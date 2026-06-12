@@ -275,6 +275,8 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
     '131-engineer-issues.sql',
     '188-work-item-claims.sql',
     '195-work-item-redundancy.sql',
+    // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
+    '241-signal-provenance-origin.sql',
   ]) {
     const text = readFileSync(join(SQL_DIR, file), 'utf8')
       .split('\n')

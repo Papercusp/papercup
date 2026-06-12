@@ -312,7 +312,11 @@ export default defineTool({
     //     (homes/views/cloud/non-repos) + idempotency live in the seeder; push
     //     is decided creator-side from the registry-known coords — none exist
     //     on this path, so the routine seeds quiet commit-only (push:false,
-    //     no_upstream_remote); B-04's reconcile revisits once coords appear.
+    //     no_upstream_remote). When this create runs inside the from-repo
+    //     composition, _create_from_repo's later coords-rich seed (step 7.25)
+    //     UPGRADES this still-machine-default row via the seeder's
+    //     untouched-coords-less carve-out — that's how the probed push +
+    //     default branch win on the default path.
     let gitSync: import('../../harness/git-sync/git-sync-routine').SeedGitSyncRoutineOutcome | undefined;
     if (hiveMembership) {
       try {

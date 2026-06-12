@@ -39,6 +39,16 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 
+
+import { dirname as __esmDirname } from 'node:path';
+import { fileURLToPath as __esmFileURLToPath } from 'node:url';
+
+// ESM-safe __dirname (plugin-host-runtime.ts pattern): bare __dirname is
+// UNDEFINED under tsx file-mode in this type:module package — referencing it
+// throws at import (top-level) or call time. This class of bug killed DBOS
+// routines fleet-wide on the 2026-06-12 05:30 deploy (change-ledger-scan).
+const __dirname = __esmDirname(__esmFileURLToPath(import.meta.url));
+
 export interface RoleCodexHome {
   /** Absolute path to set as the child's CODEX_HOME. */
   codexHome: string;

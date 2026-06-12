@@ -382,6 +382,25 @@ export async function bootAllHarnessesForActiveWorkspace(
     }
   })();
 
+  // git-sync-any-hive-2026-06-12 P-004 (B-04): once-per-process reconcile —
+  // walk each workspace's registry and seed any MISSING `system:git-sync`
+  // routine rows for hive MEMBER checkouts (hives created before the seeding
+  // sites existed, or members that slipped past them). ADD-only: existing
+  // rows — `papercup`'s hand-tuned one included — are never mutated. Same
+  // posture as the hygiene blocks above: lazy-import + fire-and-forget with
+  // its own catch — it must NEVER affect harness boot — and the once-guard
+  // lives in the module, so retry passes of this function no-op.
+  void (async () => {
+    try {
+      const { ensureGitSyncRoutinesReconciledOnce } = await import(
+        '../../harness/git-sync/git-sync-reconcile'
+      );
+      ensureGitSyncRoutinesReconciledOnce(workspaceIds);
+    } catch {
+      /* best-effort; boot-all never fails on git-sync reconcile */
+    }
+  })();
+
   return {
     attempted: results.length,
     booted: results.filter((r) => r.state === 'booted').length,

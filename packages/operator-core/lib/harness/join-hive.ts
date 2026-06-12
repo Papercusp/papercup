@@ -14,7 +14,11 @@
  *      owned meta, never announces) + `hive_slug` stamped on each joined
  *      member, plus the member's upstream coords parsed from its join link —
  *      so the Harnesses tab's grouping/rail/strip work for the joiner, and the
- *      fork-PR context chain (P-013 of the parent plan) has registry coords.
+ *      fork-PR context chain (P-013 of the parent plan) has registry coords;
+ *   3. best-effort `system:git-sync` SEEDING for every joined member clone
+ *      (git-sync-any-hive-2026-06-12 P-003): inactive + push:false joiner rows
+ *      via B-01's seedGitSyncRoutineForMember — without this, shared hives only
+ *      sync on the creator's machine. Never fails the join.
  *
  * Deliberately the SMALLEST model that fixes the asymmetry (D-007): a fuller
  * co-owned hive (shared identity, multi-writer listing) is out of scope.
@@ -29,6 +33,7 @@ import {
   loadHarnessRegistry,
   mutateHarnessRegistry,
   type HarnessRegistry,
+  type ProjectEntry,
 } from '../harness-registry';
 import { parseHarnessLink, type HarnessLink } from './url-scheme';
 import {
@@ -36,6 +41,11 @@ import {
   realJoinLinkDeps,
   type JoinLinkDeps,
 } from '../endpoint-route/routes/harness/join-link';
+import {
+  seedGitSyncRoutineForMember,
+  type SeedGitSyncRoutineOpts,
+  type SeedGitSyncRoutineOutcome,
+} from './git-sync/git-sync-routine';
 
 // ── Shapes ─────────────────────────────────────────────────────────────────────
 
@@ -53,7 +63,9 @@ export interface JoinedMember {
   slug: string;
   link: string;
   ok: boolean;
-  /** 'joined' | 'already_registered' | the failure detail. */
+  /** 'joined' | 'already_registered' | the failure detail. Successful joins
+   *  additionally carry the git-sync seed outcome appended as
+   *  `; git_sync:<seeded|ineligible|routine_exists|error>` (B-03 P-003). */
   detail: string;
 }
 
@@ -74,6 +86,10 @@ export interface JoinHiveDeps {
   ensureDir?: (path: string) => Promise<void>;
   /** Root for remote-hive view dirs (default ~/.papercusp/remote-hives). */
   remoteHivesRoot?: string;
+  /** Best-effort per-member git-sync routine seeding (git-sync-any-hive P-003;
+   *  default B-01's seedGitSyncRoutineForMember). NEVER fails the join — every
+   *  outcome folds into the member's `detail`. */
+  seedGitSync?: (opts: SeedGitSyncRoutineOpts) => Promise<SeedGitSyncRoutineOutcome>;
 }
 
 async function defaultJoinLink(input: {
@@ -176,12 +192,15 @@ export async function joinHiveAsView(
   const linkBySlug = new Map(
     members.filter((m) => m.ok).map((m) => [m.slug, links.find((l) => l.raw === m.link)?.parsed]),
   );
+  // Post-mutate member entries (hive_slug + upstream coords stamped) — the
+  // git-sync seeding below feeds these to the eligibility/seed composition.
+  const memberEntries = new Map<string, ProjectEntry>();
   await mutateRegistry((cur: HarnessRegistry) => {
     const hasView = cur.projects.some((p) => p.slug === hiveSlug);
     const projects = cur.projects.map((p) => {
       const link = linkBySlug.get(p.slug);
       if (!link) return p;
-      return {
+      const next = {
         ...p,
         hive_slug: hiveSlug,
         // Upstream coords from the join link (the fork-PR context + future
@@ -193,6 +212,8 @@ export async function joinHiveAsView(
           ? {}
           : { github_repository_id: link.repoId }),
       };
+      memberEntries.set(next.slug, next);
+      return next;
     });
     return {
       ...cur,
@@ -209,6 +230,34 @@ export async function joinHiveAsView(
           ],
     };
   }, opts.workspaceId);
+
+  // 3 — best-effort git-sync seeding per joined member clone (git-sync-any-hive
+  //     P-003): joiner-side rows seed INACTIVE + push:false (P-005/D-005 via the
+  //     seeder), non-clobber idempotent (re-join reports routine_exists), and the
+  //     remote_hive VIEW is never a member here (eligibility would refuse it
+  //     anyway). The cron jitter key is salted per-install — on a shared hive the
+  //     same member slug exists on N peer boxes. A failure NEVER fails the join;
+  //     the outcome lands in the member's `detail`.
+  const seedGitSync = deps.seedGitSync ?? seedGitSyncRoutineForMember;
+  for (const m of members) {
+    if (!m.ok) continue;
+    const entry = memberEntries.get(m.slug);
+    if (!entry) continue;
+    const outcome = await seedGitSync({
+      workspaceId: opts.workspaceId,
+      installSlug: m.slug,
+      entry,
+      joinerSide: true,
+      cronKey: `${m.slug}:${opts.workspaceId}`,
+    }).catch(
+      (e): SeedGitSyncRoutineOutcome => ({
+        seeded: false,
+        reason: 'error',
+        message: e instanceof Error ? e.message : String(e),
+      }),
+    );
+    m.detail = `${m.detail}; git_sync:${outcome.seeded ? 'seeded' : outcome.reason}`;
+  }
 
   return { ok: true, hiveSlug, members };
 }

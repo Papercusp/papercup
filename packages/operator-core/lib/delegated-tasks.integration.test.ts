@@ -67,6 +67,8 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
+  // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
+  await db.sql.unsafe(readMigration('241-signal-provenance-origin.sql')).simple();
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.

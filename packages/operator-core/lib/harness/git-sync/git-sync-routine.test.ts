@@ -172,6 +172,20 @@ describe('seedGitSyncRoutineForMember (P-001/P-008 seed side)', () => {
     expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({ active: false });
   });
 
+  it('cronKey salts the jitter key (B-03 joiner-side per-install salt); default stays installSlug', async () => {
+    const { deps } = seedDeps();
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws-1', installSlug: 'shop', entry: memberEntry(), joinerSide: true, cronKey: 'shop:ws-1' },
+      deps,
+    );
+    // 'shop' hashes to offset 7, 'shop:ws-1' to offset 3 — the salt really moves the schedule
+    expect(out).toMatchObject({ seeded: true, cron: gitSyncCronForKey('shop:ws-1') });
+    expect(gitSyncCronForKey('shop:ws-1')).not.toBe(gitSyncCronForKey('shop'));
+    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({
+      triggerConfig: { cron: gitSyncCronForKey('shop:ws-1') },
+    });
+  });
+
   it('an INELIGIBLE entry reports the reason and touches neither PG nor the probe', async () => {
     const getRoutine = vi.fn(async () => null);
     const { deps, probeCalls } = seedDeps({ eligibility: undefined, getRoutine });
@@ -222,6 +236,114 @@ describe('seedGitSyncRoutineForMember (P-001/P-008 seed side)', () => {
       deps,
     );
     expect(out).toEqual({ seeded: false, reason: 'error', message: 'octokit melted' });
+    expect(upsertRoutineMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('coords-aware upgrade carve-out (the from-repo double-seed ordering)', () => {
+  /** Exactly what a coords-less creator-side seed writes (create.ts step 5a):
+   *  active per the creator split, push:false (no_upstream_remote), submodules
+   *  on, no branch, the slug-jittered cron — the only row shape the carve-out
+   *  may upgrade. `over`/`cfgOver` deviate one field to simulate a human edit. */
+  const machineDefaultRow = (
+    slug: string,
+    over: Record<string, unknown> = {},
+    cfgOver: Record<string, unknown> = {},
+  ) =>
+    ({
+      id: `rt_${slug}_git-sync`,
+      active: GIT_SYNC_SEED_ACTIVE_CREATOR,
+      triggerConfig: {
+        cron: gitSyncCronForKey(slug),
+        push: false,
+        push_submodules: true,
+        ...cfgOver,
+      },
+      ...over,
+    }) as never;
+
+  it('UPGRADES an untouched machine-default coords-less row when the creator re-seed brings coords: probed push + branch land, outcome surfaces upgraded', async () => {
+    const { deps, probeCalls } = seedDeps({
+      getRoutine: vi.fn(async () => machineDefaultRow('shop')),
+    });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws-1', installSlug: 'shop', entry: memberEntry(), joinerSide: false },
+      deps,
+    );
+    expect(out).toEqual({
+      seeded: true,
+      upgraded: true,
+      active: GIT_SYNC_SEED_ACTIVE_CREATOR,
+      push: true,
+      pushReason: expect.stringContaining('github_permissions_push_true'),
+      cron: gitSyncCronForKey('shop'),
+      branch: 'develop',
+    });
+    // The upgrade really probed (the routine_exists path never reaches the probe)…
+    expect(probeCalls).toEqual([{ owner: 'acme', repo: 'shop' }]);
+    // …and the rewrite carries the probed push + the clone's default branch.
+    expect(upsertRoutineMock).toHaveBeenCalledTimes(1);
+    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({
+      workspaceId: 'ws-1',
+      installSlug: 'shop',
+      active: true,
+      triggerConfig: { cron: gitSyncCronForKey('shop'), push: true, branch: 'develop' },
+    });
+  });
+
+  it('a human edit — active flipped OFF — kills the upgrade: routine_exists, zero writes, no probe', async () => {
+    const { deps, probeCalls } = seedDeps({
+      getRoutine: vi.fn(async () => machineDefaultRow('shop', { active: false })),
+    });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws', installSlug: 'shop', entry: memberEntry(), joinerSide: false },
+      deps,
+    );
+    expect(out).toEqual({ seeded: false, reason: 'routine_exists' });
+    expect(probeCalls).toEqual([]);
+    expect(upsertRoutineMock).not.toHaveBeenCalled();
+  });
+
+  it('a human edit — custom cron — kills the upgrade: routine_exists, zero writes', async () => {
+    const { deps } = seedDeps({
+      getRoutine: vi.fn(async () => machineDefaultRow('shop', {}, { cron: '0 5 * * * *' })),
+    });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws', installSlug: 'shop', entry: memberEntry(), joinerSide: false },
+      deps,
+    );
+    expect(out).toEqual({ seeded: false, reason: 'routine_exists' });
+    expect(upsertRoutineMock).not.toHaveBeenCalled();
+  });
+
+  it('a coords-LESS re-seed over the same machine-default row carries no more information: routine_exists', async () => {
+    const { deps, probeCalls } = seedDeps({
+      getRoutine: vi.fn(async () => machineDefaultRow('local-only')),
+    });
+    const out = await seedGitSyncRoutineForMember(
+      {
+        workspaceId: 'ws',
+        installSlug: 'local-only',
+        entry: memberEntry({ slug: 'local-only', github_remote: undefined, github_default_branch: undefined }),
+        joinerSide: false,
+      },
+      deps,
+    );
+    expect(out).toEqual({ seeded: false, reason: 'routine_exists' });
+    expect(probeCalls).toEqual([]);
+    expect(upsertRoutineMock).not.toHaveBeenCalled();
+  });
+
+  it('a JOINER-side re-seed never upgrades — even a row that would otherwise qualify stays routine_exists', async () => {
+    const { deps, probeCalls } = seedDeps({
+      getRoutine: vi.fn(async () => machineDefaultRow('shop')),
+    });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws', installSlug: 'shop', entry: memberEntry(), joinerSide: true },
+      deps,
+    );
+    expect(out).toEqual({ seeded: false, reason: 'routine_exists' });
+    expect(probeCalls).toEqual([]);
     expect(upsertRoutineMock).not.toHaveBeenCalled();
   });
 });

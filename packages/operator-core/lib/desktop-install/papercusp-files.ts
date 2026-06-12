@@ -18,6 +18,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROJECT_GUIDE_MARKER } from './splice-tooling-overlay';
 import { renderWorkspaceMapSection } from './workspace-map';
 import { renderWireSchemasSection } from '../prompt-assembly';
@@ -231,9 +232,18 @@ function resolveOperatorAppRoot(): string {
   // Source layout (tsx dev): this file lives at
   // <operatorApp>/lib/desktop-install/papercusp-files.ts. Walk up two
   // directories. In the esbuild-bundled production layout (single
-  // host.cjs in sidecar/), __dirname collapses to sidecar/ — the
-  // candidate-list fallbacks below handle that.
-  return path.resolve(__dirname, '..', '..');
+  // host.cjs in sidecar/), the module dir collapses to sidecar/ — the
+  // candidate-list fallbacks below handle that. ESM-safe: bare `__dirname`
+  // is UNDEFINED under tsx file-mode in this type:module package (it broke
+  // ensure-omp-su phase1 on every operator boot); import.meta.url is the
+  // dev path, the CJS __dirname global only as the bundled-sidecar fallback.
+  let moduleDir: string;
+  try {
+    moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    moduleDir = typeof __dirname === 'string' ? __dirname : process.cwd();
+  }
+  return path.resolve(moduleDir, '..', '..');
 }
 
 /**

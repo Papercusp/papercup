@@ -13,7 +13,8 @@
  */
 
 import { execFile as execFileCb } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -26,8 +27,12 @@ import { registerSystemAction } from './system-actions';
 
 const execFile = promisify(execFileCb);
 
-// packages/operator-core/lib/harness/routines → repo root (mirrors lib/gym/ab-run.ts).
-const REPO_ROOT = join(__dirname, '../../../../..');
+// packages/operator-core/lib/harness/routines → repo root. ESM-safe: bare
+// `__dirname` is UNDEFINED under tsx file-mode in this type:module package —
+// a top-level reference here threw at import, poisoned the whole
+// register-system-actions chain, and killed DBOS routines fleet-wide on the
+// 2026-06-12 05:30 deploy. Never use __dirname in operator-core.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 registerSystemAction('change-ledger-scan', async (ctx) => {
   if (!(await getFlag(FLAGS.CHANGE_LEDGER, `routine:${ctx.installSlug}`))) {

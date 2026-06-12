@@ -118,6 +118,13 @@ export interface SeedGitSyncRoutineOpts {
   /** Joiner-side member clone? Creator-side producers pass false (the default).
    *  Drives both the P-005 active split and B-02's push decision. */
   joinerSide?: boolean;
+  /**
+   * Jitter key for `gitSyncCronForKey` (default: `installSlug`). On a SHARED
+   * hive the same member slug exists on N peer boxes, so joiner-side callers
+   * (B-03) salt per-install — `${installSlug}:${workspaceId}` — to keep peers
+   * off the same minute offsets (D-004 origin-serialized multi-pusher).
+   */
+  cronKey?: string;
 }
 
 export interface SeedGitSyncRoutineDeps {
@@ -132,13 +139,32 @@ export interface SeedGitSyncRoutineDeps {
 }
 
 export type SeedGitSyncRoutineOutcome =
-  | { seeded: true; active: boolean; push: boolean; pushReason: string; cron: string; branch?: string }
+  /** `upgraded` = an untouched machine-default coords-less row was re-seeded with coords (see below). */
+  | { seeded: true; active: boolean; push: boolean; pushReason: string; cron: string; branch?: string; upgraded?: true }
   /** Not a syncable member checkout (hive home / remote view / cloud / no repo). */
   | { seeded: false; reason: 'ineligible'; ineligibleReason: IneligibleReason }
   /** A routine row already exists — NEVER clobbered (a human/peer may have edited it). */
   | { seeded: false; reason: 'routine_exists' }
   /** Anything threw (PG down, probe seam exploded, …) — reported, never rethrown. */
   | { seeded: false; reason: 'error'; message: string };
+
+/**
+ * Is this row EXACTLY what a coords-less creator-side seed would have written —
+ * i.e. machine-default in every field a human (or a later coords-rich seed)
+ * could have touched? Only such rows are safe to upgrade: any deviation means a
+ * human/peer/migration wrote here and the non-clobber rule must win.
+ */
+function isUntouchedCoordslessCreatorSeed(row: RoutineRow, installSlug: string): boolean {
+  const tc = (row.triggerConfig ?? {}) as Record<string, unknown>;
+  return (
+    row.active === GIT_SYNC_SEED_ACTIVE_CREATOR &&
+    tc.push === false &&
+    tc.push_submodules === true &&
+    tc.branch === undefined &&
+    tc.extra_lock_resources === undefined &&
+    tc.cron === gitSyncCronForKey(installSlug)
+  );
+}
 
 /**
  * Best-effort seed of one MEMBER checkout's `system:git-sync` routine — the one
@@ -153,13 +179,17 @@ export type SeedGitSyncRoutineOutcome =
  *     are reported `ineligible` BEFORE any PG/network I/O is attempted;
  *   - idempotent — an existing routine row is never clobbered (getGitSyncRoutine
  *     first; a re-add/re-create reports `routine_exists` and leaves the row,
- *     including any human-edited `active`/config, intact);
+ *     including any human-edited `active`/config, intact) — with ONE carve-out:
+ *     a creator-side re-seed that brings github coords UPGRADES a row that is
+ *     still exactly the untouched machine-default coords-less shape (the
+ *     from-repo double-seed ordering; see isUntouchedCoordslessCreatorSeed);
  *   - `push` from B-02: `hasUpstreamRemote` = the entry's registry-known
  *     `github_remote` (the seed-time signal; B-04's reconcile can revisit), with
  *     the GitHub permissions probe run only when it could change the answer
  *     (creator-side + upstream known — the decider short-circuits the rest);
  *   - `active` from the P-005 provisional split (creator true / joiner false);
- *   - `cron` = gitSyncCronForKey(installSlug) (deterministic jitter, D-004);
+ *   - `cron` = gitSyncCronForKey(cronKey ?? installSlug) (deterministic jitter,
+ *     D-004; joiner-side callers salt the key per-install — see `cronKey`);
  *   - `branch` = the entry's `github_default_branch` when present.
  */
 export async function seedGitSyncRoutineForMember(
@@ -175,12 +205,23 @@ export async function seedGitSyncRoutineForMember(
 
     const sql = deps.sql ?? getOrgPg().sql;
     const getRoutine = deps.getRoutine ?? getGitSyncRoutine;
-    if ((await getRoutine(sql, opts.installSlug)) != null) {
-      return { seeded: false, reason: 'routine_exists' };
-    }
-
     const joinerSide = opts.joinerSide === true;
     const hasUpstreamRemote = Boolean(opts.entry.github_remote);
+
+    // Coords-aware upgrade (the from-repo double-seed ordering, B-07's pinned
+    // gap): `harness:create { hive }` seeds BEFORE the composition stamps github
+    // coords, so the coords-rich seed at _create_from_repo step 7.25 used to
+    // lose to non-clobber and the member synced commit-only forever. A re-seed
+    // may upgrade a row iff (a) it carries strictly more information (creator
+    // side + upstream remote known) and (b) the row is still byte-for-byte the
+    // machine-default coords-less shape — anything a human touched stays kept.
+    let upgrading = false;
+    const existing = await getRoutine(sql, opts.installSlug);
+    if (existing != null) {
+      upgrading =
+        !joinerSide && hasUpstreamRemote && isUntouchedCoordslessCreatorSeed(existing, opts.installSlug);
+      if (!upgrading) return { seeded: false, reason: 'routine_exists' };
+    }
     // Probe only when the answer can matter: rules 1+2 of the decider win
     // outright for fetch-less repos and joiner clones.
     let permissionsPush: boolean | null = null;
@@ -194,7 +235,7 @@ export async function seedGitSyncRoutineForMember(
     const decide = deps.decidePush ?? decideGitSyncPush;
     const decision = decide({ joinerSide, hasUpstreamRemote, permissionsPush });
 
-    const cron = gitSyncCronForKey(opts.installSlug);
+    const cron = gitSyncCronForKey(opts.cronKey ?? opts.installSlug);
     const active = joinerSide ? GIT_SYNC_SEED_ACTIVE_JOINER : GIT_SYNC_SEED_ACTIVE_CREATOR;
     const branch = opts.entry.github_default_branch;
     const upsert = deps.upsert ?? upsertGitSyncRoutine;
@@ -206,7 +247,15 @@ export async function seedGitSyncRoutineForMember(
       active,
       ...(branch ? { branch } : {}),
     });
-    return { seeded: true, active, push: decision.push, pushReason: decision.reason, cron, ...(branch ? { branch } : {}) };
+    return {
+      seeded: true,
+      active,
+      push: decision.push,
+      pushReason: decision.reason,
+      cron,
+      ...(branch ? { branch } : {}),
+      ...(upgrading ? { upgraded: true as const } : {}),
+    };
   } catch (e) {
     return {
       seeded: false,

@@ -3901,6 +3901,50 @@ The inbox emitter is two pure functions:
 
 See the plan `inbox-cards-unification-2026-05-31` and the predecessor `planning-attention-importance-2026-05-31` (P-017, superseded).
 
+# Adding a column to a shared SELECT list breaks hand-rolled integration fixtures
+
+> ISSUE_COLS/FEATURE_COLS-style column additions 42703 every integration fixture that hand-rolls the table's DDL — sweep the fixtures with the migration, or better, source DDL from a shared test schema helper
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Dozens of integration tests across several `*.integration.test.ts` files go red at once with `PostgresError: column "<new_col>" does not exist` (code `42703`), usually surfacing from a deep shared read like `getIssue`/`getWorkItem` — in tests that have nothing to do with the column or the lane that added it. `test:affected` looks fleet-broken; each failing suite is innocent.
+
+## Cause
+
+[Section titled “Cause”](#cause)
+
+A migration added a column AND a shared SELECT list (`ISSUE_COLS`, `FEATURE_COLS`, `SELECT_COLS`, …) now selects it — but integration fixtures do not run the full migration chain. They hand-roll the table from a few `readMigration(...)` calls plus an inline `ALTER TABLE … ADD COLUMN IF NOT EXISTS` patch block, so the new column never exists in the fixture DB while the production code unconditionally selects it.
+
+Three occurrences of the class so far: migration 178’s `assignee_rank`/ `rank_writer` columns (every work-items fixture grew the ALTER patch block), and twice on 2026-06-12 — migration 241’s `engineer_issues.signal_origin` broke six work-items fixtures (48 red tests) hours after the same pattern hit `work-items-priority`.
+
+## Fix (immediate)
+
+[Section titled “Fix (immediate)”](#fix-immediate)
+
+Grep the fixtures that bootstrap the table and extend their ALTER patch block:
+
+```bash
+grep -rln "readMigration('131-engineer-issues" packages/operator-core/lib | xargs grep -l "ALTER TABLE.*engineer_issues"
+```
+
+then add the column to each block, e.g. `ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic'`.
+
+## Fix (durable — do this when you ADD such a column)
+
+[Section titled “Fix (durable — do this when you ADD such a column)”](#fix-durable--do-this-when-you-add-such-a-column)
+
+1. **Before landing**: grep for the SELECT list you’re extending; every `*.integration.test.ts` that hand-rolls that table’s DDL needs the column.
+2. **Better**: move the table’s fixture DDL into a shared helper the way D-014 did for `harness_features_consolidated` (`packages/operator-core/test/_work-items-schema.ts` exports `HARNESS_FEATURES_CONSOLIDATED_DDL` — the single source of truth fixtures import). `engineer_issues` still lacks such a helper; whoever next touches its shape should lift the DDL there and point the six fixtures at it.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `packages/operator-core/test/_work-items-schema.ts` — the D-014 precedent.
+* Plan context: hive-network-surface-2026-06-11 (P-011 close-out hit this); self-learning-frontier P-002 (migration 241, the trigger).
+
 # IQ-battery judge composite is 0–10 — don't infer scales from old fixtures
 
 > Live beekeeper_scores composites sit at ~4–6 (the gym judge's 0–10 rubric scale), but the LearningTab apiary fixture historically used 0.70/0.74 — a unit-scale assumption baked into chart code clamps live points off the plot.
@@ -3924,6 +3968,56 @@ The gym judge rubric (d1/d2/d3, weights 0.5/0.25/0.25 — `buildRubric()` in `pa
 * Keep projection/chart code over `composite` **scale-free**: derive the domain from the data, clamp only the floor at 0, never a unit ceiling. (`computeTrendPoints` in `apps/operator-vite/src/components/adv/BenchmarkTrend.tsx` pins this with a live-scale regression test.)
 * The apiary fixture now carries live-scale values (4.06/5.95) — keep it that way; new fixtures for beekeeper data should copy magnitudes from live rows.
 * Before trusting any scale/shape assumption about beekeeper data, look at a real row: `SELECT composite FROM harness_shared.beekeeper_scores LIMIT 5` (read-only, via `getOrgPg`).
+
+# Adding a column to ISSUE_COLS/FEATURE_COLS breaks minimal-schema integration testbeds — patch every 131-applier, not just your own suite
+
+> Several integration suites hand-assemble engineer_issues from picked migration files (131 + ad-hoc ALTERs). A new column selected by ISSUE_COLS (issues-engineer.ts) fails them all with "column does not exist" — grep for 131-engineer-issues.sql and apply your migration in each setup.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+`npm run test:affected:integration` goes red with 10+ tests across suites you never touched — `delegated-tasks`, `plan-items/plan-item-convert`, the four `shared-hive-loop` suites — all with the same error:
+
+```plaintext
+PostgresError: column "signal_origin" of relation "engineer_issues" does not exist
+  ❯ createIssue lib/issues-engineer.ts:249
+```
+
+Your own suite (and the live DB) are green, because you applied your migration there. The failures are NOT in your test; they are in the **work-items engine code path** (`ISSUE_COLS` / `FEATURE_COLS` in `packages/operator-core/lib/issues-engineer.ts`), which now selects/inserts a column the other suites’ test DBs don’t have.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+These suites do not provision through the full migration chain. They build a **minimal schema** by applying hand-picked migration files plus ad-hoc `ALTER TABLE … ADD COLUMN IF NOT EXISTS` patches:
+
+* `lib/plan-items/plan-item-convert.integration.test.ts` (beforeAll, `readMigration('131-engineer-issues.sql')` + selected others)
+* `lib/delegated-tasks.integration.test.ts` (same pattern)
+* `lib/shared-hive-loop/composition-rig.ts` (a file list around line 270 — shared by composition-happy-path, fleet-monitors, redundancy-two-swarm, split-brain-queen)
+
+So any migration that adds a column **the engine reads or writes unconditionally** must also be applied in every one of these setups. This has now recurred twice: migration 178 (`assignee_rank` — the precedent is the inline ALTER comment in those same beforeAlls) and migration 241 (`signal_origin`, fixed 2026-06-12 during consume-edges B-09).
+
+## Fix / rule
+
+[Section titled “Fix / rule”](#fix--rule)
+
+When you add a column to `engineer_issues` / `harness_features_consolidated` that `ISSUE_COLS`/`FEATURE_COLS` (or any unconditional engine SQL) touches:
+
+```bash
+grep -rln "131-engineer-issues.sql" packages/operator-core/{lib,test}
+```
+
+and add your migration to **each** hit (one line, mirroring the existing pattern):
+
+```ts
+// Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
+await db.sql.unsafe(readMigration('241-signal-provenance-origin.sql')).simple();
+```
+
+(`composition-rig.ts` takes the filename in its list instead.) Then run the hits’ suites, not just your own: `npx vitest run --config vitest.integration.config.ts <files>`.
+
+Keep migrations like this **idempotent + standalone** (ADD COLUMN IF NOT EXISTS, no `\set`, no BEGIN/COMMIT wrappers) — the rig strips psql meta-commands but can’t fix a migration that depends on later files.
 
 # Canonical-form JSON for signed payloads — reach for JCS (RFC 8785)
 
@@ -6260,6 +6354,38 @@ The brain pane hit the same root cause on 2026-06-06 (the `claudeStoreHasSession
 * Ghost sessions are **unrecoverable by design** — no transcript was ever written. Don’t burn time trying to “restore” them.
 * With `ended_at` now stamped, a quit session’s dir loses the GC’s open-row protection and is collected after `DEFAULT_RETENTION_MS` (7d) idle (`session-dir-gc.ts`) — i.e. the resume window for a quit session is now the GC’s *designed* 7 days, not the accidental-infinite the wedge provided.
 * Pre-fix rows keep `ended_at = NULL` (no backfill — distinguishing dead-from-idle retroactively is unsafe); they’re harmless now that the picker filters by transcript existence.
+
+# pui headless smoke: scratch zellij session, CR-not-LF keys, restore ViewState
+
+> How to drive the pui TUI end-to-end without touching the user's workbench — and the three traps (tips dialog, \n vs \r, shared ViewState owner row)
+
+Driving the **pui TUI** live (agent-run e2e) has no Tauri-style documented recipe. This one works and is isolation-safe (proven 2026-06-12 verifying the `:theme` switcher, workbench-theme-system P-002):
+
+```bash
+# 1. Scratch config dir — pui's zellij writes (and zellij itself) land here,
+#    NOT in the user's ~/.config/zellij. Boot a DEDICATED session under a pty.
+SCRATCH=$(mktemp -d); echo "// scratch" > $SCRATCH/config.kdl
+export ZELLIJ_CONFIG_DIR=$SCRATCH
+script -qfc "zellij --session my-smoke" /dev/null >/dev/null 2>&1 &
+
+
+# 2. Drive it
+zellij --session my-smoke action write-chars $'...keys...'
+zellij --session my-smoke action dump-screen            # stdout (0.44: no path arg)
+zellij --session my-smoke action dump-screen --ansi     # assert actual RGB cells
+
+
+# 3. Tear down
+zellij kill-session my-smoke; zellij delete-session my-smoke; rm -rf $SCRATCH
+```
+
+The three traps:
+
+1. **A zellij startup “tips” dialog swallows your first keystrokes.** Send a lone `$'\x1b'` (Esc) after boot, *then* type. If your first command line “vanished”, this is why.
+2. **Enter is `\r`, not `\n`.** crossterm maps LF (0x0A) to ctrl-j — in pui’s palette it appends a literal `j` instead of submitting. Always end `write-chars` command lines with `$'\r'`.
+3. **pui shares the user’s real backend state.** `workbench_owner()` is `$USER[@host]`, so anything your smoke persists (ViewState: theme, tab, selections — `harness_shared.tui_view_state`) lands on the **user’s own row**. Restore what you changed before quitting (e.g. `:theme frost`), and verify via `GET :3070/api/tui/view-state?owner=$(whoami)`.
+
+Bonus: `ZELLIJ_CONFIG_DIR=$SCRATCH zellij setup --check` is a cheap parse gate for generated config/themes KDL — “Well defined.” or a loud error.
 
 # pui workbench is a dockview — stacked work area, swap presets, dock-verbs
 
@@ -41434,6 +41560,155 @@ The `packages/operator-core/lib/operator-state-pg.ts` helpers branch on `ENCRYPT
 * **OS keyring (Tauri keychain / libsecret)** for the key. The flat file at mode 0600 is roughly equivalent to keyring on a single-user host.
 * **Real KMS** (cloud or on-prem). Out of scope for V1.
 * **Drop plaintext column entirely.** Migration 028 wipes it to `'{}'::jsonb` rather than DROPping; future migration after we confirm nothing else queries the column will run `ALTER TABLE ... DROP COLUMN payload`.
+
+# Hive git-sync — per-member seeding and the multi-pusher model
+
+> How git-sync generalizes to any hive — one routine per member checkout (never homes or views), the push decision table, creator/joiner seed-active split, deterministic cron jitter, and the origin-serialized multi-pusher model for shared hives.
+
+# Hive git-sync
+
+[Section titled “Hive git-sync”](#hive-git-sync)
+
+The git-sync pipeline (`packages/operator-core/lib/harness/git-sync/run-git-sync.ts`) commits the whole tree, fetches, merges, and pushes — for **any** registered checkout, not just papercup. This page documents how that pipeline is *wired* to hives: which registry entries get a `system:git-sync` routine, who seeds it, what the seeded config says, and how N independent peers on a shared hive converge on one origin branch. Source plan: `git-sync-any-hive-2026-06-12` (see the [plans index](/internal/docs/reference/plans-index)); the pipeline itself was built in `git-sync-auto-commit-2026-06-03` and hardened in `git-sync-system-audit-2026-06-09`.
+
+Two decisions on this page are PROVISIONAL
+
+The **creator-ACTIVE / joiner-INACTIVE seed split** (P-005) and the **multi-pusher origin-serialized model** (D-004) are provisional defaults (plan decision D-005), implemented as one-line constants so a later ratification is a trivial flip. D-004 is additionally gated on the P-010 two-peer convergence verification, which has **not yet run** — see [Verification status](#verification-status).
+
+## The model in one paragraph
+
+[Section titled “The model in one paragraph”](#the-model-in-one-paragraph)
+
+A hive = a **home** harness (`harness_kind: 'hive'`, a non-repo state dir) + N **member** harnesses (registered clones carrying `hive_slug`). Joiners additionally materialize a `remote_hive` home **view** (non-repo) + read-only member clones. Git-sync seeds **one routine per member checkout — never homes, never views** (plan D-001: “git-sync for a hive” = the set of its members’ routines). Each routine is an ordinary `harness_shared.routines` row (`target_role: 'system:git-sync'`, cron trigger — see [Routines](/internal/docs/spec/routines)); the routines engine runs the action, which wraps the pure pipeline with locks, escalations, and resolver dispatch.
+
+## Eligibility — which entries get a routine
+
+[Section titled “Eligibility — which entries get a routine”](#eligibility--which-entries-get-a-routine)
+
+`git-sync-eligibility.ts` is the **one** verdict module, shared by every seed site and by the action’s runtime gate, so seed time and run time can never disagree. `gitSyncEligibility(entry)` is pure + sync over a registry snapshot; reasons in precedence order:
+
+| Reason                 | Entry shape                                  | Why it never syncs                                                                                                      |
+| ---------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `remote_hive_view`     | `remote_hive: true`                          | Joiner-side hive view — a non-repo dir under `~/.papercusp/remote-hives` (checked first: views are also `kind: 'hive'`) |
+| `hive_home`            | `harness_kind: 'hive'`                       | The hive home is a non-repo state dir                                                                                   |
+| `non_local_deployment` | `deployment.target` present and ≠ `'local'`  | The checkout lives on a cloud frame, not this box’s filesystem                                                          |
+| `no_path`              | No registered path, or it vanished from disk | Nothing to sync                                                                                                         |
+| `not_a_git_repo`       | Path exists but carries no `.git`            | Not a clone (`.git` may be a dir or a worktree/submodule file)                                                          |
+
+The same verdict also runs as a **runtime gate** at the top of every tick (`git-sync-action.ts`): a routine row whose target became ineligible no-ops with a logged reason and a `last_status: 'skipped'` metadata patch instead of error-escalating every 10 minutes.
+
+## Seeding — one spine, five producers
+
+[Section titled “Seeding — one spine, five producers”](#seeding--one-spine-five-producers)
+
+All seeding flows through `seedGitSyncRoutineForMember` (`git-sync-routine.ts`), which composes eligibility → existing-row check → push decision → jittered cron → upsert. It **never throws** and never fails the calling tool — every failure folds into a reported outcome. It is **non-clobbering**: an existing routine row (possibly human-edited) is left intact; a re-add/re-join reports `routine_exists`. One carve-out: a creator-side re-seed that brings github coords **upgrades** a row that is still exactly the untouched machine-default coords-less shape, so the probed push and default branch land on the from-repo double-seed ordering (`harness:create { hive }` seeds before the coords are stamped); the outcome surfaces `upgraded: true`. Anything human-touched — active flipped, cron retuned, any config deviation — is never clobbered, and joiner-side or coords-less re-seeds still report `routine_exists`.
+
+| Producer                  | Site                                                                                  | Side                | Cron jitter key                      |
+| ------------------------- | ------------------------------------------------------------------------------------- | ------------------- | ------------------------------------ |
+| `hive:create_from_repo`   | `agent-tools/hive/_create_from_repo.ts` (step 7.25, new-hive **and** into-hive paths) | creator             | member slug                          |
+| `hive:add-member`         | `agent-tools/hive/_add-member.ts` (both success paths — a re-add heals a missing row) | creator             | member slug                          |
+| `harness:create { hive }` | `agent-tools/harness/create.ts` (step 5a)                                             | creator             | member slug                          |
+| Hive join                 | `lib/harness/join-hive.ts` (`joinHiveAsView` per-member loop)                         | joiner              | `<slug>:<workspaceId>`               |
+| Boot reconcile            | `git-sync-reconcile.ts`, fired once per process from `lib/sync/hyperbee/boot-all.ts`  | detected per member | slug, or salted when joiner-detected |
+
+The boot reconcile is the **backfill**: it walks each workspace’s registry, visits only hive members (`hive_slug` set), detects joiner-side members by their home entry’s `remote_hive` flag, and add-only seeds whatever is missing — so hives created before the seed sites existed (or members that slipped past them) converge on next boot. Members joined via a **bare join link** (outside `joinHiveAsView`) carry no `hive_slug` and are not covered.
+
+A seeded row carries, in `trigger_config`:
+
+* **`cron`** — jittered every-10-minutes schedule (below);
+* **`push`** — from the decision table (below);
+* **`branch`** — the member’s `github_default_branch` registry coord when known (the pipeline falls back to its own per-repo branch resolution otherwise);
+* **`active`** — from the provisional creator/joiner split (below).
+
+## Seed-active split (P-005 — provisional)
+
+[Section titled “Seed-active split (P-005 — provisional)”](#seed-active-split-p-005--provisional)
+
+Creator-side members seed **ACTIVE**; joiner-side clones seed **INACTIVE**. The constants live in `git-sync-eligibility.ts`:
+
+```ts
+export const GIT_SYNC_SEED_ACTIVE_CREATOR = true;  // provisional P-005
+export const GIT_SYNC_SEED_ACTIVE_JOINER = false;  // provisional P-005
+```
+
+Rationale for the default: creator-side follows the flags-default-enabled culture (escalations surface problems); joiner-side clones are read-only by design (fork-PR is the contribution path), so even commit-only churn stays opt-in until a human flips the routine on (`setGitSyncRoutineActive(sql, slug, true)`). The owner may ratify or flip either constant — they are deliberately one-line.
+
+## The push decision table
+
+[Section titled “The push decision table”](#the-push-decision-table)
+
+`decideGitSyncPush` (`decide-git-sync-push.ts`) is the one place that answers “should this seeded routine push?”. Rules in precedence order; the first match wins (reason tokens are stable, machine-greppable prefixes):
+
+| # | Condition                                     | `push`  | Reason token                     |
+| - | --------------------------------------------- | ------- | -------------------------------- |
+| 1 | No upstream remote (no `github_remote` coord) | `false` | `no_upstream_remote`             |
+| 2 | Joiner-side clone                             | `false` | `joiner_side`                    |
+| 3 | GitHub `permissions.push === false`           | `false` | `github_permissions_push_false`  |
+| 4 | GitHub `permissions.push === true`            | `true`  | `github_permissions_push_true`   |
+| 5 | Permission unknown (`null`)                   | `true`  | `permissions_unknown_optimistic` |
+
+The permissions signal comes from a best-effort probe (`lib/harness/github-repo-permissions.ts`: authenticated `GET /repos/{owner}/{repo}`, auth via the shared `getOctokit()`/gh-token path; any failure returns `null`, never throws). The spine only runs the probe when it can change the answer — rules 1–2 win outright without it.
+
+Why the default is asymmetric (rule 5 optimistic, rules 1–2 hard `false`): the pipeline’s fetch-fail branch is not symmetric in `push`. With `push: false` a failed/absent fetch is benign — the repo gets quiet commit-only sync. With `push: true` the same failed fetch error-escalates **every tick** and never self-heals. So push is only enabled where it plausibly works; a wrong optimistic guess surfaces loudly via the `git-sync-error` escalation (plan D-002) instead of silently stranding work.
+
+## Cron jitter — and why
+
+[Section titled “Cron jitter — and why”](#cron-jitter--and-why)
+
+`gitSyncCronForKey(key)` (`git-sync-eligibility.ts`) hashes the key (FNV-1a 32-bit, dependency-free, stable across processes and platforms) to a minute offset 0–9 and emits a 6-field every-10-minutes cron:
+
+```plaintext
+0 <o>,<o+10>,<o+20>,<o+30>,<o+40>,<o+50> * * * *
+```
+
+Every member keeps a 10-minute cadence, but members land on different minute offsets. This cuts same-tick collisions two ways:
+
+* **between members on one box** — N members’ ticks don’t all contend the routines engine and the network at once;
+* **between peers on a shared hive** (the D-004 case) — the same member slug exists on every peer box, so joiner-side seeding salts the key with the workspace id (`<slug>:<workspaceId>`), de-correlating peers’ fire times and shrinking the window for two peers to fetch→push the same origin branch in the same instant.
+
+Jitter is structural, not configurable: the seeding spine always computes the cron through this helper (no seed site bypasses it), and the schedule shape is the same one papercup’s hand-seeded row already uses, parsed by the routines engine’s `computeNextFireAt`.
+
+## The multi-pusher model (D-004 — provisional)
+
+[Section titled “The multi-pusher model (D-004 — provisional)”](#the-multi-pusher-model-d-004--provisional)
+
+For shared hives, **every push-capable peer runs its own git-sync independently**. There is no single-pusher election and no new coordination machinery. Convergence relies on the origin branch as the serializer:
+
+1. Each peer’s tick runs commit → fetch → merge → push per repo (submodules deepest-first, superproject last).
+2. When a peer’s push is rejected **non-fast-forward** (another peer pushed between its fetch and push), the pipeline re-fetches, re-merges once, and re-pushes (`run-git-sync.ts`, `syncOneRepo`). The loser’s local edits ride in on the merge commit.
+3. When that merge **content-conflicts**, the tree is aborted clean (agents never see a half-merged tree), a `git-sync-conflict` escalation is written, and a `merge-resolver` agent is dispatched **on that peer** — resolvers run per peer, against the peer’s own checkout. Dispatch is deduped per harness while a resolver is genuinely in-flight (`RESOLVER_INFLIGHT_MS`, 20 min); the launch resolves via the `merge-resolution` [launch blueprint](/internal/docs/agent-insights/launch-blueprints).
+
+Accepted cost: occasional cross-peer merge conflicts, handled by the existing escalation + resolver path rather than prevented by election or locking.
+
+### Federation is orthogonal (D-003)
+
+[Section titled “Federation is orthogonal (D-003)”](#federation-is-orthogonal-d-003)
+
+A shared hive’s substrate federation ([hive-scoped federation](/internal/docs/agent-insights/hive-scoped-federation) — hyperbee/peer-log over the hive’s Ed25519 topic) carries **coordination and PG state**. Git origin carries **the tree**. Generalized git-sync neither replaces nor depends on federation: a federated hive still syncs its tree per-peer through ordinary git remotes, and a hive with no federation at all syncs the same way.
+
+## Run-time concerns: locks and escalation keying
+
+[Section titled “Run-time concerns: locks and escalation keying”](#run-time-concerns-locks-and-escalation-keying)
+
+Per tick, the action holds the **per-slug** exclusive lock `git-sync:<slug>` (auto-registered idempotently, in the same transaction as the acquire) for the whole commit → submodule-push → pointer-bump → push sequence, plus every name in the routine’s `trigger_config.extra_lock_resources` (which are **never** auto-registered — an unknown name skips the tick with a loud log). Held by a peer → skip this tick. Papercup’s row lists the legacy global `git-sync` + `libs-papercusp-submodule` names there, so the documented back-off protocol (“acquire `exclusive(git-sync)` to make papercup’s git-sync back off”) keeps working — see [named resource locks](/internal/docs/agent-spawning/named-resource-locks) and [repo conventions](/internal/docs/system/repo-conventions) for the papercup specifics.
+
+Escalations key on `(harness_slug, phase)` with the **constant** phase `'git-sync'`. The old constant `'staging'` shared its row with other `phase='staging'` writers — auto-rebase’s `rebase_conflict` rows clobbered git-sync’s and vice versa via `ON CONFLICT DO UPDATE` — and a branch-derived phase would orphan open rows whenever a routine’s branch changed. A git-sync-owned constant ends both.
+
+Both changes ship with migrations — locks `sql/015` (registry prose for the per-slug naming) and db `sql/237` (papercup’s `extra_lock_resources` + re-key of open escalation rows `'staging'` → `'git-sync'`) — which apply via the migration runner (`db:migrate`).
+
+## Failure surfaces (links, not prose)
+
+[Section titled “Failure surfaces (links, not prose)”](#failure-surfaces-links-not-prose)
+
+* **`git-sync-conflict`** — merge conflict; tree aborted clean, resolver dispatched (above). Read via the `harness:escalation` tool; pipeline history on the `/admin/git` tab.
+* **`git-sync-error`** — repeated push failures and/or oversized-file exclusions (EI-18: GitHub hard-rejects blobs ≥100MB; dirty files over `max_blob_bytes`, default 95MB, are excluded from the auto-commit and reported instead of permanently wedging the push). Never clobbers an open conflict escalation. Long form: plan `git-sync-system-audit-2026-06-09`.
+* Every tick also appends a pipeline event row (sync/conflict/error rates over time) — surfaced on the `/admin/git` tab.
+
+## Verification status
+
+[Section titled “Verification status”](#verification-status)
+
+D-004 stands **provisionally**. The empirical half (plan P-010 — a two-peer convergence test on a scratch shared hive: disjoint edits, a real overlapping conflict, and a resolver-race probe for ping-pong) is deferred to a dedicated session with a second isolated operator stack. Until it runs, treat shared-hive multi-pusher behavior as designed-but-unverified; if ping-pong is observed the planned mitigation is a resolver-dispatch backoff (skip dispatch when origin advanced since the conflicting fetch — re-merge first), recorded as a new plan decision.
 
 # Learning Packs — default hive learnings, hive memory, Comb distribution
 

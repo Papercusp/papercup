@@ -66,10 +66,10 @@ pub enum Action {
     /// tracked-pane set, so a refresh in the mark-launched window won't re-open.
     LaunchPanes {
         sessions: Vec<crate::session_panes::SessionPane>,
-        /// Read-only `pui watch-pane <owner>` panes for active swarm agents —
-        /// appended to the dock stack (pui-dock-agent-stack-2026-06-07). Opened
+        /// `claude --resume <session_id>` panes for active fleet bees —
+        /// appended to the dock stack (hive-agent-tabs P-004/P-014). Opened
         /// via the zellij CLI only (no companion / no mark-launched).
-        watch: Vec<crate::mux::PaneSpec>,
+        bees: Vec<crate::mux::PaneSpec>,
     },
     /// Result of an applied agent control intent (P12b / tui:dispatch) — the run
     /// loop POSTs it to `/api/tui/intents/:id/result`. `result_json` is the JSON
@@ -210,9 +210,6 @@ pub enum Action {
     /// Join every member harness of a discovered hive (p2p-hive-directory P-006):
     /// POST each `links` entry to `/api/harness/join-link`. `slug` is the hive id.
     JoinHive { slug: String, links: Vec<String> },
-    /// Watch-pane chat (pui-dock-agent-stack): send the composer draft to the
-    /// watched bee via coord:message-agent → `Event::BeeMessageSent`.
-    SendBeeMessage { to: String, body: String },
     /// P-008: set an agent's wake mode (auto|manual) via coord:wake-mode. The run
     /// loop spawns the run_tool call; the next roster poll refreshes the badge.
     SetWakeMode { agent: String, mode: String },
@@ -1269,16 +1266,9 @@ pub struct App {
     /// bee's ranked work-list + coord inbox/outbox. Populated by `pui bee-pane`
     /// polling the in-memory selection relay; all logic lives in `bee.rs`.
     pub bee: crate::bee::BeeState,
-    /// Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
-    /// swarm agent this instance renders read-only (dossier + activity + mail).
-    /// `None` = a normal tabbed/pinned instance.
-    pub watch: Option<String>,
-    /// Consecutive roster refreshes the watched agent has been absent/stale —
-    /// at 2 the watch pane exits (its `--close-on-exit` pane then closes).
-    pub watch_misses: u8,
     /// Per-bee wake-pane lifecycle (owner ask 2026-06-11): consecutive roster
-    /// misses for an Owner-scoped wake-pane's agent — the wake-pane analog of
-    /// `watch_misses` (2 misses + a drained queue → this instance exits).
+    /// misses for an Owner-scoped wake-pane's agent (2 misses + a drained
+    /// queue → this instance exits).
     pub wake_owner_misses: u8,
     /// Agent-context pane mode (dock 4-pane split, owner ask 2026-06-11):
     /// which board a pinned `Tab::AgentCtx` instance renders — the launch
@@ -1291,16 +1281,6 @@ pub struct App {
     pub agent_ctx: Option<Result<crate::models::AgentCtxData, String>>,
     /// Agent-context pane scroll offset (j/k).
     pub agent_ctx_scroll: u16,
-    /// The watched bee's accumulated raw output (the "thinking" feed) — a
-    /// capped ring fed by the bee-output poll; newest at the END.
-    pub watch_output: String,
-    /// The bee-output poll cursor (byte offset into the spawn's .out file).
-    pub watch_output_offset: u64,
-    /// The watch pane's chat composer draft (Enter sends via
-    /// coord:message-agent; Esc clears).
-    pub watch_input: String,
-    /// True while a chat send is in flight (composer locked).
-    pub watch_sending: bool,
     /// True only in the dock's chat-pane: drive the reactive agent stack (a
     /// watch pane per active bee + an interactive pane per new local launch).
     pub dock_agent_panes: bool,
@@ -1309,9 +1289,9 @@ pub struct App {
     /// TUI instead of the read-only `pui watch-pane` (RosterEntry::dock_pane_argv).
     /// Default off → current behavior.
     pub hive_agent_tabs: bool,
-    /// Owner ids the dock has already opened a watch pane for (dedup; pruned
+    /// Owner ids the dock has already opened a bee pane for (dedup; pruned
     /// when the agent leaves the roster so a returning bee re-panes).
-    pub watched_panes: std::collections::HashSet<String>,
+    pub paned_bees: std::collections::HashSet<String>,
     /// Hive lexicon (pui-hive-lexicon-2026-06-06): the active brand pack's
     /// term→label map, fetched once at startup. Empty = classic fallback (today's
     /// labels). `lex(term)` routes user-facing labels through it.
@@ -1550,19 +1530,13 @@ impl App {
             relaunch_command: None,
             fleet: FleetState::default(),
             bee: crate::bee::BeeState::default(),
-            watch: None,
-            watch_misses: 0,
             wake_owner_misses: 0,
             agent_ctx_mode: AgentCtxMode::default(),
             agent_ctx: None,
             agent_ctx_scroll: 0,
-            watch_output: String::new(),
-            watch_output_offset: 0,
-            watch_input: String::new(),
-            watch_sending: false,
             dock_agent_panes: false,
             hive_agent_tabs: false,
-            watched_panes: std::collections::HashSet::new(),
+            paned_bees: std::collections::HashSet::new(),
             lexicon: crate::lexicon::Lexicon::default(),
             chat_messages: Vec::new(),
             chat_input: String::new(),
@@ -2685,12 +2659,6 @@ impl App {
         Some(grouped.into_iter().map(|(id, _)| id).collect())
     }
 
-    /// Watch pane exit rule: the watched agent has been absent/stale for 2
-    /// consecutive roster refreshes (one miss can be churn; two is gone).
-    pub fn watch_should_exit(&self) -> bool {
-        self.watch.is_some() && self.watch_misses >= 2
-    }
-
     /// Per-bee wake-pane exit rule (owner ask 2026-06-11): an Owner-scoped
     /// `pui wake-pane <owner>` exits once its agent has been gone for 2
     /// consecutive roster refreshes AND its queue is drained — a dead bee's
@@ -3548,18 +3516,6 @@ impl App {
             Event::Roster { active, pending } => {
                 self.set_roster(active);
                 self.last_error = None;
-                // Watch pane (pui-dock-agent-stack-2026-06-07): track the watched
-                // agent's roster presence; after 2 consecutive misses the run
-                // loop exits this instance. A watch pane never opens panes.
-                if let Some(w) = &self.watch {
-                    let present = self.roster.iter().any(|r| &r.owner_id == w && !r.stale);
-                    self.watch_misses = if present {
-                        0
-                    } else {
-                        self.watch_misses.saturating_add(1)
-                    };
-                    return Action::Render;
-                }
                 // Per-bee wake pane (owner ask 2026-06-11): an Owner-scoped
                 // wake-pane tracks its agent's roster presence the same way —
                 // the run loop exits this instance once the agent is gone AND
@@ -3583,19 +3539,19 @@ impl App {
                     // TUI / chat-pane / dock-driver react to pending launches.
                     Vec::new()
                 };
-                // The dock's agent stack (pui-dock-agent-stack-2026-06-07): one
-                // read-only watch pane per active swarm agent, so the user
+                // The dock's agent stack (hive-agent-tabs P-004): one
+                // `claude --resume` bee pane per active fleet bee, so the user
                 // scrolls through ALL active agents in the dock.
-                let watch = if self.dock_agent_panes {
+                let bees = if self.dock_agent_panes {
                     for p in &mut to_open {
                         // Interactive launch panes join the dock stack too.
                         p.spec.stacked = true;
                     }
-                    self.watch_panes_to_open()
+                    self.bee_panes_to_open()
                 } else {
                     Vec::new()
                 };
-                if to_open.is_empty() && watch.is_empty() {
+                if to_open.is_empty() && bees.is_empty() {
                     // Swarm pane: re-publish an EXISTING bee selection when the
                     // roster lands (keeps the relay fresh across roster churn).
                     // No selection → leave it that way: the default Fleet view is
@@ -3611,7 +3567,7 @@ impl App {
                     }
                     Action::LaunchPanes {
                         sessions: to_open,
-                        watch,
+                        bees,
                     }
                 }
             }
@@ -5552,12 +5508,13 @@ mod tests {
             liveness: "live".into(),
             agent: Some("claude".into()),
             agent_pane_kind: Some(kind.into()),
+            session_id: Some(format!("sid-{owner}")),
             ..Default::default()
         }
     }
 
     #[test]
-    fn watch_panes_append_grouped_by_kind_and_dedup_by_owner() {
+    fn bee_panes_append_grouped_by_kind_and_dedup_by_owner() {
         let mut a = App::new();
         a.hive_agent_tabs = true;
         a.dock_agent_panes = true;
@@ -5568,7 +5525,7 @@ mod tests {
             fleet_bee("p-2", "planner"),
             fleet_bee("b-2", "bee"),
         ]);
-        let specs = a.watch_panes_to_open();
+        let specs = a.bee_panes_to_open();
         let titles: Vec<&str> = specs.iter().map(|s| s.title.as_deref().unwrap_or("")).collect();
         // One pane per agent (owner ask 2026-06-11: bees do NOT get a per-bee
         // wake pane — they review via the fleet-wide board; the queen's inline
@@ -5580,9 +5537,9 @@ mod tests {
         // The dedup set records OWNER ids (not argv[2], which is a session id for
         // a flag-on claude --resume bee) — a re-refresh opens nothing.
         for o in ["p-1", "b-1", "p-2", "b-2"] {
-            assert!(a.watched_panes.contains(o), "owner {o} not recorded");
+            assert!(a.paned_bees.contains(o), "owner {o} not recorded");
         }
-        assert!(a.watch_panes_to_open().is_empty(), "second refresh must dedup");
+        assert!(a.bee_panes_to_open().is_empty(), "second refresh must dedup");
     }
 
     #[test]
@@ -5739,9 +5696,12 @@ mod tests {
                 assert_eq!(tabs.len(), 1);
                 let (name, kdl) = &tabs[0];
                 assert_eq!(name, "☁ papercup-cloud");
-                // Host-matched agent panes only (the local bee stays out).
-                assert!(kdl.contains("args \"watch-pane\" \"su-remote\""), "{kdl}");
-                assert!(!kdl.contains("su-local"));
+                // P-014 retired the watch-pane surface: the frame tab is a named
+                // placeholder — no per-agent panes (the remote live view is the
+                // streamed desktop in the webview Frames tab).
+                assert!(kdl.contains("tab name=\"☁ papercup-cloud\""), "{kdl}");
+                assert!(!kdl.contains("watch-pane"), "{kdl}");
+                assert!(!kdl.contains("su-remote") && !kdl.contains("su-local"), "{kdl}");
             }
             other => panic!("expected CreateFrameTabs, got {other:?}"),
         }
@@ -9488,9 +9448,9 @@ mod tests {
             pending: vec![p],
         });
         match act {
-            Action::LaunchPanes { sessions, watch } => {
+            Action::LaunchPanes { sessions, bees } => {
                 assert_eq!(sessions.len(), 1);
-                assert!(watch.is_empty());
+                assert!(bees.is_empty());
                 assert_eq!(sessions[0].adv_session_id, 607);
                 assert_eq!(sessions[0].spec.argv, vec!["psu", "--no-picker", "--agent=claude"]);
             }
@@ -9500,10 +9460,10 @@ mod tests {
     }
 
     #[test]
-    fn dock_chat_pane_opens_watch_panes_for_active_agents() {
-        // The dock agent stack (pui-dock-agent-stack-2026-06-07): one read-only
-        // watch pane per live agent; dedup'd; pruned when the agent leaves so a
-        // returning bee re-panes.
+    fn dock_chat_pane_opens_bee_panes_for_active_agents() {
+        // The dock agent stack (hive-agent-tabs P-004): one `claude --resume`
+        // bee pane per live fleet bee with a resumable session id; dedup'd;
+        // pruned when the agent leaves so a returning bee re-panes.
         let mut a = App::new();
         a.dock_agent_panes = true;
         let bee = |o: &str| RosterEntry {
@@ -9512,6 +9472,7 @@ mod tests {
             source: "fleet-spawn".into(),
             liveness: "live".into(),
             agent: Some("claude".into()),
+            session_id: Some(format!("sid-{o}")),
             ..Default::default()
         };
         // An engineer shell (omp-hook-session) is NEVER paned — bees only.
@@ -9526,12 +9487,12 @@ mod tests {
             pending: vec![],
         });
         match act {
-            Action::LaunchPanes { sessions, watch } => {
+            Action::LaunchPanes { sessions, bees } => {
                 assert!(sessions.is_empty());
-                assert_eq!(watch.len(), 2);
-                assert_eq!(watch[0].argv, vec!["pui", "watch-pane", "su-aaa"]);
-                assert!(watch[0].stacked);
-                assert!(watch[0].close_on_exit);
+                assert_eq!(bees.len(), 2);
+                assert_eq!(bees[0].argv, vec!["claude", "--resume", "sid-su-aaa"]);
+                assert!(bees[0].stacked);
+                assert!(bees[0].close_on_exit);
             }
             other => panic!("expected LaunchPanes, got {other:?}"),
         }
@@ -9546,86 +9507,19 @@ mod tests {
             active: vec![bee("su-aaa")],
             pending: vec![],
         });
-        assert!(!a.watched_panes.contains("su-bbb"));
+        assert!(!a.paned_bees.contains("su-bbb"));
         match a.update(Event::Roster {
             active: vec![bee("su-aaa"), bee("su-bbb")],
             pending: vec![],
         }) {
-            Action::LaunchPanes { watch, .. } => {
-                assert_eq!(watch.len(), 1);
-                assert_eq!(watch[0].argv[2], "su-bbb");
+            Action::LaunchPanes { bees, .. } => {
+                assert_eq!(bees.len(), 1);
+                assert_eq!(bees[0].argv[2], "sid-su-bbb");
             }
             other => panic!("expected LaunchPanes, got {other:?}"),
         }
     }
 
-    #[test]
-    fn watch_composer_types_sends_and_clears() {
-        // The watch pane IS a chat surface: printable keys draft, Enter sends
-        // a coord:message-agent thread, Esc clears (pui-dock-agent-stack).
-        // (Fire-and-forget since hive-agent-tabs P-014 — completion rides the
-        // generic Notify/Error events; no busy-flag composer lock.)
-        let mut a = App::new();
-        a.watch = Some("s-bee1".into());
-        a.update(key('h', KeyModifiers::NONE));
-        a.update(key('i', KeyModifiers::NONE));
-        assert_eq!(a.watch_input, "hi");
-        a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
-        assert_eq!(a.watch_input, "h");
-        a.update(key('i', KeyModifiers::NONE));
-        match a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))) {
-            Action::SendBeeMessage { to, body } => {
-                assert_eq!(to, "s-bee1");
-                assert_eq!(body, "hi");
-            }
-            other => panic!("expected SendBeeMessage, got {other:?}"),
-        }
-        assert!(a.watch_input.is_empty());
-        // An empty draft never sends.
-        assert_eq!(
-            a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))),
-            Action::Render
-        );
-        // Esc clears the draft.
-        a.update(key('x', KeyModifiers::NONE));
-        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        assert!(a.watch_input.is_empty());
-    }
-
-    #[test]
-    fn watch_pane_tracks_misses_and_exits_after_two() {
-        // `pui watch-pane <owner>` exits once its agent has been gone for two
-        // consecutive roster refreshes (one miss can be churn) — and NEVER
-        // opens panes itself.
-        let mut a = App::new();
-        a.watch = Some("su-w".into());
-        let live = RosterEntry {
-            owner_id: "su-w".into(),
-            liveness: "live".into(),
-            ..Default::default()
-        };
-        a.update(Event::Roster {
-            active: vec![live.clone()],
-            pending: vec![],
-        });
-        assert!(!a.watch_should_exit());
-        a.update(Event::Roster {
-            active: vec![],
-            pending: vec![],
-        });
-        assert!(!a.watch_should_exit()); // one miss — churn tolerance
-        a.update(Event::Roster {
-            active: vec![],
-            pending: vec![],
-        });
-        assert!(a.watch_should_exit()); // two misses — gone
-        a.watch_misses = 0;
-        let act = a.update(Event::Roster {
-            active: vec![live],
-            pending: vec![],
-        });
-        assert_eq!(act, Action::Render);
-    }
 
     /// EI-358: a board pane (reactive_launch_panes = false — watch/wake/
     /// prompt/mail/work/network/hive) must NEVER react to pending launches;
