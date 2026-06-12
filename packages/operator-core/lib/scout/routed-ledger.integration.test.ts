@@ -4,7 +4,9 @@
  *  - recordRoutedIdea upsert + readRoutedIdeas round-trip (provenance shape, scope filter);
  *  - getScoutLensOutcomes deriving per-lens outcomes by JOINING the ledger's
  *    routedRef to the live Change Feed (gym_proposals / harness_plans);
- *  - refreshScoutOutcomes persisting the outcome cache back to the ledger.
+ *  - refreshScoutOutcomes persisting the outcome cache back to the ledger;
+ *  - gradeRoutedIdea (scout-idea-grading C-2, migration 234): the owner-sovereign
+ *    precedence guard against live rows + the C-1 → C-1b grade read-back.
  *
  * The pure derivation is covered by outcome-feedback.test.ts; this proves the
  * real join + the SQL are correct (the change-feed-deps Phase-7 lesson: a wrong
@@ -15,10 +17,13 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+// recordRoutedIdea/gradeRoutedIdea fire-and-forget a learning.scout invalidate
+// via a lazy import — mock the SSE seam so the grade tests can assert it.
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-const { recordRoutedIdea, readRoutedIdeas, getScoutLensOutcomes, refreshScoutOutcomes } = await import(
-  './routed-ledger'
-);
+const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea, getScoutLensOutcomes, refreshScoutOutcomes } =
+  await import('./routed-ledger');
+const invalidate = vi.mocked((await import('../sync-sse')).notifySyncInvalidate);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const WS = 'ws-scout-ledger-test';
@@ -131,5 +136,77 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     const total = weightRows.reduce((s, r) => s + Number(r.weight), 0);
     expect(total).toBeCloseTo(1, 6); // normalized shares
     for (const r of weightRows) expect(r.decided).toBeGreaterThanOrEqual(0);
+  });
+
+  // ── scout-idea-grading C-2 (migration 234): gradeRoutedIdea against the real
+  //    guard SQL + the C-1 → C-1b read-back. Runs LAST — grades must not
+  //    perturb the outcome-derivation tests above (classifyIdeaOutcome is
+  //    grade-blind by design, but ordering keeps the suites independent).
+  describe('gradeRoutedIdea (C-2)', () => {
+    const gradeRow = async (ideaId: string) =>
+      (
+        await db.adminSql<
+          { human_grade: number | null; human_feedback: string | null; graded_by: string | null; graded_at: Date | null }[]
+        >`
+        SELECT human_grade, human_feedback, graded_by, graded_at
+          FROM harness_shared.scout_routed_ideas
+         WHERE idea_id = ${ideaId}`
+      )[0];
+
+    it('Queen grades an ungraded idea; readRoutedIdeas maps C-1 → C-1b', async () => {
+      invalidate.mockClear();
+      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 2, feedback: 'derivative', gradedBy: 'Queen' });
+      expect(res).toEqual({ applied: true });
+      await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith('learning.scout'));
+
+      const row = await gradeRow('i2');
+      expect(row.human_grade).toBe(2);
+      expect(row.human_feedback).toBe('derivative');
+      expect(row.graded_by).toBe('Queen');
+      expect(row.graded_at).toBeTruthy();
+
+      const i2 = (await readRoutedIdeas({ workspaceId: WS })).find((r) => r.ideaId === 'i2')!;
+      expect(i2.humanGrade).toBe(2);
+      expect(i2.humanFeedback).toBe('derivative');
+      expect(i2.gradedBy).toBe('Queen');
+      expect(typeof i2.gradedAt).toBe('string');
+      // ungraded rows stay bare — the optional C-1b fields are absent
+      const i3 = (await readRoutedIdeas({ workspaceId: WS })).find((r) => r.ideaId === 'i3')!;
+      expect(i3.humanGrade).toBeUndefined();
+      expect(i3.gradedBy).toBeUndefined();
+    });
+
+    it('regrade is idempotent and reflects the LATEST call in full (omitted feedback clears)', async () => {
+      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 3, gradedBy: 'Queen' });
+      expect(res).toEqual({ applied: true });
+      const row = await gradeRow('i2');
+      expect(row.human_grade).toBe(3);
+      expect(row.human_feedback).toBeNull();
+    });
+
+    it('owner overwrites a Queen grade (the owner overwrites anything, D-004)', async () => {
+      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 5, feedback: 'actually great', gradedBy: 'owner' });
+      expect(res).toEqual({ applied: true });
+      const row = await gradeRow('i2');
+      expect(row.human_grade).toBe(5);
+      expect(row.graded_by).toBe('owner');
+    });
+
+    it('Queen on an owner-graded row is a NO-OP: owner-grade-sovereign, row untouched, no invalidate', async () => {
+      invalidate.mockClear();
+      const res = await gradeRoutedIdea({ ideaId: 'i2', grade: 1, feedback: 'overruled?', gradedBy: 'Queen' });
+      expect(res).toEqual({ applied: false, reason: 'owner-grade-sovereign' });
+      const row = await gradeRow('i2');
+      expect(row.human_grade).toBe(5); // the owner's verdict stands
+      expect(row.human_feedback).toBe('actually great');
+      expect(row.graded_by).toBe('owner');
+      await new Promise((r) => setTimeout(r, 10));
+      expect(invalidate).not.toHaveBeenCalled();
+    });
+
+    it('grading a nonexistent idea → not-found', async () => {
+      const res = await gradeRoutedIdea({ ideaId: 'i-missing', grade: 4, gradedBy: 'owner' });
+      expect(res).toEqual({ applied: false, reason: 'not-found' });
+    });
   });
 });

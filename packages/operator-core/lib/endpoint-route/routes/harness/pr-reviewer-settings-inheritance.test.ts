@@ -11,7 +11,7 @@ vi.mock('../../../harness/projects-lite', () => ({
   buildProjectsLitePayload: (...args: unknown[]) => buildProjectsLitePayload(...args),
 }));
 
-import { hiveHomeOf } from './pr-reviewer-settings';
+import { hiveHomeOf, hiveGroupRootOf, resolveRoleSource } from './pr-reviewer-settings';
 
 const HIVES = [
   {
@@ -54,5 +54,57 @@ describe('hiveHomeOf (P-007 role inheritance)', () => {
   test('a lite-payload failure degrades to no inheritance, never throws', async () => {
     buildProjectsLitePayload.mockRejectedValue(new Error('registry down'));
     expect(await hiveHomeOf('acme-web')).toBeNull();
+  });
+});
+
+/**
+ * resolveRoleSource — the P-008 (D-003) ownership-gate precedence matrix:
+ * explicit row (the kill switch) > hive ownership > home-row inheritance >
+ * default off.
+ */
+describe('resolveRoleSource (P-008 ownership gate)', () => {
+  test('an explicit per-harness row beats everything (the kill switch)', () => {
+    expect(
+      resolveRoleSource({ hasExplicitRow: true, ownsHome: true, homeRoleEnabled: true }),
+    ).toBe('explicit');
+  });
+
+  test('ownership confers the role with no explicit row', () => {
+    expect(
+      resolveRoleSource({ hasExplicitRow: false, ownsHome: true, homeRoleEnabled: false }),
+    ).toBe('ownership');
+  });
+
+  test('home-row inheritance applies only without ownership', () => {
+    expect(
+      resolveRoleSource({ hasExplicitRow: false, ownsHome: false, homeRoleEnabled: true }),
+    ).toBe('inherited');
+  });
+
+  test('nothing set → off', () => {
+    expect(
+      resolveRoleSource({ hasExplicitRow: false, ownsHome: false, homeRoleEnabled: false }),
+    ).toBe('none');
+  });
+});
+
+/** hiveGroupRootOf — the P-008 root resolution: members AND the home itself. */
+describe('hiveGroupRootOf', () => {
+  test('a member resolves to its group root', async () => {
+    expect(await hiveGroupRootOf('acme-web')).toBe('acme');
+  });
+
+  test('the home resolves to ITSELF (ownership applies on the home too)', async () => {
+    expect(await hiveGroupRootOf('acme')).toBe('acme');
+  });
+
+  test('a standalone harness is its own group root', async () => {
+    expect(await hiveGroupRootOf('solo')).toBe('solo');
+  });
+
+  test('unknown slug / lookup failure → null', async () => {
+    expect(await hiveGroupRootOf('ghost')).toBeNull();
+    buildProjectsLitePayload.mockRejectedValue(new Error('down'));
+    expect(await hiveGroupRootOf('acme')).toBeNull();
   });
 });

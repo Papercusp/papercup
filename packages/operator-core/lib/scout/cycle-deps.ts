@@ -38,6 +38,7 @@ import {
   type PlanDraftCreator,
 } from './router-deps';
 import { gatherSteppingStones, type ArchivePort } from './gym-bridge';
+import { gatherGraderFeedbackPriming, type GradedIdeaView } from './ideator-feedback-priming';
 import { getScoutLensWeights } from './routed-ledger';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
 import type { CorpusEntry } from './critique-core';
@@ -70,6 +71,11 @@ export interface BuildScoutCycleDepsOptions {
    * the production `buildCapturePort` over the real `captureImprovement`.
    */
   capturePort?: CapturePort;
+  /**
+   * Override the graded-ledger read behind the C-4 grader-feedback priming
+   * (tests). Default: prod `readRoutedIdeas` (B-02's reader), harness-scoped.
+   */
+  graderFeedbackReader?: () => Promise<GradedIdeaView[]>;
 }
 
 /**
@@ -167,12 +173,20 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       // elites (stepping-stones), so Scout builds on / leaps away from what the gym has
       // found. Empty/no-op archive ⇒ no stones ⇒ no priming block (clean cold start).
       const { stones, priming } = gatherSteppingStones(opts.archive);
+      // C-4 grader feedback (scout-idea-grading P-005): owner/Queen grades on recently
+      // routed ideas, concatenated BELOW the stepping-stones on the same priming
+      // channel. No graded rows / read failure ⇒ no block (clean cold start).
+      const grader = await gatherGraderFeedbackPriming({
+        harnessSlug: opts.harnessSlug,
+        ...(opts.graderFeedbackReader ? { readRows: opts.graderFeedbackReader } : {}),
+      });
+      const primingBlocks = [...(stones.length ? [priming] : []), ...(grader.priming ? [grader.priming] : [])];
       return (
         await runIdeators(digest, {
           llmCall: ctx.llmCall,
           ...roster,
           ...weighting,
-          ...(stones.length ? { priming } : {}),
+          ...(primingBlocks.length ? { priming: primingBlocks.join('\n\n') } : {}),
         })
       ).ideas;
     },

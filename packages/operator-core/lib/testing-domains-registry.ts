@@ -137,6 +137,61 @@ defineTestDomain({
   ],
 });
 
+// learning-packs-2026-06-11: the Learning Packs feature end-to-end — pack
+// format/seeding/management, the hive memory scope + budgeted injection, the
+// Learnings-view reader, the creation/Comb UI, and the worker's
+// pre-publication review pipeline. (hive-scope/injection also surface under
+// the Memory domain's core glob — the overlap is deliberate: this row is the
+// per-feature view.)
+defineTestDomain({
+  id: 'learnings',
+  label: 'Learnings',
+  description: 'Learning packs: format/seed/manage, hive memory scope, Learnings UI, Comb review pipeline.',
+  tier: 'domain',
+  sections: [
+    {
+      id: 'packs',
+      label: 'Packs core',
+      description: 'Pack format + loader, default-pack content pin, seeding, install/uninstall/upgrade/sweep + conflict review.',
+      globs: ['packages/operator-core/lib/learning-packs/**/*.test.ts'],
+    },
+    {
+      id: 'hive-memory',
+      label: 'Hive memory',
+      description: 'hive:<slug> scope resolution + budgeted pre-turn injection (pack-muting-aware).',
+      globs: [
+        'packages/operator-core/lib/memory/hive-scope.test.ts',
+        'packages/operator-core/lib/memory/injection.test.ts',
+      ],
+    },
+    {
+      id: 'reader',
+      label: 'Learnings view reader',
+      globs: ['packages/operator-core/lib/sync-resolver/learning-hive-read.test.ts'],
+    },
+    {
+      id: 'ui',
+      label: 'UI',
+      description: 'Creation pack picker + seeded summary, Learning tab, Comb storefront/detail.',
+      globs: [
+        'apps/operator/app/harness/__tests__/EntryGithubUrlForm.test.tsx',
+        'apps/operator/app/harness/__tests__/CreateHarnessPicker.test.tsx',
+        'apps/operator/app/cupboard/__tests__/*.test.tsx',
+        'apps/operator-vite/src/components/adv/LearningTab.test.tsx',
+      ],
+    },
+    {
+      id: 'comb-review',
+      label: 'Comb review',
+      description: 'Cupboard worker: listing kinds + the pending→approve/reject pre-publication pipeline (D-007).',
+      globs: [
+        'apps/operator-public/src/__tests__/review.test.ts',
+        'apps/operator-public/src/__tests__/listings.test.ts',
+      ],
+    },
+  ],
+});
+
 defineTestDomain({
   id: 'packaged',
   label: 'Packaged build',

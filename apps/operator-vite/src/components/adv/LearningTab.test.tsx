@@ -9,11 +9,14 @@
 // (+ owner-gated empty state), the Scout rails/tick view, and the Knowledge runbooks +
 // memory health + Insights cross-link — plus the how-this-works strip — guarding against
 // render-time crashes the typecheck can't catch. Empty states are pinned per view.
+// Scout grading (B-07, scout-idea-grading-2026-06-12): star control, attribution
+// chip, optimistic write through the `scout:grade-idea` tool proxy (+ rollback),
+// the `?grade=` note popover, and the lens-weight strip.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
-const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true, tab: null };
+const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true, tab: null, grade: null };
 vi.mock('nuqs', () => ({
   useQueryState: (key: string) => [nuqsState[key], vi.fn()],
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),

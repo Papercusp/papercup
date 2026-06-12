@@ -505,6 +505,10 @@ import './harness/generate_from_repo';
 import './gym/judge';
 import './gym/signals';
 
+// scout-idea-grading-2026-06-12 B-03 (C-3) — grade a routed Scout idea 1–5
+// (+ optional critique) over the C-2 ledger seam; owner grades are sovereign.
+import './scout/grade-idea';
+
 // event-reaction-system-2026-06-04 D-010 — the inspectable reactive-graph tool
 // (what fires what + recent fired reactions with their cause-chain).
 import './events/graph';

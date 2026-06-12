@@ -15,6 +15,7 @@
  * routed-ledger.integration.test.ts against the real migrated schema.
  */
 
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { gatherCompletions } from '../curation/change-feed';
@@ -68,11 +69,25 @@ interface LedgerRow {
   title: string | null;
   addresses_pattern_refs: string[] | null;
   routed_at: string;
+  human_grade: number | null;
+  human_feedback: string | null;
+  graded_by: string | null;
+  graded_at: Date | string | null;
 }
 
 function epochMsToIso(v: string | number | null): string {
   const n = typeof v === 'number' ? v : Number(v ?? 0);
   return new Date(Number.isFinite(n) ? n : 0).toISOString();
+}
+
+/** timestamptz → ISO (postgres-js hands back a Date; tolerate a string). */
+function tsToIso(v: Date | string | null): string | undefined {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'string' && v) {
+    const ms = Date.parse(v);
+    return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
+  }
+  return undefined;
 }
 
 /**
@@ -110,6 +125,75 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
     .catch(() => {});
 }
 
+/** Input to {@link gradeRoutedIdea} — one grader's verdict on a routed idea (C-2). */
+export interface GradeRoutedIdeaInput {
+  /** The routed idea's id (the ledger PK). */
+  ideaId: string;
+  /** 1–5 integer (D-001); B-04's weight math derives winCredit = (grade − 1) / 4 (C-5). */
+  grade: number;
+  /**
+   * Free-text critique — the ideator-priming channel's payload (C-4), not used
+   * by the weight math. Omitting it on a regrade CLEARS the stored feedback:
+   * the row always reflects the latest grade call in full.
+   */
+  feedback?: string;
+  /**
+   * Grader attribution (D-004). The tool layer (C-3) DERIVES this from the
+   * caller role — it is never caller-supplied input.
+   */
+  gradedBy: 'owner' | 'Queen';
+}
+
+/** Result of {@link gradeRoutedIdea}. */
+export interface GradeRoutedIdeaResult {
+  applied: boolean;
+  reason?: 'owner-grade-sovereign' | 'not-found';
+}
+
+/**
+ * Record a grader's verdict on one routed idea (scout-idea-grading C-2): an
+ * idempotent UPDATE of the four grade columns on the ledger row. Regrading is
+ * allowed, with ONE precedence rule (D-004), enforced here rather than in any
+ * prompt: the owner overwrites anything; the Queen never overwrites an owner
+ * grade — that write is a no-op returning `{ applied: false, reason:
+ * 'owner-grade-sovereign' }`.
+ *
+ * Keyed on the PK alone, NOT workspace-narrowed: like {@link readScoutPlanRefs},
+ * the in-process tool dispatch path runs under the 'default' ALS workspace while
+ * the ledger rows carry the active one (EI-346) — a workspace clause here would
+ * silently no-op every grade from the tool surface. Admin client by design.
+ */
+export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<GradeRoutedIdeaResult> {
+  if (!Number.isInteger(input.grade) || input.grade < 1 || input.grade > 5) {
+    throw new Error(`gradeRoutedIdea: grade must be an integer 1–5, got ${String(input.grade)}`);
+  }
+  const { sql } = getOrgPg();
+  // D-004 in one statement. `graded_by IS DISTINCT FROM 'owner'` (not `<>`) so
+  // ungraded rows (NULL graded_by) pass the guard for both graders.
+  const updated = await sql<{ idea_id: string }[]>`
+    UPDATE harness_shared.scout_routed_ideas
+       SET human_grade = ${input.grade},
+           human_feedback = ${input.feedback ?? null},
+           graded_by = ${input.gradedBy},
+           graded_at = now()
+     WHERE idea_id = ${input.ideaId}
+       AND (${input.gradedBy} = 'owner' OR graded_by IS DISTINCT FROM 'owner')
+     RETURNING idea_id`;
+  if (updated.length === 0) {
+    const exists = await sql<{ idea_id: string }[]>`
+      SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`;
+    return exists.length === 0
+      ? { applied: false, reason: 'not-found' }
+      : { applied: false, reason: 'owner-grade-sovereign' };
+  }
+  // Push the Learning tab's Scout view — same lazy fire-and-forget seam as
+  // recordRoutedIdea (a missing SSE bus is a no-op). Applied writes only.
+  void import('../sync-sse')
+    .then((m) => m.notifySyncInvalidate('learning.scout'))
+    .catch(() => {});
+  return { applied: true };
+}
+
 /**
  * The plan refs Scout has routed ("plan:<slug>"), across ALL workspaces — the
  * provenance lookup behind the plans:list `origin: 'scout'` flag. Deliberately
@@ -132,22 +216,34 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const limit = opts.limit ?? 2000;
   const rows = await sql<LedgerRow[]>`
-    SELECT idea_id, lens, cycle_id, rail, routed_ref, title, addresses_pattern_refs, routed_at
+    SELECT idea_id, lens, cycle_id, rail, routed_ref, title, addresses_pattern_refs, routed_at,
+           human_grade, human_feedback, graded_by, graded_at
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}
      ORDER BY routed_at DESC
      LIMIT ${limit}`;
-  return rows.map((r) => ({
-    ideaId: r.idea_id,
-    lens: r.lens as CreativeLens,
-    rail: r.rail as RoutedRail,
-    routedRef: r.routed_ref,
-    ...(r.cycle_id ? { cycleId: r.cycle_id } : {}),
-    ...(r.title ? { title: r.title } : {}),
-    routedAt: epochMsToIso(r.routed_at),
-  }));
+  return rows.map((r) => {
+    // C-1 → C-1b: the grade fields are optional on the provenance — absent =
+    // ungraded. graded_by is gated to the seam's vocabulary ('owner' | 'Queen',
+    // the only values gradeRoutedIdea writes); an unknown attribution drops the
+    // field but keeps the grade.
+    const gradedAt = r.graded_at ? tsToIso(r.graded_at) : undefined;
+    return {
+      ideaId: r.idea_id,
+      lens: r.lens as CreativeLens,
+      rail: r.rail as RoutedRail,
+      routedRef: r.routed_ref,
+      ...(r.cycle_id ? { cycleId: r.cycle_id } : {}),
+      ...(r.title ? { title: r.title } : {}),
+      routedAt: epochMsToIso(r.routed_at),
+      ...(r.human_grade != null ? { humanGrade: Number(r.human_grade) } : {}),
+      ...(r.human_feedback ? { humanFeedback: r.human_feedback } : {}),
+      ...(r.graded_by === 'owner' || r.graded_by === 'Queen' ? { gradedBy: r.graded_by } : {}),
+      ...(gradedAt ? { gradedAt } : {}),
+    };
+  });
 }
 
 /**
@@ -214,11 +310,15 @@ export async function upsertScoutLensWeights(
  * Read the persisted per-lens weights for a workspace. Lenses with no row are
  * simply absent (the sampling floor in {@link samplingWeightsWithFloor} keeps
  * them alive); unknown lens ids in the table are ignored.
+ *
+ * Accepts an injected `sql` so workspace-routed readers (the learning.scout
+ * snapshot, C-1c) can reuse the lens filtering without the admin client; when
+ * omitted, the admin client is used as before.
  */
 export async function readScoutLensWeights(
-  opts: { workspaceId?: string } = {},
+  opts: { workspaceId?: string; sql?: Sql } = {},
 ): Promise<Partial<Record<CreativeLens, number>>> {
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<{ lens: string; weight: string | number }[]>`
     SELECT lens, weight

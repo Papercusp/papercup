@@ -89,6 +89,13 @@ export interface PrReviewerSettingsResponse {
    * explicit per harness. An explicit row (any value) always wins.
    */
   inheritedFrom?: string | null;
+  /**
+   * P-008 (D-003): true when the role was conferred by hive OWNERSHIP (this
+   * install created the hive — a local harness_shared.hives row exists for
+   * the group's home). Pairs with inheritedFrom (the home slug; null when
+   * the viewed harness IS the owned home).
+   */
+  grantedByOwnership?: boolean;
 }
 
 // ─── Pure helpers (unit-tested) ───────────────────────────────────
@@ -184,22 +191,71 @@ function dbRowToSettings(
 }
 
 /**
- * Resolve the hive HOME for `slug` when slug is a MEMBER of a multi-harness
- * hive (P-007). Uses the cached lite payload's precomputed grouping (formal
- * `hive_slug` + legacy fallback). Returns null for a standalone harness, the
- * home itself, or on any failure (inheritance silently off). Exported for
- * tests.
+ * Resolve the hive-group ROOT containing `slug` — the slug itself when it IS
+ * the root (P-008 needs that case: ownership applies on the home too). Uses
+ * the cached lite payload's precomputed grouping (formal `hive_slug` + legacy
+ * fallback). Null on lookup failure. Exported for tests.
  */
-export async function hiveHomeOf(slug: string): Promise<string | null> {
+export async function hiveGroupRootOf(slug: string): Promise<string | null> {
   try {
     const { buildProjectsLitePayload } = await import('../../../harness/projects-lite');
     const { hives } = await buildProjectsLitePayload();
     const group = hives.find((g) => g.members.some((m) => m.slug === slug));
-    const home = group?.root.slug ?? null;
-    return home && home !== slug ? home : null;
+    return group?.root.slug ?? null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve the hive HOME for `slug` when slug is a MEMBER of a multi-harness
+ * hive (P-007). Returns null for a standalone harness, the home itself, or on
+ * any failure (inheritance silently off). Exported for tests.
+ */
+export async function hiveHomeOf(slug: string): Promise<string | null> {
+  const root = await hiveGroupRootOf(slug);
+  return root && root !== slug ? root : null;
+}
+
+/**
+ * Does this install OWN the hive whose home is `homeSlug`? A
+ * `harness_shared.hives` row exists ONLY for locally-created hives (the
+ * keypair'd creator) — a JOINED remote hive gets a registry `remote_hive`
+ * view, no row, no keypair. Best-effort false on error.
+ */
+async function isOwnedHiveHome(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  homeSlug: string,
+): Promise<boolean> {
+  try {
+    const rows = await sql`
+      SELECT 1 FROM harness_shared.hives
+       WHERE workspace_id = ${workspaceId} AND home_slug = ${homeSlug}
+       LIMIT 1`;
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The role-grant precedence (P-008 / D-003), pure + exported for tests:
+ *   explicit per-harness row (ANY value — the kill switch)
+ *   > hive OWNERSHIP (claiming the hive confers the role on home + members)
+ *   > home-row inheritance (D-002)
+ *   > default off.
+ * auto_review/auto_merge never inherit or auto-grant on any path.
+ */
+export function resolveRoleSource(opts: {
+  hasExplicitRow: boolean;
+  ownsHome: boolean;
+  homeRoleEnabled: boolean;
+}): 'explicit' | 'ownership' | 'inherited' | 'none' {
+  if (opts.hasExplicitRow) return 'explicit';
+  if (opts.ownsHome) return 'ownership';
+  if (opts.homeRoleEnabled) return 'inherited';
+  return 'none';
 }
 
 // ─── Shared identity resolution ───────────────────────────────────
@@ -237,6 +293,7 @@ const getSettings = defineTool({
         now,
       });
       let inheritedFrom: string | null = null;
+      let grantedByOwnership = false;
       if (v) {
         const rows = (await sql`
           SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at
@@ -247,14 +304,18 @@ const getSettings = defineTool({
            LIMIT 1
         `) as unknown as SettingsDbRow[];
         settingsRow = dbRowToSettings(rows[0], slug, v.id, now);
-        // P-007 (D-002): read-time, role-ONLY inheritance. No explicit row for
-        // this harness → fall back to the viewer's hive-HOME row for the role
-        // bit, so enabling the role once on the home covers every member
-        // (including members that join later — zero fan-out drift).
-        // auto_review/auto_merge never inherit (per-repo blast radius).
+        // No explicit row → the layered grant (P-007 D-002 + P-008 D-003):
+        // OWNERSHIP of the hive confers the role on the home and every member
+        // (claiming the hive IS the reviewer mandate); else fall back to the
+        // viewer's hive-HOME row (read-time inheritance). An explicit row —
+        // any value — beats both (the kill switch). auto_review/auto_merge
+        // never inherit or auto-grant on any path.
         if (!rows[0]) {
-          const home = await hiveHomeOf(slug);
-          if (home) {
+          const root = await hiveGroupRootOf(slug);
+          const ownsHome = root ? await isOwnedHiveHome(sql, workspaceId, root) : false;
+          const home = root && root !== slug ? root : null;
+          let homeRoleEnabled = false;
+          if (!ownsHome && home) {
             const homeRows = (await sql`
               SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at
                 FROM harness_shared.pr_reviewer_settings
@@ -263,10 +324,16 @@ const getSettings = defineTool({
                  AND github_user_id = ${v.id}
                LIMIT 1
             `) as unknown as SettingsDbRow[];
-            if (homeRows[0]?.pr_reviewer_role_enabled) {
-              settingsRow = { ...settingsRow, pr_reviewer_role_enabled: true };
-              inheritedFrom = home;
-            }
+            homeRoleEnabled = !!homeRows[0]?.pr_reviewer_role_enabled;
+          }
+          const source = resolveRoleSource({ hasExplicitRow: false, ownsHome, homeRoleEnabled });
+          if (source === 'ownership') {
+            settingsRow = { ...settingsRow, pr_reviewer_role_enabled: true };
+            grantedByOwnership = true;
+            inheritedFrom = home; // null when slug IS the owned home
+          } else if (source === 'inherited') {
+            settingsRow = { ...settingsRow, pr_reviewer_role_enabled: true };
+            inheritedFrom = home;
           }
         }
       }
@@ -335,6 +402,7 @@ const getSettings = defineTool({
         viewer: v ? { github_user_id: v.id, github_login: v.login } : null,
         editable: !!v,
         inheritedFrom,
+        grantedByOwnership,
       };
       return Response.json(resp);
     } catch (e: unknown) {

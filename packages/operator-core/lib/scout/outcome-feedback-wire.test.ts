@@ -201,6 +201,80 @@ describe('Scout lens-outcome meta-learning — full wire (P-014)', () => {
     });
   });
 
+  describe('grader credit on the wire (scout-idea-grading C-5 / D-002) — grades shift weights without any feed entry', () => {
+    it('grade 5 on a feed-absent idea ≡ one ACCEPTED outcome: 4/13 vs 3/13 (the pinned single-win shift)', () => {
+      const w = weightsOf([prov({ lens: 'analogical', routedRef: 'gym:ungraded', humanGrade: 5, gradedBy: 'owner' })], []);
+      expect(w.analogical).toBeCloseTo(4 / 13, 12);
+      for (const l of CREATIVE_LENSES.filter((x) => x !== 'analogical')) expect(w[l]).toBeCloseTo(3 / 13, 12);
+    });
+
+    it('grade 1 ≡ one REJECTED outcome: 2/11 vs 3/11', () => {
+      const w = weightsOf([prov({ lens: 'reframing', routedRef: 'gym:ungraded', humanGrade: 1, gradedBy: 'Queen' })], []);
+      expect(w.reframing).toBeCloseTo(2 / 11, 12);
+      for (const l of CREATIVE_LENSES.filter((x) => x !== 'reframing')) expect(w[l]).toBeCloseTo(3 / 11, 12);
+    });
+
+    it('grade 4 pins the fractional formula: r = 1.75/3 = 7/12 → 7/25, untouched lenses 6/25', () => {
+      // r_graded = (0.75 + 1) / (0.75 + 0.25 + 2) = 7/12; r_other = 1/2;
+      // Σr = 7/12 + 3/2 = 25/12 → graded = (7/12)/(25/12) = 7/25; other = 6/25.
+      const w = weightsOf([prov({ lens: 'first-principles', routedRef: 'gym:ungraded', humanGrade: 4, gradedBy: 'owner' })], []);
+      expect(w['first-principles']).toBeCloseTo(7 / 25, 12);
+      for (const l of CREATIVE_LENSES.filter((x) => x !== 'first-principles')) expect(w[l]).toBeCloseTo(6 / 25, 12);
+      expect(CREATIVE_LENSES.reduce((a, l) => a + w[l], 0)).toBeCloseTo(1, 12);
+    });
+
+    it('grade 3 is weight-neutral: the vector is bit-identical to the empty world (0.5/0.5 ≡ the Beta(1,1) prior)', () => {
+      const w = weightsOf([prov({ lens: 'constraint-removal', routedRef: 'gym:meh', humanGrade: 3, gradedBy: 'owner' })], []);
+      expect(w).toEqual(weightsOf([], []));
+    });
+
+    it('D-002 dominance on the wire: a grade-1 on a feed-ACCEPTED idea weighs exactly like a feed rejection', () => {
+      const overridden = weightsOf(
+        [prov({ lens: 'analogical', routedRef: 'gym:w1', humanGrade: 1, gradedBy: 'owner' })],
+        [gymEntry('gym:w1', 'accepted')],
+      );
+      const plainLoss = weightsOf([prov({ lens: 'analogical', routedRef: 'gym:l1' })], [gymEntry('gym:l1', 'rejected')]);
+      expect(overridden).toEqual(plainLoss);
+      // …and the system verdict stays intact for the outcome cache (grade-blind classify).
+      const byRef = new Map([['gym:w1', gymEntry('gym:w1', 'accepted')]]);
+      expect(
+        classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'gym:w1', humanGrade: 1, gradedBy: 'owner' }), byRef),
+      ).toBe('won');
+    });
+
+    it('a GRADED errored eval arm is decided by the grade; an ungraded one stays pending (errored-stays-pending untouched)', () => {
+      const verdict: EvalVerdictLike = {
+        scenarioId: 'scn-graded-err',
+        primaryScorer: 'score',
+        selectionReason: 'no candidate measured',
+        candidates: [
+          { variantId: 'v-err-graded', rank: 1, errored: true },
+          { variantId: 'v-err-bare', rank: 2, errored: true },
+        ],
+      };
+      const entries = evalVerdictEntries(verdict, new Date('2026-06-12T01:00:00Z'));
+      expect(entries).toEqual([]); // errored arms emit nothing, as before
+      const report = computeLensOutcomes(
+        [
+          prov({ lens: 'analogical', routedRef: evalVerdictRef('scn-graded-err', 'v-err-graded'), humanGrade: 5, gradedBy: 'owner' }),
+          prov({ lens: 'reframing', routedRef: evalVerdictRef('scn-graded-err', 'v-err-bare'), ideaId: 'bare' }),
+        ],
+        entries,
+      );
+      expect(report.byLens.analogical).toMatchObject({ won: 1, lost: 0, pending: 0 });
+      expect(report.byLens.reframing).toMatchObject({ won: 0, lost: 0, pending: 1 });
+    });
+
+    it('re-grading is idempotent in the projection: the same graded store gathers to the same report', async () => {
+      const store = fakeStore();
+      store.routed.push(prov({ lens: 'analogical', routedRef: 'gym:never-decided', humanGrade: 2, gradedBy: 'Queen' }));
+      const first = await gatherLensOutcomes(store.readers);
+      const second = await gatherLensOutcomes(store.readers);
+      expect(second).toEqual(first);
+      expect(first.byLens.analogical).toMatchObject({ won: 0.25, lost: 0.75, pending: 0 });
+    });
+  });
+
   describe('provenance convergence: gym change-feed decision ≡ eval-verdict wire', () => {
     // Two parallel worlds with IDENTICAL outcomes — one decided by the gym rail's
     // change-feed entries, one by evalVerdictEntries over evalVerdictRef provenance.

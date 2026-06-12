@@ -12,10 +12,12 @@
 import { describe, it, expect } from 'vitest';
 import { buildScoutCycleDeps, rosterForBudget } from './cycle-deps';
 import { makeFakeScoutLlm, fixtureProposal } from './test-support';
+import { GRADER_FEEDBACK_HEADING, type GradedIdeaView } from './ideator-feedback-priming';
 import type { StateOfHiveReaders } from './corpus-digest';
 import type { CorpusEntry } from './critique-core';
-import type { ArchivePort } from './gym-bridge';
+import type { ArchiveEliteView, ArchivePort } from './gym-bridge';
 import type { PlanDraftCreator } from './router-deps';
+import type { CorpusDigest, ScoutLlmCall } from './types';
 
 const EMPTY_READERS: StateOfHiveReaders = {
   completions: async () => [],
@@ -89,6 +91,96 @@ describe('buildScoutCycleDeps — route wiring (ctx-bound plan creator)', () => 
     // The ctx-bound creator was actually invoked (the honest ctx seam).
     expect(planDrafts).toHaveLength(1);
     expect(decisions[0].routedRef).toBe(`plan:${planDrafts[0].slug}`);
+  });
+});
+
+describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading P-005)', () => {
+  const DIGEST: CorpusDigest = {
+    recurringFriction: [{ summary: 'lock contention on shared tree', ref: 'wi:F-1' }],
+    timeTokenSinks: [],
+    chronicDeferrals: [],
+    capabilityGaps: [],
+    headline: 'busy week',
+  };
+  const GYM_HEADING = '## Gym stepping-stones';
+  const ELITE: ArchiveEliteView = {
+    nicheKey: 'module|sync|low',
+    coords: { scope: 'module', domain: 'sync', risk: 'low' },
+    candidateId: 'cand-1',
+    fitness: 0.8,
+    descriptor: { coords: { scope: 'module', domain: 'sync', risk: 'low' }, features: [0.5, 0.5, 1 / 3, 0] },
+    source: 'gym',
+  };
+  const GRADED: GradedIdeaView[] = [
+    {
+      lens: 'reframing',
+      ideaId: 'idea-g1',
+      title: 'Speculative plan drafts',
+      humanGrade: 5,
+      humanFeedback: 'exactly the right altitude',
+      gradedBy: 'owner',
+      gradedAt: '2026-06-12T10:00:00.000Z',
+    },
+  ];
+
+  /** A capturing fake LLM: records each ideator's user prompt, returns one valid idea. */
+  function capturingLlm(): { seen: string[]; llmCall: ScoutLlmCall } {
+    const seen: string[] = [];
+    const llmCall: ScoutLlmCall = async (opts) => {
+      seen.push(opts.messages.map((m) => m.content).join('\n'));
+      return {
+        text: '',
+        json: { ideas: [{ title: 'T', body: 'B', mechanism: 'M', addressesPatternRefs: ['wi:F-1'] }] },
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+    };
+    return { seen, llmCall };
+  }
+
+  it('grader feedback reaches EVERY ideator prompt, concatenated BELOW the gym stepping-stones', async () => {
+    const { deps } = build({
+      archive: { listElites: () => [ELITE], seed: () => ({ admitted: false, nicheKey: '' }) },
+      graderFeedbackReader: async () => GRADED,
+    });
+    const { seen, llmCall } = capturingLlm();
+    const ideas = await deps.ideate(DIGEST, { llmCall, maxIdeators: 2 });
+    expect(ideas.length).toBeGreaterThan(0);
+    expect(seen).toHaveLength(2); // one per budget-clamped lens
+    for (const prompt of seen) {
+      const gymIdx = prompt.indexOf(GYM_HEADING);
+      const graderIdx = prompt.indexOf(GRADER_FEEDBACK_HEADING);
+      expect(gymIdx).toBeGreaterThan(-1);
+      expect(graderIdx).toBeGreaterThan(gymIdx); // grader block sits BELOW the stones
+      expect(prompt).toContain('- [★5 · Owner · reframing] Speculative plan drafts: exactly the right altitude');
+    }
+  });
+
+  it('with no gym stones, the grader block still primes every ideator on its own', async () => {
+    const { deps } = build({
+      archive: { listElites: () => [], seed: () => ({ admitted: false, nicheKey: '' }) },
+      graderFeedbackReader: async () => GRADED,
+    });
+    const { seen, llmCall } = capturingLlm();
+    await deps.ideate(DIGEST, { llmCall, maxIdeators: 2 });
+    for (const prompt of seen) {
+      expect(prompt).not.toContain(GYM_HEADING);
+      expect(prompt).toContain(GRADER_FEEDBACK_HEADING);
+    }
+  });
+
+  it('with nothing graded and no stones, prompts carry no priming block (clean cold start)', async () => {
+    const { deps } = build({
+      archive: { listElites: () => [], seed: () => ({ admitted: false, nicheKey: '' }) },
+      graderFeedbackReader: async () => [],
+    });
+    const { seen, llmCall } = capturingLlm();
+    await deps.ideate(DIGEST, { llmCall, maxIdeators: 2 });
+    for (const prompt of seen) {
+      expect(prompt).not.toContain(GYM_HEADING);
+      expect(prompt).not.toContain(GRADER_FEEDBACK_HEADING);
+    }
   });
 });
 

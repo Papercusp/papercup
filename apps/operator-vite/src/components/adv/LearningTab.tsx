@@ -16,7 +16,11 @@
  *   - **Benchmark**: the apiary / IQ-battery generation trend via `learning.apiary`
  *     (owner-gated gen-0 baseline → clean empty state until it runs).
  *   - **Scout**: routed-ideas-by-rail + last-tick gate outcome via `learning.scout`
- *     (graceful empty until Scout routes its first idea / P-034 ticks land).
+ *     (graceful empty until Scout routes its first idea / P-034 ticks land), plus
+ *     idea grading (scout-idea-grading-2026-06-12 B-07): a 1–5 star control and
+ *     note popover (`?grade=<ideaId>`) writing through the `scout:grade-idea`
+ *     tool proxy with optimistic updates, a grade chip with owner/Queen
+ *     attribution, and the learned per-lens sampling weights.
  *   - **Knowledge**: agent-insight runbook count + recent-5 and a memory-health
  *     strip via `learning.knowledge`, cross-linking to the full Insights tab
  *     (`?tab=insights`) — a teaser, never a duplicate of that tab.
@@ -31,7 +35,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain } from 'lucide-react';
+import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
 import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
@@ -98,6 +102,10 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
     {
       title: 'Route',
       desc: 'Ideas that survive critique are routed into a rail — a plan draft, a gym experiment, or a work item — and their outcomes feed back into which lenses get used.',
+    },
+    {
+      title: 'Grade',
+      desc: 'Grade routed ideas 1–5 with an optional note — the Queen auto-grades the rest, and your grade always wins. Grades shift the lens weights below, and recent notes are quoted to the next cycle’s ideators.',
     },
   ],
   knowledge: [
@@ -767,13 +775,213 @@ const RAIL_META: Record<string, { label: string; desc: string; color: string }> 
   instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: '#f472b6' },
 };
 
+/** C-1c (plan scout-idea-grading-2026-06-12): the grade + lens-weight fields the
+    `learning.scout` snapshot gains with brief B-02. Mirrored locally as OPTIONAL
+    overlays so this file typechecks both before and after that brief lands — once
+    the resolver types carry the fields, these intersections collapse onto them. */
+type GradedRoutedItem = ScoutRoutedItem & {
+  humanGrade?: number | null;
+  humanFeedback?: string | null;
+  gradedBy?: string | null;
+};
+type ScoutSnapshotWithGrades = Omit<ScoutSnapshot, 'recent'> & {
+  recent: GradedRoutedItem[];
+  /** Current persisted lens sampling weights; null/absent when none recorded. */
+  lensWeights?: Record<string, number> | null;
+};
+
+/** The grade a row should display: an in-flight optimistic owner write wins,
+    then the snapshot's stored grade, else null (ungraded). */
+interface EffectiveGrade {
+  grade: number;
+  feedback: string | null;
+  gradedBy: string;
+}
+
+const GRADE_MEANING: Record<number, string> = {
+  1: 'a bad call — counts as a full loss for this lens',
+  2: 'weak — mostly a loss',
+  3: 'neutral — half win, half loss',
+  4: 'useful — mostly a win',
+  5: 'excellent — counts as a full win for this lens',
+};
+
+/** Attribution label per C-1's graded_by values ('owner' | 'Queen'). */
+const graderLabel = (gradedBy: string): string => (gradedBy === 'owner' ? 'Owner' : gradedBy);
+
+/** The tool-proxy response envelope varies (the parsed result | {result} | MCP
+    content text) — unwrap whichever the dispatcher returns. */
+function unwrapToolResult(d: unknown): Record<string, unknown> {
+  const o = d as { content?: Array<{ type?: string; text?: string }>; result?: unknown } | null;
+  const text = Array.isArray(o?.content) ? o.content.find((c) => c?.type === 'text')?.text : undefined;
+  if (typeof text === 'string') {
+    try {
+      return JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  const inner = o?.result ?? d;
+  return inner && typeof inner === 'object' ? (inner as Record<string, unknown>) : {};
+}
+
+/** The 1–5 star radio row. Always interactive — the owner may regrade anything
+    (D-004: owner grade is sovereign; the server derives gradedBy from the surface). */
+function StarControl({
+  value,
+  onRate,
+  busy = false,
+  size = 13,
+}: {
+  value: number | null;
+  onRate: (grade: number) => void;
+  busy?: boolean;
+  size?: number;
+}) {
+  return (
+    <span className="pc-learning__stars" role="radiogroup" aria-label="Grade this idea 1 to 5">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          role="radio"
+          aria-checked={value === n}
+          aria-label={`Grade ${n} of 5`}
+          title={`★${n} — ${GRADE_MEANING[n]}`}
+          className={`pc-learning__star${value != null && n <= value ? ' is-on' : ''}`}
+          disabled={busy}
+          onClick={() => onRate(n)}
+        >
+          <Star size={size} aria-hidden fill={value != null && n <= value ? 'currentColor' : 'none'} />
+        </button>
+      ))}
+    </span>
+  );
+}
+
+/** The note popover (open-state in nuqs `?grade=<ideaId>`): stars + a free-text
+    critique saved together through `scout:grade-idea`. Mid-edit drafts are
+    useState by design (nuqs is for the open-state only). */
+function GradePanel({
+  current,
+  busy,
+  onSave,
+  onClose,
+}: {
+  current: EffectiveGrade | null;
+  busy: boolean;
+  onSave: (grade: number, feedback: string | null) => void;
+  onClose: () => void;
+}) {
+  const [grade, setGrade] = useState<number | null>(current?.grade ?? null);
+  const [draft, setDraft] = useState(current?.feedback ?? '');
+  return (
+    <div
+      className="pc-learning__gradepanel"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <div className="pc-learning__gradepanelrow">
+        <StarControl value={grade} onRate={setGrade} size={16} />
+        <span className="pc-learning__gradepanelhint">
+          {grade == null ? 'Pick a grade — 5 counts as a win for this lens, 1 as a loss.' : `★${grade} — ${GRADE_MEANING[grade]}`}
+        </span>
+      </div>
+      <textarea
+        value={draft}
+        rows={2}
+        maxLength={2000}
+        aria-label="Grading note"
+        placeholder="Why? Scout quotes recent grading notes to the next cycle’s ideators."
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <div className="pc-learning__gradepanelactions">
+        <button type="button" className="pc-learning__panelbtn" onClick={onClose}>
+          cancel
+        </button>
+        <button
+          type="button"
+          className="pc-learning__panelbtn pc-learning__panelbtn--primary"
+          disabled={grade == null || busy}
+          onClick={() => {
+            if (grade != null) onSave(grade, draft.trim() ? draft.trim() : null);
+          }}
+        >
+          {busy ? 'saving…' : 'save grade'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ScoutView() {
-  const sync = useSyncQuery<ScoutSnapshot>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
+  const sync = useSyncQuery<ScoutSnapshotWithGrades>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
   const snap = sync.data?.[0];
   const rails = snap?.railCounts ?? [];
   const recent = snap?.recent ?? [];
   const tick = snap?.lastTick ?? null;
   const tickMs = tick?.at ? Date.parse(tick.at) : NaN;
+
+  // Grading (P-006): the note popover's open-state is URL state (`?grade=<ideaId>`)
+  // so agents can drive it; in-flight optimistic grades + errors are transient
+  // lifecycle → useState. A grade from this surface is an OWNER grade (the
+  // server derives gradedBy from the caller — C-3); owner regrade is always
+  // allowed, so the stars stay interactive on graded rows.
+  const [gradeOpen, setGradeOpen] = useQueryState('grade', parseAsString);
+  const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>({});
+  const [savingId, setSavingId] = useState('');
+  const [gradeError, setGradeError] = useState('');
+
+  const effectiveGrade = (item: GradedRoutedItem): EffectiveGrade | null => {
+    const opt = optimistic[item.ideaId];
+    if (opt) return opt;
+    if (item.humanGrade == null) return null;
+    return { grade: item.humanGrade, feedback: item.humanFeedback ?? null, gradedBy: item.gradedBy ?? 'owner' };
+  };
+
+  const submitGrade = async (item: GradedRoutedItem, grade: number, feedback: string | null) => {
+    setGradeError('');
+    setSavingId(item.ideaId);
+    const prevEntry = optimistic[item.ideaId] ?? null;
+    // Optimistic: show the new grade immediately; the refetched snapshot
+    // confirms it (or the catch below rolls it back).
+    setOptimistic((m) => ({ ...m, [item.ideaId]: { grade, feedback, gradedBy: 'owner' } }));
+    try {
+      const res = await fetch('/api/agent-tools/scout/grade-idea', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ideaId: item.ideaId, grade, ...(feedback ? { feedback } : {}) }),
+      });
+      const raw: unknown = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const result = unwrapToolResult(raw);
+      if (result.applied === false) throw new Error(String(result.reason ?? 'grade not applied'));
+      sync.invalidate();
+    } catch (e) {
+      setOptimistic((m) => {
+        const next = { ...m };
+        if (prevEntry) next[item.ideaId] = prevEntry;
+        else delete next[item.ideaId];
+        return next;
+      });
+      setGradeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingId('');
+    }
+  };
+
+  // Steering visibility (P-007): the persisted per-lens sampling weights,
+  // shown as shares of the total so they read as "how Scout will lean".
+  const lensEntries = useMemo<Array<[string, number]>>(() => {
+    const w = snap?.lensWeights;
+    if (!w) return [];
+    const entries = Object.entries(w).filter(([, v]) => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+    const sum = entries.reduce((s, [, v]) => s + v, 0);
+    if (entries.length === 0 || sum <= 0) return [];
+    return entries
+      .map(([k, v]) => [k, Math.round((v / sum) * 100)] as [string, number])
+      .sort((a, b) => b[1] - a[1]);
+  }, [snap]);
 
   // Deep-links: a routed idea opens its artifact's home surface (all nuqs, so
   // agents can drive the same navigation via ui:dispatch).
@@ -826,6 +1034,31 @@ function ScoutView() {
         ))}
       </div>
 
+      {lensEntries.length > 0 ? (
+        <div className="pc-learning__flow" aria-label="Lens sampling weights">
+          <span
+            className="pc-learning__flowchip"
+            title="Scout picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess)."
+          >
+            <Sparkles size={11} aria-hidden />
+            lens weights
+          </span>
+          {lensEntries.map(([lens, share]) => (
+            <span
+              key={lens}
+              className="pc-learning__lens"
+              title={`${lens}: ${share}% of next cycle's lens sampling — raised by wins and good grades, lowered by losses and poor grades.`}
+            >
+              <em>{lens}</em>
+              <span className="pc-learning__lensbar" aria-hidden>
+                <span style={{ width: `${share}%` }} />
+              </span>
+              <strong>{share}%</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       <div className="pc-learning__sectionhead">
         <h2>Routed ideas</h2>
         <button
@@ -850,39 +1083,95 @@ function ScoutView() {
           <span>Scout sweeps the system on a cadence, but spends nothing unless its gates (idle, friction, budget, circuit-breaker) open — most ticks correctly do nothing. When an idea survives critique it’s routed into a plan draft, a gym experiment, an improvement work-item, or an instance candidate, and it appears here.</span>
         </div>
       ) : (
-        <ul className="pc-learning__list">
-          {recent.map((item) => {
-            const meta = RAIL_META[item.rail] ?? { label: item.rail, desc: 'Routed idea', color: '#94a3b8' };
-            const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
-            return (
-              <li
-                key={item.ideaId}
-                className="pc-learning__row pc-learning__row--link"
-                role="button"
-                tabIndex={0}
-                onClick={() => openRouted(item)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    openRouted(item);
-                  }
-                }}
-                title={`${meta.desc}\n${item.routedRef}`}
-              >
-                <span className="pc-learning__sev" style={{ background: meta.color }} aria-hidden />
-                <span className="pc-learning__id" style={{ color: meta.color }}>{meta.label}</span>
-                <span className="pc-learning__title">{item.title ?? item.routedRef}</span>
-                <span className="pc-learning__meta">
-                  <span className="pc-learning__chip pc-learning__chip--idea" title="Creative lens that produced this idea">{item.lens}</span>
-                  {item.outcome && item.outcome !== 'pending' ? (
-                    <span className="pc-learning__score" title="Outcome from the change feed">{item.outcome}</span>
+        <>
+          {gradeError ? (
+            <p className="pc-learning__empty" role="alert">
+              Grade failed: {gradeError}
+            </p>
+          ) : null}
+          <ul className="pc-learning__list">
+            {recent.map((item) => {
+              const meta = RAIL_META[item.rail] ?? { label: item.rail, desc: 'Routed idea', color: '#94a3b8' };
+              const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
+              const eff = effectiveGrade(item);
+              const isOpen = gradeOpen === item.ideaId;
+              const saving = savingId === item.ideaId;
+              return (
+                <li key={item.ideaId} className={`pc-learning__row pc-learning__row--scout${isOpen ? ' is-grading' : ''}`}>
+                  <span
+                    className="pc-learning__rowmain"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openRouted(item)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openRouted(item);
+                      }
+                    }}
+                    title={`${meta.desc}\n${item.routedRef}`}
+                  >
+                    <span className="pc-learning__sev" style={{ background: meta.color }} aria-hidden />
+                    <span className="pc-learning__id" style={{ color: meta.color }}>{meta.label}</span>
+                    <span className="pc-learning__title">{item.title ?? item.routedRef}</span>
+                  </span>
+                  <span className="pc-learning__meta">
+                    <span className="pc-learning__chip pc-learning__chip--idea" title="Creative lens that produced this idea">{item.lens}</span>
+                    {item.outcome && item.outcome !== 'pending' ? (
+                      <span className="pc-learning__score" title="Outcome from the change feed">{item.outcome}</span>
+                    ) : null}
+                    <span className="pc-learning__age">{!Number.isNaN(when) ? whenLabel(when) : ''}</span>
+                    {/* Grade controls (P-006). A bare star click writes immediately
+                        (preserving any existing note); the note button opens the
+                        popover. stopPropagation so grading never opens the artifact. */}
+                    <span
+                      className="pc-learning__grade"
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => e.stopPropagation()}
+                    >
+                      <StarControl
+                        value={eff?.grade ?? null}
+                        busy={saving}
+                        onRate={(n) => void submitGrade(item, n, eff?.feedback ?? null)}
+                      />
+                      {eff ? (
+                        <span
+                          className="pc-learning__gradechip"
+                          title={
+                            eff.feedback
+                              ? `Graded by ${graderLabel(eff.gradedBy)}: “${eff.feedback}”`
+                              : `Graded by ${graderLabel(eff.gradedBy)} — click the stars to regrade (your grade always wins)`
+                          }
+                        >
+                          ★{eff.grade} · {graderLabel(eff.gradedBy)}
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="pc-learning__notebtn"
+                        aria-label={eff?.feedback ? 'Edit the grading note' : 'Grade with a note'}
+                        title={eff?.feedback ? `Edit the grading note: “${eff.feedback}”` : 'Grade with a note — ideators read recent notes next cycle'}
+                        onClick={() => void setGradeOpen(isOpen ? null : item.ideaId)}
+                      >
+                        {eff?.feedback ? <MessageSquareText size={12} aria-hidden /> : <MessageSquarePlus size={12} aria-hidden />}
+                      </button>
+                    </span>
+                  </span>
+                  {isOpen ? (
+                    <GradePanel
+                      current={eff}
+                      busy={saving}
+                      onSave={(grade, feedback) => {
+                        void submitGrade(item, grade, feedback).then(() => void setGradeOpen(null));
+                      }}
+                      onClose={() => void setGradeOpen(null)}
+                    />
                   ) : null}
-                  <span className="pc-learning__age">{!Number.isNaN(when) ? whenLabel(when) : ''}</span>
-                </span>
-              </li>
-            );
-          })}
-        </ul>
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
     </section>
   );
@@ -1518,6 +1807,39 @@ function LearningStyles() {
       .pc-learning__delta--flat { color: var(--fg-mute, #7f9bb4); }
       .pc-learning__age { font-size: 11px; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
       .pc-learning__score { font-size: 11px; font-weight: 700; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; min-width: 18px; text-align: right; }
+
+      /* Scout grading (B-07, scout-idea-grading-2026-06-12): the routed-idea row
+         splits into a clickable main area + a grade cluster, so stars/note/chip
+         never fight the open-the-artifact click. */
+      .pc-learning__row--scout { grid-template-columns: minmax(0, 1fr) auto; }
+      .pc-learning__row--scout.is-grading { border-color: rgba(251, 191, 36, 0.45); }
+      .pc-learning__row--scout .pc-learning__meta { flex-wrap: wrap; justify-content: flex-end; }
+      .pc-learning__rowmain { display: grid; grid-template-columns: 4px auto minmax(0, 1fr); align-items: center; gap: 9px; min-width: 0; cursor: pointer; border-radius: 6px; }
+      .pc-learning__rowmain:hover .pc-learning__title, .pc-learning__rowmain:focus-visible .pc-learning__title { color: var(--accent, #7dd3fc); }
+      .pc-learning__grade { display: inline-flex; align-items: center; gap: 5px; }
+      .pc-learning__stars { display: inline-flex; }
+      .pc-learning__star { display: inline-flex; align-items: center; padding: 1px; background: none; border: none; border-radius: 3px; color: var(--fg-mute, #7f9bb4); cursor: pointer; }
+      .pc-learning__star.is-on { color: #fbbf24; }
+      .pc-learning__star:hover { color: #fcd34d; }
+      .pc-learning__star:disabled { opacity: 0.5; cursor: default; }
+      .pc-learning__gradechip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; font-size: 10px; font-weight: 700; border-radius: 999px; border: 1px solid rgba(251, 191, 36, 0.5); color: #fbbf24; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .pc-learning__notebtn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; background: none; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 6px; color: var(--fg-mute, #7f9bb4); cursor: pointer; }
+      .pc-learning__notebtn:hover { color: var(--fg-dim, #b9d4e8); border-color: var(--border-strong, rgba(125, 211, 252, 0.32)); }
+      .pc-learning__gradepanel { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 7px; margin-top: 7px; padding-top: 9px; border-top: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); cursor: default; }
+      .pc-learning__gradepanelrow { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+      .pc-learning__gradepanelhint { font-size: 11px; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__gradepanel textarea { background: var(--bg-2, rgba(255, 255, 255, 0.03)); border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); border-radius: 7px; color: var(--fg, #e7f7ff); font-size: 12px; font-family: inherit; line-height: 1.45; padding: 6px 9px; resize: vertical; }
+      .pc-learning__gradepanelactions { display: flex; justify-content: flex-end; gap: 8px; }
+      .pc-learning__panelbtn { padding: 4px 11px; font-size: 11.5px; font-weight: 650; border-radius: 7px; cursor: pointer; border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); background: transparent; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__panelbtn--primary { border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.12); color: #fcd34d; }
+      .pc-learning__panelbtn:disabled { opacity: 0.5; cursor: default; }
+
+      /* Lens sampling weights (P-007 steering visibility). */
+      .pc-learning__lens { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 999px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__lens em { font-style: normal; color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__lens strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
+      .pc-learning__lensbar { width: 44px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+      .pc-learning__lensbar span { display: block; height: 100%; border-radius: 2px; background: #a78bfa; }
 
       .pc-learning__empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 28px 16px; color: var(--fg-mute, #7f9bb4); font-size: 12.5px; }
       .pc-learning__empty--card { border: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); border-radius: 12px; }

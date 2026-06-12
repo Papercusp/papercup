@@ -1512,7 +1512,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         return await routeWithWorkspace(async (tx) => [await readScoutSnapshot(tx, ws)]);
       } catch (err) {
         console.warn('[learning.scout] scout read failed:', err instanceof Error ? err.message : err);
-        return [{ totalRouted: 0, railCounts: [], lastTick: null }];
+        return [{ totalRouted: 0, railCounts: [], recent: [], lastTick: null, lensWeights: null }];
       }
     },
   },

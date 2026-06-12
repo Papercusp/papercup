@@ -110,7 +110,9 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
       { rail: 'plan', count: 3 },
       { rail: 'gym', count: 1 },
     ],
+    recent: [],
     lastTick: { at: '2026-06-09T08:00:00.000Z', outcome: 'skipped', detail: 'budget gate closed' },
+    lensWeights: { analogical: 0.4, reframing: 0.6 },
   };
 
   it('returns the reader snapshot as a 1-element array, scoped to the active workspace', async () => {
@@ -124,7 +126,7 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
   it('degrades to the empty snapshot when the read fails (no 500 for the tab)', async () => {
     readScoutSnapshot.mockRejectedValue(new Error('pg down'));
     const rows = (await resolveNamedQueryV2('learning.scout', {})) as ScoutSnapshot[];
-    expect(rows).toEqual([{ totalRouted: 0, railCounts: [], lastTick: null }]);
+    expect(rows).toEqual([{ totalRouted: 0, railCounts: [], recent: [], lastTick: null, lensWeights: null }]);
     expect(warn).toHaveBeenCalled();
   });
 });

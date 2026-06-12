@@ -145,6 +145,124 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
     });
   });
 
+  describe('grade credit (scout-idea-grading C-5 / D-002)', () => {
+    it('winCredit pins the C-5 line: (grade − 1) / 4', () => {
+      expect(winCredit(1)).toBe(0);
+      expect(winCredit(2)).toBe(0.25);
+      expect(winCredit(3)).toBe(0.5);
+      expect(winCredit(4)).toBe(0.75);
+      expect(winCredit(5)).toBe(1);
+    });
+
+    it('a graded idea contributes credit/1−credit to its lens — even with NO feed entry (decided by the grader)', () => {
+      const r = computeLensOutcomes(
+        [
+          prov({ lens: 'analogical', routedRef: 'gym:none-a', humanGrade: 5, gradedBy: 'owner' }),
+          prov({ lens: 'reframing', routedRef: 'gym:none-b', humanGrade: 4, gradedBy: 'Queen', ideaId: 'g4' }),
+          prov({ lens: 'first-principles', routedRef: 'gym:none-c', humanGrade: 3, gradedBy: 'owner', ideaId: 'g3' }),
+          prov({ lens: 'constraint-removal', routedRef: 'gym:none-d', humanGrade: 1, gradedBy: 'owner', ideaId: 'g1' }),
+        ],
+        [], // empty feed: every grade still decides its idea
+      );
+      expect(r.byLens.analogical).toMatchObject({ won: 1, lost: 0, pending: 0, winRate: 1 });
+      expect(r.byLens.reframing).toMatchObject({ won: 0.75, lost: 0.25, pending: 0, winRate: 0.75 });
+      expect(r.byLens['first-principles']).toMatchObject({ won: 0.5, lost: 0.5, pending: 0, winRate: 0.5 });
+      expect(r.byLens['constraint-removal']).toMatchObject({ won: 0, lost: 1, pending: 0, winRate: 0 });
+      // The routed invariant survives fractional credit: won + lost + pending === routed.
+      for (const l of CREATIVE_LENSES) {
+        const s = r.byLens[l];
+        expect(s.won + s.lost + s.pending).toBeCloseTo(s.routed, 12);
+      }
+    });
+
+    it('the grade DOMINATES the change-feed outcome in the tally (D-002), both directions', () => {
+      const feed = [
+        entry({ ref: 'gym:fed-win', kind: 'proposal', detail: 'Status: accepted' }),
+        entry({ ref: 'gym:fed-loss', kind: 'proposal', detail: 'Status: rejected' }),
+      ];
+      const r = computeLensOutcomes(
+        [
+          // Feed says won, grader says 1 → counts as pure loss mass.
+          prov({ lens: 'analogical', routedRef: 'gym:fed-win', humanGrade: 1, gradedBy: 'owner' }),
+          // Feed says lost, grader says 5 → counts as pure win mass.
+          prov({ lens: 'reframing', routedRef: 'gym:fed-loss', humanGrade: 5, gradedBy: 'Queen' }),
+        ],
+        feed,
+      );
+      expect(r.byLens.analogical).toMatchObject({ won: 0, lost: 1 });
+      expect(r.byLens.reframing).toMatchObject({ won: 1, lost: 0 });
+    });
+
+    it('classifyIdeaOutcome stays GRADE-BLIND — the persisted outcome column keeps the system verdict (D-002)', () => {
+      const feed = new Map([
+        ['gym:fed-win', entry({ ref: 'gym:fed-win', kind: 'proposal' as const, detail: 'Status: accepted' })],
+      ]);
+      const graded1 = prov({ lens: 'analogical', routedRef: 'gym:fed-win', humanGrade: 1, gradedBy: 'owner' });
+      expect(classifyIdeaOutcome(graded1, feed)).toBe('won'); // feed verdict, not the grade
+      const gradedPending = prov({ lens: 'analogical', routedRef: 'gym:absent', humanGrade: 5, gradedBy: 'owner' });
+      expect(classifyIdeaOutcome(gradedPending, feed)).toBe('pending');
+    });
+
+    it('an invalid grade (out of range / fractional / NaN) is treated as ungraded, not poison', () => {
+      const feed = [entry({ ref: 'gym:w', kind: 'proposal', detail: 'Status: accepted' })];
+      for (const bad of [0, 6, 2.5, NaN, Infinity]) {
+        const r = computeLensOutcomes(
+          [prov({ lens: 'analogical', routedRef: 'gym:w', humanGrade: bad, gradedBy: 'owner' })],
+          feed,
+        );
+        // Falls back to the change-feed path: a clean integer win.
+        expect(r.byLens.analogical).toMatchObject({ won: 1, lost: 0, pending: 0 });
+      }
+      // …and an invalid grade on a feed-absent idea stays pending.
+      const r = computeLensOutcomes(
+        [prov({ lens: 'reframing', routedRef: 'gym:absent', humanGrade: 0, gradedBy: 'owner' })],
+        feed,
+      );
+      expect(r.byLens.reframing).toMatchObject({ won: 0, lost: 0, pending: 1 });
+    });
+
+    it('grade extremes converge with feed terminals in weight space: grade 5 ≡ accepted, grade 1 ≡ rejected', () => {
+      const byGrade5 = computeLensOutcomes(
+        [prov({ lens: 'analogical', routedRef: 'gym:ungraded-x', humanGrade: 5, gradedBy: 'owner' })],
+        [],
+      );
+      const byFeedWin = computeLensOutcomes(
+        [prov({ lens: 'analogical', routedRef: 'gym:w' })],
+        [entry({ ref: 'gym:w', kind: 'proposal', detail: 'Status: accepted' })],
+      );
+      expect(lensWeightsFromReport(byGrade5)).toEqual(lensWeightsFromReport(byFeedWin));
+
+      const byGrade1 = computeLensOutcomes(
+        [prov({ lens: 'reframing', routedRef: 'gym:ungraded-y', humanGrade: 1, gradedBy: 'Queen' })],
+        [],
+      );
+      const byFeedLoss = computeLensOutcomes(
+        [prov({ lens: 'reframing', routedRef: 'gym:l' })],
+        [entry({ ref: 'gym:l', kind: 'proposal', detail: 'Status: rejected' })],
+      );
+      expect(lensWeightsFromReport(byGrade1)).toEqual(lensWeightsFromReport(byFeedLoss));
+    });
+
+    it('grade 3 is exactly neutral under the Beta(1,1) prior: weights stay at the uniform baseline', () => {
+      const r = computeLensOutcomes(
+        [prov({ lens: 'analogical', routedRef: 'gym:meh', humanGrade: 3, gradedBy: 'owner' })],
+        [],
+      );
+      // r_analogical = (0.5 + 1) / (1 + 2) = 1/2 — identical to an untouched lens.
+      for (const l of CREATIVE_LENSES) expect(r.byLens[l].weight).toBeCloseTo(1 / 4, 12);
+    });
+
+    it('lensWeightRowsFromReport carries the fractional masses (wins/decided) for the weight upsert', () => {
+      const report = computeLensOutcomes(
+        [prov({ lens: 'analogical', routedRef: 'gym:none', humanGrade: 4, gradedBy: 'owner' })],
+        [],
+      );
+      const rows = lensWeightRowsFromReport(report);
+      const ana = rows.find((x) => x.lens === 'analogical');
+      expect(ana).toMatchObject({ wins: 0.75, decided: 1 });
+    });
+  });
+
   describe('lensWeightsFromReport (D-009 hook for runIdeators)', () => {
     it('projects each lens weight into the runIdeators lensWeights shape (summing ~1)', () => {
       const report = computeLensOutcomes([], []);

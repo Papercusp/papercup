@@ -52,6 +52,9 @@ export interface PrReviewerSettingsResponse {
   /** P-007 (D-002): hive HOME slug the role bit was inherited from, when this
    *  harness has no explicit row. Provenance display only. */
   inheritedFrom?: string | null;
+  /** P-008 (D-003): the role was conferred by hive OWNERSHIP (this install
+   *  created the hive). Provenance display only. */
+  grantedByOwnership?: boolean;
 }
 
 // ─── Pure helpers (unit-tested) ───────────────────────────────────
@@ -247,9 +250,11 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
               <Toggle
                 label="Enable PR-reviewer role"
                 hint={
-                  data?.inheritedFrom
-                    ? `Inherited from hive home '${data.inheritedFrom}' — flipping it here writes an explicit setting for this harness.`
-                    : 'Master switch. When off, no auto-review or auto-merge fires.'
+                  data?.grantedByOwnership
+                    ? `Granted by hive ownership${data.inheritedFrom ? ` (home '${data.inheritedFrom}')` : ''} — you created this hive, so you review its PRs. Flipping it here writes an explicit per-harness setting.`
+                    : data?.inheritedFrom
+                      ? `Inherited from hive home '${data.inheritedFrom}' — flipping it here writes an explicit setting for this harness.`
+                      : 'Master switch. When off, no auto-review or auto-merge fires.'
                 }
                 checked={!!settings?.pr_reviewer_role_enabled}
                 disabled={!editable || saving}

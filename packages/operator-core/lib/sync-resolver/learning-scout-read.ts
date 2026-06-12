@@ -52,6 +52,12 @@ export interface ScoutRoutedItem {
   routedAt: string | null;
   /** Cached outcome from the change-feed join (won/lost/pending), when classified. */
   outcome: string | null;
+  /** Grader's 1–5 verdict (scout-idea-grading C-1c); null = ungraded. */
+  humanGrade: number | null;
+  /** Grader's free-text critique, when given. */
+  humanFeedback: string | null;
+  /** Who graded — 'owner' | 'Queen' (open set — render what arrives). */
+  gradedBy: string | null;
 }
 
 export interface ScoutSnapshot {
@@ -61,6 +67,12 @@ export interface ScoutSnapshot {
   recent: ScoutRoutedItem[];
   /** Newest scout tick, or null when none recorded (or the table doesn't exist yet). */
   lastTick: ScoutTickSummary | null;
+  /**
+   * Current persisted per-lens sampling weights (`scout_lens_weights`, written
+   * by refreshScoutOutcomes) — the steering the grades feed (C-1c / P-007).
+   * null when none recorded yet (or the read degrades).
+   */
+  lensWeights: Record<string, number> | null;
 }
 
 const UNDEFINED_TABLE = '42P01';
@@ -127,7 +139,8 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
   // routed where (owner ask 2026-06-11), not just counts. routed_at is
   // epoch-ms (bigint) in migration 194.
   const items = (await sql`
-    SELECT idea_id, lens, rail, routed_ref, title, routed_at, outcome
+    SELECT idea_id, lens, rail, routed_ref, title, routed_at, outcome,
+           human_grade, human_feedback, graded_by
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${workspaceId}
      ORDER BY routed_at DESC
@@ -141,6 +154,9 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     title: typeof r.title === 'string' && r.title ? r.title : null,
     routedAt: toIso(typeof r.routed_at === 'string' ? Number(r.routed_at) : r.routed_at),
     outcome: typeof r.outcome === 'string' && r.outcome ? r.outcome : null,
+    humanGrade: r.human_grade == null ? null : Number(r.human_grade),
+    humanFeedback: typeof r.human_feedback === 'string' && r.human_feedback ? r.human_feedback : null,
+    gradedBy: typeof r.graded_by === 'string' && r.graded_by ? r.graded_by : null,
   }));
 
   // scout_ticks lands with P-034 (a peer owns the migration); until then — and
@@ -161,5 +177,19 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
-  return { totalRouted, railCounts, recent, lastTick };
+  // Lens-weight half (C-1c): reuse routed-ledger's reader over THIS injected,
+  // workspace-routed sql (it filters to known lenses). Best-effort like the
+  // tick half — a missing table / failed read degrades to null, never a 500.
+  let lensWeights: Record<string, number> | null = null;
+  try {
+    const { readScoutLensWeights } = await import('../scout/routed-ledger');
+    const weights = await readScoutLensWeights({ workspaceId, sql });
+    lensWeights = Object.keys(weights).length > 0 ? (weights as Record<string, number>) : null;
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      console.warn('[learning.scout] lens-weight read failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  return { totalRouted, railCounts, recent, lastTick, lensWeights };
 }

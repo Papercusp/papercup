@@ -14,12 +14,15 @@ import { readScoutSnapshot, normalizeScoutTick, isUndefinedTable } from './learn
 
 type Handler = () => Promise<Array<Record<string, unknown>>>;
 
-function fakeSql(opts: { rails?: Handler; items?: Handler; ticks?: Handler }): Sql {
+function fakeSql(opts: { rails?: Handler; items?: Handler; ticks?: Handler; weights?: Handler }): Sql {
   const fn = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
     const text = strings.join(' ');
     // Both ledger reads hit scout_routed_ideas — the aggregate groups by rail,
-    // the per-item read selects idea_id.
+    // the per-item read selects idea_id. The lens-weight half (C-1c) reads
+    // scout_lens_weights through routed-ledger's readScoutLensWeights with
+    // THIS injected sql.
     if (text.includes('GROUP BY rail')) return (opts.rails ?? (async () => []))();
+    if (text.includes('scout_lens_weights')) return (opts.weights ?? (async () => []))();
     if (text.includes('idea_id')) return (opts.items ?? (async () => []))();
     if (text.includes('scout_ticks')) return (opts.ticks ?? (async () => []))();
     return Promise.resolve([]);
@@ -53,7 +56,7 @@ describe('readScoutSnapshot', () => {
     });
   });
 
-  it('maps the recent routed-idea rows into the UI shape (epoch-ms routed_at, null-safe optionals)', async () => {
+  it('maps the recent routed-idea rows into the UI shape (epoch-ms routed_at, null-safe optionals, grade fields)', async () => {
     const sql = fakeSql({
       rails: async () => [{ rail: 'plan', count: 1 }],
       items: async () => [
@@ -65,6 +68,10 @@ describe('readScoutSnapshot', () => {
           title: 'A reframed idea',
           routed_at: '1781210000000', // bigint arrives as a string
           outcome: null,
+          // ungraded row: grade columns NULL (or absent pre-migration-234)
+          human_grade: null,
+          human_feedback: null,
+          graded_by: null,
         },
         {
           idea_id: 'scout-idea-analogical-1-0',
@@ -74,6 +81,9 @@ describe('readScoutSnapshot', () => {
           title: null,
           routed_at: null,
           outcome: 'won',
+          human_grade: 4,
+          human_feedback: 'sharp framing, do more of these',
+          graded_by: 'Queen',
         },
       ],
     });
@@ -87,6 +97,9 @@ describe('readScoutSnapshot', () => {
         title: 'A reframed idea',
         routedAt: new Date(1781210000000).toISOString(),
         outcome: null,
+        humanGrade: null,
+        humanFeedback: null,
+        gradedBy: null,
       },
       {
         ideaId: 'scout-idea-analogical-1-0',
@@ -96,6 +109,9 @@ describe('readScoutSnapshot', () => {
         title: null,
         routedAt: null,
         outcome: 'won',
+        humanGrade: 4,
+        humanFeedback: 'sharp framing, do more of these',
+        gradedBy: 'Queen',
       },
     ]);
   });
@@ -109,7 +125,7 @@ describe('readScoutSnapshot', () => {
       },
     });
     const snap = await readScoutSnapshot(sql, 'ws-1');
-    expect(snap).toEqual({ totalRouted: 0, railCounts: [], recent: [], lastTick: null });
+    expect(snap).toEqual({ totalRouted: 0, railCounts: [], recent: [], lastTick: null, lensWeights: null });
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -124,6 +140,37 @@ describe('readScoutSnapshot', () => {
     const snap = await readScoutSnapshot(sql, 'ws-1');
     expect(snap.railCounts).toEqual([{ rail: 'wi', count: 2 }]); // rail half survives
     expect(snap.lastTick).toBeNull();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('surfaces the persisted lens weights (C-1c), filtered to known lenses', async () => {
+    const sql = fakeSql({
+      weights: async () => [
+        { lens: 'analogical', weight: '0.4' }, // numeric arrives as a string
+        { lens: 'reframing', weight: 0.35 },
+        { lens: 'not-a-lens', weight: 0.25 }, // unknown lens ids are ignored
+      ],
+    });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.lensWeights).toEqual({ analogical: 0.4, reframing: 0.35 });
+  });
+
+  it('lensWeights is null when no weight rows are recorded yet', async () => {
+    const snap = await readScoutSnapshot(fakeSql({}), 'ws-1');
+    expect(snap.lensWeights).toBeNull();
+  });
+
+  it('lensWeights degrades to null (warn, never a crash) when the weight read fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({
+      rails: async () => [{ rail: 'plan', count: 1 }],
+      weights: async () => {
+        throw Object.assign(new Error('permission denied'), { code: '42501' });
+      },
+    });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.lensWeights).toBeNull();
+    expect(snap.totalRouted).toBe(1); // the routed half survives
     expect(warn).toHaveBeenCalled();
   });
 });

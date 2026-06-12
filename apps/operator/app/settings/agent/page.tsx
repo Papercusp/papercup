@@ -123,11 +123,19 @@ export default function AgentSettingsPage() {
   // stored setting (assemble-config.ts has the full story).
   const lastValidRef = useRef<LastValidSections>({ models: {}, surfaceModels: {}, tiers: [], tierCeilings: {} });
 
+  // Hydrate-once guard: StrictMode (and any remount) runs load() twice with
+  // BOTH fetches in flight — a late second resolution must not re-apply
+  // server state over fields the user may already be editing (the e2e caught
+  // a committed edit being silently clobbered by the second hydration).
+  const hydrationAppliedRef = useRef(false);
+
   const load = useCallback(async () => {
     try {
       const r = await fetch('/api/agent-config');
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = (await r.json()) as ConfigSnapshot;
+      if (hydrationAppliedRef.current) return;
+      hydrationAppliedRef.current = true;
       setSnapshot(d);
       setBackend(d.config.backend);
       setCmd(d.config.cmd);

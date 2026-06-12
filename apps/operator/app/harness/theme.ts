@@ -143,6 +143,27 @@ export const WORK_ITEM_KIND = new Proxy(_WORK_ITEM_KIND_TABLE as Record<string, 
 
 export type WorkItemKindKey = keyof typeof _WORK_ITEM_KIND_TABLE;
 
+// Agent pane-kind coloring — the colony vocabulary {queen, bee, sentinel,
+// planner, su} (apps/tui agent_pane_kind.rs). The SINGLE source for agent-kind
+// chips (<AgentKindPill> in primitives.tsx), same hue discipline + Proxy
+// fallback as WORK_ITEM_KIND so the Agents table's pill columns speak the same
+// visual language as Work items.
+const _AGENT_KIND_TABLE = {
+  queen:    { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Queen' },
+  bee:      { solid: '#38bdf8', bg: 'rgba(56,189,248,0.14)',  text: '#7dd3fc', label: 'Bee' },
+  sentinel: { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',  text: '#6ee7b7', label: 'Sentinel' },
+  planner:  { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)',  text: '#d8b4fe', label: 'Planner' },
+  su:       { solid: '#ec4899', bg: 'rgba(236,72,153,0.15)',  text: '#f9a8d4', label: 'SU' },
+} as const;
+
+export const AGENT_KIND = new Proxy(_AGENT_KIND_TABLE as Record<string, StatusMeta>, {
+  get(target, prop: string) {
+    return (target as any)[prop] ?? _STATUS_META_FALLBACK;
+  },
+}) as typeof _AGENT_KIND_TABLE;
+
+export type AgentKindKey = keyof typeof _AGENT_KIND_TABLE;
+
 /**
  * Canonical role color/label overrides. Roles not listed here get a
  * stable color derived from their name (see getRoleStyle below) — adding
