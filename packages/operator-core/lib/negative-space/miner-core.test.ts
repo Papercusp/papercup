@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   aggregateZeroHits,
+  classifyDemandEntry,
   demandCaptureBody,
   demandCaptureTitle,
   demandOptionsFromPayload,
   demandWatchdogKey,
+  isReferenceShapedQuery,
   normalizeQuery,
   selectDemandCandidates,
   surfaceOfTool,
@@ -125,6 +127,53 @@ describe('capture rendering', () => {
     expect(body).toContain('5×');
     expect(body).toContain('30d');
     expect(body).toContain('2026-06-11T10:00:00.000Z');
+  });
+});
+
+describe('kind fidelity (frontier P-044 / FB-18)', () => {
+  it('isReferenceShapedQuery accepts exact identifiers and rejects prose / bare words', () => {
+    expect(isReferenceShapedQuery('local-hive-orchestration-2026-06-06')).toBe(true);
+    expect(isReferenceShapedQuery('db:check_drift')).toBe(true);
+    expect(isReferenceShapedQuery('agent-insights/adding-a-sync-query')).toBe(true);
+    expect(isReferenceShapedQuery('how to use locks')).toBe(false); // prose
+    expect(isReferenceShapedQuery('governor')).toBe(false); // bare word — collision-prone
+    expect(isReferenceShapedQuery('a-b')).toBe(false); // too short
+  });
+
+  it('an existing artifact behind a reference-shaped query is the bug-shaped resolution gap (EI-397 shape)', () => {
+    const e = entry({ surface: 'plans', queryNorm: 'local-hive-orchestration-2026-06-06' });
+    const c = classifyDemandEntry(e, 'plan:local-hive-orchestration-2026-06-06');
+    expect(c).toEqual({
+      kind: 'bug',
+      findingClass: 'negative-space:resolution-gap',
+      severity: 'major',
+      artifactRef: 'plan:local-hive-orchestration-2026-06-06',
+    });
+    expect(demandCaptureTitle(e, c)).toBe(
+      'Resolution gap: plans searches for "local-hive-orchestration-2026-06-06" zero-hit although it exists',
+    );
+    const body = demandCaptureBody(e, 30, c);
+    expect(body).toContain('Correct state');
+    expect(body).toContain('plan:local-hive-orchestration-2026-06-06');
+  });
+
+  it('no artifact = the judgment-shaped missing-knowledge change (today\'s shape)', () => {
+    const e = entry();
+    const c = classifyDemandEntry(e, null);
+    expect(c).toEqual({
+      kind: 'change',
+      findingClass: 'negative-space:missing-knowledge',
+      severity: 'minor',
+      artifactRef: null,
+    });
+    expect(demandCaptureTitle(e, c)).toBe('Missing knowledge: docs searches for "tauri bridge port" find nothing');
+    expect(demandCaptureBody(e, 30, c)).toContain('close as not-planned');
+  });
+
+  it('an artifact hit behind a PROSE query never upgrades to bug (the pure guard behind the scan gate)', () => {
+    const c = classifyDemandEntry(entry({ queryNorm: 'tauri bridge port' }), 'doc:tauri-bridge');
+    expect(c.kind).toBe('change');
+    expect(c.artifactRef).toBeNull();
   });
 });
 

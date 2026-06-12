@@ -217,6 +217,103 @@ export function isCoveredByNamespace(term: string, index: ReadonlySet<string>): 
 }
 
 /* ────────────────────────────────────────────────────────────────────────
+ * Kind/taxonomy fidelity at the filing edge (frontier P-044 / FB-18, D-008)
+ *
+ * Two shapes leave this miner:
+ *
+ *   primitive-near-miss  — the fleet's term is ONE word-edit from a real
+ *                          primitive phrase: agents repeatedly reference a
+ *                          primitive under a spelling that doesn't resolve.
+ *                          Clear correct state (the term resolves to the
+ *                          primitive — alias/doc anchor — or the vocabulary
+ *                          is corrected), regression-testable → kind=bug.
+ *   abstraction-proposal — genuinely unnamed vocabulary; whether to mint the
+ *                          primitive is a judgment call → kind=change, the
+ *                          Scout-rail proposal (today's shape, unchanged).
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export type NeologismFindingClass = 'neologism:primitive-near-miss' | 'neologism:abstraction-proposal';
+
+/** Levenshtein-distance-≤1 check (lengths within 1, single edit), cheap + exact. */
+function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  if (longer.length - shorter.length > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < shorter.length && j < longer.length) {
+    if (shorter[i] === longer[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    if (edits > 0) return false;
+    edits = 1;
+    if (shorter.length === longer.length) i += 1; // substitution
+    j += 1; // deletion from the longer
+  }
+  return true; // any trailing char is the one allowed edit
+}
+
+/** Word-level fuzz: singular/plural variants, or one edit on words long enough to trust. */
+function wordsNearlyEqual(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a + 's' === b || b + 's' === a || a + 'es' === b || b + 'es' === a) return true;
+  if (a.length >= 5 && b.length >= 5) return withinOneEdit(a, b);
+  return false;
+}
+
+/**
+ * Does this (uncovered) term near-miss an indexed primitive phrase — same
+ * word count, exactly ONE word differing by plural form or a single edit?
+ * Returns the matched phrase or null. Pure, so the bug-vs-judgment line is
+ * pinned by unit tests; the tick runs it only over the capped candidates.
+ */
+export function findPrimitiveNearMiss(term: string, index: ReadonlySet<string>): string | null {
+  if (index.has(term)) return null; // exact coverage is not a near-miss (never reaches filing anyway)
+  const words = term.split(' ');
+  for (const phrase of index) {
+    if (Math.abs(phrase.length - term.length) > 3) continue; // cheap pre-filter
+    const phraseWords = phrase.split(' ');
+    if (phraseWords.length !== words.length) continue;
+    let mismatches = 0;
+    let ok = true;
+    for (let i = 0; i < words.length; i++) {
+      if (words[i] === phraseWords[i]) continue;
+      if (!wordsNearlyEqual(words[i], phraseWords[i]) || mismatches > 0) {
+        ok = false;
+        break;
+      }
+      mismatches = 1;
+    }
+    if (ok && mismatches === 1) return phrase;
+  }
+  return null;
+}
+
+/** STABLE near-miss capture title (no counts/timestamps, dedup contract). */
+export function neologismNearMissTitle(term: string, primitivePhrase: string): string {
+  return `Vocabulary resolution gap: fleet term "${term}" near-misses primitive phrase "${primitivePhrase}"`;
+}
+
+/** Near-miss capture body — evidence + the correct state (the bug shape's contract). */
+export function neologismNearMissBody(entry: NeologismEntry, primitivePhrase: string, windowDays: number): string {
+  return (
+    `Neologism miner signal (self-learning-frontier P-011, kind-fidelity per P-044): the fleet writes ` +
+    `"${entry.term}" — ${entry.recentMentions + entry.priorMentions} mention(s) by ${entry.distinctSpeakers} ` +
+    `distinct agent(s) over the last ${windowDays}d — but no primitive carries that exact name; the nearest ` +
+    `real primitive phrase is "${primitivePhrase}" (one word-edit away). Agents are referencing a primitive ` +
+    `under a spelling that doesn't resolve.\n\n` +
+    `Latest usage: ${JSON.stringify(entry.exampleText)}\n` +
+    `Window: ${entry.firstSeenAt} → ${entry.lastSeenAt}\n\n` +
+    `Correct state: the fleet's spelling resolves — alias/anchor "${entry.term}" to the primitive behind ` +
+    `"${primitivePhrase}" (doc anchor, tool alias, or a docs note pinning the canonical name). ` +
+    `Regression test: findPrimitiveNearMiss("${entry.term}") stops firing once the spelling is covered.`
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────
  * Aggregation + emergence
  * ──────────────────────────────────────────────────────────────────────── */
 

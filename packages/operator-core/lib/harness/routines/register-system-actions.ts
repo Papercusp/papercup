@@ -148,6 +148,15 @@
  *     arming gate, which also gates the capture seams), governor-preflighted
  *     (loop `calibration-markets`), AND seeded INACTIVE
  *     (lib/calibration/seed-calibration-routine.ts).
+ *   - `system:graduation-scan` — self-learning-frontier-2026-06-12 P-045/P-046
+ *     (FB-19, D-008). Daily per-class clean-pass counting over the outcome
+ *     rails (resolve evidence, decay verification, dispatch ledger, gym/EKG
+ *     regressions); a class crossing the graduation threshold files an OWNER
+ *     ratification report through the capture rails — NEVER an automatic
+ *     autoKinds edit. SQL-only; flag-gated OFF (papercusp-graduation-tracker
+ *     — the frontier D-001 arming gate), governor-preflighted (loop
+ *     `graduation-tracker`), AND seeded INACTIVE
+ *     (lib/graduation/seed-graduation-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -175,3 +184,4 @@ import './fleet-ekg-action';
 import './prompt-ablation-action';
 import './deferral-interest-action';
 import './calibration-action';
+import './graduation-action';

@@ -101,10 +101,11 @@ async function runVoiceMeshMetal(opts: {
     ? resolve(process.cwd(), '..', '..')
     : process.cwd();
   const frameCount = Math.max(2, Number(process.env.VOICE_MESH_FRAMES ?? 10));
+  const fanout = Math.max(1, Number(process.env.VOICE_MESH_PEERS_PER_FRAME ?? 1));
   const meshSizes = (process.env.VOICE_MESH_SIZES ?? '2,5,10')
     .split(',')
     .map((s) => Number(s.trim()))
-    .filter((n) => n >= 2 && n <= frameCount);
+    .filter((n) => n >= 2 && n <= frameCount * fanout);
   const log = (lvl: string, m: string) => console.log(`[voice-mesh ${opts.tag} ${lvl}] ${m}`);
 
   const fleet = await provisionBenchFleet({
@@ -124,11 +125,22 @@ async function runVoiceMeshMetal(opts: {
     log,
   });
   try {
-    const frames: VoiceMeshSshSlotSpec[] = fleet.frames.map((f) => ({
-      label: f.spec.label,
-      region: f.spec.region,
-      target: f.target,
-    }));
+    // Quota-capped fan-out: VOICE_MESH_PEERS_PER_FRAME children per frame,
+    // INTERLEAVED across frames so a slot-prefix slice (mesh size 2 on a
+    // 2-frame fleet) is one peer per physical host — the honest cross-host
+    // pair. Same-host pairs separate into mouthToEarSameHostMs in the fold.
+    const peersPerFrame = Math.max(1, Number(process.env.VOICE_MESH_PEERS_PER_FRAME ?? 1));
+    const frames: VoiceMeshSshSlotSpec[] = [];
+    for (let k = 0; k < peersPerFrame; k++) {
+      for (const f of fleet.frames) {
+        frames.push({
+          label: peersPerFrame > 1 ? `${f.spec.label}-p${k}` : f.spec.label,
+          region: f.spec.region,
+          host: f.spec.label,
+          target: f.target,
+        });
+      }
+    }
     const launcher = sshVoiceMeshLauncher({
       frames,
       log: (l) => console.log(`[voice-mesh ${opts.tag} peer] ${l}`),

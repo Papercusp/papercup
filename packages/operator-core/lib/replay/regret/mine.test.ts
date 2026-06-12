@@ -226,7 +226,11 @@ describe('runRegretTick — filing leg (D-002: origin=replay)', () => {
     expect(capture).toHaveBeenCalledTimes(1);
     const input = (capture.mock.calls as unknown as unknown[][])[0]?.[0] as Record<string, unknown>;
     expect(input).toMatchObject({
+      // No tools pinned in this fixture's evidence → the judgment-shaped
+      // process counterfactual (frontier P-044 kind fidelity).
       kind: 'change',
+      findingClass: 'regret:process-counterfactual',
+      severity: 'minor',
       origin: 'replay', // the D-002 invariant — a regret report never reads organic
       watchdogKey: 'regret:run-bad',
       dedupScope: 'open',
@@ -234,6 +238,27 @@ describe('runRegretTick — filing leg (D-002: origin=replay)', () => {
     });
     expect(String(input.title)).toContain('error-loop');
     expect(filedMarks).toEqual([{ runId: 'run-bad', improvementId: 'EI-900' }]);
+  });
+
+  it('an error-loop finding with pinned tools files the bug shape (frontier P-044 kind fidelity)', async () => {
+    const { deps, capture } = fakeDeps({
+      readRows: async () => [],
+      readUnfiledReplayed: async () => [
+        replayedFinding({ divergenceEvidence: { runLength: 3, tools: ['Bash'] } }),
+      ],
+    });
+    const result = await runRegretTick(WS, deps);
+    expect(result.filed).toEqual(['EI-900']);
+    const input = (capture.mock.calls as unknown as unknown[][])[0]?.[0] as Record<string, unknown>;
+    expect(input).toMatchObject({
+      kind: 'bug',
+      findingClass: 'regret:tool-error-loop',
+      severity: 'major',
+      origin: 'replay', // bug-shaped or not, a replay row never reads organic (D-002)
+      watchdogKey: 'regret:run-bad',
+    });
+    expect(String(input.title)).toContain('Tool error loop: Bash');
+    expect(String(input.body)).toContain('Correct state');
   });
 
   it('a best score below minFileScore never files', async () => {

@@ -49,10 +49,13 @@ describe('runNegativeSpaceTick', () => {
     const persisted = persist.mock.calls[0]![1];
     expect(persisted.map((e) => e.queryNorm).sort()).toEqual(['hot query', 'lonely query']);
 
-    // Only "hot query" crosses both bars (3 misses, 2 agents).
+    // Only "hot query" crosses both bars (3 misses, 2 agents). Prose query =
+    // the judgment-shaped missing-knowledge change (the P-044 gate lane).
     expect(capture).toHaveBeenCalledOnce();
     const input = capture.mock.calls[0]![0];
     expect(input.kind).toBe('change');
+    expect(input.findingClass).toBe('negative-space:missing-knowledge');
+    expect(input.severity).toBe('minor');
     expect(input.watchdogKey).toBe('negative-space:docs:hot query');
     expect(input.dedupScope).toBe('open');
     expect(input.evidenceAt).toBe('2026-06-11T10:00:00.000Z');
@@ -110,5 +113,65 @@ describe('runNegativeSpaceTick', () => {
     expect(persist).toHaveBeenCalledOnce();
     expect(capture).not.toHaveBeenCalled();
     expect(result).toMatchObject({ demandEntries: 1, filed: [] });
+  });
+});
+
+describe('runNegativeSpaceTick — kind fidelity at the filing edge (frontier P-044 / FB-18)', () => {
+  const SLUG = 'local-hive-orchestration-2026-06-06';
+  const slugRows = (agents: string[]): ZeroHitRow[] =>
+    agents.map((agent) => ({ toolName: 'plans:search', query: SLUG, agent, invokedAt: '2026-06-11T10:00:00.000Z' }));
+
+  it('an exact slug that EXISTS files the bug-shaped resolution gap (the EI-397 shape)', async () => {
+    const probeArtifact = vi.fn(async () => `plan:${SLUG}`);
+    const { deps, capture } = makeDeps(slugRows(['a', 'b', 'c']), { probeArtifact });
+    await runNegativeSpaceTick('ws-1', deps);
+
+    expect(probeArtifact).toHaveBeenCalledWith('plans', SLUG);
+    expect(capture).toHaveBeenCalledOnce();
+    const input = capture.mock.calls[0]![0];
+    expect(input.kind).toBe('bug');
+    expect(input.findingClass).toBe('negative-space:resolution-gap');
+    expect(input.severity).toBe('major');
+    expect(input.title).toBe(`Resolution gap: plans searches for "${SLUG}" zero-hit although it exists`);
+    expect(input.body).toContain('Correct state');
+    expect(input.body).toContain(`plan:${SLUG}`);
+    // The signal identity is the same regardless of shape — classification
+    // must never fork the cross-tick dedup key.
+    expect(input.watchdogKey).toBe(`negative-space:plans:${SLUG}`);
+  });
+
+  it('an exact slug that does NOT exist stays the judgment-shaped missing-knowledge change', async () => {
+    const { deps, capture } = makeDeps(slugRows(['a', 'b', 'c']), { probeArtifact: async () => null });
+    await runNegativeSpaceTick('ws-1', deps);
+    const input = capture.mock.calls[0]![0];
+    expect(input.kind).toBe('change');
+    expect(input.findingClass).toBe('negative-space:missing-knowledge');
+    expect(input.severity).toBe('minor');
+  });
+
+  it('prose queries are never probed (only reference-shaped identifiers can be resolution gaps)', async () => {
+    const probeArtifact = vi.fn(async () => 'doc:should-not-matter');
+    const rows = [zeroHit('hot query', 'a'), zeroHit('hot query', 'b'), zeroHit('hot query', 'c')];
+    const { deps, capture } = makeDeps(rows, { probeArtifact });
+    await runNegativeSpaceTick('ws-1', deps);
+    expect(probeArtifact).not.toHaveBeenCalled();
+    expect(capture.mock.calls[0]![0].kind).toBe('change');
+  });
+
+  it('a probe failure degrades to the change shape — never a falsely-confident bug, never an aborted candidate', async () => {
+    const { deps, capture } = makeDeps(slugRows(['a', 'b', 'c']), {
+      probeArtifact: async () => {
+        throw new Error('pg down');
+      },
+    });
+    const result = await runNegativeSpaceTick('ws-1', deps);
+    expect(result.filed).toEqual(['EI-100']);
+    expect(capture.mock.calls[0]![0].kind).toBe('change');
+  });
+
+  it('no probe wired (legacy deps) keeps every candidate change-shaped', async () => {
+    const { deps, capture } = makeDeps(slugRows(['a', 'b', 'c']));
+    await runNegativeSpaceTick('ws-1', deps);
+    expect(capture.mock.calls[0]![0].kind).toBe('change');
   });
 });

@@ -42,6 +42,7 @@ import {
   type KnownOpenAgingTickTunables,
 } from './known-open-aging';
 import type { ImprovementSeverity } from './policy';
+import type { LearningSloOptions } from './learning-slo';
 
 export type WatchdogSource =
   | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
@@ -58,7 +59,16 @@ export type WatchdogSource =
   | 'ship-link-stuck'
   // an auto-implement dispatch whose worker died without ever calling
   // improvements:resolve (consume-edges P-011 — orphaned-dispatch.ts):
-  | 'orphaned-dispatch';
+  | 'orphaned-dispatch'
+  // learning-system SLO sensors (self-learning-frontier P-047 / FB-21 —
+  // learning-slo.ts; flag-gated dark per D-001 until the P-001 arming gate):
+  | 'triage-entropy' | 'capture-consume-imbalance' | 'mttsh-regression'
+  | 'governor-starvation' | 'memory-zero-hit'
+  // the routines ENGINE itself is dead — every active routine overdue at once
+  // (the 06-12 DBOS incident class). Detected OUT-OF-BAND by lib/red-queen/
+  // engine-death.ts (P-031 / FB-20) since the watchdog rides the engine it
+  // would be watching:
+  | 'routine-engine-death';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -331,7 +341,12 @@ export async function readWatchdogKeyDups(keys: string[]): Promise<WatchdogKeyDu
 
 // ── signal collectors (IO) ───────────────────────────────────────────────────
 
-export interface CollectOptions {
+/**
+ * Collector bars + windows for one tick. Extends the FB-21 learning-SLO
+ * tunables (learning-slo.ts LEARNING_SLO_DEFAULTS) so the five SLO sensors
+ * tune from the same routine payload as every other collector.
+ */
+export interface CollectOptions extends LearningSloOptions {
   /** Lookback for the red-test sweep. Default 6h. */
   redTestWindowHours?: number;
   /** Minimum fail count in the window (and the latest run must be a fail). Default 3. */
@@ -1302,6 +1317,32 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
       name: 'papercusp-ship-link',
       collect: () => import('./ship-link').then((m) => m.collectShipLinkSignals()),
     },
+    // Audit-as-sensors (self-learning-frontier P-047 / FB-21): the learning
+    // system's own health KPIs as standing SLO collectors — a breach files
+    // into the very queue it measures, kinds per FB-18's fidelity rules.
+    // All five ride ONE dark flag (papercusp-learning-slo-sensors, D-001 —
+    // each reports a 'dark' note while OFF), are SQL-only, and read their
+    // thresholds from LEARNING_SLO_DEFAULTS / this tick's payload tunables.
+    {
+      name: 'papercusp-triage-entropy',
+      collect: () => import('./learning-slo').then((m) => m.triageEntropyCollector(workspaceId, opts)),
+    },
+    {
+      name: 'papercusp-capture-consume-flow',
+      collect: () => import('./learning-slo').then((m) => m.captureConsumeFlowCollector(workspaceId, opts)),
+    },
+    {
+      name: 'papercusp-mttsh-regression',
+      collect: () => import('./learning-slo').then((m) => m.mttshRegressionCollector(opts)),
+    },
+    {
+      name: 'papercusp-governor-starvation',
+      collect: () => import('./learning-slo').then((m) => m.governorStarvationCollector(workspaceId, opts)),
+    },
+    {
+      name: 'papercusp-memory-recall-zero-hit',
+      collect: () => import('./learning-slo').then((m) => m.memoryZeroHitCollector(opts)),
+    },
   ];
 }
 
@@ -1866,6 +1907,15 @@ const PAYLOAD_TUNABLE_KEYS = [
   // so the ratified values land via the routine payload without a deploy)
   'agingGeneralThresholdHours', 'agingInfraThresholdHours', 'agingReescalateDays',
   'agingContinuityGapMinutes', 'maxAgingEscalationsPerTick',
+  // learning-SLO sensor thresholds (frontier P-047 / FB-21 — defaults in
+  // learning-slo.ts LEARNING_SLO_DEFAULTS; tunable here so SLO tuning never
+  // needs a deploy)
+  'triageEntropyWindowDays', 'triageEntropyMinSample', 'triageEntropyMinNormalized',
+  'flowWindowDays', 'flowMinInflow', 'flowMaxRatio',
+  'mttshRecentDays', 'mttshBaselineDays', 'mttshMinSamples', 'mttshMaxRegressionFactor',
+  'governorStarvationFloorUsd',
+  'memoryZeroHitRecentHours', 'memoryZeroHitBaselineDays', 'memoryZeroHitMinRecalls',
+  'memoryZeroHitMaxRate', 'memoryZeroHitSpikeFactor',
 ] as const;
 
 /**

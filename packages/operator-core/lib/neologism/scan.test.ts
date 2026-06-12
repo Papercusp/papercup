@@ -120,24 +120,62 @@ describe('runNeologismTick', () => {
   });
 });
 
+const armingGateEntry = {
+  term: 'arming gate',
+  recentMentions: 4,
+  priorMentions: 0,
+  distinctSpeakers: 3,
+  growth: 9,
+  insightSlugs: [],
+  firstSeenAt: daysAgo(5),
+  lastSeenAt: daysAgo(2),
+  exampleText: 'past the arming gate',
+};
+
 describe('neologismCaptureInput', () => {
   it('stamps the term-keyed watchdogKey and the last-seen evidence timestamp', () => {
-    const input = neologismCaptureInput(
-      {
-        term: 'arming gate',
-        recentMentions: 4,
-        priorMentions: 0,
-        distinctSpeakers: 3,
-        growth: 9,
-        insightSlugs: [],
-        firstSeenAt: daysAgo(5),
-        lastSeenAt: daysAgo(2),
-        exampleText: 'past the arming gate',
-      },
-      30,
-    );
+    const input = neologismCaptureInput(armingGateEntry, 30);
     expect(input.watchdogKey).toBe('neologism:arming-gate');
     expect(input.evidenceAt).toBe(daysAgo(2));
     expect(input.title).not.toMatch(/\d/);
+  });
+
+  // Kind fidelity (frontier P-044 / FB-18): the change-shaped and bug-shaped pins.
+  it('unnamed vocabulary stays the judgment-shaped kind=change abstraction proposal', () => {
+    const input = neologismCaptureInput(armingGateEntry, 30);
+    expect(input.kind).toBe('change');
+    expect(input.findingClass).toBe('neologism:abstraction-proposal');
+    expect(input.severity).toBe('minor');
+  });
+
+  it('a primitive near-miss files the bug-shaped vocabulary resolution gap', () => {
+    const input = neologismCaptureInput(armingGateEntry, 30, 'arming gates');
+    expect(input.kind).toBe('bug');
+    expect(input.findingClass).toBe('neologism:primitive-near-miss');
+    expect(input.severity).toBe('minor');
+    expect(input.title).toBe(
+      'Vocabulary resolution gap: fleet term "arming gate" near-misses primitive phrase "arming gates"',
+    );
+    expect(input.body).toContain('Correct state');
+    // Same signal identity either way — classification never forks the dedup key.
+    expect(input.watchdogKey).toBe('neologism:arming-gate');
+    expect(input.dedupScope).toBe('all');
+    expect(input.origin).toBe('organic');
+  });
+});
+
+describe('runNeologismTick — kind fidelity at the filing edge (frontier P-044 / FB-18)', () => {
+  it('a candidate one word-edit from a real primitive files kind=bug through the tick', async () => {
+    // "wake storm" survives coverage (no primitive is named exactly that) but
+    // near-misses the indexed phrase "wake storms" → the bug shape.
+    const { deps, capture } = fakeDeps({
+      readNamespaces: vi.fn(async () => ['system:wake-storms-monitor']),
+    });
+    const result = await runNeologismTick('ws-1', deps, { asOf: AS_OF });
+    expect(result.filed).toEqual(['EI-1']);
+    const input = capture.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.kind).toBe('bug');
+    expect(input.findingClass).toBe('neologism:primitive-near-miss');
+    expect(String(input.title)).toContain('near-misses primitive phrase "wake storms"');
   });
 });

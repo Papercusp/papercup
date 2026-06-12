@@ -97,6 +97,23 @@ describe('issueToCandidate — native kind column (close-loop D-002, deriveKind 
       expect(c.sourceRole).toBe(role);
     }
   });
+
+  it('maps payload.findingClass → candidate.findingClass (frontier P-044 taxonomy slug)', () => {
+    const c = issueToCandidate(
+      issue({
+        id: 'EI-8',
+        title: 'resolution gap',
+        kind: 'bug',
+        payload: { findingClass: 'negative-space:resolution-gap' },
+      }),
+    );
+    expect(c.findingClass).toBe('negative-space:resolution-gap');
+    // absent / non-string stays absent
+    expect(issueToCandidate(issue({ id: 'EI-9', title: 'y', kind: 'bug' })).findingClass).toBeUndefined();
+    expect(
+      issueToCandidate(issue({ id: 'EI-10', title: 'z', kind: 'bug', payload: { findingClass: 7 } })).findingClass,
+    ).toBeUndefined();
+  });
 });
 
 describe('readImprovementItems', () => {

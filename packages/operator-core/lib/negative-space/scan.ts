@@ -23,16 +23,22 @@
  * lives in the routine action (negative-space-action.ts), not here.
  */
 
+import { readdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import {
   aggregateZeroHits,
   selectDemandCandidates,
+  classifyDemandEntry,
   demandWatchdogKey,
   demandCaptureTitle,
   demandCaptureBody,
+  isReferenceShapedQuery,
   type DemandEntry,
   type DemandFilingOptions,
+  type DemandSurface,
   type ZeroHitRow,
 } from './miner-core';
 import {
@@ -56,6 +62,14 @@ export interface NegativeSpaceTickDeps {
   persist: (workspaceId: string, entries: DemandEntry[]) => Promise<DemandEntry[]>;
   capture: (input: CaptureImprovementInput) => Promise<CaptureImprovementResult>;
   markFiled: (workspaceId: string, entry: DemandEntry, improvementId: string) => Promise<void>;
+  /**
+   * Does the demanded artifact actually EXIST under this exact identifier?
+   * Returns its ref (`plan:<slug>` / `doc:<slug>`) or null. Drives the
+   * kind-fidelity split (frontier P-044): exists + zero-hit = resolution gap
+   * (kind=bug, EI-397 shape); absent = missing knowledge (kind=change).
+   * Only called for reference-shaped queries; absent dep ⇒ never bug-shaped.
+   */
+  probeArtifact?: (surface: DemandSurface, queryNorm: string) => Promise<string | null>;
   log?: (message: string) => void;
 }
 
@@ -146,6 +160,57 @@ export async function markDemandFiled(
        AND query_norm = ${entry.queryNorm}`;
 }
 
+// packages/operator-core/lib/negative-space → repo root. ESM-safe: bare
+// `__dirname` is UNDEFINED under tsx file-mode in this type:module package —
+// never use __dirname in operator-core (the neologism miner carries the same note).
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const DOCS_CONTENT_DIR = join(REPO_ROOT, 'apps/operator-docs/src/content/docs');
+
+/**
+ * The live artifact probe behind the kind-fidelity split (frontier P-044):
+ *   plans  — exact plan_slug anywhere in harness_shared.harness_plans (the
+ *            EI-397 case: harness-scoped agents zero-hitting an operator-scope
+ *            plan they name exactly);
+ *   docs   — a page whose slug (basename or section/slug path) equals the
+ *            query, in the MDX corpus (missing corpus degrades to null, the
+ *            neologism reader's stripped-deploy-tree rule);
+ *   memory — no clear-correct-state probe exists (recall is similarity-based,
+ *            not identifier-based) → always null, always judgment-shaped.
+ * Never throws: a probe failure means "not proven to exist" — the candidate
+ * files in today's change shape rather than a falsely-confident bug.
+ */
+export async function probeDemandArtifact(
+  sql: Sql,
+  surface: DemandSurface,
+  queryNorm: string,
+  docsDir: string = DOCS_CONTENT_DIR,
+): Promise<string | null> {
+  try {
+    if (surface === 'plans') {
+      const rows = await sql<{ plan_slug: string }[]>`
+        SELECT plan_slug FROM harness_shared.harness_plans
+         WHERE plan_slug = ${queryNorm}
+         LIMIT 1`;
+      return rows.length > 0 ? `plan:${rows[0].plan_slug}` : null;
+    }
+    if (surface === 'docs') {
+      const entries = await readdir(docsDir, { recursive: true, withFileTypes: true });
+      for (const e of entries) {
+        if (!e.isFile() || !/\.mdx?$/.test(e.name)) continue;
+        const full = join(e.parentPath, e.name);
+        const rel = full.startsWith(docsDir) ? full.slice(docsDir.length).replace(/^\//, '') : e.name;
+        const relSlug = rel.replace(/\.mdx?$/, '').toLowerCase();
+        const baseSlug = e.name.replace(/\.mdx?$/, '').toLowerCase();
+        if (baseSlug === queryNorm || relSlug === queryNorm) return `doc:${relSlug}`;
+      }
+      return null;
+    }
+    return null; // memory: no identifier-keyed existence check
+  } catch {
+    return null;
+  }
+}
+
 /** The live PG-backed deps (the routine action's default wiring). */
 export function defaultNegativeSpaceDeps(sql: Sql): NegativeSpaceTickDeps {
   return {
@@ -153,6 +218,7 @@ export function defaultNegativeSpaceDeps(sql: Sql): NegativeSpaceTickDeps {
     persist: (ws, entries) => persistDemandMap(sql, ws, entries),
     capture: (input) => captureImprovement(input),
     markFiled: (ws, entry, id) => markDemandFiled(sql, ws, entry, id),
+    probeArtifact: (surface, queryNorm) => probeDemandArtifact(sql, surface, queryNorm),
     log: (m) => console.log(m),
   };
 }
@@ -175,11 +241,21 @@ export async function runNegativeSpaceTick(
   for (const entry of candidates) {
     // Best-effort per candidate: one capture failure never aborts the tick.
     try {
+      // Kind fidelity (frontier P-044): probe reference-shaped queries for an
+      // existing artifact — exists + zero-hit = resolution gap (kind=bug, the
+      // EI-397 shape); otherwise today's missing-knowledge change. A probe
+      // failure degrades to null (change shape), never aborts the candidate.
+      const artifactRef =
+        deps.probeArtifact && isReferenceShapedQuery(entry.queryNorm)
+          ? await deps.probeArtifact(entry.surface, entry.queryNorm).catch(() => null)
+          : null;
+      const classification = classifyDemandEntry(entry, artifactRef);
       const result = await deps.capture({
-        title: demandCaptureTitle(entry),
-        kind: 'change',
-        body: demandCaptureBody(entry, windowDays),
-        severity: 'minor',
+        title: demandCaptureTitle(entry, classification),
+        kind: classification.kind,
+        body: demandCaptureBody(entry, windowDays, classification),
+        severity: classification.severity,
+        findingClass: classification.findingClass,
         subTopic: 'negative-space',
         sourceRole: 'system',
         source: 'su',

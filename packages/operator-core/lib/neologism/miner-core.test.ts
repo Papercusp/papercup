@@ -9,6 +9,7 @@ import {
   aggregateNeologisms,
   buildNamespaceIndex,
   extractTerms,
+  findPrimitiveNearMiss,
   isCoveredByNamespace,
   neologismCaptureTitle,
   neologismOptionsFromPayload,
@@ -102,6 +103,38 @@ describe('namespace coverage', () => {
   it('does not cover genuinely unnamed vocabulary', () => {
     expect(isCoveredByNamespace('wake storm', index)).toBe(false);
     expect(isCoveredByNamespace('deploy train', index)).toBe(false);
+  });
+});
+
+describe('findPrimitiveNearMiss (kind fidelity — frontier P-044 / FB-18)', () => {
+  const index = buildNamespaceIndex(['events:await', 'memory:search', 'negative_space_demand']);
+
+  it('catches singular/plural drift and single-edit typos against a real primitive phrase', () => {
+    // "event await" — fleet drops the plural of the real `events:await`.
+    expect(findPrimitiveNearMiss('event await', index)).toBe('events await');
+    // one-edit typo on a long-enough word
+    expect(findPrimitiveNearMiss('memori search', index)).toBe('memory search');
+  });
+
+  it('an exactly-covered term is not a near-miss (it never reaches filing anyway)', () => {
+    expect(findPrimitiveNearMiss('events await', index)).toBeNull();
+  });
+
+  it('genuinely unnamed vocabulary stays judgment-shaped: no match', () => {
+    expect(findPrimitiveNearMiss('wake storm', index)).toBeNull();
+    expect(findPrimitiveNearMiss('deploy train', index)).toBeNull();
+  });
+
+  it('two differing words / different word counts are not a near-miss', () => {
+    expect(findPrimitiveNearMiss('event awaits queue', index)).toBeNull(); // 3 words vs 2
+    expect(findPrimitiveNearMiss('events awaited', index)).toBeNull(); // 'awaited' is 2 edits from 'await'
+    expect(findPrimitiveNearMiss('event search', index)).toBeNull(); // near two phrases, one word each — not one phrase
+  });
+
+  it('short words never fuzzy-match (only exact/plural) — "gate"/"date" stay distinct', () => {
+    const shortIndex = buildNamespaceIndex(['release-gate']);
+    expect(findPrimitiveNearMiss('release date', shortIndex)).toBeNull();
+    expect(findPrimitiveNearMiss('release gates', shortIndex)).toBe('release gate');
   });
 });
 

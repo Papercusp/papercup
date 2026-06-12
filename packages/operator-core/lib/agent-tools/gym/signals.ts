@@ -18,10 +18,43 @@ import { evaluateSignals, knownSignals, type SignalContext } from '../../gym/pri
 
 const testResult = z.object({ name: z.string(), passed: z.boolean() });
 
+// Mirrors the red-queen v1 DrillOutcome contract (lib/gym/drill-signals.ts) — the
+// drill-ground-truth judging inputs (FB-23 / P-048).
+const drillOutcome = z.object({
+  drillId: z.string(),
+  drillClass: z.string(),
+  collectorFamily: z.string(),
+  plantedAt: z.string(),
+  detectedAt: z.string().nullish(),
+  triagedAt: z.string().nullish(),
+  resolvedAt: z.string().nullish(),
+  expectedWatchdogKey: z.string(),
+  expectedKind: z.enum(['bug', 'change']),
+  expectedSeverity: z.string(),
+  expectedDecision: z.enum(['place', 'gate', 'gym', 'reject']).nullish(),
+  detectedWatchdogKey: z.string().nullish(),
+  detectedKind: z.string().nullish(),
+  triagedDecision: z.string().nullish(),
+  triagedIdeaType: z.string().nullish(),
+  resolvedWithEvidence: z.boolean(),
+  issueId: z.string().nullish(),
+  mttsh: z
+    .object({
+      detectMs: z.number().optional(),
+      triageMs: z.number().optional(),
+      fixMs: z.number().optional(),
+      totalMs: z.number().optional(),
+    })
+    .nullish(),
+  leakCheckPassed: z.boolean().nullish(),
+  status: z.enum(['planted', 'detected', 'triaged', 'resolved', 'failed', 'expired']),
+  origin: z.literal('drill'),
+});
+
 export default defineTool({
   name: 'gym:signals',
   description:
-    "Evaluate a target blueprint's deterministic gym signals (un-gameable guardrails) over one run's inputs. Pass `signals` (names from the target's blueprint.gym.signals) + any of {preTests, postTests, plantedBug, harnessOutputText}. Returns {results:[{name,value,applicable}], unknown, known}. Built-ins: regressionsFromTests (needs pre+post tests), plantedBugCaught (needs plantedBug+harnessOutputText).",
+    "Evaluate a target blueprint's deterministic gym signals (un-gameable guardrails) over one run's inputs. Pass `signals` (names from the target's blueprint.gym.signals) + any of {preTests, postTests, plantedBug, harnessOutputText, drillOutcomes}. Returns {results:[{name,value,applicable,metric?}], unknown, known}. Built-ins: regressionsFromTests (needs pre+post tests), plantedBugCaught (needs plantedBug+harnessOutputText), drillResolveRate / drillTriageAccuracy / drillMttsh (need drillOutcomes — red-queen drill rows with planted known answers; value = SLO verdict, metric = the raw rate/ms).",
   guidance: {
     when: "Scoring a gym run's deterministic guardrails — the optimizer cannot game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's declared gym.signals by name.",
     notWhen: 'Subjective quality scoring — that is the frozen judge (gym:judge). Running the pipeline — the gym runner.',
@@ -42,6 +75,10 @@ export default defineTool({
       .optional()
       .describe('The defect planted in the task (for plantedBugCaught)'),
     harnessOutputText: z.string().optional().describe("The harness's produced output (verdicts, filed issues)"),
+    drillOutcomes: z
+      .array(drillOutcome)
+      .optional()
+      .describe('Red-queen drill outcomes (planted known answers) for the drill-ground-truth signals'),
   }),
   async handler(args) {
     const ctx: SignalContext = {
@@ -51,6 +88,7 @@ export default defineTool({
         ? { location: args.plantedBug.location, defect: args.plantedBug.defect ?? '', detectionSignature: args.plantedBug.detectionSignature ?? '' }
         : null,
       harnessOutputText: args.harnessOutputText,
+      drillOutcomes: args.drillOutcomes,
     };
     const { results, unknown } = evaluateSignals(args.signals, ctx);
     return {

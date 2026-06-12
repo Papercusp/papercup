@@ -130,6 +130,11 @@ export const DEFAULT_RISK_TIER_POLICY: RiskTierPolicy = {
     'libs/flags/**',
     'packages/operator-core/lib/harness/improvements/**',
     'packages/operator-core/lib/agent-tools/improvements/**',
+    // The loop's governance rails (frontier P-049): the learning-spend budget
+    // machinery (D-004 — an auto-edit could un-make the refuse-unattended rule)
+    // and the behavior-change ledger (D-003 — the one mutation-attribution rail).
+    'packages/operator-core/lib/learning-governor/**',
+    'packages/operator-core/lib/change-ledger/**',
     // Auth / security surfaces.
     '**/auth/**',
     '**/credentials/**',

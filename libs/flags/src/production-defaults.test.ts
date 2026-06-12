@@ -98,6 +98,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // improvements queue: new capture volume waits for the consume-edges
   // live proof like every other frontier capture source.
   FLAGS.LEARNING_SLO_SENSORS,
+  // … and the graduation evidence tracker (P-045/P-046/FB-19) — triple gate:
+  // flag OFF here, the daily routine seeded INACTIVE, and unbudgeted on the
+  // learning governor (loop `graduation-tracker`) until P-001. SQL-only
+  // zero-spend, but it files owner ratification reports into the
+  // improvements queue (new capture volume). The widening act itself (the
+  // autoKinds/policy edit) is NEVER automated regardless of this flag.
+  FLAGS.GRADUATION_TRACKER,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

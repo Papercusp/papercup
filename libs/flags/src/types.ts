@@ -272,6 +272,16 @@ export const FLAGS = {
   // still being repaired). OFF = every collector reports a 'dark' note and
   // emits nothing.
   LEARNING_SLO_SENSORS: "papercusp-learning-slo-sensors",
+  // self-learning-frontier-2026-06-12 (P-045/P-046 / FB-19): the graduation
+  // evidence tracker — `system:graduation-scan` counts per-class clean
+  // auto-implement passes over the existing outcome rails (resolve evidence,
+  // decay verification, dispatch ledger, gym/EKG regressions) and files a
+  // "class X is graduation-eligible" OWNER report when a class crosses the
+  // threshold. It NEVER edits autoKinds — widening stays a reviewed policy.ts
+  // config change riding the release gate (D-008). SQL-only, zero LLM spend,
+  // but it FILES into the improvements queue, so it ships dark until the
+  // plan's P-001 arming gate closes (D-001).
+  GRADUATION_TRACKER: "papercusp-graduation-tracker",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -430,6 +440,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // nothing; the flag flip is the ONLY P-001 arming act (no routine to
   // activate, no governor budget — SQL-only on the watchdog's cadence).
   [FLAGS.LEARNING_SLO_SENSORS]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: the
+  // graduation tracker files owner ratification reports into the improvements
+  // queue (new capture volume); the flag flip + an owner-set per-cycle
+  // governor budget on loop `graduation-tracker` (0 is honest — SQL-only) +
+  // activating the seeded-inactive routine are the P-001 arming acts.
+  [FLAGS.GRADUATION_TRACKER]: false,
   // ON by default — Phase 0 foundation, same call as CHANGE_LEDGER above
   // (self-learning-frontier P-003/FB-01): the governor SPENDS nothing and
   // FILES nothing — it is the refusal gate D-004 wants live, and ON starts

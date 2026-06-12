@@ -27,6 +27,46 @@ export function regretWatchdogKey(runId: string): string {
   return `regret:${runId}`;
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * Kind/taxonomy fidelity at the filing edge (frontier P-044 / FB-18, D-008)
+ *
+ * Two shapes leave this miner:
+ *
+ *   tool-error-loop        — the divergence is ≥N CONSECUTIVE failing calls
+ *                            to concrete, named tools: a real erroring
+ *                            surface with a clear correct state (those calls
+ *                            don't error / the error is handled) and a
+ *                            regression test (invoke the tool) → kind=bug.
+ *   process-counterfactual — repeat-loop / burn-inflection / rescue-marker
+ *                            divergences propose prompt/process changes
+ *                            priced by replay; whether to adopt the rule is
+ *                            a judgment call → kind=change (today's shape).
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export type RegretFindingClass = 'regret:tool-error-loop' | 'regret:process-counterfactual';
+
+export interface RegretClassification {
+  kind: 'bug' | 'change';
+  findingClass: RegretFindingClass;
+  severity: 'major' | 'minor';
+  /** The erroring tools pinned by the divergence evidence — tool-error-loop only. */
+  errorTools: string[];
+}
+
+/** Pure shape classifier over the finding's divergence — pinned by unit tests. */
+export function classifyRegretFinding(
+  input: Pick<RegretReportInput, 'divergenceKind' | 'divergenceEvidence'>,
+): RegretClassification {
+  if (input.divergenceKind === 'error-loop') {
+    const rawTools = (input.divergenceEvidence as { tools?: unknown } | null)?.tools;
+    const errorTools = Array.isArray(rawTools) ? rawTools.filter((t): t is string => typeof t === 'string') : [];
+    if (errorTools.length > 0) {
+      return { kind: 'bug', findingClass: 'regret:tool-error-loop', severity: 'major', errorTools };
+    }
+  }
+  return { kind: 'change', findingClass: 'regret:process-counterfactual', severity: 'minor', errorTools: [] };
+}
+
 /** The slice of a regret finding the report renders (store.RegretFindingRecord satisfies it). */
 export interface RegretReportInput {
   runId: string;
@@ -52,6 +92,12 @@ export function bestReplayScore(input: Pick<RegretReportInput, 'replayScores'>):
 }
 
 export function regretReportTitle(input: RegretReportInput): string {
+  const classification = classifyRegretFinding(input);
+  if (classification.findingClass === 'regret:tool-error-loop') {
+    return `Tool error loop: ${classification.errorTools.join(', ')} failed repeatedly in a ${
+      input.role ?? 'agent'
+    } session`;
+  }
   const best = bestReplayScore(input);
   const change = input.candidateChanges.find((c) => c.id === best?.candidateId);
   return `Regret: ${input.role ?? 'agent'} session diverged (${input.divergenceKind ?? 'unknown'}) — ${
@@ -77,6 +123,16 @@ export function regretReportBody(input: RegretReportInput): string {
     lines.push(
       `- \`${change.id}\` — ${change.title}: ` +
         (score ? `**${score.improvementScore.toFixed(2)}** — ${score.summary}` : 'not replayed'),
+    );
+  }
+  const classification = classifyRegretFinding(input);
+  if (classification.findingClass === 'regret:tool-error-loop') {
+    lines.push(
+      '',
+      `**Correct state** (kind-fidelity per frontier P-044): consecutive calls to ` +
+        `${classification.errorTools.map((t) => `\`${t}\``).join(', ')} must not keep erroring — either the ` +
+        `tool's failure is a real bug to fix, or its error response must carry enough signal that an agent ` +
+        `stops retrying. Regression test: the failing call shape from the divergence evidence.`,
     );
   }
   lines.push(

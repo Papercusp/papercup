@@ -36,6 +36,7 @@ import {
 import {
   MIN_FILE_IMPROVEMENT_SCORE,
   bestReplayScore,
+  classifyRegretFinding,
   regretReportBody,
   regretReportTitle,
   regretWatchdogKey,
@@ -201,11 +202,16 @@ export async function runRegretTick(
       const best = bestReplayScore(finding);
       if (!best || best.improvementScore < minFileScore || finding.divergenceTurn === null) continue;
       try {
+        // Kind fidelity (frontier P-044): an error-loop divergence pinning
+        // concrete erroring tools is bug-shaped; the prompt/process
+        // counterfactuals stay judgment-shaped changes.
+        const classification = classifyRegretFinding(finding);
         const result = await deps.capture({
           title: regretReportTitle(finding),
-          kind: 'change',
+          kind: classification.kind,
           body: regretReportBody(finding),
-          severity: 'minor',
+          severity: classification.severity,
+          findingClass: classification.findingClass,
           subTopic: 'regret-mining',
           sourceRole: 'system',
           source: 'su',

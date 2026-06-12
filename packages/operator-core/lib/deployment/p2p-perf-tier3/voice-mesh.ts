@@ -51,6 +51,10 @@ const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 export interface VoiceMeshSlot {
   label: string;
   region?: string;
+  /** Physical host identity, when slots fan multiple peers onto one frame
+   *  (quota-capped accounts). Pairs sharing a defined host are folded into
+   *  `mouthToEarSameHostMs` (loopback-biased) instead of the headline metric. */
+  host?: string;
   launch(cfg: VoiceMeshChildConfig): PeerChildHandle;
 }
 
@@ -84,6 +88,8 @@ export function localVoiceMeshLauncher(opts: {
 export interface VoiceMeshSshSlotSpec {
   label: string;
   region?: string;
+  /** Physical frame identity for same-host pair classification (fan-out). */
+  host?: string;
   target: SshTarget;
   installRoot?: string;
 }
@@ -106,6 +112,7 @@ export function sshVoiceMeshLauncher(opts: {
   const slots: VoiceMeshSlot[] = opts.frames.map((f) => ({
     label: f.label,
     region: f.region,
+    host: f.host,
     launch: (cfg: VoiceMeshChildConfig) => {
       // Public DHT on real frames — never ship a local-testnet bootstrap.
       const { bootstrap: _drop, ...childCfg } = cfg;
@@ -193,6 +200,7 @@ export async function voiceMesh(opts: VoiceMeshScenarioOpts): Promise<PerfArtifa
     );
 
     const m2e: number[] = [];
+    const m2eSameHost: number[] = [];
     const lossPct: number[] = [];
     const egressBps: number[] = [];
     const ingressBps: number[] = [];
@@ -210,20 +218,30 @@ export async function voiceMesh(opts: VoiceMeshScenarioOpts): Promise<PerfArtifa
         if (s === r) continue;
         const sendRes = results[s];
         if (!sendRes) continue;
+        // Fan-out classification: a pair sharing a DEFINED physical host rides
+        // an intra-machine path (loopback-biased) — keep it out of the headline.
+        const sameHost = !!slots[r].host && slots[r].host === slots[s].host;
         const times = recvRes.recv[sendRes.id] ?? [];
         const n = Math.min(times.length, sendRes.sendTimes.length);
         if (sendRes.sendTimes.length > 0) {
           lossPct.push((1 - n / sendRes.sendTimes.length) * 100);
         }
         const skew = offsets[r] - offsets[s];
+        const pool = sameHost ? m2eSameHost : m2e;
         for (let k = 0; k < n; k++) {
-          m2e.push(times[k] - sendRes.sendTimes[k] - skew);
+          pool.push(times[k] - sendRes.sendTimes[k] - skew);
         }
       }
     }
 
     const artifact = meter.finish();
     if (m2e.length) artifact.metrics['mouthToEarMs'] = summarize(m2e, 'ms');
+    if (m2eSameHost.length) {
+      artifact.metrics['mouthToEarSameHostMs'] = summarize(m2eSameHost, 'ms');
+      artifact.notes.push(
+        'fan-out run: mouthToEarMs = CROSS-HOST pairs only; same-host pairs (intra-machine, loopback-biased) are mouthToEarSameHostMs',
+      );
+    }
     if (lossPct.length) artifact.metrics['frameLossPct'] = summarize(lossPct, 'count');
     if (egressBps.length) artifact.metrics['egressBytesPerSec'] = summarize(egressBps, 'bytes');
     if (ingressBps.length) artifact.metrics['ingressBytesPerSec'] = summarize(ingressBps, 'bytes');

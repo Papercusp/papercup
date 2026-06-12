@@ -30,6 +30,15 @@ import {
   type DimensionWeights,
 } from './judge-scoring';
 import { regressionsFromTests, plantedBugCaught, type TestResult } from './signals';
+import {
+  drillResolveRate,
+  drillTriageAccuracy,
+  drillMttshMs,
+  DRILL_RESOLVE_RATE_FLOOR,
+  DRILL_TRIAGE_ACCURACY_FLOOR,
+  DRILL_MTTSH_CEILING_MS,
+  type DrillOutcome,
+} from './drill-signals';
 import type { PlantedBug } from './probe-generator';
 import { resolveChildBlueprint, assertNotNestedHive } from '@papercusp/orchestrator/blueprint';
 
@@ -50,6 +59,12 @@ export interface SignalContext {
   plantedBug?: PlantedBug | null;
   /** The harness's produced output text (validator/crosscheck verdicts, filed issues). */
   harnessOutputText?: string;
+  /**
+   * Drill-corpus outcomes for the run (FB-23 / P-048): the red-queen drills the
+   * variant was exercised against, each carrying its planted known answer. Fed by
+   * `readDrillOutcomes()` (lib/red-queen/store.ts) once the corpus is live.
+   */
+  drillOutcomes?: readonly DrillOutcome[];
 }
 
 export interface SignalResult {
@@ -57,11 +72,18 @@ export interface SignalResult {
   /**
    * The signal's raw boolean. Direction is signal-specific (the gym's gate logic
    * interprets it): `regressionsFromTests` true = a regression occurred (bad);
-   * `plantedBugCaught` true = the harness caught the defect (good).
+   * `plantedBugCaught` true = the harness caught the defect (good). Threshold
+   * signals (the drill rates) report the SLO verdict here.
    */
   value: boolean;
   /** false when the context lacked the inputs this signal needs — a skip, not a real value. */
   applicable: boolean;
+  /**
+   * The underlying scalar for rate/duration signals (resolve rate, triage
+   * accuracy, MTTSH ms) — observability + aggregation ride-along; `value` stays
+   * the gate verdict. Absent on plain boolean signals.
+   */
+  metric?: number;
 }
 
 export type SignalFn = (ctx: SignalContext) => SignalResult;
@@ -84,6 +106,25 @@ export const GYM_SIGNAL_REGISTRY: Readonly<Record<string, SignalFn>> = Object.fr
       return { name: 'plantedBugCaught', value: false, applicable: false };
     }
     return { name: 'plantedBugCaught', value: plantedBugCaught(ctx.plantedBug, ctx.harnessOutputText), applicable: true };
+  },
+  // ── drill-ground-truth signals (FB-23 / P-048) — the plantedBugCaught precedent
+  // generalized: the drill corpus is planted, so its known answers are un-gameable.
+  // Each reports the SLO verdict as `value` + the raw scalar as `metric`; a context
+  // with no (settled/scoreable) drill rows is inapplicable, never a fake failure.
+  drillResolveRate: (ctx) => {
+    const rate = ctx.drillOutcomes ? drillResolveRate(ctx.drillOutcomes) : null;
+    if (rate === null) return { name: 'drillResolveRate', value: false, applicable: false };
+    return { name: 'drillResolveRate', value: rate >= DRILL_RESOLVE_RATE_FLOOR, applicable: true, metric: rate };
+  },
+  drillTriageAccuracy: (ctx) => {
+    const acc = ctx.drillOutcomes ? drillTriageAccuracy(ctx.drillOutcomes) : null;
+    if (acc === null) return { name: 'drillTriageAccuracy', value: false, applicable: false };
+    return { name: 'drillTriageAccuracy', value: acc >= DRILL_TRIAGE_ACCURACY_FLOOR, applicable: true, metric: acc };
+  },
+  drillMttsh: (ctx) => {
+    const ms = ctx.drillOutcomes ? drillMttshMs(ctx.drillOutcomes) : null;
+    if (ms === null) return { name: 'drillMttsh', value: false, applicable: false };
+    return { name: 'drillMttsh', value: ms <= DRILL_MTTSH_CEILING_MS, applicable: true, metric: ms };
   },
 });
 
@@ -238,6 +279,16 @@ export {
   plantedBugCaught,
   type TestResult,
 } from './signals';
+export {
+  drillResolveRate,
+  drillTriageAccuracy,
+  drillMttshMs,
+  onlyDrillRows,
+  DRILL_RESOLVE_RATE_FLOOR,
+  DRILL_TRIAGE_ACCURACY_FLOOR,
+  DRILL_MTTSH_CEILING_MS,
+  type DrillOutcome,
+} from './drill-signals';
 export {
   collectTrace,
   assembleRawTrace,

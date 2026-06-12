@@ -34,7 +34,10 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import {
   aggregateNeologisms,
   buildNamespaceIndex,
+  findPrimitiveNearMiss,
   neologismCaptureTitle,
+  neologismNearMissBody,
+  neologismNearMissTitle,
   neologismProposal,
   neologismWatchdogKey,
   selectNeologismCandidates,
@@ -181,14 +184,19 @@ export function defaultNeologismDeps(sql: Sql): NeologismTickDeps {
   };
 }
 
-/** Shape one candidate as the capture-core input (Scout's improvement-rail proposal form). */
-export function neologismCaptureInput(entry: NeologismEntry, windowDays: number): CaptureImprovementInput {
-  const proposal = neologismProposal(entry, windowDays);
-  return {
-    title: neologismCaptureTitle(entry.term),
-    kind: 'change',
-    body: improvementBody(proposal),
-    severity: 'minor',
+/**
+ * Shape one candidate as the capture-core input. Kind fidelity (frontier
+ * P-044 / FB-18): a term that near-misses a real primitive phrase is a
+ * vocabulary RESOLUTION GAP — clear correct state, regression-testable —
+ * and files kind=bug; genuinely unnamed vocabulary stays the kind=change
+ * Scout-rail abstraction proposal.
+ */
+export function neologismCaptureInput(
+  entry: NeologismEntry,
+  windowDays: number,
+  nearMissPhrase: string | null = null,
+): CaptureImprovementInput {
+  const shared = {
     subTopic: 'neologism',
     sourceRole: 'system',
     source: 'su',
@@ -203,6 +211,25 @@ export function neologismCaptureInput(entry: NeologismEntry, windowDays: number)
     // FB-03/D-002 provenance, explicit: the mined signals are REAL fleet
     // traffic — organic, never drill/replay/shadow.
     origin: 'organic',
+  } satisfies Partial<CaptureImprovementInput>;
+  if (nearMissPhrase) {
+    return {
+      ...shared,
+      title: neologismNearMissTitle(entry.term, nearMissPhrase),
+      kind: 'bug',
+      body: neologismNearMissBody(entry, nearMissPhrase, windowDays),
+      severity: 'minor',
+      findingClass: 'neologism:primitive-near-miss',
+    };
+  }
+  const proposal = neologismProposal(entry, windowDays);
+  return {
+    ...shared,
+    title: neologismCaptureTitle(entry.term),
+    kind: 'change',
+    body: improvementBody(proposal),
+    severity: 'minor',
+    findingClass: 'neologism:abstraction-proposal',
   };
 }
 
@@ -235,7 +262,11 @@ export async function runNeologismTick(
   for (const entry of candidates) {
     // Best-effort per candidate: one capture failure never aborts the tick.
     try {
-      const result = await deps.capture(neologismCaptureInput(entry, windowDays));
+      // Kind fidelity (frontier P-044): a candidate one word-edit from a real
+      // primitive phrase is a vocabulary resolution gap (kind=bug); only over
+      // the capped candidates, so the index sweep stays cheap.
+      const nearMissPhrase = findPrimitiveNearMiss(entry.term, index);
+      const result = await deps.capture(neologismCaptureInput(entry, windowDays, nearMissPhrase));
       if (result.created && result.issue) {
         filed.push(result.issue.id);
       } else {

@@ -215,6 +215,21 @@ describe('captureImprovement — watchdogKey-aware dedup (watchdog-audit P-004 /
     expect(d.created[0].payload).toMatchObject({ watchdogKey: 'red-test:lib/a.test.ts' });
   });
 
+  it('stamps payload.findingClass — the taxonomy slug the rails route/count by (frontier P-044)', async () => {
+    const d = deps();
+    const res = await captureImprovement(
+      {
+        title: 'Resolution gap: plans searches for "x-2026-06-06" zero-hit although it exists',
+        kind: 'bug',
+        watchdogKey: 'negative-space:plans:x-2026-06-06',
+        findingClass: 'negative-space:resolution-gap',
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(d.created[0].payload).toMatchObject({ findingClass: 'negative-space:resolution-gap' });
+  });
+
   it('a title-similar candidate with a DIFFERENT watchdogKey never declines (the subset-title edge)', async () => {
     // The nested-path shape: "lib/deep/a.test.ts" token-subsets "lib/a.test.ts"-style
     // titles enough to clear the Jaccard bar, but the keys differ — distinct signals.
