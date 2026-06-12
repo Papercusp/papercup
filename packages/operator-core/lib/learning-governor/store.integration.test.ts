@@ -43,7 +43,9 @@ afterAll(async () => {
   } finally {
     await maint.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+  // Best-effort: the reused test container is shared across vitest processes
+  // on the dev box — a concurrent suite's teardown can stop it first (404).
+  if (!process.env.KEEP_TEST_PG) await teardownTestPg().catch(() => {});
 });
 
 describe('registry — register/get/list', () => {

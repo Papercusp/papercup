@@ -80,7 +80,10 @@ const productionDepsBuilder: ScoutTickDepsBuilder = (ctx, runCycle) =>
 export function makeScoutCycleAction(
   runCycle: ScoutCycleRunner,
   buildDeps: ScoutTickDepsBuilder = productionDepsBuilder,
-  recordGovernor: typeof recordScoutTickToGovernor = recordScoutTickToGovernor,
+  // No production default ON PURPOSE: this factory's unit-test contract is
+  // PG-free (see the header), and the real glue resolves the live admin pool.
+  // The boot path (registerScoutCycleAction) wires recordScoutTickToGovernor.
+  recordGovernor?: typeof recordScoutTickToGovernor,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
     const cfg = parseScoutCycleConfig(ctx.payloadTemplate);
@@ -96,15 +99,17 @@ export function makeScoutCycleAction(
     // fired cycle's reported spend. Flag-gated (papercusp-learning-governor —
     // the kill-switch) and best-effort by contract — it never throws, so
     // governor bookkeeping can never fail (or replay) the tick.
-    await recordGovernor({
-      workspaceId: ctx.workspaceId,
-      harnessSlug: ctx.installSlug,
-      perCycleBudgetUsd: resolveScoutBudget(cfg.budget).maxCostUsd,
-      fired:
-        result.fired && result.costUsd != null
-          ? { costUsd: result.costUsd, ...(result.cycleId ? { cycleId: result.cycleId } : {}) }
-          : null,
-    });
+    if (recordGovernor) {
+      await recordGovernor({
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.installSlug,
+        perCycleBudgetUsd: resolveScoutBudget(cfg.budget).maxCostUsd,
+        fired:
+          result.fired && result.costUsd != null
+            ? { costUsd: result.costUsd, ...(result.cycleId ? { cycleId: result.cycleId } : {}) }
+            : null,
+      });
+    }
 
     if (result.fired) {
       // eslint-disable-next-line no-console
@@ -125,7 +130,10 @@ export function makeScoutCycleAction(
  * once at boot (alongside the other registerSystemAction calls). Last wins.
  */
 export function registerScoutCycleAction(runCycle: ScoutCycleRunner): void {
-  registerSystemAction(SCOUT_CYCLE_ACTION, makeScoutCycleAction(runCycle));
+  registerSystemAction(
+    SCOUT_CYCLE_ACTION,
+    makeScoutCycleAction(runCycle, undefined, recordScoutTickToGovernor),
+  );
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {

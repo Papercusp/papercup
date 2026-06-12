@@ -45,12 +45,17 @@ async function seedRun(q: {
 }
 
 beforeAll(async () => {
+  // decideProposal's after-accept change-ledger hook (FB-02) reads the live org
+  // PG — out of scope here (covered by change-ledger.integration.test.ts), so
+  // kill-switch it off via the env flag override before it can warn.
+  process.env.PAPERCUSP_FLAG_PAPERCUSP_CHANGE_LEDGER = '0';
   containerUri = await getTestPg();
   const { databaseUri } = await provisionGymDatabase({ maintenanceUri: containerUri, dbName });
   sql = postgres(databaseUri, { max: 2, onnotice: () => {}, prepare: false });
 }, 180_000);
 
 afterAll(async () => {
+  delete process.env.PAPERCUSP_FLAG_PAPERCUSP_CHANGE_LEDGER;
   if (sql) await sql.end({ timeout: 5 });
   const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
   try { await maint.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`); } catch { /* best-effort */ } finally { await maint.end({ timeout: 5 }); }

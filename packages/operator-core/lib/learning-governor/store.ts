@@ -16,7 +16,7 @@
  *     accumulate:false ledgers the event only (gym: the row's spent mirrors
  *     gym_autoloop_config, so accumulating here would double-count).
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import {
   checkLoopVerdict,
   LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
@@ -184,7 +184,7 @@ export async function recordLearningSpend(sql: Sql, q: RecordLearningSpendInput)
   if (!Number.isFinite(q.costUsd) || q.costUsd < 0) {
     throw new Error(`learning-governor: costUsd must be a non-negative finite number, got ${q.costUsd}`);
   }
-  const run = async (tx: Sql): Promise<LearningSpendEvent> => {
+  const run = async (tx: Sql | TransactionSql): Promise<LearningSpendEvent> => {
     const rows = (await tx`
       INSERT INTO harness_shared.learning_spend_events
         (workspace_id, loop_id, cost_usd, signal_origin, run_ref, note)

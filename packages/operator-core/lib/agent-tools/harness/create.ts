@@ -260,13 +260,14 @@ export default defineTool({
       const folded = applyGenomeConfig(args.instance.configOverrides, genomeConfig);
       if (Object.keys(folded).length > 0) instanceFields.configOverrides = folded;
     }
-    reg.projects.push({
+    const newEntry = {
       slug: args.slug,
       path,
       ...(hiveMembership ? { hive_slug: hiveMembership } : {}),
       ...(deployment.target !== 'local' ? { deployment } : {}),
       ...instanceFields,
-    });
+    };
+    reg.projects.push(newEntry);
     await saveHarnessRegistry(reg);
     let provisioning: { ok: true } | { ok: false; error: string };
     try {
@@ -303,6 +304,35 @@ export default defineTool({
       console.warn(`[harness:create] materialize triggers failed (${args.slug}): ${e instanceof Error ? e.message : e}`);
     }
 
+    // 5a. A harness born INTO a hive is a MEMBER checkout — seed its
+    //     `system:git-sync` routine (git-sync-any-hive B-01, the
+    //     `harness:create { hive }` producer). Best-effort like the trigger
+    //     materialization above: the seeder never throws and a failure never
+    //     fails the create (its outcome is reported as `gitSync`). Eligibility
+    //     (homes/views/cloud/non-repos) + idempotency live in the seeder; push
+    //     is decided creator-side from the registry-known coords — none exist
+    //     on this path, so the routine seeds quiet commit-only (push:false,
+    //     no_upstream_remote); B-04's reconcile revisits once coords appear.
+    let gitSync: import('../../harness/git-sync/git-sync-routine').SeedGitSyncRoutineOutcome | undefined;
+    if (hiveMembership) {
+      try {
+        const { seedGitSyncRoutineForMember } = await import('../../harness/git-sync/git-sync-routine');
+        const { activeWorkspaceId } = await import('../../workspace-registry');
+        gitSync = await seedGitSyncRoutineForMember({
+          workspaceId: activeWorkspaceId(),
+          installSlug: args.slug,
+          entry: newEntry,
+          joinerSide: false,
+        });
+      } catch (e) {
+        gitSync = {
+          seeded: false,
+          reason: 'error',
+          message: (e instanceof Error ? e.message : String(e)).slice(0, 300),
+        };
+      }
+    }
+
     return {
       content: [
         {
@@ -320,6 +350,7 @@ export default defineTool({
             warnings: validation.validation!.warnings,
             provisioning,
             scheduledRoutines,
+            ...(gitSync ? { gitSync } : {}),
           }),
         },
       ],

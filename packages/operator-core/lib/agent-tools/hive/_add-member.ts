@@ -15,12 +15,24 @@
  *
  * Idempotent (re-adding to the same Hive is a no-op success). Pure over injectable
  * registry seams so it unit-tests without PG.
+ *
+ * git-sync-any-hive B-01: a successful add ALSO seeds the member's
+ * `system:git-sync` routine (best-effort, never fails the add) — the harness
+ * pre-exists here and may lack github coords, so the seeder's eligibility check
+ * decides; an existing routine row is never clobbered (the seeder checks
+ * getGitSyncRoutine first), so a re-add can heal a missing routine without
+ * touching a human-edited one.
  */
 import {
   loadHarnessRegistry as realLoad,
   saveHarnessRegistry as realSave,
   type HarnessRegistry,
+  type ProjectEntry,
 } from '../../harness-registry';
+import type {
+  SeedGitSyncRoutineOpts,
+  SeedGitSyncRoutineOutcome,
+} from '../../harness/git-sync/git-sync-routine';
 import { HIVE_KIND } from './_resolve';
 
 export interface AddHiveMemberOpts {
@@ -44,11 +56,18 @@ export interface AddHiveMemberResult {
   memberHarnessSlug?: string;
   /** True when the membership was newly set; false when it already held (idempotent). */
   changed?: boolean;
+  /** git-sync-any-hive B-01: outcome of seeding the member's `system:git-sync`
+   *  routine (only on success paths). Best-effort — never fails the add. */
+  gitSync?: SeedGitSyncRoutineOutcome;
 }
 
 export interface AddHiveMemberSeams {
   loadRegistry?: (workspaceId: string) => Promise<HarnessRegistry>;
   saveRegistry?: (reg: HarnessRegistry, workspaceId: string) => Promise<void>;
+  /** git-sync-any-hive B-01: seed the member's `system:git-sync` routine.
+   *  Default: seedGitSyncRoutineForMember (lazy-imported — keeps this module
+   *  PG-free for the registry-only unit tests). */
+  seedGitSyncRoutine?: (opts: SeedGitSyncRoutineOpts) => Promise<SeedGitSyncRoutineOutcome>;
 }
 
 export async function addHarnessToHive(
@@ -88,14 +107,41 @@ export async function addHarnessToHive(
       message: `'${opts.memberHarnessSlug}' is already a member of hive '${member.hive_slug}' — remove it first`,
     };
   }
+  // B-01: best-effort git-sync routine seeding for the (now-)member checkout.
+  // Runs on BOTH success paths — a re-add heals a missing routine; an existing
+  // row (possibly human-edited) is never clobbered (the seeder checks first).
+  const seedGitSync = async (entry: ProjectEntry): Promise<SeedGitSyncRoutineOutcome> => {
+    const seed =
+      seams.seedGitSyncRoutine ??
+      (async (o: SeedGitSyncRoutineOpts) =>
+        (await import('../../harness/git-sync/git-sync-routine')).seedGitSyncRoutineForMember(o));
+    try {
+      return await seed({ workspaceId: ws, installSlug: entry.slug, entry, joinerSide: false });
+    } catch (e) {
+      return { seeded: false, reason: 'error', message: e instanceof Error ? e.message : String(e) };
+    }
+  };
+
   if (member.hive_slug === opts.hiveHomeSlug) {
-    // Already a member — idempotent success.
-    return { ok: true, hiveHomeSlug: opts.hiveHomeSlug, memberHarnessSlug: opts.memberHarnessSlug, changed: false };
+    // Already a member — idempotent success (still consult the seeder: heal-only).
+    return {
+      ok: true,
+      hiveHomeSlug: opts.hiveHomeSlug,
+      memberHarnessSlug: opts.memberHarnessSlug,
+      changed: false,
+      gitSync: await seedGitSync(member),
+    };
   }
 
   member.hive_slug = opts.hiveHomeSlug;
   await saveRegistry(reg, ws);
-  return { ok: true, hiveHomeSlug: opts.hiveHomeSlug, memberHarnessSlug: opts.memberHarnessSlug, changed: true };
+  return {
+    ok: true,
+    hiveHomeSlug: opts.hiveHomeSlug,
+    memberHarnessSlug: opts.memberHarnessSlug,
+    changed: true,
+    gitSync: await seedGitSync(member),
+  };
 }
 
 /**

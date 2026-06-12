@@ -1544,7 +1544,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const { getOrgPg } = await import('@papercusp/db-org');
         return [await readDemandSnapshot(getOrgPg().sql, activeWorkspaceId())];
       } catch (err) {
-        console.warn('[learning.demand] demand read failed:', err instanceof Error ? err.message : err);
+        // 42P01 (undefined table) = migration 245 not applied yet — the
+        // expected pre-boot-apply state, not worth a warn.
+        if ((err as { code?: string }).code !== '42P01') {
+          console.warn('[learning.demand] demand read failed:', err instanceof Error ? err.message : err);
+        }
         return [EMPTY_DEMAND_SNAPSHOT];
       }
     },

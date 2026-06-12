@@ -27,6 +27,7 @@ function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
     removedHomes: [] as string[],
     publishes: [] as Record<string, unknown>[],
     beaconWrites: [] as { hive: string; consent: boolean }[],
+    gitSyncSeeds: [] as Record<string, unknown>[],
     registry: [{ slug: 'existing', path: '/x' }] as Record<string, unknown>[],
   };
   const deps: CreateHiveFromRepoDeps = {
@@ -67,6 +68,17 @@ function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
     },
     setBeaconConsent: async (_ws, hive, consent) => {
       calls.beaconWrites.push({ hive, consent });
+    },
+    seedGitSync: async (o) => {
+      calls.gitSyncSeeds.push(o as unknown as Record<string, unknown>);
+      return {
+        seeded: true,
+        active: true,
+        push: true,
+        pushReason: 'github_permissions_push_true — faked',
+        cron: '0 3,13,23,33,43,53 * * * *',
+        branch: 'develop',
+      };
     },
     ...over,
   };
@@ -355,6 +367,71 @@ describe('createHiveFromRepo (P-006)', () => {
     });
     const r = await createHiveFromRepo({ githubUrl: URL, beaconConsent: true, workspaceId: 'ws' }, deps);
     expect(r.ok).toBe(true);
+  });
+
+  // ── git-sync-any-hive B-01: member routine seeding (P-001/P-008 seed side) ────
+
+  it('seeds the member git-sync routine on the new-hive path (creator side, coords + branch threaded)', async () => {
+    const { deps, calls } = fakes();
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(calls.gitSyncSeeds).toEqual([
+      {
+        workspaceId: 'ws',
+        installSlug: 'shop',
+        joinerSide: false,
+        entry: {
+          slug: 'shop',
+          path: '/clones/shop',
+          hive_slug: 'shop-hive',
+          github_remote: 'https://github.com/acme/shop.git',
+          github_repository_id: 100,
+          github_default_branch: 'develop',
+        },
+      },
+    ]);
+    // the outcome is REPORTED on the result, next to publish
+    expect(r.gitSync).toMatchObject({ seeded: true, push: true, branch: 'develop' });
+  });
+
+  it('seeds on the P-009 into-hive path too (member of the EXISTING home)', async () => {
+    const { deps, calls } = fakes({
+      loadRegistry: async () =>
+        ({ projects: [{ slug: 'myhive', path: '/h', harness_kind: 'hive' }] }) as never,
+      republish: (async () => ({ announced: true, cupboard: { attempted: false } })) as never,
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, intoHive: 'myhive', workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(calls.gitSyncSeeds).toEqual([
+      expect.objectContaining({
+        installSlug: 'shop',
+        joinerSide: false,
+        entry: expect.objectContaining({ slug: 'shop', hive_slug: 'myhive' }),
+      }),
+    ]);
+    expect(r.gitSync).toMatchObject({ seeded: true });
+  });
+
+  it('a git-sync seeding failure NEVER fails the create — reported as { reason: error }', async () => {
+    const { deps } = fakes({
+      seedGitSync: async () => {
+        throw new Error('routines pg down');
+      },
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.gitSync).toEqual({ seeded: false, reason: 'error', message: 'routines pg down' });
+    expect(r.publish).toMatchObject({ announced: true }); // the rest of the create proceeded
+  });
+
+  it('a FAILED create never reaches the seeder (member-create failure)', async () => {
+    const { deps, calls } = fakes({ createMember: async () => ({ ok: false, error: 'boom' }) });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(false);
+    expect(calls.gitSyncSeeds).toEqual([]);
   });
 
   it('into-hive member-create failure removes only the clone (the existing home is untouched)', async () => {

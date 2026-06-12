@@ -63,7 +63,13 @@ describe('system:negative-space-mine (self-learning-frontier P-010 / FB-04)', ()
   });
 
   it('a tick failure never throws out of the durable step', async () => {
-    deps.readRows.mockRejectedValue(new Error('pg down'));
-    await expect(run()).resolves.toBeUndefined();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      deps.readRows.mockRejectedValue(new Error('pg down'));
+      await expect(run()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith('[negative-space-mine] tick FAILED:', 'pg down');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

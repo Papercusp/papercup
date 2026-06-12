@@ -47,6 +47,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // signup on a single-owner box mints real accounts. The zero-users
   // bootstrap path in the route keeps fresh installs working while dark.
   FLAGS.OPEN_SIGNUP,
+  // self-learning-frontier D-001 (owner-ratified dark-ship rule): every
+  // frontier LEARNING LOOP ships built + tested + DARK, arming only when the
+  // plan's P-001 gate closes (consume-edges P-013 live proof + owner
+  // ratification). Covers the negative-space miner (P-010/FB-04); later
+  // frontier loop flags join this block under the same decision.
+  FLAGS.NEGATIVE_SPACE_MINER,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

@@ -18,7 +18,7 @@
  * the SQL is covered by control-plane.integration.test.ts.
  */
 import { randomUUID } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { recordBehaviorChange } from '../change-ledger/change-ledger';
 import type { LoopProposalRecord } from './loop';

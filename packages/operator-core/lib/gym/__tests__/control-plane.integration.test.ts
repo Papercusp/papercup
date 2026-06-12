@@ -27,12 +27,18 @@ const dbName = `gymcp_${randomBytes(5).toString('hex')}`;
 const WS = 'ws-test';
 
 beforeAll(async () => {
+  // This fixture provisions the GYM database only — decideProposal's best-effort
+  // behavior-change-ledger hook (FB-02) would warn against it (no migration 242
+  // table here). The hook's own coverage is change-ledger.integration.test.ts;
+  // here the flag turns it into a no-op.
+  process.env.PAPERCUSP_FLAG_PAPERCUSP_CHANGE_LEDGER = '0';
   containerUri = await getTestPg();
   const { databaseUri } = await provisionGymDatabase({ maintenanceUri: containerUri, dbName });
   sql = postgres(databaseUri, { max: 2, onnotice: () => {}, prepare: false });
 }, 180_000);
 
 afterAll(async () => {
+  delete process.env.PAPERCUSP_FLAG_PAPERCUSP_CHANGE_LEDGER;
   if (sql) await sql.end({ timeout: 5 });
   const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
   try { await maint.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`); } catch { /* best-effort */ } finally { await maint.end({ timeout: 5 }); }

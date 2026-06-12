@@ -23,8 +23,6 @@
  *     the open escalation (one resolver per harness). A clean sync clears the escalation.
  *   - Records `{ last_synced_at, last_status, head_sha }` onto the routine's metadata.
  */
-import { stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
@@ -34,6 +32,7 @@ import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { registerSystemAction, type SystemActionCtx } from '../routines/system-actions';
+import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
 import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized } from './run-git-sync';
@@ -447,42 +446,17 @@ async function recordOutcome(slug: string, outcome: GitSyncOutcome, consecutiveE
 
 // ── Runtime eligibility gate (git-sync-any-hive P-008, action half) ─────────────
 
-interface GateVerdict {
-  eligible: boolean;
-  /** B-01's IneligibleReason vocabulary: 'hive_home' | 'remote_hive_view' |
-   *  'no_path' | 'non_local_deployment' | 'not_a_git_repo'. */
-  reason?: string;
-}
-
-const pathExists = (p: string): Promise<boolean> => stat(p).then(() => true, () => false);
-
-/** B-01's eligibility module (`./git-sync-eligibility`), loaded lazily via a
- *  non-literal specifier so this compiles+runs BEFORE B-01 lands (import rejects →
- *  null → inline fallback below). Once it exists, its registry-snapshot verdict is
- *  preferred; the on-disk checks stay ours either way (the contract fn is pure/sync). */
-type EligibilityModule = { gitSyncEligibility?: (p: ProjectEntry) => GateVerdict };
-let eligibilityModulePromise: Promise<EligibilityModule | null> | undefined;
-function loadEligibilityModule(): Promise<EligibilityModule | null> {
-  if (!eligibilityModulePromise) {
-    const spec = './git-sync-eligibility'; // non-literal: not statically resolved
-    eligibilityModulePromise = import(/* @vite-ignore */ spec).then(
-      (m) => m as EligibilityModule,
-      () => null,
-    );
-  }
-  return eligibilityModulePromise;
-}
-
 /**
  * Belt-and-braces gate before the pipeline runs: a routine row pointing at a hive
  * HOME (non-repo state dir), a joiner-side remote-hive VIEW, a non-local
  * deployment, or a vanished / non-git checkout must NO-OP (logged + recorded as
- * skipped) instead of error-escalating every 10 minutes. Registry-snapshot
- * verdicts defer to B-01's `gitSyncEligibility` when present; the disk checks
- * (vanished checkout, missing .git) always run here. Best-effort: an unreadable
+ * skipped) instead of error-escalating every 10 minutes. The verdict (including
+ * the on-disk vanished-checkout / missing-.git checks) is B-01's
+ * `gitSyncEligibility` — the SAME module the seed sites consult, so seed time
+ * and run time can never disagree on the vocabulary. Best-effort: an unreadable
  * registry FAILS OPEN (the pipeline's own path resolution will surface the error).
  */
-async function gitSyncRuntimeGate(slug: string): Promise<GateVerdict> {
+async function gitSyncRuntimeGate(slug: string): Promise<GitSyncEligibility> {
   let entry: ProjectEntry | undefined;
   try {
     entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
@@ -490,27 +464,9 @@ async function gitSyncRuntimeGate(slug: string): Promise<GateVerdict> {
     console.warn(`[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`);
     return { eligible: true };
   }
+  // A vanished registry entry reads the same as a vanished checkout: no path.
   if (!entry) return { eligible: false, reason: 'no_path' };
-
-  const mod = await loadEligibilityModule();
-  if (mod?.gitSyncEligibility) {
-    const verdict = mod.gitSyncEligibility(entry);
-    if (!verdict.eligible) return verdict;
-  } else {
-    // Inline fallback until B-01's module lands (same reason vocabulary).
-    if (entry.harness_kind === 'hive') {
-      return { eligible: false, reason: entry.remote_hive ? 'remote_hive_view' : 'hive_home' };
-    }
-    const target = entry.deployment?.target;
-    if (target && target !== 'local') return { eligible: false, reason: 'non_local_deployment' };
-    if (!entry.path) return { eligible: false, reason: 'no_path' };
-  }
-
-  // On-disk reality (always ours — the registry snapshot can't see a vanished
-  // checkout). `.git` may be a dir (normal clone) or a file (worktree/submodule).
-  if (!entry.path || !(await pathExists(entry.path))) return { eligible: false, reason: 'no_path' };
-  if (!(await pathExists(join(entry.path, '.git')))) return { eligible: false, reason: 'not_a_git_repo' };
-  return { eligible: true };
+  return gitSyncEligibility(entry);
 }
 
 /** The registered `system:git-sync` handler. */

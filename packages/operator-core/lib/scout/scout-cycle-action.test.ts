@@ -64,6 +64,44 @@ describe('makeScoutCycleAction', () => {
     expect(calls.ran).toBe(0);
     expect(calls.persisted).toBe(0);
   });
+
+  // FB-01 (self-learning-frontier P-003): the learning-governor hook.
+  it('reports a fired cycle (cost + cycleId) and the resolved per-cycle cap to the governor', async () => {
+    const calls = { ran: 0, persisted: 0 };
+    const gov: unknown[] = [];
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.25 }),
+      fakeBuilder({ idleRatio: 1 }, calls),
+      async (input) => (gov.push(input), { applied: true as const }),
+    );
+    await handler({ ...ctx, payloadTemplate: { budget: { maxCostUsd: 2 } } });
+    expect(gov).toEqual([
+      { workspaceId: 'w', harnessSlug: 'papercup', perCycleBudgetUsd: 2, fired: { costUsd: 0.25, cycleId: 'cyc' } },
+    ]);
+  });
+
+  it('reports fired:null to the governor on a withheld tick (mirror only)', async () => {
+    const calls = { ran: 0, persisted: 0 };
+    const gov: Array<{ fired?: unknown }> = [];
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [] }),
+      fakeBuilder({ idleRatio: 0, lastRunAtMs: NOW - 60_000 }, calls),
+      async (input) => (gov.push(input), { applied: true as const }),
+    );
+    await handler({ ...ctx, payloadTemplate: { cadence: { minIntervalSec: 3600 } } });
+    expect(gov).toHaveLength(1);
+    expect(gov[0].fired).toBeNull();
+  });
+
+  it('stays hermetic (no governor IO) when no recorder is wired — the unit-test contract', async () => {
+    const calls = { ran: 0, persisted: 0 };
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      fakeBuilder({ idleRatio: 1 }, calls),
+    );
+    await handler(ctx); // would attempt the live admin pool if a default glue existed
+    expect(calls.ran).toBe(1);
+  });
 });
 
 describe('registerScoutCycleAction', () => {

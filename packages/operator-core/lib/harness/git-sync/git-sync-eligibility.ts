@@ -1,0 +1,97 @@
+/**
+ * git-sync-eligibility — the ONE answer to "does this registry entry get a
+ * `system:git-sync` routine?" (git-sync-any-hive-2026-06-12 P-001, + the
+ * seed-side half of P-008).
+ *
+ * We seed one routine per hive MEMBER checkout — never hive HOMES (a
+ * `kind:'hive'` entry is a NON-repo state dir), never joiner-side
+ * `remote_hive` VIEWS (non-repo dirs under ~/.papercusp/remote-hives), never
+ * non-local deployments (a cloud-frame checkout is not on this box), and never
+ * entries whose path is missing/vanished or carries no `.git`. The same
+ * verdict gates both SEED time (B-01's three creator-side producers, B-03's
+ * join path) and RUN time (git-sync-action's P-008 gate), so the vocabulary
+ * below is pinned by git-sync-action.test.ts — change it only with a coord
+ * broadcast to the plan's briefs.
+ *
+ * Pure + sync over a registry-snapshot `ProjectEntry`; the on-disk checks ride
+ * an injected `pathExists` seam (default `existsSync`) so the fn unit-tests
+ * without a filesystem — the house inject-the-IO-seam pattern
+ * (cf. lib/hive-member-repos.ts).
+ */
+
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { ProjectEntry } from '../../harness-registry';
+
+export type IneligibleReason =
+  | 'hive_home'
+  | 'remote_hive_view'
+  | 'no_path'
+  | 'non_local_deployment'
+  | 'not_a_git_repo';
+
+export interface GitSyncEligibility {
+  eligible: boolean;
+  reason?: IneligibleReason;
+}
+
+export interface GitSyncEligibilityDeps {
+  /** On-disk existence check (default: fs.existsSync). `.git` may be a dir
+   *  (normal clone) or a file (worktree/submodule) — existence is enough. */
+  pathExists?: (p: string) => boolean;
+}
+
+/**
+ * Verdict for one registry entry. Reasons, in precedence order:
+ *   1. `remote_hive_view` — joiner-side hive VIEW (`remote_hive` flag; these are
+ *      also `kind:'hive'`, so the flag is checked first).
+ *   2. `hive_home`        — `harness_kind === 'hive'` (non-repo state dir).
+ *   3. `non_local_deployment` — `deployment.target` present and ≠ 'local'
+ *      (seed-side half of P-008: the checkout lives on a cloud frame).
+ *   4. `no_path`          — no registered path, or the path vanished from disk.
+ *   5. `not_a_git_repo`   — the path exists but carries no `.git`.
+ */
+export function gitSyncEligibility(
+  p: ProjectEntry,
+  deps: GitSyncEligibilityDeps = {},
+): GitSyncEligibility {
+  const pathExists = deps.pathExists ?? existsSync;
+  if (p.remote_hive) return { eligible: false, reason: 'remote_hive_view' };
+  if (p.harness_kind === 'hive') return { eligible: false, reason: 'hive_home' };
+  const target = p.deployment?.target;
+  if (target && target !== 'local') return { eligible: false, reason: 'non_local_deployment' };
+  if (!p.path || !pathExists(p.path)) return { eligible: false, reason: 'no_path' };
+  if (!pathExists(join(p.path, '.git'))) return { eligible: false, reason: 'not_a_git_repo' };
+  return { eligible: true };
+}
+
+// ── Seed-active split (P-005, PROVISIONAL — D-005: no owner override yet) ──────
+// One-line constants so a later ratification is a trivial flip. Creator-side
+// members seed ACTIVE; joiner-side clones seed INACTIVE (read-only by design —
+// fork-PR is the contribution path; B-03 wires the joiner seeding).
+
+export const GIT_SYNC_SEED_ACTIVE_CREATOR = true;
+export const GIT_SYNC_SEED_ACTIVE_JOINER = false;
+
+// ── Jittered per-key cron (D-004 multi-pusher) ─────────────────────────────────
+
+/**
+ * Deterministic jittered every-10-minutes 6-field cron for a key (the install
+ * slug). The key hashes (FNV-1a) to a stable minute offset 0–9, producing
+ * `'0 <o>,<o+10>,<o+20>,<o+30>,<o+40>,<o+50> * * * *'` — same shape
+ * `computeNextFireAt` (harness/routines/cron.ts) already parses for papercup's
+ * every-10-minutes DEFAULT_GIT_SYNC_CRON. The jitter cuts same-tick collisions between peers on a
+ * shared hive (D-004 origin-serialized multi-pusher) and between many members
+ * on one box, while keeping every member on a 10-minute cadence.
+ */
+export function gitSyncCronForKey(key: string): string {
+  // FNV-1a 32-bit — tiny, dependency-free, stable across processes/platforms.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  const offset = h % 10;
+  const minutes = [0, 10, 20, 30, 40, 50].map((m) => m + offset).join(',');
+  return `0 ${minutes} * * * *`;
+}

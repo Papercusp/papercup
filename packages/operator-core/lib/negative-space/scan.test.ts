@@ -25,10 +25,10 @@ const declinedResult: CaptureImprovementResult = {
 };
 
 function makeDeps(rows: ZeroHitRow[], over: Partial<NegativeSpaceTickDeps> = {}) {
-  const readRows = vi.fn(async () => rows);
-  const persist = vi.fn(async (_ws: string, entries: DemandEntry[]) => entries);
-  const capture = vi.fn(async () => createdResult('EI-100'));
-  const markFiled = vi.fn(async () => {});
+  const readRows = vi.fn<NegativeSpaceTickDeps['readRows']>(async () => rows);
+  const persist = vi.fn<NegativeSpaceTickDeps['persist']>(async (_ws, entries) => entries);
+  const capture = vi.fn<NegativeSpaceTickDeps['capture']>(async () => createdResult('EI-100'));
+  const markFiled = vi.fn<NegativeSpaceTickDeps['markFiled']>(async () => {});
   const deps: NegativeSpaceTickDeps = { readRows, persist, capture, markFiled, log: () => {}, ...over };
   return { deps, readRows, persist, capture, markFiled };
 }
@@ -46,12 +46,12 @@ describe('runNegativeSpaceTick', () => {
 
     expect(readRows).toHaveBeenCalledWith('ws-1', DEFAULT_WINDOW_DAYS);
     expect(persist).toHaveBeenCalledOnce();
-    const persisted = persist.mock.calls[0][1] as DemandEntry[];
+    const persisted = persist.mock.calls[0]![1];
     expect(persisted.map((e) => e.queryNorm).sort()).toEqual(['hot query', 'lonely query']);
 
     // Only "hot query" crosses both bars (3 misses, 2 agents).
     expect(capture).toHaveBeenCalledOnce();
-    const input = capture.mock.calls[0][0];
+    const input = capture.mock.calls[0]![0];
     expect(input.kind).toBe('change');
     expect(input.watchdogKey).toBe('negative-space:docs:hot query');
     expect(input.dedupScope).toBe('open');

@@ -34,7 +34,11 @@ import {
   lookupHiveForRepo,
   type RepoHiveLookup,
 } from '../../harness/lookup-hive-for-repo';
-import { loadHarnessRegistry, mutateHarnessRegistry } from '../../harness-registry';
+import { loadHarnessRegistry, mutateHarnessRegistry, type ProjectEntry } from '../../harness-registry';
+import type {
+  SeedGitSyncRoutineOpts,
+  SeedGitSyncRoutineOutcome,
+} from '../../harness/git-sync/git-sync-routine';
 import type { HiveVisibility } from '../../sync/hyperbee/hive-announce';
 import { createHiveHarness, type CreateHiveResult, type SeededLearningsSummary } from './_create';
 import { shapesFromDetection } from '../../learning-packs/seed';
@@ -131,6 +135,9 @@ export type CreateHiveFromRepoResult =
         | PublishCreatedHiveOutcome
         | { skipped: 'private' }
         | { skipped: 'unpublished_hive' };
+      /** git-sync-any-hive B-01: outcome of seeding the member's `system:git-sync`
+       *  routine. Best-effort — a failed/ineligible seed never fails the create. */
+      gitSync: SeedGitSyncRoutineOutcome;
     };
 
 // ── Injectable seams (tests pass fakes; production uses the defaults) ─────────
@@ -165,6 +172,10 @@ export interface CreateHiveFromRepoDeps {
    *  `beacon-consent` accessor (writes the federated `beacon-publish-consent`
    *  hive setting). Best-effort — a consent write never fails the create. */
   setBeaconConsent?: (workspaceId: string, hiveHomeSlug: string, consent: boolean) => Promise<void>;
+  /** git-sync-any-hive B-01: seed the new member's `system:git-sync` routine.
+   *  Default: seedGitSyncRoutineForMember (lazy-imported). Best-effort — a
+   *  seeding failure NEVER fails the create (mirrors the publish discipline). */
+  seedGitSync?: (opts: SeedGitSyncRoutineOpts) => Promise<SeedGitSyncRoutineOutcome>;
   loadRegistry?: typeof loadHarnessRegistry;
   mutateRegistry?: typeof mutateHarnessRegistry;
   /** Remove a half-created hive home (reverse of createHiveHarness). Best-effort. */
@@ -294,6 +305,10 @@ export async function createHiveFromRepo(
       const { setBeaconPublishConsent } = await import('../../beacon-consent');
       await setBeaconPublishConsent(workspaceId, hiveHomeSlug, consent);
     });
+  const seedGitSync =
+    deps.seedGitSync ??
+    (async (o: SeedGitSyncRoutineOpts) =>
+      (await import('../../harness/git-sync/git-sync-routine')).seedGitSyncRoutineForMember(o));
   const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
   const mutateRegistry = deps.mutateRegistry ?? mutateHarnessRegistry;
   const removeHiveHome = deps.removeHiveHome ?? defaultRemoveHiveHome;
@@ -491,6 +506,34 @@ export async function createHiveFromRepo(
     };
   }, opts.workspaceId).catch(() => {});
 
+  // 7.25 — seed the member's `system:git-sync` routine (git-sync-any-hive B-01;
+  //        BOTH the new-hive and the P-009 into-hive paths land here, after the
+  //        member registration succeeded). Best-effort, NEVER fails the create —
+  //        the seeder folds every failure into its outcome (same discipline as
+  //        the publish step below). Push comes from B-02's probe+decider
+  //        (creator side), branch from the clone's default branch, active per
+  //        the provisional P-005 creator split, cron jittered per slug. The
+  //        entry is synthesized from the exact coords stamped in step 7 — no
+  //        registry re-read.
+  const memberEntry: ProjectEntry = {
+    slug: memberSlug,
+    path: memberPath,
+    hive_slug: hiveSlug,
+    github_remote: parsed.cloneUrl,
+    ...(repoId !== undefined ? { github_repository_id: repoId } : {}),
+    ...(defaultBranch ? { github_default_branch: defaultBranch } : {}),
+  };
+  const gitSync: SeedGitSyncRoutineOutcome = await seedGitSync({
+    workspaceId: opts.workspaceId,
+    installSlug: memberSlug,
+    entry: memberEntry,
+    joinerSide: false,
+  }).catch((e) => ({
+    seeded: false as const,
+    reason: 'error' as const,
+    message: e instanceof Error ? e.message : String(e),
+  }));
+
   // 7.5 — record the owner's beacon-publish consent (B-07 / C-2). NEW published
   //       Hives only: a private hive never publishes (no beacon), and into-hive
   //       re-adds must not clobber the existing home's standing consent. Absent =
@@ -560,5 +603,6 @@ export async function createHiveFromRepo(
     },
     bindingUnverified,
     publish: publishOutcome,
+    gitSync,
   };
 }
