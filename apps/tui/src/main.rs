@@ -83,15 +83,15 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Some("hud") => {}
-        // Dock pane modes (pui-dock-agent-stack-2026-06-07) — fall through to
-        // the normal run loop: `chat-pane` is the dock's operator chat (single
-        // pinned tab; it also drives the dock's reactive agent stack);
-        // `watch-pane <owner>` is a read-only live view of ONE swarm agent
-        // (dossier + activity + mail), one per active bee in the dock stack.
-        // The old main-pane (tab-subset) + voice-/swarm-/bee-pane standalone
-        // modes are GONE: tab surfaces live in the pui app, not zellij.
-        // dock-driver (hive-agent-tabs P-004/D-009): flag-on the operator pane is
-        // psu, so the reactive agent stack needs a dedicated driver pane — it runs
+        // Dock pane modes — fall through to the normal run loop. The old
+        // main-pane (tab-subset) + voice-/swarm-/bee-pane standalone modes are
+        // GONE (tab surfaces live in the pui app, not zellij), and
+        // hive-agent-tabs P-014 retired `chat-pane` (the dock's operator-chat
+        // widget — the Sentinel is a real psu session now) and
+        // `watch-pane <owner>` (the read-only per-bee view — claude bees
+        // resume as real Claude TUIs via the dock-driver).
+        // dock-driver (hive-agent-tabs P-004/D-009): the operator pane is psu,
+        // so the reactive agent stack needs a dedicated driver pane — it runs
         // the reactive loop + renders the Fleet roster as the dock controller.
         // wake-pane (EI-312): the dock's staged-wake board — every manual-mode
         // agent's pending wakes (queen first) with release / edit / skip and
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
         // network-pane / hive-pane (hive-network-surface-2026-06-11 B-09): the
         // dock `network` tab's cross-Hive board, and the per-hive drill-in
         // tab's dossier pane (B-10's generated tabs run `pui hive-pane <key>`).
-        Some("chat-pane") | Some("watch-pane") | Some("dock-driver") | Some("wake-pane")
+        Some("dock-driver") | Some("wake-pane")
         | Some("prompt-pane") | Some("mail-pane") | Some("work-pane")
         | Some("network-pane") | Some("hive-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
@@ -111,7 +111,6 @@ async fn main() -> Result<()> {
     // Pinned single-tab dock pane: render JUST that tab's body (no tab strip /
     // HUD / work area); the full data wiring in run() is unchanged.
     let pinned = match subcommand.as_deref() {
-        Some("chat-pane") => Some(app::Tab::Operator),
         // dock-driver: render the Fleet roster (the dock controller) while driving
         // the reactive bee stack (hive-agent-tabs P-004/D-009).
         Some("dock-driver") => Some(app::Tab::Fleet),
@@ -136,18 +135,6 @@ async fn main() -> Result<()> {
             Some(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
             _ => {
                 eprintln!("usage: pui hive-pane <key>");
-                std::process::exit(2);
-            }
-        },
-        _ => None,
-    };
-    // Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
-    // swarm agent this instance watches, read-only. Required argv[2].
-    let watch: Option<String> = match subcommand.as_deref() {
-        Some("watch-pane") => match std::env::args().nth(2) {
-            Some(o) if !o.trim().is_empty() => Some(o),
-            _ => {
-                eprintln!("usage: pui watch-pane <owner-id>");
                 std::process::exit(2);
             }
         },
@@ -183,20 +170,18 @@ async fn main() -> Result<()> {
         }
         _ => app::WakeFilter::All,
     };
-    // The dock's chat-pane drives the reactive agent stack: one watch pane per
-    // active bee + one interactive pane per new local launch, appended to the
-    // dock's zellij stack.
-    // Driven by the chat-pane (flag-off) OR the dedicated dock-driver pane (flag-on,
-    // hive-agent-tabs P-004/D-009 — the operator pane is psu then, so the driver moved).
-    let dock_agent_panes = matches!(subcommand.as_deref(), Some("chat-pane") | Some("dock-driver"));
+    // The dock-driver drives the reactive agent stack (hive-agent-tabs
+    // P-004/D-009): one live `claude --resume` pane per resumable bee + one
+    // interactive pane per new local launch, appended to the dock's stack.
+    let dock_agent_panes = subcommand.as_deref() == Some("dock-driver");
     // EI-358: only launch-capable modes react to pending workbench launches —
-    // the full TUI (no subcommand), chat-pane, and dock-driver. Board panes
-    // (watch/wake/prompt/mail/work/network/hive) must never open launch panes.
+    // the full TUI (no subcommand) and the dock-driver. Board panes
+    // (wake/prompt/mail/work/network/hive) must never open launch panes.
     // Races among the capable modes are settled by claim-then-open.
     let reactive_launch_panes =
-        matches!(subcommand.as_deref(), None | Some("chat-pane") | Some("dock-driver"));
-    // The dock-driver pane is materialised ONLY in the flag-on dock, so when we ARE
-    // it the flag is on → render each claude bee as a `claude --resume` Claude TUI.
+        matches!(subcommand.as_deref(), None | Some("dock-driver"));
+    // The dock-driver is the only mode with the driver-only surfaces (frame
+    // tabs, the regroup repair, the Fleet roster's glyph/badge columns).
     let hive_agent_tabs = subcommand.as_deref() == Some("dock-driver");
 
     enable_raw_mode()?;
@@ -218,7 +203,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, watch, network_focus, wake_filter, agent_ctx_mode, dock_agent_panes, hive_agent_tabs, reactive_launch_panes).await;
+    let result = run(&mut terminal, pinned, network_focus, wake_filter, agent_ctx_mode, dock_agent_panes, hive_agent_tabs, reactive_launch_panes).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -259,27 +244,17 @@ fn run_workbench() -> Result<()> {
 async fn run_chat_dock() -> Result<()> {
     let env = std::env::var("PAPERCUSP_BRAIN_CMD").ok();
     let brain_argv = layout::default_brain_argv(env.as_deref());
-    // Resolve the active Hive lexicon (pane DISPLAY names) + the HIVE_AGENT_TABS
-    // flag (hive-agent-tabs P-003: when on, the Sentinel/Queen panes are real psu
-    // sessions). Both from the operator; unreachable → classic lexicon + flag off
-    // (the current dock, unchanged).
-    let (lex, hive_agent_tabs) = match OperatorClient::from_discovery().await {
-        Ok(c) => {
-            let lex = match c.lexicon_active_pack().await {
-                Ok(pack) => lexicon::Lexicon::from_payload(&pack),
-                Err(_) => lexicon::Lexicon::default(),
-            };
-            let on = c
-                .flags()
-                .await
-                .ok()
-                .map(|f| f.flags.get("papercusp-hive-agent-tabs").copied().unwrap_or(false))
-                .unwrap_or(false);
-            (lex, on)
-        }
-        Err(_) => (lexicon::Lexicon::default(), false),
+    // Resolve the active Hive lexicon (pane DISPLAY names) from the operator;
+    // unreachable → classic lexicon. (The hive-agent-tabs flag is RETIRED —
+    // the live-TUI dock shape is the only shape, so no flag read here.)
+    let lex = match OperatorClient::from_discovery().await {
+        Ok(c) => match c.lexicon_active_pack().await {
+            Ok(pack) => lexicon::Lexicon::from_payload(&pack),
+            Err(_) => lexicon::Lexicon::default(),
+        },
+        Err(_) => lexicon::Lexicon::default(),
     };
-    let path = layout::materialize_chat_dock(&brain_argv, &lex, hive_agent_tabs)?;
+    let path = layout::materialize_chat_dock(&brain_argv, &lex)?;
     // App-managed session (EI-186): reap stale leftovers (the desktop relaunches
     // this dock constantly — each relaunch used to leak a detached server), and
     // kill our own when zellij returns.
@@ -295,7 +270,6 @@ async fn run_chat_dock() -> Result<()> {
 async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     pinned: Option<app::Tab>,
-    watch: Option<String>,
     network_focus: Option<String>,
     wake_filter: app::WakeFilter,
     agent_ctx_mode: app::AgentCtxMode,
@@ -312,20 +286,11 @@ async fn run<B: Backend>(
     if let Some(p) = pinned {
         app.tab = p;
     }
-    // Watch pane (pui-dock-agent-stack-2026-06-07): pin the watched agent as
-    // the bee selection so the dossier render + refetches target it from the
-    // first frame; the dock chat-pane flag arms the reactive agent stack.
-    app.watch = watch.clone();
     // hive-pane (B-09/B-10 drill-in): pin the dossier to one C-3 row key.
     app.network_focus = network_focus;
     app.dock_agent_panes = dock_agent_panes;
     app.hive_agent_tabs = hive_agent_tabs;
     app.reactive_launch_panes = reactive_launch_panes;
-    if let Some(owner) = &app.watch {
-        app.bee.set_selection(Some(owner.clone()), None);
-        // The thinking feed: tail the bee's live stdout (offset-cursor poll).
-        tokio::spawn(bee_output_loop(owner.clone(), tx.clone()));
-    }
     // The wake-pane (EI-312): keep the staged-wake board fresh while pinned.
     app.wake_filter = wake_filter.clone();
     if pinned == Some(app::Tab::Wake) {
@@ -353,7 +318,6 @@ async fn run<B: Backend>(
         app.active_harness.clone(),
         app.active_doc.clone(),
         app.active_plan.clone(),
-        watch.clone(),
         app.network_focus.clone(),
     );
     // Debounced persistence of the quiet view-state (P12 / D-002): the run loop
@@ -659,8 +623,9 @@ async fn run<B: Backend>(
                 // surface B-09→B-10, coord 2026-06-11). Tier 1 is the local
                 // hive — its "drill-in" is the dock's `this hive` tab (always
                 // the FIRST tab, agreed with B-10). Tiers 2-4 open B-10's
-                // generated per-hive tab (hive-pane detail; one read-only
-                // watch pane per C-3 `watchOwners` entry — P-014 item 1).
+                // generated per-hive tab (hive-pane detail; tier 2 adds the
+                // hive-scoped wake board; the per-bee watch panes were dropped
+                // when hive-agent-tabs P-014 retired the watch-pane surface).
                 // The KDL goes through a materialized file + the zellij CLI
                 // because the companion is NEVER spawned in pinned panes
                 // (Companion::spawn gating above) — `Command::NewTab` over
@@ -672,11 +637,6 @@ async fn run<B: Backend>(
                         tier: req.tier,
                         key: req.key.clone(),
                         title: req.title.clone(),
-                        watch_owners: req
-                            .watch_owners
-                            .iter()
-                            .map(|o| (o.clone(), layout::watch_pane_title(o)))
-                            .collect(),
                     };
                     match materialize_hive_tab(&spec) {
                         Ok(path) => {
@@ -2331,6 +2291,8 @@ async fn lexicon_fetch(tx: UnboundedSender<Event>) {
 }
 
 /// Watch-pane chat send: coord:message-agent { to, body } via the admin proxy.
+/// Completion rides the generic Notify/Error events (the dedicated
+/// BeeMessageSent event left with the hive-agent-tabs P-014 retirement).
 async fn send_bee_message(to: String, body: String, tx: UnboundedSender<Event>) {
     let res = match OperatorClient::from_discovery().await {
         Ok(client) => {
@@ -2343,7 +2305,15 @@ async fn send_bee_message(to: String, body: String, tx: UnboundedSender<Event>) 
         }
         Err(e) => Err(e.to_string()),
     };
-    let _ = tx.send(Event::BeeMessageSent(res));
+    let _ = tx.send(match res {
+        Ok(()) => Event::Notify(crate::models::Notif {
+            level: "info".into(),
+            message: "sent — the bee replies in-thread (inbox below)".into(),
+            harness: None,
+            ts: None,
+        }),
+        Err(e) => Event::Error(format!("bee message send failed: {e}")),
+    });
 }
 
 /// P-008: set an agent's wake mode via `coord:wake-mode` (the run_tool bridge).
@@ -2648,44 +2618,6 @@ async fn fetch_agent_ctx(
     }
     .await;
     let _ = tx.send(Event::AgentCtx { result });
-}
-
-/// The watch pane's thinking feed: poll the RUNNING bee's appended raw output
-/// (GET /api/fleet/bee-output, offset cursor) every ~2s and ship the chunks as
-/// `Event::BeeOutput`. Offset state lives here; the reducer stale-guards on
-/// owner. Justified poll: the source is a local log file with no push rail,
-/// and exactly one pane consumes it (see the route's doc).
-async fn bee_output_loop(owner: String, tx: UnboundedSender<Event>) {
-    let client = loop {
-        match OperatorClient::from_discovery().await {
-            Ok(c) => break c,
-            Err(_) => tokio::time::sleep(Duration::from_secs(3)).await,
-        }
-    };
-    let mut offset: u64 = 0;
-    let mut ticker = tokio::time::interval(Duration::from_millis(2000));
-    loop {
-        ticker.tick().await;
-        if tx.is_closed() {
-            return;
-        }
-        match client.bee_output(&owner, offset).await {
-            Ok((next, chunk, _status)) => {
-                offset = next;
-                if tx
-                    .send(Event::BeeOutput {
-                        owner: owner.clone(),
-                        offset: next,
-                        chunk,
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            Err(_) => { /* transient — keep polling; the pane keeps its tail */ }
-        }
-    }
 }
 
 /// Fetch the federated p2p roster (`coord:presence`, federated rows only) and

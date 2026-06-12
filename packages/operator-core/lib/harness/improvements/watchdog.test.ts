@@ -517,7 +517,17 @@ describe('runWatchdogTick — captures through the shared core', () => {
       dedupScope: 'open',
       paths: ['lib/a.test.ts'],
       foundDuring: 'improvement-watchdog',
+      // consume-edges P-021: scope is always explicit so the D-005 triage
+      // taxonomy can key off it ('operator' when the signal doesn't set one).
+      scope: 'operator',
     });
+  });
+
+  it('passes a per-signal scope through to the capture (consume-edges P-021)', async () => {
+    const { calls, capture } = captureRecorder();
+    const signals = [sig({ key: 'hive-x', scope: 'harness:sheets' })];
+    await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
+    expect(calls[0]).toMatchObject({ scope: 'harness:sheets' });
   });
 
   it('counts declined open-duplicates instead of re-filing (cross-tick dedup)', async () => {

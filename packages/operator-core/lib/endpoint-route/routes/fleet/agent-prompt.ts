@@ -13,7 +13,7 @@
  *     workspace-level persona through the SAME assembler its launcher uses —
  *     what a fresh session of this role gets, not a transcript of the live one.
  *
- * Loopback-only like the other fleet panes (bee-output): a prompt can carry
+ * Loopback-only (fleet-pane convention): a prompt can carry
  * project substrate + briefs; the only consumer is the local pui pane.
  */
 import { defineTool } from '@papercusp/agent-mcp';

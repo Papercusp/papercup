@@ -2569,36 +2569,33 @@ impl App {
             if r.adv_session_id.is_some_and(|id| self.tracked_panes.contains(&id)) {
                 continue;
             }
+            // P-004: a claude bee resumes as a real Claude TUI (claude --resume
+            // <session_id>). None = no resumable session yet (the watch-pane
+            // fallback was retired by hive-agent-tabs P-014) — skip WITHOUT
+            // marking opened, so the pane appears once the session id lands.
+            let Some(argv) = r.dock_pane_argv() else {
+                continue;
+            };
             let title = r
                 .agent
                 .clone()
                 .filter(|a| !a.is_empty())
                 .map(|a| {
-                    // P-012: flag-on, the right side is the bee's current work
-                    // (declared intent / feature) so the title bar summarises what
-                    // it's doing; flag-off keeps the owner id (current behavior).
-                    let right = if self.hive_agent_tabs {
-                        r.work_summary().unwrap_or_else(|| short_owner(&r.owner_id))
-                    } else {
-                        short_owner(&r.owner_id)
-                    };
+                    // P-012: the right side is the bee's current work (declared
+                    // intent / feature) so the title bar summarises what it's doing.
+                    let right = r.work_summary().unwrap_or_else(|| short_owner(&r.owner_id));
                     format!("{a} · {right}")
                 })
                 .unwrap_or_else(|| r.label.clone());
             let kind = crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind);
-            // P-010: flag-on, prefix the per-type glyph into the bee pane title
-            // (zellij has no per-pane color — D-008 — so the glyph carries the type).
-            let title =
-                crate::agent_pane_kind::glyph_prefixed_title(&title, kind, self.hive_agent_tabs);
+            // P-010: prefix the per-type glyph into the bee pane title (zellij
+            // has no per-pane color — D-008 — so the glyph carries the type).
+            let title = crate::agent_pane_kind::glyph_prefixed_title(&title, kind);
             out.push((
                 // P-011: group same-type panes — the batch appends in group-rank
                 // order so bees land together, planners together. Unknown → last.
                 kind.map(|k| k.group_rank()).unwrap_or(u8::MAX),
-                // P-004: flag-on, a claude bee resumes as a real Claude TUI
-                // (claude --resume <session_id>); else the read-only watch-pane.
-                crate::mux::PaneSpec::new(r.dock_pane_argv(self.hive_agent_tabs))
-                    .titled(title)
-                    .stacked_autoclose(),
+                crate::mux::PaneSpec::new(argv).titled(title).stacked_autoclose(),
             ));
             // NOTE (owner ask 2026-06-11): bees do NOT get a per-bee wake pane
             // here. zellij stacks can't nest a chat|wakes split, and a bee is a
@@ -2647,24 +2644,10 @@ impl App {
             if existing.contains(name.as_str()) || self.created_frame_tabs.contains(&name) {
                 continue;
             }
-            // The frame's agents: live roster entries on that frame's host.
-            let agents: Vec<(String, String)> = self
-                .roster
-                .iter()
-                .filter(|r| {
-                    r.is_live()
-                        && fr.frame.host.as_deref().is_some_and(|h| !h.is_empty() && r.host == h)
-                })
-                .map(|r| {
-                    let title = crate::agent_pane_kind::glyph_prefixed_title(
-                        &r.label,
-                        crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind),
-                        true,
-                    );
-                    (r.owner_id.clone(), title)
-                })
-                .collect();
-            let kdl = crate::layout::frame_tab_kdl(&name, &agents);
+            // The frame tab is a MARKER since hive-agent-tabs P-014 retired the
+            // watch-pane surface — remote agents render via the webview Frames
+            // tab; the zellij tab just navigates (no per-agent panes).
+            let kdl = crate::layout::frame_tab_kdl(&name);
             self.created_frame_tabs.insert(name.clone());
             out.push((name, kdl));
         }
@@ -3897,48 +3880,6 @@ impl App {
                 self.hive_asks = asks;
                 Action::Render
             }
-            Event::BeeOutput {
-                owner,
-                offset,
-                chunk,
-            } => {
-                // Appended raw output from the watched bee. Stale-guarded on
-                // owner; capped ring so a chatty agent can't grow the pane.
-                if self.watch.as_deref() == Some(owner.as_str()) {
-                    self.watch_output_offset = offset;
-                    if !chunk.is_empty() {
-                        self.watch_output.push_str(&chunk);
-                        const CAP: usize = 64 * 1024;
-                        if self.watch_output.len() > CAP {
-                            let cut = self.watch_output.len() - CAP;
-                            // keep char boundary
-                            let cut = (cut..self.watch_output.len())
-                                .find(|i| self.watch_output.is_char_boundary(*i))
-                                .unwrap_or(cut);
-                            self.watch_output.drain(..cut);
-                        }
-                    }
-                }
-                Action::Render
-            }
-            Event::BeeMessageSent(res) => {
-                self.watch_sending = false;
-                match res {
-                    Ok(()) => self.push_notif(Notif {
-                        level: "info".into(),
-                        message: "sent — the bee replies in-thread (inbox below)".into(),
-                        harness: None,
-                        ts: None,
-                    }),
-                    Err(e) => self.push_notif(Notif {
-                        level: "error".into(),
-                        message: format!("send failed: {e}"),
-                        harness: None,
-                        ts: None,
-                    }),
-                }
-                Action::Render
-            }
             Event::WakeQueue { agent, result } => {
                 // P-009: a staged-wake list (or an act error) landed. Stale-guard
                 // on the agent so a late response never paints another agent's
@@ -4257,10 +4198,12 @@ impl App {
                 }
                 KeyCode::Enter => {
                     let body = self.watch_input.trim().to_string();
-                    if body.is_empty() || self.watch_sending {
+                    if body.is_empty() {
                         return Action::Render;
                     }
-                    self.watch_sending = true;
+                    // Fire-and-forget: completion rides the generic Notify/Error
+                    // events (the busy-flag reset left with BeeMessageSent —
+                    // hive-agent-tabs P-014 retirement).
                     self.watch_input.clear();
                     return Action::SendBeeMessage {
                         to: self.watch.clone().expect("watch checked above"),
@@ -9665,6 +9608,8 @@ mod tests {
     fn watch_composer_types_sends_and_clears() {
         // The watch pane IS a chat surface: printable keys draft, Enter sends
         // a coord:message-agent thread, Esc clears (pui-dock-agent-stack).
+        // (Fire-and-forget since hive-agent-tabs P-014 — completion rides the
+        // generic Notify/Error events; no busy-flag composer lock.)
         let mut a = App::new();
         a.watch = Some("s-bee1".into());
         a.update(key('h', KeyModifiers::NONE));
@@ -9681,48 +9626,15 @@ mod tests {
             other => panic!("expected SendBeeMessage, got {other:?}"),
         }
         assert!(a.watch_input.is_empty());
-        assert!(a.watch_sending);
-        // While sending, Enter on a new draft is a no-op (composer locked).
-        a.update(key('x', KeyModifiers::NONE));
+        // An empty draft never sends.
         assert_eq!(
             a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))),
             Action::Render
         );
-        // The send result unlocks + toasts.
-        a.update(Event::BeeMessageSent(Ok(())));
-        assert!(!a.watch_sending);
         // Esc clears the draft.
+        a.update(key('x', KeyModifiers::NONE));
         a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert!(a.watch_input.is_empty());
-    }
-
-    #[test]
-    fn bee_output_accumulates_capped_and_stale_guarded() {
-        let mut a = App::new();
-        a.watch = Some("s-bee1".into());
-        a.update(Event::BeeOutput {
-            owner: "s-bee1".into(),
-            offset: 5,
-            chunk: "think".into(),
-        });
-        assert_eq!(a.watch_output, "think");
-        assert_eq!(a.watch_output_offset, 5);
-        // A chunk for a DIFFERENT owner is dropped (stale guard).
-        a.update(Event::BeeOutput {
-            owner: "s-other".into(),
-            offset: 99,
-            chunk: "noise".into(),
-        });
-        assert_eq!(a.watch_output, "think");
-        assert_eq!(a.watch_output_offset, 5);
-        // The ring caps at 64KB, keeping the TAIL.
-        a.update(Event::BeeOutput {
-            owner: "s-bee1".into(),
-            offset: 70_000,
-            chunk: "x".repeat(70_000),
-        });
-        assert_eq!(a.watch_output.len(), 64 * 1024);
-        assert!(a.watch_output.ends_with('x'));
     }
 
     #[test]

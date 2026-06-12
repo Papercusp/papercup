@@ -81,11 +81,12 @@ export interface NetworkBoardRow {
   /** Distinct live agents in this context (tiers 1–3; from beacon at tier 4). */
   liveAgents?: number;
   /**
-   * Per-bee watch owner IDs for tiers 2–3 (hive-network-surface P-014 item 1).
+   * Per-bee live owner IDs for tiers 2–3 (hive-network-surface P-014 item 1).
    * Each entry is a coord ownerId (su-…) of a live bee on that hive/device.
-   * The TUI drill-in generator (B-10 hive_tab_kdl) already tolerates a populated
-   * list — each id becomes a `pui watch-pane <owner>` pane. Absent on tiers 1 and 4
-   * (tier 1 = this Swarm's own bees, irrelevant for the per-hive tab; tier 4 = no roster).
+   * Informational since hive-agent-tabs P-014 retired the `pui watch-pane`
+   * surface (the TUI no longer panes these); kept as C-3 data for any board UI.
+   * Absent on tiers 1 and 4 (tier 1 = this Swarm's own bees, irrelevant for
+   * the per-hive tab; tier 4 = no roster).
    */
   watchOwners?: string[];
   /** Open work-item / backlog depth (beacon at tier 4; absent on tiers 1–3 in v1). */

@@ -148,7 +148,7 @@ export interface RosterEntry {
  * is `spawned_agents.spawn_id`). Recorded by operator-spawn for CLAUDE bees only
  * (mig 203 / P-016); lets the roster hand pui a `claude --resume <id>` handle for
  * the bee pane (P-004). Best-effort: a read error yields an empty map (no resume
- * handle → pui falls back to the watch-pane view).
+ * handle → the bee gets no dock pane; it stays visible in the colony roster).
  */
 export async function spawnedAgentSessionsByOwner(): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -163,7 +163,7 @@ export async function spawnedAgentSessionsByOwner(): Promise<Map<string, string>
       if (r.spawn_id && r.session_id) out.set(r.spawn_id, r.session_id);
     }
   } catch {
-    /* best-effort — no resume handles, pui falls back to watch-panes */
+    /* best-effort — no resume handles, those bees get no dock panes */
   }
   return out;
 }

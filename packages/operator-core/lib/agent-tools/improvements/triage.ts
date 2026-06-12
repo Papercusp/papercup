@@ -23,10 +23,10 @@ export default defineTool({
   name: 'improvements:triage',
   profile: 'engineer',
   description:
-    'Queen-turn triage: read the scored improvements:digest and route each idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new draft). The safety verdict (auto vs human) comes from the risk-tier policy — triage adds only the routing dimension (D-003: one verdict chain). Updates idea lifecycle state with the Queen\'s decision. (P-010) Supports per-Hive scope filtering.',
+    'Queen-turn triage: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.',
   guidance: {
     when:
-      'To triage captured ideas: read the digest summary, classify each by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Queen\'s judgment. (P-010) Pass harnessSlug to triage a specific Hive\'s ideas. Routing: product→place in the target Hive; code-bug→the policy tier decides (auto place vs human gate); infra-environment→owner-escalation (D-002, never auto); process-prompt→gate or gym A/B; needs-design→plans:new draft. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.',
+      'To triage captured ideas: read the digest summary, classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Queen\'s judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.',
     notWhen: 'You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.',
     chaining: 'improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas.',
   },

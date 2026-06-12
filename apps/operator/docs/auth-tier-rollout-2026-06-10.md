@@ -326,7 +326,7 @@ Total HTTP-projected routes scanned: **685**
 | GET | `/flags/testing-features` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/flags/testing-features.ts |
 | POST | `/flags/testing-features` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/flags/testing-features.ts |
 | POST | `/flags/webhook` | public | public! | OWNER | inbound webhook (provider-signed) | packages/operator-core/lib/endpoint-route/routes/flags/webhook.ts |
-| GET | `/fleet/bee-output` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/fleet/bee-output.ts |
+| GET | `/fleet/bee-output` | loopback | — | RETIRED | route deleted 2026-06-12 (hive-agent-tabs P-014 — its only consumer, the pui watch-pane, was retired) | (deleted) |
 | GET | `/gym/:slug` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/gym/control.ts |
 | POST | `/gym/:slug/accept` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/gym/control.ts |
 | GET | `/gym/:slug/autoloop` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/gym/control.ts |

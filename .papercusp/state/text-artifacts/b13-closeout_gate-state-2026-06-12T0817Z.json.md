@@ -1,23 +1,37 @@
 ---
 rel_path: "b13-closeout/gate-state-2026-06-12T0817Z.json"
-updated_at: 1781252117680
+updated_at: 1781252452238
 _body: "content"
 ---
 
 {
-  "purpose": "B-13 gate tracker + pending checks for the supervision leg (P-013).",
+  "purpose": "B-13 gate tracker + pending checks for the supervision leg (P-013). UPDATED 08:21Z — all gates IN, lane PAUSED.",
   "gates": {
-    "consume-edges:ledger-landed": "FIRED 08:05Z — verified (see ledger-baseline-2026-06-12T0810Z.json)",
-    "consume-edges:B-05:done": "FIRED 08:14Z — verified: papercusp-orphaned-dispatch registered watchdog.ts:1279, routeExhaustedImprovementToHuman wired improvement-actions.ts:332 (every tick, flag-OFF too, fresh-final-claim excluded), 67 tests green across 5 files, EI-365 resolved by B-05",
-    "consume-edges:spawn-fixed": "PENDING (await 850, expires 11:48Z) — fix LANDED per coord (su-973fd restarted :3170 with EI-334 fix ~08:08; identity default su-http-loopback + invalid_input error coding); awaiting B-02's end-to-end spawn proof emit"
+    "consume-edges:ledger-landed": "FIRED 08:05Z — verified (ledger-baseline-2026-06-12T0810Z.json)",
+    "consume-edges:B-05:done": "FIRED 08:14Z — verified: papercusp-orphaned-dispatch @ watchdog.ts:1279, routeExhaustedImprovementToHuman @ improvement-actions.ts:332 (every tick, flag-OFF too), 67 tests green, EI-365 resolved",
+    "consume-edges:spawn-fixed": "FIRED 08:16Z — EI-334 resolved; spawn s-1781251745958-0a976b75 tracked in fleet:tree; fix on :3170, :3070 pending deploy. Insight: fleet-spawn-structural-error-identity-and-coding"
   },
-  "pendingChecksAtSupervision": [
-    "EI-LIVE probe rows (2, open, fired 08:06Z): B-04 pinged twice (me 08:07Z, B-05 08:14Z) to drive terminal before ~10:06Z overdue. CONTINGENCY: if still open ~09:50Z, close via closeDispatchesForItem-equivalent myself and notify B-04 — else B-05's collector files a junk signal for nonexistent item EI-LIVE.",
-    "su-973fd's EI-334 error-coding change broke agent-mcp artifacts.test.ts expectation (flagged by su-819db 08:10Z) — confirm B-02 synced it before counting their lane done.",
-    "Exclude item_id='EI-LIVE' from first-10 dispatch count.",
-    "Watch dispatch journal for '[dispatch-ledger] FAILED to record' warns (ledger-invisible dispatches).",
-    "Wedge-pool re-entry ~09:21Z (backfilled assigned_at 03:21 local + 2h stale-claim) — first real dispatches likely shortly after; 'skipped: N in-flight' baseline = 49, must drain toward ~4-5.",
-    "OWNER NOTIFICATION required before live supervision starts (P-013 needs-human; brief: run WITH owner watching; no done-flip without owner sign-off)."
+  "protectivePause": {
+    "flag": "papercusp-improvement-auto-implement → OFF at 08:19Z by su-e9bc8 (pg-override via POST :3070/api/flags/set; MCP flags:set lacks the PG fallback — flag-backend-not-configured; audited)",
+    "why": "deployed main 8c2e391 (cut 07:10Z) predates wedge-triad fix + ledger + collector; 49-item wedge pool re-enters dispatchability ~09:21Z; old-code dispatches = 280s SIGTERM deaths + re-wedged unstamped claims + zero ledger rows",
+    "reEnableCondition": "deploy train carries consume-edges stack to :3070 AND owner present (P-013 needs-human) — owner notified 08:20Z",
+    "unaffected": "capture, triage, B-05 exhaustion flip (runs flag-OFF by design)"
+  },
+  "deployTrainBlockers": [
+    "agent-mcp artifacts.test.ts — expects handler_error, B-02's fix codes invalid_input (@su-973fd pinged)",
+    "cross-hive-outbound-grants.test.ts 19 reds (cross-hive lane, also askedBy tsc +1)",
+    "LearningTab.test.tsx — B-08 HumanQueueDrain title vs test (B-10 flagged @su-155c0)"
   ],
-  "eiReconciliationDelta": { "EI-365": "RESOLVED by B-05 08:14Z (was open at 07:55Z baseline)" }
+  "pendingChecksAtNextWake_0920Z": [
+    "green-checkpoint / main FF / deploy state — stack on :3070?",
+    "EI-LIVE probe rows (10 open, grew 08:06-08:09Z — B-04's integration test may write the LIVE DB, not testcontainers; pinged 3rd time 08:21Z): contingency = close myself ~09:50Z",
+    "repeated-tool-error:fleet:spawn:structural out of knownOpenKeys (first tick after 08:16Z resolve = 08:30Z)",
+    "implement journal reads 'disabled' (flag confirmed OFF via live-host flags:get 08:20Z)",
+    "supervision still owed: first 10 dispatches w/ ledger chains, ≥1 genuine auto-resolve w/ test evidence, deliberate worker-kill (orphan+flip proof), skipped-in-flight plateau (baseline 49), ## Verification checklist, EI reconciliation, dispatch-by-dispatch owner report"
+  ],
+  "eiReconciliationDelta": {
+    "EI-334": "RESOLVED by B-02 08:16Z (was open at baseline)",
+    "EI-365": "RESOLVED by B-05 08:14Z (was open at baseline)",
+    "EI-366": "in-flight B-10 (mig 240 memory_recall_stats boot-applying on :3170 per 08:1xZ coord)"
+  }
 }

@@ -64,12 +64,12 @@ export const FLAGS = {
   // /api/prompt-studio/* routes are gated on this flag TOO (plus the loopback
   // guard + 512KB cap + id-whitelist from the security review).
   PROMPT_STUDIO: "papercusp-prompt-studio",
-  // hive-agent-tabs-psu-tui-2026-06-09: gates the unified agent-tabs dock where
+  // hive-agent-tabs-psu-tui-2026-06-09: gates the unified agent-tabs system where
   // EVERY agent surface (Queen · Bee · Sentinel · Planner) is a real psu/Claude
   // TUI session, plus the per-agent wake-mode gate, per-type color/grouping, and
-  // per-frame tabs. OFF (default) = the current dock (pui chat-pane operator +
-  // read-only watch-pane bees) is unchanged. Flip ON once the new renderer is
-  // Tauri-verified. Reversible — the legacy surfaces stay until Phase 5 retires them.
+  // per-frame tabs. Server-side gates only (wake delivery, roster stamping) —
+  // the pui dock ships the unified shape unconditionally since P-014 retired
+  // the legacy `pui chat-pane`/`pui watch-pane` surfaces (2026-06-12).
   HIVE_AGENT_TABS: "papercusp-hive-agent-tabs",
   // hive-inference-gateway-2026-06-09 (P-012): when ON, every bee spawn gets
   // ANTHROPIC_BASE_URL pointed at the localhost pacing gateway (127.0.0.1:8788), so

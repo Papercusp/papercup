@@ -54,7 +54,7 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
         label: resolvedSlug ? `new-plan · ${resolvedSlug}` : 'new-plan',
         kickoff: { kind: 'new-plan' },
         // Open as a pane in the zellij dock (owner ask, pui-dock-agent-stack):
-        // record a pending workbench launch; the dock's chat-pane pui panes it
+        // record a pending workbench launch; the dock's pui dock-driver panes it
         // reactively instead of the server spawning an OS terminal window.
         deferSpawn: true,
       });
