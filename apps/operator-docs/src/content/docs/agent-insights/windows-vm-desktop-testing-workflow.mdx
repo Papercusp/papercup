@@ -125,6 +125,15 @@ edge that cost an hour:
     paints white (WebView2 GPU/compositor init flake under QEMU qxl).
     It self-resolved after the onboarding-finalize restart. If you see
     white, check the DOM via CDP (§14) before assuming the app is dead.
+16. **Inbox (pre-Store) WSL's `wsl.exe` wedges FOREVER under a
+    pseudoconsole** — the wizard's pty-routed installs/logins sit silent
+    with zero output, zero exit, and no distro-side process; the same
+    command via plain pipes works instantly. The VM runs inbox WSL
+    (`wsl --version` is not even a recognized option there). Full
+    diagnosis recipe + the fix set:
+    [wsl-inbox-conpty-pty-hang](/internal/docs/agent-insights/wsl-inbox-conpty-pty-hang).
+    pty.rs now carries a 20s no-output watchdog that kills the wedge and
+    prints a `wsl --update` hint into the pane.
 
 ## Where the artifacts live
 

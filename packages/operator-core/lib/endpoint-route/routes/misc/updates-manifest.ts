@@ -61,14 +61,21 @@ export function pickAssetUrl(release: GhRelease, target: string, arch: string): 
   if (!platform) return null;
   const candidates = release.assets.filter((a) => {
     const name = a.name.toLowerCase();
-    if (!name.endsWith('.tar.gz') && !name.endsWith('.zip')) return false;
+    // Tauri v2's Windows updater artifact is the bare NSIS `-setup.exe`
+    // (or `.msi`) — v1's `.msi.zip`/`.exe.tar.gz` wrappers no longer
+    // exist. Without this the endpoint 404'd on every real Windows
+    // release (windows-desktop-release-readiness-2026-06-11 P-013).
+    const winV2 = name.endsWith('-setup.exe') || name.endsWith('.msi');
+    if (!name.endsWith('.tar.gz') && !name.endsWith('.zip') && !(target === 'windows' && winV2))
+      return false;
     if (target === 'darwin' && !name.includes('darwin') && !name.endsWith('.app.tar.gz')) return false;
     if (target === 'linux' && !name.includes('linux') && !name.endsWith('.appimage.tar.gz')) return false;
     if (
       target === 'windows' &&
       !name.includes('windows') &&
       !name.endsWith('.msi.zip') &&
-      !name.endsWith('.exe.tar.gz')
+      !name.endsWith('.exe.tar.gz') &&
+      !winV2
     )
       return false;
     // A macOS universal bundle (Papercusp_universal.app.tar.gz) serves every

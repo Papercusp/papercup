@@ -52,4 +52,27 @@ describe('pickAssetUrl', () => {
     };
     expect(pickAssetUrl(weird, 'linux', 'x86_64')).toBeNull();
   });
+
+  it('picks the Tauri v2 NSIS -setup.exe for windows (the real published shape), never its .sig', () => {
+    const v2 = {
+      ...release,
+      assets: [
+        'Papercusp_universal.app.tar.gz',
+        'Papercusp_universal.app.tar.gz.sig',
+        'Papercusp_0.0.2_universal.dmg',
+        'Papercusp_0.0.2_amd64.deb',
+        'Papercusp_0.0.2_x64-setup.exe',
+        'Papercusp_0.0.2_x64-setup.exe.sig',
+        'papercusp-latest-desktop-v0.0.2-alpha.json',
+      ].map((name) => ({ name, browser_download_url: `https://gh.test/${name}` })),
+    };
+    expect(pickAssetUrl(v2, 'windows', 'x86_64')).toBe(
+      'https://gh.test/Papercusp_0.0.2_x64-setup.exe',
+    );
+    // the bare exe never leaks to other targets
+    expect(pickAssetUrl(v2, 'linux', 'x86_64')).toBeNull();
+    expect(pickAssetUrl(v2, 'darwin', 'x86_64')).toBe(
+      'https://gh.test/Papercusp_universal.app.tar.gz',
+    );
+  });
 });
