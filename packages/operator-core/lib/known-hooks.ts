@@ -17,6 +17,17 @@
  * builds on this registry: the lost names are catalogued as `status: 'lost'`
  * so the restoration has one place to flip them live, but `getKnownHooks()`
  * exposes only what actually fires.
+ *
+ * NOTE (plugin-system-hive-port-2026-06-11 D-003): new pipeline fire-points
+ * are EVENT EMISSIONS, not script/typed hooks — the live pipeline now emits
+ * `pipeline:step-start` / `pipeline:step-done` / `pipeline:done` /
+ * `pipeline:escalate` / `pipeline:launch` (see `lib/events/pipeline-events.ts`),
+ * which supersede the `lost` rows' SEMANTICS (pre-/post-role visibility) for
+ * plugins + agents via reaction rules and `events:await`. The `lost` rows stay
+ * catalogued here because EI-95 (restoring them as *harness script hooks* —
+ * `.papercusp/hooks/*.sh`) is a separate decision this registry still anchors;
+ * do NOT add a new `runHook(...)` fire-point without a registry row (the drift
+ * guard in known-hooks.test.ts fails the build).
  */
 
 export interface KnownHookInfo {

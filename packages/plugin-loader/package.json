@@ -35,9 +35,6 @@
   "scripts": {
     "test": "vitest run"
   },
-  "bin": {
-    "papercusp-fire-hook": "./bin/fire-hook"
-  },
   "dependencies": {
     "@papercusp/plugin-loader-core": "*",
     "@papercusp/plugin-sdk": "*"

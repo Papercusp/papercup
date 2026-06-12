@@ -359,13 +359,17 @@ pub enum AgentCtxMode {
 /// "⏸ wakes" pane shows the whole fleet; a per-agent pane (e.g. "♛⏸ wakes"
 /// under the Queen) filters to one agent. `Queen` resolves the live queen
 /// from the roster each refresh (the owner id isn't known at layout time and
-/// changes when the brain respawns); `Owner` pins an explicit id.
+/// changes when the brain respawns); `Owner` pins an explicit id. `Hive`
+/// (P-014 item 3 / D-007 GAP 1) scopes to one hive's attributed owners — the
+/// fetch swaps to the server-filtered `network.hive.wakes` query, so the
+/// client-side filter passes groups through.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WakeFilter {
     #[default]
     All,
     Queen,
     Owner(String),
+    Hive(String),
 }
 
 /// Apply a [`WakeFilter`] to assembled wake groups. Queen resolution prefers
@@ -380,6 +384,9 @@ pub fn filter_wake_groups(
 ) -> Vec<crate::models::WakeGroup> {
     match filter {
         WakeFilter::All => groups,
+        // Hive scope is applied server-side (`network.hive.wakes` rows arrive
+        // pre-filtered to the hive's attributed owners) — pass through.
+        WakeFilter::Hive(_) => groups,
         WakeFilter::Owner(id) => groups.into_iter().filter(|g| &g.agent == id).collect(),
         WakeFilter::Queen => {
             let queen_owner = roster
@@ -1116,6 +1123,11 @@ pub struct App {
     /// `pui hive-pane <key>` (the primary pane of B-10's per-hive drill-in
     /// tabs): render ONLY this key's dossier, full-pane. `None` = the board.
     pub network_focus: Option<String>,
+    /// The drill-in dossier data for the pinned `network_focus` key (P-014
+    /// item 2): captured beacon history + the full C-1 ask log. Both empty
+    /// outside hive-pane mode (and for keys with no traffic — sections hide).
+    pub hive_beacons: Vec<crate::models::HiveBeaconSnapshot>,
+    pub hive_asks: Vec<crate::models::CrossHiveAskRow>,
     pub memories: Vec<crate::models::MemoryEntry>,
     pub memory_hits: Option<(String, Vec<crate::models::MemoryEntry>)>,
     pub memory_sel: usize,
@@ -1464,6 +1476,8 @@ impl App {
             network_rows: Vec::new(),
             network_sel: 0,
             network_focus: None,
+            hive_beacons: Vec::new(),
+            hive_asks: Vec::new(),
             memories: Vec::new(),
             memory_hits: None,
             memory_sel: 0,
@@ -3829,6 +3843,13 @@ impl App {
                 if self.network_sel >= self.network_rows.len() {
                     self.network_sel = self.network_rows.len().saturating_sub(1);
                 }
+                Action::Render
+            }
+            Event::HiveDossier { beacons, asks } => {
+                // The drill-in dossier data landed (P-014 item 2): a whole
+                // snapshot for the pinned hive-pane key — replace both lists.
+                self.hive_beacons = beacons;
+                self.hive_asks = asks;
                 Action::Render
             }
             Event::BeeOutput {

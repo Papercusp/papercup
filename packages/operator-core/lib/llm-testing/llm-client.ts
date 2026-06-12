@@ -114,7 +114,10 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
       outputTokens = ev.tokensOut;
       costUsd = ev.costUsd;
     } else if (ev.type === 'error') {
-      lastErrMsg = ev.message;
+      // Fold the subprocess stderr tail into the message: the un-governed CLI path attaches
+      // no classified turn, so a bare `<backend> exited 1` is undiagnosable — and the
+      // fallback classifier below only sees the message string.
+      lastErrMsg = ev.stderr?.trim() ? `${ev.message} — stderr: ${ev.stderr.trim()}` : ev.message;
       // Prefer the structured turn the governed path attaches; else classify the message so a
       // rate-limit is still detected on the un-governed path (RB-006).
       lastErrTurn = ev.turn;

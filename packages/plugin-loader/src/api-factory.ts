@@ -11,7 +11,7 @@
  *   host-side service implementations (Postgres-backed)
  *                  │
  *                  ▼
- *   createPapercuspApi({ ctx, services, hookBus })
+ *   createPapercuspApi({ ctx, services })
  *                  │
  *                  ▼  wraps each real service in a capability-checking Proxy
  *                  │  (using `wrapServiceWithCaps` from ./capabilities)
@@ -41,7 +41,6 @@ import type {
   PluginFetch,
   PluginStorage,
   PluginDb,
-  PluginHookBus,
   ServiceDef,
 } from '@papercusp/plugin-sdk';
 import {
@@ -157,8 +156,6 @@ export interface CreatePapercuspApiInput {
   ctx: CapabilityCheckContext;
   /** Host-built real services to wrap. */
   services: RealServices;
-  /** Plugin's hook bus (already capability-aware — see ./hookbus). */
-  hookBus: PluginHookBus;
 }
 
 /**
@@ -173,7 +170,7 @@ export interface CreatePapercuspApiInput {
  * can `try/catch` if they want to degrade gracefully when a cap is missing.
  */
 export function createPapercuspApi(input: CreatePapercuspApiInput): PapercuspApi {
-  const { ctx, services, hookBus } = input;
+  const { ctx, services } = input;
   const realFetch = services.fetch ?? globalThis.fetch.bind(globalThis);
 
   const tasks       = wrapServiceWithCaps(ctx, services.tasks         as any, TasksServiceDef)         as unknown as TasksService;
@@ -201,7 +198,6 @@ export function createPapercuspApi(input: CreatePapercuspApiInput): PapercuspApi
     fetch: pluginFetch,
     storage,
     db,
-    hooks: hookBus,
     capabilities: () => [...ctx.capabilities],
   };
 }

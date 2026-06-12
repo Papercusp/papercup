@@ -222,6 +222,29 @@
         "type": "object"
       }
     },
+    "reactions": {
+      "description": "Declarative event-reaction rules (plugin-system-hive-port D-003): when trigger `on` settles, fire one of THIS plugin's tools through normal dispatch. Manifest rules are the declarative subset — `when` is a data-match object, `args` a static object; function forms need an entry-point plugin. Each `on` trigger requires an `events:listen:<on>` capability.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "on": {
+            "anyOf": [
+              { "type": "string", "minLength": 1 },
+              { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+            ]
+          },
+          "when": { "type": "object" },
+          "fire": { "type": "string", "minLength": 1 },
+          "args": { "type": "object" },
+          "onlyOnSuccess": { "type": "boolean" },
+          "capability": { "type": "string", "minLength": 1 }
+        },
+        "required": ["id", "on", "fire"],
+        "additionalProperties": false
+      }
+    },
     "models": {
       "type": "object"
     },

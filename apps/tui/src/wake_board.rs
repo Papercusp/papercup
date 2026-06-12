@@ -93,6 +93,7 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
         crate::app::WakeFilter::All => String::new(),
         crate::app::WakeFilter::Queen => " · ♛ queen".to_string(),
         crate::app::WakeFilter::Owner(id) => format!(" · {}", trunc(id, 14)),
+        crate::app::WakeFilter::Hive(h) => format!(" · ⬡ {}", trunc(h, 14)),
     };
     let mut title = vec![Span::styled(
         format!(" Staged wakes{scope} — {} item(s)", b.total()),
@@ -114,10 +115,14 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
 
     // The board: per-agent headers + one row per staged wake.
     if b.groups.is_empty() && !b.loading {
-        let empty = if app.wake_filter == crate::app::WakeFilter::All {
-            " no staged wakes — every agent is in auto mode or drained"
-        } else {
-            " no staged wakes for this agent — auto mode or drained"
+        let empty = match &app.wake_filter {
+            crate::app::WakeFilter::All => {
+                " no staged wakes — every agent is in auto mode or drained"
+            }
+            crate::app::WakeFilter::Hive(_) => {
+                " no staged wakes for this hive — its agents are in auto mode or drained"
+            }
+            _ => " no staged wakes for this agent — auto mode or drained",
         };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(empty, Theme::dim()))),

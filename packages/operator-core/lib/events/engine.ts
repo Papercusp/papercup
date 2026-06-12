@@ -56,14 +56,85 @@ export function normalizeEvent(pe: PostInvokeEvent): ToolInvocationEvent {
 /** The host's `postInvoke` — match rules + schedule reactions. Never throws. */
 export function handleToolInvoked(pe: PostInvokeEvent): void {
   let event: ToolInvocationEvent;
-  let actions: Array<MatchedAction<ToolInvocationEvent, string>>;
   try {
     event = normalizeEvent(pe);
+  } catch (err) {
+    // Normalization must never break the trigger. (Pure code; defensive.)
+    // eslint-disable-next-line no-console
+    console.warn(`[events] normalize failed for ${pe.toolName}: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  matchAndRun(event);
+}
+
+/**
+ * Feed a SYNTHETIC (non-tool) event into the same matcher + reaction scheduler
+ * (event-reaction-system D-013: the dispatcher is the *primary* source, but the
+ * one matcher accepts other sources normalized to the same shape).
+ *
+ * This is how non-tool fire-points — blueprint-spine step transitions, the
+ * work_items lifecycle, plugin-emitted events — reach reaction rules
+ * (plugin-system-hive-port D-003: new pipeline fire-points are event emissions
+ * only). `tool` is the rule index key (e.g. `pipeline:step-done`); `data`
+ * becomes `result.data` so the same data-matcher grammar applies. A minimal
+ * system ctx scopes downstream reactions (workspace / harness inheritance).
+ * Never throws.
+ */
+export function emitSystemEvent(opts: {
+  /** The rule index key, e.g. `pipeline:step-done` or `myplugin.cache-warm`. */
+  tool: string;
+  /** Event payload — matched as both `args` and `result.data`. */
+  args?: Record<string, unknown>;
+  /** Scope for downstream reactions. Defaults to the active workspace, harness '*'. */
+  workspaceId?: string;
+  harnessSlug?: string;
+  /** Cause-chain when the emission itself was caused by a reaction. */
+  cause?: ToolInvocationEvent['cause'];
+}): void {
+  let event: ToolInvocationEvent;
+  try {
+    const ctx = {
+      workspaceId: opts.workspaceId ?? activeWorkspaceId(),
+      harnessSlug: opts.harnessSlug ?? '*',
+      role: 'operator',
+      featureId: null,
+      chunkId: null,
+      runId: globalThis.crypto.randomUUID(),
+      spawnId: 'system-event',
+      parentSpawnId: null,
+      uiClientId: null,
+      isSuperuser: false,
+      profile: 'engineer',
+      transport: 'in_process',
+      log: () => {},
+      progress: () => {},
+      emit: () => {},
+      signal: new AbortController().signal,
+    } as unknown as UnifiedToolContext;
+    event = {
+      tool: opts.tool,
+      args: opts.args ?? {},
+      result: { ok: true, data: opts.args ?? {} },
+      ctx,
+      ...(opts.cause ? { cause: opts.cause } : {}),
+    };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[events] system-event build failed for ${opts.tool}: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  matchAndRun(event);
+}
+
+/** Shared match + schedule tail for both event sources. Never throws. */
+function matchAndRun(event: ToolInvocationEvent): void {
+  let actions: Array<MatchedAction<ToolInvocationEvent, string>>;
+  try {
     actions = matchReactions(event);
   } catch (err) {
     // Matching must never break the trigger. (Pure code; defensive.)
     // eslint-disable-next-line no-console
-    console.warn(`[events] match failed for ${pe.toolName}: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[events] match failed for ${event.tool}: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
   if (actions.length === 0) return;

@@ -1,0 +1,74 @@
+# Implement-lane wedge triad — dateless claims, 280s SIGTERM, untracked launches
+URL: /internal/docs/agent-insights/improvement-implement-lane-wedge-triad
+
+Why the armed auto-implement loop resolved only 7/58 dispatches — claimIssue never stamped assigned_at (permanent in-flight), the 280s timeout SIGTERM'd workers mid-fix (exit 143), and the launch-blueprint fallback spawn record violated parent_role NOT NULL (invisible in fleet:tree).
+
+## Symptom
+
+After the implement lane was armed (learning-system-audit-improvements-2026-06-09
+P-012 / D-009), the routine dispatched 1 bug every 30 min, but the journal's
+`skipped: N in-flight` count **grew monotonically** (26 → 50 over \~30 h) while
+only 7/58 dispatches ever resolved. `fleet:tree` showed none of the implement
+workers. Three separate defects compound into this picture — fixing any one
+alone would NOT have healed the lane:
+
+## The triad
+
+1. **`claimIssue` set `assignee` but never `assigned_at`.**
+   `planImplementRun`'s in-flight guard treats a claim with no `assignedAt` as
+   *"age unknown → assume in flight"* — **forever**. The 2 h stale-claim
+   reclaim (`DEFAULT_STALE_CLAIM_MS`) could never fire, so every dispatch whose
+   worker died silently wedged permanently. This is the same failure class as
+   the gym autoloop's `status='running'` dead-lock (that plan's D-007): *a
+   liveness mechanism keyed on a timestamp nobody writes is a dead-lock, not a
+   reclaim.* Fix: `claimIssue` stamps `assigned_at = now()`; `releaseIssue`
+   clears it (issues-engineer.ts).
+
+2. **The dispatch fired with `timeoutMs: 280_000`.** The invoke runner
+   SIGTERMs the child at timeout — journal signature
+   `[dbos-invoke] role=worker exited 143 with empty stderr` \~4 min 40 s after
+   each dispatch. 280 s cannot fit reproduce + fix + regression test +
+   `test:affected`, so \~51/58 workers were killed mid-fix and never reached the
+   `improvements:resolve` back-edge. Fix: `implementTimeoutMs()` in
+   improvement-actions.ts — default 45 min, env-overridable
+   (`PAPERCUSP_IMPROVEMENT_IMPLEMENT_TIMEOUT_MS`), pinned by test to stay under
+   the stale-claim window.
+
+3. **The launch-blueprint fire-and-forget fallback's `recordSpawn` passed no
+   `parentRole`** — `spawned_agents.parent_role` is NOT NULL, so the insert
+   failed on **every** fallback launch (journal:
+   `[launch-blueprint] fallback spawn record failed … parent_role …
+   violates not-null constraint`). The fire itself still happened (the record
+   is best-effort), so the workers ran but were invisible to `fleet:tree` —
+   which is why nobody saw 51 workers dying. Fix: parentless launches record
+   `parentRole: 'operator'` (matching every other root spawn), real parents
+   pass through.
+
+## How to spot it again
+
+* `[improvement-implement] … skipped: N in-flight` with N growing across days
+  → claims aren't aging out: check `assigned_at IS NULL` on
+  `engineer_issues WHERE assignee='improvement-runner'`.
+* `exited 143 with empty stderr` shortly after a dispatch → the worker hit its
+  `timeoutMs`, not a crash.
+* A fired launch that never appears in `fleet:tree` → check for the fallback
+  spawn-record warn; the run may be alive but untracked.
+
+## The general lessons
+
+* **Every "skip while in-flight" guard needs a written timestamp AND a tested
+  stale path.** If the claim writer and the staleness reader live in different
+  files (here: issues-engineer.ts vs plan-implement.ts), add an integration
+  test that claims through the real writer and asserts the timestamp landed.
+* **Best-effort bookkeeping that fails 100% of the time is a silent
+  observability hole** — the catch-and-warn kept the lane "working" while
+  hiding the worker deaths it existed to surface. A warn that fires on every
+  tick is a bug, not noise.
+* Timeout knobs copied between contexts (a 280 s chat-ish timeout onto a
+  fix-a-bug worker) deserve a sanity check against what the child actually
+  does, and an invariant test against the reclaim window above them.
+
+Repaired live on 2026-06-12: the 48 wedged rows were backfilled
+`assigned_at = now()` so they re-enter the dispatchable pool \~2 h later, after
+the deploy train carries the fixed code to :3070. Full context:
+learning-system-audit-improvements-2026-06-09 D-010.

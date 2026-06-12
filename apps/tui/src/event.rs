@@ -175,6 +175,14 @@ pub enum Event {
     /// one pinned-C-3 row per hive-context over the capability ladder, from
     /// B-08's data endpoint. A whole snapshot; replaces the pane's rows.
     NetworkBoard(Vec<crate::models::NetworkBoardRow>),
+    /// The per-hive drill-in dossier data (hive-network-surface P-014 item 2):
+    /// a foreign hive's captured beacon HISTORY + the full C-1 ask log for the
+    /// `pui hive-pane <key>` instance's pinned key. A whole snapshot; replaces
+    /// both lists each refetch (rides the standard SSE + 60s cadence).
+    HiveDossier {
+        beacons: Vec<crate::models::HiveBeaconSnapshot>,
+        asks: Vec<crate::models::CrossHiveAskRow>,
+    },
     /// The active Hive lexicon pack, fetched once at startup
     /// (pui-hive-lexicon-2026-06-06). The reducer stores the term→label map.
     LexiconPack(LexiconPackPayload),

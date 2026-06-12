@@ -42,6 +42,61 @@ const SETTLED_STATES: Record<WorkItemFamily, readonly string[]> = {
   issue: ['resolved', 'closed'],
 };
 
+/** Errors a partial test schema produces — expected fail-soft, not warn-worthy. */
+function failSoft(scope: string, e: unknown): void {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/does not exist/.test(msg)) return;
+  console.warn(`[work-items-events] ${scope} emit failed: ${msg}`);
+}
+
+/**
+ * `work-item:claimed:<id>` — fired when an agent claims an item
+ * (plugin-system-hive-port P-004: the work_items lifecycle fire-point set).
+ * Awaited-event leg only: the claim travels through the `work_items:claim` /
+ * `work_items:claim_next` tools, which the reaction matcher already observes
+ * via postInvoke — plugins subscribe there; this key serves `events:await`.
+ * Fire-and-forget; never throws.
+ */
+export function emitWorkItemClaimedEvent(
+  wi: WorkItem,
+  assignee: string,
+  deps: Pick<SettledEventsDeps, 'emit'> = {},
+): void {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: `work-item:claimed:${wi.id}`,
+        summary: `${wi.id} claimed by ${assignee}: ${wi.title}`,
+        payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, assignee, title: wi.title },
+        source: 'work-items',
+      }),
+    )
+    .catch((e: unknown) => failSoft(`claimed-event for ${wi.id}`, e));
+}
+
+/**
+ * `work-item:blocked:<id>` — fired when an item transitions INTO `blocked`
+ * (the durable "I can't proceed" record — see the repo guide's don't-silently-
+ * defer rule). The delegator (assignedBy) is notified so blocked work is never
+ * a prose message that scrolls away. Fire-and-forget; never throws.
+ */
+export function emitWorkItemBlockedEvent(wi: WorkItem, deps: Pick<SettledEventsDeps, 'emit'> = {}): void {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  const notify = wi.assignedBy && wi.assignedBy !== wi.assignee ? [wi.assignedBy] : [];
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: `work-item:blocked:${wi.id}`,
+        summary: `${wi.id} is BLOCKED: ${wi.title}`,
+        payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, title: wi.title },
+        to: notify,
+        source: 'work-items',
+      }),
+    )
+    .catch((e: unknown) => failSoft(`blocked-event for ${wi.id}`, e));
+}
+
 export function isSettledWorkItem(wi: Pick<WorkItem, 'family' | 'state'>): boolean {
   return SETTLED_STATES[wi.family]?.includes(wi.state) ?? false;
 }

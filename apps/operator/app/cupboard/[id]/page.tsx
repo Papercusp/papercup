@@ -30,7 +30,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from '@/lib/router-compat/navigation';
 import {
-  Shield, ExternalLink, Users, Clock, GitBranch,
+  ShieldCheck, ExternalLink, Users, Clock, GitBranch,
   ArrowLeft, Loader2, AlertTriangle, GitFork, Plug, Globe, Hexagon,
 } from 'lucide-react';
 import type { HarnessListing, ListingAction } from '@papercusp/operator-core/lib/cupboard/types';
@@ -45,6 +45,8 @@ import {
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
 import { CupboardErrorState } from '../CupboardErrorState';
+import { ClaimStatusBadge } from '../../_components/ClaimStatusBadge';
+import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 
 /** Icon for a listing's action (null = legacy harness row — kind icon only). */
@@ -64,9 +66,10 @@ export default function CupboardDetailPage() {
   const [listing, setListing] = useState<HarnessListing | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // In-flight lifecycle flag for the direct-execution action (blueprint
-  // install) — render-lifecycle state, not URL state.
+  // In-flight lifecycle flags for the direct-execution action (blueprint
+  // install) and the claim CTA — render-lifecycle state, not URL state.
   const [busy, setBusy] = useState(false);
+  const [claiming, setClaiming] = useState(false);
 
   const fetchListing = useCallback(() => {
     if (!id) return;
@@ -176,6 +179,37 @@ export default function CupboardDetailPage() {
       toast.error(`Install crashed: ${(e as Error)?.message ?? String(e)}`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Claim (comb-hive-native-sharing P-003, O-1 per D-005): offered on unclaimed
+  // hive member rows to any viewer — the WORKER enforces maintain/admin via the
+  // GitHub API and a refusal is surfaced honestly, not hidden.
+  const claimListing = async () => {
+    if (!listing || claiming) return;
+    setClaiming(true);
+    try {
+      const r = await fetch(`/api/cupboard/listings/${encodeURIComponent(String(listing.id))}/claim`, {
+        method: 'POST',
+      });
+      const d = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (r.ok && d.ok) {
+        toast.success('Listing claimed — your maintainer vouch is now the trust signal on this listing.');
+        fetchListing();
+      } else if (d.error === 'gh_auth_required') {
+        toast.error('Claiming needs a GitHub sign-in on this box — run `gh auth login`, then retry.');
+      } else if (d.error === 'insufficient_permission') {
+        toast.error('GitHub says you don’t have maintain/admin on this repo — claiming needs maintainer access.');
+      } else if (d.error === 'already_claimed') {
+        toast.error('Someone else claimed this listing first.');
+        fetchListing();
+      } else {
+        toast.error(`Claim failed: ${d.error ?? `HTTP ${r.status}`}`);
+      }
+    } catch (e) {
+      toast.error(`Claim crashed: ${(e as Error)?.message ?? String(e)}`);
+    } finally {
+      setClaiming(false);
     }
   };
 
@@ -295,15 +329,11 @@ export default function CupboardDetailPage() {
             }} data-testid="cupboard-detail-kind" data-kind={kind}>
               <ActionIcon action={action} size={12} /> {kind}
             </span>
-            {listing.claim_status === 'claimed' && (
-              <span className="pc-badge" style={{
-                display: 'inline-flex', alignItems: 'center', gap: 4,
-                background: 'color-mix(in srgb, var(--success), transparent 86%)', color: 'var(--success)',
-                border: '1px solid color-mix(in srgb, var(--success), transparent 76%)',
-              }}>
-                <Shield size={12} /> Claimed
-              </span>
-            )}
+            <ClaimStatusBadge
+              status={listing.claim_status}
+              claimantLogin={listing.claimant_github_login}
+              claimedAt={listing.claimed_at}
+            />
           </span>
         </div>
 
@@ -350,8 +380,17 @@ export default function CupboardDetailPage() {
             </MetaRow>
           )}
           <MetaRow label="Claim status">
-            <span style={{ fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.text, textTransform: 'capitalize' }}>
-              {listing.claim_status}
+            <span
+              data-testid="cupboard-detail-claim-status"
+              style={{ fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.text }}
+            >
+              <span style={{ textTransform: 'capitalize' }}>{listing.claim_status}</span>
+              {listing.claim_status === 'claimed' && listing.claimant_github_login && (
+                <> by <strong>@{listing.claimant_github_login}</strong></>
+              )}
+              {listing.claim_status === 'claimed' && listing.claimed_at && (
+                <> · {new Date(listing.claimed_at).toLocaleDateString()}</>
+              )}
             </span>
           </MetaRow>
           {contributors > 0 && (
@@ -406,6 +445,26 @@ export default function CupboardDetailPage() {
               <><ActionIcon action={action} /> {LISTING_ACTION_LABEL[action]}{action === 'install' || action === 'fork' ? ` ${kind}` : ''}</>
             )}
           </button>
+          )}
+          {/* Claim CTA (P-003): hive member rows only, while unclaimed. Shown
+              to any viewer (O-1 per D-005) — the worker enforces maintain/admin
+              and a refusal is surfaced honestly in the toast. */}
+          {kind === 'harness' && !!listing.hive_pubkey && listing.claim_status === 'unclaimed' && (
+            <Tooltip label="Claim vouches for this listing as a verified repo maintainer — a trust signal, not ownership of the code. GitHub enforces maintain/admin; without it the claim is refused and says so.">
+              <button
+                onClick={() => void claimListing()}
+                disabled={claiming}
+                data-testid="cupboard-detail-claim"
+                className="pc-button"
+                style={{ opacity: claiming ? 0.7 : 1, cursor: claiming ? 'default' : 'pointer' }}
+              >
+                {claiming ? (
+                  <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Claiming…</>
+                ) : (
+                  <><ShieldCheck size={13} /> Claim</>
+                )}
+              </button>
+            </Tooltip>
           )}
           {repoSlug && (
             <a

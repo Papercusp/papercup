@@ -27,8 +27,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain } from 'lucide-react';
-import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight } from 'lucide-react';
+import * as Collapsible from '@radix-ui/react-collapsible';
+import { toast } from 'sonner';
+import type { HarnessListing, ListingKind, HiveBrowseGroup } from '@papercusp/operator-core/lib/cupboard/types';
 import {
   isPubliclyVisible,
   listingActionFor,
@@ -37,12 +39,16 @@ import {
   listingContributorCount,
   listingTopLanguage,
   listingHiveRef,
+  listingHiveKey,
+  isHivePubkeyRef,
+  groupHarnessRowsByHive,
   groupListingsByKind,
   LISTING_ACTION_LABEL,
   type ListingAction,
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
-import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
+import { ClaimStatusBadge, CLAIM_STATUS_COPY } from '../_components/ClaimStatusBadge';
+import { Tooltip } from '../harness/Tooltip';
 import { CupboardErrorState } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
 import { useLexicon } from '@/lib/useLexicon';
@@ -171,16 +177,21 @@ export default function CupboardClient() {
     try {
       const params = new URLSearchParams();
       if (q) params.set('q', q);
-      if (claimFilter !== 'all') params.set('claim_status', claimFilter);
-      if (hive) {
-        // Hive rollup: fetch every kind for this project (the worker's
-        // server-side `project` filter, forwarded by the proxy) so the rollup
-        // can present all facets grouped. The kind tabs are hidden in this
-        // mode, so `kind` is intentionally not forwarded.
+      // The worker's filter param is `claim` (claimed|unclaimed) — `claim_status`
+      // was silently ignored, so the filter pills never narrowed anything.
+      if (claimFilter !== 'all') params.set('claim', claimFilter);
+      if (hive && !isHivePubkeyRef(hive)) {
+        // Legacy project rollup: fetch every kind for this project (the
+        // worker's server-side `project` filter, forwarded by the proxy) so
+        // the rollup can present all facets grouped. The kind tabs are hidden
+        // in this mode, so `kind` is intentionally not forwarded.
         params.set('project', hive);
-      } else if (kindFilter !== 'all' && kindFilter !== 'tools') {
+      } else if (!hive && kindFilter !== 'all' && kindFilter !== 'tools') {
         params.set('kind', kindFilter);
       }
+      // Hive-pubkey rollup (comb-hive-native-sharing P-001): the worker has no
+      // hive filter, so fetch unfiltered and narrow client-side by hive_pubkey
+      // below — page-scoped, like the flat-browse grouping (P-002).
       const res = await fetch(`/api/cupboard/listings?${params}`, { signal: ctrl.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { listings: HarnessListing[] };
@@ -202,13 +213,29 @@ export default function CupboardClient() {
     void fetchListings();
   }, [fetchListings, toolsView, hive]);
 
-  // Hive rollup: client-side safety filter (the server `project` filter only
-  // matches rows that actually carry `project_ref`; this keeps the grouping
-  // correct regardless) + group by kind. Empty unless `hive` is set.
-  const hiveListings = hive ? listings.filter((l) => listingHiveRef(l) === hive) : [];
+  // Hive rollup: narrow to the one hive. A pubkey ref matches the member rows'
+  // `hive_pubkey` (the hive-native key — comb-hive-native-sharing P-001); a
+  // legacy ref matches listingHiveRef (client-side safety filter on top of the
+  // server `project` filter). Empty unless `hive` is set.
+  const hiveListings = hive
+    ? listings.filter((l) =>
+        isHivePubkeyRef(hive) ? l.hive_pubkey === hive : listingHiveRef(l) === hive,
+      )
+    : [];
   const hiveGroups = hive ? groupListingsByKind(hiveListings) : [];
   const groupedListings = groupListingsByKind(listings);
   const facetCount = groupedListings.length;
+  // Flat hive-first browse (P-002): harness member rows fold into ONE card per
+  // owning hive; legacy (pre-hive) harness rows collapse into their own
+  // section. Other kinds render as plain listing cards, unchanged.
+  const hiveFirstBrowse =
+    !hive && !toolsView && (kindFilter === 'all' || kindFilter === 'harness');
+  const browseSplit = hiveFirstBrowse
+    ? groupHarnessRowsByHive(listings.filter((l) => listingKindOf(l) === 'harness'))
+    : null;
+  const browseOthers = hiveFirstBrowse
+    ? listings.filter((l) => listingKindOf(l) !== 'harness')
+    : listings;
   const activeViewLabel = toolsView && !hive
     ? 'Tool discovery'
     : hive
@@ -230,7 +257,9 @@ export default function CupboardClient() {
   const handleAction = useCallback(
     (listing: HarnessListing) => {
       if (listingActionFor(listing) === 'view-hive') {
-        void setHive(listingHiveRef(listing));
+        // Hive-native key: the owning hive's pubkey (all member rows share it),
+        // so the rollup aggregates the WHOLE hive, not one repo's listings.
+        void setHive(listingHiveKey(listing));
         return;
       }
       // fork / install → the listing detail (act-on surface).
@@ -370,9 +399,22 @@ export default function CupboardClient() {
             }}
           >
             <Package size={14} /> {t('pot')}:{' '}
-            <strong style={{ fontFamily: FONTS.mono }} data-testid="cupboard-hive-name">{hive}</strong>
+            <strong style={{ fontFamily: FONTS.mono }} data-testid="cupboard-hive-name">
+              {hiveListings.find((l) => l.hive_title)?.hive_title ?? hive}
+            </strong>
           </span>
         </div>
+      )}
+
+      {/* Hive header card — the hive as the joinable unit (P-001): title,
+          member count, claim rollup, directory visibility, Join CTA. Hidden
+          while the page is still loading so the empty-state stays honest. */}
+      {hive && !loading && !error && (
+        <HiveRollupHeaderCard
+          hiveRef={hive}
+          members={hiveListings.filter((l) => listingKindOf(l) === 'harness')}
+          onClaimed={() => void fetchListings()}
+        />
       )}
 
       {/* Search + claim filter bar */}
@@ -458,7 +500,9 @@ export default function CupboardClient() {
           }}
         >
           {hive
-            ? `No listings found for ${t('pot')} "${hive}"${q ? ` matching "${q}"` : ''}.`
+            ? isHivePubkeyRef(hive)
+              ? `No Cupboard listings found for this hive on this page${q ? ` matching "${q}"` : ''}.`
+              : `No listings found for ${t('pot')} "${hive}"${q ? ` matching "${q}"` : ''}.`
             : `No ${kindFilter === 'all' ? 'listings' : VIEW_FILTER_LABEL[kindFilter].toLowerCase()} found${q ? ` matching "${q}"` : ''}.`}
         </div>
       )}
@@ -492,21 +536,73 @@ export default function CupboardClient() {
                     listing={listing}
                     onAction={() => handleAction(listing)}
                     onDetail={() => router.push(`/cupboard/${listing.id}`)}
+                    suppressViewHive
                   />
                 ))}
               </div>
             </section>
           ))}
         </div>
+      ) : browseSplit ? (
+        /* Hive-first flat browse (P-002): one card per hive, plain cards for
+           the other kinds, legacy pre-hive harness rows collapsed below. */
+        <>
+          <div style={gridStyle}>
+            {browseSplit.hives.map((group) => (
+              <HiveBrowseCard
+                key={group.hivePubkey}
+                group={group}
+                onOpen={() => void setHive(group.hivePubkey)}
+              />
+            ))}
+            {browseOthers.map((listing) => (
+              <ListingCard
+                key={listing.id}
+                listing={listing}
+                hiveRef={listingHiveKey(listing)}
+                onHive={() => void setHive(listingHiveKey(listing))}
+                onAction={() => handleAction(listing)}
+                onDetail={() => router.push(`/cupboard/${listing.id}`)}
+              />
+            ))}
+          </div>
+          {browseSplit.legacy.length > 0 && (
+            <Collapsible.Root data-testid="cupboard-legacy-section" style={{ marginTop: SIZES.lg }}>
+              <Collapsible.Trigger asChild>
+                <button style={{ ...ghostButtonStyle, gap: 4 }} data-testid="cupboard-legacy-toggle">
+                  <ChevronRight size={13} className="pc-collapsible-chevron" />
+                  Legacy listings ({browseSplit.legacy.length}) — pre-hive shared harnesses
+                </button>
+              </Collapsible.Trigger>
+              <Collapsible.Content>
+                <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, margin: '10px 0' }}>
+                  These listings predate hives, and per-harness joining is retired — they are
+                  reference rows only. Sharing and joining happen at the hive level now.
+                </p>
+                <div style={gridStyle}>
+                  {browseSplit.legacy.map((listing) => (
+                    <ListingCard
+                      key={listing.id}
+                      listing={listing}
+                      onAction={() => handleAction(listing)}
+                      onDetail={() => router.push(`/cupboard/${listing.id}`)}
+                    />
+                  ))}
+                </div>
+              </Collapsible.Content>
+            </Collapsible.Root>
+          )}
+        </>
       ) : (
-        /* Flat browse — each card links to its Hive via the Hive chip */
+        /* Flat browse (single non-harness kind) — each card links to its Hive
+           via the Hive chip. */
         <div style={gridStyle}>
-          {listings.map((listing) => (
+          {browseOthers.map((listing) => (
             <ListingCard
               key={listing.id}
               listing={listing}
-              hiveRef={listingHiveRef(listing)}
-              onHive={() => void setHive(listingHiveRef(listing))}
+              hiveRef={listingHiveKey(listing)}
+              onHive={() => void setHive(listingHiveKey(listing))}
               onAction={() => handleAction(listing)}
               onDetail={() => router.push(`/cupboard/${listing.id}`)}
             />
@@ -528,6 +624,7 @@ export function ListingCard({
   onDetail,
   hiveRef,
   onHive,
+  suppressViewHive,
 }: {
   listing: HarnessListing;
   onAction: () => void;
@@ -536,9 +633,13 @@ export function ListingCard({
    *  a clickable chip that enters the per-Hive rollup. Omit in rollup mode. */
   hiveRef?: string;
   onHive?: () => void;
+  /** Rollup mode (P-001): the card already sits inside the hive's rollup, so a
+   *  per-row View Hive button is redundant — suppress it. Fork/Install stay. */
+  suppressViewHive?: boolean;
 }) {
   const kind = listingKindOf(listing);
-  const action = listingActionFor(listing);
+  const rawAction = listingActionFor(listing);
+  const action = suppressViewHive && rawAction === 'view-hive' ? null : rawAction;
   const repoSlug = listingRepoSlug(listing);
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
@@ -587,7 +688,11 @@ export function ListingCard({
         </button>
         <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <KindBadge kind={kind} />
-          <ClaimStatusBadge status={listing.claim_status} />
+          <ClaimStatusBadge
+            status={listing.claim_status}
+            claimantLogin={listing.claimant_github_login}
+            claimedAt={listing.claimed_at}
+          />
         </span>
       </div>
 
@@ -806,4 +911,421 @@ function formatRelativeTime(epochMs: number): string {
   const months = Math.floor(days / 30);
   if (months === 1) return '1 month ago';
   return `${months} months ago`;
+}
+
+// ─── Hive-first browse + rollup (comb-hive-native-sharing-2026-06-11) ───────
+
+/**
+ * Claim rollup for a hive's member listings — "x/y claimed" as a trust signal.
+ * Counts are page-scoped (the worker paginates), which the tooltip says.
+ */
+function ClaimRollupPill({ claimed, total }: { claimed: number; total: number }) {
+  if (total === 0) return null;
+  const all = claimed === total && total > 0;
+  return (
+    <Tooltip
+      label={`${claimed} of ${total} member-repo listings are claimed. ${CLAIM_STATUS_COPY.claimed} Counts reflect the listings on this page of results.`}
+    >
+      <span
+        data-testid="cupboard-claim-rollup"
+        className="pc-badge"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          color: all ? 'var(--success)' : 'var(--fg-dim)',
+          background: all ? 'color-mix(in srgb, var(--success), transparent 88%)' : 'var(--bg-2)',
+          border: `1px solid ${all ? 'color-mix(in srgb, var(--success), transparent 76%)' : 'var(--border)'}`,
+        }}
+      >
+        <ShieldCheck size={10} /> {claimed}/{total} claimed
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
+ * One Hive in the flat browse (P-002): member repos grouped under the hive's
+ * title with a claim rollup; the primary action enters the per-Hive rollup.
+ */
+function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOpen: () => void }) {
+  const title = group.hiveTitle ?? listingRepoSlug(group.members[0]) ?? 'Untitled hive';
+  const repos = group.members.map(listingRepoSlug).filter(Boolean);
+  const shown = repos.slice(0, 4);
+  return (
+    <div
+      className="pc-card"
+      data-testid="cupboard-hive-card"
+      data-hive-pubkey={group.hivePubkey}
+      style={{
+        padding: 16,
+        borderRadius: 16,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        cursor: 'default',
+        minHeight: 208,
+      }}
+    >
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          inset: '0 0 auto',
+          height: 3,
+          background: 'linear-gradient(90deg, var(--accent-soft), transparent)',
+          opacity: 0.86,
+        }}
+      />
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+        <span
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            fontFamily: FONTS.ui, fontWeight: 600, fontSize: 15, lineHeight: 1.3, color: COLORS.text,
+          }}
+        >
+          <Hexagon size={14} style={{ color: 'var(--accent-soft)', flexShrink: 0 }} /> {title}
+        </span>
+        <ClaimRollupPill claimed={group.claimedCount} total={group.members.length} />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {shown.map((slug) => (
+          <span key={slug} style={{ fontFamily: FONTS.mono, fontSize: 11, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <GitBranch size={10} /> {slug}
+          </span>
+        ))}
+        {repos.length > shown.length && (
+          <span style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textDim }}>
+            +{repos.length - shown.length} more
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 4, alignItems: 'center' }}>
+        <button
+          onClick={onOpen}
+          data-testid="cupboard-hive-card-open"
+          className="pc-button"
+          style={{ flex: 1, background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)' }}
+        >
+          <Hexagon size={13} /> View Hive
+        </button>
+        <Tooltip label="Member-repo listings on this page of results — the hive may list more.">
+          <span style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Users size={11} /> {group.members.length}
+          </span>
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
+/** The /api/discovery/hives row shape (the directory's HTTP projection). */
+interface DirectoryHiveRow {
+  hiveId: string;
+  title: string;
+  description: string;
+  owner: string;
+  visibility: 'public' | 'invite';
+  memberLinks: string[];
+  memberCount: number;
+  hivePubkey: string | null;
+}
+
+/**
+ * The hive header card in rollup mode (P-001): the hive as the joinable unit.
+ * Resolves the live directory announce by `hive_pubkey` (the directory is the
+ * content authority; the Cupboard rows are the lookup index) for visibility +
+ * member links, joins via the composed join-hive flow, and — when no announce
+ * is resolvable (offline directory / invite or private hive) — shows an honest
+ * empty state with the invite-link affordance. Claim (P-003, O-1 per D-005):
+ * offered on unclaimed member listings to any viewer; the worker enforces
+ * maintain/admin and a refusal surfaces honestly.
+ */
+function HiveRollupHeaderCard({
+  hiveRef,
+  members,
+  onClaimed,
+}: {
+  hiveRef: string;
+  members: HarnessListing[];
+  onClaimed: () => void;
+}) {
+  const hivePubkey = isHivePubkeyRef(hiveRef)
+    ? hiveRef
+    : members.find((m) => m.hive_pubkey)?.hive_pubkey ?? null;
+  // Directory + join + claim state is all fetch/lifecycle state (useState per
+  // the nuqs rule); the rollup selection itself lives in ?hive=.
+  const [dirRows, setDirRows] = useState<DirectoryHiveRow[] | null>(null);
+  const [dirError, setDirError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [joinMsg, setJoinMsg] = useState<string | null>(null);
+  const [claiming, setClaiming] = useState(false);
+  const [inviteLink, setInviteLink] = useState('');
+  const [inviteMsg, setInviteMsg] = useState<string | null>(null);
+
+  const loadDirectory = useCallback(async () => {
+    try {
+      const res = await fetch('/api/discovery/hives');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { rows?: DirectoryHiveRow[] };
+      setDirRows(data.rows ?? []);
+      setDirError(null);
+    } catch (e) {
+      setDirRows([]);
+      setDirError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+  useEffect(() => {
+    void loadDirectory();
+  }, [loadDirectory]);
+
+  const announce = hivePubkey
+    ? dirRows?.find((r) => r.hivePubkey === hivePubkey) ?? null
+    : null;
+  const title =
+    members.find((m) => m.hive_title)?.hive_title ??
+    announce?.title ??
+    (isHivePubkeyRef(hiveRef) ? 'Hive' : hiveRef);
+  const claimedCount = members.filter((m) => m.claim_status === 'claimed').length;
+  const unclaimed = members.filter((m) => m.claim_status === 'unclaimed');
+  const joinable = !!announce && announce.memberLinks.length > 0;
+
+  const join = useCallback(async () => {
+    if (!announce || announce.memberLinks.length === 0) return;
+    setJoining(true);
+    setJoinMsg('Joining…');
+    // Join the HIVE, not N loose harnesses — the composed join-hive call runs
+    // every member join and materializes the local hive view (same treatment
+    // as the workbench directory panel).
+    try {
+      const res = await fetch('/api/discovery/join-hive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hiveId: announce.hiveId,
+          title: announce.title,
+          memberLinks: announce.memberLinks,
+        }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        hiveSlug?: string;
+        members?: { ok: boolean }[];
+        error?: string;
+      };
+      const okCount = body.members?.filter((m) => m.ok).length ?? 0;
+      setJoinMsg(
+        res.ok && body.ok
+          ? `Joined hive '${body.hiveSlug}' — ${okCount}/${announce.memberLinks.length} member(s)`
+          : `Join failed: ${body.error ?? `HTTP ${res.status}`}${okCount ? ` (${okCount} member(s) joined)` : ''}`,
+      );
+    } catch (e) {
+      setJoinMsg(`Join failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    setJoining(false);
+  }, [announce]);
+
+  // Claim every unclaimed member listing through the loopback proxy; the
+  // worker is the enforcement point, so report its per-repo verdicts honestly.
+  const claimAll = useCallback(async () => {
+    if (unclaimed.length === 0 || claiming) return;
+    setClaiming(true);
+    let ok = 0;
+    const failures: string[] = [];
+    for (const m of unclaimed) {
+      const repo = listingRepoSlug(m) || String(m.id);
+      try {
+        const res = await fetch(`/api/cupboard/listings/${encodeURIComponent(String(m.id))}/claim`, {
+          method: 'POST',
+        });
+        const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (res.ok && body.ok) {
+          ok += 1;
+        } else if (body.error === 'gh_auth_required') {
+          failures.push(`${repo}: GitHub sign-in required (run \`gh auth login\` on this box)`);
+        } else if (body.error === 'insufficient_permission') {
+          failures.push(`${repo}: GitHub says you don't have maintain/admin on this repo`);
+        } else if (body.error === 'already_claimed') {
+          failures.push(`${repo}: already claimed by someone else`);
+        } else {
+          failures.push(`${repo}: ${body.error ?? `HTTP ${res.status}`}`);
+        }
+      } catch (e) {
+        failures.push(`${repo}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (ok > 0) toast.success(`Claimed ${ok} listing${ok === 1 ? '' : 's'}.`);
+    if (failures.length > 0) toast.error(`Not claimed — ${failures.join('; ')}`);
+    setClaiming(false);
+    if (ok > 0) onClaimed();
+  }, [unclaimed, claiming, onClaimed]);
+
+  // Invitee path: joining the invite-scoped directory topic ingests the hive's
+  // announce, after which the Join CTA above lights up.
+  const submitInvite = useCallback(async () => {
+    const link = inviteLink.trim();
+    if (!link) return;
+    setInviteMsg('Joining the invite topic…');
+    try {
+      const res = await fetch('/api/discovery/join-invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ link }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (res.ok && body.ok) {
+        setInviteMsg('Invite topic joined — waiting for the hive to announce. Refreshing…');
+        setTimeout(() => void loadDirectory(), 1500);
+      } else {
+        setInviteMsg(`Invite failed: ${body.error ?? `HTTP ${res.status}`}`);
+      }
+    } catch (e) {
+      setInviteMsg(`Invite failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [inviteLink, loadDirectory]);
+
+  return (
+    <div
+      data-testid="cupboard-hive-rollup-card"
+      className="pc-card"
+      style={{
+        padding: 16,
+        borderRadius: 16,
+        marginBottom: 16,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        cursor: 'default',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontFamily: FONTS.ui, fontWeight: 650, fontSize: 16, color: COLORS.text }}>
+          <Hexagon size={15} style={{ color: 'var(--accent-soft)' }} />
+          <span data-testid="cupboard-hive-rollup-title">{title}</span>
+          {announce && (
+            <Tooltip
+              label={
+                announce.visibility === 'public'
+                  ? 'Published on the public P2P directory — anyone can discover and join it.'
+                  : 'Listed via an invite topic — only peers holding the invite link discover it.'
+              }
+            >
+              <span
+                data-testid="cupboard-hive-visibility"
+                data-visibility={announce.visibility}
+                className="pc-badge"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  color: 'var(--fg-dim)', background: 'var(--bg-2)', border: '1px solid var(--border)',
+                }}
+              >
+                {announce.visibility === 'public' ? <Globe size={10} /> : <KeyRound size={10} />}
+                {announce.visibility}
+              </span>
+            </Tooltip>
+          )}
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Tooltip label={announce ? 'Member count from the hive’s live directory announce.' : 'Member-repo listings on this page of results — the hive may list more.'}>
+            <span style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <Users size={11} /> {announce ? announce.memberCount : members.length} member{(announce ? announce.memberCount : members.length) === 1 ? '' : 's'}
+            </span>
+          </Tooltip>
+          <ClaimRollupPill claimed={claimedCount} total={members.length} />
+        </span>
+      </div>
+
+      {announce?.owner && (
+        <span style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted }}>
+          owner: {announce.owner}
+        </span>
+      )}
+
+      {dirRows === null ? (
+        <span style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Checking the hive directory…
+        </span>
+      ) : joinable ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            onClick={() => void join()}
+            disabled={joining}
+            data-testid="cupboard-hive-join"
+            className="pc-button"
+            style={{
+              background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)',
+              opacity: joining ? 0.7 : 1, cursor: joining ? 'default' : 'pointer',
+            }}
+          >
+            {joining ? (
+              <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Joining…</>
+            ) : (
+              <><Hexagon size={13} /> Join hive</>
+            )}
+          </button>
+          {joinMsg && (
+            <span data-testid="cupboard-hive-join-msg" style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
+              {joinMsg}
+            </span>
+          )}
+        </div>
+      ) : (
+        /* Honest empty-state (P-001): no resolvable announce — offline
+           directory, invite-only, or private hive. Offer the invite-link path. */
+        <div data-testid="cupboard-hive-join-unavailable" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <AlertTriangle size={12} />
+            {announce
+              ? 'This hive announces topics only — a full member join link is required to join from here.'
+              : dirError
+                ? `The hive directory is unreachable (${dirError}) — joining needs a live announce.`
+                : 'This hive isn’t announcing on the directory from here — it may be invite-only, offline, or not yet discovered.'}
+          </span>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              value={inviteLink}
+              onChange={(e) => setInviteLink(e.target.value)}
+              placeholder="papercusp://hive?pubkey=…&secret=… invite link"
+              data-testid="cupboard-hive-invite-input"
+              className="pc-input"
+              style={{ flex: 1, minWidth: 220, fontFamily: FONTS.mono, fontSize: 12 }}
+            />
+            <button
+              onClick={() => void submitInvite()}
+              disabled={!inviteLink.trim()}
+              data-testid="cupboard-hive-invite-submit"
+              className="pc-button"
+            >
+              <KeyRound size={12} /> Join via invite
+            </button>
+          </div>
+          {inviteMsg && (
+            <span data-testid="cupboard-hive-invite-msg" style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
+              {inviteMsg}
+            </span>
+          )}
+        </div>
+      )}
+
+      {unclaimed.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Tooltip label={`Claim vouches for the ${unclaimed.length === 1 ? 'listing' : 'listings'} as a verified repo maintainer — a trust signal, not ownership of the code. GitHub enforces maintain/admin; without it the claim is refused and says so.`}>
+            <button
+              onClick={() => void claimAll()}
+              disabled={claiming}
+              data-testid="cupboard-hive-claim"
+              className="pc-button"
+              style={{ opacity: claiming ? 0.7 : 1, cursor: claiming ? 'default' : 'pointer' }}
+            >
+              {claiming ? (
+                <><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Claiming…</>
+              ) : (
+                <><ShieldCheck size={12} /> Claim {unclaimed.length === members.length ? 'listings' : `${unclaimed.length} unclaimed`}</>
+              )}
+            </button>
+          </Tooltip>
+        </div>
+      )}
+    </div>
+  );
 }

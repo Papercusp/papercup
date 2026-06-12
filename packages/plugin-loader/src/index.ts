@@ -128,6 +128,8 @@ export interface LoadedPlugin {
    * default to `{ kind: 'js' }`.
    */
   runtime?: import('@papercusp/plugin-sdk').PluginRuntime;
+  /** Declarative reaction rules parsed from the manifest (merged with the entry plugin's `reactions` by `collectReactionRules`). */
+  manifestReactions?: import('@papercusp/plugin-sdk').PluginReactionRule[];
 }
 
 export interface LoaderOptions {
@@ -158,6 +160,13 @@ interface ManifestShape {
    * distinguishes React (in-bundle) from iframe surfaces (Batch H).
    */
   ui?: import('@papercusp/plugin-sdk').UiSurfaceManifestEntry[];
+  /**
+   * Declarative event-reaction rules (plugin-system-hive-port D-003 / P-005).
+   * The manifest carries the declarative subset only (data-match `when`,
+   * static `args` — enforced by the JSON schema); function forms live on the
+   * entry plugin's `reactions` export. Merged by `collectReactionRules`.
+   */
+  reactions?: import('@papercusp/plugin-sdk').PluginReactionRule[];
 }
 
 async function readManifest(dir: string): Promise<ManifestShape | { __error: string } | null> {
@@ -345,6 +354,47 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
       }
     }
   }
+  // Reaction-rule validation (plugin-system-hive-port D-003 / P-005):
+  //   1. Rule ids unique within the plugin (across manifest + code rules).
+  //   2. Each trigger in `on` requires an `events:listen:<trigger>` capability
+  //      — the consent surface for what the plugin watches.
+  //   3. An explicit `capability` must be one the plugin declares.
+  // Fire-target resolution (must be THIS plugin's projected tool) happens at
+  // host registration time, when the projection registry exists.
+  {
+    const manifestRules = manifest.reactions ?? [];
+    const codeRules = (plugin as { reactions?: import('@papercusp/plugin-sdk').PluginReactionRule[] }).reactions ?? [];
+    const seenIds = new Set<string>();
+    for (const [label, rules] of [['manifest', manifestRules], ['export', codeRules]] as const) {
+      for (const r of rules) {
+        if (!r || typeof r.id !== 'string' || r.id.length === 0) {
+          return `plugin "${plugin.name}" has an invalid ${label} reaction (missing id)`;
+        }
+        // A code rule deliberately re-declaring a manifest rule's id (override) is
+        // allowed; a duplicate WITHIN one source is an authoring error.
+        const scopedId = `${label}:${r.id}`;
+        if (seenIds.has(scopedId)) {
+          return `plugin "${plugin.name}" declares duplicate reaction id "${r.id}"`;
+        }
+        seenIds.add(scopedId);
+        if (typeof r.fire !== 'string' || r.fire.length === 0) {
+          return `plugin "${plugin.name}" reaction "${r.id}" has no fire target`;
+        }
+        const triggers = Array.isArray(r.on) ? r.on : [r.on];
+        if (triggers.length === 0 || triggers.some((t) => typeof t !== 'string' || t.length === 0)) {
+          return `plugin "${plugin.name}" reaction "${r.id}" has an invalid \`on\` trigger`;
+        }
+        for (const t of triggers) {
+          if (!plugin.capabilities.includes(`events:listen:${t}` as any)) {
+            return `plugin "${plugin.name}" reaction "${r.id}" listens on "${t}" but lacks capability "events:listen:${t}"`;
+          }
+        }
+        if (r.capability !== undefined && !plugin.capabilities.includes(r.capability as any)) {
+          return `plugin "${plugin.name}" reaction "${r.id}" scopes to capability "${r.capability}" the plugin doesn't declare`;
+        }
+      }
+    }
+  }
   // kind='pack' — a runtime-less code-tool pack (tool-distribution-granularity
   // 2026-06-05 D-001/D-004): statically-declared tools are its ONLY
   // contribution, so a pack stays installable in isolation by construction.
@@ -372,6 +422,7 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
     if ((legacy.routines?.length ?? 0) > 0) offending.push('routines');
     if ((plugin.actions?.length ?? 0) > 0) offending.push('actions');
     if (plugin.hooks && Object.keys(plugin.hooks).length > 0) offending.push('hooks');
+    if ((plugin.reactions?.length ?? 0) > 0 || (manifest.reactions?.length ?? 0) > 0) offending.push('reactions');
     if (offending.length > 0) {
       return `pack "${plugin.name}" declares runtime-bearing surface(s) ${offending.join(', ')} — a pack contributes tools only; use kind "plugin"`;
     }
@@ -464,6 +515,7 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
     source: r.source as LoadedPlugin['source'],
     toolDefinitions: manifest.tools ?? [],
     runtime,
+    manifestReactions: manifest.reactions ?? [],
   };
 }
 
@@ -746,6 +798,22 @@ export function collectUiContributions(loaded: LoadedPlugin[]): {
   return { routes, dashboardTabs, sidebarItems };
 }
 
+/**
+ * One plugin's effective reaction rules: manifest-declared (declarative
+ * subset) merged with the entry plugin's `reactions` export — a code rule
+ * overrides a manifest rule with the same id. The host registers each into
+ * the reaction registry, capability-scoped (plugin-system-hive-port P-005;
+ * event-reaction-system D-012).
+ */
+export function collectReactionRules(
+  lp: LoadedPlugin,
+): import('@papercusp/plugin-sdk').PluginReactionRule[] {
+  const byId = new Map<string, import('@papercusp/plugin-sdk').PluginReactionRule>();
+  for (const r of lp.manifestReactions ?? []) byId.set(r.id, r);
+  for (const r of lp.plugin.reactions ?? []) byId.set(r.id, r);
+  return [...byId.values()];
+}
+
 // ─── Re-exports ──────────────────────────────────────────────────────
 export {
   hasCapability,
@@ -758,10 +826,9 @@ export {
   type CapabilityCheckContext,
 } from './capabilities';
 
-export {
-  HookBus,
-  createPluginHookBus,
-} from './hookbus';
+// (hookbus.ts — the WordPress-style addAction/addFilter bus — was RETIRED by
+// plugin-system-hive-port-2026-06-11 P-006: zero registered consumers, and its
+// invocations bypassed dispatch. Plugins hook the host via `reactions` now.)
 
 export {
   createPapercuspApi,

@@ -612,6 +612,15 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
       .then((m) => m.emitWorkItemSettledEvents(settled))
       .catch(() => {});
   }
+  // plugin-system-hive-port P-004: a transition INTO `blocked` fires
+  // `work-item:blocked:<id>` (notifying the delegator) so blocked work is a
+  // durable signal, not a prose message. Same fire-and-forget shape.
+  if (result && result.state === 'blocked' && wi.state !== 'blocked') {
+    const blocked = result;
+    void import('./work-items-events')
+      .then((m) => m.emitWorkItemBlockedEvent(blocked))
+      .catch(() => {});
+  }
   return result;
 }
 
@@ -625,18 +634,29 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
 export async function claimWorkItem(id: string, assignee: string, opts: { harness?: string } = {}): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  let claimed: WorkItem | null;
   if (wi.family === 'issue') {
     const updated = await claimIssue(id, assignee);
-    return updated ? issueToWorkItem(updated) : null;
+    claimed = updated ? issueToWorkItem(updated) : null;
+  } else {
+    const { sql } = getOrgPg();
+    const rows = await sql<FeatureRowDb[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         SET taken_by = ${assignee}, taken_at = now(), updated_ts = ${Date.now()}
+       WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee})
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
-  const { sql } = getOrgPg();
-  const rows = await sql<FeatureRowDb[]>`
-    UPDATE harness_shared.harness_features_consolidated
-       SET taken_by = ${assignee}, taken_at = now(), updated_ts = ${Date.now()}
-     WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
-       AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee})
-    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
-  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  // plugin-system-hive-port P-004: a successful claim fires `work-item:claimed:<id>`
+  // (events:await leg; reaction rules observe the claim tools via postInvoke).
+  if (claimed) {
+    const won = claimed;
+    void import('./work-items-events')
+      .then((m) => m.emitWorkItemClaimedEvent(won, assignee))
+      .catch(() => {});
+  }
+  return claimed;
 }
 
 export interface ClaimNextFilter {
@@ -708,7 +728,14 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
         FOR UPDATE SKIP LOCKED
      )
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
-  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  const claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  // plugin-system-hive-port P-004: same claimed-event as claimWorkItem.
+  if (claimed) {
+    void import('./work-items-events')
+      .then((m) => m.emitWorkItemClaimedEvent(claimed, filter.assignee))
+      .catch(() => {});
+  }
+  return claimed;
 }
 
 export interface WorkItemObservation {

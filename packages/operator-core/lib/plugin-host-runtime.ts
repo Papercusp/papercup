@@ -2,14 +2,19 @@
  * Phase 6b items 1 + 4 — process-level plugin lifecycle host.
  *
  * Owns:
- *   - the singleton `HookBus` for free-form `events:emit/listen:*` events
  *   - the discovered `LoadedPlugin[]` cache
  *   - per-(plugin, harness) lazy initialization of `init()` + `hooks.onLoad()`
- *   - the host-side fire helpers `firePluginLifecycle()` + `firePluginEvent()`
+ *   - the host-side typed fire helper `firePluginLifecycle()`
+ *   - plugin reaction-rule registration into the event-reaction registry
  *
  * Lifecycle hooks (the typed `PluginHooks` shape on the SDK) are called by
- * direct iteration. Free-form events (`events:emit:<name>`) flow through
- * the `HookBus` so plugins can subscribe via `addAction`/`addFilter`.
+ * direct iteration — a FROZEN back-compat surface (plugin-system-hive-port
+ * D-003). The extension surface is event-reaction rules: plugins declare
+ * `reactions` (manifest or entry export); the host registers each into the
+ * one reaction registry, capability-scoped, firing through normal dispatch.
+ * Plugin-emitted events (the WASM event sink, `plugins:fire_event`) feed the
+ * same registry as synthetic events via `emitSystemEvent`. (The WordPress-
+ * style HookBus addAction/addFilter layer was retired by that plan's P-006.)
  *
  * Keep this module side-effect-free at import time — the first `await
  * getPluginHost()` triggers discovery so we don't wedge dev-server boot
@@ -21,10 +26,9 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   loadPlugins,
-  HookBus,
-  createPluginHookBus,
   hasCapability,
   ServerActionRegistry,
+  collectReactionRules,
   type LoadedPlugin,
   type CapabilityCheckContext,
   type ActionDecl,
@@ -33,6 +37,7 @@ import {
 import type {
   PapercuspContext,
   PluginHooks,
+  PluginReactionRule,
   PluginSpawn,
   PluginSpawnResult,
 } from '@papercusp/plugin-sdk';
@@ -114,7 +119,6 @@ installConsoleInterceptor();
 interface HostState {
   loaded: LoadedPlugin[];
   loadErrors: Array<{ error: string; path: string }>;
-  bus: HookBus;
   /** (pluginName, installSlug) → already initialized */
   initialized: Set<string>;
   /** (pluginName, installSlug) → sealed action registry from `init()`. */
@@ -159,7 +163,8 @@ function discoverHarnessSlugs(): string[] {
 export interface PluginHostStatus {
   loaded: number;
   errors: number;
-  hookRegistrations: { event: string; kind: 'action' | 'filter'; plugins: string[] }[];
+  /** Reaction rules contributed by plugins (`plugin:<name>:<rule-id>`). */
+  reactionRules: Array<{ id: string; on: string | string[]; fire: string; plugin: string }>;
 }
 
 /**

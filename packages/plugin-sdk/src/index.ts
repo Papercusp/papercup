@@ -65,7 +65,10 @@ export type Capability =
   | `secrets:read:${string}`
   | `secrets:write:${string}`
 
-  // Events / hooks. e.g. 'events:emit:briefing-ready'.
+  // Events. `events:emit:<name>` gates plugin-emitted events (WASM event
+  // sink / cross-plugin signals); `events:listen:<trigger>` gates a reaction
+  // rule's `on` trigger (each rule's trigger key must be declared — the
+  // consent surface for what the plugin watches).
   | `events:emit:${string}`
   | `events:listen:${string}`
 
@@ -454,7 +457,6 @@ export interface PapercuspApi {
   fetch: PluginFetch;
   storage: PluginStorage;
   db: PluginDb;
-  hooks: PluginHookBus;
   /** Inspector — what capabilities this plugin actually has. */
   capabilities: () => Capability[];
 }
@@ -560,19 +562,65 @@ export interface PluginDb {
 
 
 /* ─────────────────────────────────────────────────────────────────────
- * Hook bus — WordPress-style addAction/addFilter.
+ * Event-reaction rules — the plugin extension surface for "when X, fire Y"
+ * (plugin-system-hive-port-2026-06-11 D-003; event-reaction-system D-012).
  *
- * Lets plugins extend behaviour without modifying core. Hook names + arg
- * shapes are part of the spec; capabilities gate subscription/emission.
+ * The WordPress-style hook bus (addAction/addFilter) was RETIRED 2026-06-12:
+ * it had zero registered consumers and its invocations bypassed dispatch
+ * (no audit, no capability gating at fire time). Plugins now hook the host
+ * by declaring REACTION RULES: when trigger `on` settles (a tool invocation
+ * observed at the dispatcher, or a host emission like `pipeline:step-done`),
+ * the host fires the rule's target tool through NORMAL dispatch — auth-gated,
+ * quota'd, audited, loop-protected. The fire target must be one of the
+ * plugin's OWN tools, and the rule runs under a principal holding only the
+ * rule's capability.
  * ───────────────────────────────────────────────────────────────────── */
 
-export interface PluginHookBus {
-  /** Cap: events:listen:<event-name>. Fires when the host emits <event-name>. */
-  addAction<T = unknown>(event: string, handler: (arg: T) => void | Promise<void>): void;
-  /** Cap: events:listen:<event-name>. Lets plugins transform a value passing through the host. */
-  addFilter<T = unknown>(event: string, handler: (arg: T) => T | Promise<T>): void;
-  /** Cap: events:emit:<event-name>. Plugins can emit their own custom events for other plugins. */
-  emit<T = unknown>(event: string, arg: T): Promise<void>;
+/**
+ * The event a plugin rule's `when` / `args` functions see. A flattened
+ * tool-invocation (or host-emitted synthetic event): `tool` is the trigger
+ * key, `result.data` the trigger's parsed return value (for a host emission,
+ * the emission payload).
+ */
+export interface PluginReactionEvent {
+  tool: string;
+  args: unknown;
+  result: { ok: boolean; data?: unknown; error?: { code: string; message: string } };
+}
+
+/**
+ * A declarative reaction rule a plugin contributes. Entry-point plugins may
+ * use function forms for `when` / `args`; manifest-only plugins are limited
+ * to the declarative forms (a data-match object / a static args object).
+ *
+ * Capability contract:
+ *  - the manifest must declare `events:listen:<on>` for each trigger key;
+ *  - `fire` must name one of THIS plugin's projected tools (`<plugin>.<verb>`);
+ *  - the reaction runs sandboxed to `capability` (default: the fired tool's
+ *    declared capability), so the rule can only do what the plugin could.
+ */
+export interface PluginReactionRule {
+  /** Unique within the plugin. The host registers it as `plugin:<name>:<id>`. */
+  id: string;
+  /** Trigger key(s): a tool MCP name (`work_items:complete`) or a host emission (`pipeline:step-done`). */
+  on: string | string[];
+  /**
+   * Optional condition. Declarative data-match object (see `@papercusp/rules`
+   * — e.g. `{ 'args.role': { equals: 'worker' } }`), or a predicate function
+   * (entry-point plugins only).
+   */
+  when?: Record<string, unknown> | ((event: PluginReactionEvent) => boolean);
+  /** The plugin tool to fire — must be this plugin's own (`<plugin>.<verb>`). */
+  fire: string;
+  /** The fire args: a static object, or a function deriving them from the event. */
+  args?: Record<string, unknown> | ((event: PluginReactionEvent) => Record<string, unknown>);
+  /** Skip when the trigger errored. Default true. */
+  onlyOnSuccess?: boolean;
+  /**
+   * Capability the reaction is sandboxed to. Must be one of the plugin's
+   * manifest capabilities. Default: the fired tool's declared capability.
+   */
+  capability?: string;
 }
 
 
@@ -790,8 +838,20 @@ export interface Plugin {
   /** Lifecycle init — runs once on plugin load. */
   init?(ctx: PapercuspContext): Promise<void>;
 
-  /** Lifecycle hooks. */
+  /**
+   * Lifecycle hooks. FROZEN surface (plugin-system-hive-port D-003): the
+   * existing fire-points stay for back-compat but no new ones will be added —
+   * new host fire-points are event emissions; subscribe via `reactions`.
+   */
   hooks?: PluginHooks;
+
+  /**
+   * Event-reaction rules — the extension surface for "when X happens, invoke
+   * my tool" (plugin-system-hive-port D-003). Each rule is capability-scoped
+   * and fires through normal dispatch. Manifest `reactions` entries (the
+   * declarative subset) merge with these; on id collision the code rule wins.
+   */
+  reactions?: PluginReactionRule[];
 
   /** Full-route UI mounted at /harness/<slug>. */
   ui?: UiContribution;

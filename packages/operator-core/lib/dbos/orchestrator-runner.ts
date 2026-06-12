@@ -24,12 +24,13 @@ import {
   configGet,
   resolvePhase,
   runHook,
-  firePluginHook,
   postCuratorOutputs,
   postArchiveEvent,
   captureDebuggerOutput,
   materializeFeatureDebugNote,
 } from '@papercusp/orchestrator';
+import { emitPipelineEvent } from '../events/pipeline-events';
+import { firePluginLifecycle } from '../plugin-host-runtime';
 import { readEffectiveHarnessConfig } from '../harness-effective-config';
 import { loadBlueprintFromFile, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { resolveProject } from '../harness-core';
@@ -420,7 +421,7 @@ function runChild(
   });
 }
 
-const realRunner: PipelineInvokeRunner = async (harnessSlug, role, _featureId, idempotencyKey, extras, workspaceId) => {
+const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, idempotencyKey, extras, workspaceId) => {
   // Resolve in the pipeline's CAPTURED workspace, not the volatile active one
   // (which can switch mid-pipeline and make `resolveProject` return null →
   // empty output → a spurious ERROR on a later turn).
@@ -442,6 +443,16 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, _featureId, i
   if (runId && role === 'worker') {
     void emitFeatureWorkedStart(harnessSlug, runId, { role });
   }
+  // P-004 (plugin-system-hive-port D-003): spine step transitions are event
+  // emissions — `pipeline:step-start` / `pipeline:step-done` serve reaction
+  // rules + events:await + UI in one fire. This runner executes INSIDE a
+  // checkpointed DBOS step, so a workflow replay does not re-emit for
+  // completed role runs. (These supersede the bash-era pre-/post-role hook
+  // points lost in the DBOS migration — known-hooks.ts EI-95 backlog.)
+  emitPipelineEvent({
+    name: 'step-start', harnessSlug, featureId, role, runId,
+    ...(workspaceId ? { workspaceId } : {}),
+  });
   const startedAt = Date.now();
   // HARNESS_SLUG = the registry slug (not basename(project.path)) so invoke-once's
   // pg-bootstrap resolves harness_<slug> correctly; PAPERCUSP_WORKSPACE_ID pins the
@@ -452,8 +463,8 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, _featureId, i
     extras,
     buildPipelineExtraEnv({ harnessSlug, idempotencyKey, workspaceId }),
   );
+  const durationMs = Date.now() - startedAt;
   if (runId) {
-    const durationMs = Date.now() - startedAt;
     void emitAgentRunCompleted(harnessSlug, runId, { role, durationMs });
     if (role === 'worker') {
       void emitFeatureWorkedEnd(harnessSlug, runId, {
@@ -461,6 +472,11 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, _featureId, i
       });
     }
   }
+  emitPipelineEvent({
+    name: 'step-done', harnessSlug, featureId, role, runId,
+    exitCode: result.exitCode, durationMs,
+    ...(workspaceId ? { workspaceId } : {}),
+  });
   return result;
 };
 
@@ -811,6 +827,12 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
             harnessSlug,
             ...(workspaceId ? { workspaceId } : {}),
           });
+          // P-004: the terminal transition is an event emission (reaction rules +
+          // events:await + UI in one fire). Inside the checkpointed finalize step.
+          emitPipelineEvent({
+            name: 'escalate', harnessSlug, featureId: featureId ?? '-',
+            ...(reason ? { reason } : {}), ...(workspaceId ? { workspaceId } : {}),
+          });
         } else if (step.hook === 'afterDone') {
           // P-004 (promote-spawn-child-harness): the parent-notification BUILTIN.
           // A per-harness hooks/afterDone.sh overrides it entirely (parity with
@@ -836,12 +858,22 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
               log: (m) => console.log(`[dbos-finalize] ${m}`),
             });
           }
-          firePluginHook({
-            hookName: 'afterDone',
+          // P-006 (plugin-system-hive-port D-003): the deprecated `firePluginHook`
+          // shell-out (per-plugin child process via the papercusp-fire-hook CLI)
+          // is replaced by the in-process typed fire — `afterDone` is one of the
+          // FROZEN legacy fire-points D-003 keeps for back-compat. Best-effort:
+          // a plugin hook failure is logged by the host, never sinks finalization.
+          await firePluginLifecycle('afterDone', {
+            installSlug: harnessSlug,
             projectDir,
             stateDir,
-            pluginsLogPath: join(logDir, 'plugins.log'),
-            log: (m) => console.log(`[dbos-finalize] ${m}`),
+          }).catch((e) => console.warn(`[dbos-finalize] afterDone plugin hooks failed: ${e instanceof Error ? e.message : e}`));
+          // P-004: the terminal transition as an event emission — the extension
+          // surface plugins actually subscribe to (capability-scoped reaction
+          // rules), plus events:await wakes on `pipeline:done:<slug>:<feature>`.
+          emitPipelineEvent({
+            name: 'done', harnessSlug, featureId: featureId ?? '-',
+            ...(workspaceId ? { workspaceId } : {}),
           });
         }
       }

@@ -9,6 +9,8 @@
  *   GET  /api/cupboard/listings/:id                  — detail (public)
  *   GET  /api/cupboard/tools                         — tool discovery (local pack
  *        catalog merged with Cupboard provides_tools; tool-distribution P-006)
+ *   POST /api/cupboard/listings/:id/claim            — claim a listing (gh token
+ *        added server-side; the worker enforces maintain/admin — comb P-003)
  *   GET  /api/cupboard/admin/reports                 — operator: list reports
  *   POST /api/cupboard/admin/reports/:id/resolve     — operator: resolve a report
  *   POST /api/cupboard/admin/harnesses/:id/unlist    — operator: takedown
@@ -202,11 +204,12 @@ const resolveCupboardProvides = defineTool({
   },
 });
 
-// ─── Operator moderation proxy (/cupboard/admin/*) ───────────────────
-// Adds the maintainer's gh-token server-side (browser never holds it), like
-// the publish proxy; the Cupboard worker enforces the operator allowlist.
+// ─── Authed forwarding (claim + /cupboard/admin/*) ───────────────────
+// Adds the operator's gh-token server-side (browser never holds it), like
+// the publish proxy; the Cupboard worker enforces its own per-route gate
+// (operator allowlist for /admin/*, repo maintain/admin for claim).
 
-async function forwardToCupboardAdmin(
+async function forwardToCupboardAuthed(
   pathAndQuery: string,
   init: { method: 'GET' | 'POST'; body?: string },
 ): Promise<Response> {
@@ -246,6 +249,26 @@ async function forwardToCupboardAdmin(
   return Response.json(parsed, { status: upstream.status });
 }
 
+// ─── POST /cupboard/listings/:id/claim ───────────────────────────
+// The storefront's Claim CTA (comb-hive-native-sharing-2026-06-11 P-003,
+// O-1 resolved per D-005): the CTA shows to any signed-in viewer; the WORKER
+// is the enforcement point (maintain/admin via the GitHub API), so this proxy
+// only adds the operator's gh token and passes the worker's verdict through
+// honestly — 401 gh_auth_required (no local gh login), 403
+// insufficient_permission, 409 already_claimed, 410 unlisted.
+
+const claimCupboardListing = defineTool({
+  method: 'POST',
+  path: '/cupboard/listings/:id/claim',
+  auth: 'loopback',
+  async handler(_req, ctx) {
+    const id = ctx.params.id as string;
+    return forwardToCupboardAuthed(`/listings/${encodeURIComponent(id)}/claim`, {
+      method: 'POST',
+    });
+  },
+});
+
 const listCupboardReports = defineTool({
   method: 'GET',
   path: '/cupboard/admin/reports',
@@ -253,7 +276,7 @@ const listCupboardReports = defineTool({
   async handler(req) {
     const status = new URL(req.url).searchParams.get('status');
     const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-    return forwardToCupboardAdmin(`/admin/reports${qs}`, { method: 'GET' });
+    return forwardToCupboardAuthed(`/admin/reports${qs}`, { method: 'GET' });
   },
 });
 
@@ -264,7 +287,7 @@ const resolveCupboardReport = defineTool({
   async handler(req, ctx) {
     const id = ctx.params.id as string;
     const body = await req.text();
-    return forwardToCupboardAdmin(`/admin/reports/${encodeURIComponent(id)}/resolve`, {
+    return forwardToCupboardAuthed(`/admin/reports/${encodeURIComponent(id)}/resolve`, {
       method: 'POST',
       body: body || '{}',
     });
@@ -278,7 +301,7 @@ const unlistCupboardHarness = defineTool({
   async handler(req, ctx) {
     const id = ctx.params.id as string;
     const body = await req.text();
-    return forwardToCupboardAdmin(`/admin/harnesses/${encodeURIComponent(id)}/unlist`, {
+    return forwardToCupboardAuthed(`/admin/harnesses/${encodeURIComponent(id)}/unlist`, {
       method: 'POST',
       body: body || '{}',
     });
@@ -293,7 +316,7 @@ const listCupboardPending = defineTool({
   path: '/cupboard/admin/pending',
   auth: 'public',
   async handler() {
-    return forwardToCupboardAdmin('/admin/pending', { method: 'GET' });
+    return forwardToCupboardAuthed('/admin/pending', { method: 'GET' });
   },
 });
 
@@ -304,7 +327,7 @@ const reviewCupboardListing = defineTool({
   async handler(req, ctx) {
     const id = ctx.params.id as string;
     const body = await req.text();
-    return forwardToCupboardAdmin(`/admin/listings/${encodeURIComponent(id)}/review`, {
+    return forwardToCupboardAuthed(`/admin/listings/${encodeURIComponent(id)}/review`, {
       method: 'POST',
       body: body || '{}',
     });
@@ -316,6 +339,7 @@ export default [
   getCupboardListing,
   listCupboardTools,
   resolveCupboardProvides,
+  claimCupboardListing,
   listCupboardReports,
   resolveCupboardReport,
   unlistCupboardHarness,

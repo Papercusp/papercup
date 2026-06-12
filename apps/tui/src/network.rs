@@ -33,14 +33,16 @@ use ratatui::{
 };
 
 /// The Enter-to-open seam consumed by B-10's per-hive tab generator: the
-/// minimal identity of the selected row. B-10 builds its `HiveTabSpec` from
-/// this (+ `watch_owners`, which C-3 rows don't carry — empty in v1).
+/// minimal identity of the selected row, plus the per-bee `watch_owners`
+/// the C-3 row carries for tiers 2/3 (P-014 item 1) — each becomes a
+/// read-only `pui watch-pane <owner>` in the generated tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrillInRequest {
     pub tier: u8,
     pub key: String,
     pub title: String,
     pub trust: String,
+    pub watch_owners: Vec<String>,
 }
 
 /// Map a board row to its drill-in request (the Enter seam).
@@ -50,6 +52,7 @@ pub fn drill_in(row: &NetworkBoardRow) -> DrillInRequest {
         key: row.key.clone(),
         title: row.title.clone(),
         trust: row.trust.clone(),
+        watch_owners: row.watch_owners.clone(),
     }
 }
 
@@ -191,10 +194,40 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
 /// The `pui hive-pane <key>` mode: one row's dossier, full-pane. A key not on
 /// the board (yet) renders an honest waiting state — the row can appear on the
 /// next refetch (the pane is opened close-on-exit by B-10's tab, so a user
-/// just closes it if the hive is truly gone).
+/// just closes it if the hive is truly gone). When the dossier queries carry
+/// data for this key (beacon history / the C-1 ask log, P-014 item 2), they
+/// render below the detail; absent data hides its section (the C-3 rule).
 fn draw_focused_hive(f: &mut Frame, app: &App, area: Rect, key: &str) {
     match app.network_rows.iter().find(|r| r.key == key) {
-        Some(row) => draw_detail(f, area, row, true),
+        Some(row) => {
+            let beacons = !app.hive_beacons.is_empty();
+            let asks = !app.hive_asks.is_empty();
+            if !beacons && !asks {
+                draw_detail(f, area, row, true);
+                return;
+            }
+            // Detail header on top; the populated dossier sections share the rest.
+            let mut constraints = vec![Constraint::Min(8)];
+            if beacons {
+                constraints.push(Constraint::Percentage(30));
+            }
+            if asks {
+                constraints.push(Constraint::Percentage(30));
+            }
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(constraints)
+                .split(area);
+            draw_detail(f, split[0], row, true);
+            let mut next = 1;
+            if beacons {
+                draw_beacon_history(f, app, split[next]);
+                next += 1;
+            }
+            if asks {
+                draw_ask_log(f, app, split[next]);
+            }
+        }
         None => {
             f.render_widget(
                 Paragraph::new(format!(
@@ -314,6 +347,80 @@ fn draw_detail(f: &mut Frame, area: Rect, row: &NetworkBoardRow, full: bool) {
     );
 }
 
+/// The dossier's beacon HISTORY (P-014 item 2, `network.hive.beacons`): one
+/// line per captured C-2 snapshot, newest-first — how the foreign hive's
+/// self-reported status evolved. Gossip trust: rendered data, never actions.
+fn draw_beacon_history(f: &mut Frame, app: &App, area: Rect) {
+    let lines: Vec<Line> = app
+        .hive_beacons
+        .iter()
+        .map(|s| {
+            let b = &s.beacon;
+            let focus = if b.focus.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", trunc(&b.focus, 40))
+            };
+            let last = if b.last_completed.is_empty() {
+                String::new()
+            } else {
+                format!(" · last: {}", trunc(&b.last_completed, 30))
+            };
+            Line::from(vec![
+                Span::styled(format!(" {} ", trunc(&s.captured_at, 19)), Theme::dim()),
+                Span::raw(format!(
+                    "{} agents · queue {}{focus}{last}",
+                    b.live_agents, b.queue_depth
+                )),
+            ])
+        })
+        .collect();
+    let n = app.hive_beacons.len();
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(Theme::panel())
+            .block(Theme::block(Line::from(format!(" beacon history — {n} ")), false)),
+        area,
+    );
+}
+
+/// The dossier's ask/answer TRAFFIC log (P-014 item 2, `network.hive.asks`):
+/// every C-1 ledger row with this peer, both directions, all states,
+/// newest-first (the board row only carries pending/answered counts).
+fn draw_ask_log(f: &mut Frame, app: &App, area: Rect) {
+    let lines: Vec<Line> = app
+        .hive_asks
+        .iter()
+        .map(|a| {
+            let dir = if a.direction == "in" { "←" } else { "→" };
+            let state_style = match a.state.as_str() {
+                "answered" => Theme::success(),
+                "declined" | "expired" => Theme::warn(),
+                _ => Theme::info(),
+            };
+            let reply = a
+                .reply_body
+                .as_ref()
+                .filter(|r| !r.is_empty())
+                .map(|r| format!(" · {}", trunc(r, 36)))
+                .unwrap_or_default();
+            Line::from(vec![
+                Span::styled(format!(" {} ", trunc(&a.created_at, 19)), Theme::dim()),
+                Span::raw(format!("{dir} {} ", a.kind)),
+                Span::styled(format!("{:<9}", a.state), state_style),
+                Span::raw(format!(" {}{reply}", trunc(&a.subject, 36))),
+            ])
+        })
+        .collect();
+    let n = app.hive_asks.len();
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(Theme::panel())
+            .block(Theme::block(Line::from(format!(" ask log — {n} ")), false)),
+        area,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +440,7 @@ mod tests {
             "queueDepth": 7,
             "focus": "shop migration",
             "lastSeen": "2026-06-11T20:00:00Z",
+            "watchOwners": ["su-aaa", "su-bbb"],
             "wake": { "active": true, "nextFireAt": "2026-06-11T21:00:00Z" },
             "grants": { "in": ["ask"], "out": ["ask", "work-request"] },
             "asks": { "pending": 2, "answered": 5 }
@@ -344,6 +452,7 @@ mod tests {
         assert_eq!(row.live_agents, Some(3));
         assert_eq!(row.queue_depth, Some(7));
         assert_eq!(row.last_seen.as_deref(), Some("2026-06-11T20:00:00Z"));
+        assert_eq!(row.watch_owners, vec!["su-aaa", "su-bbb"]);
         let w = row.wake.unwrap();
         assert!(w.active);
         assert_eq!(w.next_fire_at.as_deref(), Some("2026-06-11T21:00:00Z"));
@@ -364,6 +473,7 @@ mod tests {
         assert_eq!(row.queue_depth, None);
         assert_eq!(row.focus, None);
         assert_eq!(row.last_seen, None);
+        assert!(row.watch_owners.is_empty());
         assert!(row.wake.is_none() && row.grants.is_none() && row.asks.is_none());
     }
 
@@ -391,6 +501,7 @@ mod tests {
             trust: "federated".into(),
             live_agents: Some(2),
             last_seen: Some("2026-06-11T19:00:00Z".into()),
+            watch_owners: vec!["fed:1@boxA".into(), "fed:2@boxA".into()],
             ..Default::default()
         }
     }
@@ -434,8 +545,13 @@ mod tests {
                 key: "pk-foreign".into(),
                 title: "Ash Hive".into(),
                 trust: "gossip".into(),
+                watch_owners: vec![],
             }
         );
+        // Tiers 2/3 carry the per-bee watch owners through (P-014 item 1) —
+        // the B-10 generator turns each into a `pui watch-pane <owner>`.
+        let req = drill_in(&t3());
+        assert_eq!(req.watch_owners, vec!["fed:1@boxA", "fed:2@boxA"]);
     }
 
     fn render(app: &App, w: u16, h: u16) -> String {
@@ -515,5 +631,50 @@ mod tests {
         app.update(crate::event::Event::NetworkBoard(vec![t1()]));
         assert_eq!(app.network_rows.len(), 1);
         assert_eq!(app.network_sel, 0);
+    }
+
+    #[test]
+    fn focused_hive_pane_renders_dossier_sections_when_populated() {
+        // P-014 item 2: the hive-pane grows beacon-history + ask-log sections
+        // when the dossier queries return data — hidden otherwise (C-3 rule,
+        // asserted by focused_hive_pane_renders_one_dossier_or_waits above).
+        let mut app = App::new();
+        app.network_rows = vec![t4()];
+        app.network_focus = Some("pk-foreign".into());
+        app.update(crate::event::Event::HiveDossier {
+            beacons: vec![crate::models::HiveBeaconSnapshot {
+                hive_id: "ash".into(),
+                hive_pubkey: Some("pk-foreign".into()),
+                beacon: crate::models::BeaconFields {
+                    live_agents: 4,
+                    queue_depth: 9,
+                    focus: "shop migration".into(),
+                    last_completed: "checkout revamp".into(),
+                    ts: "2026-06-11T20:00:00Z".into(),
+                },
+                captured_at: "2026-06-11T20:00:01Z".into(),
+            }],
+            asks: vec![crate::models::CrossHiveAskRow {
+                peer_pubkey: "pk-foreign".into(),
+                direction: "out".into(),
+                kind: "ask".into(),
+                subject: "schema advice".into(),
+                state: "answered".into(),
+                reply_body: Some("use mig-196 conventions".into()),
+                asked_by: Some("su-queen".into()),
+                created_at: "2026-06-11T18:00:00Z".into(),
+                updated_at: "2026-06-11T19:00:00Z".into(),
+            }],
+        });
+        let text = render(&app, 120, 40);
+        assert!(text.contains("beacon history — 1"));
+        assert!(text.contains("4 agents · queue 9"));
+        assert!(text.contains("shop migration"));
+        assert!(text.contains("ask log — 1"));
+        assert!(text.contains("answered"));
+        assert!(text.contains("schema advice"));
+        assert!(text.contains("use mig-196 conventions"));
+        // The detail header still leads the pane.
+        assert!(text.contains("T4·gossip"));
     }
 }

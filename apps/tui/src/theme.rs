@@ -11,6 +11,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::glyph;
 
@@ -151,16 +152,52 @@ pub fn theme_by_name(name: &str) -> Option<&'static ThemeSpec> {
     THEMES.iter().copied().find(|t| t.name == name)
 }
 
+/// Index into [`THEMES`] of a registered theme name.
+fn theme_idx(name: &str) -> Option<usize> {
+    THEMES.iter().position(|t| t.name == name)
+}
+
+/// The live `:theme` selection as an index into [`THEMES`] (P1 / D-002).
+/// `usize::MAX` = no selection → [`Theme::active`] resolves [`DEFAULT_THEME`].
+/// Atomic because the reducer thread flips it while the draw loop reads it.
+static ACTIVE_IDX: AtomicUsize = AtomicUsize::new(usize::MAX);
+
 pub struct Theme;
 
 impl Theme {
     /// The active palette every accessor reads from — resolved *through* the
-    /// registry (D-001). P0 always resolves `DEFAULT_THEME`; P1 swaps in the
-    /// persisted `:theme` selection, at which point a full re-render re-themes
-    /// the whole workbench. Falls back to the const if the name ever misses.
+    /// registry (D-001). With no `:theme` selection this resolves
+    /// `DEFAULT_THEME`; [`Theme::set_active`] (the `:theme` switcher /
+    /// ViewState restore) swaps the spec, at which point the next full
+    /// re-render re-themes the whole workbench. Falls back to the const if
+    /// the name ever misses.
     #[inline]
     pub fn active() -> &'static ThemeSpec {
-        theme_by_name(DEFAULT_THEME).unwrap_or(&PAPERCUSP_DARK)
+        THEMES
+            .get(ACTIVE_IDX.load(Ordering::Relaxed))
+            .copied()
+            .or_else(|| theme_by_name(DEFAULT_THEME))
+            .unwrap_or(&PAPERCUSP_DARK)
+    }
+
+    /// Stable id of the active theme — what `capture_view_state` persists and
+    /// `:themes` marks in its listing.
+    #[inline]
+    pub fn active_name() -> &'static str {
+        Self::active().name
+    }
+
+    /// Flip the active theme by registry name (`:theme <name>` / the
+    /// ViewState restore). Unknown names change nothing and return `false` —
+    /// the caller lists `THEMES` instead of erroring silently (D-002).
+    pub fn set_active(name: &str) -> bool {
+        match theme_idx(name) {
+            Some(i) => {
+                ACTIVE_IDX.store(i, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Base pane surface. Blocks use this so adjacent panes read as an intentional
@@ -440,6 +477,41 @@ mod tests {
         assert_eq!(theme_by_name("papercusp-dark"), Some(&PAPERCUSP_DARK));
         assert!(theme_by_name("does-not-exist").is_none());
         assert!(!THEMES.is_empty());
+    }
+
+    /// `:theme` switcher (P1 / D-002). NOTE: these tests never flip the active
+    /// palette to a *different* theme — sibling tests (here and in
+    /// `fleet.rs`/`ui.rs`) read `Theme::active()` concurrently, so a real flip
+    /// would race them. The store path is still covered: re-selecting the
+    /// current name takes the same `Some(idx) → store` branch.
+    #[test]
+    fn set_active_unknown_name_is_a_noop_and_false() {
+        let before = Theme::active_name();
+        assert!(!Theme::set_active("does-not-exist"));
+        assert_eq!(Theme::active_name(), before, "unknown name must not change the active theme");
+    }
+
+    #[test]
+    fn set_active_known_name_returns_true() {
+        let current = Theme::active_name();
+        assert!(Theme::set_active(current));
+        assert_eq!(Theme::active_name(), current);
+    }
+
+    /// The registry index ↔ name mapping `set_active` stores through.
+    #[test]
+    fn theme_idx_matches_registry_order() {
+        for (i, t) in THEMES.iter().enumerate() {
+            assert_eq!(theme_idx(t.name), Some(i));
+        }
+        assert_eq!(theme_idx("does-not-exist"), None);
+    }
+
+    /// `active_name` is always a registered name (the `:themes` listing and
+    /// ViewState capture rely on it).
+    #[test]
+    fn active_name_is_registered() {
+        assert!(theme_by_name(Theme::active_name()).is_some());
     }
 
     /// Per-theme render snapshot: the needs-human marker must stay VISIBLE —

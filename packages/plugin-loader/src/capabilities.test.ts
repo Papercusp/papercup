@@ -13,7 +13,6 @@ import {
   MissingCapabilityError,
   UnknownMethodError,
 } from './capabilities.ts';
-import { HookBus, createPluginHookBus } from './hookbus.ts';
 
 // Inline service def — equivalent to `defineService({...})` from @papercusp/plugin-sdk
 // but avoids cross-package imports in tsx --test which has resolution issues.
@@ -194,85 +193,5 @@ describe('makeSecretsProxy', () => {
       () => proxy.read('OPENAI_API_KEY'),
       (e: Error) => e instanceof MissingCapabilityError,
     );
-  });
-});
-
-describe('HookBus + createPluginHookBus', () => {
-  it('addAction requires events:listen:<event>', () => {
-    const bus = new HookBus();
-    const ctx = { pluginName: 'p', capabilities: [] as any };
-    const scoped = createPluginHookBus(bus, ctx);
-    assert.throws(() => scoped.addAction('task.passed', () => {}), /events:listen:task\.passed/);
-  });
-
-  it('runAction fires registered handlers', async () => {
-    const bus = new HookBus();
-    const ctx = { pluginName: 'p', capabilities: ['events:listen:task.passed'] as any };
-    const scoped = createPluginHookBus(bus, ctx);
-
-    let received: unknown = null;
-    scoped.addAction<{ taskId: string }>('task.passed', (arg) => {
-      received = arg;
-    });
-    await bus.runAction('task.passed', { taskId: 'F-001' });
-    assert.deepEqual(received, { taskId: 'F-001' });
-  });
-
-  it('applyFilter chains transformations', async () => {
-    const bus = new HookBus();
-    const ctxA = { pluginName: 'plugin-a', capabilities: ['events:listen:task.title'] as any };
-    const ctxB = { pluginName: 'plugin-b', capabilities: ['events:listen:task.title'] as any };
-    createPluginHookBus(bus, ctxA).addFilter<string>('task.title', (s) => `[A] ${s}`);
-    createPluginHookBus(bus, ctxB).addFilter<string>('task.title', (s) => `${s} [B]`);
-    const out = await bus.applyFilter('task.title', 'hello');
-    assert.equal(out, '[A] hello [B]');
-  });
-
-  it('emit checks events:emit:<event>', async () => {
-    const bus = new HookBus();
-    const ctx = { pluginName: 'mytool', capabilities: [] as any };
-    const scoped = createPluginHookBus(bus, ctx);
-    // Plugin-emitted events MUST be prefixed with the plugin id (Batch
-    // A3 namespace rule), so use 'mytool.briefing-ready' not the
-    // substrate-style 'briefing.ready'. Bare 'briefing.ready' would now
-    // be rejected by the namespace check before the capability check.
-    await assert.rejects(
-      () => scoped.emit('mytool.briefing-ready', {}),
-      /events:emit:mytool\.briefing-ready/,
-    );
-  });
-
-  it('emit rejects substrate-reserved event names', async () => {
-    const bus = new HookBus();
-    const ctx = { pluginName: 'mytool', capabilities: ['events:emit:mission.start'] as any };
-    const scoped = createPluginHookBus(bus, ctx);
-    await assert.rejects(
-      () => scoped.emit('mission.start', {}),
-      /reserved for the substrate/,
-    );
-  });
-
-  it('emit rejects events not prefixed with the plugin id', async () => {
-    const bus = new HookBus();
-    const ctx = { pluginName: 'mytool', capabilities: ['events:emit:something.else'] as any };
-    const scoped = createPluginHookBus(bus, ctx);
-    await assert.rejects(
-      () => scoped.emit('something.else', {}),
-      /must prefix emitted events with its plugin id/,
-    );
-  });
-
-  it('unregisterPlugin removes all that plugin\'s registrations', async () => {
-    const bus = new HookBus();
-    const ctxA = { pluginName: 'plugin-a', capabilities: ['events:listen:x'] as any };
-    const ctxB = { pluginName: 'plugin-b', capabilities: ['events:listen:x'] as any };
-    let calls = 0;
-    createPluginHookBus(bus, ctxA).addAction('x', () => { calls++; });
-    createPluginHookBus(bus, ctxB).addAction('x', () => { calls++; });
-    await bus.runAction('x', {});
-    assert.equal(calls, 2);
-    bus.unregisterPlugin('plugin-a');
-    await bus.runAction('x', {});
-    assert.equal(calls, 3);    // only plugin-b's handler ran
   });
 });

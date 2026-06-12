@@ -305,7 +305,9 @@ async function main(): Promise<void> {
     }
   };
 
-  const projectOp = (op: OpEnvelope, remote: boolean): void => {
+  // Structural op view: applies to both read-merged OpEnvelopes and own LocalWriteOps.
+  type LoopOpView = { type: string; table?: string; hbKey?: string; value?: unknown };
+  const projectOp = (op: LoopOpView, remote: boolean): void => {
     if (op.type !== 'put' || !op.hbKey) return;
     if (op.table === 'wi-steer') {
       const v = op.value as { item: string; order: number; epoch: number; ts: number };
@@ -361,16 +363,15 @@ async function main(): Promise<void> {
     /** Append a loop op to the own log AND project it locally (own ops are not
      *  read-merged back — same shape as the rig's local PG write + capture). */
     const appendOp = async (table: 'wi-steer' | 'wi-done', hbKey: string, value: unknown) => {
-      const ts = Date.now();
-      const op: OpEnvelope = {
-        type: 'put',
+      const op = {
+        type: 'put' as const,
         table,
         hbKey,
         value,
-        ts,
+        ts: Date.now(),
         schema_version: 1,
         writerPubkey: identity.devicePubkey,
-      } as OpEnvelope;
+      };
       await handle!.append(op);
       projectOp(op, false);
     };
@@ -578,28 +579,35 @@ async function main(): Promise<void> {
     };
 
     // ── 7. Command loop ──
+    // `go` runs the claim loop CONCURRENTLY with this loop: chaos commands
+    // (partition / revoke / dump) must take effect MID-RUN, not queue behind it.
+    let loopRun: Promise<void> | null = null;
     const lines = createLineReader();
     for (;;) {
       const line = await lines.next();
       if (line === null || line === 'stop') break;
 
       if (line === 'go') {
-        await runLoop();
-        const result: LoopAgentResult = {
-          evt: 'result',
-          swarmIndex: cfg.swarmIndex,
-          devicePubkey: cfg.devicePubkey,
-          owner: cfg.owner,
-          completions: [...completions.values()],
-          stats,
-          sideEffects,
-          refusals,
-          abortSignals,
-          stalledItem,
-          lag: { count: lagSamples.length, maxMs: Math.max(0, ...lagSamples), p95Ms: p95(lagSamples) },
-          doneItemsVisible: done.size,
-        };
-        out(result);
+        loopRun = (async () => {
+          await runLoop();
+          const result: LoopAgentResult = {
+            evt: 'result',
+            swarmIndex: cfg.swarmIndex,
+            devicePubkey: cfg.devicePubkey,
+            owner: cfg.owner,
+            completions: [...completions.values()],
+            stats,
+            sideEffects,
+            refusals,
+            abortSignals,
+            stalledItem,
+            lag: { count: lagSamples.length, maxMs: Math.max(0, ...lagSamples), p95Ms: p95(lagSamples) },
+            doneItemsVisible: done.size,
+          };
+          out(result);
+        })().catch((e) => {
+          out({ evt: 'error', message: e instanceof Error ? e.message : String(e) });
+        });
         continue;
       }
 
@@ -637,9 +645,14 @@ async function main(): Promise<void> {
         continue;
       }
 
-      if (line === 'dump') {
+      if (line === 'dump' || line.startsWith('dump ')) {
+        // `dump <seq>` — the seq is echoed so a POLLING parent can match THIS
+        // response (waitFor scans event history; an unsequenced poll would
+        // always re-match the first state event).
+        const seq = line.startsWith('dump ') ? Number(line.slice('dump '.length)) : 0;
         out({
           evt: 'state',
+          seq,
           claims: store.allClaims(),
           doneDigest: doneDigest(),
           doneItems: done.size,
@@ -650,6 +663,8 @@ async function main(): Promise<void> {
       }
     }
 
+    // A `stop` while the loop is mid-run: let it finish its current await, then close.
+    if (loopRun) await Promise.race([loopRun, sleep(2_000)]);
     offAdmitted();
   } catch (e) {
     out({ evt: 'error', message: e instanceof Error ? e.message : String(e) });

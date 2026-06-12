@@ -6,7 +6,6 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPapercuspApi, type RealServices } from './api-factory.ts';
 import { MissingCapabilityError, UnknownMethodError } from './capabilities.ts';
-import { createPluginHookBus, HookBus } from './hookbus.ts';
 import type {
   TasksService,
   GoalsService,
@@ -80,8 +79,7 @@ const buildServices = (overrides?: Partial<RealServices>): RealServices => ({
 const buildApi = (capabilities: string[]) => {
   const ctx = { pluginName: 'test-plugin', capabilities: capabilities as any };
   const services = buildServices();
-  const hookBus = createPluginHookBus(new HookBus(), { name: 'test-plugin', capabilities: capabilities as any } as any);
-  return createPapercuspApi({ ctx, services, hookBus });
+  return createPapercuspApi({ ctx, services });
 };
 
 describe('createPapercuspApi — capability gating', () => {
@@ -121,7 +119,6 @@ describe('createPapercuspApi — secrets per-name capability', () => {
     const api = createPapercuspApi({
       ctx,
       services,
-      hookBus: createPluginHookBus(new HookBus(), { name: 'p', capabilities: ctx.capabilities } as any),
     });
     const v = await api.secrets.read('YT_API_KEY');
     assert.equal(v, 'YT_VAL');
@@ -133,7 +130,6 @@ describe('createPapercuspApi — secrets per-name capability', () => {
     const api = createPapercuspApi({
       ctx,
       services,
-      hookBus: createPluginHookBus(new HookBus(), { name: 'p', capabilities: ctx.capabilities } as any),
     });
     // secrets.read is `async`, so sync throws inside become rejected promises.
     await assert.rejects(() => api.secrets.read('OTHER_KEY'), MissingCapabilityError);
@@ -153,7 +149,6 @@ describe('createPapercuspApi — fetch domain allowlist', () => {
     const api = createPapercuspApi({
       ctx,
       services,
-      hookBus: createPluginHookBus(new HookBus(), { name: 'p', capabilities: ctx.capabilities } as any),
     });
     const r = await api.fetch('https://weather.gov/forecast');
     assert.equal(await r.text(), 'weather');
@@ -166,7 +161,6 @@ describe('createPapercuspApi — fetch domain allowlist', () => {
     const api = createPapercuspApi({
       ctx,
       services,
-      hookBus: createPluginHookBus(new HookBus(), { name: 'p', capabilities: ctx.capabilities } as any),
     });
     await assert.rejects(() => api.fetch('https://attacker.example/'), MissingCapabilityError);
   });
@@ -175,7 +169,7 @@ describe('createPapercuspApi — fetch domain allowlist', () => {
 describe('createPapercuspApi — service breadth', () => {
   it('exposes all 9 service slots', () => {
     const api = buildApi([]);
-    for (const slot of ['tasks', 'goals', 'pendingEvents', 'routines', 'comments', 'secrets', 'fetch', 'storage', 'db', 'hooks']) {
+    for (const slot of ['tasks', 'goals', 'pendingEvents', 'routines', 'comments', 'secrets', 'fetch', 'storage', 'db']) {
       assert.ok((api as any)[slot] !== undefined, `slot ${slot} missing`);
     }
   });

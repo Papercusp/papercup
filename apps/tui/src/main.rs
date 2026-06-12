@@ -155,10 +155,19 @@ async fn main() -> Result<()> {
     // Wake-pane scope (owner ask 2026-06-11): bare `wake-pane` = the fleet-wide
     // board; `wake-pane --queen` = the live queen's queue (resolved from the
     // roster each refresh — her owner id isn't known at layout time); `wake-pane
-    // <owner-id>` = one explicit agent's queue.
+    // <owner-id>` = one explicit agent's queue; `wake-pane --hive <slug>` = one
+    // hive's attributed owners (P-014 item 3 — the drill-in tab's wake board,
+    // server-filtered via `network.hive.wakes`).
     let wake_filter: app::WakeFilter = match subcommand.as_deref() {
         Some("wake-pane") => match std::env::args().nth(2).as_deref() {
             Some("--queen") => app::WakeFilter::Queen,
+            Some("--hive") => match std::env::args().nth(3) {
+                Some(h) if !h.trim().is_empty() => app::WakeFilter::Hive(h.trim().to_string()),
+                _ => {
+                    eprintln!("usage: pui wake-pane --hive <slug>");
+                    std::process::exit(2);
+                }
+            },
             Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
             _ => app::WakeFilter::All,
         },
@@ -344,6 +353,7 @@ async fn run<B: Backend>(
         app.active_doc.clone(),
         app.active_plan.clone(),
         watch.clone(),
+        app.network_focus.clone(),
     );
     // Debounced persistence of the quiet view-state (P12 / D-002): the run loop
     // ships a snapshot on each nav change; the saver coalesces a burst + PUTs.
@@ -632,7 +642,12 @@ async fn run<B: Backend>(
             Action::FetchNetworkBoard => {
                 // B-09: the network-pane's manual `g` refresh — the refetch
                 // loop covers the push-driven cadence (SSE + 60s safety net).
+                // A pinned hive-pane also re-pulls its drill-in dossier
+                // (beacon history + ask log, P-014 item 2).
                 tokio::spawn(fetch_network_board(tx.clone()));
+                if let Some(key) = &app.network_focus {
+                    tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
+                }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::OpenNetworkDrillIn(req) => {
@@ -640,13 +655,12 @@ async fn run<B: Backend>(
                 // surface B-09→B-10, coord 2026-06-11). Tier 1 is the local
                 // hive — its "drill-in" is the dock's `this hive` tab (always
                 // the FIRST tab, agreed with B-10). Tiers 2-4 open B-10's
-                // generated per-hive tab (hive-pane detail; watch panes when
-                // an owner-id-bearing endpoint lands — v1 C-3 rows carry no
-                // bee owner ids, so watch_owners=[]). The KDL goes through a
-                // materialized file + the zellij CLI because the companion is
-                // NEVER spawned in pinned panes (Companion::spawn gating
-                // above) — `Command::NewTab` over the companion can't fire
-                // from the pinned network-pane.
+                // generated per-hive tab (hive-pane detail; one read-only
+                // watch pane per C-3 `watchOwners` entry — P-014 item 1).
+                // The KDL goes through a materialized file + the zellij CLI
+                // because the companion is NEVER spawned in pinned panes
+                // (Companion::spawn gating above) — `Command::NewTab` over
+                // the companion can't fire from the pinned network-pane.
                 if req.tier <= 1 {
                     let _ = Zellij.run_action(&MuxAction::GoToTab(1));
                 } else {
@@ -654,7 +668,11 @@ async fn run<B: Backend>(
                         tier: req.tier,
                         key: req.key.clone(),
                         title: req.title.clone(),
-                        watch_owners: Vec::new(),
+                        watch_owners: req
+                            .watch_owners
+                            .iter()
+                            .map(|o| (o.clone(), layout::watch_pane_title(o)))
+                            .collect(),
                     };
                     match materialize_hive_tab(&spec) {
                         Ok(path) => {
@@ -2389,15 +2407,24 @@ async fn wake_queue_act(
 /// carries) joined with the roster for labels/kinds, scoped by this pane's
 /// [`app::WakeFilter`] (fleet-wide, the live queen, or one owner), plus the
 /// GLOBAL default wake-mode (a fleet-wide pause reads differently from one
-/// paused agent) → `Event::WakeBoard`.
+/// paused agent) → `Event::WakeBoard`. The `Hive` scope (P-014 item 3) swaps
+/// the source to the server-filtered `network.hive.wakes` query instead —
+/// same rows, pre-scoped to the hive's attributed owners.
 async fn fetch_wake_board(filter: app::WakeFilter, tx: UnboundedSender<Event>) {
     let result = match OperatorClient::from_discovery().await {
         Ok(client) => {
-            let pending = client
-                .run_tool("coord:wake-queue", serde_json::json!({ "action": "list" }))
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|v| crate::client::parse_wake_queue_list(&v).map_err(|e| e.to_string()));
+            let pending = match &filter {
+                app::WakeFilter::Hive(hive) => {
+                    client.hive_wakes(hive).await.map_err(|e| e.to_string())
+                }
+                _ => client
+                    .run_tool("coord:wake-queue", serde_json::json!({ "action": "list" }))
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| {
+                        crate::client::parse_wake_queue_list(&v).map_err(|e| e.to_string())
+                    }),
+            };
             match pending {
                 Ok(pending) => {
                     // Roster join is best-effort: a fetch error degrades to raw
@@ -2684,6 +2711,21 @@ async fn fetch_network_board(tx: UnboundedSender<Event>) {
             let _ = tx.send(Event::Error(format!("network board: {e}")));
         }
     }
+}
+
+/// Fetch the per-hive drill-in dossier data (hive-network-surface P-014
+/// item 2 / D-007 GAP 2) for the pinned `pui hive-pane <key>` instance: the
+/// captured beacon HISTORY + the full C-1 ask log, via the `network.hive.*`
+/// sync queries. Quietly best-effort BOTH ways: a tier-2/3 slug key simply
+/// matches no beacon/peer rows (→ empty lists, sections hidden), and a host
+/// predating the queries renders the C-3 detail alone — never a toast per pass.
+async fn hive_dossier_fetch(key: String, tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    let beacons = client.hive_beacons(&key).await.unwrap_or_default();
+    let asks = client.hive_asks(&key).await.unwrap_or_default();
+    let _ = tx.send(Event::HiveDossier { beacons, asks });
 }
 
 /// Fetch the P2P hive directory (`GET /api/discovery/hives`) and emit
@@ -3124,6 +3166,7 @@ fn spawn_sync(
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
     watch: Option<String>,
+    network_focus: Option<String>,
 ) {
     // Internal signal channel: invalidation_loop → refetch_loop ("something changed").
     let (sig_tx, sig_rx) = mpsc::unbounded_channel::<()>();
@@ -3133,6 +3176,7 @@ fn spawn_sync(
         active_doc,
         active_plan,
         watch,
+        network_focus,
         sig_rx,
     ));
     // Coord-inbox push (P-002 / D-003b): a 3rd task on its own SSE stream.
@@ -3211,6 +3255,7 @@ async fn refetch_loop(
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
     watch: Option<String>,
+    network_focus: Option<String>,
     mut sig_rx: UnboundedReceiver<()>,
 ) {
     let client = match OperatorClient::from_discovery().await {
@@ -3227,6 +3272,12 @@ async fn refetch_loop(
             // Watch pane: re-pull the watched agent's dossier (ranked work-list
             // + coord mail) on the same push-driven cadence.
             tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
+        }
+        if let Some(key) = &network_focus {
+            // hive-pane: re-pull the drill-in dossier (beacon history + ask
+            // log, P-014 item 2) on the same push-driven cadence — the
+            // network.hive.* writers fire SSE invalidates on this stream.
+            tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
         }
     // Seed notification history once from the toast-log (P8); live
     // `attention.notify` events prepend to it as they arrive.
@@ -3270,6 +3321,10 @@ async fn refetch_loop(
             // + coord mail) on the same push-driven cadence.
             tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
         }
+        if let Some(key) = &network_focus {
+            // hive-pane: drill-in dossier rides the same cadence (P-014 item 2).
+            tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
+        }
             }
             _ = safety.tick() => {
                 refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
@@ -3277,6 +3332,10 @@ async fn refetch_loop(
             // Watch pane: re-pull the watched agent's dossier (ranked work-list
             // + coord mail) on the same push-driven cadence.
             tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
+        }
+        if let Some(key) = &network_focus {
+            // hive-pane: drill-in dossier rides the same cadence (P-014 item 2).
+            tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
         }
             }
         }

@@ -945,6 +945,60 @@ impl OperatorClient {
         Ok(resp.rows)
     }
 
+    /// One named sync query over the zero-harness rest-query route, returning
+    /// its `rows` (`{ rows, version }` envelope — version unused; the SSE
+    /// invalidate stream drives the refetch cadence, not row versions).
+    async fn rest_query_rows<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<Vec<T>> {
+        let v = self
+            .get_json(&format!(
+                "/api/zero-harness/rest-query?name={}&args={}",
+                name,
+                urlencode(&args.to_string())
+            ))
+            .await?;
+        let rows = v.get("rows").cloned().unwrap_or_else(|| serde_json::json!([]));
+        serde_json::from_value(rows).with_context(|| format!("parse {name} rows"))
+    }
+
+    /// A foreign hive's beacon HISTORY (`network.hive.beacons`, hive-network-
+    /// surface P-014 item 2): captured C-2 snapshots newest-first. `hive_key`
+    /// is the C-3 tier-4 row key (pubkey-b64 or hiveId — either resolves).
+    pub async fn hive_beacons(
+        &self,
+        hive_key: &str,
+    ) -> Result<Vec<crate::models::HiveBeaconSnapshot>> {
+        self.rest_query_rows(
+            "network.hive.beacons",
+            &serde_json::json!({ "hiveKey": hive_key }),
+        )
+        .await
+    }
+
+    /// The full C-1 ask log (`network.hive.asks`, P-014 item 2), newest-first,
+    /// narrowed to one peer pubkey — the tier-4 dossier's traffic view.
+    pub async fn hive_asks(
+        &self,
+        peer_pubkey: &str,
+    ) -> Result<Vec<crate::models::CrossHiveAskRow>> {
+        self.rest_query_rows(
+            "network.hive.asks",
+            &serde_json::json!({ "peerPubkey": peer_pubkey }),
+        )
+        .await
+    }
+
+    /// The hive-SCOPED staged-wake queue (`network.hive.wakes`, P-014 item 3 /
+    /// D-007 GAP 1): every hive-attributed owner's pending wakes, filtered
+    /// server-side (owner ASC, oldest-first — assemble groups per owner).
+    pub async fn hive_wakes(&self, hive: &str) -> Result<Vec<crate::models::PendingWake>> {
+        self.rest_query_rows("network.hive.wakes", &serde_json::json!({ "hive": hive }))
+            .await
+    }
+
     /// Join one member harness of a discovered hive (`POST /api/harness/join-link`).
     /// The joiner's GitHub identity + device keychain are resolved server-side.
     pub async fn join_hive_link(&self, slug: &str, harness_link_url: &str) -> Result<serde_json::Value> {

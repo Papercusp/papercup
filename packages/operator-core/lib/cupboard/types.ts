@@ -193,6 +193,74 @@ export function groupListingsByKind(listings: HarnessListing[]): ListingKindGrou
 }
 
 /**
+ * The hive-native rollup key for a listing (comb-hive-native-sharing-2026-06-11
+ * P-001/P-002): hives are the browsable, joinable unit, so a hive-bound row
+ * keys by its owning Hive's identity pubkey — which all member-repo rows share,
+ * unlike `project_ref` (the hive publish path doesn't set one). Legacy rows
+ * fall back to listingHiveRef. The `?hive=` rollup accepts both forms; see
+ * isHivePubkeyRef for the discriminator.
+ */
+export function listingHiveKey(l: HarnessListing): string {
+  return l.hive_pubkey ?? listingHiveRef(l);
+}
+
+/** Raw-32-byte base64 (the directory-announce hive_pubkey encoding): exactly
+ *  43 base64 chars + one '=' pad. Project/repo refs always carry a '/'. */
+const HIVE_PUBKEY_B64_RE = /^[A-Za-z0-9+/]{43}=$/;
+
+/**
+ * Does a `?hive=` rollup value name a Hive by identity pubkey (raw-32-byte
+ * Ed25519, base64 — the same encoding as `hive_pubkey` on listings and the
+ * directory announce) rather than a legacy project/repo ref?
+ */
+export function isHivePubkeyRef(v: string): boolean {
+  return HIVE_PUBKEY_B64_RE.test(v);
+}
+
+/** One Hive's slice of the flat browse (comb-hive-native-sharing P-002). */
+export interface HiveBrowseGroup {
+  hivePubkey: string;
+  /** Denormalized display title from the member rows (the directory announce
+   *  stays the content authority; null when no row carries one). */
+  hiveTitle: string | null;
+  /** The hive's member-repo rows present on THIS result page — the worker
+   *  paginates, so member/claim counts are per-page, not global. */
+  members: HarnessListing[];
+  claimedCount: number;
+}
+
+/**
+ * Group kind='harness' rows by owning Hive for the hive-first browse
+ * (comb-hive-native-sharing P-002 / D-001): hive-bound member rows fold into
+ * ONE group per hive; rows with no `hive_pubkey` are pre-hive legacy listings.
+ * Pure and page-scoped — callers surface the pagination caveat on counts.
+ * Non-harness rows are ignored (callers pre-split by kind).
+ */
+export function groupHarnessRowsByHive(rows: HarnessListing[]): {
+  hives: HiveBrowseGroup[];
+  legacy: HarnessListing[];
+} {
+  const hives = new Map<string, HiveBrowseGroup>();
+  const legacy: HarnessListing[] = [];
+  for (const l of rows) {
+    if (listingKindOf(l) !== 'harness') continue;
+    if (!l.hive_pubkey) {
+      legacy.push(l);
+      continue;
+    }
+    let g = hives.get(l.hive_pubkey);
+    if (!g) {
+      g = { hivePubkey: l.hive_pubkey, hiveTitle: null, members: [], claimedCount: 0 };
+      hives.set(l.hive_pubkey, g);
+    }
+    g.members.push(l);
+    if (!g.hiveTitle && l.hive_title) g.hiveTitle = l.hive_title;
+    if (l.claim_status === 'claimed') g.claimedCount += 1;
+  }
+  return { hives: [...hives.values()], legacy };
+}
+
+/**
  * GitHub-side permission ladder per v5 §10.3. Claim verification
  * requires `maintain` or `admin`; supersede requires `admin`.
  */
@@ -318,6 +386,10 @@ export interface HarnessListing {
   provisional_owner_github_user_id: number;
   claim_status: CupboardClaimStatus;
   claimed_at: number | null;
+  /** Claimant identity (worker rows; set while claim_status='claimed') —
+   *  the "who/when" the claim badge surfaces (comb-hive-native-sharing P-003). */
+  claimant_github_user_id?: number | null;
+  claimant_github_login?: string | null;
   last_permission_verified_at: number | null;
   superseded_by_harness_id: number | null;
   /** Self-reported contributor count, recomputed weekly. */

@@ -213,6 +213,18 @@ File: `multi-session-concurrency.integration.test.ts` (4 channels, N isolated te
 | N×M concurrent claims → one winner per item | ❌ | 🔴 |
 | N concurrent lock races → one grant/path; distinct paths all granted | ❌ | 🔴 |
 
+### Agent protocol use under lock contention — LLM-judged (Layer C)
+
+File: `lib/llm-testing/scenarios/su/S11-lock-contention-protocol.ts` (llm-testing lane, coord-e2e P-011 — deny text is the live hook's exact rendering, verified by `pretooluse-locks-live.integration.test.ts`). Cost-capped: single scenario per run (`--no-matrix`), D-003.
+
+| Cell | Before | Now |
+|---|---|---|
+| hook-denied edit → protocol response (`locks:acquire {wake_on_grant:true}` / `locks:queue` / `coord:send` to holder), ERROR-gated assert | ❌ | 🔴 first scored run 2026-06-12: assert green |
+| NO bypass — no `mv`/`cp`/`--force` on the contested path, no sibling-copy edit, no blind retry loop (>2 re-denied attempts), ERROR-gated assert | ❌ | 🔴 same run: assert green |
+| grounding while waiting — no narrated/fictional peer reply after `coord:send` (judge groundedness axis) | ❌ silent | 🔴 judged — first run FAILED this axis (real finding: SUT narrated an anticipated reply before checking `coord:inbox`; filed as an improvement) |
+
+Run recipe (the 429 trap): `LLM_TEST_BACKEND=claude-code` is the knob that escapes the saturated raw-OAuth bucket (`AGENT_BACKEND` alone only picks the stateless credential) — see the `llm-429-check-the-transport-not-the-account` insight.
+
 ## Closed since first publication
 
 <Aside type="tip" title="EI-155 — interactive-claude config isolation: CLOSED">

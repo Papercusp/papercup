@@ -38,6 +38,9 @@ export interface ClaimStatusBadgeProps {
   status: ClaimStatus;
   /** For `claimed`, the @login of the current claimant. */
   claimantLogin?: string | null;
+  /** For `claimed`, epoch ms of the claim — the "when" half of who/when
+   *  (comb-hive-native-sharing P-003); surfaces in the tooltip. */
+  claimedAt?: number | null;
   /** For `superseded`, an optional href to the successor harness. */
   supersededByHref?: string | null;
 }
@@ -62,41 +65,62 @@ interface StatusStyle {
   tooltip: string;
 }
 
+/**
+ * The ONE copy source for what claimed/unclaimed means (comb-hive-native-sharing
+ * P-003; P-012's explainer reuses these strings). The framing rule: a claim is
+ * a TRUST SIGNAL — a verified repo maintainer vouching for the listing — not
+ * ownership of the code.
+ */
+export const CLAIM_STATUS_COPY: Record<ClaimStatus, string> = {
+  unclaimed:
+    'Unclaimed — no verified repo maintainer has vouched for this listing yet. A claim is a trust signal, not ownership of the code; anyone with maintain/admin on the GitHub repo can claim it.',
+  claimed:
+    'Claimed — a verified repo maintainer (maintain/admin on GitHub) has vouched for this listing. A claim is a trust signal, not ownership of the code.',
+  stale:
+    'Stale claim — the claimant has lost the GitHub permission they claimed with, so the trust signal no longer holds. Provisional-owner controls are re-enabled.',
+  superseded:
+    'Superseded — this listing has been replaced by a newer canonical binding.',
+};
+
 const STATUS_STYLES: Record<ClaimStatus, StatusStyle> = {
   unclaimed: {
     label: 'Unclaimed',
     background: 'var(--bg-2)',
     color: 'var(--fg-dim)',
-    tooltip: 'No GitHub maintainer has claimed this harness. The creator is the provisional owner.',
+    tooltip: CLAIM_STATUS_COPY.unclaimed,
   },
   claimed: {
     label: 'Claimed',
     background: 'var(--accent-soft, rgba(76, 175, 80, 0.15))',
     color: 'var(--accent, #4CAF50)',
-    tooltip: 'A GitHub maintainer with admin/maintain permission has claimed this harness.',
+    tooltip: CLAIM_STATUS_COPY.claimed,
   },
   stale: {
     label: 'Stale claim',
     background: 'var(--bg-warning, rgba(255, 152, 0, 0.12))',
     color: 'var(--fg-warning, #FF9800)',
-    tooltip: 'The claimant has lost the GitHub permission they claimed with. Provisional-owner controls are re-enabled.',
+    tooltip: CLAIM_STATUS_COPY.stale,
   },
   superseded: {
     label: 'Superseded',
     background: 'var(--bg-1, transparent)',
     color: 'var(--fg-dim)',
-    tooltip: 'This harness has been superseded by a newer canonical binding.',
+    tooltip: CLAIM_STATUS_COPY.superseded,
   },
 };
 
 export function ClaimStatusBadge(props: ClaimStatusBadgeProps): ReactNode {
-  const { status, claimantLogin, supersededByHref } = props;
+  const { status, claimantLogin, claimedAt, supersededByHref } = props;
   const style = STATUS_STYLES[status];
   const composed: CSSProperties = {
     ...BADGE_BASE,
     background: style.background,
     color: style.color,
   };
+  const tooltip =
+    status === 'claimed' && claimedAt
+      ? `${style.tooltip} Claimed ${new Date(claimedAt).toLocaleDateString()}.`
+      : style.tooltip;
 
   // Body content depends on status.
   let inner: ReactNode;
@@ -123,7 +147,7 @@ export function ClaimStatusBadge(props: ClaimStatusBadgeProps): ReactNode {
     <span
       data-claim-status={status}
       data-testid={`claim-status-badge-${status}`}
-      title={style.tooltip}
+      title={tooltip}
       style={composed}
     >
       {inner}

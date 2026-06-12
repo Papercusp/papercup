@@ -45,6 +45,11 @@ export default defineTool({
         memberCount: h.memberTopics.length,
         createdAt: h.createdAt,
         lastSeenMs: h.lastSeenMs,
+        // The hive's identity pubkey (raw-32-byte base64) — lets the Comb's
+        // ?hive= rollup match its listings (which carry the same encoding in
+        // `hive_pubkey`) to this announce for the Join CTA
+        // (comb-hive-native-sharing-2026-06-11 P-001).
+        hivePubkey: h.hivePubkey ?? null,
       }));
     return Response.json({ count: rows.length, rows });
   },

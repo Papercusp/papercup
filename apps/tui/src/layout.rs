@@ -487,8 +487,21 @@ pub struct HiveTabSpec {
     /// The C-3 row title — the human label shown in the tab + detail-pane name.
     pub title: String,
     /// (owner_id, pane title) for each live bee to open a read-only watch pane
-    /// (tiers 2/3 only). Empty in v1 — C-3 rows carry no per-bee owner ids.
+    /// (tiers 2/3 only). Sourced from the C-3 row's `watchOwners` (P-014
+    /// item 1) via B-09's Enter seam; empty when the hive has no live bees.
     pub watch_owners: Vec<(String, String)>,
+}
+
+/// The watch-pane title for one C-3 `watchOwners` entry: the 🐝 marker + a
+/// short owner id (a full coord ownerId is a uuid — the pane strip would
+/// truncate it arbitrarily; we truncate it legibly instead). Pure.
+pub fn watch_pane_title(owner: &str) -> String {
+    let short: String = owner.chars().take(14).collect();
+    if owner.chars().count() > 14 {
+        format!("🐝 {short}…")
+    } else {
+        format!("🐝 {short}")
+    }
 }
 
 /// The zellij tab name for a per-hive drill-in (P-008). The ⌕ prefix marks it a
@@ -515,15 +528,16 @@ pub fn hive_tab_name(spec: &HiveTabSpec) -> String {
 ///   * tiers 2/3 (own hives / shared-Hive peer Swarms — substrate-backed): the
 ///     `pui hive-pane <key>` queen-status / live-counts DETAIL pane (focused),
 ///     joined by one read-only `pui watch-pane <owner>` per `spec.watch_owners`
-///     entry (stacked when present). C-3 rows carry no per-bee owner ids yet, so
-///     v1 passes `watch_owners=[]` → just the detail pane; the per-bee watch
-///     panes light up when an owner-id-bearing endpoint lands. (The per-hive
-///     WAKE board folds INTO the detail pane's header: `pui wake-pane` is
-///     owner/queen-scoped, not hive-keyable, and foreign/peer wake queues
-///     aren't local — a hive-scoped wake endpoint is a tracked v1 gap.)
+///     entry (P-014 item 1 — the C-3 row's `watchOwners` rides B-09's seam).
+///   * tier 2 ONLY additionally gets the hive-scoped WAKE board pane
+///     (`pui wake-pane --hive <key>`, P-014 item 3 / D-007 GAP 1 closed):
+///     tier-2 keys are hive slugs the `network.hive.wakes` query scopes by.
+///     Tier-3 keys are peer DEVICE pubkeys — that peer's wake queue lives in
+///     their PG, not ours, so tier 3 keeps the detail-header wake summary.
 ///   * tier 4 (foreign directory hives): a lone `pui hive-pane <key>` DOSSIER
 ///     (tier badge, trust, beacon fields, grants in/out, ask counts from the
-///     C-3 row; full beacon history + the C-1 ask log await an endpoint).
+///     C-3 row, plus beacon HISTORY + the C-1 ask log via the dossier
+///     queries — P-014 item 2 / D-007 GAP 2 closed).
 ///
 /// Every pane is `close_on_exit=true` — the drill-in tab is never auto-opened
 /// and tears itself down when its panes exit (no EXITED husk). The detail pane
@@ -546,9 +560,13 @@ pub fn hive_tab_kdl(spec: &HiveTabSpec) -> String {
     } else {
         Vec::new()
     };
+    // tier 2 only: the hive-scoped wake board (`network.hive.wakes` scopes by
+    // hive SLUG — exactly the tier-2 key; tier-3 keys are peer device pubkeys
+    // whose wake queues aren't in our PG).
+    let wake_pane = spec.tier == 2;
     // A stack needs ≥2 children (zellij is picky about a one-pane stack); the
     // lead (detail) pane is the expanded one.
-    let stacked = !watch.is_empty();
+    let stacked = !watch.is_empty() || wake_pane;
     let detail_attrs = if stacked {
         "focus=true expanded=true"
     } else {
@@ -557,6 +575,11 @@ pub fn hive_tab_kdl(spec: &HiveTabSpec) -> String {
     let mut panes = format!(
         "\n            pane name=\"{detail_label}\" {detail_attrs} close_on_exit=true {{\n                command \"pui\"\n                args \"hive-pane\" \"{key}\"\n            }}",
     );
+    if wake_pane {
+        panes.push_str(&format!(
+            "\n            pane name=\"⏸ wakes\" close_on_exit=true {{\n                command \"pui\"\n                args \"wake-pane\" \"--hive\" \"{key}\"\n            }}",
+        ));
+    }
     for (owner, title) in watch {
         panes.push_str(&format!(
             "\n            pane name=\"{}\" close_on_exit=true {{\n                command \"pui\"\n                args \"watch-pane\" \"{}\"\n            }}",
@@ -1172,23 +1195,58 @@ mod tests {
             let detail_at = kdl.find("args \"hive-pane\"").unwrap();
             let watch_at = kdl.find("args \"watch-pane\"").unwrap();
             assert!(detail_at < watch_at, "the detail pane leads the stack (tier {tier})");
-            // detail + 2 watch panes = 3 pui commands.
-            assert_eq!(kdl.matches("command \"pui\"").count(), 3);
+            // tier 2: detail + wake board + 2 watch panes; tier 3: no wake
+            // board (the peer's wake queue isn't in our PG — see hive_tab_kdl).
+            let pui_panes = if tier == 2 { 4 } else { 3 };
+            assert_eq!(kdl.matches("command \"pui\"").count(), pui_panes, "tier {tier}");
+            assert_eq!(
+                kdl.contains("args \"wake-pane\" \"--hive\" \"peer-swarm\""),
+                tier == 2,
+                "wake board is tier-2 only (tier {tier})"
+            );
             // Every command pane tears down on exit (no EXITED husk).
-            assert_eq!(kdl.matches("close_on_exit=true").count(), 3);
+            assert_eq!(kdl.matches("close_on_exit=true").count(), pui_panes);
         }
     }
 
     #[test]
-    fn hive_tab_kdl_tier2_3_empty_watch_owners_is_detail_only() {
-        // The v1 reality: C-3 rows carry no per-bee owner ids → watch_owners=[],
-        // so a tier-2/3 drill-in is just the detail pane (no stack, no watches).
+    fn hive_tab_kdl_tier2_empty_watch_owners_is_detail_plus_wake_board() {
+        // A tier-2 hive with no live bees: the detail pane + the hive-scoped
+        // wake board (P-014 item 3 / D-007 GAP 1 — `network.hive.wakes` scopes
+        // by the tier-2 hive slug), stacked, no watch panes.
         let kdl = hive_tab_kdl(&hive_spec(2, "papercup", "This Box", &[]));
         assert!(kdl.contains("args \"hive-pane\" \"papercup\""));
+        assert!(kdl.contains("args \"wake-pane\" \"--hive\" \"papercup\""));
+        assert!(kdl.contains("name=\"⏸ wakes\""));
         assert!(!kdl.contains("watch-pane"));
+        assert!(kdl.contains("stacked=true"));
+        assert!(kdl.contains("focus=true expanded=true close_on_exit=true"));
+        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
+    }
+
+    #[test]
+    fn hive_tab_kdl_tier3_empty_watch_owners_is_detail_only() {
+        // A tier-3 peer swarm with no live members: just the detail pane — no
+        // stack, no watches, and NO wake board (tier-3 keys are peer device
+        // pubkeys; that peer's wake queue lives in their PG, not ours).
+        let kdl = hive_tab_kdl(&hive_spec(3, "pk-peer", "Peer Swarm", &[]));
+        assert!(kdl.contains("args \"hive-pane\" \"pk-peer\""));
+        assert!(!kdl.contains("watch-pane"));
+        assert!(!kdl.contains("wake-pane"));
         assert!(!kdl.contains("stacked=true"));
         assert!(kdl.contains("focus=true close_on_exit=true"));
         assert_eq!(kdl.matches("command \"pui\"").count(), 1);
+    }
+
+    #[test]
+    fn watch_pane_title_marks_and_shortens_owner_ids() {
+        // A short id passes through; a uuid-length coord ownerId truncates
+        // legibly (the zellij pane strip would otherwise cut it arbitrarily).
+        assert_eq!(watch_pane_title("su-aaa"), "🐝 su-aaa");
+        assert_eq!(
+            watch_pane_title("su-885d2e27-d7a9-4092-8e45-394a2f43b140"),
+            "🐝 su-885d2e27-d7…"
+        );
     }
 
     #[test]
