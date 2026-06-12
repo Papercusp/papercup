@@ -83,3 +83,47 @@ describe('su SUT eval-variant knob (test-gym-apiary P-001)', () => {
     expect(() => parseSuConfigDelta({ sutModel: 42 as unknown as string })).toThrow(/non-empty string/);
   });
 });
+
+describe('su SUT systemPromptText replacement (self-learning-frontier P-023 / FB-09)', () => {
+  it('parseSuConfigDelta accepts systemPromptText verbatim (never trimmed — the text IS the experiment)', () => {
+    const text = `${SU_PLAYBOOK_FRAMING}ablated body\n`;
+    expect(parseSuConfigDelta({ systemPromptText: text })).toEqual({ systemPromptText: text });
+    expect(() => parseSuConfigDelta({ systemPromptText: '' })).toThrow(/non-empty string/);
+    expect(() => parseSuConfigDelta({ systemPromptText: 7 as unknown as string })).toThrow(/non-empty string/);
+  });
+
+  it('open() with systemPromptText replaces the loader; without it the loader stands', async () => {
+    let loaderCalls = 0;
+    const target = new SuTarget({
+      loadSystemPrompt: () => {
+        loaderCalls++;
+        return 'loader prompt';
+      },
+    });
+    // Replacement arm: the variant text wins; the target loader is never consulted.
+    await target.open({
+      runId: 'r1',
+      workspaceMode: 'isolated',
+      transport: 'in-process',
+      variant: { id: 'ablate:x/y', configDelta: { systemPromptText: 'REPLACED' } },
+    } as never);
+    expect(loaderCalls).toBe(0);
+    // Baseline-shaped open: loader untouched until send(); an unknown knob still throws at open().
+    await target.open({ runId: 'r2', workspaceMode: 'isolated', transport: 'in-process' } as never);
+    await expect(
+      target.open({
+        runId: 'r3',
+        workspaceMode: 'isolated',
+        transport: 'in-process',
+        variant: { id: 'bad', configDelta: { playbook: 'x' } },
+      } as never),
+    ).rejects.toThrow(/unsupported variant configDelta key/);
+  });
+
+  it('loadPlaybookBody returns the marker-spliced body the ablation runner segments (no framing, no raw markers)', () => {
+    const body = loadPlaybookBody();
+    expect(body.startsWith(SU_PLAYBOOK_FRAMING)).toBe(false);
+    expect(body).not.toMatch(/<!-- PAPERCUSP-SU:[A-Z-]+ -->/);
+    expect(body.length).toBeGreaterThan(10_000);
+  });
+});

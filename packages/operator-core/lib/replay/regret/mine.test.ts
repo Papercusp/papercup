@@ -224,7 +224,7 @@ describe('runRegretTick — filing leg (D-002: origin=replay)', () => {
     const result = await runRegretTick(WS, deps);
     expect(result.filed).toEqual(['EI-900']);
     expect(capture).toHaveBeenCalledTimes(1);
-    const input = capture.mock.calls[0][0] as Record<string, unknown>;
+    const input = (capture.mock.calls as unknown as unknown[][])[0]?.[0] as Record<string, unknown>;
     expect(input).toMatchObject({
       kind: 'change',
       origin: 'replay', // the D-002 invariant — a regret report never reads organic

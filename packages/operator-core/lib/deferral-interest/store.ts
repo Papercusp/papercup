@@ -66,7 +66,7 @@ export async function saveDeferralModel(
   await sql`
     INSERT INTO harness_shared.deferral_pricing_model
       (workspace_id, trained_at, model, sample_items, sample_weeks, created_by)
-    VALUES (${workspaceId}, ${model.trainedAt}, ${JSON.stringify(model)}::jsonb,
+    VALUES (${workspaceId}, ${model.trainedAt}, ${JSON.stringify(model)}::text::jsonb,
             ${model.totalItems}, ${model.totalWeeks}, ${createdBy})`;
 }
 

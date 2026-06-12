@@ -149,6 +149,56 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
     });
   });
 
+  it('a blocked transfer bar refuses adoption and the candidate stays pending (P-022 / D-006)', async () => {
+    const staged = await stageLearningPackCandidate(stageInput('sig-transfer-blocked'));
+    if (!staged.staged) throw new Error('stage failed');
+
+    const refused = await decideLearningPackCandidate({
+      id: staged.id,
+      action: 'adopt',
+      by: 'owner',
+      workspaceId: WS,
+      packsRoot,
+      transferBar: async (q) => {
+        expect(q).toEqual({ workspaceId: WS, candidateId: staged.id, signature: 'sig-transfer-blocked' });
+        return { blocked: true, detail: 'transfer test failed this lesson' };
+      },
+    });
+    expect(refused).toEqual({ ok: false, reason: 'transfer_bar', error: 'transfer test failed this lesson' });
+
+    // Still pending — the owner can fix/dismiss/re-decide; never a half state.
+    const [row] = (await listLearningPackCandidates({ workspaceId: WS, status: 'pending' })).filter(
+      (r) => r.id === staged.id,
+    );
+    expect(row?.status).toBe('pending');
+
+    // An open bar lets the same candidate through.
+    const adopted = await decideLearningPackCandidate({
+      id: staged.id,
+      action: 'adopt',
+      by: 'owner',
+      workspaceId: WS,
+      packsRoot,
+      transferBar: async () => ({ blocked: false }),
+    });
+    expect(adopted).toMatchObject({ ok: true, action: 'adopt' });
+  });
+
+  it('the bar never gates a dismiss', async () => {
+    const staged = await stageLearningPackCandidate(stageInput('sig-transfer-dismiss'));
+    if (!staged.staged) throw new Error('stage failed');
+    const dismissed = await decideLearningPackCandidate({
+      id: staged.id,
+      action: 'dismiss',
+      by: 'owner',
+      workspaceId: WS,
+      transferBar: async () => {
+        throw new Error('the bar must not be consulted on a dismiss');
+      },
+    });
+    expect(dismissed).toEqual({ ok: true, action: 'dismiss', id: staged.id });
+  });
+
   it('decide on an unknown id is not_found; workspaces are isolated', async () => {
     const missing = await decideLearningPackCandidate({
       id: '00000000-0000-0000-0000-000000000000',

@@ -235,4 +235,31 @@ describe('buildMemoryContextBlock', () => {
     expect(pinned.search.mock.calls.map((c) => c[1].scope)).toEqual([['hive:other-hive']]);
     expect(block).toContain('@ hive:other-hive');
   });
+
+  describe('two-tier markers (self-learning-frontier P-022 / FB-08, D-006)', () => {
+    const rows = [
+      { id: 'p1', text: 'A probationary lesson', kind: 'project', metadata: { tier: 'probationary' } },
+      { id: 'v1', text: 'A validated fact', kind: 'project' },
+    ] as never[];
+    const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_TRANSFER_HARNESS';
+
+    it('flag dark (the D-001 default) ⇒ byte-identical output, no markers', async () => {
+      useBackend(mockBackend(rows));
+      const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
+      expect(block).toContain('- [project] (id=p1) A probationary lesson');
+      expect(block).not.toContain('probationary]');
+    });
+
+    it('flag armed ⇒ probationary entries are marked, still injected (admission is free)', async () => {
+      process.env[FLAG_ENV] = '1';
+      try {
+        useBackend(mockBackend(rows));
+        const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
+        expect(block).toContain('- [project · probationary] (id=p1) A probationary lesson');
+        expect(block).toContain('- [project] (id=v1) A validated fact'); // legacy grandfathered
+      } finally {
+        delete process.env[FLAG_ENV];
+      }
+    });
+  });
 });

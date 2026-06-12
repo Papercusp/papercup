@@ -2672,6 +2672,41 @@ Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 * **Don’t blind-retry**: a retry of a >10-minute brief dies the same death and may leave MORE half-landed edits. Either do the work inline (an interactive session has no invoke timeout), split the brief into chunks each under 10 minutes, or raise `PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS` on the spawning host until EI-361 lands a per-spawn override.
 * **Always sweep for partial work** after such a kill: the bee’s edits are in the shared tree (git-sync swept them) — `git log` the kill window and check `lint:tsc` / the touched suites before assuming “nothing landed”.
 
+# Session-level behavior lives in agent_activity, NOT tool_invocations — spawn_id can't group sessions
+
+> harness_shared.tool_invocations.spawn_id is per-call or per-surface (palette, dev-page, one-shot UUIDs) for ~99% of rows, so grouping it never reconstructs an agent session; the per-CLI activity bridge (harness_shared.agent_activity, keyed owner_id+session_id) is the real session stream — native AND mcp__* calls, ~100–300 sessions/day since 2026-06-04.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+`harness_shared.tool_invocations` looks like the obvious substrate for per-session behavioral analysis — every dispatched tool call lands there, and its `spawn_id` column is documented as the session/spawn identity. It is not usable that way. Measured over 30 days (2026-06-12):
+
+* **1.41M of 1.41M+ distinct spawn\_ids had exactly ONE call** — one-shot UUIDs minted per request.
+* The few “busy” spawn\_ids are **fixed surface labels, not sessions**: `palette` (183k calls), `''`, `event-reaction`, `dev-page`.
+* `role` is `operator` for \~99% of traffic — the desktop UI’s dispatch, not agents.
+
+Group by `spawn_id` and you get either singletons or a single years-long “session” named `palette`. Per-call analyses (the negative-space miner’s zero-hit search mining, `dev:telemetry` rollups) are fine; session reconstruction is impossible.
+
+## The substrate that works
+
+[Section titled “The substrate that works”](#the-substrate-that-works)
+
+`harness_shared.agent_activity` (migration 143 — the cross-CLI activity bridge) is the real per-session stream: one row per tool call from every worker CLI (Claude Code / Codex / OMP), **native tools (Bash, Edit, Read…) and `mcp__*` dispatches alike**, keyed by `(owner_id, session_id)` with `agent`, `tool_name`, `phase` (`pre`/`post`), `status` (`ok`/`error`/null), `detail`, `created_at`.
+
+* Use `kind = 'tool' AND phase = 'post'` for completed calls.
+* Scope `workspace_id IN (<ws>, '*')` — unscoped SU sessions (most real traffic) land in the `'*'` bucket.
+* Volume: \~100–300 sessions/day, \~10–25k events/day; populated **since 2026-06-04** (the bridge’s landing) — a “last 30 days” ask older than that has no data, by construction.
+* `status` is null for \~14% of post rows — exclude nulls from error-rate denominators.
+
+`lib/fleet-ekg/scan.ts#readSessionEvents` is the canonical reader (grouping + scoping done); `lib/fleet-ekg/features.ts` turns a session’s rows into a named behavioral vector.
+
+## Rule
+
+[Section titled “Rule”](#rule)
+
+Per-CALL questions (which tool, how often, error classes) → `tool_invocations`. Per-SESSION questions (behavior, pacing, rhythm, anything grouped by agent session) → `agent_activity`. Don’t trust `spawn_id` as a session key without checking the calls-per-spawn histogram first.
+
 # Don't infer the fleet's inference plan from credential presence — check the wire
 
 > Agents repeatedly conclude "the fleet runs on the Claude Max subscription" from the presence of a `subscriptionType: max` OAuth in `~/.claude/.credentials.json`, without checking what the spawned `claude -p` bee actually presents on the wire. Credential presence ≠ the subscription serving the workload. Cost telemetry and 429s reinforce the wrong conclusion. Run `npm run check:fleet-auth` for the ground truth — and note the 2026-06-11 addendum: bees present `~/.papercusp/claude-token` (CLAUDE_CODE_OAUTH_TOKEN), NOT the global OAuth your probe uses; A/B both credentials before declaring auth healthy.
@@ -4221,6 +4256,52 @@ Both modules ship before the runtime serializer because the field-order const is
 * [JCS / RFC 8785 spec](https://www.rfc-editor.org/rfc/rfc8785) — short read (\~15 pages), worth bookmarking.
 * [`types-first-from-design-memo`](/internal/docs/agent-insights/types-first-from-design-memo/) — the broader pattern this fits into: extract types ahead of behavior so the implementation has a stable spine.
 * `dogfood-design-memo-two-channel-binding-ux-2026-05-24.md` — design memo where JCS choice was first surfaced (D-001 in `papercusp-dogfood-phase1b-oauth-clone-attestation-2026-05-24.md`).
+
+# jsonb params need ${JSON.stringify(x)}::text::jsonb — every other form breaks on one of the two pg clients
+
+> The live getOrgPg client (custom `types` map) THROWS on object/sql.json jsonb params, while a default postgres() client DOUBLE-ENCODES a pre-stringified param described as jsonb — only stringify + ::text::jsonb round-trips an object on both, so either failure mode ships green in the suite that doesn't exercise it.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Writing an object into a `jsonb` column behaves differently depending on which postgres-js client runs the query — and each “obvious” form is broken on exactly one of them:
+
+| param form                            | live `getOrgPg()` client                                                                   | default `postgres()` client (testcontainers)                                |
+| ------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `${obj}` or `${sql.json(obj)}`        | **THROWS** `The "string" argument must be of type string … Received an instance of Object` | ✅ stores an object                                                          |
+| `${JSON.stringify(obj)}::jsonb`       | ✅ stores an object                                                                         | **double-encodes** — `jsonb_typeof` = `'string'`, reads back as a JS string |
+| `${JSON.stringify(obj)}::text::jsonb` | ✅ object                                                                                   | ✅ object                                                                    |
+
+So an integration-green write can fail (or silently double-encode) live, and a live-green write can corrupt rows under the test container — the same integration-green ≠ live-green class as [db-org-client-rejects-js-date-params](/internal/docs/agent-insights/db-org-client-rejects-js-date-params), on the jsonb axis.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+`buildClient` (`libs/papercusp/libs/db/src/connection.ts`) passes a custom `types: { bigint: … }` map. Supplying a custom types map changes postgres-js’s parameter-serialization path, and on that path a non-scalar JS value (object, `sql.json` wrapper, `Date`) reaches a writer that only accepts string/Buffer — hence the throw. A plain `postgres()` client (what the integration testbeds build) keeps the default path: it *accepts* objects, but when the server describes a param as `jsonb` (any param bound to a jsonb column or `::jsonb` cast) it serializes the JS value with `JSON.stringify` — so a value you already stringified becomes a quoted JSON **string**, not a document.
+
+`::text::jsonb` sidesteps both: the explicit `::text` makes the server describe the param as text, so BOTH clients send the plain string, and the text→jsonb cast parses the document server-side.
+
+## Rule
+
+[Section titled “Rule”](#rule)
+
+For any `jsonb` write that must run on more than one client (lib code shared between routine actions and integration tests — i.e. nearly everything in `operator-core/lib`):
+
+```ts
+await sql`INSERT INTO t (data) VALUES (${JSON.stringify(value)}::text::jsonb)`;
+```
+
+Never `sql.json(...)`, never a raw object param, never a bare `::jsonb` cast on a pre-stringified value. The routines seeds (`seed-*-routine.ts`, `trigger_config`) and `lib/fleet-ekg/scan.ts` are existing examples of the canonical form.
+
+Read side is symmetric-safe: both clients parse a selected `jsonb` column to an object — but defensive readers (`Array.isArray(...) ? … : []`) keep a legacy double-encoded row from crashing the projection.
+
+## How it was caught
+
+[Section titled “How it was caught”](#how-it-was-caught)
+
+FB-10’s Fleet EKG wrote vectors with `sql.json` — integration-green, then the live backfill threw; switching to `${str}::jsonb` fixed live but flipped the integration suite red with double-encoded rows (`features.errorRate` undefined). A temp-table probe against both clients side-by-side (`jsonb_typeof(a)`) isolated the matrix above in one pass — probe both clients before trusting either suite on a serialization question.
 
 # Agent launches are declared blueprints — fire them with the launch-blueprint primitive
 
@@ -6823,6 +6904,18 @@ With registration fixed, the same probe failed differently: `render_error: The "
 
 Fixed in: host-architecture-2026-05-20-v2 P-001..P-003 (D-002 has the full phase-by-phase re-baseline).
 
+# Replay-consumer loops must not re-ledger battery spend
+
+> runGovernedReplay already ledgers every battery dollar on frontier:replay-harness — a consumer loop (regret/transfer/ablation) that also records the returned totalCostUsd on its own governor loop double-counts it on the one visible spend number.
+
+**The trap.** The frontier consumer loops (regret mining FB-07, transfer harness FB-08, shadow ablation FB-09) run student/counterfactual batteries through `runGovernedReplay` (`packages/operator-core/lib/replay/governed.ts`). That wrapper ALREADY calls `recordLearningSpend` with the battery’s `totalCostUsd` on loop `frontier:replay-harness` (accumulate:true, origin=‘replay’). The returned `ReplayBatteryResult.totalCostUsd` is there for *reporting* — if your loop also ledgers it on its own governor loop, the same dollar lands twice in `summarizeLearningSpend().totalSpentUsd` (D-004’s “one visible number”), and your loop’s lifetime budget exhausts at half its real allowance.
+
+**The rule.** A consumer loop ledgers on its own loop id ONLY the spend it generates *outside* the battery (the transfer harness: distillation LLM calls). Battery spend belongs to `frontier:replay-harness` — that loop’s owner-set budget is the chokepoint for ALL replay consumers, by design (FB-06). Surface battery cost in your tick report from `totalCostUsd`, don’t re-record it.
+
+**How FB-08 wires it** (`lib/transfer/tick.ts` testLeg + `replay-adapter.ts`): the tick’s `recordSpend` port is called for distillation refs only; the adapter routes batteries through `runGovernedReplay` and returns the cost purely for the log line.
+
+**Corollary for arming (P-001).** A consumer loop needs BOTH budgets set to actually run: its own loop (distillation/selection spend) AND `frontier:replay-harness` (battery spend) — plus both flags. An armed consumer with a dark/unbudgeted replay loop fails its tests with “governed replay refused (replay-dark)” — that’s the designed refusal, not a bug.
+
 # Extend a multi-entry route with a body-discriminator + a helper-per-entry + a shared error vocabulary
 
 > POST /harness/projects now accepts 3 entry shapes (Entry 1/2/3). The pattern that scales — discriminate on body, delegate to a per-entry helper, surface errors with a shared .code vocabulary the UI handles uniformly.
@@ -9383,6 +9476,75 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 [Section titled “Why this is the shape it is”](#why-this-is-the-shape-it-is)
 
 D-001..D-010 on `windows-desktop-release-readiness-2026-06-11` carry the full rationale (build-on-VM, bundle-the-rootfs, NSIS-only, unsigned alpha, ext4 PG, payload trims, navigate-after-discovery, statics-pre-operator, breakaway restart).
+
+# The workspace-domain split (EI-295)
+
+> Presence/activity rows stamp AGENT workspace; plan-store rows stamp DEFAULT. Readers joining both must accept both workspace IDs until axes unify.
+
+## What
+
+[Section titled “What”](#what)
+
+The Papercusp workspace scoping model uses two distinct domains for row identity:
+
+* **Presence/activity rows** (e.g., `owner_activity`, `fleet_assignments`): stamp the **AGENT workspace** — the workspace where the agent is spawned (e.g., `papercusp-workspace`).
+* **Plan-store rows** (e.g., `plans`, `plan_item_claims`, `plan_items`): stamp the **DEFAULT\_WORKSPACE\_ID** (`'default'`) — the workspace resolved by `resolvePlanScope`.
+
+This split exists because agents span workspaces but claims + plans are anchored to a single default scope. It is intentional but sharp: readers that JOIN presence-domain rows with plan-store rows see double the workspace scope until the axes unify.
+
+## The bugs (2026-06-11)
+
+[Section titled “The bugs (2026-06-11)”](#the-bugs-2026-06-11)
+
+Three bugs surfaced from this split on 2026-06-11:
+
+### Bug 1: fleet\_assignment reader dropped all claims
+
+[Section titled “Bug 1: fleet\_assignment reader dropped all claims”](#bug-1-fleet_assignment-reader-dropped-all-claims)
+
+**What**: The `fleet_assignments` reader (`lib/fleet/assignments.ts`) was filtering for only one workspace ID. It would join `owner_activity` (agent workspace) with `plan_item_claims` (default workspace) but accept only one side, dropping claims in the other domain.
+
+**Fixed in**: `packages/operator-core/lib/fleet/assignments.ts` — now accepts rows from both workspace IDs and unifies them in the result.
+
+### Bug 2: claim renewal missed default-domain rows
+
+[Section titled “Bug 2: claim renewal missed default-domain rows”](#bug-2-claim-renewal-missed-default-domain-rows)
+
+**What**: The auto-renewal routine (`renewOwnerActivityClaims` in `lib/plan-items/claims.ts`) refreshed the `owner_activity` side (agent workspace) but did not refresh `plan_item_claims` rows in the default workspace. Claims would show stale in one domain while live in the other.
+
+**Fixed in**: `packages/operator-core/lib/plan-items/claims.ts` — the renewal now touches both domains.
+
+### Bug 3: shared-resolver counted contributors in the wrong domain
+
+[Section titled “Bug 3: shared-resolver counted contributors in the wrong domain”](#bug-3-shared-resolver-counted-contributors-in-the-wrong-domain)
+
+**What**: The `defaultSharedResolver` (`lib/plan-items/liveness.ts`) counted work contributors by querying `owner_activity`, but some contributors’ claims were only live in the default-workspace `plan_item_claims` rows. The count was incomplete.
+
+**Status**: Still unfixed, but harmless after fix #2. Once claims renew correctly in both domains, the domain mismatch no longer loses data — it just means the counter runs over only one domain instead of unifying both. A full fix would be to join both domains in the counter query.
+
+## The rule for future agents
+
+[Section titled “The rule for future agents”](#the-rule-for-future-agents)
+
+**Any reader JOINing presence-domain rows (like `owner_activity`, `fleet_assignments`) with plan-store rows (like `plan_item_claims`, `plans`, `plan_items`) must accept and return rows from BOTH workspace IDs until the axes are unified.**
+
+This is not a bug in your code; it is a property of the schema. If you write a reader that touches both domains:
+
+1. Do not filter by a single workspace ID mid-query.
+2. Do not assume one domain “is the right one” — both are valid.
+3. If you need a single answer, unify the results on the client side or add a migration to stamp both domains the same way.
+
+The workspace split is tracked under [EI-295](/) and the unification plan is in [local-hive-orchestration D-013](/).
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `lib/fleet/assignments.ts` — reader that correctly handles both domains
+* `lib/plan-items/claims.ts` — renewal routine that touches both domains
+* `lib/plan-items/liveness.ts` — shared-resolver (partial fix candidate)
+* EI-295 — the issue tracking full unification
+* local-hive-orchestration D-013 — the unification roadmap
 
 # The PAPERCUSP_WORKSPACE_ID pin silently rebinds every workspace
 

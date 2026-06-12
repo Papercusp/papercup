@@ -10,6 +10,12 @@ vi.mock('@papercusp/flags', () => ({
 }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn(() => ({ sql: {} })) }));
+// The real cycle runner + replay leg drag the whole llm-testing/replay import
+// chains (module-scope PG codegen) into a hermetic test — both are exercised
+// by their own suites (lib/ablation/*.test.ts); here only the action's wiring
+// is under test, with the runner injected via its seam.
+vi.mock('../../ablation/runner', () => ({ runAblationCycle: vi.fn() }));
+vi.mock('../../ablation/replay-leg', () => ({ makeAblationReplayLeg: vi.fn(() => async () => null) }));
 
 // Importing the module registers the `prompt-ablation` system action.
 import {

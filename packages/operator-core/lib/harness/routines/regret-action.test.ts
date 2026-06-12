@@ -122,7 +122,7 @@ describe('system:regret-mine (self-learning-frontier P-021 / FB-07)', () => {
       // Payload asks for 10 — the governor cap (2) must win. With a budget > 0
       // and a wired runner the replay leg reads pending findings; budget
       // plumbing is observable through that read happening at all.
-      deps.replayRunner = { replayCandidate: vi.fn(async () => ({ improvementScore: 0, summary: '', costUsd: 0 })) };
+      deps.replayRunner = { priceFinding: vi.fn(async () => ({ scores: [], costUsd: 0 })) };
       await run({ payloadTemplate: { replayBudgetUsd: 10 } });
       expect(readPendingReplay).toHaveBeenCalled();
     } finally {

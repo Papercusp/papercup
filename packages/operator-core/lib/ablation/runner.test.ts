@@ -90,7 +90,10 @@ describe('pickRuleForRotation', () => {
 describe('runAblationCycle', () => {
   it('runs both arms per scenario on the SAME framed snapshot, differing only in the rule', async () => {
     const { deps, calls, inserted } = makeDeps({});
-    const result = await runAblationCycle({ workspaceId: 'w1' }, deps);
+    const result = await runAblationCycle(
+      { workspaceId: 'w1', thresholds: { minMeasurableScenarios: 2 } },
+      deps,
+    );
 
     expect(calls).toHaveLength(4); // 2 scenarios × 2 arms
     const baseline = calls[0]!.variant!;

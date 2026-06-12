@@ -111,7 +111,7 @@ export async function readSelectionRows(sql: Sql, workspaceId: string, windowDay
     costUsd: r.cost_usd === null ? null : Number(r.cost_usd),
     outputTokens: r.output_tokens === null ? null : Number(r.output_tokens),
     transcriptBytes: r.transcript_bytes === null ? null : Number(r.transcript_bytes),
-    featureAttempts: r.feature_attempts,
+    featureAttempts: r.feature_attempts === null ? null : Number(r.feature_attempts),
   }));
 }
 
@@ -140,12 +140,12 @@ export async function upsertFinding(sql: Sql, finding: RegretFindingRecord): Pro
        divergence_turn, divergence_kind, divergence_evidence, candidate_changes,
        replay_status, replay_scores, report_improvement_id, mined_at, updated_at)
     VALUES (${finding.workspaceId}, ${finding.runId}, ${finding.harnessSlug}, ${finding.role},
-            ${finding.badnessScore}, ${JSON.stringify(finding.badnessReasons)}::jsonb,
+            ${finding.badnessScore}, ${JSON.stringify(finding.badnessReasons)}::text::jsonb,
             ${finding.divergenceTurn}, ${finding.divergenceKind},
-            ${finding.divergenceEvidence === null ? null : JSON.stringify(finding.divergenceEvidence)}::jsonb,
-            ${JSON.stringify(finding.candidateChanges)}::jsonb,
+            ${finding.divergenceEvidence === null ? null : JSON.stringify(finding.divergenceEvidence)}::text::jsonb,
+            ${JSON.stringify(finding.candidateChanges)}::text::jsonb,
             ${finding.replayStatus},
-            ${finding.replayScores === null ? null : JSON.stringify(finding.replayScores)}::jsonb,
+            ${finding.replayScores === null ? null : JSON.stringify(finding.replayScores)}::text::jsonb,
             ${finding.reportImprovementId}, ${finding.minedAt}, now())
     ON CONFLICT (workspace_id, run_id) DO UPDATE SET
       harness_slug = EXCLUDED.harness_slug,
@@ -205,7 +205,7 @@ export async function recordReplayScores(
 ): Promise<void> {
   await sql`
     UPDATE harness_shared.regret_findings
-       SET replay_scores = ${JSON.stringify(scores)}::jsonb,
+       SET replay_scores = ${JSON.stringify(scores)}::text::jsonb,
            replay_status = 'replayed',
            updated_at = now()
      WHERE workspace_id = ${workspaceId} AND run_id = ${runId}`;

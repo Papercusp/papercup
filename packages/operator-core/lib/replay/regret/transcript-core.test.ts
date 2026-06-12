@@ -98,6 +98,19 @@ describe('parseTranscript', () => {
     expect(parseTranscript(tail).rescueMarkerTurns).toEqual([0]);
   });
 
+  it('takes the REAL per-message output usage from stream_event message_delta', () => {
+    const body = [
+      line({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm1' } } }),
+      assistantEvent({ id: 'm1', text: 'long work', usage: { output_tokens: 3 } }), // early snapshot
+      line({ type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 850 } } }),
+      line({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm2' } } }),
+      assistantEvent({ id: 'm2', text: 'short', usage: { output_tokens: 2 } }),
+      line({ type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 40 } } }),
+    ].join('\n');
+    const parsed = parseTranscript(body);
+    expect(parsed.turns.map((t) => t.outputTokens)).toEqual([850, 40]);
+  });
+
   it('tolerates junk, truncation, and unknown event types', () => {
     const body = [
       'not json at all',

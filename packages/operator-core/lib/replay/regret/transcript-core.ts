@@ -92,6 +92,10 @@ export function parseTranscript(jsonlBody: string): ParsedTranscript {
   let model: string | null = null;
   let role: string | null = null;
   let totalCostUsd: number | null = null;
+  /** The message currently streaming (stream_event message_start) — its
+   *  terminal message_delta carries the REAL cumulative output usage (the
+   *  `assistant` events' usage snapshots are early-stream and tiny). */
+  let streamingMessageId: string | null = null;
 
   for (const line of jsonlBody.split('\n')) {
     const trimmed = line.trim();
@@ -162,6 +166,19 @@ export function parseTranscript(jsonlBody: string): ParsedTranscript {
       // turn-interrupt notices). Attribute to the NEXT assistant turn (the
       // one acting under the interrupt) = current turns.length.
       if (RESCUE_MARKER_RE.test(trimmed)) rescueTurns.add(turns.length);
+    } else if (type === 'stream_event') {
+      const streamEvent = event.event as Record<string, unknown> | undefined;
+      if (!streamEvent) continue;
+      if (streamEvent.type === 'message_start') {
+        const message = streamEvent.message as Record<string, unknown> | undefined;
+        if (message && typeof message.id === 'string') streamingMessageId = message.id;
+      } else if (streamEvent.type === 'message_delta' && streamingMessageId !== null) {
+        const usage = streamEvent.usage as Record<string, unknown> | undefined;
+        const turn = byMessageId.get(streamingMessageId);
+        if (turn && usage && typeof usage.output_tokens === 'number') {
+          turn.outputTokens = Math.max(turn.outputTokens, usage.output_tokens);
+        }
+      }
     } else if (type === 'result') {
       const cost = event.total_cost_usd;
       if (typeof cost === 'number') totalCostUsd = cost; // last wins (cumulative)

@@ -28,12 +28,10 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
 import { transferGovernorGate } from '../../transfer/governor';
 import { transferOptionsFromPayload } from '../../transfer/gate';
-import { defaultTransferTickDeps } from '../../transfer/live-deps';
 import { runTransferTick, type TransferTickDeps } from '../../transfer/tick';
 
 /** The tick-deps seam — injectable for tests (mirrors setNegativeSpaceTickDeps). */
@@ -67,7 +65,14 @@ registerSystemAction('transfer-distill', async (ctx: SystemActionCtx) => {
     return;
   }
   const opts = transferOptionsFromPayload(ctx.payloadTemplate);
-  const deps = _deps ?? defaultTransferTickDeps(getOrgPg().sql, ctx.workspaceId);
+  // Lazy: the live deps pull the PG pool + memory-backend graph — neither may
+  // load (or throw) before the flag + governor checks in a hermetic process.
+  const deps =
+    _deps ??
+    (await import('../../transfer/live-deps')).defaultTransferTickDeps(
+      (await import('@papercusp/db-org')).getOrgPg().sql,
+      ctx.workspaceId,
+    );
   try {
     const r = await runTransferTick(ctx.workspaceId, deps, opts);
     console.log(
