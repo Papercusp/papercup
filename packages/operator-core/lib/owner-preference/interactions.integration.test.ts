@@ -96,7 +96,7 @@ describe('gradeRoutedIdea capture seam (owner grades only)', () => {
     recordRoutedIdea({
       ideaId,
       harnessSlug: 'papercup',
-      lens: 'inversion',
+      lens: 'reframing',
       rail: 'improvement',
       routedRef,
       title: `idea ${ideaId}`,
