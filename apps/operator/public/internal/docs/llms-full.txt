@@ -2654,6 +2654,45 @@ Two that bit while adding the regression tests for these bugs:
 
 You can `psql` the embedded PG (5432, `harness_admin`) read-only to reproduce a query or confirm a `has_table_privilege(...)`. For a faithful migration test, execute the **real** `NNN-*.sql` files against a testcontainer DB (see `apps/operator/test/harness-plan-status-grants.integration.test.ts`) rather than re-stating the DDL.
 
+# Flag flips on PostHog-less boxes — MCP flags:set fails, the HTTP route works
+
+> MCP `flags:set` returns `flag-backend-not-configured` on any box without PostHog (this dev box included) — that does NOT mean flags are broken. The HTTP route `POST /api/flags/set` (loopback, no auth header needed from the box) has a PG-override fallback the MCP projection lacks: it writes the flip to the PG override store, publishes the change bus event, and records the flag:set audit row. Symptoms that mean READ THIS — "flag-backend-not- configured" from flags:set, a flag flip that silently never lands, audit rows showing backend pg-override.
+
+## The gotcha
+
+[Section titled “The gotcha”](#the-gotcha)
+
+`flags:set` over MCP (papercusp-su) calls `setFlag()` and surfaces the raw PostHog failure:
+
+```json
+{ "ok": false, "reason": "flag-backend-not-configured" }
+```
+
+On a box with no PostHog credential (the shared dev box), **every MCP flag flip fails this way**. The flag system is fine — the *write fallback* only exists in the HTTP route.
+
+## The working path
+
+[Section titled “The working path”](#the-working-path)
+
+```bash
+curl -s -X POST http://127.0.0.1:3070/api/flags/set \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"papercusp-improvement-auto-implement","enabled":true}'
+# → {"ok":true,"key":"…","enabled":true,"backend":"pg-override"}
+```
+
+The route (`packages/operator-core/lib/endpoint-route/routes/flags/set.ts`, `auth: 'loopback'`) falls back to `setFlagOverride()` (PG override store), calls `publishFlagChange()` so live readers update without a restart, and records the `flag:set` audit row with `backend: pg-override`. Verify with MCP `flags:get` (the read side resolves overrides correctly on every transport).
+
+`/admin/features` rides this same route — the UI works too.
+
+## Notes
+
+[Section titled “Notes”](#notes)
+
+* Reads are fine everywhere; only the MCP *write* lacks the fallback. Filed as EI-407 (transport divergence — the endpoint system promises one tool per verb across HTTP/MCP/IPC).
+* The audit trail for ANY flag flip is `audit:list` with action `flag:set` (singular — `flags:set` as an action filter matches nothing).
+* Observed during the consume-edges P-013 supervised proof (2026-06-12): both the protective pause and the un-pause of `papercusp-improvement-auto-implement` rode the pg-override fallback.
+
 # Fleet bee dies at exactly 10 minutes — the DBOS 600s invoke timeout
 
 > A fleet:spawn'd bee that fails with exit 143 (SIGTERM), an EMPTY error_message, and a duration of exactly 600s was killed by PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS (default 600_000, orchestrator-runner.ts). Three bees died this way on 2026-06-11 mid-edit, one leaving the shared tree red. Don't re-dispatch a >10-minute task into the same guillotine — do it inline or raise the timeout.
@@ -2914,6 +2953,70 @@ Every client-less call to `POST /api/agent-tools/fleet/spawn?superuser=1` — th
 Fixed 2026-06-12 (plan `self-improvement-consume-edges-2026-06-12` P-002 / brief B-02). Tests: tooldef 368, tooldef-http 6, agent-mcp http-projection 34
 
 * artifacts 23, operator-core agent-tools-catchall 7 — all green; live before/after probes on `:3170`.
+
+# Fleet OAuth token quota exhaustion = silent exit-1 on every autonomous claude spawn
+
+> When ~/.papercusp/claude-token hits its Anthropic usage limit (weekly/session), every orchestrator invoke fails as 'exited 1 with empty stderr' — the real refusal text is in stdout, which only surfaces in the run-output row or with PAPERCUSP_DBOS_INVOKE_DEBUG=1. Interactive sessions keep working, so the outage is invisible from your own seat. One-line discrimination test inside.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Autonomous LLM work dies fleet-wide while every *interactive* agent session works fine. The visible shape, wherever an orchestrator spawn runs (gym cycles, improvement implement-lane workers, wake-executor resumes, headless bees):
+
+```plaintext
+[dbos-invoke] role=director exited 1 with empty stderr (stdout 526 chars)
+Error: decide invoke failed (exit=1, empty=false)
+```
+
+Three traps stacked on top of each other make this hard to read:
+
+1. **stderr is empty** — the claude CLI prints its refusal to *stdout*.
+2. The invoke log line only prints the stdout **length**, not its content (full tail requires `PAPERCUSP_DBOS_INVOKE_DEBUG=1` on the host).
+3. Your own session works, because interactive psu/Claude-Code sessions ride the rotating `~/.claude/.credentials.json` family — a **different account/pool** than the fleet token.
+
+## Where the real error text lives
+
+[Section titled “Where the real error text lives”](#where-the-real-error-text-lives)
+
+The agent’s stdout is persisted even when the log hides it: for the gym, the run row in the **gym DB testcontainer** (DSN in `/tmp/gym-loop-op-*.log`):
+
+```sql
+SELECT role, exit_code, left(out_body, 200)
+  FROM harness_shared.harness_run_output ORDER BY ended_at DESC LIMIT 3;
+-- out_body: "You've hit your weekly limit · resets Jun 18, 7am (America/New_York)"
+```
+
+## One-line discrimination test
+
+[Section titled “One-line discrimination test”](#one-line-discrimination-test)
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.papercusp/claude-token) claude -p 'reply ok' --model haiku
+```
+
+Compare with the same call *without* the env override (interactive family) and, if registered, the Queen’s pool credentials under `~/.papercusp/deploy-credentials/<id>`. Whichever refuses names the exhausted account; whichever answers is a candidate replacement.
+
+## Why the fleet pins to one token
+
+[Section titled “Why the fleet pins to one token”](#why-the-fleet-pins-to-one-token)
+
+`@papercusp/orchestrator` invoke.ts + the wake-executor export `CLAUDE_CODE_OAUTH_TOKEN` from `~/.papercusp/claude-token` when the file exists (see `fleet-claude-token.ts`) — deliberately, so autonomous refreshes never invalidate the owner’s interactive terminals (the every-terminal-relogin cascade; insight precedent in `claude-credential-sync-2026-06-10`). The cost: the whole autonomous fleet shares ONE account’s usage caps, and burns through weekly quota much faster than any human notices.
+
+## Recovery (owner act — whose quota the fleet burns is a policy call)
+
+[Section titled “Recovery (owner act — whose quota the fleet burns is a policy call)”](#recovery-owner-act--whose-quota-the-fleet-burns-is-a-policy-call)
+
+* **Re-mint**: on an account with headroom, `claude setup-token` → paste the `sk-ant-oat01…` token into `~/.papercusp/claude-token` (0600). The credential-sync service propagates it; spawns recover immediately.
+* **Stopgap**: install a pool-account token (e.g. `~/.papercusp/deploy-credentials/<id>`) at the same path, or point one host at it via `PAPERCUSP_CLAUDE_TOKEN_PATH`.
+* Waiting out the reset works but stalls every autonomous lane.
+
+## Related gotchas
+
+[Section titled “Related gotchas”](#related-gotchas)
+
+* This failure class does NOT trip the gym’s rate-pause detection or the learning-infra health chip (the spine probe checks credential *presence*, not *quota*) — first seen 2026-06-12 when the gym circuit accumulated errors on a perfectly healthy boot path.
+* The gym autoloop keeps dispatching doomed $0 cycles every tick until the error backoff opens the circuit; after recovery, `autoloop:control reset-errors` for `gymloopharness` clears the backoff.
 
 # Forward-defined registry entries — advance-mapping without losing the drift signal
 
@@ -3253,6 +3356,12 @@ Because the gym is now a blueprint, you do **not** extend it by editing core gym
 The abort’s `what()` is empty and apport drops cores for non-dpkg binaries (linuxbrew node), so the throwing module is still unidentified. The suspect set was the native modules loaded by boot legs the gym never needed — holepunch (`sodium-native`, `udx-native`, `rocksdb-native` via the substrate
 
 * voice cluster) and `onnxruntime` (embedder warm-up) — all on a bleeding-edge node (25.9). The utility-host profile removes them from the gym-operator process entirely; if the abort recurs on a minimal boot, the remaining suspect set is small (pg/tsx/plugin-host daemons) and the fail-fast path now prints the boot-log tail at the moment of death instead of a downstream SQL error.
+
+## Postscript — the vocabulary itself was retired (2026-06-12, EI-399)
+
+[Section titled “Postscript — the vocabulary itself was retired (2026-06-12, EI-399)”](#postscript--the-vocabulary-itself-was-retired-2026-06-12-ei-399)
+
+This page is the historical record of the topology; the codebase no longer uses the word. FB-17 renamed the stateless backend `meridian` → `anthropic-direct` (`AGENT_BACKENDS`, `TurnBackend`, `BACKEND_PROFILES`, `LLM_TEST_BACKEND` default, the `[meridian]`/`meridian error:` log + error prefixes, `setMeridianUsageSink` → `setStatelessUsageSink`) and **removed the dead omp-token transport leg** from `chooseStatelessTransport` — a stateless call now resolves anthropic-direct off the live Claude session or fails with one honest error. References to “Meridian” that remain in the tree name the real external router product (`@rynfar/meridian`) on the omp runtime path — desktop setup wizard, frame bootstrap for `backend=omp` frames, the `/settings/meridian` iframe page — not the LLM client.
 
 # Harness tests gate feature approval, and link to plans through the VAL
 
@@ -4586,12 +4695,7 @@ The diagnosis was wrong. The owner cracked it with one question: *“are you sur
 
 [Section titled “The actual topology”](#the-actual-topology)
 
-`llm-client.ts llmCall` → `runAgentChat({ backend: TEST_BACKEND })` where `TEST_BACKEND = LLM_TEST_BACKEND ?? 'meridian'`. The `meridian` backend is the **stateless raw-HTTP path** (`libs/papercup-shared/src/agent/chat-stream.ts`, `resolveStatelessTransport`):
-
-* `anthropic-direct` — `api.anthropic.com` with the Claude-Max OAuth token from `~/.claude/.credentials.json` and the `anthropic-beta: oauth-2025-04-20` header. This **is** the Max subscription — no API key involved.
-* `meridian` — the local `:3456` router with omp’s OAuth token.
-
-`AGENT_BACKEND=claude-code` only biases WHICH stateless credential wins (EI-281). It does **not** change the path class.
+`llm-client.ts llmCall` → `runAgentChat({ backend: TEST_BACKEND })` where `TEST_BACKEND = LLM_TEST_BACKEND ?? 'anthropic-direct'` (the backend was named `meridian` until 2026-06-12 — EI-399). `anthropic-direct` is the **stateless raw-HTTP path** (`libs/papercup-shared/src/agent/chat-stream.ts`, `resolveStatelessTransport`): `api.anthropic.com` with the Claude-Max OAuth token from `~/.claude/.credentials.json` and the `anthropic-beta: oauth-2025-04-20` header. This **is** the Max subscription — no API key involved. (The omp-token leg via the local `:3456` router was removed with the rename.)
 
 The non-obvious part: **the raw-OAuth path is rate-limited in its own bucket, separately from real Claude Code CLI traffic on the same account.** Interactive Claude Code sessions (and `claude -p` subprocesses) kept working all night while every raw-OAuth call 429’d. The fleet’s llm-testing sim/judge calls hammer the raw path box-wide, so that bucket exhausts first and stays exhausted.
 
@@ -4611,7 +4715,7 @@ The non-obvious part: **the raw-OAuth path is rate-limited in its own bucket, se
 LLM_TEST_BACKEND=claude-code   # llm-client routes through the claude CLI subprocess
 ```
 
-This is the documented-but-easy-to-miss knob in `llm-client.ts` (its comment says “to dodge a Meridian rate-limit window” — it equally dodges the raw-OAuth bucket). The subprocess inherits Claude Code’s client identity, so it draws from the bucket that interactive sessions use. With `isolateConfig` the spawn skips the heavy host MCP init.
+This is the documented-but-easy-to-miss knob in `llm-client.ts` — it dodges the raw-OAuth bucket. The subprocess inherits Claude Code’s client identity, so it draws from the bucket that interactive sessions use. With `isolateConfig` the spawn skips the heavy host MCP init.
 
 Trade-offs: \~**$0.10 per call** of subprocess overhead (system prompt + minimal MCP init tokens) — budget caps sized for raw-path costs will overshoot; and the `model:` param maps to claude CLI model selection, not raw API model ids.
 
@@ -4901,7 +5005,7 @@ Check the rungs in order. `PAPERCUSP_MEM0_SESSION_EXTRACTION=0` disables rung 1 
 [Section titled “Verifying it live”](#verifying-it-live)
 
 * **Round-trip probe** (isolated schema; exit 2 = skip without a session): `npx tsx packages/operator-core/lib/memory/session-extraction-live.ts` — also registered in the `/adv` Tests tab (Memory → Live). Proof-of-rung is the adapter’s own usage counters (`sessionExtractionUsage()`), not just a stored row.
-* **Telemetry**: every session-rung call lands a usage sample in `harness_shared.agent_usage_samples` (provider `anthropic`, class `haiku`) via the shared meridian sink — tokens are metered against the Max quota even though marginal cost is \~$0.
+* **Telemetry**: every session-rung call lands a usage sample in `harness_shared.agent_usage_samples` (provider `anthropic`, class `haiku`) via the shared stateless usage sink — tokens are metered against the Max quota even though marginal cost is \~$0.
 * A staging (`:3170`) `memory:remember` whose stored text comes back **rewritten** (not your verbatim input) is extraction working; verbatim echo means the write skipped extraction (`verbatim: true`) or the client fell back to a degraded path.
 
 ## Two test-side gotchas (from the Phase 1/2 build)
@@ -6791,13 +6895,13 @@ A good `decideX` function: takes data, returns a discriminated union, has no asy
 
 [Section titled “What changed (rate-limit-layer-v2-2026-06-05)”](#what-changed-rate-limit-layer-v2-2026-06-05)
 
-The `RateLimitGovernor` is no longer dormant: `PAPERCUSP_AGENT_GOVERNOR=1` and `PAPERCUSP_AGENT_GOVERNOR_PG=1` are set in **both** `apps/operator/.env.local` (staging `:3170` + Tauri dev spawns) and the release checkout’s `.env.local` (`:3070`). Every orchestrator spawn + meridian call now paces through the shared per-`(provider, modelClass)` buckets, the fleet-wide `maxSimultaneousAgents` gate (live-editable via `operator:rate_limit_config` / the `/adv` top-bar `<FleetRateControl>`), AIMD effective concurrency, and staggered resume. Don’t re-add ad-hoc retry/backoff at call sites — classify + let the governor pace.
+The `RateLimitGovernor` is no longer dormant: `PAPERCUSP_AGENT_GOVERNOR=1` and `PAPERCUSP_AGENT_GOVERNOR_PG=1` are set in **both** `apps/operator/.env.local` (staging `:3170` + Tauri dev spawns) and the release checkout’s `.env.local` (`:3070`). Every orchestrator spawn + stateless anthropic-direct call now paces through the shared per-`(provider, modelClass)` buckets, the fleet-wide `maxSimultaneousAgents` gate (live-editable via `operator:rate_limit_config` / the `/adv` top-bar `<FleetRateControl>`), AIMD effective concurrency, and staggered resume. Don’t re-add ad-hoc retry/backoff at call sites — classify + let the governor pace.
 
 ## Gotcha 1 — streaming SDK calls hide the rate-limit headers
 
 [Section titled “Gotcha 1 — streaming SDK calls hide the rate-limit headers”](#gotcha-1--streaming-sdk-calls-hide-the-rate-limit-headers)
 
-`client.messages.stream(...).finalMessage()` returns the **Message**, which has no headers — so a naive implementation never sees `anthropic-ratelimit-*` on the success path (only thrown SDK errors carry `.headers`). The fix (SDK `@anthropic-ai/sdk` 0.73.0): keep the `MessageStream` object; after `finalMessage()` resolves, `stream.response` is the raw `Response` whose headers carry the live limits. `chat-stream.ts` now does exactly this and returns the headers in the governed `TurnOutcome`, which both activates header-driven pacing (`governor.recordResponse`) and feeds the usage-telemetry sink (`setMeridianUsageSink` → `agent_usage_samples`, migration 161).
+`client.messages.stream(...).finalMessage()` returns the **Message**, which has no headers — so a naive implementation never sees `anthropic-ratelimit-*` on the success path (only thrown SDK errors carry `.headers`). The fix (SDK `@anthropic-ai/sdk` 0.73.0): keep the `MessageStream` object; after `finalMessage()` resolves, `stream.response` is the raw `Response` whose headers carry the live limits. `chat-stream.ts` now does exactly this and returns the headers in the governed `TurnOutcome`, which both activates header-driven pacing (`governor.recordResponse`) and feeds the usage-telemetry sink (`setStatelessUsageSink`, named `setMeridianUsageSink` pre-EI-399 → `agent_usage_samples`, migration 161).
 
 ## Gotcha 2 — AIMD must dedupe penalties per backpressure EVENT
 
@@ -7272,7 +7376,7 @@ The papercup Learning tab’s Scout view sat empty after the scout-cycle routine
 [Section titled “Where to look”](#where-to-look)
 
 1. `SELECT * FROM harness_shared.scout_ticks ORDER BY tick_at DESC` — the `detail` jsonb carries `stop` + `cycleId` (the cycleId’s epoch-ms suffix is the cycle START; the row lands at completion).
-2. The operator host’s journal for `[meridian]` warn lines during the cycle window. **Transient errors (429/529) log retries; non-transient failures (401, transport-resolution failure) are SILENT** — a cycle window with no `[meridian]` lines at all points at the auth/cache class, not rate limits.
+2. The operator host’s journal for `[anthropic-direct]` warn lines during the cycle window (`[meridian]` in logs before 2026-06-12 — EI-399 renamed the backend). **Transient errors (429/529) log retries; non-transient failures (401, transport-resolution failure) are SILENT** — a cycle window with no such lines at all points at the auth/cache class, not rate limits.
 3. Probe the exact path the cycle uses, from a FRESH process: `llmCall` in `packages/operator-core/lib/llm-testing/llm-client.ts` (one haiku call ≈ $0.00002). Fresh-process-green + long-lived-host-dead = the token-cache class.
 
 ## The two proven causes
@@ -11404,7 +11508,7 @@ Papercusp has three first-class agent surfaces, each tuned for a different laten
 
 [Section titled “Architectural split: fast voice + deep delegation”](#architectural-split-fast-voice--deep-delegation)
 
-The Operator’s voice layer is intentionally a **fast router**, not a deep brain. When the user asks something simple (“is the harness running?”, “open the operator panel”), voice handles it directly with sub-300ms latency. When the user asks something deep (“explain how authentication works in this repo”, “what should I work on next?”), voice **delegates to a coding agent** via a single tool, which spawns `omp -p` (default, via Meridian + Claude Max) or `claude -p` (when `AGENT_BACKEND=claude-code`) with the full agent-mcp tool surface — file reads, code analysis, multi-step planning.
+The Operator’s voice layer is intentionally a **fast router**, not a deep brain. When the user asks something simple (“is the harness running?”, “open the operator panel”), voice handles it directly with sub-300ms latency. When the user asks something deep (“explain how authentication works in this repo”, “what should I work on next?”), voice **delegates to a coding agent** via a single tool, which spawns `claude -p` (under `AGENT_BACKEND=claude-code`, the deployed default) or `omp -p` (routes through its own Meridian router + Claude Max) with the full agent-mcp tool surface — file reads, code analysis, multi-step planning.
 
 The architecture is documented in detail in the [Action Registry plan](/internal/docs/agents/action-registry).
 
@@ -11450,27 +11554,27 @@ This is the canonical plan — earlier iterations (v2-v4) are preserved at `apps
 **Scope:** unify the agent tool surfaces (Oracle, Operator-voice, Pi) plus the user-facing surfaces (keyboard shortcuts, ⌘K command palette) under a single typed registry of commands (side-effects) and queries (reads), with a clear architectural split between:
 
 * **reflexive UI control** — fast, local, low-stakes; runs in the voice layer via ElevenLabs Conv AI client-side tools or directly via shortcuts/palette
-* **deep reasoning** — slow, agent-backed, high-context; lives in the existing `operator-scan`/`operator-chat` endpoints (default `omp -p` via Meridian + Claude Max OAuth, or `claude -p` when `AGENT_BACKEND=claude-code`), accessed via the `delegate_to_agent` (alias `delegate_to_claude`) tool
+* **deep reasoning** — slow, agent-backed, high-context; lives in the existing `operator-scan`/`operator-chat` endpoints (`claude -p` under `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p`, which routes through its own Meridian router + Claude Max OAuth), accessed via the `delegate_to_agent` (alias `delegate_to_claude`) tool
 
 **Non-goals:** generic DOM clicker, free-text input tools, drag/resize gestures, multi-step workflows in the registry. Deep-reasoning lives in the `operator-chat` endpoint, not in the registry.
 
 **Decisions made through iteration** (see §9 for the full log):
 
-| Decision                                      | Resolution                                                                                                                                               |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Voice provider                                | **ElevenLabs Conversational AI** (primary) + OpenAI Realtime (manual fallback in settings)                                                               |
-| Voice underlying LLM                          | **Claude Haiku 4.5** via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports)                                              |
-| Deep reasoning                                | **agent CLI per-turn** (`omp -p` default via Meridian, `claude -p` when opted-in; existing pattern from `operator-scan`); persistent subprocess rejected |
-| Conversation memory                           | `claude-sessions` table; voice picks via injected list; auto-archive at 24h idle                                                                         |
-| Tool surface for voice                        | \~22 tools: 12 reflexive commands + 9 fast queries + `delegate_to_claude` + claude-sessions list/get                                                     |
-| Audit                                         | Two tables: `agent_actions` (full) + `agent_queries` (sampled per-def)                                                                                   |
-| Aliases for renamed tools                     | None — hard cutover with prompt update in same PR                                                                                                        |
-| Browser-routing                               | Tristate `browser: 'required' \| 'optional' \| 'none'` per def                                                                                           |
-| Concurrency                                   | Per-def `concurrent: 'allow' \| 'queue' \| 'deny'`                                                                                                       |
-| Workspace scoping                             | `ctx.workspace`, never threaded through args                                                                                                             |
-| Cross-process                                 | Leader-bridge SSE pressure-tested in PR 1                                                                                                                |
-| Auto-fallback to OpenAI on ElevenLabs failure | **Manual** for v1. Auto-fallback rejected as premature complexity                                                                                        |
-| `runMany` / batch tool calls                  | Deferred until concrete need                                                                                                                             |
+| Decision                                      | Resolution                                                                                                                                                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Voice provider                                | **ElevenLabs Conversational AI** (primary) + OpenAI Realtime (manual fallback in settings)                                                                                                                 |
+| Voice underlying LLM                          | **Claude Haiku 4.5** via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports)                                                                                                |
+| Deep reasoning                                | **agent CLI per-turn** (`claude -p` under `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p` via its Meridian router; existing pattern from `operator-scan`); persistent subprocess rejected |
+| Conversation memory                           | `claude-sessions` table; voice picks via injected list; auto-archive at 24h idle                                                                                                                           |
+| Tool surface for voice                        | \~22 tools: 12 reflexive commands + 9 fast queries + `delegate_to_claude` + claude-sessions list/get                                                                                                       |
+| Audit                                         | Two tables: `agent_actions` (full) + `agent_queries` (sampled per-def)                                                                                                                                     |
+| Aliases for renamed tools                     | None — hard cutover with prompt update in same PR                                                                                                                                                          |
+| Browser-routing                               | Tristate `browser: 'required' \| 'optional' \| 'none'` per def                                                                                                                                             |
+| Concurrency                                   | Per-def `concurrent: 'allow' \| 'queue' \| 'deny'`                                                                                                                                                         |
+| Workspace scoping                             | `ctx.workspace`, never threaded through args                                                                                                                                                               |
+| Cross-process                                 | Leader-bridge SSE pressure-tested in PR 1                                                                                                                                                                  |
+| Auto-fallback to OpenAI on ElevenLabs failure | **Manual** for v1. Auto-fallback rejected as premature complexity                                                                                                                                          |
+| `runMany` / batch tool calls                  | Deferred until concrete need                                                                                                                                                                               |
 
 ***
 
@@ -33704,7 +33808,7 @@ When `papercusp update &lt;plugin&gt;` finds capability changes in the new versi
 
 # 16. CLI pluggability
 
-The substrate invokes role agents by spawning a CLI subprocess. The default is `omp -p` (routes through Meridian + Claude Max OAuth); `claude -p` is also fully supported via `AGENT_BACKEND=claude-code`. That CLI is a **substitution point**, not a hard dependency. Anything that satisfies a small contract can drive a role.
+The substrate invokes role agents by spawning a CLI subprocess. The deployed default is `claude -p` via `AGENT_BACKEND=claude-code`; `omp -p` (which routes through its own Meridian router + Claude Max OAuth) is the code-level fallback and fully supported. That CLI is a **substitution point**, not a hard dependency. Anything that satisfies a small contract can drive a role.
 
 ## The CLI contract
 
@@ -43010,7 +43114,7 @@ A `Proposal` *fuses* multiple source ideas, and the creative `lens` lives on the
 
 `cycle-deps.ts` assembles the concrete `ScoutCycleDeps`. Three deps are irreducibly injected by the caller (a slug alone can’t produce them in a pure lib):
 
-* **`llmCall`** — the real meridian LLM client (the gym `JudgeLlmCall` pattern);
+* **`llmCall`** — the real stateless LLM client (anthropic-direct; the gym `JudgeLlmCall` pattern);
 * **`createPlanDraft`** — the **ctx-bound** `plans:new` draft creator (plans:new needs operator ctx for the write-lock + revision + plan-event — the honest ctx seam);
 * **`archive`** — the gym QD `ArchivePort` for the testable rail.
 

@@ -20,17 +20,14 @@ the actual transport instead of re-asserting the assumption.
 ## The actual topology
 
 `llm-client.ts llmCall` → `runAgentChat({ backend: TEST_BACKEND })` where
-`TEST_BACKEND = LLM_TEST_BACKEND ?? 'meridian'`. The `meridian` backend is the
-**stateless raw-HTTP path** (`libs/papercup-shared/src/agent/chat-stream.ts`,
-`resolveStatelessTransport`):
-
-* `anthropic-direct` — `api.anthropic.com` with the Claude-Max OAuth token from
-  `~/.claude/.credentials.json` and the `anthropic-beta: oauth-2025-04-20`
-  header. This **is** the Max subscription — no API key involved.
-* `meridian` — the local `:3456` router with omp's OAuth token.
-
-`AGENT_BACKEND=claude-code` only biases WHICH stateless credential wins
-(EI-281). It does **not** change the path class.
+`TEST_BACKEND = LLM_TEST_BACKEND ?? 'anthropic-direct'` (the backend was named
+`meridian` until 2026-06-12 — EI-399). `anthropic-direct` is the **stateless
+raw-HTTP path** (`libs/papercup-shared/src/agent/chat-stream.ts`,
+`resolveStatelessTransport`): `api.anthropic.com` with the Claude-Max OAuth
+token from `~/.claude/.credentials.json` and the `anthropic-beta:
+oauth-2025-04-20` header. This **is** the Max subscription — no API key
+involved. (The omp-token leg via the local `:3456` router was removed with the
+rename.)
 
 The non-obvious part: **the raw-OAuth path is rate-limited in its own bucket,
 separately from real Claude Code CLI traffic on the same account.** Interactive
@@ -54,9 +51,8 @@ raw path box-wide, so that bucket exhausts first and stays exhausted.
 LLM_TEST_BACKEND=claude-code   # llm-client routes through the claude CLI subprocess
 ```
 
-This is the documented-but-easy-to-miss knob in `llm-client.ts` (its comment
-says "to dodge a Meridian rate-limit window" — it equally dodges the raw-OAuth
-bucket). The subprocess inherits Claude Code's client identity, so it draws from
+This is the documented-but-easy-to-miss knob in `llm-client.ts` — it dodges
+the raw-OAuth bucket. The subprocess inherits Claude Code's client identity, so it draws from
 the bucket that interactive sessions use. With `isolateConfig` the spawn skips
 the heavy host MCP init.
 

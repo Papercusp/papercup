@@ -287,7 +287,7 @@ export async function runDrillCycle(cls: DrillClass, deps: DrillCycleDeps): Prom
 async function collectAll(collectors: WatchdogCollector[]) {
   const out = [];
   for (const c of collectors) {
-    const res = await c.collect().catch(() => [] as const);
+    const res = await c.collect().catch(() => []);
     out.push(...(Array.isArray(res) ? res : res.signals));
   }
   return out;

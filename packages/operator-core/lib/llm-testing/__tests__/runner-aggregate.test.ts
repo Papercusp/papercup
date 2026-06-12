@@ -96,6 +96,8 @@ describe('scenario registry', () => {
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',
+      // queen ranked-queue decider (self-learning-frontier-2026-06-12 P-045 / FB-19)
+      'queen-Q03-ranked-queue-decider',
     ].sort());
   });
 

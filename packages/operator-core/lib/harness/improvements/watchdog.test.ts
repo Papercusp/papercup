@@ -530,6 +530,18 @@ describe('runWatchdogTick — captures through the shared core', () => {
     expect(calls[0]).toMatchObject({ scope: 'harness:sheets' });
   });
 
+  it('passes a per-signal findingClass through to the capture (frontier P-044 taxonomy slug)', async () => {
+    const { calls, capture } = captureRecorder();
+    const signals = [sig({ key: 'slo-x', findingClass: 'learning-slo:triage-degeneracy' })];
+    await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => signals, capture, recordTick: noopRecord });
+    expect(calls[0]).toMatchObject({ findingClass: 'learning-slo:triage-degeneracy' });
+    // absent on the signal stays absent on the capture — graduation's
+    // findingClassOf falls back to `<source>:unclassified`, never a fake stamp.
+    const { calls: bare, capture: bareCapture } = captureRecorder();
+    await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'y' })], capture: bareCapture, recordTick: noopRecord });
+    expect((bare[0] as { findingClass?: string }).findingClass).toBeUndefined();
+  });
+
   it('counts declined open-duplicates instead of re-filing (cross-tick dedup)', async () => {
     const { capture } = captureRecorder([{ created: false, reason: 'likely-duplicate' }]);
     const res = await runWatchdogTick('ws', {}, { readKeyDups: noKeyDups, pruneTicks: noPrune, collect: async () => [sig({ key: 'x' })], capture, recordTick: noopRecord });

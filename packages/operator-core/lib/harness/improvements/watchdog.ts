@@ -110,6 +110,14 @@ export interface WatchdogSignal {
    * organic open item as its duplicate, and vice versa.
    */
   origin?: SignalOrigin;
+  /**
+   * Machine-readable finding class (frontier P-044/D-008): a stable
+   * `<family>:<shape>` slug stamped into `payload.findingClass` so the
+   * graduation tracker counts clean passes per class. Collectors should set
+   * it; absent, graduation falls back to `<source>:unclassified`
+   * (graduation/core.ts findingClassOf).
+   */
+  findingClass?: string;
 }
 
 /** `${source}:${key}` — the stable cross-tick identity of a signal (P-004 / D-001). */
@@ -1737,6 +1745,8 @@ async function runWatchdogTickBody(
         evidenceAt: s.latestAt,
         // Frontier P-002: provenance rides from the signal into the row (default organic).
         origin: s.origin,
+        // Frontier P-044: the taxonomy slug graduation counts clean passes by.
+        findingClass: s.findingClass,
       });
     } catch (e) {
       console.warn(`[improvement-watchdog] capture failed for ${s.source}:${s.key}: ${e instanceof Error ? e.message : e}`);

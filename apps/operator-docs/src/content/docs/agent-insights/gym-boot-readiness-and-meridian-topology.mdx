@@ -72,3 +72,17 @@ node (25.9). The utility-host profile removes them from the gym-operator
 process entirely; if the abort recurs on a minimal boot, the remaining suspect
 set is small (pg/tsx/plugin-host daemons) and the fail-fast path now prints
 the boot-log tail at the moment of death instead of a downstream SQL error.
+
+## Postscript — the vocabulary itself was retired (2026-06-12, EI-399)
+
+This page is the historical record of the topology; the codebase no longer
+uses the word. FB-17 renamed the stateless backend `meridian` →
+`anthropic-direct` (`AGENT_BACKENDS`, `TurnBackend`, `BACKEND_PROFILES`,
+`LLM_TEST_BACKEND` default, the `[meridian]`/`meridian error:` log + error
+prefixes, `setMeridianUsageSink` → `setStatelessUsageSink`) and **removed the
+dead omp-token transport leg** from `chooseStatelessTransport` — a stateless
+call now resolves anthropic-direct off the live Claude session or fails with
+one honest error. References to "Meridian" that remain in the tree name the
+real external router product (`@rynfar/meridian`) on the omp runtime path —
+desktop setup wizard, frame bootstrap for `backend=omp` frames, the
+`/settings/meridian` iframe page — not the LLM client.

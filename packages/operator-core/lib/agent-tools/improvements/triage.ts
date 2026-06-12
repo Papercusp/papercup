@@ -16,7 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
-import { applyHumanQueueRanking, humanQueueRankerSpec } from '../../queue-ranker/human-queue';
+import { applyHumanQueueRanking, humanQueueRankerSpec, type RankedHumanQueueItem } from '../../queue-ranker/human-queue';
 import { triageIdea, summarizeTriages, type IdeaType, type TriageDecision } from '../../harness/improvements/triage';
 import { applyTriageDecision } from '../../harness/improvements/triage-core';
 
@@ -103,8 +103,9 @@ export default defineTool({
           target: triage.target,
         };
       };
+      const rankedQueue: RankedHumanQueueItem[] = digest.humanQueue;
       const decisions = [
-        ...digest.humanQueue.map((item) => ({
+        ...rankedQueue.map((item) => ({
           ...decide(item),
           rankScore: item.rank.score,
           rankFeatures: item.rank.features

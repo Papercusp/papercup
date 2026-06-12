@@ -211,6 +211,7 @@ export function triageEntropySignalsFromRows(
       `of its shape.`,
     severity: 'major',
     kind: 'bug',
+    findingClass: 'learning-slo:triage-degeneracy',
     paths: ['packages/operator-core/lib/harness/improvements/triage.ts'],
   }];
 }
@@ -275,6 +276,7 @@ export function flowSignalsFromAggregate(agg: FlowAggregate, opts: LearningSloOp
       `so the queue accumulates instead of converting into fixes.`,
     severity: 'major',
     kind: 'change',
+    findingClass: 'learning-slo:flow-imbalance',
   }];
 }
 
@@ -342,6 +344,7 @@ export function mttshSignalsFromWindows(w: MttshWindows, opts: LearningSloOption
       `Some stage of detect→triage→fix slowed down; the drill rows carry the per-stage timings for diagnosis.`,
     severity: 'major',
     kind: 'change',
+    findingClass: 'learning-slo:mttsh-regression',
   }];
 }
 
@@ -426,6 +429,7 @@ export function governorStarvationSignals(
         `raising (or deliberately retiring) the budget is an owner act.`,
       severity: 'major',
       kind: 'change',
+      findingClass: 'learning-slo:governor-starvation',
     });
   }
   return out;
@@ -490,6 +494,7 @@ export function memoryZeroHitSignalsFromAggregate(
       `(the EI-366 class B-10's memory_recall_stats telemetry exists to catch).`,
     severity: 'major',
     kind: 'bug',
+    findingClass: 'learning-slo:recall-degradation',
     paths: ['packages/operator-core/lib/memory/recall-stats.ts'],
   }];
 }

@@ -1,0 +1,77 @@
+# Fleet OAuth token quota exhaustion = silent exit-1 on every autonomous claude spawn
+URL: /internal/docs/agent-insights/fleet-token-weekly-limit-silent-invoke-failures
+
+When ~/.papercusp/claude-token hits its Anthropic usage limit (weekly/session), every orchestrator invoke fails as 'exited 1 with empty stderr' — the real refusal text is in stdout, which only surfaces in the run-output row or with PAPERCUSP_DBOS_INVOKE_DEBUG=1. Interactive sessions keep working, so the outage is invisible from your own seat. One-line discrimination test inside.
+
+## Symptom
+
+Autonomous LLM work dies fleet-wide while every *interactive* agent session
+works fine. The visible shape, wherever an orchestrator spawn runs (gym
+cycles, improvement implement-lane workers, wake-executor resumes, headless
+bees):
+
+```
+[dbos-invoke] role=director exited 1 with empty stderr (stdout 526 chars)
+Error: decide invoke failed (exit=1, empty=false)
+```
+
+Three traps stacked on top of each other make this hard to read:
+
+1. **stderr is empty** — the claude CLI prints its refusal to *stdout*.
+2. The invoke log line only prints the stdout **length**, not its content
+   (full tail requires `PAPERCUSP_DBOS_INVOKE_DEBUG=1` on the host).
+3. Your own session works, because interactive psu/Claude-Code sessions ride
+   the rotating `~/.claude/.credentials.json` family — a **different
+   account/pool** than the fleet token.
+
+## Where the real error text lives
+
+The agent's stdout is persisted even when the log hides it: for the gym, the
+run row in the **gym DB testcontainer** (DSN in `/tmp/gym-loop-op-*.log`):
+
+```sql
+SELECT role, exit_code, left(out_body, 200)
+  FROM harness_shared.harness_run_output ORDER BY ended_at DESC LIMIT 3;
+-- out_body: "You've hit your weekly limit · resets Jun 18, 7am (America/New_York)"
+```
+
+## One-line discrimination test
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.papercusp/claude-token) claude -p 'reply ok' --model haiku
+```
+
+Compare with the same call *without* the env override (interactive family)
+and, if registered, the Queen's pool credentials under
+`~/.papercusp/deploy-credentials/<id>`. Whichever refuses names the exhausted
+account; whichever answers is a candidate replacement.
+
+## Why the fleet pins to one token
+
+`@papercusp/orchestrator` invoke.ts + the wake-executor export
+`CLAUDE_CODE_OAUTH_TOKEN` from `~/.papercusp/claude-token` when the file
+exists (see `fleet-claude-token.ts`) — deliberately, so autonomous refreshes
+never invalidate the owner's interactive terminals (the every-terminal-relogin
+cascade; insight precedent in `claude-credential-sync-2026-06-10`). The cost:
+the whole autonomous fleet shares ONE account's usage caps, and burns through
+weekly quota much faster than any human notices.
+
+## Recovery (owner act — whose quota the fleet burns is a policy call)
+
+* **Re-mint**: on an account with headroom, `claude setup-token` → paste the
+  `sk-ant-oat01…` token into `~/.papercusp/claude-token` (0600). The
+  credential-sync service propagates it; spawns recover immediately.
+* **Stopgap**: install a pool-account token (e.g.
+  `~/.papercusp/deploy-credentials/<id>`) at the same path, or point one host
+  at it via `PAPERCUSP_CLAUDE_TOKEN_PATH`.
+* Waiting out the reset works but stalls every autonomous lane.
+
+## Related gotchas
+
+* This failure class does NOT trip the gym's rate-pause detection or the
+  learning-infra health chip (the spine probe checks credential *presence*,
+  not *quota*) — first seen 2026-06-12 when the gym circuit accumulated
+  errors on a perfectly healthy boot path.
+* The gym autoloop keeps dispatching doomed $0 cycles every tick until the
+  error backoff opens the circuit; after recovery, `autoloop:control
+  reset-errors` for `gymloopharness` clears the backoff.

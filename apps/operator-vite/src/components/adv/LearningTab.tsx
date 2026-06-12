@@ -44,6 +44,7 @@ import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-re
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 import { BenchmarkTrend } from './BenchmarkTrend';
 import { EkgPanel } from './EkgPanel';
+import { RedQueenPanel } from './RedQueenPanel';
 import { DemandPanel } from './DemandPanel';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
@@ -750,6 +751,8 @@ function ApiaryView() {
       <BenchmarkTrend instances={instances} />
 
       <EkgPanel />
+
+      <RedQueenPanel />
 
       <div className="pc-learning__sectionhead">
         <h2>Benchmark generations</h2>

@@ -74,7 +74,7 @@ hard stop for the whole client) — not extraction.
   stored row.
 * **Telemetry**: every session-rung call lands a usage sample in
   `harness_shared.agent_usage_samples` (provider `anthropic`, class `haiku`)
-  via the shared meridian sink — tokens are metered against the Max quota
+  via the shared stateless usage sink — tokens are metered against the Max quota
   even though marginal cost is \~$0.
 * A staging (`:3170`) `memory:remember` whose stored text comes back
   **rewritten** (not your verbatim input) is extraction working; verbatim
