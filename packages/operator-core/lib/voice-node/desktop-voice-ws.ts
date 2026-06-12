@@ -26,6 +26,7 @@ import net from 'node:net';
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { startLocalVoiceSocket } from './local-audio-socket';
+import { isReservedServicePort } from '../reserved-service-ports';
 
 const BASE_PORT = Number(process.env.DESKTOP_VOICE_WS_PORT ?? 3076);
 const PORT_RANGE = 8;
@@ -78,6 +79,22 @@ export function startDesktopVoiceWs(): void {
 }
 
 async function tryListen(port: number, attempt: number): Promise<void> {
+  // Never squat a core service's canonical port (EI-294 class): a reserved
+  // port that's free right now belongs to a service whose next (re)start
+  // would crash-loop on EADDRINUSE behind our WS-only listener. The walk
+  // still consumes the attempt so the range stays bounded.
+  if (isReservedServicePort(port)) {
+    if (attempt + 1 < PORT_RANGE) {
+      console.warn(`[desktop-voice] port ${port} is a reserved papercusp service port — skipping`);
+      void tryListen(port + 1, attempt + 1);
+    } else {
+      console.error(
+        `[desktop-voice] FATAL: walk exhausted at reserved port ${port}; desktop voice WS will not start.`,
+      );
+      dvState.started = false;
+    }
+    return;
+  }
   const wss = new WebSocketServer({ port, path: WS_PATH });
   wss.on('connection', handleConnection);
   wss.on('listening', () => {

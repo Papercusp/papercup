@@ -276,17 +276,28 @@ export function parseSuConfigDelta(delta: Record<string, unknown> | undefined): 
 
 export interface SuTargetOpts {
   catalog?: BuiltCatalog;
+  /** Target id override (default 'su') — sibling in-process SUTs (e.g. the
+   *  hive Queen) reuse this loop with their own prompt + catalog. */
+  id?: string;
+  behaviors?: string[];
+  /** System-prompt loader override (default: the engineer playbook). Returns
+   *  the FULL framed prompt text; called lazily per send like loadPlaybook. */
+  loadSystemPrompt?: () => string;
 }
 
 export class SuTarget implements ChatTarget {
-  readonly id = 'su';
-  readonly behaviors = BEHAVIORS;
+  readonly id: string;
+  readonly behaviors: string[];
   /** Eval variant knob (test-gym-apiary P-001): prompt overlay + configDelta.sutModel. */
   readonly supportsVariants = true;
   private readonly catalog: BuiltCatalog;
+  private readonly loadSystemPrompt: () => string;
 
   constructor(opts: SuTargetOpts = {}) {
+    this.id = opts.id ?? 'su';
+    this.behaviors = opts.behaviors ?? BEHAVIORS;
     this.catalog = opts.catalog ?? buildCatalog();
+    this.loadSystemPrompt = opts.loadSystemPrompt ?? loadPlaybook;
   }
 
   async open(opts: SessionOptions): Promise<ChatSession> {
@@ -297,6 +308,7 @@ export class SuTarget implements ChatTarget {
     return new SuSession({
       runId: opts.runId,
       catalog: this.catalog,
+      loadSystemPrompt: this.loadSystemPrompt,
       override: opts.dispatchOverride,
       ...(opts.variant?.promptOverlay ? { promptOverlay: opts.variant.promptOverlay } : {}),
       ...(delta.sutModel ? { modelOverride: delta.sutModel } : {}),
@@ -307,6 +319,7 @@ export class SuTarget implements ChatTarget {
 interface SessionState {
   runId: string;
   catalog: BuiltCatalog;
+  loadSystemPrompt: () => string;
   override?: ToolDispatchOverride;
   /** Variant prompt overlay (P-001) — appended as an uncached system block. */
   promptOverlay?: string;
@@ -369,7 +382,7 @@ class SuSession implements ChatSession {
     // First system block MUST be the Claude Code identifier (auth framing for the
     // Max OAuth rate-limit bucket — see CLAUDE_CODE_IDENTIFIER / buildSuSystemBlocks).
     // Built via the exported helper so the framing invariant is regression-tested.
-    const system = buildSuSystemBlocks(loadPlaybook(), cache, this.state.promptOverlay);
+    const system = buildSuSystemBlocks(this.state.loadSystemPrompt(), cache, this.state.promptOverlay);
     const tools = this.state.catalog.tools;
 
     // The conversation transcript for THIS turn (stateless: caller threads the

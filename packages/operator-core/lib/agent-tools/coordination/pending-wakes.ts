@@ -9,6 +9,17 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 
+/**
+ * Push the hive-scoped wake board (`network.hive.wakes`, hive-network-surface
+ * P-014 item 3) after a queue write. Lazy fire-and-forget so this PG seam (+ its
+ * tests) never statically depends on the SSE layer; a missing bus is a no-op.
+ */
+function pushWakeBoard(): void {
+  void import('../../sync-sse')
+    .then((m) => m.notifySyncInvalidate('network.hive.wakes'))
+    .catch(() => {});
+}
+
 export interface StageWakeInput {
   ownerId: string;
   summary?: string;
@@ -59,6 +70,7 @@ export async function stagePendingWake(input: StageWakeInput): Promise<void> {
       last_seen_at = now(),
       payload = EXCLUDED.payload
   `;
+  pushWakeBoard();
 }
 
 /** An agent's staged wakes, oldest-first (the pane lists them in order). */
@@ -159,6 +171,7 @@ export async function hasPendingWakeFromSource(
 export async function releasePendingWake(id: number): Promise<void> {
   const { sql } = getOrgPg();
   await sql`DELETE FROM harness_shared.pending_wakes WHERE id = ${id}`;
+  pushWakeBoard();
 }
 
 /** Drop ALL of an agent's staged wakes (release_all / skip_all). Returns rows dropped. */
@@ -167,6 +180,7 @@ export async function clearPendingWakes(ownerId: string): Promise<number> {
   const rows = await sql`
     DELETE FROM harness_shared.pending_wakes WHERE owner_id = ${ownerId} RETURNING id
   `;
+  pushWakeBoard();
   return (rows as unknown[]).length;
 }
 
@@ -198,5 +212,6 @@ export async function sweepDeadOwnerPendingWakes(opts: { liveGraceMin?: number }
             AND cp.heartbeat_at > now() - make_interval(mins => ${grace})
        )
     RETURNING id`;
+  if ((rows as unknown[]).length > 0) pushWakeBoard();
   return (rows as unknown[]).length;
 }

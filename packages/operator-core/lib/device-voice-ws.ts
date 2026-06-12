@@ -30,17 +30,16 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import { verifyDeviceToken } from './device-jwt';
 import { dispatchTranscript, type OutgoingFrame } from './device-voice-dispatch';
+import { RESERVED_SERVICE_PORTS } from './reserved-service-ports';
 
 const BASE_PORT = Number(process.env.MOBILE_VOICE_WS_PORT ?? 3068);
 const PORT_RANGE = 8;
-/**
- * Papercusp service ports the walk must NEVER squat. Walking +1 from a taken
- * base can land on a sibling service's canonical port — observed live
- * 2026-06-10: with 3068 held, the staging host's walk reached :3070 during a
- * green-host restart window and the voice WSS answered the operator API port
- * with 426s while the real host crash-looped on EADDRINUSE.
- */
-const RESERVED_PORTS = new Set([3055, 3056, 3070, 3170]);
+// Papercusp service ports the walk must NEVER squat (EI-294: with 3068 held,
+// the staging host's walk reached :3070 during a green-host restart window
+// and the voice WSS answered the operator API port with 426s while the real
+// host crash-looped on EADDRINUSE). Shared canonical set — desktop-voice-ws
+// guards its walk with the same one.
+const RESERVED_PORTS = RESERVED_SERVICE_PORTS;
 const DEFAULT_WAKE_WORD = process.env.MOBILE_WAKE_WORD ?? 'hey operator';
 
 // Pin started/chosenPort on globalThis so Next dev HMR re-imports of

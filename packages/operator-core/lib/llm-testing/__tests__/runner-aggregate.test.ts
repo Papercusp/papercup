@@ -93,6 +93,9 @@ describe('scenario registry', () => {
       'su-S10-claim-before-work',
       'su-S11-lock-contention-protocol',
       'su-S12-same-turn-insight',
+      // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
+      'queen-Q01-grade-routed-on-triage',
+      'queen-Q02-owner-grade-sovereign-no-retry',
     ].sort());
   });
 
@@ -102,7 +105,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(['operator', 'oracle', 'architect', 'su']).toContain(s.target);
+      expect(['operator', 'oracle', 'architect', 'su', 'queen']).toContain(s.target);
     }
   });
 

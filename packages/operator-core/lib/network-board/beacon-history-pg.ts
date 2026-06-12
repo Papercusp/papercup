@@ -44,6 +44,8 @@ function rowToSnapshot(r: BeaconRow): BeaconSnapshot {
 /**
  * Append a beacon snapshot when an announce is accepted. Best-effort — caller
  * catches and warns; the announce is never rejected on a PG error here.
+ * Pushes the dossier + board queries after the write (lazy fire-and-forget so
+ * the PG seam never statically depends on the SSE layer; a missing bus is a no-op).
  */
 export async function captureBeaconSnapshot(
   hiveId: string,
@@ -56,24 +58,33 @@ export async function captureBeaconSnapshot(
      VALUES ($1, $2, $3::jsonb)`,
     [hiveId, hivePubkey ?? null, JSON.stringify(beacon)],
   );
+  void import('../sync-sse')
+    .then((m) => {
+      void m.notifySyncInvalidate('network.hive.beacons').catch(() => {});
+      void m.notifySyncInvalidate('network.board').catch(() => {});
+    })
+    .catch(() => {});
 }
 
 /**
- * Read the most-recent beacon snapshots for a hive, newest-first.
- * Returns [] on error (best-effort — the dossier panel renders empty).
+ * Read the most-recent beacon snapshots for a hive, newest-first. `hiveKey`
+ * accepts either the DiscoveredHive.hiveId or its pubkey-b64 — i.e. the C-3
+ * tier-4 row key (`pubkey || hiveId`), so the drill-in dossier can query with
+ * the only identity it holds. Returns [] on error (best-effort — the dossier
+ * panel renders empty).
  */
 export async function listBeaconHistory(
-  hiveId: string,
+  hiveKey: string,
   limit = 50,
   sql?: Sql,
 ): Promise<BeaconSnapshot[]> {
   const rows = (await pg(sql).unsafe(
     `SELECT id, hive_id, hive_pubkey, beacon, captured_at
        FROM harness_shared.cross_hive_beacon_history
-      WHERE hive_id = $1
+      WHERE hive_id = $1 OR hive_pubkey = $1
       ORDER BY captured_at DESC
       LIMIT $2`,
-    [hiveId, Math.min(Math.max(1, limit), 500)],
+    [hiveKey, Math.min(Math.max(1, limit), 500)],
   )) as unknown as BeaconRow[];
   return rows.map(rowToSnapshot);
 }

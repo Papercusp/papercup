@@ -88,6 +88,10 @@ import { SU_S10_CLAIM_BEFORE_WORK } from './su/S10-claim-before-work';
 import { SU_S11_LOCK_CONTENTION_PROTOCOL } from './su/S11-lock-contention-protocol';
 // SU-S12: same-turn insight capture (agent policies §19 timing rule; EI-328/EI-329)
 import { SU_S12_SAME_TURN_INSIGHT } from './su/S12-same-turn-insight';
+// QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
+// routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
+import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
+import { QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY } from './queen/Q02-owner-grade-sovereign-no-retry';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -161,6 +165,9 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S10_CLAIM_BEFORE_WORK,
   SU_S11_LOCK_CONTENTION_PROTOCOL,
   SU_S12_SAME_TURN_INSIGHT,
+  // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
+  QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
+  QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,
 ];
 
 export function getScenario(id: string): Scenario {

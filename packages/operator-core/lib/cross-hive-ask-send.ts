@@ -125,6 +125,16 @@ export async function sendCrossHiveAsk(
   }
   const state: 'sent' | 'queued' = sendResult.delivered ? 'sent' : 'queued';
 
+  // Push the Network board's ask counts + the dossier ask log (lazy fire-and-
+  // forget so this composition + its fake-deps tests never statically depend
+  // on the SSE layer; a missing bus is a no-op).
+  void import('./sync-sse')
+    .then((m) => {
+      void m.notifySyncInvalidate('network.board').catch(() => {});
+      void m.notifySyncInvalidate('network.hive.asks').catch(() => {});
+    })
+    .catch(() => {});
+
   return {
     ok: true,
     correlationId,

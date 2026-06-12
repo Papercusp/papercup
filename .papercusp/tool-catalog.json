@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 368,
+  "count": 383,
   "tools": [
     {
       "name": "accounts:list",
@@ -25,6 +25,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -55,6 +56,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -86,6 +88,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -116,6 +119,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -146,6 +150,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -172,6 +177,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -201,6 +207,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "sentinel"
@@ -230,6 +237,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -258,6 +266,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -303,6 +312,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -332,6 +342,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -361,6 +372,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -390,6 +402,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -419,6 +432,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -447,6 +461,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -490,9 +505,9 @@
         "scoper",
         "architect",
         "worker",
-        "tester",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -540,10 +555,10 @@
         "architect",
         "worker",
         "validator",
-        "tester",
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -569,9 +584,9 @@
         "scoper",
         "architect",
         "worker",
-        "tester",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -640,6 +655,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -670,6 +686,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -766,6 +783,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -817,6 +835,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -846,6 +865,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -878,6 +898,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -909,6 +930,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -940,6 +962,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -971,6 +994,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1016,6 +1040,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -1047,6 +1072,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1078,6 +1104,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1109,6 +1136,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1140,6 +1168,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1171,6 +1200,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1202,6 +1232,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1233,6 +1264,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1264,6 +1296,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1294,6 +1327,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1325,6 +1359,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1355,6 +1390,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1371,7 +1407,7 @@
           "POST"
         ]
       },
-      "description": "Declare what you are working on right now — a one-line intent, optionally the plan slug and the files in scope. Other agents see this via coord:presence. Declares your whole current state; omitted fields reset.",
+      "description": "Declare what you are working on right now — a one-line intent, optionally the plan slug, the plan items you are taking (auto-claimed as your lane), and the files in scope. Other agents see this via coord:presence / fleet:assignments. Declares your whole current state; omitted fields reset (except claims — omitted `items` leaves claims untouched).",
       "capabilities": [
         "coord:write"
       ],
@@ -1386,11 +1422,13 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
-        "when": "Starting a distinct piece of work, so other agents see what you have taken on.",
-        "notWhen": "Every turn — the OMP hook heartbeats automatically; call this when your intent changes."
+        "when": "Starting a distinct piece of work, so other agents see what you have taken on. When the work is plan items, pass them as `items` — that claims your lane structurally instead of describing it in prose.",
+        "notWhen": "Every turn — the OMP hook heartbeats automatically; call this when your intent changes.",
+        "chaining": "coord:declare-intent { intent, current_plan_slug, items: [\"P-001\", \"P-002\"] } → work → plans:set-status done releases each as you finish. A reported conflict means a live peer holds that item — coordinate or re-lane."
       }
     },
     {
@@ -1416,6 +1454,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1446,6 +1485,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1477,6 +1517,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1507,6 +1548,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1537,11 +1579,43 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
         "when": "You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.",
         "notWhen": "For YOUR addressed messages use coord:inbox; for open human escalations use coord:escalations; for live \"who is active\" use coord:presence. coord:feed is the read-everything firehose, not a working inbox."
+      }
+    },
+    {
+      "name": "coord:glance",
+      "http": {
+        "path": "/api/agent-tools/coord/glance",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "One cheap combined fleet glance: wake mode (default) + staged-wake count, bees in flight (fresh-heartbeat nursery rows), paused governor buckets, recent cross-CLI activity rows, and contextual tips (with ready-to-run slash commands) evaluated for the caller's audience. The statusline/TUI read — one call instead of four.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "guidance": {
+        "when": "A status surface (statusline, TUI bar, dashboard widget) needs the fleet's headline state in one round-trip, or you want the current contextual tips for an audience.",
+        "notWhen": "Deep rate-limit telemetry (usage %, $spend) — dev:rate_governor_status. Full presence roster — coord:presence. Reviewing/releasing the staged wakes themselves — coord:wake-queue."
       }
     },
     {
@@ -1567,6 +1641,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1597,6 +1672,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1627,6 +1703,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1657,6 +1734,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1688,6 +1766,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1718,6 +1797,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1748,6 +1828,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1778,6 +1859,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1808,6 +1890,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1838,6 +1921,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel",
         "voter",
         "advocate"
@@ -1870,6 +1954,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1900,6 +1985,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1915,7 +2001,7 @@
           "POST"
         ]
       },
-      "description": "Review a manual-mode agent's STAGED wakes: list them, release one (deliver as-is or edited as the agent's next turn), or skip one (discard). The pause/edit gate's review surface (hive-agent-tabs D-005 / P-009).",
+      "description": "Review a manual-mode agent's STAGED wakes: list them, release one (deliver as-is or edited as the agent's next turn), skip one (discard), or drain the whole queue — release_all delivers ONE coalesced wake for everything staged; skip_all discards everything. The pause/edit gate's review surface (hive-agent-tabs D-005 / P-009).",
       "capabilities": [
         "coord:write"
       ],
@@ -1930,10 +2016,11 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
-        "when": "Reviewing a manual-mode agent's staged wakes from its pane — releasing the ones to deliver (optionally edited) and skipping the rest.",
+        "when": "Reviewing a manual-mode agent's staged wakes from its pane — releasing the ones to deliver (optionally edited) and skipping the rest. Draining a backlog → release_all (one consolidated turn) or skip_all, never N individual releases.",
         "notWhen": "An auto-mode agent — its wakes fire immediately, nothing is staged. Changing the mode itself — that's coord:wake-mode."
       }
     },
@@ -1960,6 +2047,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -1990,6 +2078,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -2020,6 +2109,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -2116,6 +2206,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -2145,6 +2236,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -2243,6 +2335,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -2272,6 +2365,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -2353,6 +2447,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -2383,6 +2478,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -2413,6 +2509,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -2446,6 +2543,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -2477,6 +2575,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -2508,6 +2607,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -2537,6 +2637,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -2567,6 +2668,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -2732,20 +2834,6 @@
         "when": "Dev-panel harness enumeration with diagnostic columns (active connections, recent errors).",
         "notWhen": "For ordinary list, use `harness:list`. dev:harnesses is the diagnostic projection."
       }
-    },
-    {
-      "name": "dev:hello-card",
-      "http": {
-        "path": "/api/agent-tools/dev/hello-card",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Phase E fixture: returns a minimal mcp-ui card so external clients can verify UI rendering. Args: { greeting? }.",
-      "capabilities": [
-        "tasks:read"
-      ],
-      "profile": "engineer"
     },
     {
       "name": "dev:ipc_echo",
@@ -2936,6 +3024,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -2954,7 +3043,7 @@
           "POST"
         ]
       },
-      "description": "Probe the dev services now (:3070 operator, :3055 vite, :4321 shop, :3350 scout, :3001 web, :8082 code-server, plus the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts) — up/down + status + latency. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a \"connection refused\".",
+      "description": "Probe the dev services now (:3070 operator, :3055 vite, :4321 shop, :3350 scout, :8082 code-server, plus the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts) — up/down + status + latency. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a \"connection refused\".",
       "capabilities": [
         "intel:read"
       ],
@@ -3080,12 +3169,12 @@
           "POST"
         ]
       },
-      "description": "Browse the P2P hive directory — the verified hives this peer has seen announced on the well-known directory topic (title · description · owner · member harnesses). Best-effort gossip: joining a listed hive still runs the full admission/attestation flow. Feeds the pui apiary-pane + the desktop HiveDirectoryPanel.",
+      "description": "Browse the P2P hive directory — the verified hives this peer has seen announced on the well-known directory topic (title · description · owner · member harnesses). Best-effort gossip: joining a listed hive still runs the full admission/attestation flow. Feeds the pui Hives/Network board + the desktop HiveDirectoryPanel.",
       "capabilities": [
         "discovery:read"
       ],
       "guidance": {
-        "when": "You want to see hives available to join across the P2P network (the browse list behind the apiary pane / HiveDirectoryPanel).",
+        "when": "You want to see hives available to join across the P2P network (the browse list behind the pui Hives/Network board + the desktop HiveDirectoryPanel).",
         "notWhen": "To list the workspace-local deployed hive frames (hiveControlFrames) use the harness/hive surfaces. To actually join a listed hive, run the join-shared-harness flow per member topic."
       }
     },
@@ -3126,6 +3215,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -3155,6 +3245,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -3184,6 +3275,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -3213,6 +3305,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -3242,6 +3335,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -3271,6 +3365,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -3300,6 +3395,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -3328,6 +3424,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -3517,6 +3614,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -3548,6 +3646,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -3580,6 +3679,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -3612,6 +3712,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -3644,6 +3745,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -3675,6 +3777,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -3732,6 +3835,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -3762,11 +3866,12 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "queen"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The user asks to launch an agent on a piece of work — \"spawn a validator in <harness>\", \"put a worker on <feature>\", \"have a scoper break down X\". The spawn is fire-and-forget: acknowledge the launch and check fleet:tree later.",
+        "when": "The user asks to launch an agent on a piece of work — \"spawn a validator in <harness>\", \"put a worker on <feature>\", \"have a scoper break down X\". The spawn is fire-and-forget: acknowledge the launch and check fleet:tree later. Pick a `tier` per task (quick/standard/deep/max — see the arg rubric); omit it for routine work at the role default.",
         "notWhen": "For answering a question you already know — spawning is for new work, not lookups. For the durable feature pipeline, file a work_item and let the harness autoloop dispatch it.",
         "chaining": "fleet:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort."
       }
@@ -3794,6 +3899,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -3826,6 +3932,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -3914,7 +4021,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "queen"
       ],
       "guidance": {
         "when": "Scoring a completed gym run for the optimizer — the subjective reward the proposer optimizes. Use the TARGET blueprint's gym.rubric so a coding vs research target is judged on its own dimensions.",
@@ -3943,7 +4051,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "queen"
       ],
       "guidance": {
         "when": "Scoring a gym run's deterministic guardrails — the optimizer cannot game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's declared gym.signals by name.",
@@ -3974,6 +4083,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -4002,6 +4112,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "sentinel"
@@ -4035,6 +4146,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -4082,6 +4194,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "sentinel"
@@ -4131,6 +4244,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -4161,6 +4275,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -4214,6 +4329,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -4241,6 +4357,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -4270,6 +4387,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -4299,6 +4417,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -4502,6 +4621,105 @@
       }
     },
     {
+      "name": "hive:ask",
+      "http": {
+        "path": "/api/agent-tools/hive/ask",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Initiate a cross-Hive ASK to a peer Hive (by pubkey): a question the peer Hive owns the answer to. The envelope is signed, sent store-and-forward, and recorded in this Hive's ask ledger; the peer's answer arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The Queen/owner needs an answer another Hive is the authority on (it owns that domain). Find the peer via discovery:hives, then hive:ask, then events:await the returned answeredEvent.",
+        "notWhen": "Handing the peer WORK to do (use hive:request_work). Within-Hive questions (coord:ask / conversations). Granting a peer to send asks INTO this Hive (that is the inbound hive:cross_grant).",
+        "chaining": "discovery:hives (find the peer Hive pubkey) → hive:ask { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with hive:asks."
+      }
+    },
+    {
+      "name": "hive:asks",
+      "http": {
+        "path": "/api/agent-tools/hive/asks",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List this Hive's cross-Hive ask ledger: the requests it initiated to peer Hives (and inbound ones with direction:'in'), with each row's peer, kind, subject, correlation id, state (queued|sent|answered|declined|expired) and reply. Filter by state / direction / peer / kind.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Reviewing the status of cross-Hive asks/work-requests — what is still pending, what was answered/declined — or deduping before initiating a new ask to a peer that already owns one.",
+        "notWhen": "Inbound admission policy (hive:cross_grant list shows who may send INTO this Hive). Within-Hive work status (work_items:* / harness:status). Blocking on one specific pending ask (events:await its answeredEvent — do not poll this list).",
+        "chaining": "hive:ask / hive:request_work create rows here; hive:asks { hive, state: \"answered\" } reviews the replies."
+      }
+    },
+    {
+      "name": "hive:beacon_consent",
+      "http": {
+        "path": "/api/agent-tools/hive/beacon_consent",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Manage whether THIS Hive publishes a live status beacon (active agents, queue depth, focus, last-completed) onto the directory gossip — the owner-consent gate, default-OFF (D-002). Pass `consent` to set it (true = publish, false = stop); omit `consent` to read the current state. The consent federates to every Swarm of the Hive and gates B-06's beacon publisher. The beacon only rides a PUBLISHED (public/invite) hive's re-announce — enabling it on a private hive has no effect until the hive is published.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Enabling, disabling, or checking this Hive's status-beacon publishing — the same consent the desktop publish-flow asks for, managed from the agent surface. Pass consent:true to opt a published hive into the beacon, consent:false to withdraw it, or omit consent to read the current value.",
+        "notWhen": "Directory visibility (public/invite/private) — that's discovery:set_hive. Cross-Hive ask/work-request grants — hive:cross_grant. Within-Hive coordination — coord:* / topics.",
+        "chaining": "discovery:set_hive { visibility:'public' } (make the hive discoverable) → hive:beacon_consent { hive, consent:true } (opt the now-public hive into the live beacon)."
+      }
+    },
+    {
       "name": "hive:create",
       "http": {
         "path": "/api/agent-tools/hive/create",
@@ -4524,6 +4742,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4534,6 +4753,39 @@
       }
     },
     {
+      "name": "hive:create_from_repo",
+      "http": {
+        "path": "/api/agent-tools/hive/create_from_repo",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create a Hive FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, Hive home + first member harness, upstream coords stamped, auto-publish per visibility (public = P2P directory + Cupboard; invite = secret topic only; private = zero external writes). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Onboarding a GitHub repository as a NEW Hive in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.",
+        "notWhen": "The repo may already have a Hive and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less hive — hive:create. Adding a repo into an EXISTING hive — harness:create { hive } after cloning (the into-hive picker mode).",
+        "chaining": "hive:create_from_repo { githubUrl } → on {existing} drive the join (POST /api/harness/join-link per member link) → on {created} hive:get / discovery:set_hive to edit the listing."
+      }
+    },
+    {
       "name": "hive:cross_grant",
       "http": {
         "path": "/api/agent-tools/hive/cross_grant",
@@ -4541,7 +4793,7 @@
           "POST"
         ]
       },
-      "description": "Owner cross-Hive capability grants: grant/revoke which peer-Hive pubkeys may send which kinds (ask | work-request) INTO this Hive, or list current grants. Default-deny — only granted peer-Hives are admitted at the cross-Hive boundary. Grants federate to all of this Hive's Swarms.",
+      "description": "Owner cross-Hive capability grants: grant/revoke which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive, or list current grants. DIRECTED — direction:'in' admits a peer's asks/work-requests INTO this Hive; direction:'out' lets THIS Hive send asks/work-requests TO a peer (required before the Queen can ask another Hive). Default-deny both directions. Grants federate to all of this Hive's Swarms.",
       "capabilities": [
         "work_items:write"
       ],
@@ -4556,13 +4808,14 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Setting this Hive's cross-Hive admission policy: allow a peer Hive (by pubkey, from discovery:hives) to send asks/work-requests, revoke a peer, or review the current grants.",
+        "when": "Setting this Hive's cross-Hive policy. direction:'in' — allow a peer Hive (by pubkey, from discovery:hives) to send asks/work-requests INTO this Hive. direction:'out' — authorize THIS Hive to send asks/work-requests TO a peer (the owner-gated step before the Queen's first hive:ask to a new peer). Or list/revoke current grants.",
         "notWhen": "Within-Hive coordination (coord:* / topics) or placing work on a Swarm (work_items:co_locate). This is ONLY the sovereignty boundary between separate Hives.",
-        "chaining": "discovery:hives (find a peer Hive's pubkey) → hive:cross_grant { action: \"grant\", peerHivePubkey, kinds }."
+        "chaining": "Inbound: discovery:hives (find a peer Hive's pubkey) → hive:cross_grant { action:\"grant\", direction:\"in\", peerHivePubkey, kinds }. Outbound (before the Queen asks a peer): hive:cross_grant { action:\"grant\", direction:\"out\", peerHivePubkey, kinds } → hive:ask / hive:request_work."
       }
     },
     {
@@ -4588,6 +4841,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4620,6 +4874,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4652,6 +4907,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4684,6 +4940,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4716,6 +4973,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4723,6 +4981,39 @@
         "when": "The user clicks Pause Hive / asks to freeze autonomous operation, or you need the colony quiet (incident, review, cost control).",
         "notWhen": "To stop ONE bee — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.",
         "chaining": "hive:pause { drainBees:true } for the harder stop → coord:wake-queue to review staged wakes → hive:start to resume."
+      }
+    },
+    {
+      "name": "hive:request_work",
+      "http": {
+        "path": "/api/agent-tools/hive/request_work",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Initiate a cross-Hive WORK-REQUEST to a peer Hive (by pubkey): ask the peer to do something in its domain. The envelope is signed, sent store-and-forward, and recorded in this Hive's ask ledger; it becomes a work_item in the peer's backlog that THEIR Queen prioritizes. The peer's response arrives asynchronously — events:await the returned answeredEvent key. Requires an outbound grant to the peer.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The Queen/owner wants a peer Hive to take on a piece of work in its domain. Find the peer via discovery:hives, then hive:request_work, then events:await the returned answeredEvent.",
+        "notWhen": "Asking a QUESTION (use hive:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Hive (that is the inbound hive:cross_grant).",
+        "chaining": "discovery:hives (find the peer Hive pubkey) → hive:request_work { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with hive:asks."
       }
     },
     {
@@ -4748,6 +5039,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4780,6 +5072,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4811,6 +5104,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4843,6 +5137,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4872,6 +5167,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -4904,6 +5200,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel",
         "scanner"
       ],
@@ -4937,6 +5234,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -4969,6 +5267,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5001,6 +5300,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5033,6 +5333,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5065,6 +5366,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -5095,6 +5397,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5127,6 +5430,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5159,6 +5463,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5227,6 +5532,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5259,6 +5565,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5290,6 +5597,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5321,6 +5629,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5353,6 +5662,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5385,6 +5695,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5416,6 +5727,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5448,6 +5760,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5480,6 +5793,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5511,6 +5825,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5543,6 +5858,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5574,6 +5890,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5606,12 +5923,157 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "Refine an issue you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), or attach the feature that will fix it.",
         "notWhen": "Resolving it (issues:close), adding a note (issues:comment), or routing it to a topic (issues:tag)."
+      }
+    },
+    {
+      "name": "learning_packs:export",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/export",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Export a hive's shared learnings into the standard pack shape (learning-packs/<packId>/ — manifest + one-learning-per-file) inside a member repo's working tree, ready to commit + publish. Defaults to the hive's ORGANIC learnings only; includePackRows re-exports installed-pack content too (explicit opt-in).",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "The user wants to share their hive's accumulated learnings — first step of the publish flow.",
+        "notWhen": "Installing or browsing packs — learning_packs:list/install.",
+        "chaining": "After the files are committed + pushed by the project's normal flow, learning_packs:publish lists the pack on the Comb (it publishes PENDING — operator approval gates public visibility, D-007)."
+      }
+    },
+    {
+      "name": "learning_packs:install",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/install",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a learning pack into an existing hive's shared memory, with the install-time conflict review: incoming learnings are classified clean/duplicate/conflict against the hive's current pool; clashes require explicit per-item resolutions (install · skip · replace · keep-both). Defaults skip clashes — existing content outranks the incoming pack.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "Adding a pack to an EXISTING hive (a new hive seeds its pack at creation). Call once to get the review; re-call with resolutions (or acceptDefaults: true) to apply.",
+        "notWhen": "At hive creation (hive:create seeds automatically). To re-adopt a newer version of an already-installed pack — learning_packs:upgrade.",
+        "chaining": "learning_packs:list { hive } first (what's installed); after install, learning.hive invalidates so the Learnings view refreshes."
+      }
+    },
+    {
+      "name": "learning_packs:list",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List resolvable learning packs (builtin + Comb-installed) and, when `hive` is given, that hive's installed state: per-pack rows present/edited, enabled/disabled, and whether a newer pack version is adoptable.",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "Before learning_packs:install/upgrade (what's available + what's already in the hive), or when the user asks what learnings their hive carries.",
+        "notWhen": "To read the actual learning texts — learning.hive backs the Learnings UI, and memory:list { hive_slug } returns the rows.",
+        "chaining": "learning_packs:install { hive, pack } to add one; learning_packs:upgrade when updateAvailable; learning_packs:set_enabled to mute a pack without uninstalling."
+      }
+    },
+    {
+      "name": "learning_packs:publish",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/publish",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List an exported learning pack on the Comb: resolves the member repo's GitHub coords, publishes a kind='learning-pack' listing (listing_ref = packId) with the operator's gh token + attestation. The listing lands PENDING (D-007) — an operator must approve it before anyone else sees it.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "After learning_packs:export and the files are pushed to the GitHub repo.",
+        "notWhen": "The pack files are not on GitHub yet — publish points at the repo; export first, push, then publish.",
+        "chaining": "The response carries review_status pending — the submitter sees it on their own listing; operators approve at /admin/cupboard-moderation."
+      }
+    },
+    {
+      "name": "learning_packs:set_enabled",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/set_enabled",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Enable or disable a learning pack's injection for a hive WITHOUT uninstalling it — the rows stay stored; agents just stop recalling them. Cheap to flip, fully reversible.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "Trying out whether a pack helps, or quarantining one that seems to misdirect agents — before reaching for uninstall.",
+        "notWhen": "Permanently removing a pack — learning_packs:uninstall.",
+        "chaining": "learning_packs:list { hive } shows enabled state per installed pack."
+      }
+    },
+    {
+      "name": "learning_packs:sweep",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/sweep",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Re-run the conflict judge across a hive's whole shared memory pool and report contradiction pairs — catches conflicts that emerged AFTER install (pack learnings vs what the hive organically learned later). Read-only; capped at 200 rows per sweep.",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "Periodic hygiene (a Queen idle-turn task), after installing a pack into a hive with many organic learnings, or when agents seem to be following contradictory guidance.",
+        "notWhen": "At install time — learning_packs:install runs its own per-item review.",
+        "chaining": "Resolve a reported pair deliberately: memory:forget the wrong side, or memory:update it to reconcile."
+      }
+    },
+    {
+      "name": "learning_packs:uninstall",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/uninstall",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Remove a learning pack's rows from a hive's shared memory (provenance-driven). Rows the user edited since seeding are KEPT by default and reported; keepEdited: false removes those too. Organic (hive-learned) rows are never touched.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "The user wants a pack gone from a hive, or before re-installing a pack from scratch.",
+        "notWhen": "To temporarily mute a pack — learning_packs:set_enabled { enabled: false } keeps the rows and just stops injecting them.",
+        "chaining": "learning_packs:list { hive } shows what remains; kept edited rows are listed in the response."
+      }
+    },
+    {
+      "name": "learning_packs:upgrade",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/upgrade",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Adopt a newer version of an installed learning pack: NEW items (no row in the hive's pool) are classified like an install and added per your resolutions; rows already present are never auto-modified. Call once for the plan, re-call with resolutions (or acceptDefaults: true) to apply.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "learning_packs:list shows updateAvailable for an installed pack.",
+        "notWhen": "First-time install — learning_packs:install.",
+        "chaining": "The response reports installedVersions vs availableVersion + the adoptable-new-items review."
       }
     },
     {
@@ -5637,6 +6099,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -5665,6 +6128,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5695,6 +6159,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5725,6 +6190,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5755,6 +6221,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5785,6 +6252,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5815,6 +6283,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5844,6 +6313,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5874,6 +6344,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5904,6 +6375,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5933,6 +6405,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5963,6 +6436,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -5993,6 +6467,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -6160,6 +6635,39 @@
       }
     },
     {
+      "name": "network:board",
+      "http": {
+        "path": "/api/agent-tools/network/board",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The aggregate Network board: one row per other-hive context across the capability-tier ladder — tier 1 this Swarm, tier 2 your own other hives, tier 3 shared-Hive peer Swarms (federated presence), tier 4 foreign Hives from the P2P directory (with their status beacon, your grants, and your outbound-ask traffic). Each row carries a tier + trust label; tier-specific fields (liveAgents/queueDepth/focus/wake/grants/asks) are present only where that tier supplies them. The data behind the dock Network tab.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You want a single cross-hive situational view — what every other hive context (own, federated peer, foreign) is and what we can see of it.",
+        "notWhen": "Just the workspace-local hives — hive:list. Just the joinable P2P directory — discovery:hives. Per-bee placement detail — fleet:assignments. One hive in depth — hive:get.",
+        "chaining": "discovery:hives → hive:cross_grant to admit a tier-4 peer; hive:get { slug } to drill into an own hive."
+      }
+    },
+    {
       "name": "new_subagent:approve",
       "http": {
         "path": "/api/agent-tools/new_subagent/approve",
@@ -6217,6 +6725,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6246,6 +6755,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6275,6 +6785,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6331,6 +6842,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6399,6 +6911,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6428,6 +6941,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6457,6 +6971,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6503,6 +7018,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6532,13 +7048,14 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "Read or update the operator's free-form note buffer — long-running scratch the user adds via /settings.",
-        "notWhen": "For HINDSIGHT (cross-agent memory), use `hindsight:recall`. Notes is operator-only, user-editable."
+        "notWhen": "For cross-agent memory, use `memory:search` / `memory:remember`. Notes is operator-only, user-editable."
       }
     },
     {
@@ -6583,6 +7100,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6612,6 +7130,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6641,6 +7160,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6670,6 +7190,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6743,6 +7264,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6772,6 +7294,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6801,6 +7324,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6876,6 +7400,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -6984,6 +7509,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7015,6 +7541,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7046,6 +7573,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7077,6 +7605,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7108,6 +7637,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7139,6 +7669,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7170,6 +7701,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7201,6 +7733,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7232,6 +7765,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7263,6 +7797,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7294,6 +7829,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -7322,6 +7858,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -7352,6 +7889,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -7382,6 +7920,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "operator",
@@ -7413,6 +7952,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7442,6 +7982,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -7472,6 +8013,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -7502,6 +8044,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7531,6 +8074,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "promote"
@@ -7561,6 +8105,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7590,6 +8135,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -7621,6 +8167,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7650,6 +8197,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7679,6 +8227,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -7709,6 +8258,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -7742,6 +8292,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel",
         "promote"
       ],
@@ -7772,6 +8323,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -7803,6 +8355,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7832,6 +8385,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7861,6 +8415,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7890,6 +8445,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7919,6 +8475,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7948,6 +8505,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -7977,6 +8535,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8007,6 +8566,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8037,6 +8597,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8067,6 +8628,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8097,6 +8659,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8127,6 +8690,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8157,6 +8721,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8187,6 +8752,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8205,7 +8771,7 @@
           "POST"
         ]
       },
-      "description": "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:.",
+      "description": "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); flipping to done/dropped releases your claim.",
       "capabilities": [
         "plans:write"
       ],
@@ -8217,14 +8783,15 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
       ],
       "guidance": {
-        "when": "An item's status changes — picking up (todo→wip), completing (wip→done), gating on a human (→needs-human), or recording external blockage (→blocked).",
+        "when": "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked).",
         "notWhen": "You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.",
-        "chaining": "plans:items { actionable: true } → plans:set-status { itemId, status: \"wip\" } when picking up."
+        "chaining": "plans:items { actionable: true } → plans:set-status { itemId, status: \"wip\" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On claim_conflict: coord:send the holder or pick another item."
       }
     },
     {
@@ -8247,6 +8814,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8277,6 +8845,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "bee"
@@ -8351,6 +8920,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8380,6 +8950,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8427,6 +8998,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8457,6 +9029,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8487,6 +9060,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8517,6 +9091,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8550,6 +9125,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -8581,6 +9157,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -8608,6 +9185,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8637,6 +9215,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8666,6 +9245,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8695,6 +9275,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -8728,6 +9309,36 @@
       }
     },
     {
+      "name": "scout:grade-idea",
+      "http": {
+        "path": "/api/agent-tools/scout/grade-idea",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Grade a routed Scout idea 1–5 with optional feedback (≤2000 chars). Grades steer Scout's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "You want to score a routed Scout idea 1–5 (optional one-line critique) so Scout learns which lenses to favor. Key by ideaId (Scout view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Queen's triage path: grade each ungraded routed draft).",
+        "notWhen": "Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Queen vs owner surface).",
+        "chaining": "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. applied:false + reason 'owner-grade-sovereign' (Queen regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade."
+      }
+    },
+    {
       "name": "search:fulltext",
       "http": {
         "path": "/api/agent-tools/search/fulltext",
@@ -8747,6 +9358,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "sentinel"
@@ -8794,6 +9406,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator",
         "sentinel"
@@ -8929,6 +9542,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -8959,6 +9573,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -8990,6 +9605,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -9021,6 +9637,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -9051,6 +9668,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -9082,6 +9700,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -9113,6 +9732,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -9140,6 +9760,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -9171,6 +9792,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "guidance": {
@@ -9198,6 +9820,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -9226,6 +9849,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -9254,6 +9878,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -9396,6 +10021,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -9425,6 +10051,7 @@
         "reviewer",
         "debugger",
         "operator",
+        "queen",
         "documenter",
         "curator"
       ],
@@ -9457,6 +10084,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9488,6 +10116,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9520,6 +10149,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9552,6 +10182,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9584,6 +10215,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9615,6 +10247,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9647,6 +10280,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9679,6 +10313,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9709,6 +10344,7 @@
         "operator",
         "documenter",
         "curator",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9741,6 +10377,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9772,6 +10409,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9803,6 +10441,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9834,6 +10473,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9866,6 +10506,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9898,6 +10539,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9930,6 +10572,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9961,6 +10604,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -9993,6 +10637,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -10024,6 +10669,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -10056,6 +10702,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -10088,6 +10735,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -10119,6 +10767,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",
@@ -10150,6 +10799,7 @@
         "documenter",
         "curator",
         "bee",
+        "queen",
         "sentinel"
       ],
       "profile": "engineer",

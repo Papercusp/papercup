@@ -8,6 +8,7 @@ import { ArchitectTarget } from './architect';
 import { OperatorTarget } from './operator';
 import { OracleTarget } from './oracle';
 import { SuTarget } from './su';
+import { makeQueenTarget } from './queen';
 
 export type TargetFactory = () => ChatTarget;
 
@@ -24,6 +25,9 @@ const TARGETS: Record<string, TargetFactory> = {
   // runs a hand-rolled Anthropic tool loop in-process (playbook-as-system-
   // prompt + the papercusp-su catalog); see ./su.
   su: () => new SuTarget(),
+  // queen — the hive Queen's blueprint prompt on the same in-process loop
+  // (scout-idea-grading B-06/B-08: does she GRADE routed drafts while triaging?).
+  queen: () => makeQueenTarget(),
 };
 
 export function registerTarget(id: string, factory: TargetFactory): void {

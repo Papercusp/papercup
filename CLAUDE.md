@@ -281,6 +281,7 @@ Every new test goes in **exactly one** of: **Vitest**
 `apps/operator/e2e/<name>.spec.ts` · **Cargo** `#[cfg(test)]` · **LLM
 scenarios** `apps/operator/lib/llm-testing/scenarios/<role>/`. **Never** new
 `.mjs` integration scripts or tsx smoke scripts (CI lint P-038 fails the build).
-`npm run lint:tests` guards registry coverage — if it fires for a new subsystem,
-widen a domain in `apps/operator/lib/testing-domains-registry.ts` then `npm run
-gen:contract`. See `/internal/docs/testing` §1.0a.
+`npm --prefix apps/operator run lint:tests` guards registry coverage — if it
+fires for a new subsystem, widen a domain in
+`packages/operator-core/lib/testing-domains-registry.ts` then `npm run
+gen:contract` (root). See `/internal/docs/testing` §1.0a.

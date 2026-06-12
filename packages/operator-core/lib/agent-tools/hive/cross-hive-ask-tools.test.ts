@@ -74,6 +74,7 @@ function fakeStore(): { store: CrossHiveAsksStore; rows: CrossHiveAsk[] } {
         state: 'queued',
         replyBody: null,
         replyTs: null,
+        askedBy: input.askedBy ?? null,
         createdAt: '2026-06-11T00:00:00Z',
         updatedAt: '2026-06-11T00:00:00Z',
       };

@@ -250,6 +250,14 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
       // ledger yet — emitting would let a forged correlationId wake the asking Queen.
       return;
     }
+    // An answered/declined row changes the board's ask counts + the dossier ask
+    // log — push both (lazy fire-and-forget; a missing SSE bus is a no-op).
+    void import('./sync-sse')
+      .then((m) => {
+        void m.notifySyncInvalidate('network.board').catch(() => {});
+        void m.notifySyncInvalidate('network.hive.asks').catch(() => {});
+      })
+      .catch(() => {});
     try {
       await emitEvent({
         key: crossHiveReplyEventKey(res.replyKind, res.correlationId),
