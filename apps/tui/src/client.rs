@@ -320,20 +320,18 @@ impl OperatorClient {
         }
     }
 
-    /// Mark a pending workbench launch CONSUMED — the pui opened its pane
-    /// (pui-reactive-session-panes D-006). Best-effort: the backend stamps
-    /// `launched_at` so the row drops out of the roster's `pending` tier
-    /// (idempotent). A failure is non-fatal (the tracked set still dedups within
-    /// this run); `Ok(false)` on any non-ok response.
+    /// Atomically CLAIM a pending workbench launch (EI-358 claim-then-open):
+    /// the route stamps `launched_at` only when unset, so `stamped == true`
+    /// for exactly ONE caller across every pui process — the claim winner
+    /// opens the pane; losers skip. A transport error is `Err` (retryable —
+    /// the caller un-tracks the id so a later roster tick can retry), distinct
+    /// from a LOST claim (`Ok(false)` — another instance owns it, skip forever).
     pub async fn mark_session_launched(&self, adv_session_id: i64) -> Result<bool> {
         let body = serde_json::json!({ "id": adv_session_id });
-        match self
+        let v = self
             .post_json("/api/adv/sessions/mark-launched", body)
-            .await
-        {
-            Ok(v) => Ok(v.get("status").and_then(|s| s.as_str()) == Some("ok")),
-            Err(_) => Ok(false),
-        }
+            .await?;
+        Ok(v.get("stamped").and_then(|s| s.as_bool()).unwrap_or(false))
     }
 
     // --- typed ---

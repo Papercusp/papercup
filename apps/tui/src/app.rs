@@ -1008,6 +1008,11 @@ pub struct App {
     /// STABLE advSessionId, never pid. Starts empty each run — a restart cannot
     /// double-pane because live sessions are never in `pending` (P-010).
     pub tracked_panes: crate::session_panes::TrackedPanes,
+    /// EI-358: may THIS process react to pending workbench launches at all?
+    /// True for the full TUI / chat-pane / dock-driver (claim-then-open settles
+    /// races between them); false for the board panes (watch/wake/prompt/mail/
+    /// work/network/hive), which must never launch sessions.
+    pub reactive_launch_panes: bool,
     /// This machine's hostname (pui-reactive-session-panes P-009), resolved once
     /// at startup the way the backend stamps a pending launch's `host`. Gates the
     /// LOCAL predicate for reactive panes so only this box's launches are paned.
@@ -1411,6 +1416,7 @@ impl App {
             plan_item_states: None,
             roster: Vec::new(),
             tracked_panes: crate::session_panes::TrackedPanes::new(),
+            reactive_launch_panes: false,
             local_host: crate::session_panes::local_host(),
             inbox: Vec::new(),
             inbox_sel: 0,
@@ -3528,8 +3534,13 @@ impl App {
                 // (pui-reactive-session-panes D-006). The pure diff returns the
                 // panes to open; record their ids so a refresh in the mark-launched
                 // window can't re-open, and hand the specs to the run loop (I/O).
-                let mut to_open =
-                    crate::session_panes::panes_to_open(&self.tracked_panes, &pending, &self.local_host);
+                let mut to_open = if self.reactive_launch_panes {
+                    crate::session_panes::panes_to_open(&self.tracked_panes, &pending, &self.local_host)
+                } else {
+                    // EI-358: board panes never launch sessions — only the full
+                    // TUI / chat-pane / dock-driver react to pending launches.
+                    Vec::new()
+                };
                 // The dock's agent stack (pui-dock-agent-stack-2026-06-07): one
                 // read-only watch pane per active swarm agent, so the user
                 // scrolls through ALL active agents in the dock.
@@ -3564,6 +3575,12 @@ impl App {
             }
             Event::FleetRate(s) => {
                 self.fleet_rate = Some(s);
+                Action::Render
+            }
+            Event::LaunchClaimRetry(id) => {
+                // EI-358: transport-failed claim — un-track so the next roster
+                // tick retries (the row is still pending server-side).
+                self.tracked_panes.remove(&id);
                 Action::Render
             }
             Event::Frames(frames) => {
@@ -9431,6 +9448,7 @@ mod tests {
     #[test]
     fn roster_pending_workbench_emits_launch_panes_and_tracks_it() {
         let mut a = App::new();
+        a.reactive_launch_panes = true; // EI-358: tests run as a launch-capable mode
         let p = pending_launch(&a, 607, "claude");
         let act = a.update(Event::Roster {
             active: vec![],
@@ -9607,9 +9625,29 @@ mod tests {
         assert_eq!(act, Action::Render);
     }
 
+    /// EI-358: a board pane (reactive_launch_panes = false — watch/wake/
+    /// prompt/mail/work/network/hive) must NEVER react to pending launches;
+    /// only the full TUI / chat-pane / dock-driver may (and claim-then-open
+    /// settles races among those).
+    #[test]
+    fn board_pane_never_emits_launch_panes() {
+        let mut a = App::new(); // reactive_launch_panes defaults to false
+        let p = pending_launch(&a, 608, "claude");
+        let act = a.update(Event::Roster {
+            active: vec![],
+            pending: vec![p],
+        });
+        assert!(
+            !matches!(act, Action::LaunchPanes { ref sessions, .. } if !sessions.is_empty()),
+            "board pane reacted to a pending launch: {act:?}"
+        );
+        assert!(a.tracked_panes.is_empty());
+    }
+
     #[test]
     fn roster_refresh_does_not_reopen_a_tracked_pane() {
         let mut a = App::new();
+        a.reactive_launch_panes = true; // EI-358: tests run as a launch-capable mode
         let p = pending_launch(&a, 607, "claude");
         let _ = a.update(Event::Roster { active: vec![], pending: vec![p.clone()] });
         // Same pending entry on the next refresh → dedup → just Render, no reopen.

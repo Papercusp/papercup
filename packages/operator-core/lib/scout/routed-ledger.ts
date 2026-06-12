@@ -291,8 +291,18 @@ export async function upsertScoutLensWeights(
   // JS-array params don't serialize under the getOrgPg postgres-js client
   // (bytes.js "Received an instance of Array" — same class as the sql.json
   // jsonb quirk). Ship one JSON text param and explode it server-side.
+  // wins/decided are FRACTIONAL under grade credit (C-5) but the columns are
+  // int (migration 208), and jsonb_to_recordset's int cast ERRORS on "0.5"
+  // rather than rounding — one mid-scale grade would kill the whole (best-
+  // effort, warn-and-continue) upsert and strand the weights stale. Round
+  // here; `weight` is computed pre-rounding, so only the analytics blur.
   const payload = JSON.stringify(
-    rows.map((r) => ({ lens: r.lens as string, wins: r.wins, decided: r.decided, weight: r.weight })),
+    rows.map((r) => ({
+      lens: r.lens as string,
+      wins: Math.round(r.wins),
+      decided: Math.round(r.decided),
+      weight: r.weight,
+    })),
   );
   await sql`
     INSERT INTO harness_shared.scout_lens_weights (workspace_id, lens, wins, decided, weight, updated_at)

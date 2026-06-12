@@ -409,8 +409,9 @@ export interface LensWeightRow {
   /**
    * Win mass from this lens (Change-Feed terminal wins + fractional grade
    * credit, C-5). May be fractional in memory; the persisted column is int so
-   * the upsert's cast rounds it — `weight` (computed here, pre-rounding) is the
-   * value the sampling path reads back, so rounding only blurs the analytics.
+   * the upsert seam rounds it before the cast (jsonb int casts error on
+   * fractions) — `weight` (computed here, pre-rounding) is the value the
+   * sampling path reads back, so rounding only blurs the analytics.
    */
   wins: number;
   /** Decided mass either way (won + lost); pending excluded. Fractional under grading, rounded on persist like `wins`. */

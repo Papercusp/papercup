@@ -46,15 +46,17 @@ Core build-script execution has landed: the SDK types (`PluginProvision` /
 the `harness_shared.operator_claims` PG lock table, the `lib/provision/runtime/lib.sh`
 helper, and real plugin scripts under `libs/papercusp/plugins/{github-repo,cloudflare-stack,cloudflare-pages}/provision/`.
 
-The **shipped** `ProvisionScript` type is just `{ path, timeoutSec?, runAt? }`
-(note `path`, not `command`); `cloudProvider` / `allowedHosts` /
-`skipReprovisionOnPatch` / `auditLogCapMb` live on the parent `PluginProvision`
-object, and the runner currently reads only `{ path, timeoutSec }` per script.
-The richer manifest fields below (`displayName`, `description`, `network`,
-`writesState`, `requiresInteractive`, etc.) describe the design target; some
-(e.g. `displayName`/`description`) already appear in real manifests, others are
-not yet wired. Treat the examples below as the design, and the SDK type + runner
-as the current truth.
+The **shipped** `ProvisionScript` type is `{ path, timeoutSec?, runAt?,
+displayName?, description? }` (note `path`, not `command`); `cloudProvider` /
+`allowedHosts` / `skipReprovisionOnPatch` / `auditLogCapMb` live on the parent
+`PluginProvision` object, and the runner currently reads only
+`{ path, timeoutSec }` per script. `displayName` / `description` are the
+consent-surface fields — the settings ProvisionPanel shows them (plus
+`allowedHosts` / `cloudProvider`) before the user's first setup run
+(2026-06-11, plugin-system-hive-port P-010). The remaining richer fields below
+(`network`, `writesState`, `requiresInteractive`, etc.) are still design-only —
+treat those examples as the design, and the SDK type + runner as the current
+truth.
 
 Add a `provision` section to `papercusp.json`:
 

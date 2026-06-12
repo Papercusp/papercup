@@ -17,10 +17,22 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import * as Collapsible from '@radix-ui/react-collapsible';
 
+interface ProvisionScriptDecl {
+  path: string;
+  timeoutSec?: number;
+  displayName?: string;
+  description?: string;
+  // Real manifests (cloudflare-stack et al.) declare these per-script;
+  // the SDK type carries them on the parent PluginProvision. The panel
+  // reads both shapes — parent wins, script-level is the fallback.
+  cloudProvider?: { id: string; region?: string; regions?: string[] };
+  allowedHosts?: string[];
+}
+
 interface ProvisionDecl {
-  setup?: { path: string; timeoutSec?: number };
-  teardown?: { path: string; timeoutSec?: number };
-  verify?: { path: string; timeoutSec?: number };
+  setup?: ProvisionScriptDecl;
+  teardown?: ProvisionScriptDecl;
+  verify?: ProvisionScriptDecl;
   cloudProvider?: { id: string; region?: string; regions?: string[] };
   allowedHosts?: string[];
 }
@@ -60,6 +72,8 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
   const [state, setState] = useState<ProvisionState | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [running, setRunning] = useState<'setup' | 'teardown' | 'verify' | null>(null);
+  const cloudProvider = provision.cloudProvider ?? provision.setup?.cloudProvider;
+  const allowedHosts = provision.allowedHosts ?? provision.setup?.allowedHosts ?? [];
 
   const reload = useCallback(async () => {
     try {
@@ -125,10 +139,27 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
       {!state?.hashes && !state?.setupFailed && (
         <div style={banner('info')}>
           Setup has not been run on <strong>{harness}</strong> yet.
-          {provision.cloudProvider && (
+          {/* Consent surface: clicking "Run setup" IS the consent, so what
+              the script does must be readable before the click — the
+              manifest's displayName/description + its network reach. */}
+          {provision.setup?.displayName && (
+            <div style={{ marginTop: 6, fontWeight: 600 }}>{provision.setup.displayName}</div>
+          )}
+          {provision.setup?.description && (
+            <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.5 }}>{provision.setup.description}</div>
+          )}
+          {cloudProvider && (
             <div style={{ marginTop: 4, fontSize: 11 }}>
-              Cloud provider: <code>{provision.cloudProvider.id}</code>
-              {provision.cloudProvider.region && <> · region <code>{provision.cloudProvider.region}</code></>}
+              Cloud provider: <code>{cloudProvider.id}</code>
+              {cloudProvider.region && <> · region <code>{cloudProvider.region}</code></>}
+            </div>
+          )}
+          {allowedHosts.length > 0 && (
+            <div style={{ marginTop: 4, fontSize: 11 }}>
+              Network access:{' '}
+              {allowedHosts.map((h, i) => (
+                <span key={h}>{i > 0 && ', '}<code>{h}</code></span>
+              ))}
             </div>
           )}
         </div>

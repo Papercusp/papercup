@@ -936,6 +936,16 @@ export interface ProvisionScript {
   path: string;
   timeoutSec?: number;
   runAt?: 'fork' | 'install' | 'first-action';
+  /**
+   * Human label shown on the consent surface (the settings ProvisionPanel)
+   * before the user runs the script. Falls back to the phase name.
+   */
+  displayName?: string;
+  /**
+   * One-paragraph explanation of what the script creates/changes, shown to
+   * the user before they approve the run. Strongly recommended for `setup`.
+   */
+  description?: string;
 }
 
 /* ─────────────────────────────────────────────────────────────────────

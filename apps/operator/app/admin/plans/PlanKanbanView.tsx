@@ -1,8 +1,10 @@
 'use client';
 
 /**
- * PlanKanbanView — the Create-tab plan board (P-025; dnd-kit + @papercusp/sync
- * rewrite, replacing the hand-rolled native-HTML5-DnD version).
+ * PlanKanbanView — the Create-tab plan board (P-025). Presentation rides the
+ * vendored Kibo UI kanban primitives (`@/app/harness/Kanban` — provenance and
+ * upstream deviations in that file's header); this file owns only the plan
+ * data layer and the card/header content.
  *
  * Data: items come LIVE from `useSyncQuery('planItems.byPlan')` — the
  * `harness_plans.items` jsonb projection that `with-plan-lock` rewrites
@@ -14,32 +16,22 @@
  * board always renders.
  *
  * Bucketing is by the STORED status token (the jsonb `status`); the columns are
- * the four stored tokens, so the issue-block `effectiveStatus` overlay (a
- * derived read-time concept) isn't needed here.
+ * the stored tokens, so the issue-block `effectiveStatus` overlay (a derived
+ * read-time concept) isn't needed here.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import {
-  DndContext,
-  DragOverlay,
-  PointerSensor,
-  KeyboardSensor,
-  useSensor,
-  useSensors,
-  useDroppable,
-  closestCorners,
-  type DragEndEvent,
-  type DragStartEvent,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  useSortable,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
+import {
+  KanbanBoard,
+  KanbanCard,
+  KanbanCards,
+  KanbanHeader,
+  KanbanProvider,
+  type DragEndEvent,
+} from '@/app/harness/Kanban';
 import { setItemStatus, type PlanItem, type ItemStatus } from './plans-api';
+import './plan-kanban.css';
 
 // One column per plan-item status — the SAME six tokens `ItemStatus` /
 // plans:set-status use, so the board is 1:1 with the statuses in the plan
@@ -71,6 +63,10 @@ function normalize(raw: unknown): BoardItem | null {
   const status = it.storedStatus ?? it.status ?? 'todo';
   return { id: it.id, text: typeof it.text === 'string' ? it.text : '', status };
 }
+
+/** Kibo item shape: `name` is the card text, `column` the status token. */
+type KItem = { id: string; name: string; column: string };
+const toKItem = (it: BoardItem): KItem => ({ id: it.id, name: it.text, column: it.status });
 
 export interface PlanKanbanViewProps {
   /** Plan slug — the sync-query key and the set-status target. */
@@ -118,20 +114,36 @@ export default function PlanKanbanView({ slug, items, onChanged }: PlanKanbanVie
     [server, optimistic],
   );
 
+  // The board state the drag mutates live (KanbanProvider flips an item's
+  // column while it hovers). Re-derived from `view` whenever a status changes
+  // server-side or optimistically; diverges only mid-drag.
+  const [board, setBoard] = useState<KItem[]>(() => view.map(toKItem));
+  const boardRef = useRef(board);
+  boardRef.current = board;
+  const viewSig = view.map((i) => `${i.id}:${i.status}`).join('|');
+  useEffect(() => {
+    setBoard(view.map(toKItem));
+    // view identity changes each render; key off the stable status signature.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewSig]);
+
   // The six known columns, then a trailing column for any unexpected status
   // present in the data — so EVERY plan item lands in exactly one column and
   // none is ever silently hidden.
   const columns = useMemo(() => {
     const extra = [...new Set(view.map((i) => i.status))].filter((s) => !isColStatus(s));
-    return [...KANBAN_COLS, ...extra.map((s) => ({ status: s, label: s, accent: 'var(--fg-mute)' }))];
+    return [
+      ...KANBAN_COLS.map((c) => ({ id: c.status as string, name: c.label, accent: c.accent })),
+      ...extra.map((s) => ({ id: s, name: s, accent: 'var(--fg-mute)' })),
+    ];
   }, [view]);
 
-  const byStatus = useMemo(() => {
-    const m = new Map<string, BoardItem[]>();
-    for (const c of columns) m.set(c.status, []);
-    for (const it of view) m.get(it.status)?.push(it);
+  const countByColumn = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of columns) m.set(c.id, 0);
+    for (const it of board) m.set(it.column, (m.get(it.column) ?? 0) + 1);
     return m;
-  }, [view, columns]);
+  }, [board, columns]);
 
   const setStatusSync = useSyncMutate('plans.setStatus', setItemStatus);
 
@@ -151,139 +163,68 @@ export default function PlanKanbanView({ slug, items, onChanged }: PlanKanbanVie
     }
   };
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
+  const resetBoard = () => setBoard(view.map(toKItem));
 
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const activeItem = activeId ? view.find((i) => i.id === activeId) ?? null : null;
-
-  const columnOf = (id: string): string | null => {
-    if (columns.some((c) => c.status === id)) return id; // dropped onto a column
-    return view.find((i) => i.id === id)?.status ?? null; // dropped onto a card
-  };
-
-  function onDragStart(e: DragStartEvent) {
-    setActiveId(String(e.active.id));
-  }
   function onDragEnd(e: DragEndEvent) {
-    setActiveId(null);
     const { active, over } = e;
-    if (!over) return;
-    const to = columnOf(String(over.id));
-    if (to) void move(String(active.id), to);
+    if (!over) {
+      resetBoard();
+      return;
+    }
+    // The provider already flipped the active item's column in `board` during
+    // dragOver; read the landing column from there and persist the diff.
+    const landed = boardRef.current.find((i) => i.id === String(active.id));
+    const from = view.find((i) => i.id === String(active.id))?.status;
+    if (landed && from && landed.column !== from) {
+      void move(landed.id, landed.column);
+    } else {
+      resetBoard();
+    }
   }
 
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCorners}
-      onDragStart={onDragStart}
+    <KanbanProvider<KItem, { id: string; name: string; accent: string }>
+      columns={columns}
+      data={board}
+      onDataChange={setBoard}
       onDragEnd={onDragEnd}
+      onDragCancel={resetBoard}
+      overlay={(item) => <PlanCardBody id={item.id} text={item.name} />}
+      className="pk-plan-kanban"
     >
-      <div style={{ display: 'flex', gap: 10, overflow: 'auto', padding: '8px 0', minHeight: 200 }}>
-        {columns.map((col) => (
-          <Column
-            key={col.status}
-            label={col.label}
-            accent={col.accent}
-            status={col.status}
-            items={byStatus.get(col.status) ?? []}
-            pending={optimistic}
-          />
-        ))}
-      </div>
-      <DragOverlay>{activeItem ? <CardBody item={activeItem} dragging /> : null}</DragOverlay>
-    </DndContext>
+      {(col) => (
+        <KanbanBoard id={col.id} key={col.id}>
+          <KanbanHeader>
+            <span className="pk-kanban__dot" style={{ background: col.accent }} />
+            {col.name}{' '}
+            <span className="pk-plan-kanban__count">({countByColumn.get(col.id) ?? 0})</span>
+          </KanbanHeader>
+          <KanbanCards id={col.id}>
+            {(item) => (
+              <KanbanCard
+                key={item.id}
+                id={item.id}
+                name={item.name}
+                column={item.column}
+                className={optimistic[item.id] ? 'is-saving' : undefined}
+              >
+                <PlanCardBody id={item.id} text={item.name} />
+              </KanbanCard>
+            )}
+          </KanbanCards>
+        </KanbanBoard>
+      )}
+    </KanbanProvider>
   );
 }
 
-function Column({
-  label,
-  accent,
-  status,
-  items,
-  pending,
-}: {
-  label: string;
-  accent: string;
-  status: string;
-  items: BoardItem[];
-  pending: Record<string, string>;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: status });
+/** The card's content — P-id eyebrow + a stripped, capped text preview.
+ *  Shared by the in-column card and the DragOverlay copy. */
+function PlanCardBody({ id, text }: { id: string; text: string }) {
   return (
-    <div
-      ref={setNodeRef}
-      style={{
-        flex: '1 1 0',
-        minWidth: 140,
-        background: 'var(--surface-2)',
-        borderRadius: 6,
-        padding: '10px 10px 14px',
-        borderTop: `3px solid ${accent}`,
-        outline: isOver ? `1px solid ${accent}` : '1px solid transparent',
-        transition: 'outline-color 0.12s ease',
-      }}
-    >
-      <div
-        style={{
-          fontSize: '0.72em',
-          fontWeight: 700,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-          color: accent,
-          marginBottom: 8,
-        }}
-      >
-        {label}{' '}
-        <span style={{ fontWeight: 400, color: 'var(--fg-mute)' }}>({items.length})</span>
-      </div>
-      <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-        {items.map((item) => (
-          <SortableCard key={item.id} item={item} saving={!!pending[item.id]} />
-        ))}
-      </SortableContext>
-    </div>
-  );
-}
-
-function SortableCard({ item, saving }: { item: BoardItem; saving: boolean }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: item.id,
-  });
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.4 : saving ? 0.6 : 1,
-  };
-  return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <CardBody item={item} />
-    </div>
-  );
-}
-
-/** The card's visual content, shared by the in-column card and the DragOverlay. */
-function CardBody({ item, dragging = false }: { item: BoardItem; dragging?: boolean }) {
-  return (
-    <div
-      style={{
-        background: 'var(--surface-1)',
-        borderRadius: 4,
-        padding: '6px 8px',
-        marginBottom: 6,
-        cursor: 'grab',
-        fontSize: '0.8em',
-        border: '1px solid var(--border)',
-        boxShadow: dragging ? '0 8px 20px rgba(0,0,0,0.45)' : 'none',
-      }}
-    >
-      <code style={{ color: 'var(--fg-mute)', fontSize: '0.85em', display: 'block', marginBottom: 2 }}>
-        {item.id}
-      </code>
-      <span style={{ lineHeight: 1.4 }}>{item.text.replace(/^`[^`]+`\s*/, '').slice(0, 120)}</span>
-    </div>
+    <>
+      <code className="pk-plan-kanban__id">{id}</code>
+      <span className="pk-plan-kanban__text">{text.replace(/^`[^`]+`\s*/, '').slice(0, 120)}</span>
+    </>
   );
 }

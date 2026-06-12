@@ -179,6 +179,12 @@ async fn main() -> Result<()> {
     // Driven by the chat-pane (flag-off) OR the dedicated dock-driver pane (flag-on,
     // hive-agent-tabs P-004/D-009 — the operator pane is psu then, so the driver moved).
     let dock_agent_panes = matches!(subcommand.as_deref(), Some("chat-pane") | Some("dock-driver"));
+    // EI-358: only launch-capable modes react to pending workbench launches —
+    // the full TUI (no subcommand), chat-pane, and dock-driver. Board panes
+    // (watch/wake/prompt/mail/work/network/hive) must never open launch panes.
+    // Races among the capable modes are settled by claim-then-open.
+    let reactive_launch_panes =
+        matches!(subcommand.as_deref(), None | Some("chat-pane") | Some("dock-driver"));
     // The dock-driver pane is materialised ONLY in the flag-on dock, so when we ARE
     // it the flag is on → render each claude bee as a `claude --resume` Claude TUI.
     let hive_agent_tabs = subcommand.as_deref() == Some("dock-driver");
@@ -202,7 +208,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, watch, network_focus, wake_filter, agent_ctx_mode, dock_agent_panes, hive_agent_tabs).await;
+    let result = run(&mut terminal, pinned, watch, network_focus, wake_filter, agent_ctx_mode, dock_agent_panes, hive_agent_tabs, reactive_launch_panes).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -285,6 +291,7 @@ async fn run<B: Backend>(
     agent_ctx_mode: app::AgentCtxMode,
     dock_agent_panes: bool,
     hive_agent_tabs: bool,
+    reactive_launch_panes: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
@@ -303,6 +310,7 @@ async fn run<B: Backend>(
     app.network_focus = network_focus;
     app.dock_agent_panes = dock_agent_panes;
     app.hive_agent_tabs = hive_agent_tabs;
+    app.reactive_launch_panes = reactive_launch_panes;
     if let Some(owner) = &app.watch {
         app.bee.set_selection(Some(owner.clone()), None);
         // The thinking feed: tail the bee's live stdout (offset-cursor poll).
@@ -694,12 +702,29 @@ async fn run<B: Backend>(
             }
             Action::LaunchPanes { sessions, watch } => {
                 // Reactive work-area panes for new LOCAL workbench launches
-                // (pui-reactive-session-panes D-006). For each: open the pane that
-                // RUNS the launch (companion when linked — its CommandPaneExited
-                // feeds pane-exit detection — else `zellij action new-pane`), then
-                // mark the pending row consumed so it drops out of the roster. The
-                // reducer already recorded each id in the tracked set + crew roster.
+                // (pui-reactive-session-panes D-006). EI-358 CLAIM-THEN-OPEN:
+                // mark-launched is the ATOMIC claim (`launched_at IS NULL` —
+                // stamped=true for exactly one caller across EVERY pui process),
+                // so we claim FIRST and open only on a won claim. The old order
+                // (open, then fire-and-forget mark) let every roster-watching
+                // pui process open its own pane for one click — the owner got
+                // five planner chats. A lost claim = another instance owns the
+                // launch (skip forever, stays tracked); a transport error is
+                // RETRYABLE (un-track via LaunchClaimRetry so a later roster
+                // tick re-attempts — the row is still pending server-side).
                 for p in sessions {
+                    let claim = match OperatorClient::from_discovery().await {
+                        Ok(c) => c.mark_session_launched(p.adv_session_id).await,
+                        Err(e) => Err(e),
+                    };
+                    match claim {
+                        Ok(true) => { /* won — open below */ }
+                        Ok(false) => continue,
+                        Err(_) => {
+                            app.update(Event::LaunchClaimRetry(p.adv_session_id));
+                            continue;
+                        }
+                    }
                     match &companion {
                         Some(c) => c.open_pane(&p.spec),
                         None => {
@@ -708,7 +733,6 @@ async fn run<B: Backend>(
                             }
                         }
                     }
-                    tokio::spawn(mark_session_launched(p.adv_session_id, tx.clone()));
                 }
                 // Dock agent stack (pui-dock-agent-stack-2026-06-07): read-only
                 // watch panes for active swarm agents — CLI only (no companion
@@ -1255,21 +1279,11 @@ async fn set_max_agents(n: u32, tx: UnboundedSender<Event>) {
     }
 }
 
-/// Enter-by-location EXTERNAL-WINDOW route (pui-workbench-usability D-001):
-/// Mark a pending workbench launch CONSUMED after the pui opened its pane
-/// (pui-reactive-session-panes D-006) — POSTs `/api/adv/sessions/mark-launched`
-/// so the row drops out of the roster's `pending` tier. Best-effort + silent: the
-/// tracked-pane set already dedups within this run, so a failure only risks a
-/// re-pane after a restart (acceptable; no user-facing toast). `tx` is taken for a
-/// uniform signature but only used to keep the task tied to the run's lifetime.
-async fn mark_session_launched(adv_session_id: i64, tx: UnboundedSender<Event>) {
-    let _ = &tx; // best-effort; no toast on success/failure
-    if let Ok(client) = OperatorClient::from_discovery().await {
-        let _ = client.mark_session_launched(adv_session_id).await;
-    }
-}
+// (mark_session_launched moved inline into the LaunchPanes arm — EI-358
+// claim-then-open: the claim verdict now GATES the pane open, so it can no
+// longer be a fire-and-forget task.)
 
-/// bring the selected agent's terminal window to the front via
+/// Bring the selected agent's terminal window to the front via
 /// `/api/adv/sessions/focus` (wmctrl). Best-effort — a resolved window toasts
 /// success; an unresolvable one (no wmctrl/DISPLAY/window, or a remote host)
 /// toasts a friendly "couldn't bring … to front" rather than failing silently.

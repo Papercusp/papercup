@@ -39,6 +39,10 @@ pub enum Event {
     Inbox(Vec<AttentionItem>),
     /// Fresh fleet rate/usage read-model (Overview top-bar, Brief 23 P-005).
     FleetRate(FleetRateStatus),
+    /// EI-358: a pending-launch CLAIM failed in transport (operator blip) — the
+    /// reducer un-tracks the id so a later roster tick retries. A LOST claim
+    /// (another pui instance won) never emits this; it stays tracked/skipped.
+    LaunchClaimRetry(i64),
     /// Realtime operator voice session updates (voice-realtime-tui-2026-06-05).
     ConvAi(crate::voice_convai::ConvAiUpdate),
     /// P2P voice-channel updates (holepunch-voice-channels P-008): socket
