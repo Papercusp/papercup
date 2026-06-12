@@ -2,7 +2,9 @@
  * Provenance + class ↔ upstream-Tailwind mapping: see Kanban.tsx header.
  * Tokens: /internal/docs/design (bluefrost semantic scale). */
 
-/* upstream: grid size-full auto-cols-fr grid-flow-col gap-4 */
+/* upstream: grid size-full auto-cols-fr grid-flow-col gap-4
+ * (+ a height cap upstream gets from its sized parent: columns must not
+ *  stretch to the tallest column's full content — cards scroll instead) */
 .pk-kanban {
   display: grid;
   grid-auto-flow: column;
@@ -10,6 +12,7 @@
   gap: 12px;
   width: 100%;
   min-height: 220px;
+  max-height: min(72vh, 680px);
   overflow-x: auto;
   padding: 8px 0;
 }
