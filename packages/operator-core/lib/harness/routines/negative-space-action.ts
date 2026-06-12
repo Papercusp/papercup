@@ -7,12 +7,17 @@
  *
  * Thin glue over the injectable tick (`lib/negative-space/scan.ts`; the
  * aggregation/fire-bar core is pure in miner-core.ts). SQL-only — no LLM
- * calls, no spend, so there is no budget refusal here (contrast
- * iq-battery-gen); the gates are:
+ * calls, zero spend (so no spend events are ledgered); the gates are:
  *
  *   - the `papercusp-negative-space-miner` flag, default OFF — the frontier
  *     program's D-001 owner-ratified arming gate (frontier loops ship built,
  *     tested, DARK until the plan's P-001 closes). OFF → log + return.
+ *   - the learning-governor preflight (D-004 / FB-01, enforcement
+ *     'governor'): governor dark / unregistered / unbudgeted / exhausted ⇒
+ *     refuse — `lib/negative-space/governor.ts`. Arming at P-001 therefore
+ *     takes BOTH the flag flip AND an owner-set budget on loop
+ *     `negative-space-miner` (per-cycle; 0 is an honest cap for a zero-spend
+ *     loop).
  *   - the routine itself is SEEDED INACTIVE
  *     (lib/negative-space/seed-negative-space-routine.ts).
  *
@@ -27,6 +32,8 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import type { GovernorVerdict } from '../../learning-governor/core';
+import { negativeSpaceGovernorGate } from '../../negative-space/governor';
 import { demandOptionsFromPayload } from '../../negative-space/miner-core';
 import {
   defaultNegativeSpaceDeps,
@@ -41,11 +48,26 @@ export function setNegativeSpaceTickDeps(deps: NegativeSpaceTickDeps | null): vo
   _deps = deps;
 }
 
+/** The governor-gate seam — injectable for tests. Pass null to restore the live preflight. */
+export type NegativeSpaceGovernorGate = (workspaceId: string) => Promise<GovernorVerdict>;
+let _governorGate: NegativeSpaceGovernorGate | null = null;
+export function setNegativeSpaceGovernorGate(gate: NegativeSpaceGovernorGate | null): void {
+  _governorGate = gate;
+}
+
 registerSystemAction('negative-space-mine', async (ctx: SystemActionCtx) => {
   if (!(await getFlag(FLAGS.NEGATIVE_SPACE_MINER, `routine:${ctx.installSlug}`))) {
     console.log(
       '[negative-space-mine] flag papercusp-negative-space-miner is OFF (frontier arming gate, ' +
         'self-learning-frontier P-001) — skipping',
+    );
+    return;
+  }
+  const verdict = await (_governorGate ?? negativeSpaceGovernorGate)(ctx.workspaceId);
+  if (!verdict.allow) {
+    console.log(
+      `[negative-space-mine] learning-governor refused (${verdict.reason}) — skipping ` +
+        '(D-004: an unattended frontier loop runs only registered + budgeted)',
     );
     return;
   }
