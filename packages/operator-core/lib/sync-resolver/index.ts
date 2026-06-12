@@ -1398,6 +1398,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // consume-edges P-022's blocking impact) — the owner's queue leads with
       // what blocks the most, each item carrying its per-feature breakdown.
       const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs }), { candidates: items });
+      // FB-15 (P-043): this resolver IS the owner's view of the queue (the
+      // improvements:digest tool and the digest routine read elsewhere), so a
+      // hit here = the queue was rendered to the owner. Record a throttled
+      // queue-view exposure row — the denominator the owner preference model
+      // learns "ignored despite being shown" from. Fire-and-forget: capture
+      // must never affect the read.
+      void import('../owner-preference/interactions')
+        .then((m) => m.recordQueueExposure(digest.humanQueue.map((i) => i.id)))
+        .catch(() => {});
       // Watchdog ticks are best-effort: a tick-read failure degrades the flow
       // strip to "watchdog: never" rather than 500ing the whole improvements view.
       let ticks: Awaited<ReturnType<typeof readWatchdogFlowTicks>> = [];

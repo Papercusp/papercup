@@ -36,6 +36,7 @@ import { IMPROVEMENT_TOPIC, issueToCandidate } from './read-items';
 import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
+import { isFlakeKey } from '../../calibration/types';
 
 /** The fileable improvement kinds (companion D-001). */
 export type ImprovementKind = 'bug' | 'change' | 'feature';
@@ -281,6 +282,29 @@ export async function captureImprovement(
   void import('../../sync-sse')
     .then((m) => m.notifySyncInvalidate('learning.improvements'))
     .catch(() => {});
+  // Calibration bet on flake-shaped signals (frontier P-041 / FB-13): filing a
+  // flake IS the natural moment to bet on its recurrence. Same lazy
+  // fire-and-forget discipline as above (the seam is flag-gated + never-throw
+  // inside recordPrediction); origin rides along so a drill's bet stays
+  // partitioned from organic scoring (D-002).
+  const flakeKey = input.watchdogKey;
+  if (flakeKey && isFlakeKey(flakeKey)) {
+    const flakePredictor = input.createdBy ?? sourceRole;
+    const flakeSubjectId = issue.id;
+    void import('../../calibration/capture')
+      .then((m) =>
+        m.recordPrediction({
+          predictor: flakePredictor,
+          domain: 'flake-recurrence',
+          subjectKind: 'improvement',
+          subjectId: flakeSubjectId,
+          claim: `flake ${flakeKey} re-captures within the horizon`,
+          watchdogKey: flakeKey,
+          origin,
+        }),
+      )
+      .catch(() => {});
+  }
   return {
     ok: true,
     created: true,

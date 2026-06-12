@@ -79,6 +79,18 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // until P-001. SQL-only zero-spend refit; the ranker feature reads any
   // already-trained model either way (degrades to zero-priced when none).
   FLAGS.DEFERRAL_INTEREST,
+  // … and the owner preference model (P-043/FB-15) — single gate: the flag
+  // IS the arming act (no routine, no governor budget — inline SQL-only
+  // re-ranking in the digest read path). Dark until P-001 because it
+  // re-orders the owner's live queue; interaction capture is unflagged
+  // substrate so history accumulates before arming.
+  FLAGS.OWNER_PREFERENCE_RANKING,
+  // … and calibration markets (P-041/FB-13) — triple gate: flag OFF here
+  // (gates the capture seams AND the resolution sweep), the routine seeded
+  // INACTIVE, and unbudgeted on the learning governor (loop
+  // `calibration-markets`) until P-001. SQL-only zero-spend; the ranker
+  // feature contributes 0 while dark.
+  FLAGS.CALIBRATION_MARKETS,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

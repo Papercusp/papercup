@@ -21,6 +21,12 @@ export {
   type DeferralInterestFeatureDeps,
 } from './deferral-interest-feature';
 export {
+  defaultOwnerPreferenceFeatureDeps,
+  makeOwnerPreferenceFeature,
+  ownerPreferenceFeature,
+  type OwnerPreferenceFeatureDeps,
+} from './owner-preference-feature';
+export {
   applyHumanQueueRanking,
   humanQueueRankerSpec,
   HUMAN_QUEUE_FEATURES,

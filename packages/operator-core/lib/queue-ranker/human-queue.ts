@@ -22,7 +22,9 @@ import {
   type HumanQueueRankContext,
   type HumanQueueRankDeps,
 } from './blocking-impact-feature';
+import { calibrationFeature } from './calibration-feature';
 import { deferralInterestFeature } from './deferral-interest-feature';
+import { ownerPreferenceFeature } from './owner-preference-feature';
 import { describeFeatures, rankQueue, type QueueFeature, type RankBreakdown } from './ranker';
 
 /**
@@ -35,6 +37,14 @@ export const HUMAN_QUEUE_FEATURES: readonly QueueFeature<ScoredItem, HumanQueueR
   // P-042 / FB-14: learned deferral pricing — contributes 0 until the lane is
   // armed (flag ON + a trained model), so registering it is order-preserving.
   deferralInterestFeature,
+  // P-043 / FB-15: implicit owner-attention model — contributes 0 until armed
+  // (flag ON) and near-0 until interaction history accumulates past the
+  // model's evidence floors, so registering it is order-preserving too.
+  ownerPreferenceFeature,
+  // P-041 / FB-13: bet-implied risk (bounced fixes + open bets × bettor
+  // trust) — contributes 0 until armed (the same flag gates the capture
+  // seams, so no bets exist while dark); order-preserving until then.
+  calibrationFeature,
 ];
 
 /** The registry as data — name/weight/description per feature. */

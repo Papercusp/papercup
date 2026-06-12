@@ -164,6 +164,23 @@ export async function bouncedFixCounts(
   return out;
 }
 
+/** Open-bet rollup by domain (the calibration:summary read). */
+export async function openBetCounts(
+  sql: Sql,
+  q: { workspaceId: string; origins?: readonly SignalOrigin[] },
+): Promise<Array<{ domain: string; open: number; matured: number }>> {
+  const origins = [...(q.origins ?? ORGANIC_ONLY)];
+  const rows = await sql`
+    SELECT domain, count(*)::int AS open,
+           count(*) FILTER (WHERE horizon_ts <= now())::int AS matured
+      FROM harness_shared.calibration_predictions
+     WHERE workspace_id = ${q.workspaceId} AND resolved_at IS NULL
+       AND signal_origin = ANY(${origins}::text[])
+     GROUP BY domain ORDER BY domain
+  `;
+  return rows.map((r) => ({ domain: String(r.domain), open: Number(r.open), matured: Number(r.matured) }));
+}
+
 /**
  * Per-persona per-domain Brier aggregate over SCORED organic bets (voided
  * rows excluded), weight attached via scoring.calibrationWeight.

@@ -34,6 +34,14 @@ export default defineTool({
     summary: z.string().min(10).max(4000).describe('what happened — for fixed: what changed + how it was verified; for the others: why'),
     testsRun: z.string().max(1000).optional().describe('the test command(s) run + result — REQUIRED for outcome fixed'),
     commit: z.string().max(120).optional().describe('commit/branch the fix landed on (it still rides the release gate)'),
+    confidence: z
+      .number()
+      .min(0)
+      .max(1)
+      .optional()
+      .describe(
+        'your probability (0–1) this fix SURVIVES — no reopen/re-capture for 14 days. Optional, never blocks: recorded as a calibration bet (Brier-scored per persona later); omitted = a cheap implicit prior',
+      ),
   }),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
@@ -45,6 +53,24 @@ export default defineTool({
       commit: args.commit,
       by: id.ownerId,
     });
+    // Calibration bet at the natural moment (frontier P-041 / FB-13): claiming
+    // `fixed` IS a survival claim — record it cheaply (fire-and-forget; the
+    // seam is flag-gated + never-throw, so the resolve path is unaffected).
+    if (args.outcome === 'fixed') {
+      const confidence = args.confidence;
+      void import('../../calibration/capture')
+        .then((m) =>
+          m.recordPrediction({
+            predictor: id.ownerId,
+            domain: 'fix-survival',
+            subjectKind: 'improvement',
+            subjectId: args.id,
+            claim: `fix for ${args.id} survives the horizon (no reopen/re-capture)`,
+            ...(confidence !== undefined ? { probability: confidence } : {}),
+          }),
+        )
+        .catch(() => {});
+    }
     // Discovery-time insight trip-wire (EI-328, policies §19 same-turn rule):
     // a fixed improvement is the moment the root cause is PROVEN — the one
     // reliable boundary to ask "does the next agent need this written down?".

@@ -36,6 +36,14 @@ export const DOMAIN_DEFAULTS: Record<PredictionDomain, { prior: number; horizonD
   'flake-recurrence': { prior: 0.6, horizonDays: 14 },
 };
 
+/**
+ * Flake-shaped watchdog keys — the flake-recurrence capture seam's net
+ * (capture-core checks it synchronously, so it lives in this pure module).
+ */
+export function isFlakeKey(key: string): boolean {
+  return /flak|quarantin/i.test(key);
+}
+
 /** One bet row (camelCase mirror of the PG columns; timestamps epoch-ms). */
 export interface PredictionRow {
   id: string;

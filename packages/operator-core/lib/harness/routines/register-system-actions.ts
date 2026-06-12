@@ -138,6 +138,16 @@
  *     flag-gated OFF (papercusp-deferral-interest — the frontier D-001
  *     arming gate), governor-preflighted (loop `deferral-interest-refit`),
  *     AND seeded INACTIVE (lib/deferral-interest/seed-deferral-interest-routine.ts).
+ *   - `system:calibration-resolve` — self-learning-frontier-2026-06-12 P-041
+ *     (FB-13). Every-6h maturity sweep over calibration bets
+ *     (calibration_predictions, mig 253): each matured bet resolves against
+ *     its domain probe (fix-survival re-capture check, plan-ship status,
+ *     flake-recurrence re-capture) and feeds the per-persona Brier scores the
+ *     one queue ranker (P-040/FB-12) + calibration:summary read. SQL-only;
+ *     flag-gated OFF (papercusp-calibration-markets — the frontier D-001
+ *     arming gate, which also gates the capture seams), governor-preflighted
+ *     (loop `calibration-markets`), AND seeded INACTIVE
+ *     (lib/calibration/seed-calibration-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -164,3 +174,4 @@ import './transfer-distill-action';
 import './fleet-ekg-action';
 import './prompt-ablation-action';
 import './deferral-interest-action';
+import './calibration-action';

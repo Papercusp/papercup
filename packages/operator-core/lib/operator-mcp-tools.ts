@@ -36,6 +36,10 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // The watchdog's own health/diagnostic read (watchdog-audit-2026-06-09
   // P-010) — "is the auto-capture loop running, what did it see/decline?".
   'mcp__agentmcp__improvements:watchdog-status',
+  // Queen-weighting read (self-learning-frontier P-041 / FB-13, D-005): the
+  // per-persona per-domain trust weights from recorded bets — what the brain
+  // consults before taking a persona's stated confidence at face value.
+  'mcp__agentmcp__calibration:summary',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
   // Plans read surface — the needs-human inbox + importance the scanner

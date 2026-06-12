@@ -530,6 +530,12 @@ import './change_ledger/calendar';
 // the write side is the weekly system:prompt-ablation routine (dark until the
 // frontier P-001 arming gate).
 import './ablation/report';
+// calibration-markets read surface (self-learning-frontier P-041 / FB-13):
+// per-persona per-domain Brier scores + trust weights — the Queen-weighting
+// consumption point (D-005). Read-only; the write side is the capture seams
+// + the system:calibration-resolve sweep (dark until the frontier P-001
+// arming gate).
+import './calibration/summary';
 
 // event-reaction-system-2026-06-04 D-010 — the inspectable reactive-graph tool
 // (what fires what + recent fired reactions with their cause-chain).

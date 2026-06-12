@@ -169,22 +169,64 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
   }
   const { sql } = getOrgPg();
   // D-004 in one statement. `graded_by IS DISTINCT FROM 'owner'` (not `<>`) so
-  // ungraded rows (NULL graded_by) pass the guard for both graders.
-  const updated = await sql<{ idea_id: string }[]>`
-    UPDATE harness_shared.scout_routed_ideas
+  // ungraded rows (NULL graded_by) pass the guard for both graders. The
+  // self-join FROM reads the PRE-update grade in the same statement (FB-15:
+  // 'regrade' detection for the owner-interaction capture below) — same
+  // unnarrowed idea_id predicate as before, so apply semantics are unchanged.
+  const updated = await sql<
+    {
+      idea_id: string;
+      lens: string;
+      rail: string;
+      routed_ref: string;
+      title: string | null;
+      prev_grade: number | null;
+      prev_graded_by: string | null;
+    }[]
+  >`
+    UPDATE harness_shared.scout_routed_ideas t
        SET human_grade = ${input.grade},
            human_feedback = ${input.feedback ?? null},
            graded_by = ${input.gradedBy},
            graded_at = now()
-     WHERE idea_id = ${input.ideaId}
-       AND (${input.gradedBy} = 'owner' OR graded_by IS DISTINCT FROM 'owner')
-     RETURNING idea_id`;
+      FROM (SELECT idea_id, human_grade AS prev_grade, graded_by AS prev_graded_by
+              FROM harness_shared.scout_routed_ideas
+             WHERE idea_id = ${input.ideaId}) prev
+     WHERE t.idea_id = prev.idea_id
+       AND (${input.gradedBy} = 'owner' OR t.graded_by IS DISTINCT FROM 'owner')
+     RETURNING t.idea_id, t.lens, t.rail, t.routed_ref, t.title,
+               prev.prev_grade, prev.prev_graded_by`;
   if (updated.length === 0) {
     const exists = await sql<{ idea_id: string }[]>`
       SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`;
     return exists.length === 0
       ? { applied: false, reason: 'not-found' }
       : { applied: false, reason: 'owner-grade-sovereign' };
+  }
+  // FB-15 (P-043): an applied OWNER grade is the cleanest implicit-attention
+  // signal — append it to the owner_interactions stream (same lazy
+  // fire-and-forget seam as the SSE push below; capture must never affect the
+  // grade write). Queen grades are deliberately NOT captured: the preference
+  // model learns the owner's attention, nobody else's.
+  const row = updated[0];
+  if (input.gradedBy === 'owner') {
+    void import('../owner-preference/interactions')
+      .then((m) =>
+        m.recordOwnerInteraction({
+          kind: row.prev_grade != null && row.prev_graded_by === 'owner' ? 'regrade' : 'grade',
+          subjectKind: 'routed-idea',
+          subjectId: row.idea_id,
+          payload: {
+            grade: input.grade,
+            ...(row.prev_grade != null ? { prevGrade: Number(row.prev_grade) } : {}),
+            lens: row.lens,
+            rail: row.rail,
+            routedRef: row.routed_ref,
+            ...(row.title ? { title: row.title } : {}),
+          },
+        }),
+      )
+      .catch(() => {});
   }
   // Push the Learning tab's Scout view — same lazy fire-and-forget seam as
   // recordRoutedIdea (a missing SSE bus is a no-op). Applied writes only.

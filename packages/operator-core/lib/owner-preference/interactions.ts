@@ -58,7 +58,7 @@ export async function recordOwnerInteraction(
       INSERT INTO harness_shared.owner_interactions
         (workspace_id, kind, subject_kind, subject_id, payload)
       VALUES (${activeWorkspaceId()}, ${input.kind}, ${input.subjectKind},
-              ${input.subjectId}, ${sql.json(input.payload ?? {})})`;
+              ${input.subjectId}, ${sql.json((input.payload ?? {}) as never)})`;
     return true;
   } catch (err) {
     console.warn(
@@ -131,14 +131,14 @@ export async function readOwnerSignal(): Promise<OwnerSignal> {
       SELECT kind, subject_id, payload
         FROM harness_shared.owner_interactions
        WHERE kind IN ('grade', 'regrade')
-         AND ts > now() - make_interval(days => ${ENGAGEMENT_WINDOW_DAYS})
+         AND ts > now() - ${`${ENGAGEMENT_WINDOW_DAYS} days`}::interval
        ORDER BY ts DESC
        LIMIT 2000`,
     sql<{ payload: Record<string, unknown> }[]>`
       SELECT payload
         FROM harness_shared.owner_interactions
        WHERE kind = 'queue-view'
-         AND ts > now() - make_interval(days => ${EXPOSURE_WINDOW_DAYS})
+         AND ts > now() - ${`${EXPOSURE_WINDOW_DAYS} days`}::interval
        ORDER BY ts DESC
        LIMIT 1000`,
   ]);

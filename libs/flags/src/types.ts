@@ -243,6 +243,25 @@ export const FLAGS = {
   // owner-ratified dark-ship rule for frontier loops); the ranker feature
   // degrades to zero-priced while no model is trained.
   DEFERRAL_INTEREST: "papercusp-deferral-interest",
+  // self-learning-frontier-2026-06-12 (P-043 / FB-15): the owner preference
+  // model — implicit owner-attention telemetry (owner grades/regrades,
+  // queue-view exposure) scored as a bounded re-ranking feature of the one
+  // queue ranker (P-040 / FB-12). SQL-only, zero LLM spend; re-ranking only,
+  // explicit grades stay sovereign. OFF until the plan's P-001 arming gate
+  // closes (D-001 owner-ratified dark-ship rule for frontier loops); the
+  // interaction CAPTURE seams are unflagged substrate (FB-02/FB-03 call) so
+  // history accumulates before arming.
+  OWNER_PREFERENCE_RANKING: "papercusp-owner-preference-ranking",
+  // self-learning-frontier-2026-06-12 (P-041 / FB-13): calibration markets —
+  // cheap recorded claims at natural moments (improvements:resolve confidence,
+  // plan starts, flake filings), matured by `system:calibration-resolve` and
+  // Brier-scored per persona per domain; consumed as a feature of the one
+  // queue ranker (P-040 / FB-12, D-005) and by Queen-weighting reads
+  // (calibration:summary). SQL-only, zero LLM spend. OFF gates BOTH the
+  // capture seams and the sweep until the plan's P-001 arming gate closes
+  // (D-001 owner-ratified dark-ship rule for frontier loops); the ranker
+  // feature contributes 0 while OFF or while no bets are scored.
+  CALIBRATION_MARKETS: "papercusp-calibration-markets",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -383,6 +402,18 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // `deferral-interest-refit` + activating the seeded-inactive routine are
   // the P-001 arming acts.
   [FLAGS.DEFERRAL_INTEREST]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: the
+  // owner-preference ranking feature re-orders the owner's live queue, so it
+  // arms only at P-001 (the flag flip is the arming act — no routine, no
+  // governor budget: it computes inline in the digest read path, SQL-only).
+  // Interaction capture stays on either way (substrate, not a loop).
+  [FLAGS.OWNER_PREFERENCE_RANKING]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: calibration
+  // markets is a frontier learning loop (SQL-only, zero LLM spend) whose flag
+  // gates both the capture seams and the resolution sweep; the flag flip + an
+  // owner-set per-cycle governor budget on loop `calibration-markets` +
+  // activating the seeded-inactive routine are the P-001 arming acts.
+  [FLAGS.CALIBRATION_MARKETS]: false,
   // ON by default — Phase 0 foundation, same call as CHANGE_LEDGER above
   // (self-learning-frontier P-003/FB-01): the governor SPENDS nothing and
   // FILES nothing — it is the refusal gate D-004 wants live, and ON starts

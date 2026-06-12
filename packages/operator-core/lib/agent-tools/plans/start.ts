@@ -133,6 +133,27 @@ export default defineTool({
     const row = rows[0];
     const transitioned = row ? row.prev_op_status !== 'started' : false;
 
+    // Calibration bet at the natural moment (frontier P-041 / FB-13): a REAL
+    // start is the starter's implicit claim the plan ships within the horizon.
+    // Fire-and-forget; the seam is flag-gated + never-throw, so the start
+    // path is unaffected. Idempotent re-starts (transitioned:false) stay silent.
+    if (transitioned) {
+      void Promise.all([
+        import('../../calibration/capture'),
+        import('../coordination/identity'),
+      ])
+        .then(([cal, ident]) =>
+          cal.recordPrediction({
+            predictor: ident.resolveAgentIdentity(ctx).ownerId,
+            domain: 'plan-ship',
+            subjectKind: 'plan',
+            subjectId: args.slug,
+            claim: `plan ${args.slug} reaches status shipped within the horizon of its start`,
+          }),
+        )
+        .catch(() => {});
+    }
+
     // Starting a plan IS the approval signal — if it's still a draft,
     // auto-advance the frontmatter to 'ready' so the lifecycle reflects
     // that work has been sanctioned. expectedCurrent='draft' makes this a

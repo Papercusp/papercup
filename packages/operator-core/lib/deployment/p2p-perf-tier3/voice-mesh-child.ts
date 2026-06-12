@@ -144,22 +144,23 @@ async function main(): Promise<void> {
     leave: (t) => swarm.leave(t),
     on(ev, cb) {
       const wrapped = (conn: DuplexLike, info?: unknown) => {
-        const counted: DuplexLike = {
+        const counted = {
           write(d: Uint8Array) {
             bytesOut += d.byteLength;
             return conn.write(d);
           },
-          on(event: 'data' | 'error' | 'close', cb2: (arg?: never) => void) {
+          on(event: 'data' | 'error' | 'close', cb2: unknown) {
             if (event === 'data') {
+              const dataCb = cb2 as (chunk: Uint8Array) => void;
               return conn.on('data', (chunk: Uint8Array) => {
                 bytesIn += chunk.byteLength;
-                (cb2 as (c: Uint8Array) => void)(chunk);
+                dataCb(chunk);
               });
             }
             return conn.on(event, cb2 as (err?: unknown) => void);
           },
           destroy: (e?: unknown) => conn.destroy(e),
-        };
+        } as DuplexLike;
         cb(counted, info);
       };
       cbMap.set(cb, wrapped);
@@ -194,9 +195,29 @@ async function main(): Promise<void> {
     channel.onPeersChanged(check);
     check();
   });
-  void meshReady;
 
   await channel.announced();
+
+  // Standalone-hyperswarm discovery gotcha (see the hyperswarm-discovery
+  // insight + directory-swarm.ts): N fresh processes joining one topic
+  // simultaneously can each announce AFTER the others' lookup pass — and a
+  // quiet swarm never re-queries, so the mesh silently never forms. Re-join
+  // returns the SAME PeerDiscovery session; drive its refresh() until the
+  // full mesh is visible, then stop (keeps the measurement window clean).
+  const discovery = swarm.join(Buffer.from(cfg.topicHex, 'hex'), {
+    server: true,
+    client: true,
+  }) as { refresh?: (o?: { client?: boolean; server?: boolean }) => unknown };
+  const refreshTimer = setInterval(() => {
+    try {
+      void discovery.refresh?.({ client: true, server: true });
+    } catch {
+      /* discovery torn down */
+    }
+  }, 2_000);
+  refreshTimer.unref();
+  void meshReady.then(() => clearInterval(refreshTimer));
+
   out({ evt: 'ready', id });
 
   const frame = toneFrame(VOICE_FRAME_SAMPLES);

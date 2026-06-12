@@ -6,7 +6,11 @@
  *
  * NOTE timestamps travel as ISO STRINGS, never Date instances — the live
  * getOrgPg() client rejects Date params (agent-insights/
- * db-org-client-rejects-js-date-params).
+ * db-org-client-rejects-js-date-params). The SAME live-client gotcha applies
+ * to jsonb params: `sql.json(<array>)` serializes fine on the testcontainers
+ * clients but the live client throws ('Received an instance of Array'), so
+ * every jsonb travels as a JSON STRING with an explicit `::text::jsonb` cast
+ * (proven live in the FB-09 supervised cycle, 2026-06-12).
  */
 
 import type { Sql } from 'postgres';
@@ -67,9 +71,9 @@ export async function insertAblationRun(sql: Sql, input: InsertAblationRunInput)
        ${input.ruleExcerpt}, ${input.scenarioCount}, ${input.baselinePassRate},
        ${input.ablatedPassRate}, ${input.passRateDelta}, ${input.verdict},
        ${input.capped}, ${input.costUsd},
-       ${input.ledgerContext ? sql.json(input.ledgerContext as never) : null},
-       ${sql.json(input.detail as never)},
-       ${input.replayLeg != null ? sql.json(input.replayLeg as never) : null})
+       ${input.ledgerContext ? JSON.stringify(input.ledgerContext) : null}::text::jsonb,
+       ${JSON.stringify(input.detail)}::text::jsonb,
+       ${input.replayLeg != null ? JSON.stringify(input.replayLeg) : null}::text::jsonb)
     RETURNING id`;
   return rows[0]!.id;
 }

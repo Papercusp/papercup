@@ -31,6 +31,10 @@ export interface OutcomeProbes {
 export interface CalibrationSweepDeps {
   sql: Sql;
   probes: OutcomeProbes;
+  /** Store ops — injectable so sweep unit tests run with no PG. */
+  list?: typeof listMaturedUnresolved;
+  resolve?: typeof resolvePrediction;
+  voidBet?: typeof voidPrediction;
   nowMs?: () => number;
   log?: (msg: string) => void;
 }
@@ -67,8 +71,11 @@ export async function runCalibrationResolveTick(
 ): Promise<CalibrationSweepResult> {
   const nowMs = deps.nowMs ?? (() => Date.now());
   const log = deps.log ?? ((m: string) => console.log(`[calibration-resolve] ${m}`));
+  const list = deps.list ?? listMaturedUnresolved;
+  const resolve = deps.resolve ?? resolvePrediction;
+  const voidBet = deps.voidBet ?? voidPrediction;
   const nowIso = new Date(nowMs()).toISOString();
-  const matured = await listMaturedUnresolved(deps.sql, {
+  const matured = await list(deps.sql, {
     workspaceId,
     nowIso,
     limit: opts.limit ?? 200,
@@ -85,10 +92,10 @@ export async function runCalibrationResolveTick(
       }
     }
     if (outcome !== null) {
-      if (await resolvePrediction(deps.sql, { id: bet.id, outcome, nowIso })) result.resolved += 1;
+      if (await resolve(deps.sql, { id: bet.id, outcome, nowIso })) result.resolved += 1;
     } else if (nowMs() - bet.horizonTs > VOID_GRACE_DAYS * DAY_MS) {
       const note = probe ? 'probe undeterminable past grace' : `unknown domain '${bet.domain}' past grace`;
-      if (await voidPrediction(deps.sql, { id: bet.id, note, nowIso })) result.voided += 1;
+      if (await voidBet(deps.sql, { id: bet.id, note, nowIso })) result.voided += 1;
     } else {
       result.skipped += 1;
     }
