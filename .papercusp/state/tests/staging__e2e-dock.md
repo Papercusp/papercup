@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781207459699
-mtime_ms: 1781207459716
+last_run_ts: 1781236808023
+mtime_ms: 1781236808040
 name: "Dock panels + layout persistence"
-payload: {"file":"apps/operator/e2e/dock.spec.ts","kind":"contract","name":"Dock panels + layout persistence","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"playwright","lastRunTs":1781207459699,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-021"],"durationMs":0,"planItemIds":["P-021"]}
+payload: {"file":"apps/operator/e2e/dock.spec.ts","kind":"contract","name":"Dock panels + layout persistence","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"playwright","lastRunTs":1781236808023,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-021"],"durationMs":0,"planItemIds":["P-021"]}
 phase: "staging"
 status: "passing"
 test_id: "e2e-dock"

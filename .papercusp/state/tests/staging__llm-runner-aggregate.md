@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781207459699
-mtime_ms: 1781207459716
+last_run_ts: 1781236808023
+mtime_ms: 1781236808040
 name: "LLM scenario runner aggregation (registry drift pinned)"
-payload: {"file":"packages/operator-core/lib/llm-testing/__tests__/runner-aggregate.test.ts","kind":"contract","name":"LLM scenario runner aggregation (registry drift pinned)","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781207459699,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-025"],"durationMs":0,"planItemIds":["P-025"]}
+payload: {"file":"packages/operator-core/lib/llm-testing/__tests__/runner-aggregate.test.ts","kind":"contract","name":"LLM scenario runner aggregation (registry drift pinned)","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781236808023,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-025"],"durationMs":0,"planItemIds":["P-025"]}
 phase: "staging"
 status: "passing"
 test_id: "llm-runner-aggregate"

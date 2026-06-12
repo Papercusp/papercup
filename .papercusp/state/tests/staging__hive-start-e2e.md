@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781207459699
-mtime_ms: 1781207459716
+last_run_ts: 1781236808023
+mtime_ms: 1781236808040
 name: "Hive boot → Queen launch → bee placement"
-payload: {"file":"packages/operator-core/lib/hive/start-hive-e2e.integration.test.ts","kind":"contract","name":"Hive boot → Queen launch → bee placement","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781207459699,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-009"],"durationMs":0,"planItemIds":["P-009"]}
+payload: {"file":"packages/operator-core/lib/hive/start-hive-e2e.integration.test.ts","kind":"contract","name":"Hive boot → Queen launch → bee placement","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781236808023,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-009"],"durationMs":0,"planItemIds":["P-009"]}
 phase: "staging"
 status: "passing"
 test_id: "hive-start-e2e"

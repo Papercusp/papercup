@@ -1292,6 +1292,77 @@
    "kind": "edge"
   },
   {
+   "id": "scout-grading-e2e",
+   "summary": "Scout idea-grading feedback loop E2E vs real PG (mig 234): tool-core grade (owner/Queen, routedRef D-007, owner-sovereign) -> ledger row -> refreshScoutOutcomes lens-weight delta (pinned C-5 math) -> grade-blind outcome cache -> C-4 priming via the REAL reader into every ideator prompt (8 tests)",
+   "file": "packages/operator-core/lib/scout/grading-feedback-loop.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-grade-write-seam",
+   "summary": "gradeRoutedIdea C-2 unit seam: result mapping, invalidate fires on APPLIED writes only, 1-5 integer validation (4 tests)",
+   "file": "packages/operator-core/lib/scout/routed-ledger.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-grader-priming",
+   "summary": "C-4 grader-feedback priming block: byte-exact heading/entry format, newest-first, 10-entry/1500-char/140-per-entry caps, defensive empty-on-read-failure",
+   "file": "packages/operator-core/lib/scout/ideator-feedback-priming.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-grade-tool",
+   "summary": "scout:grade-idea C-3 tool: gradedBy derived from caller role (never args), D-007 exactly-one ideaId/routedRef key, owner-grade-sovereign pass-through (18 tests)",
+   "file": "packages/operator-core/lib/agent-tools/scout/__tests__/grade-idea.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spa-learning-tab",
+   "summary": "LearningTab Scout view: grade stars + note popover (nuqs ?grade=), optimistic write -> invalidate, grade chip attribution, lens-weight display (24 tests)",
+   "file": "apps/operator-vite/src/components/adv/LearningTab.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027",
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
    "id": "sync-connectivity-store",
    "summary": "Client connectivity store: offline flips on sustained network-level failure only (HTTP errors prove reachable), recovers on first success; batch-fetcher reporting integration (EI-239)",
    "file": "libs/generic/sync/src/connectivity.test.ts",
