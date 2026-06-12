@@ -30,12 +30,9 @@
  * the rig's own claim tests (brief 11) and locks suites.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type postgres from 'postgres';
-import { PgWatermarkStore, ensureCoordWatermarksTable } from '@papercusp/coordination/watermark-store';
+import { PgWatermarkStore } from '@papercusp/coordination/watermark-store';
 import { bootCompositionRig, type CompositionRig, type SwarmCell } from './composition-rig';
+import { coordCellSetup } from './federated-cell-setup';
 import { buildCoordMessageProjection } from '../sync/hyperbee/projections/coord-message';
 
 // EI-279: the coord-message projection's federated deliver-and-wake fan
@@ -63,51 +60,6 @@ vi.mock('@papercusp/db-org', async () => {
     },
   };
 });
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(HERE, '../../../../libs/papercusp/libs/db/sql');
-const FED_MIGRATION = resolve(SQL_DIR, '150-coord-event-log-federation.sql');
-const FED_MIGRATION_147 = resolve(SQL_DIR, 'archive/147-coord-event-log-federation.sql');
-
-function stripMeta(sql: string): string {
-  return sql
-    .split('\n')
-    .filter((l) => {
-      const t = l.trim();
-      if (t.startsWith('\\')) return false;
-      if (/^(begin|commit);$/i.test(t)) return false;
-      return true;
-    })
-    .join('\n');
-}
-
-/** Pre-147 coord_event_log + the real federation migration + fed_ts + watermarks. */
-async function coordCellSetup(sql: postgres.Sql): Promise<void> {
-  await sql.unsafe(`
-    CREATE TABLE harness_shared.coord_event_log (
-      id           bigserial   PRIMARY KEY,
-      workspace_id text        NOT NULL DEFAULT 'default',
-      surface      text        NOT NULL,
-      writer_key   text,
-      msg_id       text        NOT NULL,
-      body         jsonb       NOT NULL,
-      ts           timestamptz NOT NULL DEFAULT now()
-    );
-  `);
-  // The real federation migration (147 in archive, else its 150 successor):
-  // harness_slug/origin/author_pubkey columns + the capture triggers.
-  let fed: string | null = null;
-  for (const p of [FED_MIGRATION_147, FED_MIGRATION]) {
-    try {
-      fed = readFileSync(p, 'utf8');
-      break;
-    } catch { /* try the next location */ }
-  }
-  if (!fed) throw new Error('coord federation migration file not found (147/150)');
-  await sql.unsafe(stripMeta(fed));
-  await sql.unsafe(`ALTER TABLE harness_shared.coord_event_log ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
-  await ensureCoordWatermarksTable(sql);
-}
 
 const WS = 'ws-shl-comp'; // the rig's default workspaceId
 const HARNESS = 'shl';    // the rig's default harnessSlug

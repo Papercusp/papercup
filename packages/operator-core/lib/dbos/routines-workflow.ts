@@ -41,6 +41,9 @@ const operatorBase = operatorApiBase;
 
 const routinesQueue = new WorkflowQueue('routines', { concurrency: 4 });
 
+/** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
+export const ROUTINE_FIRE_TIMEOUT_MS = 2 * 60 * 60_000;
+
 /**
  * One durable fire of a routine: dispatch by target inside the routine's
  * workspace scope. A workflow (not just a step) so a crash mid-fire resumes; the
@@ -150,6 +153,14 @@ async function routinesTickImpl(): Promise<void> {
       await DBOS.startWorkflow(routineFireWorkflow, {
         queueName: routinesQueue.name,
         enqueueOptions: { deduplicationID: `routine:${r.id}` },
+        // A fire PENDING on a DEAD executor holds this dedup ID forever (DBOS
+        // recovery is per-executor), silently collapsing every later fire while
+        // claimDueRoutine keeps bumping last_fired_at — the routine looks alive
+        // but never runs (gym-cycle wedged 7.5h on a dead repro host,
+        // 2026-06-12). The timeout is the release valve: DBOS cancels the
+        // workflow at the deadline, freeing the dedup. Ceiling sized above the
+        // longest legitimate in-process action (a real gym cycle, ≲90 min).
+        timeoutMS: ROUTINE_FIRE_TIMEOUT_MS,
       })(r.id, r.workspaceId, r.installSlug, r.targetRole, r.triggerConfig, r.payloadTemplate ?? null);
     } catch (e) {
       // Already enqueued/active for this routine — collapse (back-pressure).

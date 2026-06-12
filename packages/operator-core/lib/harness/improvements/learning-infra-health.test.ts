@@ -1,16 +1,17 @@
 // learning-infra-health — the composite "learning system offline/degraded"
 // status (self-improvement-consume-edges-2026-06-12 P-003 / D-002). Pins the
-// pure composite rule (meridian is the spine; two non-spine legs down =
+// pure composite rule (the llm-spine is the spine; two non-spine legs down =
 // offline; unknown fails toward ok), the transition detector (alert on the
-// →offline edge incl. first-seen, recover on the offline→ edge only), and the
-// tick's notify-exactly-once-per-transition semantics via the injected seams.
+// →offline edge incl. first-seen, recover on the offline→ edge only), the
+// tick's notify-exactly-once-per-transition semantics via the injected seams,
+// and the llm-spine leg's transport-probe mapping (credential presence, NOT a
+// :3456 TCP probe — meridian-not-running is the healthy state on this box).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  checkLlmSpineLeg,
   composeLearningHealth,
   diffLearningHealth,
   lastLearningInfraHealth,
-  meridianBaseUrl,
-  probeMeridianLeg,
   runLearningInfraHealthTick,
   _resetLearningInfraHealthState,
   type InfraLeg,
@@ -23,7 +24,7 @@ const leg = (name: InfraLeg['name'], status: InfraLeg['status'], detail = `${nam
   detail,
 });
 
-const ALL_OK: InfraLeg[] = [leg('meridian', 'ok'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
+const ALL_OK: InfraLeg[] = [leg('llm-spine', 'ok'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
 
 describe('composeLearningHealth', () => {
   it('all legs up → ok', () => {
@@ -33,23 +34,23 @@ describe('composeLearningHealth', () => {
     expect(h.evaluatedAt).toBe(1000);
   });
 
-  it('meridian down alone → OFFLINE (the LLM spine)', () => {
+  it('llm-spine down alone → OFFLINE (the LLM spine)', () => {
     const h = composeLearningHealth(
-      [leg('meridian', 'down', '127.0.0.1:3456 ECONNREFUSED'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')],
+      [leg('llm-spine', 'down', 'no live Claude session or omp token'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')],
       0,
     );
     expect(h.status).toBe('offline');
-    expect(h.reason).toContain('meridian: 127.0.0.1:3456 ECONNREFUSED');
+    expect(h.reason).toContain('llm-spine: no live Claude session or omp token');
   });
 
   it('one non-spine leg down → degraded', () => {
-    expect(composeLearningHealth([leg('meridian', 'ok'), leg('spawn-path', 'down'), leg('gym-circuit', 'ok')], 0).status).toBe('degraded');
-    expect(composeLearningHealth([leg('meridian', 'ok'), leg('spawn-path', 'ok'), leg('gym-circuit', 'down')], 0).status).toBe('degraded');
+    expect(composeLearningHealth([leg('llm-spine', 'ok'), leg('spawn-path', 'down'), leg('gym-circuit', 'ok')], 0).status).toBe('degraded');
+    expect(composeLearningHealth([leg('llm-spine', 'ok'), leg('spawn-path', 'ok'), leg('gym-circuit', 'down')], 0).status).toBe('degraded');
   });
 
   it('both non-spine legs down → OFFLINE (cannot dispatch workers nor run the gym)', () => {
     const h = composeLearningHealth(
-      [leg('meridian', 'ok'), leg('spawn-path', 'down'), leg('gym-circuit', 'down')],
+      [leg('llm-spine', 'ok'), leg('spawn-path', 'down'), leg('gym-circuit', 'down')],
       0,
     );
     expect(h.status).toBe('offline');
@@ -59,16 +60,16 @@ describe('composeLearningHealth', () => {
 
   it("a leg whose own check failed ('unknown') counts toward ok — no fabricated outage", () => {
     const h = composeLearningHealth(
-      [leg('meridian', 'unknown', 'leg check failed: pg down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')],
+      [leg('llm-spine', 'unknown', 'leg check failed: pg down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')],
       0,
     );
     expect(h.status).toBe('ok');
-    expect(h.reason).toContain('meridian unknown');
+    expect(h.reason).toContain('llm-spine unknown');
   });
 
   it('unknown legs never dilute a real outage', () => {
     const h = composeLearningHealth(
-      [leg('meridian', 'down'), leg('spawn-path', 'unknown'), leg('gym-circuit', 'unknown')],
+      [leg('llm-spine', 'down'), leg('spawn-path', 'unknown'), leg('gym-circuit', 'unknown')],
       0,
     );
     expect(h.status).toBe('offline');
@@ -111,7 +112,7 @@ describe('runLearningInfraHealthTick', () => {
   it('notifies exactly once per offline transition, then once on recovery', async () => {
     const notify = vi.fn(async () => {});
     const invalidate = vi.fn(async () => {});
-    const down = [leg('meridian', 'down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
+    const down = [leg('llm-spine', 'down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
 
     const first = await tick(down, notify, invalidate);
     expect(first.transition).toBe('offline');
@@ -136,7 +137,7 @@ describe('runLearningInfraHealthTick', () => {
     expect(invalidate).toHaveBeenCalledTimes(1);
     await tick(ALL_OK, notify, invalidate); // ok → ok: steady
     expect(invalidate).toHaveBeenCalledTimes(1);
-    await tick([leg('meridian', 'ok'), leg('spawn-path', 'down'), leg('gym-circuit', 'ok')], notify, invalidate);
+    await tick([leg('llm-spine', 'ok'), leg('spawn-path', 'down'), leg('gym-circuit', 'ok')], notify, invalidate);
     expect(invalidate).toHaveBeenCalledTimes(2); // ok → degraded
     expect(notify).not.toHaveBeenCalled(); // degraded is chip-only
   });
@@ -146,7 +147,7 @@ describe('runLearningInfraHealthTick', () => {
       throw new Error('toast write failed');
     });
     const invalidate = vi.fn(async () => {});
-    const down = [leg('meridian', 'down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
+    const down = [leg('llm-spine', 'down'), leg('spawn-path', 'ok'), leg('gym-circuit', 'ok')];
 
     const { health } = await tick(down, notify, invalidate);
     expect(health.status).toBe('offline');
@@ -155,32 +156,28 @@ describe('runLearningInfraHealthTick', () => {
   });
 });
 
-describe('meridianBaseUrl', () => {
-  const saved = { primary: process.env.PAPERCUSP_MERIDIAN_URL, fallback: process.env.MERIDIAN_BASE_URL };
-  afterEach(() => {
-    if (saved.primary === undefined) delete process.env.PAPERCUSP_MERIDIAN_URL;
-    else process.env.PAPERCUSP_MERIDIAN_URL = saved.primary;
-    if (saved.fallback === undefined) delete process.env.MERIDIAN_BASE_URL;
-    else process.env.MERIDIAN_BASE_URL = saved.fallback;
+describe('checkLlmSpineLeg', () => {
+  it('a resolvable transport reads ok, with the transport label as evidence', () => {
+    const probed = checkLlmSpineLeg(() => ({ ok: true, label: 'anthropic-direct' }));
+    expect(probed).toEqual({ name: 'llm-spine', status: 'ok', detail: 'stateless transport: anthropic-direct' });
+    expect(checkLlmSpineLeg(() => ({ ok: true, label: 'meridian' })).detail).toBe('stateless transport: meridian');
   });
 
-  it('probes a dead port to down with the address in the evidence', async () => {
-    // Port 1 on loopback is reliably closed — a refused connect must read as
-    // DOWN with the probed address, never as an exception.
-    process.env.PAPERCUSP_MERIDIAN_URL = 'http://127.0.0.1:1';
-    const probed = await probeMeridianLeg(1500);
-    expect(probed.name).toBe('meridian');
+  it('no usable credential reads down, carrying the resolver error as evidence', () => {
+    const probed = checkLlmSpineLeg(() => ({ ok: false, error: 'stateless LLM path needs a live Claude session …' }));
+    expect(probed.name).toBe('llm-spine');
     expect(probed.status).toBe('down');
-    expect(probed.detail).toContain('127.0.0.1:1');
+    expect(probed.detail).toContain('live Claude session');
   });
 
-  it('resolves PAPERCUSP_MERIDIAN_URL → MERIDIAN_BASE_URL → the :3456 default (transport order)', () => {
-    delete process.env.PAPERCUSP_MERIDIAN_URL;
-    delete process.env.MERIDIAN_BASE_URL;
-    expect(meridianBaseUrl()).toBe('http://127.0.0.1:3456');
-    process.env.MERIDIAN_BASE_URL = 'http://127.0.0.1:3458';
-    expect(meridianBaseUrl()).toBe('http://127.0.0.1:3458');
-    process.env.PAPERCUSP_MERIDIAN_URL = 'http://127.0.0.1:9999';
-    expect(meridianBaseUrl()).toBe('http://127.0.0.1:9999');
+  it('the real probe returns a well-formed leg whatever this box holds (never a :3456 TCP read)', () => {
+    // No injected probe: rides the real credential files via papercup-shared.
+    // Box-independent assertions only — ok on a dev box with a live Claude
+    // session, down in a bare sandbox; never 'unknown', never an exception.
+    const probed = checkLlmSpineLeg();
+    expect(probed.name).toBe('llm-spine');
+    expect(['ok', 'down']).toContain(probed.status);
+    expect(probed.detail.length).toBeGreaterThan(0);
+    expect(probed.detail).not.toContain('3456');
   });
 });

@@ -10,14 +10,19 @@
  * to offline + a standing Learning-tab chip — instead of only queueing.
  *
  * Three legs feed the composite:
- *   - **meridian** — TCP reachability of the local LLM router. The spine: the
- *     gym judge, llm-testing, and implement-lane judging all ride it.
+ *   - **llm-spine** — a stateless LLM call can resolve a transport right now
+ *     (live Claude session → anthropic-direct, or live omp token → meridian).
+ *     The spine: the gym judge, llm-testing, and implement-lane judging all
+ *     ride it. Deliberately a credential-presence probe on the SAME resolution
+ *     the real calls use — never a :3456 TCP probe, which reads permanently
+ *     red on a healthy box (meridian-not-running is the normal state here;
+ *     B-01's verified topology, agent-insights/gym-boot-readiness-and-meridian-topology).
  *   - **spawn-path** — an OPEN improvement on the runner-spawn structural
  *     watchdog key means the auto-implement lane cannot dispatch workers.
  *   - **gym-circuit** — any enabled gym autoloop whose fire circuit is OPEN
  *     (autoloop_state consecutive_errors past the threshold).
  *
- * Composite rule (composeLearningHealth): meridian down alone ⇒ OFFLINE (the
+ * Composite rule (composeLearningHealth): llm-spine down alone ⇒ OFFLINE (the
  * spine); both non-spine legs down ⇒ OFFLINE (can neither run the gym nor
  * dispatch workers); exactly one non-spine leg down ⇒ DEGRADED. A leg whose
  * evaluation itself failed is 'unknown' and counts toward OK — a health
@@ -34,11 +39,11 @@
  * `learning.health` sync resolver; gated by FLAGS.LEARNING_INFRA_HEALTH
  * (default ON).
  */
-import * as net from 'node:net';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { probeStatelessTransport, type StatelessTransportProbe } from '@papercusp/papercup-shared/agent';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { notifySyncInvalidate } from '../../sync-sse';
@@ -48,12 +53,12 @@ import { listAutoloopsForWorkspace } from '../../gym/control-plane';
 import { readWatchdogKeyDups } from './watchdog';
 
 export type InfraLegStatus = 'ok' | 'down' | 'unknown';
-export type InfraLegName = 'meridian' | 'spawn-path' | 'gym-circuit';
+export type InfraLegName = 'llm-spine' | 'spawn-path' | 'gym-circuit';
 
 export interface InfraLeg {
   name: InfraLegName;
   status: InfraLegStatus;
-  /** Human-readable evidence ("127.0.0.1:3456 ECONNREFUSED", "circuit OPEN: gymloopharness …"). */
+  /** Human-readable evidence ("stateless transport: anthropic-direct", "circuit OPEN: gymloopharness …"). */
   detail: string;
 }
 
@@ -81,9 +86,9 @@ const GYM_CYCLE_FIRE_ROLE = 'gym-cycle';
 /** Compose the three legs into the ONE status the chip + notification carry. */
 export function composeLearningHealth(legs: InfraLeg[], nowMs: number): LearningInfraHealth {
   const down = legs.filter((l) => l.status === 'down');
-  const meridianDown = down.some((l) => l.name === 'meridian');
+  const spineDown = down.some((l) => l.name === 'llm-spine');
   const status: LearningHealthStatus =
-    meridianDown || down.length >= 2 ? 'offline' : down.length === 1 ? 'degraded' : 'ok';
+    spineDown || down.length >= 2 ? 'offline' : down.length === 1 ? 'degraded' : 'ok';
   const unknowns = legs.filter((l) => l.status === 'unknown');
   const reason =
     down.length > 0
@@ -114,35 +119,19 @@ export function diffLearningHealth(
 
 // ── leg collectors (IO — each fails soft to 'unknown') ──────────────────────
 
-/** Meridian router base URL — same resolution order as the transports that ride it. */
-export function meridianBaseUrl(): string {
-  return process.env.PAPERCUSP_MERIDIAN_URL ?? process.env.MERIDIAN_BASE_URL ?? 'http://127.0.0.1:3456';
-}
-
-/** TCP-probe the meridian router (mirrors desktop/preflight.ts checkMeridian). */
-export function probeMeridianLeg(timeoutMs = 2000): Promise<InfraLeg> {
-  let url: URL;
-  try {
-    url = new URL(meridianBaseUrl());
-  } catch {
-    return Promise.resolve({ name: 'meridian', status: 'unknown', detail: `unparseable meridian URL "${meridianBaseUrl()}"` });
-  }
-  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-  return new Promise((resolve) => {
-    const socket = new net.Socket();
-    let settled = false;
-    const finish = (status: InfraLegStatus, detail: string): void => {
-      if (settled) return;
-      settled = true;
-      try { socket.destroy(); } catch { /* ignore */ }
-      resolve({ name: 'meridian', status, detail });
-    };
-    socket.setTimeout(timeoutMs);
-    socket.once('connect', () => finish('ok', `${url.hostname}:${port} reachable`));
-    socket.once('timeout', () => finish('down', `${url.hostname}:${port} timeout`));
-    socket.once('error', (e: NodeJS.ErrnoException) => finish('down', `${url.hostname}:${port} ${e?.code ?? 'unreachable'}`));
-    socket.connect(port, url.hostname);
-  });
+/**
+ * The LLM spine: would a stateless LLM call resolve a transport right now?
+ * Credential presence (live Claude session → anthropic-direct, live omp token
+ * → meridian) on the SAME resolution the real calls use — the leg can never
+ * disagree with the call path. Replaced the original :3456 TCP probe, which
+ * raised "learning system OFFLINE" by construction on this box where
+ * meridian-not-running is the healthy state (B-01, 2026-06-12).
+ */
+export function checkLlmSpineLeg(probe: () => StatelessTransportProbe = probeStatelessTransport): InfraLeg {
+  const result = probe();
+  return result.ok
+    ? { name: 'llm-spine', status: 'ok', detail: `stateless transport: ${result.label}` }
+    : { name: 'llm-spine', status: 'down', detail: result.error };
 }
 
 /** The runner spawn path: an OPEN improvement on the structural-spawn key = down. */
@@ -190,7 +179,7 @@ async function legSafe(name: InfraLegName, run: () => Promise<InfraLeg>): Promis
 
 async function collectLegs(): Promise<InfraLeg[]> {
   return Promise.all([
-    legSafe('meridian', () => probeMeridianLeg()),
+    legSafe('llm-spine', async () => checkLlmSpineLeg()),
     legSafe('spawn-path', checkSpawnPathLeg),
     legSafe('gym-circuit', checkGymCircuitLeg),
   ]);
