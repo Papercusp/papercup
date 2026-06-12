@@ -18,6 +18,7 @@ function existing(p: Partial<EngineerIssue> & { id: string; title: string }): En
     foundDuring: null,
     linkedFeatureId: null,
     createdBy: null,
+    signalOrigin: 'organic',
     assigneeRank: null,
     rankWriter: null,
     rankUpdatedAt: null,
@@ -304,5 +305,77 @@ describe('captureImprovement — resolved-dup evidence gate (watchdog-audit P-00
       d,
     );
     expect(res.created).toBe(true);
+  });
+});
+
+describe('captureImprovement — signal provenance (frontier P-002 / D-002)', () => {
+  it('writes signal_origin=organic by default', async () => {
+    const d = deps();
+    const res = await captureImprovement({ title: 'a real friction', kind: 'bug' }, d);
+    expect(res.created).toBe(true);
+    expect(d.created[0].signalOrigin).toBe('organic');
+  });
+
+  it('passes a frontier origin through to the column (drill)', async () => {
+    const d = deps();
+    const res = await captureImprovement({ title: 'planted flaky test', kind: 'bug', origin: 'drill' }, d);
+    expect(res.created).toBe(true);
+    expect(d.created[0].signalOrigin).toBe('drill');
+  });
+
+  it('an OPEN organic duplicate never declines a drill capture (the drill must file)', async () => {
+    const organicDup = existing({ id: 'EI-7', title: 'presence list dumps stale rows', state: 'open' });
+    const d = deps({ found: [organicDup] });
+    const res = await captureImprovement(
+      { title: 'presence list dumps stale rows', kind: 'bug', origin: 'drill' },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(res.possibleDuplicates).toHaveLength(0); // cross-origin rows are not even surfaced
+  });
+
+  it('an OPEN drill duplicate never declines an ORGANIC capture (synthetic must not suppress real)', async () => {
+    const drillDup = existing({
+      id: 'EI-7',
+      title: 'presence list dumps stale rows',
+      state: 'open',
+      signalOrigin: 'drill',
+    });
+    const d = deps({ found: [drillDup] });
+    const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug' }, d);
+    expect(res.created).toBe(true);
+  });
+
+  it('same-origin dedup still declines (drill vs drill)', async () => {
+    const drillDup = existing({
+      id: 'EI-7',
+      title: 'presence list dumps stale rows',
+      state: 'open',
+      signalOrigin: 'drill',
+    });
+    const d = deps({ found: [drillDup] });
+    const res = await captureImprovement(
+      { title: 'presence list dumps stale rows', kind: 'bug', origin: 'drill' },
+      d,
+    );
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('likely-duplicate');
+  });
+
+  it('already-decided recall is origin-scoped: a decided REPLAY row is not recalled for an organic capture', async () => {
+    const decidedReplay = existing({
+      id: 'EI-7',
+      title: 'presence list dumps stale rows',
+      state: 'resolved',
+      signalOrigin: 'replay',
+      payload: { decidedReason: 'replay counterfactual outcome — not a live decision' },
+    });
+    const d = deps({ found: [decidedReplay] });
+    const res = await captureImprovement(
+      { title: 'stale rows dumps presence list', kind: 'bug', dedupScope: 'open' },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(res.alreadyDecided).toBeUndefined();
   });
 });

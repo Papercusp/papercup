@@ -24,7 +24,8 @@ import { registerSystemAction, type SystemActionCtx } from '../harness/routines/
 import { runScoutTick, buildScoutTickDeps, type ScoutCycleLike, type ScoutTickDeps } from './scheduler';
 import { readHiveIdleRatio, readFrictionSignalCount } from './cadence-signals';
 import type { ScoutCadenceOptions } from './cadence';
-import type { ScoutBudget } from './budget';
+import { resolveScoutBudget, type ScoutBudget } from './budget';
+import { recordScoutTickToGovernor } from '../learning-governor/registrants';
 
 /** The action name; a routine targets it via `target_role: 'system:scout-cycle'`. */
 export const SCOUT_CYCLE_ACTION = 'scout-cycle';
@@ -79,6 +80,7 @@ const productionDepsBuilder: ScoutTickDepsBuilder = (ctx, runCycle) =>
 export function makeScoutCycleAction(
   runCycle: ScoutCycleRunner,
   buildDeps: ScoutTickDepsBuilder = productionDepsBuilder,
+  recordGovernor: typeof recordScoutTickToGovernor = recordScoutTickToGovernor,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
     const cfg = parseScoutCycleConfig(ctx.payloadTemplate);
@@ -87,6 +89,21 @@ export function makeScoutCycleAction(
     const result = await runScoutTick(deps, {
       ...(cfg.cadence ? { cadence: cfg.cadence } : {}),
       ...(cfg.budget ? { budget: cfg.budget } : {}),
+    });
+
+    // FB-01 (self-learning-frontier P-003): mirror scout's per-cycle cap onto
+    // the shared learning-governor ledger as its sub-budget + accumulate a
+    // fired cycle's reported spend. Flag-gated (papercusp-learning-governor —
+    // the kill-switch) and best-effort by contract — it never throws, so
+    // governor bookkeeping can never fail (or replay) the tick.
+    await recordGovernor({
+      workspaceId: ctx.workspaceId,
+      harnessSlug: ctx.installSlug,
+      perCycleBudgetUsd: resolveScoutBudget(cfg.budget).maxCostUsd,
+      fired:
+        result.fired && result.costUsd != null
+          ? { costUsd: result.costUsd, ...(result.cycleId ? { cycleId: result.cycleId } : {}) }
+          : null,
     });
 
     if (result.fired) {

@@ -20,7 +20,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { recordBehaviorChange } from '../change-ledger/change-ledger';
 import type { LoopProposalRecord } from './loop';
+import { recordChampionAcceptance } from './post-acceptance-outcomes';
 
 /** The judge rubric is edited like a role prompt but isn't an AGENT_ROLES role. */
 export const JUDGE_PROMPT_KEY = 'judge';
@@ -295,13 +297,51 @@ export async function decideProposal(
           SET prompt_md = EXCLUDED.prompt_md, updated_at = EXCLUDED.updated_at`;
     }
     await tx`UPDATE harness_shared.gym_proposals SET status = ${q.decision}, decided_at = ${now} WHERE id = ${q.id}`;
+    // P-030 (consume-edges B-09): acceptance opens the post-acceptance outcome
+    // window — the baseline is captured ATOMICALLY with the accept, so an
+    // accepted champion without a tracking row cannot exist. The gym tick
+    // finalizes the row once the window elapses (finalizePendingChampionOutcomes).
+    if (promoted) {
+      await recordChampionAcceptance(tx, {
+        proposal: {
+          id: row.id,
+          workspaceId: row.workspaceId,
+          harnessSlug: row.harnessSlug,
+          role: row.role,
+          variantId: row.variantId,
+          cycle: row.cycle,
+          devAnchorDelta: row.devAnchorDelta,
+          costDelta: row.costDelta,
+          probeStatus: row.probeStatus,
+        },
+        acceptedAt: now,
+      });
+    }
     return { ok: true, promoted, proposal: { ...row, status: q.decision, decidedAt: now } };
   };
   // Accept's promote + status-update must be atomic. Open our own transaction when handed a
   // top-level client; when the caller already runs us inside one (routeWithWorkspace passes a
   // TransactionSql, which has no `.begin`), run directly — it's already atomic in the outer tx.
   const begin = (sql as unknown as { begin?: unknown }).begin;
-  return typeof begin === 'function' ? ((await sql.begin(run)) as DecideResult) : run(sql);
+  const result = typeof begin === 'function' ? ((await sql.begin(run)) as DecideResult) : await run(sql);
+  // The gym committer's behavior-change-ledger hook (self-learning-frontier
+  // P-004 / D-003): an accepted proposal IS a live prompt mutation. Best-effort
+  // AFTER the decide — a ledger failure must never roll back the promotion.
+  if (result.ok && result.promoted && result.proposal) {
+    await recordBehaviorChange({
+      workspaceId: q.workspaceId,
+      source: 'gym:accept',
+      action: 'set',
+      targetKind: 'prompt-override',
+      target: `${q.harnessSlug}/${result.proposal.role}`,
+      harnessSlug: q.harnessSlug,
+      role: result.proposal.role,
+      diffRef: q.id,
+      actor: 'gym:accept',
+      summary: `gym proposal accepted → ${result.proposal.role}@${q.harnessSlug}`,
+    });
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------

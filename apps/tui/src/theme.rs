@@ -138,9 +138,139 @@ pub const HONEYCOMB: ThemeSpec = ThemeSpec {
     tab_bar_bg: Color::Rgb(5, 5, 5),
 };
 
+// ─── Built-in ports (workbench-theme-system P3 / D-001) ─────────────────────
+// The four community palettes use their canonical published values mapped onto
+// the semantic slots (emphasis hue family: warn≈orange/yellow · sky≈cyan/blue ·
+// sage≈green · human≈pink/purple). papercusp-light derives papercusp-dark's
+// hue family onto light surfaces.
+
+/// Papercusp Light — papercusp-dark's teal/amber identity on light surfaces.
+pub const PAPERCUSP_LIGHT: ThemeSpec = ThemeSpec {
+    name: "papercusp-light",
+    ink: Color::Rgb(26, 32, 31),
+    muted: Color::Rgb(110, 125, 120),
+    panel: Color::Rgb(247, 249, 248),
+    panel_active: Color::Rgb(235, 241, 240),
+    border: Color::Rgb(195, 210, 207),
+    border_active: Color::Rgb(13, 148, 136),
+    accent: Color::Rgb(180, 110, 10),
+    accent_hot: Color::Rgb(217, 119, 6),
+    on_accent: Color::Rgb(255, 251, 240),
+    sky: Color::Rgb(2, 132, 199),
+    sage: Color::Rgb(22, 163, 74),
+    warn: Color::Rgb(180, 110, 10),
+    danger: Color::Rgb(220, 38, 38),
+    human: Color::Rgb(219, 39, 119),
+    popup: Color::Rgb(255, 255, 255),
+    input: Color::Rgb(255, 255, 255),
+    status: Color::Rgb(238, 242, 241),
+    tab_bar_bg: Color::Rgb(242, 245, 244),
+};
+
+/// Catppuccin Mocha — base/surface layers, mauve accent, pink selection fill.
+pub const CATPPUCCIN_MOCHA: ThemeSpec = ThemeSpec {
+    name: "catppuccin-mocha",
+    ink: Color::Rgb(205, 214, 244),
+    muted: Color::Rgb(108, 112, 134),
+    panel: Color::Rgb(30, 30, 46),
+    panel_active: Color::Rgb(49, 50, 68),
+    border: Color::Rgb(69, 71, 90),
+    border_active: Color::Rgb(180, 190, 254),
+    accent: Color::Rgb(203, 166, 247),
+    accent_hot: Color::Rgb(245, 194, 231),
+    on_accent: Color::Rgb(17, 17, 27),
+    sky: Color::Rgb(137, 180, 250),
+    sage: Color::Rgb(166, 227, 161),
+    warn: Color::Rgb(249, 226, 175),
+    danger: Color::Rgb(243, 139, 168),
+    human: Color::Rgb(250, 179, 135),
+    popup: Color::Rgb(24, 24, 37),
+    input: Color::Rgb(17, 17, 27),
+    status: Color::Rgb(24, 24, 37),
+    tab_bar_bg: Color::Rgb(17, 17, 27),
+};
+
+/// Gruvbox Dark — warm bg ladder, orange/yellow accents.
+pub const GRUVBOX_DARK: ThemeSpec = ThemeSpec {
+    name: "gruvbox-dark",
+    ink: Color::Rgb(235, 219, 178),
+    muted: Color::Rgb(146, 131, 116),
+    panel: Color::Rgb(40, 40, 40),
+    panel_active: Color::Rgb(60, 56, 54),
+    border: Color::Rgb(80, 73, 69),
+    border_active: Color::Rgb(250, 189, 47),
+    accent: Color::Rgb(254, 128, 25),
+    accent_hot: Color::Rgb(250, 189, 47),
+    on_accent: Color::Rgb(29, 32, 33),
+    sky: Color::Rgb(131, 165, 152),
+    sage: Color::Rgb(184, 187, 38),
+    warn: Color::Rgb(250, 189, 47),
+    danger: Color::Rgb(251, 73, 52),
+    human: Color::Rgb(211, 134, 155),
+    popup: Color::Rgb(50, 48, 47),
+    input: Color::Rgb(29, 32, 33),
+    status: Color::Rgb(29, 32, 33),
+    tab_bar_bg: Color::Rgb(29, 32, 33),
+};
+
+/// Nord — polar-night surfaces, frost accents, aurora semantics.
+pub const NORD: ThemeSpec = ThemeSpec {
+    name: "nord",
+    ink: Color::Rgb(236, 239, 244),
+    muted: Color::Rgb(76, 86, 106),
+    panel: Color::Rgb(46, 52, 64),
+    panel_active: Color::Rgb(59, 66, 82),
+    border: Color::Rgb(67, 76, 94),
+    border_active: Color::Rgb(136, 192, 208),
+    accent: Color::Rgb(129, 161, 193),
+    accent_hot: Color::Rgb(136, 192, 208),
+    on_accent: Color::Rgb(46, 52, 64),
+    sky: Color::Rgb(129, 161, 193),
+    sage: Color::Rgb(163, 190, 140),
+    warn: Color::Rgb(235, 203, 139),
+    danger: Color::Rgb(191, 97, 106),
+    human: Color::Rgb(180, 142, 173),
+    popup: Color::Rgb(59, 66, 82),
+    input: Color::Rgb(36, 41, 51),
+    status: Color::Rgb(36, 41, 51),
+    tab_bar_bg: Color::Rgb(36, 41, 51),
+};
+
+/// Dracula — the canonical bg/current-line layers, purple/pink identity.
+pub const DRACULA: ThemeSpec = ThemeSpec {
+    name: "dracula",
+    ink: Color::Rgb(248, 248, 242),
+    muted: Color::Rgb(98, 114, 164),
+    panel: Color::Rgb(40, 42, 54),
+    panel_active: Color::Rgb(68, 71, 90),
+    border: Color::Rgb(68, 71, 90),
+    border_active: Color::Rgb(189, 147, 249),
+    accent: Color::Rgb(189, 147, 249),
+    accent_hot: Color::Rgb(255, 121, 198),
+    on_accent: Color::Rgb(40, 42, 54),
+    sky: Color::Rgb(139, 233, 253),
+    sage: Color::Rgb(80, 250, 123),
+    warn: Color::Rgb(255, 184, 108),
+    danger: Color::Rgb(255, 85, 85),
+    human: Color::Rgb(255, 121, 198),
+    popup: Color::Rgb(33, 34, 44),
+    input: Color::Rgb(30, 31, 41),
+    status: Color::Rgb(30, 31, 41),
+    tab_bar_bg: Color::Rgb(30, 31, 41),
+};
+
 /// Registry of built-in themes. P1 — the `:theme` switcher — adds a
 /// live-selectable, ViewState-persisted active theme.
-pub const THEMES: &[&ThemeSpec] = &[&BLUE_FROST, &HONEYCOMB, &PAPERCUSP_DARK];
+pub const THEMES: &[&ThemeSpec] = &[
+    &BLUE_FROST,
+    &HONEYCOMB,
+    &PAPERCUSP_DARK,
+    &PAPERCUSP_LIGHT,
+    &CATPPUCCIN_MOCHA,
+    &GRUVBOX_DARK,
+    &NORD,
+    &DRACULA,
+];
 
 /// Default active theme id. P1 (the `:theme` switcher) overrides this with the
 /// ViewState-persisted selection; P0 always resolves to it.
@@ -512,6 +642,23 @@ mod tests {
     #[test]
     fn active_name_is_registered() {
         assert!(theme_by_name(Theme::active_name()).is_some());
+    }
+
+    /// P3 ports: every registered theme keeps the legibility invariants the
+    /// draw sites rely on — unique names, text visible on its panel, the
+    /// needs-human hue distinct from the de-emphasis hue (the `!` flag must
+    /// never dim away), and selected text distinct from its fill.
+    #[test]
+    fn every_theme_keeps_semantic_slots_distinct() {
+        let mut names = std::collections::BTreeSet::new();
+        for t in THEMES {
+            assert!(!t.name.is_empty());
+            assert!(names.insert(t.name), "duplicate theme name {}", t.name);
+            assert_ne!(t.ink, t.panel, "{}: text invisible on panel", t.name);
+            assert_ne!(t.human, t.muted, "{}: needs-human dims away", t.name);
+            assert_ne!(t.on_accent, t.accent_hot, "{}: selected text invisible", t.name);
+            assert_ne!(t.danger, t.sage, "{}: danger/success collide", t.name);
+        }
     }
 
     /// Per-theme render snapshot: the needs-human marker must stay VISIBLE —

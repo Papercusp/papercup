@@ -519,6 +519,13 @@ import './gym/signals';
 // (+ optional critique) over the C-2 ledger seam; owner grades are sovereign.
 import './scout/grade-idea';
 
+// self-learning-frontier-2026-06-12 P-004 (FB-02, D-003) — the behavior-change
+// ledger read surface: recent prompt/rule mutations (change_ledger:list) + the
+// mutation-calendar overlap advisory (change_ledger:calendar). Read-only; the
+// write side is the hooks in lib/change-ledger/.
+import './change_ledger/list';
+import './change_ledger/calendar';
+
 // event-reaction-system-2026-06-04 D-010 — the inspectable reactive-graph tool
 // (what fires what + recent fired reactions with their cause-chain).
 import './events/graph';

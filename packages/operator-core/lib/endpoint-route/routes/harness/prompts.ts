@@ -38,6 +38,9 @@ import {
 // direct PG override write.
 import { commitAndReproject } from '../../../blueprint/commit-reproject';
 import { realCommitReprojectDeps } from '../../../blueprint/commit-reproject-real';
+// Behavior-change-ledger hooks (self-learning-frontier P-004 / D-003): every
+// successful write here is a live prompt mutation. Best-effort — never blocks.
+import { recordBehaviorChange } from '../../../change-ledger/change-ledger';
 import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
@@ -121,6 +124,20 @@ const putPrompt = defineTool({
             realCommitReprojectDeps(tx),
           ),
         );
+        if (res.ok && res.committed) {
+          await recordBehaviorChange({
+            workspaceId: activeWorkspaceId(),
+            source: 'prompts-api',
+            action: 'set',
+            targetKind: 'prompt-file',
+            target: `${project.slug}/.papercusp/prompts/${role}.md`,
+            harnessSlug: project.slug,
+            role,
+            diffRef: res.commit ?? null,
+            actor: 'prompts-api',
+            summary: `prompt commit→reproject set → ${role}@${project.slug}`,
+          });
+        }
         return Response.json({ ok: res.ok, role, mode: 'commit-reproject', committed: res.committed, commit: res.commit, contentHash: res.contentHash, reason: res.reason });
       } catch (e) {
         return Response.json({ ok: false, role, mode: 'commit-reproject', error: e instanceof Error ? e.message : String(e) }, { status: 500 });
@@ -130,6 +147,17 @@ const putPrompt = defineTool({
     // Legacy / non-blueprint harness: PG-only override (the escape-hatch); the harness
     // folder is never modified, so the repo git tree stays clean.
     await setPromptOverride(activeWorkspaceId(), project.slug, role, body.content);
+    await recordBehaviorChange({
+      workspaceId: activeWorkspaceId(),
+      source: 'prompts-api',
+      action: 'set',
+      targetKind: 'prompt-override',
+      target: `${project.slug}/${role}`,
+      harnessSlug: project.slug,
+      role,
+      actor: 'prompts-api',
+      summary: `prompt override set → ${role}@${project.slug}`,
+    });
     return Response.json({ ok: true, role, mode: 'pg-override' });
   },
 });
@@ -146,6 +174,19 @@ const deletePrompt = defineTool({
     // Clearing the workspace override IS "reset to default": the orchestrator's
     // PG→file fallback then yields the committed default (or the base prompt).
     const existed = await deletePromptOverride(activeWorkspaceId(), project.slug, role);
+    if (existed) {
+      await recordBehaviorChange({
+        workspaceId: activeWorkspaceId(),
+        source: 'prompts-api',
+        action: 'clear',
+        targetKind: 'prompt-override',
+        target: `${project.slug}/${role}`,
+        harnessSlug: project.slug,
+        role,
+        actor: 'prompts-api',
+        summary: `prompt override cleared (reset to default) → ${role}@${project.slug}`,
+      });
+    }
     return Response.json({ ok: true, reset: existed });
   },
 });
@@ -158,6 +199,19 @@ const resetAllPrompts = defineTool({
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const cleared = await clearAllPromptOverrides(activeWorkspaceId(), project.slug);
+    if (cleared > 0) {
+      await recordBehaviorChange({
+        workspaceId: activeWorkspaceId(),
+        source: 'prompts-api',
+        action: 'clear-all',
+        targetKind: 'prompt-override',
+        target: `${project.slug}/*`,
+        harnessSlug: project.slug,
+        actor: 'prompts-api',
+        summary: `all prompt overrides cleared (${cleared}) @${project.slug}`,
+        payload: { cleared },
+      });
+    }
     return Response.json({ ok: true, cleared });
   },
 });

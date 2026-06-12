@@ -18,6 +18,7 @@ function issue(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
     foundDuring: null,
     linkedFeatureId: null,
     createdBy: null,
+    signalOrigin: 'organic',
     assigneeRank: null,
     rankWriter: null,
     rankUpdatedAt: null,

@@ -29,9 +29,9 @@ export default defineTool({
   description:
     "The Queen's steer-don't-dispatch lever: set a work-item's BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Set an explicit { priority } integer, bump to { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder, which ranks one bee's already-claimed work-list.",
   guidance: {
-    when: "You are the Queen steering the SHARED backlog after reading the rolled-up change feed (curation:change-feed) + the frontier (work_items:list): promote/demote what the fleet should claim next. Use position:'top'/'bottom' for the common 'make this most/least urgent', or an explicit priority integer for fine control.",
+    when: "You are the Queen steering the SHARED backlog (read curation:change-feed + work_items:list): promote/demote what the fleet claims next — position:'top'/'bottom' for most/least urgent, or an explicit integer. In a multi-Swarm Hive only the steering-lease holder commits; a non-holder's set returns proposed:true (recorded for the holding Queen to dispose; local placement is unaffected).",
     notWhen:
-      "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). This sets the GLOBAL backlog order, not a per-bee queue, and applies to feature-family items only.",
+      "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
     chaining:
       "curation:change-feed (what shipped / where momentum is) + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first.",
   },
@@ -73,6 +73,10 @@ export default defineTool({
         priority: set.priority,
         applicable: set.applicable,
         action: args.priority === null ? 'clear' : 'set',
+        // P-011 steering lease (D-004): proposed=true ⇒ this Swarm is not the
+        // lease holder — the write was NOT committed; a proposal was recorded
+        // for the holding Queen (steeringHolder) to dispose.
+        ...(set.proposed ? { proposed: true, steeringHolder: set.steeringHolder } : {}),
       });
     }
 
@@ -86,6 +90,7 @@ export default defineTool({
       priority: set.priority,
       applicable: set.applicable,
       action: args.position,
+      ...(set.proposed ? { proposed: true, steeringHolder: set.steeringHolder } : {}),
     });
   },
 });

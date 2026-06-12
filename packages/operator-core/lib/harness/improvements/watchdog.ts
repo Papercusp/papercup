@@ -34,6 +34,7 @@ import { lastServiceHealth, lastServiceHealthAt, type ProbeResult } from '../../
 import { checkMigrationDrift } from '../../migration-drift';
 import { findIssuesByWatchdogKeys } from '../../issues-engineer';
 import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
+import { effectiveOrigin, type SignalOrigin } from './provenance';
 import {
   processKnownOpenAging,
   agingOptionsFromTick,
@@ -91,6 +92,14 @@ export interface WatchdogSignal {
    * exists NOW, so a re-file after resolve is always legitimate.
    */
   latestAt?: string;
+  /**
+   * Learning-signal provenance (frontier P-002/D-002): organic (default) | drill
+   * | replay | shadow. A drill harness's collectors tag their planted frictions
+   * so the capture rides the drill lane end-to-end while staying out of organic
+   * learners. Key-dup matching is origin-scoped: a drill signal never reads an
+   * organic open item as its duplicate, and vice versa.
+   */
+  origin?: SignalOrigin;
 }
 
 /** `${source}:${key}` — the stable cross-tick identity of a signal (P-004 / D-001). */
@@ -242,6 +251,9 @@ export interface WatchdogKeyDup {
   state: string;
   /** ISO `updated_at` — for a resolved item, the resolution recency bound (D-002). */
   updatedAt: string;
+  /** The item's signal_origin (frontier P-002) — dup matching is origin-scoped.
+   *  Absent = organic (legacy rows / pre-column readers). */
+  signalOrigin?: string;
 }
 
 /** The pre-filter's split of collected signals (P-004 / D-001 + P-005 / D-002). */
@@ -278,7 +290,13 @@ export function partitionSignalsByKnownKeys(signals: WatchdogSignal[], dups: Wat
   }
   const out: SignalPartition = { fresh: [], knownOpen: [], staleResolved: [] };
   for (const s of signals) {
-    const matches = byKey.get(watchdogKeyOf(s)) ?? [];
+    // Origin-scoped matching (frontier P-002/D-002): a dup only counts when its
+    // signal_origin matches the signal's — an organic open item must not absorb
+    // a drill signal (the drill would silently never file), nor a drill row an
+    // organic signal (a synthetic row suppressing a real one).
+    const matches = (byKey.get(watchdogKeyOf(s)) ?? []).filter(
+      (m) => effectiveOrigin(m.signalOrigin) === effectiveOrigin(s.origin),
+    );
     if (matches.some((m) => m.state === 'open')) {
       out.knownOpen.push(s);
       continue;
@@ -307,6 +325,7 @@ export async function readWatchdogKeyDups(keys: string[]): Promise<WatchdogKeyDu
     watchdogKey: String((i.payload as Record<string, unknown> | null)?.watchdogKey ?? ''),
     state: i.state,
     updatedAt: i.updatedAt,
+    signalOrigin: i.signalOrigin,
   }));
 }
 
@@ -1675,6 +1694,8 @@ async function runWatchdogTickBody(
         watchdogKey: watchdogKeyOf(s),
         // P-005: the title net's resolved dups also gate on evidence recency.
         evidenceAt: s.latestAt,
+        // Frontier P-002: provenance rides from the signal into the row (default organic).
+        origin: s.origin,
       });
     } catch (e) {
       console.warn(`[improvement-watchdog] capture failed for ${s.source}:${s.key}: ${e instanceof Error ? e.message : e}`);

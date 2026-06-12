@@ -40,6 +40,7 @@ import {
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { activeWorkspaceId } from './workspace-registry';
 import { checkAndEscalateSteeringChurn } from './steering-churn';
+import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
@@ -845,6 +846,16 @@ export interface WorkItemPriorityResult {
   priority: number | null;
   /** Whether backlog priority APPLIES — feature-family (the dispatched backlog) = true; issue-family = false. */
   applicable: boolean;
+  /**
+   * P-011 steering lease (D-004): true when THIS Swarm does not hold its Hive's
+   * single-steerer lease — the write was NOT committed (priority echoes the
+   * stored value); a PROPOSAL was recorded (work-item comment + advisory coord
+   * escalation) for the holding Queen to dispose. Local placement (assignee
+   * ranks, claims) is never lease-gated.
+   */
+  proposed?: boolean;
+  /** The lease holder's label (set with `proposed`). */
+  steeringHolder?: string;
 }
 
 /** Set (or clear, with `priority: null`) a feature-family work-item's backlog priority (`feature_order`). */
@@ -858,6 +869,37 @@ export async function setWorkItemPriority(
   if (wi.family !== 'feature') return { id, harness: wi.harness, priority: null, applicable: false };
   const ord = priority === null ? null : Math.trunc(priority);
   const { sql } = getOrgPg();
+  // P-011 single-steerer lease (D-004, hive-network-surface): cross-Swarm
+  // priority writes are single-writer — the lease rides the per-Hive lock
+  // authority. A non-holder's steer becomes a PROPOSAL (comment + advisory
+  // escalation; the holding Queen disposes) and the row is NOT written.
+  // checkSteeringLease never throws and FAILS OPEN (non-Hive harness, N=1,
+  // partition, missing fixture tables → holder:true), so behavior is unchanged
+  // everywhere except a live multi-Swarm Hive where another Swarm holds it.
+  if (wi.harness) {
+    const lease = await checkSteeringLease(activeWorkspaceId(), wi.harness);
+    if (!lease.holder) {
+      await recordSteeringProposal({
+        workspaceId: activeWorkspaceId(),
+        harnessSlug: wi.harness,
+        featureId: id,
+        requestedOrder: ord,
+        hiveSlug: lease.hiveSlug ?? 'unknown',
+        holderLabel: lease.holderLabel ?? 'an unidentified peer Swarm',
+      }).catch(() => undefined);
+      const cur = await sql<{ feature_order: number | null }[]>`
+        SELECT feature_order FROM harness_shared.harness_features_consolidated
+         WHERE harness_slug = ${wi.harness} AND feature_id = ${id} LIMIT 1`;
+      return {
+        id,
+        harness: wi.harness,
+        priority: cur[0]?.feature_order ?? null,
+        applicable: true,
+        proposed: true,
+        steeringHolder: lease.holderLabel ?? 'an unidentified peer Swarm',
+      };
+    }
+  }
   const rows = await sql<{ feature_order: number | null }[]>`
     UPDATE harness_shared.harness_features_consolidated
        SET feature_order = ${ord}, updated_ts = ${Date.now()}

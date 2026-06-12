@@ -65,6 +65,7 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     foundDuring: null,
     linkedFeatureId: null,
     createdBy: null,
+    signalOrigin: 'organic',
     assigneeRank: null,
     rankWriter: null,
     rankUpdatedAt: null,

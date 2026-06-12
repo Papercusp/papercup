@@ -14,6 +14,10 @@ export interface PromotionDeps {
   listExistingOverrideRoles(harnessSlug: string): Promise<string[]>;
   setOverride(harnessSlug: string, role: string, promptMd: string): Promise<void>;
   clearOverride(harnessSlug: string, role: string): Promise<void>;
+  /** Behavior-change-ledger hook (self-learning-frontier P-004 / D-003) — bind
+   *  `gymPromotionRecorder(...)` from lib/change-ledger so autonomous
+   *  promotions ledger every set/clear. Optional: promotion never fails on it. */
+  recordChange?(entry: { role: string; action: 'set' | 'clear' }): Promise<void>;
 }
 
 export async function promoteChampion(
@@ -27,11 +31,13 @@ export async function promoteChampion(
 
   for (const role of target) {
     await deps.setOverride(harnessSlug, role, overlay.promptOverrides[role]);
+    await deps.recordChange?.({ role, action: 'set' });
   }
   const rolesCleared: string[] = [];
   for (const role of existing.slice().sort()) {
     if (!targetSet.has(role)) {
       await deps.clearOverride(harnessSlug, role);
+      await deps.recordChange?.({ role, action: 'clear' });
       rolesCleared.push(role);
     }
   }

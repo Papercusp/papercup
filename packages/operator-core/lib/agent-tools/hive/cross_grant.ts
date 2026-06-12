@@ -28,13 +28,13 @@ export default defineTool({
   name: 'hive:cross_grant',
   profile: 'engineer',
   description:
-    "Owner cross-Hive capability grants: grant/revoke which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive, or list current grants. DIRECTED — direction:'in' admits a peer's asks/work-requests INTO this Hive; direction:'out' lets THIS Hive send asks/work-requests TO a peer (required before the Queen can ask another Hive). Default-deny both directions; every grant is quota-capped (maxPerHour / maxBodyBytes, defaults 60/hr + 64KiB) and optionally expiring (expiresInHours). Grants federate to all of this Hive's Swarms.",
+    "Owner-managed cross-Hive grants: grant/revoke/list which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive. DIRECTED: 'in' admits a peer's traffic INTO this Hive; 'out' lets THIS Hive send to a peer (required before the Queen can ask another Hive). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Hive's Swarms.",
   guidance: {
-    when: "Setting this Hive's cross-Hive policy: direction:'in' admits a peer Hive's asks/work-requests; direction:'out' authorizes ours to it (owner-gated before the Queen's first hive:ask to a new peer). Also list/revoke. maxPerHour/maxBodyBytes/expiresInHours tune a grant's quota/expiry (capped defaults otherwise).",
+    when: "Setting this Hive's cross-Hive policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Queen's first hive:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
     notWhen:
-      'Within-Hive coordination (coord:* / topics) or placing work on a Swarm (work_items:co_locate). This is ONLY the sovereignty boundary between separate Hives.',
+      'Within-Hive coordination (coord:*/topics) or Swarm work placement (work_items:co_locate) — this is only the sovereignty boundary between Hives.',
     chaining:
-      'discovery:hives (peer pubkey) → hive:cross_grant { action:"grant", direction, peerHivePubkey, kinds } — direction:"out" before hive:ask / hive:request_work.',
+      'discovery:hives (peer pubkey) → hive:cross_grant {action:"grant", direction, peerHivePubkey, kinds}; "out" before hive:ask / hive:request_work.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

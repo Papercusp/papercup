@@ -1526,6 +1526,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.demand — the Knowledge view's missing-knowledge demand panel ──
+  //
+  // The negative-space miner's demand map (self-learning-frontier-2026-06-12
+  // P-010 / FB-04): zero-hit docs/plans/memory searches aggregated into
+  // harness_shared.negative_space_demand (migration 245) by the
+  // system:negative-space-mine cadence. Hottest entries + rollups; PG failure
+  // OR a not-yet-applied migration degrades to the empty snapshot (the panel
+  // renders its nothing-mined state, never a 500). Returns a 1-element array
+  // (client reads data[0]). NOT table-backed — the miner fires
+  // notifySyncInvalidate('learning.demand') after each tick.
+  'learning.demand': {
+    resolve: async () => {
+      const { EMPTY_DEMAND_SNAPSHOT, readDemandSnapshot } = await import('../negative-space/demand-read');
+      try {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const { getOrgPg } = await import('@papercusp/db-org');
+        return [await readDemandSnapshot(getOrgPg().sql, activeWorkspaceId())];
+      } catch (err) {
+        console.warn('[learning.demand] demand read failed:', err instanceof Error ? err.message : err);
+        return [EMPTY_DEMAND_SNAPSHOT];
+      }
+    },
+  },
+
   // ── learning.scout — the Learning tab's Scout view (learning-system-audit P-042) ──
   //
   // Routed-ideas-by-rail over scout_routed_ideas (migration 194) + the newest

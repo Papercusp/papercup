@@ -68,6 +68,12 @@ export interface BuildLoopDepsConfig {
    */
   candidateDirections?: string[];
   /**
+   * P-030 (consume-edges B-09): recent champions' measured post-acceptance outcome
+   * lines (gatherChampionOutcomeEntries) — primes the proposer with what its past
+   * accepted changes did to LIVE runs. Empty/absent ⇒ unchanged proposer prompt.
+   */
+  championOutcomes?: string[];
+  /**
    * P-025: repeats per (variant × task) — the per-task composite is the MEAN over repeats,
    * to average out the judge's per-run noise. Default 1; P-014 measured sd≤0.5 → minRepeats≈4,
    * so the loop driver should set this ≥4 for accept decisions to be trustworthy.
@@ -242,6 +248,8 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
           proposerModel: cfg.proposerModel,
           // P-032: routed-idea candidate directions ride every propose call (additive).
           ...(cfg.candidateDirections?.length ? { candidateDirections: cfg.candidateDirections } : {}),
+          // P-030: measured champion outcomes ride every propose call (additive).
+          ...(cfg.championOutcomes?.length ? { championOutcomes: cfg.championOutcomes } : {}),
         },
         { llmCall: cfg.proposerCall },
       );

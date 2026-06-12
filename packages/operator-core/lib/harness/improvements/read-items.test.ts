@@ -17,6 +17,7 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     foundDuring: null,
     linkedFeatureId: null,
     createdBy: 'su-test',
+    signalOrigin: 'organic',
     assigneeRank: null,
     rankWriter: null,
     rankUpdatedAt: null,
@@ -143,5 +144,61 @@ describe('readImprovementItems', () => {
     const barItems = await readImprovementItems({ harnessSlug: 'bar' }, { listIssues: fakeList });
     expect(barItems.length).toBe(1);
     expect(barItems[0]?.id).toBe('EI-3');
+  });
+});
+
+describe('readImprovementItems — signal provenance gate (frontier P-002 / D-002)', () => {
+  const mixedStore = [
+    issue({ id: 'EI-1', title: 'a real bug', kind: 'bug' }), // organic (helper default)
+    issue({ id: 'EI-2', title: 'planted flaky test', kind: 'bug', signalOrigin: 'drill' }),
+    issue({ id: 'EI-3', title: 'replay counterfactual artifact', kind: 'change', signalOrigin: 'replay' }),
+    issue({ id: 'EI-4', title: 'shadow ablation artifact', kind: 'change', signalOrigin: 'shadow' }),
+  ];
+
+  it('DEFAULT read passes the organic-only allowlist down to listIssues (SQL-side filter)', async () => {
+    let seen: any;
+    await readImprovementItems({}, { listIssues: async (f) => ((seen = f), []) });
+    expect(seen.signalOrigins).toEqual(['organic']);
+  });
+
+  it('DEFAULT read excludes every synthetic row even when the lister ignores signalOrigins (belt + braces)', async () => {
+    // Fake lister returns the FULL mixed store regardless of the filter — the
+    // TS-side gate must still keep drill/replay/shadow away from the consumer.
+    const items = await readImprovementItems({}, { listIssues: async () => mixedStore });
+    expect(items.map((i) => i.id)).toEqual(['EI-1']);
+    expect(items[0]?.origin).toBe('organic');
+  });
+
+  it('a row with NO stored origin reads as organic (pre-migration legacy semantics)', async () => {
+    const legacy = issue({ id: 'EI-9', title: 'legacy row', kind: 'bug' });
+    delete (legacy as unknown as Record<string, unknown>).signalOrigin;
+    const items = await readImprovementItems({}, { listIssues: async () => [legacy] });
+    expect(items.map((i) => i.id)).toEqual(['EI-9']);
+  });
+
+  it('a junk origin value fails CLOSED — excluded from organic reads', async () => {
+    const junk = issue({ id: 'EI-9', title: 'junk-origin row', kind: 'bug' });
+    (junk as unknown as Record<string, unknown>).signalOrigin = 'mystery';
+    const items = await readImprovementItems({}, { listIssues: async () => [junk] });
+    expect(items).toEqual([]);
+  });
+
+  it('explicit opt-in sees exactly the requested origins (the vaccination measurement read)', async () => {
+    const items = await readImprovementItems({ origins: ['drill'] }, { listIssues: async () => mixedStore });
+    expect(items.map((i) => i.id)).toEqual(['EI-2']);
+    expect(items[0]?.origin).toBe('drill');
+  });
+
+  it('multi-origin opt-in composes (replay + shadow audit read)', async () => {
+    const items = await readImprovementItems(
+      { origins: ['replay', 'shadow'] },
+      { listIssues: async () => mixedStore },
+    );
+    expect(items.map((i) => i.id)).toEqual(['EI-3', 'EI-4']);
+  });
+
+  it('issueToCandidate carries the origin onto the candidate', () => {
+    const c = issueToCandidate(issue({ id: 'EI-2', title: 'planted', kind: 'bug', signalOrigin: 'drill' }));
+    expect(c.origin).toBe('drill');
   });
 });

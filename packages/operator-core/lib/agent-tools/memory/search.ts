@@ -120,6 +120,11 @@ export default defineTool({
 
     const results = hits.slice(0, limit).map(toWireRow);
 
+    // Result count into tool_invocations.metadata_json (mirrors plans:search):
+    // the negative-space miner (self-learning-frontier P-010) detects zero-hit
+    // searches by `metadata_json->>'count'`; the query rides in args_json.
+    (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({ count: results.length });
+
     // Recall telemetry (migration 240) — zero-hit-rate + score distribution
     // for the Learning tab memory-health card. Fire-and-forget.
     void (async () => {

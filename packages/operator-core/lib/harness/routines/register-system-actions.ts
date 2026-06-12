@@ -75,6 +75,17 @@
  *     blocking impact (blocks edges, references, re-captures, watchdog
  *     persistence) via the inbox + attention rails. Read-only; seeded ACTIVE
  *     (seed-human-digest-routine.ts).
+ *   - `system:change-ledger-scan` — self-learning-frontier-2026-06-12 P-004
+ *     (FB-02). The repo-edit leg of the behavior-change ledger: git-log the
+ *     prompt-source roots, one ledger row per (commit, file), idempotent via
+ *     the dedupe index. No LLM; flag-gated by CHANGE_LEDGER (ON); seeded
+ *     ACTIVE (seed-change-ledger-scan-routine.ts) — pure bookkeeping.
+ *   - `system:negative-space-mine` — self-learning-frontier-2026-06-12 P-010
+ *     (FB-04). Every-6h demand-map recompute over zero-hit docs/plans/memory
+ *     searches (tool_invocations) + capped kind=change candidate filing via
+ *     the capture core. SQL-only; flag-gated OFF
+ *     (papercusp-negative-space-miner — the frontier D-001 arming gate) AND
+ *     seeded INACTIVE (lib/negative-space/seed-negative-space-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -93,3 +104,5 @@ import './coord-invariant-actions';
 import './cross-hive-drain-action';
 import './benchmark-actions';
 import './human-queue-digest-action';
+import './change-ledger-scan-action';
+import './negative-space-action';

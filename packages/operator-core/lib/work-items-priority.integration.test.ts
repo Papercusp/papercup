@@ -16,7 +16,7 @@
  *
  * Mirrors work-items-swarm-affinity.integration.test.ts's schema bootstrap.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -84,7 +84,8 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
     ALTER TABLE harness_shared.engineer_issues
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;`).simple();
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
+      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
 });
 
 afterAll(async () => {
@@ -94,6 +95,63 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.harness_features_consolidated`;
   await db.sql`DELETE FROM harness_shared.engineer_issues`;
+});
+
+describe('P-011 single-steerer lease gates the priority write (D-004)', () => {
+  const lease = () => import('./steering-lease');
+  afterEach(async () => (await lease()).__setSteeringLeaseTestDeps(null));
+
+  it('a NON-HOLDER steer is withheld: no write, proposed result, sinks fired', async () => {
+    await seedFeature('F-1', { createdTs: 100, order: 7 });
+    const comments: { featureId: string; body: string }[] = [];
+    const escalations: { summary: string }[] = [];
+    (await lease()).__setSteeringLeaseTestDeps({
+      resolveHive: async () => 'the-hive',
+      hiveAuthority: async () => ({
+        isSelf: false,
+        liveCount: 2,
+        peer: { devicePubkey: 'pk-remote', githubUserId: 1, machineLabel: 'box-b' },
+      }),
+      comment: async (c) => void comments.push(c),
+      escalate: async (e) => void escalations.push(e),
+    });
+    const res = await wi.setWorkItemPriority('F-1', 1, { harness: H });
+    expect(res).toMatchObject({
+      id: 'F-1',
+      priority: 7, // the STORED value — the requested 1 was not committed
+      applicable: true,
+      proposed: true,
+      steeringHolder: 'box-b',
+    });
+    expect((await wi.getWorkItemPriority('F-1', { harness: H }))?.priority).toBe(7);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].body).toContain('feature_order=1');
+    expect(escalations).toHaveLength(1);
+    // bump routes through the same chokepoint — also withheld.
+    const bumped = await wi.bumpWorkItemPriority('F-1', 'top', { harness: H });
+    expect(bumped?.proposed).toBe(true);
+    expect((await wi.getWorkItemPriority('F-1', { harness: H }))?.priority).toBe(7);
+  });
+
+  it('the HOLDER commits exactly as before (and fail-open keeps committing)', async () => {
+    await seedFeature('F-1', { createdTs: 100 });
+    (await lease()).__setSteeringLeaseTestDeps({
+      resolveHive: async () => 'the-hive',
+      hiveAuthority: async () => ({ isSelf: true, liveCount: 2 }),
+    });
+    const res = await wi.setWorkItemPriority('F-1', 5, { harness: H });
+    expect(res).toMatchObject({ priority: 5, applicable: true });
+    expect(res?.proposed).toBeUndefined();
+
+    // Fail-open (election unavailable) — the steer still commits (D-004).
+    (await lease()).__setSteeringLeaseTestDeps({
+      resolveHive: async () => 'the-hive',
+      hiveAuthority: async () => {
+        throw new Error('presence outage');
+      },
+    });
+    expect((await wi.setWorkItemPriority('F-1', 9, { harness: H }))?.priority).toBe(9);
+  });
 });
 
 describe('setWorkItemPriority / getWorkItemPriority', () => {

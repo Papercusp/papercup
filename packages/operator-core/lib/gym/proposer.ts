@@ -36,6 +36,13 @@ export interface ProposeInput {
    * the prompt is byte-identical to before (purely additive).
    */
   candidateDirections?: string[];
+  /**
+   * P-030 (consume-edges B-09): recent champions' MEASURED post-acceptance
+   * outcomes (live success-rate delta vs the pre-acceptance baseline),
+   * pre-formatted one entry per line (post-acceptance-outcomes.ts,
+   * formatChampionOutcomeEntries). Empty/absent ⇒ byte-identical prompt.
+   */
+  championOutcomes?: string[];
 }
 
 export interface ParsedProposal {
@@ -64,6 +71,17 @@ export function buildProposerPrompt(input: ProposeInput): { system: string; user
   const user = [
     '## Running changelog',
     input.changelog || '(none yet)',
+    // P-030: live post-acceptance measurement of past accepted changes. Zero
+    // finalized champions ⇒ no section (the prompt stays byte-identical).
+    ...(input.championOutcomes?.length
+      ? [
+          '',
+          '## Recent champion outcomes (live post-acceptance measurement)',
+          'Live-run outcomes measured AFTER each recently accepted prompt change, vs the same window',
+          'before it. Build on changes that improved live outcomes; avoid repeating ones that regressed.',
+          ...input.championOutcomes,
+        ]
+      : []),
     '',
     '## Worst-scoring runs (judge rationales)',
     ...input.worstTraces.map(

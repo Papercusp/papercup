@@ -109,6 +109,8 @@ export interface ScoutTickResult {
   reason: ScoutCadenceVerdict['reason'] | 'circuit' | 'claim-lost' | 'cycle-error';
   cycleId?: string;
   routedCount?: number;
+  /** The fired cycle's reported LLM spend (cycle.costUsd) — FB-01 learning-governor ledgering. */
+  costUsd?: number;
   retryAfterSec?: number;
   error?: string;
 }
@@ -189,7 +191,13 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
       ...(cycle.costUsd != null ? { budgetUsedUsd: cycle.costUsd } : {}),
       detail: { cycleId, reason: verdict.reason, ...(cycle.stop ? { stop: cycle.stop } : {}) },
     });
-    return { fired: true, reason: verdict.reason, cycleId, routedCount: provenance.length };
+    return {
+      fired: true,
+      reason: verdict.reason,
+      cycleId,
+      routedCount: provenance.length,
+      ...(cycle.costUsd != null ? { costUsd: cycle.costUsd } : {}),
+    };
   } catch (e) {
     await deps.recordFire?.('error');
     const error = e instanceof Error ? e.message : String(e);

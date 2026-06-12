@@ -154,6 +154,32 @@ export const FLAGS = {
   // prompts (agent:role, …) are NOT gated by this. OFF = the kill-switch if
   // a client chokes on the 400+-prompt catalog (plan D-003 risk lever).
   SLASH_EXPOSURE: "papercusp-slash-exposure",
+  // self-learning-frontier-2026-06-12 (P-004 / FB-02, D-003): the
+  // behavior-affecting change ledger — best-effort append-only rows on every
+  // prompt/rule mutation (gym commits, prompt-override API, repo prompt-file
+  // scan, future FB-09 ablations) + the system:change-ledger-scan cadence.
+  // Pure record-keeping (no LLM spend, no queue filing) — Phase 0 FOUNDATION,
+  // not one of the D-001 dark-shipped frontier loops: the EKG/ablation need
+  // attribution history to already exist when they arm. OFF = kill-switch
+  // (every writer no-ops).
+  CHANGE_LEDGER: "papercusp-change-ledger",
+  // self-learning-frontier-2026-06-12 (P-010 / FB-04): the negative-space
+  // miner — `system:negative-space-mine` turns zero-hit docs/plans/memory
+  // searches (tool_invocations) into a demand map of missing knowledge and
+  // files capped kind=change candidates through the capture core. OFF until
+  // the plan's P-001 arming gate closes (D-001 owner-ratified dark-ship rule
+  // for frontier loops); the Learning tab demand panel reads the map either way.
+  NEGATIVE_SPACE_MINER: "papercusp-negative-space-miner",
+  // self-learning-frontier-2026-06-12 (P-003 / FB-01, D-004): the learning
+  // governor — ONE shared learning-spend ledger every unattended learning loop
+  // registers with (sub-budget + priority). ON: learningGovernorPreflight
+  // gates governor-enforced (frontier) loops — unregistered / unbudgeted /
+  // exhausted ⇒ REFUSE (the gym null-budget precedent) — and the gym + scout
+  // routine actions mirror their budgets/spend onto the ledger (their own
+  // gates stay authoritative; zero behavior change). OFF: the preflight
+  // refuses EVERYTHING with 'governor-dark' and the mirrors no-op — the
+  // kill-switch.
+  LEARNING_GOVERNOR: "papercusp-learning-governor",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -246,6 +272,26 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // new hives seed the selected learning pack; OFF skips seeding + hides the
   // pack-management surfaces.
   [FLAGS.LEARNING_PACKS]: true,
+  // ON by default — Phase 0 foundation record-keeping (self-learning-frontier
+  // P-004/FB-02): append-only attribution rows, no LLM spend, no queue filing.
+  // Deliberately NOT under the plan's D-001 dark-ship rule (that covers the
+  // frontier LOOPS; the EKG/ablation need this history accumulating before
+  // they arm). OFF is the kill-switch.
+  [FLAGS.CHANGE_LEDGER]: true,
+  // OFF by default — DELIBERATE (the frontier program's D-001 owner-ratified
+  // exception to the alpha default-ON policy): every frontier learning loop
+  // ships built + tested + DARK, arming only when self-learning-frontier
+  // P-001 closes (consume-edges P-013 live proof + owner ratification). The
+  // pending flip is surfaced in the plan's ## Now + every lane report.
+  [FLAGS.NEGATIVE_SPACE_MINER]: false,
+  // ON by default — Phase 0 foundation, same call as CHANGE_LEDGER above
+  // (self-learning-frontier P-003/FB-01): the governor SPENDS nothing and
+  // FILES nothing — it is the refusal gate D-004 wants live, and ON starts
+  // the gym/scout one-ledger spend visibility now. The D-001 dark-ship rule
+  // covers the frontier LOOPS, each individually flag-gated + unbudgeted
+  // (⇒ refused by THIS gate) until the P-001 arming act. OFF is the
+  // kill-switch (mirrors no-op; preflight refuses 'governor-dark').
+  [FLAGS.LEARNING_GOVERNOR]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

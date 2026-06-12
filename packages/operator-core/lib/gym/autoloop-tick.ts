@@ -186,6 +186,12 @@ export interface GymTickDeps {
   readRoutedIdeas(): Promise<RoutedGymIdea[]>;
   /** Run ONE bounded gym cycle (live wiring: runOneAutoloopCycle, in-process). */
   runCycle(req: GymCycleRequest): Promise<GymCycleResult>;
+  /**
+   * P-030 (B-09): finalize due post-acceptance champion-outcome windows
+   * (live wiring: finalizePendingChampionOutcomes — cheap SQL, no LLM).
+   * Optional; returns the finalized count. Failures log, never fail the tick.
+   */
+  finalizeOutcomes?(): Promise<number>;
   now?(): number;
   log?(msg: string): void;
 }
@@ -207,6 +213,8 @@ export interface GymTickOutcome {
   error?: string;
   /** Slugs whose stale 'running' rows were reclaimed (crash recovery) this tick. */
   reclaimed?: string[];
+  /** P-030: champion-outcome windows finalized this tick (absent when the dep is unwired). */
+  outcomesFinalized?: number;
 }
 
 export interface GymTickOptions {
@@ -225,6 +233,19 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
   const floor = opts.budgetFloorUsd ?? GYM_AUTOLOOP_BUDGET_FLOOR_USD;
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? (() => {});
+
+  // P-030 (B-09): settle any post-acceptance outcome windows that have elapsed
+  // BEFORE the cycle work — cheap SQL, independent of selection, and it feeds
+  // the freshest champion verdicts into whatever cycle this tick may fire.
+  let outcomesFinalized: number | undefined;
+  if (deps.finalizeOutcomes) {
+    try {
+      outcomesFinalized = await deps.finalizeOutcomes();
+      if (outcomesFinalized > 0) log(`finalized ${outcomesFinalized} champion outcome window(s)`);
+    } catch (e) {
+      log(`champion-outcome finalize failed (continuing): ${e instanceof Error ? e.message : e}`);
+    }
+  }
 
   const all = await deps.listAutoloops();
 
@@ -259,7 +280,10 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
       log(`failed to reclaim stale 'running' row for ${cfg.harnessSlug}: ${e instanceof Error ? e.message : e}`);
     }
   }
-  const reclaimExtra = reclaimedSlugs.length ? { reclaimed: reclaimedSlugs } : {};
+  const reclaimExtra = {
+    ...(reclaimedSlugs.length ? { reclaimed: reclaimedSlugs } : {}),
+    ...(outcomesFinalized !== undefined ? { outcomesFinalized } : {}),
+  };
 
   const eligible = orderByLeastRecentlyRun(pool.filter((c) => isEligibleAutoloop(c, floor)));
   if (eligible.length === 0) {

@@ -1,37 +1,27 @@
 ---
 rel_path: "b13-closeout/gate-state-2026-06-12T0817Z.json"
-updated_at: 1781252452238
+updated_at: 1781254250386
 _body: "content"
 ---
 
 {
-  "purpose": "B-13 gate tracker + pending checks for the supervision leg (P-013). UPDATED 08:21Z — all gates IN, lane PAUSED.",
-  "gates": {
-    "consume-edges:ledger-landed": "FIRED 08:05Z — verified (ledger-baseline-2026-06-12T0810Z.json)",
-    "consume-edges:B-05:done": "FIRED 08:14Z — verified: papercusp-orphaned-dispatch @ watchdog.ts:1279, routeExhaustedImprovementToHuman @ improvement-actions.ts:332 (every tick, flag-OFF too), 67 tests green, EI-365 resolved",
-    "consume-edges:spawn-fixed": "FIRED 08:16Z — EI-334 resolved; spawn s-1781251745958-0a976b75 tracked in fleet:tree; fix on :3170, :3070 pending deploy. Insight: fleet-spawn-structural-error-identity-and-coding"
-  },
+  "purpose": "B-13 gate tracker + pending checks for the supervision leg (P-013). UPDATED 08:52Z.",
+  "gates": "ALL THREE FIRED (spawn-fixed 08:16Z / ledger-landed 08:05Z / B-05:done 08:14Z) — see prior revisions for verification detail",
   "protectivePause": {
-    "flag": "papercusp-improvement-auto-implement → OFF at 08:19Z by su-e9bc8 (pg-override via POST :3070/api/flags/set; MCP flags:set lacks the PG fallback — flag-backend-not-configured; audited)",
-    "why": "deployed main 8c2e391 (cut 07:10Z) predates wedge-triad fix + ledger + collector; 49-item wedge pool re-enters dispatchability ~09:21Z; old-code dispatches = 280s SIGTERM deaths + re-wedged unstamped claims + zero ledger rows",
-    "reEnableCondition": "deploy train carries consume-edges stack to :3070 AND owner present (P-013 needs-human) — owner notified 08:20Z",
-    "unaffected": "capture, triage, B-05 exhaustion flip (runs flag-OFF by design)"
+    "flag": "papercusp-improvement-auto-implement OFF since 08:19Z (pg-override, audited)",
+    "reEnableCondition": "deploy carries stack to :3070 AND owner present (owner notified 08:20Z, no response yet)"
   },
-  "deployTrainBlockers": [
-    "agent-mcp artifacts.test.ts — expects handler_error, B-02's fix codes invalid_input (@su-973fd pinged)",
-    "cross-hive-outbound-grants.test.ts 19 reds (cross-hive lane, also askedBy tsc +1)",
-    "LearningTab.test.tsx — B-08 HumanQueueDrain title vs test (B-10 flagged @su-155c0)"
-  ],
-  "pendingChecksAtNextWake_0920Z": [
-    "green-checkpoint / main FF / deploy state — stack on :3070?",
-    "EI-LIVE probe rows (10 open, grew 08:06-08:09Z — B-04's integration test may write the LIVE DB, not testcontainers; pinged 3rd time 08:21Z): contingency = close myself ~09:50Z",
-    "repeated-tool-error:fleet:spawn:structural out of knownOpenKeys (first tick after 08:16Z resolve = 08:30Z)",
-    "implement journal reads 'disabled' (flag confirmed OFF via live-host flags:get 08:20Z)",
-    "supervision still owed: first 10 dispatches w/ ledger chains, ≥1 genuine auto-resolve w/ test evidence, deliberate worker-kill (orphan+flip proof), skipped-in-flight plateau (baseline 49), ## Verification checklist, EI reconciliation, dispatch-by-dispatch owner report"
-  ],
+  "monitorRound_0848Z": {
+    "deploy": "release still @ 8c2e391 — train hasn't moved; all 3 blocker reds (tool-guidance-budget, ClaimStatusBadge, api-factory) verified GREEN at HEAD 08:50Z, so next green-checkpoint (~09:10Z if hourly) should pass; deploy ETA ~09:25Z",
+    "probeRows": "improvement_dispatches EMPTY — B-04 deleted the 10 EI-LIVE rows; collector false-positive risk gone",
+    "watchdog_0845Z_tick": "repeated-tool-error:fleet:spawn:structural → staleResolvedKeys (OUT of knownOpen, correct); fire-circuit-open:gym-cycle GONE (B-01 circuit reset held); NEW knownOpen: red-test:tool-guidance-budget (self-capture of the train blocker, now stale); knownOpenPrefiltered 26/2 ticks (was 70/5)",
+    "b03HealthChipLive": "learning-infra-health fired 🔴 'meridian ECONNREFUSED' 08:28Z — B-01 transport leg still pending (consume-edges:meridian-up never fired)",
+    "b07Retriage_3170": "BEFORE 100% process→gate; AFTER place 32/gate 68; code-bug 86/infra-environment 3/process-prompt 10/needs-design 1 — verify independently at reconciliation. :3070 pre-deploy NEW captures still get old-style routes (re-takeable)."
+  },
   "eiReconciliationDelta": {
-    "EI-334": "RESOLVED by B-02 08:16Z (was open at baseline)",
-    "EI-365": "RESOLVED by B-05 08:14Z (was open at baseline)",
-    "EI-366": "in-flight B-10 (mig 240 memory_recall_stats boot-applying on :3170 per 08:1xZ coord)"
-  }
+    "EI-334": "RESOLVED B-02 08:16Z", "EI-364": "RESOLVED B-07 08:25Z", "EI-365": "RESOLVED B-05 08:14Z", "EI-366": "RESOLVED B-10 ~08:50Z",
+    "stillOpen": "EI-233/237/261/265 (B-01 lane, meridian still down), EI-315, EI-340/352 (B-08), EI-353, EI-363 (B-06 lane wip), EI-368 (B-01), EI-370 (unowned)"
+  },
+  "laneStates_0852Z": "done: B-02 B-04 B-05 B-07 B-10; build-complete-awaiting-live-leg: B-03 (awaits B-01+B-02 done) B-12 (awaits meridian-up); wip: B-01 (meridian+boot) B-06 (P-020) B-08 (P-022) B-09 (P-030) B-11 (P-032)",
+  "nextWake": "await 865 consume-edges:B-13:monitor-tick, timeout 09:21Z — check deploy landed; if yes ping owner to start supervised proof (flag back ON with owner present); P-013 claim re-asserted 08:52Z"
 }

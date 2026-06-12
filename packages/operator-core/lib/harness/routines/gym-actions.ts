@@ -39,6 +39,8 @@ import {
   type GymCycleResult,
 } from '../../gym/autoloop-tick';
 import { readImprovementItems } from '../improvements/read-items';
+import { finalizePendingChampionOutcomes } from '../../gym/post-acceptance-outcomes';
+import { recordGymTickToGovernor } from '../../learning-governor/registrants';
 
 /** The autoloop_state role the gym tick's fire-gate/backoff is keyed under. */
 export const GYM_CYCLE_FIRE_ROLE = 'gym-cycle';
@@ -104,10 +106,32 @@ registerSystemAction('gym-cycle', async (ctx: SystemActionCtx) => {
       // (payload.ideaLifecycle.triageDecision='gym') → proposer candidate directions.
       readRoutedIdeas: async () => selectRoutedGymIdeas(await readImprovementItems({ state: 'open' })),
       runCycle: _runCycle ?? defaultRunCycle,
+      // P-030 (B-09): settle elapsed post-acceptance champion-outcome windows each tick.
+      finalizeOutcomes: () =>
+        finalizePendingChampionOutcomes(sql, { workspaceId: ctx.workspaceId, log: (m) => console.log(`[gym-cycle] ${m}`) }),
       log: (m) => console.log(`[gym-cycle] ${m}`),
     },
     { budgetFloorUsd: gymBudgetFloorUsd() },
   );
+
+  // FB-01 (self-learning-frontier P-003): mirror the autoloop budgets onto the
+  // shared learning-governor ledger as sub-budgets + ledger this tick's spend.
+  // Flag-gated (papercusp-learning-governor — the kill-switch) and best-effort
+  // by contract — recordGymTickToGovernor never throws, so governor
+  // bookkeeping can never fail (or durably replay) the gym tick.
+  await recordGymTickToGovernor({
+    workspaceId: ctx.workspaceId,
+    sql,
+    listAutoloops: () => listAutoloopsForWorkspace(sql, { workspaceId: ctx.workspaceId }),
+    ran:
+      outcome.action === 'ran' && outcome.result
+        ? {
+            harnessSlug: outcome.harnessSlug!,
+            spentUsd: outcome.result.spentUsd,
+            runRef: `gym-cycle:${outcome.harnessSlug}`,
+          }
+        : null,
+  });
 
   if (outcome.action === 'idle') {
     console.log(

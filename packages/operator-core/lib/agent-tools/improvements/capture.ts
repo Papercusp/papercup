@@ -48,6 +48,7 @@ export default defineTool({
     paths: z.array(z.string().min(1).max(300)).max(20).optional().describe('repo-relative file paths the improvement touches, when known — feeds the protected-path gate'),
     force: z.boolean().optional().describe('file even if a likely duplicate exists (default false → search-first declines)'),
     checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
+    origin: z.enum(['organic', 'drill', 'replay', 'shadow']).optional().describe('signal provenance (frontier P-002) — default organic. ONLY a frontier loop passes non-organic (vaccination drill, replay counterfactual, shadow ablation); synthetic rows stay out of organic learners'),
   }),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
@@ -63,6 +64,7 @@ export default defineTool({
       paths: args.paths,
       force: args.force,
       checkDuplicatesOnly: args.checkDuplicatesOnly,
+      origin: args.origin,
       createdBy: id.ownerId,
       source,
     });

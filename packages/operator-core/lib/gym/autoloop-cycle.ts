@@ -39,6 +39,7 @@ import { createGymRunnerPorts } from './runner-ports';
 import { buildLoopDeps, type LoopTask } from './loop-deps';
 import { runOptimizationLoop, type LoopResult } from './loop';
 import { makeLoopProposalRecorder, setAutoloop, getAutoloop } from './control-plane';
+import { gatherChampionOutcomeEntries } from './post-acceptance-outcomes';
 import { makeLoopQdSeams } from './qd/archive-recorder';
 import { readPoolAggregates } from './read-api';
 import { GYM_JUDGE_RUBRIC_V1, rubricHash } from './judge-scoring';
@@ -267,6 +268,10 @@ export async function runOneAutoloopCycle(
     // P-010/P-011 (D-008): the QD record + novelty seams over ONE live archive (+ a shared
     // variantId→descriptor cache), so noveltyForVariant's reads see recordArchive's writes.
     const qdSeams = makeLoopQdSeams(controlSql, { workspaceId: WS, harnessSlug: slug });
+    // P-030 (B-09): measured post-acceptance outcomes of past champions prime the
+    // proposer. Defensive — a read failure yields [] and the cycle proceeds.
+    const championOutcomes = await gatherChampionOutcomeEntries(controlSql, { workspaceId: WS, harnessSlug: slug });
+    report.championOutcomes = championOutcomes.length;
     const deps = buildLoopDeps({
       gymSql,
       ports,
@@ -285,6 +290,8 @@ export async function runOneAutoloopCycle(
       repeats: REPEATS, // P-025
       // P-032: triage-routed gym ideas → the proposer's candidate directions (additive).
       candidateDirections: opts.candidateDirections,
+      // P-030: recent champion post-acceptance outcome lines (additive priming).
+      championOutcomes,
       // Human-gated (D-020): the loop records proposals for review; the human promotes via gym:accept.
       recordProposal: makeLoopProposalRecorder(controlSql, { workspaceId: WS, harnessSlug: slug }),
       // P-010 (D-008): feed each evaluated variant into the QD novelty/diversity archive.
