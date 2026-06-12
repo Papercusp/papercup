@@ -391,6 +391,43 @@ export function claudeStoreHasSession(id, { home = homedir(), configDir = null }
   return false;
 }
 
+/**
+ * Can this tracked session actually be RESUMED — does the agent's own store
+ * hold a persisted transcript for it? An adv row is recorded at LAUNCH time
+ * (bootstrap-su, before the agent's first turn), but an agent only persists
+ * its transcript on the first message — so a launch that died at startup, or
+ * a session closed at the prompt, leaves a permanent "ghost" row with nothing
+ * to resume (`claude --resume` fails "No conversation found"; measured ~50%
+ * of recent rows on the standing dev box, 2026-06-12). The resume picker
+ * filters by this so it only offers sessions that can really be resumed.
+ *
+ * Verification is per-agent and deliberately errs toward KEEPING a row when
+ * the store can't be checked by id:
+ *   - claude + known sessionId → the EI-155 isolated config dir (else the
+ *     shared ~/.claude) must hold `projects/<dir>/<sid>.jsonl`.
+ *   - claude, no sessionId (pre-native-id rows) → resume falls back to
+ *     `--continue` (most-recent-in-cwd) — not verifiable by id, keep.
+ *   - codex + known sessionId + adv row id → the per-session CODEX_HOME must
+ *     hold the rollout file; without a row id there is no home to check — keep.
+ *   - omp → the thread store isn't path-indexed here — keep.
+ * Pure-ish (reads FS); `home` injectable for tests; exported for tests.
+ */
+export function sessionHasTranscript(session, { home = homedir() } = {}) {
+  if (session.agent === 'claude') {
+    if (!session.sessionId) return true;
+    const configDir =
+      session.configDir ||
+      (session.coordOwnerId ? sessionClaudeConfigDir(session.coordOwnerId, home) : null);
+    return claudeStoreHasSession(session.sessionId, { home, configDir });
+  }
+  if (session.agent === 'codex') {
+    if (!session.sessionId || session.id == null) return true;
+    const sessionsRoot = join(home, '.papercusp', 'su-codex-homes', `session-${session.id}`, 'sessions');
+    return Boolean(findCodexRollout(sessionsRoot, session.sessionId));
+  }
+  return true;
+}
+
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
 export function planValue(picked) {
   return picked === NO_PLAN || picked == null || picked === '' ? null : picked;
@@ -760,6 +797,40 @@ export function startSupervisorBeat(
   return timer;
 }
 
+/**
+ * Best-effort "my child exited" report: stamps the tracked adv row's
+ * ended_at/exit_code (bootstrap-su/session-ended), so the resume picker and
+ * roster stop showing dead sessions as `· active` and the session-dir GC's
+ * open-row protection actually expires. psu is the live parent in BOTH launch
+ * paths (the same property the supervisor beat rides), so child-exit is the
+ * one reliable place to stamp it. Awaited with a short timeout because psu
+ * process.exit()s right after; any failure — operator down, endpoint not yet
+ * deployed (an older release 404s) — is swallowed: end-stamping is telemetry,
+ * never a reason to hold the user's terminal open. Exported with injectables
+ * for tests. Never rejects.
+ */
+export async function reportSessionEnded(
+  advSessionId,
+  exitCode,
+  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 2_000 } = {},
+) {
+  if (!advSessionId) return;
+  try {
+    const tok = token ?? readToken();
+    await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/session-ended', {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'content-type': 'application/json',
+        ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+      },
+      body: JSON.stringify({ advSessionId: Number(advSessionId), exitCode: exitCode ?? null }),
+    });
+  } catch {
+    /* best-effort — never surface */
+  }
+}
+
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
@@ -771,8 +842,10 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
     process.exit(127);
   });
   child.on('exit', (code, signal) => {
-    if (signal) process.kill(process.pid, signal);
-    else process.exit(code ?? 0);
+    void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code).finally(() => {
+      if (signal) process.kill(process.pid, signal);
+      else process.exit(code ?? 0);
+    });
   });
 }
 
@@ -795,7 +868,11 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
         env,
         ownerId,
         advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
-        onExit: (code) => process.exit(code ?? 0),
+        onExit: (code) => {
+          void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code).finally(() =>
+            process.exit(code ?? 0),
+          );
+        },
       }).catch((e) => {
         // The pty was already spawned (the promise only rejects on an unforeseen
         // bridge error); don't double-spawn — surface + exit non-zero.
@@ -917,7 +994,22 @@ async function resumeFlow(args = {}) {
     const tracked = sessions.find(
       (s) => String(s.id) === String(args.resumeId) || (s.sessionId && s.sessionId === args.resumeId),
     );
-    if (tracked) { launchResume(tracked); return; }
+    if (tracked) {
+      // A tracked row alone doesn't prove resumability — a launch that died
+      // (or was closed) before its first persisted message has NO transcript,
+      // and the raw `--resume` would fail "No conversation found". Say why
+      // instead of letting the agent CLI fail cryptically.
+      if (!sessionHasTranscript(tracked)) {
+        console.error(
+          `psu: session #${tracked.id} (${tracked.agent}${tracked.sessionId ? ` ${tracked.sessionId}` : ''}) ` +
+            `has no persisted transcript — it died or was closed before its first message, so there is no ` +
+            `conversation to resume. Pick a different session with \`psu --resume\`.`,
+        );
+        process.exit(1);
+      }
+      launchResume(tracked);
+      return;
+    }
 
     // 2. Not tracked → search the agents' OWN session stores for the id.
     const untracked = findUntrackedSession(args.resumeId);
