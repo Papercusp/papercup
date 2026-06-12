@@ -525,6 +525,11 @@ import './scout/grade-idea';
 // write side is the hooks in lib/change-ledger/.
 import './change_ledger/list';
 import './change_ledger/calendar';
+// prompt-sedimentology read surface (self-learning-frontier P-023 / FB-09):
+// the per-rule dead-weight standings + recent shadow-cycle rows. Read-only;
+// the write side is the weekly system:prompt-ablation routine (dark until the
+// frontier P-001 arming gate).
+import './ablation/report';
 
 // event-reaction-system-2026-06-04 D-010 — the inspectable reactive-graph tool
 // (what fires what + recent fired reactions with their cause-chain).

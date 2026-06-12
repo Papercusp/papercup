@@ -10,22 +10,45 @@
  *     port); this lister is deliberately the same corpus replay reads today.
  *   - llm: Anthropic haiku distiller (anthropic-judge.ts pattern: no API key
  *     ⇒ a no-op that distills nothing), cost priced from reported usage.
- *   - replay: NULL until `frontier:replay-landed` — tick.ts skips the testing
- *     leg with an honest count.
+ *   - replay: the governed replay battery (replay-adapter.ts) with an
+ *     Anthropic continuation student and the house frozen judge
+ *     (lib/llm-testing/llm-client — the gym's judge path). Double-gated at
+ *     run time: the transfer action's own flag+governor AND the replay
+ *     substrate's flag+budget (both P-001 arming acts).
  */
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { costFromTokens } from '@papercusp/model-pricing';
+import type { JudgeLlmCall } from '@papercusp/eval-battery';
+import { recordLearningSpend } from '../learning-governor/store';
 import { getMemoryBackend } from '../memory/backend';
 import { harnessDir } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { fsTranscriptSource } from '../replay/transcript';
-import type { TransferTickDeps } from './tick';
-import type { LessonDistillerLlm, TranscriptRefLister } from './types';
+import type { ReplayRunner } from '../replay/types';
+import { transferReplayPort } from './replay-adapter';
+import {
+  admitTransferLesson,
+  listLessonsForTesting,
+  markTransferError,
+  recordTransferOutcome,
+  setLessonMemoryId,
+} from './store';
+import type { TransferStorePort, TransferTickDeps } from './tick';
+import {
+  TRANSFER_LOOP_ID,
+  TRANSFER_ORIGIN,
+  type LessonDistillerLlm,
+  type TranscriptRefLister,
+  type TransferReplayPort,
+} from './types';
 
 const DISTILL_MODEL = 'claude-haiku-4-5';
 const DISTILL_TIMEOUT_MS = 60_000;
+const STUDENT_MODEL = process.env.PAPERCUSP_TRANSFER_STUDENT_MODEL || 'claude-haiku-4-5';
+const STUDENT_MAX_TOKENS = 2_048;
+const STUDENT_TIMEOUT_MS = 120_000;
 
 /** Recent `.papercusp/logs/*.jsonl` across every registry project. */
 export function fsTranscriptRefLister(workspaceId?: string): TranscriptRefLister {
@@ -92,16 +115,86 @@ export function anthropicDistillerLlm(opts?: { apiKey?: string; model?: string }
   };
 }
 
-/** The live tick deps. `replay` stays null until the replay battery is wired
- *  (frontier:replay-landed); memory degrades to null when the backend is
- *  unavailable (lessons still tracked in PG). */
-export function defaultTransferTickDeps(sql: Sql, workspaceId?: string): TransferTickDeps {
+/** The Anthropic continuation student — lib/replay's ReplayRunner shape: the
+ *  variant's system prompt (base + lesson overlay) over the rendered case
+ *  context. No API key ⇒ throws (the cell records 'errored', never silent). */
+export function anthropicStudentRunner(opts?: { apiKey?: string; model?: string }): ReplayRunner {
+  const apiKey = opts?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
+  const model = opts?.model ?? STUDENT_MODEL;
+  return async ({ systemPrompt, contextText }) => {
+    if (!apiKey) throw new Error('anthropicStudentRunner: no ANTHROPIC_API_KEY — student replay unavailable');
+    const mod = (await import('@anthropic-ai/sdk')) as unknown as {
+      default: new (o: { apiKey: string; timeout?: number }) => {
+        messages: { create: (...args: unknown[]) => Promise<unknown> };
+      };
+    };
+    const client = new mod.default({ apiKey, timeout: STUDENT_TIMEOUT_MS });
+    const response = (await client.messages.create({
+      model,
+      max_tokens: STUDENT_MAX_TOKENS,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: contextText }],
+    })) as {
+      content?: Array<{ type: string; text?: string }>;
+      usage?: { input_tokens?: number; output_tokens?: number };
+    };
+    const outputText = (response.content ?? [])
+      .filter((c) => c.type === 'text')
+      .map((c) => c.text ?? '')
+      .join('');
+    const inputTokens = response.usage?.input_tokens ?? 0;
+    const outputTokens = response.usage?.output_tokens ?? 0;
+    return {
+      outputText,
+      costUsd: costFromTokens(model, { inputTokens, outputTokens }).usd,
+      inputTokens,
+      outputTokens,
+      replayed: true,
+    };
+  };
+}
+
+/** The live student-transfer port: governed replay battery + house judge.
+ *  Lazy judge import — the llm-client graph loads only when a test runs. */
+export function liveTransferReplayPort(workspaceId: string): TransferReplayPort {
+  return async (input) => {
+    const { llmCall } = (await import('../llm-testing/llm-client')) as { llmCall: JudgeLlmCall };
+    const port = transferReplayPort({ workspaceId, runner: anthropicStudentRunner(), llmCall });
+    return port(input);
+  };
+}
+
+/** store.ts bound to the live pool — the TransferStorePort the tick consumes. */
+export function pgTransferStorePort(sql: Sql): TransferStorePort {
   return {
-    sql,
+    admit: (input) => admitTransferLesson(sql, input),
+    listForTesting: (q) => listLessonsForTesting(sql, q),
+    recordOutcome: (q) => recordTransferOutcome(sql, q),
+    markError: (q) => markTransferError(sql, q),
+    setMemoryId: (q) => setLessonMemoryId(sql, q),
+  };
+}
+
+/** The live tick deps. Memory degrades to null when the backend is
+ *  unavailable (lessons still tracked in PG). */
+export function defaultTransferTickDeps(sql: Sql, workspaceId: string): TransferTickDeps {
+  return {
+    store: pgTransferStorePort(sql),
+    recordSpend: async ({ costUsd, note, runRef }) => {
+      await recordLearningSpend(sql, {
+        workspaceId,
+        loopId: TRANSFER_LOOP_ID,
+        costUsd,
+        signalOrigin: TRANSFER_ORIGIN,
+        runRef: runRef ?? null,
+        note,
+        accumulate: true,
+      });
+    },
     lister: fsTranscriptRefLister(workspaceId),
     source: fsTranscriptSource(),
     llm: anthropicDistillerLlm(),
-    replay: null,
+    replay: liveTransferReplayPort(workspaceId),
     memory: getMemoryBackend(),
     log: (m) => console.log(`[transfer-distill] ${m}`),
   };

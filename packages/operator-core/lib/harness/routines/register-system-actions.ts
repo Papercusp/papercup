@@ -129,6 +129,15 @@
  *     — the frontier D-001 arming gate), governor-preflighted with the
  *     per-cycle budget as the hard cycle cap (loop `prompt-ablation`), AND
  *     seeded INACTIVE (lib/ablation/seed-prompt-ablation-routine.ts).
+ *   - `system:deferral-interest-refit` — self-learning-frontier-2026-06-12
+ *     P-042 (FB-14, D-006). Nightly backfill of realized deferral costs from
+ *     history (human-lane items → downstream blockage accrued in-window over
+ *     coord_links + same-signature re-captures) + re-fit of the learned
+ *     pricing model (lib/deferral-interest/, mig 252) the one queue ranker
+ *     (P-040/FB-12) reads as its deferral-interest feature. SQL-only;
+ *     flag-gated OFF (papercusp-deferral-interest — the frontier D-001
+ *     arming gate), governor-preflighted (loop `deferral-interest-refit`),
+ *     AND seeded INACTIVE (lib/deferral-interest/seed-deferral-interest-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -154,3 +163,4 @@ import './regret-action';
 import './transfer-distill-action';
 import './fleet-ekg-action';
 import './prompt-ablation-action';
+import './deferral-interest-action';

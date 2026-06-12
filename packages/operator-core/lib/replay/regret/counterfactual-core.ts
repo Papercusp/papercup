@@ -7,11 +7,11 @@
  * replaying the session from the divergence turn with the candidate's
  * promptDelta injected, via the FB-06 replay harness (lib/replay, P-020).
  *
- * The seam is `RegretReplayRunner`: mine.ts takes `runner | null`. While the
- * replay harness is unlanded (this lane awaits `frontier:replay-landed`),
- * the runner stays null and findings persist as replay_status='pending';
- * wiring the landed lib/replay API in is the adapter's one job — nothing
- * else in this module changes.
+ * The seam is `RegretCounterfactualRunner`: mine.ts takes `runner | null`
+ * (null ⇒ the replay leg is dormant and findings persist as
+ * replay_status='pending'). The live implementation is replay-adapter.ts
+ * over FB-06's lib/replay (`runGovernedReplay`), wired by the routine
+ * action's boot path; tests inject fakes.
  */
 
 import type { DivergenceFinding } from './divergence-core';
@@ -99,32 +99,46 @@ export function candidateChangesFor(finding: DivergenceFinding): CandidateChange
 }
 
 // ---------------------------------------------------------------------------
-// The replay seam (FB-06 lib/replay adapter implements this; tests fake it)
+// The replay seam — implemented by replay-adapter.ts over FB-06's lib/replay
+// runGovernedReplay (one battery per finding: the historical case cut at the
+// divergence turn × one systemOverlay variant per candidate, judged against
+// the zero-cost baseline echo). Tests fake the whole runner.
 // ---------------------------------------------------------------------------
 
-export interface RegretReplayRequest {
+export interface RegretPriceRequest {
   workspaceId: string;
   harnessSlug: string;
   runId: string;
-  /** Divergence turn to re-enter the historical session from. */
-  fromTurn: number;
-  /** The candidate rule injected into the replayed agent's prompt. */
-  promptDelta: string;
-  /** Per-candidate spend cap (the loop's per-cycle governor budget, split). */
+  /** The persisted stream body (harness_run_output.jsonl_body). */
+  jsonlBody: string;
+  /** Assistant-turn ordinal (transcript-core) the replay re-enters from. */
+  divergenceTurn: number;
+  changes: readonly CandidateChange[];
+  /** Per-finding spend cap (the loop's per-cycle governor budget, split). */
   budgetUsd: number;
 }
 
-export interface RegretReplayResult {
-  /** 0..1 — how much better the counterfactual trajectory scored vs the original. */
+export interface CandidateReplayScore {
+  candidateId: string;
+  /**
+   * 0..1 — (candidate − baseline) mean judge composite, as a fraction of the
+   * 10-point scale. 0 = no better than the original trajectory.
+   */
   improvementScore: number;
   summary: string;
   costUsd: number;
 }
 
-export interface RegretReplayRunner {
-  replayCandidate(req: RegretReplayRequest): Promise<RegretReplayResult>;
+export interface RegretPricing {
+  scores: CandidateReplayScore[];
+  costUsd: number;
 }
 
-export interface CandidateReplayScore extends RegretReplayResult {
-  candidateId: string;
+export interface RegretCounterfactualRunner {
+  /**
+   * Price one finding's candidates by counterfactual replay. Returns null
+   * when the replay SUBSTRATE refused (its own D-001 flag / governor gates) —
+   * the finding stays pending for a later armed tick.
+   */
+  priceFinding(req: RegretPriceRequest): Promise<RegretPricing | null>;
 }

@@ -167,7 +167,9 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
     },
 
     async health() {
-      return probeHealth(cfg.operatorHealthUrl, { log: (s) => log(s) });
+      // WI-109: Harden the run-check to detect broken MCP before traffic cutover.
+      // Probe both /api/health and POST /api/mcp initialize → 200 event-stream.
+      return probeHealth(cfg.operatorHealthUrl, { log: (s) => log(s), probeMcp: true });
     },
 
     async verifyPaths() {

@@ -25,6 +25,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, type MemoryEntry } from './backend';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
+import { memoryTierOf } from './two-tier';
 
 /**
  * Memory injection is a best-effort enhancement — never load-bearing —
@@ -349,10 +350,25 @@ export async function buildMemoryContextBlock(
   }
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
+  // Two-tier marker (self-learning-frontier P-022 / FB-08, D-006): with the
+  // transfer harness armed, probationary entries are visibly marked — STILL
+  // injected (admission is free); the marker just shows the trust level until
+  // a student-transfer test promotes them. Flag dark (the D-001 default) ⇒
+  // byte-identical output. Best-effort: a flags hiccup means no markers.
+  let tierMarkers = false;
+  try {
+    const { FLAGS } = await import('@papercusp/flags');
+    const { getFlag } = await import('@papercusp/flags/server');
+    tierMarkers = await getFlag(FLAGS.TRANSFER_HARNESS, 'memory-injection');
+  } catch {
+    /* never load-bearing */
+  }
+
   const fmtScope = (entry: MemoryEntry, slug?: string): string => {
     const kind = entry.kind ?? 'unknown';
-    if (slug) return `[${kind} @ ${slug}]`;
-    return `[${kind}]`;
+    const tier = tierMarkers && memoryTierOf(entry) === 'probationary' ? ' · probationary' : '';
+    if (slug) return `[${kind}${tier} @ ${slug}]`;
+    return `[${kind}${tier}]`;
   };
 
   // Phase 5 P-020: surface memory_id alongside each entry so the agent

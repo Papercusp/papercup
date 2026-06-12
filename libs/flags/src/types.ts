@@ -234,6 +234,15 @@ export const FLAGS = {
   // (loop `prompt-ablation`). OFF until the plan's P-001 arming gate closes
   // (D-001 owner-ratified dark-ship rule for frontier loops).
   PROMPT_ABLATION: "papercusp-prompt-ablation",
+  // self-learning-frontier-2026-06-12 (P-042 / FB-14, D-006): deferral
+  // interest — `system:deferral-interest-refit` backfills realized deferral
+  // costs from history (human-lane items → downstream blockage accrued while
+  // each sat deferred) and fits the learned pricing model the one queue
+  // ranker (P-040 / FB-12) reads as its deferral-interest feature. SQL-only,
+  // zero LLM spend. OFF until the plan's P-001 arming gate closes (D-001
+  // owner-ratified dark-ship rule for frontier loops); the ranker feature
+  // degrades to zero-priced while no model is trained.
+  DEFERRAL_INTEREST: "papercusp-deferral-interest",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -368,6 +377,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // seeded-inactive routine are the P-001 arming acts. Shadow-only either
   // way: this lane never mutates live prompts.
   [FLAGS.PROMPT_ABLATION]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: the
+  // deferral-interest refit is a frontier learning loop (SQL-only, zero LLM
+  // spend); the flag flip + an owner-set per-cycle governor budget on loop
+  // `deferral-interest-refit` + activating the seeded-inactive routine are
+  // the P-001 arming acts.
+  [FLAGS.DEFERRAL_INTEREST]: false,
   // ON by default — Phase 0 foundation, same call as CHANGE_LEDGER above
   // (self-learning-frontier P-003/FB-01): the governor SPENDS nothing and
   // FILES nothing — it is the refusal gate D-004 wants live, and ON starts

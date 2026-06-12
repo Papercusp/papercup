@@ -22,6 +22,7 @@ import {
   type HumanQueueRankContext,
   type HumanQueueRankDeps,
 } from './blocking-impact-feature';
+import { deferralInterestFeature } from './deferral-interest-feature';
 import { describeFeatures, rankQueue, type QueueFeature, type RankBreakdown } from './ranker';
 
 /**
@@ -31,6 +32,9 @@ import { describeFeatures, rankQueue, type QueueFeature, type RankBreakdown } fr
  */
 export const HUMAN_QUEUE_FEATURES: readonly QueueFeature<ScoredItem, HumanQueueRankContext>[] = [
   blockingImpactFeature,
+  // P-042 / FB-14: learned deferral pricing — contributes 0 until the lane is
+  // armed (flag ON + a trained model), so registering it is order-preserving.
+  deferralInterestFeature,
 ];
 
 /** The registry as data — name/weight/description per feature. */

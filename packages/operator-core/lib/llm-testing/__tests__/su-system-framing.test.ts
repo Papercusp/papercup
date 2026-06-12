@@ -13,7 +13,14 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { CLAUDE_CODE_IDENTIFIER, buildSuSystemBlocks, parseSuConfigDelta } from '../targets/su';
+import {
+  CLAUDE_CODE_IDENTIFIER,
+  SU_PLAYBOOK_FRAMING,
+  SuTarget,
+  buildSuSystemBlocks,
+  loadPlaybookBody,
+  parseSuConfigDelta,
+} from '../targets/su';
 
 const PLAYBOOK = '# Papercusp engineer-collaborator playbook\n...body...';
 

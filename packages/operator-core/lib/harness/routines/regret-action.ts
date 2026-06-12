@@ -19,10 +19,13 @@
  *     (lib/replay/regret/seed-regret-routine.ts).
  *
  * The governor's per-cycle cap flows into the tick as replayBudgetUsd
- * (payload may LOWER it, never raise it); realized replay spend is ledgered
- * via recordLearningSpend with signal origin 'replay' (D-002). Detection is
- * SQL+parse only — with the replay runner unwired (pre-`frontier:
- * replay-landed`) a tick spends $0 and ledgers nothing.
+ * (payload may LOWER it, never raise it). The replay leg rides FB-06's
+ * runGovernedReplay (replay-adapter.ts), which preflights the SUBSTRATE's
+ * own D-001 gates (flag papercusp-replay-harness + loop
+ * frontier:replay-harness) and ledgers the spend itself (origin='replay',
+ * runRef `regret:<runId>`) — so arming the replay leg at P-001 takes BOTH
+ * loops budgeted + both flags on, and this action never double-ledgers.
+ * Detection alone is SQL+parse only — $0.
  *
  * Tune via payload_template: windowDays, minScore, maxSessions,
  * maxReplaysPerTick, replayBudgetUsd, maxFilePerTick (0 = mine-only),
@@ -34,8 +37,9 @@ import { getFlag } from '@papercusp/flags/server';
 import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { regretGovernorGate, REGRET_LOOP_ID } from '../../replay/regret/governor';
+import { regretGovernorGate } from '../../replay/regret/governor';
 import { regretOptionsFromPayload, runRegretTick, type RegretTickDeps } from '../../replay/regret/mine';
+import { governedRegretRunner } from '../../replay/regret/replay-adapter';
 import { defaultRegretDeps } from '../../replay/regret/store';
 
 /** The tick-deps seam — injectable for tests (mirrors setNegativeSpaceTickDeps). */
@@ -72,7 +76,11 @@ registerSystemAction('regret-mine', async (ctx: SystemActionCtx) => {
   // The governor's per-cycle cap bounds replay spend; the payload may lower it.
   const governorCapUsd = verdict.remainingUsd ?? 0;
   opts.replayBudgetUsd = Math.min(opts.replayBudgetUsd ?? governorCapUsd, governorCapUsd);
-  const deps = _deps ?? defaultRegretDeps(getOrgPg().sql);
+  // Boot-path composition (the hermetic-glue insight): the live replay runner
+  // is wired HERE, not in the PG deps factory. Spend is ledgered ONCE by the
+  // replay substrate itself (runGovernedReplay, loop frontier:replay-harness,
+  // runRef `regret:<runId>`) — regret-mining must not double-ledger it.
+  const deps = _deps ?? { ...defaultRegretDeps(getOrgPg().sql), replayRunner: governedRegretRunner() };
   try {
     const result = await runRegretTick(ctx.workspaceId, deps, opts);
     console.log(
@@ -82,21 +90,6 @@ registerSystemAction('regret-mine', async (ctx: SystemActionCtx) => {
         `${result.filed.length ? ` (${result.filed.join(', ')})` : ''}` +
         (result.declined ? `, ${result.declined} declined` : ''),
     );
-    if (result.replayCostUsd > 0) {
-      // Ledger realized replay spend (gym/scout precedent: only positive spend lands).
-      try {
-        const { recordLearningSpend } = await import('../../learning-governor/store');
-        await recordLearningSpend(getOrgPg().sql, {
-          workspaceId: ctx.workspaceId,
-          loopId: REGRET_LOOP_ID,
-          costUsd: result.replayCostUsd,
-          accumulate: true,
-          note: `regret-mine tick: ${result.replayed} finding(s) replayed`,
-        });
-      } catch (e) {
-        console.warn('[regret-mine] spend ledgering FAILED:', e instanceof Error ? e.message : e);
-      }
-    }
   } catch (e) {
     // Never throw from a durable step (replay = a second tick for nothing).
     console.warn('[regret-mine] tick FAILED:', e instanceof Error ? e.message : e);

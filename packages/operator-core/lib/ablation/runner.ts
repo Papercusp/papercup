@@ -48,7 +48,7 @@ import {
   type ArmMetrics,
   type ScenarioArmOutcome,
 } from './scoring';
-import { insertAblationRun, lastAblatedAtByRule } from './store';
+import { insertAblationRun, lastAblatedAtByRule, type InsertAblationRunInput } from './store';
 
 /** The repo-relative playbook identity recorded on every run row. */
 export const SU_PLAYBOOK_REPO_PATH = 'apps/operator/prompts/papercusp-su-engineer.tools.md';
@@ -78,8 +78,11 @@ export interface AblationCycleDeps {
   runScenarioFn?: typeof runScenario;
   /** LLM-capable runner deps for the arms (default shadowRunnerDeps()). */
   runnerDeps?: RunnerDeps;
-  /** PG handle for the run store. */
-  sql: Sql;
+  /** PG handle for the run store. Optional when both store seams are injected (hermetic tests). */
+  sql?: Sql;
+  /** Store seams (default: the real store.ts fns bound over `sql`). */
+  insertRun?: (input: InsertAblationRunInput) => Promise<string>;
+  lastAblatedAt?: (workspaceId: string) => Promise<Map<string, string>>;
   /** D-003 conditioning (default: change-ledger readRecentChanges, trimmed). Null = unavailable. */
   readLedgerContext?: (workspaceId: string, sinceMs: number) => Promise<unknown[] | null>;
   /**
@@ -188,6 +191,13 @@ export async function runAblationCycle(
   const run = deps.runScenarioFn ?? runScenario;
   const runnerDeps = deps.runnerDeps ?? shadowRunnerDeps();
   const readLedger = deps.readLedgerContext ?? defaultLedgerContext;
+  const requireSql = (): Sql => {
+    if (!deps.sql) throw new Error('prompt-ablation: deps.sql is required when store seams are not injected');
+    return deps.sql;
+  };
+  const insertRun = deps.insertRun ?? ((input: InsertAblationRunInput) => insertAblationRun(requireSql(), input));
+  const lastAblatedAt =
+    deps.lastAblatedAt ?? ((workspaceId: string) => lastAblatedAtByRule(requireSql(), workspaceId));
   const thresholds: AblationThresholds = { ...DEFAULT_ABLATION_THRESHOLDS, ...cfg.thresholds };
   const startedAtMs = nowMs();
 
@@ -203,7 +213,7 @@ export async function runAblationCycle(
     if (!found) throw new Error(`prompt-ablation: ruleKey '${cfg.ruleKey}' not found in the current playbook`);
     rule = found;
   } else {
-    rule = pickRuleForRotation(rules, await lastAblatedAtByRule(deps.sql, cfg.workspaceId));
+    rule = pickRuleForRotation(rules, await lastAblatedAt(cfg.workspaceId));
   }
   const ablatedBody = ablateRule(body, rule);
   log(
@@ -271,7 +281,7 @@ export async function runAblationCycle(
   );
 
   const excerpt = `${rule.lead} — ${rule.text.replace(/\s+/g, ' ').slice(0, 200)}`;
-  const runRowId = await insertAblationRun(deps.sql, {
+  const runRowId = await insertRun({
     workspaceId: cfg.workspaceId,
     startedAtMs,
     playbookPath: SU_PLAYBOOK_REPO_PATH,

@@ -82,7 +82,10 @@ describe('runNeologismTick', () => {
     });
     const result = await runNeologismTick('ws-1', deps, { asOf: AS_OF });
     expect(capture).not.toHaveBeenCalled();
-    expect(result.terms).toBe(0);
+    // The covered term is gone; the fixtures' incidental one-off bigrams stay
+    // under the fire bars, so nothing files.
+    expect(result.entries.find((e) => e.term === 'wake storm')).toBeUndefined();
+    expect(result.overBars).toBe(0);
     expect(result.filed).toEqual([]);
   });
 

@@ -4,43 +4,60 @@
  *
  * Every dep is a port ({@link TransferTickDeps}) so tick.test.ts covers the
  * whole flow with zero LLM/PG. The live deps come from
- * `defaultTransferTickDeps` (PG pool, fs transcript lister, Anthropic
- * distiller, the memory backend) — EXCEPT `replay`, which stays null until
- * lib/replay's battery lands (`frontier:replay-landed`); a null replay port
- * skips the testing leg with an honest count, never a silent drop.
+ * `defaultTransferTickDeps` (PG store port, fs transcript lister, Anthropic
+ * distiller, the governed replay battery, the memory backend); a null
+ * `replay` port skips the testing leg with an honest count, never a silent
+ * drop.
  *
- * Spend: distillation + battery costs are ledgered on the learning governor
- * (accumulate:true — the governor is this loop's only spend store), tagged
- * origin='replay' (D-002).
+ * Spend: DISTILLATION cost is ledgered on the learning governor under
+ * `frontier:transfer-harness` (accumulate:true, origin='replay', D-002);
+ * battery cost is ledgered by the governed replay path under
+ * `frontier:replay-harness` — each dollar lands on exactly one loop.
  */
-import type { Sql } from 'postgres';
 import type { MemoryBackend } from '@papercusp/memory';
-import { recordLearningSpend } from '../learning-governor/store';
 import { admitProbationaryMemory, setMemoryTier } from '../memory/two-tier';
-import { applyTransferVerdict, transferVerdict, type TransferTickOptions } from './gate';
+import {
+  applyTransferVerdict,
+  transferVerdict,
+  type GateTransition,
+  type TransferTickOptions,
+} from './gate';
 import { distillLessonsFromTranscript, lessonSignature } from './distill';
+import type { AdmitLessonInput, AdmitLessonResult } from './store';
 import {
-  admitTransferLesson,
-  listLessonsForTesting,
-  markTransferError,
-  recordTransferOutcome,
-  setLessonMemoryId,
-} from './store';
-import {
-  TRANSFER_LOOP_ID,
   TRANSFER_ORIGIN,
   type LessonDistillerLlm,
   type TranscriptRefLister,
+  type TransferLesson,
   type TransferReplayPort,
   type TransferTranscriptSource,
 } from './types';
 
+/** The PG seam (store.ts bound to a Sql in live-deps; in-memory fakes in tests). */
+export interface TransferStorePort {
+  admit(input: AdmitLessonInput): Promise<AdmitLessonResult>;
+  listForTesting(q: { workspaceId: string; limit: number }): Promise<TransferLesson[]>;
+  recordOutcome(q: {
+    workspaceId: string;
+    id: string;
+    transition: GateTransition;
+    batteryId: string;
+    delta: number;
+  }): Promise<unknown>;
+  markError(q: { workspaceId: string; id: string }): Promise<void>;
+  setMemoryId(q: { workspaceId: string; id: string; memoryId: string | null }): Promise<void>;
+}
+
 export interface TransferTickDeps {
-  sql: Sql;
+  store: TransferStorePort;
+  /** Governor spend ledger for DISTILLATION spend only (battery spend is
+   *  ledgered by the governed replay path — see testLeg). Never throws
+   *  upward; the caller wraps. */
+  recordSpend: (q: { costUsd: number; note: string; runRef?: string }) => Promise<void>;
   lister: TranscriptRefLister;
   source: TransferTranscriptSource;
   llm: LessonDistillerLlm;
-  /** null until the replay substrate is wired (frontier:replay-landed). */
+  /** null ⇒ the testing leg self-skips with an honest count. */
   replay: TransferReplayPort | null;
   /** null = memory admission skipped (degraded; lessons still tracked in PG). */
   memory: MemoryBackend | null;
@@ -63,22 +80,13 @@ export interface TransferTickResult {
 
 async function ledgerSpend(
   deps: TransferTickDeps,
-  workspaceId: string,
   costUsd: number,
   note: string,
   runRef?: string,
 ): Promise<void> {
   if (!(costUsd > 0)) return;
   try {
-    await recordLearningSpend(deps.sql, {
-      workspaceId,
-      loopId: TRANSFER_LOOP_ID,
-      costUsd,
-      signalOrigin: TRANSFER_ORIGIN,
-      runRef: runRef ?? null,
-      note,
-      accumulate: true,
-    });
+    await deps.recordSpend({ costUsd, note, ...(runRef ? { runRef } : {}) });
   } catch (e) {
     // Spend bookkeeping must never fail the tick; the governor's lifetime cap
     // self-corrects next tick (under-counted spend only ever errs once).
@@ -115,11 +123,11 @@ async function distillLeg(
       continue;
     }
     result.costUsd += costUsd;
-    await ledgerSpend(deps, workspaceId, costUsd, 'lesson distillation', ref);
+    await ledgerSpend(deps, costUsd, 'lesson distillation', ref);
     result.lessonsDistilled += lessons.length;
 
     for (const lesson of lessons) {
-      const admitted = await admitTransferLesson(deps.sql, {
+      const admitted = await deps.store.admit({
         workspaceId,
         signature: lessonSignature(lesson.lessonText),
         title: lesson.title,
@@ -144,7 +152,7 @@ async function distillLeg(
             },
           });
           if (memoryId) {
-            await setLessonMemoryId(deps.sql, { workspaceId, id: admitted.lesson.id, memoryId });
+            await deps.store.setMemoryId({ workspaceId, id: admitted.lesson.id, memoryId });
           }
         } catch (e) {
           deps.log(`memory admission failed for ${admitted.lesson.id}: ${e instanceof Error ? e.message : e}`);
@@ -167,7 +175,7 @@ async function testLeg(
     deps.log('replay substrate not wired yet (frontier:replay-landed pending) — testing leg skipped');
     return;
   }
-  const queue = await listLessonsForTesting(deps.sql, { workspaceId, limit: opts.maxTestsPerTick });
+  const queue = await deps.store.listForTesting({ workspaceId, limit: opts.maxTestsPerTick });
   for (const lesson of queue) {
     if (lesson.sourceKind !== 'transcript' || !lesson.sourceRef) continue; // nothing replayable
     let outcome;
@@ -176,17 +184,21 @@ async function testLeg(
       outcome = await deps.replay({ lesson, transcript });
     } catch (e) {
       result.errors += 1;
-      await markTransferError(deps.sql, { workspaceId, id: lesson.id });
+      await deps.store.markError({ workspaceId, id: lesson.id });
       deps.log(`transfer test errored for ${lesson.id}: ${e instanceof Error ? e.message : e}`);
       continue;
     }
     result.tested += 1;
+    // Battery spend is counted for the tick report but NOT ledgered here —
+    // the governed replay path already ledgers it on frontier:replay-harness
+    // (replay-adapter.ts); ledgering again would double-count the dollar on
+    // the governor's one visible number. The transfer loop ledgers only its
+    // own distillation spend.
     result.costUsd += outcome.costUsd;
-    await ledgerSpend(deps, workspaceId, outcome.costUsd, 'student-transfer test', outcome.batteryId);
 
     const verdict = transferVerdict(outcome, opts);
     const transition = applyTransferVerdict(lesson, verdict, opts);
-    await recordTransferOutcome(deps.sql, {
+    await deps.store.recordOutcome({
       workspaceId,
       id: lesson.id,
       transition,
@@ -203,7 +215,7 @@ async function testLeg(
       try {
         if (transition.forgetMemory) {
           await deps.memory.forget(lesson.memoryId);
-          await setLessonMemoryId(deps.sql, { workspaceId, id: lesson.id, memoryId: null });
+          await deps.store.setMemoryId({ workspaceId, id: lesson.id, memoryId: null });
         } else if (transition.tier !== 'retired') {
           await setMemoryTier(deps.memory, lesson.memoryId, transition.tier);
         }

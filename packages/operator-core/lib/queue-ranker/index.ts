@@ -15,6 +15,12 @@ export {
   type HumanQueueRankDeps,
 } from './blocking-impact-feature';
 export {
+  deferralInterestFeature,
+  defaultDeferralInterestFeatureDeps,
+  makeDeferralInterestFeature,
+  type DeferralInterestFeatureDeps,
+} from './deferral-interest-feature';
+export {
   applyHumanQueueRanking,
   humanQueueRankerSpec,
   HUMAN_QUEUE_FEATURES,

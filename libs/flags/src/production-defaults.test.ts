@@ -74,6 +74,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // weekly routine seeded inactive, until P-001. Real LLM spend per cycle;
   // shadow-only (never mutates live prompts) even when armed.
   FLAGS.PROMPT_ABLATION,
+  // … and deferral interest (P-042/FB-14) — same double gate: flag OFF here
+  // AND unbudgeted on the learning governor (loop `deferral-interest-refit`)
+  // until P-001. SQL-only zero-spend refit; the ranker feature reads any
+  // already-trained model either way (degrades to zero-priced when none).
+  FLAGS.DEFERRAL_INTEREST,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

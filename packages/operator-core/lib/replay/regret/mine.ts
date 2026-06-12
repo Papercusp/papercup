@@ -9,10 +9,10 @@
  *                (transcript-core), locate the divergence turn
  *                (divergence-core), template candidate changes
  *                (counterfactual-core), upsert the finding;
- *   3. REPLAY  — when a RegretReplayRunner is wired (FB-06's lib/replay —
- *                this leg stays dormant until `frontier:replay-landed`),
- *                counterfactually price pending findings' candidates under
- *                the per-cycle budget, oldest first;
+ *   3. REPLAY  — when a RegretCounterfactualRunner is wired (the live one is
+ *                replay-adapter.ts over FB-06's lib/replay), counterfactually
+ *                price pending findings' candidates under the per-cycle
+ *                budget, oldest first — one governed battery per finding;
  *   4. FILE    — replayed findings whose best candidate clears minFileScore
  *                file ONE scored report each through the capture core,
  *                origin='replay' (D-002), watchdogKey-deduped, capped per
@@ -31,7 +31,7 @@ import { detectDivergenceSignals, pickDivergence } from './divergence-core';
 import {
   candidateChangesFor,
   type CandidateReplayScore,
-  type RegretReplayRunner,
+  type RegretCounterfactualRunner,
 } from './counterfactual-core';
 import {
   MIN_FILE_IMPROVEMENT_SCORE,
@@ -86,8 +86,8 @@ export interface RegretTickDeps {
   readUnfiledReplayed: (workspaceId: string, limit: number) => Promise<RegretFindingRecord[]>;
   capture: (input: CaptureImprovementInput) => Promise<CaptureImprovementResult>;
   markFiled: (workspaceId: string, runId: string, improvementId: string) => Promise<void>;
-  /** null until FB-06's replay harness is wired in — the replay leg then activates. */
-  replayRunner: RegretReplayRunner | null;
+  /** null ⇒ the replay leg is dormant; live = replay-adapter.ts over lib/replay. */
+  replayRunner: RegretCounterfactualRunner | null;
   /** Current ISO timestamp — injected so the tick is deterministic in tests. */
   nowIso: () => string;
   log?: (message: string) => void;
@@ -159,7 +159,7 @@ export async function runRegretTick(
     }
   }
 
-  // ── 3. REPLAY (dormant until FB-06's runner is wired) ─────────────────────
+  // ── 3. REPLAY (one governed battery per finding; dormant with no runner) ──
   let replayed = 0;
   let replayCostUsd = 0;
   if (deps.replayRunner && replayBudgetUsd > 0 && maxReplays > 0) {
@@ -168,21 +168,23 @@ export async function runRegretTick(
     for (const finding of pending) {
       if (finding.divergenceTurn === null || finding.candidateChanges.length === 0) continue;
       try {
-        const perCandidate = perFinding / finding.candidateChanges.length;
-        const scores: CandidateReplayScore[] = [];
-        for (const change of finding.candidateChanges) {
-          const result = await deps.replayRunner.replayCandidate({
-            workspaceId,
-            harnessSlug: finding.harnessSlug,
-            runId: finding.runId,
-            fromTurn: change.fromTurn,
-            promptDelta: change.promptDelta,
-            budgetUsd: perCandidate,
-          });
-          replayCostUsd += result.costUsd;
-          scores.push({ candidateId: change.id, ...result });
+        const body = await deps.readTranscript(finding.runId);
+        if (body === null) {
+          log(`[regret-mine] transcript for "${finding.runId}" no longer in PG — leaving pending`);
+          continue;
         }
-        await deps.recordReplayScores(workspaceId, finding.runId, scores);
+        const pricing = await deps.replayRunner.priceFinding({
+          workspaceId,
+          harnessSlug: finding.harnessSlug,
+          runId: finding.runId,
+          jsonlBody: body,
+          divergenceTurn: finding.divergenceTurn,
+          changes: finding.candidateChanges,
+          budgetUsd: perFinding,
+        });
+        if (pricing === null) continue; // substrate refused (its own D-001 gates) — stays pending
+        replayCostUsd += pricing.costUsd;
+        await deps.recordReplayScores(workspaceId, finding.runId, pricing.scores);
         replayed += 1;
       } catch (e) {
         log(`[regret-mine] replay for "${finding.runId}" FAILED: ${e instanceof Error ? e.message : e}`);

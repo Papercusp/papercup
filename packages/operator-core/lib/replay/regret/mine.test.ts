@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { runRegretTick, type RegretTickDeps } from './mine';
 import type { SelectionInputRow } from './selection-core';
 import type { RegretFindingRecord } from './store';
-import type { CandidateReplayScore, RegretReplayRunner } from './counterfactual-core';
+import type { CandidateReplayScore, RegretCounterfactualRunner } from './counterfactual-core';
 
 const WS = 'ws-1';
 
@@ -166,12 +166,16 @@ describe('runRegretTick — replay leg', () => {
   });
 
   it('prices pending findings through the runner under the per-cycle budget', async () => {
-    const requests: number[] = [];
-    const runner: RegretReplayRunner = {
-      replayCandidate: async (req) => {
-        requests.push(req.budgetUsd);
-        expect(req).toMatchObject({ workspaceId: WS, runId: 'run-bad', fromTurn: 0 });
-        return { improvementScore: 0.7, summary: 'better', costUsd: 0.2 };
+    const requests: Array<{ budgetUsd: number; divergenceTurn: number; jsonlBody: string }> = [];
+    const runner: RegretCounterfactualRunner = {
+      priceFinding: async (req) => {
+        requests.push({ budgetUsd: req.budgetUsd, divergenceTurn: req.divergenceTurn, jsonlBody: req.jsonlBody });
+        expect(req).toMatchObject({ workspaceId: WS, runId: 'run-bad' });
+        expect(req.changes).toHaveLength(1);
+        return {
+          scores: [{ candidateId: 'stop-retry-ladder', improvementScore: 0.7, summary: 'better', costUsd: 0.2 }],
+          costUsd: 0.25,
+        };
       },
     };
     const { deps, scored } = fakeDeps({
@@ -180,20 +184,34 @@ describe('runRegretTick — replay leg', () => {
     });
     const result = await runRegretTick(WS, deps, { replayBudgetUsd: 2 });
     expect(result.replayed).toBe(1);
-    expect(result.replayCostUsd).toBeCloseTo(0.2);
+    expect(result.replayCostUsd).toBeCloseTo(0.25);
     expect(scored[0].scores[0]).toMatchObject({ candidateId: 'stop-retry-ladder', improvementScore: 0.7 });
-    expect(requests[0]).toBeCloseTo(2); // one finding, one candidate → whole budget
+    expect(requests[0].budgetUsd).toBeCloseTo(2); // one pending finding → whole budget
+    expect(requests[0].divergenceTurn).toBe(0);
+    expect(requests[0].jsonlBody.length).toBeGreaterThan(0); // transcript re-read for the case
+  });
+
+  it('a substrate refusal (null pricing) leaves the finding pending', async () => {
+    const runner: RegretCounterfactualRunner = { priceFinding: async () => null };
+    const { deps, scored } = fakeDeps({
+      replayRunner: runner,
+      readPendingReplay: async () => [replayedFinding({ replayStatus: 'pending', replayScores: null })],
+    });
+    const result = await runRegretTick(WS, deps, { replayBudgetUsd: 2 });
+    expect(result.replayed).toBe(0);
+    expect(result.replayCostUsd).toBe(0);
+    expect(scored).toHaveLength(0);
   });
 
   it('zero budget keeps the runner idle even when wired', async () => {
-    const runner: RegretReplayRunner = { replayCandidate: vi.fn() as never };
+    const runner: RegretCounterfactualRunner = { priceFinding: vi.fn() as never };
     const { deps } = fakeDeps({
       replayRunner: runner,
       readPendingReplay: async () => [replayedFinding({ replayStatus: 'pending', replayScores: null })],
     });
     const result = await runRegretTick(WS, deps, { replayBudgetUsd: 0 });
     expect(result.replayed).toBe(0);
-    expect(runner.replayCandidate).not.toHaveBeenCalled();
+    expect(runner.priceFinding).not.toHaveBeenCalled();
   });
 });
 
@@ -223,7 +241,8 @@ describe('runRegretTick — filing leg (D-002: origin=replay)', () => {
       readRows: async () => [],
       readUnfiledReplayed: async () => [
         replayedFinding({
-          replayScores: [{ candidateId: 'stop-retry-ladder', improvementScore: 0.2, summary: 'no help', costUsd: 0.1 }],
+          // 0.05 = half a composite point — under the 0.1 default bar.
+          replayScores: [{ candidateId: 'stop-retry-ladder', improvementScore: 0.05, summary: 'no help', costUsd: 0.1 }],
         }),
       ],
     });

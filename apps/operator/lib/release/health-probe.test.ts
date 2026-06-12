@@ -83,4 +83,84 @@ describe('probeHealth', () => {
     expect(r.error).toBeTruthy(); // last error is carried out
     expect(r.elapsedMs).toBeGreaterThanOrEqual(0);
   });
+
+  it('fails when probeMcp:true and MCP returns non-200', async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      callCount++;
+      if (url.includes('/health')) {
+        return jsonRes(200, { ok: true });
+      } else if (url.includes('/mcp')) {
+        return jsonRes(426, 'Upgrade Required');
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 50,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeMcp: true,
+    });
+
+    expect(r.healthy).toBe(false);
+    expect(r.error).toMatch(/MCP initialization failed.*426/);
+    // Should have tried both health and mcp endpoints at least once
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/health'),
+      expect.any(Object),
+    );
+  });
+
+  it('fails when probeMcp:true and MCP returns 200 but wrong content-type', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) {
+        return jsonRes(200, { ok: true });
+      } else if (url.includes('/mcp')) {
+        return new Response('plain text', {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 50,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeMcp: true,
+    });
+
+    expect(r.healthy).toBe(false);
+    expect(r.error).toMatch(/MCP initialization failed.*expected text\/event-stream/);
+  });
+
+  it('succeeds when probeMcp:true and both health and MCP respond correctly', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) {
+        return jsonRes(200, { ok: true });
+      } else if (url.includes('/mcp')) {
+        return new Response(':stream-open\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeMcp: true,
+    });
+
+    expect(r.healthy).toBe(true);
+    expect(r.status).toBe(200);
+    expect(r.attempts).toBe(1);
+  });
 });

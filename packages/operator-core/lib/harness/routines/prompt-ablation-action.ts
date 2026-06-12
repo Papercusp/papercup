@@ -32,6 +32,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
 import { recordLearningSpend } from '../../learning-governor/store';
 import { promptAblationGovernorGate, PROMPT_ABLATION_LOOP_ID } from '../../ablation/governor';
+import { makeAblationReplayLeg } from '../../ablation/replay-leg';
 import {
   runAblationCycle,
   type AblationCycleConfig,
@@ -107,7 +108,16 @@ registerSystemAction('prompt-ablation', async (ctx: SystemActionCtx) => {
   // the runner enforces mid-suite.
   const cfg = cycleConfigFromPayload(ctx.workspaceId, ctx.payloadTemplate, verdict.remainingUsd);
   try {
-    const result = await (_runner ?? runAblationCycle)(cfg, { sql: getOrgPg().sql });
+    // The replay-sample leg (FB-06 substrate) is wired HERE, at the boot-path
+    // registrar — runAblationCycle's deps carry no production default for it
+    // (the default-on-flag-glue-vs-hermetic-unit-tests discipline). It rides
+    // the REPLAY loop's own flag + governor budget and degrades to a recorded
+    // skip until the replay harness arms at P-001.
+    const sql = getOrgPg().sql;
+    const result = await (_runner ?? runAblationCycle)(cfg, {
+      sql,
+      replayLeg: makeAblationReplayLeg({ sql }),
+    });
     if (result.costUsd > 0) {
       const record =
         _recordSpend ??

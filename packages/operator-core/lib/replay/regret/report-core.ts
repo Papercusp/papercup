@@ -16,7 +16,12 @@
 
 import type { CandidateChange, CandidateReplayScore } from './counterfactual-core';
 
-export const MIN_FILE_IMPROVEMENT_SCORE = 0.5;
+/**
+ * improvementScore is (candidate − baseline) mean judge composite as a
+ * fraction of the 10-point rubric scale — 0.1 = a full composite point
+ * better than the original trajectory.
+ */
+export const MIN_FILE_IMPROVEMENT_SCORE = 0.1;
 
 export function regretWatchdogKey(runId: string): string {
   return `regret:${runId}`;
