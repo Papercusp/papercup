@@ -38,9 +38,7 @@ import {
   type CommentsService,
 } from '@papercusp/plugin-sdk';
 import {
-  HookBus,
   createPapercuspApi,
-  createPluginHookBus,
   type RealServices,
 } from '@papercusp/plugin-loader';
 import {
@@ -396,8 +394,6 @@ export interface BuildPluginRuntimeOptions {
   projectDir?: string;
   /** Optional override for the install's state dir. */
   stateDir?: string;
-  /** Optional shared HookBus (one per host instance, shared across plugins). */
-  hookBus?: HookBus;
   /** Optional plugin-scoped logger. Defaults to console.log with a prefix. */
   log?: (msg: string) => void;
 }
@@ -449,16 +445,9 @@ export function buildPluginRuntime(opts: BuildPluginRuntimeOptions): PluginRunti
     fetch: globalThis.fetch.bind(globalThis),
   };
 
-  const sharedBus = opts.hookBus ?? new HookBus();
-  const hookBus = createPluginHookBus(sharedBus, {
-    name: plugin.name,
-    capabilities: (plugin.capabilities ?? []) as Capability[],
-  } as any);
-
   const api = createPapercuspApi({
     ctx: { pluginName: plugin.name, capabilities: (plugin.capabilities ?? []) as Capability[] },
     services,
-    hookBus,
   });
 
   return {

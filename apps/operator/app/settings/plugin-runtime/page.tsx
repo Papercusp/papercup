@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic';
 interface RuntimeStatus {
   loaded: number;
   errors: number;
-  hookRegistrations: { event: string; kind: 'action' | 'filter'; plugins: string[] }[];
+  reactionRules: { id: string; on: string | string[]; fire: string; plugin: string }[];
   plugins: { name: string; version: string; source: string }[];
   loadErrors: { error: string | object; path: string }[];
   initializedPairs: string[];

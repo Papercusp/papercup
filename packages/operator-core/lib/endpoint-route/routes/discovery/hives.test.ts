@@ -70,6 +70,17 @@ describe('GET /api/discovery/hives route (P-007)', () => {
     expect(body.rows[0]).toMatchObject({ hiveId: 'ash', title: 'Ash Hive', memberLinks: ['papercusp://harness?topic=a'] });
   });
 
+  it('projects hivePubkey so the Comb rollup can match listings to the announce (comb-hive-native-sharing P-001)', async () => {
+    const dir = configureHiveDirectoryForTest(fakeDeps());
+    const pk = 'K'.repeat(43) + '=';
+    await dir.ingestAnnounce(await announce({ hive_id: 'keyed', hive_pubkey: pk }));
+    await dir.ingestAnnounce(await announce({ hive_id: 'unkeyed' }));
+    const { body } = await call('http://127.0.0.1/api/discovery/hives');
+    const rows = body.rows as Array<{ hiveId: string; hivePubkey: string | null }>;
+    expect(rows.find((r) => r.hiveId === 'keyed')?.hivePubkey).toBe(pk);
+    expect(rows.find((r) => r.hiveId === 'unkeyed')?.hivePubkey).toBeNull();
+  });
+
   it('403s a non-loopback caller via the declared loopback tier (auth-tier Wave 1)', async () => {
     // The perimeter moved from an in-handler guard to `auth: 'loopback'`,
     // enforced by the route-stack authStep — assert the declaration and the

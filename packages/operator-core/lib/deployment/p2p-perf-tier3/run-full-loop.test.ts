@@ -96,6 +96,41 @@ describe('computeFullLoopVerdict', () => {
     expect(v.revoke).toBeNull();
   });
 
+  it('starvation counts federated evidence: a killed reporter whose wi-done federated is NOT starvation', () => {
+    const v = computeFullLoopVerdict({
+      ...baseInput,
+      scenario: { kind: 'kill-authority' },
+      killedAuthority: { swarmIndex: 0, devicePubkey: 'pk-auth' },
+      results: [
+        result({
+          swarmIndex: 1,
+          owner: 'queen',
+          completions: [completion({ workItemId: 'F-001', owner: 'queen' })],
+        }),
+      ],
+      // F-002 was completed + federated by the DEAD authority — visible in the
+      // queen's converged projection, reported by no one.
+      queenTurn2SawDone: { 'F-001': ['queen'], 'F-002': ['dead-authority'] },
+    });
+    expect(v.starvedItems).toEqual([]);
+    expect(v.completedItems).toEqual(['F-001']); // reported completions only
+
+    const noEvidence = computeFullLoopVerdict({
+      ...baseInput,
+      scenario: { kind: 'kill-authority' },
+      killedAuthority: { swarmIndex: 0, devicePubkey: 'pk-auth' },
+      results: [
+        result({
+          swarmIndex: 1,
+          owner: 'queen',
+          completions: [completion({ workItemId: 'F-001', owner: 'queen' })],
+        }),
+      ],
+      queenTurn2SawDone: { 'F-001': ['queen'] }, // F-002: no evidence anywhere
+    });
+    expect(noEvidence.starvedItems).toEqual(['F-002']);
+  });
+
   it('flags a queen that MISSED a remote completion (monotonicity violation)', () => {
     const v = computeFullLoopVerdict({
       ...baseInput,

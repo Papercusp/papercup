@@ -28,6 +28,8 @@ import { getFlag } from '@papercusp/flags/server';
 import { startMobileVoiceWs } from '@papercusp/operator-core/lib/device-voice-ws';
 import { startDesktopVoiceWs } from '@papercusp/operator-core/lib/voice-node/desktop-voice-ws';
 import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/device-push-credentials';
+import { registerHostPlatform } from '@papercusp/host-platform';
+import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -37,6 +39,21 @@ export function runBootstrap(): void {
   const g = globalThis as GuardedGlobal;
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
+
+  // HostPlatform registration — every getHostPlatform() consumer (agent:role,
+  // operator:scanner prompt resolvers, …) throws without it. This call lived
+  // ONLY in the retired instrumentation-node.ts (same story as the IPC server
+  // start below) and was dropped, not ported, when that file was deleted
+  // (5694e7d58) — prompts/get on every host threw from then on. The operator
+  // is always either Tauri-hosted or a local-dev Node process — both are
+  // "desktop" for HostPlatform purposes. A future server host would register
+  // `serverHostPlatform` from its own entry point. try/catch: tests that
+  // registered a mock before calling runBootstrap() must not crash the boot.
+  try {
+    registerHostPlatform(desktopHostPlatform);
+  } catch (err) {
+    console.warn('[host-platform] register failed (non-fatal):', err);
+  }
 
   // Endpoint-IPC server — the webview→Tauri→Node fast path. The packaged
   // desktop spawns this sidecar with PAPERCUSP_IPC_ENABLE=1 and watches stdout

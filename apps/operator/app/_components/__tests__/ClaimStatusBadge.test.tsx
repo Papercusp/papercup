@@ -60,10 +60,20 @@ describe('ClaimStatusBadge — P-069a', () => {
     const titles = Array.from(container.querySelectorAll('[data-claim-status]'))
       .map((el) => el.getAttribute('title'));
     expect(new Set(titles).size).toBe(4);          // all distinct
-    expect(titles[0]).toContain('No GitHub maintainer');
-    expect(titles[1]).toContain('admin/maintain');
+    // The claim-trust copy (comb-hive-native-sharing P-003): a claim is a
+    // trust signal, not ownership of the code — single copy source.
+    expect(titles[0]).toContain('no verified repo maintainer');
+    expect(titles[0]).toContain('not ownership of the code');
+    expect(titles[1]).toContain('maintain/admin');
     expect(titles[2]).toContain('lost the GitHub permission');
-    expect(titles[3]).toContain('superseded');
+    expect(titles[3]).toContain('replaced by a newer');
+  });
+
+  it('claimed tooltip carries the when (claimedAt) — who/when per comb P-003', () => {
+    render(<ClaimStatusBadge status="claimed" claimantLogin="alice" claimedAt={1717200000000} />);
+    const title = screen.getByTestId('claim-status-badge-claimed').getAttribute('title') ?? '';
+    expect(title).toContain('Claimed ');
+    expect(title).toContain(new Date(1717200000000).toLocaleDateString());
   });
 
   it('null claimantLogin is treated as no-login', () => {

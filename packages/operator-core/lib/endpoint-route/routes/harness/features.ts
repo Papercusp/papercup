@@ -22,7 +22,7 @@ import { phasePhaseLabel } from '../../../harness-phases';
 import { emitFeatureAuthored, emitFeatureQueued } from '../../../harness/usage-emitters';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { auditFeatureChange } from '../../../feature-audit';
-import { firePluginLifecycle, firePluginEvent } from '../../../plugin-host-runtime';
+import { firePluginLifecycle } from '../../../plugin-host-runtime';
 import { getFeatureBlockers, syncFeatureBlockEdges } from '../../../dbos/feature-blockers-edges';
 import {
   resolveBlockedByRefs,
@@ -351,13 +351,27 @@ const updateFeature = defineTool({
     const transitionedToPassed = updates.status === 'passed' && existing.status !== 'passed';
 
     if (transitionedToPassed) {
+      // `onFeaturePassed` is a FROZEN typed fire-point (plugin-system-hive-port
+      // D-003) — kept for back-compat, never extended.
       void firePluginLifecycle('onFeaturePassed', {
         installSlug: project.slug,
         projectDir: project.path,
         stateDir: harnessDir(project),
       }, id);
-      void firePluginEvent('task.passed', { taskId: id, installSlug: project.slug });
-      void firePluginEvent('feature.completed', { featureId: id, installSlug: project.slug });
+      // P-007: the plugin-visible transition is re-homed onto the unified
+      // work-items emissions (`work-item:done:<id>` + unblock fan-out) — the
+      // SAME events the modern work_items:set_state path fires — replacing the
+      // retired HookBus `task.passed` / `feature.completed` topics. The
+      // per-schema harness_features write lands in the consolidated table, so
+      // the unified read sees the settled row.
+      void import('../../../work-items')
+        .then(async (wiMod) => {
+          const wi = await wiMod.getWorkItem(id, project.slug);
+          if (!wi) return;
+          const m = await import('../../../work-items-events');
+          await m.emitWorkItemSettledEvents({ ...wi, state: 'passed' });
+        })
+        .catch(() => {});
     }
 
     const updated = await dbc.prepare(

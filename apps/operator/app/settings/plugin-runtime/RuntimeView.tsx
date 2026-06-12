@@ -6,7 +6,7 @@ import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 interface RuntimeStatus {
   loaded: number;
   errors: number;
-  hookRegistrations: { event: string; kind: 'action' | 'filter'; plugins: string[] }[];
+  reactionRules: { id: string; on: string | string[]; fire: string; plugin: string }[];
   plugins: { name: string; version: string; source: string }[];
   loadErrors: { error: string | object; path: string }[];
   initializedPairs: string[];
@@ -15,7 +15,7 @@ interface RuntimeStatus {
 
 type Plugin = RuntimeStatus['plugins'][number];
 type Action = RuntimeStatus['registeredActions'][number];
-type Hook = RuntimeStatus['hookRegistrations'][number];
+type ReactionRule = RuntimeStatus['reactionRules'][number];
 
 const PLUGIN_COLUMNS: ColumnDef<Plugin>[] = [
   { key: 'name', header: 'Name', width: 2, toCopyText: (r) => r.name, render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.name}</span> },
@@ -37,10 +37,11 @@ const ACTION_COLUMNS: ColumnDef<Action>[] = [
   },
 ];
 
-const HOOK_COLUMNS: ColumnDef<Hook>[] = [
-  { key: 'event', header: 'Event', width: 2, toCopyText: (r) => r.event, render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.event}</span> },
-  { key: 'kind', header: 'Kind', width: 1, toCopyText: (r) => r.kind, render: ({ row }) => <>{row.kind}</> },
-  { key: 'plugins', header: 'Plugins', width: 3, toCopyText: (r) => r.plugins.join(', '), render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.plugins.join(', ')}</span> },
+const onText = (on: string | string[]): string => (Array.isArray(on) ? on.join(', ') : on);
+const REACTION_COLUMNS: ColumnDef<ReactionRule>[] = [
+  { key: 'on', header: 'On', width: 2, toCopyText: (r) => onText(r.on), render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{onText(row.on)}</span> },
+  { key: 'fire', header: 'Fires', width: 2, toCopyText: (r) => r.fire, render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.fire}</span> },
+  { key: 'plugin', header: 'Plugin', width: 2, toCopyText: (r) => r.plugin, render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.plugin}</span> },
 ];
 
 export default function RuntimeView({ status: initial }: { status: RuntimeStatus }) {
@@ -111,15 +112,15 @@ export default function RuntimeView({ status: initial }: { status: RuntimeStatus
         )}
       </Card>
 
-      <Card title={`Hook subscriptions — ${status.hookRegistrations.length}`}>
-        {status.hookRegistrations.length === 0 ? (
-          <Empty>No plugin has subscribed to free-form events via <code>ctx.api.hooks.addAction</code> or <code>addFilter</code>.</Empty>
+      <Card title={`Reaction rules — ${(status.reactionRules ?? []).length}`}>
+        {(status.reactionRules ?? []).length === 0 ? (
+          <Empty>No plugin has contributed event-reaction rules (<code>reactions</code> in the manifest or plugin export).</Empty>
         ) : (
-          <div style={{ height: Math.min(360, 36 + status.hookRegistrations.length * 28 + 4) }}>
-            <RichGrid<Hook>
-              columns={HOOK_COLUMNS}
-              rows={status.hookRegistrations}
-              getRowId={(r) => `${r.event}:${r.kind}`}
+          <div style={{ height: Math.min(360, 36 + status.reactionRules.length * 28 + 4) }}>
+            <RichGrid<ReactionRule>
+              columns={REACTION_COLUMNS}
+              rows={status.reactionRules}
+              getRowId={(r) => r.id}
               rowMinHeight={28}
               headerHeight={28}
             />

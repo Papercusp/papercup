@@ -23,6 +23,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('../../../plugin-host-runtime');
+  vi.doUnmock('../../../events/engine');
   vi.doUnmock('../../../harness-registry');
 });
 
@@ -36,7 +37,6 @@ describe('plugins:runtime_status', () => {
     vi.doMock('../../../plugin-host-runtime', () => ({
       pluginHostStatus: vi.fn(async () => status),
       invokePluginAction: vi.fn(),
-      firePluginEvent: vi.fn(),
       firePluginLifecycle: vi.fn(),
     }));
     const { default: tool } = await import('../runtime_status');
@@ -52,7 +52,6 @@ describe('plugins:invoke_action', () => {
     vi.doMock('../../../plugin-host-runtime', () => ({
       pluginHostStatus: vi.fn(),
       invokePluginAction,
-      firePluginEvent: vi.fn(),
       firePluginLifecycle: vi.fn(),
     }));
     vi.doMock('../../../harness-registry', () => ({
@@ -84,7 +83,6 @@ describe('plugins:invoke_action', () => {
     vi.doMock('../../../plugin-host-runtime', () => ({
       pluginHostStatus: vi.fn(),
       invokePluginAction,
-      firePluginEvent: vi.fn(),
       firePluginLifecycle: vi.fn(),
     }));
     vi.doMock('../../../harness-registry', () => ({
@@ -104,7 +102,6 @@ describe('plugins:invoke_action', () => {
     vi.doMock('../../../plugin-host-runtime', () => ({
       pluginHostStatus: vi.fn(),
       invokePluginAction: vi.fn(),
-      firePluginEvent: vi.fn(),
       firePluginLifecycle: vi.fn(),
     }));
     vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
@@ -114,14 +111,14 @@ describe('plugins:invoke_action', () => {
 });
 
 describe('plugins:fire_event', () => {
-  it('event mode calls firePluginEvent', async () => {
-    const firePluginEvent = vi.fn(async () => undefined);
+  it('event mode feeds the reaction matcher via emitSystemEvent', async () => {
+    const emitSystemEvent = vi.fn();
     vi.doMock('../../../plugin-host-runtime', () => ({
       pluginHostStatus: vi.fn(),
       invokePluginAction: vi.fn(),
-      firePluginEvent,
       firePluginLifecycle: vi.fn(),
     }));
+    vi.doMock('../../../events/engine', () => ({ emitSystemEvent }));
     vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
@@ -130,7 +127,7 @@ describe('plugins:fire_event', () => {
       { mode: 'event', event: 'smoke-test', payload: { x: 1 } },
       MAKE_CTX(),
     );
-    expect(firePluginEvent).toHaveBeenCalledWith('smoke-test', { x: 1 });
+    expect(emitSystemEvent).toHaveBeenCalledWith({ tool: 'smoke-test', args: { x: 1 } });
     const payload = parsePayload(result as never);
     expect(payload).toEqual({ ok: true, fired: 'smoke-test' });
   });
@@ -140,7 +137,6 @@ describe('plugins:fire_event', () => {
     vi.doMock('../../../plugin-host-runtime', () => ({
       pluginHostStatus: vi.fn(),
       invokePluginAction: vi.fn(),
-      firePluginEvent: vi.fn(),
       firePluginLifecycle,
     }));
     vi.doMock('../../../harness-registry', () => ({

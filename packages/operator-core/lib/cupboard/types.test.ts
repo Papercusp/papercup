@@ -14,9 +14,12 @@ import {
   canRepublish,
   canSupersede,
   err,
+  groupHarnessRowsByHive,
   groupListingsByKind,
   isHarnessListing,
+  isHivePubkeyRef,
   isPubliclyVisible,
+  listingHiveKey,
   listingHiveRef,
   ok,
   type CupboardError,
@@ -348,5 +351,68 @@ describe('groupListingsByKind (per-Hive rollup, D-005)', () => {
 
   it('returns [] for no listings', () => {
     expect(groupListingsByKind([])).toEqual([]);
+  });
+});
+
+describe('listingHiveKey + isHivePubkeyRef (hive-native rollup key, comb-hive-native-sharing P-001/P-002)', () => {
+  const PUBKEY = 'A'.repeat(43) + '=';
+
+  it('hive-bound rows key by hive_pubkey (member rows share it; project_ref does not exist on them)', () => {
+    expect(listingHiveKey(makeListing({ hive_pubkey: PUBKEY }))).toBe(PUBKEY);
+  });
+
+  it('legacy rows fall back to listingHiveRef', () => {
+    expect(listingHiveKey(makeListing({ project_ref: 'papercupai/demo' }))).toBe('papercupai/demo');
+    expect(listingHiveKey(makeListing())).toBe('papercup-ai/papercup');
+  });
+
+  it('isHivePubkeyRef accepts the raw-32-byte base64 announce encoding only', () => {
+    expect(isHivePubkeyRef(PUBKEY)).toBe(true);
+    expect(isHivePubkeyRef('papercupai/demo')).toBe(false); // project ref
+    expect(isHivePubkeyRef('owner/repo')).toBe(false); // repo slug
+    expect(isHivePubkeyRef('')).toBe(false);
+    expect(isHivePubkeyRef('A'.repeat(44))).toBe(false); // no pad ⇒ not 32 bytes
+    expect(isHivePubkeyRef('A'.repeat(43))).toBe(false);
+  });
+});
+
+describe('groupHarnessRowsByHive (hive-first browse, comb-hive-native-sharing P-002)', () => {
+  const HIVE_A = 'A'.repeat(43) + '=';
+  const HIVE_B = 'B'.repeat(43) + '=';
+
+  it('folds member rows into one group per hive, carrying title + claim rollup', () => {
+    const rows = [
+      makeListing({ id: 1, hive_pubkey: HIVE_A, hive_title: 'Hive A', claim_status: 'claimed' }),
+      makeListing({ id: 2, hive_pubkey: HIVE_A, github_repo: 'o/r2' }),
+      makeListing({ id: 3, hive_pubkey: HIVE_B, hive_title: 'Hive B' }),
+    ];
+    const { hives, legacy } = groupHarnessRowsByHive(rows);
+    expect(legacy).toEqual([]);
+    expect(hives).toHaveLength(2);
+    const a = hives.find((h) => h.hivePubkey === HIVE_A)!;
+    expect(a.hiveTitle).toBe('Hive A');
+    expect(a.members.map((m) => m.id)).toEqual([1, 2]);
+    expect(a.claimedCount).toBe(1);
+    expect(hives.find((h) => h.hivePubkey === HIVE_B)!.members).toHaveLength(1);
+  });
+
+  it('rows with no hive_pubkey are legacy (pre-hive) listings', () => {
+    const rows = [makeListing({ id: 1 }), makeListing({ id: 2, hive_pubkey: HIVE_A })];
+    const { hives, legacy } = groupHarnessRowsByHive(rows);
+    expect(legacy.map((l) => l.id)).toEqual([1]);
+    expect(hives).toHaveLength(1);
+  });
+
+  it('ignores non-harness rows (callers pre-split by kind)', () => {
+    const rows = [makeListing({ listing_kind: 'blueprint', hive_pubkey: HIVE_A })];
+    expect(groupHarnessRowsByHive(rows)).toEqual({ hives: [], legacy: [] });
+  });
+
+  it('first title wins when member rows disagree (announce stays authority)', () => {
+    const rows = [
+      makeListing({ id: 1, hive_pubkey: HIVE_A, hive_title: null }),
+      makeListing({ id: 2, hive_pubkey: HIVE_A, hive_title: 'Late title' }),
+    ];
+    expect(groupHarnessRowsByHive(rows).hives[0].hiveTitle).toBe('Late title');
   });
 });

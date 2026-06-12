@@ -199,8 +199,87 @@ function findBundledPluginsParent(): string | null {
   return null;
 }
 
+/**
+ * Register every loaded plugin's reaction rules into the one reaction
+ * registry (plugin-system-hive-port P-005; event-reaction-system D-012).
+ *
+ * MUST run after the plugin-tool sweep — fire-target resolution needs the
+ * projection registry. Per rule:
+ *   - `fire` must resolve to a projected tool OWNED by this plugin;
+ *   - the reaction is sandboxed to ONE capability (the rule's declared one,
+ *     else the fired tool's declared capability) — `buildReactionCtx` runs
+ *     the fire under a principal holding only it, so the tool's required
+ *     capabilities must be covered or registration refuses;
+ *   - registered as `plugin:<name>:<rule-id>` with source `plugin:<name>`.
+ *
+ * Full re-sync semantics: all prior `plugin:`-sourced rules are dropped
+ * first, so a dev re-discovery or a removed plugin can't leave stale rules.
+ * Failures land in loadErrors (visible via plugins:runtime_status).
+ */
+async function registerPluginReactionRules(
+  loaded: LoadedPlugin[],
+  pushErr: (e: { plugin: string; rule: string; error: string }) => void,
+): Promise<void> {
+  const { lookupByMcpName } = await import('@papercusp/agent-mcp');
+  const { registerReactionRule, unregisterReactionRule, listReactionRules } = await import('./events/registry');
+
+  for (const r of listReactionRules()) {
+    if (typeof r.source === 'string' && r.source.startsWith('plugin:')) unregisterReactionRule(r.id);
+  }
+
+  for (const lp of loaded) {
+    let rules: PluginReactionRule[];
+    try {
+      rules = collectReactionRules(lp);
+    } catch (e) {
+      pushErr({ plugin: lp.plugin.name, rule: '<collect>', error: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
+    for (const rule of rules) {
+      try {
+        const projected = lookupByMcpName(rule.fire);
+        if (!projected) {
+          throw new Error(`fire target "${rule.fire}" is not a registered tool (plugin tools project as "<plugin>.<verb>")`);
+        }
+        if (projected.pluginName !== lp.plugin.name) {
+          throw new Error(
+            `fire target "${rule.fire}" belongs to "${projected.pluginName}" — a plugin rule may only fire the plugin's OWN tools`,
+          );
+        }
+        const required = (projected.capabilities ?? []) as string[];
+        if (required.length > 1) {
+          throw new Error(
+            `fire target "${rule.fire}" requires ${required.length} capabilities — a capability-scoped reaction runs under ONE; split the tool's capabilities or pick a single-capability target`,
+          );
+        }
+        const capability = rule.capability ?? required[0] ?? `plugin:${lp.plugin.name}`;
+        if (required.length === 1 && required[0] !== capability) {
+          throw new Error(
+            `reaction capability "${capability}" does not cover fire target "${rule.fire}"'s required capability "${required[0]}"`,
+          );
+        }
+        registerReactionRule({
+          id: `plugin:${lp.plugin.name}:${rule.id}`,
+          on: rule.on,
+          // PluginReactionEvent is a structural subset of ToolInvocationEvent,
+          // and a data-match object passes through to @papercusp/rules as-is.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ...(rule.when !== undefined ? { when: rule.when as any } : {}),
+          fire: rule.fire,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          args: (rule.args ?? {}) as any,
+          ...(rule.onlyOnSuccess !== undefined ? { onlyOnSuccess: rule.onlyOnSuccess } : {}),
+          source: `plugin:${lp.plugin.name}`,
+          capability,
+        });
+      } catch (e) {
+        pushErr({ plugin: lp.plugin.name, rule: rule.id, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  }
+}
+
 async function discover(): Promise<HostState> {
-  const bus = new HookBus();
   let loaded: LoadedPlugin[] = [];
   let loadErrors: Array<{ error: string; path: string }> = [];
   try {
@@ -236,6 +315,22 @@ async function discover(): Promise<HostState> {
         path: err.plugin,
       });
     };
+    // Reaction-rule registration rides AFTER the tool sweep (fire-target
+    // resolution needs the projection registry). On a sweep timeout it moves
+    // into the background continuation for the same reason.
+    const pushReactionErr = (err: { plugin: string; rule: string; error: string }): void => {
+      loadErrors.push({
+        error: `reaction wiring failed for rule "${err.rule}" in plugin "${err.plugin}": ${err.error}`,
+        path: err.plugin,
+      });
+    };
+    const wireReactions = () =>
+      registerPluginReactionRules(loaded, pushReactionErr).catch((e: unknown) => {
+        loadErrors.push({
+          error: `plugin-reaction wiring threw: ${e instanceof Error ? e.message : String(e)}`,
+          path: '<plugin-reaction-wiring>',
+        });
+      });
     try {
       const { registerPluginTools } = await import('@papercusp/plugin-loader');
       const sweep = registerPluginTools(loaded);
@@ -247,6 +342,7 @@ async function discover(): Promise<HostState> {
       ]);
       if (outcome.kind === 'done') {
         outcome.r.errors.forEach(pushWiringErr);
+        await wireReactions();
       } else {
         loadErrors.push({
           error: `plugin-tool wiring exceeded ${SWEEP_BUDGET_MS}ms — continuing with partial registration (a dynamic-tool probe is slow/hung); it finishes in the background`,
@@ -254,7 +350,7 @@ async function discover(): Promise<HostState> {
         });
         // Drain the late result into the (mutable) state loadErrors so a delayed
         // completion is still observable via plugin host status.
-        void sweep.then((r) => r.errors.forEach(pushWiringErr), () => { /* noted above */ });
+        void sweep.then((r) => r.errors.forEach(pushWiringErr), () => { /* noted above */ }).then(wireReactions);
       }
     } catch (e: any) {
       loadErrors.push({
@@ -264,7 +360,7 @@ async function discover(): Promise<HostState> {
     }
   }
 
-  return { loaded, loadErrors, bus, initialized: new Set(), registries: new Map(), grants: new Map(), wasmHandles: new Map() };
+  return { loaded, loadErrors, initialized: new Set(), registries: new Map(), grants: new Map(), wasmHandles: new Map() };
 }
 
 function regKey(pluginName: string, installSlug: string): string {
@@ -656,23 +752,15 @@ async function ensureInitialized(
     return;
   }
 
-  // Register the plugin's free-form hook subscriptions first so an init()
-  // that fires its own events can reach its own filters/actions.
   // Tier 2 of the capability check: load the user-granted set for this
-  // (plugin@version, harness) pair so the loader's hasCapability ANDs
-  // manifest with the granted set. See lib/plugin-grants.ts.
+  // (plugin@version, harness) pair so dispatch-time checks AND the manifest
+  // with the granted set. See lib/plugin-grants.ts.
   const granted = await loadGrantedCapsSafe(
     lp.plugin.name,
     lp.plugin.version,
     ctx.installSlug,
   );
   state.grants.set(key, granted);
-  const capCtx: CapabilityCheckContext = {
-    pluginName: lp.plugin.name,
-    capabilities: lp.plugin.capabilities ?? [],
-    granted: granted as any,
-  };
-  void createPluginHookBus(state.bus, capCtx);
 
   // Build a per-(plugin, harness) action registry. Plugins receive it as
   // `ctx.actions` and call `ctx.actions.register(name, handler)` from
@@ -832,14 +920,21 @@ async function initializeWasmPlugin(
     },
   };
 
-  // Event sink → fire on the existing HookBus so JS plugins can listen
-  // to WASM-emitted events. `event` becomes the bus topic.
+  // Event sink → feed the reaction registry as a synthetic event so other
+  // plugins' reaction rules (`on: '<namespace>.<event>'`) can trigger on
+  // WASM-emitted events. (Replaces the retired HookBus topic fire — P-006.)
   const eventSink = {
     emit: (namespace: string, event: string, payloadJson: string) => {
       const topic = `${namespace}.${event}`;
       let payload: unknown = payloadJson;
       try { payload = payloadJson ? JSON.parse(payloadJson) : null; } catch { /* keep raw */ }
-      void state.bus.runAction(topic, payload, ctx.log);
+      void import('./events/engine')
+        .then((m) => m.emitSystemEvent({
+          tool: topic,
+          args: (payload && typeof payload === 'object' ? payload : { value: payload }) as Record<string, unknown>,
+          harnessSlug: ctx.installSlug,
+        }))
+        .catch((e) => ctx.log(`wasm event emit failed for ${topic}: ${e instanceof Error ? e.message : e}`));
     },
   };
 
@@ -1072,21 +1167,6 @@ export async function firePluginLifecycle<K extends keyof PluginHooks>(
 
 }
 
-/**
- * Fire a free-form `events:emit:<name>` event through the HookBus. Returns
- * after all action handlers have run. Filters are not fired here — use
- * `applyPluginFilter()` for value-transform chains.
- */
-export async function firePluginEvent<T = unknown>(event: string, arg: T): Promise<void> {
-  const state = await getPluginHost();
-  await state.bus.runAction(event, arg, (msg) => console.warn(msg));
-}
-
-export async function applyPluginFilter<T = unknown>(event: string, value: T): Promise<T> {
-  const state = await getPluginHost();
-  return state.bus.applyFilter(event, value);
-}
-
 export async function pluginHostStatus(): Promise<PluginHostStatus & {
   plugins: Array<{ name: string; version: string; source: string }>;
   loadErrors: Array<{ error: string; path: string }>;
@@ -1094,10 +1174,14 @@ export async function pluginHostStatus(): Promise<PluginHostStatus & {
   registeredActions: Array<{ key: string; declared: string[]; registered: string[] }>;
 }> {
   const state = await getPluginHost();
+  const { listReactionRules } = await import('./events/registry');
+  const reactionRules = listReactionRules()
+    .filter((r) => typeof r.source === 'string' && r.source.startsWith('plugin:'))
+    .map((r) => ({ id: r.id, on: r.on, fire: r.fire, plugin: (r.source as string).slice('plugin:'.length) }));
   return {
     loaded: state.loaded.length,
     errors: state.loadErrors.length,
-    hookRegistrations: state.bus.inspect(),
+    reactionRules,
     plugins: state.loaded.map((lp) => ({ name: lp.plugin.name, version: lp.plugin.version, source: lp.source })),
     loadErrors: state.loadErrors,
     initializedPairs: Array.from(state.initialized).sort(),
@@ -1277,7 +1361,6 @@ export function _injectPluginHostForTests(loaded: LoadedPlugin[]): void {
   const state: HostState = {
     loaded,
     loadErrors: [],
-    bus: new HookBus(),
     initialized: new Set(),
     registries: new Map(),
     grants: new Map(),

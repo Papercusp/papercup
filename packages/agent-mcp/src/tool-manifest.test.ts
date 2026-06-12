@@ -9,7 +9,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { registerHostPlatform } from '@papercusp/host-platform';
+import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 import { applyToolManifest, reloadToolManifest, hasToolManifest } from './tool-manifest';
+
+// The SUT reads via HostPlatform now; register the real desktop impl so the
+// test keeps driving the actual file-read path (not a stub of it).
+registerHostPlatform(desktopHostPlatform);
 
 let dir: string;
 let manifestFile: string;

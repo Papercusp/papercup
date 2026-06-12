@@ -150,8 +150,9 @@ describe('full shared-hive loop — $0 local parity (3 Swarms, testnet DHT, loop
 
       expect(v.killedAuthority?.swarmIndex).toBe(0);
       expect(v.results.length).toBe(2); // survivors
-      expect(v.starvedItems).toEqual([]); // dead authority's items reclaimed via fail-open
-      expect(v.completedItems.length).toBe(12);
+      // No starvation: every item has completion EVIDENCE — survivor-reported, or
+      // federated by the authority before it died, or reclaimed via fail-open.
+      expect(v.starvedItems).toEqual([]);
       expect(v.failOpenObserved).toBe(true);
       expect(v.doubleCompletedAfterReconcile).toEqual([]);
       expect(v.determinismHolds).toBe(true);
@@ -346,23 +347,26 @@ describe.skipIf(!haveHetzner)(
           expect(happy.convergence.doneVisibleEverywhere).toBe(true);
           expect(happy.convergence.lagMaxMs).toBeLessThan(120_000); // bounded lag oracle
 
-          // ── §2a: REAL network partition (nftables drop of the authority RPC port on frame 1) ──
+          // ── §2a: REAL network partition — nftables cuts ALL frame1↔frame0 traffic
+          // (authority RPC + substrate replication alike, the true machine-boundary
+          // partition). SSH control rides the orchestrator's box → frames, untouched.
           console.log('[loop-xm] scenario 2/5: PARTITION (real nftables cut)');
           const authorityIp = fleet.frames[0].target.host;
           const frame1Exec = createSshRemoteExec({ ...fleet.frames[1].target, sudo: false });
-          const authPortScenario1 = basePort + 10; // slot 0's port in scenario index 1
           verdicts.partition = await runFullLoop({
             launcher: launcherFor(1),
             scenario: {
               kind: 'partition',
               targetIndex: 2,
-              healAfterMs: 12_000,
+              healAfterMs: 15_000,
               engage: async () => {
                 await frame1Exec.runScript(
                   [
                     'nft add table inet loopchaos',
                     `nft add chain inet loopchaos output '{ type filter hook output priority 0 ; policy accept ; }'`,
-                    `nft add rule inet loopchaos output ip daddr ${authorityIp} tcp dport ${authPortScenario1} drop`,
+                    `nft add chain inet loopchaos input '{ type filter hook input priority 0 ; policy accept ; }'`,
+                    `nft add rule inet loopchaos output ip daddr ${authorityIp} drop`,
+                    `nft add rule inet loopchaos input ip saddr ${authorityIp} drop`,
                   ].join('\n') + '\n',
                 );
               },

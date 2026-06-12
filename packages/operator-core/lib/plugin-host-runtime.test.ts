@@ -11,7 +11,6 @@ import {
   _injectPluginHostForTests,
   _resetPluginHostForTests,
   firePluginLifecycle,
-  firePluginEvent,
   invokePluginAction,
   pluginHostStatus,
   warmUpPluginsForSlug,
@@ -376,13 +375,6 @@ describe('ctx.oauth.token', () => {
   });
 });
 
-describe('firePluginEvent (free-form bus)', () => {
-  it('returns without error even when no plugin subscribes', async () => {
-    _injectPluginHostForTests([]);
-    await firePluginEvent('arbitrary.event', { x: 1 });
-    // No assertion needed — this just must not throw.
-  });
-});
 
 describe('pluginHostStatus', () => {
   it('reports loaded count + initialized pairs', async () => {

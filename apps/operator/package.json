@@ -96,6 +96,7 @@
     "@papercusp/git-graph": "file:../../libs/generic/git-graph",
     "@papercusp/grid-core": "file:../../libs/generic/papergrid/grid-core",
     "@papercusp/harness": "file:../../libs/papercusp/packages/harness",
+    "@papercusp/host-platform": "file:../../libs/host-platform",
     "@papercusp/ipc-endpoint-server": "file:../../libs/generic/ipc-endpoint-server",
     "@papercusp/ipc-framing": "file:../../libs/generic/ipc-framing",
     "@papercusp/locks": "file:../../libs/papercusp/packages/locks",

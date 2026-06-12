@@ -1,10 +1,14 @@
 /**
  * POST /api/plugins/runtime/fire-event — diagnostic event or lifecycle
- * fire through the host runtime. Useful for smoke-testing handler
+ * fire through the host runtime. Useful for smoke-testing handler/rule
  * wiring without touching the substrate's mission lifecycle.
  *
  * Body: { event: string; lifecycle?: keyof PluginHooks; slug?: string;
  *         args?: unknown[]; payload?: unknown }
+ *
+ * `event` feeds the event-reaction matcher as a synthetic event (the
+ * retired HookBus fire it used to do — plugin-system-hive-port P-006);
+ * `lifecycle` fires the typed PluginHooks surface.
  *
  * Relocated from app/api/_hono/plugins.ts (endpoint-hono-elimination
  * -2026-05-21 A3).
@@ -19,9 +23,9 @@ export default defineTool({
     const body = await req.json().catch(() => ({} as any));
     const event = typeof body?.event === 'string' ? body.event : '';
     const lifecycle = typeof body?.lifecycle === 'string' ? body.lifecycle : '';
-    const { firePluginEvent, firePluginLifecycle } = await import('../../../plugin-host-runtime');
     try {
       if (lifecycle) {
+        const { firePluginLifecycle } = await import('../../../plugin-host-runtime');
         const slug = String(body?.slug ?? 'diag');
         const { loadHarnessRegistry } = await import('../../../harness-registry');
         const project = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug) ?? null;
@@ -37,7 +41,12 @@ export default defineTool({
       if (!event) {
         return Response.json({ error: 'event (string) or lifecycle (string) required' }, { status: 400 });
       }
-      await firePluginEvent(event, body?.payload ?? {});
+      const { emitSystemEvent } = await import('../../../events/engine');
+      const payload = body?.payload;
+      emitSystemEvent({
+        tool: event,
+        args: (payload && typeof payload === 'object' ? payload : payload === undefined ? {} : { value: payload }) as Record<string, unknown>,
+      });
       return Response.json({ ok: true });
     } catch (e: any) {
       return Response.json({ error: e?.message ?? String(e) }, { status: 500 });

@@ -336,7 +336,11 @@ async function main(): Promise<void> {
   const identity = makePeerIdentity(`loop-${cfg.swarmIndex}`, 1000 + cfg.swarmIndex);
   const swarm = new Hyperswarm(
     cfg.bootstrap && cfg.bootstrap.length ? { bootstrap: cfg.bootstrap } : {},
-  ) as unknown as HyperswarmLike & { destroy(): Promise<void> };
+  ) as unknown as HyperswarmLike & {
+    destroy(): Promise<void>;
+    keyPair: { publicKey: Buffer };
+    joinPeer(publicKey: Buffer): void;
+  };
 
   const binding: SwarmBinding = { kind: 'hive', hive_pubkey: cfg.hivePubkey };
   let handle: BootedHarnessHandle | null = null;
@@ -376,7 +380,18 @@ async function main(): Promise<void> {
       projectOp(op, false);
     };
 
-    out({ evt: 'ready', devicePubkey: cfg.devicePubkey, httpPort: cfg.httpPort, logKey: handle.ownLog.keyHex });
+    // `swarmKey` = this peer's hyperswarm noise pubkey. Announces ride PER-CONNECTION
+    // channels (no gossip), so full-mesh admission needs a DIRECT connection per pair —
+    // concurrent topic joins race the DHT announce and can miss each other. The parent
+    // collects every swarmKey and sends `peers <hex,…>`; each agent then joinPeer()s
+    // the others explicitly (deterministic mesh, identical on testnet + public DHT).
+    out({
+      evt: 'ready',
+      devicePubkey: cfg.devicePubkey,
+      httpPort: cfg.httpPort,
+      logKey: handle.ownLog.keyHex,
+      swarmKey: swarm.keyPair.publicKey.toString('hex'),
+    });
 
     let admittedReported = false;
     const reportAdmitted = () => {
@@ -636,6 +651,22 @@ async function main(): Promise<void> {
         const pk = line.slice('revoke '.length).trim();
         revoked.add(pk);
         out({ evt: 'revoked-ack', pubkey: pk, tAuthority: Date.now() });
+        continue;
+      }
+
+      if (line.startsWith('peers ')) {
+        const ownKey = swarm.keyPair.publicKey.toString('hex');
+        for (const hex of line.slice('peers '.length).split(',')) {
+          const k = hex.trim();
+          if (k && k !== ownKey) {
+            try {
+              swarm.joinPeer(Buffer.from(k, 'hex'));
+            } catch {
+              /* a bad key can't block the mesh; topic discovery is the fallback */
+            }
+          }
+        }
+        out({ evt: 'peers-ack' });
         continue;
       }
 

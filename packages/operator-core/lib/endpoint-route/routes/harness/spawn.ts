@@ -31,7 +31,8 @@ import {
 import { phasePhaseLabel } from '../../../harness-phases';
 import { SUPERUSER_TOKEN_PATH } from '../../../superuser-token';
 import { launchRun } from '../../../harness-launch';
-import { firePluginLifecycle, firePluginEvent } from '../../../plugin-host-runtime';
+import { firePluginLifecycle } from '../../../plugin-host-runtime';
+import { emitPipelineEvent } from '../../../events/pipeline-events';
 import { recordAdvSession, markAdvSessionEnded } from '../../../adv-sessions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { operatorApiBase } from '../../../operator-api-base';
@@ -56,13 +57,16 @@ const launch = defineTool({
     const extra = typeof (body as any).extra === 'string' ? (body as any).extra : '';
     const result = await launchRun(project, extra);
     if (!result.ok) return Response.json({ error: result.error }, { status: 500 });
-    // Phase 6b — plugin lifecycle hooks; best-effort.
+    // Phase 6b — plugin lifecycle hooks; best-effort. `beforeMissionStart` is
+    // a FROZEN typed fire-point (plugin-system-hive-port D-003); the launch
+    // emission is the live extension surface (reaction rules + events:await),
+    // re-homed from the retired HookBus `mission.start` (P-007).
     void firePluginLifecycle('beforeMissionStart', {
       installSlug: project.slug,
       projectDir: project.path,
       stateDir: harnessDir(project),
     });
-    void firePluginEvent('mission.start', { installSlug: project.slug });
+    emitPipelineEvent({ name: 'launch', harnessSlug: project.slug });
     return Response.json({ ok: true, logPath: result.logPath });
   },
 });

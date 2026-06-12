@@ -245,6 +245,13 @@ export async function runFullLoop(opts: RunFullLoopOpts): Promise<FullLoopVerdic
   if (notReady.length) throw new Error(`runFullLoop: Swarm(s) ${notReady.join(',')} never became ready`);
   log(`all ${swarmCount} Swarms ready; hive topic ${hivePubkey.slice(0, 12)}…`);
 
+  // Deterministic mesh: announces are PER-CONNECTION (no gossip), so distribute every
+  // peer's swarm key and have each agent joinPeer() the others explicitly — concurrent
+  // topic joins otherwise race the DHT announce and stall the pairwise mesh.
+  const swarmKeys = readys.map((r) => String((r as { swarmKey?: unknown }).swarmKey ?? ''));
+  const peersLine = `peers ${swarmKeys.filter(Boolean).join(',')}`;
+  for (const h of handles) h.send(peersLine);
+
   const admits = await Promise.all(handles.map((h) => h.waitFor('admitted', meshTimeoutMs)));
   const notMeshed = admits.map((r, i) => (r ? null : i)).filter((i): i is number => i !== null);
   if (notMeshed.length) throw new Error(`runFullLoop: Swarm(s) ${notMeshed.join(',')} never reached full mesh`);
@@ -446,7 +453,14 @@ export function computeFullLoopVerdict(input: {
 
   const completedItems = [...new Set(allCompletions.map((c) => c.workItemId))].sort();
   const completedSet = new Set(completedItems);
-  const starvedItems = backlog.filter((i) => !completedSet.has(i));
+  // Starvation counts COMPLETION EVIDENCE, not reporters: a killed Swarm's
+  // completions never report a result, but its federated `wi-done` records are
+  // legitimate completions (visible in the Queen's converged projection). Only an
+  // item with NO evidence anywhere starved. (A dead-reporter completion racing a
+  // survivor's fail-open re-claim can double-complete invisibly to this verdict —
+  // that residual is production's P-012 cross-swarm double-completion detector.)
+  const evidenceDone = new Set([...completedSet, ...Object.keys(input.queenTurn2SawDone)]);
+  const starvedItems = backlog.filter((i) => !evidenceDone.has(i));
 
   const ownersByItem = new Map<string, Set<string>>();
   for (const c of allCompletions) {

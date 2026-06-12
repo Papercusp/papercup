@@ -12,9 +12,11 @@
  *
  * Consumers either inject a `HostPlatform` explicitly (preferred — keeps the
  * dependency visible) or call `getHostPlatform()` to get the process-wide
- * default. The default is whatever was registered via `registerHostPlatform()`
- * during host bootstrap, or the desktop impl if nothing was registered (which
- * is the right answer for Tauri + `npm run dev` operator).
+ * default — whatever was registered via `registerHostPlatform()` during host
+ * bootstrap. There is NO silent fallback: an unregistered host throws on the
+ * first `getHostPlatform()` call (see the rationale on that function). Hosts
+ * that register today: the operator Hono host (`bin/host-bootstrap.ts`) and
+ * the agent-mcp stdio server (`server-entry.ts`) — both desktop.
  */
 
 export interface HostPlatform {

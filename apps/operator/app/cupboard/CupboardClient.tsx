@@ -948,7 +948,7 @@ function ClaimRollupPill({ claimed, total }: { claimed: number; total: number })
  * One Hive in the flat browse (P-002): member repos grouped under the hive's
  * title with a claim rollup; the primary action enters the per-Hive rollup.
  */
-function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOpen: () => void }) {
+export function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOpen: () => void }) {
   const title = group.hiveTitle ?? listingRepoSlug(group.members[0]) ?? 'Untitled hive';
   const repos = group.members.map(listingRepoSlug).filter(Boolean);
   const shown = repos.slice(0, 4);
@@ -1041,7 +1041,7 @@ interface DirectoryHiveRow {
  * offered on unclaimed member listings to any viewer; the worker enforces
  * maintain/admin and a refusal surfaces honestly.
  */
-function HiveRollupHeaderCard({
+export function HiveRollupHeaderCard({
   hiveRef,
   members,
   onClaimed,

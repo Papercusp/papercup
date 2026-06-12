@@ -9,7 +9,7 @@
  * Concurrency: outgoing requests are tagged with monotonic ids; replies
  * dispatch to pending promises by id. Server-initiated notifications
  * (no id) fire onNotification for the operator-side bridge to relay
- * onto the HookBus.
+ * as host events (the event-reaction registry).
  */
 
 import type { Readable, Writable } from 'node:stream';

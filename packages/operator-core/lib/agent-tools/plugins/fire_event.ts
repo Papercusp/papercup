@@ -1,17 +1,21 @@
 /**
- * plugins:fire_event — fire a free-form plugin event OR a typed
- * lifecycle hook through the in-process host runtime. Diagnostic-
- * shaped, useful for smoke-testing handler wiring.
+ * plugins:fire_event — fire a synthetic event into the reaction registry OR
+ * a typed lifecycle hook through the in-process host runtime. Diagnostic-
+ * shaped, useful for smoke-testing handler/rule wiring.
  *
  * Mirrors POST /api/plugins/runtime/fire-event. Discriminated by
  * `mode`:
- *   - { mode: 'event',     event,     payload? }
- *   - { mode: 'lifecycle', lifecycle, slug, args? }
+ *   - { mode: 'event',     event,     payload? }  → reaction rules on that key
+ *   - { mode: 'lifecycle', lifecycle, slug, args? } → typed PluginHooks fire
+ *
+ * (The `event` mode used to fire the retired HookBus; it now feeds the
+ * event-reaction matcher — plugin-system-hive-port P-006/D-003.)
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { firePluginEvent, firePluginLifecycle } from '../../plugin-host-runtime';
+import { firePluginLifecycle } from '../../plugin-host-runtime';
+import { emitSystemEvent } from '../../events/engine';
 import { loadHarnessRegistry } from '../../harness-registry';
 
 export default defineTool({
@@ -41,7 +45,11 @@ export default defineTool({
   ]),
   async handler(args) {
     if (args.mode === 'event') {
-      await firePluginEvent(args.event, args.payload ?? {});
+      const payload = args.payload;
+      emitSystemEvent({
+        tool: args.event,
+        args: (payload && typeof payload === 'object' ? payload : payload === undefined ? {} : { value: payload }) as Record<string, unknown>,
+      });
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, fired: args.event }) }] };
     }
     const project = (await loadHarnessRegistry()).projects.find((p) => p.slug === args.slug) ?? null;

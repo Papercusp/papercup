@@ -391,7 +391,6 @@ describe('joinSharedHarness orchestrator', () => {
         githubUserId: USER_ID,
         githubLogin: LOGIN,
         keychainId: KEYCHAIN_ID,
-      registerCloneFn: async () => undefined, // EI-339: never the live registry
         registerCloneFn: async () => undefined, // EI-339: never the live registry
         existingGistId: 'gist-injected-123',
         fetchFn: makeFetch([{ status: 200, body: { id: USER_ID, login: LOGIN } }]),
@@ -547,7 +546,6 @@ describe('joinSharedHarness orchestrator', () => {
         githubUserId: USER_ID,
         githubLogin: LOGIN,
         keychainId: KEYCHAIN_ID,
-      registerCloneFn: async () => undefined, // EI-339: never the live registry
         registerCloneFn: async () => undefined, // EI-339: never the live registry
         fetchFn,
         readStateFn,

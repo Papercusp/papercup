@@ -135,14 +135,9 @@ export function makeBrowserApi(slug: string, pluginName: string, opts: BrowserAp
         return r as Response;
       })) as typeof fetch;
 
-  // Hooks bus: plugins on the browser side can't subscribe to host
-  // hook events meaningfully (no shared event loop). We expose a
-  // no-op shim that throws on subscribe to fail loudly.
-  const hooks = {
-    addAction: () => { throw new Error('PluginHookBus.addAction is not available in the browser. Use a server-side plugin (apiRoutes) to handle host hooks.'); },
-    addFilter: () => { throw new Error('PluginHookBus.addFilter is not available in the browser.'); },
-    emit: async () => { /* no-op */ },
-  };
+  // (The hook bus shim is gone — the addAction/addFilter surface was retired
+  // by plugin-system-hive-port P-006; plugins hook the host via declarative
+  // `reactions`, which are host-side by construction.)
 
   return {
     tasks,
@@ -154,7 +149,6 @@ export function makeBrowserApi(slug: string, pluginName: string, opts: BrowserAp
     fetch: pluginFetch,
     storage,
     db,
-    hooks: hooks as any,
     capabilities: () => [],  // browser doesn't know — server enforces
   } as PapercuspApi;
 }

@@ -24,9 +24,8 @@
  * so this is fully backward-compatible until you generate a snapshot.
  */
 
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { getHostPlatform } from '@papercusp/host-platform';
 
 type Manifest = { order: Map<string, number> };
 
@@ -36,14 +35,19 @@ let cache: Manifest | null | undefined;
 function manifestPath(): string {
   return (
     process.env.AGENT_MCP_TOOL_MANIFEST ||
-    path.join(os.homedir(), '.papercusp', 'tool-manifest.json')
+    path.join(getHostPlatform().homedir(), '.papercusp', 'tool-manifest.json')
   );
 }
 
 function load(): Manifest | null {
   if (cache !== undefined) return cache;
   try {
-    const raw = JSON.parse(fs.readFileSync(manifestPath(), 'utf8'));
+    const text = getHostPlatform().readTextFileSync(manifestPath());
+    if (text === null) {
+      cache = null; // missing or unreadable → expose all
+      return cache;
+    }
+    const raw = JSON.parse(text);
     const names: unknown = Array.isArray(raw) ? raw : raw?.tools;
     if (
       !Array.isArray(names) ||
@@ -55,7 +59,7 @@ function load(): Manifest | null {
     }
     cache = { order: new Map((names as string[]).map((n, i) => [n, i])) };
   } catch {
-    cache = null; // missing or invalid → expose all
+    cache = null; // unparseable → expose all
   }
   return cache;
 }

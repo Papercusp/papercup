@@ -13,12 +13,20 @@
  * (blueprint) / Install (plugin, pack), driven by `listingActionFor()`.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
-import { ListingCard } from '../CupboardClient';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import * as RadixTooltip from '@radix-ui/react-tooltip';
+import type { ReactElement } from 'react';
+import { ListingCard, HiveBrowseCard, HiveRollupHeaderCard } from '../CupboardClient';
+import { groupHarnessRowsByHive } from '@papercusp/operator-core/lib/cupboard/types';
 import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
 
 afterEach(() => cleanup());
+
+/** Radix Tooltip needs its provider (the SPA root mounts one globally). */
+function withTooltips(ui: ReactElement) {
+  return render(<RadixTooltip.Provider delayDuration={0}>{ui}</RadixTooltip.Provider>);
+}
 
 function listing(overrides: Partial<HarnessListing> = {}): HarnessListing {
   return {
@@ -231,5 +239,137 @@ describe('Cupboard ListingCard — Hive chip (per-Hive rollup, D-005)', () => {
       />,
     );
     expect(screen.queryByTestId('cupboard-hive-chip')).toBeNull();
+  });
+});
+
+// ─── comb-hive-native-sharing-2026-06-11 Phase 1 ────────────────────────────
+
+const HIVE_PK = 'A'.repeat(43) + '=';
+
+describe('ListingCard — suppressViewHive (rollup mode, P-001)', () => {
+  it('hides the redundant View Hive button inside the rollup', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'harness', hive_pubkey: HIVE_PK })}
+        onAction={() => {}}
+        onDetail={() => {}}
+        suppressViewHive
+      />,
+    );
+    expect(screen.queryByTestId('cupboard-action')).toBeNull();
+  });
+
+  it('keeps Fork/Install actions in rollup mode (only view-hive is redundant)', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'blueprint' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+        suppressViewHive
+      />,
+    );
+    expect(screen.getByTestId('cupboard-action').getAttribute('data-action')).toBe('fork');
+  });
+});
+
+describe('HiveBrowseCard — hive-first flat browse (P-002)', () => {
+  function group() {
+    const rows = [
+      listing({ id: 1, hive_pubkey: HIVE_PK, hive_title: 'Demo Hive', github_repo: 'o/r1', claim_status: 'claimed' }),
+      listing({ id: 2, hive_pubkey: HIVE_PK, github_repo: 'o/r2' }),
+    ];
+    return groupHarnessRowsByHive(rows).hives[0];
+  }
+
+  it('renders ONE card per hive: title, member repos, claim rollup, View Hive CTA', () => {
+    const onOpen = vi.fn();
+    withTooltips(<HiveBrowseCard group={group()} onOpen={onOpen} />);
+    const card = screen.getByTestId('cupboard-hive-card');
+    expect(card.getAttribute('data-hive-pubkey')).toBe(HIVE_PK);
+    expect(card.textContent).toContain('Demo Hive');
+    expect(card.textContent).toContain('o/r1');
+    expect(card.textContent).toContain('o/r2');
+    expect(screen.getByTestId('cupboard-claim-rollup').textContent).toContain('1/2 claimed');
+    fireEvent.click(screen.getByTestId('cupboard-hive-card-open'));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)', () => {
+  const originalFetch = global.fetch;
+  const fetchMock = vi.fn();
+  beforeEach(() => {
+    fetchMock.mockReset();
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  const members = [
+    listing({ id: 1, hive_pubkey: HIVE_PK, hive_title: 'Demo Hive', github_repo: 'o/r1' }),
+    listing({ id: 2, hive_pubkey: HIVE_PK, github_repo: 'o/r2', claim_status: 'claimed' }),
+  ];
+
+  function directoryResponds(rows: unknown[]) {
+    fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/api/discovery/hives')) {
+        return new Response(JSON.stringify({ count: rows.length, rows }), { status: 200 });
+      }
+      if (u.includes('/api/discovery/join-hive')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { memberLinks?: string[] };
+        return new Response(
+          JSON.stringify({ ok: true, hiveSlug: 'demo-hive', members: (body.memberLinks ?? []).map(() => ({ ok: true })) }),
+          { status: 200 },
+        );
+      }
+      if (u.includes('/claim')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    });
+  }
+
+  it('resolves the announce by hive_pubkey: title, visibility, Join CTA → join-hive', async () => {
+    directoryResponds([
+      {
+        hiveId: 'demo', title: 'Demo Hive', description: '', owner: 'alice',
+        visibility: 'public', memberLinks: ['papercusp://harness?topic=a', 'papercusp://harness?topic=b'],
+        memberCount: 2, hivePubkey: HIVE_PK,
+      },
+    ]);
+    withTooltips(<HiveRollupHeaderCard hiveRef={HIVE_PK} members={members} onClaimed={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('cupboard-hive-join')).toBeTruthy());
+    expect(screen.getByTestId('cupboard-hive-rollup-title').textContent).toBe('Demo Hive');
+    expect(screen.getByTestId('cupboard-hive-visibility').getAttribute('data-visibility')).toBe('public');
+    fireEvent.click(screen.getByTestId('cupboard-hive-join'));
+    await waitFor(() =>
+      expect(screen.getByTestId('cupboard-hive-join-msg').textContent).toContain("Joined hive 'demo-hive' — 2/2"),
+    );
+    const joinCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('join-hive'))!;
+    expect(JSON.parse(String((joinCall[1] as RequestInit).body))).toMatchObject({ hiveId: 'demo' });
+  });
+
+  it('honest empty-state + invite-link affordance when no announce resolves', async () => {
+    directoryResponds([]);
+    withTooltips(<HiveRollupHeaderCard hiveRef={HIVE_PK} members={members} onClaimed={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('cupboard-hive-join-unavailable')).toBeTruthy());
+    expect(screen.queryByTestId('cupboard-hive-join')).toBeNull();
+    expect(screen.getByTestId('cupboard-hive-invite-input')).toBeTruthy();
+    expect(screen.getByTestId('cupboard-hive-join-unavailable').textContent).toContain('isn’t announcing');
+  });
+
+  it('claim rollup + Claim CTA drive the loopback claim proxy for unclaimed members (P-003)', async () => {
+    directoryResponds([]);
+    const onClaimed = vi.fn();
+    withTooltips(<HiveRollupHeaderCard hiveRef={HIVE_PK} members={members} onClaimed={onClaimed} />);
+    await waitFor(() => expect(screen.getByTestId('cupboard-hive-claim')).toBeTruthy());
+    expect(screen.getByTestId('cupboard-claim-rollup').textContent).toContain('1/2 claimed');
+    fireEvent.click(screen.getByTestId('cupboard-hive-claim'));
+    await waitFor(() => expect(onClaimed).toHaveBeenCalledTimes(1));
+    const claimCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/claim'));
+    // Only the UNCLAIMED member (id 1) is claimed — id 2 already is.
+    expect(claimCalls.map((c) => String(c[0]))).toEqual(['/api/cupboard/listings/1/claim']);
   });
 });
