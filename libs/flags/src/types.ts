@@ -170,6 +170,13 @@ export const FLAGS = {
   // the plan's P-001 arming gate closes (D-001 owner-ratified dark-ship rule
   // for frontier loops); the Learning tab demand panel reads the map either way.
   NEGATIVE_SPACE_MINER: "papercusp-negative-space-miner",
+  // self-learning-frontier-2026-06-12 (P-011 / FB-05): the neologism miner —
+  // `system:neologism-mine` mines coord traffic + insights for emergent
+  // recurring vocabulary with no corresponding primitive (tool/table/verb)
+  // and routes capped abstraction-proposal candidates into Scout's
+  // improvement rail via the capture core. OFF until the plan's P-001 arming
+  // gate closes (D-001 owner-ratified dark-ship rule for frontier loops).
+  NEOLOGISM_MINER: "papercusp-neologism-miner",
   // self-learning-frontier-2026-06-12 (P-003 / FB-01, D-004): the learning
   // governor — ONE shared learning-spend ledger every unattended learning loop
   // registers with (sub-budget + priority). ON: learningGovernorPreflight
@@ -180,6 +187,24 @@ export const FLAGS = {
   // refuses EVERYTHING with 'governor-dark' and the mirrors no-op — the
   // kill-switch.
   LEARNING_GOVERNOR: "papercusp-learning-governor",
+  // self-learning-frontier-2026-06-12 (P-020 / FB-06): the replay harness —
+  // re-run an agent from a historical transcript point (or synthetic context)
+  // under a modified prompt/policy and judge the divergence; the substrate for
+  // regret mining / transfer / shadow ablation (P-021..023). OFF until the
+  // plan's P-001 arming gate closes (D-001 owner-ratified dark-ship rule):
+  // replayPreflight refuses with 'replay-dark', so no unattended replay can
+  // spend. Double-gated — the loop also ships unregistered/unbudgeted on the
+  // learning governor until the P-001 arming act.
+  REPLAY_HARNESS: "papercusp-replay-harness",
+  // self-learning-frontier-2026-06-12 (P-021 / FB-07): regret mining —
+  // `system:regret-mine` selects bad historical sessions (token-burn
+  // percentile, validator bounces, rescue markers), locates the divergence
+  // turn in the persisted transcript, and — once the FB-06 replay harness
+  // lands — counterfactually replays candidate rule changes from that turn,
+  // filing scored what-would-have-helped reports origin=replay through the
+  // capture core. OFF until the plan's P-001 arming gate closes (D-001
+  // owner-ratified dark-ship rule for frontier loops).
+  REGRET_MINING: "papercusp-regret-mining",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -284,6 +309,19 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // P-001 closes (consume-edges P-013 live proof + owner ratification). The
   // pending flip is surfaced in the plan's ## Now + every lane report.
   [FLAGS.NEGATIVE_SPACE_MINER]: false,
+  // OFF by default — same D-001 dark-ship rule as NEGATIVE_SPACE_MINER above:
+  // frontier learning loops arm only when self-learning-frontier P-001 closes
+  // (the flag flip + an owner-set governor budget are the arming acts).
+  [FLAGS.NEOLOGISM_MINER]: false,
+  // OFF by default — same D-001 dark-ship rule as the miners above: the
+  // replay harness is a frontier learning loop (LLM spend); flag flip + an
+  // owner-set governor budget (registerReplayLoop) are the P-001 arming acts.
+  [FLAGS.REPLAY_HARNESS]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: regret
+  // mining is a frontier learning loop (its replay leg spends LLM tokens);
+  // the flag flip + an owner-set governor budget on loop `regret-mining`
+  // are the P-001 arming acts.
+  [FLAGS.REGRET_MINING]: false,
   // ON by default — Phase 0 foundation, same call as CHANGE_LEDGER above
   // (self-learning-frontier P-003/FB-01): the governor SPENDS nothing and
   // FILES nothing — it is the refusal gate D-004 wants live, and ON starts

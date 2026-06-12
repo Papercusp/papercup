@@ -1,0 +1,427 @@
+/**
+ * miner-core.ts — the neologism miner's pure core
+ * (self-learning-frontier-2026-06-12 P-011 / FB-05).
+ *
+ * A "neologism" here is emergent fleet vocabulary: a term agents coin and
+ * keep using in coord traffic + insights ("wake-storm", "arming gate",
+ * "deploy train") that has NO corresponding primitive — no tool, table,
+ * verb, routine, or flag carries its name. Recurring coinage with no
+ * primitive is a demand signal for an abstraction: the concept is real
+ * enough that the fleet needed a word for it, but it still lives only in
+ * prose, so it is unsearchable, unreferenceable, and unautomatable.
+ *
+ * This module turns raw coord rows (mined from
+ * harness_shared.coord_event_log by scan.ts) + the insights corpus + the
+ * primitive namespaces into a ranked emergent-term map and picks the capped
+ * candidate set worth routing into Scout's improvement rail as abstraction
+ * proposals (D-007's "route into the existing rails" — the proposal shape is
+ * Scout's own `Proposal`, the body composer is router-deps' improvementBody).
+ *
+ * Pure on purpose (no PG, no fs, no clock — `asOf` is injected):
+ * sanitization, term extraction, namespace coverage, the growth math, and
+ * the fire-bar selection are all unit-testable; scan.ts owns the SQL/fs +
+ * capture glue. Mirrors the negative-space miner's split (FB-04).
+ */
+
+import type { Proposal } from '../scout/types';
+
+/** One coord row as scan.ts reads it off coord_event_log (prose kinds only). */
+export interface CoordTextRow {
+  /** Writer's owner id (body->>'from') — the distinct-speakers signal. */
+  speaker: string;
+  /** summary + body concatenated. */
+  text: string;
+  /** ISO timestamp of the envelope. */
+  at: string;
+}
+
+/** One insights-corpus doc (slug + raw MDX text) — corroborating evidence. */
+export interface InsightDoc {
+  slug: string;
+  text: string;
+}
+
+/** One emergent-term entry: a normalized term with its evidence. */
+export interface NeologismEntry {
+  /** Normalized term (lowercase, single-space-joined words). */
+  term: string;
+  /** Coord rows mentioning the term in the recent sub-window. */
+  recentMentions: number;
+  /** Coord rows mentioning the term in the prior sub-window. */
+  priorMentions: number;
+  /** Distinct speakers over the whole window. */
+  distinctSpeakers: number;
+  /** recent-rate / smoothed-prior-rate — the emergence signal. */
+  growth: number;
+  /** Insight docs whose text contains the term (corroboration, not time-series). */
+  insightSlugs: string[];
+  firstSeenAt: string;
+  lastSeenAt: string;
+  /** A representative usage snippet (from the most recent mentioning row). */
+  exampleText: string;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Sanitization + term extraction
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Functional stopwords only — content words stay so real compounds ("wake
+ * queue", "deploy train") survive. The namespace check + fire bars are the
+ * real noise filters; this list just kills grammatical bigrams.
+ */
+const STOPWORDS = new Set(
+  (
+    'the a an and or but nor if then than so as of to in on at by for with from into onto over under up down ' +
+    'out off about above below between through during without within against because until since while when ' +
+    'where which who whom whose this that these those it its is are was were be been being has have had do ' +
+    'does did done not no yes all any each every some most more less few many much own same other another such ' +
+    'only also just now here there what why how can could should would will shall may might must im ive dont ' +
+    'doesnt didnt isnt arent wasnt werent cant wont my our your their his her you we they he she i me us them ' +
+    'him via per vs etc still already never ever again once both was get got need needs needed want wants ' +
+    'after before next last first second new old one two three'
+  ).split(/\s+/),
+);
+
+/** Min letters for a word to participate in a term. */
+const MIN_WORD_LEN = 3;
+/** Max words in one term (hyphenated compounds can run longer in file names — capped out). */
+const MAX_TERM_WORDS = 4;
+
+/**
+ * Strip the text regions that breed false terms before extraction:
+ * backtick code spans, URLs, path-like tokens (anything with a slash),
+ * file-extension tokens, and the fleet's id vocabulary (F-NNN / EI-NNN /
+ * P-NNN / WI-NNN / B-NN / FB-NN / D-NNN, su-/wf-/rt- ids, plan slugs with
+ * dates). Digits in general never make it through extraction (terms are
+ * alpha-only), but stripping here also prevents the WORDS around an id from
+ * forming a bogus bigram across it.
+ */
+export function sanitizeCoordText(raw: string): string {
+  return (
+    raw
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`[^`]*`/g, ' ')
+      .replace(/https?:\/\/\S+/g, ' ')
+      // path-like (a slash anywhere in the token) — files, routes, slugs
+      .replace(/\S*\/\S*/g, ' ')
+      // file tokens by extension (no slash, e.g. "miner-core.ts")
+      .replace(/\b[\w.-]+\.(?:tsx?|jsx?|mjs|cjs|json|mdx?|sql|rs|py|sh|ya?ml|toml|css|html|svg|lock)\b/gi, ' ')
+      // fleet ids: F-012, EI-334, P-011, WI-3, B-08, FB-05, D-001, su-0ae39, wf-x, rt_y
+      .replace(/\b(?:[A-Z]{1,3}-\d+|FB-\d+|su-[0-9a-f-]+|wf_[a-z0-9-]+|rt_[a-z0-9_]+)\b/g, ' ')
+      // dated plan/slug tails that survived the path strip ("foo-2026-06-12")
+      .replace(/\b[\w-]*\d{4}-\d{2}-\d{2}\b/g, ' ')
+  );
+}
+
+/**
+ * Extract candidate terms from one text, DEDUPED per text (a term counts
+ * once per row — mention-counting is row-based so one chatty message can't
+ * fake recurrence). Two shapes:
+ *
+ *   1. hyphenated compounds — `wake-storm`, `green-checkpoint` — all-alpha
+ *      segments, each ≥ 2 chars (normalized to space-joined words);
+ *   2. content bigrams — adjacent non-stopword words ≥ MIN_WORD_LEN within
+ *      one punctuation-bounded segment ("arming gate", "deploy train").
+ *
+ * All terms are lowercase, space-joined, ≤ MAX_TERM_WORDS words.
+ */
+export function extractTerms(rawText: string): Set<string> {
+  const text = sanitizeCoordText(rawText).toLowerCase();
+  const terms = new Set<string>();
+
+  // 1. hyphenated compounds
+  for (const m of text.matchAll(/\b[a-z]{2,}(?:-[a-z]{2,})+\b/g)) {
+    const words = m[0].split('-');
+    if (words.length > MAX_TERM_WORDS) continue;
+    if (words.every((w) => !STOPWORDS.has(w))) terms.add(words.join(' '));
+  }
+
+  // 2. content bigrams within punctuation-bounded segments
+  for (const segment of text.split(/[^a-z\s-]+/)) {
+    const words = segment
+      .split(/[\s-]+/)
+      .filter((w) => w.length >= MIN_WORD_LEN && /^[a-z]+$/.test(w));
+    for (let i = 0; i + 1 < words.length; i++) {
+      const a = words[i];
+      const b = words[i + 1];
+      if (STOPWORDS.has(a) || STOPWORDS.has(b)) continue;
+      terms.add(`${a} ${b}`);
+    }
+  }
+
+  return terms;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Namespace coverage — "no corresponding primitive"
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Build the covered-vocabulary set from primitive names (tool names, table
+ * names, routine names/targets, flag keys). Each name is split on the
+ * separator vocabulary (`:` `_` `-` `.` `/` space) and every contiguous
+ * word n-gram (1..MAX_TERM_WORDS) is registered, so the term "negative
+ * space" is covered by the table `negative_space_demand` and "memory
+ * search" by the tool `memory:search`.
+ */
+export function buildNamespaceIndex(primitiveNames: Iterable<string>): Set<string> {
+  const covered = new Set<string>();
+  for (const name of primitiveNames) {
+    const words = name.toLowerCase().split(/[:_./\s-]+/).filter(Boolean);
+    for (let n = 1; n <= MAX_TERM_WORDS; n++) {
+      for (let i = 0; i + n <= words.length; i++) {
+        covered.add(words.slice(i, i + n).join(' '));
+      }
+    }
+  }
+  return covered;
+}
+
+/** Is the (normalized) term already named by some primitive? */
+export function isCoveredByNamespace(term: string, index: ReadonlySet<string>): boolean {
+  return index.has(term);
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Aggregation + emergence
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export interface NeologismFilingOptions {
+  /** Trailing mining window in days. Default 30. */
+  windowDays?: number;
+  /** The "recent" emergence sub-window in days (must be < windowDays). Default 7. */
+  recentDays?: number;
+  /** Fire bar: rows mentioning the term in the recent sub-window. Default 4. */
+  minRecentMentions?: number;
+  /** Fire bar: distinct speakers over the window ("fleet vocabulary, not one agent's tic"). Default 3. */
+  minSpeakers?: number;
+  /** Fire bar: recent-rate over smoothed-prior-rate. Default 3. */
+  growthFactor?: number;
+  /** Per-tick filing cap (the anti-flood half capture-core doesn't own). Default 2. 0 = mine-only. */
+  maxPerTick?: number;
+}
+
+export const DEFAULT_NEOLOGISM_OPTIONS: Required<NeologismFilingOptions> = {
+  windowDays: 30,
+  recentDays: 7,
+  minRecentMentions: 4,
+  minSpeakers: 3,
+  growthFactor: 3,
+  maxPerTick: 2,
+};
+
+function resolveOptions(opts: NeologismFilingOptions): Required<NeologismFilingOptions> {
+  const merged = { ...DEFAULT_NEOLOGISM_OPTIONS, ...opts };
+  if (merged.recentDays >= merged.windowDays) merged.recentDays = DEFAULT_NEOLOGISM_OPTIONS.recentDays;
+  return merged;
+}
+
+/**
+ * Aggregate coord rows + insight docs into the emergent-term map, namespace-
+ * filtered and sorted hottest-first. `asOf` anchors the recent/prior window
+ * split (injected — the core owns no clock).
+ *
+ * Growth math: recentRate = recentMentions / recentDays;
+ * priorRate = (priorMentions + 1) / priorDays (Laplace-smoothed so a term
+ * with zero prior history gets a large-but-finite growth). A term the fleet
+ * has used steadily all window scores ≈ 1 and is correctly NOT emergent.
+ *
+ * Insights are corroboration, not time-series: MDX files carry no usable
+ * timestamps, so insight mentions never enter the growth math — they rank
+ * (score) and they evidence (the proposal body names the slugs).
+ */
+export function aggregateNeologisms(
+  rows: readonly CoordTextRow[],
+  insights: readonly InsightDoc[],
+  namespaceIndex: ReadonlySet<string>,
+  asOf: string,
+  opts: NeologismFilingOptions = {},
+): NeologismEntry[] {
+  const o = resolveOptions(opts);
+  const asOfMs = Date.parse(asOf);
+  const recentStartMs = asOfMs - o.recentDays * 86_400_000;
+
+  interface Acc {
+    recent: number;
+    prior: number;
+    speakers: Set<string>;
+    firstSeenAt: string;
+    lastSeenAt: string;
+    exampleText: string;
+  }
+  const byTerm = new Map<string, Acc>();
+
+  for (const row of rows) {
+    const atMs = Date.parse(row.at);
+    if (!Number.isFinite(atMs) || atMs > asOfMs) continue;
+    const isRecent = atMs >= recentStartMs;
+    for (const term of extractTerms(row.text)) {
+      if (isCoveredByNamespace(term, namespaceIndex)) continue;
+      const acc = byTerm.get(term);
+      if (!acc) {
+        byTerm.set(term, {
+          recent: isRecent ? 1 : 0,
+          prior: isRecent ? 0 : 1,
+          speakers: new Set([row.speaker || 'unknown']),
+          firstSeenAt: row.at,
+          lastSeenAt: row.at,
+          exampleText: row.text,
+        });
+        continue;
+      }
+      if (isRecent) acc.recent += 1;
+      else acc.prior += 1;
+      acc.speakers.add(row.speaker || 'unknown');
+      if (row.at < acc.firstSeenAt) acc.firstSeenAt = row.at;
+      if (row.at > acc.lastSeenAt) {
+        acc.lastSeenAt = row.at;
+        acc.exampleText = row.text;
+      }
+    }
+  }
+
+  const priorDays = o.windowDays - o.recentDays;
+  const entries: NeologismEntry[] = [];
+  for (const [term, acc] of byTerm) {
+    const recentRate = acc.recent / o.recentDays;
+    const priorRate = (acc.prior + 1) / priorDays;
+    const insightSlugs = insights
+      .filter((d) => d.text.toLowerCase().includes(term) || d.text.toLowerCase().includes(term.replace(/ /g, '-')))
+      .map((d) => d.slug);
+    entries.push({
+      term,
+      recentMentions: acc.recent,
+      priorMentions: acc.prior,
+      distinctSpeakers: acc.speakers.size,
+      growth: recentRate / priorRate,
+      insightSlugs,
+      firstSeenAt: acc.firstSeenAt,
+      lastSeenAt: acc.lastSeenAt,
+      exampleText: acc.exampleText.slice(0, 300),
+    });
+  }
+
+  return entries.sort(
+    (a, b) =>
+      score(b) - score(a) ||
+      b.growth - a.growth ||
+      (a.term < b.term ? -1 : a.term > b.term ? 1 : 0),
+  );
+}
+
+/** Ranking score: traffic × spread, with insight corroboration weighted in. */
+function score(e: NeologismEntry): number {
+  return e.recentMentions * e.distinctSpeakers + 5 * e.insightSlugs.length;
+}
+
+/**
+ * The capped candidate selection: entries over ALL fire bars (recent
+ * mentions, speakers, growth), hottest-first, cut at the per-tick cap.
+ * There is no filed-id ledger here — capture-core's watchdogKey dedup is
+ * the cross-tick net (a re-mined term re-offers and is declined while its
+ * item is open; a resolved item re-files only on fresh evidence).
+ */
+export function selectNeologismCandidates(
+  entries: readonly NeologismEntry[],
+  opts: NeologismFilingOptions = {},
+): NeologismEntry[] {
+  const o = resolveOptions(opts);
+  if (o.maxPerTick <= 0) return [];
+  return entries
+    .filter(
+      (e) =>
+        e.recentMentions >= o.minRecentMentions &&
+        e.distinctSpeakers >= o.minSpeakers &&
+        e.growth >= o.growthFactor,
+    )
+    .slice(0, o.maxPerTick);
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * The abstraction proposal (Scout's rail shape)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** Stable cross-tick capture identity (payload.watchdogKey). */
+export function neologismWatchdogKey(term: string): string {
+  return `neologism:${term.replace(/ /g, '-')}`;
+}
+
+/** STABLE capture title — no counts/timestamps, per the search-first dedup contract. */
+export function neologismCaptureTitle(term: string): string {
+  return `Abstraction proposal: name the recurring fleet term "${term}"`;
+}
+
+/**
+ * Shape one emergent term as a Scout `Proposal` — the abstraction-proposal
+ * form P-011 asks for, dispatched down Scout's improvement rail (D-007).
+ * Deterministic (no LLM): the framing/mechanism/bet are template prose over
+ * the entry's evidence; the D-006 cheap experiment is the owner-review test
+ * every proposal must carry.
+ */
+export function neologismProposal(entry: NeologismEntry, windowDays: number): Proposal {
+  const id = neologismWatchdogKey(entry.term);
+  const insightNote = entry.insightSlugs.length
+    ? ` It also appears in ${entry.insightSlugs.length} insight doc(s): ${entry.insightSlugs.slice(0, 5).join(', ')}.`
+    : '';
+  return {
+    id,
+    framing: `Emerging fleet vocabulary "${entry.term}" has no corresponding primitive (tool/table/verb)`,
+    mechanism:
+      `Promote "${entry.term}" into a named primitive: give the recurring mechanism it names a ` +
+      `first-class home — a tool/verb, a table, a routine, or at minimum a docs/insight page that ` +
+      `defines it — so the concept becomes searchable, referenceable, and automatable instead of ` +
+      `living only in coord prose.`,
+    whyNew:
+      `Coined organically in fleet traffic: ${entry.recentMentions + entry.priorMentions} mention(s) by ` +
+      `${entry.distinctSpeakers} distinct agent(s) over the last ${windowDays}d, recent-week rate ` +
+      `×${entry.growth.toFixed(1)} vs prior, and absent from every primitive namespace checked ` +
+      `(tools, tables, routines, flags).${insightNote}\n\nLatest usage: ${JSON.stringify(entry.exampleText)}`,
+    bet:
+      `If the term names a real recurring mechanism, minting its primitive turns tacit coordination ` +
+      `vocabulary into infrastructure; if it is a passing turn of phrase, the candidate dies cheaply in review.`,
+    cheapExperiment: {
+      hypothesis: `"${entry.term}" denotes a recurring mechanism agents need to reference precisely — not a passing turn of phrase.`,
+      method:
+        `Owner/Queen review: write the one-paragraph definition (docs or insight page), link this traffic, ` +
+        `and if the concept holds, mint the primitive it implies (verb, table, routine, or doc anchor).`,
+      falsifiableSignal:
+        `Usage fades (no new mentions in the next ${windowDays}d) or review finds the concept already ` +
+        `covered by an existing primitive under another name.`,
+    },
+    sourceIdeaIds: [id],
+    routeHint: 'improvement',
+    addressesPatternRefs: [],
+  };
+}
+
+/**
+ * Tuning knobs off the routine's payload_template (mirrors
+ * demandOptionsFromPayload — re-tunable without a deploy). Unknown/invalid
+ * values are ignored.
+ */
+export function neologismOptionsFromPayload(
+  payload: Record<string, unknown> | null | undefined,
+): NeologismFilingOptions {
+  const out: NeologismFilingOptions = {};
+  if (!payload) return out;
+  const num = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+  const int = (v: unknown): number | undefined => {
+    const n = num(v);
+    return n === undefined ? undefined : Math.floor(n);
+  };
+  const windowDays = int(payload.windowDays);
+  const recentDays = int(payload.recentDays);
+  const minRecentMentions = int(payload.minRecentMentions);
+  const minSpeakers = int(payload.minSpeakers);
+  const growthFactor = num(payload.growthFactor);
+  const maxPerTick = int(payload.maxPerTick);
+  if (windowDays !== undefined && windowDays > 0) out.windowDays = windowDays;
+  if (recentDays !== undefined && recentDays > 0) out.recentDays = recentDays;
+  if (minRecentMentions !== undefined) out.minRecentMentions = minRecentMentions;
+  if (minSpeakers !== undefined) out.minSpeakers = minSpeakers;
+  if (growthFactor !== undefined) out.growthFactor = growthFactor;
+  if (maxPerTick !== undefined) out.maxPerTick = maxPerTick;
+  return out;
+}

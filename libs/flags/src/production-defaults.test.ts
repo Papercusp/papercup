@@ -50,9 +50,18 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // self-learning-frontier D-001 (owner-ratified dark-ship rule): every
   // frontier LEARNING LOOP ships built + tested + DARK, arming only when the
   // plan's P-001 gate closes (consume-edges P-013 live proof + owner
-  // ratification). Covers the negative-space miner (P-010/FB-04); later
-  // frontier loop flags join this block under the same decision.
+  // ratification). Covers the negative-space miner (P-010/FB-04) and the
+  // neologism miner (P-011/FB-05); later frontier loop flags join this block
+  // under the same decision.
   FLAGS.NEGATIVE_SPACE_MINER,
+  FLAGS.NEOLOGISM_MINER,
+  // … the replay harness (P-020/FB-06) — double-gated: flag OFF here AND
+  // unregistered/unbudgeted on the learning governor until the P-001 arming
+  // act (registerReplayLoop with an owner-set budget).
+  FLAGS.REPLAY_HARNESS,
+  // … and regret mining (P-021/FB-07) — same double gate: flag OFF here AND
+  // unbudgeted on the learning governor (loop `regret-mining`) until P-001.
+  FLAGS.REGRET_MINING,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

@@ -86,6 +86,14 @@
  *     the capture core. SQL-only; flag-gated OFF
  *     (papercusp-negative-space-miner — the frontier D-001 arming gate) AND
  *     seeded INACTIVE (lib/negative-space/seed-negative-space-routine.ts).
+ *   - `system:neologism-mine` — self-learning-frontier-2026-06-12 P-011
+ *     (FB-05). Every-6h mine of coord traffic + insights for emergent
+ *     recurring vocabulary with no corresponding primitive; capped
+ *     abstraction-proposal candidates route into Scout's improvement rail
+ *     via the capture core. SQL/fs-only; flag-gated OFF
+ *     (papercusp-neologism-miner — the frontier D-001 arming gate), governor-
+ *     preflighted (loop `neologism-miner`), AND seeded INACTIVE
+ *     (lib/neologism/seed-neologism-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -106,3 +114,4 @@ import './benchmark-actions';
 import './human-queue-digest-action';
 import './change-ledger-scan-action';
 import './negative-space-action';
+import './neologism-action';

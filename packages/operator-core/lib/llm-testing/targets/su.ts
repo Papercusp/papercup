@@ -90,7 +90,7 @@ function sutModel(): string {
 
 let _playbookCache: string | undefined;
 
-function resolvePlaybookPath(): string {
+export function resolvePlaybookPath(): string {
   const override = process.env.PAPERCUSP_SU_PLAYBOOK_PATH?.trim();
   if (override) return override;
   const here = dirname(fileURLToPath(import.meta.url));

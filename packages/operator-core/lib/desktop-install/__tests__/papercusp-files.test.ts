@@ -218,6 +218,14 @@ describe('installPapercuspFiles', () => {
     expect(result.minted.agentId).toBe(true);
   });
 
+  it('boot-smoke: resolveOperatorAppRoot does not crash on ESM __dirname access (WI-110)', async () => {
+    // Verify the fix for ESM __dirname ReferenceError: calling installPapercuspFiles
+    // with no explicit operatorAppRoot triggers resolveOperatorAppRoot, which must
+    // not crash even though __dirname is undefined in ESM modules.
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.minted.token).toBe(true); // Reached completion without crashing.
+  });
+
   it('reuses token already present from a prior install with no trailing newline', async () => {
     const paths = resolveInstallPaths(tmpHome);
     await fs.mkdir(paths.papercuspDir, { recursive: true });

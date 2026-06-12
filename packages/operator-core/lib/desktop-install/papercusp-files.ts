@@ -233,15 +233,14 @@ function resolveOperatorAppRoot(): string {
   // <operatorApp>/lib/desktop-install/papercusp-files.ts. Walk up two
   // directories. In the esbuild-bundled production layout (single
   // host.cjs in sidecar/), the module dir collapses to sidecar/ — the
-  // candidate-list fallbacks below handle that. ESM-safe: bare `__dirname`
-  // is UNDEFINED under tsx file-mode in this type:module package (it broke
-  // ensure-omp-su phase1 on every operator boot); import.meta.url is the
-  // dev path, the CJS __dirname global only as the bundled-sidecar fallback.
+  // candidate-list fallbacks below handle that. ESM-safe: use
+  // fileURLToPath(import.meta.url) for the module path, with process.cwd()
+  // as a safe fallback if that fails for any reason.
   let moduleDir: string;
   try {
     moduleDir = path.dirname(fileURLToPath(import.meta.url));
   } catch {
-    moduleDir = typeof __dirname === 'string' ? __dirname : process.cwd();
+    moduleDir = process.cwd();
   }
   return path.resolve(moduleDir, '..', '..');
 }
