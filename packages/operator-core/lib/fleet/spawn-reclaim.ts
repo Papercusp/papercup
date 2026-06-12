@@ -110,6 +110,33 @@ export async function heartbeatSpawns(
   }
 }
 
+/**
+ * A bee alive-but-silent past this long is a "possibly wedged" candidate
+ * (liveness-hardening P-009): the supervisor still beats for it (process
+ * alive) but its stream hasn't moved — hung network call, stuck rate-limit
+ * loop. DISPLAY/TRIAGE ONLY (plan P-010 owns any auto-action policy).
+ */
+export const WEDGE_SILENT_MS = 10 * 60_000;
+
+/**
+ * Classify a spawn row as possibly wedged: actively supervised (running, fresh
+ * heartbeat) yet stream-silent past the threshold. A row with NO last_output_at
+ * (pre-233, or no output observed yet) is never flagged — absence of signal is
+ * not evidence of a wedge. Pure; exported for tests + fleet:tree.
+ */
+export function isPossiblyWedged(
+  row: { status: string; heartbeatAt?: Date | null; lastOutputAt?: Date | null },
+  opts: { now?: number; silentMs?: number; staleMs?: number } = {},
+): boolean {
+  const now = opts.now ?? Date.now();
+  const silentMs = opts.silentMs ?? WEDGE_SILENT_MS;
+  const staleMs = opts.staleMs ?? RECLAIM_STALE_MS;
+  if (row.status !== 'running' && row.status !== 'restarting') return false;
+  if (!row.heartbeatAt || now - row.heartbeatAt.getTime() > staleMs) return false; // not supervised-live → the reclaim path owns it
+  if (!row.lastOutputAt) return false;
+  return now - row.lastOutputAt.getTime() > silentMs;
+}
+
 export interface ReclaimResult {
   reclaimed: number;
   spawnIds: string[];

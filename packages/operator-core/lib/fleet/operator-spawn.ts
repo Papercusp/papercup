@@ -148,11 +148,27 @@ export async function getSpawnHeadroom(workspaceId: string): Promise<{
 const localSpawnAborts = new Map<string, AbortController>();
 
 /**
+ * Per-spawn stream activity (liveness-hardening P-008): epoch-ms of the
+ * latest stdout/stderr chunk each LOCAL spawn emitted (set by the runner's
+ * onOutputActivity callback — in-process, no tee files) and the value last
+ * persisted, so the heartbeat tick only stamps rows whose output actually
+ * advanced. Entries die with the spawn (cleared beside localSpawnAborts).
+ */
+const localSpawnOutput = new Map<string, { at: number; persistedAt: number }>();
+
+function noteSpawnOutput(spawnId: string): void {
+  const e = localSpawnOutput.get(spawnId);
+  if (e) e.at = Date.now();
+  else localSpawnOutput.set(spawnId, { at: Date.now(), persistedAt: 0 });
+}
+
+/**
  * Heartbeat loop (P-011): while this host has live spawns, bump their
  * `heartbeat_at` every SPAWN_HEARTBEAT_INTERVAL_MS so the reclaim sweep can tell
  * a live spawn from one whose host died. Lazily started on the first spawn and
  * self-stopping when the last local spawn finishes. `unref`'d so it never holds
- * the process open.
+ * the process open. The same tick stamps `last_output_at` for spawns whose
+ * stream moved since the last persist (P-008 — zero extra write cadence).
  */
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 function ensureSpawnHeartbeatLoop(): void {
@@ -164,7 +180,15 @@ function ensureSpawnHeartbeatLoop(): void {
       heartbeatTimer = null;
       return;
     }
-    void heartbeatSpawns(getOrgPg().sql, ids).catch(() => {
+    const outputAt = new Map<string, number>();
+    for (const id of ids) {
+      const e = localSpawnOutput.get(id);
+      if (e && e.at > e.persistedAt) {
+        outputAt.set(id, e.at);
+        e.persistedAt = e.at;
+      }
+    }
+    void heartbeatSpawns(getOrgPg().sql, ids, outputAt).catch(() => {
       /* best-effort — a missed beat at worst risks an early reclaim, which is
          itself recoverable (an autonomous spawn re-runs; an interactive one is
          the human's to relaunch). */
@@ -609,6 +633,8 @@ export async function spawnAgentInHarness(
     onChildPid: (pid) => {
       void recordSpawnPid(getOrgPg().sql, spawnId, pid).catch(() => {});
     },
+    // P-008: per-chunk stream signal, persisted by the heartbeat tick.
+    onOutputActivity: () => noteSpawnOutput(spawnId),
   })
     .then((r) => {
       finalStatus = abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed');
@@ -632,6 +658,7 @@ export async function spawnAgentInHarness(
     })
     .finally(() => {
       localSpawnAborts.delete(spawnId);
+      localSpawnOutput.delete(spawnId);
       // The terminal flip above freed a ceiling slot — wake any over-ceiling
       // waiter sleeping on the slot key (D-004). Best-effort, off the hot path.
       void announceSpawnSlotFreed(input.workspaceId, `spawn ${spawnId} finished — ceiling slot freed`);

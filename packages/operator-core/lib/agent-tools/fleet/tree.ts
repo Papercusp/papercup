@@ -14,6 +14,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getSubtree } from '../../fleet/spawn-tree';
 import { assertCanComplete } from '../../fleet/nursery';
+import { isPossiblyWedged } from '../../fleet/spawn-reclaim';
 
 export default defineTool({
   name: 'fleet:tree',
@@ -61,6 +62,11 @@ export default defineTool({
               ...(n.modelTier ? { tier: n.modelTier } : {}),
               // The parent-authored brief (mig 230) — the dock brief-pane's source.
               ...(n.brief ? { brief: n.brief } : {}),
+              // Liveness annotations (P-008/P-009): stream activity + the
+              // wedged-candidate flag (alive + heartbeating, stream silent
+              // >10min). Display/triage only — never auto-acted on (P-010).
+              ...(n.lastOutputAt ? { last_output_at: n.lastOutputAt } : {}),
+              ...(isPossiblyWedged(n) ? { possibly_wedged: true } : {}),
             })),
           }),
         },

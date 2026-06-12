@@ -75,6 +75,11 @@ export interface SpawnNode {
   modelTier?: string | null;
   /** Parent-authored brief that started this spawn (absent/null = none). */
   brief?: string | null;
+  /** Supervisor liveness annotations (carried, never interpreted by the
+      toolkit): last supervisor heartbeat / last observed child output.
+      Optional so hosts without supervision heartbeats never touch them. */
+  heartbeatAt?: Date | null;
+  lastOutputAt?: Date | null;
 }
 
 /** Result of recording one restart against a spawn's sliding intensity window. */

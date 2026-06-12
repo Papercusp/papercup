@@ -29,6 +29,12 @@ Spawns carry per-spawn env pins that vitest inherits:
   mounts `core.hooksPath` → the fleet no-push pre-push hook. git applies these
   env overrides in **every repo the test creates**, so real-git tests can't push
   to their own temp origins.
+* `PAPERCUSP_INTEGRATION_ROOT` / `RELEASE_ROOT` / `CHECKPOINT_ROOT` /
+  `INTEGRATION_BRANCH` / `RELEASE_REF` — the release-gate workspace-map config
+  in gate/checkpoint runner envs. `resolveWorkspaceMapConfig` prefers them over
+  sibling derivation, so `workspace-map.test.ts`'s derivation asserts got the
+  runner's real paths (it stubbed only `INTEGRATION_ROOT`, and the runner's
+  `RELEASE_ROOT` won).
 
 An interactive shell has neither pin, which is why local re-runs are useless
 for reproducing this class.

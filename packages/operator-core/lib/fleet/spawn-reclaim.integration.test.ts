@@ -25,6 +25,7 @@ const SPAWNED_AGENTS_DDL = `
     restart_strategy text NOT NULL DEFAULT 'one_for_one', restart_count int NOT NULL DEFAULT 0,
     restart_window_start timestamptz, cancel_reason text, cancelled_at timestamptz,
     heartbeat_at timestamptz NOT NULL DEFAULT now(),
+    last_output_at timestamptz,
     pid integer, launcher_host text)`;
 
 const WS = 'default';
@@ -209,5 +210,39 @@ describe('heartbeatSpawns keeps a live spawn out of reclaim range', () => {
     await heartbeatSpawns(db.sql, []);             // no-op
     await heartbeatSpawns(db.sql, ['terminal']);   // WHERE excludes terminal
     expect(await statusOf('terminal')).toBe('done');
+  });
+});
+
+/** liveness-hardening P-008: the same heartbeat tick stamps last_output_at for
+ *  spawns whose stream moved — zero extra write cadence, monotonic. */
+describe('heartbeatSpawns stamps last_output_at (P-008 stream activity)', () => {
+  async function lastOutputOf(spawnId: string): Promise<number | null> {
+    const rows = await db.sql<{ t: Date | null }[]>`
+      SELECT last_output_at AS t FROM harness_shared.spawned_agents WHERE spawn_id = ${spawnId}`;
+    return rows[0]?.t ? rows[0].t.getTime() : null;
+  }
+
+  it('stamps output spawns and leaves silent ones NULL in one tick', async () => {
+    await insertSpawn('talking', 'running', 0);
+    await insertSpawn('silent', 'running', 0);
+    const at = Date.now() - 1_000;
+    await heartbeatSpawns(db.sql, ['talking', 'silent'], new Map([['talking', at]]));
+    expect(await lastOutputOf('talking')).toBe(at);
+    expect(await lastOutputOf('silent')).toBeNull();
+  });
+
+  it('is monotonic — a racing older stamp never regresses last_output_at', async () => {
+    await insertSpawn('bee', 'running', 0);
+    const newer = Date.now();
+    const older = newer - 60_000;
+    await heartbeatSpawns(db.sql, ['bee'], new Map([['bee', newer]]));
+    await heartbeatSpawns(db.sql, ['bee'], new Map([['bee', older]]));
+    expect(await lastOutputOf('bee')).toBe(newer);
+  });
+
+  it('never stamps a terminal row', async () => {
+    await insertSpawn('gone', 'done', 0);
+    await heartbeatSpawns(db.sql, ['gone'], new Map([['gone', Date.now()]]));
+    expect(await lastOutputOf('gone')).toBeNull();
   });
 });

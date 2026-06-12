@@ -24,7 +24,7 @@ describe('maybeBeatPresenceOnDispatch', () => {
   });
 
   test('beats the resolved owner exactly once per throttle window', async () => {
-    const beat = vi.fn(async () => {});
+    const beat = vi.fn(async (_ownerId: string) => {});
     let t = 1_000_000;
     const now = () => t;
 
@@ -43,7 +43,7 @@ describe('maybeBeatPresenceOnDispatch', () => {
   });
 
   test('different owners throttle independently', async () => {
-    const beat = vi.fn(async () => {});
+    const beat = vi.fn(async (_ownerId: string) => {});
     const now = () => 5_000_000;
     maybeBeatPresenceOnDispatch(SU_CTX, { beat, now });
     maybeBeatPresenceOnDispatch(
@@ -55,7 +55,7 @@ describe('maybeBeatPresenceOnDispatch', () => {
   });
 
   test('anonymous / unresolvable ctx is skipped without throwing', async () => {
-    const beat = vi.fn(async () => {});
+    const beat = vi.fn(async (_ownerId: string) => {});
     // No identity markers at all → resolveAgentIdentity throws → swallowed.
     expect(() => maybeBeatPresenceOnDispatch({}, { beat })).not.toThrow();
     // Superuser ctx MISSING uiClientId → resolver throws → swallowed.
@@ -83,7 +83,7 @@ describe('maybeBeatPresenceOnDispatch', () => {
   });
 
   test('power-user and signed-spawn identities beat under their own ids', async () => {
-    const beat = vi.fn(async () => {});
+    const beat = vi.fn(async (_ownerId: string) => {});
     const now = () => 12_000_000;
     maybeBeatPresenceOnDispatch(
       { isPowerUser: true, uiClientId: 'pus-abc', workspaceId: 'ws' },

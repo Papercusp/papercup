@@ -58,13 +58,15 @@ interface SpawnRowDb {
   restart_strategy: string | null;
   restart_count: number | null;
   restart_window_start: Date | null;
+  heartbeat_at: Date | null;
+  last_output_at: Date | null;
   depth?: number;
 }
 
 const SELECT_COLS = `spawn_id, parent_spawn_id, workspace_id, harness_slug, parent_role,
   child_role, status, session_owner, coordination_domain, feature_id, chunk_id,
   plan_slug, item_id, model_spec, model_tier, brief, restart_strategy, restart_count,
-  restart_window_start`;
+  restart_window_start, heartbeat_at, last_output_at`;
 
 function rowToNode(r: SpawnRowDb): SpawnNode {
   return {
@@ -87,6 +89,8 @@ function rowToNode(r: SpawnRowDb): SpawnNode {
     restartStrategy: (r.restart_strategy as RestartStrategy) || 'one_for_one',
     restartCount: Number(r.restart_count ?? 0),
     restartWindowStart: r.restart_window_start,
+    heartbeatAt: r.heartbeat_at ?? null,
+    lastOutputAt: r.last_output_at ?? null,
     depth: Number(r.depth ?? 0),
   };
 }
