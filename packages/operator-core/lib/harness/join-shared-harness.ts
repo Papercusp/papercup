@@ -600,6 +600,16 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
         try {
           if (opts.registerCloneFn) {
             await opts.registerCloneFn(opts.slug, state.cloneDir);
+          } else if (process.env.VITEST) {
+            // EI-339 enforcement: this default branch upserts the LIVE shared
+            // registry. Relying on the "tests MUST inject registerCloneFn"
+            // convention leaked 538 default-boot-* residue rows by 2026-06-12
+            // (join-default-boot-wiring.test.ts ran sweep-driven ~1/min).
+            // Refuse the live write under vitest instead of trusting the
+            // convention; the warn keeps the missing injection visible.
+            console.warn(
+              `[join-shared-harness] refusing live registry write for '${opts.slug}' under vitest — inject registerCloneFn (EI-339)`,
+            );
           } else {
             // Atomic upsert (P-006/EI-82): load→push→save races a concurrent
             // registry write and silently reverts it.

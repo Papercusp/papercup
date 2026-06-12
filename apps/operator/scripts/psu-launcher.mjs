@@ -1030,12 +1030,23 @@ async function resumeFlow(args = {}) {
     return;
   }
 
-  if (sessions.length === 0) {
-    console.error('psu: no tracked sessions — launch one with `psu`, or resume a raw session by id with `psu --resume=<session-id>`.');
+  // Only offer sessions whose agent store actually holds a transcript — a row
+  // recorded at launch whose session never persisted a first message is a
+  // permanent ghost ("No conversation found" on every attempt). Say how many
+  // were hidden so a "where did my session go?" has an answer.
+  const resumable = sessions.filter((s) => sessionHasTranscript(s));
+  const ghostCount = sessions.length - resumable.length;
+  if (ghostCount > 0) {
+    console.error(
+      `psu: hiding ${ghostCount} session(s) with no persisted transcript (died or closed before the first message) — they cannot be resumed.`,
+    );
+  }
+  if (resumable.length === 0) {
+    console.error('psu: no resumable sessions — launch one with `psu`, or resume a raw session by id with `psu --resume=<session-id>`.');
     process.exit(1);
   }
   const { search } = await import('@inquirer/prompts');
-  const rows = sessions.map((s) => ({
+  const rows = resumable.map((s) => ({
     name:
       `${s.id != null ? `#${s.id}  ·  ` : ''}${s.agent}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.startedAt)}` +
       `${s.endedAt ? '' : '  · active'}`,

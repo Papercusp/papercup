@@ -4118,6 +4118,16 @@ This is the target-level edition of the EI-133 lesson (SU-S10): *judged runs fai
 
 Pull the transcript (`llm_test_runs.transcript_raw_zstd`) and read the SUT’s first assistant turn. If it mentions stubs / test mode / suspended dispatch, fix the executor before touching the scenario asserts or the playbook — the deterministic asserts may still be valid (S12’s all passed on that run), but every judge axis is contaminated.
 
+## Sibling stub-world artifact: static stubs + chat-shaped turn caps make agents “repeat” work
+
+[Section titled “Sibling stub-world artifact: static stubs + chat-shaped turn caps make agents “repeat” work”](#sibling-stub-world-artifact-static-stubs--chat-shaped-turn-caps-make-agents-repeat-work)
+
+Second flavor of the same class (queen-Q01, 2026-06-12): the override’s queue read returned the SAME ungraded EI on every call, and the scenario allowed 4 chat turns — so after grading in turn 1, the Queen re-listed the queue in turn 2, saw the (stale-stub) item still ungraded, and honestly graded it again. The judge read that as “duplicate grading” — a stub-world artifact, not an agent defect; in production the row carries her grade after the write.
+
+Fixes, in preference order: (1) **match `caps.maxTurns` to the SUT’s production turn shape** — a spawned-turn agent (Queen) does one pass, so brief
+
+* one turn (`maxTurns: 2`); the in-process loop already allows 6 tool rounds INSIDE the turn, which is where multi-step work belongs. (2) Make the stub world reflect the agent’s own writes — but beware: a module-level stateful `toolOverride` leaks state across matrix repeats in one process. (3) Make the rubric anchor distinguish the benign case (idempotent self-regrade on a stale read) from the real harm (regrading after a sovereignty refusal).
+
 Related: EI-336 (judge is catalog-blind — the complementary judge-side noise source), EI-345 (su-suite baseline reds), agent policies §19 (the rule S12 probes).
 
 # Live-LLM transport — claude CLI subprocess works where raw OAuth API calls 429
@@ -5879,6 +5889,63 @@ The legend the model reads, the read encoder’s column order, and the write shi
 [Section titled “The gate before defaulting (P-013 → P-016)”](#the-gate-before-defaulting-p-013--p-016)
 
 The write side hinges on an empirical question unit tests can’t answer: does the model reliably emit a correct positional row? That’s measured by the LLM-scenario gate (`llm-testing/scenarios/su/S07-positional-write.ts` + `S08-compact-read.ts`). **No tool is flipped to `write:'positional'` on the live fleet until it passes** — the registry config keeps such candidates at `write:'off'` with a `→positional after P-013` note. The read side (CSV) is safe to default (a misread is recoverable; TOON already ships fleet-wide).
+
+# psu --resume "No conversation found": ghost adv rows, not broken resume plumbing
+
+> An adv_sessions row is recorded at LAUNCH, but an agent only persists its transcript on the FIRST MESSAGE — so launches that die or get closed at the prompt leave permanent unresumable ghost rows (~50% of recent rows by 2026-06-12). Fixed: the picker filters by sessionHasTranscript and psu stamps ended_at via bootstrap-su/session-ended. Diagnosis recipe inside.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+`psu --resume` → pick a session → `claude --resume <uuid>` fails:
+
+```plaintext
+No conversation found with session ID: e42bab31-…
+```
+
+The owner hit this on every pick and concluded “resume is broken for ALL my papercusp sessions”. It wasn’t. The EI-155 isolated-config-dir plumbing was fine; the picked rows were **ghosts**.
+
+## The mechanism
+
+[Section titled “The mechanism”](#the-mechanism)
+
+Two write-times that don’t line up:
+
+* The `harness_shared.adv_sessions` row is recorded at **launch** time (bootstrap-su, before the agent’s first turn).
+* Claude/codex only persist a session transcript on the **first message** (`<CLAUDE_CONFIG_DIR>/projects/<dir>/<sid>.jsonl`).
+
+A session that crashes at startup, or is closed at the prompt without a message (pre-spawned dock panes, abandoned launches, instant-death retries), leaves a row with **nothing on disk to resume — ever**. Audited 2026-06-12: \~50% of recent claude rows had no transcript anywhere.
+
+Three amplifiers made it read as “everything is broken”:
+
+1. `ended_at` was **never stamped** for console sessions (`markAdvSessionEnded` only fired for server-spawned terminals), so every dead row showed `· active` in the picker forever — and permanently held the session-dir GC’s open-row protection, wedging collection.
+2. The picker sorts newest-first, and the freshest rows are disproportionately ghosts — so picking from the top kept hitting them.
+3. Rows are visually identical (`claude · no plan · <cwd> · active`).
+
+The brain pane hit the same root cause on 2026-06-06 (the `claudeStoreHasSession` check at `psu-launcher.mjs` `brainFlow`) — but the fix was only wired into the brain path, not the picker / direct-id paths.
+
+## The fix (2026-06-12)
+
+[Section titled “The fix (2026-06-12)”](#the-fix-2026-06-12)
+
+* `sessionHasTranscript(session)` in `apps/operator/scripts/psu-launcher.mjs`: per-agent store check (claude → isolated config dir keyed by `coordOwnerId`, else shared `~/.claude`; codex → per-session `CODEX_HOME` rollout; unverifiable rows are KEPT). `resumeFlow` filters the picker with it (“psu: hiding N session(s)…”) and the direct `psu --resume=<id>` path errors with the explanation instead of letting the CLI fail cryptically.
+* `POST /api/agent-mcp/console/bootstrap-su/session-ended` (bootstrap-su.ts) + `reportSessionEnded` in the launcher: psu is the live parent in both launch paths, so child-exit now stamps `ended_at`/`exit_code`. Best-effort: a 404 from an operator predating the endpoint is swallowed.
+
+## Diagnosis recipe (if it recurs)
+
+[Section titled “Diagnosis recipe (if it recurs)”](#diagnosis-recipe-if-it-recurs)
+
+1. Does the transcript exist? `ls ~/.papercusp/session-claude/<coordOwnerId>/projects/*/<sessionId>.jsonl` (owner + sid from `GET /api/adv/sessions/resumable`). Missing → ghost row, nothing was ever persisted, nothing to recover.
+2. Transcript exists but resume still fails → check the resume re-supplied `CLAUDE_CONFIG_DIR` (the EI-155 edge: `launchResume` derives it from `coordOwnerId`; without it claude looks in the shared `~/.claude` and finds nothing).
+
+## Consequences to know
+
+[Section titled “Consequences to know”](#consequences-to-know)
+
+* Ghost sessions are **unrecoverable by design** — no transcript was ever written. Don’t burn time trying to “restore” them.
+* With `ended_at` now stamped, a quit session’s dir loses the GC’s open-row protection and is collected after `DEFAULT_RETENTION_MS` (7d) idle (`session-dir-gc.ts`) — i.e. the resume window for a quit session is now the GC’s *designed* 7 days, not the accidental-infinite the wedge provided.
+* Pre-fix rows keep `ended_at = NULL` (no backfill — distinguishing dead-from-idle retroactively is unsafe); they’re harmless now that the picker filters by transcript existence.
 
 # pui workbench is a dockview — stacked work area, swap presets, dock-verbs
 

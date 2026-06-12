@@ -11,6 +11,8 @@ import {
   resumeEnvFor,
   findUntrackedSession,
   claudeStoreHasSession,
+  sessionHasTranscript,
+  reportSessionEnded,
   roleLaunchArgs,
   suLaunchArgs,
   agentInvalidForRole,
@@ -567,5 +569,95 @@ describe('usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 
 
   it('PAPERCUSP_PSU_PTY=1 is still honored as an explicit enable', () => {
     expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: tty, stdout: tty })).toBe(true);
+  });
+});
+
+describe('sessionHasTranscript (ghost rows — adv-tracked launches that never persisted a turn)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  let home = '';
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-ghosts-')); });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  const writeClaudeTranscript = (configDir) => {
+    const projDir = join(configDir, 'projects', '-some-dir');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+  };
+
+  it('claude: TRUE when the transcript lives in the EI-155 isolated config dir (derived from coordOwnerId)', () => {
+    const owner = 'su-owner-9';
+    writeClaudeTranscript(join(home, '.papercusp', 'session-claude', owner));
+    expect(sessionHasTranscript({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe(true);
+  });
+
+  it('claude: TRUE when the transcript lives in the shared ~/.claude store (pre-EI-155 sessions)', () => {
+    writeClaudeTranscript(join(home, '.claude'));
+    expect(sessionHasTranscript({ agent: 'claude', sessionId: UUID, coordOwnerId: 'su-other' }, { home })).toBe(true);
+  });
+
+  it('claude: FALSE for a ghost — known sessionId, no transcript anywhere (the "No conversation found" row)', () => {
+    // The launch materialized the config dir but died before its first turn.
+    mkdirSync(join(home, '.papercusp', 'session-claude', 'su-ghost', 'projects'), { recursive: true });
+    expect(sessionHasTranscript({ agent: 'claude', sessionId: UUID, coordOwnerId: 'su-ghost' }, { home })).toBe(false);
+  });
+
+  it('claude: KEEPS a pre-native-id row (no sessionId — resume falls back to --continue, unverifiable)', () => {
+    expect(sessionHasTranscript({ agent: 'claude', sessionId: null, coordOwnerId: 'su-legacy' }, { home })).toBe(true);
+  });
+
+  it('claude: an explicit session.configDir (untracked isolated hit) wins over the owner derivation', () => {
+    const configDir = join(home, 'elsewhere', 'iso-dir');
+    writeClaudeTranscript(configDir);
+    expect(sessionHasTranscript({ agent: 'claude', sessionId: UUID, configDir }, { home })).toBe(true);
+  });
+
+  it('codex: TRUE when the per-session CODEX_HOME holds the rollout; FALSE when it does not', () => {
+    const dir = join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions', '2026', '06', '12');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `rollout-2026-06-12T09-00-00-${UUID}.jsonl`), `{"type":"meta"}\n`);
+    expect(sessionHasTranscript({ agent: 'codex', id: 42, sessionId: UUID }, { home })).toBe(true);
+    expect(sessionHasTranscript({ agent: 'codex', id: 43, sessionId: UUID }, { home })).toBe(false);
+  });
+
+  it('codex: KEEPS rows it cannot verify (no sessionId → `resume --last`; no row id → no home to check)', () => {
+    expect(sessionHasTranscript({ agent: 'codex', id: 42, sessionId: null }, { home })).toBe(true);
+    expect(sessionHasTranscript({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe(true);
+  });
+
+  it('omp: always kept (the thread store is not path-indexed here)', () => {
+    expect(sessionHasTranscript({ agent: 'omp', ompThreadId: 't-1' }, { home })).toBe(true);
+  });
+});
+
+describe('reportSessionEnded (stamp adv ended_at on child exit — best-effort, never rejects)', () => {
+  it('POSTs the row id + exit code to bootstrap-su/session-ended with the bearer', async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    await reportSessionEnded('17', 0, { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/session-ended');
+    expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
+    expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 17, exitCode: 0 });
+  });
+
+  it('maps a null/undefined exit code to null (signal exits)', async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    await reportSessionEnded(17, undefined, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 17, exitCode: null });
+  });
+
+  it('no adv row id → no request (untracked sessions have nothing to stamp)', async () => {
+    const calls = [];
+    const fetchImpl = async (...a) => { calls.push(a); return { ok: true }; };
+    await reportSessionEnded(null, 0, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('swallows transport failures — psu is about to exit; end-stamping must never hold the terminal', async () => {
+    const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+    await expect(
+      reportSessionEnded(17, 1, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+    ).resolves.toBeUndefined();
   });
 });

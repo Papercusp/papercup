@@ -259,6 +259,10 @@ import './coordination/tools/wake-queue';
 // One cheap combined fleet glance (wake gate + staged wakes + bees + governor +
 // contextual tips) — the high-frequency statusline/TUI read.
 import './coordination/tools/glance';
+// Dispatch a slash-exposed tool command AT another agent via deliver-and-wake
+// (WI-126) — the cross-session leg of slash exposure; the wake-mode gate stages
+// dispatched commands for manual-mode targets.
+import './slash/dispatch';
 // L3 channels — messages + acks + threads (Phase B core)
 import './coordination/tools/send';
 // Open a work-item-scoped conversation with an agent — the inbox "Message owner"

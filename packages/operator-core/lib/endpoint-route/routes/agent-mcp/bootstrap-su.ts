@@ -25,7 +25,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, readRegistry, workspaceById } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
-import { recordAdvSession } from '../../../adv-sessions';
+import { markAdvSessionEnded, recordAdvSession } from '../../../adv-sessions';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -564,4 +564,63 @@ const optionsForHeartbeat = defineTool({
   },
 });
 
-export default [options, optionsForOptions, post, optionsGet, brainGet, heartbeat, optionsForHeartbeat];
+/**
+ * POST /api/agent-mcp/console/bootstrap-su/session-ended  { advSessionId, exitCode? }
+ *
+ * The psu launcher's exit report. psu stays alive as the agent's parent in
+ * BOTH launch paths (the same property the supervisor beat rides), and on
+ * child exit it stamps the tracked adv_sessions row's ended_at/exit_code
+ * here. Before this, CONSOLE sessions never got ended_at (markAdvSessionEnded
+ * only fired for server-spawned terminals), so every dead launch sat
+ * "· active" in the `psu --resume` picker forever — and the session-dir GC's
+ * open-row protection never expired, wedging collection of abandoned dirs.
+ *
+ * Best-effort contract like the sibling heartbeat: the launcher swallows any
+ * failure (it is about to process.exit). markAdvSessionEnded is idempotent —
+ * it only stamps an unset ended_at — so a duplicate report is harmless.
+ */
+const sessionEnded = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/console/bootstrap-su/session-ended',
+  auth: 'loopback',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    let advSessionId: number | null = null;
+    let exitCode: number | null = null;
+    try {
+      const body = (await req.json()) as { advSessionId?: unknown; exitCode?: unknown };
+      if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
+        advSessionId = body.advSessionId;
+      }
+      if (typeof body.exitCode === 'number' && Number.isInteger(body.exitCode)) {
+        exitCode = body.exitCode;
+      }
+    } catch {
+      /* fall through to the 400 */
+    }
+    if (advSessionId == null || advSessionId <= 0) {
+      return jsonRes({ error: 'advSessionId required' }, 400);
+    }
+    try {
+      await markAdvSessionEnded(advSessionId, exitCode);
+      return jsonRes({ ok: true });
+    } catch (err) {
+      return jsonRes(
+        { ok: false, error: err instanceof Error ? err.message : String(err) },
+        503,
+      );
+    }
+  },
+});
+
+const optionsForSessionEnded = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/session-ended',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+export default [options, optionsForOptions, post, optionsGet, brainGet, heartbeat, optionsForHeartbeat, sessionEnded, optionsForSessionEnded];
