@@ -172,10 +172,16 @@ describe('engineer issues surface (real PG)', () => {
     await issues.createIssue({ title: 't', createdBy: 'agA' });
     const claimed = await issues.claimIssue('EI-1', 'agB');
     expect(claimed?.assignee).toBe('agB');
+    // assigned_at MUST stamp on claim: the implement lane's stale-claim reclaim
+    // ages claims off it — a dateless claim reads as in-flight forever and wedged
+    // 48 dispatched bugs (learning-system-audit-improvements-2026-06-09 D-010).
+    expect(claimed?.assignedAt).toBeTruthy();
+    expect(Math.abs(Date.now() - Date.parse(claimed!.assignedAt!))).toBeLessThan(60_000);
     const mySubs = await subs.listSubscriptions('agB');
     expect(mySubs.map((s) => s.target_ref)).toContain('issue:EI-1');
     const released = await issues.releaseIssue('EI-1');
     expect(released?.assignee).toBeNull();
+    expect(released?.assignedAt).toBeNull();
   });
 
   it('close→resolved reaches a mention-mode subscriber (Lifecycle + D-006)', async () => {

@@ -55,11 +55,24 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
       harnessSlug: 'papercup',
       childRole: 'bee',
       status: 'running',
+      // parent_role is NOT NULL in spawned_agents — a parentless launch records
+      // 'operator' (a NULL here failed the insert and untracked EVERY fallback
+      // launch; learning-system-audit-improvements-2026-06-09 D-010).
+      parentRole: 'operator',
+      parentSpawnId: null,
     });
     expect(typeof input.spawnId).toBe('string');
     expect(input.spawnId).toMatch(/^s-\d+-[0-9a-f]{8}$/);
     expect(typeof input.runId).toBe('string');
     expect(input.runId).toMatch(/^launch-\d+-[0-9a-f]{6}$/);
+  });
+
+  it('records the launching parent lineage when the launch carries one', async () => {
+    await fireLaunchBlueprint('bee', { ...opts, parent: { spawnId: 's-parent-1', role: 'queen' } });
+
+    expect(recordSpawn).toHaveBeenCalledOnce();
+    const [, input] = vi.mocked(recordSpawn).mock.calls[0]!;
+    expect(input).toMatchObject({ parentSpawnId: 's-parent-1', parentRole: 'queen' });
   });
 
   it('flips the row to done after fetch succeeds', async () => {

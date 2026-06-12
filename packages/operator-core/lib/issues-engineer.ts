@@ -356,11 +356,13 @@ export async function updateIssue(id: string, patch: UpdateIssuePatch): Promise<
   return issue;
 }
 
-/** Claimable.claim — assign the issue. */
+/** Claimable.claim — assign the issue. Stamps assigned_at: the implement lane's
+ *  stale-claim reclaim (plan-implement.ts inFlight) ages claims off it — a claim
+ *  without assigned_at reads as in-flight FOREVER and wedges the auto lane. */
 export async function claimIssue(id: string, assignee: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, origin = 'local'
+    UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local'
      WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
@@ -374,7 +376,7 @@ export async function claimIssue(id: string, assignee: string): Promise<Engineer
 export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET assignee = NULL, origin = 'local'
+    UPDATE harness_shared.engineer_issues SET assignee = NULL, assigned_at = NULL, origin = 'local'
      WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;

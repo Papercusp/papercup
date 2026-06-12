@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 // Side-effect import registers the watchdog + implement actions (and exercises every import path).
-import { implementKickoff, intFromEnv } from './improvement-actions';
+import { implementKickoff, implementTimeoutMs, intFromEnv } from './improvement-actions';
 import { listSystemActions } from './system-actions';
+import { DEFAULT_STALE_CLAIM_MS } from '../improvements/plan-implement';
 
 describe('improvement-actions registration', () => {
   it('registers system:improvement-watchdog and system:improvement-implement', () => {
@@ -29,6 +30,28 @@ describe('implementKickoff — the dispatch carries the resolve contract (close-
   it('flags a retry so the worker reads earlier attempts first', () => {
     const k = implementKickoff({ id: 'EI-12', title: 'x', attempts: 2 });
     expect(k).toMatch(/Dispatch attempt 3/);
+  });
+});
+
+describe('implementTimeoutMs — the dispatch worker lifetime (learning-system-audit D-010)', () => {
+  const VAR = 'PAPERCUSP_IMPROVEMENT_IMPLEMENT_TIMEOUT_MS';
+  afterEach(() => {
+    delete process.env[VAR];
+  });
+
+  it('defaults to 45 min — 280s SIGTERM-killed 51/58 workers mid-fix', () => {
+    expect(implementTimeoutMs()).toBe(2_700_000);
+  });
+
+  it('stays under the stale-claim window so a timed-out worker is dead before its claim re-dispatches', () => {
+    expect(implementTimeoutMs()).toBeLessThan(DEFAULT_STALE_CLAIM_MS);
+  });
+
+  it('honors the env override, clamped to ≥60s', () => {
+    process.env[VAR] = '600000';
+    expect(implementTimeoutMs()).toBe(600_000);
+    process.env[VAR] = '5';
+    expect(implementTimeoutMs()).toBe(60_000);
   });
 });
 

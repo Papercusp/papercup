@@ -187,7 +187,7 @@ export function setLaunchBlueprintFire(fn: LaunchFireFn | null): void {
   _fire = fn;
 }
 
-const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs, workspaceId }) => {
+const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs, workspaceId, parent }) => {
   const body: Record<string, unknown> = {};
   if (kickoff) body.kickoff = kickoff;
   // `BLUEPRINT_ID=<id>` scopes the role's prompt resolution to
@@ -231,6 +231,10 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
       spawnId,
       workspaceId,
       harnessSlug: installSlug,
+      // parent_role is NOT NULL in spawned_agents — a parentless system launch is
+      // recorded as spawned by the operator host (matches every other root spawn).
+      parentSpawnId: parent?.spawnId ?? null,
+      parentRole: parent?.role ?? 'operator',
       childRole: role,
       runId,
       status: 'running',

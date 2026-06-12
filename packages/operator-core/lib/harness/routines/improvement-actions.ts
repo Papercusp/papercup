@@ -242,12 +242,24 @@ export function implementKickoff(candidate: Pick<ScoredItem, 'id' | 'title' | 'a
  * ever runs when an owner has flipped the flag AND configured the runner harness
  * — see planImplementRun's gates; until then it is unreachable.)
  */
+/**
+ * Worker lifetime for one implement dispatch. Reproduce + fix + regression test +
+ * test:affected does not fit the invoke route's smaller defaults — the first armed
+ * week ran at 280s and SIGTERM'd 51/58 workers mid-fix (exit 143,
+ * learning-system-audit-improvements-2026-06-09 D-010). Must stay well under
+ * plan-implement's DEFAULT_STALE_CLAIM_MS (2h) so a timed-out item's claim goes
+ * stale only AFTER its worker is dead — never two workers on one item.
+ */
+export function implementTimeoutMs(): number {
+  return intFromEnv('PAPERCUSP_IMPROVEMENT_IMPLEMENT_TIMEOUT_MS', 2_700_000, { min: 60_000 });
+}
+
 const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candidate }) => {
   await fireLaunchBlueprint('implement', {
     installSlug: runnerHarness,
     workspaceId,
     kickoff: implementKickoff(candidate),
-    timeoutMs: 280_000,
+    timeoutMs: implementTimeoutMs(),
   });
 };
 

@@ -16,13 +16,14 @@
  * the dispatcher (`fireReactionInProcess`) and the durable seam (`./durable`).
  */
 
-import type { DispatchProjectedResult, PostInvokeEvent } from '@papercusp/agent-mcp';
+import type { DispatchProjectedResult, PostInvokeEvent, UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { MatchedAction } from '@papercusp/rules';
 import { runReactions } from '@papercusp/event-reaction';
 import { matchReactions } from './registry';
 import { fireReactionInProcess } from './dispatch-reaction';
 import { runDurableReaction, durableReactionsEnabled } from './durable';
 import type { ToolInvocationEvent } from './types';
+import { activeWorkspaceId } from '../workspace-registry';
 
 /** Extract a tool's return value from its MCP-shaped ToolResult (parse JSON when possible). */
 function extractData(result: DispatchProjectedResult): unknown {

@@ -166,3 +166,9 @@ export function remotePeerChildPath(installRoot = '/opt/papercusp'): string {
 export function remoteClaimAgentPath(installRoot = '/opt/papercusp'): string {
   return `${benchRuntimeDir(installRoot)}/packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts`;
 }
+
+/** Path to loop-agent.ts inside the unpacked runtime (the real-metal FULL-LOOP E2E launch
+ *  target — shared-hive-loop-e2e-testing P-008/P-009/P-011). Ships like claim-agent.ts. */
+export function remoteLoopAgentPath(installRoot = '/opt/papercusp'): string {
+  return `${benchRuntimeDir(installRoot)}/packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts`;
+}

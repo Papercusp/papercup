@@ -640,6 +640,12 @@ pub struct NetworkBoardRow {
     /// ISO timestamp of the freshest signal (sorts lexically).
     #[serde(rename = "lastSeen")]
     pub last_seen: Option<String>,
+    /// Per-bee watch owner IDs (tiers 2–3; P-014 item 1 C-3 extension) — coord
+    /// ownerIds of live bees on that hive/device. Each becomes a read-only
+    /// `pui watch-pane <owner>` in the B-10 drill-in tab. Absent (= empty) on
+    /// tiers 1 and 4 — and on a tier-2/3 hive with no live bees.
+    #[serde(rename = "watchOwners", default)]
+    pub watch_owners: Vec<String>,
     pub wake: Option<NetworkWake>,
     pub grants: Option<NetworkGrants>,
     pub asks: Option<NetworkAsks>,
@@ -678,6 +684,70 @@ pub struct NetworkAsks {
 pub struct NetworkBoardResponse {
     #[serde(default)]
     pub rows: Vec<NetworkBoardRow>,
+}
+
+/// One captured C-2 beacon snapshot (`network.hive.beacons`, migration 236) —
+/// a tier-4 dossier's beacon-HISTORY row: how the foreign hive's self-reported
+/// status evolved, newest-first (hive-network-surface P-014 item 2).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveBeaconSnapshot {
+    #[serde(default)]
+    pub hive_id: String,
+    #[serde(default)]
+    pub hive_pubkey: Option<String>,
+    /// The C-2 beacon payload as announced (self-reported — gossip trust).
+    #[serde(default)]
+    pub beacon: BeaconFields,
+    #[serde(default)]
+    pub captured_at: String,
+}
+
+/// The C-2 beacon payload fields (all-or-none per D-002 v1 binary consent).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BeaconFields {
+    #[serde(default)]
+    pub live_agents: u32,
+    #[serde(default)]
+    pub queue_depth: u32,
+    #[serde(default)]
+    pub focus: String,
+    #[serde(default)]
+    pub last_completed: String,
+    /// ISO-8601 build time of the beacon (the staleness key).
+    #[serde(default)]
+    pub ts: String,
+}
+
+/// One C-1 `cross_hive_asks` ledger row (`network.hive.asks`) — the tier-4
+/// dossier's ask/answer traffic log, both directions, all states
+/// (hive-network-surface P-014 item 2; the board row only carries counts).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossHiveAskRow {
+    #[serde(default)]
+    pub peer_pubkey: String,
+    /// 'out' (we asked them) | 'in' (they asked us).
+    #[serde(default)]
+    pub direction: String,
+    /// 'ask' | 'work-request'.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub subject: String,
+    /// queued | sent | answered | declined | expired.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub reply_body: Option<String>,
+    /// The asking owner's coord id (migration 235; null pre-235 / inbound).
+    #[serde(default)]
+    pub asked_by: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 // NOTE: the old Activity tab's `/api/harness/all/recent-activity` DTOs
