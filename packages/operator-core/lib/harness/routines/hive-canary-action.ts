@@ -71,8 +71,9 @@ export function planCanaryTick(
   const nowMs = opts.nowMs ?? Date.now();
   const cutoff = nowMs - deadlineHours * 3_600_000;
   const overdue = rows
-    .filter((r) => r.payload?.canary === true)
-    .filter((r) => !r.payload?.canary_reported)
+    .filter((r) => r.payload !== null && r.payload !== undefined)
+    .filter((r) => r.payload.canary === true)
+    .filter((r) => r.payload.canary_reported !== true)
     .filter((r) => !CANARY_TERMINAL.has(r.status))
     .filter((r) => Number(r.created_ts) < cutoff)
     .map((r) => r.feature_id);
@@ -153,9 +154,9 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   const { sql } = getOrgPg();
   const rows = await sql<CanaryFeatureRow[]>`
     SELECT feature_id, status, created_ts, payload
-      FROM harness_shared.work_items
+      FROM harness_shared.harness_features_consolidated
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
-       AND item_kind = 'feature' AND payload->>'canary' = 'true'
+       AND item_kind = 'feature' AND payload IS NOT NULL AND payload->>'canary' = 'true'
      ORDER BY created_ts DESC LIMIT 30`;
   const plan = planCanaryTick(rows, { deadlineHours });
 
@@ -175,15 +176,26 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
       watchdogKey: `hive-canary:${installSlug}:${fid}`,
     });
     // Mark reported regardless of created/deduped — one report per canary.
-    await sql`
+    // Merge canary_reported: true into the payload JSONB object (or create the object if payload is null).
+    const updateResult = await sql<{ feature_id: string }[]>`
       UPDATE harness_shared.harness_features_consolidated
-         SET payload = COALESCE(payload, '{}'::jsonb) || '{"canary_reported": true}'::jsonb,
+         SET payload = CASE
+               WHEN payload IS NULL THEN '{"canary": true, "canary_reported": true}'::jsonb
+               ELSE payload || '{"canary_reported": true}'::jsonb
+             END,
              updated_ts = ${Date.now()}
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND feature_id = ${fid}`;
-    console.warn(
-      `[hive-canary] ${installSlug}/${fid} MISSED its ${deadlineHours}h deadline — ` +
-        (res.created ? `filed ${res.issue?.id ?? 'improvement'}` : `report deduped (${res.reason ?? 'duplicate'})`),
-    );
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND feature_id = ${fid}
+       RETURNING feature_id`;
+    if (updateResult.length === 0) {
+      console.warn(
+        `[hive-canary] ${installSlug}/${fid} UPDATE failed — row not found in database`,
+      );
+    } else {
+      console.warn(
+        `[hive-canary] ${installSlug}/${fid} MISSED its ${deadlineHours}h deadline — ` +
+          (res.created ? `filed ${res.issue?.id ?? 'improvement'}` : `report deduped (${res.reason ?? 'duplicate'})`),
+      );
+    }
   }
 
   // Phase 2 — QUEUE today's canary (idempotent: date-keyed id + DO NOTHING).
@@ -191,17 +203,23 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   const title = typeof payloadTemplate?.title === 'string' && payloadTemplate.title.trim()
     ? payloadTemplate.title.trim()
     : 'Canary: append today\'s date to CANARY.md';
-  const inserted = await sql`
-    INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, title, summary, status, attempts, item_kind,
-       payload, needs_human_review, workspace_id, ts, created_ts, updated_ts)
-    VALUES
-      (${installSlug}, ${plan.queueId}, ${title},
-       'Trivial daily canary feature — the autonomous loop must carry it to DONE untouched.',
-       'todo', 0, 'feature', '{"canary": true}'::jsonb, FALSE, ${workspaceId}, ${now}, ${now}, ${now})
-    ON CONFLICT (harness_slug, feature_id) DO NOTHING
-    RETURNING feature_id`;
-  if (inserted.length > 0) {
-    console.log(`[hive-canary] queued ${installSlug}/${plan.queueId} (deadline ${deadlineHours}h)`);
+  try {
+    const inserted = await sql<{ feature_id: string }[]>`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (harness_slug, feature_id, title, summary, status, attempts, item_kind,
+         payload, needs_human_review, workspace_id, ts, created_ts, updated_ts)
+      VALUES
+        (${installSlug}, ${plan.queueId}, ${title},
+         'Trivial daily canary feature — the autonomous loop must carry it to DONE untouched.',
+         'todo', 0, 'feature', '{"canary": true}'::jsonb, FALSE, ${workspaceId}, ${now}, ${now}, ${now})
+      ON CONFLICT (harness_slug, feature_id) DO NOTHING
+      RETURNING feature_id`;
+    if (inserted.length > 0) {
+      console.log(`[hive-canary] queued ${installSlug}/${plan.queueId} (deadline ${deadlineHours}h)`);
+    } else {
+      console.log(`[hive-canary] ${installSlug}/${plan.queueId} already queued from previous run`);
+    }
+  } catch (e) {
+    console.error(`[hive-canary] failed to queue ${installSlug}/${plan.queueId}: ${e instanceof Error ? e.message : e}`);
   }
 });
