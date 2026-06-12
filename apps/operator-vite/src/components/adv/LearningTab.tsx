@@ -28,7 +28,7 @@
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md). Styled with the
  * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain } from 'lucide-react';
@@ -285,6 +285,9 @@ function ImprovementsView() {
   const [lane, setLane] = useQueryState('lane', parseAsStringEnum<Lane>([...LANES]).withDefault('all'));
   // Source facet (`?lsrc=`): who filed it — Scout / Queen / system / … (payload.sourceRole).
   const [src, setSrc] = useQueryState('lsrc', parseAsString);
+  // Selected item (`?lsel=`): set by deep-links (e.g. a Scout-routed improvement
+  // click) — the row is highlighted + scrolled into view; clicking it dismisses.
+  const [lsel, setLsel] = useQueryState('lsel', parseAsString);
 
   const allRows = useMemo<ScoredItem[]>(() => {
     if (!digest) return [];
@@ -379,7 +382,7 @@ function ImprovementsView() {
       ) : (
         <ul className="pc-learning__list">
           {rows.map((it) => (
-            <ImprovementRow key={it.id} item={it} />
+            <ImprovementRow key={it.id} item={it} selected={it.id === lsel} onDismissSelect={() => void setLsel(null)} />
           ))}
         </ul>
       )}
@@ -387,11 +390,29 @@ function ImprovementsView() {
   );
 }
 
-function ImprovementRow({ item }: { item: ScoredItem }) {
+function ImprovementRow({
+  item,
+  selected = false,
+  onDismissSelect,
+}: {
+  item: ScoredItem;
+  /** Deep-link target (?lsel) — highlighted + scrolled into view; click dismisses. */
+  selected?: boolean;
+  onDismissSelect?: () => void;
+}) {
   const sevColor = SEV_COLOR[item.severity ?? 'minor'] ?? '#94a3b8';
   const human = item.tier === 'human';
+  const ref = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (selected) ref.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [selected]);
   return (
-    <li className="pc-learning__row" title={item.tierReason}>
+    <li
+      ref={ref}
+      className={`pc-learning__row${selected ? ' pc-learning__row--selected' : ''}`}
+      title={item.tierReason}
+      onClick={selected ? onDismissSelect : undefined}
+    >
       <span className="pc-learning__sev" style={{ background: sevColor }} aria-hidden />
       <span className="pc-learning__id">{item.id}</span>
       <span className="pc-learning__title">{item.title}</span>
@@ -760,6 +781,9 @@ function ScoutView() {
   const [, setCreateView] = useQueryState('view', parseAsString);
   const [, setPlanSel] = useQueryState('plan', parseAsString);
   const [, setLviewRaw] = useQueryState('lview', parseAsString);
+  const [, setLane] = useQueryState('lane', parseAsString);
+  const [, setSrcSel] = useQueryState('lsrc', parseAsString);
+  const [, setLsel] = useQueryState('lsel', parseAsString);
   const openRouted = (item: ScoutRoutedItem) => {
     if (item.rail === 'plan' && item.routedRef.startsWith('plan:')) {
       void setPlanSel(item.routedRef.slice('plan:'.length));
@@ -770,7 +794,14 @@ function ScoutView() {
     } else if (item.rail === 'instance') {
       void setLviewRaw('benchmark');
     } else {
-      // improvement (wi:EI-…) and anything unknown → the improvements backlog.
+      // improvement (wi:EI-…) and anything unknown → the improvements backlog,
+      // selecting THAT row (?lsel) and resetting the lane/source filters so the
+      // target is guaranteed visible (a sticky lane=auto would hide a
+      // human-tier item and the click would look like a no-op).
+      const id = item.routedRef.startsWith('wi:') ? item.routedRef.slice('wi:'.length) : item.routedRef;
+      void setLsel(id);
+      void setLane(null);
+      void setSrcSel(null);
       void setLviewRaw('improvements');
     }
   };
@@ -1462,6 +1493,7 @@ function LearningStyles() {
       }
       .pc-learning__sev { width: 4px; height: 100%; min-height: 18px; border-radius: 3px; }
       .pc-learning__row--link { cursor: pointer; }
+      .pc-learning__row--selected { border-color: #f59e0b; box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35); cursor: pointer; }
       .pc-learning__srcselect {
         font-size: 11px; padding: 3px 7px; border-radius: 7px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.2));

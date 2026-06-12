@@ -25,6 +25,7 @@
  * fire+observe loop, while the simple fire-and-forget callers use
  * `fireLaunchBlueprint`.
  */
+import { randomUUID } from 'node:crypto';
 import { loadBuiltinBlueprint, assertNotNestedHive, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { loopbackFetch } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
