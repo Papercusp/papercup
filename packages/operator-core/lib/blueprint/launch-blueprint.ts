@@ -27,9 +27,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import { loadBuiltinBlueprint, assertNotNestedHive, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { getOrgPg } from '@papercusp/db-org';
 import { loopbackFetch } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
+import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
 
 // The invoke route is a Hono API route on the operator's API port — derive the base from
 // the shared helper (operator-api-base.ts), never the stale `:3055` Vite SPA default.
@@ -185,7 +187,7 @@ export function setLaunchBlueprintFire(fn: LaunchFireFn | null): void {
   _fire = fn;
 }
 
-const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs }) => {
+const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs, workspaceId }) => {
   const body: Record<string, unknown> = {};
   if (kickoff) body.kickoff = kickoff;
   // `BLUEPRINT_ID=<id>` scopes the role's prompt resolution to
@@ -217,18 +219,52 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
     }
   }
 
-  // Fire-and-forget fallback (DBOS off, or a durable start isn't possible here):
-  // the invoke route runs the agent to completion (up to its timeout); a launch
-  // must NOT block the caller (a routine's durable step, an event reaction) on the
-  // whole agent lifetime. Mirrors the bespoke callers this replaces (the git-sync
-  // merge-resolver dispatch, the release/improvement fires).
+  // Fire-and-forget fallback (DBOS off, or durableSpawnFire declined — e.g. called
+  // from inside a DBOS step). Record a durable spawned_agents row so this launch
+  // appears in fleet:tree instead of being silently untracked (WI-108).
+  const spawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const runId = `launch-${Date.now()}-${randomUUID().slice(0, 6)}`;
+  let pg: ReturnType<typeof getOrgPg> | null = null;
+  try {
+    pg = getOrgPg();
+    await recordSpawn(pg.sql, {
+      spawnId,
+      workspaceId,
+      harnessSlug: installSlug,
+      childRole: role,
+      runId,
+      status: 'running',
+    });
+  } catch (e) {
+    console.warn(
+      `[launch-blueprint] fallback spawn record failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
+    );
+    pg = null;
+  }
+
   void loopbackFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
-  }).catch((e) =>
-    console.warn(`[launch-blueprint] fire failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`),
-  );
+  })
+    .then(() => {
+      if (pg) {
+        void finishSpawn(pg.sql, { spawnId, workspaceId, status: 'done' }).catch(() => {});
+      }
+    })
+    .catch((e) => {
+      console.warn(
+        `[launch-blueprint] fire failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
+      );
+      if (pg) {
+        void finishSpawn(pg.sql, {
+          spawnId,
+          workspaceId,
+          status: 'failed',
+          errorMessage: e instanceof Error ? e.message : String(e),
+        }).catch(() => {});
+      }
+    });
 };
 
 /**
