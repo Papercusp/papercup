@@ -91,6 +91,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // `calibration-markets`) until P-001. SQL-only zero-spend; the ranker
   // feature contributes 0 while dark.
   FLAGS.CALIBRATION_MARKETS,
+  // … and the audit-as-sensors SLO collectors (P-047/FB-21) — single gate:
+  // the flag IS the arming act (no routine of their own — they ride the
+  // existing improvement-watchdog tick — and no governor budget: SQL-only,
+  // zero LLM spend). Dark until P-001 because a breach FILES into the
+  // improvements queue: new capture volume waits for the consume-edges
+  // live proof like every other frontier capture source.
+  FLAGS.LEARNING_SLO_SENSORS,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

@@ -41,6 +41,8 @@ interface ImprovementPayload {
   ideaLifecycle?: unknown;
   /** Stable watchdog signal identity ('<source>:<key>' — watchdog-audit P-004). */
   watchdogKey?: unknown;
+  /** Machine-readable finding class ('<miner>:<shape>' — frontier P-044/D-008). */
+  findingClass?: unknown;
 }
 
 function payloadOf(issue: EngineerIssue): ImprovementPayload {
@@ -74,6 +76,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(sourceRole ? { sourceRole } : {}),
     ...(isIdeaLifecycle(p.ideaLifecycle) ? { ideaLifecycle: p.ideaLifecycle } : {}),
     ...(typeof p.watchdogKey === 'string' && p.watchdogKey ? { watchdogKey: p.watchdogKey } : {}),
+    ...(typeof p.findingClass === 'string' && p.findingClass ? { findingClass: p.findingClass } : {}),
     ...(isSignalOrigin(issue.signalOrigin) ? { origin: issue.signalOrigin } : {}),
   };
 }

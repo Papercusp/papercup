@@ -77,6 +77,11 @@ export interface ImprovementCandidate {
    *  already origin-filtered at the read seam (read-items.ts); this rides along
    *  for display + downstream decisions. */
   origin?: import('./provenance').SignalOrigin;
+  /** Machine-readable finding class (payload.findingClass — frontier P-044/D-008):
+   *  a stable `<miner>:<shape>` slug from the filing edge (e.g.
+   *  `negative-space:resolution-gap`). The graduation tracker counts clean
+   *  passes per class; absent on interactive/legacy captures. */
+  findingClass?: string;
 }
 
 export type Tier = 'auto' | 'human';

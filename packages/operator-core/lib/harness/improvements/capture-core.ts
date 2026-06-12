@@ -102,6 +102,17 @@ export interface CaptureImprovementInput {
    * row must never suppress a real signal, nor a real row a planted drill).
    */
   origin?: SignalOrigin;
+  /**
+   * Machine-readable finding class (frontier P-044/D-008): a stable
+   * `<miner>:<shape>` slug (e.g. `negative-space:resolution-gap`,
+   * `regret:process-counterfactual`) identifying WHAT KIND of finding this is,
+   * independent of its free-prose title. Stored at `payload.findingClass` and
+   * surfaced on ImprovementCandidate so downstream rails can route and count
+   * per class — the graduation tracker (P-045/P-046) counts clean passes per
+   * findingClass, never per fuzzy title. Automated filers (the miners, the
+   * watchdog collectors) should always pass one; interactive captures may omit.
+   */
+  findingClass?: string;
 }
 
 export interface PossibleDuplicate {
@@ -256,6 +267,9 @@ export async function captureImprovement(
   // Stable signal identity (watchdog-audit P-004 / D-001): the indexed cross-tick
   // dedup key the watchdog pre-filters against (findIssuesByWatchdogKeys).
   if (input.watchdogKey) payload.watchdogKey = input.watchdogKey;
+  // Machine-readable finding class (frontier P-044/D-008) — the taxonomy slug
+  // the triage/graduation rails route and count by.
+  if (input.findingClass) payload.findingClass = input.findingClass;
   // P-010 source-tag: track who filed this improvement for per-Hive analytics
   if (sourceRole !== 'human') payload.sourceRole = sourceRole;
   // Idea lifecycle starts at capture (self-learning P-031): open → triaged → applied

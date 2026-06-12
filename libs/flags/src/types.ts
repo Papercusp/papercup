@@ -262,6 +262,16 @@ export const FLAGS = {
   // (D-001 owner-ratified dark-ship rule for frontier loops); the ranker
   // feature contributes 0 while OFF or while no bets are scored.
   CALIBRATION_MARKETS: "papercusp-calibration-markets",
+  // self-learning-frontier-2026-06-12 (P-047 / FB-21): audit-as-sensors — five
+  // learning-system SLO collectors riding the existing improvement-watchdog
+  // tick (triage-distribution entropy, capture-vs-consume flow imbalance,
+  // MTTSH regression, governor budget starvation, memory recall zero-hit
+  // spike). SQL-only, zero LLM spend, no routine of its own — but a breach
+  // FILES into the improvements queue, so it ships dark until the plan's
+  // P-001 arming gate closes (D-001: no new capture volume into a drain
+  // still being repaired). OFF = every collector reports a 'dark' note and
+  // emits nothing.
+  LEARNING_SLO_SENSORS: "papercusp-learning-slo-sensors",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -414,6 +424,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // owner-set per-cycle governor budget on loop `calibration-markets` +
   // activating the seeded-inactive routine are the P-001 arming acts.
   [FLAGS.CALIBRATION_MARKETS]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: the SLO
+  // sensors are new CAPTURE SOURCES (a breach files into the improvements
+  // queue) even though they ride the existing watchdog routine and spend
+  // nothing; the flag flip is the ONLY P-001 arming act (no routine to
+  // activate, no governor budget — SQL-only on the watchdog's cadence).
+  [FLAGS.LEARNING_SLO_SENSORS]: false,
   // ON by default — Phase 0 foundation, same call as CHANGE_LEDGER above
   // (self-learning-frontier P-003/FB-01): the governor SPENDS nothing and
   // FILES nothing — it is the refusal gate D-004 wants live, and ON starts

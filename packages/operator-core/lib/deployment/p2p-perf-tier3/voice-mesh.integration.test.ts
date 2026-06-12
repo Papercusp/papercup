@@ -78,13 +78,86 @@ describe('Tier-3 voice mesh — $0 local parity (no cloud, no SSH)', () => {
 });
 
 // ── CRED-GATED REAL FRAMES — the P-014 co-located rung (owner ack 2026-06-10,
-// WI-101). Provisions VOICE_MESH_FRAMES Latitude VMs in ONE region (co-located;
+// WI-101). Provisions VOICE_MESH_FRAMES frames in ONE region (co-located;
 // cross-region stays gated on the Latitude quota raise), runs the mesh at
 // VOICE_MESH_SIZES over the public DHT, DESTROYS everything in a finally.
 // Same cred/skip posture as the Tier-3 substrate test above. $0 in CI.
+// Two provider variants through the SAME provider-agnostic fleet code (the
+// substrate test's pattern). NOTE 2026-06-12: Latitude VM creates currently
+// yield Running-but-unreachable machines (no ssh from any vantage even with
+// the OS fix) — Hetzner is the rung that actually ran.
+const FOUR_HOURS = 4 * 60 * 60_000;
+
+async function runVoiceMeshMetal(opts: {
+  driver: import('@papercusp/deployment-driver').DeploymentDriver;
+  providerDefaults: Record<string, unknown>;
+  identityFile?: string;
+  size: string;
+  region: string;
+  tag: string;
+}): Promise<void> {
+  const { provisionBenchFleet } = await import('./bench-frames');
+  const repoRoot = process.cwd().includes('packages/operator-core')
+    ? resolve(process.cwd(), '..', '..')
+    : process.cwd();
+  const frameCount = Math.max(2, Number(process.env.VOICE_MESH_FRAMES ?? 10));
+  const meshSizes = (process.env.VOICE_MESH_SIZES ?? '2,5,10')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => n >= 2 && n <= frameCount);
+  const log = (lvl: string, m: string) => console.log(`[voice-mesh ${opts.tag} ${lvl}] ${m}`);
+
+  const fleet = await provisionBenchFleet({
+    driver: opts.driver,
+    repoRoot,
+    sshIdentityFile: opts.identityFile,
+    providerDefaults: opts.providerDefaults,
+    specs: Array.from({ length: frameCount }, (_, i) => ({
+      label: `voice-${opts.region.toLowerCase()}-${i}`,
+      region: opts.region,
+      size: opts.size,
+      kind: 'vm' as const,
+      // Co-located rung measures the mesh itself — direct connectivity,
+      // no NAT-like firewall (D-009/relay is a separate, shipped story).
+      firewall: false,
+    })),
+    log,
+  });
+  try {
+    const frames: VoiceMeshSshSlotSpec[] = fleet.frames.map((f) => ({
+      label: f.spec.label,
+      region: f.spec.region,
+      target: f.target,
+    }));
+    const launcher = sshVoiceMeshLauncher({
+      frames,
+      log: (l) => console.log(`[voice-mesh ${opts.tag} peer] ${l}`),
+    });
+    const res = await runVoiceMeshSuite({
+      meshSizes,
+      launcher,
+      harnessSlug: `voice-mesh-p014-${Date.now()}`,
+      frames: Number(process.env.VOICE_MESH_FRAMES_PER_PEER ?? 750), // 15s of audio
+      meshTimeoutMs: 240_000,
+      log: (l) => console.log(`[voice-mesh ${opts.tag}] ${l}`),
+    });
+    expect(res.artifacts.length).toBe(meshSizes.length);
+    for (const a of res.artifacts) {
+      const m2e = a.metrics['mouthToEarMs'] as MetricSummary;
+      expect(m2e?.count).toBeGreaterThan(0);
+      console.log(
+        `[voice-mesh ${opts.tag}] ${a.params['peers']} peers — mouthToEar p50=${m2e.p50}ms p95=${m2e.p95}ms ` +
+          `loss p50=${(a.metrics['frameLossPct'] as MetricSummary)?.p50}% ` +
+          `egress p50=${(a.metrics['egressBytesPerSec'] as MetricSummary)?.p50}B/s`,
+      );
+    }
+  } finally {
+    await fleet.teardownAll();
+  }
+}
+
 const project = process.env.P2P_PERF_LATITUDE_PROJECT ?? process.env.LATITUDE_E2E_PROJECT;
 const haveLatitude = !!process.env.LATITUDE_API_KEY && !!project;
-const NINETY_MIN = 90 * 60_000;
 
 describe.skipIf(!haveLatitude)(
   'P-014 voice mesh — REAL Latitude frames (needs LATITUDE_API_KEY + P2P_PERF_LATITUDE_PROJECT)',
@@ -92,73 +165,49 @@ describe.skipIf(!haveLatitude)(
     it(
       'provisions co-located VM frames, measures 2/5/10-peer voice mesh, DESTROYS always',
       async () => {
-        const { provisionBenchFleet } = await import('./bench-frames');
         const { LatitudeDriver } = await import('../latitude/latitude-driver');
         const sshKeyIds = (process.env.P2P_PERF_SSH_KEY_IDS ?? '')
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean);
         const identityFile = process.env.P2P_PERF_SSH_IDENTITY_FILE;
-        const repoRoot = process.cwd().includes('packages/operator-core')
-          ? resolve(process.cwd(), '..', '..')
-          : process.cwd();
-        const frameCount = Math.max(2, Number(process.env.VOICE_MESH_FRAMES ?? 10));
-        const meshSizes = (process.env.VOICE_MESH_SIZES ?? '2,5,10')
-          .split(',')
-          .map((s) => Number(s.trim()))
-          .filter((n) => n >= 2 && n <= frameCount);
-        const region = process.env.VOICE_MESH_REGION ?? 'ASH';
-        const log = (lvl: string, m: string) => console.log(`[voice-mesh metal ${lvl}] ${m}`);
-
-        const fleet = await provisionBenchFleet({
+        await runVoiceMeshMetal({
           driver: LatitudeDriver,
-          repoRoot,
-          sshIdentityFile: identityFile,
           providerDefaults: { project, sshKeys: sshKeyIds, sshIdentityFile: identityFile },
-          specs: Array.from({ length: frameCount }, (_, i) => ({
-            label: `voice-${region.toLowerCase()}-${i}`,
-            region,
-            size: process.env.P2P_PERF_LATITUDE_VM_PLAN ?? 'vm.small',
-            kind: 'vm' as const,
-            // Co-located rung measures the mesh itself — direct connectivity,
-            // no NAT-like firewall (D-009/relay is a separate, shipped story).
-            firewall: false,
-          })),
-          log,
+          identityFile,
+          size: process.env.P2P_PERF_LATITUDE_VM_PLAN ?? 'vm.small',
+          region: process.env.VOICE_MESH_REGION ?? 'ASH',
+          tag: 'latitude',
         });
-        try {
-          const frames: VoiceMeshSshSlotSpec[] = fleet.frames.map((f) => ({
-            label: f.spec.label,
-            region: f.spec.region,
-            target: f.target,
-          }));
-          const launcher = sshVoiceMeshLauncher({
-            frames,
-            log: (l) => console.log(`[voice-mesh peer] ${l}`),
-          });
-          const res = await runVoiceMeshSuite({
-            meshSizes,
-            launcher,
-            harnessSlug: `voice-mesh-p014-${Date.now()}`,
-            frames: Number(process.env.VOICE_MESH_FRAMES_PER_PEER ?? 750), // 15s of audio
-            meshTimeoutMs: 240_000,
-            log: (l) => console.log(`[voice-mesh metal] ${l}`),
-          });
-          expect(res.artifacts.length).toBe(meshSizes.length);
-          for (const a of res.artifacts) {
-            const m2e = a.metrics['mouthToEarMs'] as MetricSummary;
-            expect(m2e?.count).toBeGreaterThan(0);
-            console.log(
-              `[voice-mesh metal] ${a.params['peers']} peers — mouthToEar p50=${m2e.p50}ms p95=${m2e.p95}ms ` +
-                `loss p50=${(a.metrics['frameLossPct'] as MetricSummary)?.p50}% ` +
-                `egress p50=${(a.metrics['egressBytesPerSec'] as MetricSummary)?.p50}B/s`,
-            );
-          }
-        } finally {
-          await fleet.teardownAll();
-        }
       },
-      NINETY_MIN,
+      FOUR_HOURS,
+    );
+  },
+);
+
+const hetznerSshKeyId = process.env.HETZNER_SSH_KEY_ID;
+const hetznerIdentity = process.env.HETZNER_SSH_IDENTITY_FILE;
+const haveHetzner =
+  !!(process.env.HCLOUD_TOKEN || process.env.HETZNER_API_TOKEN) && !!hetznerSshKeyId && !!hetznerIdentity;
+
+describe.skipIf(!haveHetzner)(
+  'P-014 voice mesh — REAL Hetzner frames (needs HCLOUD_TOKEN + HETZNER_SSH_KEY_ID + HETZNER_SSH_IDENTITY_FILE)',
+  () => {
+    it(
+      'provisions co-located VM frames, measures 2/5/10-peer voice mesh, DESTROYS always',
+      async () => {
+        const { HetznerDriver } = await import('../hetzner/hetzner-driver');
+        const sshKeyId = Number(hetznerSshKeyId) || hetznerSshKeyId!;
+        await runVoiceMeshMetal({
+          driver: HetznerDriver,
+          providerDefaults: { sshKeys: [sshKeyId], sshIdentityFile: hetznerIdentity },
+          identityFile: hetznerIdentity,
+          size: process.env.HETZNER_E2E_SERVER_TYPE ?? 'cpx31',
+          region: process.env.VOICE_MESH_REGION ?? 'ash',
+          tag: 'hetzner',
+        });
+      },
+      FOUR_HOURS,
     );
   },
 );
