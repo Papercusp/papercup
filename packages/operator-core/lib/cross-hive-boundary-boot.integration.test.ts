@@ -53,6 +53,24 @@ const OUTBOX_DDL = `
     last_attempt_at bigint NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, hive_slug, id),
     CONSTRAINT cross_hive_outbox_kind_check CHECK (kind IN ('ask','work-request','answer','decline')))`;
+// Mirrors migration 231 (the C-1 ask ledger) — the boot-wired boundary's default
+// quota ledger records every ADMITTED inbound request as an `in` row (P-013).
+const ASKS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_asks (
+    workspace_id text NOT NULL, hive_slug text NOT NULL,
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    peer_pubkey text NOT NULL, direction text NOT NULL DEFAULT 'out',
+    kind text NOT NULL, subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
+    correlation_id text NOT NULL, state text NOT NULL DEFAULT 'queued',
+    reply_body text, reply_ts timestamptz,
+    asked_by text,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT cross_hive_asks_pkey PRIMARY KEY (id),
+    CONSTRAINT cross_hive_asks_workspace_nonempty CHECK (workspace_id <> ''),
+    CONSTRAINT cross_hive_asks_direction_check CHECK (direction IN ('out','in')),
+    CONSTRAINT cross_hive_asks_kind_check CHECK (kind IN ('ask','work-request')),
+    CONSTRAINT cross_hive_asks_state_check CHECK (state IN ('queued','sent','answered','declined','expired')),
+    CONSTRAINT cross_hive_asks_correlation_uniq UNIQUE (workspace_id, hive_slug, correlation_id))`;
 
 let db: FreshPgDb;
 
@@ -102,6 +120,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HIVES_DDL);
   await db.sql.unsafe(HIVE_SETTINGS_DDL);
   await db.sql.unsafe(OUTBOX_DDL);
+  await db.sql.unsafe(ASKS_DDL);
   await db.sql`
     INSERT INTO harness_shared.hives (workspace_id, home_slug, public_key, keychain_id, created_at)
     VALUES (${WS}, ${B_SLUG}, ${Buffer.alloc(32)}, 'kc-b', 0)`;

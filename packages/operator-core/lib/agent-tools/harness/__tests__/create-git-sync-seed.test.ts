@@ -1,0 +1,149 @@
+/**
+ * harness:create { hive } — git-sync routine seeding for a member born at
+ * create (git-sync-any-hive-2026-06-12 B-01, the third creator-side producer).
+ *
+ * A successful create WITH `hive` must call seedGitSyncRoutineForMember
+ * (creator side, the freshly-registered entry) and report the outcome as
+ * `gitSync`; a create WITHOUT `hive` must not touch the seeder; a seeder that
+ * explodes must never fail the create. PG-free: registry/schema/triggers and
+ * the seeder module are doMock'd (same pattern as create-dep-gate.test.ts).
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const MAKE_CTX = () =>
+  ({
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    workspaceId: 'default',
+    harnessSlug: 'x',
+    role: 'architect' as const,
+    runId: 'run_T',
+    spawnId: 'spw_T',
+  }) as never;
+
+function parsePayload(result: { content: Array<{ text: string }> }): Record<string, any> {
+  return JSON.parse(result.content[0].text);
+}
+
+const seedCalls: Array<Record<string, unknown>> = [];
+let seedImpl: (o: Record<string, unknown>) => Promise<Record<string, unknown>> = async () => ({
+  seeded: true,
+  active: true,
+  push: false,
+  pushReason: 'no_upstream_remote — faked',
+  cron: '0 4,14,24,34,44,54 * * * *',
+});
+
+beforeEach(() => {
+  vi.resetModules();
+  seedCalls.length = 0;
+  seedImpl = async () => ({
+    seeded: true,
+    active: true,
+    push: false,
+    pushReason: 'no_upstream_remote — faked',
+    cron: '0 4,14,24,34,44,54 * * * *',
+  });
+  vi.doMock('../../../harness-registry', () => ({
+    loadHarnessRegistry: async () => ({
+      projects: [{ slug: 'my-hive', path: '/h', harness_kind: 'hive' }],
+    }),
+    saveHarnessRegistry: async () => {},
+  }));
+  vi.doMock('../../../scaffold-harness-schema', () => ({
+    scaffoldHarnessSchema: async () => {},
+  }));
+  vi.doMock('../../../blueprint/materialize-triggers', () => ({
+    materializeBlueprintTriggers: async () => [],
+  }));
+  vi.doMock('../../../workspace-registry', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../workspace-registry')>()),
+    activeWorkspaceId: () => 'ws-test',
+  }));
+  vi.doMock('../../../harness/git-sync/git-sync-routine', () => ({
+    seedGitSyncRoutineForMember: async (o: Record<string, unknown>) => {
+      seedCalls.push(o);
+      return seedImpl(o);
+    },
+  }));
+});
+afterEach(() => {
+  vi.doUnmock('../../../harness-registry');
+  vi.doUnmock('../../../scaffold-harness-schema');
+  vi.doUnmock('../../../blueprint/materialize-triggers');
+  vi.doUnmock('../../../workspace-registry');
+  vi.doUnmock('../../../harness/git-sync/git-sync-routine');
+});
+
+async function runCreate(args: Record<string, unknown>): Promise<Record<string, any>> {
+  const tool = (await import('../create')).default as {
+    handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
+  };
+  return parsePayload(await tool.handler(args, MAKE_CTX()));
+}
+
+describe('harness:create { hive } — B-01 git-sync seeding', () => {
+  it('seeds the member routine (creator side, active workspace, the new entry) and reports gitSync', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'create-gitsync-'));
+    try {
+      const payload = await runCreate({
+        slug: 'member-x',
+        path: dir,
+        blueprint: { id: 'member-x', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
+        hive: 'my-hive',
+      });
+      expect(payload.ok).toBe(true);
+      expect(payload.hive).toBe('my-hive');
+      expect(seedCalls).toEqual([
+        {
+          workspaceId: 'ws-test',
+          installSlug: 'member-x',
+          joinerSide: false,
+          entry: expect.objectContaining({ slug: 'member-x', path: dir, hive_slug: 'my-hive' }),
+        },
+      ]);
+      expect(payload.gitSync).toMatchObject({ seeded: true, push: false });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a create WITHOUT { hive } never touches the seeder and reports no gitSync', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'create-nogitsync-'));
+    try {
+      const payload = await runCreate({
+        slug: 'standalone-x',
+        path: dir,
+        blueprint: { id: 'standalone-x', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
+      });
+      expect(payload.ok).toBe(true);
+      expect(seedCalls).toEqual([]);
+      expect(payload).not.toHaveProperty('gitSync');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('an exploding seeder NEVER fails the create — reported as { reason: error }', async () => {
+    seedImpl = async () => {
+      throw new Error('routines pg down');
+    };
+    const dir = await fs.mkdtemp(join(tmpdir(), 'create-gitsync-err-'));
+    try {
+      const payload = await runCreate({
+        slug: 'member-err',
+        path: dir,
+        blueprint: { id: 'member-err', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
+        hive: 'my-hive',
+      });
+      expect(payload.ok).toBe(true);
+      expect(payload.gitSync).toEqual({ seeded: false, reason: 'error', message: 'routines pg down' });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});

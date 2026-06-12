@@ -100,7 +100,7 @@ describe('gym control plane — proposals', () => {
     const id = await recordProposal(sql, {
       workspaceId: WS, harnessSlug: 'tx', cycle: 1, variantId: 'v-tx', role: 'reviewer', proposedMd: 'tx reviewer',
     });
-    const res = await sql.begin((tx) => decideProposal(tx as typeof sql, { id, workspaceId: WS, harnessSlug: 'tx', decision: 'accepted' }));
+    const res = await sql.begin((tx) => decideProposal(tx as unknown as typeof sql, { id, workspaceId: WS, harnessSlug: 'tx', decision: 'accepted' }));
     expect(res.ok).toBe(true);
     expect(res.promoted).toBe(true);
     const prompts = await getPrompts(sql, { workspaceId: WS, harnessSlug: 'tx' });

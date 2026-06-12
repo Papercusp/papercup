@@ -323,7 +323,12 @@ export async function decideProposal(
   // top-level client; when the caller already runs us inside one (routeWithWorkspace passes a
   // TransactionSql, which has no `.begin`), run directly — it's already atomic in the outer tx.
   const begin = (sql as unknown as { begin?: unknown }).begin;
-  const result = typeof begin === 'function' ? ((await sql.begin(run)) as DecideResult) : await run(sql);
+  // postgres.js types Sql and TransactionSql as non-overlapping even though the
+  // runtime objects are template-call compatible — hence the through-unknown cast.
+  const result =
+    typeof begin === 'function'
+      ? ((await sql.begin(run as unknown as (tx: TransactionSql<Record<string, unknown>>) => Promise<DecideResult>)) as DecideResult)
+      : await run(sql);
   // The gym committer's behavior-change-ledger hook (self-learning-frontier
   // P-004 / D-003): an accepted proposal IS a live prompt mutation. Best-effort
   // AFTER the decide — a ledger failure must never roll back the promotion.

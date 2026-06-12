@@ -137,7 +137,8 @@ beforeAll(async () => {
     ALTER TABLE harness_shared.engineer_issues
       ADD COLUMN IF NOT EXISTS assignee_rank integer,
       ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
+      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';
   `).simple();
 }, 90_000);
 

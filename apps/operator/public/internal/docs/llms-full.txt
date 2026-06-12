@@ -1425,6 +1425,42 @@ The other shape that looks like PG-as-transport but isn’t: `pg_notify`. That�
 
 The endpoint system docs at [`/docs/endpoint-system/overview`](/internal/docs/endpoint-system/overview) describe the canonical “function as truth, transports as projections” shape. Use it.
 
+# The live db-org postgres client rejects JS Date params — pass ISO strings
+
+> getOrgPg()'s live client throws 'The "string" argument must be of type string… Received an instance of Date' on a Date query parameter, while the plain testcontainers clients integration tests use accept Dates fine — so the failure ships green and only surfaces live.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A write/read through `getOrgPg()` that passes a JavaScript `Date` as a query parameter (e.g. `${new Date(ms)}` into a `timestamptz` column) fails at runtime with:
+
+```plaintext
+The "string" argument must be of type string or an instance of Buffer or
+ArrayBuffer. Received an instance of Date
+```
+
+Every integration test stays GREEN: the `_org-test-db` / `createOrgTestDb` fixtures hand tests a plain `postgres(url)` client (and mock `@papercusp/db-org` onto it), and vanilla postgres.js serializes `Date` natively. The live `getOrgPg()` client is configured differently (custom type/serializer setup), and there a `Date` parameter throws. FB-02’s change-ledger hit this: 7/7 integration tests green, then the first LIVE scan recorded 0 of 139 rows (best-effort swallow+warn made it visible instead of fatal).
+
+## Rule
+
+[Section titled “Rule”](#rule)
+
+**Never pass a `Date` instance as a `getOrgPg()` query parameter. Convert to an ISO string** — Postgres casts `text` → `timestamptz` fine:
+
+```ts
+${new Date(ms).toISOString()}          // ✅
+${new Date(ms)}                        // ❌ throws on the live client only
+```
+
+This also means a green `*.integration.test.ts` does NOT prove parameter serialization against the live client — if your write path is new, run one real write through the live `getOrgPg()` (a tsx one-off or the live surface) before calling it verified. Best-effort writers (swallow+warn, dispatch-ledger style) make this class of failure observable instead of silent.
+
+## Where it bit
+
+[Section titled “Where it bit”](#where-it-bit)
+
+`packages/operator-core/lib/change-ledger/change-ledger.ts` (`recordBehaviorChange` `recorded_at` backfill + `readRecentChanges` `sinceMs` filter), fixed to `.toISOString()` on 2026-06-12 (self-learning-frontier FB-02).
+
 # DBOS durable execution — the eight gotchas that bite on first integration
 
 > Hard-won findings from wiring DBOS Transact into the operator (dbos-durable-jobs-2026-05-31) — boot path, PG connect-probe, version pinning, scheduled-workflow registration, dedup vs concurrency, interrupted-step re-execution, and why the durable pipeline is sequential-only.
@@ -1520,6 +1556,34 @@ That purity is also why the durable pipeline is **sequential-only**. The moment 
 Note
 
 **Update (2026-06-06):** Two things in this footer drifted. (1) The DBOS dir moved from `apps/operator/lib/dbos/` to `packages/operator-core/lib/dbos/`. (2) The `autoloop-workflow.ts` (AutoLoop as scheduled + dedup-keyed) is **retired** (`autoloop-pot-operator-rebuild-2026-06-05` P-010/D-009 — it read a `director-config.json` enablement surface nothing wrote). (3) The Phase-3 durable pipeline is now the **default** orchestrator (on unless `PAPERCUSP_DBOS_ORCHESTRATOR=0`), and the **legacy main loop is retired** — archived to `libs/papercusp/_retired/orchestrator-run-loop/` on 2026-06-06; setting `PAPERCUSP_DBOS_ORCHESTRATOR=0` no longer reverts to it (there is no legacy loop left), it just registers no DBOS orchestrator at all. Gotcha #8’s “leaving that feature to the legacy main loop” no longer applies — a parallel/branch verb now simply stops the durable pipeline.
+
+# A default-ON flag turns "hermetic" unit tests into live-DB writers
+
+> Flag-gated glue with a production default param defeats a factory's PG-free test contract — getOrgPg() falls back to localhost:5432, the dev box's LIVE operator DB.
+
+**The trap.** You add best-effort, flag-gated glue (governor mirror, ledger hook, telemetry write) to an existing routine-action factory and default the new parameter to the production implementation:
+
+```ts
+export function makeScoutCycleAction(
+  runCycle: ScoutCycleRunner,
+  buildDeps: ScoutTickDepsBuilder = productionDepsBuilder,
+  recordGovernor = recordScoutTickToGovernor,   // ⟵ the trap
+)
+```
+
+If your feature flag defaults **ON** (the repo’s normal flag culture), every existing unit test that invokes the factory’s handler now runs the real glue: `getFlag` returns the default (`true`) in a bare vitest process, the glue resolves `getOrgPg()`, and — the sharp edge — `getOrgPg()`’s last-resort fallback is `postgresql://…@localhost:5432/papercusp`, which on the dev box is the **live operator DB**. The “hermetic” suite silently writes garbage rows (e.g. `workspaceId: 'w'`) into live tables, or hangs/flakes on the connect when PG isn’t there. Nothing fails loudly at the seam you added.
+
+**Why it’s non-obvious.** Each layer behaves reasonably alone: flags fail-safe to defaults with no PostHog; default-ON is the documented culture; `getOrgPg()`’s `:5432` fallback is deliberate (the dev box really runs PG there); best-effort glue swallows its errors. The composition is what bites — and it bites tests that were *designed* PG-free (the factory header even says so), which is exactly where nobody looks.
+
+**The fix pattern (FB-01, learning-governor):**
+
+* The factory takes the glue as an **optional param with NO production default** — omitted ⇒ skipped. Its PG-free unit-test contract survives.
+* The **boot-path registrar** (the one production entry, e.g. `registerScoutCycleAction`) wires the real glue explicitly.
+* A unit test pins the hermetic contract (handler runs with no recorder wired ⇒ no governor IO).
+
+Handlers that are *already* PG-bound (e.g. `system:gym-cycle` calls `getOrgPg()` itself) don’t need this — adding glue there changes nothing about their test posture.
+
+**Check before you ship** (FB-05..FB-15 will all wire glue like this): grep the factory’s existing `.test.ts` — if its tests invoke the handler without PG, your new default must not reach a pool. `enabled()`-first ordering is not enough once the flag defaults ON.
 
 # Desktop IPC transport map — what rides IPC, what's dormant, how to turn it on
 

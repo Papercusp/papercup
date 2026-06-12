@@ -64,7 +64,8 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
     ALTER TABLE harness_shared.engineer_issues
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
-      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;`).simple();
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
+      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });
 beforeEach(async () => { await db.sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.engineer_issues`; });

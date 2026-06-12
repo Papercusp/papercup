@@ -128,7 +128,7 @@ export async function recordBehaviorChange(input: RecordBehaviorChangeInput): Pr
          ${input.role ?? null}, ${input.diffRef ?? null}, ${input.actor ?? null},
          ${input.summary ?? null},
          ${input.payload ? sql.json(input.payload as never) : null},
-         ${input.recordedAtMs != null ? new Date(input.recordedAtMs) : sql`now()`})
+         ${input.recordedAtMs != null ? new Date(input.recordedAtMs).toISOString() : sql`now()`})
       ON CONFLICT DO NOTHING
       RETURNING id`;
     return rows[0]?.id ?? null;
@@ -178,7 +178,7 @@ export async function readRecentChanges(
       FROM harness_shared.behavior_change_ledger
      WHERE workspace_id = ${workspaceId}
        ${opts.mutationClass ? sql`AND mutation_class = ${opts.mutationClass}` : sql``}
-       ${opts.sinceMs != null ? sql`AND recorded_at >= ${new Date(opts.sinceMs)}` : sql``}
+       ${opts.sinceMs != null ? sql`AND recorded_at >= ${new Date(opts.sinceMs).toISOString()}` : sql``}
      ORDER BY recorded_at DESC
      LIMIT ${limit}`;
   const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : new Date(v).toISOString());
