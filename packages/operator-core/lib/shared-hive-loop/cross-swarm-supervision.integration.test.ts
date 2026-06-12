@@ -126,6 +126,23 @@ async function coordRows(cell: SwarmCell, surface: string): Promise<LogRow[]> {
     ORDER BY id`;
 }
 
+/**
+ * Presence announces are DIRECT log appends (no outbox leg), so converge()'s
+ * drain-based fixed point can hold before the peer's merge has seen the new
+ * block — real swarm replication needs a beat. Re-drive converge until the
+ * read settles (bounded), mirroring converge()'s own retry shape.
+ */
+async function convergeUntil<T>(read: () => Promise<T | null>, label: string): Promise<T> {
+  for (let pass = 0; pass < 20; pass++) {
+    const conv = await rig.converge();
+    expect(conv.fixedPoint).toBe(true);
+    const got = await read();
+    if (got != null) return got;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`convergeUntil: ${label} never settled`);
+}
+
 /** The Queen's cross-swarm roster read — the REAL production read path run
  *  against HER OWN cell's PG (listFederatedPresence → board tier 3). */
 async function queenRosterRead(cell: SwarmCell, nowMs: number) {
@@ -165,11 +182,11 @@ describe('P-010 — cross-swarm supervision: the Queen on A supervises a bee on 
     expect(res.announced).toBe(true);
     lastAnnounce = res.last!;
 
-    const conv = await rig.converge();
-    expect(conv.fixedPoint).toBe(true);
-
     // The Queen reads HER OWN cell's PG — the bee federated in.
-    const fresh = await queenRosterRead(a, announceMs + 1_000);
+    const fresh = await convergeUntil(async () => {
+      const view = await queenRosterRead(a, announceMs + 1_000);
+      return view.peers.length > 0 ? view : null;
+    }, 'bee presence on the Queen cell');
     expect(fresh.peers).toHaveLength(1);
     const peer = fresh.peers[0];
     expect(peer.ownerId).toBe(`fed:${b.githubUserId}@${BEE_MACHINE}`);
@@ -257,11 +274,11 @@ describe('P-010 — cross-swarm supervision: the Queen on A supervises a bee on 
     );
     expect(res.announced).toBe(true);
 
-    const conv = await rig.converge();
-    expect(conv.fixedPoint).toBe(true);
-
     // Still ONE roster row (LWW overwrite, not a second agent) — new focus.
-    const view = await queenRosterRead(a, t2 + 1_000);
+    const view = await convergeUntil(async () => {
+      const v = await queenRosterRead(a, t2 + 1_000);
+      return v.peers[0]?.intent === `${BEE} working WI-1` ? v : null;
+    }, 'the bee intent change on the Queen cell');
     expect(view.peers).toHaveLength(1);
     expect(view.peers[0].intent).toBe(`${BEE} working WI-1`);
     expect(view.peers[0].currentView).toBe('work-item:WI-1');

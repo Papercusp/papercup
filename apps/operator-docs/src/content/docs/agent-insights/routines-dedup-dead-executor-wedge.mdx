@@ -1,0 +1,67 @@
+---
+title: Routines that "fire" but never run — the dedup-ID + dead-executor wedge
+description: A routineFire PENDING on a dead DBOS executor holds its deduplicationID forever, silently collapsing every later cron fire while claimDueRoutine keeps bumping last_fired_at — the routines table looks healthy while the routine is dead. gym-cycle lost 7.5h this way.
+discovered: 2026-06-12
+tags: [routines, dbos, autoloop, gym, debugging]
+status: active
+---
+
+## Symptom
+
+A cron routine's `routines.last_fired_at` advances on schedule, but the
+routine's *effect* never happens. For `gym-cycle` (2026-06-12, 06:28→14:00):
+`harness_shared.autoloop_state` frozen at `gym-cycle:dispatch`,
+`gym_autoloop_config` stuck `running` for 7.5h (far past the 45-min
+stale-reclaim — which never ran, because the reclaim lives INSIDE the action
+that never executed), zero `[gym-cycle]` lines in the host journal. The Queen
+surfaced it as "P-001 autoloop discrepancy".
+
+## Mechanism
+
+`routinesTickImpl` (`packages/operator-core/lib/dbos/routines-workflow.ts`)
+enqueues each due fire with `deduplicationID: routine:<id>` and swallows
+`Duplicate…` errors as back-pressure. DBOS holds a dedup ID until the
+workflow reaches a terminal state — and **recovery is per-executor**: a fire
+PENDING on an executor that died is never recovered by the surviving hosts.
+So one dead executor holding one fire = that routine's dedup ID is occupied
+FOREVER; every later tick claims the routine (bumping `last_fired_at` — the
+misleading part) and then silently collapses the enqueue.
+
+How a foreign executor got the fire at all: any ad-hoc host (here
+`executor_id='repro-debug'`, an incident-repro session) sharing the live DB
+with the same DBOS app version joins the workflow queues and steals work; if
+it exits mid-run, everything it held is orphaned.
+
+## Diagnosis recipe
+
+```sql
+select workflow_uuid, status, executor_id, to_timestamp(created_at/1000)
+from dbos.workflow_status
+where name='routineFire' and status='PENDING';
+```
+
+A PENDING row whose `executor_id` no longer exists is the wedge. Cross-check
+`harness_shared.routines.last_fired_at` (advancing) vs the routine's actual
+effect table (frozen).
+
+## Fix (2026-06-12)
+
+- Immediate: cancel the phantom — and note the dedup is enforced by a unique
+  index with NO status predicate (`uq_workflow_status_dedup_id` on
+  `(queue_name, deduplication_id) WHERE deduplication_id IS NOT NULL`), so a
+  status flip alone does NOT free it (verified live: the next tick still
+  collapsed). DBOS's own terminal transition clears the column; a manual
+  cancel must too:
+  ```sql
+  UPDATE dbos.workflow_status
+     SET status='CANCELLED', deduplication_id=NULL
+   WHERE workflow_uuid=… AND status='PENDING';
+  -- and clear any lingering queue row:
+  DELETE FROM dbos.workflow_queue WHERE deduplication_id='routine:<id>';
+  ```
+- Structural: `startWorkflow(..., { timeoutMS: ROUTINE_FIRE_TIMEOUT_MS })`
+  (2h) — DBOS cancels a wedged fire at the deadline, so the worst case is one
+  ceiling window, not forever.
+- Prevention (open, EI-396 residual): per-host `DBOS__APPVERSION`/`DBOS__VMID`
+  discipline for ad-hoc/repro hosts so they never join the live hosts'
+  queues (the staging unit already isolates itself this way).

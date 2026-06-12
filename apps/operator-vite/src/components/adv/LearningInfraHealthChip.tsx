@@ -3,8 +3,8 @@
  * degraded / up" status chip on the Learning tab
  * (self-improvement-consume-edges-2026-06-12 P-003 / D-002).
  *
- * Reads `learning.health` (the 2-min learning-infra tick's snapshot: meridian
- * reachability + runner spawn path + gym fire circuit) and renders a single
+ * Reads `learning.health` (the 2-min learning-infra tick's snapshot: LLM
+ * transport resolvability + runner spawn path + gym fire circuit) and renders a single
  * tone-dotted chip with the per-leg evidence in the hover hint — the standing
  * Learning-tab face of the status whose offline transition also notifies the
  * owner (infra failures escalate, they don't queue).
@@ -39,7 +39,7 @@ export default function LearningInfraHealthChip() {
   if (!health || !(health.status in TONES)) return null;
   const tone = TONES[health.status];
   const hint =
-    `The learning system's own infrastructure — the meridian LLM router (gym judge, llm-testing), ` +
+    `The learning system's own infrastructure — the LLM spine (gym judge, llm-testing — anthropic-direct or meridian), ` +
     `the runner spawn path (auto-implement workers), and the gym fire circuit. ` +
     `When this goes offline you are notified directly: these failures can't be auto-fixed by the improvement queue.\n\n` +
     health.legs.map((l) => `${l.name}: ${l.status} — ${l.detail}`).join('\n') +

@@ -18,6 +18,7 @@ import desktopVersion from './desktop/version';
 import deployFrameView from './deploy/frame-view';
 import deployFrames from './deploy/frames';
 import discoveryHives from './discovery/hives';
+import discoveryHiveMeta from './discovery/hive-meta';
 import discoverySetHive from './discovery/set-hive';
 import discoveryBeaconConsent from './discovery/beacon-consent';
 import discoveryJoinInvite from './discovery/join-invite';
@@ -414,6 +415,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deployFrameView as AnyRoute),
   ...flatten(deployFrames as AnyRoute),
   ...flatten(discoveryHives as AnyRoute),
+  ...flatten(discoveryHiveMeta as AnyRoute),
   ...flatten(discoverySetHive as AnyRoute),
   ...flatten(discoveryBeaconConsent as AnyRoute[]),
   ...flatten(discoveryJoinInvite as AnyRoute),

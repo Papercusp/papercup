@@ -1,7 +1,7 @@
 # Gym-operator boot — liveness≠readiness, the Napi abort, and the :3456 Vikunja misdiagnosis
 URL: /internal/docs/agent-insights/gym-boot-readiness-and-meridian-topology
 
-EI-368's "column was_forked_from does not exist" was a half-migrated dbos schema left by a native abort that a liveness probe sailed past — and EI-261's "docker maps :3458" meridian theory was Vikunja's coincidental port. The dev box's correct LLM transport is anthropic-direct; :3456 down is healthy.
+>-
 
 ## The two traps
 

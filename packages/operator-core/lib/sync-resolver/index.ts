@@ -1438,7 +1438,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //
   // (self-improvement-consume-edges-2026-06-12 P-003 / D-002). ONE
   // offline/degraded/ok verdict over the learning system's own infra legs —
-  // meridian reachability, the runner spawn path's watchdog key, the gym fire
+  // LLM-spine resolvability, the runner spawn path's watchdog key, the gym fire
   // circuit — read from the snapshot the 2-min DBOS tick maintains (a stale or
   // missing snapshot triggers an on-demand evaluation; same transition +
   // notification semantics either way). Returns [] when the

@@ -19,13 +19,12 @@ converge on one origin branch. Source plan: `git-sync-any-hive-2026-06-12`
 itself was built in `git-sync-auto-commit-2026-06-03` and hardened in
 `git-sync-system-audit-2026-06-09`.
 
-<Aside type="caution" title="Two decisions on this page are PROVISIONAL">
-The **creator-ACTIVE / joiner-INACTIVE seed split** (P-005) and the
-**multi-pusher origin-serialized model** (D-004) are provisional defaults
-(plan decision D-005), implemented as one-line constants so a later
-ratification is a trivial flip. D-004 is additionally gated on the P-010
-two-peer convergence verification, which has **not yet run** — see
-[Verification status](#verification-status).
+<Aside type="caution" title="One decision on this page is PROVISIONAL">
+The **creator-ACTIVE / joiner-INACTIVE seed split** (P-005) is a provisional
+default (plan decision D-005), implemented as one-line constants so a later
+ratification is a trivial flip. The **multi-pusher origin-serialized model**
+(D-004) has passed its P-010 two-peer convergence verification — no ping-pong,
+no backoff needed — see [Verification status](#verification-status).
 </Aside>
 
 ## The model in one paragraph
@@ -246,11 +245,38 @@ migration runner (`db:migrate`).
 
 ## Verification status
 
-D-004 stands **provisionally**. The empirical half (plan P-010 — a two-peer
-convergence test on a scratch shared hive: disjoint edits, a real overlapping
-conflict, and a resolver-race probe for ping-pong) is deferred to a dedicated
-session with a second isolated operator stack. Until it runs, treat shared-hive
-multi-pusher behavior as designed-but-unverified; if ping-pong is observed the
-planned mitigation is a resolver-dispatch backoff (skip dispatch when origin
-advanced since the conflicting fetch — re-merge first), recorded as a new plan
-decision.
+D-004 is **empirically verified** (plan P-010, decision D-007, 2026-06-12). The
+verification lives as a permanent regression suite —
+`packages/operator-core/lib/harness/git-sync/two-peer-convergence.integration.test.ts`
+— rather than the originally-planned one-shot manual run on a second operator
+stack: two member slugs in one process reproduce the two-stack topology exactly
+(peers share *nothing* but the git origin — per-slug routine rows, escalation
+rows, and lock resources are all peer-local), while making the race
+interleavings deterministic. The resolver *dispatch loop* runs for real
+(conflict → escalation → merge-resolution blueprint → invoke-route POST, served
+by an in-test HTTP server); the resolver *agent* is scripted maximally
+adversarial — it never agrees with the other peer's resolution.
+
+Results (all deterministic, every run):
+
+- **In-pass push race** — a peer push landing between our fetch and our push is
+  absorbed by the non-FF retry (`run-git-sync.ts` push-reject → re-fetch →
+  re-merge → re-push), for both the clean-re-merge and re-conflict variants.
+- **Disjoint edits** — both land; union on origin; zero escalations, zero
+  resolver dispatches.
+- **Overlapping edit** — exactly the losing peer escalates and dispatches one
+  resolver; a second conflicted tick while it is in flight does NOT re-dispatch;
+  the resolution clears the escalation and the fleet converges.
+- **Resolver race** (the ping-pong probe) — both peers conflict against a
+  third-party tip, both resolvers run, their resolutions interleave so the
+  second push is non-FF-rejected and its re-merge re-conflicts with the first
+  resolution. Outcome: bounded at ONE extra pass (`resolved: 2, pushAttempts:
+  2`), fleet converged two ticks later. **No ping-pong** — convergence is
+  structural: origin serializes pushes, and every accepted push descends from
+  the tip its merge consumed, so a peer with no new local work always merges a
+  descendant cleanly.
+
+The contingent mitigation (a resolver-dispatch backoff when origin advanced
+since the conflicting fetch) is therefore **not implemented** — unbounded
+re-conflict requires new divergent work each round, which is real work
+arriving, not a resolver race.

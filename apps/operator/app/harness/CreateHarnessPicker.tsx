@@ -922,6 +922,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
           <ShareOfferStep
             slug={createdSlug}
             hiveSlug={createdHiveSlug}
+            hiveLabel={hiveLabel}
             onDone={handleClose}
           />
         )}
@@ -937,11 +938,13 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
 function ShareOfferStep({
   slug,
   hiveSlug,
+  hiveLabel,
   onDone,
 }: {
   slug: string;
   /** The created harness's home hive (or the new hive itself); null = standalone. */
   hiveSlug: string | null;
+  hiveLabel: string;
   onDone: () => void;
 }) {
   return (
@@ -954,7 +957,7 @@ function ShareOfferStep({
       </p>
       {hiveSlug ? (
         <div style={{ marginBottom: 16 }}>
-          <PublishHiveCard hiveSlug={hiveSlug} />
+          <PublishHiveCard hiveSlug={hiveSlug} hiveLabel={hiveLabel.toLowerCase()} />
         </div>
       ) : (
         <p data-testid="share-offer-standalone-note" style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--fg-dim)' }}>

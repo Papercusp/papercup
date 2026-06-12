@@ -22,7 +22,7 @@ const snapshot = (status: 'ok' | 'degraded' | 'offline', reason: string) => ({
   status,
   reason,
   legs: [
-    { name: 'meridian', status: status === 'offline' ? 'down' : 'ok', detail: '127.0.0.1:3456' },
+    { name: 'llm-spine', status: status === 'offline' ? 'down' : 'ok', detail: 'stateless transport: anthropic-direct' },
     { name: 'spawn-path', status: 'ok', detail: 'no open spawn-structural watchdog item' },
     { name: 'gym-circuit', status: status === 'degraded' ? 'down' : 'ok', detail: 'circuit state' },
   ],
@@ -41,7 +41,7 @@ describe('LearningInfraHealthChip', () => {
     render(<LearningInfraHealthChip />);
     const chip = screen.getByLabelText('learning infra up');
     expect(chip.className).toContain('pc-lihealth--good');
-    expect(chip.title).toContain('meridian: ok');
+    expect(chip.title).toContain('llm-spine: ok');
   });
 
   it('renders the amber chip + reason on degraded', () => {
@@ -53,11 +53,11 @@ describe('LearningInfraHealthChip', () => {
   });
 
   it('renders the red chip on offline', () => {
-    setResult([snapshot('offline', 'meridian: 127.0.0.1:3456 ECONNREFUSED')]);
+    setResult([snapshot('offline', 'llm-spine: no live Claude session or omp token')]);
     render(<LearningInfraHealthChip />);
     const chip = screen.getByLabelText('learning system OFFLINE');
     expect(chip.className).toContain('pc-lihealth--bad');
-    expect(chip.title).toContain('meridian: down');
+    expect(chip.title).toContain('llm-spine: down');
   });
 
   it('renders nothing while loading, on error, on an empty result (flag off), or for a foreign payload', () => {

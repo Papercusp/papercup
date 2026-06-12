@@ -1,0 +1,507 @@
+'use client';
+
+/**
+ * ShareHiveDialog / ShareHiveForm — the real share surface for a hive
+ * (comb-hive-native-sharing-2026-06-11 P-004). Replaces the retired
+ * default-public one-click publish with an explicit choice:
+ *
+ *   - visibility (public / invite / private) with consequence copy per option
+ *   - title + description (the directory listing's face)
+ *   - the member repos the publish will list (derived server-side, fresh)
+ *   - the `papercusp://hive` invite artifact for invite mode — REUSING the
+ *     stored secret on edit (re-minting would orphan every link already
+ *     handed out; mint only when none exists)
+ *
+ * ShareHiveForm is the embeddable core: PublishHiveCard (the picker's
+ * share-offer) embeds it as its minimal form; the hive header strip opens it
+ * centered via ShareHiveDialog (a Modal wrapper). Data flows through
+ * injectable seams for tests:
+ *
+ *   - fetchShareMeta: GET /api/discovery/hive-meta (prefill + pubkey + repos)
+ *   - setHiveListing: POST /api/discovery/set-hive (the one flip composition)
+ */
+
+import React, { useEffect, useState } from 'react';
+import { Check, Copy, Globe, Link2, Lock } from 'lucide-react';
+import { formatHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
+import { Modal } from './Modal';
+import { Button } from './Button';
+import { TextArea, TextInput } from './TextInput';
+
+export type HiveShareVisibility = 'public' | 'invite' | 'private';
+
+/** The owner's share-state projection (GET /api/discovery/hive-meta). */
+export interface HiveShareMeta {
+  hiveId: string;
+  /** false = never published (the "unpublished" chrome state). */
+  found: boolean;
+  visibility: HiveShareVisibility | null;
+  title: string;
+  description: string;
+  /** Stored invite secret — lets the owner re-copy the artifact. */
+  inviteSecret: string | null;
+  /** The hive's Ed25519 identity pubkey (base64) for the FULL invite link. */
+  hivePubkey: string | null;
+  /** Member repos the next publish will list, encoded `owner/repo[#id]`. */
+  memberRepos: string[];
+}
+
+export interface SetHiveOutcome {
+  ok: boolean;
+  announced?: boolean;
+  withdrawn?: boolean;
+  error?: string;
+}
+
+/** Default meta read: GET /api/discovery/hive-meta. null on any failure. */
+export async function defaultFetchShareMeta(hiveSlug: string): Promise<HiveShareMeta | null> {
+  try {
+    const res = await fetch(`/api/discovery/hive-meta?hiveId=${encodeURIComponent(hiveSlug)}`);
+    if (!res?.ok) return null;
+    const body = (await res.json()) as Partial<HiveShareMeta>;
+    return {
+      hiveId: String(body.hiveId ?? hiveSlug),
+      found: body.found === true,
+      visibility:
+        body.visibility === 'public' || body.visibility === 'invite' || body.visibility === 'private'
+          ? body.visibility
+          : null,
+      title: typeof body.title === 'string' && body.title ? body.title : hiveSlug,
+      description: typeof body.description === 'string' ? body.description : '',
+      inviteSecret: typeof body.inviteSecret === 'string' ? body.inviteSecret : null,
+      hivePubkey: typeof body.hivePubkey === 'string' ? body.hivePubkey : null,
+      memberRepos: Array.isArray(body.memberRepos) ? body.memberRepos.map(String) : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Default write: POST /api/discovery/set-hive (the one flip composition). */
+export async function defaultSetHiveListing(input: {
+  hiveId: string;
+  title: string;
+  description: string;
+  visibility: HiveShareVisibility;
+  inviteSecret?: string;
+}): Promise<SetHiveOutcome> {
+  try {
+    const res = await fetch('/api/discovery/set-hive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const body = (await res.json().catch(() => ({}))) as SetHiveOutcome & { error?: string };
+    if (!res.ok) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, announced: body.announced, withdrawn: body.withdrawn };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** 24 random bytes as 48 hex chars — same shape the header strip minted. */
+function mintInviteSecret(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(24)))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/** Display form of an encoded member-repo ref: drop the `#<id>` suffix. */
+function repoRefDisplay(ref: string): string {
+  return ref.replace(/#\d+$/, '');
+}
+
+const VISIBILITY_OPTIONS: ReadonlyArray<{
+  value: HiveShareVisibility;
+  label: string;
+  Icon: typeof Globe;
+  /** Consequence copy — what picking this actually does. */
+  copy: string;
+}> = [
+  {
+    value: 'public',
+    label: 'Public',
+    Icon: Globe,
+    copy: 'Listed on the P2P directory and browsable in the Comb. The member repos below are indexed; anyone can join in one click.',
+  },
+  {
+    value: 'invite',
+    label: 'Invite-only',
+    Icon: Link2,
+    copy: 'Unlisted — announced only on an invite-scoped topic. Joining requires the invite link below; nothing is indexed publicly.',
+  },
+  {
+    value: 'private',
+    label: 'Private',
+    Icon: Lock,
+    copy: 'Not shared. A previously published listing is withdrawn and its Comb rows unlisted; peers drop the announce.',
+  },
+];
+
+export interface ShareHiveFormProps {
+  hiveSlug: string;
+  /** Lexicon-resolved noun for copy ("hive" / "pot"). */
+  hiveLabel?: string;
+  /** Tighter spacing for embedded contexts (the picker share-offer card). */
+  compact?: boolean;
+  /** Fired after a successful save with the saved visibility (chrome refresh). */
+  onSaved?: (visibility: HiveShareVisibility) => void;
+  /** Injection seams for tests. Defaults hit the loopback routes. */
+  fetchShareMeta?: (hiveSlug: string) => Promise<HiveShareMeta | null>;
+  setHiveListing?: typeof defaultSetHiveListing;
+}
+
+export function ShareHiveForm({
+  hiveSlug,
+  hiveLabel = 'hive',
+  compact = false,
+  onSaved,
+  fetchShareMeta = defaultFetchShareMeta,
+  setHiveListing = defaultSetHiveListing,
+}: ShareHiveFormProps) {
+  // Mid-edit drafts + load/save lifecycle — render state, not URL state.
+  const [meta, setMeta] = useState<HiveShareMeta | null>(null);
+  const [metaLoaded, setMetaLoaded] = useState(false);
+  const [title, setTitle] = useState(hiveSlug);
+  const [description, setDescription] = useState('');
+  const [visibility, setVisibility] = useState<HiveShareVisibility>('public');
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<SetHiveOutcome | null>(null);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setMetaLoaded(false);
+    void fetchShareMeta(hiveSlug).then((m) => {
+      if (!alive) return;
+      setMetaLoaded(true);
+      if (!m) return;
+      setMeta(m);
+      setTitle(m.title);
+      setDescription(m.description);
+      // Preselect the live state for a published hive; a withdrawn or
+      // never-published hive opens on the headline choice (public) — the
+      // owner came here to share.
+      if (m.visibility === 'public' || m.visibility === 'invite') setVisibility(m.visibility);
+      // Recover the invite artifact for an already-invite hive — the strip
+      // used to show it exactly once and lose it.
+      if (m.visibility === 'invite' && m.inviteSecret) {
+        setInviteLink(
+          formatHiveInviteLink({
+            ...(m.hivePubkey ? { pubkeyBase64: m.hivePubkey } : {}),
+            secret: m.inviteSecret,
+            title: m.title,
+          }),
+        );
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [hiveSlug, fetchShareMeta]);
+
+  async function submit(): Promise<void> {
+    // Reuse the stored secret on edit — re-minting orphans every link already
+    // handed out. Mint only when this hive has never had one.
+    const inviteSecret =
+      visibility === 'invite' ? (meta?.inviteSecret ?? mintInviteSecret()) : undefined;
+    setBusy(true);
+    setOutcome(null);
+    setInviteCopied(false);
+    const res = await setHiveListing({
+      hiveId: hiveSlug,
+      title: title.trim() || hiveSlug,
+      description: description.trim(),
+      visibility,
+      ...(inviteSecret ? { inviteSecret } : {}),
+    });
+    setBusy(false);
+    setOutcome(res);
+    if (res.ok) {
+      if (visibility === 'invite' && inviteSecret) {
+        setMeta((m) => (m ? { ...m, visibility, inviteSecret } : m));
+        setInviteLink(
+          formatHiveInviteLink({
+            ...(meta?.hivePubkey ? { pubkeyBase64: meta.hivePubkey } : {}),
+            secret: inviteSecret,
+            title: title.trim() || hiveSlug,
+          }),
+        );
+      } else {
+        setMeta((m) => (m ? { ...m, visibility } : m));
+        setInviteLink(null);
+      }
+      onSaved?.(visibility);
+    }
+  }
+
+  const currentState = meta?.found
+    ? (meta.visibility ?? 'private')
+    : metaLoaded
+      ? 'unpublished'
+      : null;
+  const memberRepos = meta?.memberRepos ?? [];
+  const submitLabel = busy
+    ? 'Saving…'
+    : visibility === 'private'
+      ? 'Withdraw from directory'
+      : visibility === 'invite'
+        ? 'Publish invite-only'
+        : `Publish ${hiveLabel}`;
+
+  return (
+    <div className={compact ? 'pc-share-hive pc-share-hive--compact' : 'pc-share-hive'} data-testid="share-hive-form">
+      {currentState && (
+        <div className="pc-share-hive__current" data-testid="share-hive-current">
+          Currently: <strong>{currentState}</strong>
+        </div>
+      )}
+
+      <div className="pc-share-hive__viz" role="group" aria-label="Visibility">
+        {VISIBILITY_OPTIONS.map(({ value, label, Icon, copy }) => (
+          <button
+            key={value}
+            type="button"
+            className="pc-share-hive__viz-card"
+            data-testid={`share-hive-viz-${value}`}
+            aria-pressed={visibility === value}
+            disabled={busy}
+            onClick={() => setVisibility(value)}
+          >
+            <span className="pc-share-hive__viz-head">
+              <Icon size={13} aria-hidden /> {label}
+            </span>
+            <span className="pc-share-hive__viz-copy">{copy}</span>
+          </button>
+        ))}
+      </div>
+
+      <label className="pc-share-hive__field">
+        <span className="pc-share-hive__field-label">Title</span>
+        <TextInput
+          data-testid="share-hive-title"
+          value={title}
+          maxLength={200}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder={hiveSlug}
+        />
+      </label>
+      <label className="pc-share-hive__field">
+        <span className="pc-share-hive__field-label">Description</span>
+        <TextArea
+          data-testid="share-hive-description"
+          value={description}
+          rows={compact ? 2 : 3}
+          maxLength={1000}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder={`What is this ${hiveLabel} about?`}
+        />
+      </label>
+
+      {memberRepos.length > 0 && (
+        <div className="pc-share-hive__repos" data-testid="share-hive-repos">
+          <span className="pc-share-hive__field-label">
+            {visibility === 'private'
+              ? `Member repos that will be unlisted (${memberRepos.length})`
+              : `Member repos that will be listed (${memberRepos.length})`}
+          </span>
+          <ul className="pc-share-hive__repo-list">
+            {memberRepos.map((ref) => (
+              <li key={ref}>
+                <code>{repoRefDisplay(ref)}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {inviteLink && (
+        <div className="pc-share-hive__invite" data-testid="share-hive-invite">
+          <span className="pc-share-hive__field-label">Invite link — share it with collaborators</span>
+          <span className="pc-share-hive__invite-row">
+            <code className="pc-share-hive__invite-code" data-testid="share-hive-invite-link" title={inviteLink}>
+              {inviteLink}
+            </code>
+            <button
+              type="button"
+              className="pc-share-hive__copy"
+              data-testid="share-hive-invite-copy"
+              title="Copy the invite link"
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(inviteLink)
+                  .then(() => setInviteCopied(true))
+                  .catch(() => {});
+              }}
+            >
+              {inviteCopied ? (
+                <>
+                  <Check size={12} aria-hidden /> copied
+                </>
+              ) : (
+                <>
+                  <Copy size={12} aria-hidden /> copy
+                </>
+              )}
+            </button>
+          </span>
+        </div>
+      )}
+
+      {outcome && (
+        <div
+          className="pc-share-hive__outcome"
+          data-testid="share-hive-outcome"
+          style={{ color: outcome.ok ? 'var(--good, #34d399)' : 'var(--error, #e64646)' }}
+        >
+          {outcome.ok
+            ? outcome.withdrawn
+              ? `Withdrawn — the ${hiveLabel} is no longer shared.`
+              : outcome.announced
+                ? 'Published and announced to the directory.'
+                : 'Saved (announce pending transport).'
+            : `Failed: ${outcome.error ?? 'unknown error'}`}
+        </div>
+      )}
+
+      <div className="pc-share-hive__actions">
+        <Button
+          variant={visibility === 'private' ? 'destructive' : 'primary'}
+          data-testid="share-hive-submit"
+          disabled={busy}
+          onClick={() => void submit()}
+        >
+          {submitLabel}
+        </Button>
+      </div>
+      <ShareHiveStyles />
+    </div>
+  );
+}
+
+export interface ShareHiveDialogProps extends ShareHiveFormProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+/** The centered Share-Hive surface — the hive header's Share target. */
+export function ShareHiveDialog({ open, onOpenChange, ...form }: ShareHiveDialogProps) {
+  const label = form.hiveLabel ?? 'hive';
+  return (
+    <Modal
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Share ${label}`}
+      srOnlyTitle
+      contentStyle={{
+        width: 480,
+        maxWidth: '90vw',
+        maxHeight: '85vh',
+        overflowY: 'auto',
+        background: 'var(--bg-1, #0d1726)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: 18,
+      }}
+    >
+      <h2 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 600 }}>
+        Share {label} <code>{form.hiveSlug}</code>
+      </h2>
+      <p style={{ margin: '0 0 14px', fontSize: 12.5, color: 'var(--fg-dim)' }}>
+        Sharing happens at the {label} level — choose who can find and join it.
+      </p>
+      <ShareHiveForm {...form} />
+    </Modal>
+  );
+}
+
+function ShareHiveStyles() {
+  return (
+    <style>{`
+      .pc-share-hive { display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
+      .pc-share-hive--compact { gap: 9px; font-size: 12.5px; }
+      .pc-share-hive__current { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-share-hive__current strong { color: var(--fg-dim, #b9d4e8); font-weight: 650; }
+      .pc-share-hive__viz { display: flex; flex-direction: column; gap: 6px; }
+      .pc-share-hive__viz-card {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        text-align: left;
+        padding: 8px 10px;
+        background: var(--bg-2, #101c2e);
+        color: var(--fg-dim, #b9d4e8);
+        border: 1px solid var(--border, #1e3349);
+        border-radius: 6px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .pc-share-hive__viz-card:hover:not(:disabled) {
+        border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
+      }
+      .pc-share-hive__viz-card[aria-pressed='true'] {
+        border-color: var(--accent, #38bdf8);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 92%);
+        color: var(--fg, #e7f7ff);
+      }
+      .pc-share-hive__viz-card:disabled { opacity: 0.6; cursor: default; }
+      .pc-share-hive__viz-head {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 650;
+        font-size: 12.5px;
+      }
+      .pc-share-hive__viz-copy { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); line-height: 1.4; }
+      .pc-share-hive__field { display: flex; flex-direction: column; gap: 4px; }
+      .pc-share-hive__field-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--fg-mute, #7f9bb4);
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      .pc-share-hive__repos { display: flex; flex-direction: column; gap: 4px; }
+      .pc-share-hive__repo-list {
+        margin: 0;
+        padding: 0 0 0 16px;
+        font-size: 12px;
+        color: var(--fg-dim, #b9d4e8);
+        max-height: 110px;
+        overflow-y: auto;
+      }
+      .pc-share-hive__invite { display: flex; flex-direction: column; gap: 4px; }
+      .pc-share-hive__invite-row { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+      .pc-share-hive__invite-code {
+        font-size: 11px;
+        color: var(--fg-dim, #b9d4e8);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+        min-width: 0;
+      }
+      .pc-share-hive__copy {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex: 0 0 auto;
+        padding: 2px 9px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--fg-dim, #b9d4e8);
+        background: transparent;
+        border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .pc-share-hive__copy:hover {
+        color: var(--fg, #e7f7ff);
+        border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
+      }
+      .pc-share-hive__outcome { font-size: 12px; }
+      .pc-share-hive__actions { display: flex; justify-content: flex-end; }
+    `}</style>
+  );
+}

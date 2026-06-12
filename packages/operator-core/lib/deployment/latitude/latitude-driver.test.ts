@@ -267,6 +267,11 @@ describe('LatitudeDriver VM path (kind:vm)', () => {
     const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
     const frame = await driver.provision(vmCfg, ctx);
     expect(client.created[0]).toMatchObject({ plan: 'plan_small', project: 'proj_1', ssh_keys: ['ssh_k'] });
+    // The OS default is LOAD-BEARING: an OS-less VM create is accepted by the
+    // API and yields a Running-but-empty machine with no ssh (live 2026-06-12,
+    // WI-101) — and the metal default is NOT vm-compatible, so the VM path
+    // must carry its own vm-provisionable image.
+    expect(client.created[0]).toMatchObject({ operating_system: 'ubuntu_24_04_x64_lts' });
     expect(frame).toMatchObject({ id: 'vm_1', kind: 'vm', host: '9.9.9.9', placement: 'remote' });
     expect(frame.meta).toMatchObject({ sshUser: 'ubuntu', planId: 'plan_small' });
   });

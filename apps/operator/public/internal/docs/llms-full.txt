@@ -3228,7 +3228,7 @@ Because the gym is now a blueprint, you do **not** extend it by editing core gym
 
 # Gym-operator boot — liveness≠readiness, the Napi abort, and the :3456 Vikunja misdiagnosis
 
-> EI-368's "column was_forked_from does not exist" was a half-migrated dbos schema left by a native abort that a liveness probe sailed past — and EI-261's "docker maps :3458" meridian theory was Vikunja's coincidental port. The dev box's correct LLM transport is anthropic-direct; :3456 down is healthy.
+> MERIDIAN IS DEAD AND THAT'S HEALTHY — the omp gateway on :3456 has been gone since 2026-04-11; the fleet's LLM transport is anthropic-direct (do NOT probe :3456 as health, do NOT chase "meridian down"). Symptoms that mean READ THIS — "Connection error" from judge/llm-test runs, ECONNREFUSED 127.0.0.1:3456, "meridian not listening/not running". Also covered — EI-368's "column was_forked_from does not exist" was a half-migrated dbos schema left by a native abort behind a liveness-only probe, and EI-261's "docker maps :3458" theory was Vikunja's coincidental port.
 
 ## The two traps
 
@@ -3505,6 +3505,34 @@ DISPLAY=:90 import -window root /tmp/shot.png   # now shows REAL content
 * The render node is `/dev/dri/renderD128` (`crw-rw----+ root render`); the invoking user must be in the `render` group (or it’s ACL-granted).
 
 See the full cookbook in [testing/agent-e2e §15.4](/internal/docs/testing/agent-e2e#154-xvfb--xdotool--ocr-fallback-cookbook).
+
+# Test agent-dispatch loops hermetically: point PAPERCUSP_OPERATOR_BASE at an in-test HTTP server
+
+> Any code path that fires the /invoke route via loopbackFetch (git-sync's merge-resolver, fireLaunchBlueprint callers) can be integration-tested END-TO-END — real blueprint resolution, real POST, observable settle — by setting PAPERCUSP_OPERATOR_BASE to an in-test node:http server that plays the invoked agent. Never let a test's dispatch reach a live :3070 (it would spawn a REAL agent). Bonus pattern: two member slugs in one process ≡ two operator stacks for git-sync-style per-slug subsystems.
+
+## The problem
+
+[Section titled “The problem”](#the-problem)
+
+Code that dispatches agents through the invoke route — `spawnMergeResolver` in `git-sync-action.ts`, anything riding `resolveLaunchTargetForEvent` / `fireLaunchBlueprint` — was effectively untestable at integration level: the dispatch is a `loopbackFetch` POST at `operatorApiBase()`, which defaults to `http://localhost:3070`. On the dev box **that port is the LIVE green operator** — a test that lets the POST through would invoke a *real* merge-resolver agent. `seed-any-hive.integration.test.ts` S4 therefore parked a fake `last_resolver: dispatched` marker to keep the dispatch path from ever running, leaving `spawnMergeResolver` (blueprint resolution, the observe loop, `merge_resolver` pipeline events) uncovered.
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+`operatorApiBase()` honors **`PAPERCUSP_OPERATOR_BASE`** (read per call, not memoized at import). So an integration test can:
+
+1. Stand up a `node:http` server on an ephemeral port (`listen(0, '127.0.0.1')`) that parses `/api/harness/:slug/invoke?role=...`, queues each arrival, and lets the TEST decide when (and with what body) to respond — `{ ok: true, exitCode: 0 }` settles the caller’s observe loop.
+2. `process.env.PAPERCUSP_OPERATOR_BASE = http://127.0.0.1:<port>` in `beforeAll` (delete in `afterAll`; respond to any still-parked request before closing or the caller’s dangling promise leaks across teardown).
+3. Drive the production code path for real: the built-in blueprint event map (`git-sync:conflict` → merge-resolution → role `merge-resolver`) resolves fine under vitest, the POST lands on the test server, and the test plays the invoked agent — including *parking* the response to simulate a long-running agent (that is how the `RESOLVER_INFLIGHT_MS` dedup gets tested for real).
+
+Working example with all the trimmings (dispatch queue, parked responses, scripted adversarial resolver, settle polling): `packages/operator-core/lib/harness/git-sync/two-peer-convergence.integration.test.ts`.
+
+## Bonus: two slugs in one process ≡ two operator stacks
+
+[Section titled “Bonus: two slugs in one process ≡ two operator stacks”](#bonus-two-slugs-in-one-process--two-operator-stacks)
+
+For per-slug subsystems (git-sync’s routine rows, `(slug, phase)` escalation rows, `git-sync:<slug>` lock resources), N “peer machines” can be simulated as N member slugs in ONE process + ONE test PG, each slug owning its own checkout of one shared bare origin: peers share *nothing* but the origin — exactly the real multi-stack topology — while every race interleaving becomes deterministic and scriptable. That is how the P-010 two-peer convergence verification (plan `git-sync-any-hive-2026-06-12` D-007) replaced a “stand up a second isolated operator stack” manual run with a permanent regression suite. Check which state is actually per-slug before reusing this: anything keyed on a process-global singleton (one workspace pin, one registry) is shared and would diverge from the multi-stack reality.
 
 # Hive-scoped federation (re-key from harness → Hive identity)
 
@@ -7068,6 +7096,54 @@ The discriminator-extension pattern works because POST /harness/projects’s ent
 * `packages/operator-core/lib/harness/init-local-dir.ts` — Entry 1 helper + structured error.
 * `packages/operator-core/lib/harness/clone-github.ts` — Entry 2 helper + structured error.
 * [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — sister principle: signals belong on the entity they describe; the same instinct applied to error shapes here.
+
+# Routines that "fire" but never run — the dedup-ID + dead-executor wedge
+
+> A routineFire PENDING on a dead DBOS executor holds its deduplicationID forever, silently collapsing every later cron fire while claimDueRoutine keeps bumping last_fired_at — the routines table looks healthy while the routine is dead. gym-cycle lost 7.5h this way.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A cron routine’s `routines.last_fired_at` advances on schedule, but the routine’s *effect* never happens. For `gym-cycle` (2026-06-12, 06:28→14:00): `harness_shared.autoloop_state` frozen at `gym-cycle:dispatch`, `gym_autoloop_config` stuck `running` for 7.5h (far past the 45-min stale-reclaim — which never ran, because the reclaim lives INSIDE the action that never executed), zero `[gym-cycle]` lines in the host journal. The Queen surfaced it as “P-001 autoloop discrepancy”.
+
+## Mechanism
+
+[Section titled “Mechanism”](#mechanism)
+
+`routinesTickImpl` (`packages/operator-core/lib/dbos/routines-workflow.ts`) enqueues each due fire with `deduplicationID: routine:<id>` and swallows `Duplicate…` errors as back-pressure. DBOS holds a dedup ID until the workflow reaches a terminal state — and **recovery is per-executor**: a fire PENDING on an executor that died is never recovered by the surviving hosts. So one dead executor holding one fire = that routine’s dedup ID is occupied FOREVER; every later tick claims the routine (bumping `last_fired_at` — the misleading part) and then silently collapses the enqueue.
+
+How a foreign executor got the fire at all: any ad-hoc host (here `executor_id='repro-debug'`, an incident-repro session) sharing the live DB with the same DBOS app version joins the workflow queues and steals work; if it exits mid-run, everything it held is orphaned.
+
+## Diagnosis recipe
+
+[Section titled “Diagnosis recipe”](#diagnosis-recipe)
+
+```sql
+select workflow_uuid, status, executor_id, to_timestamp(created_at/1000)
+from dbos.workflow_status
+where name='routineFire' and status='PENDING';
+```
+
+A PENDING row whose `executor_id` no longer exists is the wedge. Cross-check `harness_shared.routines.last_fired_at` (advancing) vs the routine’s actual effect table (frozen).
+
+## Fix (2026-06-12)
+
+[Section titled “Fix (2026-06-12)”](#fix-2026-06-12)
+
+* Immediate: cancel the phantom — and note the dedup is enforced by a unique index with NO status predicate (`uq_workflow_status_dedup_id` on `(queue_name, deduplication_id) WHERE deduplication_id IS NOT NULL`), so a status flip alone does NOT free it (verified live: the next tick still collapsed). DBOS’s own terminal transition clears the column; a manual cancel must too:
+
+  ```sql
+  UPDATE dbos.workflow_status
+     SET status='CANCELLED', deduplication_id=NULL
+   WHERE workflow_uuid=… AND status='PENDING';
+  -- and clear any lingering queue row:
+  DELETE FROM dbos.workflow_queue WHERE deduplication_id='routine:<id>';
+  ```
+
+* Structural: `startWorkflow(..., { timeoutMS: ROUTINE_FIRE_TIMEOUT_MS })` (2h) — DBOS cancels a wedged fire at the deadline, so the worst case is one ceiling window, not forever.
+
+* Prevention (open, EI-396 residual): per-host `DBOS__APPVERSION`/`DBOS__VMID` discipline for ad-hoc/repro hosts so they never join the live hosts’ queues (the staging unit already isolates itself this way).
 
 # Routines are claimed by WHICHEVER host's tick wins — green and staging race on one table
 
@@ -41831,9 +41907,9 @@ The `packages/operator-core/lib/operator-state-pg.ts` helpers branch on `ENCRYPT
 
 The git-sync pipeline (`packages/operator-core/lib/harness/git-sync/run-git-sync.ts`) commits the whole tree, fetches, merges, and pushes — for **any** registered checkout, not just papercup. This page documents how that pipeline is *wired* to hives: which registry entries get a `system:git-sync` routine, who seeds it, what the seeded config says, and how N independent peers on a shared hive converge on one origin branch. Source plan: `git-sync-any-hive-2026-06-12` (see the [plans index](/internal/docs/reference/plans-index)); the pipeline itself was built in `git-sync-auto-commit-2026-06-03` and hardened in `git-sync-system-audit-2026-06-09`.
 
-Two decisions on this page are PROVISIONAL
+One decision on this page is PROVISIONAL
 
-The **creator-ACTIVE / joiner-INACTIVE seed split** (P-005) and the **multi-pusher origin-serialized model** (D-004) are provisional defaults (plan decision D-005), implemented as one-line constants so a later ratification is a trivial flip. D-004 is additionally gated on the P-010 two-peer convergence verification, which has **not yet run** — see [Verification status](#verification-status).
+The **creator-ACTIVE / joiner-INACTIVE seed split** (P-005) is a provisional default (plan decision D-005), implemented as one-line constants so a later ratification is a trivial flip. The **multi-pusher origin-serialized model** (D-004) has passed its P-010 two-peer convergence verification — no ping-pong, no backoff needed — see [Verification status](#verification-status).
 
 ## The model in one paragraph
 
@@ -41968,7 +42044,16 @@ Both changes ship with migrations — locks `sql/015` (registry prose for the pe
 
 [Section titled “Verification status”](#verification-status)
 
-D-004 stands **provisionally**. The empirical half (plan P-010 — a two-peer convergence test on a scratch shared hive: disjoint edits, a real overlapping conflict, and a resolver-race probe for ping-pong) is deferred to a dedicated session with a second isolated operator stack. Until it runs, treat shared-hive multi-pusher behavior as designed-but-unverified; if ping-pong is observed the planned mitigation is a resolver-dispatch backoff (skip dispatch when origin advanced since the conflicting fetch — re-merge first), recorded as a new plan decision.
+D-004 is **empirically verified** (plan P-010, decision D-007, 2026-06-12). The verification lives as a permanent regression suite — `packages/operator-core/lib/harness/git-sync/two-peer-convergence.integration.test.ts` — rather than the originally-planned one-shot manual run on a second operator stack: two member slugs in one process reproduce the two-stack topology exactly (peers share *nothing* but the git origin — per-slug routine rows, escalation rows, and lock resources are all peer-local), while making the race interleavings deterministic. The resolver *dispatch loop* runs for real (conflict → escalation → merge-resolution blueprint → invoke-route POST, served by an in-test HTTP server); the resolver *agent* is scripted maximally adversarial — it never agrees with the other peer’s resolution.
+
+Results (all deterministic, every run):
+
+* **In-pass push race** — a peer push landing between our fetch and our push is absorbed by the non-FF retry (`run-git-sync.ts` push-reject → re-fetch → re-merge → re-push), for both the clean-re-merge and re-conflict variants.
+* **Disjoint edits** — both land; union on origin; zero escalations, zero resolver dispatches.
+* **Overlapping edit** — exactly the losing peer escalates and dispatches one resolver; a second conflicted tick while it is in flight does NOT re-dispatch; the resolution clears the escalation and the fleet converges.
+* **Resolver race** (the ping-pong probe) — both peers conflict against a third-party tip, both resolvers run, their resolutions interleave so the second push is non-FF-rejected and its re-merge re-conflicts with the first resolution. Outcome: bounded at ONE extra pass (`resolved: 2, pushAttempts: 2`), fleet converged two ticks later. **No ping-pong** — convergence is structural: origin serializes pushes, and every accepted push descends from the tip its merge consumed, so a peer with no new local work always merges a descendant cleanly.
+
+The contingent mitigation (a resolver-dispatch backoff when origin advanced since the conflicting fetch) is therefore **not implemented** — unbounded re-conflict requires new divergent work each round, which is real work arriving, not a resolver race.
 
 # Learning Packs — default hive learnings, hive memory, Comb distribution
 

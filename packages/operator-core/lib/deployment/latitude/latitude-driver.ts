@@ -42,6 +42,15 @@ const VM_DEFAULT_SSH_USER = 'ubuntu';
 const DEFAULT_VM_PLAN = 'vm.small';
 
 const DEFAULT_OS = 'ubuntu_22_04_x64_lts';
+/**
+ * VM creates MUST carry an explicit OS now: as of 2026-06-12 the API accepts
+ * an OS-less VM create and yields a Running-but-empty machine (no image, no
+ * ssh — found live by WI-101's bench fleet; the 06-06 verification predated
+ * the change). The metal default above is NOT vm-compatible ("is not
+ * compatible with this plan"); per `/plans/operating_systems` provisionable_on,
+ * Ubuntu 24.04 is the plain image provisionable on the vm.* family.
+ */
+const DEFAULT_VM_OS = 'ubuntu_24_04_x64_lts';
 
 export interface LatitudeDriverDeps {
   /** Injected client (tests). Default: built per-call from the resolved API key. */
@@ -161,7 +170,7 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
           plan: planId,
           project,
           ssh_keys: provider.sshKeys as string[] | undefined,
-          operating_system: provider.operatingSystem as string | undefined,
+          operating_system: (provider.operatingSystem as string | undefined) ?? DEFAULT_VM_OS,
         });
         log(ctx, 'info', `vm ${created.id} created (status=${created.status}); waiting for Running`);
         const deadline = Date.now() + pollTimeoutMs;

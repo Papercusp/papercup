@@ -113,7 +113,7 @@ const serviceHealthWorkflow = DBOS.registerWorkflow(serviceHealthTick, {
 DBOS.registerScheduled(serviceHealthWorkflow, { name: 'serviceHealth', crontab: '0 * * * * *' });
 
 // Every 2min: the composite learning-infra health tick (self-improvement-
-// consume-edges-2026-06-12 P-003 / D-002) — meridian reachability + runner
+// consume-edges-2026-06-12 P-003 / D-002) — LLM-spine resolvability + runner
 // spawn path + gym circuit → ONE offline/degraded status; owner notification
 // on the transition to offline (infra failures escalate, they don't queue).
 // Flag-gated (LEARNING_INFRA_HEALTH, default ON); transition-only, never a
