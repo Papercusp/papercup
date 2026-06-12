@@ -20,7 +20,7 @@ import {
   type WorkItemKind,
   DEFAULT_RISK_TIER_POLICY,
 } from './policy';
-import { classifyIdeaType } from './triage';
+import { classifyIdeaType, type IdeaType } from './triage';
 
 const SEVERITY_WEIGHT: Record<ImprovementSeverity, number> = {
   critical: 40,
@@ -48,8 +48,8 @@ export interface ScoredItem {
   ageDays: number;
   /** Why this tier — from the policy decision. */
   tierReason: string;
-  /** Idea type (product vs process, self-learning P-020). */
-  ideaType?: 'product' | 'process';
+  /** Idea type — the D-005 routing taxonomy (consume-edges P-021). */
+  ideaType?: IdeaType;
   /** Idea-lifecycle state (payload.ideaLifecycle.state) — undefined for legacy
    *  captures. The scheduled triage pass picks untriaged items off this. */
   ideaLifecycleState?: import('./lifecycle').IdeaLifecycleState;
@@ -344,7 +344,9 @@ export function buildDigest(
 
     const decision = decisions[c.id];
     const ageDays = c.createdAt ? Math.max(0, (nowMs - Date.parse(c.createdAt)) / DAY_MS) : 0;
-    const { type: ideaType } = classifyIdeaType({ scope: c.scope, title: c.title } as ScoredItem);
+    // Full-fidelity classification (D-005): the candidate carries paths +
+    // watchdogKey + kind, which the taxonomy keys off — never a scope-only call.
+    const { type: ideaType } = classifyIdeaType(c);
     const scored: ScoredItem = {
       id: c.id,
       kind: c.kind,

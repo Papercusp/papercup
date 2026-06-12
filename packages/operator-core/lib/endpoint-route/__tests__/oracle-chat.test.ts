@@ -97,7 +97,12 @@ async function oracleChatHandler(
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
   vi.doMock('../../auth', () => ({ getSessionUserOrDefault: vi.fn(async () => ({ id: 'user-1' })) }));
   vi.doMock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => opts.flagOn !== false) }));
-  vi.doMock('@papercusp/flags', () => ({ FLAGS: { ORACLE: 'oracle' } }));
+  // The route gates on FLAGS.TESTING (papercusp-oracle folded into
+  // papercusp-testing, 2026-06-10). Keep the real key string: if module
+  // isolation ever lets the REAL flags/server resolve, an undefined key
+  // crashes resolveEnvOverride (`key.toUpperCase`) before the getFlag mock
+  // can answer — exactly the suite-order flake this mock used to cause.
+  vi.doMock('@papercusp/flags', () => ({ FLAGS: { TESTING: 'papercusp-testing' } }));
 
   await import('../../agent-tools/oracle/chat');
   const routes = (await import('../routes/oracle/index')).default as RouteDefinition<undefined>[];

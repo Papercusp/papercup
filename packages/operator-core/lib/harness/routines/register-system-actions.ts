@@ -65,6 +65,11 @@
  *     a restart), then run one backoff-aware drain pass over every wired
  *     Hive's durable outbox. Self-gates on zero published Hives; seeded ACTIVE
  *     (seed-cross-hive-drain-routine.ts).
+ *   - `system:iq-battery-gen` — self-improvement-consume-edges-2026-06-12
+ *     P-033 (B-12). Monthly benchmark cadence: one budget-capped gen-N
+ *     IQ-battery run per new code generation (skip at an already-measured
+ *     SHA). REFUSES without an owner-set payload budget (gym precedent).
+ *     Seeded INACTIVE (lib/iq-battery/seed-benchmark-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';

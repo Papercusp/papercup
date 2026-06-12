@@ -151,3 +151,63 @@ export async function resolveImprovement(
   await deps.releaseIssue(input.id);
   return { ok: true, id: input.id, outcome: 'could-not-fix', state: 'open', routedToHuman: exhausted };
 }
+
+// ── Exhausted-without-resolve ⇒ needs-human (consume-edges P-012) ─────────────
+//
+// The paths above only run when a worker CALLS improvements:resolve. A worker
+// that dies silently (SIGTERM, crash, never spawned) calls nothing — so an item
+// whose dispatch attempts exhaust through the stale-claim cycle stays stranded
+// in the auto lane forever: never dispatchable again (the attempts cap), never
+// routed to a human (only an explicit could-not-fix/needs-human resolve did
+// that). This is the flip that catches the silent-death case: the implement
+// routine calls it for every attempts-exhausted item still missing `needsHuman`.
+
+export interface ExhaustedFlipInput {
+  id: string;
+  /** Dispatch attempts recorded so far (for the explanatory comment). */
+  attempts?: number;
+  /** The cap the attempts exhausted against (default DEFAULT_MAX_ATTEMPTS). */
+  maxAttempts?: number;
+  /** Who is flipping (default 'improvement-implement' — the routine). */
+  by?: string;
+}
+
+export interface ExhaustedFlipResult {
+  ok: boolean;
+  id: string;
+  /** True when this call routed the item to the human tier. */
+  flipped: boolean;
+  /** Why nothing was flipped (already-human / not-open / not-found). */
+  reason?: string;
+}
+
+/**
+ * Route an attempts-exhausted item with NO resolve ever recorded to the human
+ * tier: explanatory comment + `payload.needsHuman` + release the (stale) claim.
+ * Idempotent — an item already flagged, resolved, or missing is a no-op, so the
+ * routine can call it every tick for whatever planImplementRun reports exhausted.
+ */
+export async function routeExhaustedImprovementToHuman(
+  input: ExhaustedFlipInput,
+  deps: ResolveDeps = defaultDeps,
+): Promise<ExhaustedFlipResult> {
+  const issue = await deps.getIssue(input.id);
+  if (!issue) return { ok: false, id: input.id, flipped: false, reason: `issue ${input.id} not found` };
+  if (issue.state !== 'open') return { ok: true, id: input.id, flipped: false, reason: 'not open' };
+  const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
+  if (p.needsHuman === true) return { ok: true, id: input.id, flipped: false, reason: 'already routed to a human' };
+
+  const by = input.by ?? 'improvement-implement';
+  const attempts = input.attempts ?? attemptsOf(issue);
+  const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  await deps.commentIssue(
+    input.id,
+    `⤴ Auto-implement attempts exhausted with NO resolve ever recorded (${attempts}/${maxAttempts} dispatches) — ` +
+      `the worker(s) died without calling improvements:resolve (silent worker death). ` +
+      `Routing to a human; this item will not auto-dispatch again.`,
+    by,
+  );
+  await deps.mergeIssuePayload(input.id, { needsHuman: true });
+  await deps.releaseIssue(input.id);
+  return { ok: true, id: input.id, flipped: true };
+}

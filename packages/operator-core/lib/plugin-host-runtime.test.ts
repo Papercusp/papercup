@@ -606,7 +606,7 @@ describe('registerPluginReactionRules (P-005 — capability-scoped plugin rules)
       });
       expect(matched).toHaveLength(1);
       expect(matched[0].args).toEqual({ via: 'reaction' });
-      expect(matched[0].rule.capability).toBe('tools:fixture:notify');
+      expect((matched[0].rule as import('./events/types').ReactionRule).capability).toBe('tools:fixture:notify');
       // The non-matching case.
       const unmatched = matchReactions({
         tool: 'pipeline:step-done',

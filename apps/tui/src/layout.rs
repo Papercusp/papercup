@@ -205,29 +205,25 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 /// consolidated pui-dock-consolidation-2026-06-07): the surface the
 /// desktop-docked native terminal runs. A **two-tab** zellij session
 /// (hive-network-surface-2026-06-11 P-007 / B-10):
-///   * tab **"this hive"** (focus) — the live-TUI dock VERBATIM: flag-on the
-///     queen split (`psu --brain` + her data boards) over the agent stack
-///     (operator/sentinel chat, the reactive dock-driver, the fleet wake board);
-///     flag-off the classic single stack (`pui chat-pane` ⇄ brain). No workbench
-///     HUD, no work-area agent panes, no swap presets.
+///   * tab **"this hive"** (focus) — the live-TUI dock VERBATIM: the queen
+///     split (`psu --brain` + her data boards) over the agent stack
+///     (operator/sentinel chat, the reactive dock-driver, the fleet wake board).
+///     No workbench HUD, no work-area agent panes, no swap presets.
 ///   * tab **"network"** — `pui network-pane`, the cross-hive capability-ladder
 ///     board (own hives, shared-Hive peer Swarms, foreign directory hives);
 ///     selecting a row drills into an on-demand per-hive tab (`hive_tab_kdl`).
 /// The tab-bar + status-bar move into a `default_tab_template` shared by both
 /// tabs; "this hive" is the FIRST tab + focus=true so the dock opens where it
-/// always did. Both flag states get the tabs; the workbench swap presets are
-/// untouched.
+/// always did. The workbench swap presets are untouched.
 ///
 /// Pane DISPLAY names route through the active Hive lexicon (`lex`): the
 /// operator pane is the `operator` term (Queen). The pinned-pane ARGS
-/// (`chat-pane`, `network-pane`) are internal identifiers and never change.
+/// (`network-pane`, `wake-pane`, …) are internal identifiers and never change.
 /// `brain_argv` is the brain pane's command; its first element is the command,
 /// the rest are quoted args. Pure (no I/O) so it is unit-tested.
-pub fn chat_dock_kdl(
-    brain_argv: &[String],
-    lex: &crate::lexicon::Lexicon,
-    hive_agent_tabs: bool,
-) -> String {
+/// (hive-agent-tabs P-014 retired the `pui chat-pane` flag-off dock shape — the
+/// queen-split layout is the only dock now.)
+pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> String {
     let (brain_cmd, brain_args) = brain_argv
         .split_first()
         .map(|(c, rest)| (c.as_str(), rest))
@@ -245,61 +241,46 @@ pub fn chat_dock_kdl(
     // Lexicon-resolved, kdl-safe pane display names ("chat" is fixed). Under
     // the-hive pack: operator → sentinel, brain → queen (owner naming, 2026-06-07;
     // operator renamed "Sentinel Bee"→"Sentinel" 2026-06-09 — hive-agent-tabs P-003).
-    // P-010: flag-on, prefix the per-type glyph into the zellij pane NAME (zellij
-    // has no per-pane color — D-008 — so the glyph is how a type reads at a glance).
-    // Flag-off → the bare lexicon name (current dock unchanged). colony (the driver)
-    // is infrastructure, not an agent type → left unglyphed.
+    // P-010: prefix the per-type glyph into the zellij pane NAME (zellij has no
+    // per-pane color — D-008 — so the glyph is how a type reads at a glance).
+    // colony (the driver) is infrastructure, not an agent type → left unglyphed.
     use crate::agent_pane_kind::AgentPaneKind;
     let glyph_name = |term: &str, fallback: &str, kind: AgentPaneKind| {
         let n = kdl_pane_name(&lex.lex(term), fallback);
-        if hive_agent_tabs { format!("{} {n}", kind.glyph()) } else { n }
+        format!("{} {n}", kind.glyph())
     };
     let operator_name = glyph_name("operator", "operator", AgentPaneKind::Sentinel);
     let brain_name = glyph_name("brain", "brain", AgentPaneKind::Queen);
-    // P-003 (hive-agent-tabs): under HIVE_AGENT_TABS the Sentinel pane is a REAL
-    // psu/Claude TUI (operator role), replacing the `pui chat-pane` widget so it
-    // renders like the Queen. It MUST be a FULLY-SCOPED, no-picker launch (owner
-    // ask 2026-06-09): `psu --no-picker --agent=claude --role=operator`.
+    // P-003 (hive-agent-tabs): the Sentinel pane is a REAL psu/Claude TUI
+    // (operator role) so it renders like the Queen (the `pui chat-pane` widget it
+    // replaced was retired by P-014). It MUST be a FULLY-SCOPED, no-picker launch
+    // (owner ask 2026-06-09): `psu --no-picker --agent=claude --role=operator`.
     //   - `--no-picker` → strict scripting launch, no interactive picker.
     //   - `--agent=claude` → required by --no-picker; the Claude TUI backend.
     //   - `--role=operator` → MUST use `=` (psu-launcher parses `--role=<v>`, NOT
     //     space-separated — `--role operator` is silently dropped → role picker).
     //   - workspace/harness/plan are omitted → psu falls back to the operator's
     //     active-workspace defaults (selectionsFromArgs), which is the right scope.
-    // Flag-off keeps the chat-pane (which also drives the reactive stack + the pui
-    // tab surfaces; relocating those flag-on is the rest of the D-009 restructure).
-    let operator_cmd_block = if hive_agent_tabs {
-        "command \"psu\"\n            args \"--no-picker\" \"--agent=claude\" \"--role=operator\""
-    } else {
-        "command \"pui\"\n            args \"chat-pane\""
-    };
-    // P-004 / D-009: flag-OFF the pui chat-pane both renders the operator chat AND
-    // drives the reactive agent stack (one pane per active bee). Flag-ON the operator
-    // pane is psu, so that driver must relocate — a dedicated `pui dock-driver` pane
-    // runs the reactive loop (dock_agent_panes) with HIVE_AGENT_TABS on and renders
-    // the fleet roster as the dock's controller. It exists ONLY in the flag-on layout,
-    // so it can assume the flag is on (no fetch). The bee panes it appends resume as
-    // real Claude TUIs (RosterEntry::dock_pane_argv → claude --resume). Named via the
-    // `fleet` lexicon term. Flag-off → empty (chat-pane drives, layout unchanged).
+    let operator_cmd_block =
+        "command \"psu\"\n            args \"--no-picker\" \"--agent=claude\" \"--role=operator\"";
+    // P-004 / D-009: the operator pane is psu, so the reactive agent stack has a
+    // dedicated driver — the `pui dock-driver` pane runs the reactive loop
+    // (dock_agent_panes) and renders the fleet roster as the dock's controller.
+    // The bee panes it appends resume as real Claude TUIs
+    // (RosterEntry::dock_pane_argv → claude --resume). Named via the `fleet`
+    // lexicon term.
     let driver_name = kdl_pane_name(&lex.lex("fleet"), "fleet");
-    // 12-space indent: flag-on, the driver is a member of the `chat` stack,
-    // which is now nested one level deeper inside the queen|stack split.
-    let driver_pane_block = if hive_agent_tabs {
-        format!(
-            "\n            pane name=\"{driver_name}\" {{\n                command \"pui\"\n                args \"dock-driver\"\n            }}"
-        )
-    } else {
-        String::new()
-    };
+    // 12-space indent: the driver is a member of the `chat` stack, which is
+    // nested one level deep inside the queen|stack split.
+    let driver_pane_block = format!(
+        "\n            pane name=\"{driver_name}\" {{\n                command \"pui\"\n                args \"dock-driver\"\n            }}"
+    );
     // The fleet-wide staged-wake board (EI-312): every manual-mode agent's
     // pending wakes (queen first) with release / edit / skip + the release-all/
-    // skip-all drains. A stack member alongside the bees + driver. Flag-on only
-    // (the wake-mode UI rides hive-agent-tabs, P-008/P-009).
-    let wake_pane_block = if hive_agent_tabs {
-        "\n            pane name=\"⏸ wakes\" {\n                command \"pui\"\n                args \"wake-pane\"\n            }"
-    } else {
-        ""
-    };
+    // skip-all drains. A stack member alongside the bees + driver (the wake-mode
+    // UI, P-008/P-009).
+    let wake_pane_block =
+        "\n            pane name=\"⏸ wakes\" {\n                command \"pui\"\n                args \"wake-pane\"\n            }";
     // The dock body between the tab-bar and status-bar. Two shapes:
     //
     // Flag ON (owner directive 2026-06-11): EVERY agent chat in the dock is a

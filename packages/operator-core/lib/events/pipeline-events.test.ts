@@ -8,8 +8,9 @@ import { emitPipelineEvent, pipelineEventKey } from './pipeline-events';
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 const seams = () => ({
-  emit: vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null })),
-  system: vi.fn(),
+  emit: vi.fn(async (_opts: import('./await/engine').EmitAwaitedEventOpts) =>
+    ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null })),
+  system: vi.fn((_opts: Parameters<typeof import('./engine').emitSystemEvent>[0]) => {}),
 });
 
 describe('pipelineEventKey', () => {

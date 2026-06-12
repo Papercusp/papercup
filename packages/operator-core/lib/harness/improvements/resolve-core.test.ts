@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveImprovement, type ResolveDeps } from './resolve-core';
+import { resolveImprovement, routeExhaustedImprovementToHuman, type ResolveDeps } from './resolve-core';
 import type { EngineerIssue, IssueState } from '../../issues-engineer';
 
 function issue(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
@@ -133,5 +133,51 @@ describe('resolveImprovement — needs-human (the protected-surface stop)', () =
     expect(d.rec.payloads).toEqual([{ id: 'EI-3', patch: { needsHuman: true } }]);
     expect(d.rec.released).toEqual(['EI-3']);
     expect(d.rec.states).toHaveLength(0);
+  });
+});
+
+describe('routeExhaustedImprovementToHuman — exhausted with no resolve recorded (consume-edges P-012)', () => {
+  it('SILENT WORKER DEATH: open + exhausted + no needsHuman → comment, flag, release the stale claim', async () => {
+    // The worker(s) died without ever calling improvements:resolve — the item
+    // carries only the dispatch bookkeeping (attempts + a stale claim).
+    const d = deps(issue({ id: 'EI-9', payload: { implementAttempts: 3 } }));
+    const r = await routeExhaustedImprovementToHuman({ id: 'EI-9' }, d);
+    expect(r).toMatchObject({ ok: true, flipped: true });
+    expect(d.rec.payloads).toEqual([{ id: 'EI-9', patch: { needsHuman: true } }]);
+    expect(d.rec.released).toEqual(['EI-9']);
+    expect(d.rec.comments[0].body).toMatch(/NO resolve ever recorded/);
+    expect(d.rec.comments[0].body).toMatch(/3\/3/);
+    expect(d.rec.states).toHaveLength(0); // stays open — a human decides, the auto lane just lets go
+  });
+
+  it('idempotent: an item already routed to a human is a no-op', async () => {
+    const d = deps(issue({ id: 'EI-9', payload: { implementAttempts: 3, needsHuman: true } }));
+    const r = await routeExhaustedImprovementToHuman({ id: 'EI-9' }, d);
+    expect(r).toMatchObject({ ok: true, flipped: false, reason: expect.stringMatching(/already/) });
+    expect(d.rec.comments).toHaveLength(0);
+    expect(d.rec.payloads).toHaveLength(0);
+    expect(d.rec.released).toHaveLength(0);
+  });
+
+  it('a resolved item is a no-op (the worker DID resolve — nothing was silent)', async () => {
+    const d = deps(issue({ id: 'EI-9', state: 'resolved', payload: { implementAttempts: 3 } }));
+    const r = await routeExhaustedImprovementToHuman({ id: 'EI-9' }, d);
+    expect(r).toMatchObject({ ok: true, flipped: false, reason: 'not open' });
+    expect(d.rec.comments).toHaveLength(0);
+  });
+
+  it('a missing item reports not-found without throwing', async () => {
+    const d = deps(null);
+    const r = await routeExhaustedImprovementToHuman({ id: 'EI-404' }, d);
+    expect(r).toMatchObject({ ok: false, flipped: false });
+    expect(r.reason).toMatch(/not found/);
+  });
+
+  it('uses the provided attempts/maxAttempts in the explanatory comment', async () => {
+    const d = deps(issue({ id: 'EI-9', payload: { implementAttempts: 5 } }));
+    const r = await routeExhaustedImprovementToHuman({ id: 'EI-9', attempts: 5, maxAttempts: 5, by: 'test-routine' }, d);
+    expect(r.flipped).toBe(true);
+    expect(d.rec.comments[0].body).toMatch(/5\/5/);
+    expect(d.rec.comments[0].by).toBe('test-routine');
   });
 });

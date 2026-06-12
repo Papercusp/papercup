@@ -67,6 +67,15 @@ export interface ImplementRunPlan {
   inFlightCount: number;
   /** Auto-eligible items skipped: dispatch attempts exhausted (human-only now). */
   attemptsExhaustedCount: number;
+  /**
+   * The attempts-exhausted items themselves (consume-edges P-012): still in the
+   * auto lane (no `needsHuman` yet — a silent worker death never calls
+   * improvements:resolve, so nothing flagged them) but never dispatchable again.
+   * The implement routine flips each to the human tier; once flipped, the policy
+   * moves it out of the auto lane, so it leaves this list on the next read.
+   * Excludes items whose final claim is still fresh (the worker may yet resolve).
+   */
+  attemptsExhausted: ScoredItem[];
   message: string;
 }
 
@@ -88,7 +97,8 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
   const exhausted = (s: ScoredItem): boolean => (s.attempts ?? 0) >= maxAttempts;
   const dispatchable = auto.filter((s) => !inFlight(s) && !exhausted(s));
   const inFlightCount = auto.filter(inFlight).length;
-  const attemptsExhaustedCount = auto.filter((s) => !inFlight(s) && exhausted(s)).length;
+  const attemptsExhausted = auto.filter((s) => !inFlight(s) && exhausted(s));
+  const attemptsExhaustedCount = attemptsExhausted.length;
   const skippedNote =
     inFlightCount || attemptsExhaustedCount
       ? ` (skipped: ${inFlightCount} in-flight, ${attemptsExhaustedCount} attempts-exhausted)`
@@ -101,6 +111,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
       autoEligibleCount: auto.length,
       inFlightCount,
       attemptsExhaustedCount,
+      attemptsExhausted,
       message:
         `auto-implement is OFF (default) — ${auto.length} auto-eligible bug(s) waiting. ` +
         `Flip the papercusp-improvement-auto-implement flag (and configure a runner harness) to enable.`,
@@ -113,6 +124,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
       autoEligibleCount: auto.length,
       inFlightCount,
       attemptsExhaustedCount,
+      attemptsExhausted,
       message: `nothing dispatchable to implement${skippedNote}`,
     };
   }
@@ -123,6 +135,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
       autoEligibleCount: auto.length,
       inFlightCount,
       attemptsExhaustedCount,
+      attemptsExhausted,
       message:
         `flag ON and ${dispatchable.length} bug(s) dispatchable, but NO dedicated runner harness is configured ` +
         `(set PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS — D-006). Refusing to auto-implement in-process.`,
@@ -135,6 +148,7 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
     autoEligibleCount: auto.length,
     inFlightCount,
     attemptsExhaustedCount,
+    attemptsExhausted,
     message:
       candidates.length > 0
         ? `dispatching ${candidates.length}/${dispatchable.length} dispatchable bug(s) to runner '${input.runnerHarness}'${skippedNote} (lands via the release gate)`

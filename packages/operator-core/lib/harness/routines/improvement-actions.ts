@@ -38,6 +38,7 @@ import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
+import { routeExhaustedImprovementToHuman } from '../improvements/resolve-core';
 import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
 import { runDecaySweep } from '../improvements/decay';
 import { runHygieneSweep } from '../improvements/hygiene';
@@ -286,6 +287,28 @@ const defaultMarkDispatched: MarkDispatchedFn = async (candidate) => {
   });
 };
 
+/**
+ * The exhausted⇒needs-human flip seam (consume-edges P-012) — injectable so the
+ * handler test observes the flip without PG. Default: resolve-core's
+ * routeExhaustedImprovementToHuman (comment + needsHuman + release the stale claim).
+ */
+export type ExhaustedFlipFn = (candidate: ScoredItem, maxAttempts?: number) => void | Promise<void>;
+
+let _flipExhausted: ExhaustedFlipFn | null = null;
+/** Override the exhausted flip (tests). Pass null to restore the default. */
+export function setImprovementExhaustedFlip(fn: ExhaustedFlipFn | null): void {
+  _flipExhausted = fn;
+}
+
+const defaultFlipExhausted: ExhaustedFlipFn = async (candidate, maxAttempts) => {
+  await routeExhaustedImprovementToHuman({
+    id: candidate.id,
+    attempts: candidate.attempts,
+    maxAttempts,
+    by: 'improvement-implement',
+  });
+};
+
 registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
   const items = await readImprovementItems({ state: 'open' });
   const flagEnabled = await getFlag(FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, `routine:${ctx.installSlug}`);
@@ -300,6 +323,25 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
       : undefined;
 
   const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts });
+
+  // Exhausted-without-resolve ⇒ needs-human (consume-edges P-012): an item whose
+  // dispatch attempts exhausted with no improvements:resolve ever recorded (silent
+  // worker death) is stranded — never dispatchable again, never human-routed. Flip
+  // each to the human tier EVERY tick, whatever the plan action (a disarmed lane
+  // still surfaces its strays). Best-effort per item: a flip failure never blocks
+  // the dispatch loop; the flip is idempotent, so the next tick retries.
+  const flipExhausted = _flipExhausted ?? defaultFlipExhausted;
+  for (const stranded of plan.attemptsExhausted) {
+    try {
+      await flipExhausted(stranded, maxAttempts);
+      console.log(
+        `[improvement-implement] ${stranded.id} exhausted ${stranded.attempts ?? '?'} dispatch attempt(s) with no resolve recorded — routed to the human tier (P-012)`,
+      );
+    } catch (e) {
+      console.warn(`[improvement-implement] exhausted⇒needs-human flip failed for ${stranded.id}:`, e instanceof Error ? e.message : e);
+    }
+  }
+
   if (plan.action !== 'dispatch') {
     console.log(`[improvement-implement] ${plan.action}: ${plan.message}`);
     return;

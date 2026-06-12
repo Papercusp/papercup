@@ -18,6 +18,8 @@
  * The process/prompt class uses gym A/B instead (D-003).
  */
 
+import type { IdeaType } from './triage';
+
 export type IdeaLifecycleState =
   | 'open'
   | 'triaged'

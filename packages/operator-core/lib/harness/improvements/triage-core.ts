@@ -28,9 +28,9 @@ import {
   type EngineerIssue,
 } from '../../issues-engineer';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
-import type { ScoredItem } from './digest';
 import type { TriageDecision } from './triage';
 import { classifyIdeaType } from './triage';
+import { issueToCandidate } from './read-items';
 import {
   initializeIdeaLifecycle,
   updateIdeaLifecycle,
@@ -97,7 +97,9 @@ export async function applyTriageDecision(
     };
   }
 
-  const ideaType = classifyIdeaType({ scope: issue.scope } as ScoredItem).type;
+  // Full-fidelity classification (D-005): the candidate view carries paths +
+  // watchdogKey + kind, which the taxonomy keys off — never a scope-only call.
+  const ideaType = classifyIdeaType(issueToCandidate(issue)).type;
   const lifecycle = updateIdeaLifecycle(current, 'triaged', {
     triageDecision: input.decision,
     triageReason: input.reason,

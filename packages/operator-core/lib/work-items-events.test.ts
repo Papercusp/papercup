@@ -120,9 +120,13 @@ describe('emitWorkItemSettledEvents', () => {
   });
 });
 
+type EmitOpts = import('./events/await/engine').EmitAwaitedEventOpts;
+const typedEmit = () =>
+  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null }));
+
 describe('emitWorkItemClaimedEvent', () => {
   it('fires work-item:claimed:<id> with the assignee in payload', async () => {
-    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const emit = typedEmit();
     const { emitWorkItemClaimedEvent } = await import('./work-items-events');
     emitWorkItemClaimedEvent(wi({ id: 'WI-7', title: 'claim me' }), 'su-claimant', { emit });
     await new Promise((r) => setTimeout(r, 0));
@@ -147,7 +151,7 @@ describe('emitWorkItemClaimedEvent', () => {
 
 describe('emitWorkItemBlockedEvent', () => {
   it('fires work-item:blocked:<id> notifying the delegator', async () => {
-    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const emit = typedEmit();
     const { emitWorkItemBlockedEvent } = await import('./work-items-events');
     emitWorkItemBlockedEvent(wi({ id: 'WI-8', state: 'blocked' }), { emit });
     await new Promise((r) => setTimeout(r, 0));
@@ -159,7 +163,7 @@ describe('emitWorkItemBlockedEvent', () => {
   });
 
   it('self-delegated items notify nobody', async () => {
-    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const emit = typedEmit();
     const { emitWorkItemBlockedEvent } = await import('./work-items-events');
     emitWorkItemBlockedEvent(wi({ assignedBy: 'su-child', assignee: 'su-child' }), { emit });
     await new Promise((r) => setTimeout(r, 0));

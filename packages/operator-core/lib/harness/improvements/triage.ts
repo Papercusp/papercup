@@ -1,19 +1,38 @@
 /**
- * Ideas triage — P-020/P-021/P-022 from self-learning-central-2026-06-06.
+ * Ideas triage — ONE classification authority + the D-005 taxonomy
+ * (self-improvement-consume-edges-2026-06-12 P-021 / D-003 / D-005; resolves EI-364).
  *
- * The Queen reads the scored improvements:digest and triages each idea:
- * - **Product-ideas** (affect target project code) → place as work-items
- * - **Process/prompt-ideas** (affect Papercusp system) → human-gate or gym-dispatch
- * - **Reject** (duplicate, low-value) → improvements:resolve with reason
+ * Before this, an item was classified TWICE in parallel: `triageIdea` ran its own
+ * product/process reasoning while `classifyImprovement` (policy.ts) computed the
+ * risk tier — with contradictory verdicts and different consumers (an operator-scope
+ * bug was tier=auto for the dispatch loop AND process→gate for triage). And with the
+ * dogfood Hive targeting papercusp itself, product/process was structurally
+ * uninformative: 100/100 open ideas classified process→gate (EI-364).
  *
- * Type distinction is a routing lane/tag (D-002), not a new kind. Determined by:
- * - `scope`: 'operator' or 'harness:papercup' → process; others → product
- * - `paths`: touches system surfaces (deploy/, migrations/, auth/) → force human gate
+ * After P-021 there is ONE verdict chain (D-003):
+ *   - **policy.ts** computes the safety tier (auto vs human) — the only safety verdict;
+ *   - **triage** consumes that tier and adds ONLY the routing dimension: the D-005
+ *     taxonomy, keyed off scope + paths + watchdog signal class.
+ *
+ * The D-005 taxonomy (PROPOSED values — P-004 ratification pending; the lists below
+ * are exported tunables so an owner amendment is a config-shaped change):
+ *   - `product`           — external-target Hive's code (scope harness:<slug> ≠ papercup)
+ *                           → place (the normal pipeline; the per-Hive external-target
+ *                           case keeps the product route).
+ *   - `code-bug`          — papercusp code-level fix → auto-eligible; the POLICY tier
+ *                           decides auto vs human (current policy gates apply).
+ *   - `infra-environment` — docker/systemd/env/transport problems → owner-escalate per
+ *                           D-002, NEVER auto (a worker cannot fix a port mapping).
+ *   - `process-prompt`    — prompt/persona/playbook changes → gym A/B or human gate
+ *                           (the existing compounding-class rule, D-003/P-040).
+ *   - `needs-design`      — net-new feature-shaped work → a plans:new design draft
+ *                           before implementation.
  */
 
 import type { ScoredItem } from './digest';
+import { matchGlob } from './policy';
 
-export type IdeaType = 'product' | 'process';
+export type IdeaType = 'product' | 'code-bug' | 'infra-environment' | 'process-prompt' | 'needs-design';
 export type TriageDecision = 'place' | 'gate' | 'gym' | 'reject';
 
 export interface IdeaTriageClassification {
@@ -24,113 +43,193 @@ export interface IdeaTriageClassification {
 export interface IdeaTriageDecision {
   decision: TriageDecision;
   reason: string;
-  /** For 'place': which harness/project. For 'gate'/'reject': the rationale. */
+  /** For 'place': which lane/harness. For 'gate': who gates (human-review / owner-escalation / plans:new). */
   target?: string;
 }
 
 /**
- * Classify an idea as product-type or process-type based on scope + paths.
- *
- * **Product-ideas**: affect code in the target project (harness:* scope, safe paths).
- * **Process/prompt-ideas**: affect Papercusp system (operator scope, or system paths).
- *
- * The distinction is a **routing lane** (D-002) — the idea *kind* (bug/change/feature)
- * stays the same; we just route it differently for implementation. Product ideas ride
- * the normal pipeline. Process ideas need extra caution (human gate or gym verification).
+ * Structural classifier input — both `ImprovementCandidate` (full fidelity: paths,
+ * watchdogKey, kind) and `ScoredItem` satisfy it. Call with the richest shape you
+ * have: the taxonomy keys off scope + paths + watchdog signal class (D-005), so a
+ * scope-only call degrades to the scope legs.
  */
-export function classifyIdeaType(item: ScoredItem): IdeaTriageClassification {
-  // Process-idea if scope targets the system itself
-  if (item.scope === 'operator' || item.scope === 'harness:papercup') {
-    return {
-      type: 'process',
-      reason: `Scope "${item.scope}" affects Papercusp system`,
-    };
-  }
+export interface IdeaClassifierInput {
+  scope?: string;
+  /** Work-item kind ('feature' = the net-new refinement → needs-design). */
+  kind?: string;
+  title?: string;
+  body?: string;
+  paths?: string[];
+  /** Stable watchdog identity '<source>:<key>' — the source IS the signal class. */
+  watchdogKey?: string;
+}
 
-  // If scope is other harness, it's likely product...
-  // UNLESS the paths touch system machinery (deploy, migrations, auth)
-  const systemPathPatterns = [
-    'packages/operator-core/lib/release/**',
-    'apps/operator/lib/release/**',
-    'packages/operator-core/lib/dbos/**',
-    'packages/operator-core/lib/harness/routines/**',
-    'packages/operator-core/lib/git-sync/**',
-    'libs/papercusp/packages/locks/**',
-    'libs/papercusp/libs/db/sql/**',
-    'libs/flags/**',
-    'packages/operator-core/lib/harness/improvements/**',
-    'packages/operator-core/lib/agent-tools/improvements/**',
-    '**/auth/**',
-    '**/credentials/**',
-  ];
+/** Scopes that mean "papercusp itself" — the dogfood case the D-005 taxonomy exists for. */
+export const PAPERCUSP_SELF_SCOPES: readonly string[] = ['operator', 'harness:papercup'];
 
-  if (item.scope && item.scope.startsWith('harness:')) {
-    // Product-idea (targets the harness's code), unless paths are protected
-    return {
-      type: 'product',
-      reason: `Scope "${item.scope}" targets project code`,
-    };
-  }
+/**
+ * Watchdog signal sources whose class is INFRA-ENVIRONMENT (D-002: escalate, never
+ * queue/auto). Shared vocabulary with the known-open aging escalation's infra-class
+ * (D-004 — B-06 keys its shorter threshold off the same set).
+ * PROPOSED values pending P-004 ratification.
+ */
+export const INFRA_SIGNAL_SOURCES: readonly string[] = ['service-down', 'fire-circuit-open', 'migration-drift'];
 
-  // Fallback: operator scope with no scope prefix → process
-  return {
-    type: 'process',
-    reason: 'Default process-type (no clear harness scope)',
-  };
+/** Paths that mean the fix lives in the ENVIRONMENT, not papercusp code. PROPOSED (P-004). */
+export const INFRA_PATH_PATTERNS: readonly string[] = [
+  '**/Dockerfile*',
+  '**/docker-compose*',
+  '**/*.service',
+  '**/systemd/**',
+  '**/.env*',
+  'infra/**',
+];
+
+/** Paths that mean the change is a PROMPT/PERSONA/PLAYBOOK edit (the gym-A/B-able class). PROPOSED (P-004). */
+export const PROMPT_PATH_PATTERNS: readonly string[] = [
+  'apps/operator/prompts/**',
+  'libs/papercusp/packages/harness/prompts/**',
+  'libs/papercusp/packages/harness/blueprints/**/prompts/**',
+  '**/*.persona.md',
+  '**/*.tools.md',
+  'packages/operator-core/lib/prompt-assembly*',
+];
+
+/**
+ * Narrow title/body markers for the prompt class when no paths were captured.
+ * Deliberately specific — 'prompt' alone would swallow "permission prompts" etc.
+ * PROPOSED (P-004).
+ */
+export const PROMPT_KEYWORDS: readonly string[] = [
+  'persona',
+  'playbook',
+  'system prompt',
+  'spawn prompt',
+  'prompt wording',
+  '.tools.md',
+  '.persona.md',
+  'prompt-assembly',
+];
+
+/** The signal class of a watchdogKey ('<source>:<key>') — '' when absent/malformed. */
+export function watchdogSourceOf(watchdogKey: string | undefined): string {
+  if (!watchdogKey) return '';
+  const i = watchdogKey.indexOf(':');
+  return i > 0 ? watchdogKey.slice(0, i) : '';
 }
 
 /**
- * Triage an idea — decide whether to place as work-item, gate, dispatch to gym, or reject.
+ * Classify an idea into the D-005 taxonomy, keyed off scope + paths + watchdog
+ * signal class. Precedence (first hit wins):
+ *   1. external-target scope → `product` (the per-Hive case keeps the product route);
+ *   2. infra signal class OR infra paths → `infra-environment`;
+ *   3. kind=feature (net-new) → `needs-design`;
+ *   4. prompt paths/keywords → `process-prompt`;
+ *   5. everything else in the dogfood scope → `code-bug`.
  *
- * The decision logic:
- * 1. **Type routing**: Classify as product or process (classifyIdeaType)
- * 2. **Risk check**: If process-type and touches protected paths → gate or gym
- * 3. **Auto-tier**: If product-type and kind=bug + no protected paths → ready to place
- * 4. **Duplicate**: If likely-dup or already-decided → reject with reason
- * 5. **Otherwise**: Gate (human review needed)
+ * The taxonomy is the ROUTING dimension only — the safety verdict (auto vs human)
+ * stays with policy.ts (`classifyImprovement`), consumed by `triageIdea` (D-003).
+ */
+export function classifyIdeaType(item: IdeaClassifierInput): IdeaTriageClassification {
+  // 1. External-target Hive → product (the harness's own code rides its pipeline).
+  if (item.scope && item.scope.startsWith('harness:') && !PAPERCUSP_SELF_SCOPES.includes(item.scope)) {
+    return { type: 'product', reason: `Scope "${item.scope}" targets an external project's code` };
+  }
+
+  // 2. Infra/environment — the signal class is the strongest key (a service-down or
+  //    circuit-open firing IS an environment fact), paths the fallback.
+  const signalSource = watchdogSourceOf(item.watchdogKey);
+  if (INFRA_SIGNAL_SOURCES.includes(signalSource)) {
+    return {
+      type: 'infra-environment',
+      reason: `Watchdog signal class "${signalSource}" is infra-class (D-002: escalate, never auto)`,
+    };
+  }
+  const infraPath = (item.paths ?? []).find((p) => INFRA_PATH_PATTERNS.some((pat) => matchGlob(pat, p)));
+  if (infraPath) {
+    return { type: 'infra-environment', reason: `Path "${infraPath}" is an environment surface (D-002)` };
+  }
+
+  // 3. Net-new work → a design draft before implementation.
+  if (item.kind === 'feature') {
+    return { type: 'needs-design', reason: 'kind=feature (net-new) — needs a design draft before implementation' };
+  }
+
+  // 4. Prompt/persona/playbook — the gym-A/B-able compounding class.
+  const promptPath = (item.paths ?? []).find((p) => PROMPT_PATH_PATTERNS.some((pat) => matchGlob(pat, p)));
+  if (promptPath) {
+    return { type: 'process-prompt', reason: `Path "${promptPath}" is a prompt source (gym-A/B-able class)` };
+  }
+  const hay = `${item.title ?? ''} ${item.body ?? ''}`.toLowerCase();
+  const promptKw = PROMPT_KEYWORDS.find((k) => hay.includes(k.toLowerCase()));
+  if (promptKw) {
+    return { type: 'process-prompt', reason: `Mentions "${promptKw}" — prompt/persona change (gym-A/B-able class)` };
+  }
+
+  // 5. Default for the dogfood scope: a papercusp code-level fix.
+  return { type: 'code-bug', reason: `Scope "${item.scope ?? 'operator'}" — papercusp code-level fix (policy tier decides the lane)` };
+}
+
+/**
+ * Triage an idea — the ROUTING verdict, derived from the taxonomy + the policy tier.
  *
- * This is the Queen's decision point — she applies judgment per the Queen persona,
- * ranking tasks + briefs, not mechanical gatekeeping. The triage function just
- * surfaces the classification and recommendation; the Queen applies discretion.
+ * D-003 (one classification authority): this function NEVER re-derives safety. The
+ * policy verdict already on the ScoredItem (`tier` + `tierReason`, computed by
+ * `classifyImprovement` in the digest) is consumed as-is; triage adds only WHERE the
+ * item goes:
+ *   - product           → place (target Hive's pipeline)
+ *   - code-bug          → tier=auto → place into the auto-implement lane;
+ *                         tier=human → gate, citing the POLICY's reason verbatim
+ *   - infra-environment → gate to owner-escalation (D-002 — never auto)
+ *   - process-prompt    → gate (human or gym A/B — P-040: the Queen may override to
+ *                         'gym'; recurrence-escalation auto-routes chronic ones)
+ *   - needs-design      → gate to plans:new (a design draft, then re-enter)
  *
- * **P-040 (gym re-trigger):** The recommendation returned here may be overridden by the
- * Queen in the agent tool via improvements:triage { decision: 'gym' }. When the Queen
- * routes a process/prompt-changing idea as 'gym', the agent tool dispatches a gym A/B
- * on the target prompt/process before it goes live (D-003).
+ * The Queen applies discretion on top via improvements:triage { decision } — this is
+ * the deterministic recommendation the scheduled pass persists.
  */
 export function triageIdea(item: ScoredItem): IdeaTriageDecision {
-  const classification = classifyIdeaType(item);
+  const type = item.ideaType ?? classifyIdeaType(item).type;
 
-  // Product-ideas: place them (the normal pipeline + the bee's work verifies).
-  // Auto-tier gate (kind=bug + no protected) is already in the digest.
-  if (classification.type === 'product') {
-    return {
-      decision: 'place',
-      reason: classification.reason,
-      target: item.scope,
-    };
+  switch (type) {
+    case 'product':
+      return {
+        decision: 'place',
+        reason: `product idea — targets ${item.scope} (external Hive); rides the normal pipeline`,
+        target: item.scope,
+      };
+    case 'code-bug':
+      if (item.tier === 'auto') {
+        return {
+          decision: 'place',
+          reason: `code-bug, policy tier=auto (${item.tierReason}) — auto-implement lane (D-003: one verdict chain)`,
+          target: 'auto-implement',
+        };
+      }
+      return {
+        decision: 'gate',
+        reason: `code-bug, policy tier=human (${item.tierReason}) — human gate per the policy verdict (D-003)`,
+        target: 'human-review',
+      };
+    case 'infra-environment':
+      return {
+        decision: 'gate',
+        reason: 'infra/environment problem — owner-escalates per D-002 (never auto: a worker cannot fix a port mapping)',
+        target: 'owner-escalation',
+      };
+    case 'process-prompt':
+      return {
+        decision: 'gate',
+        reason: 'process/prompt change — human gate or gym A/B before live (compounding class, D-003/P-040)',
+        target: 'human-review',
+      };
+    case 'needs-design':
+      return {
+        decision: 'gate',
+        reason: 'net-new feature — needs a design draft (plans:new) before implementation (D-005)',
+        target: 'plans:new',
+      };
   }
-
-  // Process-ideas: human-gate or gym-dispatch (risky — modify the system itself).
-  // D-003: Recurrence-decay is weak for this class; they earn gym A/B before live.
-  // P-040: The Queen may override this recommendation and choose 'gym' for verification.
-  if (classification.type === 'process') {
-    // Default recommendation: human-gate. The Queen can override to 'gym' if she
-    // wants A/B verification before the change goes live (P-040).
-    return {
-      decision: 'gate',
-      reason:
-        classification.reason +
-        ' — process/prompt changes need human gate or gym A/B (D-003, P-040)',
-      target: 'human-review',
-    };
-  }
-
-  // Shouldn't reach here, but fallback to safe decision
-  return {
-    decision: 'reject',
-    reason: 'Unknown classification; needs manual review',
-  };
 }
 
 /**
@@ -152,23 +251,26 @@ export function summarizeTriages(items: ScoredItem[]): TriageSummary {
     reject: 0,
   };
   const byType: Record<IdeaType, number> = {
-    product: 0,
-    process: 0,
+    'product': 0,
+    'code-bug': 0,
+    'infra-environment': 0,
+    'process-prompt': 0,
+    'needs-design': 0,
   };
   const highlights: string[] = [];
 
   for (const item of items) {
-    const classification = classifyIdeaType(item);
+    const type = item.ideaType ?? classifyIdeaType(item).type;
     const decision = triageIdea(item);
 
-    byType[classification.type] += 1;
+    byType[type] += 1;
     byDecision[decision.decision] += 1;
 
     // Highlight high-priority ideas
     if (item.score >= 40 && decision.decision === 'place') {
-      highlights.push(`${item.title} (product, high-priority)`);
+      highlights.push(`${item.title} (${type}, high-priority)`);
     } else if (item.score >= 40 && decision.decision === 'gate') {
-      highlights.push(`${item.title} (process, needs human gate)`);
+      highlights.push(`${item.title} (${type}, ${decision.target ?? 'gated'})`);
     }
   }
 

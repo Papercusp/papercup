@@ -86,6 +86,35 @@ describe('planImplementRun — close-loop anti-re-dispatch guards (close-loop D-
     expect(p.message).toMatch(/attempts-exhausted/);
   });
 
+  it('returns the exhausted items themselves so the routine can flip them to the human tier (consume-edges P-012)', () => {
+    const items = [cand({ id: 'B1', attempts: 3 }), cand({ id: 'B2', attempts: 1 })];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.attemptsExhausted.map((s) => s.id)).toEqual(['B1']);
+    expect(p.attemptsExhausted[0].attempts).toBe(3);
+  });
+
+  it('an exhausted item whose FINAL claim is still fresh is in-flight, not exhausted — the worker may yet resolve (P-012)', () => {
+    // Silent-worker-death timeline: dispatch 3/3 claims the item; while the claim is
+    // fresh nothing flips it (the worker might still call improvements:resolve); once
+    // the claim goes stale with no resolve recorded, the item surfaces as exhausted.
+    const fresh = [cand({ id: 'B1', attempts: 3, assignee: 'improvement-runner', assignedAt: '2026-06-05T11:30:00Z' })];
+    const pFresh = planImplementRun({ items: fresh, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(pFresh.attemptsExhausted).toEqual([]);
+    expect(pFresh.inFlightCount).toBe(1);
+
+    const stale = [cand({ id: 'B1', attempts: 3, assignee: 'improvement-runner', assignedAt: '2026-06-05T08:00:00Z' })];
+    const pStale = planImplementRun({ items: stale, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(pStale.attemptsExhausted.map((s) => s.id)).toEqual(['B1']);
+    expect(pStale.inFlightCount).toBe(0);
+  });
+
+  it('exhausted items are reported even when the flag is OFF (a disarmed lane still surfaces its strays)', () => {
+    const items = [cand({ id: 'B1', attempts: 3 })];
+    const p = planImplementRun({ items, flagEnabled: false, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.action).toBe('disabled');
+    expect(p.attemptsExhausted.map((s) => s.id)).toEqual(['B1']);
+  });
+
   it('a needs-human item is not in the auto lane at all (policy tier)', () => {
     const items = [cand({ id: 'B1', needsHuman: true })];
     const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });

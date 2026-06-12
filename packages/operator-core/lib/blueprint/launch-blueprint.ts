@@ -177,10 +177,29 @@ export interface FireLaunchInput {
 }
 
 /**
+ * What the fire path knows about the spawn it produced — the correlation a caller
+ * can persist (the improvement dispatch ledger records it as `spawned_run_id`).
+ * `runId` is the fallback path's spawned_agents run_id, or the DBOS durable-spawn
+ * idempotency key (the durable workflow id) when the launch went durable.
+ */
+export interface LaunchSpawnInfo {
+  /** spawned_agents.spawn_id (fallback path only — the DBOS path has no spawn row). */
+  spawnId: string | null;
+  /** The durable correlation id for this fire (see above). */
+  runId: string | null;
+  /** True when the fire was enqueued as a DBOS durable workflow. */
+  durable: boolean;
+}
+
+/**
  * The fire seam — injectable so tests capture the dispatch without a real HTTP call
  * (the codebase's `setPipelineInvokeRunner` pattern). Default = the invoke route.
+ * Returning `LaunchSpawnInfo` is optional — a seam that returns void just yields
+ * `spawn: null` on the launch result.
  */
-export type LaunchFireFn = (input: FireLaunchInput & LaunchTarget) => void | Promise<void>;
+export type LaunchFireFn = (
+  input: FireLaunchInput & LaunchTarget,
+) => void | LaunchSpawnInfo | Promise<void | LaunchSpawnInfo>;
 let _fire: LaunchFireFn | null = null;
 /** Override the launch-fire fn (tests). Pass `null` to restore the default route fire. */
 export function setLaunchBlueprintFire(fn: LaunchFireFn | null): void {

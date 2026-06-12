@@ -306,6 +306,26 @@ export class PgCrossHiveAsks {
   }
 
   /**
+   * Count requests exchanged with one peer in one direction since `sinceMs`
+   * (epoch-ms) — the P-013 rolling-window rate-cap counter. Counts by
+   * `created_at` regardless of state: an answered ask still consumed quota
+   * when it was made.
+   */
+  async countRecentByPeer(
+    peerPubkey: string,
+    direction: CrossHiveAskDirection,
+    sinceMs: number,
+  ): Promise<number> {
+    const rows = (await pg(this.sql).unsafe(
+      `SELECT COUNT(*)::int AS n FROM harness_shared.cross_hive_asks
+        WHERE workspace_id=$1 AND hive_slug=$2 AND peer_pubkey=$3 AND direction=$4
+          AND created_at > to_timestamp($5::double precision / 1000.0)`,
+      [this.workspaceId, this.hiveSlug, peerPubkey, direction, sinceMs],
+    )) as unknown as { n: number }[];
+    return rows.length ? Number(rows[0].n) : 0;
+  }
+
+  /**
    * Strict transition primitive: move a row to `to`, enforcing the legality
    * guard atomically. Returns the updated row, the unchanged row on a same-state
    * no-op, or null if the row does not exist. Throws CrossHiveAskTransitionError

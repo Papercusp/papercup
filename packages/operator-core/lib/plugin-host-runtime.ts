@@ -1253,7 +1253,9 @@ async function buildContextFor(lp: LoadedPlugin, harnessSlug: string): Promise<P
     return {
       projectDir: paths.projectDir,
       stateDir: paths.stateDir,
-      pluginDataDir: paths.pluginDataDir,
+      // resolveHarnessPaths returns only {projectDir, stateDir}; derive the
+      // data dir the same way buildPapercuspContext does.
+      pluginDataDir: join(paths.stateDir, 'plugin-data', lp.plugin.name),
       installSlug: harnessSlug,
       log: (msg: string) => {
         // eslint-disable-next-line no-console

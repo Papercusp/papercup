@@ -41,6 +41,7 @@ mod voice_stream;
 mod voice_ui;
 mod wake_board;
 mod workbench;
+mod zellij_theme;
 
 use anyhow::Result;
 use crossterm::{
@@ -1820,8 +1821,34 @@ async fn execute_workbench_command(
         | P::Float { .. }
         | P::Dock { .. }
         | P::Layout { .. }
-        | P::Theme { .. }
+        | P::Theme { name: None }
         | P::Themes => {}
+        // `:theme <name>` (workbench-theme-system P2 / D-003): the reducer
+        // already flipped the pui palette + persisted the selection; this arm
+        // syncs the zellij CHROME — regenerate + install the theme KDL files
+        // (additive, marker-guarded) and point the single managed `theme` line
+        // in config.kdl at the selection, so zellij's config watcher re-themes
+        // the same instant pui re-rendered. Off the UI thread; small files.
+        P::Theme { name: Some(name) } => match zellij_theme::sync(&name) {
+            Ok(out) => {
+                let mut msg = format!("theme: zellij chrome → {name}");
+                if let zellij_theme::ConfigOutcome::RespectedUser(user) = &out.config {
+                    msg = format!(
+                        "theme: {name} set in pui only — config.kdl has your own `theme \"{user}\"` line (left untouched; remove it to let pui manage the chrome)"
+                    );
+                }
+                if !out.skipped.is_empty() {
+                    msg.push_str(&format!(
+                        " · kept your own theme file(s): {}",
+                        out.skipped.join(", ")
+                    ));
+                }
+                let _ = tx.send(toast(msg));
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("theme: zellij sync: {e}")));
+            }
+        },
         // `:create <slug> <path-or-github-url>` (D-010) — register a new pot,
         // then refresh the pot list so it appears in the selector immediately.
         P::CreatePot { slug, source } => match client.create_harness(&slug, &source).await {

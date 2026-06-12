@@ -287,6 +287,16 @@ export interface ReceiveDeps {
   loadGrants: () => Promise<readonly CrossHiveGrant[]>;
   /** Translate an admitted REQUEST into a B-side object (boundary ports). */
   requestPorts: CrossHiveBoundaryPorts;
+  /**
+   * P-013 rate-cap counter: requests admitted FROM this peer within the rolling
+   * hour (production: the C-1 `in` ledger count). Called only for a VERIFIED
+   * request envelope — a spoofer must not be able to consume a peer's quota.
+   * Absent, or throwing, skips the rate check (fail-open on telemetry — the
+   * grant allow-list itself never fails open).
+   */
+  countRecentFromPeer?: (peerPubkey: string) => Promise<number>;
+  /** Clock for grant-expiry checks (P-013; default Date.now). */
+  nowMs?: () => number;
 }
 
 /**
@@ -308,6 +318,17 @@ export async function receiveCrossHive(
   }
   if (isRequestKind(env.kind)) {
     const grants = await deps.loadGrants();
+    // P-013 rate-cap context — counted only AFTER signature verification (above)
+    // so a forged sender can never consume a real peer's quota. A failing count
+    // skips the rate check rather than inventing a zero.
+    let recentFromPeerCount: number | undefined;
+    if (deps.countRecentFromPeer) {
+      try {
+        recentFromPeerCount = await deps.countRecentFromPeer(env.fromHivePubkey);
+      } catch {
+        recentFromPeerCount = undefined;
+      }
+    }
     const request: CrossHiveEnvelope = {
       fromHivePubkey: env.fromHivePubkey,
       toHivePubkey: env.toHivePubkey,
@@ -318,7 +339,12 @@ export async function receiveCrossHive(
     };
     const route = await routeCrossHiveEnvelope(
       request,
-      { selfHivePubkey: deps.selfHivePubkey, grants },
+      {
+        selfHivePubkey: deps.selfHivePubkey,
+        grants,
+        nowMs: (deps.nowMs ?? Date.now)(),
+        ...(recentFromPeerCount != null ? { recentFromPeerCount } : {}),
+      },
       deps.requestPorts,
     );
     return { kind: 'request', route };

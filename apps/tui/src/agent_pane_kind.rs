@@ -110,14 +110,14 @@ impl AgentPaneKind {
     }
 }
 
-/// Prefix a pane title/name with the kind's glyph when hive-agent-tabs is ON (P-010).
-/// Flag-off, or an unknown/missing kind → the base unchanged. Pure — unit-tested.
+/// Prefix a pane title/name with the kind's glyph (P-010). An unknown/missing
+/// kind → the base unchanged. Pure — unit-tested.
 /// (zellij has no per-pane color, D-008, so the glyph in the pane NAME is how a type
 /// reads at a glance; pui draws the color where it owns the chrome.)
-pub fn glyph_prefixed_title(base: &str, kind: Option<AgentPaneKind>, hive_agent_tabs: bool) -> String {
-    match (hive_agent_tabs, kind) {
-        (true, Some(k)) => format!("{} {base}", k.glyph()),
-        _ => base.to_string(),
+pub fn glyph_prefixed_title(base: &str, kind: Option<AgentPaneKind>) -> String {
+    match kind {
+        Some(k) => format!("{} {base}", k.glyph()),
+        None => base.to_string(),
     }
 }
 
@@ -208,14 +208,12 @@ mod tests {
     }
 
     #[test]
-    fn glyph_prefixed_title_only_when_flag_on() {
-        // flag-on + known kind → glyph prefixed (P-010)
-        assert_eq!(glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee), true), "🐝 worker · ab12");
-        assert_eq!(glyph_prefixed_title("Q", Some(AgentPaneKind::Queen), true), "♛ Q");
-        // flag-off → unchanged (current dock)
-        assert_eq!(glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee), false), "worker · ab12");
-        // unknown/missing kind → unchanged even flag-on
-        assert_eq!(glyph_prefixed_title("x", None, true), "x");
+    fn glyph_prefixed_title_prefixes_known_kinds() {
+        // known kind → glyph prefixed (P-010)
+        assert_eq!(glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee)), "🐝 worker · ab12");
+        assert_eq!(glyph_prefixed_title("Q", Some(AgentPaneKind::Queen)), "♛ Q");
+        // unknown/missing kind → unchanged
+        assert_eq!(glyph_prefixed_title("x", None), "x");
     }
 
     #[test]
@@ -259,7 +257,7 @@ mod tests {
         assert_eq!(AgentPaneKind::from_glyph_prefix("colony"), None);
         assert_eq!(AgentPaneKind::from_glyph_prefix("claude · ab12"), None);
         // Round-trip with the P-010 prefixer.
-        let t = glyph_prefixed_title("worker", Some(AgentPaneKind::Bee), true);
+        let t = glyph_prefixed_title("worker", Some(AgentPaneKind::Bee));
         assert_eq!(AgentPaneKind::from_glyph_prefix(&t), Some(AgentPaneKind::Bee));
     }
 

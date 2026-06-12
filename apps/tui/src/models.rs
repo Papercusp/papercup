@@ -187,17 +187,15 @@ impl RosterEntry {
     }
 
     /// The dock pane command for this entry as a fleet bee (hive-agent-tabs P-004
-    /// / D-007). Flag-on, a claude bee with a recorded native session id resumes
-    /// as a real Claude TUI (`claude --resume <id>`) — the "looks like the Queen"
-    /// surface; otherwise (no session id / omp bee / flag-off) it stays the
-    /// read-only `pui watch-pane <owner>` live view. NB: the resume FORM + the live
+    /// / D-007). A claude bee with a recorded native session id resumes as a real
+    /// Claude TUI (`claude --resume <id>`) — the "looks like the Queen" surface;
+    /// otherwise (no session id / omp bee) it stays the read-only
+    /// `pui watch-pane <owner>` live view. NB: the resume FORM + the live
     /// attach are validated in the owner's live dock — a still-running `-p` session
     /// can't be attached, so it's a between/after-turns takeover (D-007).
-    pub fn dock_pane_argv(&self, hive_agent_tabs: bool) -> Vec<String> {
-        if hive_agent_tabs {
-            if let Some(sid) = self.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                return vec!["claude".to_string(), "--resume".to_string(), sid.to_string()];
-            }
+    pub fn dock_pane_argv(&self) -> Vec<String> {
+        if let Some(sid) = self.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return vec!["claude".to_string(), "--resume".to_string(), sid.to_string()];
         }
         vec!["pui".to_string(), "watch-pane".to_string(), self.owner_id.clone()]
     }
@@ -2447,21 +2445,16 @@ mod tests {
     fn roster_entry_dock_pane_argv_bee_resume_vs_watch() {
         use super::RosterEntry;
         let bee = RosterEntry { owner_id: "s-1".into(), session_id: Some("uuid-x".into()), ..Default::default() };
-        // flag-on + claude session id → claude --resume (Claude TUI, P-004/D-007)
+        // claude session id → claude --resume (Claude TUI, P-004/D-007)
         assert_eq!(
-            bee.dock_pane_argv(true),
+            bee.dock_pane_argv(),
             vec!["claude".to_string(), "--resume".to_string(), "uuid-x".to_string()]
         );
-        // flag-on, no session id (omp bee / between turns) → watch-pane
+        // no session id (omp bee / between turns) → the read-only watch-pane
         let nosid = RosterEntry { owner_id: "s-2".into(), session_id: None, ..Default::default() };
         assert_eq!(
-            nosid.dock_pane_argv(true),
+            nosid.dock_pane_argv(),
             vec!["pui".to_string(), "watch-pane".to_string(), "s-2".to_string()]
-        );
-        // flag-OFF → always the watch-pane (current behavior), even with a session id
-        assert_eq!(
-            bee.dock_pane_argv(false),
-            vec!["pui".to_string(), "watch-pane".to_string(), "s-1".to_string()]
         );
     }
 

@@ -45,10 +45,68 @@ export interface CrossHiveEnvelope {
  * Trust is per-peer-Hive + revocable (the Hive-granularity analog of contributor
  * admission). The absence of a grant is a hard reject — admission is allow-list, not
  * deny-list.
+ *
+ * P-013 (D-005 hardening): every grant additionally carries QUOTAS — a rolling
+ * per-hour request cap, a payload size cap, and an optional expiry. Absent fields
+ * fall back to the module defaults below, so even a bare grant is never unbounded.
  */
 export interface CrossHiveGrant {
   peerHivePubkey: string;
   allowedKinds: readonly CrossHiveKind[];
+  /** Max requests per rolling hour with this peer (default {@link DEFAULT_CROSS_HIVE_MAX_PER_HOUR}). */
+  maxPerHour?: number;
+  /** Max `body` size in BYTES per request (default {@link DEFAULT_CROSS_HIVE_MAX_BODY_BYTES}). */
+  maxBodyBytes?: number;
+  /** Epoch-ms after which the grant is void (absent = no expiry). */
+  expiresAt?: number;
+}
+
+/**
+ * P-013 quota defaults — applied when a grant does not set its own. Deliberately
+ * always-on (D-005: "a granted peer can flood … unbounded" was the recorded gap):
+ * a grant with no explicit quota is capped, not open.
+ */
+export const DEFAULT_CROSS_HIVE_MAX_PER_HOUR = 60;
+export const DEFAULT_CROSS_HIVE_MAX_BODY_BYTES = 64 * 1024;
+
+/** UTF-8 byte length of a request body (the quota unit — chars lie about size). */
+export function crossHiveBodyBytes(body: string): number {
+  return Buffer.byteLength(body, 'utf8');
+}
+
+/**
+ * The P-013 quota verdict shared by both directions. Pure: callers supply the
+ * clock + the rolling-window usage count (the wiring counts the C-1 ledger).
+ * An absent `recentCount` skips the rate check (the caller could not count —
+ * fail-open on telemetry, never on the allow-list itself).
+ */
+function checkGrantQuota(
+  grant: CrossHiveGrant,
+  opts: { bodyBytes?: number; nowMs?: number; recentCount?: number },
+  peerLabel: string,
+): CrossHiveAdmission | null {
+  const now = opts.nowMs ?? Date.now();
+  if (grant.expiresAt != null && now > grant.expiresAt) {
+    return {
+      admitted: false,
+      reason: `grant for Hive ${peerLabel} expired at ${new Date(grant.expiresAt).toISOString()}`,
+    };
+  }
+  const maxBody = grant.maxBodyBytes ?? DEFAULT_CROSS_HIVE_MAX_BODY_BYTES;
+  if (opts.bodyBytes != null && opts.bodyBytes > maxBody) {
+    return {
+      admitted: false,
+      reason: `payload ${opts.bodyBytes}B exceeds the ${maxBody}B cap for Hive ${peerLabel}`,
+    };
+  }
+  const maxPerHour = grant.maxPerHour ?? DEFAULT_CROSS_HIVE_MAX_PER_HOUR;
+  if (opts.recentCount != null && opts.recentCount >= maxPerHour) {
+    return {
+      admitted: false,
+      reason: `rate cap reached for Hive ${peerLabel} — ${opts.recentCount} requests in the last hour (cap ${maxPerHour})`,
+    };
+  }
+  return null;
 }
 
 export interface CrossHiveAdmission {
@@ -61,12 +119,21 @@ export interface AdmitOpts {
   selfHivePubkey: string;
   /** The owner-set capability grants for inbound peer-Hives. */
   grants: readonly CrossHiveGrant[];
+  /** Clock for grant-expiry checks (P-013; default Date.now). */
+  nowMs?: number;
+  /**
+   * Requests admitted FROM `env.fromHivePubkey` within the rolling hour (P-013 rate
+   * cap; the wiring counts the C-1 `in` ledger). Absent = the rate check is skipped
+   * (the caller could not count — never silently zero).
+   */
+  recentFromPeerCount?: number;
 }
 
 /**
  * Decide whether an inbound cross-Hive envelope is admitted. Pure. Rejects when: not
- * addressed to this Hive, unsigned, no grant for the sending Hive, or the grant does
- * not cover the envelope's kind.
+ * addressed to this Hive, unsigned, no grant for the sending Hive, the grant does
+ * not cover the envelope's kind, or a P-013 quota trips (grant expired / payload
+ * over the size cap / peer over the rolling per-hour rate cap).
  */
 export function admitCrossHiveEnvelope(env: CrossHiveEnvelope, opts: AdmitOpts): CrossHiveAdmission {
   if (env.toHivePubkey !== opts.selfHivePubkey) {
@@ -82,6 +149,16 @@ export function admitCrossHiveEnvelope(env: CrossHiveEnvelope, opts: AdmitOpts):
   if (!grant.allowedKinds.includes(env.kind)) {
     return { admitted: false, reason: `Hive ${env.fromHivePubkey} is not granted '${env.kind}'` };
   }
+  const quota = checkGrantQuota(
+    grant,
+    {
+      bodyBytes: crossHiveBodyBytes(env.body),
+      ...(opts.nowMs != null ? { nowMs: opts.nowMs } : {}),
+      ...(opts.recentFromPeerCount != null ? { recentCount: opts.recentFromPeerCount } : {}),
+    },
+    env.fromHivePubkey,
+  );
+  if (quota) return quota;
   return { admitted: true, reason: 'admitted by capability grant' };
 }
 
@@ -90,18 +167,28 @@ export interface OutboundCrossHiveRequest {
   /** The peer Hive we are sending to (its directory pubkey). */
   toHivePubkey: string;
   kind: CrossHiveKind;
+  /** The request body's UTF-8 byte size (P-013 size cap; absent = size check skipped). */
+  bodyBytes?: number;
 }
 
 export interface OutboundAdmitOpts {
   /** This Hive's owner-set OUTBOUND grants — which peer-Hives we may send which kinds TO. */
   grants: readonly CrossHiveGrant[];
+  /** Clock for grant-expiry checks (P-013; default Date.now). */
+  nowMs?: number;
+  /**
+   * Requests already sent TO `req.toHivePubkey` within the rolling hour (P-013 rate
+   * cap; the send path counts the C-1 `out` ledger). Absent = rate check skipped.
+   */
+  recentToPeerCount?: number;
 }
 
 /**
  * Decide whether an OUTBOUND cross-Hive request is permitted to leave this Hive. The
  * egress twin of {@link admitCrossHiveEnvelope}: default-deny, allow-list. Rejects when
- * there is no outbound grant for the destination Hive, or the grant does not cover the
- * request's kind. Pure — the send path loads `grants` via `loadOutboundCrossHiveGrants`.
+ * there is no outbound grant for the destination Hive, the grant does not cover the
+ * request's kind, or a P-013 quota trips (expiry / size cap / per-hour rate cap).
+ * Pure — the send path loads `grants` via `loadOutboundCrossHiveGrants`.
  */
 export function admitOutboundCrossHive(
   req: OutboundCrossHiveRequest,
@@ -117,6 +204,16 @@ export function admitOutboundCrossHive(
   if (!grant.allowedKinds.includes(req.kind)) {
     return { admitted: false, reason: `Hive ${req.toHivePubkey} is not granted outbound '${req.kind}'` };
   }
+  const quota = checkGrantQuota(
+    grant,
+    {
+      ...(req.bodyBytes != null ? { bodyBytes: req.bodyBytes } : {}),
+      ...(opts.nowMs != null ? { nowMs: opts.nowMs } : {}),
+      ...(opts.recentToPeerCount != null ? { recentCount: opts.recentToPeerCount } : {}),
+    },
+    req.toHivePubkey,
+  );
+  if (quota) return quota;
   return { admitted: true, reason: 'admitted by outbound capability grant' };
 }
 
