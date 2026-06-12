@@ -868,30 +868,6 @@ impl OperatorClient {
         }))
     }
 
-    /// One RUNNING bee's appended raw output since `offset` — the watch pane's
-    /// "what is it thinking" feed (GET /api/fleet/bee-output, offset-cursor
-    /// tail of the spawn's live `.papercusp/logs/<run>.out`).
-    pub async fn bee_output(&self, owner: &str, offset: u64) -> Result<(u64, String, String)> {
-        let path = format!(
-            "/api/fleet/bee-output?owner={}&offset={}",
-            urlencode(owner),
-            offset
-        );
-        let v = self.get_json(&path).await?;
-        let next = v.get("offset").and_then(|o| o.as_u64()).unwrap_or(offset);
-        let chunk = v
-            .get("chunk")
-            .and_then(|c| c.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let status = v
-            .get("status")
-            .and_then(|c| c.as_str())
-            .unwrap_or_default()
-            .to_string();
-        Ok((next, chunk, status))
-    }
-
     /// The federated p2p roster — every remote hive announced into
     /// `shared_presence`, via `coord:presence { include_stale: true }` (MCP
     /// envelope unwrapped). Local (non-federated) session rows are dropped;

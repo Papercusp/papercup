@@ -243,7 +243,7 @@ mod tests {
     fn stacked_autoclose_flags_emit_zellij_args() {
         // The dock agent-stack pane shape (pui-dock-agent-stack-2026-06-07):
         // join the focused stack + close when the command exits.
-        let spec = PaneSpec::new(["pui", "watch-pane", "su-x"])
+        let spec = PaneSpec::new(["claude", "--resume", "sid-1"])
             .titled("claude · su-x")
             .stacked_autoclose();
         let argv = Zellij.new_pane_argv(&spec);
@@ -258,9 +258,9 @@ mod tests {
                 "--stacked",
                 "--close-on-exit",
                 "--",
-                "pui",
-                "watch-pane",
-                "su-x",
+                "claude",
+                "--resume",
+                "sid-1",
             ]
         );
     }

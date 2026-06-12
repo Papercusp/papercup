@@ -172,21 +172,27 @@ describe('system:improvement-implement — dispatch ledger write path (consume-e
   });
 
   it('FIRE FAILURE is terminal in the ledger and does NOT abort the loop — the next candidate still dispatches', async () => {
-    arm(cand({ id: 'EI-BOOM', attempts: 0 }), cand({ id: 'EI-NEXT', attempts: 0 }));
-    let calls = 0;
-    setImprovementImplementFire(async () => {
-      calls += 1;
-      if (calls === 1) throw new Error('invoke route down');
-    });
+    // Two candidates must enter the loop — the default per-run cap is 1.
+    process.env.PAPERCUSP_IMPROVEMENT_MAX_PER_RUN = '5';
+    try {
+      arm(cand({ id: 'EI-BOOM', attempts: 0 }), cand({ id: 'EI-NEXT', attempts: 0 }));
+      let calls = 0;
+      setImprovementImplementFire(async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('invoke route down');
+      });
 
-    await run();
+      await run();
 
-    expect(dispatched.map((s) => s.id)).toEqual(['EI-BOOM', 'EI-NEXT']); // both claimed
-    expect(ledgerFired.map((f) => f.itemId)).toEqual(['EI-BOOM', 'EI-NEXT']); // both recorded
-    expect(ledgerResults).toEqual([
-      { dispatchId: 'd-1', result: { ok: false, error: 'invoke route down' } },
-      { dispatchId: 'd-2', result: { ok: true, spawnedRunId: null } },
-    ]);
+      expect(dispatched.map((s) => s.id)).toEqual(['EI-BOOM', 'EI-NEXT']); // both claimed
+      expect(ledgerFired.map((f) => f.itemId)).toEqual(['EI-BOOM', 'EI-NEXT']); // both recorded
+      expect(ledgerResults).toEqual([
+        { dispatchId: 'd-1', result: { ok: false, error: 'invoke route down' } },
+        { dispatchId: 'd-2', result: { ok: true, spawnedRunId: null } },
+      ]);
+    } finally {
+      delete process.env.PAPERCUSP_IMPROVEMENT_MAX_PER_RUN;
+    }
   });
 
   it('a ledger insert that failed (null id) skips the fire-result write without crashing the dispatch', async () => {

@@ -21,6 +21,31 @@ export function backgroundWorkersEnabled(env: NodeJS.ProcessEnv = process.env): 
 }
 
 /**
+ * Headless UTILITY host (PAPERCUSP_UTILITY_HOST=1) — a short-lived dedicated
+ * operator instance (the gym-operator, future eval/bench hosts) that needs the
+ * request surface + DBOS pipelines but none of the interactive/dogfood legs.
+ *
+ * backgroundWorkersEnabled() can't express this: it bundles the DBOS launch
+ * with the shared-DB drains, and the gym needs DBOS ON. This flag instead
+ * gates the boot legs that are irrelevant to a utility instance AND carry the
+ * process's heavy native-module surface (EI-368 — the gym-operator
+ * intermittently died with a bare `terminate called after throwing an
+ * instance of 'Napi::Error'` mid-boot; the suspect natives all live behind
+ * these legs):
+ *  - the hyperbee/holepunch dogfood substrate (sodium/udx/rocksdb natives)
+ *  - the voice cluster (mobile/desktop WS, local audio socket, relay — more
+ *    holepunch natives + port scanning)
+ *  - the boot-time embedder warm-up (onnxruntime)
+ *
+ * Independent of backgroundWorkers: a utility host usually keeps
+ * backgroundWorkers ON for its own dedicated DB (DBOS pipelines); the gated
+ * legs check BOTH.
+ */
+export function utilityHostEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAPERCUSP_UTILITY_HOST === '1';
+}
+
+/**
  * Whether THIS process should arm the in-process REACTION MATCHER — project the
  * persisted hive-wake subscriptions into the in-memory reaction registry so a tool
  * invoked HERE fires its demand-wake reaction in-process (EI-307).

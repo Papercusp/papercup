@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { resolveImprovement, routeExhaustedImprovementToHuman, type ResolveDeps } from './resolve-core';
 import type { EngineerIssue, IssueState } from '../../issues-engineer';
 
@@ -32,10 +32,12 @@ interface Recorded {
   states: { id: string; state: IssueState }[];
   released: string[];
   payloads: { id: string; patch: Record<string, unknown> }[];
+  /** Dispatch-ledger closes (consume-edges P-010 / B-04). */
+  closes: { id: string; outcome: string; by?: string }[];
 }
 
 function deps(current: EngineerIssue | null): ResolveDeps & { rec: Recorded } {
-  const rec: Recorded = { comments: [], states: [], released: [], payloads: [] };
+  const rec: Recorded = { comments: [], states: [], released: [], payloads: [], closes: [] };
   return {
     rec,
     getIssue: async () => current,
@@ -54,6 +56,10 @@ function deps(current: EngineerIssue | null): ResolveDeps & { rec: Recorded } {
     mergeIssuePayload: async (id, patch) => {
       rec.payloads.push({ id, patch });
       return current;
+    },
+    closeDispatches: async (id, opts) => {
+      rec.closes.push({ id, outcome: opts.outcome, by: opts.by });
+      return 1;
     },
   };
 }
@@ -179,5 +185,44 @@ describe('routeExhaustedImprovementToHuman — exhausted with no resolve recorde
     expect(r.flipped).toBe(true);
     expect(d.rec.comments[0].body).toMatch(/5\/5/);
     expect(d.rec.comments[0].by).toBe('test-routine');
+  });
+});
+
+describe('resolveImprovement — dispatch-ledger close (consume-edges P-010 / B-04)', () => {
+  it('every successful outcome drives the open ledger rows terminal with that outcome', async () => {
+    for (const outcome of ['could-not-fix', 'needs-human'] as const) {
+      const d = deps(issue({ id: 'EI-7' }));
+      await resolveImprovement({ id: 'EI-7', outcome, summary: 's', by: 'worker-1' }, d);
+      expect(d.rec.closes).toEqual([{ id: 'EI-7', outcome, by: 'worker-1' }]);
+    }
+    const d = deps(issue({ id: 'EI-7' }));
+    await resolveImprovement({ id: 'EI-7', outcome: 'fixed', summary: 's', testsRun: 'vitest green', by: 'worker-1' }, d);
+    expect(d.rec.closes).toEqual([{ id: 'EI-7', outcome: 'fixed', by: 'worker-1' }]);
+  });
+
+  it('the idempotent re-resolve of an already-resolved item STILL closes ledger rows (no strays for the orphan collector)', async () => {
+    const d = deps(issue({ id: 'EI-7', state: 'resolved' }));
+    const r = await resolveImprovement({ id: 'EI-7', outcome: 'fixed', summary: 's', testsRun: 't' }, d);
+    expect(r.ok).toBe(true);
+    expect(d.rec.closes).toEqual([{ id: 'EI-7', outcome: 'fixed', by: 'improvement-runner' }]);
+    expect(d.rec.states).toHaveLength(0); // still a no-op on the issue itself
+  });
+
+  it('a REFUSED resolve (fixed without testsRun) closes nothing — the dispatch is still live', async () => {
+    const d = deps(issue({ id: 'EI-7' }));
+    await resolveImprovement({ id: 'EI-7', outcome: 'fixed', summary: 's' }, d);
+    expect(d.rec.closes).toHaveLength(0);
+  });
+
+  it('a ledger-close failure never fails the resolve (best-effort back edge)', async () => {
+    const d = deps(issue({ id: 'EI-7' }));
+    d.closeDispatches = async () => {
+      throw new Error('PG hiccup');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = await resolveImprovement({ id: 'EI-7', outcome: 'fixed', summary: 's', testsRun: 't' }, d);
+    expect(r).toMatchObject({ ok: true, outcome: 'fixed', state: 'resolved' });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/dispatch-ledger close failed/), 'PG hiccup');
+    warn.mockRestore();
   });
 });

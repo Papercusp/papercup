@@ -17,23 +17,9 @@ use ratatui::{
 pub fn draw(f: &mut Frame, app: &App) {
     // Pinned single-pane dock mode (native-terminal-desktop P-013 / D-011): the
     // desktop-docked native terminal's panes render JUST one tab's body — no
-    // tab strip, no HUD, no work area (operator chat via `pui chat-pane`, the
-    // voice channels via `pui voice-pane`). The tab's state + data wiring are
+    // tab strip, no HUD, no work area. The tab's state + data wiring are
     // unchanged; only the rendering is reduced to that body full-screen (the
-    // tab is re-pinned in main.rs, so chat shows the FULL chat with no
-    // dock-focus marker). Help + the latest toast still overlay.
-    // Watch pane (pui-dock-agent-stack-2026-06-07): a read-only live view of ONE
-    // swarm agent (dossier + activity + coord mail), full-screen — the dock's
-    // per-agent stack pane. No tabs, no HUD; toasts still overlay.
-    if app.watch.is_some() {
-        crate::bee::draw_watch(f, app, f.area());
-        if app.show_notifs {
-            draw_notifs(f, app);
-        } else if let Some(t) = &app.toast {
-            draw_toast(f, t);
-        }
-        return;
-    }
+    // tab is re-pinned in main.rs). Help + the latest toast still overlay.
     if let Some(pinned) = app.pinned {
         draw_tab_body(f, app, pinned, f.area());
         if app.show_notifs {
@@ -3522,10 +3508,10 @@ mod tests {
     }
 
     #[test]
-    fn notifs_history_renders_in_pinned_and_watch_panes() {
+    fn notifs_history_renders_in_pinned_panes() {
         // Owner report 2026-06-11: in the zellij dock the alert toast flashed
-        // but 'N' opened an overlay that never drew — the pinned/watch render
-        // paths skipped draw_notifs. Pin both paths.
+        // but 'N' opened an overlay that never drew — the pinned render path
+        // skipped draw_notifs. Pin it.
         let mut app = App::new();
         app.pinned = Some(crate::app::Tab::Wake);
         app.tab = crate::app::Tab::Wake;
@@ -3534,13 +3520,6 @@ mod tests {
         let text = render(&app, 90, 16);
         assert!(text.contains("Notifications (1)"), "pinned pane must render the history: {text}");
         assert!(text.contains("bee crashed"));
-
-        let mut w = App::new();
-        w.watch = Some("s-123".into());
-        w.show_notifs = true;
-        w.notifs = vec![ui_notif("high", "needs you now", None)];
-        let wt = render(&w, 90, 16);
-        assert!(wt.contains("Notifications (1)"), "watch pane must render the history: {wt}");
     }
 
     #[test]

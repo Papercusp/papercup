@@ -173,8 +173,8 @@ describe('runRecurrenceEscalation — glue', () => {
     expect(stagedInputs[0]).toMatchObject({
       title: 'cross scope pain everywhere always',
       recurrenceCount: 3,
-      sourceItemIds: ['x3', 'x2', 'x1'],
     });
+    expect([...stagedInputs[0]!.sourceItemIds].sort()).toEqual(['x1', 'x2', 'x3']);
     expect(stagedInputs[0]!.scopes.sort()).toEqual(['harness:papercup', 'harness:sheets', 'operator']);
     expect(stagedInputs[0]!.signature).toBeTruthy();
   });

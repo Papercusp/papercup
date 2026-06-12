@@ -1637,6 +1637,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learningPacks.candidates — the fleet→pack review queue (consume-edges
+  // P-032, B-11). Pending candidates staged by recurrence-escalation, with
+  // provenance; the Learnings view renders adopt/dismiss. Stage/decide fire
+  // this name explicitly (an adopt also fires learningPacks.list +
+  // learning.hive — the version bump lights updateAvailable). Read failure
+  // degrades to [] — the strip just disappears, never a 500.
+  'learningPacks.candidates': {
+    resolve: async () => {
+      try {
+        const { listLearningPackCandidates } = await import('../learning-packs/candidates');
+        return await listLearningPackCandidates({ status: 'pending' });
+      } catch (err) {
+        console.warn('[learningPacks.candidates] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
   // ── dev.* — live-ops glances for the dev admin rail ──────────────────
   //
   // (plan dev-admin-sidebar-2026-06-05, P-005..P-008). NOT table-backed, so

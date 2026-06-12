@@ -299,7 +299,7 @@ export async function runLearningInfraHealthTick(
  * when fresh, else a live tick. Returns null when the feature flag is off.
  */
 export async function getLearningInfraHealth(maxAgeMs = 5 * 60_000): Promise<LearningInfraHealth | null> {
-  if (!(await getFlag(FLAGS.LEARNING_INFRA_HEALTH))) return null;
+  if (!(await getFlag(FLAGS.LEARNING_INFRA_HEALTH, 'learning-infra-health'))) return null;
   if (lastHealth && Date.now() - lastHealth.evaluatedAt <= maxAgeMs) return lastHealth;
   const { health } = await runLearningInfraHealthTick();
   return health;

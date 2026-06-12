@@ -188,16 +188,19 @@ impl RosterEntry {
 
     /// The dock pane command for this entry as a fleet bee (hive-agent-tabs P-004
     /// / D-007). A claude bee with a recorded native session id resumes as a real
-    /// Claude TUI (`claude --resume <id>`) — the "looks like the Queen" surface;
-    /// otherwise (no session id / omp bee) it stays the read-only
-    /// `pui watch-pane <owner>` live view. NB: the resume FORM + the live
-    /// attach are validated in the owner's live dock — a still-running `-p` session
+    /// Claude TUI (`claude --resume <id>`) — the "looks like the Queen" surface.
+    /// `None` = no resumable session (omp/codex bee, or a claude bee before its
+    /// session id is recorded) → the bee gets NO dock pane; it stays visible in
+    /// the colony roster + fleet boards. (The read-only `pui watch-pane`
+    /// fallback was retired by P-014.) NB: the resume FORM + the live attach
+    /// are validated in the owner's live dock — a still-running `-p` session
     /// can't be attached, so it's a between/after-turns takeover (D-007).
-    pub fn dock_pane_argv(&self) -> Vec<String> {
-        if let Some(sid) = self.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            return vec!["claude".to_string(), "--resume".to_string(), sid.to_string()];
-        }
-        vec!["pui".to_string(), "watch-pane".to_string(), self.owner_id.clone()]
+    pub fn dock_pane_argv(&self) -> Option<Vec<String>> {
+        self.session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|sid| vec!["claude".to_string(), "--resume".to_string(), sid.to_string()])
     }
 
     /// A short summary of what this agent is currently doing — its declared coord
@@ -638,12 +641,6 @@ pub struct NetworkBoardRow {
     /// ISO timestamp of the freshest signal (sorts lexically).
     #[serde(rename = "lastSeen")]
     pub last_seen: Option<String>,
-    /// Per-bee watch owner IDs (tiers 2–3; P-014 item 1 C-3 extension) — coord
-    /// ownerIds of live bees on that hive/device. Each becomes a read-only
-    /// `pui watch-pane <owner>` in the B-10 drill-in tab. Absent (= empty) on
-    /// tiers 1 and 4 — and on a tier-2/3 hive with no live bees.
-    #[serde(rename = "watchOwners", default)]
-    pub watch_owners: Vec<String>,
     pub wake: Option<NetworkWake>,
     pub grants: Option<NetworkGrants>,
     pub asks: Option<NetworkAsks>,
@@ -2442,20 +2439,18 @@ mod tests {
     }
 
     #[test]
-    fn roster_entry_dock_pane_argv_bee_resume_vs_watch() {
+    fn roster_entry_dock_pane_argv_bee_resume_vs_none() {
         use super::RosterEntry;
         let bee = RosterEntry { owner_id: "s-1".into(), session_id: Some("uuid-x".into()), ..Default::default() };
         // claude session id → claude --resume (Claude TUI, P-004/D-007)
         assert_eq!(
             bee.dock_pane_argv(),
-            vec!["claude".to_string(), "--resume".to_string(), "uuid-x".to_string()]
+            Some(vec!["claude".to_string(), "--resume".to_string(), "uuid-x".to_string()])
         );
-        // no session id (omp bee / between turns) → the read-only watch-pane
+        // no session id (omp bee / between turns) → no dock pane (P-014 retired
+        // the read-only watch-pane fallback).
         let nosid = RosterEntry { owner_id: "s-2".into(), session_id: None, ..Default::default() };
-        assert_eq!(
-            nosid.dock_pane_argv(),
-            vec!["pui".to_string(), "watch-pane".to_string(), "s-2".to_string()]
-        );
+        assert_eq!(nosid.dock_pane_argv(), None);
     }
 
     #[test]

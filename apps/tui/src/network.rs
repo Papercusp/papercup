@@ -33,16 +33,14 @@ use ratatui::{
 };
 
 /// The Enter-to-open seam consumed by B-10's per-hive tab generator: the
-/// minimal identity of the selected row, plus the per-bee `watch_owners`
-/// the C-3 row carries for tiers 2/3 (P-014 item 1) — each becomes a
-/// read-only `pui watch-pane <owner>` in the generated tab.
+/// minimal identity of the selected row. (The per-bee `watchOwners` leg was
+/// dropped when hive-agent-tabs P-014 retired the `pui watch-pane` surface.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrillInRequest {
     pub tier: u8,
     pub key: String,
     pub title: String,
     pub trust: String,
-    pub watch_owners: Vec<String>,
 }
 
 /// Map a board row to its drill-in request (the Enter seam).
@@ -52,7 +50,6 @@ pub fn drill_in(row: &NetworkBoardRow) -> DrillInRequest {
         key: row.key.clone(),
         title: row.title.clone(),
         trust: row.trust.clone(),
-        watch_owners: row.watch_owners.clone(),
     }
 }
 
@@ -440,7 +437,6 @@ mod tests {
             "queueDepth": 7,
             "focus": "shop migration",
             "lastSeen": "2026-06-11T20:00:00Z",
-            "watchOwners": ["su-aaa", "su-bbb"],
             "wake": { "active": true, "nextFireAt": "2026-06-11T21:00:00Z" },
             "grants": { "in": ["ask"], "out": ["ask", "work-request"] },
             "asks": { "pending": 2, "answered": 5 }
@@ -452,7 +448,6 @@ mod tests {
         assert_eq!(row.live_agents, Some(3));
         assert_eq!(row.queue_depth, Some(7));
         assert_eq!(row.last_seen.as_deref(), Some("2026-06-11T20:00:00Z"));
-        assert_eq!(row.watch_owners, vec!["su-aaa", "su-bbb"]);
         let w = row.wake.unwrap();
         assert!(w.active);
         assert_eq!(w.next_fire_at.as_deref(), Some("2026-06-11T21:00:00Z"));
@@ -473,7 +468,6 @@ mod tests {
         assert_eq!(row.queue_depth, None);
         assert_eq!(row.focus, None);
         assert_eq!(row.last_seen, None);
-        assert!(row.watch_owners.is_empty());
         assert!(row.wake.is_none() && row.grants.is_none() && row.asks.is_none());
     }
 
@@ -501,7 +495,6 @@ mod tests {
             trust: "federated".into(),
             live_agents: Some(2),
             last_seen: Some("2026-06-11T19:00:00Z".into()),
-            watch_owners: vec!["fed:1@boxA".into(), "fed:2@boxA".into()],
             ..Default::default()
         }
     }
@@ -545,13 +538,8 @@ mod tests {
                 key: "pk-foreign".into(),
                 title: "Ash Hive".into(),
                 trust: "gossip".into(),
-                watch_owners: vec![],
             }
         );
-        // Tiers 2/3 carry the per-bee watch owners through (P-014 item 1) —
-        // the B-10 generator turns each into a `pui watch-pane <owner>`.
-        let req = drill_in(&t3());
-        assert_eq!(req.watch_owners, vec!["fed:1@boxA", "fed:2@boxA"]);
     }
 
     fn render(app: &App, w: u16, h: u16) -> String {

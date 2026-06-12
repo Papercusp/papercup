@@ -21,7 +21,7 @@ import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-s
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
-import { backgroundWorkersEnabled } from '@papercusp/operator-core/lib/background-workers';
+import { backgroundWorkersEnabled, utilityHostEnabled } from '@papercusp/operator-core/lib/background-workers';
 import { startClaudeCredentialSync } from '@papercusp/operator-core/lib/claude-credential-sync';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -178,38 +178,48 @@ export function runBootstrap(): void {
   // The legacy in-process AutoLoop ticker is RETIRED (autoloop-pot-operator-
   // rebuild P-010 / D-009) — scheduled decider fires ride the durable routines
   // engine (blueprint triggers.schedule → system:blueprint-run).
-  startMobileVoiceWs();
+  // EI-368: the whole voice cluster is skipped on a headless utility host (the
+  // gym-operator) — no human ever talks to it, the legs port-scan, and they
+  // pull in the holepunch native stack (part of the Napi-abort suspect set).
+  const utilityHost = utilityHostEnabled();
+  if (utilityHost) {
+    console.log('[host] PAPERCUSP_UTILITY_HOST=1 — headless utility host: skipping voice cluster, hyperbee substrate, and embedder warm-up (EI-368)');
+  } else {
+    startMobileVoiceWs();
+  }
   startPushCredentialRefresher();
-  // P2P voice channels: the local binary audio socket (holepunch-voice-channels
-  // P-006/D-010). Cheap to start; the voice swarm itself is lazy (first join).
-  void (async () => {
-    try {
-      const { startLocalVoiceSocket } = await import('@papercusp/operator-core/lib/voice-node/local-audio-socket');
-      const { socketPath } = startLocalVoiceSocket();
-      console.log(`[voice-node] local audio socket at ${socketPath}`);
-      // The ONE shared EL/operator voice session (universal-voice-interface-2026-06-05):
-      // hosted here and attached to the same socket bus, so desktop + tui both stream
-      // into one session and both receive the input + response (Model A).
-      const { startOperatorVoiceHost } = await import('@papercusp/operator-core/lib/voice-node/operator-voice-host');
-      startOperatorVoiceHost();
-    } catch (err) {
-      console.error('[voice-node] failed to start local audio socket / operator voice host:', err);
-    }
-  })();
-  // Desktop voice surface (P-015): bridge the local audio socket over a loopback
-  // WS so the Tauri webview's getUserMedia path can reach the same voice-node.
-  startDesktopVoiceWs();
-  // Voice relay (P-013/D-009): when PG `voice_relay.serve` opts this operator
-  // in as the fleet's reachable peer, run the blind-relay server firewalled
-  // peers fall back through. No-op (null) everywhere else.
-  void (async () => {
-    try {
-      const { maybeStartVoiceRelayServer } = await import('@papercusp/operator-core/lib/voice-node/voice-relay');
-      await maybeStartVoiceRelayServer();
-    } catch (err) {
-      console.error('[voice-relay] bootstrap check failed:', err);
-    }
-  })();
+  if (!utilityHost) {
+    // P2P voice channels: the local binary audio socket (holepunch-voice-channels
+    // P-006/D-010). Cheap to start; the voice swarm itself is lazy (first join).
+    void (async () => {
+      try {
+        const { startLocalVoiceSocket } = await import('@papercusp/operator-core/lib/voice-node/local-audio-socket');
+        const { socketPath } = startLocalVoiceSocket();
+        console.log(`[voice-node] local audio socket at ${socketPath}`);
+        // The ONE shared EL/operator voice session (universal-voice-interface-2026-06-05):
+        // hosted here and attached to the same socket bus, so desktop + tui both stream
+        // into one session and both receive the input + response (Model A).
+        const { startOperatorVoiceHost } = await import('@papercusp/operator-core/lib/voice-node/operator-voice-host');
+        startOperatorVoiceHost();
+      } catch (err) {
+        console.error('[voice-node] failed to start local audio socket / operator voice host:', err);
+      }
+    })();
+    // Desktop voice surface (P-015): bridge the local audio socket over a loopback
+    // WS so the Tauri webview's getUserMedia path can reach the same voice-node.
+    startDesktopVoiceWs();
+    // Voice relay (P-013/D-009): when PG `voice_relay.serve` opts this operator
+    // in as the fleet's reachable peer, run the blind-relay server firewalled
+    // peers fall back through. No-op (null) everywhere else.
+    void (async () => {
+      try {
+        const { maybeStartVoiceRelayServer } = await import('@papercusp/operator-core/lib/voice-node/voice-relay');
+        await maybeStartVoiceRelayServer();
+      } catch (err) {
+        console.error('[voice-relay] bootstrap check failed:', err);
+      }
+    })();
+  }
   // hive-frame-desktops-live-view P-012: on a desktop-enabled FRAME (the
   // bootstrap advertised a display pool), publish each ACTIVE display as a
   // screen track on the harness's video channel. Viewer-driven — a track
@@ -364,6 +374,12 @@ export function runBootstrap(): void {
       // substrate (which reads those tables) starts.
       const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
       await applyPendingMigrationsAtBoot();
+
+      // EI-368: a headless utility host (gym-operator) wants the migrations
+      // above but neither the embedder warm-up (onnxruntime) nor the dogfood
+      // substrate (holepunch natives) — both are in the Napi-abort suspect set
+      // and neither serves a short-lived dedicated instance.
+      if (utilityHost) return;
 
       // Best-effort embedder warm-up (memory-backend-improve-and-hybrid P-004a):
       // fire one throwaway memory search so the user's first turn doesn't pay the

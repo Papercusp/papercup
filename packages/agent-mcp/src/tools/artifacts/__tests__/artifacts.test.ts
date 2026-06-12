@@ -271,7 +271,9 @@ describe('artifacts:* — slug validation', () => {
       {},
     );
     expect(r.ok).toBe(false);
-    expect(r.error?.code).toBe('handler_error');
+    // Schema-validation failures are caller-class `invalid_input` (EI-334:
+    // they were previously miscoded `handler_error`, the structural class).
+    expect(r.error?.code).toBe('invalid_input');
     // Zod schema regex catches whitespace before the handler's manual
     // SLUG_RE check; either path is fine.
     expect(r.error?.message).toMatch(/invalid_args|pattern|slug/i);

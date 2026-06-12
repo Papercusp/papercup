@@ -176,6 +176,31 @@ export interface CrossHiveQuotaLedger {
 /** Rolling rate-cap window (P-013): one hour. */
 const QUOTA_WINDOW_MS = 60 * 60 * 1000;
 
+/**
+ * In-memory CrossHiveQuotaLedger — the unit-test fake (the convention: unit
+ * tests inject EVERY PG port; only integration suites exercise the PG default).
+ * Counts/records in arrays so tests can assert what was ledgered.
+ */
+export class InMemoryCrossHiveQuotaLedger implements CrossHiveQuotaLedger {
+  readonly inbound: { peerPubkey: string; kind: CrossHiveRequestKind; correlationId: string; subject: string; body: string; ts: number }[] = [];
+  readonly settled: { correlationId: string; peerPubkey: string; replyKind: CrossHiveReplyKind; replyBody: string }[] = [];
+  /** Pre-set counts for rate-cap tests (otherwise derived from `inbound`). */
+  outboundCount = 0;
+
+  async countRecentInbound(peerPubkey: string, sinceMs: number): Promise<number> {
+    return this.inbound.filter((r) => r.peerPubkey === peerPubkey && r.ts > sinceMs).length;
+  }
+  async countRecentOutbound(_peerPubkey: string, _sinceMs: number): Promise<number> {
+    return this.outboundCount;
+  }
+  async recordInboundRequest(input: { peerPubkey: string; kind: CrossHiveRequestKind; correlationId: string; subject: string; body: string }): Promise<void> {
+    this.inbound.push({ ...input, ts: Date.now() });
+  }
+  async settleInboundRequest(input: { correlationId: string; peerPubkey: string; replyKind: CrossHiveReplyKind; replyBody: string }): Promise<void> {
+    this.settled.push(input);
+  }
+}
+
 /** The default PG-backed quota ledger over the C-1 `cross_hive_asks` store. */
 export function pgCrossHiveQuotaLedger(
   workspaceId: string,

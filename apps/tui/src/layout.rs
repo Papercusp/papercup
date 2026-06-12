@@ -393,39 +393,23 @@ layout {{
 }
 
 /// A deployed frame's zellij TAB layout (hive-agent-tabs P-013): one tab named
-/// for the frame, holding that frame's agents as a stack of read-only
-/// `pui watch-pane <owner>` panes. Remote agents have no local PTY, so the
-/// PG-backed watch-pane IS the terminal-side remote view; the STREAMED desktop
-/// view stays the webview Frames tab (`hive-frame-desktops-live-view`, OQ-5
-/// settlement). No agents yet → a single shell pane as the placeholder.
-/// Pure (no I/O) — unit-tested. The companion's `new_tabs_with_layout` consumes
-/// the whole `layout { tab … }` string.
-pub fn frame_tab_kdl(tab_name: &str, agents: &[(String, String)]) -> String {
+/// for the frame, holding a single shell pane as the placeholder. (P-014
+/// retired the read-only `pui watch-pane` surface, and remote agents have no
+/// local PTY to attach a real TUI to — so the frame tab is a marker; the
+/// remote agents' live view is the STREAMED desktop in the webview Frames tab,
+/// `hive-frame-desktops-live-view`.) Pure (no I/O) — unit-tested. The
+/// companion's `new_tabs_with_layout` consumes the whole `layout { tab … }`
+/// string.
+pub fn frame_tab_kdl(tab_name: &str) -> String {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-    let panes = if agents.is_empty() {
-        "\n        pane".to_string()
-    } else {
-        agents
-            .iter()
-            .map(|(owner, title)| {
-                format!(
-                    "\n        pane name=\"{}\" {{\n            command \"pui\"\n            args \"watch-pane\" \"{}\"\n        }}",
-                    esc(title),
-                    esc(owner)
-                )
-            })
-            .collect::<String>()
-    };
-    // `stacked` needs ≥2 children to be meaningful (and zellij is picky about a
-    // one-pane stack) — a lone/placeholder pane renders unstacked.
-    let stacked = if agents.len() >= 2 { " stacked=true" } else { "" };
     format!(
         r#"layout {{
     tab name="{name}" {{
         pane size=1 borderless=true {{
             plugin location="zellij:tab-bar"
         }}
-        pane{stacked} {{{panes}
+        pane {{
+            pane
         }}
         pane size=2 borderless=true {{
             plugin location="zellij:status-bar"
@@ -434,8 +418,6 @@ pub fn frame_tab_kdl(tab_name: &str, agents: &[(String, String)]) -> String {
 }}
 "#,
         name = esc(tab_name),
-        stacked = stacked,
-        panes = panes
     )
 }
 
@@ -455,22 +437,6 @@ pub struct HiveTabSpec {
     pub key: String,
     /// The C-3 row title — the human label shown in the tab + detail-pane name.
     pub title: String,
-    /// (owner_id, pane title) for each live bee to open a read-only watch pane
-    /// (tiers 2/3 only). Sourced from the C-3 row's `watchOwners` (P-014
-    /// item 1) via B-09's Enter seam; empty when the hive has no live bees.
-    pub watch_owners: Vec<(String, String)>,
-}
-
-/// The watch-pane title for one C-3 `watchOwners` entry: the 🐝 marker + a
-/// short owner id (a full coord ownerId is a uuid — the pane strip would
-/// truncate it arbitrarily; we truncate it legibly instead). Pure.
-pub fn watch_pane_title(owner: &str) -> String {
-    let short: String = owner.chars().take(14).collect();
-    if owner.chars().count() > 14 {
-        format!("🐝 {short}…")
-    } else {
-        format!("🐝 {short}")
-    }
 }
 
 /// The zellij tab name for a per-hive drill-in (P-008). The ⌕ prefix marks it a
@@ -495,9 +461,10 @@ pub fn hive_tab_name(spec: &HiveTabSpec) -> String {
 ///
 /// Composition rides the capability ladder (D-001) via `spec.tier`:
 ///   * tiers 2/3 (own hives / shared-Hive peer Swarms — substrate-backed): the
-///     `pui hive-pane <key>` queen-status / live-counts DETAIL pane (focused),
-///     joined by one read-only `pui watch-pane <owner>` per `spec.watch_owners`
-///     entry (P-014 item 1 — the C-3 row's `watchOwners` rides B-09's seam).
+///     `pui hive-pane <key>` queen-status / live-counts DETAIL pane (focused).
+///     (Per-bee read-only watch panes rode here until hive-agent-tabs P-014
+///     retired the `pui watch-pane` surface — live-bee counts stay on the
+///     detail pane.)
 ///   * tier 2 ONLY additionally gets the hive-scoped WAKE board pane
 ///     (`pui wake-pane --hive <key>`, P-014 item 3 / D-007 GAP 1 closed):
 ///     tier-2 keys are hive slugs the `network.hive.wakes` query scopes by.
@@ -520,22 +487,13 @@ pub fn hive_tab_kdl(spec: &HiveTabSpec) -> String {
     } else {
         spec.title.as_str()
     });
-    // tiers 2/3 are substrate-backed → the detail pane is joined by read-only
-    // per-bee watch panes. tier 4 (and any stray tier 1) → the dossier/detail
-    // pane alone.
-    let substrate = spec.tier != 4;
-    let watch: Vec<&(String, String)> = if substrate {
-        spec.watch_owners.iter().collect()
-    } else {
-        Vec::new()
-    };
     // tier 2 only: the hive-scoped wake board (`network.hive.wakes` scopes by
     // hive SLUG — exactly the tier-2 key; tier-3 keys are peer device pubkeys
     // whose wake queues aren't in our PG).
     let wake_pane = spec.tier == 2;
     // A stack needs ≥2 children (zellij is picky about a one-pane stack); the
     // lead (detail) pane is the expanded one.
-    let stacked = !watch.is_empty() || wake_pane;
+    let stacked = wake_pane;
     let detail_attrs = if stacked {
         "focus=true expanded=true"
     } else {
@@ -547,13 +505,6 @@ pub fn hive_tab_kdl(spec: &HiveTabSpec) -> String {
     if wake_pane {
         panes.push_str(&format!(
             "\n            pane name=\"⏸ wakes\" close_on_exit=true {{\n                command \"pui\"\n                args \"wake-pane\" \"--hive\" \"{key}\"\n            }}",
-        ));
-    }
-    for (owner, title) in watch {
-        panes.push_str(&format!(
-            "\n            pane name=\"{}\" close_on_exit=true {{\n                command \"pui\"\n                args \"watch-pane\" \"{}\"\n            }}",
-            esc(title),
-            esc(owner),
         ));
     }
     let stacked_attr = if stacked { " stacked=true" } else { "" };
@@ -778,49 +729,45 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_is_one_agent_stack() {
-        // The dock (pui-dock-agent-stack-2026-06-07): ONE full-width zellij
-        // stack — operator (expanded) ⇄ brain; active agents append at runtime.
-        // No main pane, no tab-subset pui, no side-by-side split.
+    fn chat_dock_is_the_queen_split_over_the_agent_stack() {
+        // The dock (hive-agent-tabs, sole shape since P-014): the queen split
+        // (psu --brain + her data boards) over the agent stack (psu sentinel,
+        // dock-driver, fleet wake board). The retired `pui chat-pane` widget
+        // must never reappear.
         let lex = Lexicon::default();
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex, false);
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
         assert!(kdl.contains("name=\"chat\""));
-        assert!(kdl.contains("name=\"operator\"")); // lex("operator") = Operator
-        assert!(kdl.contains("name=\"brain\""));
+        assert!(kdl.contains("name=\"🛡 operator\"")); // lex("operator"), P-010 glyph
+        assert!(kdl.contains("name=\"♛ brain\""));
         assert!(kdl.contains("stacked=true"));
         assert!(kdl.contains("expanded=true"));
-        // The pinned-pane ARGS are internal identifiers — NEVER lexicon-driven.
-        assert!(kdl.contains("args \"chat-pane\""));
         assert!(kdl.contains("command \"psu\""));
         assert!(kdl.contains("args \"--resume\""));
-        // The main pane (tab-subset pui) + the old single-tab panes are GONE —
-        // tab surfaces live in the pui app, not zellij.
+        // The retired pane modes + old single-tab panes are GONE — tab
+        // surfaces live in the pui app, not zellij (chat-pane/watch-pane
+        // retired by P-014).
         for gone in [
+            "chat-pane",
+            "watch-pane",
             "main-pane",
             "apiary-pane",
             "voice-pane",
             "swarm-pane",
             "bee-pane",
             "name=\"main\"",
-            "split_direction",
         ] {
             assert!(!kdl.contains(gone), "stale dock artifact: {gone}");
         }
-        // Operator leads the stack (expanded + focused), brain under it.
-        let (o, b) = (
-            kdl.find("name=\"operator\"").unwrap(),
-            kdl.find("name=\"brain\"").unwrap(),
+        // Operator leads the agent stack (expanded + focused), under the queen.
+        let (q, o) = (
+            kdl.find("name=\"♛ brain\"").unwrap(),
+            kdl.find("name=\"🛡 operator\"").unwrap(),
         );
-        assert!(o < b, "stack order must be operator ⇄ brain");
-        assert!(kdl.find("expanded=true").unwrap() < b);
+        assert!(q < o, "the queen split precedes the agent stack");
         // And NOTHING of the workbench: no HUD, no work area, no swap presets.
         assert!(!kdl.contains("args \"hud\""));
-        assert!(!kdl.contains("name=\"work\""));
+        assert!(!kdl.contains("name=\"work\" "));
         assert!(!kdl.contains("swap_tiled_layout"));
-        // TWO pui panes — the "this hive" tab's chat + the "network" tab's
-        // network-pane (P-007 dock tabs) — and one psu (the brain).
-        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
-        assert_eq!(kdl.matches("command \"psu\"").count(), 1);
         assert!(kdl.contains("args \"network-pane\""));
     }
 
@@ -829,82 +776,67 @@ mod tests {
         // P-007 (hive-network-surface B-10): the dock is a TWO-tab zellij
         // session. Tab 1 "this hive" holds the dock VERBATIM; tab 2 "network"
         // hosts `pui network-pane`. The bars live in a `default_tab_template`
-        // shared by both tabs. Present in BOTH flag states; the workbench swap
-        // presets never appear here.
-        for flag in [false, true] {
-            let kdl =
-                chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), flag);
-            // A shared tab template carries the bars exactly once.
-            assert!(kdl.contains("default_tab_template {"), "no default_tab_template (flag={flag})");
-            assert!(kdl.contains("children"), "template has no children placeholder (flag={flag})");
-            assert_eq!(
-                kdl.matches("zellij:tab-bar").count(),
-                1,
-                "tab-bar declared once in the template (flag={flag})"
-            );
-            assert_eq!(
-                kdl.matches("zellij:status-bar").count(),
-                1,
-                "status-bar declared once in the template (flag={flag})"
-            );
-            // Both tabs, in order: "this hive" (focus) THEN "network" (C-5 names).
-            assert!(
-                kdl.contains("tab name=\"this hive\" focus=true"),
-                "missing focused this-hive tab (flag={flag})"
-            );
-            assert!(kdl.contains("tab name=\"network\""), "missing network tab (flag={flag})");
-            let th = kdl.find("tab name=\"this hive\"").unwrap();
-            let nw = kdl.find("tab name=\"network\"").unwrap();
-            assert!(
-                th < nw,
-                "this hive must be the FIRST tab so tier-1 GoToTab(1) lands on it (flag={flag})"
-            );
-            // The dock body moved VERBATIM inside the this-hive tab (the chat
-            // stack sits between the two tab headers).
-            let chat = kdl.find("name=\"chat\"").unwrap();
-            assert!(
-                th < chat && chat < nw,
-                "the dock body must live inside the this-hive tab (flag={flag})"
-            );
-            // The network tab hosts the C-5-named `pui network-pane`.
-            let net_pane = kdl.find("args \"network-pane\"").unwrap();
-            assert!(net_pane > nw, "network-pane must be inside the network tab (flag={flag})");
-            // The dock is never the workbench.
-            assert!(!kdl.contains("swap_tiled_layout"), "no swap presets in the dock (flag={flag})");
-        }
-    }
-
-    #[test]
-    fn chat_dock_stack_children_carry_no_sizes() {
-        // The stack gives the expanded pane everything but title bars; only the
-        // bar panes carry fixed sizes (tab-bar 1 / status-bar 2).
-        let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default(), false);
-        assert!(!kdl.contains("size=\""), "no percent sizes in the stack dock");
-        assert!(kdl.contains("pane size=1 borderless=true"));
-        assert!(kdl.contains("pane size=2 borderless=true"));
+        // shared by both tabs. The workbench swap presets never appear here.
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        // A shared tab template carries the bars exactly once.
+        assert!(kdl.contains("default_tab_template {"), "no default_tab_template");
+        assert!(kdl.contains("children"), "template has no children placeholder");
+        assert_eq!(
+            kdl.matches("zellij:tab-bar").count(),
+            1,
+            "tab-bar declared once in the template"
+        );
+        assert_eq!(
+            kdl.matches("zellij:status-bar").count(),
+            1,
+            "status-bar declared once in the template"
+        );
+        // Both tabs, in order: "this hive" (focus) THEN "network" (C-5 names).
+        assert!(
+            kdl.contains("tab name=\"this hive\" focus=true"),
+            "missing focused this-hive tab"
+        );
+        assert!(kdl.contains("tab name=\"network\""), "missing network tab");
+        let th = kdl.find("tab name=\"this hive\"").unwrap();
+        let nw = kdl.find("tab name=\"network\"").unwrap();
+        assert!(
+            th < nw,
+            "this hive must be the FIRST tab so tier-1 GoToTab(1) lands on it"
+        );
+        // The dock body moved VERBATIM inside the this-hive tab (the chat
+        // stack sits between the two tab headers).
+        let chat = kdl.find("name=\"chat\"").unwrap();
+        assert!(
+            th < chat && chat < nw,
+            "the dock body must live inside the this-hive tab"
+        );
+        // The network tab hosts the C-5-named `pui network-pane`.
+        let net_pane = kdl.find("args \"network-pane\"").unwrap();
+        assert!(net_pane > nw, "network-pane must be inside the network tab");
+        // The dock is never the workbench.
+        assert!(!kdl.contains("swap_tiled_layout"), "no swap presets in the dock");
     }
 
     #[test]
     fn chat_dock_pane_names_route_through_the_hive_lexicon() {
         // With the-hive active: operator→sentinel, brain→queen (lowercased,
-        // kdl-safe). The fixed "chat" stays verbatim. (renamed from "sentinel-bee",
-        // owner directive 2026-06-09 / hive-agent-tabs P-003.)
-        let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex(), false);
-        assert!(kdl.contains("name=\"sentinel\""));
-        assert!(kdl.contains("name=\"queen\""));
+        // kdl-safe, P-010 glyph-prefixed). The fixed "chat" stays verbatim.
+        // (renamed from "sentinel-bee", owner directive 2026-06-09 / P-003.)
+        let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex());
+        assert!(kdl.contains("name=\"🛡 sentinel\""));
+        assert!(kdl.contains("name=\"♛ queen\""));
         assert!(kdl.contains("name=\"chat\""));
         // The classic labels must NOT leak when the-hive is on.
-        assert!(!kdl.contains("name=\"operator\""));
-        assert!(!kdl.contains("name=\"brain\""));
-        // The internal pinned-pane arg is unchanged regardless of pack.
-        assert!(kdl.contains("args \"chat-pane\""));
+        assert!(!kdl.contains("name=\"🛡 operator\""));
+        assert!(!kdl.contains("name=\"♛ brain\""));
     }
 
     #[test]
-    fn chat_dock_hive_agent_tabs_makes_sentinel_a_psu_session() {
-        // hive-agent-tabs P-003: flag ON → the operator/Sentinel pane is a real
-        // psu/Claude TUI (`psu --role operator`), NOT the `pui chat-pane` widget.
-        let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), true);
+    fn chat_dock_sentinel_is_a_psu_session() {
+        // hive-agent-tabs P-003: the operator/Sentinel pane is a real
+        // psu/Claude TUI (`psu --role operator`) — the `pui chat-pane` widget
+        // it replaced was retired by P-014.
+        let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
         // Fully-scoped, no-picker launch (owner ask): the role is auto-selected.
         assert!(on.contains("args \"--no-picker\" \"--agent=claude\" \"--role=operator\""));
         assert!(on.contains("--role=operator")); // `=` form — psu drops `--role operator`
@@ -952,57 +884,40 @@ mod tests {
         assert!(queen_at < brief_at, "brain precedes her side column");
         assert!(work_at < stack_at, "the queen split precedes the agent stack");
         assert!(stack_at < driver_at, "the driver is inside the stack");
-
-        // Flag OFF → unchanged: the classic single stack — pui chat-pane over the
-        // brain, no split, no driver pane, no wake panes.
-        let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
-        assert!(off.contains("args \"chat-pane\""));
-        assert!(!off.contains("--role=operator"));
-        assert!(!off.contains("args \"dock-driver\""));
-        assert!(!off.contains("args \"wake-pane\""));
-        assert!(!off.contains("split_direction"), "flag-off stays the single stack");
-        // chat-pane + the network tab's network-pane (P-007 dock tabs) = 2.
-        assert_eq!(off.matches("command \"pui\"").count(), 2);
     }
 
     #[test]
     fn chat_dock_binds_tab_to_fullscreen_zoom_at_the_layout_level() {
         // owner ask 2026-06-11: Tab fullscreens the focused pane (chat → hide
         // its wakes pane; Tab again restores). A layout-level keybind (merges
-        // with the user's config, dock-session-only). Present in both flag
-        // states (it zooms whatever is focused).
-        for flag in [true, false] {
-            let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), flag);
-            assert!(kdl.contains("keybinds {"), "keybinds block missing (flag={flag}): {kdl}");
-            assert!(
-                kdl.contains("bind \"Tab\" { ToggleFocusFullscreen; }"),
-                "Tab→fullscreen bind missing (flag={flag}): {kdl}",
-            );
-            // The keybinds block precedes the layout block (zellij wants it as a
-            // top-level sibling, not nested in `layout`).
-            assert!(
-                kdl.find("keybinds {").unwrap() < kdl.find("layout {").unwrap(),
-                "keybinds must precede layout (flag={flag})",
-            );
-        }
+        // with the user's config, dock-session-only).
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        assert!(kdl.contains("keybinds {"), "keybinds block missing: {kdl}");
+        assert!(
+            kdl.contains("bind \"Tab\" { ToggleFocusFullscreen; }"),
+            "Tab→fullscreen bind missing: {kdl}",
+        );
+        // The keybinds block precedes the layout block (zellij wants it as a
+        // top-level sibling, not nested in `layout`).
+        assert!(
+            kdl.find("keybinds {").unwrap() < kdl.find("layout {").unwrap(),
+            "keybinds must precede layout",
+        );
     }
 
     #[test]
-    fn chat_dock_hive_agent_tabs_glyphs_the_static_pane_names() {
-        // P-010: flag-on, the sentinel/queen pane NAMES carry their per-type glyph
-        // (zellij has no per-pane color, D-008). Flag-off → bare names (unchanged).
-        let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), true);
-        assert!(on.contains("name=\"🛡 operator\""), "sentinel glyph missing: {on}");
-        assert!(on.contains("name=\"♛ brain\""), "queen/brain glyph missing: {on}");
-        let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
-        assert!(off.contains("name=\"operator\""));
-        assert!(!off.contains("🛡") && !off.contains("♛"));
+    fn chat_dock_glyphs_the_static_pane_names() {
+        // P-010: the sentinel/queen pane NAMES carry their per-type glyph
+        // (zellij has no per-pane color, D-008).
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        assert!(kdl.contains("name=\"🛡 operator\""), "sentinel glyph missing: {kdl}");
+        assert!(kdl.contains("name=\"♛ brain\""), "queen/brain glyph missing: {kdl}");
     }
 
     #[test]
     fn chat_dock_fresh_brain_omits_args_line() {
         // A bare `psu` brain (fresh, no resume) renders no `args` line.
-        let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default(), false);
+        let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default());
         assert!(kdl.contains("command \"psu\""));
         assert!(!kdl.contains("args \"--resume\""));
     }
@@ -1016,7 +931,6 @@ mod tests {
                 "abc-123".to_string(),
             ],
             &Lexicon::default(),
-            false,
         );
         assert!(kdl.contains("args \"--resume\" \"abc-123\""));
     }
@@ -1045,71 +959,45 @@ mod tests {
             d.path(),
             &["psu".to_string(), "--resume".to_string()],
             &Lexicon::default(),
-            false,
         )
         .unwrap();
         assert!(p.ends_with("pui-chat-dock.kdl"));
         let written = std::fs::read_to_string(&p).unwrap();
-        assert!(written.contains("name=\"brain\""));
-        assert!(written.contains("args \"chat-pane\""));
+        assert!(written.contains("name=\"♛ brain\""));
+        assert!(written.contains("args \"dock-driver\""));
         assert!(written.contains("stacked=true"));
     }
 
     // ── P-013 per-frame tabs ─────────────────────────────────────────────────
 
     #[test]
-    fn frame_tab_kdl_stacks_the_frames_agents_as_watch_panes() {
-        let agents = vec![
-            ("su-aaa".to_string(), "🐝 su · su-aaa".to_string()),
-            ("su-bbb".to_string(), "🐝 su · su-bbb".to_string()),
-        ];
-        let kdl = frame_tab_kdl("☁ papercup-cloud", &agents);
+    fn frame_tab_kdl_is_a_named_placeholder_tab() {
+        // P-014 retired the watch-pane surface, so the frame tab is a marker:
+        // a named tab holding a shell placeholder (the remote agents' live
+        // view is the streamed desktop in the webview Frames tab).
+        let kdl = frame_tab_kdl("☁ papercup-cloud");
         assert!(kdl.contains("tab name=\"☁ papercup-cloud\""));
-        assert!(kdl.contains("stacked=true"));
-        assert!(kdl.contains("args \"watch-pane\" \"su-aaa\""));
-        assert!(kdl.contains("args \"watch-pane\" \"su-bbb\""));
-        assert!(kdl.contains("name=\"🐝 su · su-aaa\""));
-        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
+        assert!(!kdl.contains("watch-pane"));
+        assert!(!kdl.contains("command \"pui\""));
+        assert!(!kdl.contains("stacked=true"));
         // The tab keeps its own bars (each zellij tab lays out independently).
         assert!(kdl.contains("zellij:tab-bar"));
         assert!(kdl.contains("zellij:status-bar"));
     }
 
     #[test]
-    fn frame_tab_kdl_placeholder_and_single_pane_are_unstacked() {
-        // No agents → a bare shell pane, no one-pane stack (zellij is picky).
-        let empty = frame_tab_kdl("☁ idle-frame", &[]);
-        assert!(!empty.contains("stacked=true"));
-        assert!(!empty.contains("watch-pane"));
-        let one = frame_tab_kdl(
-            "☁ one",
-            &[("su-x".to_string(), "🐝 x".to_string())],
-        );
-        assert!(!one.contains("stacked=true"));
-        assert!(one.contains("args \"watch-pane\" \"su-x\""));
-    }
-
-    #[test]
     fn frame_tab_kdl_escapes_quotes() {
-        let kdl = frame_tab_kdl(
-            "☁ q\"uote",
-            &[("o-1".to_string(), "ti\"tle".to_string())],
-        );
+        let kdl = frame_tab_kdl("☁ q\"uote");
         assert!(kdl.contains("tab name=\"☁ q\\\"uote\""));
-        assert!(kdl.contains("name=\"ti\\\"tle\""));
     }
 
     // ── P-008 per-hive drill-in tabs ─────────────────────────────────────────
 
-    fn hive_spec(tier: u8, key: &str, title: &str, owners: &[(&str, &str)]) -> HiveTabSpec {
+    fn hive_spec(tier: u8, key: &str, title: &str) -> HiveTabSpec {
         HiveTabSpec {
             tier,
             key: key.to_string(),
             title: title.to_string(),
-            watch_owners: owners
-                .iter()
-                .map(|(o, t)| (o.to_string(), t.to_string()))
-                .collect(),
         }
     }
 
@@ -1117,20 +1005,19 @@ mod tests {
     fn hive_tab_name_prefixes_and_falls_back_to_key() {
         // Names by the row title; the ⌕ prefix marks a drill-in. Blank title →
         // the key (a foreign pubkey-b64 still gets a usable tab name).
-        assert_eq!(hive_tab_name(&hive_spec(4, "AbC+/d", "Acme Hive", &[])), "⌕ Acme Hive");
-        assert_eq!(hive_tab_name(&hive_spec(2, "papercup", "", &[])), "⌕ papercup");
-        assert_eq!(hive_tab_name(&hive_spec(2, "papercup", "   ", &[])), "⌕ papercup");
+        assert_eq!(hive_tab_name(&hive_spec(4, "AbC+/d", "Acme Hive")), "⌕ Acme Hive");
+        assert_eq!(hive_tab_name(&hive_spec(2, "papercup", "")), "⌕ papercup");
+        assert_eq!(hive_tab_name(&hive_spec(2, "papercup", "   ")), "⌕ papercup");
     }
 
     #[test]
     fn hive_tab_kdl_tier4_is_a_lone_dossier_pane() {
-        // tier 4 (foreign): ONE `pui hive-pane <key>` dossier pane, no watch
-        // panes, not stacked. Carries its own bars (injected into the live
-        // session, like frame_tab_kdl).
-        let kdl = hive_tab_kdl(&hive_spec(4, "k3y+b64", "Foreign Hive", &[("ignored", "x")]));
+        // tier 4 (foreign): ONE `pui hive-pane <key>` dossier pane, not
+        // stacked. Carries its own bars (injected into the live session, like
+        // frame_tab_kdl).
+        let kdl = hive_tab_kdl(&hive_spec(4, "k3y+b64", "Foreign Hive"));
         assert!(kdl.contains("tab name=\"⌕ Foreign Hive\""));
         assert_eq!(kdl.matches("args \"hive-pane\" \"k3y+b64\"").count(), 1);
-        assert!(!kdl.contains("watch-pane"), "tier 4 has no per-bee watch panes: {kdl}");
         assert!(!kdl.contains("stacked=true"), "a lone dossier pane is not stacked");
         assert!(kdl.contains("focus=true close_on_exit=true"));
         assert!(kdl.contains("zellij:tab-bar"));
@@ -1140,65 +1027,35 @@ mod tests {
     }
 
     #[test]
-    fn hive_tab_kdl_tier2_3_stacks_detail_plus_watch_panes() {
-        // tiers 2/3 (substrate): the focused detail pane LEADS a stack of
-        // read-only watch panes, one per live bee. Every pane is close_on_exit.
-        for tier in [2u8, 3u8] {
-            let kdl = hive_tab_kdl(&hive_spec(
-                tier,
-                "peer-swarm",
-                "Peer Swarm",
-                &[("su-aaa", "🐝 su-aaa"), ("su-bbb", "🐝 su-bbb")],
-            ));
-            assert!(kdl.contains("stacked=true"), "tier {tier} stacks detail+watch: {kdl}");
-            // Detail pane: the queen-status/live-counts view, expanded lead.
-            assert!(kdl.contains("focus=true expanded=true close_on_exit=true"));
-            assert!(kdl.contains("args \"hive-pane\" \"peer-swarm\""));
-            // One read-only watch pane per bee.
-            assert!(kdl.contains("args \"watch-pane\" \"su-aaa\""));
-            assert!(kdl.contains("args \"watch-pane\" \"su-bbb\""));
-            assert!(kdl.contains("name=\"🐝 su-aaa\""));
-            // detail (hive-pane) leads the stack, watch panes follow.
-            let detail_at = kdl.find("args \"hive-pane\"").unwrap();
-            let watch_at = kdl.find("args \"watch-pane\"").unwrap();
-            assert!(detail_at < watch_at, "the detail pane leads the stack (tier {tier})");
-            // tier 2: detail + wake board + 2 watch panes; tier 3: no wake
-            // board (the peer's wake queue isn't in our PG — see hive_tab_kdl).
-            let pui_panes = if tier == 2 { 4 } else { 3 };
-            assert_eq!(kdl.matches("command \"pui\"").count(), pui_panes, "tier {tier}");
-            assert_eq!(
-                kdl.contains("args \"wake-pane\" \"--hive\" \"peer-swarm\""),
-                tier == 2,
-                "wake board is tier-2 only (tier {tier})"
-            );
-            // Every command pane tears down on exit (no EXITED husk).
-            assert_eq!(kdl.matches("close_on_exit=true").count(), pui_panes);
-        }
-    }
-
-    #[test]
-    fn hive_tab_kdl_tier2_empty_watch_owners_is_detail_plus_wake_board() {
-        // A tier-2 hive with no live bees: the detail pane + the hive-scoped
-        // wake board (P-014 item 3 / D-007 GAP 1 — `network.hive.wakes` scopes
-        // by the tier-2 hive slug), stacked, no watch panes.
-        let kdl = hive_tab_kdl(&hive_spec(2, "papercup", "This Box", &[]));
+    fn hive_tab_kdl_tier2_stacks_detail_plus_wake_board() {
+        // tier 2 (own hive): the focused detail pane LEADS a stack with the
+        // hive-scoped wake board (P-014 item 3 / D-007 GAP 1 —
+        // `network.hive.wakes` scopes by the tier-2 hive slug). Every pane is
+        // close_on_exit. (Per-bee watch panes rode here until hive-agent-tabs
+        // P-014 retired the watch-pane surface.)
+        let kdl = hive_tab_kdl(&hive_spec(2, "papercup", "This Box"));
         assert!(kdl.contains("args \"hive-pane\" \"papercup\""));
         assert!(kdl.contains("args \"wake-pane\" \"--hive\" \"papercup\""));
         assert!(kdl.contains("name=\"⏸ wakes\""));
         assert!(!kdl.contains("watch-pane"));
         assert!(kdl.contains("stacked=true"));
         assert!(kdl.contains("focus=true expanded=true close_on_exit=true"));
+        // detail (hive-pane) leads the stack, the wake board follows.
+        let detail_at = kdl.find("args \"hive-pane\"").unwrap();
+        let wake_at = kdl.find("args \"wake-pane\"").unwrap();
+        assert!(detail_at < wake_at, "the detail pane leads the stack");
         assert_eq!(kdl.matches("command \"pui\"").count(), 2);
+        // Every command pane tears down on exit (no EXITED husk).
+        assert_eq!(kdl.matches("close_on_exit=true").count(), 2);
     }
 
     #[test]
-    fn hive_tab_kdl_tier3_empty_watch_owners_is_detail_only() {
-        // A tier-3 peer swarm with no live members: just the detail pane — no
-        // stack, no watches, and NO wake board (tier-3 keys are peer device
-        // pubkeys; that peer's wake queue lives in their PG, not ours).
-        let kdl = hive_tab_kdl(&hive_spec(3, "pk-peer", "Peer Swarm", &[]));
+    fn hive_tab_kdl_tier3_is_detail_only() {
+        // tier 3 (peer swarm): just the detail pane — no stack and NO wake
+        // board (tier-3 keys are peer device pubkeys; that peer's wake queue
+        // lives in their PG, not ours).
+        let kdl = hive_tab_kdl(&hive_spec(3, "pk-peer", "Peer Swarm"));
         assert!(kdl.contains("args \"hive-pane\" \"pk-peer\""));
-        assert!(!kdl.contains("watch-pane"));
         assert!(!kdl.contains("wake-pane"));
         assert!(!kdl.contains("stacked=true"));
         assert!(kdl.contains("focus=true close_on_exit=true"));
@@ -1206,38 +1063,20 @@ mod tests {
     }
 
     #[test]
-    fn watch_pane_title_marks_and_shortens_owner_ids() {
-        // A short id passes through; a uuid-length coord ownerId truncates
-        // legibly (the zellij pane strip would otherwise cut it arbitrarily).
-        assert_eq!(watch_pane_title("su-aaa"), "🐝 su-aaa");
-        assert_eq!(
-            watch_pane_title("su-885d2e27-d7a9-4092-8e45-394a2f43b140"),
-            "🐝 su-885d2e27-d7…"
-        );
-    }
-
-    #[test]
     fn hive_tab_kdl_tab_name_matches_hive_tab_name() {
         // The KDL's `tab name=` MUST equal hive_tab_name(spec) (escaped) so the
         // companion `Command::NewTab { name }` B-09 sends agrees with the layout
         // — otherwise zellij would show two names / fail to de-dupe the tab.
-        let spec = hive_spec(3, "peer", "Peer Swarm", &[]);
+        let spec = hive_spec(3, "peer", "Peer Swarm");
         let expected = format!("tab name=\"{}\"", hive_tab_name(&spec));
         assert!(hive_tab_kdl(&spec).contains(&expected));
     }
 
     #[test]
     fn hive_tab_kdl_escapes_quotes() {
-        let kdl = hive_tab_kdl(&hive_spec(
-            2,
-            "ke\"y",
-            "Ti\"tle",
-            &[("ow\"ner", "pa\"ne")],
-        ));
+        let kdl = hive_tab_kdl(&hive_spec(2, "ke\"y", "Ti\"tle"));
         assert!(kdl.contains("tab name=\"⌕ Ti\\\"tle\""));
         assert!(kdl.contains("args \"hive-pane\" \"ke\\\"y\""));
-        assert!(kdl.contains("args \"watch-pane\" \"ow\\\"ner\""));
-        assert!(kdl.contains("name=\"pa\\\"ne\""));
     }
 
     #[test]

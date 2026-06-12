@@ -2706,6 +2706,42 @@ Defense-in-depth, **not** a hard boundary. The egress proxy filters by client-su
 * [claude-code headless permission model](/internal/docs/agent-insights/claude-code-headless-permissions) — the `--allowed-tools` / `--permission-mode dontAsk` posture the sandbox composes with.
 * Plan `fleet-spawn-sandbox-2026-06-01` (decisions D-001..D-015) — the full design + the real-fleet-pass findings.
 
+# fleet:spawn "structural error" — a missing transport identity default plus miscoded caller errors
+
+> Why the advertised curl-able superuser HTTP path failed deterministically (no uiClientId default → resolveAgentIdentity throws) and why zod failures inflated the structural tool-error class (define-tool threw plain Errors that dispatch coded handler_error instead of invalid_input).
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The watchdog key `repeated-tool-error:fleet:spawn:structural` fired and filed EI-334 (“Tool fleet:spawn returns a structural error”). Sample error:
+
+```plaintext
+resolveAgentIdentity: superuser context is missing uiClientId — re-run install-standalone-mcp.sh to mint a ?client= id
+```
+
+Every client-less call to `POST /api/agent-tools/fleet/spawn?superuser=1` — the curl-able admin trigger advertised in the tool’s own docstring — failed with a 500 `handler_error` before the spawn engine was even reached.
+
+## Two distinct legs (fixing one alone leaves the key firing)
+
+[Section titled “Two distinct legs (fixing one alone leaves the key firing)”](#two-distinct-legs-fixing-one-alone-leaves-the-key-firing)
+
+1. **The HTTP transport admitted superusers without giving them an identity.** `tooldef-http/src/http-projection.ts`’s superuser block defaulted `workspaceId`/`harnessSlug`/`role`/`runId`/`spawnId` — but not `uiClientId`. `resolveAgentIdentity`’s contract says the per-transport route folds the tier identity into `ctx.uiClientId`; for a superuser ctx with none it THROWS (attributability is a hard requirement). So any identity-resolving tool (`fleet:*`, `coord:*`, `plans:*` writes…) was structurally broken over the client-less superuser HTTP path. Fix: an admitted superuser (the host validator already proved loopback + the on-disk bearer = the machine admin) with no `?client=`/`x-papercusp-client` now defaults to the stable `su-http-loopback` id — same stability class as a `?client=` machine UUID. An explicit client id still wins; non-superuser callers get NO default (unattributable writes stay rejected — EI-318’s forgery concern is about *trusting caller-supplied* ids, not about assigning a fixed one post-proof).
+
+2. **Schema-validation failures were coded `handler_error` → structural.** `defineTool`’s projected fn threw a plain `Error('invalid_args: …')` on a zod parse failure; the dispatch-stack catch coded any plain Error `handler_error` (500). The watchdog’s TS classifier (`classifyToolError`) checks `error_code` FIRST, so these caller mistakes (e.g. a >2000-char `brief`) landed in the **structural** class — the “tool is broken” bucket. Fix: a typed `InvalidInputError` (name-matched like `UnauthorizedToolError`, dual-module-instance safe) thrown from define-tool’s two parse sites, mapped to `invalid_input` (HTTP 400) in dispatch-stack. `invalid_input` was already in the taxonomy, the HTTP 400 mapping, the invocation-status mapping, and the watchdog’s caller class — the plumbing existed end-to-end; nothing ever produced the code.
+
+## Gotchas worth keeping
+
+[Section titled “Gotchas worth keeping”](#gotchas-worth-keeping)
+
+* The watchdog’s SQL classifier and the TS `classifyToolError` **diverged** on legacy rows: SQL also matches `error_message LIKE 'invalid_args:%'` → caller even when `error_code='handler_error'`; the TS fn trusts `error_code` first. With `invalid_input` now actually emitted, both agree on new rows.
+* Resolving the EI right after the fix is safe even though pre-fix error rows remain in the 24h collector window: `partitionSignalsByKnownKeys` routes signals whose `latestAt` predates the resolution to `staleResolved` (dropped, not re-filed). Only a genuinely NEW structural failure re-captures.
+* A spawned child exiting 1 with output `You've hit your session limit` is the Claude account limit, not the spawn path — the nursery row, `fleet:tree` visibility, and pid all prove the launch leg worked.
+
+Fixed 2026-06-12 (plan `self-improvement-consume-edges-2026-06-12` P-002 / brief B-02). Tests: tooldef 368, tooldef-http 6, agent-mcp http-projection 34
+
+* artifacts 23, operator-core agent-tools-catchall 7 — all green; live before/after probes on `:3170`.
+
 # Forward-defined registry entries — advance-mapping without losing the drift signal
 
 > When you need to map something before its target exists, the cheap path is a `FORWARD_DEFINED` set + a sanity assertion that flips when the target lands. Keeps the drift visible.
@@ -3016,6 +3052,34 @@ Because the gym is now a blueprint, you do **not** extend it by editing core gym
 
 * Plan `harness-blueprint-orchestration-2026-06-03` (Phase D: P-011–P-016, D-022 / D-015 / D-007 / D-021). Absorbs `harness-gym-eval-optimizer-2026-06-02`.
 * The engine: `@papercusp/orchestrator/blueprint` (`GymSchema`, `RecursionSchema`, `deriveNext`, the loader) — **frozen**; the gym needed no schema change.
+
+# Gym-operator boot — liveness≠readiness, the Napi abort, and the :3456 Vikunja misdiagnosis
+
+> EI-368's "column was_forked_from does not exist" was a half-migrated dbos schema left by a native abort that a liveness probe sailed past — and EI-261's "docker maps :3458" meridian theory was Vikunja's coincidental port. The dev box's correct LLM transport is anthropic-direct; :3456 down is healthy.
+
+## The two traps
+
+[Section titled “The two traps”](#the-two-traps)
+
+**1. ”:3456 not listening, docker maps :3458” is a misdiagnosis (EI-261).** The container publishing host `:3458` is `restart-vikunja-1` — Vikunja’s default *internal* port happens to be 3456, so `docker ps` shows `0.0.0.0:3458->3456/tcp` and pattern-matches beautifully to “meridian’s port got remapped”. It is a task-tracker, not an LLM router. Meridian (the npm proxy, v1.42.1 on this box) simply isn’t running — and **that is the healthy state**: the omp token (`~/.omp/agent/auth.json`) expired 2026-04-11 and OMP is dead (npm-unpublished), so `readMeridianToken()` returns null and `chooseStatelessTransport` resolves **anthropic-direct** off the live Claude session (EI-281, both halves in `libs/papercup-shared/src/agent/chat-stream.ts`). Verified live 2026-06-12: `llmCall` round-trip in 1.0s. Do NOT model “learning-infra health” as ”:3456 listening” — the correct probe is “stateless transport resolvable” (a live `~/.claude/.credentials.json` or a live omp token). A :3456 probe reads permanently red on a healthy box.
+
+**2. “column was\_forked\_from does not exist” is the *symptom*; the disease is a liveness probe passing before DBOS migrated (EI-368).** Boot order in `bin/hono-host.ts`: the HTTP listener binds **before** the DBOS system-DB migration runs. The gym runners’ old `waitForHttp(…/llms.txt)` accepted any HTTP status as “up”, so when the gym-operator intermittently died mid-boot (`terminate called after throwing an instance of 'Napi::Error'`, empty `what()` — an async native-thread throw, \~2/15 boots), the fresh gym DB was left with `dbos.workflow_status` created but the `was_forked_from` column migration unapplied, and the cycle’s `startPipeline` surfaced the missing column minutes later. Total misdirection: the SQL error points at the DB; the bug is the dead process behind it.
+
+## The fix (2026-06-12, B-01 of self-improvement-consume-edges)
+
+[Section titled “The fix (2026-06-12, B-01 of self-improvement-consume-edges)”](#the-fix-2026-06-12-b-01-of-self-improvement-consume-edges)
+
+* **`GET /api/health/ready`** (`endpoint-route/routes/misc/health-ready.ts`) — readiness: 503 until `dbosStarted()` on a DBOS-enabled host; `/api/health` stays pure liveness.
+* **`waitForOperatorReady`** (`lib/gym/operator-ready.ts`) — all five gym runners (autoloop-cycle, ab-run, blueprint-cycle-run, smoke, wake-mode) now gate on readiness AND **fail fast the moment the child exits**, with the boot-log tail in the error. Falls back to the legacy llms.txt probe when a pinned checkout predates the route (404). The blind `sleep(4000)` “giving DBOS a moment” is gone.
+* **`PAPERCUSP_UTILITY_HOST=1`** (`lib/background-workers.ts` → `utilityHostEnabled`, set by `lib/gym/boot-spec.ts`) — the gym-operator now boots a *headless utility profile*: no voice cluster, no hyperbee/holepunch substrate, no boot-time embedder warm-up. `backgroundWorkersEnabled()` could not express this (it bundles the DBOS launch with the shared-DB drains; the gym needs DBOS ON).
+
+## The Napi abort itself — open, with a subtraction trap armed
+
+[Section titled “The Napi abort itself — open, with a subtraction trap armed”](#the-napi-abort-itself--open-with-a-subtraction-trap-armed)
+
+The abort’s `what()` is empty and apport drops cores for non-dpkg binaries (linuxbrew node), so the throwing module is still unidentified. The suspect set was the native modules loaded by boot legs the gym never needed — holepunch (`sodium-native`, `udx-native`, `rocksdb-native` via the substrate
+
+* voice cluster) and `onnxruntime` (embedder warm-up) — all on a bleeding-edge node (25.9). The utility-host profile removes them from the gym-operator process entirely; if the abort recurs on a minimal boot, the remaining suspect set is small (pg/tsx/plugin-host daemons) and the fail-fast path now prints the boot-log tail at the moment of death instead of a downstream SQL error.
 
 # Harness tests gate feature approval, and link to plans through the VAL
 
@@ -3772,6 +3836,30 @@ The inbox emitter is two pure functions:
 * **Inline chat needs a bounded height.** `ChatPanel` is `height:100%`; give the inline host (`.pc-plan-chat-inline`) a fixed height or it collapses.
 
 See the plan `inbox-cards-unification-2026-05-31` and the predecessor `planning-attention-importance-2026-05-31` (P-017, superseded).
+
+# IQ-battery judge composite is 0–10 — don't infer scales from old fixtures
+
+> Live beekeeper_scores composites sit at ~4–6 (the gym judge's 0–10 rubric scale), but the LearningTab apiary fixture historically used 0.70/0.74 — a unit-scale assumption baked into chart code clamps live points off the plot.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+UI or aggregation code over `harness_shared.beekeeper_scores.composite` that assumes a 0..1 judge scale renders garbage against live data: B-12’s first `BenchmarkTrend` projection clamped its y-domain ceiling to 1, so every real generation (composites 4.06–5.95 on the live gen-0 rows) projected off the plot box. Unit tests stayed green because the shared `LearningTab.test.tsx` apiary fixture used `meanComposite: 0.74 / 0.70` — unit-scale values that never existed in the wild.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+The gym judge rubric (d1/d2/d3, weights 0.5/0.25/0.25 — `buildRubric()` in `packages/operator-core/lib/iq-battery/beekeeper-gen0-runner.ts`) scores on **0..10**, and `composite` persists that scale. The fixture predated the live baseline and guessed unit scale; nothing reconciled it after gen-0 ran.
+
+## Fix / how to apply
+
+[Section titled “Fix / how to apply”](#fix--how-to-apply)
+
+* Keep projection/chart code over `composite` **scale-free**: derive the domain from the data, clamp only the floor at 0, never a unit ceiling. (`computeTrendPoints` in `apps/operator-vite/src/components/adv/BenchmarkTrend.tsx` pins this with a live-scale regression test.)
+* The apiary fixture now carries live-scale values (4.06/5.95) — keep it that way; new fixtures for beekeeper data should copy magnitudes from live rows.
+* Before trusting any scale/shape assumption about beekeeper data, look at a real row: `SELECT composite FROM harness_shared.beekeeper_scores LIMIT 5` (read-only, via `getOrgPg`).
 
 # Canonical-form JSON for signed payloads — reach for JCS (RFC 8785)
 
@@ -5517,6 +5605,42 @@ The template is shaped around three forces:
 3. **Multi-agent parallelism.** Different agents will work different phases. The cross-refs + open-questions + handoffs are the inter-agent protocol.
 
 The result: a multi-phase arc that can be picked up by any agent at any phase boundary without re-reading the entire corpus. Proven across the dogfood arc’s 13 phase plans + 3 design memos + 2 deferral plans + 1 index + 1 overview + 1 master plan = 21 documents shipping a single arc.
+
+# PG-backed default seams silently write the LIVE dev DB from unit tests
+
+> An injectable seam whose DEFAULT implementation writes Postgres (and swallows failures) runs for real in any handler-level unit test that forgets to stub it — on the dev box that means real rows in the live DB, polluting peers' baselines. Stub every PG-backed seam in beforeEach; prefer REQUIRED deps over optional-with-real-default.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Rows appear in a live `harness_shared` table that no real workflow wrote — synthetic ids (`EI-LIVE`, `ws-1` workspace) accumulating a pair at a time. During the consume-edges wave, B-13’s reconciliation baseline of the brand-new `improvement_dispatches` ledger found 12 phantom “open dispatches”, all `workspace_id='ws-1'`, growing every few minutes — two more after every `test:affected` run anywhere in the fleet.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+The `system:improvement-implement` handler test (`improvement-implement-action.test.ts`) stubbed the fire / mark-dispatched / flip seams but not the **dispatch-ledger seam** added the same morning (`setImprovementDispatchLedger`, B-04). The seam’s default is the real PG-backed `recordDispatchFired` — and like most accounting writes it **swallows + warns on failure** so it can never block its production caller. That failure-swallowing is exactly what makes the leak silent in tests:
+
+* On CI / a box without PG: the write fails, warns, test stays green.
+* On the dev box with live PG on `:5432`: the write **succeeds**, test stays green, and the live table gains a synthetic row per run.
+
+Two properties have to coincide, and both are common here: (1) an injectable seam whose *default* is a live PG write, (2) a handler-level unit test that exercises the code path with the seam left at its default.
+
+## Fix / rule
+
+[Section titled “Fix / rule”](#fix--rule)
+
+1. **Handler-level unit tests stub EVERY seam with a PG-backed default** in `beforeEach` — not just the ones the test asserts on. The leak came from the seam nobody was asserting on.
+2. **When adding a new PG-backed seam to a handler that already has tests, add the stub to those tests in the same change** — the seam author is the only one who knows it landed.
+3. Where the dependency is a per-call deps object (not a module setter), **make the PG-backed member REQUIRED, not optional-with-real-default** — a required member fails the type-check in every fixture the moment it’s added, which finds all the leak sites at compile time. This is why `ResolveDeps.closeDispatches` (resolve-core.ts) is required even though it has an obvious default; `defaultDeps` wires the real one for production.
+4. Synthetic-row debris in a live control-plane table is safe to delete by its test signature (`workspace_id='ws-1'`, fixture item ids) — but tell whoever is baselining that table first.
+
+## How to spot it
+
+[Section titled “How to spot it”](#how-to-spot-it)
+
+Unexplained live rows whose `workspace_id` matches a test fixture (`ws-1`, `ws-ledger`, `default`) or whose ids look like fixtures (`EI-LIVE`, `EI-DEAD`, `F-STALE`). Correlate `fired_at`/`created_at` timestamps with test runs — “grows by N per test-file execution” is the signature. The writer is a seam default reachable from a unit test: grep the handler under test for `set...(null)`-style seam resetters and check each seam’s default for `getOrgPg`.
 
 # PG migrations — bash heredocs collapse $body$ tokens
 

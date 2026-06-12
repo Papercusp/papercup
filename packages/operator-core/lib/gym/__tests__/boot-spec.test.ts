@@ -51,6 +51,9 @@ describe('buildGymOperatorBootSpec', () => {
     expect(env.PAPERCUSP_WORKSPACE_ID).toBe('gym-ws');
     // Not the desktop/IPC context.
     expect(env.PAPERCUSP_IPC_ENABLE).toBe('0');
+    // EI-368: headless utility profile — no voice cluster / hyperbee substrate /
+    // embedder warm-up in the gym-operator (native-surface containment).
+    expect(env.PAPERCUSP_UTILITY_HOST).toBe('1');
   });
 
   it('defaults the autoloop to manual (none) so runs are started explicitly', () => {

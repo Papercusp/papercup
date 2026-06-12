@@ -156,8 +156,9 @@ describe('outbound (egress) grants — direction is independent of inbound', () 
     await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
     await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], 'out', db.sql);
     const rec = await getHiveSetting(WS, HIVE, CROSS_HIVE_GRANTS_KEY, db.sql);
-    // The federated value is the directed envelope — the shape every Swarm enforces.
-    expect(rec?.value).toEqual({ in: { [PEER_A]: ['ask'] }, out: { [PEER_B]: ['ask'] } });
+    // The federated value is the directed envelope — the shape every Swarm
+    // enforces. P-013: entries persist as { kinds, …quota } objects.
+    expect(rec?.value).toEqual({ in: { [PEER_A]: { kinds: ['ask'] } }, out: { [PEER_B]: { kinds: ['ask'] } } });
   });
 });
 
@@ -183,8 +184,58 @@ describe('back-compat — a legacy flat value reads as inbound-only', () => {
     await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], 'out', db.sql);
 
     const rec = await getHiveSetting(WS, HIVE, CROSS_HIVE_GRANTS_KEY, db.sql);
-    expect(rec?.value).toEqual({ in: { [PEER_A]: ['ask'] }, out: { [PEER_B]: ['ask'] } });
+    expect(rec?.value).toEqual({ in: { [PEER_A]: { kinds: ['ask'] } }, out: { [PEER_B]: { kinds: ['ask'] } } });
     expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([{ peerHivePubkey: PEER_A, allowedKinds: ['ask'] }]);
     expect(await loadOutboundCrossHiveGrants(WS, HIVE, db.sql)).toEqual([{ peerHivePubkey: PEER_B, allowedKinds: ['ask'] }]);
+  });
+});
+
+describe('P-013 — quota knobs round-trip + drive assertOutboundGrant', () => {
+  it('persists maxPerHour / maxBodyBytes / expiresAt on the grant and loads them back', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'out', db.sql, {
+      maxPerHour: 5,
+      maxBodyBytes: 2048,
+      expiresAt: 1_900_000_000_000,
+    });
+    expect(await loadOutboundCrossHiveGrants(WS, HIVE, db.sql)).toEqual([
+      { peerHivePubkey: PEER_A, allowedKinds: ['ask'], maxPerHour: 5, maxBodyBytes: 2048, expiresAt: 1_900_000_000_000 },
+    ]);
+  });
+
+  it('a re-grant WITHOUT quota fields preserves the tuned quota (merge semantics)', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'out', db.sql, { maxPerHour: 5 });
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask', 'work-request'], 'out', db.sql);
+    const [g] = await loadOutboundCrossHiveGrants(WS, HIVE, db.sql);
+    expect([...g.allowedKinds].sort()).toEqual(['ask', 'work-request']);
+    expect(g.maxPerHour).toBe(5);
+  });
+
+  it('an EXPIRED outbound grant is denied; size + rate caps gate via the opts context', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'out', db.sql, {
+      maxPerHour: 2,
+      maxBodyBytes: 10,
+      expiresAt: 1_000,
+    });
+    // Expired (clock injected after the expiry).
+    const expired = await assertOutboundGrant(WS, HIVE, PEER_A, 'ask', db.sql, { nowMs: 2_000 });
+    expect(expired.admitted).toBe(false);
+    expect(expired.reason).toMatch(/expired/i);
+
+    // Un-expire by re-granting with a future expiry; size cap then trips.
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'out', db.sql, { expiresAt: 9_999_999_999_999 });
+    const oversize = await assertOutboundGrant(WS, HIVE, PEER_A, 'ask', db.sql, { bodyBytes: 11 });
+    expect(oversize.admitted).toBe(false);
+    expect(oversize.reason).toMatch(/exceeds the 10B cap/);
+
+    // Rate cap via an injected counter (the PG default counts cross_hive_asks).
+    const atCap = await assertOutboundGrant(WS, HIVE, PEER_A, 'ask', db.sql, {
+      countRecentToPeer: async () => 2,
+    });
+    expect(atCap.admitted).toBe(false);
+    expect(atCap.reason).toMatch(/rate cap/i);
+    const underCap = await assertOutboundGrant(WS, HIVE, PEER_A, 'ask', db.sql, {
+      countRecentToPeer: async () => 1,
+    });
+    expect(underCap.admitted).toBe(true);
   });
 });

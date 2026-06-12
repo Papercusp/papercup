@@ -10,6 +10,7 @@ import {
   diffLearningHealth,
   lastLearningInfraHealth,
   meridianBaseUrl,
+  probeMeridianLeg,
   runLearningInfraHealthTick,
   _resetLearningInfraHealthState,
   type InfraLeg,
@@ -161,6 +162,16 @@ describe('meridianBaseUrl', () => {
     else process.env.PAPERCUSP_MERIDIAN_URL = saved.primary;
     if (saved.fallback === undefined) delete process.env.MERIDIAN_BASE_URL;
     else process.env.MERIDIAN_BASE_URL = saved.fallback;
+  });
+
+  it('probes a dead port to down with the address in the evidence', async () => {
+    // Port 1 on loopback is reliably closed — a refused connect must read as
+    // DOWN with the probed address, never as an exception.
+    process.env.PAPERCUSP_MERIDIAN_URL = 'http://127.0.0.1:1';
+    const probed = await probeMeridianLeg(1500);
+    expect(probed.name).toBe('meridian');
+    expect(probed.status).toBe('down');
+    expect(probed.detail).toContain('127.0.0.1:1');
   });
 
   it('resolves PAPERCUSP_MERIDIAN_URL → MERIDIAN_BASE_URL → the :3456 default (transport order)', () => {

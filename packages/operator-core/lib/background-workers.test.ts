@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { backgroundWorkersEnabled, reactionMatcherShouldArm } from './background-workers';
+import { backgroundWorkersEnabled, reactionMatcherShouldArm, utilityHostEnabled } from './background-workers';
 
 const saved = {
   VITEST: process.env.VITEST,
@@ -38,6 +38,20 @@ describe('backgroundWorkersEnabled (EI-126 / EI-312 leg 1)', () => {
     expect(backgroundWorkersEnabled()).toBe(true);
     delete process.env.PAPERCUSP_HONO_PORT;
     expect(backgroundWorkersEnabled()).toBe(true);
+  });
+});
+
+describe('utilityHostEnabled (EI-368)', () => {
+  it('opt-in only — exactly PAPERCUSP_UTILITY_HOST=1', () => {
+    expect(utilityHostEnabled({} as unknown as NodeJS.ProcessEnv)).toBe(false);
+    expect(utilityHostEnabled({ PAPERCUSP_UTILITY_HOST: '0' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+    expect(utilityHostEnabled({ PAPERCUSP_UTILITY_HOST: '1' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+  });
+
+  it('is independent of backgroundWorkers — the gym keeps DBOS while skipping the dogfood legs', () => {
+    const gymEnv = { PAPERCUSP_UTILITY_HOST: '1', PAPERCUSP_DBOS_ENABLE: '1' } as unknown as NodeJS.ProcessEnv;
+    expect(utilityHostEnabled(gymEnv)).toBe(true);
+    expect(backgroundWorkersEnabled(gymEnv)).toBe(true);
   });
 });
 

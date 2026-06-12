@@ -83,6 +83,13 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     DBOS__APPVERSION: `gym-${cfg.harnessCommit.slice(0, 12)}`,
     // Not the Tauri desktop/IPC context.
     PAPERCUSP_IPC_ENABLE: '0',
+    // EI-368: headless utility profile — skip the voice cluster, hyperbee
+    // substrate, and embedder warm-up. The gym never uses them, they inherit
+    // port scans from the launcher env, and they carry the heavy native-module
+    // surface suspected in the intermittent boot abort (Napi::Error terminate
+    // mid-DBOS-migration → half-migrated dbos schema → "column was_forked_from
+    // does not exist" on the first pipeline call).
+    PAPERCUSP_UTILITY_HOST: '1',
   };
 
   if (cfg.agentCmd) env.AGENT_CMD = cfg.agentCmd;

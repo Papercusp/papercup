@@ -188,4 +188,38 @@ const fetchFromComb = defineTool({
   },
 });
 
-export default [install, upgrade, uninstall, setEnabled, fetchFromComb];
+/**
+ * POST /learning-packs/candidate-decide — the owner's adopt/dismiss on one
+ * staged fleet→pack candidate (consume-edges P-032, B-11). Adopt writes the
+ * fleet-lessons pack (version bump ⇒ hives see updateAvailable and ride the
+ * normal install/upgrade review); dismiss is terminal. Candidate list rides
+ * the `learningPacks.candidates` sync query — no GET here.
+ */
+const candidateDecide = defineTool({
+  method: 'POST',
+  path: '/learning-packs/candidate-decide',
+  auth: 'loopback',
+  async handler(req) {
+    const gated = await gateApiRoute(req, FLAGS.LEARNING_PACKS);
+    if (gated) return gated;
+    let body: { id?: string; action?: string; note?: string; title?: string; text?: string } = {};
+    try { body = (await req.json()) as typeof body; } catch { /* empty */ }
+    const id = String(body.id ?? '').trim();
+    const action = body.action === 'adopt' || body.action === 'dismiss' ? body.action : null;
+    if (!id || !action) return badRequest('id and action (adopt|dismiss) are required');
+
+    const { decideLearningPackCandidate } = await import('../../learning-packs/candidates');
+    const result = await decideLearningPackCandidate({
+      id,
+      action,
+      by: (await getSessionUserOrDefault(req.headers)).id,
+      ...(typeof body.note === 'string' && body.note.trim() ? { note: body.note.trim() } : {}),
+      ...(typeof body.title === 'string' && body.title.trim() ? { title: body.title.trim() } : {}),
+      ...(typeof body.text === 'string' && body.text.trim() ? { text: body.text.trim() } : {}),
+      workspaceId: activeWorkspaceId(),
+    });
+    return Response.json(result, { status: result.ok ? 200 : result.reason === 'not_found' ? 404 : 409 });
+  },
+});
+
+export default [install, upgrade, uninstall, setEnabled, fetchFromComb, candidateDecide];

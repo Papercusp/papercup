@@ -77,9 +77,10 @@ export interface ResolveDeps {
   releaseIssue: (id: string) => Promise<EngineerIssue | null>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
   /** Dispatch-ledger back-edge (consume-edges P-010 / B-04): drive the item's
-   *  open improvement_dispatches rows terminal. Optional for older callers;
-   *  default = dispatch-ledger's closeDispatchesForItem. */
-  closeDispatches?: (itemId: string, opts: { outcome: ResolveOutcome; by?: string }) => Promise<number>;
+   *  open improvement_dispatches rows terminal. REQUIRED (not defaulted per-call)
+   *  so a unit test can never silently fall through to the PG-backed default —
+   *  defaultDeps wires the real closeDispatchesForItem. */
+  closeDispatches: (itemId: string, opts: { outcome: ResolveOutcome; by?: string }) => Promise<number>;
 }
 
 const defaultDeps: ResolveDeps = {
@@ -118,7 +119,7 @@ export async function resolveImprovement(
   // never fail the resolve itself (the orphan collector sweeps stragglers).
   const closeLedger = async () => {
     try {
-      await (deps.closeDispatches ?? closeDispatchesForItem)(input.id, { outcome: input.outcome, by });
+      await deps.closeDispatches(input.id, { outcome: input.outcome, by });
     } catch (e) {
       console.warn(`[improvements:resolve] dispatch-ledger close failed for ${input.id}:`, e instanceof Error ? e.message : e);
     }

@@ -49,7 +49,7 @@ describe('learning-pack candidates (real PG, migration 239)', () => {
 
   afterAll(async () => {
     await fs.rm(packsRoot, { recursive: true, force: true });
-    await db?.teardown();
+    await db?.cleanup();
   });
 
   afterEach(() => {

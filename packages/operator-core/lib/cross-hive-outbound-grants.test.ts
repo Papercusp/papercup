@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { admitOutboundCrossHive, type CrossHiveGrant } from './cross-hive-boundary';
 import { toDirectedGrantMap } from './cross-hive-grants';
 import { InMemoryCrossHiveOutbox, type CrossHiveTransport, type CrossHiveWireEnvelope } from './cross-hive-transport';
-import { wireCrossHiveBoundary } from './cross-hive-wiring';
+import { InMemoryCrossHiveQuotaLedger, wireCrossHiveBoundary } from './cross-hive-wiring';
 
 const PEER = 'peer-hive-pubkey-b64';
 const OTHER = 'other-hive-pubkey-b64';
@@ -46,34 +46,48 @@ describe('admitOutboundCrossHive (egress default-deny)', () => {
 });
 
 describe('toDirectedGrantMap (storage shape + back-compat)', () => {
-  it('parses the directed shape, splitting in/out', () => {
+  // P-013: GrantMap values are ENTRY OBJECTS `{ kinds, maxPerHour?, maxBodyBytes?,
+  // expiresAt? }`; a bare kinds ARRAY (any pre-P-013 write) parses as `{ kinds }`.
+  it('parses the directed shape, splitting in/out (bare-array entries upgrade)', () => {
     const d = toDirectedGrantMap({ in: { [PEER]: ['ask'] }, out: { [OTHER]: ['ask', 'work-request'] } });
-    expect(d.in).toEqual({ [PEER]: ['ask'] });
-    expect(d.out).toEqual({ [OTHER]: ['ask', 'work-request'] });
+    expect(d.in).toEqual({ [PEER]: { kinds: ['ask'] } });
+    expect(d.out).toEqual({ [OTHER]: { kinds: ['ask', 'work-request'] } });
+  });
+
+  it('parses P-013 entry objects, keeping quota knobs and dropping junk fields', () => {
+    const d = toDirectedGrantMap({
+      in: {
+        [PEER]: { kinds: ['ask'], maxPerHour: 5, maxBodyBytes: 1024, expiresAt: 1770000000000 },
+        [OTHER]: { kinds: ['work-request'], maxPerHour: -3, maxBodyBytes: 'big', extra: true },
+      },
+    });
+    expect(d.in[PEER]).toEqual({ kinds: ['ask'], maxPerHour: 5, maxBodyBytes: 1024, expiresAt: 1770000000000 });
+    // Junk quota values are dropped (defaults apply at admission), kinds survive.
+    expect(d.in[OTHER]).toEqual({ kinds: ['work-request'] });
   });
 
   it('reads a LEGACY flat value as INBOUND-only (no outbound)', () => {
     const d = toDirectedGrantMap({ [PEER]: ['ask'], [OTHER]: ['work-request'] });
-    expect(d.in).toEqual({ [PEER]: ['ask'], [OTHER]: ['work-request'] });
+    expect(d.in).toEqual({ [PEER]: { kinds: ['ask'] }, [OTHER]: { kinds: ['work-request'] } });
     expect(d.out).toEqual({});
   });
 
   it('tolerates a half-directed value (only out present)', () => {
     const d = toDirectedGrantMap({ out: { [PEER]: ['ask'] } });
     expect(d.in).toEqual({});
-    expect(d.out).toEqual({ [PEER]: ['ask'] });
+    expect(d.out).toEqual({ [PEER]: { kinds: ['ask'] } });
   });
 
   it('drops junk kinds and empty peers', () => {
     const d = toDirectedGrantMap({ in: { [PEER]: ['ask', 'nope'], junk: [], also: 'bad' } });
-    expect(d.in).toEqual({ [PEER]: ['ask'] });
+    expect(d.in).toEqual({ [PEER]: { kinds: ['ask'] } });
   });
 
   it('does NOT mistake a legacy peer named "in"/"out" for the directed envelope', () => {
     // A legacy flat map whose peers happen to be named in/out carries ARRAY values,
     // not sub-maps — so it stays legacy-inbound, not split as directed.
     const d = toDirectedGrantMap({ in: ['ask'], out: ['work-request'] });
-    expect(d.in).toEqual({ in: ['ask'], out: ['work-request'] });
+    expect(d.in).toEqual({ in: { kinds: ['ask'] }, out: { kinds: ['work-request'] } });
     expect(d.out).toEqual({});
   });
 
@@ -112,6 +126,7 @@ describe('wireCrossHiveBoundary send-path egress gate (the chokepoint, no PG)', 
       // Inbound path is unused here, but the wiring eagerly builds its ports.
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       outbox: new InMemoryCrossHiveOutbox(),
+      quotaLedger: new InMemoryCrossHiveQuotaLedger(),
     });
     return { wiring, sent };
   };

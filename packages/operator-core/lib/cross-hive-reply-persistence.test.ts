@@ -19,7 +19,11 @@ import {
   type CrossHiveTransport,
   type CrossHiveWireEnvelope,
 } from './cross-hive-transport';
-import { wireCrossHiveBoundary, type CrossHiveInboundReply } from './cross-hive-wiring';
+import {
+  InMemoryCrossHiveQuotaLedger,
+  wireCrossHiveBoundary,
+  type CrossHiveInboundReply,
+} from './cross-hive-wiring';
 import type { EmitAwaitedEventOpts } from './events/await/engine';
 
 function rawPubkeyBase64(publicKey: ReturnType<typeof generateKeyPairSync>['publicKey']): string {
@@ -141,6 +145,7 @@ describe('wiring reply path — persist + emit is the production path (B-03)', (
       loadGrants: async () => [],
       outbox: new InMemoryCrossHiveOutbox(),
       askLedger: ledger,
+      quotaLedger: new InMemoryCrossHiveQuotaLedger(),
       emitEvent: async (o) => {
         emits.push(o);
         if (opts.emitThrows) throw new Error('emit down');
@@ -153,6 +158,7 @@ describe('wiring reply path — persist + emit is the production path (B-03)', (
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       loadGrants: async () => [],
       outbox: new InMemoryCrossHiveOutbox(),
+      quotaLedger: new InMemoryCrossHiveQuotaLedger(),
       emitEvent: async () => {},
     });
     return { A, B, ledger, emits, replies, bWiring };

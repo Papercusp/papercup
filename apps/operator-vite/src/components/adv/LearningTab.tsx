@@ -44,6 +44,9 @@ import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-re
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 import { BenchmarkTrend } from './BenchmarkTrend';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
+import MemoryHealthCard from './MemoryHealthCard';
+import HumanQueueDrain from './HumanQueueDrain';
+import LearningPackCandidates from './LearningPackCandidates';
 
 const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'knowledge', 'learnings'] as const;
 type LView = (typeof LVIEWS)[number];
@@ -333,6 +336,12 @@ function ImprovementsView() {
         <Stat label="needs review" value={digest?.humanQueue.length ?? '—'} tone="human" hint="Open items that need your judgment — risky surfaces, behaviour changes, or new features." />
         <Stat label="resolved" value={resolved} tone="good" hint="Fixed and closed." />
       </div>
+
+      {/* The owner's drain ritual (consume-edges P-022): top of the human queue
+          in the resolver's blocking-impact order; click highlights the row. */}
+      {digest && lane !== 'auto' ? (
+        <HumanQueueDrain items={digest.humanQueue} onSelect={(id) => void setLsel(id)} />
+      ) : null}
 
       <div className="pc-learning__sectionhead">
         <h2>Captured improvements</h2>
@@ -759,7 +768,7 @@ function ApiaryView() {
         <div className="pc-learning__empty pc-learning__empty--card">
           <Gauge size={20} aria-hidden />
           <strong>No baseline runs yet</strong>
-          <span>The IQ-battery baseline is owner-gated — the gen-0 run spends real budget, so it only happens when the owner kicks it off. It runs a fixed task corpus against the fleet and judges every run, so each generation is comparable; once the baseline lands, the trend appears here — newest first, with the composite change vs the prior generation.</span>
+          <span>The IQ-battery is owner-gated — runs spend real budget, so they happen when the owner kicks one off, or via the monthly cadence routine once the owner sets its budget (it then benchmarks each new code generation automatically). It runs a fixed task corpus against the fleet and judges every run, so each generation is comparable; once generations land, the trend appears here — newest first, with the composite change vs the prior generation.</span>
         </div>
       ) : (
         <ul className="pc-learning__list">
@@ -1257,25 +1266,7 @@ function KnowledgeView() {
         </ul>
       )}
 
-      <div className="pc-learning__flow" aria-label="Memory health">
-        <span
-          className="pc-learning__flowchip"
-          title="The shared canonical memory store agents recall from at session start."
-        >
-          <Brain size={11} aria-hidden />
-          {memory ? <><strong>{memory.totalMemories}</strong> memories</> : <>memory health unavailable</>}
-        </span>
-        {memory ? (
-          <span
-            className="pc-learning__flowchip"
-            title="Feedback events (edits, forgets, corrections) against memories in the trailing 30 days — zero means the store is written but never corrected."
-          >
-            <Activity size={11} aria-hidden />
-            <strong>{memory.feedback30d}</strong> feedback events
-            <em>30d</em>
-          </span>
-        ) : null}
-      </div>
+      <MemoryHealthCard memory={memory} />
 
       <div className="pc-learning__empty pc-learning__empty--card pc-learning__knowledge">
         <BookOpen size={22} aria-hidden />
@@ -1533,6 +1524,9 @@ function LearningsView() {
         </div>
       )}
       {packError ? <p className="pc-learning__empty" role="alert">Pack action failed: {packError}</p> : null}
+
+      {/* P-032 (B-11): fleet→pack candidates awaiting the owner's adopt/dismiss. */}
+      <LearningPackCandidates />
 
       {/* P-011 prune nudge: a bloated pool crowds the per-turn injection budget. */}
       {rows.length > 80 && (

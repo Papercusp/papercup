@@ -15,8 +15,7 @@
 //! Parsing keeps the CONVERSATION only: user text + assistant text blocks.
 //! Tool calls/results, thinking, sidechains (subagents), and harness records
 //! (queue-operation / attachment / last-prompt / ai-title / summary) are
-//! skipped — the pane is a chat, not a debugger (the raw feed stays
-//! `watch-pane`'s thinking feed).
+//! skipped — the pane is a chat, not a debugger.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};

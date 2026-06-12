@@ -70,10 +70,12 @@ const gymSnapshot = {
   ],
 };
 
+// Composites use the LIVE judge scale (0..10 — real gen-0 rows sit at 4.06..5.95),
+// not 0..1: the BenchmarkTrend projection must stay scale-free (B-12).
 const apiarySnapshot = {
   instances: [
-    { instanceId: 'gen0-bbb2222-ws', codeSha: 'bbb2222', createdAt: new Date(2_000_000).toISOString(), totalRuns: 20, successfulRuns: 16, successRate: 0.8, meanComposite: 0.74, meanTimeToGreenSecs: 95, meanTokens: 12000, escalationRate: 0.1, firstAttemptRate: 0.6 },
-    { instanceId: 'gen0-aaa1111-ws', codeSha: 'aaa1111', createdAt: new Date(1_000_000).toISOString(), totalRuns: 20, successfulRuns: 14, successRate: 0.7, meanComposite: 0.70, meanTimeToGreenSecs: 110, meanTokens: 13500, escalationRate: 0.15, firstAttemptRate: 0.5 },
+    { instanceId: 'gen0-bbb2222-ws', codeSha: 'bbb2222', createdAt: new Date(2_000_000).toISOString(), totalRuns: 20, successfulRuns: 16, successRate: 0.8, meanComposite: 5.95, meanTimeToGreenSecs: 95, meanTokens: 12000, escalationRate: 0.1, firstAttemptRate: 0.6 },
+    { instanceId: 'gen0-aaa1111-ws', codeSha: 'aaa1111', createdAt: new Date(1_000_000).toISOString(), totalRuns: 20, successfulRuns: 14, successRate: 0.7, meanComposite: 4.06, meanTimeToGreenSecs: 110, meanTokens: 13500, escalationRate: 0.15, firstAttemptRate: 0.5 },
   ],
 };
 
@@ -85,7 +87,17 @@ const knowledgeSnapshot = {
       { slug: 'postgres-js-jsonb-binding', title: 'postgres.js jsonb binding', description: 'sql.json throws under getOrgPg.', status: 'active', tags: ['pg'], modifiedAt: new Date(2_000_000).toISOString() },
     ],
   },
-  memory: { totalMemories: 168, feedback30d: 3 },
+  memory: {
+    totalMemories: 168,
+    entityRows: 1829,
+    feedback30d: 3,
+    recalls7d: 40,
+    zeroHit7d: 10,
+    zeroHitRate7d: 0.25,
+    topScoreP50: 0.52,
+    topScoreP90: 0.74,
+    fragmentHits7d: 0,
+  },
 };
 
 const scoutSnapshot = {
@@ -156,8 +168,11 @@ describe('LearningTab — Improvements view (default)', () => {
   it('lists both lanes in the all view', () => {
     render(<LearningTab />);
     expect(screen.getByText('fleet:spawn children are coordination-MUTE')).toBeTruthy();
-    expect(screen.getByText('Peer restarts massacre in-flight spawns')).toBeTruthy();
+    // The human-lane title renders twice: the list row + the "Decide next"
+    // drain panel over the blocking-impact order (consume-edges P-022 / B-08).
+    expect(screen.getAllByText('Peer restarts massacre in-flight spawns').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('EI-75')).toBeTruthy();
+    expect(screen.getByText('Decide next')).toBeTruthy();
   });
 
   it('shows the lane filter tabs and the sub-view tabs', () => {
@@ -214,6 +229,37 @@ describe('LearningTab — Improvements view (default)', () => {
     expect(screen.queryByLabelText('Improvement flow (trailing window)')).toBeNull();
     expect(screen.getByText('135')).toBeTruthy(); // the stock scoreboard still renders
   });
+
+  it('renders the dispatch-ledger chip when flow.dispatch is present — fired/fixed counts, red on dead dispatches (P-010 / B-04)', () => {
+    const base = improvementsDigest as Record<string, unknown> & { flow: Record<string, unknown> };
+    const dispatch = {
+      total: 9,
+      fired7d: 6,
+      firing: 0,
+      inProgress: 2,
+      overdue: 1,
+      fireFailed: 1,
+      orphaned: 1,
+      resolved: { fixed: 3, couldNotFix: 1, needsHuman: 0 },
+      fixed7d: 3,
+      lastDispatchAt: new Date().toISOString(),
+      lastOutcomeAt: new Date().toISOString(),
+    };
+    improvementsResult = {
+      data: [{ ...base, flow: { ...base.flow, dispatch } }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    const strip = screen.getByLabelText('Improvement flow (trailing window)');
+    expect(strip.textContent).toMatch(/dispatch\s*6\s*fired \/\s*3\s*fixed/);
+    expect(strip.textContent).toContain('3 dead'); // overdue + fire-failed + orphaned
+    expect(strip.querySelectorAll('.pc-learning__flowchip--wd-bad').length).toBeGreaterThanOrEqual(1);
+    // The base fixture carries no dispatch block → the existing flow-strip test
+    // doubles as the omitted-chip case.
+  });
 });
 
 describe('LearningTab — Gym view', () => {
@@ -255,8 +301,8 @@ describe('LearningTab — Benchmark view', () => {
     expect(screen.getByText('80%')).toBeTruthy(); // latest success rate (scoreboard)
     // shas + composites appear in the generation rows AND the BenchmarkTrend line (B-12)
     expect(screen.getAllByText('bbb2222').length).toBeGreaterThanOrEqual(1); // latest generation sha
-    expect(screen.getAllByText('0.700').length).toBeGreaterThanOrEqual(1); // older generation composite
-    expect(screen.getAllByText('0.740').length).toBeGreaterThanOrEqual(1); // latest composite (scoreboard + trend)
+    expect(screen.getAllByText('4.060').length).toBeGreaterThanOrEqual(1); // older generation composite
+    expect(screen.getAllByText('5.950').length).toBeGreaterThanOrEqual(1); // latest composite (scoreboard + trend)
     // the trend line itself: one polyline + one dot per scored generation
     const figure = document.querySelector('figure.pc-benchtrend');
     expect(figure).not.toBeNull();
@@ -407,6 +453,26 @@ describe('LearningTab — Knowledge view', () => {
     expect(memCard.textContent).toContain('memories');
     expect(memCard.textContent).toContain('3');
     expect(memCard.textContent).toContain('feedback events');
+    // Recall-quality signals (P-031 / B-10): volume, zero-hit share, score distribution.
+    expect(memCard.textContent).toContain('40');
+    expect(memCard.textContent).toContain('recalls');
+    expect(memCard.textContent).toContain('25%');
+    expect(memCard.textContent).toContain('zero-hit');
+    expect(memCard.textContent).toContain('0.52');
+    expect(memCard.textContent).toContain('0.74');
+    // The EI-366 regression canary stays hidden at zero leakage.
+    expect(memCard.textContent).not.toContain('fragment hits');
+  });
+
+  it('renders the fragment-leakage canary chip ONLY when entity rows leak into recall', () => {
+    knowledgeResult = {
+      data: [{ insights: knowledgeSnapshot.insights, memory: { ...knowledgeSnapshot.memory, fragmentHits7d: 7 } }],
+      loading: false, fetching: false, error: null, invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    const memCard = screen.getByLabelText('Memory health');
+    expect(memCard.textContent).toContain('7');
+    expect(memCard.textContent).toContain('fragment hits');
   });
 
   it('renders the agent-insights cross-link to the Insights tab', () => {
@@ -416,7 +482,7 @@ describe('LearningTab — Knowledge view', () => {
   });
 
   it('renders the empty runbooks state (cross-link intact) when the library is empty', () => {
-    knowledgeResult = { data: [{ insights: { count: 0, recent: [] }, memory: { totalMemories: 168, feedback30d: 0 } }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    knowledgeResult = { data: [{ insights: { count: 0, recent: [] }, memory: { ...knowledgeSnapshot.memory, feedback30d: 0 } }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<LearningTab />);
     expect(screen.getByText('No runbooks yet')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Open the Insights library/ })).toBeTruthy();

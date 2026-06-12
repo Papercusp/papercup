@@ -50,10 +50,12 @@ export function computeTrendPoints(instances: BenchmarkTrendInstance[]): TrendPo
   if (scored.length < 2) return [];
   const lo0 = Math.min(...scored.map((i) => i.meanComposite));
   const hi0 = Math.max(...scored.map((i) => i.meanComposite));
-  // Pad the domain so a flat-ish trend doesn't fill the box with noise; clamp to the 0..1 judge scale.
+  // Pad the domain so a flat-ish trend doesn't fill the box with noise. Scale-free on
+  // purpose: the LIVE judge composite is 0..10 (gym rubric), while older fixtures used
+  // 0..1 — only the floor is clamped (scores are non-negative), never a unit ceiling.
   const pad = Math.max(0.05, (hi0 - lo0) * 0.25);
   const lo = Math.max(0, lo0 - pad);
-  const hi = Math.min(1, hi0 + pad);
+  const hi = hi0 + pad;
   const plotW = W - PAD.left - PAD.right;
   const plotH = H - PAD.top - PAD.bottom;
   return scored.map((inst, i) => ({

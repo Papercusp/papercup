@@ -122,7 +122,7 @@ async function learningInfraHealthTick(): Promise<void> {
   await DBOS.runStep(async () => {
     const { FLAGS } = await import('@papercusp/flags');
     const { getFlag } = await import('@papercusp/flags/server');
-    if (!(await getFlag(FLAGS.LEARNING_INFRA_HEALTH))) return;
+    if (!(await getFlag(FLAGS.LEARNING_INFRA_HEALTH, 'learning-infra-health'))) return;
     const { runLearningInfraHealthTick } = await import('../harness/improvements/learning-infra-health');
     const { health, transition } = await runLearningInfraHealthTick();
     if (transition) {

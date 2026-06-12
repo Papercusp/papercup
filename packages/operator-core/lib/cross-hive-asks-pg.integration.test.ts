@@ -287,3 +287,28 @@ describe('per-Hive scoping', () => {
     expect(await a.getById(bRow!.id)).toBeNull();
   });
 });
+
+describe('countRecentByPeer (P-013 rolling rate-cap counter)', () => {
+  it('counts per (peer, direction) within the window, regardless of state', async () => {
+    const store2 = new PgCrossHiveAsks(WS, HIVE_A, db.sql);
+    await store2.insert({ peerPubkey: PEER, kind: 'ask', correlationId: 'c-out-1' });
+    await store2.insert({ peerPubkey: PEER, kind: 'ask', correlationId: 'c-out-2' });
+    await store2.insert({ peerPubkey: PEER, kind: 'ask', correlationId: 'c-in-1', direction: 'in' });
+    await store2.insert({ peerPubkey: PEER2, kind: 'ask', correlationId: 'c-other' });
+    // An answered row still consumed quota when it was made.
+    const settled = await store2.getByCorrelationId('c-out-1');
+    await store2.markSent(settled!.id);
+    await store2.transition(settled!.id, 'answered');
+
+    const hourAgo = Date.now() - 60 * 60 * 1000;
+    expect(await store2.countRecentByPeer(PEER, 'out', hourAgo)).toBe(2);
+    expect(await store2.countRecentByPeer(PEER, 'in', hourAgo)).toBe(1);
+    expect(await store2.countRecentByPeer(PEER2, 'out', hourAgo)).toBe(1);
+
+    // Rows older than the window fall out of the count.
+    await db.sql`UPDATE harness_shared.cross_hive_asks
+                   SET created_at = now() - interval '2 hours'
+                 WHERE correlation_id = 'c-out-2'`;
+    expect(await store2.countRecentByPeer(PEER, 'out', hourAgo)).toBe(1);
+  });
+});

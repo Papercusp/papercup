@@ -133,16 +133,6 @@ pub enum Event {
     /// Swarm dossier (pui-dock-consolidation-2026-06-07 #2). The reducer stores
     /// them in `fleet.all_assignments`.
     FleetAssignments(Vec<BeeAssignment>),
-    /// A RUNNING bee's appended raw output (the watch pane's thinking feed,
-    /// pui-dock-agent-stack-2026-06-07): bytes since the last poll cursor.
-    BeeOutput {
-        owner: String,
-        offset: u64,
-        chunk: String,
-    },
-    /// The watch pane's chat send finished (Ok → the thread is open and the
-    /// bee was pinged; Err carries the message).
-    BeeMessageSent(Result<(), String>),
     /// A manual-mode agent's staged wakes (hive-agent-tabs P-009) — the result of
     /// `FetchWakeQueue` (and the auto-refresh after a release/skip). Carries the
     /// agent so a stale response never paints another agent's review overlay.

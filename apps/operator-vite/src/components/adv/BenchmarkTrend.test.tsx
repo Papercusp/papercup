@@ -21,11 +21,13 @@ const gen = (over: Partial<BenchmarkTrendInstance>): BenchmarkTrendInstance => (
   ...over,
 });
 
-// Newest-first, like the learning.apiary read.
+// Newest-first, like the learning.apiary read. Composites use the LIVE judge
+// scale (0..10 — e.g. 4.06..5.95 on the real gen-0 rows), NOT the 0..1 the old
+// LearningTab fixture suggested; the projection must stay scale-free.
 const THREE_GENS: BenchmarkTrendInstance[] = [
-  gen({ codeSha: 'ccc3333', createdAt: new Date(3_000_000).toISOString(), meanComposite: 0.78 }),
-  gen({ codeSha: 'bbb2222', createdAt: new Date(2_000_000).toISOString(), meanComposite: 0.74 }),
-  gen({ codeSha: 'aaa1111', createdAt: new Date(1_000_000).toISOString(), meanComposite: 0.7 }),
+  gen({ codeSha: 'ccc3333', createdAt: new Date(3_000_000).toISOString(), meanComposite: 5.95 }),
+  gen({ codeSha: 'bbb2222', createdAt: new Date(2_000_000).toISOString(), meanComposite: 4.81 }),
+  gen({ codeSha: 'aaa1111', createdAt: new Date(1_000_000).toISOString(), meanComposite: 4.06 }),
 ];
 
 describe('computeTrendPoints', () => {
@@ -35,6 +37,12 @@ describe('computeTrendPoints', () => {
     expect(pts[0].x).toBeLessThan(pts[2].x);
     // SVG y grows downward: the newer, higher-composite generation sits at a smaller y.
     expect(pts[2].y).toBeLessThan(pts[0].y);
+    // Live-scale (0..10) points must land inside the plot box — the regression that
+    // a 0..1 domain ceiling produced off-box coordinates for real judge composites.
+    for (const p of pts) {
+      expect(p.y).toBeGreaterThanOrEqual(0);
+      expect(p.y).toBeLessThanOrEqual(132);
+    }
   });
 
   it('skips unscored generations (dry-runs) instead of breaking the line', () => {
@@ -59,7 +67,7 @@ describe('<BenchmarkTrend />', () => {
     const dots = container.querySelectorAll('circle');
     expect(dots).toHaveLength(3);
     const titles = [...container.querySelectorAll('circle title')].map((t) => t.textContent ?? '');
-    expect(titles.some((t) => t.includes('ccc3333') && t.includes('0.780') && t.includes('16/20 solved'))).toBe(true);
+    expect(titles.some((t) => t.includes('ccc3333') && t.includes('5.950') && t.includes('16/20 solved'))).toBe(true);
   });
 
   it('renders nothing below two scored generations — the parent owns the empty state', () => {

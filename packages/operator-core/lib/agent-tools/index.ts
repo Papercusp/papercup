@@ -108,6 +108,9 @@ import './learning_packs/set_enabled';
 import './learning_packs/upgrade';
 import './learning_packs/sweep';
 import './learning_packs/publish';
+// consume-edges P-032 (B-11) — the fleet→pack candidate review queue:
+import './learning_packs/candidates';
+import './learning_packs/decide_candidate';
 import './memory/forget';
 import './memory/update';
 import './autoloop/status';
