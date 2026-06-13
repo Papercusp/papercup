@@ -1,6 +1,6 @@
 /**
  * CI guard for the performance anti-patterns catalogued in
- * `apps/operator/content/internal-docs/performance.mdx` (rules A1–A14).
+ * `apps/operator-docs/src/content/docs/performance.mdx` (rules A1–A14).
  *
  * Each rule has either:
  *   - a regex that catches the pattern, OR
@@ -15,7 +15,7 @@
  *   2. The fix is documented with code examples on the docs page.
  *
  * Adding a new rule:
- *   - Update `apps/operator/content/internal-docs/performance.mdx` first with
+ *   - Update `apps/operator-docs/src/content/docs/performance.mdx` first with
  *     A<N>: <title>, the wrong code, the right code, and a measurement
  *     if available.
  *   - Add a `Rule` entry below pointing at the new doc anchor.

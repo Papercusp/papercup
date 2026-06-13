@@ -3,7 +3,7 @@
  *
  * The design-phase intermediate representation. Designer agents emit
  * this; ecosystem adapters consume it. Plan: §7 of
- * apps/operator/content/internal-docs/design/design-phase-plan.mdx.
+ * apps/operator-docs/src/content/docs/design/design-phase-plan.mdx.
  *
  * v0.x is explicitly unstable — breaking changes likely until v1.0.
  * Lock criteria: ≥2 production adapters consuming for ≥1 month

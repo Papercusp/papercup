@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 402,
+  "count": 403,
   "tools": [
     {
       "name": "ablation:report",
@@ -697,6 +697,39 @@
         "when": "User asks \"is the autoloop running?\", \"is the harness on autopilot?\". Reads enabled/paused state + recent tick info.",
         "notWhen": "For TURNING the autoloop on/off, use `autoloop:control`. For harness liveness in general, use `harness:health`.",
         "chaining": "Pair with `autoloop:control` if the user wants to change state."
+      }
+    },
+    {
+      "name": "autonomy:decide",
+      "http": {
+        "path": "/api/agent-tools/autonomy/decide",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Queen autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (the Queen may decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. Behavior-neutral (always gated) until the owner arms the policy (P-092).",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the Queen (or a bee) deciding whether to auto-handle a queue item / answer a card without the owner. Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
+        "notWhen": "To READ or render the whole policy use autonomy:policy_get. To CHANGE a ceiling use autonomy:policy_set (owner-authority). This tool DECIDES one action; it never mutates.",
+        "chaining": "hive:survey / improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue."
       }
     },
     {

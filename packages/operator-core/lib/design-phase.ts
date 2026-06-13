@@ -2,7 +2,7 @@
  * Design phase — lifecycle helpers.
  *
  * Step 1 of the design-phase plan
- * (apps/operator/content/internal-docs/design/design-phase-plan.mdx). Provides:
+ * (apps/operator-docs/src/content/docs/design/design-phase-plan.mdx). Provides:
  *
  *   - computeNeedsDesign(): the heuristic for whether a new feature
  *     should enter the design phase, derived from proposal / scope text
