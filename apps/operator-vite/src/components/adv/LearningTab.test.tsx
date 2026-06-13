@@ -127,17 +127,20 @@ let gymResult: Record<string, unknown> = { data: [gymSnapshot], loading: false, 
 let apiaryResult: Record<string, unknown> = { data: [apiarySnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 let knowledgeResult: Record<string, unknown> = { data: [knowledgeSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 let scoutResult: Record<string, unknown> = { data: [scoutSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+let hiveEvalResult: Record<string, unknown> = { data: [{ instances: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string }) =>
     opts.queryName === 'learning.gym'
       ? gymResult
       : opts.queryName === 'learning.apiary'
         ? apiaryResult
-        : opts.queryName === 'learning.knowledge'
-          ? knowledgeResult
-          : opts.queryName === 'learning.scout'
-            ? scoutResult
-            : improvementsResult,
+        : opts.queryName === 'learning.hiveEvalTrend'
+          ? hiveEvalResult
+          : opts.queryName === 'learning.knowledge'
+            ? knowledgeResult
+            : opts.queryName === 'learning.scout'
+              ? scoutResult
+              : improvementsResult,
 }));
 
 import LearningTab from './LearningTab';
@@ -153,6 +156,7 @@ beforeEach(() => {
   apiaryResult = { data: [apiarySnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   knowledgeResult = { data: [knowledgeSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   scoutResult = { data: [scoutSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+  hiveEvalResult = { data: [{ instances: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 });
 afterEach(() => cleanup());
 
@@ -313,7 +317,28 @@ describe('LearningTab — Benchmark view', () => {
     apiaryResult = { data: [{ instances: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<LearningTab />);
     expect(screen.getByText('No baseline runs yet')).toBeTruthy();
-    expect(screen.getByText(/owner-gated/)).toBeTruthy();
+    // owner-gated copy now appears on BOTH benchmark empty cards (apiary + Hive-eval); assert the apiary one.
+    expect(screen.getByText(/IQ-battery is owner-gated/)).toBeTruthy();
+  });
+
+  it('renders the Hive-orchestration trend + scoreboard when generations exist (HE-07)', () => {
+    hiveEvalResult = {
+      data: [{ instances: [
+        { instanceId: 'hev-new', codeSha: 'ccc3333', createdAt: new Date(2_000_000).toISOString(), totalRuns: 4, scoredRuns: 4, meanComposite: 7.2, meanEfficiency: 7, meanSpeed: 8, meanCriticalPathRatio: 1.3, outcomeGatePassRate: 1, fabricationRate: 0 },
+        { instanceId: 'hev-old', codeSha: 'ddd4444', createdAt: new Date(1_000_000).toISOString(), totalRuns: 4, scoredRuns: 4, meanComposite: 5.5, meanEfficiency: 6, meanSpeed: 6, meanCriticalPathRatio: 1.6, outcomeGatePassRate: 0.75, fabricationRate: 0 },
+      ] }], loading: false, fetching: false, error: null, invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.getByText('outcome gate')).toBeTruthy(); // a Stat label unique to the Hive-eval scoreboard
+    expect(screen.getByText('1.30×')).toBeTruthy(); // latest critical-path ratio
+    expect(screen.getAllByText('7.200').length).toBeGreaterThanOrEqual(1); // latest composite
+    // two trend figures now: the apiary trend + the Hive-orchestration trend.
+    expect(document.querySelectorAll('figure.pc-benchtrend')).toHaveLength(2);
+  });
+
+  it('renders the Hive-eval empty state when there are no Hive-eval generations', () => {
+    render(<LearningTab />); // hiveEvalResult defaults to empty instances
+    expect(screen.getByText('No Hive-eval generations yet')).toBeTruthy();
   });
 });
 

@@ -6,14 +6,16 @@
  * upstream deviations in that file's header); this file owns only the plan
  * data layer and the card/header content.
  *
- * Data: items come LIVE from `useSyncQuery('planItems.byPlan')` — the
- * `harness_plans.items` jsonb projection that `with-plan-lock` rewrites
- * synchronously on every plan write. A drag writes through
- * `useSyncMutate('plans.setStatus', setItemStatus)`, and the set-status route
- * fires `notifySyncInvalidate('planItems.byPlan')`, so the board re-pulls and
- * moves even when ANOTHER agent flips a status. The `items` prop is the
- * `plans:get` snapshot, used as the initial / no-SyncProvider fallback so the
- * board always renders.
+ * Data: items come LIVE from `useSyncQuery('planItems.byPlan')` — the resolver
+ * re-parses the plan's markdown content on every read (NOT the
+ * `harness_plans.items` jsonb column, which is only re-projected on a plan
+ * WRITE and so was stale/empty for plans untouched since it landed). A drag
+ * writes through `useSyncMutate('plans.setStatus', setItemStatus)`, and the
+ * set-status route fires `notifySyncInvalidate('planItems.byPlan')`, so the
+ * board re-pulls and moves even when ANOTHER agent flips a status. The `items`
+ * prop is the `plans:get` snapshot PlanDetail already holds; the board renders
+ * it whenever the live query has no rows yet (first pull pending, error, or no
+ * SyncProvider) so it ALWAYS shows data when the plan has any.
  *
  * Bucketing is by the STORED status token (the jsonb `status`); the columns are
  * the stored tokens, so the issue-block `effectiveStatus` overlay (a derived
@@ -78,10 +80,15 @@ export interface PlanKanbanViewProps {
 }
 
 export default function PlanKanbanView({ slug, items, onChanged }: PlanKanbanViewProps) {
-  // Live items from the harness_plans.items jsonb projection. Falls back to the
-  // plans:get snapshot when no provider is mounted or the first pull is pending.
+  // Live items from `planItems.byPlan`. The @papercusp/sync hook returns a
+  // (frozen) EMPTY ARRAY — never `undefined` — while the first pull is pending
+  // or after an error, so the snapshot fallback MUST key off "no rows yet", not
+  // `data !== undefined` (which never fires under a live provider and left the
+  // board blank until the live pull landed). A genuinely item-less plan has an
+  // empty snapshot too, so the floor stays correct there as well.
   const { data } = useSyncQuery<unknown>({ queryName: 'planItems.byPlan', args: { planSlug: slug } });
-  const source = data !== undefined ? (data as unknown[]) : (items as unknown[]);
+  const live = Array.isArray(data) ? (data as unknown[]) : [];
+  const source = live.length > 0 ? live : (items as unknown[]);
 
   const server = useMemo(
     () => (Array.isArray(source) ? source.map(normalize).filter((x): x is BoardItem => x !== null) : []),

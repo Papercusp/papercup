@@ -12,7 +12,7 @@ vi.mock('@papercusp/sync', () => ({
   // (decision.ledger, B-13/P-113) gets its own empty result so it renders its
   // empty state rather than mis-rendering policy rows as decision rows.
   useSyncQuery: (opts?: { queryName?: string }) =>
-    opts?.queryName === 'decision.ledger'
+    opts?.queryName === 'decision.ledger' || opts?.queryName === 'autonomy.graduation'
       ? { data: [], loading: false, error: null, fetching: false, invalidate: vi.fn() }
       : { ...syncResult, fetching: false, invalidate: vi.fn() },
   useSyncMutate: () => mutateMock,
@@ -131,13 +131,13 @@ describe('AutonomySettingsPage', () => {
     expect(screen.getByText('Release & deploy')).toBeTruthy();
   });
 
-  it('renders the live recent-auto-decisions feed (P-031/P-113) + the deferred P-032 graduation placeholder', () => {
+  it('renders the live recent-auto-decisions feed (P-031) + the graduation surface (P-032)', () => {
     render(<AutonomySettingsPage />);
-    // P-031 feed is now LIVE (RecentAutoDecisions via decision.ledger) — with the
-    // empty mock it shows the no-decisions-yet state, not a "coming soon" stub.
+    // P-031 feed (RecentAutoDecisions via decision.ledger) — empty mock → empty state.
     expect(screen.getByRole('heading', { name: /Recent auto-decisions/i })).toBeTruthy();
     expect(screen.getByText(/No decisions logged yet/i)).toBeTruthy();
-    // P-032 graduation prompts still await the B-16 engine.
-    expect(screen.getByText(/Graduation-eligible prompts/i)).toBeTruthy();
+    // P-032 graduation surface (GraduationPrompts via autonomy.graduation) — empty mock → empty state.
+    expect(screen.getByRole('heading', { name: 'Graduation' })).toBeTruthy();
+    expect(screen.getByText(/No categories are graduation-eligible yet/i)).toBeTruthy();
   });
 });

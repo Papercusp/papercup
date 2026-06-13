@@ -42,6 +42,39 @@ interface PlacementResult {
   error?: string;
 }
 
+/**
+ * The effects `executeBatch` performs, as an injectable seam. Defaults (via
+ * `loadExecuteBatchDeps`) are the real modules — the tool handler passes none,
+ * so production behavior is unchanged. Tests inject fakes to exercise the
+ * placement paths (woken:0 ladder, await_event ceiling, inject-race) without a
+ * live fleet / PG.
+ */
+export interface ExecuteBatchDeps {
+  spawnAgentInHarness: (typeof import('../../fleet/operator-spawn'))['spawnAgentInHarness'];
+  claimWorkItem: (typeof import('../../work-items'))['claimWorkItem'];
+  releaseWorkItem: (typeof import('../../work-items'))['releaseWorkItem'];
+  reorderWorkItem: (typeof import('../../work-items'))['reorderWorkItem'];
+  sendMessage: (typeof import('../coordination/messages'))['sendMessage'];
+  wakeRecipients: (typeof import('../coordination/inbox-wake'))['wakeRecipients'];
+}
+
+async function loadExecuteBatchDeps(): Promise<ExecuteBatchDeps> {
+  const [spawn, wi, msgs, wake] = await Promise.all([
+    import('../../fleet/operator-spawn'),
+    import('../../work-items'),
+    import('../coordination/messages'),
+    import('../coordination/inbox-wake'),
+  ]);
+  return {
+    spawnAgentInHarness: spawn.spawnAgentInHarness,
+    claimWorkItem: wi.claimWorkItem,
+    releaseWorkItem: wi.releaseWorkItem,
+    reorderWorkItem: wi.reorderWorkItem,
+    sendMessage: msgs.sendMessage,
+    wakeRecipients: wake.wakeRecipients,
+  };
+}
+
 export default defineTool({
   name: 'fleet:place_batch',
   profile: 'engineer',
@@ -165,7 +198,7 @@ function summarizePlan(plan: BatchPlacementPlan) {
  * woken:0 warm-inject fallbacks draw from the leftover (headroom − planned
  * spawns) so a fallback can never starve a planned spawn.
  */
-async function executeBatch(opts: {
+export async function executeBatch(opts: {
   plan: BatchPlacementPlan;
   headroom: number;
   brief: string | null;
@@ -173,15 +206,13 @@ async function executeBatch(opts: {
   actor: AgentIdentity;
   role: string;
   workspaceId: string;
+  /** Test seam (DI): inject the spawn/claim/message/wake effects. Defaults to
+   *  the real modules — the tool handler passes none (zero behavior change). */
+  deps?: ExecuteBatchDeps;
 }): Promise<{ placements: PlacementResult[]; summary: Record<string, number>; await_event?: string; next?: string }> {
   const { plan, headroom, brief, tier, actor, role, workspaceId } = opts;
-  const [{ spawnAgentInHarness }, { claimWorkItem, releaseWorkItem, reorderWorkItem }, { sendMessage }, { wakeRecipients }] =
-    await Promise.all([
-      import('../../fleet/operator-spawn'),
-      import('../../work-items'),
-      import('../coordination/messages'),
-      import('../coordination/inbox-wake'),
-    ]);
+  const { spawnAgentInHarness, claimWorkItem, releaseWorkItem, reorderWorkItem, sendMessage, wakeRecipients } =
+    opts.deps ?? (await loadExecuteBatchDeps());
 
   const ownerId = actor.ownerId ?? '';
   const parentSpawnId = /^s-/.test(ownerId) ? ownerId : null;

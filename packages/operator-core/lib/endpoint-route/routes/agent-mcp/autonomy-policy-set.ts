@@ -81,6 +81,9 @@ export default defineTool({
       );
       const { notifySyncInvalidate } = await import('../../../sync-sse');
       await notifySyncInvalidate('autonomy.policy', { workspaceId: ws }).catch(() => {});
+      // A graduatedLevel ratify (P-032) changes a category's graduation target, so
+      // refresh the graduation surface too (cheap; derives from the same policy).
+      await notifySyncInvalidate('autonomy.graduation', { workspaceId: ws }).catch(() => {});
       return Response.json({ ok: true, workspaceId: ws, policy: decoratePolicyForView(policy) });
     } catch (err) {
       // setAutonomyPolicy throws on unknown category / invalid level — a 400, not a 500.

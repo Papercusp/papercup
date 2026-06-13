@@ -10,15 +10,38 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getJob, readJobOutput } from './bash-jobs';
 
+/** Max length of an agent-supplied `filter` regex (ReDoS surface bound). */
+const MAX_FILTER_LEN = 200;
+
+/**
+ * Heuristic for a catastrophic-backtracking (ReDoS) pattern: a quantified GROUP
+ * whose body itself contains a quantifier — `(a+)+`, `(.*)*`, `(a{2,})+`, `(.+){8}`.
+ * This is the classic nested-quantifier signature; it runs in the shared OPERATOR
+ * process, where a hang would block every concurrent agent's MCP calls, so we
+ * reject rather than risk it. Approximate (not a full safe-regex analysis) but it
+ * covers the common exponential-blowup classes.
+ */
+function isLikelyCatastrophicRegex(re: string): boolean {
+  return /\([^)]*[+*}][^)]*\)\s*[+*{]/.test(re);
+}
+
 /**
  * Apply the native-BashOutput `filter` regex to an output chunk: keep only the
  * LINES matching `filter` (the caller advances the cursor over the full chunk
- * regardless, so non-matching lines aren't re-shown). An invalid regex never
- * throws — it returns the unfiltered chunk plus an `error` note. Exported pure for
+ * regardless, so non-matching lines aren't re-shown). Never throws or hangs: an
+ * invalid OR ReDoS-prone OR over-long regex returns the unfiltered chunk plus an
+ * `error` note (the filter runs in the shared operator process, so an
+ * agent-supplied pattern must not be able to wedge it). Exported pure for
  * deterministic unit testing (no subprocess).
  */
 export function filterOutputLines(chunk: string, filter: string | undefined): { output: string; error?: string } {
   if (!filter) return { output: chunk };
+  if (filter.length > MAX_FILTER_LEN) {
+    return { output: chunk, error: `filter regex too long (>${MAX_FILTER_LEN} chars) — returning unfiltered output` };
+  }
+  if (isLikelyCatastrophicRegex(filter)) {
+    return { output: chunk, error: 'filter regex rejected (ReDoS-prone nested quantifier) — returning unfiltered output' };
+  }
   try {
     const re = new RegExp(filter);
     return { output: chunk.split('\n').filter((line) => re.test(line)).join('\n') };

@@ -47,6 +47,14 @@ export const CAPABILITY_SANDBOX_MASK_DIRS: readonly string[] = [
   '.npmrc',
 ];
 
+/**
+ * Home-relative entries in {@link CAPABILITY_SANDBOX_MASK_DIRS} that are FILES, not
+ * directories. `--tmpfs DEST` needs DEST to be a directory mount point, so a file
+ * credential (`~/.npmrc` holds npm auth tokens) is masked with `--ro-bind /dev/null`
+ * instead — otherwise the tmpfs mount no-ops and the secret stays readable.
+ */
+const CAPABILITY_SANDBOX_MASK_FILES: ReadonlySet<string> = new Set(['.npmrc']);
+
 export interface CapabilitySandboxDecision {
   /** Binary to spawn (bwrap, or the original `cmd[0]` when not wrapped). */
   binary: string;
@@ -153,10 +161,14 @@ export function buildCapabilitySandboxCommand(
     '--die-with-parent',
     '--chdir', input.cwd,
   ];
-  // Mask credential dirs (a tmpfs over each makes them read empty). Applied AFTER
-  // the ro-bind of `/`, so the overlay wins.
+  // Mask credential paths. Applied AFTER the ro-bind of `/`, so the overlay wins.
+  // Dirs read empty via a tmpfs overlay; file credentials (e.g. ~/.npmrc) read
+  // empty via `--ro-bind /dev/null` (a tmpfs needs a DIRECTORY mount point, so a
+  // tmpfs over a file no-ops and would leave the secret readable).
   for (const d of CAPABILITY_SANDBOX_MASK_DIRS) {
-    argv.push('--tmpfs', join(home, d));
+    const abs = join(home, d);
+    if (CAPABILITY_SANDBOX_MASK_FILES.has(d)) argv.push('--ro-bind', '/dev/null', abs);
+    else argv.push('--tmpfs', abs);
   }
   if (denyAllEgress) argv.push('--unshare-net');
   // No `--clearenv`: a capability:bash build/test needs the caller's env (PATH,

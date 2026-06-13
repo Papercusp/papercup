@@ -1529,6 +1529,38 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── autonomy.graduation — graduation-eligible standings (queen-autonomy-policy B-16 / P-082; surface P-032) ──
+  //
+  // Per-category trust-graduation TARGETS: the autonomy level the tripwire
+  // evidence has EARNED (clamped ≤ ceiling) vs the current graduated_level, and
+  // whether the owner may ratify a promotion (`shouldWrite` — target > current AND
+  // not locked/protected/pinned). Recomputed from the autonomy_tripwires ledger
+  // (mig 266, B-16) + the policy; categories with no evidence are OMITTED, so this
+  // resolves to [] while the system is dark (nothing armed → the settings
+  // graduation surface shows its nothing-eligible state, never a 500 — the store
+  // swallows a not-yet-applied migration). Mirrors the autonomy:graduation_status
+  // tool. Invalidated by a graduatedLevel write (the autonomy-policy-set route).
+  'autonomy.graduation': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readTripwireEvidence } = await import('../autonomy/tripwire/store');
+      const { readAutonomyPolicy } = await import('../autonomy/policy-store');
+      const { getCategory } = await import('../autonomy/categories');
+      const { computeAutonomyStandings, computeCategoryGraduationTargets, DEFAULT_AUTONOMY_GRADUATION_POLICY } =
+        await import('../autonomy/tripwire/graduation');
+      const sql = getOrgPg().sql;
+      const ws = activeWorkspaceId();
+      const nowMs = Date.now();
+      const rows = await readTripwireEvidence(sql, ws, { lookbackDays: 90, nowMs });
+      const standings = computeAutonomyStandings(rows, DEFAULT_AUTONOMY_GRADUATION_POLICY, nowMs);
+      const policies = await readAutonomyPolicy(sql, ws);
+      const policyMap = new Map(policies.map((p) => [p.category, p]));
+      const targets = computeCategoryGraduationTargets(standings, policyMap, DEFAULT_AUTONOMY_GRADUATION_POLICY);
+      return targets.map((t) => ({ ...t, label: getCategory(t.category)?.label ?? t.category }));
+    },
+  },
+
   // ── decision.ledger — the Queen decision ledger (queen-autonomy-policy B-13 / P-113) ──
   //
   // The two-layer D-012 ledger (harness_shared.decision_ledger, migrations 260 +

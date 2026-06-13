@@ -62,10 +62,18 @@ describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)
     }
   });
 
-  it('masks every credential dir with a tmpfs at the resolved home path', () => {
-    for (const dir of CAPABILITY_SANDBOX_MASK_DIRS) {
+  it('masks credential DIRS with a tmpfs at the resolved home path', () => {
+    for (const dir of ['.ssh', '.aws', '.gnupg', '.config/gcloud', '.papercusp']) {
+      expect(CAPABILITY_SANDBOX_MASK_DIRS).toContain(dir);
       expect(seq(d.argv, ['--tmpfs', `/home/op/${dir}`])).toBe(true);
     }
+  });
+
+  it('masks the credential FILE ~/.npmrc with --ro-bind /dev/null (a tmpfs over a file no-ops → would leak the token)', () => {
+    expect(CAPABILITY_SANDBOX_MASK_DIRS).toContain('.npmrc');
+    expect(seq(d.argv, ['--ro-bind', '/dev/null', '/home/op/.npmrc'])).toBe(true);
+    // …and NOT a tmpfs (the bug this guards against).
+    expect(seq(d.argv, ['--tmpfs', '/home/op/.npmrc'])).toBe(false);
   });
 
   it('ends with `-- <cmd>` so the wrapped command runs last', () => {

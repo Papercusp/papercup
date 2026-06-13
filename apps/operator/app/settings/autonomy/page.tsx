@@ -24,6 +24,7 @@ import { toast } from 'sonner';
 import { Checkbox } from '../../harness/Checkbox';
 import { CeilingSlider, CEILING_SHORT_LABEL, type Ceiling } from './CeilingSlider';
 import RecentAutoDecisions from './RecentAutoDecisions';
+import GraduationPrompts from './GraduationPrompts';
 
 /* ── Wire type — mirrors AutonomyPolicyView (operator-core/lib/autonomy/policy-view.ts),
  *    kept local per the client wire-type decoupling convention. ── */
@@ -333,15 +334,10 @@ export default function AutonomySettingsPage() {
           lights up once B-16's tripwire records a revert handle. */}
       <RecentAutoDecisions />
 
-      {/* ── Deferred: P-032 inline graduation-eligible prompts (needs B-16 graduation engine) ── */}
-      <section className="pc-settings-section" aria-label="Graduation" style={{ marginTop: 8 }}>
-        <h2>Graduation</h2>
-        <p style={{ color: 'var(--fg-mute)', fontSize: 13 }}>
-          Graduation-eligible prompts — where you ratify a category earning a higher level — arrive
-          with the graduation engine (B-16 · P-032).{' '}
-          <span style={{ fontStyle: 'italic' }}>Coming soon.</span>
-        </p>
-      </section>
+      {/* P-032 inline graduation-eligible prompts — the owner ratifies an earned
+          promotion (autonomy.graduation → autonomy-policy-set graduatedLevel, B-16/P-082).
+          Owner-authority only; never an auto allowlist edit. */}
+      <GraduationPrompts />
     </div>
   );
 }

@@ -29,4 +29,24 @@ describe('filterOutputLines', () => {
     expect(r.output).toBe(chunk);
     expect(r.error).toMatch(/invalid filter regex/);
   });
+
+  it('rejects ReDoS-prone nested-quantifier patterns (runs in the shared operator process)', () => {
+    for (const evil of ['(a+)+', '(.*)*', '(a{2,})+', '(.+){8}', '(ab*)+$']) {
+      const r = filterOutputLines(chunk, evil);
+      expect(r.output).toBe(chunk); // unfiltered (not applied)
+      expect(r.error, `${evil} must be rejected`).toMatch(/ReDoS/);
+    }
+  });
+
+  it('rejects an over-long filter (length-cap bound on the ReDoS surface)', () => {
+    const r = filterOutputLines(chunk, 'a'.repeat(201));
+    expect(r.output).toBe(chunk);
+    expect(r.error).toMatch(/too long/);
+  });
+
+  it('still accepts ordinary anchored/alternation patterns (the guard is not over-broad)', () => {
+    expect(filterOutputLines(chunk, '^a').error).toBeUndefined();
+    expect(filterOutputLines(chunk, 'a(pp|pr)').error).toBeUndefined();
+    expect(filterOutputLines(chunk, 'err|warn|fail').error).toBeUndefined();
+  });
 });

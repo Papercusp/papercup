@@ -99,6 +99,19 @@ describe('PlanKanbanView', () => {
     expect(screen.getByText('Blocked').textContent).toContain('(1)');
   });
 
+  it('falls back to the snapshot when the live query is a defined-but-EMPTY array', () => {
+    // The real @papercusp/sync (SSE/polling) hook returns a frozen EMPTY ARRAY
+    // — never `undefined` — while the first pull is pending or after an error.
+    // A `data !== undefined` guard would take the empty live branch and leave
+    // the board blank; the board must render the snapshot instead.
+    h.liveData = [];
+    render(<PlanKanbanView slug="my-plan" items={[snap('P-001', 'blocked'), snap('P-002', 'wip')]} />);
+    expect(screen.getByText('P-001')).toBeTruthy();
+    expect(screen.getByText('P-002')).toBeTruthy();
+    expect(screen.getByText('Blocked').textContent).toContain('(1)');
+    expect(screen.getByText('In Progress').textContent).toContain('(1)');
+  });
+
   it('normalizes: storedStatus wins over status; missing both → todo; id-less rows dropped', () => {
     h.liveData = [
       { id: 'P-201', text: 'both', status: 'done', storedStatus: 'wip' },
