@@ -55,63 +55,63 @@ describe('isConnRefused (deprecated)', () => {
   });
 });
 
-describe(‘loopbackFetch’, () => {
-  it(‘retries connection-refused then succeeds (rides over a restart)’, async () => {
-    const ok = new Response(‘ok’, { status: 200 });
-    const fetchMock = vi.spyOn(globalThis, ‘fetch’)
+describe('loopbackFetch', () => {
+  it('retries connection-refused then succeeds (rides over a restart)', async () => {
+    const ok = new Response('ok', { status: 200 });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockRejectedValueOnce(refused())
       .mockRejectedValueOnce(refused())
       .mockResolvedValueOnce(ok);
-    const res = await loopbackFetch(‘http://127.0.0.1:3070/x’, undefined, FAST);
+    const res = await loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST);
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it(‘retries connection-reset and succeeds (EI-390: transient network error)’, async () => {
-    const ok = new Response(‘ok’, { status: 200 });
-    const fetchMock = vi.spyOn(globalThis, ‘fetch’)
+  it('retries connection-reset and succeeds (EI-390: transient network error)', async () => {
+    const ok = new Response('ok', { status: 200 });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockRejectedValueOnce(connReset())
       .mockResolvedValueOnce(ok);
-    const res = await loopbackFetch(‘http://127.0.0.1:3070/x’, undefined, FAST);
+    const res = await loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST);
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it(‘retries DNS failure (ENOTFOUND) and succeeds (EI-390)’, async () => {
-    const ok = new Response(‘ok’, { status: 200 });
-    const fetchMock = vi.spyOn(globalThis, ‘fetch’)
+  it('retries DNS failure (ENOTFOUND) and succeeds (EI-390)', async () => {
+    const ok = new Response('ok', { status: 200 });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockRejectedValueOnce(notFound())
       .mockResolvedValueOnce(ok);
-    const res = await loopbackFetch(‘http://127.0.0.1:3070/x’, undefined, FAST);
+    const res = await loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST);
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it(‘retries timeout and succeeds (EI-390)’, async () => {
-    const ok = new Response(‘ok’, { status: 200 });
-    const fetchMock = vi.spyOn(globalThis, ‘fetch’)
+  it('retries timeout and succeeds (EI-390)', async () => {
+    const ok = new Response('ok', { status: 200 });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockRejectedValueOnce(timedOut())
       .mockResolvedValueOnce(ok);
-    const res = await loopbackFetch(‘http://127.0.0.1:3070/x’, undefined, FAST);
+    const res = await loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST);
     expect(res.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it(‘throws after exhausting retries when still refused (then the caller fails open)’, async () => {
-    const fetchMock = vi.spyOn(globalThis, ‘fetch’).mockRejectedValue(refused());
-    await expect(loopbackFetch(‘http://127.0.0.1:3070/x’, undefined, FAST)).rejects.toThrow(/fetch failed/);
+  it('throws after exhausting retries when still refused (then the caller fails open)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(refused());
+    await expect(loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST)).rejects.toThrow(/fetch failed/);
     expect(fetchMock).toHaveBeenCalledTimes(4); // initial + 3 retries
   });
 
-  it(‘does NOT retry a non-transient error (fails fast)’, async () => {
-    const fetchMock = vi.spyOn(globalThis, ‘fetch’).mockRejectedValue(new Error(‘socket hang up’));
-    await expect(loopbackFetch(‘http://127.0.0.1:3070/x’, undefined, FAST)).rejects.toThrow(/socket hang up/);
+  it('does NOT retry a non-transient error (fails fast)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('socket hang up'));
+    await expect(loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST)).rejects.toThrow(/socket hang up/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it(‘does NOT retry a non-ok HTTP response (status is the caller’s to handle)’, async () => {
-    const fetchMock = vi.spyOn(globalThis, ‘fetch’).mockResolvedValue(new Response(‘nope’, { status: 500 }));
-    const res = await loopbackFetch(‘http://127.0.0.1:3070/x’, undefined, FAST);
+  it('does NOT retry a non-ok HTTP response (status is the caller\'s to handle)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 500 }));
+    const res = await loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST);
     expect(res.status).toBe(500);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

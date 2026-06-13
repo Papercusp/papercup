@@ -182,13 +182,65 @@ export function matchGlob(pattern: string, value: string): boolean {
   return re.test(value);
 }
 
+// ── infra-environment detection (D-002/D-005: infra failures escalate, never auto) ──
+//
+// The SINGLE source of truth for "is this an environment problem a code-fix worker
+// cannot touch?" — owned here (the safety layer) and re-used by the triage taxonomy
+// (triage.ts re-exports these + classifyIdeaType keys its infra-environment leg off
+// `infraEnvironmentHit`). Living here is what lets `classifyImprovement` consult it
+// so an infra-classed kind=bug never reaches tier=auto (EI-408): the verdict chain
+// stays policy-first (D-003) instead of the infra knowledge existing only at triage.
+
+/**
+ * Watchdog signal sources whose class is INFRA-ENVIRONMENT (D-002: escalate, never
+ * auto). Shared vocabulary with the known-open aging escalation's infra-class
+ * (D-004 — the shorter aging threshold keys off the same set). PROPOSED (P-004).
+ */
+export const INFRA_SIGNAL_SOURCES: readonly string[] = ['service-down', 'fire-circuit-open', 'migration-drift'];
+
+/** Paths that mean the fix lives in the ENVIRONMENT, not papercusp code. PROPOSED (P-004). */
+export const INFRA_PATH_PATTERNS: readonly string[] = [
+  'Dockerfile*',
+  '**/Dockerfile*',
+  'docker-compose*',
+  '**/docker-compose*',
+  '**/*.service',
+  '**/systemd/**',
+  '.env*',
+  '**/.env*',
+  'infra/**',
+];
+
+/** The signal class of a watchdogKey ('<source>:<key>') — '' when absent/malformed. */
+export function watchdogSourceOf(watchdogKey: string | undefined): string {
+  if (!watchdogKey) return '';
+  const i = watchdogKey.indexOf(':');
+  return i > 0 ? watchdogKey.slice(0, i) : '';
+}
+
+/**
+ * Whether a candidate is an infra/environment problem — keyed off the watchdog
+ * signal class (the strongest key: a service-down or circuit-open firing IS an
+ * environment fact) with infra paths as the fallback. Returns a short human-readable
+ * hit string (for the reason trail) or null. Pure — both `classifyImprovement`
+ * (safety tier) and `classifyIdeaType` (routing taxonomy) consume it (D-003).
+ */
+export function infraEnvironmentHit(c: Pick<ImprovementCandidate, 'watchdogKey' | 'paths'>): string | null {
+  const source = watchdogSourceOf(c.watchdogKey);
+  if (INFRA_SIGNAL_SOURCES.includes(source)) return `watchdog signal class "${source}"`;
+  const infraPath = (c.paths ?? []).find((p) => INFRA_PATH_PATTERNS.some((pat) => matchGlob(pat, p)));
+  if (infraPath) return `path "${infraPath}"`;
+  return null;
+}
+
 /**
  * Classify a single candidate into its risk tier. The order is deliberate:
  *   0. explicit needs-human routing (improvements:resolve back-edge) → HUMAN.
  *   1. kind gate — not an auto kind → HUMAN immediately (the common case).
- *   2. protected paths (when known) → HUMAN (the safety surfaces).
- *   3. protected keywords (title+body) → HUMAN (the pre-paths proxy).
- *   4. otherwise → AUTO (still runs blueprint + tests + release-manager, D-005).
+ *   2. infra-environment (D-002/D-005) → HUMAN (a worker cannot fix a port mapping).
+ *   3. protected paths (when known) → HUMAN (the safety surfaces).
+ *   4. protected keywords (title+body) → HUMAN (the pre-paths proxy).
+ *   5. otherwise → AUTO (still runs blueprint + tests + release-manager, D-005).
  */
 export function classifyImprovement(
   c: ImprovementCandidate,
@@ -208,6 +260,17 @@ export function classifyImprovement(
     return { tier: 'human', reasons };
   }
   reasons.push(`kind=${c.kind} is auto-eligible`);
+
+  // Infra-environment never auto (D-002/D-005): a code-fix worker cannot fix a
+  // down service / port mapping / migration drift. The infra knowledge lives in
+  // the signal class + paths (not the kind), so an infra kind=bug (EI-187
+  // service-down) would otherwise slip into the auto lane and burn dispatch
+  // attempts on something no worker can resolve (EI-408).
+  const infraHit = infraEnvironmentHit(c);
+  if (infraHit) {
+    reasons.push(`infra-environment (${infraHit}) — D-002/D-005: infra failures escalate, never auto → human`);
+    return { tier: 'human', reasons, protectedHit: infraHit };
+  }
 
   for (const p of c.paths ?? []) {
     const hit = policy.protectedPathPatterns.find((pat) => matchGlob(pat, p));

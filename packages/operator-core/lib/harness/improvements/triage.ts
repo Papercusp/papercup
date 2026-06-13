@@ -30,7 +30,18 @@
  */
 
 import type { ScoredItem } from './digest';
-import { matchGlob } from './policy';
+import {
+  matchGlob,
+  infraEnvironmentHit,
+  watchdogSourceOf,
+  INFRA_SIGNAL_SOURCES,
+  INFRA_PATH_PATTERNS,
+} from './policy';
+
+// Infra-environment detection is owned by the safety layer (policy.ts) so the
+// risk tier and the routing taxonomy share ONE vocabulary (D-003) — re-exported
+// here for back-compat with existing importers (the D-005 taxonomy's public surface).
+export { watchdogSourceOf, INFRA_SIGNAL_SOURCES, INFRA_PATH_PATTERNS };
 
 export type IdeaType = 'product' | 'code-bug' | 'infra-environment' | 'process-prompt' | 'needs-design';
 export type TriageDecision = 'place' | 'gate' | 'gym' | 'reject';
@@ -66,27 +77,6 @@ export interface IdeaClassifierInput {
 
 /** Scopes that mean "papercusp itself" — the dogfood case the D-005 taxonomy exists for. */
 export const PAPERCUSP_SELF_SCOPES: readonly string[] = ['operator', 'harness:papercup'];
-
-/**
- * Watchdog signal sources whose class is INFRA-ENVIRONMENT (D-002: escalate, never
- * queue/auto). Shared vocabulary with the known-open aging escalation's infra-class
- * (D-004 — B-06 keys its shorter threshold off the same set).
- * PROPOSED values pending P-004 ratification.
- */
-export const INFRA_SIGNAL_SOURCES: readonly string[] = ['service-down', 'fire-circuit-open', 'migration-drift'];
-
-/** Paths that mean the fix lives in the ENVIRONMENT, not papercusp code. PROPOSED (P-004). */
-export const INFRA_PATH_PATTERNS: readonly string[] = [
-  'Dockerfile*',
-  '**/Dockerfile*',
-  'docker-compose*',
-  '**/docker-compose*',
-  '**/*.service',
-  '**/systemd/**',
-  '.env*',
-  '**/.env*',
-  'infra/**',
-];
 
 /** Paths that mean the change is a PROMPT/PERSONA/PLAYBOOK edit (the gym-A/B-able class). PROPOSED (P-004). */
 export const PROMPT_PATH_PATTERNS: readonly string[] = [
@@ -130,13 +120,6 @@ export const PROMPT_KEYWORDS: readonly string[] = [
   'role prompt',
 ];
 
-/** The signal class of a watchdogKey ('<source>:<key>') — '' when absent/malformed. */
-export function watchdogSourceOf(watchdogKey: string | undefined): string {
-  if (!watchdogKey) return '';
-  const i = watchdogKey.indexOf(':');
-  return i > 0 ? watchdogKey.slice(0, i) : '';
-}
-
 /**
  * Classify an idea into the D-005 taxonomy, keyed off scope + paths + watchdog
  * signal class. Precedence (first hit wins):
@@ -155,18 +138,13 @@ export function classifyIdeaType(item: IdeaClassifierInput): IdeaTriageClassific
     return { type: 'product', reason: `Scope "${item.scope}" targets an external project's code` };
   }
 
-  // 2. Infra/environment — the signal class is the strongest key (a service-down or
-  //    circuit-open firing IS an environment fact), paths the fallback.
-  const signalSource = watchdogSourceOf(item.watchdogKey);
-  if (INFRA_SIGNAL_SOURCES.includes(signalSource)) {
-    return {
-      type: 'infra-environment',
-      reason: `Watchdog signal class "${signalSource}" is infra-class (D-002: escalate, never auto)`,
-    };
-  }
-  const infraPath = (item.paths ?? []).find((p) => INFRA_PATH_PATTERNS.some((pat) => matchGlob(pat, p)));
-  if (infraPath) {
-    return { type: 'infra-environment', reason: `Path "${infraPath}" is an environment surface (D-002)` };
+  // 2. Infra/environment — the safety layer's shared predicate (signal class is the
+  //    strongest key — a service-down/circuit-open firing IS an environment fact —
+  //    infra paths the fallback). D-003: ONE vocabulary, owned by policy.ts, so the
+  //    risk tier (classifyImprovement) and this routing taxonomy never disagree.
+  const infraHit = infraEnvironmentHit(item);
+  if (infraHit) {
+    return { type: 'infra-environment', reason: `${infraHit} — infra-class (D-002: escalate, never auto)` };
   }
 
   // 3. Net-new work → a design draft before implementation.

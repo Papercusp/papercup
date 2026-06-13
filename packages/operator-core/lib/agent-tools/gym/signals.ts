@@ -5,16 +5,26 @@
  * The gym is a blueprint now (D-022); its judge/proposer roles resolve a target's
  * signals BY NAME through the host-side registry (`GYM_SIGNAL_REGISTRY`). This tool
  * is that resolution exposed to a role: pass the signal names + whatever run inputs
- * you have (pre/post tests, the planted bug, the harness output text) and get back
- * each guardrail's boolean — with unknown/inapplicable signals reported, never
- * silently dropped.
+ * you have (pre/post tests, the planted bug, the harness output text, drill outcomes)
+ * and get back each guardrail's boolean — with unknown/inapplicable signals reported,
+ * never silently dropped.
  *
- * harness-blueprint-orchestration-2026-06-03 P-012 / D-022. Pure — no LLM, no PG.
+ * Drill-ground-truth signals (FB-23 / P-048) read red-queen drill rows. A judge can
+ * supply them two ways: pass `drillOutcomes` explicitly (the test/override seam), OR
+ * set `loadDrillOutcomes` to pull the live sandbox corpus from PG itself
+ * (`readDrillOutcomes`, lib/red-queen/store.ts) — the no-hand-assembly path now that
+ * the corpus is live (frontier:drill-corpus-live).
+ *
+ * harness-blueprint-orchestration-2026-06-03 P-012 / D-022. Pure (no PG, no LLM)
+ * UNLESS `loadDrillOutcomes` is set, which lazily reads the drill corpus from PG.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { evaluateSignals, knownSignals, type SignalContext } from '../../gym/primitives';
+import { SANDBOX_WORKSPACE_ID } from '../../red-queen/types';
+import type { DrillOutcome as RedQueenDrillOutcome } from '../../red-queen/types';
+import type { DrillOutcome as GymDrillOutcome } from '../../gym/drill-signals';
 
 const testResult = z.object({ name: z.string(), passed: z.boolean() });
 
@@ -51,14 +61,29 @@ const drillOutcome = z.object({
   origin: z.literal('drill'),
 });
 
+/**
+ * Compile-time drift guard (FB-23 ↔ FB-20). The DrillOutcome contract lives in
+ * THREE places that must stay in lockstep:
+ *   1. lib/red-queen/types.ts      — the SOURCE rows FB-20 produces (readDrillOutcomes)
+ *   2. lib/gym/drill-signals.ts    — the gym signal-core mirror (this consumer reads it)
+ *   3. the zod `drillOutcome` above — the wire schema for the explicit `drillOutcomes` arg
+ * Both the load path (1→2) and the wire path (3→2) must remain assignable to the gym
+ * signal contract; if a field is added/retyped incompatibly, the matching alias fails its
+ * constraint and the build breaks (TS2344) — pointing the next editor straight here. (The
+ * handler's real assignments enforce the same thing; these name it so the coupling is loud.)
+ */
+type Assignable<A extends B, B> = A;
+export type _DrillContractSourcePin = Assignable<RedQueenDrillOutcome, GymDrillOutcome>;
+export type _DrillContractWirePin = Assignable<z.infer<typeof drillOutcome>, GymDrillOutcome>;
+
 export default defineTool({
   name: 'gym:signals',
   description:
-    "Evaluate a target blueprint's deterministic gym signals (un-gameable guardrails) over one run's inputs. Pass `signals` (names from the target's blueprint.gym.signals) + any of {preTests, postTests, plantedBug, harnessOutputText, drillOutcomes}. Returns {results:[{name,value,applicable,metric?}], unknown, known}. Built-ins: regressionsFromTests (needs pre+post tests), plantedBugCaught (needs plantedBug+harnessOutputText), drillResolveRate / drillTriageAccuracy / drillMttsh (need drillOutcomes — red-queen drill rows with planted known answers; value = SLO verdict, metric = the raw rate/ms).",
+    "Evaluate a target blueprint's deterministic gym signals (un-gameable guardrails) over one run's inputs. Pass `signals` (names from the target's blueprint.gym.signals) + any of {preTests, postTests, plantedBug, harnessOutputText, drillOutcomes}. Returns {results:[{name,value,applicable,metric?}], unknown, known, drillSource}. Built-ins: regressionsFromTests (needs pre+post tests), plantedBugCaught (needs plantedBug+harnessOutputText), drillResolveRate / drillTriageAccuracy / drillMttsh (need drill rows with planted known answers; value = SLO verdict, metric = the raw rate/ms). Drill rows: pass `drillOutcomes` directly, or set `loadDrillOutcomes` to read the live sandbox drill corpus from PG.",
   guidance: {
-    when: "Scoring a gym run's deterministic guardrails — the optimizer cannot game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's declared gym.signals by name.",
+    when: "Scoring a gym run's deterministic guardrails — the optimizer cannot game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's declared gym.signals by name. For the drill signals, set loadDrillOutcomes to pull the live red-queen sandbox corpus instead of hand-assembling rows.",
     notWhen: 'Subjective quality scoring — that is the frozen judge (gym:judge). Running the pipeline — the gym runner.',
-    chaining: 'gym runner → collect run inputs (tests/output) → gym:signals → feed results into the proposer + the trace summary.',
+    chaining: 'gym runner → collect run inputs (tests/output) → gym:signals (loadDrillOutcomes for drill targets) → feed results into the proposer + the trace summary.',
   },
   capability: 'harness:read',
   requirePrincipal: false,
@@ -78,9 +103,47 @@ export default defineTool({
     drillOutcomes: z
       .array(drillOutcome)
       .optional()
-      .describe('Red-queen drill outcomes (planted known answers) for the drill-ground-truth signals'),
+      .describe('Red-queen drill outcomes (planted known answers) for the drill-ground-truth signals — pass explicitly, or set loadDrillOutcomes to read them from PG'),
+    loadDrillOutcomes: z
+      .boolean()
+      .optional()
+      .describe('Load the live sandbox drill corpus from PG (readDrillOutcomes) into the drill signals instead of passing drillOutcomes by hand. Opt-in; when off the tool does no I/O. Ignored if drillOutcomes is also given (explicit wins).'),
+    drillWorkspaceId: z
+      .string()
+      .optional()
+      .describe(`Workspace to load drills from when loadDrillOutcomes is set (default '${SANDBOX_WORKSPACE_ID}', the red-queen sandbox).`),
+    drillClass: z.string().optional().describe('Restrict loaded drills to one drill_class (e.g. "smoke-fail").'),
+    drillsSinceTs: z.string().optional().describe('Only load drills planted at/after this ISO timestamp.'),
+    drillsLimit: z
+      .number()
+      .int()
+      .positive()
+      .max(2000)
+      .optional()
+      .describe('Cap the number of loaded drill rows (store default 200, max 2000).'),
   }),
   async handler(args) {
+    // drillOutcomes precedence: an explicit arg wins (test/override seam); otherwise
+    // loadDrillOutcomes lazily reads the live corpus. When neither is given the drill
+    // signals report inapplicable (never a fake zero), same as before.
+    let drillOutcomes: SignalContext['drillOutcomes'] = args.drillOutcomes;
+    let drillSource: { mode: 'explicit' | 'loaded' | 'none'; count: number; workspaceId?: string } = {
+      mode: drillOutcomes ? 'explicit' : 'none',
+      count: drillOutcomes?.length ?? 0,
+    };
+    if (args.loadDrillOutcomes && !drillOutcomes) {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readDrillOutcomes } = await import('../../red-queen/store');
+      const workspaceId = args.drillWorkspaceId ?? SANDBOX_WORKSPACE_ID;
+      const loaded = await readDrillOutcomes(getOrgPg().sql, {
+        workspaceId,
+        classId: args.drillClass,
+        sinceTs: args.drillsSinceTs,
+        limit: args.drillsLimit,
+      });
+      drillOutcomes = loaded;
+      drillSource = { mode: 'loaded', count: loaded.length, workspaceId };
+    }
     const ctx: SignalContext = {
       preTests: args.preTests,
       postTests: args.postTests,
@@ -88,11 +151,13 @@ export default defineTool({
         ? { location: args.plantedBug.location, defect: args.plantedBug.defect ?? '', detectionSignature: args.plantedBug.detectionSignature ?? '' }
         : null,
       harnessOutputText: args.harnessOutputText,
-      drillOutcomes: args.drillOutcomes,
+      drillOutcomes,
     };
     const { results, unknown } = evaluateSignals(args.signals, ctx);
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: unknown.length === 0, results, unknown, known: knownSignals() }) }],
+      content: [
+        { type: 'text' as const, text: JSON.stringify({ ok: unknown.length === 0, results, unknown, known: knownSignals(), drillSource }) },
+      ],
     };
   },
 });

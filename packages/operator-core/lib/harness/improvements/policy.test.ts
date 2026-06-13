@@ -3,6 +3,7 @@ import {
   classifyImprovement,
   partitionByTier,
   matchGlob,
+  infraEnvironmentHit,
   DEFAULT_RISK_TIER_POLICY,
   type ImprovementCandidate,
   type RiskTierPolicy,
@@ -82,6 +83,39 @@ describe('classifyImprovement — protected keywords (pre-paths proxy)', () => {
   it('plain bug with no protected keyword → auto', () => {
     const d = classifyImprovement(cand({ id: 'k3', kind: 'bug', title: 'presence list dumps 233 stale rows' }));
     expect(d.tier).toBe('auto');
+  });
+});
+
+describe('classifyImprovement — infra-environment never auto (EI-408 / D-002 / D-005)', () => {
+  it('infra kind=bug via watchdog signal class → human (EI-187 service-down shape)', () => {
+    const d = classifyImprovement(cand({ id: 'i1', kind: 'bug', title: 'Service shop is down', watchdogKey: 'service-down:shop' }));
+    expect(d.tier).toBe('human');
+    expect(d.protectedHit).toMatch(/service-down/);
+    expect(d.reasons.join(' ')).toMatch(/infra-environment/);
+  });
+  it('infra kind=bug via an environment path → human (.service file)', () => {
+    const d = classifyImprovement(cand({ id: 'i2', kind: 'bug', title: 'restart loop', paths: ['deploy/papercup-staging-api.service'] }));
+    expect(d.tier).toBe('human');
+    expect(d.protectedHit).toMatch(/\.service/);
+  });
+  it('fire-circuit-open + migration-drift signal classes are infra too', () => {
+    expect(classifyImprovement(cand({ id: 'i3', kind: 'bug', title: 'gym backoff', watchdogKey: 'fire-circuit-open:gym' })).tier).toBe('human');
+    expect(classifyImprovement(cand({ id: 'i4', kind: 'bug', title: 'drift', watchdogKey: 'migration-drift:live' })).tier).toBe('human');
+  });
+  it('infra beats graduation — even with every kind graduated, an infra item stays human', () => {
+    const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change', 'feature'] };
+    const d = classifyImprovement(cand({ id: 'i5', kind: 'bug', watchdogKey: 'service-down:openai' }), graduated);
+    expect(d.tier).toBe('human');
+  });
+  it('a non-infra signal class (red-test) does NOT trip the infra gate', () => {
+    const d = classifyImprovement(cand({ id: 'i6', kind: 'bug', title: 'red e2e', watchdogKey: 'red-test:apps/operator/e2e/foo' }));
+    expect(d.tier).toBe('auto');
+  });
+  it('infraEnvironmentHit: signal class > path > null', () => {
+    expect(infraEnvironmentHit({ watchdogKey: 'service-down:shop' })).toMatch(/service-down/);
+    expect(infraEnvironmentHit({ paths: ['ops/docker-compose.dev.yml'] })).toMatch(/docker-compose/);
+    expect(infraEnvironmentHit({ watchdogKey: 'red-test:e2e', paths: ['packages/operator-core/lib/x.ts'] })).toBeNull();
+    expect(infraEnvironmentHit({})).toBeNull();
   });
 });
 

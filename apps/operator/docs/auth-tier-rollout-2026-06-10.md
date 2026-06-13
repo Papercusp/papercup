@@ -7,14 +7,14 @@
 > change declarative conversion of existing hand-called loopback gates;
 > `W1` is the mutating→loopback default; `W2` reads stay public.
 
-Total HTTP-projected routes scanned: **685**
+Total HTTP-projected routes scanned: **702**
 
 | wave | routes |
 |---|---|
 | - | 143 |
-| DONE | 254 |
-| OWNER | 17 |
-| W2 | 271 |
+| DONE | 269 |
+| OWNER | 15 |
+| W2 | 275 |
 
 | method | path | current | proposed | wave | reason | file |
 |---|---|---|---|---|---|---|
@@ -95,8 +95,12 @@ Total HTTP-projected routes scanned: **685**
 | OPTIONS | `/agent-mcp/console/bootstrap-su` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
 | POST | `/agent-mcp/console/bootstrap-su` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
 | GET | `/agent-mcp/console/bootstrap-su/brain` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
+| OPTIONS | `/agent-mcp/console/bootstrap-su/heartbeat` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
+| POST | `/agent-mcp/console/bootstrap-su/heartbeat` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
 | GET | `/agent-mcp/console/bootstrap-su/options` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
 | OPTIONS | `/agent-mcp/console/bootstrap-su/options` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
+| OPTIONS | `/agent-mcp/console/bootstrap-su/session-ended` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
+| POST | `/agent-mcp/console/bootstrap-su/session-ended` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts |
 | GET | `/agent-mcp/console/launch` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-launch.ts |
 | OPTIONS | `/agent-mcp/console/launch` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-launch.ts |
 | POST | `/agent-mcp/console/launch` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-launch.ts |
@@ -175,13 +179,13 @@ Total HTTP-projected routes scanned: **685**
 | PUT | `/agent-mcp/workspace/company-id` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/agent-mcp/workspace-company-id.ts |
 | POST | `/agent-tokens/power-user` | trust | trust | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/agent-tokens/power-user.ts |
 | POST | `/agent-tokens/power-user/refresh` | trust | trust | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/agent-tokens/power-user-refresh.ts |
-| POST | `/auth/change-password` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/change-password.ts |
+| POST | `/auth/change-password` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/auth/change-password.ts |
 | POST | `/auth/login` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/login.ts |
 | POST | `/auth/logout` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/logout.ts |
 | GET | `/auth/me` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/me.ts |
-| PATCH | `/auth/me` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/me.ts |
+| PATCH | `/auth/me` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/auth/me.ts |
 | POST | `/auth/signup` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/signup.ts |
-| POST | `/authority/rpc` | public | public! | OWNER | cross-swarm authority RPC (peer transport; EI-284 hardening pending) | packages/operator-core/lib/endpoint-route/routes/authority/rpc.ts |
+| POST | `/authority/rpc` | public | public! | OWNER | cross-swarm authority RPC (peer transport; EI-284 revocation + EI-322 signed-caller enforced, metal-verified 2026-06-12) | packages/operator-core/lib/endpoint-route/routes/authority/rpc.ts |
 | GET | `/backups` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/backups/index.ts |
 | PUT | `/backups` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/backups/index.ts |
 | GET | `/backups/broken-list` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/backups/broken-list.ts |
@@ -213,6 +217,8 @@ Total HTTP-projected routes scanned: **685**
 | GET | `/credentials/search-providers` | trust | trust | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/credentials/search-providers.ts |
 | POST | `/credentials/search-providers` | trust | trust | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/credentials/search-providers.ts |
 | POST | `/cupboard/admin/harnesses/:id/unlist` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
+| POST | `/cupboard/admin/listings/:id/review` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
+| GET | `/cupboard/admin/pending` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
 | GET | `/cupboard/admin/reports` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
 | POST | `/cupboard/admin/reports/:id/resolve` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
 | POST | `/cupboard/install-blueprint` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts |
@@ -220,6 +226,7 @@ Total HTTP-projected routes scanned: **685**
 | POST | `/cupboard/install-plugin` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/cupboard-install-plugin.ts |
 | GET | `/cupboard/listings` | public | public! | OWNER | public pack listings proxy | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
 | GET | `/cupboard/listings/:id` | public | public! | OWNER | public pack listings proxy | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
+| POST | `/cupboard/listings/:id/claim` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
 | GET | `/cupboard/provides` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/cupboard.ts |
 | POST | `/cupboard/publish-blueprint` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts |
 | POST | `/cupboard/publish-plugin` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/cupboard-publish-plugin.ts |
@@ -310,7 +317,12 @@ Total HTTP-projected routes scanned: **685**
 | POST | `/device/voice-tool/:name` | principal (default) | principal (default) | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/device/sync.ts |
 | POST | `/device/workspace/switch` | principal (default) | principal (default) | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/device/pair.ts |
 | GET | `/device/workspaces` | principal (default) | principal (default) | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/device/pair.ts |
+| GET | `/discovery/beacon-consent` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/discovery/beacon-consent.ts |
+| POST | `/discovery/beacon-consent` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/discovery/beacon-consent.ts |
+| GET | `/discovery/hive-meta` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/discovery/hive-meta.ts |
 | GET | `/discovery/hives` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/discovery/hives.ts |
+| POST | `/discovery/join-hive` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/discovery/join-hive.ts |
+| POST | `/discovery/join-invite` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/discovery/join-invite.ts |
 | POST | `/discovery/set-hive` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/discovery/set-hive.ts |
 | GET | `/dock-layouts/_list` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/dock-layouts/index.ts |
 | DELETE | `/dock-layouts/:name` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/dock-layouts/index.ts |
@@ -326,7 +338,8 @@ Total HTTP-projected routes scanned: **685**
 | GET | `/flags/testing-features` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/flags/testing-features.ts |
 | POST | `/flags/testing-features` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/flags/testing-features.ts |
 | POST | `/flags/webhook` | public | public! | OWNER | inbound webhook (provider-signed) | packages/operator-core/lib/endpoint-route/routes/flags/webhook.ts |
-| GET | `/fleet/bee-output` | loopback | — | RETIRED | route deleted 2026-06-12 (hive-agent-tabs P-014 — its only consumer, the pui watch-pane, was retired) | (deleted) |
+| GET | `/fleet/agent-prompt` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/fleet/agent-prompt.ts |
+| GET | `/github/search-repos` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/github/search-repos.ts |
 | GET | `/gym/:slug` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/gym/control.ts |
 | POST | `/gym/:slug/accept` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/gym/control.ts |
 | GET | `/gym/:slug/autoloop` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/gym/control.ts |
@@ -503,7 +516,6 @@ Total HTTP-projected routes scanned: **685**
 | POST | `/harness/:slug/screenshots` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/screenshots.ts |
 | DELETE | `/harness/:slug/screenshots/:id` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/screenshots.ts |
 | GET | `/harness/:slug/screenshots/:id` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/harness/screenshots.ts |
-| POST | `/harness/:slug/share/finalize` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/share-finalize.ts |
 | GET | `/harness/:slug/skills` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/harness/skills-notes.ts |
 | DELETE | `/harness/:slug/skills/:name` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/skills-notes.ts |
 | GET | `/harness/:slug/skills/:name` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/harness/skills-notes.ts |
@@ -546,8 +558,6 @@ Total HTTP-projected routes scanned: **685**
 | GET | `/harness/all/kpis` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/harness/all-kpis.ts |
 | GET | `/harness/all/recent-activity` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/cross-harness/index.ts |
 | POST | `/harness/binding/claim` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/binding-claim.ts |
-| POST | `/harness/binding/resolve` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/binding-resolve.ts |
-| POST | `/harness/cupboard/publish` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/cupboard-publish.ts |
 | POST | `/harness/hives` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/projects.ts |
 | POST | `/harness/hives/from-repo` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/harness/projects.ts |
 | GET | `/harness/identity` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/harness/standalone-views.ts |
@@ -566,6 +576,7 @@ Total HTTP-projected routes scanned: **685**
 | GET | `/harness/templates` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/harness/standalone-views.ts |
 | GET | `/harness/templates/:id/file` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/harness/standalone-views.ts |
 | GET | `/health` | public | public! | OWNER | health probe | packages/operator-core/lib/endpoint-route/routes/misc/health.ts |
+| GET | `/health/ready` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/misc/health-ready.ts |
 | GET | `/installed` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/installed/index.ts |
 | POST | `/installed/prune` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/installed/prune.ts |
 | POST | `/internal/archive-event` | trust | trust | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/internal/archive-event.ts |
@@ -582,6 +593,12 @@ Total HTTP-projected routes scanned: **685**
 | POST | `/internal/skill-snapshot` | trust | trust | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/internal/skill-snapshot.ts |
 | POST | `/internal/smoke-test-event` | trust | trust | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/internal/smoke-test-event.ts |
 | POST | `/internal/test-snapshot` | trust | trust | - | already non-public (trust-gated or principal-required default) | packages/operator-core/lib/endpoint-route/routes/internal/test-snapshot.ts |
+| POST | `/learning-packs/candidate-decide` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/learning-packs.ts |
+| POST | `/learning-packs/fetch-from-comb` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/learning-packs.ts |
+| POST | `/learning-packs/install` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/learning-packs.ts |
+| POST | `/learning-packs/set-enabled` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/learning-packs.ts |
+| POST | `/learning-packs/uninstall` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/learning-packs.ts |
+| POST | `/learning-packs/upgrade` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/learning-packs.ts |
 | GET | `/marketplace/catalog` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/marketplace/catalog.ts |
 | GET | `/marketplace/spawnable` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/marketplace/spawnable.ts |
 | GET | `/oauth/callback` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/oauth/callback.ts |

@@ -48,8 +48,9 @@ afterEach(() => {
 describe('flags:set', () => {
   it('returns ok:true and the key on success', async () => {
     const setFlag = vi.fn(async () => ({ ok: true as const }));
+    const setFlagOverride = vi.fn(async () => ({ ok: true as const }));
     const publishFlagChange = vi.fn();
-    vi.doMock('@papercusp/flags/server', () => ({ setFlag }));
+    vi.doMock('@papercusp/flags/server', () => ({ setFlag, setFlagOverride }));
     vi.doMock('../../flag-bus', () => ({ publishFlagChange }));
     vi.doMock('../flags/_register-backend', () => ({}));
 
@@ -108,7 +109,8 @@ describe('flags:set', () => {
     const tx = vi.fn(async () => []) as any;
     tx.unsafe = vi.fn(async () => []);
     const setFlag = vi.fn(async () => ({ ok: true as const }));
-    vi.doMock('@papercusp/flags/server', () => ({ setFlag }));
+    const setFlagOverride = vi.fn(async () => ({ ok: true as const }));
+    vi.doMock('@papercusp/flags/server', () => ({ setFlag, setFlagOverride }));
     vi.doMock('../../flag-bus', () => ({ publishFlagChange: vi.fn() }));
     vi.doMock('../flags/_register-backend', () => ({}));
 
