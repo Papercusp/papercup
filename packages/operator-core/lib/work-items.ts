@@ -571,10 +571,11 @@ export function normalizeWorkItemState(
     todo: 'open',
     dropped: 'closed',
     deprecated: 'closed',
+    'needs-human': 'open',
   };
   const mapped = aliases[state] ?? state;
   if (ISSUE_FAMILY_STATES.includes(mapped)) return { ok: true, state: mapped };
-  return { ok: false, valid: [...ISSUE_FAMILY_STATES, 'done', 'dropped', 'todo'] };
+  return { ok: false, valid: [...ISSUE_FAMILY_STATES, 'done', 'dropped', 'todo', 'needs-human'] };
 }
 
 /** Lifecycle.setState — feature → status; issue → state. The requested state is

@@ -19,7 +19,9 @@
  */
 import { buildSubstrateCloneCommands, type GitCommand } from '../gym/clone';
 import type { HiveScenario } from './scenario';
+import { SEED_APP_DIR } from './scenarios';
 import type { HiveSurvey } from '../hive/survey';
+import type { HiveRunPorts, HiveBootResult, DriveResult } from './run-harness';
 
 // ───────────────────────── seed-app → a pinned-SHA git repo (pure) ─────────────────────────
 //
@@ -109,11 +111,168 @@ export function isHiveDrained(
 // (teardown). Injected so the orchestration is unit-testable; bound for the owner-armed live run.
 // (makeLiveHivePorts lands next — Phase 1 IO assembly + Phase 2 drive/collect — over this seam.)
 
-export interface LiveHivePortsDeps {
-  /** Run a git/shell command (execFile, no shell). Returns stdout (for `rev-parse`). */
-  exec(cmd: string, args: string[]): Promise<{ stdout: string }>;
+/** The run's measured counts + cost, read from the throwaway hive's rows (the speed/cost inputs). */
+export interface LiveRunStats {
+  costUsd: number;
+  workItemsTotal: number;
+  workItemsCompleted: number;
+}
+
+/**
+ * The live IO operations `makeLiveHivePorts` orchestrates. Every side effect is one method, so the
+ * boot→seed→drive→collect→teardown ORDERING + the drained-polling loop are unit-testable with fakes
+ * (no git/PG/LLM); the real binding (`liveHiveOps`, next) wires git/fs + createHiveHarness + the
+ * member-register + the HFC/edge writes + hive:start + surveyHive + the placement/spawn reads +
+ * teardown. The full live run is reached only by an owner-armed run (P-051).
+ */
+export interface LiveHiveOps {
+  /** Per-run scratch root (the base + clone dirs live under it). */
+  scratchRoot(slug: string): string;
   /** Recursively copy the seed-app fixture into a writable base dir (never mutate the fixture). */
   copyDir(src: string, dest: string): Promise<void>;
+  /** Run a git/shell command (execFile, no shell). Returns stdout (for `rev-parse`). */
+  exec(cmd: string, args: string[]): Promise<{ stdout: string }>;
   /** Remove a path (the clone / base dir) on teardown. */
   rm(path: string): Promise<void>;
+  /** Mint the Queen seat — createHiveHarness, IDLE (no initial wake; drive starts it). */
+  createHive(input: { slug: string; workspaceId: string }): Promise<void>;
+  /** Register the substrate clone as a MEMBER harness (scaffold schema + hive_slug → home). */
+  registerMember(input: { member: string; clonePath: string; hiveHome: string; workspaceId: string }): Promise<void>;
+  /** Seed one scenario work-item as a `todo` feature-family work-item in the member harness. */
+  seedFeature(input: { member: string; featureId: string; title: string; spec: string; workspaceId: string }): Promise<void>;
+  /** Write a work-item's dependsOn as feature→feature `blocks` edges (syncFeatureBlockEdges). */
+  syncBlockEdges(input: { member: string; featureId: string; blockedBy: readonly string[] }): Promise<void>;
+  /** Start the Hive (setHiveStarted + the urgent Queen wake) — the real autonomous run begins. */
+  startHive(input: { hiveHome: string; workspaceId: string; kickoff: string }): Promise<void>;
+  /** Stop the Hive (setHiveStarted false) — bound spend at drain/timeout. */
+  pauseHive(input: { hiveHome: string; workspaceId: string }): Promise<void>;
+  /** surveyHive's two views (which plans/frontier remain) — the drained inputs. */
+  survey(input: { hiveHome: string; workspaceId: string }): Promise<Pick<HiveSurvey, 'plans' | 'frontier'>>;
+  /** Count placements still in flight (hive_placements rows not yet `completed`). */
+  countInFlightPlacements(input: { hiveHome: string; workspaceId: string }): Promise<number>;
+  /** The run's measured cost + completion counts (spawned_agents + the member's work-items). */
+  readRunStats(input: { member: string; workspaceId: string }): Promise<LiveRunStats>;
+  /** The distilled trace + ref for the judge (HE-06) — read from spawn/work-item rows. */
+  readRunTrace(input: { member: string; workspaceId: string; maxChars: number }): Promise<{ distilledTrace: string; traceRef: string; extra?: Record<string, unknown> }>;
+  /** Drop the member harness schema + its rows. */
+  dropMember(input: { member: string; workspaceId: string }): Promise<void>;
+  /** Dissolve the Queen-seat hive home. */
+  dissolveHive(input: { hiveHome: string; workspaceId: string }): Promise<void>;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+
+export interface LiveHivePortsOpts {
+  workspaceId: string;
+  /** Poll cadence for the drained check during driveToCompletion. Default 10s. */
+  pollIntervalMs?: number;
+}
+
+/** The boot context threaded (opaquely) to seed/drive/collect/teardown. */
+interface LiveBootHandle {
+  home: string;
+  member: string;
+  base: string;
+  clone: string;
+}
+
+/**
+ * Assemble the LIVE {@link HiveRunPorts} from the injected ops. boot → materialize+clone the
+ * seed-app, mint the Queen seat + register the substrate member; seed → the work-item DAG + block
+ * edges; drive → start the Hive then poll until {@link isHiveDrained} or the timeout (then pause to
+ * bound spend); collect → the distilled trace; teardown → drop the member + dissolve the hive +
+ * remove the clones. The whole-Hive run is real LLM spend — reached only by an owner-armed run.
+ */
+export function makeLiveHivePorts(ops: LiveHiveOps, opts: LiveHivePortsOpts): HiveRunPorts {
+  const ws = opts.workspaceId;
+  const pollIntervalMs = opts.pollIntervalMs ?? 10_000;
+
+  return {
+    now: () => ops.now(),
+
+    async bootHive({ identity }): Promise<HiveBootResult> {
+      const root = ops.scratchRoot(identity.hiveSlug);
+      const base = `${root}/base`;
+      const clone = `${root}/clone`;
+      const home = identity.hiveSlug;
+      const member = `${identity.hiveSlug}m`; // hyphen-free (run-identity) ⇒ safe schema id
+
+      // 1. Materialize the seed-app fixture as a one-commit repo (the clone source + pin).
+      await ops.copyDir(SEED_APP_DIR, base);
+      for (const c of seedRepoMaterializeCommands(base)) await ops.exec(c.argv[0], c.argv.slice(1));
+      const sha = (await ops.exec('git', ['-C', base, 'rev-parse', 'HEAD'])).stdout.trim();
+      // 2. Hermetic-clone @ the pinned SHA.
+      for (const c of seedRepoCloneCommands({ baseDir: base, commit: sha, destDir: clone })) {
+        await ops.exec(c.argv[0], c.argv.slice(1));
+      }
+      // 3. Queen seat (idle) + the substrate as a member harness it surveys.
+      await ops.createHive({ slug: home, workspaceId: ws });
+      await ops.registerMember({ member, clonePath: clone, hiveHome: home, workspaceId: ws });
+
+      const handle: LiveBootHandle = { home, member, base, clone };
+      return { hiveSlug: home, repoPath: clone, workspaceId: ws, handle };
+    },
+
+    async seedScenario({ scenario, boot }): Promise<void> {
+      const { member } = boot.handle as LiveBootHandle;
+      const plan = scenarioSeedPlan(scenario);
+      for (const f of plan.features) {
+        await ops.seedFeature({ member, featureId: f.featureId, title: f.title, spec: f.spec, workspaceId: ws });
+      }
+      // Block edges per work-item (the planted defect is already in the cloned repo).
+      for (const w of scenario.workItems) {
+        if (w.dependsOn.length > 0) await ops.syncBlockEdges({ member, featureId: w.id, blockedBy: w.dependsOn });
+      }
+    },
+
+    async driveToCompletion({ scenario, boot, timeoutMs }): Promise<DriveResult> {
+      const { home, member } = boot.handle as LiveBootHandle;
+      const startedAt = ops.now();
+      await ops.startHive({
+        hiveHome: home,
+        workspaceId: ws,
+        kickoff: `Hive-eval scenario "${scenario.id}" — drain the seeded work-items to the known-good end state.`,
+      });
+
+      let drained = false;
+      try {
+        while (ops.now() - startedAt < timeoutMs) {
+          const [survey, inFlight] = await Promise.all([
+            ops.survey({ hiveHome: home, workspaceId: ws }),
+            ops.countInFlightPlacements({ hiveHome: home, workspaceId: ws }),
+          ]);
+          if (isHiveDrained(survey, inFlight)) {
+            drained = true;
+            break;
+          }
+          await ops.sleep(pollIntervalMs);
+        }
+      } finally {
+        // Always stop the Hive — a timed-out run must not keep spending.
+        await ops.pauseHive({ hiveHome: home, workspaceId: ws }).catch(() => {});
+      }
+
+      const stats = await ops.readRunStats({ member, workspaceId: ws });
+      return {
+        terminalState: drained ? 'drained' : 'timeout',
+        frontierDrained: drained,
+        workItemsTotal: stats.workItemsTotal || scenario.workItems.length,
+        workItemsCompleted: stats.workItemsCompleted,
+        costUsd: stats.costUsd,
+      };
+    },
+
+    async collectRunData({ boot, maxChars }) {
+      const { member } = boot.handle as LiveBootHandle;
+      return ops.readRunTrace({ member, workspaceId: ws, maxChars });
+    },
+
+    async teardown({ boot }): Promise<void> {
+      const { home, member, base, clone } = boot.handle as LiveBootHandle;
+      await ops.dropMember({ member, workspaceId: ws }).catch(() => {});
+      await ops.dissolveHive({ hiveHome: home, workspaceId: ws }).catch(() => {});
+      await ops.rm(base).catch(() => {});
+      await ops.rm(clone).catch(() => {});
+    },
+  };
 }

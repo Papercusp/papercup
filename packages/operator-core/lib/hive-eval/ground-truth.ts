@@ -233,7 +233,8 @@ export async function runBaselineSuite(
   opts: { command?: string; args?: string[]; timeoutMs?: number } = {},
 ): Promise<TestResult[]> {
   const command = opts.command ?? 'node';
-  const args = opts.args ?? ['--test'];
+  // Force the TAP reporter — Node ≥22 defaults to the human `spec` reporter (✔/✘), not TAP.
+  const args = opts.args ?? ['--test', '--test-reporter=tap'];
   try {
     const { stdout } = await execFileP(command, args, {
       cwd: repoPath,

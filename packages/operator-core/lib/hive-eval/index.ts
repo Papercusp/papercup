@@ -84,6 +84,8 @@ export {
   deriveActuals,
   gitLogCommits,
   liveGroundTruthPorts,
+  parseTapResults,
+  runBaselineSuite,
   type GroundTruthRaw,
   type GroundTruthCtx,
   type GroundTruthPorts,

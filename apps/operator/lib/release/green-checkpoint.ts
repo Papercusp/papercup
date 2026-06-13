@@ -83,6 +83,76 @@ export function extractFailingTests(out: string): string[] {
   return [...set].sort().slice(0, 50);
 }
 
+/** Host-set, test-affecting NON-`PAPERCUSP_` env vars the gate must strip (P-008).
+ *  `AGENT_MODELS` (the operator's per-role model map, e.g. `{"worker":"opus"}` in
+ *  .env.local) leaked into the gate and broke `@papercusp/orchestrator` invoke.test
+ *  2026-06-09 — green in a clean shell, red only under the routine. The gate measures
+ *  the COMMITTED defaults; tests that need it set it themselves. */
+export const HOST_ENV_STRIP = ['AGENT_MODELS'];
+
+/**
+ * Build the GREEN suite's environment — the COMMITTED DEFAULTS, with the host's
+ * identity stripped — as a fresh env (so realCheckpointDeps.runGreen's env logic,
+ * which twice held `main` red for hours via leaked env, is unit-testable without
+ * running the suite). `source` defaults to the live process env.
+ *
+ * - Strip ALL `PAPERCUSP_*` (a demo flag leaked from the systemd user-manager env
+ *   held `main` red for hours 2026-06-06; non-flag host vars — PAPERCUSP_OPERATOR_URL
+ *   / SPAWN_SU_BEARER — struck again 2026-06-07, failing spawn-chokepoint tests 8/8
+ *   under the routine while the same sha passed in a login shell) + every
+ *   {@link HOST_ENV_STRIP} key. The host's identity must never define green.
+ * - `GREEN_CHECKPOINT=1` — a marker so genuinely load-/live-network-sensitive tests
+ *   that CANNOT be hermetic (real Hyperswarm/DHT, ports) self-exclude via
+ *   `describe.skipIf(process.env.GREEN_CHECKPOINT === '1')`; they still run in CI/local.
+ * - `AFFECTED_BASE=<base>` (when given) so test:affected runs exactly the candidate's delta.
+ * - `VITEST_MAX_FORKS/THREADS` default to 8 (respecting a pre-set value): the checkpoint
+ *   shares the box with the live fleet; uncapped workers under that load produce timeout
+ *   FLAKES that read as "not green" (a 1-of-8881 load-flake held `main` back 2026-06-06).
+ * - `AFFECTED_RETRY_FAILED` defaults to 1 (respecting a pre-set value): re-run a failed
+ *   workspace once before calling it red — a real regression fails twice, a flake doesn't.
+ */
+export function buildGreenCheckpointEnv(
+  base: string | null,
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...source };
+  for (const k of Object.keys(env)) {
+    if (k.startsWith('PAPERCUSP_') || HOST_ENV_STRIP.includes(k)) delete env[k];
+  }
+  env.GREEN_CHECKPOINT = '1';
+  if (base) env.AFFECTED_BASE = base;
+  env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? '8';
+  env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? '8';
+  env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? '1';
+  return env;
+}
+
+/** P-012 failure signature for the release-fixer dedup, folding the SPA-build break in:
+ *  a green run has none; otherwise the extracted suite failures, plus the sentinel
+ *  `@papercusp/operator-vite` when the build (not the suite) is what failed — so a broken
+ *  build holds `main` like any other red and dedups by FAILURE, not the hourly candidate sha. */
+export function checkpointFailureSignature(
+  fullOutput: string,
+  green: boolean,
+  buildOk: boolean,
+): string[] {
+  const failingTests = green ? [] : extractFailingTests(fullOutput);
+  if (!buildOk && !failingTests.includes('@papercusp/operator-vite')) failingTests.push('@papercusp/operator-vite');
+  return failingTests;
+}
+
+/** De-noise the suite (+ build) output for the held-gate broadcast/escalation: drop npm's
+ *  error boilerplate (~10 lines/failed-workspace that repeatedly pushed the real `FAIL`
+ *  test names out of the tail — cost two diagnosis round-trips 2026-06-06) and keep the
+ *  last 2000 chars (FAIL lines, timeouts, assertion output, the SPA-build failure tail). */
+export function summarizeSuiteOutput(fullOutput: string): string {
+  return fullOutput
+    .split('\n')
+    .filter((l) => !/^npm error/.test(l))
+    .join('\n')
+    .slice(-2000);
+}
+
 export interface CheckpointOpts {
   /** Override the candidate (default: integration-branch HEAD). */
   candidate?: string;
@@ -187,47 +257,11 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
     },
     async runGreen(treeDir, base) {
       const [cmd, ...args] = cfg.greenCmd.split(' ');
-      const env: NodeJS.ProcessEnv = { ...process.env };
-      // GREEN means "the COMMITTED DEFAULTS pass" — strip ALL host-specific
-      // PAPERCUSP_* env from the gate's environment, not just flags. History:
-      // 2026-06-06 a demo flag (PAPERCUSP_FLAG_…) leaked from the systemd
-      // user-manager env and held `main` red for hours; 2026-06-07 the same
-      // class struck again via NON-flag vars — the live operator host's env
-      // (PAPERCUSP_OPERATOR_URL / SPAWN_SU_BEARER / …) made the spawn-chokepoint
-      // tests fail 8/8 under the routine while the same sha passed 8/8 in a
-      // login shell. Tests that need papercusp env set it themselves; the
-      // host's identity must never define green.
-      // P-008 (release-pipeline-resilience-2026-06-09): also strip host-set,
-      // test-affecting NON-PAPERCUSP_ vars of the same class. `AGENT_MODELS` (the
-      // operator's per-role model map, e.g. {"worker":"opus"} in .env.local) leaked
-      // into the gate and broke `@papercusp/orchestrator` invoke.test 2026-06-09 —
-      // green in a clean shell, red only under the routine. Same principle: the
-      // gate measures the COMMITTED defaults; tests that need it set it themselves.
-      const HOST_ENV_STRIP = ['AGENT_MODELS'];
-      for (const k of Object.keys(env)) {
-        if (k.startsWith('PAPERCUSP_') || HOST_ENV_STRIP.includes(k)) delete env[k];
-      }
-      // P-008: a gate marker so genuinely load- / live-network-sensitive tests that
-      // CANNOT be made hermetic (real Hyperswarm/DHT, ports) can self-exclude from
-      // the hourly gate via `describe.skipIf(process.env.GREEN_CHECKPOINT === '1')`
-      // — they still run in normal CI/local. The gate measures deterministic
-      // suites; live-wire coverage belongs in a non-gating tier.
-      env.GREEN_CHECKPOINT = '1';
-      if (base) env.AFFECTED_BASE = base;
-      // Cap the suite's parallelism: the checkpoint shares the box with the live
-      // fleet (deploys, hive agents, builds), and uncapped vitest workers under
-      // that load produce timeout FLAKES that read as "not green" and stall the
-      // auto-serve pipeline (observed 2026-06-06: 1-of-8881 load-flake held
-      // `main` back; the same suite passed clean minutes later). Hourly +
-      // isolated means slower-but-stable is the right trade.
-      env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? '8';
-      env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? '8';
-      // …and absorb the flakes the cap can't prevent: re-run a failed workspace
-      // once before calling the candidate red (affected-tests.mjs). At fleet
-      // load 70-95 single-timeout flakes held `main` for ~6h (2026-06-06
-      // afternoon) while the identification re-runs passed 100%. A real
-      // regression fails twice; a flake almost never does.
-      env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? '1';
+      // The gate measures the COMMITTED DEFAULTS: buildGreenCheckpointEnv strips the
+      // host's identity (all PAPERCUSP_* + HOST_ENV_STRIP), pins AFFECTED_BASE to the
+      // last green, caps vitest parallelism + retries once to absorb load-flakes, and
+      // marks GREEN_CHECKPOINT=1 (its doc records the incidents behind each rule).
+      const env = buildGreenCheckpointEnv(base);
       const r = await runCmd(cmd, args, { cwd: treeDir, env, allowNonZero: true });
 
       // P-005: the SPA build is PART of "green". A build break (a bad import, a type
@@ -268,20 +302,11 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
         pruneOldLogs(logDir, 14);
       } catch { /* best-effort — the gate verdict must not depend on logging */ }
 
-      // P-012: a stable failure signature from the FULL output (before truncation), so the
-      // release-fixer dedups by WHAT failed, not the candidate sha (which changes hourly).
-      const failingTests = green ? [] : extractFailingTests(fullOutput);
-      if (!buildOk && !failingTests.includes('@papercusp/operator-vite')) failingTests.push('@papercusp/operator-vite');
-
-      // Strip npm's error boilerplate before truncating — it's ~10 lines of noise per
-      // failed workspace and repeatedly pushed the actual FAIL test names out of the
-      // 2000-char tail (cost two diagnosis round-trips on 2026-06-06). Keep the signal:
-      // FAIL lines, timeouts, assertion output, and the SPA build failure tail.
-      const summary = fullOutput
-        .split('\n')
-        .filter((l) => !/^npm error/.test(l))
-        .join('\n')
-        .slice(-2000);
+      // P-012: a stable failure signature from the FULL output (before truncation), folding
+      // the SPA build break in, so the release-fixer dedups by WHAT failed, not the candidate
+      // sha. The de-noised 2000-char tail rides the held-gate broadcast/escalation.
+      const failingTests = checkpointFailureSignature(fullOutput, green, buildOk);
+      const summary = summarizeSuiteOutput(fullOutput);
       return { green, summary, failingTests };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),

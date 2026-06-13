@@ -136,7 +136,11 @@ export type AttentionActionId =
   | 'drop'
   | 'view-log'
   | 'open'
-  | 'ack';
+  | 'ack'
+  // B-14 / D-027 follow-on (1): inline disposition for the folded kinds.
+  // standing-approval is a terminal grant/dismiss (operator:standing_approvals_decide).
+  | 'grant'
+  | 'dismiss';
 
 export interface AttentionAction {
   id: AttentionActionId;

@@ -27,7 +27,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const workItem = await setWorkItemState(args.id, args.state, { harness: args.harness, by: ident.ownerId });
-    return { content: [{ type: 'text' as const, text: JSON.stringify(workItem ? { ok: true, workItem } : { ok: false, error: `work_item '${args.id}' not found` }) }] };
+    try {
+      const workItem = await setWorkItemState(args.id, args.state, { harness: args.harness, by: ident.ownerId });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(workItem ? { ok: true, workItem } : { ok: false, error: `work_item '${args.id}' not found` }) }] };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }] };
+    }
   },
 });

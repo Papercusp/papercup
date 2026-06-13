@@ -12,9 +12,12 @@
  *     the resume-on-resolve / no-resume-on-drop distinction. Navigate ids
  *     (`chat`/`answer`/`view-log`/`open`) are NOT handled here — the
  *     component owns them (inline chat / inline InputCard / harness view).
- *   - `answerAttentionItem(item, text)` is the Answer InputCard submit
- *     (record a decision + mark done + resume), mirroring the retired
- *     `InboxItemActions.handleAnswer`.
+ *   - `answerAttentionItem(item, text)` is the Answer InputCard submit: for a
+ *     plan-item, record a decision + mark done + resume (mirrors the retired
+ *     `InboxItemActions.handleAnswer`); for a conversation (D-027 follow-on (1)),
+ *     resolve the question with the owner's text as the accepted answer.
+ *   - `resolveAttentionAction` also dispatches the standing-approval terminal
+ *     grant/dismiss (D-027 follow-on (1)).
  *
  * These deliberately reproduce today's `OtherDetail` / `InboxItemActions`
  * behavior — see attention-card.test.ts for the parity assertions (P-013).
@@ -31,6 +34,8 @@ import {
   setItemStatus,
   addPlanDecision,
   triageAttentionItem,
+  decideStandingApproval,
+  resolveConversationAnswer,
 } from './plans-api';
 import type { AskChoiceArgs, AskChoiceOption } from '@/app/_components/chat/AskChoiceCard';
 
@@ -176,6 +181,19 @@ export async function resolveAttentionAction(
     }
   }
 
+  if (ref.kind === 'standing-approval' && (optionId === 'grant' || optionId === 'dismiss')) {
+    // D-027 follow-on (1): inline owner decision on a standing-approval candidate.
+    // Grant ('approve') writes the persistent [STANDING-APPROVE] preference entry;
+    // Dismiss drops the candidate. Both refresh the candidate list so the row leaves.
+    const res = await decideStandingApproval({
+      capability: refField(item, 'capability'),
+      targetHarness: refField(item, 'targetHarness'),
+      decision: optionId === 'grant' ? 'approve' : 'dismiss',
+    });
+    if (res?.error) throw new Error(res.error);
+    return { resolved: true };
+  }
+
   if (ref.kind === 'operator-report' && (optionId === 'resolve' || optionId === 'mark-done')) {
     // Resolving an operator report IS the triage state machine (resolve →
     // handled tier, auditable — Brief 21 D-006); the item id is stable
@@ -195,13 +213,32 @@ export async function resolveAttentionAction(
 }
 
 /**
- * Answer a needs-human plan item with free text: record a plan decision the
- * agent reads next, mark the item done, resume the loop. Mirrors the retired
- * `InboxItemActions.handleAnswer`.
+ * Submit the inline Answer InputCard's free text. Two kinds answer with text:
+ *
+ *  - `plan-item` (P-021): record a plan decision the agent reads next, mark the
+ *    item done, resume the loop. Mirrors the retired `InboxItemActions.handleAnswer`.
+ *  - `conversation` (D-027 follow-on (1)): resolve the open question with the
+ *    owner's text as the accepted answer — captures it to the knowledge layer for
+ *    the next asker and drops it from the Queue. No loop resume (a coord:ask
+ *    conversation isn't a plan-blocking decision).
+ *
+ * Any other kind (or empty text) is a no-op.
  */
 export async function answerAttentionItem(item: AttentionItem, answerText: string): Promise<ResolveResult> {
   const body = answerText.trim();
-  if (!body || (item.ref as { kind: string }).kind !== 'plan-item') return { resolved: false };
+  if (!body) return { resolved: false };
+  const kind = (item.ref as { kind: string }).kind;
+
+  if (kind === 'conversation') {
+    const res = await resolveConversationAnswer({
+      conversation_id: refField(item, 'conversationId'),
+      accepted_answer: body,
+    });
+    if (res?.error) throw new Error(res.error);
+    return { resolved: true };
+  }
+
+  if (kind !== 'plan-item') return { resolved: false };
   const slug = refField(item, 'slug');
   const itemId = refField(item, 'itemId');
   const dec = await addPlanDecision({ slug, title: `Answer to ${itemId}`, body, refs: [itemId] });

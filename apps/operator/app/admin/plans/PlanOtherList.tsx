@@ -27,8 +27,9 @@ import { toast } from 'sonner';
 import PlanChat from './PlanChat';
 import MessageOwnerThread from './MessageOwnerThread';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
+import { InputCard, type InputCardResponse } from '@/app/_components/chat/InputCard';
 import { InboxCardActions } from './InboxCardActions';
-import { attentionItemToCardSpec, resolveAttentionAction } from './attention-card';
+import { attentionItemToCardSpec, resolveAttentionAction, answerAttentionItem } from './attention-card';
 import { TIER_LABEL, type AttentionGroup, type AttentionItem, type AttentionKind, type AttentionTier } from './plans-api';
 
 const KIND_LABEL: Record<AttentionKind, string> = {
@@ -236,6 +237,9 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
 export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {
   const [chatOpen, setChatOpen] = useState(false);
   const [msgOwnerOpen, setMsgOwnerOpen] = useState(false);
+  // D-027 follow-on (1): the inline Answer InputCard (conversation kind). State
+  // resets per selection — PlansClient remounts OtherDetail with key={item.id}.
+  const [answerOpen, setAnswerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [answered, setAnswered] = useState<AskChoiceAnswered | undefined>(undefined);
 
@@ -262,6 +266,9 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
         setChatOpen(true);
       } else if (resp.option_id === 'message-owner') {
         setMsgOwnerOpen(true);
+      } else if (resp.option_id === 'answer') {
+        // D-027 follow-on (1): reveal the inline Answer InputCard (conversation).
+        setAnswerOpen((v) => !v);
       } else {
         toast.info(
           `${resp.label}: this ${kindLabel} lives in its harness view${
@@ -287,6 +294,30 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
       } finally {
         setBusy(false);
       }
+    }
+  };
+
+  // D-027 follow-on (1): the inline Answer submit (conversation kind). Resolves
+  // the question with the owner's text as the accepted answer (captured for the
+  // next asker), which drops it from the Queue.
+  const onAnswerResponse = async (r: InputCardResponse) => {
+    if (r.action !== 'submit') {
+      setAnswerOpen(false);
+      return;
+    }
+    if (busy || !item) return;
+    setBusy(true);
+    try {
+      const res = await answerAttentionItem(item, String(r.value));
+      if (res.resolved) {
+        setAnswered({ picks: [{ option_id: 'answer', label: 'Answer' }], at: Date.now() });
+        toast.success(`Answered ${kindLabel}`, { description: 'Recorded as the accepted answer; question resolved.' });
+        onResolved();
+      }
+    } catch (e) {
+      toast.error('Answer failed', { description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -325,6 +356,13 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
           hideOptions
           onResponse={(r) => void onResponse(r)}
         />
+        {answerOpen ? (
+          <InputCard
+            prompt="Your answer — recorded as the accepted answer (resolves the question and captures it for the next asker)."
+            presentation={{ kind: 'text', placeholder: 'Type your answer…', multiline: true }}
+            onResponse={(r) => void onAnswerResponse(r)}
+          />
+        ) : null}
         {msgOwnerOpen ? <MessageOwnerThread item={item} /> : null}
         {chatOpen ? <PlanChat harnessSlug={item.harnessSlug} label={chatLabel} /> : null}
       </div>

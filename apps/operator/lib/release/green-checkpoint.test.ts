@@ -7,7 +7,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runGreenCheckpoint, extractFailingTests, type CheckpointDeps } from './green-checkpoint';
+import {
+  runGreenCheckpoint,
+  extractFailingTests,
+  buildGreenCheckpointEnv,
+  checkpointFailureSignature,
+  summarizeSuiteOutput,
+  type CheckpointDeps,
+} from './green-checkpoint';
 import { git, revParse, advanceReady } from './git-ops';
 import { releaseConfig } from './release-config';
 

@@ -151,7 +151,12 @@ export type AttentionActionId =
   | 'drop'
   | 'view-log'
   | 'open'
-  | 'ack';
+  | 'ack'
+  // B-14 / D-027 follow-on (1): inline disposition for the folded kinds
+  // (standing-approval grant/dismiss). Mirrors AttentionActionId in
+  // operator-core/lib/attention/types.ts — keep in sync.
+  | 'grant'
+  | 'dismiss';
 
 /** The four inbox tiers (inbox-tiering-and-message-agent D-002/D-006), ordered
  *  Decisions ▸ Handled-by-operator ▸ Alerts ▸ Activity. Mirrors the server
@@ -499,6 +504,41 @@ export function postConversation(conversationId: string, body: string) {
     conversation_id: conversationId,
     body,
   });
+}
+
+/** Answer + close an open question from the Queue (D-027 follow-on (1)): record
+ *  the owner's text as the accepted answer and resolve the conversation, which
+ *  captures it to the knowledge layer (for the next asker) and drops it from the
+ *  Queue. The owner is the authority, so answering IS resolving — distinct from
+ *  postConversation (a non-closing reply). */
+export function resolveConversationAnswer(args: { conversation_id: string; accepted_answer: string }) {
+  return postCoordination<{ ok?: boolean; state?: string; error?: string }>('conversations', 'resolve', {
+    conversation_id: args.conversation_id,
+    accepted_answer: args.accepted_answer,
+  });
+}
+
+/** Grant or dismiss a standing-approval candidate from the Queue (D-027 follow-on
+ *  (1)). Mirrors the settings/operator page's decideCandidate — the same POST half
+ *  of operator:standing_approvals_decide; Grant writes the [STANDING-APPROVE]
+ *  preference entry, both refresh candidates so the pair drops out. */
+export async function decideStandingApproval(args: {
+  capability: string;
+  targetHarness: string;
+  decision: 'approve' | 'dismiss';
+}): Promise<{ ok?: boolean; error?: string }> {
+  const r = await fetch('/api/agent-mcp/operator-standing-approvals', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(args),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`standing-approvals:decide → ${r.status}: ${text.slice(0, 200)}`);
+  try {
+    return JSON.parse(text) as { ok?: boolean; error?: string };
+  } catch {
+    return {};
+  }
 }
 
 /* ── Hooks ─────────────────────────────────────────────────────────── */

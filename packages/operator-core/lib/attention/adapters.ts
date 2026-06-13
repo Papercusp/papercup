@@ -430,7 +430,14 @@ export function standingApprovalToAttention(s: StandingApprovalInput): Attention
     ownerAgentId: null,
     ownerLabel: null,
     ...untriaged(),
-    actions: [{ id: 'open', label: 'Review approval', primary: true }],
+    // D-027 follow-on (1): inline disposition — Grant writes the standing
+    // [STANDING-APPROVE] preference entry, Dismiss drops the candidate
+    // (operator:standing_approvals_decide). A clean owner binary, so resolve it
+    // on the Queue rather than bouncing to the operator-settings surface.
+    actions: [
+      { id: 'grant', label: 'Grant', primary: true },
+      { id: 'dismiss', label: 'Dismiss' },
+    ],
     ref: { kind: 'standing-approval', capability: s.capability, targetHarness: s.targetHarness },
   };
 }
@@ -469,9 +476,14 @@ export function conversationToAttention(c: ConversationInput): AttentionItem {
     ownerAgentId: c.askerId ?? null,
     ownerLabel: c.askerLabel ?? c.askerId ?? null,
     ...untriaged(),
+    // D-027 follow-on (1): inline disposition — `answer` is a navigate id (the
+    // detail pane reveals an inline InputCard); submitting resolves the question
+    // with the owner's text (conversations:resolve { accepted_answer }), which
+    // captures it to the knowledge layer AND drops it from the Queue (the reader
+    // surfaces only open, unanswered conversations).
     actions: c.harnessSlug
-      ? [{ id: 'open', label: 'Answer', primary: true }, CHAT, MESSAGE_OWNER]
-      : [{ id: 'open', label: 'Answer', primary: true }, MESSAGE_OWNER],
+      ? [{ id: 'answer', label: 'Answer', primary: true }, CHAT, MESSAGE_OWNER]
+      : [{ id: 'answer', label: 'Answer', primary: true }, MESSAGE_OWNER],
     ref: { kind: 'conversation', conversationId: c.conversationId },
   };
 }

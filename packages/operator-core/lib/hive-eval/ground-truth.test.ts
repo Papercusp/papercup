@@ -11,6 +11,8 @@ import {
   collectGroundTruth,
   liveGroundTruthPorts,
   gitLogCommits,
+  parseTapResults,
+  runBaselineSuite,
   type GroundTruthPorts,
   type GroundTruthCtx,
   type ObservedCommit,
@@ -18,7 +20,7 @@ import {
   type WorkItemActual,
 } from './ground-truth';
 import { detectFabrication } from './outcome-metrics';
-import { getScenario } from './scenarios';
+import { getScenario, SEED_APP_DIR } from './scenarios';
 import type { HiveScenario, ScenarioWorkItem } from './scenario';
 
 const execFileP = promisify(execFile);
@@ -190,5 +192,37 @@ describe('gitLogCommits (real git reader)', () => {
 
   it('a non-git path yields no commits (never throws)', async () => {
     expect(await gitLogCommits(path.join(tmpdir(), 'definitely-not-a-repo-heval'))).toEqual([]);
+  });
+});
+
+describe('parseTapResults (the regression-floor TAP parser)', () => {
+  it('reads ok / not ok verdicts and strips TAP directives', () => {
+    const tap = [
+      'TAP version 13',
+      'ok 1 - parseRecord parses well-formed records',
+      'not ok 2 - scoreItem multiplies weight by signal',
+      'ok 3 - skipped one # SKIP not relevant',
+      '1..3',
+      '# tests 3',
+    ].join('\n');
+    expect(parseTapResults(tap)).toEqual([
+      { name: 'parseRecord parses well-formed records', passed: true },
+      { name: 'scoreItem multiplies weight by signal', passed: false },
+      { name: 'skipped one', passed: true },
+    ]);
+  });
+
+  it('ignores non-verdict lines and yields [] for empty output', () => {
+    expect(parseTapResults('')).toEqual([]);
+    expect(parseTapResults('# just a comment\nTAP version 13\n1..0')).toEqual([]);
+  });
+});
+
+describe('runBaselineSuite (against the seed-app fixture — the green regression floor)', () => {
+  it('runs node --test and reports the baseline suite all green', async () => {
+    const results = await runBaselineSuite(SEED_APP_DIR, { timeoutMs: 30_000 });
+    expect(results.length).toBeGreaterThanOrEqual(4);
+    expect(results.every((r) => r.passed)).toBe(true); // planted defects are LATENT at seed
+    expect(results.map((r) => r.name)).toContain('rankItems orders by descending score');
   });
 });
