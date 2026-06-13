@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { selectNudgeTargets, selectDeclaredPresence, nudgeSummary, nudgeBody, NUDGE_PREFIX } from './claim-discipline-action';
+import type { PresenceRecord } from '@papercusp/coordination/presence';
 
 function declaredPresence(over: {
   agentId: string;
@@ -12,6 +13,70 @@ function declaredPresence(over: {
     declaredPlanSlug: over.declaredPlanSlug === undefined ? 'plan-a' : over.declaredPlanSlug,
   };
 }
+
+function presenceRecord(over: {
+  owner_id: string;
+  heartbeat_at?: string;
+  current_plan_slug?: string | null;
+  revoked?: boolean;
+}): PresenceRecord {
+  const now = new Date();
+  const recentHeartbeat = over.heartbeat_at ?? now.toISOString();
+  return {
+    ownerId: over.owner_id,
+    ownerLabel: 'test',
+    workspaceId: 'test-workspace',
+    source: 'session',
+    intent: 'working',
+    currentPlanSlug: over.current_plan_slug ?? null,
+    currentFiles: [],
+    host: 'localhost',
+    pid: null,
+    startedAt: now.toISOString(),
+    heartbeatAt: recentHeartbeat,
+    stale: false,
+    userId: 'user-1',
+    revoked: over.revoked ?? false,
+  };
+}
+
+describe('selectDeclaredPresence', () => {
+  it('filters out revoked sessions even with fresh heartbeat and declared plan', () => {
+    const rows: PresenceRecord[] = [
+      presenceRecord({ owner_id: 'a', current_plan_slug: 'plan-x' }),
+      presenceRecord({ owner_id: 'b', current_plan_slug: 'plan-x', revoked: true }),
+      presenceRecord({ owner_id: 'c', current_plan_slug: 'plan-x' }),
+    ];
+    const result = selectDeclaredPresence(rows);
+    expect(result.map((r) => r.agentId)).toEqual(['a', 'c']);
+    expect(result.every((r) => !rows.find((pr) => pr.revoked && pr.ownerId === r.agentId))).toBe(true);
+  });
+
+  it('filters out stale heartbeats', () => {
+    const now = Date.now();
+    const staleHeartbeat = new Date(now - 11 * 60 * 1000).toISOString(); // 11 minutes old
+    const rows: PresenceRecord[] = [
+      presenceRecord({ owner_id: 'a', current_plan_slug: 'plan-x' }),
+      presenceRecord({ owner_id: 'b', current_plan_slug: 'plan-x', heartbeat_at: staleHeartbeat }),
+    ];
+    const result = selectDeclaredPresence(rows);
+    expect(result.map((r) => r.agentId)).toEqual(['a']);
+  });
+
+  it('includes agents with no declared plan (null currentPlanSlug)', () => {
+    const rows: PresenceRecord[] = [
+      presenceRecord({ owner_id: 'a', current_plan_slug: 'plan-x' }),
+      presenceRecord({ owner_id: 'b', current_plan_slug: null }),
+    ];
+    const result = selectDeclaredPresence(rows);
+    expect(result).toHaveLength(2);
+    expect(result.find((r) => r.agentId === 'b')).toEqual({
+      agentId: 'b',
+      alive: true,
+      declaredPlanSlug: null,
+    });
+  });
+});
 
 describe('selectNudgeTargets', () => {
   it('targets alive declared-unclaimed agents only', () => {

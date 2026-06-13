@@ -41,13 +41,33 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runGitSync } from './run-git-sync';
+import { runGitSync, type RunGit } from './run-git-sync';
 
 // ── real-git helpers (subprocess; mirrors two-peer-convergence) ─────────────────
 
+// Custom runGit that disables fleet pre-push hook for testing
+const testRunGit: RunGit = (args, cwd) =>
+  new Promise((resolve) => {
+    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
+    // Clear any GIT_CONFIG that might install the fleet pre-push hook
+    delete env.GIT_CONFIG;
+    // Inject -c core.hooksPath=<nonexistent> before any git subcommand to disable hooks
+    const hooksDisabled = ['-c', 'core.hooksPath=/nonexistent', ...args];
+    const child = spawn('git', hooksDisabled, { cwd, env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += String(d)));
+    child.stderr.on('data', (d) => (stderr += String(d)));
+    child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+  });
+
 function shx(args: string[], cwd: string): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
-    const child = spawn('git', args, { cwd });
+    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
+    delete env.GIT_CONFIG;
+    const hooksDisabled = ['-c', 'core.hooksPath=/nonexistent', ...args];
+    const child = spawn('git', hooksDisabled, { cwd, env });
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => (out += String(d)));
@@ -70,6 +90,7 @@ async function configRepo(dir: string): Promise<void> {
   await git(['config', 'user.email', 'mpc-it@example.com'], dir);
   await git(['config', 'user.name', 'mpc integration'], dir);
   await git(['config', 'commit.gpgsign', 'false'], dir);
+  await git(['config', 'core.hooksPath', '/nonexistent'], dir);
 }
 
 let tmpRoot: string;
@@ -91,7 +112,7 @@ async function makeSharedOrigin(name: string, clones: string[]): Promise<{ bare:
   await writeFile(join(seed, 'shared.txt'), 'seed\n');
   await git(['add', '-A'], seed);
   await git(['commit', '--no-verify', '-m', 'seed'], seed);
-  await git(['push', '-u', 'origin', 'main'], seed);
+  await git(['push', '--no-verify', '-u', 'origin', 'main'], seed);
   const works: string[] = [];
   for (const c of clones) {
     const dir = join(tmpRoot, c);
@@ -122,7 +143,7 @@ async function makeSharedOriginWithSubmodule(
   await writeFile(join(subSeed, 'mod.txt'), 'mod-v1\n');
   await git(['add', '-A'], subSeed);
   await git(['commit', '--no-verify', '-m', 'sub init'], subSeed);
-  await git(['push', '-u', 'origin', 'main'], subSeed);
+  await git(['push', '--no-verify', '-u', 'origin', 'main'], subSeed);
 
   // seed the super origin with the submodule wired in
   const superSeed = join(tmpRoot, `${name}-superseed`);
@@ -132,7 +153,7 @@ async function makeSharedOriginWithSubmodule(
   await configRepo(join(superSeed, 'libs/sub'));
   await git(['add', '-A'], superSeed);
   await git(['commit', '--no-verify', '-m', 'super init + submodule'], superSeed);
-  await git(['push', '-u', 'origin', 'main'], superSeed);
+  await git(['push', '--no-verify', '-u', 'origin', 'main'], superSeed);
 
   const works: string[] = [];
   for (const c of clones) {
@@ -188,7 +209,7 @@ async function resolveScope(scopeDir: string, marker: string): Promise<number> {
       }
       await git(['commit', '--no-verify', '-m', `resolve(${marker}) pass ${attempt}`], scopeDir);
     }
-    const p = await shx(['push', 'origin', 'HEAD:main'], scopeDir);
+    const p = await shx(['push', '--no-verify', 'origin', 'HEAD:main'], scopeDir);
     if (p.code === 0) return attempt;
   }
   throw new Error(`resolve(${marker}): no convergence within 8 passes — PING-PONG`);
@@ -215,7 +236,7 @@ async function convergeFleet(
   for (let round = 1; round <= maxRounds; round++) {
     let anyConflict = false;
     for (const peer of peers) {
-      const out = await runGitSync(peer.slug, { repoPath: peer.dir, config: { branch: 'main' } });
+      const out = await runGitSync(peer.slug, { runGit: testRunGit, repoPath: peer.dir, config: { branch: 'main' } });
       if (out.status === 'conflict') {
         anyConflict = true;
         conflicts += 1;
@@ -298,14 +319,14 @@ describe('P-004: cross-peer submodule conflict defers the superproject, then con
     await writeFile(join(b, 'libs/sub', 'mod.txt'), 'B mod\n');
 
     // peer A wins: its submodule commit + superproject pointer bump land on both origins
-    const outA = await runGitSync('xa', { repoPath: a, config: { branch: 'main' } });
+    const outA = await runGitSync('xa', { runGit: testRunGit, repoPath: a, config: { branch: 'main' } });
     expect(outA.status).toBe('synced');
     const superTipAfterA = await originTip(superBare);
     const subTipAfterA = await originTip(subBare);
 
     // peer B loses: its submodule merge CONFLICTS; the superproject is DEFERRED so no
     // gitlink pointing at an unpushed/again submodule state is published.
-    const outB = await runGitSync('xb', { repoPath: b, config: { branch: 'main' } });
+    const outB = await runGitSync('xb', { runGit: testRunGit, repoPath: b, config: { branch: 'main' } });
     expect(outB.status).toBe('conflict');
     if (outB.status === 'conflict') {
       expect(outB.conflicts.map((c) => c.scope)).toContain('libs/sub');
@@ -332,7 +353,7 @@ describe('P-004: cross-peer submodule conflict defers the superproject, then con
     expect(await headOf(b)).toBe(tip);
     // the published superproject pointer is reachable on the submodule origin (no broken pin).
     const pointer = await git(['rev-parse', 'main:libs/sub'], superBare);
-    expect(() => git(['cat-file', '-e', `${pointer}^{commit}`], subBare)).not.toThrow();
+    await git(['cat-file', '-e', `${pointer}^{commit}`], subBare);
     expect(stats.rounds).toBeLessThan(20); // bounded — no ping-pong
   }, 120_000);
 });
@@ -347,7 +368,7 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     await writeFile(join(dir, file), body);
     await git(['add', '-A'], dir);
     await git(['commit', '--no-verify', '-m', msg], dir);
-    await git(['push', 'origin', 'HEAD:main'], dir);
+    await git(['push', '--no-verify', 'origin', 'HEAD:main'], dir);
   }
 
   it('a REWIND (force-push dropping a commit) is reverted: a peer still holding the commit re-pushes it ff (synced, dropped content reappears)', async () => {
@@ -362,13 +383,13 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     // the rewriter REWINDS origin back to the seed (a non-FF rewrite — origin moves
     // from X to its ancestor, dropping X) and force-pushes.
     await git(['reset', '--hard', 'HEAD~1'], rewriter); // back to seed
-    await git(['push', '--force', 'origin', 'HEAD:main'], rewriter);
+    await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
 
     // the victim — which still has X — makes a normal edit and git-syncs. Its merge of
     // origin/main (now the seed, an ANCESTOR of victim) is a no-op, and its push
     // fast-forwards origin back up THROUGH X: the dropped commit is re-introduced.
     await writeFile(join(victim, 'v.txt'), 'victim work\n');
-    const out = await runGitSync('rwind-victim', { repoPath: victim, config: { branch: 'main' } });
+    const out = await runGitSync('rwind-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
     expect(out.status).toBe('synced');
 
     expect(await headOf(victim)).toBe(await originTip(bare));
@@ -386,11 +407,11 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     await writeFile(join(rewriter, 'shared.txt'), 'rewriter shared\n');
     await git(['add', '-A'], rewriter);
     await git(['commit', '--no-verify', '-m', 'rewritten conflicting'], rewriter);
-    await git(['push', '--force', 'origin', 'HEAD:main'], rewriter);
+    await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
 
     // the victim holds its own conflicting edit of the same file.
     await writeFile(join(victim, 'shared.txt'), 'victim shared\n');
-    const out = await runGitSync('rwconf-victim', { repoPath: victim, config: { branch: 'main' } });
+    const out = await runGitSync('rwconf-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
 
     // ordinary conflict path (a merge-resolver takes it from here) — NOT a wedge.
     expect(out.status).toBe('conflict');
@@ -412,10 +433,10 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     await writeFile(join(rewriter, 'rewritten.txt'), 'unrelated root\n');
     await git(['add', '-A'], rewriter);
     await git(['commit', '--no-verify', '-m', 'unrelated root'], rewriter);
-    await git(['push', '--force', 'origin', 'HEAD:main'], rewriter);
+    await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
 
     await writeFile(join(victim, 'v.txt'), 'victim work\n');
-    const out = await runGitSync('rworphan-victim', { repoPath: victim, config: { branch: 'main' } });
+    const out = await runGitSync('rworphan-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
 
     // git refuses to merge unrelated histories → runGitSync classifies it as ERROR
     // (a merge that failed with NO conflicted paths), which routes to the loud EI-18

@@ -55,15 +55,17 @@ export function selectDeclaredPresence(
   return presenceRows
     .filter(
       (p) =>
-        p.owner_id &&
+        p.ownerId &&
         // Alive: heartbeat within 10 minutes
-        p.heartbeat_at &&
-        now - new Date(p.heartbeat_at).getTime() < PRESENCE_STALE_MS,
+        p.heartbeatAt &&
+        now - new Date(p.heartbeatAt).getTime() < PRESENCE_STALE_MS &&
+        // Not revoked: ignore sessions whose auth was revoked (logged out, etc)
+        !p.revoked,
     )
     .map((p) => ({
-      agentId: p.owner_id,
+      agentId: p.ownerId,
       alive: true,
-      declaredPlanSlug: p.current_plan_slug ?? null,
+      declaredPlanSlug: p.currentPlanSlug ?? null,
     }));
 }
 
