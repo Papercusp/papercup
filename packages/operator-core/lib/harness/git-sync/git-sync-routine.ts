@@ -10,7 +10,7 @@
  * `app.workspace_id` GUC trigger, despite earlier comments here that claimed one).
  */
 import type { Sql } from 'postgres';
-import { getOrgPg, upsertRoutine, setRoutineActive, type RoutineRow } from '@papercusp/db-org';
+import { getOrgPg, upsertRoutine, setRoutineActive, deleteRoutine, type RoutineRow } from '@papercusp/db-org';
 import type { ProjectEntry } from '../../harness-registry';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
@@ -104,6 +104,18 @@ export async function getGitSyncRoutine(sql: Sql, installSlug: string): Promise<
 /** Enable/disable a harness's git-sync routine (go-live = setGitSyncRoutineActive(sql, slug, true)). */
 export async function setGitSyncRoutineActive(sql: Sql, installSlug: string, active: boolean): Promise<boolean> {
   return setRoutineActive(sql, installSlug, GIT_SYNC_ROUTINE_NAME, active);
+}
+
+/**
+ * Delete a harness's `system:git-sync` routine row entirely — the durable inverse
+ * of the seed (shared-hive-hardening-2026-06-13 P-012 leave path). Returns true
+ * when a row was removed, false when none existed (idempotent: a re-run of a
+ * partial leave no-ops). Distinct from `setGitSyncRoutineActive(false)`, which
+ * keeps the row (disabled) — on LEAVE the member is deregistered, so the row
+ * should be gone, not merely inactive.
+ */
+export async function removeGitSyncRoutine(sql: Sql, installSlug: string): Promise<boolean> {
+  return deleteRoutine(sql, installSlug, GIT_SYNC_ROUTINE_NAME);
 }
 
 // ── Member seeding (git-sync-any-hive P-001/P-008, seed side) ──────────────────

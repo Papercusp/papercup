@@ -188,7 +188,7 @@ export interface PlacementSweepResult {
   workspaceId: string;
   installSlug: string;
   workItemId: string;
-  decision: PlacementDecision['kind'] | 'stranded';
+  decision: PlacementDecision['kind'] | 'stranded' | 'unblocked';
   detail?: string;
 }
 
@@ -440,6 +440,20 @@ export async function reconcileOneHive(
               disposition: 'completed',
             });
             out.push({ workspaceId, installSlug, workItemId: unitId, decision: 'completed' });
+            // P-032 — EDGE RESOLUTION: a completed lane that gated downstream work
+            // has just un-gated it (its `blocks` edges resolve). Fire ONE Queen wake
+            // so she surveys + places the now-ready next-wave batch — the wave
+            // ordering executing through edge resolution, replacing the hand-rolled
+            // pair-emit `:done` events (queen-wave-dispatch D-006). The survey applies
+            // the precise readiness gate; we only wake when there IS non-terminal
+            // downstream this lane blocks. Fires once (guarded by the status transition).
+            if (base.harnessSlug) {
+              const downstream = await countNonTerminalDownstream(sql, workspaceId, base.harnessSlug, unitId);
+              if (downstream > 0) {
+                await fireUnblockWake(workspaceId, queenOwner, unitId, base.harnessSlug, downstream);
+                out.push({ workspaceId, installSlug, workItemId: unitId, decision: 'unblocked', detail: `${downstream} downstream` });
+              }
+            }
           }
           break;
         case 'recover':
@@ -526,6 +540,58 @@ async function fireRecoveryWake(
     });
   } catch (e) {
     console.warn(`[hive-placement-watchdog] recovery wake failed for ${unitId}: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** P-032 — count the NON-TERMINAL downstream features that `blockerId` (in `harness`)
+ *  gates via a `blocks` edge: the lanes a completion may have just un-gated. Mirrors
+ *  reconcileStrandedWork's edge query (the single `coord_links rel='blocks'` source of
+ *  truth, D-007), with the blocker as edge SOURCE and live downstream as the target. */
+async function countNonTerminalDownstream(
+  sql: Sql,
+  workspaceId: string,
+  harness: string,
+  blockerId: string,
+): Promise<number> {
+  const rows = await sql<{ downstream: number }[]>`
+    SELECT count(*)::int AS downstream
+      FROM harness_shared.coord_links l
+      JOIN harness_shared.harness_features_consolidated d
+        ON d.workspace_id = ${workspaceId}
+       AND d.harness_slug = split_part(l.dst_ref, '#', 1)
+       AND d.feature_id   = split_part(l.dst_ref, '#', 2)
+     WHERE l.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND l.rel = 'blocks'
+       AND l.src_kind = 'feature'
+       AND l.dst_kind = 'feature'
+       AND l.src_ref = ${`${harness}#${blockerId}`}
+       AND d.status <> ALL(${[...TERMINAL_UNIT_STATES]})`;
+  return rows[0]?.downstream ?? 0;
+}
+
+/** P-032 — a completed lane that gated downstream work fires ONE Queen wake so she
+ *  surveys + places the now-unblocked next-wave batch. The wave ordering executing
+ *  through edge resolution — replacing the hand-rolled pair-emit `:done` events
+ *  (queen-wave-dispatch D-006). Best-effort: a woken:0 (no armed wake) degrades to
+ *  the Queen seeing the freed lanes in her next natural hive:survey. */
+async function fireUnblockWake(
+  workspaceId: string,
+  queenOwner: string,
+  completedId: string,
+  harness: string | null,
+  downstream: number,
+): Promise<void> {
+  try {
+    await wakeRecipients([queenOwner], {
+      summary:
+        `Placement watchdog: ${completedId}${harness ? ` (${harness})` : ''} completed and un-gated ` +
+        `${downstream} downstream lane(s) — survey + place the next wave batch.`,
+      payload: { kind: 'placement-unblocked', workItemId: completedId, harness, downstream },
+      source: 'hive-placement-watchdog',
+      workspaceId,
+    });
+  } catch (e) {
+    console.warn(`[hive-placement-watchdog] unblock wake failed for ${completedId}: ${e instanceof Error ? e.message : e}`);
   }
 }
 

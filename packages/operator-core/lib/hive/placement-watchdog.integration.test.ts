@@ -200,6 +200,56 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(mocks.openEscalation).not.toHaveBeenCalled();
   });
 
+  it('P-032: a COMPLETED blocker gating a non-terminal downstream → ONE unblock wake to the Queen', async () => {
+    // tier1 completed (passed); tier2 still todo and blocked_by tier1 — now un-gated.
+    await seedBee({ owner: 'bee-1', featureId: 'F-500', status: 'done' });
+    await seedUnit({ id: 'F-500', status: 'passed', takenBy: 'bee-1' });
+    await seedUnit({ id: 'F-501', status: 'todo' });
+    await sql`
+      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES ('default', 'feature', ${HIVE + '#F-500'}, 'feature', ${HIVE + '#F-501'}, 'blocks')`;
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-500'))?.status).toBe('completed');
+    expect(out.find((r) => r.workItemId === 'F-500' && r.decision === 'unblocked')?.detail).toBe('1 downstream');
+    expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1);
+    expect(mocks.wakeRecipients.mock.calls[0]![0]).toEqual([QUEEN]);
+    const opts = mocks.wakeRecipients.mock.calls[0]![1] as unknown as { payload?: { kind?: string } };
+    expect(opts.payload?.kind).toBe('placement-unblocked');
+  });
+
+  it('P-032: a completed lane gating ONLY terminal downstream fires NO unblock wake', async () => {
+    await seedBee({ owner: 'bee-1', featureId: 'F-510', status: 'done' });
+    await seedUnit({ id: 'F-510', status: 'passed', takenBy: 'bee-1' });
+    await seedUnit({ id: 'F-511', status: 'passed' }); // downstream already terminal
+    await sql`
+      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES ('default', 'feature', ${HIVE + '#F-510'}, 'feature', ${HIVE + '#F-511'}, 'blocks')`;
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-510'))?.status).toBe('completed');
+    expect(out.find((r) => r.decision === 'unblocked')).toBeUndefined();
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  it('P-032: the unblock wake fires only ONCE — a re-sweep of an already-completed lane is silent', async () => {
+    await seedBee({ owner: 'bee-1', featureId: 'F-520', status: 'done' });
+    await seedUnit({ id: 'F-520', status: 'passed', takenBy: 'bee-1' });
+    await seedUnit({ id: 'F-521', status: 'todo' });
+    await sql`
+      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES ('default', 'feature', ${HIVE + '#F-520'}, 'feature', ${HIVE + '#F-521'}, 'blocks')`;
+
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW); // first sweep records completed + wakes
+    expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1);
+    mocks.wakeRecipients.mockClear();
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW); // already completed → no re-wake
+
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
+  });
+
   it('returns no placements + no side effects when the hive has no resolvable Queen session', async () => {
     await sql`TRUNCATE harness_shared.adv_sessions`; // no queen owner to attribute bees / wake
     await seedBee({ owner: 'bee-x', featureId: 'F-400', status: 'failed' });

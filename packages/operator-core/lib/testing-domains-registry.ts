@@ -1091,6 +1091,13 @@ defineTestDomain({
       description: 'The Apiary instance-gym: corpus seeder, the seven metric collectors, and the Beekeeper runner.',
       globs: ['packages/operator-core/lib/iq-battery/**/*.test.ts'],
     },
+    {
+      id: 'run-eval',
+      label: 'Hive run evaluation',
+      description:
+        'The Hive-run-evaluation battery (sibling of the apiary): seeded scenarios with an objective optimum (parallelism math + validation), the throwaway-hive run harness, and the determinism + repeat-distribution controls.',
+      globs: ['packages/operator-core/lib/hive-eval/**/*.test.ts'],
+    },
   ],
 });
 

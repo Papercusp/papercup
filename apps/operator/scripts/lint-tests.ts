@@ -95,6 +95,10 @@ const COVERAGE_IGNORE_DIRS = new Set([
   // (TypeDoc) mirrors source test files into .papercusp/lib-api/**/_media/,
   // which otherwise surface here as orphans whenever someone regenerates.
   '.papercusp',
+  // Test FIXTURES are seeded sandboxes / test data (e.g. the hive-eval seed-app's
+  // own `node --test` suite the throwaway Hive runs against), not operator tests —
+  // they belong to the fixture's runtime, never the /adv Tests tab.
+  'fixtures',
 ]);
 
 const CANONICAL_TEST_RE = /\.(test|spec)\.(ts|tsx|mts|cts|mjs|js|jsx)$/;

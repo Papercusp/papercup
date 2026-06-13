@@ -46,6 +46,7 @@ import {
   placementConfig,
   type PlacementObservation,
 } from './placement-watchdog';
+import { rankPlacements, type PlacementCandidate } from './placement-ranker';
 
 const NOW = 1_700_000_000_000;
 const MIN = 60_000;
@@ -170,9 +171,43 @@ describe('P-051 Queen-loop contract — BEHAVIORAL completion guarantee (B-09 se
   });
 });
 
+describe('P-051 Queen-loop contract — BEHAVIORAL prioritization (B-08 ranker LIVE)', () => {
+  // B-08's "one ranker" seam landed (placement-ranker.ts, su-37d9d): the pure
+  // `rankPlacements` over the FB-12 engine, plan-importance-first. The P-051
+  // contract asserts the loop ranks its placement frontier correctly over the
+  // REAL ranker (contract-altitude, not a re-test of the ranker's internals).
+  const cand = (over: Partial<PlacementCandidate>): PlacementCandidate => ({
+    id: 'x',
+    view: 'work-item',
+    harness: 'mem-a',
+    title: 't',
+    ...over,
+  });
+
+  it('ranks the frontier plan-importance-first across 2+ member harnesses', async () => {
+    const ranked = await rankPlacements([
+      cand({ id: 'mem-a:low', harness: 'mem-a', importance: 'low' }),
+      cand({ id: 'mem-b:urgent', harness: 'mem-b', view: 'plan', importance: 'urgent' }),
+      cand({ id: 'mem-a:normal', harness: 'mem-a', importance: 'normal' }),
+    ]);
+    // importance is the primary signal (weight 4): urgent (mem-b) > normal > low (mem-a),
+    // and the order spans both member harnesses — the Queen pours into the hot plan first.
+    expect(ranked.map((r) => r.id)).toEqual(['mem-b:urgent', 'mem-a:normal', 'mem-a:low']);
+  });
+
+  it('escalation pressure + blocking impact lift an item above a higher-importance idle one', async () => {
+    // A 'normal' item gating downstream work + carrying an open escalation should
+    // outrank a bare 'high' item — the ranker is multi-signal, not importance-only.
+    const ranked = await rankPlacements([
+      cand({ id: 'bare-high', importance: 'high' }),
+      cand({ id: 'blocking-normal', importance: 'normal', blocksOut: 4, escalations: 2 }),
+    ]);
+    expect(ranked[0]!.id).toBe('blocking-normal');
+  });
+});
+
 describe('P-051 Queen-loop contract — BEHAVIORAL (pending predecessor briefs)', () => {
   it.todo('B-07: a started Hive with N ready units + M free slots places min(N,M) bees in ONE wake');
-  it.todo('B-07: placements are ranked plan-importance-first across 2+ member harnesses (queue-ranker)');
   it.todo('B-09: the Queen drives the frontier to empty, every unit verified terminal, then idles (P-030)');
   it.todo('B-10/B-17: a reversible bee question is unblocked without the owner (intercepted card, not a freeze)');
 });

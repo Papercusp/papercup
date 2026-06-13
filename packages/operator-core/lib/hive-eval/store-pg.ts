@@ -30,7 +30,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
          critical_path, work_item_count, planted_bug_location)
       VALUES
         (${s.scenarioId}, ${s.title}, ${s.shape}, ${s.idealWallClockUnits}, ${s.idealBeeCount},
-         ${s.totalUnits}, ${JSON.stringify(s.criticalPath)}, ${s.workItemCount}, ${s.plantedBugLocation})
+         ${s.totalUnits}, ${this.sql.json(s.criticalPath)}, ${s.workItemCount}, ${s.plantedBugLocation})
       ON CONFLICT (scenario_id) DO UPDATE SET
         title = EXCLUDED.title,
         shape = EXCLUDED.shape,
@@ -85,7 +85,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
         work_items_total = ${o.workItemsTotal},
         work_items_completed = ${o.workItemsCompleted},
         cost_usd = ${o.costUsd},
-        observations = ${JSON.stringify(o)},
+        observations = ${this.sql.json(o as unknown as postgres.JSONValue)},
         trace_ref = ${fields.traceRef || null}
       WHERE run_id = ${runId}
     `;

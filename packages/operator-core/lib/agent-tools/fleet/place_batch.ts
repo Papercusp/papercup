@@ -86,7 +86,7 @@ export default defineTool({
     const limit = args.max ?? 32;
 
     const [{ tasks, skipped }, bees] = await Promise.all([
-      gatherFrontier({ ids: args.tasks, harness: args.harness, limit }),
+      gatherFrontier({ ids: args.tasks, harness: args.harness, limit, workspaceId }),
       gatherLiveBees(workspaceId),
     ]);
 
@@ -126,6 +126,22 @@ export default defineTool({
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+}
+
+/**
+ * Merge a work-item's per-lane brief (`payload.brief` — the lane's MISSING
+ * context, carried from a `## Promote` lane's `brief:` field) with the Queen's
+ * batch-wide overlay. Both present → lane brief first then the overlay; either
+ * alone → that one; neither → null (queen-wave-dispatch P-031).
+ */
+export function mergeBrief(
+  laneBrief: string | null | undefined,
+  overlay: string | null | undefined,
+): string | null {
+  const lane = laneBrief?.trim() || null;
+  const over = overlay?.trim() || null;
+  if (lane && over) return `${lane}\n\n${over}`;
+  return lane ?? over ?? null;
 }
 
 function summarizePlan(plan: BatchPlacementPlan) {
@@ -182,7 +198,10 @@ async function executeBatch(opts: {
       harness: task.harness,
       role: 'bee',
       featureId: task.id,
-      brief,
+      // Per-lane brief (payload.brief) MERGED with the Queen's batch overlay, so
+      // a placed bee gets ITS wave lane's context — not just the one batch-wide
+      // brief (queen-wave-dispatch P-031). spawnAgentInHarness threads it via QUEEN_BRIEF.
+      brief: mergeBrief(task.brief, brief),
       tier,
       parentSpawnId,
       parentRole: role,
@@ -222,8 +241,11 @@ async function executeBatch(opts: {
       }
       await reorderWorkItem(d.task.id, d.rank ?? 0, { writer: 'queen', harness });
       const summary = `Queen warm-inject: ${d.task.id}`;
+      // The lane's own brief (payload.brief) + the Queen's batch overlay — so the
+      // injected bee gets ITS wave lane's missing context, not just a generic note
+      // (queen-wave-dispatch P-031). Falls back to the placement pointer when neither.
       const body =
-        brief ??
+        mergeBrief(d.task.brief, brief) ??
         `Queen placement — ${d.task.id} ("${d.task.title}") is on your work-list at head-of-line (${d.affinity?.reasons.join(', ') || 'context affinity'}). Claim_next / work it next.`;
       await sendMessage(actor, { to: [bee], summary, body, extra: { wake: true } });
       const fan = await wakeRecipients([bee], { summary, source: ownerId, workspaceId });
