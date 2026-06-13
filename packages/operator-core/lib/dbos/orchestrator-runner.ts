@@ -84,8 +84,10 @@ import { recordUsageHeaders } from '../agent-usage-telemetry';
 // Audit P-015 (EI-172): read these env knobs LAZILY, per spawn — as module-init
 // consts they froze at first import, so setting/changing the env after host boot
 // (or per test case) was silently ignored. Exported for unit testing.
+// Default 2700000ms (45 min) to support improvement workers (implementTimeoutMs
+// defaults to 45 min; D-010). Prior default 600000ms (10 min) was insufficient.
 export const invokeTimeoutMs = (): number =>
-  Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
+  Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 2_700_000);
 // How long an orchestrator spawn will wait on a shared rate-limit pause before giving up
 // (the director re-tries later). Unattended → wait generously, but bounded.
 export const governorMaxWaitMs = (): number =>
