@@ -21,13 +21,11 @@ comments there cross-reference the plan's decision IDs.
 
 ## 1. Boot from the live host path, not the retired instrumentation hook
 
-The instinct is to launch DBOS from `apps/operator/instrumentation-node.ts` — that's
-the Next.js instrumentation hook, the "run once at server start" idiom. **It's
+The instinct is to launch DBOS from the Next.js instrumentation hook — **it's
 retired.** The operator is served by the `operator-vite` + Hono host
-(`bin/hono-host.ts` → `bin/host-bootstrap.ts`), not by Next any more. A DBOS launch
-wired into `instrumentation-node.ts` simply never runs in the desktop product.
+(`apps/operator/bin/hono-host.ts` → `apps/operator/bin/host-bootstrap.ts`), not by Next any more. 
 
-`startDbos()` must be called from **`bin/host-bootstrap.ts`** (the live boot path).
+`startDbos()` must be called from **`apps/operator/bin/host-bootstrap.ts`** (the live boot path).
 The tell that you got this wrong: the `dbos` schema never appears in the embedded PG
 even though `PAPERCUSP_DBOS_ENABLE=1`. See also `operator-next-is-retired`.
 
@@ -146,6 +144,7 @@ live-integration boundary the plan stops at, not a quick extension.
 **Where this is wired:** `packages/operator-core/lib/dbos/` — `bootstrap.ts` (launch +
 probe + flags), `orchestrator-workflow.ts` (the durable pipeline), `orchestrator-runner.ts`
 (spawns `invoke-once` with the idempotency key), `periodic-workflows.ts` (the timers).
+Bootstrapping happens from `apps/operator/bin/host-bootstrap.ts`.
 Full design + decision log: the plans
 `dbos-durable-jobs-2026-05-31` and `dbos-orchestrator-durability-2026-05-31`.
 

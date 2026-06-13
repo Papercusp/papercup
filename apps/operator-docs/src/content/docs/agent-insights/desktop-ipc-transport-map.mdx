@@ -183,8 +183,7 @@ run id). The remaining work for the typed dispatch path is wiring that cursor th
   `embedded-postgres/bin/postgres`, …); if a prior desktop's sidecar/code-server is still
   running it triggers `Text file busy (ETXTBSY)`, and `kill -9` mid-copy can leave the
   binaries corrupt → `embedded-postgres did not accept TCP` / code-server `Exec format error`.
-  Kill ALL release/sidecar processes first, then build; re-run `bin/build-desktop-sidecar.sh`
-  to restore if a copy got interrupted (verified 2026-06-02).
+  Kill ALL release/sidecar processes first, then retry the build (verified 2026-06-02).
 - **Embedded-PG boot can crash on a migration `42P01`→`42703` chain.** A migration whose
   one-`BEGIN…COMMIT` file `ALTER`s a table created by *ensure-schema* (not by a migration —
   e.g. `feature_queue`) throws `42P01` at embedded-boot (migrations run BEFORE ensure-schema),
