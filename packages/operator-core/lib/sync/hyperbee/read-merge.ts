@@ -26,6 +26,7 @@
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 import { applyHyperbeeOpToPg, lwwPick } from './projection';
+import { isSnapshotOp, type SnapshotPayload, type SnapshotRow } from './log-snapshot';
 
 /**
  * Structural view of a log the merge can read. Stage 1's `RemoteLog` / `OwnLog`
@@ -133,6 +134,39 @@ async function readOpBounded(
  * so the apply path can determine `origin` by comparing against the own log's
  * `keyHex` — the log-source approach is authoritative + unforgeable.
  */
+/**
+ * P-007 (design A): the rows carried by a snapshot op (`__snapshot__`), or `[]`
+ * for a malformed payload. Each row reconstitutes one key's current state.
+ */
+function snapshotRows(op: PeerLogOp): SnapshotRow[] {
+  const payload = op.value as SnapshotPayload | undefined;
+  return payload && Array.isArray(payload.rows) ? payload.rows : [];
+}
+
+/**
+ * P-007 (design A): map one snapshot row to an `OpEnvelope` (a put), preserving
+ * its original ts/hlc so it folds + LWW-compares exactly as the original write
+ * did. `writerPubkey` / `sourceLogKeyHex` come from the snapshot op's source log,
+ * so provenance + origin resolution are identical to a normal op from that peer.
+ */
+function snapshotRowToEnvelope(
+  row: SnapshotRow,
+  sourceLogKeyHex: string,
+  authorPubkey: string,
+): OpEnvelope {
+  return {
+    type: 'put',
+    table: row.table,
+    hbKey: row.hbKey,
+    value: row.value,
+    ts: row.ts,
+    schema_version: row.schema_version,
+    ...(row.hlc ? { hlc: row.hlc } : {}),
+    writerPubkey: authorPubkey,
+    sourceLogKeyHex,
+  };
+}
+
 function toEnvelope(op: PeerLogOp, sourceLogKeyHex: string): OpEnvelope {
   return {
     type: op.type,
@@ -201,6 +235,19 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
       }
       const op = await readOpBounded(log, i, getTimeoutMs);
       if (!op) continue;
+      // P-007 (design A): a snapshot op reconstitutes many keys at once — expand
+      // its rows and fold each (so folding from a snapshot index lands the same
+      // winners a full fold from 0 would). Non-snapshot-aware callers never reach
+      // here because snapshot ops only exist once the flag-gated producer ran.
+      if (isSnapshotOp(op)) {
+        for (const row of snapshotRows(op)) {
+          const env = snapshotRowToEnvelope(row, log.keyHex, op.author_pubkey);
+          const groupKey = `${env.table}::${env.hbKey}`;
+          const prev = winners.get(groupKey);
+          winners.set(groupKey, prev ? lwwPick(prev, env) : env);
+        }
+        continue;
+      }
       const env = toEnvelope(op, log.keyHex);
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = winners.get(groupKey);
@@ -429,6 +476,21 @@ export async function mergeAdmittedLogsIncremental(
       }
       if (!op) continue; // version-gated drop — advance past it
       decoded++;
+      // P-007 (design A): expand a snapshot op into its per-key rows and fold each
+      // through the SAME ts-guarded apply path. One decode reconstitutes N keys —
+      // exactly the cost win (the joiner's cursor can start AT this op's index and
+      // skip the summarized prefix). `continue` advances the cursor past it.
+      if (isSnapshotOp(op)) {
+        for (const row of snapshotRows(op)) {
+          const env = snapshotRowToEnvelope(row, log.keyHex, op.author_pubkey);
+          const groupKey = `${env.table}::${env.hbKey}`;
+          const prev = cursor.winners.get(groupKey);
+          if (prev && !beatsStored(env, prev)) continue; // stale row, never applied
+          cursor.winners.set(groupKey, toMeta(env));
+          if (await apply(env)) applied++;
+        }
+        continue;
+      }
       const env = toEnvelope(op, log.keyHex);
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = cursor.winners.get(groupKey);

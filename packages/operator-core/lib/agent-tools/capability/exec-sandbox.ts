@@ -25,11 +25,13 @@
  * containment (+ the optional deny-all egress lock).
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { homedir, platform as osPlatform } from 'node:os';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { homedir, platform as osPlatform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { srtBinOnPath, buildFleetSrtSettings, wrapSpawnWithSrt } from '@papercusp/orchestrator';
 
 /**
  * Credential dirs masked (tmpfs mounted over them, so they read empty) inside the
@@ -56,12 +58,15 @@ export const CAPABILITY_SANDBOX_MASK_DIRS: readonly string[] = [
 const CAPABILITY_SANDBOX_MASK_FILES: ReadonlySet<string> = new Set(['.npmrc']);
 
 export interface CapabilitySandboxDecision {
-  /** Binary to spawn (bwrap, or the original `cmd[0]` when not wrapped). */
+  /** Binary to spawn (srt / bwrap, or the original `cmd[0]` when not wrapped). */
   binary: string;
-  /** argv for the binary (bwrap args + `--` + cmd, or `cmd.slice(1)`). */
+  /** argv for the binary (the wrapper's args + the command, or `cmd.slice(1)`). */
   argv: string[];
-  /** true ⇒ wrapped in bwrap. */
+  /** true ⇒ wrapped (srt or bwrap). */
   sandboxed: boolean;
+  /** Which wrapper ran: 'srt' (fs+credential+egress-allowlist) · 'bwrap'
+   *  (fs+credential) · 'raw' (unwrapped). */
+  mode: 'srt' | 'bwrap' | 'raw';
   /** Why not sandboxed (for telemetry / log), or null when sandboxed. */
   reason: 'flag-off' | 'bwrap-unavailable' | null;
 }
@@ -110,12 +115,42 @@ export interface BuildSandboxOpts {
   enabled: boolean;
   /** Whether bwrap works (defaults to `capabilityBwrapWorks()`); injected by tests. */
   bwrapWorks?: boolean;
-  /** Add `--unshare-net` (deny ALL egress). Defaults from the env knob. */
+  /** srt binary path or null. `undefined` ⇒ resolve via `srtBinOnPath()`; tests inject. */
+  srtBin?: string | null;
+  /** srt settings file path or null. `undefined` ⇒ resolve via the per-cwd memo; tests inject. */
+  srtSettingsPath?: string | null;
+  /** Add `--unshare-net` (deny ALL egress) on the BWRAP fallback. Defaults from the env knob. */
   denyAllEgress?: boolean;
   /** Operator home dir (defaults to `homedir()`); injected by tests. */
   homeDir?: string;
   /** bwrap binary (default `'bwrap'`); injected by tests. */
   bwrapBinary?: string;
+}
+
+/**
+ * Per-cwd memo of the srt settings file (network egress allowlist + credential
+ * denyRead, from `buildFleetSrtSettings`). Written once per cwd (the allowlist is
+ * stable for the operator's lifetime), 0600, so capability:bash isn't writing a
+ * temp file per call. Mirrors the fleet sandbox's cache-root convention.
+ */
+const _srtSettingsByCwd = new Map<string, string>();
+
+export function capabilitySrtSettingsPathForCwd(cwd: string): string {
+  const cached = _srtSettingsByCwd.get(cwd);
+  if (cached && existsSync(cached)) return cached;
+  const dir = join(tmpdir(), 'papercusp-capability-srt');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `srt-${createHash('sha256').update(cwd).digest('hex').slice(0, 16)}.json`);
+  // backend:'omp' ⇒ no model-endpoint domains added (a shell command talks to no
+  // model); egress = the package registries/CDNs + localhost (the operator + PG).
+  writeFileSync(path, JSON.stringify(buildFleetSrtSettings({ cwd, backend: 'omp' })), { mode: 0o600 });
+  _srtSettingsByCwd.set(cwd, path);
+  return path;
+}
+
+/** Test-only: clear the srt-settings memo. */
+export function __resetCapabilitySrtSettings(): void {
+  _srtSettingsByCwd.clear();
 }
 
 /** `PAPERCUSP_CAPABILITY_SANDBOX_DENY_ALL_EGRESS=1` → `--unshare-net` (no network). */
@@ -137,11 +172,33 @@ export function buildCapabilitySandboxCommand(
     binary: input.cmd[0]!,
     argv: input.cmd.slice(1),
     sandboxed: false,
+    mode: 'raw',
     reason,
   });
   if (!opts.enabled) return raw('flag-off');
+  // srt and our bwrap both rest on bubblewrap; if bwrap can't sandbox here, srt
+  // can't either, so fail OPEN to raw (never a wrapper that errors at runtime).
   const works = opts.bwrapWorks ?? capabilityBwrapWorks();
   if (!works) return raw('bwrap-unavailable');
+
+  // PREFER srt (P-033): it adds DOMAIN-ALLOWLIST egress (its socat proxy) on top of
+  // the fs + credential containment — full parity with native Bash's fleet sandbox,
+  // reusing the validated buildFleetSrtSettings allowlist. Only when srt is absent
+  // do we fall back to the bwrap-only path (fs + credential, no domain egress).
+  const srtBin = opts.srtBin !== undefined ? opts.srtBin : srtBinOnPath();
+  if (srtBin) {
+    const settingsPath =
+      opts.srtSettingsPath !== undefined ? opts.srtSettingsPath : capabilitySrtSettingsPathForCwd(input.cwd);
+    if (settingsPath) {
+      const w = wrapSpawnWithSrt(input.cmd[0]!, input.cmd.slice(1), {
+        enabled: true,
+        backend: 'omp', // a shell command talks to no model — backend only selects model-domains (none for omp)
+        srtBin,
+        settingsPath,
+      });
+      return { binary: w.command, argv: w.argv, sandboxed: true, mode: 'srt', reason: null };
+    }
+  }
 
   const home = opts.homeDir ?? homedir();
   const denyAllEgress = opts.denyAllEgress ?? capabilitySandboxDenyAllEgress();
@@ -175,7 +232,7 @@ export function buildCapabilitySandboxCommand(
   // HOME, npm/cargo config); the caller passes the same env to the bwrap spawn and
   // bwrap forwards it. Containment is filesystem-level (above), not env-stripping.
   argv.push('--', ...input.cmd);
-  return { binary: bwrap, argv, sandboxed: true, reason: null };
+  return { binary: bwrap, argv, sandboxed: true, mode: 'bwrap', reason: null };
 }
 
 /**
