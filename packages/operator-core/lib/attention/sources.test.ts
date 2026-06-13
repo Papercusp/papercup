@@ -9,9 +9,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { parsePlan } from '@papercusp/plan-parser';
-import { planItemsToAttention } from './sources';
+import { planItemsToAttention, dropConvertedPlanItems } from './sources';
 import { buildAttentionGroups } from './group';
 import { smokeFailToAttention } from './adapters';
+import { planItemRef } from '../issue-blocks-merge';
 import { buildItemLine } from '../agent-tools/plans/add-item';
 import { setImportanceInBody } from '../agent-tools/plans/set-importance';
 
@@ -84,6 +85,42 @@ describe('planItemsToAttention (plan-item source of plans:attention)', () => {
   it('skips legacy plans', () => {
     const legacy = parsePlan('# no frontmatter\n\n## Phase 1\n\n- **P-001** `todo` x importance: high\n');
     expect(planItemsToAttention([{ parsed: legacy }], null)).toEqual([]);
+  });
+});
+
+describe('dropConvertedPlanItems — decision↔execution dedup guard (P-104 / D-013)', () => {
+  const planItems = planItemsToAttention(
+    [{ parsed: parsePlan(MIXED, { filePath: 't-2026-05-31.md' }) }],
+    'papercup',
+  );
+  const SLUG = 't-2026-05-31';
+  // P-002 todo (activity), P-003 needs-human (decision), P-004 blocked (alert).
+
+  it('drops an executing (converted) plan-item — it lives in the Working tab now', () => {
+    const kept = dropConvertedPlanItems(planItems, new Set([planItemRef(SLUG, 'P-002')]));
+    expect(kept.map((i) => i.itemRef).sort()).toEqual(['P-003', 'P-004']);
+  });
+
+  it('NEVER hides a needs-human DECISION, even if it carries an implements edge', () => {
+    const kept = dropConvertedPlanItems(planItems, new Set([planItemRef(SLUG, 'P-003')]));
+    expect(kept.some((i) => i.itemRef === 'P-003')).toBe(true); // decision always shows
+  });
+
+  it('drops a converted blocked (alert-tier) item too', () => {
+    const kept = dropConvertedPlanItems(planItems, new Set([planItemRef(SLUG, 'P-004')]));
+    expect(kept.some((i) => i.itemRef === 'P-004')).toBe(false);
+  });
+
+  it('empty convertedRefs → every item passes through unchanged', () => {
+    expect(dropConvertedPlanItems(planItems, new Set())).toHaveLength(planItems.length);
+  });
+
+  it('passes non-plan-item kinds through untouched (only plan-items dedup)', () => {
+    const smoke = smokeFailToAttention({ harnessSlug: 'papercup' });
+    // a converted ref that happens to collide on string is irrelevant — smoke is not a plan-item
+    const kept = dropConvertedPlanItems([smoke], new Set([planItemRef(SLUG, 'P-002')]));
+    expect(kept).toHaveLength(1);
+    expect(kept[0].kind).toBe('smoke-fail');
   });
 });
 

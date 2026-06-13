@@ -22,6 +22,7 @@ import {
   runForeground,
   startBackground,
 } from './bash-jobs';
+import { capabilityExecSandboxEnabled } from './exec-sandbox';
 
 export default defineTool({
   name: 'capability:bash',
@@ -67,9 +68,12 @@ export default defineTool({
     const baseDir = ctx.projectDir ?? process.cwd();
     const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
     const timeoutMs = args.timeout ?? DEFAULT_TIMEOUT_MS;
+    // P-022/D-008: re-apply the OS sandbox to this operator-side shell when the
+    // papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
+    const sandboxEnabled = await capabilityExecSandboxEnabled();
 
     if (args.run_in_background) {
-      const job = startBackground({ command: args.command, cwd, stateDir: ctx.stateDir }, timeoutMs);
+      const job = startBackground({ command: args.command, cwd, stateDir: ctx.stateDir, sandboxEnabled }, timeoutMs);
       return {
         content: [
           {
@@ -93,6 +97,7 @@ export default defineTool({
         cwd,
         stateDir: ctx.stateDir,
         onChunk: (chunk) => ctx.emit('output', chunk),
+        sandboxEnabled,
       },
       ctx.signal,
       timeoutMs,

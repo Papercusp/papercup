@@ -4,6 +4,16 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runGitSync, type RunGit } from './run-git-sync';
+import type { ContentDetector } from '../../content-lint/registry';
+
+/** A test content detector that quarantines any matched file whose text contains BROKEN. */
+const brokenDetector: ContentDetector = {
+  key: 'fake-broken',
+  glob: '**/*.md',
+  matches: (f) => f.endsWith('.md'),
+  detect: (_f, text) => (text.includes('BROKEN') ? 'contains BROKEN' : null),
+  fixerRole: 'content-fixer',
+};
 
 /** Run git synchronously for test setup; throws on failure. */
 function git(cwd: string, ...args: string[]): string {

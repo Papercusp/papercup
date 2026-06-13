@@ -58,6 +58,24 @@ export interface DecisionLedgerEntry {
 
 const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : new Date(v).toISOString());
 
+/**
+ * Normalize a jsonb column to a plain object. The org pool parses jsonb → object,
+ * but a differently-configured client (or a text-typed read) can hand back the raw
+ * JSON string — coerce both so the surface always gets an object (or null).
+ */
+function asObject(v: unknown): Record<string, unknown> | null {
+  if (v == null) return null;
+  if (typeof v === 'string') {
+    try {
+      const p = JSON.parse(v);
+      return p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
 /** Recent decision-ledger rows for a workspace, newest first, filtered. */
 export async function readDecisionLedger(
   workspaceId: string,
@@ -127,13 +145,13 @@ export async function readDecisionLedger(
     revisitAt: r.revisit_at != null ? iso(r.revisit_at) : null,
     revertHandle: r.revert_handle,
     why: r.why,
-    links: r.links,
+    links: asObject(r.links),
     actorRole: r.actor_role,
     actorSpawnId: r.actor_spawn_id,
     actorPrincipal: r.actor_principal,
     transport: r.transport,
     durationMs: r.duration_ms,
-    metadata: r.metadata,
+    metadata: asObject(r.metadata),
   }));
 }
 

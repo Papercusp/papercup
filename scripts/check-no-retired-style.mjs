@@ -64,6 +64,8 @@ export const MIGRATED_LOOPS = [
   { loop: 'deferral-interest-refit', retiredTarget: 'system:deferral-interest-refit', blueprintId: 'deferral-interest' },
   { loop: 'calibration-resolve', retiredTarget: 'system:calibration-resolve', blueprintId: 'calibration' },
   { loop: 'graduation-scan', retiredTarget: 'system:graduation-scan', blueprintId: 'graduation' },
+  // The hybrid eval engine (D-013; seed repointed 2026-06-13).
+  { loop: 'iq-battery-gen', retiredTarget: 'system:iq-battery-gen', blueprintId: 'iq-battery' },
 ];
 
 /** The retired bespoke action names that must never be a routine target again. */

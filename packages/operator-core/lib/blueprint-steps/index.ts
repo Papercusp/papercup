@@ -37,3 +37,7 @@ import './ops/change-ledger-scan.js';
 import './ops/deferral-interest-refit.js';
 import './ops/calibration-resolve.js';
 import './ops/graduation-scan.js';
+// The one true HYBRID (D-013): det cadence → governed fleet-bee spawns
+// (spawnAgentInHarness → spawnInvokeOnce, internal to the op, not a spawn-roles step)
+// → det persist. NOT a flag/governor loop — gated on the owner-set budgetUsd.
+import './ops/iq-battery-gen.js';

@@ -25,6 +25,7 @@ import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
+import { buildCapabilitySandboxCommand } from './exec-sandbox';
 
 /** Inline output cap (chars). Output beyond this spills to the scratch log and
  *  the inline result carries head+tail + the log path. Mirrors the native
@@ -73,10 +74,29 @@ export function scratchDir(stateDir: string | undefined): string {
 
 /** Spawn `bash -c <command>` with an augmented PATH (the operator sidecar's PATH
  *  often omits node/npx/git locations — same fix as pluginSpawnImpl). stdin is
- *  closed; combined stdout+stderr are piped. */
-function spawnShell(command: string, cwd: string, env: Record<string, string> | undefined): ChildProcess {
+ *  closed; combined stdout+stderr are piped.
+ *
+ *  When `sandboxEnabled` (the resolved papercusp-capability-exec-sandbox flag,
+ *  P-022/D-008), the `bash -c` runs inside a bwrap OS sandbox (fs + credential
+ *  containment) where bwrap works; FAIL-OPEN to a raw spawn otherwise (a logged
+ *  warning), so a host without a working bwrap is never bricked. */
+function spawnShell(
+  command: string,
+  cwd: string,
+  env: Record<string, string> | undefined,
+  sandboxEnabled = false,
+): ChildProcess {
   const spawnPath = augmentedSpawnPath();
-  const child = childSpawn(resolveBin('bash', spawnPath), ['-c', command], {
+  const decision = buildCapabilitySandboxCommand(
+    { cmd: [resolveBin('bash', spawnPath), '-c', command], cwd },
+    { enabled: sandboxEnabled },
+  );
+  if (sandboxEnabled && !decision.sandboxed) {
+    console.warn(
+      `[capability:bash] exec-sandbox enabled but ${decision.reason} — running unsandboxed in the operator process (cwd ${cwd})`,
+    );
+  }
+  const child = childSpawn(decision.binary, decision.argv, {
     cwd,
     env: { ...process.env, ...(env ?? {}), PATH: spawnPath },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -107,6 +127,9 @@ export interface RunOptions {
   env?: Record<string, string>;
   /** Per-event streamer (foreground only). */
   onChunk?: (chunk: string) => void;
+  /** Resolved papercusp-capability-exec-sandbox flag (P-022/D-008). When true the
+   *  command runs inside a bwrap OS sandbox where bwrap works; fail-open otherwise. */
+  sandboxEnabled?: boolean;
 }
 
 export interface ForegroundResult {
@@ -131,7 +154,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     const logPath = join(scratchDir(opts.stateDir), `bash-${id}.log`);
     const logStream = safeWriteStream(logPath);
     const startedAt = Date.now();
-    const child = spawnShell(opts.command, opts.cwd, opts.env);
+    const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled);
 
     let buffer = '';
     let totalBytes = 0;
@@ -203,7 +226,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   pruneFinished();
   const id = cryptoRandomId();
   const logPath = join(scratchDir(opts.stateDir), `bash-${id}.log`);
-  const child = spawnShell(opts.command, opts.cwd, opts.env);
+  const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled);
   const job: BashJob = {
     id,
     command: opts.command,

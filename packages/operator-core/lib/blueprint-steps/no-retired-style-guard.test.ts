@@ -73,7 +73,7 @@ describe('no-retired-style guard predicate (P-132)', () => {
     expect(isRetiredRoutineRewire(live)).toBe(false);
   });
 
-  it('the migrated set is well-formed: 12 known loops, each retiredTarget = system:<loop>, each with a blueprintId', () => {
+  it('the migrated set is well-formed: 13 known loops, each retiredTarget = system:<loop>, each with a blueprintId', () => {
     expect(MIGRATED_LOOPS.map((m) => m.loop).sort()).toEqual(
       [
         'calibration-resolve',
@@ -81,6 +81,7 @@ describe('no-retired-style guard predicate (P-132)', () => {
         'deferral-interest-refit',
         'fleet-ekg-scan',
         'graduation-scan',
+        'iq-battery-gen',
         'negative-space-mine',
         'neologism-mine',
         'prompt-ablation',

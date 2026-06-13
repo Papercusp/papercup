@@ -10,6 +10,23 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getJob, readJobOutput } from './bash-jobs';
 
+/**
+ * Apply the native-BashOutput `filter` regex to an output chunk: keep only the
+ * LINES matching `filter` (the caller advances the cursor over the full chunk
+ * regardless, so non-matching lines aren't re-shown). An invalid regex never
+ * throws — it returns the unfiltered chunk plus an `error` note. Exported pure for
+ * deterministic unit testing (no subprocess).
+ */
+export function filterOutputLines(chunk: string, filter: string | undefined): { output: string; error?: string } {
+  if (!filter) return { output: chunk };
+  try {
+    const re = new RegExp(filter);
+    return { output: chunk.split('\n').filter((line) => re.test(line)).join('\n') };
+  } catch (err) {
+    return { output: chunk, error: `invalid filter regex (${err instanceof Error ? err.message : String(err)}) — returning unfiltered output` };
+  }
+}
+
 export default defineTool({
   name: 'capability:bash_output',
   description:
@@ -24,6 +41,12 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     bash_id: z.string().min(1).describe('The id returned by capability:bash (run_in_background).'),
+    filter: z
+      .string()
+      .optional()
+      .describe(
+        'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter.',
+      ),
     peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
   }),
   async handler(args, ctx) {
@@ -44,7 +67,10 @@ export default defineTool({
       };
     }
     void ctx;
-    const output = readJobOutput(job, args.peek ?? false);
+    // Cursor advances over the FULL chunk (matching native BashOutput); the filter
+    // only narrows what's RETURNED, so non-matching lines aren't re-shown next read.
+    const fullChunk = readJobOutput(job, args.peek ?? false);
+    const { output, error: filterError } = filterOutputLines(fullChunk, args.filter);
     return {
       content: [
         {
@@ -57,6 +83,7 @@ export default defineTool({
             running: job.status === 'running',
             total_bytes: job.totalBytes,
             log_path: job.logPath,
+            ...(filterError ? { filter_error: filterError } : {}),
             output,
           }),
         },

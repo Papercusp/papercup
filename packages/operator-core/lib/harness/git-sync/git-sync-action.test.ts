@@ -75,7 +75,7 @@ mkdirSync(join(repoDir, '.git'), { recursive: true });
 mkdirSync(noGitDir, { recursive: true });
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
-const runGitSyncMock = vi.fn(async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({ status: 'nothing', oversized: [] }));
+const runGitSyncMock = vi.fn(async (_slug: string, _opts: Record<string, unknown>): Promise<GitSyncOutcome> => ({ status: 'nothing', oversized: [], contentErrors: [] }));
 vi.mock('./run-git-sync', () => ({
   runGitSync: (...a: unknown[]) => runGitSyncMock(a[0] as string, a[1] as Record<string, unknown>),
 }));
@@ -86,12 +86,12 @@ vi.mock('./pipeline-events', () => ({
 }));
 
 const INVOKE_URL = 'http://127.0.0.1:3070/api/agents/invoke?role=merge-resolver';
+const CONTENT_FIX_URL = 'http://127.0.0.1:3070/api/agents/invoke?role=content-fixer';
 const resolveLaunchTargetForEventMock = vi.fn(
-  async (_event: string, _opts: Record<string, unknown>): Promise<{ blueprintId: string; role: string; url: string } | null> => ({
-    blueprintId: 'merge-resolution',
-    role: 'merge-resolver',
-    url: INVOKE_URL,
-  }),
+  async (event: string, _opts: Record<string, unknown>): Promise<{ blueprintId: string; role: string; url: string } | null> =>
+    event === 'git-sync:content-error'
+      ? { blueprintId: 'content-fix', role: 'content-fixer', url: CONTENT_FIX_URL }
+      : { blueprintId: 'merge-resolution', role: 'merge-resolver', url: INVOKE_URL },
 );
 vi.mock('../../blueprint/launch-blueprint', () => ({
   resolveLaunchTargetForEvent: (...a: unknown[]) => resolveLaunchTargetForEventMock(a[0] as string, a[1] as Record<string, unknown>),
@@ -125,14 +125,17 @@ vi.mock('../docs/sweep-after-sync', () => ({
 type Row = Record<string, unknown>;
 /** Rows returned for the resolverInFlight read (`metadata->'last_resolver'`). */
 let resolverRows: Array<{ lr: { status?: string; at?: number; instance?: string } | null }> = [];
-/** Rows returned for the EI-18 counters read (`consecutive_error_ticks`/`last_oversized`). */
-let counterRows: Array<{ et: number; lo: string[] | null }> = [];
+/** Rows returned for the contentFixerInFlight read (`metadata->'last_content_fixer'`). */
+let contentFixerRows: Array<{ lr: { status?: string; at?: number; instance?: string } | null }> = [];
+/** Rows returned for the EI-18 + content counters read (`consecutive_error_ticks`/`last_oversized`/`consecutive_content_error_ticks`). */
+let counterRows: Array<{ et: number; lo: string[] | null; ct?: number }> = [];
 /** Every `sql.unsafe(text, params)` write, in order. */
 const unsafeCalls: Array<{ text: string; params: unknown[] }> = [];
 
 const fakeSql = Object.assign(
   (strings: TemplateStringsArray, ..._values: unknown[]): Promise<Row[]> => {
     const text = strings.join('?');
+    if (text.includes("'last_content_fixer'")) return Promise.resolve(contentFixerRows as unknown as Row[]);
     if (text.includes("'last_resolver'")) return Promise.resolve(resolverRows as unknown as Row[]);
     if (text.includes('consecutive_error_ticks')) return Promise.resolve(counterRows as unknown as Row[]);
     return Promise.resolve([]);
@@ -197,6 +200,7 @@ const syncedOutcome: GitSyncOutcome = {
   pushed: ['libs/generic/sync', 'superproject'],
   merged: ['superproject'],
   oversized: [],
+  contentErrors: [],
 };
 const conflictOutcome: GitSyncOutcome = {
   status: 'conflict',
@@ -205,6 +209,7 @@ const conflictOutcome: GitSyncOutcome = {
   pushed: ['libs/papercusp'],
   merged: [],
   oversized: [],
+  contentErrors: [],
 };
 const errorOutcome: GitSyncOutcome = {
   status: 'error',
@@ -212,6 +217,18 @@ const errorOutcome: GitSyncOutcome = {
   pushed: [],
   merged: [],
   oversized: [],
+  contentErrors: [],
+};
+/** EI-438: a tick that quarantined a broken .mdx (synced everything else). */
+const contentErrorOutcome: GitSyncOutcome = {
+  status: 'synced',
+  headSha: 'def789',
+  pushed: ['superproject'],
+  merged: [],
+  oversized: [],
+  contentErrors: [
+    { scope: 'superproject', file: 'apps/operator-docs/src/content/docs/x.mdx', detectorKey: 'mdx', error: 'MDX compile error at line 7: closing tag for `<date>`', fixerRole: 'content-fixer' },
+  ],
 };
 
 const action = getSystemAction('git-sync')!;
@@ -227,6 +244,7 @@ beforeEach(() => {
   captureHeadShaMock.mockReset();
   runDocSweepMock.mockReset();
   resolverRows = [];
+  contentFixerRows = [];
   counterRows = [];
   unsafeCalls.length = 0;
   txQueries.length = 0;
@@ -307,7 +325,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
   it('a harness with NO extra_lock_resources acquires only its own per-slug resource', async () => {
     registryProjects = [{ slug: 'otherapp', path: repoDir }];
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
 
     await action({ ...ctx, installSlug: 'otherapp', triggerConfig: {} });
 
@@ -437,7 +455,8 @@ describe('clean sync outcome', () => {
       }));
 
     // a clean pass clears the conflict escalation AND (errTicks 0) the error one —
-    // targeting the P-007 constant 'git-sync' phase row
+    // targeting the P-007 constant 'git-sync' phase row. (The content escalation clear is
+    // gated on a PRIOR content quarantine — none here — so it does not fire this tick.)
     expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-error']]);
     const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
     expect(clears.map((c) => c.params[2])).toEqual(['git-sync', 'git-sync']); // phase
@@ -458,12 +477,12 @@ describe('clean sync outcome', () => {
   });
 
   it("a 'nothing' pass also clears escalations but records no head_sha and runs no doc sweep", async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
 
     await action(ctx);
 
     const [patch] = routinePatches();
-    expect(patch).toMatchObject({ last_status: 'nothing', consecutive_error_ticks: 0 });
+    expect(patch).toMatchObject({ last_status: 'nothing', consecutive_error_ticks: 0, consecutive_content_error_ticks: 0 });
     expect(patch).not.toHaveProperty('head_sha');
     expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-error']]);
     expect(runDocSweepMock).not.toHaveBeenCalled();
@@ -472,7 +491,7 @@ describe('clean sync outcome', () => {
   });
 
   it('maps the routine trigger_config onto the pipeline config', async () => {
-    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [] });
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
 
     await action({
       ...ctx,
@@ -743,5 +762,141 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
         detail: expect.objectContaining({ consecutiveErrorTicks: 3 }),
       }));
     warn.mockRestore();
+  });
+});
+
+describe('EI-438 content-guard path (git-sync-content-error)', () => {
+  /** Content escalation upserts — their OWN phase 'git-sync-content' (never the conflict row). */
+  const contentUpserts = (): Array<{ text: string; params: unknown[]; body: Record<string, unknown> }> =>
+    escalationUpserts().filter((u) => u.params[1] === 'git-sync-content');
+
+  it('a quarantine tick writes the content escalation (own phase) AND dispatches the content-fixer observably', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 0 }]; // no prior content errors
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    // escalation row on its OWN phase, kind + files, needs_human false (first attempt). The
+    // separate phase is what keeps it from clobbering the conflict/error row (single (slug,phase)).
+    const ups = contentUpserts();
+    expect(ups).toHaveLength(1);
+    expect(ups[0].params[1]).toBe('git-sync-content');
+    expect(ups[0].params[4]).toBe('ws-42'); // workspace_id
+    expect(ups[0].body).toMatchObject({
+      kind: 'git-sync-content-error',
+      harness_slug: 'papercup',
+      needs_human: false,
+      consecutive_content_error_ticks: 1,
+      files: [{ scope: 'superproject', file: 'apps/operator-docs/src/content/docs/x.mdx', detector: 'mdx' }],
+    });
+
+    // dispatch resolved declaratively from the launch blueprint by the content-error event key
+    expect(resolveLaunchTargetForEventMock).toHaveBeenCalledWith(
+      'git-sync:content-error', { installSlug: 'papercup', workspaceId: 'ws-42' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dispatching content-fixer'));
+
+    // the durable 'dispatched' marker is on its OWN key — never the merge-resolver's
+    expect(routinePatches()).toContainEqual({
+      last_content_fixer: expect.objectContaining({ status: 'dispatched' }),
+    });
+    expect(routinePatches().some((p) => 'last_resolver' in p)).toBe(false);
+
+    // the invoke POST: content-fix URL + the --git-sync-content-error extra carrying the files
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = loopbackFetchMock.mock.calls[0];
+    expect(url).toBe(CONTENT_FIX_URL);
+    const body = JSON.parse((init as { body: string }).body) as Record<string, unknown>;
+    expect((body.extra as string[])[0]).toBe('--git-sync-content-error');
+    expect(JSON.parse((body.extra as string[])[1]).files[0]).toMatchObject({ detector: 'mdx' });
+    expect(body.kickoff).toContain('x.mdx');
+
+    // the dangling invoke promise SETTLES observably → last_content_fixer ok + a
+    // content_fixer pipeline event (the Git-tab timeline)
+    await vi.waitFor(() => {
+      expect(appendPipelineEventMock).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'content_fixer', status: 'ok' }));
+    });
+    expect(routinePatches()).toContainEqual({
+      last_content_fixer: expect.objectContaining({ status: 'ok', httpStatus: 200 }),
+    });
+    warn.mockRestore();
+  });
+
+  it('does NOT dispatch a second content-fixer while one is genuinely in flight (dedup on last_content_fixer)', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 1 }];
+    // a content-fixer dispatch recorded 1 min ago that has not settled → in flight
+    contentFixerRows = [{ lr: { status: 'dispatched', at: Date.now() - 60_000 } }];
+
+    await action(ctx);
+
+    // the escalation is still refreshed every quarantine tick…
+    expect(contentUpserts()).toHaveLength(1);
+    // …but no duplicate fixer fires, and no new dispatched marker is written
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(routinePatches().some((p) => 'last_content_fixer' in p)).toBe(false);
+  });
+
+  it('after MAX attempts the file is STILL broken → surfaces to a human + STOPS auto-dispatching (P-005)', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 4 }]; // 4 prior failing ticks → this is the 5th (= MAX), crosses the threshold
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    // the escalation is marked needs_human (a human must fix; it stays quarantined)
+    const ups = contentUpserts();
+    expect(ups).toHaveLength(1);
+    expect(ups[0].body).toMatchObject({ needs_human: true, consecutive_content_error_ticks: 5 });
+
+    // NO new fixer dispatch — never an infinite silent loop
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(routinePatches().some((p) => 'last_content_fixer' in p)).toBe(false);
+    // …and a one-shot fleet broadcast fires exactly on the transition
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    const [identity, msg] = sendMessageMock.mock.calls[0];
+    expect(identity).toMatchObject({ ownerId: 'system:git-sync' });
+    expect(msg).toMatchObject({ to: ['*'], category: 'git-sync' });
+    expect((msg as { summary: string }).summary).toContain('human is needed');
+    warn.mockRestore();
+  });
+
+  it('does NOT re-broadcast on a failing tick already PAST the threshold (transition-only)', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 5 }]; // already at MAX last tick → this is the 6th
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(contentUpserts()[0].body).toMatchObject({ needs_human: true, consecutive_content_error_ticks: 6 });
+    expect(sendMessageMock).not.toHaveBeenCalled(); // no repeat broadcast
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('a clean re-check after a quarantine clears the content escalation (own phase + kind)', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome); // contentErrors: []
+    counterRows = [{ et: 0, lo: [], ct: 2 }]; // a prior quarantine was open
+
+    await action(ctx);
+
+    const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
+    const contentClear = clears.find((c) => c.params[2] === 'git-sync-content');
+    expect(contentClear).toBeDefined();
+    expect(contentClear!.params[3]).toEqual(['git-sync-content-error']);
+    // no content escalation WRITE + no fixer dispatch on a clean tick
+    expect(contentUpserts()).toEqual([]);
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a clean tick with NO prior quarantine does NOT issue a content-escalation clear (gated on the prior counter)', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+
+    await action(ctx);
+
+    const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
+    expect(clears.some((c) => c.params[2] === 'git-sync-content')).toBe(false);
   });
 });

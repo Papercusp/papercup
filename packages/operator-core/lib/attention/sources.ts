@@ -9,6 +9,7 @@
 import { resolveEffectiveStatus, type ParsedPlan } from '@papercusp/plan-parser';
 import { parseReportBlock } from '@papercusp/chat-protocol';
 import { operatorReportToAttention, planItemToAttention } from './adapters';
+import { planItemRef } from '../issue-blocks-merge';
 import type { OperatorReportTurnRow } from './operator-report-source';
 import type { AttentionItem } from './types';
 
@@ -44,6 +45,32 @@ export function planItemsToAttention(
     }
   }
   return out;
+}
+
+/**
+ * The decision↔execution dedup guard (queen-autonomy-policy B-14 / P-104 · D-013):
+ * drop plan-item Queue items that have been CONVERTED to a work_item. `plan_items:
+ * convert` is the boundary — pre-convert the item is an awaiting-decision Queue
+ * row; post-convert it executes and shows in the Working tab (its work_item). It
+ * must never show in BOTH. `convertedRefs` is the set of '<plan>#<item>' refs with
+ * an `implements` edge ({@link listConvertedPlanItemRefs}).
+ *
+ * A needs-human DECISION (`tier === 'decision'`) ALWAYS stays — you resolve a
+ * decision, you don't convert it, and a decision must never be silently hidden.
+ * Only executing items (todo/wip/blocked, the activity/alert tiers) carrying an
+ * edge are dropped. Non-plan-item kinds pass through untouched. PURE.
+ */
+export function dropConvertedPlanItems(
+  items: readonly AttentionItem[],
+  convertedRefs: ReadonlySet<string>,
+): AttentionItem[] {
+  if (convertedRefs.size === 0) return [...items];
+  return items.filter((it) => {
+    if (it.kind !== 'plan-item') return true;
+    if (it.tier === 'decision') return true; // a needs-human decision always shows
+    const ref = it.ref as { kind: 'plan-item'; slug: string; itemId: string };
+    return !convertedRefs.has(planItemRef(ref.slug, ref.itemId));
+  });
 }
 
 /**

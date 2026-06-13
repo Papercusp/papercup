@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
+import { buildCapabilitySandboxCommand, capabilityExecSandboxEnabled } from './exec-sandbox';
 
 const REFUSED_SUBCOMMANDS = new Set(['push']);
 
@@ -48,8 +49,11 @@ export default defineTool({
     }
     const baseDir = ctx.projectDir ?? process.cwd();
     const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
+    // P-022/D-008: re-apply the OS sandbox to this operator-side git subprocess
+    // when the papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
+    const sandboxEnabled = await capabilityExecSandboxEnabled();
 
-    const r = await runGit(args.args, cwd, ctx.stateDir, ctx.signal);
+    const r = await runGit(args.args, cwd, ctx.stateDir, ctx.signal, sandboxEnabled);
     const truncated = r.output.length > INLINE_OUTPUT_CAP;
     let logPath: string | undefined;
     let output = r.output;
@@ -71,10 +75,20 @@ function runGit(
   cwd: string,
   _stateDir: string | undefined,
   signal: AbortSignal,
+  sandboxEnabled = false,
 ): Promise<{ code: number | null; output: string }> {
   return new Promise((resolvePromise) => {
     const spawnPath = augmentedSpawnPath();
-    const child = childSpawn(resolveBin('git', spawnPath), argv, {
+    const decision = buildCapabilitySandboxCommand(
+      { cmd: [resolveBin('git', spawnPath), ...argv], cwd },
+      { enabled: sandboxEnabled },
+    );
+    if (sandboxEnabled && !decision.sandboxed) {
+      console.warn(
+        `[capability:git] exec-sandbox enabled but ${decision.reason} — running unsandboxed in the operator process (cwd ${cwd})`,
+      );
+    }
+    const child = childSpawn(decision.binary, decision.argv, {
       cwd,
       env: { ...process.env, PATH: spawnPath },
       stdio: ['ignore', 'pipe', 'pipe'],

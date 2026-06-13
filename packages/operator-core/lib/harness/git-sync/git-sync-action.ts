@@ -398,17 +398,18 @@ async function writeGitSyncErrorEscalation(
   );
 }
 
-/** Previous tick's EI-18 counters from the routine metadata. */
-async function readEscalationCounters(slug: string): Promise<{ errTicks: number; oversizedKeys: string[] }> {
+/** Previous tick's EI-18 + content-guard counters from the routine metadata. */
+async function readEscalationCounters(slug: string): Promise<{ errTicks: number; oversizedKeys: string[]; contentTicks: number }> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ et: number; lo: string[] | null }[]>`
+  const rows = await sql<{ et: number; lo: string[] | null; ct: number }[]>`
     SELECT coalesce((metadata->>'consecutive_error_ticks')::int, 0) AS et,
-           array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo
+           array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo,
+           coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct
       FROM harness_shared.routines
      WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
      LIMIT 1
   `;
-  return { errTicks: rows[0]?.et ?? 0, oversizedKeys: rows[0]?.lo ?? [] };
+  return { errTicks: rows[0]?.et ?? 0, oversizedKeys: rows[0]?.lo ?? [], contentTicks: rows[0]?.ct ?? 0 };
 }
 
 /**
@@ -513,6 +514,100 @@ async function recordResolverDispatch(slug: string, info: Record<string, unknown
   }
 }
 
+/**
+ * EI-438 content-fixer dedup (P-004): the SAME in-flight model as the
+ * merge-resolver (`isResolverInFlight` is generic over the marker), keyed on its
+ * OWN `last_content_fixer` routine-metadata marker so the two dispatchers never
+ * suppress each other. A clean re-check tick clears the escalation.
+ */
+async function contentFixerInFlight(slug: string): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ lr: ResolverMarker | null }[]>`
+    SELECT metadata->'last_content_fixer' AS lr
+      FROM harness_shared.routines
+     WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+     LIMIT 1
+  `;
+  return isResolverInFlight(rows[0]?.lr, Date.now(), PROCESS_INSTANCE_ID);
+}
+
+/** Record the content-fixer dispatch lifecycle onto the routine metadata. */
+async function recordContentFixerDispatch(slug: string, info: Record<string, unknown>): Promise<void> {
+  try {
+    await patchRoutineMetadata(slug, { last_content_fixer: info });
+  } catch (e) {
+    console.warn(`[git-sync] failed to record content-fixer dispatch (${slug}): ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
+ * Spawn a content-fixer via the invoke route (P-004) — fire-and-forget + observed,
+ * the SAME shape as spawnMergeResolver. The fixer needs no git-sync lock: every
+ * commit is gated by the content detector, so git-sync can never commit a
+ * half-fixed file; the fixer just edits the named files and the next tick re-checks
+ * + commits when they pass. It reads its file list from the `--git-sync-content-error`
+ * extra (the open escalation is for human visibility, not the fixer's read path).
+ */
+async function spawnContentFixer(slug: string, workspaceId: string, contentErrors: ScopedContentError[]): Promise<void> {
+  const target = await resolveLaunchTargetForEvent(CONTENT_ERROR_EVENT, { installSlug: slug, workspaceId });
+  if (!target) {
+    console.warn(`[git-sync] no launch blueprint declares "${CONTENT_ERROR_EVENT}" — skipping content-fixer dispatch`);
+    return;
+  }
+  const { url } = target;
+  const files = contentErrors.map((c) => ({ scope: c.scope, file: c.file, detector: c.detectorKey, error: c.error }));
+  const filePaths = files.map((f) => `${f.scope}/${f.file}`);
+  const filesSummary = contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]: ${c.error}`).join('; ');
+  const dispatchedAt = Date.now();
+
+  // (1) durable "dispatched" marker, awaited (instance-tagged so a restart-orphaned
+  //     dispatch re-fires next tick rather than waiting out the TTL).
+  await recordContentFixerDispatch(slug, { at: dispatchedAt, status: 'dispatched', files: filePaths, instance: PROCESS_INSTANCE_ID });
+
+  const logSettle = (status: 'ok' | 'failed' | 'error', extra: Record<string, unknown>): Promise<void> =>
+    appendPipelineEvent({ workspaceId, installSlug: slug, kind: 'content_fixer', status, detail: { files: filePaths, ...extra } });
+
+  // (2) async result recording. Fire-and-forget — never awaited inside the routine step.
+  loopbackFetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      kickoff:
+        `Fix the git-sync content-guard quarantine in ${slug}: ${files.length} file(s) fail their content detector and were EXCLUDED from the auto-commit so staging stays clean. ` +
+        `Fix ONLY the syntax so each passes its detector, change nothing else, leave the tree clean, and do NOT push (the next git-sync tick re-checks + commits). Files: ${filesSummary}`,
+      extra: ['--git-sync-content-error', JSON.stringify({ files })],
+      // A small, mechanical syntax fix scoped to the named files — well under the
+      // invoke route's 1200s ceiling. RESOLVER_INFLIGHT_MS (20 min) exceeds this so a
+      // still-running fixer is never double-dispatched.
+      timeoutMs: 600_000,
+    }),
+  })
+    .then(async (res) => {
+      let exitCode: number | undefined;
+      let timedOut: boolean | undefined;
+      let detail = '';
+      try {
+        const j = (await res.json()) as { ok?: boolean; exitCode?: number; timedOut?: boolean; stderr?: string; decisionLine?: string };
+        exitCode = j?.exitCode;
+        timedOut = j?.timedOut;
+        if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
+        const settled = res.ok && j?.ok !== false ? 'ok' : 'failed';
+        await recordContentFixerDispatch(slug, { at: dispatchedAt, status: settled, httpStatus: res.status, exitCode, timedOut, detail });
+        await logSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
+      } catch {
+        const settled = res.ok ? 'ok' : 'failed';
+        await recordContentFixerDispatch(slug, { at: dispatchedAt, status: settled, httpStatus: res.status });
+        await logSettle(settled, { httpStatus: res.status });
+      }
+    })
+    .catch(async (e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[git-sync] content-fixer dispatch failed (${slug}): ${msg}`);
+      await recordContentFixerDispatch(slug, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
+      await logSettle('error', { error: msg.slice(0, 300) });
+    });
+}
+
 /** Merge a partial metadata patch onto the git-sync routine's JSONB. */
 async function patchRoutineMetadata(slug: string, patch: Record<string, unknown>): Promise<void> {
   const { sql } = getOrgPg();
@@ -524,7 +619,12 @@ async function patchRoutineMetadata(slug: string, patch: Record<string, unknown>
   );
 }
 
-async function recordOutcome(slug: string, outcome: GitSyncOutcome, consecutiveErrorTicks: number): Promise<void> {
+async function recordOutcome(
+  slug: string,
+  outcome: GitSyncOutcome,
+  consecutiveErrorTicks: number,
+  consecutiveContentErrorTicks: number,
+): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
   // errors[] exists on both 'conflict' and 'error' outcomes — record it ALWAYS so a
@@ -544,6 +644,9 @@ async function recordOutcome(slug: string, outcome: GitSyncOutcome, consecutiveE
     // EI-18 counters: ticks-of-uninterrupted-error + the oversized set (scope:path keys).
     consecutive_error_ticks: consecutiveErrorTicks,
     last_oversized: outcome.oversized.map(oversizedKey),
+    // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
+    consecutive_content_error_ticks: consecutiveContentErrorTicks,
+    last_content_errors: outcome.contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`),
     ...(outcome.status === 'synced' ? { head_sha: outcome.headSha } : {}),
   });
 }
@@ -632,7 +735,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   // indefinitely. The error LIST drives the counter now, not the worst status.
   const tickErrors = 'errors' in outcome ? outcome.errors : [];
   const errTicks = tickErrors.length > 0 ? prev.errTicks + 1 : 0;
-  await recordOutcome(slug, outcome, errTicks);
+  // EI-438: consecutive ticks with a file still quarantined (drives P-005 escalate-to-human).
+  const contentTicks = outcome.contentErrors.length > 0 ? prev.contentTicks + 1 : 0;
+  await recordOutcome(slug, outcome, errTicks, contentTicks);
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
   // sync/conflict/error rates over time (routines.metadata only keeps the LAST).
@@ -650,6 +755,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
           : [],
       errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({ scope: e.scope, message: e.message.slice(0, 300) })),
       oversized: outcome.oversized.length,
+      contentErrors: outcome.contentErrors.length,
       consecutiveErrorTicks: errTicks,
       ...(outcome.status === 'synced' ? { headSha: outcome.headSha } : {}),
     },
@@ -667,6 +773,40 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     // A clean pass means any prior conflict is resolved — clear the escalation.
     await clearGitSyncEscalation(slug, [ESCALATION_KIND]);
+  }
+
+  // EI-438 content guard (P-004/P-005): broken files were QUARANTINED this tick
+  // (excluded from the auto-commit so staging stays clean). Escalate + dispatch a
+  // content-fixer (deduped), counting consecutive failing ticks so a file the fixer
+  // can't repair surfaces to a human instead of looping forever. A clean tick clears
+  // the escalation + resets the counter. INDEPENDENT of outcome.status — content
+  // errors ride alongside on any status (like oversized), so this runs unconditionally.
+  const contentErrors = outcome.contentErrors;
+  if (contentErrors.length > 0) {
+    const needsHuman = contentTicks >= MAX_CONTENT_FIXER_ATTEMPTS;
+    await writeGitSyncContentEscalation(slug, workspaceId, contentErrors, contentTicks, needsHuman);
+    if (needsHuman) {
+      // P-005: the fixer has had MAX_CONTENT_FIXER_ATTEMPTS ticks and the file is STILL
+      // broken — STOP auto-dispatching (no infinite silent loop) and surface to a human
+      // ONCE, on the transition. The file stays quarantined (never reaches staging), so
+      // nothing is at risk while it waits for a human.
+      if (prev.contentTicks < MAX_CONTENT_FIXER_ATTEMPTS) {
+        const summary =
+          `git-sync: ${contentErrors.length} broken file(s) STILL failing their content check after ${contentTicks} ticks — ` +
+          `the content-fixer couldn't repair them; a human is needed. Quarantined (staging stays clean): ` +
+          contentErrors.map((c) => `${c.scope}/${c.file}`).join(', ');
+        console.warn(`[git-sync] ${slug}: ${summary}`);
+        await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary, category: 'git-sync' }).catch(() => {});
+      }
+    } else if (!(await contentFixerInFlight(slug))) {
+      console.warn(`[git-sync] ${slug}: ${contentErrors.length} content error(s) quarantined — dispatching content-fixer`);
+      await spawnContentFixer(slug, workspaceId, contentErrors);
+    }
+  } else if (prev.contentTicks > 0) {
+    // Clean re-check after a quarantine — the previously-broken files now pass: clear the
+    // content-error escalation (mirror the merge-resolver's clean-pass clear). Gated on the
+    // prior counter so a no-content tick doesn't issue a pointless UPDATE every 10 min.
+    await clearGitSyncEscalation(slug, [CONTENT_ERROR_KIND], CONTENT_ESCALATION_PHASE);
   }
 
   // P-003/D-004: after a real sync, sweep this harness's docs for drift — flip

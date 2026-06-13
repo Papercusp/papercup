@@ -45,7 +45,7 @@ import {
   conversationToAttention,
   scoutGradeToAttention,
 } from '../../attention/adapters';
-import { planItemsToAttention, reportTurnsToAttention } from '../../attention/sources';
+import { planItemsToAttention, reportTurnsToAttention, dropConvertedPlanItems } from '../../attention/sources';
 import { buildAttentionGroups } from '../../attention/group';
 import { applyTriage, groupByTier, type AttentionItem } from '../../attention/types';
 import { readTriageByWorkspace } from '../../attention/triage-store';
@@ -294,7 +294,24 @@ export default defineTool({
       /* best-effort */
     }
 
-    // 11. Operator triage overlay (D-006): a downgrade/resolve moves the item to
+    // 11. Decision↔execution dedup guard (B-14 / P-104 · D-013): drop any
+    //     plan-item that has been CONVERTED to a work_item (an `implements`
+    //     edge) — it executes in the Working tab now, so it must not ALSO show
+    //     as a Queue decision/row. A needs-human DECISION always stays.
+    //     Best-effort: a failed lookup leaves every item (no silent hiding).
+    try {
+      const { listConvertedPlanItemRefs } = await import('../../plan-items/convert');
+      const convertedRefs = await listConvertedPlanItemRefs();
+      if (convertedRefs.size > 0) {
+        const kept = dropConvertedPlanItems(items, convertedRefs);
+        items.length = 0;
+        items.push(...kept);
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    // 12. Operator triage overlay (D-006): a downgrade/resolve moves the item to
     //    the auditable "Handled by operator" tier, an escalate/confirm keeps it
     //    a Decision — never a silent vanish. Best-effort: no triage table / PG
     //    offline degrades to "untriaged", never a failed feed.

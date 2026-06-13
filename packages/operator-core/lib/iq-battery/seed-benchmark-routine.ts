@@ -26,7 +26,13 @@ const SLUG = process.env.IQ_BATTERY_HARNESS ?? 'papercup';
 // from the gym's :10/:40 ticks, for the same reason the gym moved off the
 // boundary: a battery is a long-running in-host job and a deploy-restart at a
 // shared boundary kills it mid-flight.
-const ROUTINE = { name: 'iq-battery-gen', target: 'system:iq-battery-gen', cron: '0 20 6 1 * *' };
+// MIGRATED (deterministic-blueprints-migration-2026-06-13, D-013): the routine now
+// fires the `iq-battery` PROGRAM blueprint via `system:blueprint-run` (which detects
+// program-mode and runs the deterministic `iq-battery:gen` step inline) rather than
+// the bespoke `system:iq-battery-gen` action. Same cron, same owner-budget gate +
+// gen-0 runner (the op runs them); the budget lives under payload_template.payload.
+// Behavior-neutral (D-004). The bespoke action is retired (P-130).
+const ROUTINE = { name: 'iq-battery-gen', target: 'system:blueprint-run', cron: '0 20 6 1 * *' };
 
 async function main(): Promise<void> {
   const active = process.argv.includes('--active');
@@ -39,20 +45,29 @@ async function main(): Promise<void> {
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
   const id = `rt_${SLUG}_${ROUTINE.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const payload = budgetUsd != null ? JSON.stringify({ budgetUsd }) : null;
-  // COALESCE on conflict: a re-seed without --budget must not wipe an owner-set budget.
+  // payload_template carries the blueprint pointer; the owner budget lives under
+  // `.payload.budgetUsd` (runScheduledProgram passes `.payload` to the program).
+  const blueprintPayload = JSON.stringify(
+    budgetUsd != null ? { blueprintId: 'iq-battery', payload: { budgetUsd } } : { blueprintId: 'iq-battery' },
+  );
+  const budgetPayload = budgetUsd != null ? JSON.stringify({ budgetUsd }) : null;
+  // On conflict: ENSURE blueprintId; a re-seed without --budget must NOT wipe the
+  // owner-set budget (preserve the existing `.payload`).
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
        payload_template, concurrency, catchup, active, next_fire_at)
     VALUES (${id}, ${SLUG}, ${ws}, ${ROUTINE.name}, 'cron',
             ${JSON.stringify({ cron: ROUTINE.cron })}::text::jsonb, ${ROUTINE.target},
-            ${payload}::text::jsonb,
+            ${blueprintPayload}::text::jsonb,
             'skip', 'skip-old', ${active}, now())
     ON CONFLICT (install_slug, name) DO UPDATE SET
       target_role = EXCLUDED.target_role,
       trigger_config = EXCLUDED.trigger_config,
-      payload_template = COALESCE(EXCLUDED.payload_template, harness_shared.routines.payload_template),
+      payload_template = jsonb_build_object(
+        'blueprintId', 'iq-battery',
+        'payload', COALESCE(${budgetPayload}::text::jsonb, harness_shared.routines.payload_template->'payload', '{}'::jsonb)
+      ),
       active = EXCLUDED.active,
       workspace_id = EXCLUDED.workspace_id,
       updated_at = now()

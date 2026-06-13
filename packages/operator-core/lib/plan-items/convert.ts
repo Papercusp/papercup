@@ -136,6 +136,30 @@ export async function findImplementingWorkItem(
   return null;
 }
 
+/**
+ * Every plan-item ref ('<plan>#<item>') that has a work_item `implements` edge —
+ * i.e. has been CONVERTED (picked up for execution). The decision↔execution
+ * boundary's queryable truth (queen-autonomy-policy B-14 / P-104 · D-013): the
+ * Queue (plans:attention) drops these so a converted item shows ONLY in Working
+ * (post-convert), never in both. ONE indexed read (coord_links_dst_idx on
+ * workspace_id, dst_kind, dst_ref). The edge persists past a work-item's
+ * completion, but reflect-rules flips a completed plan-item to `done` (which the
+ * Queue already excludes), so a still-open plan-item carrying an edge is one that
+ * is actively executing.
+ */
+export async function listConvertedPlanItemRefs(
+  workspaceId: string = DEFAULT_COORD_WORKSPACE,
+): Promise<Set<string>> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ dst_ref: string }[]>`
+    SELECT DISTINCT dst_ref
+      FROM harness_shared.coord_links
+     WHERE workspace_id = ${workspaceId}
+       AND rel = ${IMPLEMENTS_REL}
+       AND dst_kind = ${PLAN_ITEM_KIND}`;
+  return new Set(rows.map((r) => r.dst_ref));
+}
+
 /** First ~`max` chars of a plan item's text as a work-item title (one line). */
 export function planItemTitle(text: string, max = 140): string {
   const oneLine = text.replace(/\s+/g, ' ').trim();
