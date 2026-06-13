@@ -4,16 +4,18 @@
  * High-tier tool: changes the live behavior of the entire app. Audited
  * via harness_shared.audit_log; agents are expected to provide a reason.
  *
- * Returns 4xx-like errors via the standard tool error shape if PostHog
- * is unconfigured, unreachable, or the flag does not yet exist in
- * PostHog. Flags must be pre-created in the PostHog UI before this tool
- * can flip them; that one-time setup lives in Phase 1 of the V1 plan.
+ * With PostHog configured the flip lands there (and any stale PG override for the key
+ * is cleared so it can't shadow PostHog); without PostHog the flip lands
+ * in the PG-backed override store (audit P-070, EI-76) — runtime flag
+ * toggling on dev boxes with no PostHog and no process restart.
+ *
+ * Returns success via either backend; errors if both fail.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
 import { ALL_FLAG_KEYS, type FlagKey } from '@papercusp/flags';
-import { setFlag } from '@papercusp/flags/server';
+import { setFlag, setFlagOverride } from '@papercusp/flags/server';
 import { publishFlagChange } from '../../flag-bus';
 import './_register-backend';
 
@@ -42,35 +44,64 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const result = await setFlag(args.key, args.enabled);
-    if (!result.ok) {
+    if (result.ok) {
+      // The flip lives in PostHog now — drop any PG override so it can't
+      // shadow later PostHog changes.
+      await setFlagOverride(args.key, null);
+      publishFlagChange(args.key);
+      const { recordFlagAudit } = await import('../../flag-audit');
+      await recordFlagAudit(args.key, args.enabled, ctx?.principal?.slug ?? 'agent', {
+        reason: args.reason,
+        backend: 'posthog',
+      });
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({ ok: false, reason: result.reason, key: args.key }, null, 2),
+            text: JSON.stringify({ ok: true, key: args.key, enabled: args.enabled, backend: 'posthog' }, null, 2),
+          },
+        ],
+      };
+    }
+
+    // Fallback to PG override if PostHog is not configured
+    if (result.reason === 'flag-backend-not-configured') {
+      const override = await setFlagOverride(args.key, args.enabled);
+      if (override.ok) {
+        publishFlagChange(args.key);
+        const { recordFlagAudit } = await import('../../flag-audit');
+        await recordFlagAudit(args.key, args.enabled, ctx?.principal?.slug ?? 'agent', {
+          reason: args.reason,
+          backend: 'pg-override',
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ ok: true, key: args.key, enabled: args.enabled, backend: 'pg-override' }, null, 2),
+            },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ ok: false, reason: override.reason, key: args.key }, null, 2),
           },
         ],
         isError: true,
       };
     }
-    publishFlagChange(args.key);
-
-    // EI-293: the prior inline INSERT omitted the NOT-NULL id + workspace_id
-    // columns, so every flag audit silently failed in its try/catch (0
-    // flag:set rows ever landed). recordFlagAudit writes the correct
-    // full-column row (shared with the HTTP /api/flags/set path).
-    const { recordFlagAudit } = await import('../../flag-audit');
-    await recordFlagAudit(args.key, args.enabled, ctx?.principal?.slug ?? 'agent', {
-      reason: args.reason,
-    });
 
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ ok: true, key: args.key, enabled: args.enabled }, null, 2),
+          text: JSON.stringify({ ok: false, reason: result.reason, key: args.key }, null, 2),
         },
       ],
+      isError: true,
     };
   },
 });

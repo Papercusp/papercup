@@ -18,6 +18,7 @@ const KEY = ALL_FLAG_KEYS[0];
 const getFlag = vi.fn();
 const getAllFlags = vi.fn();
 const setFlag = vi.fn();
+const setFlagOverride = vi.fn();
 const publishFlagChange = vi.fn();
 const resolveDistinctId = vi.fn(() => 'did-test');
 const recordFlagAudit = vi.fn(async () => {});
@@ -40,7 +41,7 @@ function parseTextPayload(result: { content: Array<{ text: string }> }): Record<
 
 beforeEach(() => {
   vi.resetModules();
-  vi.doMock('@papercusp/flags/server', () => ({ getFlag, getAllFlags, setFlag }));
+  vi.doMock('@papercusp/flags/server', () => ({ getFlag, getAllFlags, setFlag, setFlagOverride }));
   vi.doMock('../../../flag-bus', () => ({ publishFlagChange }));
   vi.doMock('../../../flag-distinct-id', () => ({ resolveDistinctId }));
   // flags:set now writes its audit row via recordFlagAudit (getOrgPg → real
@@ -49,6 +50,7 @@ beforeEach(() => {
   getFlag.mockResolvedValue(false);
   getAllFlags.mockResolvedValue({});
   setFlag.mockResolvedValue({ ok: true });
+  setFlagOverride.mockResolvedValue({ ok: true });
 });
 
 afterEach(() => {
@@ -57,6 +59,7 @@ afterEach(() => {
   vi.doUnmock('../../../flag-bus');
   vi.doUnmock('../../../flag-distinct-id');
   vi.doUnmock('../../../flag-audit');
+  setFlagOverride.mockClear();
 });
 
 describe('flags:get', () => {
@@ -89,22 +92,35 @@ describe('flags:list', () => {
 });
 
 describe('flags:set', () => {
-  it('flips a flag, publishes the change, and returns {ok:true}', async () => {
+  it('flips a flag, publishes the change, and returns {ok:true, backend:posthog}', async () => {
     setFlag.mockResolvedValue({ ok: true });
     const { default: tool } = await import('../set');
     const result = await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX());
     expect(setFlag).toHaveBeenCalledWith(KEY, true);
+    expect(setFlagOverride).toHaveBeenCalledWith(KEY, null);
     expect(publishFlagChange).toHaveBeenCalledWith(KEY);
-    expect(parseTextPayload(result as never)).toEqual({ ok: true, key: KEY, enabled: true });
+    expect(parseTextPayload(result as never)).toEqual({ ok: true, key: KEY, enabled: true, backend: 'posthog' });
     expect((result as { isError?: boolean }).isError).toBeUndefined();
   });
 
-  it('on backend failure: flags isError, forwards the reason, and does NOT publish', async () => {
-    setFlag.mockResolvedValue({ ok: false, reason: 'posthog_unconfigured' });
+  it('on flag-backend-not-configured: falls back to pg-override and returns {ok:true, backend:pg-override}', async () => {
+    setFlag.mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
+    setFlagOverride.mockResolvedValue({ ok: true });
+    const { default: tool } = await import('../set');
+    const result = await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX());
+    expect(setFlag).toHaveBeenCalledWith(KEY, true);
+    expect(setFlagOverride).toHaveBeenCalledWith(KEY, true);
+    expect(publishFlagChange).toHaveBeenCalledWith(KEY);
+    expect(parseTextPayload(result as never)).toEqual({ ok: true, key: KEY, enabled: true, backend: 'pg-override' });
+    expect((result as { isError?: boolean }).isError).toBeUndefined();
+  });
+
+  it('on other backend failure: flags isError, forwards the reason, and does NOT publish', async () => {
+    setFlag.mockResolvedValue({ ok: false, reason: 'posthog_error' });
     const { default: tool } = await import('../set');
     const result = await tool.handler({ key: KEY, enabled: true, reason: 'enable for release' }, MAKE_CTX());
     expect((result as { isError?: boolean }).isError).toBe(true);
-    expect(parseTextPayload(result as never)).toEqual({ ok: false, reason: 'posthog_unconfigured', key: KEY });
+    expect(parseTextPayload(result as never)).toEqual({ ok: false, reason: 'posthog_error', key: KEY });
     expect(publishFlagChange).not.toHaveBeenCalled();
   });
 
@@ -116,14 +132,14 @@ describe('flags:set', () => {
     );
     // recordFlagAudit is the single correct writer (replaced the inline
     // ctx.tx INSERT that omitted id + workspace_id and silently failed).
-    expect(recordFlagAudit).toHaveBeenCalledWith(KEY, false, 'agent-x', { reason: 'disable for V1' });
+    expect(recordFlagAudit).toHaveBeenCalledWith(KEY, false, 'agent-x', { reason: 'disable for V1', backend: 'posthog' });
     expect(publishFlagChange).toHaveBeenCalledWith(KEY);
   });
 
   it("falls back to actor 'agent' when no principal is present", async () => {
     const { default: tool } = await import('../set');
     await tool.handler({ key: KEY, enabled: true, reason: 'enable it' }, MAKE_CTX());
-    expect(recordFlagAudit).toHaveBeenCalledWith(KEY, true, 'agent', { reason: 'enable it' });
+    expect(recordFlagAudit).toHaveBeenCalledWith(KEY, true, 'agent', { reason: 'enable it', backend: 'posthog' });
   });
   // recordFlagAudit's best-effort "never throws even on a write failure"
   // contract is covered against a real dead connection in
