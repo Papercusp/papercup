@@ -59,6 +59,11 @@ export interface LeaveHiveOpts {
    *  false — keep the clones (re-joinable, data-safe; mirrors dissolve's
    *  default-keep). */
   deleteClones?: boolean;
+  /** EI-469: ms to keep the swarms live AFTER publishing presence tombstones and
+   *  BEFORE teardown, so connected peers pull the del. Default
+   *  DEFAULT_LEAVE_DRAIN_MS; 0 disables (skipped anyway when nothing tombstoned).
+   *  Best-effort (pull-based replication, no ack). */
+  drainMs?: number;
 }
 
 export interface LeaveHiveMember {
@@ -107,7 +112,14 @@ export interface LeaveHiveDeps {
   dropPresence?: (sql: Sql, workspaceId: string, harnessSlug: string) => Promise<number>;
   /** rm -rf a clone dir (default fs.rm recursive force). */
   rmDir?: (path: string) => Promise<void>;
+  /** Sleep for the EI-469 drain window (test seam; default setTimeout). */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/** Default leave drain window (EI-469): keep swarms live this long after the
+ *  tombstones so connected peers pull the del before teardown. A few seconds is
+ *  ample on a LAN; a user-facing leave can absorb it. Override via opts.drainMs. */
+export const DEFAULT_LEAVE_DRAIN_MS = 3000;
 
 /** Default presence-tombstone: publish a `del` on the leaver's presence key via
  *  the still-live booted handle (EI-469). No-op (false) when not booted. */
@@ -197,40 +209,55 @@ export async function leaveHive(
   const memberPathBySlug = new Map<string, string | undefined>(
     memberEntries.map((m) => [m.slug, m.path]),
   );
-  const members: LeaveHiveMember[] = [];
+  const members: LeaveHiveMember[] = memberEntries.map((m) => ({
+    slug: m.slug,
+    presenceTombstoned: false,
+    federationClosed: false,
+    routineRemoved: false,
+    presenceRowsDropped: 0,
+  }));
 
-  // 1–3 — per member: stop federating, delete routine, drop presence.
-  for (const m of memberEntries) {
-    const out: LeaveHiveMember = {
-      slug: m.slug,
-      presenceTombstoned: false,
-      federationClosed: false,
-      routineRemoved: false,
-      presenceRowsDropped: 0,
-    };
-    // EI-469: tombstone presence FIRST, while the swarm is still live, so peers
-    // drop our row at once; THEN stop federating. Best-effort either way.
+  // PASS 1 (EI-469) — publish presence tombstones for EVERY member while their
+  // swarms are still live, BEFORE any teardown. Best-effort.
+  for (const out of members) {
     try {
-      out.presenceTombstoned = await tombstone(opts.workspaceId, m.slug);
+      out.presenceTombstoned = await tombstone(opts.workspaceId, out.slug);
     } catch {
       /* best-effort — not booted / no swarm / gh-unauthed; TTL is the backstop */
     }
+  }
+
+  // DRAIN (EI-469) — a single bounded window keeping the swarms live so connected
+  // peers' pull-based read-merge fetches the tombstones before we tear down.
+  // Skipped when nothing was tombstoned (no peers to wait for) or drainMs<=0.
+  // Replication here is PULL-based with no delivery ack, so this is a best-effort
+  // window, NOT a guarantee — a peer that hasn't pulled falls back to the TTL
+  // (today's behavior). Tuning this window under real latency is the only part
+  // that needs two real machines (plan D-003); the federation path itself is
+  // proven in-process (leave-hive-tombstone-federation.integration.test.ts).
+  const drainMs = opts.drainMs ?? DEFAULT_LEAVE_DRAIN_MS;
+  if (drainMs > 0 && members.some((m) => m.presenceTombstoned)) {
+    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    await sleep(drainMs);
+  }
+
+  // PASS 2 — per member: stop federating, delete routine, drop local presence.
+  for (const out of members) {
     try {
-      out.federationClosed = await closeHandle(opts.workspaceId, m.slug);
+      out.federationClosed = await closeHandle(opts.workspaceId, out.slug);
     } catch {
       /* best-effort — not booted / already closed */
     }
     try {
-      out.routineRemoved = await removeRoutine(sql, m.slug);
+      out.routineRemoved = await removeRoutine(sql, out.slug);
     } catch {
       /* best-effort — no row / PG blip; re-runnable */
     }
     try {
-      out.presenceRowsDropped = await dropPresence(sql, opts.workspaceId, m.slug);
+      out.presenceRowsDropped = await dropPresence(sql, opts.workspaceId, out.slug);
     } catch {
       /* best-effort — re-runnable */
     }
-    members.push(out);
   }
   // The view itself never booted/announced, but close for symmetry (no-op).
   try {

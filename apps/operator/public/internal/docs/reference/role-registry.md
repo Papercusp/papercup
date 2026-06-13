@@ -11,7 +11,7 @@ The built-in agent roles (AGENT_ROLES) joined with their spawn personas. Generat
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role's **persona** is its spawn prompt at `libs/papercusp/packages/harness/prompts/<role>.md`. Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (22 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (41 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (23 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (43 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -30,6 +30,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `operator` | — | chat/runtime surface — no spawn persona |
 | `oracle` | — | chat/runtime surface — no spawn persona |
 | `bee` | ✓ | Bee (generic Hive worker) — You are a **bee** — a generic implementation agent in the Hive, placed and woken by |
+| `queen` | ✓ | Queen (hive placement decider — global fallback persona) — You are **the Queen** — the hive's placement-specialist decider (the operator |
 | `planner` | ✓ | Planner (interactive plan author) — You are a **planner** — an interactive, owner-driven session for authoring and |
 | `orchestrator` | — | chat/runtime surface — no spawn persona |
 | `promote` | ✓ | Promote agent — You promote a plan's `## Promote` policy into the harness as features — **all |
@@ -51,6 +52,7 @@ These have a spawn persona but are not `AGENT_ROLES` entries — blueprint decid
 | Role | Summary |
 |---|---|
 | `committer` | Committer (accepted-edit commit → reproject) — You are the **committer** for the `gym` blueprint — the finalize step that makes an |
+| `content-fixer` | You are the **Content-Fixer** — Papercusp's automated git-sync content-guard repairer. |
 | `dimension-reviewer` | Dimension Reviewer — You review **one task** — the one named in `FEATURE_ID` — along **one dimension**, |
 | `director` | Director (per-feature durable pipeline) — You are the **director** for a SINGLE feature inside a durable pipeline |
 | `discoverer` | Discoverer — You build the **work-list** for a migration task — the one named in `FEATURE_ID`. |

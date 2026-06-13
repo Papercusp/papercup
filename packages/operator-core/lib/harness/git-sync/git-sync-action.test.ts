@@ -80,6 +80,14 @@ vi.mock('./run-git-sync', () => ({
   runGitSync: (...a: unknown[]) => runGitSyncMock(a[0] as string, a[1] as Record<string, unknown>),
 }));
 
+// EI-438 content-guard kill-switch flag — default ON; a test can flip it to exercise
+// the OFF (empty-detector) path. Only '@papercusp/flags/server' (the network getFlag)
+// is mocked; '@papercusp/flags' (the FLAGS constants) imports for real.
+const getFlagMock = vi.fn(async (_key: string, _distinctId?: string): Promise<boolean> => true);
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: (...a: unknown[]) => getFlagMock(a[0] as string, a[1] as string | undefined),
+}));
+
 const appendPipelineEventMock = vi.fn(async (_ev: Record<string, unknown>): Promise<void> => {});
 vi.mock('./pipeline-events', () => ({
   appendPipelineEvent: (...a: unknown[]) => appendPipelineEventMock(a[0] as Record<string, unknown>),
@@ -243,6 +251,8 @@ beforeEach(() => {
   sendMessageMock.mockReset();
   captureHeadShaMock.mockReset();
   runDocSweepMock.mockReset();
+  getFlagMock.mockReset();
+  getFlagMock.mockResolvedValue(true); // content-guard flag defaults ON
   resolverRows = [];
   contentFixerRows = [];
   counterRows = [];
@@ -898,5 +908,34 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
 
     const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
     expect(clears.some((c) => c.params[2] === 'git-sync-content')).toBe(false);
+  });
+});
+
+describe('EI-438 content-guard kill-switch flag', () => {
+  const runGitSyncOpts = (): { config?: unknown; contentDetectors?: unknown } =>
+    runGitSyncMock.mock.calls[0][1] as { config?: unknown; contentDetectors?: unknown };
+
+  it('flag ON (default): runGitSync runs with the DEFAULT detector set (guard active)', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    // undefined contentDetectors → runGitSync falls back to DEFAULT_CONTENT_DETECTORS.
+    expect(runGitSyncOpts().contentDetectors).toBeUndefined();
+    // gate read keyed by the harness slug.
+    expect(getFlagMock).toHaveBeenCalledWith('papercusp-git-sync-content-guard', 'papercup');
+  });
+
+  it('flag OFF (kill-switch): runGitSync runs with an EMPTY detector set — commits as before this plan', async () => {
+    getFlagMock.mockResolvedValue(false);
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    // [] disables the guard entirely: no quarantine, so outcome.contentErrors is always
+    // empty → no content escalation + no fixer dispatch downstream.
+    expect(runGitSyncOpts().contentDetectors).toEqual([]);
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(escalationUpserts().filter((u) => u.params[1] === 'git-sync-content')).toEqual([]);
   });
 });

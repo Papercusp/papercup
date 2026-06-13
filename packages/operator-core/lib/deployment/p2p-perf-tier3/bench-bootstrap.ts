@@ -172,3 +172,10 @@ export function remoteClaimAgentPath(installRoot = '/opt/papercusp'): string {
 export function remoteLoopAgentPath(installRoot = '/opt/papercusp'): string {
   return `${benchRuntimeDir(installRoot)}/packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts`;
 }
+
+/** Path to eviction-agent.ts inside the unpacked runtime (the ≥3-machine LOCK-AUTHORITY
+ *  φ+SWIM EVICTION proof launch target — shared-hive-hardening P-016 / D-010). Ships like
+ *  claim-agent.ts (runtime-pack tars the whole source tree). */
+export function remoteEvictionAgentPath(installRoot = '/opt/papercusp'): string {
+  return `${benchRuntimeDir(installRoot)}/packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-agent.ts`;
+}

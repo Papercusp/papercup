@@ -26,7 +26,12 @@
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 import { applyHyperbeeOpToPg, lwwPick } from './projection';
-import { isSnapshotOp, type SnapshotPayload, type SnapshotRow } from './log-snapshot';
+import {
+  isSnapshotOp,
+  SNAPSHOT_COMPACT_EVERY_OPS,
+  type SnapshotPayload,
+  type SnapshotRow,
+} from './log-snapshot';
 
 /**
  * Structural view of a log the merge can read. Stage 1's `RemoteLog` / `OwnLog`
@@ -295,6 +300,65 @@ export interface MergeCursor {
 
 export function createMergeCursor(): MergeCursor {
   return { positions: new Map(), winners: new Map() };
+}
+
+/**
+ * Default backward-scan bound for `findLatestSnapshotIndex`. By the compaction
+ * cadence (`SNAPSHOT_COMPACT_EVERY_OPS`) the latest snapshot is at most ~threshold
+ * ops behind the tail, so scanning a few cadence-windows back finds it; if none is
+ * found in the window we fall back to folding from 0 (today's behavior — safe, no
+ * regression), which bounds a fresh joiner of a NON-compacted log from paying
+ * O(total-history) just to discover there is no snapshot.
+ */
+export const SNAPSHOT_SCAN_LOOKBACK = SNAPSHOT_COMPACT_EVERY_OPS * 4;
+
+/**
+ * P-007 (design A): find the index of the LATEST `__snapshot__` op in a log, or
+ * `null` if none within `maxLookback` ops of the tail. Scans BACKWARD from the
+ * tail (the latest snapshot is near the tail by the cadence) so it touches only
+ * `[index, length)` — exactly the tail a snapshot-seeded fold will read anyway, so
+ * the scan adds no download a fresh joiner wouldn't already pay. Per-op reads are
+ * bounded so a withholding peer can't hang it (a failed read ends the scan →
+ * null → fold from 0, safe).
+ */
+export async function findLatestSnapshotIndex(
+  log: AdmittedLog,
+  maxLookback: number = SNAPSHOT_SCAN_LOOKBACK,
+  getTimeoutMs: number = DEFAULT_GET_TIMEOUT_MS,
+): Promise<number | null> {
+  const len = log.length;
+  const floor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
+  for (let i = len - 1; i >= floor; i--) {
+    const op = await readOpBounded(log, i, getTimeoutMs);
+    if (!op) return null; // unavailable/withholding → give up, fold from 0
+    if (isSnapshotOp(op)) return i;
+  }
+  return null;
+}
+
+/**
+ * P-007 (design A): seed a FRESH merge cursor at each log's latest snapshot index
+ * so a new joiner (or a post-reset re-fold) folds from the snapshot forward
+ * instead of from 0 — the new-joiner replay-skip. Only seeds a log with NO cursor
+ * position yet (fresh); an already-advanced cursor is left untouched (idempotent,
+ * never rewinds a live fold). A log with no snapshot is left at 0 (folds from
+ * scratch, today's behavior). FLAG-GATED by the caller (boot.ts) — off ⇒ never
+ * called ⇒ cursor seeds at 0, byte-identical to today.
+ */
+export async function seedCursorFromSnapshots(
+  logs: AdmittedLog[],
+  cursor: MergeCursor,
+  opts?: { maxLookback?: number; getTimeoutMs?: number },
+): Promise<void> {
+  for (const log of logs) {
+    if (cursor.positions.has(log.keyHex)) continue; // already folding — don't rewind
+    const idx = await findLatestSnapshotIndex(
+      log,
+      opts?.maxLookback ?? SNAPSHOT_SCAN_LOOKBACK,
+      opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS,
+    );
+    if (idx !== null && idx > 0) cursor.positions.set(log.keyHex, idx);
+  }
 }
 
 /**

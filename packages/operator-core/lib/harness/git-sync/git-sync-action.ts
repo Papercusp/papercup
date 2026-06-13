@@ -24,6 +24,8 @@
  *   - Records `{ last_synced_at, last_status, head_sha }` onto the routine's metadata.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
@@ -721,10 +723,16 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     /* best-effort */
   }
 
+  // EI-438 content-guard KILL-SWITCH (default ON): when OFF, pass an EMPTY detector
+  // set so runGitSync commits exactly as before this plan (no quarantine/escalation/
+  // fixer) — the instant off-switch on the shared commit path, no deploy needed. A
+  // flag-infra error falls back to the default (ON), keeping the safety on.
+  const contentGuardOn = await getFlag(FLAGS.GIT_SYNC_CONTENT_GUARD, slug);
+
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
   try {
-    outcome = await runGitSync(slug, { config: cfg });
+    outcome = await runGitSync(slug, { config: cfg, contentDetectors: contentGuardOn ? undefined : [] });
   } finally {
     if (lock.state === 'acquired') await releaseAll(cd, acquired);
   }

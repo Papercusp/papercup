@@ -34,6 +34,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // chat decision cards is still building; the live ctx.askUser path is
   // unchanged with this off.
   FLAGS.INBOX_DURABLE_ESCALATIONS,
+
+  // plan-federation-regrain-2026-06-13 (P-005/P-006): per-PART plan federation.
+  // DARK because it is an UNVERIFIED cutover — the cross-machine merge proof
+  // needs two real machines (P-008) and existing plans need backfilling (P-007)
+  // before the flip. With it OFF, plans federate exactly as today (whole
+  // harness_plans.content blob); the per-part capture/projection are inert.
+  // Pending flip surfaced in the plan's ## Now. Owner flips at cutover.
+  FLAGS.PLAN_PART_FEDERATION,
   // papercusp-self-improvement-loop Phase 3 master switch: auto-IMPLEMENTING
   // captured improvements only begins once the owner flips it (capture +
   // triage run regardless).
@@ -59,6 +67,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // proof). OFF = staleness-only authority selection, byte-identical to pre-P-016
   // + fail-open (D-004); the flip is gated on the two-machine eviction proof.
   FLAGS.AUTHORITY_EVICTION_PROBE,
+  // substrate-peer-log-compaction-2026-06-13 (design A, D-005 / P-008): peer-log
+  // snapshot compaction + fresh-joiner cursor-seeding is wired + the fold-from-
+  // snapshot correctness is proven single-box, but the real-wire replay-cost
+  // saving (Hypercore sparse-fetch) + cross-machine convergence are
+  // real-hardware-unverified (P-008, the same D-003 gate as the sibling
+  // AUTHORITY_RPC_PROTOMUX). OFF = no snapshot ops produced + cursor seeds at 0,
+  // byte-identical to today; the flip is gated on the two-machine proof.
+  FLAGS.SUBSTRATE_LOG_SNAPSHOT,
   // self-learning-frontier D-001 (owner-ratified dark-ship rule): every
   // frontier LEARNING LOOP ships built + tested + DARK, arming only when the
   // plan's P-001 gate closes (consume-edges P-013 live proof + owner

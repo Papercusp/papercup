@@ -149,6 +149,17 @@ export const FLAGS = {
   // on the two-machine proof. OFF = staleness-only selection, byte-identical to
   // pre-P-016. Listed in KNOWN_DARK_FLAGS.
   AUTHORITY_EVICTION_PROBE: "papercusp-authority-eviction-probe",
+  // substrate-peer-log-compaction-2026-06-13 (design A, D-005): when ON, boot
+  // (a) seeds a fresh/reset merge cursor at each log's latest `__snapshot__` index
+  // so a new joiner folds from the snapshot instead of replaying full history, and
+  // (b) periodically compacts the OWN log (appends one additive snapshot op once it
+  // grows past a threshold of ops since the last snapshot). DEFAULT OFF (dark): the
+  // mechanism + fold-correctness are proven single-box, but the real-wire
+  // replay-cost saving (Hypercore sparse-fetch from the snapshot index) and
+  // cross-machine convergence are real-hardware-unverified (P-008, same D-003 gate
+  // as the sibling AUTHORITY_RPC_PROTOMUX). OFF = no snapshot ops produced, cursor
+  // seeds at 0 — byte-identical to today. Listed in KNOWN_DARK_FLAGS.
+  SUBSTRATE_LOG_SNAPSHOT: "papercusp-substrate-log-snapshot",
   // EI-316 (hive completion split-brain): when ON, work_items:create refuses a
   // title that embeds an existing OPEN work-item id (the "WI-118: …" mirror
   // signal) — the creator must work the given id, not fork a duplicate it then
@@ -391,6 +402,23 @@ export const FLAGS = {
   // spawn (today's behavior) — it can never break a non-bwrap host. OFF by default until
   // validated end-to-end on a bwrap-capable host (this dev box's userns is restricted).
   CAPABILITY_EXEC_SANDBOX: "papercusp-capability-exec-sandbox",
+  // git-sync-content-guard-2026-06-13 (D-006-superseded): the runtime KILL-SWITCH for
+  // the git-sync content guard (EI-438) — the pre-commit check that quarantines a dirty
+  // file failing a content detector (an .mdx that won't compile, a curly quote used as
+  // code) so it never reaches staging, + the content-fixer auto-repair. ON by default
+  // (alpha default-on + it's a safety feature). When OFF, git-sync passes the guard an
+  // EMPTY detector set, so it commits exactly as before this plan (no quarantine, no
+  // escalation, no fixer dispatch) — the instant off-switch if the guard ever
+  // mis-quarantines real work on the shared commit path, without waiting for a deploy.
+  GIT_SYNC_CONTENT_GUARD: "papercusp-git-sync-content-guard",
+  // plan-federation-regrain-2026-06-13 P-005/P-006: per-PART plan federation —
+  // kills the whole-document LWW clobber where two peers editing DIFFERENT plan
+  // items lose one edit (D-009). DEFAULT-OFF: an UNVERIFIED cutover that needs a
+  // real two-machine merge proof (P-008) + the existing-plan backfill (P-007)
+  // before the flip. When OFF, plans federate EXACTLY as today (the whole
+  // harness_plans.content blob, mig 125) and the per-part capture/projection are
+  // inert — the live path is byte-identical. The owner flips this ON at cutover.
+  PLAN_PART_FEDERATION: "papercusp-plan-part-federation",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -401,6 +429,8 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.DESIGN]: false,
   [FLAGS.TESTING]: false,
   [FLAGS.INBOX_DURABLE_ESCALATIONS]: false,
+  // DEFAULT OFF — unverified cutover (needs the 2-machine merge proof, P-008). Off = plans federate as today.
+  [FLAGS.PLAN_PART_FEDERATION]: false,
   // OFF by default — the self-improvement loop captures + triages with this off;
   // auto-implementation only begins once an owner flips it (see the flag note above).
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
@@ -475,6 +505,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // byte-identical to pre-P-016. Listed in KNOWN_DARK_FLAGS; flip gated on the
   // two-machine eviction proof.
   [FLAGS.AUTHORITY_EVICTION_PROBE]: false,
+  // DEFAULT OFF (dark): the peer-log compaction mechanism + fold-from-snapshot
+  // correctness are proven single-box, but the real-wire replay-cost saving +
+  // cross-machine convergence are real-hardware-unverified (P-008, D-003 gate).
+  // OFF = no snapshot ops produced + cursor seeds at 0, byte-identical to today.
+  // Listed in KNOWN_DARK_FLAGS; flip gated on the two-machine proof.
+  [FLAGS.SUBSTRATE_LOG_SNAPSHOT]: false,
   // ON by default (alpha flags-default-on policy + EI-316 correctness fix): the
   // guard fires only on a title that embeds an id resolving to a live OPEN
   // work-item — a near-zero-false-positive signal — and force:true is the
@@ -619,6 +655,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // host (this box's unprivileged userns is AppArmor-restricted). Owner arms after that
   // validation. OFF = today's raw operator-side spawn. Listed in KNOWN_DARK_FLAGS.
   [FLAGS.CAPABILITY_EXEC_SANDBOX]: false,
+  // ON by default (alpha flags-default-on policy) — the content guard is a SAFETY
+  // feature (broken docs never reach staging) that fails open per-detector + is a
+  // verified no-op on a clean tree. ON ships it; OFF is the instant kill-switch if it
+  // ever mis-quarantines on the shared git-sync commit path. A flag-infra error keeps
+  // it ON (getFlag falls back to this default), so the safety stays on when PostHog is
+  // unreachable — the opposite of a closed gate.
+  [FLAGS.GIT_SYNC_CONTENT_GUARD]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

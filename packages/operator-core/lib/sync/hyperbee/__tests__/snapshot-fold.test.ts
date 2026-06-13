@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { produceLogSnapshot } from '../log-snapshot';
+import { produceLogSnapshot, shouldCompactOwnLog } from '../log-snapshot';
 import {
   mergeAdmittedLogs,
   mergeAdmittedLogsIncremental,
   createMergeCursor,
+  findLatestSnapshotIndex,
+  seedCursorFromSnapshots,
   type AdmittedLog,
 } from '../read-merge';
 import type { OwnLog, PeerLogOp } from '../peer-log';
@@ -147,5 +149,91 @@ describe('snapshot fold (P-005 + P-007, design A)', () => {
     const pg = await foldToPg([joinerView], 0);
     // B + C live (C updated by tail); A absent (del'd before the snapshot, omitted).
     expect(pg).toEqual({ 'queue::B': { n: 2 }, 'queue::C': { n: 33 } });
+  });
+});
+
+describe('shouldCompactOwnLog (P-005 cadence)', () => {
+  it('fires once growth since the last snapshot reaches the threshold', () => {
+    expect(shouldCompactOwnLog(1000, 0, 1000)).toBe(true);
+    expect(shouldCompactOwnLog(999, 0, 1000)).toBe(false);
+    expect(shouldCompactOwnLog(2500, 1500, 1000)).toBe(true); // grew 1000 since last
+    expect(shouldCompactOwnLog(2400, 1500, 1000)).toBe(false); // grew only 900
+  });
+  it('a non-positive threshold disables compaction', () => {
+    expect(shouldCompactOwnLog(10_000, 0, 0)).toBe(false);
+    expect(shouldCompactOwnLog(10_000, 0, -1)).toBe(false);
+  });
+});
+
+describe('findLatestSnapshotIndex + seedCursorFromSnapshots (P-007 reader seeding)', () => {
+  it('finds the latest snapshot index near the tail', async () => {
+    const log = memLog('dd'.repeat(32));
+    await log.append(put('queue', 'A', { n: 1 }, 1));
+    await log.append(put('queue', 'B', { n: 2 }, 2));
+    await produceLogSnapshot(log, { now: 5, schemaVersion: 1 }); // snapshot at index 2
+    await log.append(put('queue', 'C', { n: 3 }, 6)); // tail
+    expect(await findLatestSnapshotIndex(log, 1000, 0)).toBe(2);
+  });
+
+  it('returns null when there is no snapshot (→ caller folds from 0)', async () => {
+    const log = memLog('ee'.repeat(32));
+    await log.append(put('queue', 'A', { n: 1 }, 1));
+    await log.append(put('queue', 'B', { n: 2 }, 2));
+    expect(await findLatestSnapshotIndex(log, 1000, 0)).toBeNull();
+  });
+
+  it('respects the maxLookback bound (a snapshot older than the window is not found)', async () => {
+    const log = memLog('ff'.repeat(32));
+    await produceLogSnapshot(log, { now: 1, schemaVersion: 1 }); // empty log → no-op (length 0)
+    await log.append(put('queue', 'A', { n: 1 }, 1));
+    await produceLogSnapshot(log, { now: 2, schemaVersion: 1 }); // snapshot at index 1
+    // append 5 tail ops so the snapshot is 5 back; lookback of 2 can't reach it.
+    for (let i = 0; i < 5; i++) await log.append(put('queue', `T${i}`, { i }, 10 + i));
+    expect(await findLatestSnapshotIndex(log, 2, 0)).toBeNull();
+    expect(await findLatestSnapshotIndex(log, 100, 0)).toBe(1);
+  });
+
+  it('seeds a fresh cursor at the snapshot index; leaves an advanced cursor untouched', async () => {
+    const log = memLog('11'.repeat(32));
+    await log.append(put('queue', 'A', { n: 1 }, 1));
+    await log.append(put('queue', 'B', { n: 2 }, 2));
+    await produceLogSnapshot(log, { now: 5, schemaVersion: 1 }); // snapshot at index 2
+    await log.append(put('queue', 'C', { n: 3 }, 6));
+
+    const fresh = createMergeCursor();
+    await seedCursorFromSnapshots([log], fresh, { maxLookback: 1000, getTimeoutMs: 0 });
+    expect(fresh.positions.get(log.keyHex)).toBe(2); // seeded at the snapshot
+
+    const advanced = createMergeCursor();
+    advanced.positions.set(log.keyHex, 99); // already folding past the snapshot
+    await seedCursorFromSnapshots([log], advanced, { maxLookback: 1000, getTimeoutMs: 0 });
+    expect(advanced.positions.get(log.keyHex)).toBe(99); // untouched — never rewound
+  });
+
+  it('a seeded cursor then folds to the SAME state as folding from 0', async () => {
+    const log = memLog('22'.repeat(32));
+    await log.append(put('queue', 'A', { n: 1 }, 1));
+    await log.append(del('queue', 'A', 2)); // A del'd before snapshot
+    await log.append(put('queue', 'B', { n: 2 }, 3));
+    await produceLogSnapshot(log, { now: 5, schemaVersion: 1 });
+    await log.append(put('queue', 'B', { n: 22 }, 6)); // tail
+
+    const fromZero = await foldToPg([log], 0);
+    // seed then fold
+    const pg = new Map<string, unknown>();
+    const cursor = createMergeCursor();
+    await seedCursorFromSnapshots([log], cursor, { maxLookback: 1000, getTimeoutMs: 0 });
+    await mergeAdmittedLogsIncremental([log], cursor, {
+      getTimeoutMs: 0,
+      maxOpsPerPass: 0,
+      applyImpl: async (env) => {
+        const k = `${env.table}::${env.hbKey}`;
+        if (env.type === 'del') pg.delete(k);
+        else pg.set(k, env.value);
+        return true;
+      },
+    });
+    expect(Object.fromEntries(pg)).toEqual(fromZero);
+    expect(fromZero).toEqual({ 'queue::B': { n: 22 } });
   });
 });

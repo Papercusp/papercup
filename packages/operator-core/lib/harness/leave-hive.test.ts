@@ -45,6 +45,9 @@ function fakes(initialProjects: HarnessRegistry['projects']) {
       calls.order.push(`tombstone:${slug}`);
       return true;
     },
+    sleep: async (ms) => {
+      calls.order.push(`drain:${ms}`);
+    },
     closeHandle: async (_ws, slug) => {
       calls.closed.push(slug);
       calls.order.push(`close:${slug}`);
@@ -90,9 +93,13 @@ describe('leaveHive (P-012)', () => {
     expect(calls.closed.sort()).toEqual(['docs', 'shop', 'shop-hive']);
     expect(calls.routinesRemoved.sort()).toEqual(['docs', 'shop']);
     expect(calls.presenceDropped.sort()).toEqual(['docs', 'shop']);
-    // EI-469: each member's tombstone is published BEFORE its handle closes.
-    expect(calls.order.indexOf('tombstone:shop')).toBeLessThan(calls.order.indexOf('close:shop'));
-    expect(calls.order.indexOf('tombstone:docs')).toBeLessThan(calls.order.indexOf('close:docs'));
+    // EI-469: ALL tombstones, THEN one drain, THEN all closes — connected peers
+    // get a single bounded window to pull the dels before any teardown.
+    const lastTombstone = Math.max(calls.order.indexOf('tombstone:shop'), calls.order.indexOf('tombstone:docs'));
+    const drainAt = calls.order.indexOf('drain:3000');
+    const firstClose = Math.min(calls.order.indexOf('close:shop'), calls.order.indexOf('close:docs'));
+    expect(lastTombstone).toBeLessThan(drainAt);
+    expect(drainAt).toBeLessThan(firstClose);
     // registry: view + members gone, the unrelated harness kept.
     expect(calls.registry.map((p) => p.slug)).toEqual(['papercup']);
   });

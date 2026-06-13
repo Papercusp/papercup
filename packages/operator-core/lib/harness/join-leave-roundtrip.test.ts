@@ -53,6 +53,7 @@ function world(initial: HarnessRegistry['projects'] = []) {
     mutateRegistry,
     sql: {} as Sql,
     tombstonePresence: async () => true, // hermetic — don't touch the real boot handle map
+    sleep: async () => {}, // skip the EI-469 drain wait in the hermetic round-trip
     closeHandle: async (_ws, slug) => {
       state.closed.push(slug);
       return true;

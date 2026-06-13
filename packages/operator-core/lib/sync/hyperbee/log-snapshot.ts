@@ -134,6 +134,30 @@ export function buildSnapshotOp(opts: {
   };
 }
 
+/**
+ * Default compaction cadence: compact the own log once it has grown this many
+ * ops PAST the last snapshot's `coversUpTo`. Compaction reads the whole own log
+ * (O(history)) once per fire, so it must be infrequent — this threshold trades a
+ * larger replay tail for fewer O(history) writer scans. A tunable, not a constant
+ * of correctness (any positive value is correct; this only sets the cadence).
+ */
+export const SNAPSHOT_COMPACT_EVERY_OPS = 1000;
+
+/**
+ * Should the own log be compacted now? True when it has grown at least
+ * `threshold` ops since the last snapshot it produced (`lastCoversUpTo`, 0 if it
+ * never snapshotted). Pure — the caller supplies the lengths so this is trivially
+ * testable and free of clock/IO.
+ */
+export function shouldCompactOwnLog(
+  currentLength: number,
+  lastCoversUpTo: number,
+  threshold: number = SNAPSHOT_COMPACT_EVERY_OPS,
+): boolean {
+  if (threshold <= 0) return false;
+  return currentLength - lastCoversUpTo >= threshold;
+}
+
 export interface ProduceSnapshotResult {
   /** False when there was nothing to snapshot (empty log) — no op appended. */
   appended: boolean;
