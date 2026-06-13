@@ -30,7 +30,7 @@ import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine } from '../harness/routines/claim';
 import { checkFireGate, recordFire } from '../autoloop';
-import { getSystemAction, SYSTEM_TARGET_PREFIX } from '../harness/routines/system-actions';
+import { getSystemAction, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
 import { operatorApiBase } from '../operator-api-base';

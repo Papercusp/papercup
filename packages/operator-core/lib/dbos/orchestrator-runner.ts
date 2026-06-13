@@ -102,6 +102,24 @@ export function extractAgentOutput(stdout: string): string {
     .trim();
 }
 
+/**
+ * D-007 (shared-hive-loop-e2e-testing) fail-open wrapper for the pipeline's
+ * lease-heartbeat hook: run the heartbeat and pass its `{renewed,reason}` through,
+ * but map ANY throw to `renewed:true` — a transient PG/authority error must NEVER
+ * make a live pipeline self-abort (the next turn re-checks; completion-adoption
+ * rule 2 is the backstop for an un-aborted zombie). Exported so the contract is
+ * unit-tested directly (the `real*` hooks themselves do I/O and are integration-only).
+ */
+export async function leaseHeartbeatFailOpen(
+  run: () => Promise<{ renewed: boolean; reason?: string }>,
+): Promise<{ renewed: boolean; reason?: string }> {
+  try {
+    return await run();
+  } catch (e) {
+    return { renewed: true, reason: `heartbeat-error-fail-open: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 /** Max chars of child stderr to surface on a failed invoke (P-005). */
 const STDERR_SURFACE_LIMIT = 4000;
 
@@ -1055,8 +1073,8 @@ export function wireOrchestratorInvokeRunner(): void {
   // before its next side effect. FAIL-OPEN: any PG/authority error returns `renewed:true`
   // — the lease check must NEVER kill a live pipeline (the next turn re-checks; adoption
   // rule 2 is the backstop for an un-aborted zombie).
-  setPipelineLeaseHeartbeatHook(async ({ harnessSlug, featureId, workspaceId, claim }) => {
-    try {
+  setPipelineLeaseHeartbeatHook(({ harnessSlug, featureId, workspaceId, claim }) =>
+    leaseHeartbeatFailOpen(async () => {
       const r = await heartbeatClaim({
         workspaceId: workspaceId ?? activeWorkspaceId(),
         harnessSlug,
@@ -1067,13 +1085,8 @@ export function wireOrchestratorInvokeRunner(): void {
         holderPubkey: claim.holderPubkey,
       });
       return { renewed: r.renewed, reason: r.reason };
-    } catch (e) {
-      return {
-        renewed: true,
-        reason: `heartbeat-error-fail-open: ${e instanceof Error ? e.message : String(e)}`,
-      };
-    }
-  });
+    }),
+  );
   // #1: a finished feature immediately refills its harness's freed slot with the
   // next queued feature, instead of waiting up to 30s for the periodic tick.
   setPipelineSettledHook((slug, workspaceId) =>

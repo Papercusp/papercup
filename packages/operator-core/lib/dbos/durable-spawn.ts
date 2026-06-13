@@ -23,6 +23,11 @@
  *   • the routine bare-role fire runs INSIDE a durable `routineFireWorkflow` step;
  *     its recovery is the routine cadence (the next due tick re-fires) — it stays
  *     as-is (a child-workflow can't start from inside a step anyway).
+ *   • a SYSTEM action that wants a durable child fire (EI-403-A) returns the fire
+ *     request as `SystemActionResult.durableSpawns`; `routineFireWorkflow` drains it
+ *     via `startDurableSpawns` AFTER the action's step, at the workflow layer where
+ *     `startWorkflow` is legal — escaping the from-a-step limitation for the
+ *     implement lane without making the fire fire-and-forget.
  *   • `fleet:spawn` (operator-spawn) keeps the durable nursery row + the P-011
  *     reclaim sweeper (fail-loud + free the ceiling on a dead host) — chosen to
  *     preserve `fleet:cancel`'s in-process abort and because a one-shot
@@ -98,4 +103,30 @@ export async function durableSpawnFire(input: DurableSpawnFireInput): Promise<bo
     );
     return false;
   }
+}
+
+/**
+ * Start a batch of durable spawns from a WORKFLOW context — the EI-403-A seam. A
+ * system action that can't start a child workflow from inside its own step instead
+ * RETURNS its fire requests (`SystemActionResult.durableSpawns`); the routine
+ * workflow calls this AFTER the action's step, where `startWorkflow` is legal.
+ *
+ * Recovery-safe BY THE CALLER'S contract: the requests come from the step's
+ * checkpointed return value, so a replay re-drains the same list, and each fire is
+ * idempotency-keyed (`durable-spawn:<key>`) — a stable key dedups the re-fire, a
+ * clock-derived key would double-dispatch (hence the SystemActionResult doc's
+ * STABLE-key requirement). `durableSpawnFire` never throws, so one declined fire
+ * (DBOS off, or a genuine enqueue error) never blocks the rest. Returns how many of
+ * `total` were durably enqueued (the remainder are the caller's fire-and-forget /
+ * cadence-recovery concern).
+ */
+export async function startDurableSpawns(
+  spawns: DurableSpawnFireInput[] | undefined,
+): Promise<{ enqueued: number; total: number }> {
+  const reqs = spawns ?? [];
+  let enqueued = 0;
+  for (const req of reqs) {
+    if (await durableSpawnFire(req)) enqueued += 1;
+  }
+  return { enqueued, total: reqs.length };
 }

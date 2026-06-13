@@ -7,7 +7,26 @@ import {
   pickReactiveBeforeWorkerRole,
   invokeTimeoutMs,
   governorMaxWaitMs,
+  leaseHeartbeatFailOpen,
 } from './orchestrator-runner';
+
+describe('leaseHeartbeatFailOpen — D-007 fail-open lease-heartbeat glue', () => {
+  test('passes a clean heartbeat verdict (renewed true/false) straight through', async () => {
+    expect(await leaseHeartbeatFailOpen(async () => ({ renewed: true }))).toEqual({ renewed: true });
+    expect(
+      await leaseHeartbeatFailOpen(async () => ({ renewed: false, reason: 'stolen by swarm-B' })),
+    ).toEqual({ renewed: false, reason: 'stolen by swarm-B' });
+  });
+
+  test('a throwing heartbeat FAILS OPEN to renewed:true (a PG/authority blip never kills a live pipeline)', async () => {
+    const r = await leaseHeartbeatFailOpen(async () => {
+      throw new Error('connection refused');
+    });
+    expect(r.renewed).toBe(true);
+    expect(r.reason).toContain('heartbeat-error-fail-open');
+    expect(r.reason).toContain('connection refused');
+  });
+});
 
 describe('lazy env knobs (audit P-015 / EI-172)', () => {
   test('invokeTimeoutMs + governorMaxWaitMs read env at call time, not import time', () => {

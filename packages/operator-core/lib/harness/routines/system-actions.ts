@@ -11,7 +11,18 @@
  * Handlers run as ONE step, so a crash mid-action replays the whole handler on
  * recovery — handlers must therefore be safe to re-run from the top (git-sync is:
  * commit is a no-op when clean, push is a no-op when up-to-date, merge re-fetches).
+ *
+ * DURABLE CHILD SPAWNS (EI-403-A): a handler that wants to start a durable child
+ * workflow (e.g. the auto-implement lane firing its worker) CANNOT do so from
+ * inside its step — `DBOS.startWorkflow` is forbidden from within a step. Instead
+ * the handler RETURNS the spawn requests as `SystemActionResult.durableSpawns`;
+ * the routine workflow drains them AFTER the step returns, at the workflow layer
+ * where `startWorkflow` is legal (see `routines-workflow.ts` →
+ * `startDurableSpawns`). Recovery-safe: the step's return value is checkpointed,
+ * so on replay the same requests are re-drained and the per-request idempotency
+ * key dedups the re-fire. A handler returning `void` is unchanged.
  */
+import type { DurableSpawnFireInput } from '../../dbos/durable-spawn';
 
 export interface SystemActionCtx {
   /** Harness slug (routines.install_slug). */
@@ -24,7 +35,23 @@ export interface SystemActionCtx {
   payloadTemplate: Record<string, unknown> | null;
 }
 
-export type SystemAction = (ctx: SystemActionCtx) => Promise<void>;
+/**
+ * What a system action MAY return so the routine engine starts durable work on
+ * its behalf at the workflow layer (EI-403-A). Returning nothing (`void`) is the
+ * common case and changes nothing. An interface (not a bare field) so future
+ * post-step engine hooks can be added without re-widening every handler.
+ */
+export interface SystemActionResult {
+  /**
+   * Durable child-workflow fires the engine starts AFTER this action's step, from
+   * the workflow context (the action cannot start them from inside its own step).
+   * Each must carry a STABLE idempotencyKey (derived from durable state, not a
+   * clock) so a recovery replay dedups rather than double-fires.
+   */
+  durableSpawns?: DurableSpawnFireInput[];
+}
+
+export type SystemAction = (ctx: SystemActionCtx) => Promise<void | SystemActionResult>;
 
 /** The reserved `target_role` prefix that routes a routine to a system action. */
 export const SYSTEM_TARGET_PREFIX = 'system:';

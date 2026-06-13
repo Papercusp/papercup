@@ -42,8 +42,12 @@
  *
  * Seed: seed-coord-invariant-routines.ts. Registered via register-system-actions.
  */
+import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+// Reuse the per-handle drain GC's retention window + batch bounds so the global
+// sweep below (EI-436) stays consistent with the inline GC it backstops.
+import { OUTBOX_GC_AGE_MS, OUTBOX_GC_BATCH, OUTBOX_GC_MAX_BATCHES } from '../../sync/hyperbee/outbox-drain';
 import { captureImprovement } from '../improvements/capture-core';
 import { lockAuthorityForHive } from '../../authority/lock-authority';
 import {
@@ -559,8 +563,62 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
   }
 }
 
+// ── EI-436: dormant-harness substrate_outbox GC ─────────────────────────────
+// The inline drain GC (outbox-drain.ts) deletes drained rows >24h ONLY for a
+// CURRENTLY-BOOTED harness's own (workspace, slug) — by design, so N booted
+// harnesses don't run N concurrent unscoped global DELETEs (the EI-125 trap that
+// produced a 102GB table). But a harness that federated then STOPPED booting has
+// no drain loop, so its drained rows never GC and leak forever (35,660 rows /
+// 4.6GB cold TOAST observed). This is the ONE single-writer global sweep that
+// reaches them: run by the hourly coord-invariant-monitor (a single authority),
+// BOUNDED + BATCHED with the same window + predicate as the inline GC, but NOT
+// scoped to a booted slug — it sweeps every slug in the workspace (the point).
+
+/**
+ * Single-writer, bounded+batched GC of drained `substrate_outbox` rows older than
+ * the retention window, across EVERY harness_slug in the workspace (incl. dormant
+ * ones the per-handle drain can't reach). Same predicate as the inline GC; only
+ * the holder of this routine (one authority, hourly) ever runs it, so it is never
+ * the unscoped concurrent DELETE storm of EI-125. Returns total rows deleted.
+ */
+export async function sweepDrainedOutbox(
+  sql: postgres.Sql,
+  workspaceId: string,
+  nowMs: number,
+  opts: { batch?: number; maxBatches?: number; ageMs?: number } = {},
+): Promise<number> {
+  const batch = opts.batch ?? OUTBOX_GC_BATCH;
+  const maxBatches = opts.maxBatches ?? OUTBOX_GC_MAX_BATCHES;
+  const cutoff = nowMs - (opts.ageMs ?? OUTBOX_GC_AGE_MS);
+  let total = 0;
+  for (let i = 0; i < maxBatches; i++) {
+    // Each batch is its own committed statement — progress survives a host recycle,
+    // and the LIMIT keeps any single DELETE bounded (never the unbounded EI-125 one).
+    const del = await sql`
+      WITH del AS (
+        SELECT id
+          FROM harness_shared.substrate_outbox
+         WHERE workspace_id = ${workspaceId}
+           AND drained_at IS NOT NULL
+           AND drained_at < ${cutoff}
+         LIMIT ${batch}
+      )
+      DELETE FROM harness_shared.substrate_outbox o
+       USING del
+       WHERE o.id = del.id`;
+    const n = del.count ?? 0;
+    total += n;
+    if (n < batch) break; // fewer than a full batch ⇒ backlog cleared
+  }
+  return total;
+}
+
 registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => {
   const t: InvariantThresholds = { ...DEFAULT_THRESHOLDS, ...(ctx.payloadTemplate as Partial<InvariantThresholds> | null) };
+  // EI-436: GC drained substrate_outbox rows for DORMANT harnesses (the inline
+  // per-handle drain GC only reaches currently-booted slugs). Best-effort — a
+  // sweep failure never aborts the pass.
+  await sweepDrainedOutbox(getOrgPg().sql, ctx.workspaceId, Date.now()).catch(() => 0);
   // EI-314: GC staged wakes for ENDED sessions before measuring. A manual-mode
   // queue for a gone owner can never be released (only the owner releases it), so
   // it would trip the wake-queue invariant as pure debris and re-file forever.
