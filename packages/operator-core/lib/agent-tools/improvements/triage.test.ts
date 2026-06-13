@@ -3,7 +3,8 @@ import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
 import triageTool from './triage';
 import { applyTriageDecision } from '../../harness/improvements/triage-core';
-import type { ScoredItem } from '../../harness/improvements/digest';
+import type { ScoredItem, ImprovementDigest } from '../../harness/improvements/digest';
+import type { ImprovementCandidate } from '../../harness/improvements/policy';
 
 // Mock the dependencies
 vi.mock('../../harness/improvements/read-items');

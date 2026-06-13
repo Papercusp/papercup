@@ -55,6 +55,11 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // records what she chose for a considered item (act/defer/reject/route-to-research/
   // no-op) → the decision ledger + the owner's recent-auto-decisions feed.
   'mcp__agentmcp__autonomy:record_disposition',
+  // The Queen's own decision-ledger read surface (B-13 / P-113): her reflective
+  // view of what she has auto-decided / gated / deferred — summary (the shape) +
+  // list (the rows).
+  'mcp__agentmcp__decision_ledger:summary',
+  'mcp__agentmcp__decision_ledger:list',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
   // Plans read surface — the needs-human inbox + importance the scanner

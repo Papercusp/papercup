@@ -217,6 +217,14 @@ export async function recordDecisionDisposition(
       const rows = inserted as unknown as Array<{ id: number | string }>;
       return rows[0]?.id != null ? Number(rows[0].id) : null;
     });
+    // Refresh the recent-auto-decisions feed (P-031/P-113). Disposition writes are
+    // the low-volume, feed-relevant layer — the action emit deliberately does NOT
+    // invalidate. Fire-and-forget; a sync miss never breaks the decision turn.
+    if (id != null) {
+      void import('../sync-sse')
+        .then(({ notifySyncInvalidate }) => notifySyncInvalidate('decision.ledger'))
+        .catch(() => {});
+    }
     return id;
   } catch (err) {
     // eslint-disable-next-line no-console

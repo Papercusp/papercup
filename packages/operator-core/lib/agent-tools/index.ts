@@ -557,6 +557,11 @@ import './scout/grade-idea';
 // write side is the hooks in lib/change-ledger/.
 import './change_ledger/list';
 import './change_ledger/calendar';
+// The Queen decision ledger read surface (queen-autonomy-policy B-13 / P-113):
+// the action-chokepoint + disposition rows, filterable + rolled-up. Read-only;
+// the write side is lib/decision-ledger/{emit,disposition}.ts.
+import './decision_ledger/list';
+import './decision_ledger/summary';
 // prompt-sedimentology read surface (self-learning-frontier P-023 / FB-09):
 // the per-rule dead-weight standings + recent shadow-cycle rows. Read-only;
 // the write side is the weekly system:prompt-ablation routine (dark until the

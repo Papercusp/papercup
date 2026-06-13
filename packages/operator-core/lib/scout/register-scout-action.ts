@@ -1,7 +1,15 @@
 /**
- * register-scout-action.ts — Scout P-008 boot wire: registers `system:scout-cycle`
- * with a PRODUCTION cycle runner (cb4b9's buildScoutCycleDeps + runScoutCycle),
- * supplying the three irreducibly-injected deps the action owns:
+ * register-scout-action.ts — Scout's PRODUCTION cycle runner provider
+ * (cb4b9's buildScoutCycleDeps + runScoutCycle), supplying the three
+ * irreducibly-injected deps a Scout cycle owns:
+ *
+ * RETIRED the bespoke `system:scout-cycle` action (deterministic-blueprints-migration
+ * -2026-06-13 P-130): scout now runs as the `scout` BLUEPRINT — its seed fires
+ * `system:blueprint-run {blueprintId:'scout'}` → the `scout:cycle` deterministic step
+ * → `runScoutCycleTick` (which calls `productionScoutRunner` below). This module no
+ * longer registers a system action; it stays as the home of `productionScoutRunner`
+ * (the scout:cycle op's production cycle deps) + noopArchive/setScoutArchiveBuilder.
+ * Injected deps:
  *
  *   - llmCall — the real stateless LLM client (lib/llm-testing/llm-client; it satisfies
  *     ScoutLlmCall directly via the gym:judge pattern). Lazily imported so a boot
@@ -14,13 +22,13 @@
  *     archive. Falls back to a NO-OP if the archive is unavailable (e.g. PG/migration
  *     193 absent) — the broad + concrete rails are unaffected.
  *
- * Side-effect import: harness/routines/register-system-actions.ts imports this so
- * the routines engine can dispatch a seeded `system:scout-cycle` routine. The
- * routine itself is seeded INACTIVE (seed-scout-routine.ts) — bring-up is
- * human-gated (D-002).
+ * No side-effect registration: the scout blueprint's deterministic step
+ * (`blueprint-steps/ops/scout-cycle.ts`) imports `productionScoutRunner` directly.
+ * The seed routine (seed-scout-routine.ts) fires `system:blueprint-run`, seeded
+ * INACTIVE — bring-up human-gated (D-002).
  */
 
-import { registerScoutCycleAction, type ScoutCycleRunner } from './scout-cycle-action';
+import { type ScoutCycleRunner } from './scout-cycle-action';
 import { runScoutCycle } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
 import { createScoutPlanDraft } from './scout-plan-draft';
@@ -105,5 +113,5 @@ function isFlushable(a: ArchivePort): a is ScoutArchivePort {
   return typeof (a as ScoutArchivePort).flush === 'function';
 }
 
-// Self-register at module load (the *-actions.ts convention).
-registerScoutCycleAction(productionScoutRunner);
+// No self-registration: `system:scout-cycle` is RETIRED (P-130). Scout runs via the
+// `scout` blueprint; the scout:cycle op imports `productionScoutRunner` above.

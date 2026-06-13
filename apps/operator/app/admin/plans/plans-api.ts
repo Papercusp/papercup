@@ -135,7 +135,12 @@ export type AttentionKind =
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'operator-report';
+  | 'operator-report'
+  // B-14 / P-100 folded disposition channels (D-011):
+  | 'improvement'
+  | 'standing-approval'
+  | 'conversation'
+  | 'scout-grade';
 
 export type AttentionActionId =
   | 'chat'

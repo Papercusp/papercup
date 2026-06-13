@@ -74,7 +74,7 @@ export default defineTool({
     distilledTrace: z.string().min(1).describe('The judge-sized distilled trace of the harness run'),
     rubric: rubricArg.describe("The target blueprint's gym.rubric (partial ok; omit for V1)"),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     let llmCall: JudgeLlmCall;
     try {
       llmCall = (await import('../../llm-testing/llm-client')).llmCall as unknown as JudgeLlmCall;
@@ -83,6 +83,27 @@ export default defineTool({
     }
     try {
       const score = await runGymJudge(args, { llmCall });
+      // queen-autonomy P-112: route the gym judge's score+rationale through the
+      // disposition log (knowledge-curation). Fire-and-forget + flag-gated.
+      const ws = ctx?.workspaceId ?? ctx?.principal?.workspaceId;
+      if (ws && ws !== '*') {
+        void (async () => {
+          try {
+            const { recordProactiveDisposition } = await import('../../decision-ledger/disposition');
+            await recordProactiveDisposition({
+              workspaceId: ws,
+              harnessSlug: ctx?.harnessSlug ?? null,
+              decisionInput: { action: 'gym:judge', riskTier: 'low', authority: 'system', reversibility: 'reversible' },
+              why: typeof score.rationale === 'string' ? score.rationale.slice(0, 1000) : `gym judge composite ${score.composite}`,
+              metadata: { composite: score.composite, judgeModel: score.judgeModel, rubricHash: score.rubricHash },
+              actorRole: ctx?.role ?? null,
+              actorSpawnId: ctx?.spawnId ?? null,
+            });
+          } catch {
+            /* a ledger miss must never break the judge */
+          }
+        })();
+      }
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, score }) }] };
     } catch (e) {
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }) }] };

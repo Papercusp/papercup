@@ -21,6 +21,7 @@ import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { Checkbox } from '../../harness/Checkbox';
 import { CeilingSlider, CEILING_SHORT_LABEL, type Ceiling } from './CeilingSlider';
+import RecentAutoDecisions from './RecentAutoDecisions';
 
 /* ── Wire type — mirrors AutonomyPolicyView (operator-core/lib/autonomy/policy-view.ts),
  *    kept local per the client wire-type decoupling convention. ── */

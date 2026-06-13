@@ -1501,6 +1501,56 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── decision.ledger — the Queen decision ledger (queen-autonomy-policy B-13 / P-113) ──
+  //
+  // The two-layer D-012 ledger (harness_shared.decision_ledger, migrations 260 +
+  // 265): action-chokepoint rows (every governed action that ran — B-06/P-110) +
+  // decider-disposition rows (the Queen's per-item choices — P-111). Filterable by
+  // layer / posture / category / disposition / time. Backs the settings
+  // recent-auto-decisions feed (P-031 — pass {layer:'disposition'}). A
+  // not-yet-applied migration degrades to [] (the feed shows its empty state, never
+  // a 500). Invalidated by recordDecisionDisposition after a disposition write (the
+  // feed-relevant, low-volume layer); the high-volume action emit does NOT
+  // invalidate.
+  'decision.ledger': {
+    argsSchema: z.object({
+      layer: z.enum(['action', 'disposition']).optional(),
+      posture: z.enum(['auto', 'proposed', 'gated', 'rejected']).optional(),
+      category: z.string().min(1).max(60).optional(),
+      disposition: z.enum(['act', 'defer', 'reject', 'route-to-research', 'no-op']).optional(),
+      sinceHours: z.number().positive().max(24 * 90).optional(),
+      limit: z.number().int().positive().max(500).default(50),
+    }),
+    resolve: async (args) => {
+      const a = args as {
+        layer?: 'action' | 'disposition';
+        posture?: string;
+        category?: string;
+        disposition?: string;
+        sinceHours?: number;
+        limit: number;
+      };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { readDecisionLedger } = await import('../decision-ledger/read');
+      try {
+        return await readDecisionLedger(activeWorkspaceId(), {
+          ...(a.layer ? { layer: a.layer } : {}),
+          ...(a.posture ? { posture: a.posture } : {}),
+          ...(a.category ? { category: a.category } : {}),
+          ...(a.disposition ? { disposition: a.disposition } : {}),
+          ...(a.sinceHours != null ? { sinceMs: Date.now() - a.sinceHours * 3_600_000 } : {}),
+          limit: a.limit,
+        });
+      } catch (err) {
+        console.warn(
+          '[decision.ledger] read failed (migration 260/265 pending?):',
+          err instanceof Error ? err.message : err,
+        );
+        return [];
+      }
+    },
+  },
+
   // Returns a 1-element array { insights, memory }. NOT table-backed — refreshes
   // on mount + the panel's manual `invalidate()`.
   'learning.knowledge': {

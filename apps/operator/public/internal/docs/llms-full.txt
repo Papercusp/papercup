@@ -2800,6 +2800,54 @@ Two that bit while adding the regression tests for these bugs:
 
 You can `psql` the embedded PG (5432, `harness_admin`) read-only to reproduce a query or confirm a `has_table_privilege(...)`. For a faithful migration test, execute the **real** `NNN-*.sql` files against a testcontainer DB (see `apps/operator/test/harness-plan-status-grants.integration.test.ts`) rather than re-stating the DDL.
 
+# Wiring @papercusp/failure-detector into the lock authority (two traps)
+
+> The φ+SWIM eviction lib's decideEviction treats all-relays-unreachable as confirmed-dead, and a relay-side authority op must skip verifyIsAuthority. Two non-obvious gotchas wiring P-016.
+
+## What
+
+[Section titled “What”](#what)
+
+Wiring `@papercusp/failure-detector` (φ-accrual + SWIM `indirectProbe` + `decideEviction`) into the lock authority so a crashed authority is evicted before the 90s staleness window (`shared-hive-hardening-2026-06-13` P-016, `packages/operator-core/lib/authority/peer-eviction.ts`). Two non-obvious traps, each of which would silently break correctness if wired the naive way.
+
+## Trap 1 — `decideEviction` reads “all relays unreachable” as “confirmed dead”
+
+[Section titled “Trap 1 — decideEviction reads “all relays unreachable” as “confirmed dead””](#trap-1--decideeviction-reads-all-relays-unreachable-as-confirmed-dead)
+
+The README snippet is `decideEviction(detector.phi(now), await indirectProbe(...))`. But `decideEviction`’s contract is: `phi < threshold` → keep; `indirect == null` → evict (`no-relays-high-phi`); `indirect.alive` → keep; **else → evict (`confirmed-dead`)**. That final `else` fires whenever the probe result is “not alive” — and an `IndirectProbeResult` where every relay landed in the `unreachable` bucket (no `confirmedBy`, no `deadBy`) is “not alive”. So a naive wiring **evicts a live authority whenever YOUR transport is down / addressing isn’t wired / there are no reachable relays** — i.e. exactly the pre-addressing state, the common one. That’s a false-positive eviction caused by our OWN blindness, not the target being dead.
+
+**Fix:** gate on a real signal before trusting `confirmed-dead`. Only evict early when at least one REACHABLE relay failed to vouch:
+
+```ts
+const result = await indirectProbe(target, relays, probe, { k: 3, label: peerLabel });
+if (result.confirmedBy.length === 0 && result.deadBy.length === 0) {
+  return { evict: false, reason: 'alive-direct' }; // all relays unreachable → inconclusive, KEEP
+}
+return decideEviction(phi, result, threshold); // alive-indirect (keep) | confirmed-dead (evict)
+```
+
+This is deliberately STRICTER than the lib’s bare-φ `no-relays-high-phi`/`confirmed-dead` options: with no witness we keep the peer and let the 90s staleness floor handle it (fail-open, D-004, unchanged). A witness must agree before we evict early.
+
+## Trap 2 — a relay-side authority op must be authority-EXEMPT
+
+[Section titled “Trap 2 — a relay-side authority op must be authority-EXEMPT”](#trap-2--a-relay-side-authority-op-must-be-authority-exempt)
+
+The SWIM relay probe is a `peer.probe` RPC asking *another* peer “is X alive from your view?”. It rides the same `PeerRpcTransport` + `handleAuthorityRpc` dispatch as the file-lock ops — but `handleAuthorityRpc` runs `verifyIsAuthority` for every kind, and a RELAY is not (necessarily) the elected authority. So a naive registration makes every relay reply `not_authority`, which the prober’s transport maps to `PeerUnreachableError` → the relay lands in the `unreachable` bucket → no signal ever → eviction never works.
+
+**Fix:** mark the op authority-exempt so the dispatch skips `verifyIsAuthority` for it (the caller-signature/EI-322 gate still applies):
+
+```ts
+registerAuthorityOp(PEER_PROBE_OP_KIND, handler, { authorityExempt: true });
+```
+
+`handleAuthorityRpc` consults the global exempt set (`getAuthorityExemptKinds()`), so this works over BOTH the HTTP route and the Hyperswarm-mux transport (`authority-rpc-swarm-wiring.ts` dispatches through the same `handleAuthorityRpc`, no per-rig `authorityExemptKinds` needed). A multi-instance rig that passes its own `handlers` map must pass `authorityExemptKinds` explicitly (it bypasses the global registry).
+
+## Why it matters
+
+[Section titled “Why it matters”](#why-it-matters)
+
+Both traps fail SILENTLY — no error, just “eviction never fires” (trap 2) or “eviction fires constantly when we’re blind” (trap 1). The keep-by-default safety policy (trap 1) is also what keeps the feature non-regressing: single box / no transport → no eviction → byte-identical to staleness-only selection. The LIVE cross-machine proof is real-hardware-gated (D-003); the deterministic path is proven in `authority/__tests__/peer-eviction.test.ts` + `peer-probe-op.test.ts`.
+
 # Flag flips on PostHog-less boxes — MCP flags:set fails, the HTTP route works
 
 > MCP `flags:set` returns `flag-backend-not-configured` on any box without PostHog (this dev box included) — that does NOT mean flags are broken. The HTTP route `POST /api/flags/set` (loopback, no auth header needed from the box) has a PG-override fallback the MCP projection lacks: it writes the flip to the PG override store, publishes the change bus event, and records the flag:set audit row. Symptoms that mean READ THIS — "flag-backend-not- configured" from flags:set, a flag flip that silently never lands, audit rows showing backend pg-override.
@@ -3569,6 +3617,21 @@ The armed subtraction trap has run. **Result: the abort does not reproduce by is
 [Section titled “Postscript — the vocabulary itself was retired (2026-06-12, EI-399)”](#postscript--the-vocabulary-itself-was-retired-2026-06-12-ei-399)
 
 This page is the historical record of the topology; the codebase no longer uses the word. FB-17 renamed the stateless backend `meridian` → `anthropic-direct` (`AGENT_BACKENDS`, `TurnBackend`, `BACKEND_PROFILES`, `LLM_TEST_BACKEND` default, the `[meridian]`/`meridian error:` log + error prefixes, `setMeridianUsageSink` → `setStatelessUsageSink`) and **removed the dead omp-token transport leg** from `chooseStatelessTransport` — a stateless call now resolves anthropic-direct off the live Claude session or fails with one honest error. References to “Meridian” that remain in the tree name the real external router product (`@rynfar/meridian`) on the omp runtime path — desktop setup wizard, frame bootstrap for `backend=omp` frames, the `/settings/meridian` iframe page — not the LLM client.
+
+## Sequel — when a gateway is interposed, “credential resolves” is necessary-but-not-sufficient (2026-06-13, EI-478)
+
+[Section titled “Sequel — when a gateway is interposed, “credential resolves” is necessary-but-not-sufficient (2026-06-13, EI-478)”](#sequel--when-a-gateway-is-interposed-credential-resolves-is-necessary-but-not-sufficient-2026-06-13-ei-478)
+
+The trap-1 fix above said: model learning-infra health as “**stateless transport resolvable**” (a live credential), never ”:3456 listening.” That was right for a box egressing DIRECT to `api.anthropic.com` — there the only failure mode is a missing/expired credential, and `api.anthropic.com` is effectively always reachable.
+
+**The hive inference-gateway (`hive-inference-gateway-2026-06-09`) reintroduced a reachability dimension** — the exact *mirror* of trap 1. When the `INFERENCE_GATEWAY` flag is ON, the gym judge/proposer, llm-testing, and bee spawns no longer hit `api.anthropic.com`; `operator-spawn.ts` + `autoloop-cycle.ts` point `ANTHROPIC_BASE_URL` / `PAPERCUSP_ANTHROPIC_URL` at a **localhost pacing gateway** (`127.0.0.1:8788`). That gateway is a real process that can die while a Claude credential still sits on disk — so a credential-presence probe reads a confident **false “ok”** (the mirror of the false “offline” the :3456 TCP probe gave). `learning-infra-health.ts`’s `llm-spine` leg now checks BOTH dimensions: the credential resolves (unchanged), AND — *only when the flag is on* — the gateway’s `GET /healthz` answers.
+
+Two things keep this faithful rather than a relapse into trap 1:
+
+* **Gate the reachability check on the flag.** Probing the gateway when the flag is OFF would be the :3456 mistake all over again (probing a thing the calls don’t use). The gateway probe runs *only* when the gateway is actually in the egress path.
+* **Any HTTP answer = reachable; only a transport-level refusal = down.** The gateway returns `503` while rate-limit-PAUSED — that’s it *pacing*, by design, not an outage. Treating a 503 as down would re-create the false-alarm class. So `reachable` is “the process answered at all”; `down` is ECONNREFUSED/timeout, mirroring what a real `llmCall` through the gateway would hit.
+
+Orthogonality that fell out of the live proof (2026-06-13): with the gateway healthy (`/healthz` 200, serving) the composite still read **degraded** because `gym-circuit` was OPEN (11 consecutive errors). Correct — the `llm-spine` leg must NOT absorb “the gym is failing”; that’s the `gym-circuit` leg’s job. A gym that errors while its LLM transport is demonstrably reachable is a gym/upstream problem (the gateway’s own `/stats` shows `upstream429`/`upstreamErrors`), not a spine-reachability problem — the two legs disagreeing is the signal, not a bug.
 
 # The gym cycle's in-process judge/proposer bypass the inference gateway (FB-16)
 
@@ -6158,6 +6221,41 @@ Any time you spawn `invoke-once` (or otherwise boot the orchestrator’s `pg-boo
 A reproduction in `packages/operator-core/lib/gym/smoke.ts` built a client with the *exact* `pg-bootstrap` config (`postgres(gymUri, { max: 4, connection: { search_path } })`) and fired 8 concurrent probes (`current_setting('search_path')` + `to_regclass('harness_features')`
 
 * `pg_backend_pid()`). All 8, across 4 distinct backends, resolved the view and the `UPDATE` executed — proving the connection config and the view were fine, and isolating the failure to the worker connecting to a **different database**. The decisive signal was that the *config* worked against the gym DB while the *worker* (resolving its own DSN) did not.
+
+# Add a P2P request/response RPC channel by riding the existing Hyperswarm connection
+
+> To reach a NAT'd peer for an RPC (lock authority, eviction relay-probe), don't resolve a URL — multiplex a protomux channel onto the connection the substrate already holds open. The connection IS the address. Mirror cross-hive-swarm-transport.ts; touch NOTHING in swarm.ts.
+
+## What
+
+[Section titled “What”](#what)
+
+When you need to send a **request/response RPC to a remote peer** in a shared hive (the lock authority’s `routeToAuthority`, B-05’s eviction relay-probe, any future cross-machine control op), the obvious design — “resolve the peer’s `:3070` URL and POST to it” — **does not work for the real topology.** Most peers are NAT’d desktops; a raw operator URL is not reachable peer-to-peer. That was the standing `HttpPeerRpcTransport` gap: `configurePeerAddressResolver` had no production source because `shared_presence` carries `device_pubkey` (identity), not a network address.
+
+The answer (shared-hive-hardening-2026-06-13 D-005, owner-ratified **option c**): the substrate **already holds an open, NAT-traversed, encrypted Hyperswarm connection per harness**, with a `protomux` muxer pinned at `socket.userData`, over which it already runs the `papercusp/announce` channel. **Ride that connection.** The connection IS the address — no URL, no mesh/tunnel layer, no addressing source to plumb.
+
+## How (the pattern — copy `cross-hive-swarm-transport.ts`)
+
+[Section titled “How (the pattern — copy cross-hive-swarm-transport.ts)”](#how-the-pattern--copy-cross-hive-swarm-transportts)
+
+A standalone transport, NOT an edit to `sync/hyperbee/swarm.ts`:
+
+1. Register your OWN `swarm.on('connection', …)` handler on the shared swarm **and** iterate `swarm.connections` for sockets that predate your wiring (the substrate forms harness connections at boot, before you register — they never re-emit `connection`).
+2. On each socket: `Protomux.from(socket)` — this **reuses** the muxer already at `socket.userData` (corestore’s replication muxer), so your channel rides the same connection as replication + the announce channel. Open a new protocol channel (`papercusp/authority-rpc`) with `c.json` encoding.
+3. **HELLO-address by identity:** on channel `onopen`, send a HELLO carrying your `device_pubkey`. The remote records it; you route an outbound request to ONLY the channel whose `remoteDevicePubkey === peer.devicePubkey`. No broadcast.
+4. **Request/response over fire-and-forget messages:** give each request a sender-unique id, keep a `pending: Map<id, …>` with a timeout, echo the id on the response. The RECEIVING side dispatches through the SAME pure `handleAuthorityRpc` the HTTP route wraps (with the identical `verifyIsAuthority` + EI-322 `verifyCaller` guards).
+5. **Compose, don’t replace:** keep `HttpPeerRpcTransport` for publicly-addressable peers (servers, the Hetzner rig). A `CompositePeerRpcTransport([swarm, http])` tries each; a `PeerUnreachableError` falls through, a non-unreachable error (reachable authority, real failure) is rethrown immediately and never masked.
+
+Reference impl: `packages/operator-core/lib/authority/authority-rpc-swarm-transport.ts` (+ `composite-peer-rpc-transport.ts`, `authority-rpc-swarm-wiring.ts`). Tests: `authority-rpc-swarm-{transport,loopback,wiring}.test.ts`.
+
+## Gotchas
+
+[Section titled “Gotchas”](#gotchas)
+
+* **Error mapping is load-bearing.** Map no-channel / timeout / closed-channel / `not_authority` → `PeerUnreachableError` (so `routeToAuthority` fails open, D-004 — git is the backstop). Map `handler_error` / `unknown_kind` / `unauthenticated` → a real `Error` (a genuine op failure on a REACHABLE authority must NOT be masked by fail-open, or you’ll silently lose serialization on a real bug).
+* **Don’t touch `swarm.ts`.** The connection handler + `Protomux.from` reuse let the whole thing live in `lib/authority/` as new files — zero contention with the `sync/hyperbee` owners, and no risk to the delicate announce-channel lazy-pairing logic.
+* **Testing without the network:** inject `protomux` (a minimal `ProtomuxLike` seam). For a two-instance loopback, link two fake channels (A’s `send` → B’s `onmessage`); that proves cross-”machine” serialization at one authority store in-process. The **real** cross-machine proof (reachability / NAT / latency) still needs two machines — keep it `needs-human`.
+* **Roll out dark.** The cross-machine path can’t be verified on one box, so ship behind a default-OFF flag (`papercusp-authority-rpc-protomux`, in `KNOWN_DARK_FLAGS`). OFF = byte-identical to today (no remote peers → no channels → fail-open). The flag-flip is the one act gated on the real-hardware proof. A runtime flip needs an operator reboot — the swarm + transport are boot-scoped.
 
 # Packaged two-instance federation merge — the write-free unlock + the same-box DHT ceiling
 

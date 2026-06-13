@@ -88,8 +88,8 @@ have its lease revoked is φ-accrual + SWIM indirect probing. Those are pure,
 domain-free algorithms, so they live in `@papercusp/failure-detector`
 (`libs/generic/failure-detector`), not here — extracted from
 `authority/{phi-accrual,swim-probe}.ts` by
-`generalize-libs-to-generic-2026-06-05` (row #2). When the cutover wires
-eviction, import them and bind this module's `PeerRef` as the label:
+`generalize-libs-to-generic-2026-06-05` (row #2). The cutover wires them as
+`peer-eviction.ts` does — bind this module's `PeerRef` as the label:
 
 ```ts
 import { PhiAccrualDetector, indirectProbe, decideEviction } from '@papercusp/failure-detector';
@@ -100,9 +100,26 @@ const result = await indirectProbe(target, relays, myRelayProbe, {
 const { evict } = decideEviction(detector.phi(now), result);
 ```
 
-The relay-probe transport is the same seam as `peer-rpc-transport.ts` above:
-until a real P2P RPC channel lands, no relay can confirm a peer alive, so
-eviction degrades to the bare φ signal (fail-open, D-004).
+**Eviction is WIRED (P-016, shared-hive-hardening-2026-06-13).** `peer-eviction.ts`
+(`AuthorityEvictionMonitor`) feeds a φ detector per peer from presence
+observations, and `myRelayProbe` = `transportRelayProbe`: a `peer.probe` authority
+RPC over the SAME `PeerRpcTransport` seam (the option-(c) Hyperswarm transport / the
+HTTP one, via the composite). The relay (`peer-probe-op.ts`) answers from its OWN
+federated presence view — so a peer one machine can't see but another can is kept
+alive (the SWIM false-positive guard). `lockAuthorityFor` consults the monitor's
+cached evicted set (sync; the probes run throttled in the background) and excludes a
+relay-confirmed-dead peer from candidacy BEFORE the 90s staleness window.
+
+Safety policy (stricter than `decideEviction`'s bare-φ option, by design): a peer is
+evicted early ONLY when a REACHABLE relay fails to confirm it alive
+(`confirmed-dead`). No relays / every relay unreachable / no transport → INCONCLUSIVE
+→ keep (the 90s staleness floor, unchanged) — we never evict on our own blindness,
+and single box / fail-open (D-004) is byte-identical to pre-P-016. Behind the
+`papercusp-authority-eviction-probe` flag (DEFAULT OFF / dark): the LIVE
+cross-machine eviction path rides the also-dark protomux transport and is
+real-hardware-unverified (D-003, the P-003 two-machine proof). The
+deterministic/loopback path is proven (`__tests__/peer-eviction.test.ts`,
+`peer-probe-op.test.ts`).
 
 ## File-claim scope guard (D-009) — `routeFileLockOp`
 
@@ -138,8 +155,13 @@ All three cutover steps are **wired at boot** (side-effect import of
    `/api/authority/rpc` (which wraps `handleAuthorityRpc` + re-verifies it is
    the authority). (Handover, D-005: on becoming authority, a peer rebuilds its
    lock set from holders' re-asserted TTL heartbeats within one heartbeat
-   interval; the brief gap is fail-open. The append-only lock-event stream on
-   the peer-log — for instant reconstruction — is the deferred enhancement.)
+   interval; the brief gap is fail-open. INSTANT handover is now BUILT — P-015,
+   shared-hive-hardening-2026-06-13: `lock-event-stream.ts` appends each
+   authority grant/release as a `lock-event` op on the peer-log; a new authority
+   reads the merged stream + folds it (`reconstructLockSet`) into
+   `LockSetReconstructor.hydrateFromEvents` to reconstruct the live set
+   immediately, falling back to the heartbeat-reassert rebuild when the stream is
+   unavailable.)
 2. ✅ **Hot-path routing** — `locks:acquire`/`release` route file-claim ops
    through `routeFileLockOp` (fed-reanchor-2026-06-06 P-060, cutover 2). The
    remote-peers cache keeps the no-peers common case near-zero-cost, and any
@@ -189,3 +211,20 @@ flag ON is the one remaining act, gated on the two-machine serialization proof.
   the boot-registered `lock.*` handlers → the real PG su-lock store. Remote
   grant, cross-wire mutual exclusion + release, `not_authority` → fail-open,
   unreachable → fail-open, unmanaged-domain → pure local.
+- `__tests__/lock-event-stream.test.ts` — P-015: the pure `reconstructLockSet`
+  fold (acquire/release/expiry/last-write-wins/scope isolation), the peer-log op
+  mappers, the sink/reader adapters, and the end-to-end instant-handover round-trip
+  (sink → in-memory peer-log → reader → fold → `hydrateFromEvents`).
+- `__tests__/lock-set-reconstructor.test.ts` — extended for P-015 hydration:
+  instant rebuild (no fail-open gap), empty-stream fallback to the heartbeat path,
+  expired-lock skip, and stream-seed + heartbeat-refresh composition.
+- `__tests__/peer-eviction.test.ts` — P-016: φ observe/decay, the `decide`
+  relay-confirmation safety policy (low-φ / no-relays / all-unreachable → keep;
+  relay-alive → keep; relay-dead → evict), `refresh` evicts + self-heals, the
+  `beforeSelect` sync-read + throttled background refresh, and the
+  `selectAuthorityFromRows` exclusion (an evicted pubkey isn't the authority).
+- `__tests__/peer-probe-op.test.ts` — P-016: the `peer.probe` handler, the
+  authority-EXEMPT dispatch (a relay answers without being the authority), and the
+  relay-probe over the `PeerRpcTransport` seam (single-box loopback-equivalent:
+  crashed authority evicted, alive-via-relay kept, blind-relay → kept). The LIVE
+  two-machine eviction proof is D-003 real-hardware-gated (needs-human).

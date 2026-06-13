@@ -655,6 +655,31 @@ export async function spawnAgentInHarness(
     }
   }
 
+  // queen-autonomy P-112: route the per-spawn model-tier choice through the
+  // disposition log (agent-lifecycle, reversible — the next spawn can differ).
+  // Fire-and-forget + flag-gated; a ledger miss must never break a spawn.
+  void (async () => {
+    try {
+      const { recordProactiveDisposition } = await import('../decision-ledger/disposition');
+      const links: Record<string, unknown> = { spawnId, runId };
+      if (input.featureId) links.featureId = input.featureId;
+      if (input.chunkId) links.chunkId = input.chunkId;
+      if (input.parentSpawnId) links.parentSpawnId = input.parentSpawnId;
+      await recordProactiveDisposition({
+        workspaceId: input.workspaceId,
+        harnessSlug: slug,
+        decisionInput: { action: 'fleet:spawn', riskTier: 'low', authority: 'system', reversibility: 'reversible' },
+        why: `model tier ${spawnModelTier ?? 'default'} for ${role}`,
+        links,
+        metadata: { modelTier: spawnModelTier ?? null, modelSpec: spawnModelSpec ?? null, role },
+        actorRole: input.parentRole ?? 'operator',
+        actorSpawnId: input.parentSpawnId ?? null,
+      });
+    } catch {
+      /* never break a spawn on a ledger miss */
+    }
+  })();
+
   const extras = [...(input.extras ?? [])];
   if (input.featureId) extras.push(`FEATURE_ID=${input.featureId}`);
   if (input.chunkId) extras.push(`CHUNK_ID=${input.chunkId}`);

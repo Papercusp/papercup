@@ -31,8 +31,15 @@ import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compile } from '@mdx-js/mdx';
-import remarkGfm from 'remark-gfm';
+// D-003 (git-sync-content-guard): the pure detector now lives in ONE importable
+// module shared by this CI lint, the git-sync content guard, and the
+// content-fixer's success-check — so "is this .mdx valid" has a single source of
+// truth. Re-exported below so existing importers (check-mdx-guard.test.ts) keep
+// working unchanged. This .mjs is run via `tsx` (package.json `lint:mdx`) so it
+// can import the TypeScript module.
+import { findMdxCompileError, blankFrontmatter } from '../packages/operator-core/lib/content-lint/mdx';
+
+export { findMdxCompileError, blankFrontmatter };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,45 +54,6 @@ const isExcluded = (f) =>
   f.includes('/_retired/') ||
   f.includes('/node_modules/') ||
   f.includes('/dist/');
-
-/**
- * Blank a leading YAML frontmatter block (--- … ---) to empty lines, preserving
- * line count. `@mdx-js/mdx` alone can't parse frontmatter (no remark-frontmatter
- * on this box), and astro strips it before the MDX core sees it — so stripping
- * here matches astro, and keeping line numbers means a compile error still
- * points at the offending source line.
- */
-export function blankFrontmatter(text) {
-  const lines = text.split('\n');
-  if (lines[0]?.trim() !== '---') return text;
-  let end = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === '---') {
-      end = i;
-      break;
-    }
-  }
-  if (end === -1) return text; // unterminated fence — leave it for the compiler
-  for (let i = 0; i <= end; i++) lines[i] = '';
-  return lines.join('\n');
-}
-
-/**
- * Pure detector: compile one .mdx with the MDX core. Returns `null` when it
- * compiles, or `{ line, col, reason }` on a syntax error. Exported for reuse.
- */
-export async function findMdxCompileError(fileName, text) {
-  try {
-    await compile(blankFrontmatter(text), { format: 'mdx', remarkPlugins: [remarkGfm] });
-    return null;
-  } catch (err) {
-    const start = err?.place?.start ?? err?.place ?? {};
-    const line = err?.line ?? start.line ?? null;
-    const col = err?.column ?? start.column ?? null;
-    const reason = (err?.reason ?? err?.message ?? String(err)).split('\n')[0];
-    return { line, col, reason };
-  }
-}
 
 async function main() {
   const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })

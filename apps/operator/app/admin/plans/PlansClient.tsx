@@ -73,7 +73,11 @@ type ItemStatusFilter =
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'operator-report';
+  | 'operator-report'
+  | 'improvement'
+  | 'standing-approval'
+  | 'conversation'
+  | 'scout-grade';
 const ITEM_STATUS_IDS = [
   'needs-human',
   'todo',
@@ -82,10 +86,23 @@ const ITEM_STATUS_IDS = [
   'coord-message',
   'smoke-fail',
   'operator-report',
+  'improvement',
+  'standing-approval',
+  'conversation',
+  'scout-grade',
 ] as const;
 // The non-plan-item facets — each maps 1:1 to an AttentionItem kind from
 // the plans:attention reader (the "Other" surfaces, now split out).
-const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail', 'operator-report'] as const;
+const OTHER_KIND_IDS = [
+  'coord-escalation',
+  'coord-message',
+  'smoke-fail',
+  'operator-report',
+  'improvement',
+  'standing-approval',
+  'conversation',
+  'scout-grade',
+] as const;
 type OtherKind = (typeof OTHER_KIND_IDS)[number];
 
 /** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
@@ -108,6 +125,10 @@ const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }>
   { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
   { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
   { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the inbox (chat stays conversation only).' },
+  { id: 'improvement', label: 'Improvements', hint: 'Self-improvements the auto-implement loop routed to you for triage.' },
+  { id: 'standing-approval', label: 'Approvals', hint: 'Standing-approval candidates — grant the operator auto-dispatch, or dismiss.' },
+  { id: 'conversation', label: 'Questions', hint: 'Open agent questions / coord:ask conversations awaiting an answer.' },
+  { id: 'scout-grade', label: 'Scout', hint: 'Routed Scout ideas awaiting your optional grade.' },
 ];
 
 const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
@@ -118,6 +139,10 @@ const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'coord-message': 'Messages',
   'smoke-fail': 'Smoke',
   'operator-report': 'Reports',
+  improvement: 'Improvements',
+  'standing-approval': 'Approvals',
+  conversation: 'Questions',
+  'scout-grade': 'Scout',
 };
 
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
@@ -377,6 +402,10 @@ export default function PlansClient() {
       'coord-message': 0,
       'smoke-fail': 0,
       'operator-report': 0,
+      improvement: 0,
+      'standing-approval': 0,
+      conversation: 0,
+      'scout-grade': 0,
     };
     for (const e of taggedItems) {
       if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;

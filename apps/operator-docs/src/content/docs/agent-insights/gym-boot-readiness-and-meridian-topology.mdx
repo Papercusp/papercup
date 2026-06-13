@@ -109,3 +109,43 @@ one honest error. References to "Meridian" that remain in the tree name the
 real external router product (`@rynfar/meridian`) on the omp runtime path —
 desktop setup wizard, frame bootstrap for `backend=omp` frames, the
 `/settings/meridian` iframe page — not the LLM client.
+
+## Sequel — when a gateway is interposed, "credential resolves" is necessary-but-not-sufficient (2026-06-13, EI-478)
+
+The trap-1 fix above said: model learning-infra health as "**stateless transport
+resolvable**" (a live credential), never ":3456 listening." That was right for a
+box egressing DIRECT to `api.anthropic.com` — there the only failure mode is a
+missing/expired credential, and `api.anthropic.com` is effectively always
+reachable.
+
+**The hive inference-gateway (`hive-inference-gateway-2026-06-09`) reintroduced a
+reachability dimension** — the exact *mirror* of trap 1. When the
+`INFERENCE_GATEWAY` flag is ON, the gym judge/proposer, llm-testing, and bee
+spawns no longer hit `api.anthropic.com`; `operator-spawn.ts` + `autoloop-cycle.ts`
+point `ANTHROPIC_BASE_URL` / `PAPERCUSP_ANTHROPIC_URL` at a **localhost pacing
+gateway** (`127.0.0.1:8788`). That gateway is a real process that can die while a
+Claude credential still sits on disk — so a credential-presence probe reads a
+confident **false "ok"** (the mirror of the false "offline" the :3456 TCP probe
+gave). `learning-infra-health.ts`'s `llm-spine` leg now checks BOTH dimensions:
+the credential resolves (unchanged), AND — *only when the flag is on* — the
+gateway's `GET /healthz` answers.
+
+Two things keep this faithful rather than a relapse into trap 1:
+
+- **Gate the reachability check on the flag.** Probing the gateway when the flag
+  is OFF would be the :3456 mistake all over again (probing a thing the calls
+  don't use). The gateway probe runs *only* when the gateway is actually in the
+  egress path.
+- **Any HTTP answer = reachable; only a transport-level refusal = down.** The
+  gateway returns `503` while rate-limit-PAUSED — that's it *pacing*, by design,
+  not an outage. Treating a 503 as down would re-create the false-alarm class.
+  So `reachable` is "the process answered at all"; `down` is ECONNREFUSED/timeout,
+  mirroring what a real `llmCall` through the gateway would hit.
+
+Orthogonality that fell out of the live proof (2026-06-13): with the gateway
+healthy (`/healthz` 200, serving) the composite still read **degraded** because
+`gym-circuit` was OPEN (11 consecutive errors). Correct — the `llm-spine` leg
+must NOT absorb "the gym is failing"; that's the `gym-circuit` leg's job. A gym
+that errors while its LLM transport is demonstrably reachable is a gym/upstream
+problem (the gateway's own `/stats` shows `upstream429`/`upstreamErrors`), not a
+spine-reachability problem — the two legs disagreeing is the signal, not a bug.

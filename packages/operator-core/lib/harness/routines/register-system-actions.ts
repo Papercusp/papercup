@@ -185,18 +185,15 @@ import './coord-invariant-actions';
 import './cross-hive-drain-action';
 import './benchmark-actions';
 import './human-queue-digest-action';
-import './change-ledger-scan-action';
-// P-130 (deterministic-blueprints-migration-2026-06-13): seven bucket-A learning
+// P-130 (deterministic-blueprints-migration-2026-06-13): ELEVEN bucket-A learning
 // loops migrated to deterministic blueprints — their bespoke `system:<loop>` action
 // handlers are RETIRED (negative-space / neologism / regret / transfer / fleet-ekg /
-// prompt-ablation / red-queen). Their seeds fire `system:blueprint-run {blueprintId}`;
-// the lib logic lives on as each op's impl (the shared `run<Loop>` orchestration);
-// the no-retired-style guard (P-132) blocks re-wiring. Scout's registration stays —
-// register-scout-action also provides `productionScoutRunner`, which the scout:cycle
-// op depends on (scout's bespoke-registration retirement is a follow-up).
-import './deferral-interest-action';
-import './calibration-action';
-import './graduation-action';
+// prompt-ablation / red-queen + change-ledger / deferral-interest / calibration /
+// graduation). Their seeds fire `system:blueprint-run {blueprintId}`; the lib logic
+// lives on as each op's impl (the shared `run<Loop>` orchestration); the
+// no-retired-style guard (P-132) blocks re-wiring. Scout's `system:scout-cycle`
+// registration is retired in register-scout-action.ts (that module also provides
+// `productionScoutRunner`, the scout:cycle op's dependency, so the file stays).
 // queen-autonomy-policy-2026-06-13 B-16: the auto-revert tripwire + graduation
 // sweep (`system:autonomy-trust-scan`). Self-gates on QUEEN_AUTONOMY_ARMED (P-092);
 // the seed routine ships INACTIVE (go-live activates it).

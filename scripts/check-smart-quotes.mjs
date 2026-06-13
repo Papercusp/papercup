@@ -30,14 +30,18 @@ import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import ts from 'typescript';
+// D-003 (git-sync-content-guard): the pure detector now lives in ONE importable
+// module shared by this CI lint, the git-sync content guard, and the
+// content-fixer's success-check. Re-exported below for parity with check-mdx.mjs.
+// Run via `tsx` (package.json `lint:smart-quotes`) so this .mjs can import the
+// TypeScript module.
+import { findCodePositionCurlyQuotes, curlyLabel, CURLY } from '../packages/operator-core/lib/content-lint/smart-quotes';
+
+export { findCodePositionCurlyQuotes, curlyLabel, CURLY };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const CURLY = /[‘’“”]/;
-const CURLY_G = /[‘’“”]/g;
-const label = (ch) =>
-  ({ '‘': 'U+2018 ‘', '’': 'U+2019 ’', '“': 'U+201C “', '”': 'U+201D ”' })[ch] ?? 'curly quote';
+const label = curlyLabel;
 
 const isExcluded = (f) =>
   f.startsWith('_retired/') ||
@@ -45,33 +49,6 @@ const isExcluded = (f) =>
   f.includes('/node_modules/') ||
   f.includes('/dist/') ||
   f === 'scripts/check-smart-quotes.mjs';
-
-/**
- * Pure detector: curly-quote offsets that sit in CODE position (the TS parser
- * emits a syntactic diagnostic at the offset). Exported for unit reuse.
- */
-export function findCodePositionCurlyQuotes(fileName, text) {
-  if (!CURLY.test(text)) return [];
-  const scriptKind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, /*setParentNodes*/ false, scriptKind);
-  const diags = sf.parseDiagnostics ?? [];
-  // Offsets where a syntactic diagnostic begins (curly-as-code → TS1127 etc.).
-  const diagStarts = new Set();
-  for (const d of diags) {
-    if (typeof d.start === 'number') diagStarts.add(d.start);
-  }
-  const hits = [];
-  for (const m of text.matchAll(CURLY_G)) {
-    const offset = m.index;
-    // Flag the curly quote only if a parse error starts at it (code position)
-    // or immediately after it (the char it tried to open a token with).
-    if (diagStarts.has(offset) || diagStarts.has(offset + 1)) {
-      const { line, character } = sf.getLineAndCharacterOfPosition(offset);
-      hits.push({ line: line + 1, col: character + 1, ch: m[0] });
-    }
-  }
-  return hits;
-}
 
 function main() {
   const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })

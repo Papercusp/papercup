@@ -5,14 +5,15 @@
  * archive + setScoutArchive seam behave (the P-012 hand-off point).
  */
 import { describe, it, expect } from 'vitest';
-import { listSystemActions, getSystemAction } from '../harness/routines/system-actions';
-import './register-scout-action'; // side-effect import: registers system:scout-cycle
-import { noopArchive, setScoutArchiveBuilder } from './register-scout-action';
+import { noopArchive, setScoutArchiveBuilder, productionScoutRunner } from './register-scout-action';
 
-describe('register-scout-action (activation keystone)', () => {
-  it('self-registers system:scout-cycle on import', () => {
-    expect(listSystemActions()).toContain('scout-cycle');
-    expect(getSystemAction('scout-cycle')).toBeTypeOf('function');
+describe('register-scout-action (Scout production runner provider)', () => {
+  it('exports productionScoutRunner — the scout:cycle blueprint op’s production cycle deps (P-130)', () => {
+    // Scout runs as the `scout` BLUEPRINT now: the seed fires system:blueprint-run
+    // {blueprintId:'scout'} → the scout:cycle deterministic step → runScoutCycleTick,
+    // which calls productionScoutRunner. The bespoke system:scout-cycle action is RETIRED,
+    // so this module no longer self-registers — it stays as the production-runner home.
+    expect(productionScoutRunner).toBeTypeOf('function');
   });
 
   it('noopArchive reads empty + admits nothing (gym rail safe fallback)', async () => {

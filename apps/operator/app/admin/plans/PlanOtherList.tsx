@@ -37,6 +37,11 @@ const KIND_LABEL: Record<AttentionKind, string> = {
   'coord-message': 'message',
   'smoke-fail': 'smoke',
   'operator-report': 'report',
+  // B-14 / P-100 folded disposition channels (D-011):
+  improvement: 'improvement',
+  'standing-approval': 'approval',
+  conversation: 'question',
+  'scout-grade': 'grade',
 };
 
 interface Props {

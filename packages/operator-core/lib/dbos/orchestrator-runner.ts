@@ -38,6 +38,8 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { harnessPackageDir } from '../harness-paths';
 import { buildInvokeOnce } from '../harness-invoke-once';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import {
   setPipelineInvokeRunner,
   setPipelineFinalizer,
@@ -262,6 +264,22 @@ export async function spawnInvokeOnce(
     };
   } else if (agentDisplayPool()) {
     console.warn(`[dbos-invoke] role=${role} desktop display pool exhausted — spawning headless`);
+  }
+
+  // B-18 fleet cutover (agent-capability-confinement P-020): resolve the
+  // papercusp-fleet-capability-only flag PER-SPAWN and thread it to the
+  // invoke-once child as PAPERCUSP_FLEET_CAPABILITY_ONLY. invoke()/claudeMcpArgs
+  // (which runs in that child) reads it to drop native write/exec/fetch tools
+  // from a confined role's --allowed-tools and route them to the gated
+  // capability:* tools. DEFAULT-OFF (getFlag falls back to FLAG_DEFAULTS=false on
+  // any PostHog miss, and a thrown lookup degrades to off) — so a flag hiccup can
+  // never silently confine the fleet; the owner's flip is the only thing that arms it.
+  try {
+    if (await getFlag(FLAGS.FLEET_CAPABILITY_ONLY, 'system')) {
+      resolvedExtraEnv = { ...resolvedExtraEnv, PAPERCUSP_FLEET_CAPABILITY_ONLY: '1' };
+    }
+  } catch {
+    /* flag lookup failure ⇒ cutover stays off (current behavior) */
   }
 
   try {
