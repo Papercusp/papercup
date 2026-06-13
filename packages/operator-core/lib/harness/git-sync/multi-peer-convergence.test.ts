@@ -93,16 +93,8 @@ async function configRepo(dir: string): Promise<void> {
   await git(['config', 'core.hooksPath', '/nonexistent'], dir);
 }
 
-let tmpRoot: string;
-beforeEach(async () => {
-  tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
-});
-afterEach(async () => {
-  await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
-});
-
 /** One bare origin (seeded `shared.txt`) + N working clones. */
-async function makeSharedOrigin(name: string, clones: string[]): Promise<{ bare: string; works: string[] }> {
+async function makeSharedOrigin(tmpRoot: string, name: string, clones: string[]): Promise<{ bare: string; works: string[] }> {
   const bare = join(tmpRoot, `${name}-origin.git`);
   await mkdir(bare, { recursive: true });
   await git(['init', '--bare', '-b', 'main'], bare);
@@ -128,13 +120,16 @@ async function makeSharedOrigin(name: string, clones: string[]): Promise<{ bare:
  *  shared) + N super clones with the submodule checked out. Models a shared hive
  *  whose tree includes a submodule both peers can push. */
 async function makeSharedOriginWithSubmodule(
+  tmpRoot: string,
   name: string,
   clones: string[],
 ): Promise<{ superBare: string; subBare: string; works: string[] }> {
   const superBare = join(tmpRoot, `${name}-super.git`);
   const subBare = join(tmpRoot, `${name}-sub.git`);
-  await git(['init', '--bare', '-b', 'main'], await mkdir(superBare, { recursive: true }).then(() => superBare));
-  await git(['init', '--bare', '-b', 'main'], await mkdir(subBare, { recursive: true }).then(() => subBare));
+  await mkdir(superBare, { recursive: true });
+  await mkdir(subBare, { recursive: true });
+  await git(['init', '--bare', '-b', 'main'], superBare);
+  await git(['init', '--bare', '-b', 'main'], subBare);
 
   // seed the submodule origin
   const subSeed = join(tmpRoot, `${name}-subseed`);
@@ -263,7 +258,9 @@ async function convergeFleet(
 
 describe('P-004: 3+ simultaneous peers converge (superproject)', () => {
   it('THREE peers with DISJOINT edits → union on origin, zero conflicts', async () => {
-    const { bare, works } = await makeSharedOrigin('n3disjoint', ['a', 'b', 'c']);
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
+    try {
+    const { bare, works } = await makeSharedOrigin(tmpRoot, 'n3disjoint', ['a', 'b', 'c']);
     const [a, b, c] = works;
     await writeFile(join(a, 'from-a.txt'), 'a\n');
     await writeFile(join(b, 'from-b.txt'), 'b\n');
@@ -280,10 +277,15 @@ describe('P-004: 3+ simultaneous peers converge (superproject)', () => {
     for (const w of works) expect(await headOf(w)).toBe(tip);
     const files = await filesAt(bare);
     for (const f of ['from-a.txt', 'from-b.txt', 'from-c.txt']) expect(files).toContain(f);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
   }, 60_000);
 
   it('THREE peers editing the SAME file → conflicts resolve, all converge to one tip (no ping-pong)', async () => {
-    const { bare, works } = await makeSharedOrigin('n3conflict', ['a', 'b', 'c']);
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
+    try {
+    const { bare, works } = await makeSharedOrigin(tmpRoot, 'n3conflict', ['a', 'b', 'c']);
     const [a, b, c] = works;
     await writeFile(join(a, 'shared.txt'), 'A version\n');
     await writeFile(join(b, 'shared.txt'), 'B version\n');
@@ -302,6 +304,9 @@ describe('P-004: 3+ simultaneous peers converge (superproject)', () => {
     // origin holds exactly one resolved value of the shared file — the fleet agreed.
     const content = await git(['show', 'main:shared.txt'], bare);
     expect(content).toMatch(/^resolved by /);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
   }, 90_000);
 });
 
@@ -311,7 +316,9 @@ describe('P-004: 3+ simultaneous peers converge (superproject)', () => {
 
 describe('P-004: cross-peer submodule conflict defers the superproject, then converges', () => {
   it('the losing peer conflicts INSIDE the submodule, does NOT publish a broken gitlink, then the fleet converges', async () => {
-    const { superBare, subBare, works } = await makeSharedOriginWithSubmodule('xsub', ['a', 'b']);
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
+    try {
+    const { superBare, subBare, works } = await makeSharedOriginWithSubmodule(tmpRoot, 'xsub', ['a', 'b']);
     const [a, b] = works;
 
     // both peers conflictingly edit the SAME file inside the submodule
@@ -355,6 +362,9 @@ describe('P-004: cross-peer submodule conflict defers the superproject, then con
     const pointer = await git(['rev-parse', 'main:libs/sub'], superBare);
     await git(['cat-file', '-e', `${pointer}^{commit}`], subBare);
     expect(stats.rounds).toBeLessThan(20); // bounded — no ping-pong
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
   }, 120_000);
 });
 
@@ -372,7 +382,9 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
   }
 
   it('a REWIND (force-push dropping a commit) is reverted: a peer still holding the commit re-pushes it ff (synced, dropped content reappears)', async () => {
-    const { bare, works } = await makeSharedOrigin('rwind', ['rewriter', 'victim']);
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
+    try {
+    const { bare, works } = await makeSharedOrigin(tmpRoot, 'rwind', ['rewriter', 'victim']);
     const [rewriter, victim] = works;
 
     // origin advances seed→X (X adds x.txt); the victim fast-forwards to X too.
@@ -396,10 +408,15 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     const files = await filesAt(bare);
     expect(files).toContain('x.txt'); // the DROPPED commit's content reappeared — rewind reverted
     expect(files).toContain('v.txt'); // the victim's own work landed
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
   }, 60_000);
 
   it('a CONFLICTING rewrite takes the ordinary conflict path (aborts clean, reports) — not an error loop', async () => {
-    const { works } = await makeSharedOrigin('rwconf', ['rewriter', 'victim']);
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
+    try {
+    const { works } = await makeSharedOrigin(tmpRoot, 'rwconf', ['rewriter', 'victim']);
     const [rewriter, victim] = works;
 
     // the rewriter rewinds to seed and force-pushes a CONFLICTING change to shared.txt.
@@ -421,10 +438,15 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     }
     expect(await git(['status', '--porcelain', '--untracked-files=no'], victim)).toBe('');
     await expect(git(['rev-parse', '--verify', 'MERGE_HEAD'], victim)).rejects.toThrow();
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
   }, 60_000);
 
   it('an UNRELATED-history rewrite (orphan force-push) is a LOUD error — classified error (no conflicted paths), never a phantom merge-resolver', async () => {
-    const { works } = await makeSharedOrigin('rworphan', ['rewriter', 'victim']);
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
+    try {
+    const { works } = await makeSharedOrigin(tmpRoot, 'rworphan', ['rewriter', 'victim']);
     const [rewriter, victim] = works;
 
     // the rewriter replaces origin with a brand-new ROOT history (no common ancestor).
@@ -448,5 +470,8 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
       expect(out.errors[0].message).toMatch(/no conflicted paths|unrelated histories/i);
     }
     expect(await git(['status', '--porcelain', '--untracked-files=no'], victim)).toBe('');
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
   }, 60_000);
 });
