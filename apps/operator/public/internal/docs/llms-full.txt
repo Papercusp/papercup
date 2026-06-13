@@ -1264,6 +1264,17 @@ When you investigate later the box is usually calm (`SELECT pg_notification_queu
 2. A read-path optimization can still be correct hygiene (the `readAckedMsgIds` pushdown was — it ships \~250 rows instead of \~6000) — just don’t mistake it for resolving a write-contention breach. Pair any such fix with the integration test for its new SQL path (see [coord-module-integration-test-fixture](/internal/docs/agent-insights/coord-module-integration-test-fixture)).
 3. Real fixes for the write side are load-bearing federation/wake infra (coalesce the `coord_inbox` NOTIFY, review the `substrate_outbox` capture on the hot path, or widen the SLO for a shared dev box) — owner decisions, not drive-by edits.
 
+## Resolution (EI-401, owner ruling “accept + tune”, 2026-06-13)
+
+[Section titled “Resolution (EI-401, owner ruling “accept + tune”, 2026-06-13)”](#resolution-ei-401-owner-ruling-accept--tune-2026-06-13)
+
+The owner chose **accept + tune** over the deeper write-path infra changes. Two tunes, both in `lib/harness/routines/coord-invariant-actions.ts`:
+
+* **SLO widened 10s → 30s.** A 10s cycle budget was unrealistic for coord writes on a shared dev box at peak fleet load. The code default is `30_000` and the live `harness_shared.routines` row carries `payload_template.totalSloMs = 30000` (re-seed is INSERT-only — existing rows are tuned directly).
+* **The attribution now DRIVES the disposition, not just annotates it.** `breachDisposition(verdict, steps)` downgrades a *pure* SLO breach that `classifyBreach` pins on `db-wide` contention to a **logged `console.warn` note** instead of filing an EI. A failed step (correctness), a `coord`-attributed breach (the real INSERT+NOTIFY cost), and `cumulative`/`none` (unattributable — **fail open, never swallow**) all still file.
+
+This is why EI-401 could finally **close**: the prior reasoning kept it open as a `dedupScope:'open'` anchor so non-actionable db-wide spikes folded in rather than minting fresh EIs. With those spikes now downgraded to notes (never filed at all), the only thing that files is a genuine coord regression — which *should* mint a fresh, actionable EI. The anchor’s reason for existing is gone.
+
 # Coord lifecycle auto-emits are subscription-scoped (not broadcast)
 
 > Lifecycle auto-emits (claim/intent/finding/completion) deliver only to agents watching the plan/topic/work-item via audience selectors, not to '*'. How the @plan/@topic/@object/@file selectors resolve, and the PAPERCUSP_COORD_EMIT_SCOPE kill-switch.
@@ -8088,6 +8099,36 @@ curl -s http://127.0.0.1:3070/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
 Note
 
 This is distinct from the registry architecture (see [capability-contract-and-palette-catalog](/internal/docs/agent-insights/capability-contract-and-palette-catalog)) and from `:3070` *server-side* staleness (see [operator-3070-host-no-hot-reload](/internal/docs/agent-insights/operator-3070-host-no-hot-reload)). Same root family — “the running thing predates your work” — three different layers: server host, static client bundle, and now per-window chunk graph.
+
+# A "resolved" staleness/watchdog alarm that keeps re-firing is deploy-lag, not rot
+
+> An insight-staleness (or any watchdog) alarm you just resolved re-files under a new id because the watchdog scans the release/green checkout, which lags staging — the fix is already on staging. Diagnose by replaying against the staging tree; the EI-441 cooldown now suppresses it.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+An insight-staleness improvement (`insight-staleness:<slug>`) — or any watchdog signal — that you JUST resolved re-appears within minutes under a NEW EI id, often escalated to major. You open it, check the cited file… and it exists. The alarm reads like a live “this file is missing” signal, but the file is right there.
+
+## What’s actually happening
+
+[Section titled “What’s actually happening”](#whats-actually-happening)
+
+The watchdog runs inside the live operator, which on the dev box runs from the **release checkout** (`papercup-release`, pinned to green `main`) — not the canonical **staging** tree where fixes land. `packages/operator-core/lib/harness/improvements/insight-staleness.ts` reads the insight MDX from its checkout’s `DOCS_CONTENT_ROOT` and checks cited paths against that same checkout’s `REPO_ROOT`. When `main` lags `staging` by a deploy window (or far longer if green-checkpoint is stuck), a citation already repointed on staging still reads as missing on release, so the signal fires.
+
+It RE-fires (not just fires once) because the pre-filter `partitionSignalsByKnownKeys` in `packages/operator-core/lib/harness/improvements/watchdog.ts` only suppresses a resolved key when the signal’s evidence PRE-dates the resolution — and insight-staleness stamps `latestAt` to the scan time, so its evidence is always “fresh.” A resolved-but-still-stale-on-release signal therefore always re-files as new. That was the EI-413 to EI-430 loop (5 insights, \~75h).
+
+## Diagnose in 30 seconds
+
+[Section titled “Diagnose in 30 seconds”](#diagnose-in-30-seconds)
+
+Replay the collector’s own extraction against BOTH trees: does the cited path exist under the staging checkout vs the `papercup-release` checkout? If staging is clean and only release is missing it, it is **deploy-lag, not rot** — resolve the item and let the deploy carry the fix. Do NOT re-edit: the fix is already on staging, and editing the release checkout is clobbered on the next deploy.
+
+## The fix in place (EI-441 / EI-427)
+
+[Section titled “The fix in place (EI-441 / EI-427)”](#the-fix-in-place-ei-441--ei-427)
+
+`insight-staleness` now stamps an opt-in `resolutionCooldownMs` (7 days) on its signals, and the partition suppresses a re-file when the matching resolution landed within that window before the scan. A genuinely-undeployed fix re-surfaces after the cooldown. Insights whose every citation is gone are classified apoptotic and get a single “supersede, don’t repoint” signal. The provenance-aware successor — replace the blind cooldown with a change-event check, plus auto-rewrite to the new canonical path — is tracked as EI-448; the content-hash schema redesign is EI-440.
 
 # Standalone hyperswarm transports — discovery.refresh() loop is the ONLY driver that connects (+ the protomux pair/id traps)
 

@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest';
 import {
   evaluateProbe,
   attributeBreach,
+  classifyBreach,
+  breachDisposition,
   runProbeCycle,
   evaluateInvariants,
   planSharedHiveCapture,
@@ -18,6 +20,7 @@ import {
   PROBE_B,
   type ProbeDeps,
   type ProbeStep,
+  type ProbeVerdict,
   type InvariantSnapshot,
 } from './coord-invariant-actions';
 import { getSystemAction } from './system-actions';
@@ -128,6 +131,53 @@ describe('attributeBreach (EI-401 self-attribution)', () => {
   it('falls back to cumulative-load when nothing dominates', () => {
     const hint = attributeBreach([step('baseline', 5), step('ping', 100), step('ack', 80)]);
     expect(hint).toContain('no single step dominates');
+  });
+});
+
+describe('classifyBreach', () => {
+  const step = (s: string, ms: number): ProbeStep => ({ step: s, ok: true, ms });
+
+  it('classifies a slow baseline as db-wide, fast-baseline-slow-write as coord', () => {
+    expect(classifyBreach([step('baseline', 9_000), step('ping', 12_000), step('ack', 9_000)])).toBe('db-wide');
+    expect(classifyBreach([step('baseline', 5), step('ping', 12_000), step('ack', 9_000)])).toBe('coord');
+  });
+
+  it('returns cumulative when nothing dominates, none when no baseline sampled', () => {
+    expect(classifyBreach([step('baseline', 5), step('ping', 100), step('ack', 80)])).toBe('cumulative');
+    expect(classifyBreach([step('ping', 12_000), step('ack', 9_000)])).toBe('none');
+  });
+});
+
+describe('breachDisposition (EI-401 file-vs-note)', () => {
+  const step = (s: string, ms: number): ProbeStep => ({ step: s, ok: true, ms });
+  const verdict = (over: Partial<ProbeVerdict>): ProbeVerdict =>
+    ({ ok: false, totalMs: 30_001, sloBreached: true, ...over });
+
+  it('downgrades a pure SLO breach pinned on DB-wide contention to a NOTE', () => {
+    const steps = [step('baseline', 9_000), step('ping', 12_000), step('ack', 9_000)];
+    expect(breachDisposition(verdict({ sloBreached: true }), steps)).toBe('note');
+  });
+
+  it('FILES a coord-attributed breach (the real coord INSERT+NOTIFY cost)', () => {
+    const steps = [step('baseline', 5), step('ping', 12_000), step('ack', 9_000), step('inbox', 477)];
+    expect(breachDisposition(verdict({ sloBreached: true }), steps)).toBe('file');
+  });
+
+  it('FILES a cumulative breach and an unattributable one (fail open, never swallow)', () => {
+    expect(breachDisposition(verdict({ sloBreached: true }), [step('baseline', 5), step('ping', 100), step('ack', 80)])).toBe('file');
+    // no baseline sampled ⇒ classifyBreach 'none' ⇒ still files.
+    expect(breachDisposition(verdict({ sloBreached: true }), [step('ping', 40_000)])).toBe('file');
+  });
+
+  it('always FILES a failed step regardless of latency attribution', () => {
+    // A failed step is a correctness failure: evaluateProbe leaves sloBreached=false,
+    // so even a slow baseline never downgrades it.
+    const steps = [step('baseline', 9_000), { step: 'lock-contend', ok: false, ms: 5 }];
+    expect(breachDisposition(verdict({ sloBreached: false, failedStep: 'lock-contend' }), steps)).toBe('file');
+  });
+
+  it('a clean cycle is ok (nothing filed or noted)', () => {
+    expect(breachDisposition({ ok: true, totalMs: 200, sloBreached: false }, [step('baseline', 5)])).toBe('ok');
   });
 });
 

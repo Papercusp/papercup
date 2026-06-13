@@ -16,11 +16,14 @@
  *     / pool contention; baseline fast but ping/ack slow ⇒ the coord
  *     INSERT+commit+NOTIFY path (EI-401 — the first real breach was mis-read as
  *     a slow read path; see agent-insight coord-canary-breach-attribute-per-step).
- *     Per-step latency + a total-cycle SLO; a failed step or SLO breach files a
- *     forensics-laden improvement (coord-log + lock-table rows) through the
- *     watchdog capture core (deduped, dedupScope 'open'). Probe hygiene: rows
- *     older than 24h are swept each fire, so the canary never becomes its own
- *     bloat incident.
+ *     Per-step latency + a 30s total-cycle SLO (EI-401 owner ruling: a 10s SLO
+ *     false-alarmed on transient shared-box peak-load write spikes). A failed
+ *     step or a coord-attributed SLO breach files a forensics-laden improvement
+ *     (coord-log + lock-table rows) through the watchdog capture core (deduped,
+ *     dedupScope 'open'); a breach the baseline pins on DB-wide / pool contention
+ *     is DOWNGRADED to a logged note, not an EI (breachDisposition). Probe
+ *     hygiene: rows older than 24h are swept each fire, so the canary never
+ *     becomes its own bloat incident.
  *
  *   - `system:coord-invariant-monitor` (P-013, hourly): cheap SQL/adapter
  *     snapshots checked against thresholds —
@@ -107,6 +110,27 @@ export function evaluateProbe(steps: ProbeStep[], totalSloMs: number): ProbeVerd
   };
 }
 
+/** How a breach attributes against the control `baseline`: 'db-wide' = the whole
+ *  DB/pool was contended (baseline itself slow) — NOT a coord regression;
+ *  'coord' = baseline fast but ping/ack slow ⇒ the coord INSERT+commit+NOTIFY
+ *  path; 'cumulative' = no single step dominates; 'none' = no baseline sampled. */
+export type BreachClass = 'db-wide' | 'coord' | 'cumulative' | 'none';
+
+/** Pure: classify an SLO breach by comparing the control `baseline` round-trip
+ *  against the coord write steps (the EI-401 self-attribution model — see
+ *  agent-insight coord-canary-breach-attribute-per-step). Drives both the
+ *  human-readable attribution line AND the file-vs-note disposition below. */
+export function classifyBreach(steps: ProbeStep[], slowMs = 2_000): BreachClass {
+  const ms = (step: string) => steps.find((s) => s.step === step)?.ms;
+  const baseline = ms('baseline');
+  if (baseline == null) return 'none';
+  const ping = ms('ping') ?? 0;
+  const ack = ms('ack') ?? 0;
+  if (baseline > slowMs) return 'db-wide';
+  if (Math.max(ping, ack) > slowMs) return 'coord';
+  return 'cumulative';
+}
+
 /** Pure: a one-line attribution hint for an SLO breach. Compares the control
  *  `baseline` round-trip against the coord write steps so a breach is not
  *  mis-read as a read-path cost — the EI-401 failure mode (see agent-insight
@@ -116,14 +140,30 @@ export function attributeBreach(steps: ProbeStep[], slowMs = 2_000): string {
   const baseline = ms('baseline');
   const ping = ms('ping') ?? 0;
   const ack = ms('ack') ?? 0;
-  if (baseline == null) return 'Attribution: no baseline control sampled.';
-  if (baseline > slowMs) {
-    return `Attribution: baseline control (SELECT 1) took ${baseline}ms — DB-wide / connection-pool contention, NOT coord-specific.`;
+  switch (classifyBreach(steps, slowMs)) {
+    case 'none':
+      return 'Attribution: no baseline control sampled.';
+    case 'db-wide':
+      return `Attribution: baseline control (SELECT 1) took ${baseline}ms — DB-wide / connection-pool contention, NOT coord-specific.`;
+    case 'coord':
+      return `Attribution: baseline control fast (${baseline}ms) but coord write slow (ping ${ping}ms / ack ${ack}ms) — the cost is the coord INSERT+commit+NOTIFY path (NOTIFY-queue serialization / substrate_outbox capture), not the read path or the DB at large.`;
+    case 'cumulative':
+      return `Attribution: baseline ${baseline}ms, ping ${ping}ms, ack ${ack}ms — no single step dominates; likely cumulative load.`;
   }
-  if (Math.max(ping, ack) > slowMs) {
-    return `Attribution: baseline control fast (${baseline}ms) but coord write slow (ping ${ping}ms / ack ${ack}ms) — the cost is the coord INSERT+commit+NOTIFY path (NOTIFY-queue serialization / substrate_outbox capture), not the read path or the DB at large.`;
-  }
-  return `Attribution: baseline ${baseline}ms, ping ${ping}ms, ack ${ack}ms — no single step dominates; likely cumulative load.`;
+}
+
+/** Pure: should a non-clean cycle FILE an EI, or downgrade to a logged NOTE?
+ *  EI-401 owner ruling ("accept + tune", 2026-06-13): a *pure* SLO breach (no
+ *  step failed) that the baseline control attributes to DB-wide / pool
+ *  contention is a transient shared-box peak-load spike, not an actionable coord
+ *  regression — log a forensic note instead of minting an EI. Everything else
+ *  still files: a failed step (correctness), a coord-attributed breach (the real
+ *  coord INSERT+NOTIFY cost), and cumulative/unattributable breaches (fail
+ *  open — never silently swallow a breach we cannot pin on the DB at large). */
+export function breachDisposition(verdict: ProbeVerdict, steps: ProbeStep[]): 'ok' | 'note' | 'file' {
+  if (verdict.ok) return 'ok';
+  if (verdict.sloBreached && classifyBreach(steps) === 'db-wide') return 'note';
+  return 'file';
 }
 
 /** The verb cycle, over an injectable deps bag (unit tests run on fakes). */
@@ -313,8 +353,23 @@ registerSystemAction('coord-probe-canary', async (ctx: SystemActionCtx) => {
 
   await sweepProbeRows(ctx.workspaceId).catch(() => {});
 
-  if (!verdict.ok) {
+  const disposition = breachDisposition(verdict, steps);
+  if (disposition !== 'ok') {
     const stepLines = steps.map((s) => `  ${s.ok ? '✓' : '×'} ${s.step} ${s.ms}ms${s.detail ? ` — ${s.detail}` : ''}`).join('\n');
+
+    // EI-401 (owner-ratified "accept + tune", 2026-06-13): a pure SLO breach the
+    // baseline control pins on DB-wide / pool contention is a transient shared-box
+    // peak-load spike, not a coord regression — log a forensic note instead of
+    // minting a non-actionable EI. The probe-row sweep above already ran, so this
+    // path leaves no debris. A failed step or a coord-attributed breach still files.
+    if (disposition === 'note') {
+      console.warn(
+        `[coord-probe-canary] SLO breach DOWNGRADED to note (not filed) — completed in ${verdict.totalMs}ms (SLO ${sloMs}ms).\n` +
+          `Cycle:\n${stepLines}\n${attributeBreach(steps)}`,
+      );
+      return;
+    }
+
     await captureImprovement({
       title: verdict.failedStep
         ? `coord probe-pair canary failed at '${verdict.failedStep}'`

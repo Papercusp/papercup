@@ -67,3 +67,25 @@ genuinely spiked to ~10–13s under load.
    the `coord_inbox` NOTIFY, review the `substrate_outbox` capture on the hot
    path, or widen the SLO for a shared dev box) — owner decisions, not
    drive-by edits.
+
+## Resolution (EI-401, owner ruling "accept + tune", 2026-06-13)
+
+The owner chose **accept + tune** over the deeper write-path infra changes. Two
+tunes, both in `lib/harness/routines/coord-invariant-actions.ts`:
+
+- **SLO widened 10s → 30s.** A 10s cycle budget was unrealistic for coord writes
+  on a shared dev box at peak fleet load. The code default is `30_000` and the
+  live `harness_shared.routines` row carries `payload_template.totalSloMs = 30000`
+  (re-seed is INSERT-only — existing rows are tuned directly).
+- **The attribution now DRIVES the disposition, not just annotates it.**
+  `breachDisposition(verdict, steps)` downgrades a *pure* SLO breach that
+  `classifyBreach` pins on `db-wide` contention to a **logged `console.warn`
+  note** instead of filing an EI. A failed step (correctness), a `coord`-attributed
+  breach (the real INSERT+NOTIFY cost), and `cumulative`/`none` (unattributable —
+  **fail open, never swallow**) all still file.
+
+This is why EI-401 could finally **close**: the prior reasoning kept it open as a
+`dedupScope:'open'` anchor so non-actionable db-wide spikes folded in rather than
+minting fresh EIs. With those spikes now downgraded to notes (never filed at all),
+the only thing that files is a genuine coord regression — which *should* mint a
+fresh, actionable EI. The anchor's reason for existing is gone.
