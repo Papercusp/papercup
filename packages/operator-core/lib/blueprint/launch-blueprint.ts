@@ -214,7 +214,7 @@ export function setLaunchBlueprintFire(fn: LaunchFireFn | null): void {
   _fire = fn;
 }
 
-const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs, workspaceId, parent }) => {
+const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs, workspaceId, parent, bodyExtra }) => {
   const body: Record<string, unknown> = {};
   if (kickoff) body.kickoff = kickoff;
   // `BLUEPRINT_ID=<id>` scopes the role's prompt resolution to
@@ -224,6 +224,9 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
   // the others inherit their global persona unchanged.
   body.extra = [`BLUEPRINT_ID=${blueprintId}`, ...(extra ?? [])];
   if (timeoutMs) body.timeoutMs = timeoutMs;
+  // Route-only bookkeeping fields (not child args) — e.g. the implement lane's
+  // improvementDispatch correlation for the worker-exit back-edge (EI-404).
+  if (bodyExtra) Object.assign(body, bodyExtra);
 
   // DURABLE when DBOS is on (unify-agent-spawn-chokepoint P-010): the launch runs
   // inside a registered, step-retried DBOS workflow that survives a host crash +

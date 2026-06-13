@@ -212,6 +212,10 @@ export type ImplementFireFn = (input: {
   runnerHarness: string;
   workspaceId: string;
   candidate: ScoredItem;
+  /** The dispatch ledger row id for THIS fire — threaded to the /invoke route so its
+   *  worker-exit back-edge (EI-404) can record the death on this row. Null when the
+   *  ledger insert failed (the orphan collector stays the 2h catch-all). */
+  dispatchId?: string | null;
 }) => void | ImplementFireResult | Promise<void | ImplementFireResult>;
 
 export interface ImplementFireResult {
@@ -264,12 +268,18 @@ export function implementTimeoutMs(): number {
   return intFromEnv('PAPERCUSP_IMPROVEMENT_IMPLEMENT_TIMEOUT_MS', 2_700_000, { min: 60_000 });
 }
 
-const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candidate }) => {
+const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candidate, dispatchId }) => {
   const target = await fireLaunchBlueprint('implement', {
     installSlug: runnerHarness,
     workspaceId,
     kickoff: implementKickoff(candidate),
     timeoutMs: implementTimeoutMs(),
+    // Correlation for the worker-exit back-edge (EI-404): the /invoke route records
+    // the worker's death on THIS ledger row at close time (visible in seconds, vs
+    // the 2h orphan threshold) and rolls back the attempt on an env-failure (EI-406).
+    bodyExtra: dispatchId
+      ? { improvementDispatch: { dispatchId, itemId: candidate.id, attempt: (candidate.attempts ?? 0) + 1 } }
+      : undefined,
   });
   return { spawnedRunId: target.spawn?.runId ?? null };
 };
@@ -395,7 +405,7 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
       runnerHarness,
     });
     try {
-      const fired = await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate });
+      const fired = await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate, dispatchId });
       if (dispatchId) {
         const spawnedRunId = fired && typeof fired === 'object' ? (fired.spawnedRunId ?? null) : null;
         await ledger.recordFireResult(dispatchId, { ok: true, spawnedRunId });

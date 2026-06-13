@@ -48,6 +48,7 @@ import {
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
 import { ClaimStatusBadge, CLAIM_STATUS_COPY } from '../_components/ClaimStatusBadge';
+import { HowSharingWorks } from '../_components/HowSharingWorks';
 import { Tooltip } from '../harness/Tooltip';
 import { CupboardErrorState } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
@@ -328,6 +329,10 @@ export default function CupboardClient() {
             <p style={{ fontFamily: FONTS.ui, fontSize: 13, lineHeight: 1.6, color: COLORS.textMuted, margin: '10px 0 0' }}>
               Discover installable harnesses, blueprints, plugins, packs, and tools from the shared Papercusp registry.
             </p>
+            {/* P-012: the in-UI "how sharing works" explainer (D-004). */}
+            <div style={{ margin: '8px 0 0' }}>
+              <HowSharingWorks linkStyle={{ fontFamily: FONTS.ui, fontSize: 12.5, color: COLORS.accent }} />
+            </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(92px, 1fr))', gap: 10, minWidth: 300, flex: '0 1 360px' }}>
             <MetricTile label={toolsView && !hive ? 'Mode' : 'Listings'} value={toolsView && !hive ? 'Tools' : String(hive ? hiveListings.length : listings.length)} />

@@ -14,6 +14,7 @@ import {
   scanOrphanedDispatches,
   buildOrphanedDispatchSignals,
   collectOrphanedDispatchSignals,
+  isHostRestartVictim,
   ORPHAN_EVIDENCE_WINDOW_MS,
 } from './orphaned-dispatch';
 import { readRecentDispatches, markDispatchOrphaned, type ImprovementDispatchRow } from './dispatch-ledger';
@@ -66,6 +67,22 @@ describe('scanOrphanedDispatches — which open rows mean a dead worker (P-011)'
   it('an unparseable firedAt is treated as infinitely old (conservative — the row cannot be vouched for)', () => {
     const rows = [row({ id: 'd1', itemId: 'EI-1', firedAt: 'not-a-date' })];
     expect(scanOrphanedDispatches(rows, { nowMs: NOW, orphanAfterMs: T })).toHaveLength(1);
+  });
+
+  it('a row fired before this process booted is a host-restart victim — orphaned regardless of age (EI-403 Option B)', () => {
+    const bootMs = NOW - 0.5 * 3_600_000; // this process booted 30 min ago
+    const rows = [
+      row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(1) }), // 1h old (< 2h) but predates boot → restart victim
+      row({ id: 'd2', itemId: 'EI-2', firedAt: new Date(NOW - 10 * 60_000).toISOString() }), // fired after boot → in progress
+    ];
+    expect(scanOrphanedDispatches(rows, { nowMs: NOW, orphanAfterMs: T, bootMs }).map((r) => r.id)).toEqual(['d1']);
+  });
+
+  it('bootMs<=0 disables the host-restart leg (pure threshold semantics preserved)', () => {
+    const rows = [row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(1) })];
+    expect(scanOrphanedDispatches(rows, { nowMs: NOW, orphanAfterMs: T, bootMs: 0 })).toEqual([]);
+    expect(isHostRestartVictim(rows[0], 0)).toBe(false);
+    expect(isHostRestartVictim(rows[0], NOW)).toBe(true);
   });
 });
 
@@ -121,7 +138,7 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
       row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(4) }),
       row({ id: 'd2', itemId: 'EI-2', firedAt: hoursAgo(1) }), // in progress — untouched
     ]);
-    const result = await collectOrphanedDispatchSignals('ws-1');
+    const result = await collectOrphanedDispatchSignals('ws-1', { bootMs: 0 });
     expect(vi.mocked(markDispatchOrphaned)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(markDispatchOrphaned)).toHaveBeenCalledWith('d1');
     expect(result.signals.map((s) => s.key)).toEqual(['EI-1']);
@@ -131,7 +148,7 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
   it('a row a late resolve beat us to (mark returns false) is NOT evidence — nothing was silent', async () => {
     vi.mocked(readRecentDispatches).mockResolvedValue([row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(4) })]);
     vi.mocked(markDispatchOrphaned).mockResolvedValue(false);
-    const result = await collectOrphanedDispatchSignals('ws-1');
+    const result = await collectOrphanedDispatchSignals('ws-1', { bootMs: 0 });
     expect(result.signals).toEqual([]);
   });
 
@@ -139,22 +156,51 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
     vi.mocked(readRecentDispatches).mockResolvedValue([
       row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(2) }),
     ]);
-    const result = await collectOrphanedDispatchSignals('ws-1');
+    const result = await collectOrphanedDispatchSignals('ws-1', { bootMs: 0 });
     expect(vi.mocked(markDispatchOrphaned)).not.toHaveBeenCalled();
     expect(result.signals.map((s) => s.key)).toEqual(['EI-1']);
+  });
+
+  it('recovers a host-restart victim: orphans with host-restart-recovery, releases the claim, rolls the attempt back (EI-403 Option B)', async () => {
+    const bootMs = NOW - 0.5 * 3_600_000; // booted 30 min ago
+    vi.mocked(readRecentDispatches).mockResolvedValue([
+      row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 2 }), // fired before boot → restart victim
+    ]);
+    const releaseClaim = vi.fn(async () => null);
+    const rollbackAttempt = vi.fn(async () => null);
+    const result = await collectOrphanedDispatchSignals('ws-1', { bootMs, recover: { releaseClaim, rollbackAttempt } });
+    expect(vi.mocked(markDispatchOrphaned)).toHaveBeenCalledWith(
+      'd1',
+      'host-restart-recovery',
+      expect.stringMatching(/host restarted mid-dispatch/),
+    );
+    expect(releaseClaim).toHaveBeenCalledWith('EI-1');
+    expect(rollbackAttempt).toHaveBeenCalledWith('EI-1', 1); // attempt 2 → rolled back to 1
+    expect(result.note).toMatch(/recovered 1 host-restart victim/);
+  });
+
+  it('a host-restart victim a late resolve beat us to (mark false) is NOT recovered', async () => {
+    const bootMs = NOW - 0.5 * 3_600_000;
+    vi.mocked(readRecentDispatches).mockResolvedValue([row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 1 })]);
+    vi.mocked(markDispatchOrphaned).mockResolvedValue(false);
+    const releaseClaim = vi.fn(async () => null);
+    const rollbackAttempt = vi.fn(async () => null);
+    await collectOrphanedDispatchSignals('ws-1', { bootMs, recover: { releaseClaim, rollbackAttempt } });
+    expect(releaseClaim).not.toHaveBeenCalled();
+    expect(rollbackAttempt).not.toHaveBeenCalled();
   });
 
   it('skips with a NOTE (not an error) while migration 238 is not applied — deploy ordering must not self-escalate', async () => {
     vi.mocked(readRecentDispatches).mockRejectedValue(
       Object.assign(new Error('relation "harness_shared.improvement_dispatches" does not exist'), { code: '42P01' }),
     );
-    const result = await collectOrphanedDispatchSignals('ws-1');
+    const result = await collectOrphanedDispatchSignals('ws-1', { bootMs: 0 });
     expect(result.signals).toEqual([]);
     expect(result.note).toMatch(/migration 238 not applied/);
   });
 
   it('any other PG failure propagates — the collector status must record it', async () => {
     vi.mocked(readRecentDispatches).mockRejectedValue(new Error('connection refused'));
-    await expect(collectOrphanedDispatchSignals('ws-1')).rejects.toThrow(/connection refused/);
+    await expect(collectOrphanedDispatchSignals('ws-1', { bootMs: 0 })).rejects.toThrow(/connection refused/);
   });
 });

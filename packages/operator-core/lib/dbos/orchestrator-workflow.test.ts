@@ -111,7 +111,7 @@ beforeEach(() => {
   setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
 });
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => vi.restoreAllMocks());
 
 const input = (over: Partial<PipelineInput> = {}): PipelineInput => ({
   harnessSlug: 'sheets',
@@ -313,11 +313,14 @@ describe('featurePipelineWorkflow — D-007 lease heartbeat + zombie self-abort'
       ++beats === 2 ? { renewed: false, reason: 'held by another owner (swarm-B)' } : { renewed: true },
     );
     setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const result = await featurePipelineWorkflow(input({ claim: lease() }));
 
     // Aborted before the validator dispatch — marker names the role we refused to run.
     expect(result).toBe('pipeline-complete (last=LEASE_LOST:VALIDATOR)');
+    // It logs the abort for observability (the seam's only side effect on a steal).
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lease not renewed'));
     const roles = runnerCalls.map((c) => c.role);
     expect(roles).toEqual(['director', 'worker', 'director']); // the validator NEVER ran
     expect(roles).not.toContain('validator');
@@ -332,10 +335,12 @@ describe('featurePipelineWorkflow — D-007 lease heartbeat + zombie self-abort'
     directorOutputs = ['NEXT_WORKER F-1', 'DONE'];
     leaseHeartbeatHook = vi.fn(async () => ({ renewed: false, reason: 'claim has lapsed' }));
     setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const result = await featurePipelineWorkflow(input({ claim: lease() }));
 
     expect(result).toBe('pipeline-complete (last=LEASE_LOST:WORKER)');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lease not renewed'));
     // Only the turn-0 decide ran; the worker was never dispatched.
     expect(runnerCalls.map((c) => c.role)).toEqual(['director']);
     expect(finalizer).not.toHaveBeenCalled();

@@ -212,6 +212,13 @@ const invoke = defineTool({
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];
     const kickoff = extractKickoff((body as any)?.kickoff);
+    // Auto-implement dispatch correlation (EI-404): when present, the implement lane
+    // fired this invoke fire-and-forget (it runs inside a DBOS step, so it can't await
+    // the worker). This route is the one thing that DOES await the worker exit, so it
+    // runs the worker-exit back-edge below. NOT forwarded to the child as args.
+    const improvementDispatch = (body as any)?.improvementDispatch as
+      | { dispatchId?: string; itemId?: string; attempt?: number }
+      | undefined;
 
     // Tracked, resumable session for kind:'hive' blueprint launches (D-010).
     // fireLaunchBlueprint marks them with `?bpkind=hive` — this route only ever
@@ -302,6 +309,7 @@ const invoke = defineTool({
       env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
     }
     if (kickoff) env.QUEEN_BRIEF = kickoff;
+    const spawnStartMs = Date.now();
     const r = await spawnInvokeOnce(
       project.path,
       role,
@@ -309,6 +317,32 @@ const invoke = defineTool({
       env,
       { timeoutMs },
     );
+    const workerRuntimeMs = Date.now() - spawnStartMs;
+
+    // Worker-exit back-edge for the auto-implement lane (EI-404 + EI-406): a
+    // dispatched implement worker that exits WITHOUT calling improvements:resolve
+    // (crash, non-zero exit, or exited 0 forgetting to resolve) is recorded on its
+    // dispatch-ledger row NOW — visible in seconds instead of waiting for the 2h
+    // orphan collector — and an environment-failure death (rate-limit/credential/DOA)
+    // rolls its attempt counter back so a credential outage can't drain the auto pool.
+    // Best-effort: bookkeeping must never fail the route. (A host RESTART kills this
+    // handler too, so this can't fire then — that case is EI-403 Option B's recovery.)
+    if (improvementDispatch?.dispatchId && improvementDispatch.itemId) {
+      try {
+        const { recordImplementWorkerExit } = await import('../../../harness/improvements/implement-worker-exit');
+        await recordImplementWorkerExit({
+          dispatchId: improvementDispatch.dispatchId,
+          itemId: improvementDispatch.itemId,
+          attempt: Number(improvementDispatch.attempt) || 1,
+          exitCode: r.exitCode ?? 1,
+          runtimeMs: workerRuntimeMs,
+          stdout: r.output,
+          stderr: r.stderr,
+        });
+      } catch (e) {
+        console.warn(`[invoke ${project.slug}] implement worker-exit back-edge failed:`, e);
+      }
+    }
 
     // Mark the tracked session ended (by ROW id — markAdvSessionEnded takes the
     // adv_sessions PK, not the native session UUID). The row stays queryable so

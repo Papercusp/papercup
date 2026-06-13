@@ -39,6 +39,20 @@ import {
   readRecentDispatches,
   type ImprovementDispatchRow,
 } from './dispatch-ledger';
+import { releaseIssue, mergeIssuePayload } from '../../issues-engineer';
+
+/**
+ * This process's boot time (ms). `process.uptime()` is import-timing-independent
+ * (unlike a module-load `Date.now()`), so a dispatch row fired BEFORE this is from
+ * a PREVIOUS process — its worker (a child of the dead host) cannot still be alive
+ * (EI-403 Option B host-restart recovery). Single-host assumption for the implement
+ * lane: the routine + its loopback-fired workers run on one host (the routine holds
+ * a cross-host lock), so a row predating boot is a restart victim, not another live
+ * host's in-flight worker.
+ */
+export function processBootMs(): number {
+  return Date.now() - Math.floor(process.uptime() * 1000);
+}
 
 /**
  * How long an already-orphaned row keeps backing a signal (re-fire window). The
@@ -57,24 +71,41 @@ export interface OrphanScanOpts {
   nowMs: number;
   /** Open-row age past which the worker is presumed dead. Default dispatchOverdueAfterMs(). */
   orphanAfterMs?: number;
+  /**
+   * This process's boot time (ms). An OPEN row fired before it is a host-restart
+   * victim — orphaned IMMEDIATELY, regardless of age (EI-403 Option B). Default 0
+   * (disabled — no row predates the epoch), so the pure threshold semantics are
+   * unchanged unless a caller opts in (the glue passes the live processBootMs()).
+   */
+  bootMs?: number;
+}
+
+/** True when an open row predates this process — its worker died with the old host. */
+export function isHostRestartVictim(row: ImprovementDispatchRow, bootMs: number): boolean {
+  if (row.outcome !== null || bootMs <= 0) return false;
+  const firedMs = Date.parse(row.firedAt);
+  return !Number.isNaN(firedMs) && firedMs < bootMs;
 }
 
 /**
- * Pure: which OPEN ledger rows are past the threshold — the worker is presumed
- * dead and the row should be driven terminal ('orphaned'). A row whose fire
- * already failed is terminal ('fire-failed') and never reaches this; a row
- * stuck at fire_result='pending' (the dispatcher died mid-fire) does.
+ * Pure: which OPEN ledger rows mean a dead worker — either past the age threshold
+ * (the worker timed out / silently died) OR fired before this process booted (a
+ * host restart killed it mid-dispatch — EI-403 Option B, recovered now instead of
+ * at the 2h threshold). A row whose fire already failed is terminal ('fire-failed')
+ * and never reaches this; a row stuck at fire_result='pending' (the dispatcher died
+ * mid-fire) does.
  */
 export function scanOrphanedDispatches(
   rows: ImprovementDispatchRow[],
   opts: OrphanScanOpts,
 ): ImprovementDispatchRow[] {
   const orphanAfterMs = opts.orphanAfterMs ?? dispatchOverdueAfterMs();
+  const bootMs = opts.bootMs ?? 0;
   return rows.filter((r) => {
     if (r.outcome !== null) return false;
     const firedMs = Date.parse(r.firedAt);
     const age = Number.isNaN(firedMs) ? Number.POSITIVE_INFINITY : opts.nowMs - firedMs;
-    return age > orphanAfterMs;
+    return age > orphanAfterMs || isHostRestartVictim(r, bootMs);
   });
 }
 
@@ -156,13 +187,39 @@ function isMissingLedgerTable(e: unknown): boolean {
 }
 
 /**
+ * Recovery seam (EI-403 Option B) — injectable so the glue is unit-testable. Default
+ * wires the real issue back-edges: release the stale claim + roll the attempt back.
+ */
+export interface OrphanRecoverDeps {
+  releaseClaim: (id: string) => Promise<unknown>;
+  rollbackAttempt: (id: string, attempts: number) => Promise<unknown>;
+}
+
+const defaultRecover: OrphanRecoverDeps = {
+  releaseClaim: releaseIssue,
+  rollbackAttempt: (id, attempts) => mergeIssuePayload(id, { implementAttempts: attempts }),
+};
+
+/**
  * Thin PG glue: read recent ledger rows, drive overdue OPEN rows terminal
  * ('orphaned' — race-safe against a late resolve via the `outcome IS NULL`
  * guard), then signal per affected item. Rows a late resolve beat us to are
  * NOT evidence (the worker did resolve — nothing was silent).
+ *
+ * EI-403 Option B: a row fired before this process booted is a HOST-RESTART victim
+ * (a deploy/crash killed the worker AND the /invoke route, so the EI-404 back-edge
+ * couldn't fire). Recover it fast — release the item's claim so the next implement
+ * tick re-dispatches (vs the 2h stale-claim window) and roll the attempt back (a
+ * restart is an environment event, not the item's fault). `bootMs` defaults to the
+ * live process boot; tests pin it (0 disables the host-restart leg).
  */
-export async function collectOrphanedDispatchSignals(workspaceId: string): Promise<CollectorResult> {
+export async function collectOrphanedDispatchSignals(
+  workspaceId: string,
+  opts: { bootMs?: number; recover?: OrphanRecoverDeps } = {},
+): Promise<CollectorResult> {
   const nowMs = Date.now();
+  const bootMs = opts.bootMs ?? processBootMs();
+  const recover = opts.recover ?? defaultRecover;
   let rows: ImprovementDispatchRow[];
   try {
     rows = await readRecentDispatches(workspaceId, { limit: ORPHAN_SCAN_READ_LIMIT });
@@ -173,19 +230,45 @@ export async function collectOrphanedDispatchSignals(workspaceId: string): Promi
     throw e;
   }
 
-  const toMark = scanOrphanedDispatches(rows, { nowMs });
+  const toMark = scanOrphanedDispatches(rows, { nowMs, bootMs });
   const nowIso = new Date(nowMs).toISOString();
   const marked: ImprovementDispatchRow[] = [];
+  let recovered = 0;
   for (const row of toMark) {
-    if (await markDispatchOrphaned(row.id)) {
-      marked.push({ ...row, outcome: 'orphaned', resolvedAt: nowIso, resolvedBy: 'orphaned-dispatch-collector' });
+    const hostRestart = isHostRestartVictim(row, bootMs);
+    const ok = hostRestart
+      ? await markDispatchOrphaned(
+          row.id,
+          'host-restart-recovery',
+          `host restarted mid-dispatch (fired ${row.firedAt}, before process boot) — worker killed; ` +
+            `claim released + attempt rolled back for re-dispatch (EI-403 Option B)`,
+        )
+      : await markDispatchOrphaned(row.id);
+    if (!ok) continue;
+    marked.push({
+      ...row,
+      outcome: 'orphaned',
+      resolvedAt: nowIso,
+      resolvedBy: hostRestart ? 'host-restart-recovery' : 'orphaned-dispatch-collector',
+    });
+    if (hostRestart) {
+      try {
+        await recover.releaseClaim(row.itemId);
+        await recover.rollbackAttempt(row.itemId, Math.max(0, (row.attempt ?? 1) - 1));
+        recovered += 1;
+      } catch (e) {
+        console.warn(
+          `[orphaned-dispatch] host-restart recovery failed for ${row.itemId}:`,
+          e instanceof Error ? e.message : e,
+        );
+      }
     }
   }
 
   const evidence = [...marked, ...rows.filter((r) => r.outcome === 'orphaned')];
   const signals = buildOrphanedDispatchSignals(evidence, { nowMs });
-  return {
-    signals,
-    ...(marked.length ? { note: `marked ${marked.length} open dispatch(es) orphaned (worker presumed dead)` } : {}),
-  };
+  const notes: string[] = [];
+  if (marked.length) notes.push(`marked ${marked.length} open dispatch(es) orphaned (worker presumed dead)`);
+  if (recovered) notes.push(`recovered ${recovered} host-restart victim(s) (claim released + attempt rolled back)`);
+  return { signals, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }

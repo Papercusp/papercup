@@ -25,6 +25,7 @@ import React, { useEffect, useState } from 'react';
 import { Check, Copy, Globe, Link2, Lock } from 'lucide-react';
 import { formatHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import { Modal } from './Modal';
+import { HowSharingWorks } from '../_components/HowSharingWorks';
 import { Button } from './Button';
 import { TextArea, TextInput } from './TextInput';
 
@@ -408,8 +409,12 @@ export function ShareHiveDialog({ open, onOpenChange, ...form }: ShareHiveDialog
       <h2 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 600 }}>
         Share {label} <code>{form.hiveSlug}</code>
       </h2>
-      <p style={{ margin: '0 0 14px', fontSize: 12.5, color: 'var(--fg-dim)' }}>
+      <p style={{ margin: '0 0 8px', fontSize: 12.5, color: 'var(--fg-dim)' }}>
         Sharing happens at the {label} level — choose who can find and join it.
+      </p>
+      {/* P-012: the in-UI explainer is reachable from the Share dialog (D-004). */}
+      <p style={{ margin: '0 0 14px' }}>
+        <HowSharingWorks />
       </p>
       <ShareHiveForm {...form} />
     </Modal>

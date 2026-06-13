@@ -40,6 +40,7 @@ import { useLexicon } from '@/lib/useLexicon';
 import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
 import { EntryGithubSearchForm } from './EntryGithubSearchForm';
 import { PublishHiveCard } from './PublishHiveCard';
+import { HowSharingWorks } from '../_components/HowSharingWorks';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -877,6 +878,12 @@ function PickerStep({
           </div>
         </div>
       ))}
+      {/* P-012: the in-UI explainer is reachable from the picker (D-004). */}
+      {githubUrlEnabled && (
+        <div style={{ marginTop: 4, textAlign: 'center' }}>
+          <HowSharingWorks />
+        </div>
+      )}
     </div>
   );
 }

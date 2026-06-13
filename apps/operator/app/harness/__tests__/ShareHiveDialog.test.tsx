@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import {
   ShareHiveDialog,
@@ -18,6 +19,11 @@ import {
   type SetHiveOutcome,
 } from '../ShareHiveDialog';
 import { PublishHiveCard } from '../PublishHiveCard';
+
+// The Share dialog now embeds the P-012 HowSharingWorks explainer (useLexicon →
+// useFlag). Mock flag-hooks so jsdom never hits the real flag bootstrap
+// (fetch + EventSource), same as the picker test. Default-on → the-hive pack.
+vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => true }));
 
 afterEach(() => cleanup());
 
@@ -219,6 +225,7 @@ describe('ShareHiveDialog (P-004)', () => {
     const s = seams({ meta: meta({ found: false }) });
     render(
       <ShareHiveDialog hiveSlug="acme" hiveLabel="pot" open onOpenChange={() => {}} {...s.props} />,
+      { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
     );
     await screen.findByTestId('share-hive-form');
     // The visible heading carries the lexicon label + the slug (the Modal's
@@ -231,6 +238,7 @@ describe('ShareHiveDialog (P-004)', () => {
     const s = seams();
     render(
       <ShareHiveDialog hiveSlug="acme" open={false} onOpenChange={() => {}} {...s.props} />,
+      { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
     );
     expect(screen.queryByTestId('share-hive-form')).toBeNull();
   });
