@@ -450,7 +450,7 @@ describe('item id allocation + append', () => {
   });
 
   it('argsSchema rejects a phase the parser would not recognize as a phase section', () => {
-    const args = { slug: 's', phase: 'Implementation (2026-06-05)', text: 'x', importance: 'normal' };
+    const args = { slug: 's', harness: 'all', phase: 'Implementation (2026-06-05)', text: 'x', importance: 'normal' };
     const bad = addItemArgsSchema.safeParse(args);
     expect(bad.success).toBe(false);
     if (!bad.success) {
@@ -474,7 +474,7 @@ describe('item id allocation + append', () => {
 });
 
 describe('plans:add-item importance enforcement (P-004/P-007)', () => {
-  const base = { slug: 's', phase: 'Phase 1 — X', text: 'do a thing' };
+  const base = { slug: 's', harness: 'all', phase: 'Phase 1 — X', text: 'do a thing' };
 
   it('rejects when importance is missing (no silent default)', () => {
     expect(addItemArgsSchema.safeParse(base).success).toBe(false);
