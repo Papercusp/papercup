@@ -55,7 +55,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.coord_links, harness_shared.harness_features_consolidated RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.coord_links, harness_shared.harness_features_consolidated,
+                       harness_shared.harness_plans RESTART IDENTITY`;
 });
 
 // Seed features (no blocked_by column post-155) + their blocker edges via the real
@@ -110,5 +111,70 @@ describe('EI-1 edge blocking (real PG)', () => {
     const norm = (fs: { id: string; blockedBy: readonly string[] }[]) =>
       Object.fromEntries(fs.map((f) => [f.id, [...f.blockedBy].sort()]).sort());
     expect(norm(frontier)).toEqual({ 'F-1': ['F-2'], 'F-2': [], 'F-3': ['F-1', 'F-2'] });
+  });
+});
+
+// ── readFrontierFeatures pickability gates (G2 / P-008) — the started-plan gate
+// and the auditor-admit gate are SQL filters; assert them against real PG (the
+// pure blockedBy derivation above is the other half). ──
+async function seedFeature(opts: {
+  id: string;
+  sourcePlan?: string | null;
+  origin?: string | null;
+  auditVerdict?: string | null;
+  status?: string;
+  itemKind?: string;
+}): Promise<void> {
+  const metaJson = opts.sourcePlan != null ? JSON.stringify({ source_plan: opts.sourcePlan }) : null;
+  await db.sql`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (workspace_id, harness_slug, feature_id, status, item_kind, metadata, origin, audit_verdict)
+    VALUES ('default', 'demo', ${opts.id}, ${opts.status ?? 'todo'}, ${opts.itemKind ?? 'feature'},
+            ${metaJson}::text::jsonb, ${opts.origin ?? 'local'}, ${opts.auditVerdict ?? null})`;
+}
+async function seedPlan(slug: string, opStatus: string): Promise<void> {
+  await db.sql`
+    INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_status)
+    VALUES ('default', 'demo', ${slug}, ${opStatus})`;
+}
+const frontierIds = (fs: { id: string }[]) => fs.map((f) => f.id).sort();
+
+describe('readFrontierFeatures — started-plan + auditor gates (real PG)', () => {
+  it('started-plan gate: a feature whose source_plan is not a STARTED plan is filtered; NULL source_plan is always pickable', async () => {
+    await seedPlan('plan-started', 'started');
+    await seedPlan('plan-draft', 'draft');
+    await seedFeature({ id: 'F-started', sourcePlan: 'plan-started' });
+    await seedFeature({ id: 'F-draft', sourcePlan: 'plan-draft' }); // plan not started → excluded
+    await seedFeature({ id: 'F-ghostplan', sourcePlan: 'plan-missing' }); // no such plan row → excluded
+    await seedFeature({ id: 'F-noplan', sourcePlan: null }); // no source_plan → always pickable
+    const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
+    expect(frontierIds(frontier)).toEqual(['F-noplan', 'F-started']);
+  });
+
+  it('auditor gate: a remote feature is pickable only once admitted; local / NULL origin is always pickable', async () => {
+    await seedFeature({ id: 'F-local', origin: 'local' });
+    await seedFeature({ id: 'F-nullorigin', origin: null });
+    await seedFeature({ id: 'F-remote-pending', origin: 'remote', auditVerdict: null });
+    await seedFeature({ id: 'F-remote-rejected', origin: 'remote', auditVerdict: 'reject' });
+    await seedFeature({ id: 'F-remote-admitted', origin: 'remote', auditVerdict: 'admit' });
+    const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
+    expect(frontierIds(frontier)).toEqual(['F-local', 'F-nullorigin', 'F-remote-admitted']);
+  });
+
+  it('only kind=feature reaches the feature-pipeline frontier (other work-item kinds are skipped)', async () => {
+    await seedFeature({ id: 'F-feat', itemKind: 'feature' });
+    await seedFeature({ id: 'B-bug', itemKind: 'bug' });
+    await seedFeature({ id: 'RT-task', itemKind: 'research-task' });
+    const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
+    expect(frontierIds(frontier)).toEqual(['F-feat']);
+  });
+
+  it('both gates compose: started-plan AND admitted is pickable; either gate failing excludes it', async () => {
+    await seedPlan('plan-started', 'started');
+    await seedFeature({ id: 'F-ok', sourcePlan: 'plan-started', origin: 'remote', auditVerdict: 'admit' });
+    await seedFeature({ id: 'F-unadmitted', sourcePlan: 'plan-started', origin: 'remote', auditVerdict: null });
+    await seedFeature({ id: 'F-unstarted', sourcePlan: 'plan-other', origin: 'remote', auditVerdict: 'admit' });
+    const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
+    expect(frontierIds(frontier)).toEqual(['F-ok']);
   });
 });
