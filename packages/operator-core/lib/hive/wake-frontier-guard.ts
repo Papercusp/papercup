@@ -23,34 +23,63 @@ export interface WakeFrontierGuardInput {
   hasTimeWake: boolean;
   /** Unplaced (todo, unassigned) work-item ids in the home harness. */
   frontierIds: string[];
+  /** Non-terminal placements (working/recovering) the Queen has IN FLIGHT —
+   *  drive-to-empty (queen-autonomous-execution B-09 / P-030). An event-only/none
+   *  wake while these exist risks her never re-waking to verify they completed
+   *  (the same wedge class as an unplaced frontier): a `working` bee that finishes
+   *  fires a wake, but if she armed no wake it lands as woken:0 voicemail, and a
+   *  `recovering` unit needs her to re-place it. So she must keep a time cadence
+   *  until every placement is terminal. Optional (default none). */
+  openPlacementIds?: string[];
 }
 
 export interface WakeFrontierRefusal {
   error: 'frontier_not_empty';
   message: string;
   frontier: string[];
+  /** Non-terminal placements that also block the idle (P-030), if any. */
+  placements: string[];
 }
 
 /**
- * Refuse a declaration with NO time component while the home harness has unplaced
- * work — that wake would never place it (in a Hive the Queen IS the dispatcher;
- * the claim layer is for harness pipelines, not the Hive). A time-wake or an empty
- * frontier passes. Returns the refusal, or null to allow.
+ * Refuse a declaration with NO time component while the Queen still has work that
+ * a no-time wake would strand: unplaced todo work in the home harness (EI-309), or
+ * non-terminal placements she must drive to completion (P-030). A time-wake, or
+ * BOTH an empty frontier AND no open placements, passes. Returns the refusal or
+ * null to allow.
  */
 export function evaluateWakeFrontierGuard(input: WakeFrontierGuardInput): WakeFrontierRefusal | null {
-  if (input.hasTimeWake) return null; // a timer re-wakes to place — fine
-  if (input.frontierIds.length === 0) return null; // nothing to place
-  const shown = input.frontierIds.slice(0, 10);
-  const more = input.frontierIds.length - shown.length;
+  if (input.hasTimeWake) return null; // a timer re-wakes to place / monitor — fine
+  const frontier = input.frontierIds;
+  const placements = input.openPlacementIds ?? [];
+  if (frontier.length === 0 && placements.length === 0) return null; // nothing pending
+
+  const parts: string[] = [];
+  if (frontier.length > 0) {
+    const shown = frontier.slice(0, 10);
+    const more = frontier.length - shown.length;
+    parts.push(
+      `${frontier.length} unplaced todo work-item(s) (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}) — ` +
+        `PLACE them this turn (spawn/dispatch a bee)`,
+    );
+  }
+  if (placements.length > 0) {
+    const shown = placements.slice(0, 10);
+    const more = placements.length - shown.length;
+    parts.push(
+      `${placements.length} non-terminal placement(s) still in flight (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}) — ` +
+        `DRIVE them to completion (re-place any recovering, verify each reaches terminal)`,
+    );
+  }
   return {
     error: 'frontier_not_empty',
     message:
-      `Refusing an event-only/none wake: the home harness has ${input.frontierIds.length} unplaced todo work-item(s) ` +
-      `(${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}) and no time-wake — an event-only/none wake will never ` +
-      `place them (in a Hive YOU are the dispatcher; the claim layer is for harness pipelines, not the Hive). ` +
-      `PLACE them this turn (spawn/dispatch a worker), or arm a time-wake (inSeconds/at) so you re-wake to place them. ` +
-      `Pass force:true only if you deliberately intend to leave them unplaced.`,
-    frontier: input.frontierIds,
+      `Refusing an event-only/none wake: ${parts.join('; and ')}. In a Hive YOU are the dispatcher AND you drive ` +
+      `every placement to completion (B-09); an event-only/none wake leaves this work stranded. Place/drive it now, ` +
+      `or arm a time-wake (inSeconds/at) so you re-wake to finish it. Pass force:true only if you deliberately intend ` +
+      `to leave it.`,
+    frontier,
+    placements,
   };
 }
 
@@ -76,4 +105,32 @@ export async function listUnplacedHiveFrontier(
      ORDER BY created_ts ASC
      LIMIT ${limit}`;
   return rows.map((r) => r.feature_id);
+}
+
+/**
+ * The Queen's non-terminal placements (P-030 drive-to-empty): hive_placements
+ * rows in `working`/`recovering` (NOT cursed/stranded — those are escalated to the
+ * owner, no longer the Queen's to drive). Best-effort: the table may not exist yet
+ * on a host whose migration is pending → return [] (the guard simply doesn't fire
+ * on placements there; the unplaced-frontier leg still works).
+ */
+export async function listNonTerminalPlacements(
+  sql: postgres.Sql,
+  workspaceId: string,
+  installSlug: string,
+  limit = 25,
+): Promise<string[]> {
+  try {
+    const rows = await sql<{ work_item_id: string }[]>`
+      SELECT work_item_id
+        FROM harness_shared.hive_placements
+       WHERE workspace_id = ${workspaceId}
+         AND install_slug = ${installSlug}
+         AND status IN ('working', 'recovering')
+       ORDER BY updated_at ASC
+       LIMIT ${limit}`;
+    return rows.map((r) => r.work_item_id);
+  } catch {
+    return [];
+  }
 }

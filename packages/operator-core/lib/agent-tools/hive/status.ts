@@ -18,6 +18,7 @@ import {
 } from '../../hive/wake';
 import { getHiveStarted } from '../../hive/started';
 import { recentWatchdogFires, watchdogFallbackSleepSec, watchdogStaleSec } from '../../hive/watchdog';
+import { summarizeOpenPlacements } from '../../hive/placement-watchdog';
 
 export default defineTool({
   name: 'hive:status',
@@ -48,6 +49,9 @@ export default defineTool({
     // signal (frequent fallback fires = a Queen prompt bug to fix, D-004).
     const started = installSlug ? await getHiveStarted(workspaceId, installSlug) : false;
     const watchdogFires24h = installSlug ? await recentWatchdogFires(workspaceId, installSlug) : 0;
+    // B-09 P-020/P-023: the open placements the Queen must drive to terminal —
+    // recovering (re-place now), cursed (escalated), stranded (blocker stuck).
+    const placements = installSlug ? await summarizeOpenPlacements(workspaceId, installSlug) : null;
 
     return {
       content: [
@@ -69,6 +73,7 @@ export default defineTool({
                   lastFiredAt: time.lastFiredAt ? new Date(time.lastFiredAt).toISOString() : null,
                 }
               : null,
+            placements,
             subscriptions: state.subscriptions,
             liveRuleIds: ruleIds,
             lastWakeAt: state.lastWakeAt ? new Date(state.lastWakeAt).toISOString() : null,

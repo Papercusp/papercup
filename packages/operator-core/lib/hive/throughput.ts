@@ -99,6 +99,22 @@ function clamp01(n: number): number {
   return n >= 1 ? 1 : n;
 }
 
+/** Coerce a jsonb column to a plain object — tolerant of a client that hands
+ *  jsonb back as a string (parse) or a legacy double-encoded scalar. */
+function asJsonObject(v: unknown): Record<string, unknown> | null {
+  if (v == null) return null;
+  if (typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
+  if (typeof v === 'string') {
+    try {
+      const p: unknown = JSON.parse(v);
+      return p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /** Is a spawn "in this tick's window" (started/finished after the previous tick)?
  *  On the first tick (lastTickAtMs null) the whole read window counts. */
 function inWindow(at: number | null, lastTickAtMs: number | null): boolean {
@@ -317,13 +333,13 @@ export async function recordHiveThroughputTick(opts: {
       VALUES
         (${ws}, ${opts.hiveSlug}, ${metrics.frontierDepth}, ${metrics.placements},
          ${metrics.beesBusy}, ${metrics.beesCap}, ${metrics.stuckCount}, ${metrics.completed},
-         ${metrics.mttcMs}, ${JSON.stringify(metrics.questionRungs)}::jsonb,
+         ${metrics.mttcMs}, ${JSON.stringify(metrics.questionRungs)}::text::jsonb,
          ${JSON.stringify({
            utilization: metrics.utilization,
            stuckThresholdMs: stuckThresholdMs(),
            startedPlans: demand.startedPlans,
            breaches: breaches.map((b) => b.kind),
-         })}::jsonb)`;
+         })}::text::jsonb)`;
 
     // FB-21 audit-as-sensors: a breach files through capture (best-effort, deduped
     // by watchdogKey so a standing breach files once, not every 30s tick).
@@ -395,7 +411,8 @@ export function normalizeThroughputRow(r: RawThroughputTickRow): HiveThroughputT
   const beesBusy = Number(r.bees_busy ?? 0);
   const beesCap = Number(r.bees_cap ?? 0);
   const mttc = r.mttc_ms == null ? null : Number(r.mttc_ms);
-  const detailUtil = (r.detail as { utilization?: unknown } | null)?.utilization;
+  const detailUtil = asJsonObject(r.detail)?.utilization;
+  const rungs = asJsonObject(r.question_rungs);
   return {
     hiveSlug: String(r.hive_slug ?? ''),
     tickAt: r.tick_at instanceof Date ? r.tick_at.toISOString() : new Date(r.tick_at).toISOString(),
@@ -412,6 +429,6 @@ export function normalizeThroughputRow(r: RawThroughputTickRow): HiveThroughputT
     completed: Number(r.completed ?? 0),
     mttcMs: mttc != null && Number.isFinite(mttc) ? mttc : null,
     stuckCount: Number(r.stuck_count ?? 0),
-    questionRungs: r.question_rungs && typeof r.question_rungs === 'object' ? r.question_rungs : {},
+    questionRungs: (rungs as Record<string, number> | null) ?? {},
   };
 }

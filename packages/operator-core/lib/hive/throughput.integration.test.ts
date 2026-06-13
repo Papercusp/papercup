@@ -40,7 +40,7 @@ async function insertTick(
     VALUES
       (${WS}, ${row.hiveSlug}, ${row.tickAt}, ${row.frontierDepth}, ${row.placements},
        ${row.beesBusy}, ${row.beesCap}, ${row.stuckCount}, ${row.completed}, ${row.mttcMs},
-       ${JSON.stringify(row.questionRungs)}::jsonb, ${JSON.stringify(row.detail)}::jsonb)`;
+       ${JSON.stringify(row.questionRungs)}::text::jsonb, ${JSON.stringify(row.detail)}::text::jsonb)`;
 }
 
 describe('hive_throughput_ticks (real PG, migration 261)', () => {

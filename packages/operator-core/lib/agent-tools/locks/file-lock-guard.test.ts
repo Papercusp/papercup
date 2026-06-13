@@ -25,7 +25,11 @@ vi.mock('./identity', () => ({ readIdentity: h.readIdentity }));
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: (_cd: string, _owner: string, fn: (tx: unknown) => unknown) => fn({}),
 }));
-vi.mock('./enrich-busy', () => ({ enrichBusy: async (rows: unknown[]) => rows }));
+// NB: we deliberately do NOT mock './enrich-busy' — acquire-enrich.test.ts
+// imports the REAL module, and a leaked mock across files (vitest non-isolated
+// pool) would break it (4605e). The real enrichBusy is safe here: it wraps
+// getPresence in `.catch(() => null)`, so a busy row just passes through
+// un-enriched, which is all these assertions check.
 
 import { guardFileLock, toRepoRelative, withFileLock, fileLockedResult } from './file-lock-guard';
 

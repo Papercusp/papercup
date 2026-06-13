@@ -26,13 +26,18 @@
  * rather than duplicating work. The testing leg self-skips with an honest
  * count until lib/replay's battery is wired (frontier:replay-landed).
  */
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { transferGovernorGate } from '../../transfer/governor';
-import { transferOptionsFromPayload } from '../../transfer/gate';
-import { runTransferTick, type TransferTickDeps } from '../../transfer/tick';
+import type { TransferTickDeps } from '../../transfer/tick';
+import { runTransferDistill } from '../../transfer/run';
+
+/**
+ * The flag → governor → tick orchestration this action runs is SHARED with the
+ * `transfer:distill` deterministic blueprint step via `runTransferDistill`
+ * (deterministic-blueprints-migration-2026-06-13 P-121 / D-004 — provably
+ * behavior-neutral: one gated tick, two callers). This action keeps its own
+ * injectable seams (the test pins them) and passes them into the shared core.
+ */
 
 /** The tick-deps seam — injectable for tests (mirrors setNegativeSpaceTickDeps). */
 let _deps: TransferTickDeps | null = null;
@@ -49,32 +54,26 @@ export function setTransferGovernorGate(gate: TransferGovernorGate | null): void
 }
 
 registerSystemAction('transfer-distill', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.TRANSFER_HARNESS, `routine:${ctx.installSlug}`))) {
-    console.log(
-      '[transfer-distill] flag papercusp-transfer-harness is OFF (frontier arming gate, ' +
-        'self-learning-frontier P-001) — skipping',
-    );
-    return;
-  }
-  const verdict = await (_governorGate ?? transferGovernorGate)(ctx.workspaceId);
-  if (!verdict.allow) {
-    console.log(
-      `[transfer-distill] learning-governor refused (${verdict.reason}) — skipping ` +
-        '(D-004: an unattended frontier loop runs only registered + budgeted)',
-    );
-    return;
-  }
-  const opts = transferOptionsFromPayload(ctx.payloadTemplate);
-  // Lazy: the live deps pull the PG pool + memory-backend graph — neither may
-  // load (or throw) before the flag + governor checks in a hermetic process.
-  const deps =
-    _deps ??
-    (await import('../../transfer/live-deps')).defaultTransferTickDeps(
-      (await import('@papercusp/db-org')).getOrgPg().sql,
-      ctx.workspaceId,
-    );
   try {
-    const r = await runTransferTick(ctx.workspaceId, deps, opts);
+    const outcome = await runTransferDistill(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payload: ctx.payloadTemplate },
+      { governorGate: _governorGate ?? undefined, tickDeps: _deps ?? undefined },
+    );
+    if (!outcome.ran) {
+      if (outcome.skipReason === 'flag-off') {
+        console.log(
+          '[transfer-distill] flag papercusp-transfer-harness is OFF (frontier arming gate, ' +
+            'self-learning-frontier P-001) — skipping',
+        );
+      } else {
+        console.log(
+          `[transfer-distill] learning-governor refused (${outcome.governorReason}) — skipping ` +
+            '(D-004: an unattended frontier loop runs only registered + budgeted)',
+        );
+      }
+      return;
+    }
+    const r = outcome.result!;
     console.log(
       `[transfer-distill] ${r.transcriptsScanned} transcript(s) → ${r.lessonsDistilled} lesson(s) distilled, ` +
         `${r.lessonsAdmitted} admitted probationary; tested ${r.tested} ` +

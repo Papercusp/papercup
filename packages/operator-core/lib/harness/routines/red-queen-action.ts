@@ -25,17 +25,18 @@
  * throws; a replay re-runs at most one cycle, and the one-open-drill-per-class
  * index makes that a clean skip.
  */
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { redQueenGovernorGate } from '../../red-queen/governor';
-import {
-  defaultDrillCycleDeps,
-  runRedQueenTick,
-  type DrillCycleDeps,
-} from '../../red-queen/sandbox';
+import type { DrillCycleDeps } from '../../red-queen/sandbox';
+import { runRedQueenDrill } from '../../red-queen/run';
+
+/**
+ * The flag → governor → drill-cycle orchestration this action runs is SHARED with
+ * the `red-queen:drill` deterministic blueprint step via `runRedQueenDrill`
+ * (deterministic-blueprints-migration-2026-06-13 P-122 / D-004 — provably
+ * behavior-neutral: one gated cycle, two callers). This action keeps its own
+ * injectable seams (the test pins them) and passes them into the shared core.
+ */
 
 /** The cycle-deps seam — injectable for tests (mirrors setFleetEkgTickDeps). */
 let _deps: DrillCycleDeps | null = null;
@@ -52,25 +53,26 @@ export function setRedQueenGovernorGate(gate: RedQueenGovernorGate | null): void
 }
 
 registerSystemAction('red-queen-drill', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.RED_QUEEN, `routine:${ctx.installSlug}`))) {
-    console.log(
-      '[red-queen-drill] flag papercusp-red-queen is OFF (frontier arming gate, ' +
-        'self-learning-frontier P-001) — skipping',
-    );
-    return;
-  }
-  const verdict = await (_governorGate ?? redQueenGovernorGate)(ctx.workspaceId);
-  if (!verdict.allow) {
-    console.log(
-      `[red-queen-drill] learning-governor refused (${verdict.reason}) — skipping ` +
-        '(D-004: an unattended frontier loop runs only registered + budgeted)',
-    );
-    return;
-  }
-  const classId = typeof ctx.payloadTemplate?.classId === 'string' ? ctx.payloadTemplate.classId : undefined;
-  const deps = _deps ?? defaultDrillCycleDeps(getOrgPg().sql, ctx.workspaceId);
   try {
-    const result = await runRedQueenTick(deps, { classId });
+    const outcome = await runRedQueenDrill(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payload: ctx.payloadTemplate },
+      { governorGate: _governorGate ?? undefined, cycleDeps: _deps ?? undefined },
+    );
+    if (!outcome.ran) {
+      if (outcome.skipReason === 'flag-off') {
+        console.log(
+          '[red-queen-drill] flag papercusp-red-queen is OFF (frontier arming gate, ' +
+            'self-learning-frontier P-001) — skipping',
+        );
+      } else {
+        console.log(
+          `[red-queen-drill] learning-governor refused (${outcome.governorReason}) — skipping ` +
+            '(D-004: an unattended frontier loop runs only registered + budgeted)',
+        );
+      }
+      return;
+    }
+    const result = outcome.result!;
     console.log(
       `[red-queen-drill] status ${result.status}: class ${result.drillClass ?? '(none)'} → ` +
         `${result.cycle?.status ?? 'n/a'}${result.cycle?.mttsh ? ` (MTTSH ${result.cycle.mttsh.totalMs}ms)` : ''}` +

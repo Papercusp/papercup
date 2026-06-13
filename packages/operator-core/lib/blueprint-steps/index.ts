@@ -18,5 +18,6 @@
 // Register each deterministic step-op — side-effect imports.
 import './ops/negative-space-scan.js';
 import './ops/regret-mine.js';
+import './ops/red-queen-drill.js';
 import './ops/neologism-mine.js';
 import './ops/fleet-ekg-scan.js';

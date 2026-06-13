@@ -214,7 +214,6 @@ export async function recordAutonomyAudit(
       VALUES (${id}, ${Date.now()}, ${actor}, ${action}, ${subject},
               ${JSON.stringify(extra ?? {})}::text::jsonb, ${workspaceId})`;
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.warn('[autonomy] audit write failed:', (err as Error)?.message);
   }
 }

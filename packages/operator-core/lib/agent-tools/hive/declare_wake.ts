@@ -27,7 +27,11 @@ import {
   setHiveEventSubscriptions,
   type HiveEventSubscription,
 } from '../../hive/wake';
-import { evaluateWakeFrontierGuard, listUnplacedHiveFrontier } from '../../hive/wake-frontier-guard';
+import {
+  evaluateWakeFrontierGuard,
+  listUnplacedHiveFrontier,
+  listNonTerminalPlacements,
+} from '../../hive/wake-frontier-guard';
 
 const subscriptionSchema = z.object({
   on: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).describe(
@@ -93,13 +97,17 @@ export default defineTool({
 
     const wantsTime = args.at != null || args.inSeconds != null;
 
-    // EI-309 frontier guard: refuse a no-time-component wake (event-only / none)
-    // while the home harness still has unplaced todo work — that wake would never
-    // place it (in a Hive the Queen IS the dispatcher). Runs BEFORE any mutation
-    // so a refused declaration doesn't partially apply. Flag-gated; force overrides.
+    // EI-309 frontier guard + P-030 drive-to-empty: refuse a no-time-component wake
+    // (event-only / none) while the Queen still has work a no-time wake would
+    // strand — unplaced todo work in the home harness, OR non-terminal placements
+    // she must drive to completion. Runs BEFORE any mutation so a refused
+    // declaration doesn't partially apply. Flag-gated; force overrides.
     if (!wantsTime && !args.force && (await getFlag(FLAGS.HIVE_WAKE_FRONTIER_GUARD, 'system'))) {
-      const frontierIds = await listUnplacedHiveFrontier(sql, workspaceId, installSlug);
-      const refusal = evaluateWakeFrontierGuard({ hasTimeWake: false, frontierIds });
+      const [frontierIds, openPlacementIds] = await Promise.all([
+        listUnplacedHiveFrontier(sql, workspaceId, installSlug),
+        listNonTerminalPlacements(sql, workspaceId, installSlug),
+      ]);
+      const refusal = evaluateWakeFrontierGuard({ hasTimeWake: false, frontierIds, openPlacementIds });
       if (refusal) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...refusal }) }],
