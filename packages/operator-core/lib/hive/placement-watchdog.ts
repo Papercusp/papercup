@@ -278,19 +278,38 @@ async function upsertPlacement(
       updated_at        = EXCLUDED.updated_at`;
 }
 
+/**
+ * The sweep's external effects, as an injectable seam (defaults to the real
+ * impls — the routine caller passes none). Lets the orchestration (flag gate,
+ * started-hive iteration, per-hive isolation, aggregation) be unit-tested
+ * without PG; reconcileOneHive's own SQL stays integration-tested separately.
+ */
+export interface ReconcileSweepDeps {
+  getFlag: typeof getFlag;
+  listStartedHives: typeof listStartedHives;
+  getOrgPg: typeof getOrgPg;
+  reconcileOneHive: typeof reconcileOneHive;
+}
+
 /** Reconcile EVERY started hive's placements. Fail-soft; never throws. */
-export async function reconcileHivePlacements(opts: { now?: number } = {}): Promise<PlacementSweepResult[]> {
+export async function reconcileHivePlacements(
+  opts: { now?: number; deps?: Partial<ReconcileSweepDeps> } = {},
+): Promise<PlacementSweepResult[]> {
   const results: PlacementSweepResult[] = [];
+  const getFlagFn = opts.deps?.getFlag ?? getFlag;
+  const listStartedHivesFn = opts.deps?.listStartedHives ?? listStartedHives;
+  const getOrgPgFn = opts.deps?.getOrgPg ?? getOrgPg;
+  const reconcileOneHiveFn = opts.deps?.reconcileOneHive ?? reconcileOneHive;
   try {
-    if (!(await getFlag(FLAGS.HIVE_PLACEMENT_WATCHDOG, 'system'))) return results;
-    const started = await listStartedHives();
+    if (!(await getFlagFn(FLAGS.HIVE_PLACEMENT_WATCHDOG, 'system'))) return results;
+    const started = await listStartedHivesFn();
     if (started.length === 0) return results;
-    const { sql } = getOrgPg();
+    const { sql } = getOrgPgFn();
     const now = opts.now ?? Date.now();
     const cfg = placementConfig();
     for (const { workspaceId, installSlug } of started) {
       try {
-        results.push(...(await reconcileOneHive(sql, workspaceId, installSlug, cfg, now)));
+        results.push(...(await reconcileOneHiveFn(sql, workspaceId, installSlug, cfg, now)));
       } catch (e) {
         console.warn(
           `[hive-placement-watchdog] hive ${installSlug} failed: ${e instanceof Error ? e.message : e}`,

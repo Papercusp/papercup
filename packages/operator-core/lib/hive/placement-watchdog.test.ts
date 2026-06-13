@@ -4,15 +4,17 @@
  * dead/stalled bee), P-021 (cursed-item breaker mirrors replanStrikes), and
  * P-023 (reconcile "steer, don't dispatch" WITH the completion mandate).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   deriveBeeLiveness,
   evaluatePlacement,
   isUnitTerminal,
   isStuckBlockerState,
   placementConfig,
+  reconcileHivePlacements,
   type PlacementObservation,
   type PlacementConfig,
+  type ReconcileSweepDeps,
 } from './placement-watchdog';
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 
@@ -158,5 +160,80 @@ describe('P-023 — reconcile "steer, don\'t dispatch" WITH the completion manda
     // Bee alive but unit not terminal ⇒ still working, NOT completed (no premature done).
     expect(evaluatePlacement(obs({ hasLiveHolder: true, unitTerminal: false }), CFG).kind).toBe('healthy');
     expect(evaluatePlacement(obs({ hasLiveHolder: true, unitTerminal: true }), CFG).kind).toBe('completed');
+  });
+});
+
+describe('reconcileHivePlacements — the all-started-hives sweep (orchestration)', () => {
+  // reconcileOneHive's real SQL is integration-tested (placement-watchdog.integration.test.ts);
+  // here we pin the SWEEP's orchestration — the flag gate, the started-hive iteration,
+  // per-hive isolation, and aggregation — via the deps seam (no PG).
+  const flagOn = () => vi.fn(async () => true);
+  const startedHives = (hives: { workspaceId: string; installSlug: string }[]) => vi.fn(async () => hives);
+  const orgPg = () => vi.fn(() => ({ sql: {} }));
+
+  it('is a no-op when the HIVE_PLACEMENT_WATCHDOG flag is off (never lists or reconciles)', async () => {
+    const listStartedHives = vi.fn();
+    const reconcileOneHive = vi.fn();
+    const out = await reconcileHivePlacements({
+      deps: { getFlag: vi.fn(async () => false), listStartedHives, reconcileOneHive } as unknown as Partial<ReconcileSweepDeps>,
+    });
+    expect(out).toEqual([]);
+    expect(listStartedHives).not.toHaveBeenCalled();
+    expect(reconcileOneHive).not.toHaveBeenCalled();
+  });
+
+  it('flag on but no started hives → empty, no reconcile', async () => {
+    const reconcileOneHive = vi.fn();
+    const out = await reconcileHivePlacements({
+      deps: { getFlag: flagOn(), listStartedHives: startedHives([]), getOrgPg: orgPg(), reconcileOneHive } as unknown as Partial<ReconcileSweepDeps>,
+    });
+    expect(out).toEqual([]);
+    expect(reconcileOneHive).not.toHaveBeenCalled();
+  });
+
+  it('reconciles EVERY started hive (with its own ws+slug + the injected now) and aggregates results', async () => {
+    const reconcileOneHive = vi.fn(async (_sql: unknown, _ws: string, slug: string, _cfg: unknown, _now: number) => [
+      { workItemId: `F-${slug}`, decision: 'recover' },
+    ]);
+    const out = await reconcileHivePlacements({
+      now: 123,
+      deps: {
+        getFlag: flagOn(),
+        listStartedHives: startedHives([
+          { workspaceId: 'wsA', installSlug: 'hiveA' },
+          { workspaceId: 'wsB', installSlug: 'hiveB' },
+        ]),
+        getOrgPg: orgPg(),
+        reconcileOneHive,
+      } as unknown as Partial<ReconcileSweepDeps>,
+    });
+    expect(reconcileOneHive).toHaveBeenCalledTimes(2);
+    expect(reconcileOneHive.mock.calls[0]!.slice(1, 3)).toEqual(['wsA', 'hiveA']);
+    expect(reconcileOneHive.mock.calls[1]!.slice(1, 3)).toEqual(['wsB', 'hiveB']);
+    expect(reconcileOneHive.mock.calls[0]![4]).toBe(123); // injected `now` threaded through
+    expect(out.map((r) => r.workItemId)).toEqual(['F-hiveA', 'F-hiveB']);
+  });
+
+  it('per-hive isolation: one hive throwing does not sink the others (fail-soft)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const reconcileOneHive = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('hiveA boom'))
+      .mockResolvedValueOnce([{ workItemId: 'F-hiveB', decision: 'completed' }]);
+    const out = await reconcileHivePlacements({
+      deps: {
+        getFlag: flagOn(),
+        listStartedHives: startedHives([
+          { workspaceId: 'wsA', installSlug: 'hiveA' },
+          { workspaceId: 'wsB', installSlug: 'hiveB' },
+        ]),
+        getOrgPg: orgPg(),
+        reconcileOneHive,
+      } as unknown as Partial<ReconcileSweepDeps>,
+    });
+    expect(reconcileOneHive).toHaveBeenCalledTimes(2);
+    expect(out).toEqual([{ workItemId: 'F-hiveB', decision: 'completed' }]); // hiveA's failure is swallowed
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

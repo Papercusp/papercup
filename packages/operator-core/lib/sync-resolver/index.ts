@@ -1486,7 +1486,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return [{ instances }];
         });
       } catch (err) {
-        console.warn('[learning.hiveEvalTrend] hive-eval trend read failed:', err instanceof Error ? err.message : err);
+        // Pre-baseline, the hive_eval tables don't exist yet: the live cadence is owner-gated
+        // (P-051) and the store uses raw SQL not the generated schema (D-011/D-015), so the tables
+        // boot-apply only on the next migration run. A missing table (42P01 undefined_table) is the
+        // EXPECTED empty state — degrade to [] SILENTLY (no warn). Warn only on a genuine error, so
+        // the structural resolver test (which runs the generated schema) stays clean.
+        const code = (err as { code?: string })?.code;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (code !== '42P01' && !/does not exist/i.test(msg)) {
+          console.warn('[learning.hiveEvalTrend] hive-eval trend read failed:', msg);
+        }
         return [{ instances: [] }];
       }
     },

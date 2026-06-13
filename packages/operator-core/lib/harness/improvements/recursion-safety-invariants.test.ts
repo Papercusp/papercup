@@ -84,6 +84,15 @@ import {
 import { categoryForAction } from '../../autonomy/capability-category-map';
 import { ACTION_SURFACE } from '../../autonomy/action-surface';
 import { decideAutonomy } from '../../autonomy/decider';
+// B-16 landed the real graduation engine AFTER P-090 shipped — §7.1b pins the
+// "protected can't graduate" invariant against IT (the actual recursion hazard),
+// not just the gate-time effectiveCeiling floor.
+import {
+  computeAutonomyStandings,
+  computeCategoryGraduationTargets,
+  DEFAULT_AUTONOMY_GRADUATION_POLICY,
+} from '../../autonomy/tripwire/graduation';
+import type { TripwireRow } from '../../autonomy/tripwire/store';
 
 import {
   checkLoopVerdict,
@@ -735,6 +744,107 @@ describe('P-090 — per-category autonomy gate: the five recursion-safety invari
       const unlocked = policyFor(cat, { locked: false, ceiling: 'low', graduatedLevel: 'low' });
       expect(effectiveCeiling(locked)).toBe('never-auto');
       expect(effectiveCeiling(unlocked)).toBe('low');
+    });
+  });
+
+  // ── 7.1b the REAL graduation engine refuses to graduate the protected set ──
+  // §7.1 above pins the GATE-TIME floor (effectiveCeiling: locked ⇒ never-auto).
+  // B-16's graduation engine (`tripwire/graduation.ts`) landed AFTER P-090 — it is
+  // the actual recursion hazard: the learning loop's own engine raising autonomy on
+  // its OWN governance (system-control = the loop's master switch). graduation.test
+  // unit-pins ONE locked category; this pins the cross-cutting arc the unit suite
+  // doesn't compose: ALL FOUR protected categories, at their SHIPPED defaults, under
+  // maximal clean-streak evidence; the defense-in-depth belt (refuses even UNLOCKED);
+  // and end-to-end into the LIVE decider.
+  describe('7.1b — the REAL graduation engine (B-16) never graduates the protected set', () => {
+    const tw = (
+      over: Partial<TripwireRow> & { status: TripwireRow['status']; armedAtMs: number },
+    ): TripwireRow => ({
+      id: `tw-${over.armedAtMs}`,
+      workspaceId: 'default',
+      category: 'implementation',
+      findingClass: 'work_items:create',
+      action: 'work_items:create',
+      riskTier: 'low',
+      reversibility: 'reversible',
+      revertHandle: { kind: 'config-edit' },
+      decision: null,
+      tripReason: null,
+      windowUntilMs: over.armedAtMs + 86_400_000,
+      resolvedAtMs: over.status === 'armed' ? null : over.armedAtMs + 86_400_000,
+      revertedAtMs: null,
+      resolvedBy: over.status === 'armed' ? null : 'sweep',
+      ...over,
+    });
+    /** A clean-streak FAR past the threshold (10) for one (category, class) — the
+     *  most evidence the engine could ever see for that category. */
+    const maximalCleanEvidence = (category: AutonomyCategory): TripwireRow[] =>
+      Array.from({ length: 40 }, (_, i) =>
+        tw({
+          id: `tw-${category}-${i}`,
+          category,
+          findingClass: `${category}:verb`,
+          action: `${category}:verb`,
+          status: 'cleared',
+          armedAtMs: 1000 + i * 1000,
+        }),
+      );
+    const targetFor = (category: AutonomyCategory, policy: AutonomyCategoryPolicy) => {
+      const standings = computeAutonomyStandings(
+        maximalCleanEvidence(category),
+        DEFAULT_AUTONOMY_GRADUATION_POLICY,
+        1e15,
+      );
+      const targets = computeCategoryGraduationTargets(
+        standings,
+        new Map<AutonomyCategory, AutonomyCategoryPolicy>([[category, policy]]),
+        DEFAULT_AUTONOMY_GRADUATION_POLICY,
+      );
+      return targets.find((t) => t.category === category) ?? null;
+    };
+
+    it('refuses to raise graduated_level on ANY protected category — shipped-locked defaults, 40 clean auto-passes', () => {
+      for (const cat of PROTECTED_CATEGORIES) {
+        const t = targetFor(cat, defaultPolicyFor(cat)); // the shipped default = locked
+        expect(t?.shouldWrite ?? false, `${cat} would graduate`).toBe(false);
+        if (t) {
+          expect(t.targetGraduatedLevel, `${cat} earned a level`).toBe('never-auto');
+          expect(t.reason).toMatch(/locked|protected/);
+        }
+      }
+    });
+
+    it('DEFENSE-IN-DEPTH: refuses even if a protected category is UNLOCKED with a high ceiling — the isProtectedCategory belt, so graduation is NEVER the widening path', () => {
+      for (const cat of PROTECTED_CATEGORIES) {
+        const unlocked = policyFor(cat, { locked: false, ceiling: 'high', graduatedLevel: 'never-auto' });
+        const t = targetFor(cat, unlocked);
+        expect(t?.shouldWrite ?? false, `${cat} graduated while unlocked`).toBe(false);
+        if (t) expect(t.reason).toMatch(/protected/);
+      }
+      // …and the refusal is NOT vacuous: the SAME evidence on a non-protected
+      // category WITH an owner-raised ceiling DOES graduate (the engine works).
+      const grad = targetFor('implementation', policyFor('implementation', { locked: false, ceiling: 'high' }));
+      expect(grad?.shouldWrite).toBe(true);
+      expect(grad?.targetGraduatedLevel).not.toBe('never-auto');
+    });
+
+    it('THE RECURSION ARC end-to-end: the engine leaves system-control never-auto, so the LIVE decider still gates the loop’s master switch (autoloop:control)', () => {
+      const cat: AutonomyCategory = 'system-control';
+      const t = targetFor(cat, defaultPolicyFor(cat));
+      expect(t?.shouldWrite ?? false).toBe(false); // engine refuses to raise the level…
+      // …so the policy stays never-auto, and the live decider gates arming/disarming
+      // the loop — the recursion crux (P-090; action-surface `system.arm-loop`).
+      const d = decideAutonomy({
+        action: 'autoloop:control',
+        effectiveCeiling: effectiveCeiling(defaultPolicyFor(cat)),
+        riskTier: 'trivial',
+        authority: 'system',
+        reversibility: 'reversible',
+        armed: true,
+      });
+      expect(d.category).toBe('system-control');
+      expect(d.posture).toBe('gated');
+      expect(d.wouldAutoIfArmed).toBe(false);
     });
   });
 

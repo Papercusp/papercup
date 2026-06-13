@@ -285,27 +285,40 @@ describe('sync-resolver v2 registry', () => {
       const names = known();
       expect(names.length).toBeGreaterThan(40); // sanity: we have ~54 today
 
+      // Resolvers legitimately console.warn/error when their PG read fails in
+      // this no-PG structural dispatch (e.g. learning.hiveEvalTrend's catch).
+      // This test only cares about TypeErrors, so silence console during the
+      // loop — otherwise vitest-fail-on-console reddens the whole operator-core
+      // suite (a recurring green-gate trip) on an EXPECTED read-failure warn.
+      // Class-level fix: protects every current + future resolver's catch-warn.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const typeErrors: Array<{ name: string; msg: string }> = [];
       const otherOk: string[] = [];
-      for (const name of names) {
-        try {
-          // Pass null — zod argsSchema will throw "Expected object,
-          // received null" for entries with required schemas. Entries
-          // that accept null/undefined go on to call PG, which we
-          // immediately abort/ignore.
-          await Promise.race([
-            r(name, null).catch(() => undefined),
-            new Promise((res) => setTimeout(res, 50)),
-          ]);
-          otherOk.push(name);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          if (/is not a function|Cannot read properties|undefined is not/i.test(msg)) {
-            typeErrors.push({ name, msg: msg.slice(0, 120) });
+      try {
+        for (const name of names) {
+          try {
+            // Pass null — zod argsSchema will throw "Expected object,
+            // received null" for entries with required schemas. Entries
+            // that accept null/undefined go on to call PG, which we
+            // immediately abort/ignore.
+            await Promise.race([
+              r(name, null).catch(() => undefined),
+              new Promise((res) => setTimeout(res, 50)),
+            ]);
+            otherOk.push(name);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (/is not a function|Cannot read properties|undefined is not/i.test(msg)) {
+              typeErrors.push({ name, msg: msg.slice(0, 120) });
+            }
+            // Other errors (zod, PG connection failure, etc.) are fine —
+            // they prove the dispatcher walked through to the resolve.
           }
-          // Other errors (zod, PG connection failure, etc.) are fine —
-          // they prove the dispatcher walked through to the resolve.
         }
+      } finally {
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
       }
       expect(typeErrors).toEqual([]);
     }, 10_000);
