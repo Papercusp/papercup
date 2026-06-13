@@ -15,7 +15,7 @@
  * ledger + graduation engine (B-16) and are stubbed as labelled placeholders
  * until those land — no data source exists for them yet.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
@@ -87,7 +87,7 @@ function effectiveSummary(row: PolicyRow): string {
   return `Auto-runs ${CEILING_SHORT_LABEL[row.effectiveCeiling]}-risk and below — the lower of your ceiling (${CEILING_SHORT_LABEL[row.ceiling]}) and the earned level (${CEILING_SHORT_LABEL[row.graduatedLevel]}).`;
 }
 
-function levelChipStyle(level: Ceiling): React.CSSProperties {
+function levelChipStyle(level: Ceiling): CSSProperties {
   const off = level === 'never-auto';
   return {
     display: 'inline-block',

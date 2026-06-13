@@ -166,7 +166,7 @@ export interface AttentionItem {
   needsHuman: boolean;
   /** The agent that owns this item (the coord record's `from` for
    *  messages/escalations), or null when there is no single agent owner
-   *  (plan items, smoke-fails, plan-reviews). Drives the "Message owner"
+   *  (plan items, smoke-fails). Drives the "Message owner"
    *  action's recipient (D-005). */
   ownerAgentId: string | null;
   /** Human-friendly label for {@link ownerAgentId}, when known. */

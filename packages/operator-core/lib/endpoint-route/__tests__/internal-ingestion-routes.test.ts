@@ -58,7 +58,6 @@ import featureDebugNoteEvent from '../routes/internal/feature-debug-note-event';
 import hookLogEvent from '../routes/internal/hook-log-event';
 import identitySnapshot from '../routes/internal/identity-snapshot';
 import logEvent from '../routes/internal/log-event';
-import planReviewEvent from '../routes/internal/plan-review-event';
 import prEvent from '../routes/internal/pr-event';
 import runChunk from '../routes/internal/run-chunk';
 import skillSnapshot from '../routes/internal/skill-snapshot';
@@ -76,7 +75,6 @@ const ROUTES: Array<{ name: string; path: string; def: AnyRoute }> = [
   { name: 'hook-log-event', path: '/internal/hook-log-event', def: hookLogEvent as AnyRoute },
   { name: 'identity-snapshot', path: '/internal/identity-snapshot', def: identitySnapshot as AnyRoute },
   { name: 'log-event', path: '/internal/log-event', def: logEvent as AnyRoute },
-  { name: 'plan-review-event', path: '/internal/plan-review-event', def: planReviewEvent as AnyRoute },
   { name: 'pr-event', path: '/internal/pr-event', def: prEvent as AnyRoute },
   { name: 'run-chunk', path: '/internal/run-chunk', def: runChunk as AnyRoute },
   { name: 'skill-snapshot', path: '/internal/skill-snapshot', def: skillSnapshot as AnyRoute },

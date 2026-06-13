@@ -38,18 +38,26 @@
  */
 
 import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, type HarnessRegistry } from '../../harness-registry';
-import { seedGitSyncRoutineForMember } from './git-sync-routine';
+import { seedGitSyncRoutineForMember, getGitSyncRoutine } from './git-sync-routine';
+import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
+import type { ProjectEntry } from '../../harness-registry';
 
 export interface ReconcileGitSyncOpts {
   /** Owning workspace_id (routines.workspace_id is NOT NULL, no default). */
   workspaceId: string;
   /** Registry snapshot loader (default loadHarnessRegistry) — test seam. */
   loadRegistry?: (workspaceId?: string) => Promise<HarnessRegistry>;
-  /** PG handle forwarded to the seeding spine (default: the spine's getOrgPg). */
+  /** PG handle forwarded to the seeding spine + the P-014 detection read
+   *  (default: the spine's getOrgPg). */
   sql?: Sql;
   /** The per-member seeding spine (default seedGitSyncRoutineForMember) — test seam. */
   seedMember?: typeof seedGitSyncRoutineForMember;
+  /** P-014 detection seams: eligibility verdict (default gitSyncEligibility) +
+   *  routine-row reader (default getGitSyncRoutine). */
+  eligibility?: (p: ProjectEntry) => GitSyncEligibility;
+  getRoutine?: typeof getGitSyncRoutine;
 }
 
 export interface ReconcileGitSyncResult {
@@ -59,6 +67,16 @@ export interface ReconcileGitSyncResult {
    *  clobbered), `ineligible:<reason>` (B-01's verdict), `error:<message>`
    *  (the spine's folded failure). Non-members never appear. */
   skipped: Array<{ slug: string; reason: string }>;
+  /** P-014 blind-spot DETECTION: NON-member registered checkouts (no `hive_slug`)
+   *  that ARE git-sync-eligible (a real local repo) yet carry NO routine row —
+   *  i.e. an eligible-but-unseeded registered repo that would silently never
+   *  sync. The reconcile does NOT auto-seed these (a non-member checkout is not
+   *  assumed wanted-synced — that's a human/owner call); it SURFACES them so a
+   *  NEW registered-checkout path that forgets to seed at creation is caught
+   *  instead of vanishing. `papercup` (hand-tuned row) and any other repo with a
+   *  routine are excluded; hive HOMES / `remote_hive` VIEWS / non-repos are
+   *  ineligible and never appear. */
+  unseeded: string[];
   /** Set when the sweep itself failed before walking members (registry load
    *  blew up). Reported, never thrown. */
   error?: string;
@@ -72,7 +90,7 @@ export interface ReconcileGitSyncResult {
 export async function reconcileGitSyncRoutines(
   opts: ReconcileGitSyncOpts,
 ): Promise<ReconcileGitSyncResult> {
-  const result: ReconcileGitSyncResult = { seeded: [], skipped: [] };
+  const result: ReconcileGitSyncResult = { seeded: [], skipped: [], unseeded: [] };
   let projects: HarnessRegistry['projects'];
   try {
     const reg = await (opts.loadRegistry ?? loadHarnessRegistry)(opts.workspaceId);
@@ -109,6 +127,44 @@ export async function reconcileGitSyncRoutines(
       result.skipped.push({ slug: member.slug, reason: `error:${outcome.message}` });
     }
   }
+
+  // ── P-014 blind-spot detection ───────────────────────────────────────────
+  // The member loop above only ever visits `hive_slug` members (the EI-382
+  // class fixed at the join-time seed). A NEW registered-checkout path that
+  // isn't a hive member AND isn't seeded at creation would sit here forever,
+  // silently un-synced, with nothing surfacing it. Detect it: any NON-member
+  // checkout that IS git-sync-eligible (a real local repo) but carries NO
+  // routine row is an eligible-but-unseeded registered repo — record it in
+  // `unseeded` (the boot trigger logs it). We do NOT auto-seed (a non-member is
+  // not assumed wanted-synced); this is an ALARM, not an action. `papercup`'s
+  // hand-tuned row + any seeded repo are excluded (a routine exists); hive
+  // homes / remote_hive views / non-repos are ineligible and never appear.
+  const eligibility = opts.eligibility ?? gitSyncEligibility;
+  const getRoutine = opts.getRoutine ?? getGitSyncRoutine;
+  let detectSql: Sql | null = opts.sql ?? null;
+  if (!detectSql && !opts.getRoutine) {
+    // No injected sql/reader — resolve the live handle, but tolerate its
+    // absence (unit tests that mock db-org to throw simply skip detection;
+    // the member loop carries its own sql via the spine).
+    try {
+      detectSql = getOrgPg().sql;
+    } catch {
+      detectSql = null;
+    }
+  }
+  if (detectSql != null || opts.getRoutine != null) {
+    for (const p of projects) {
+      if (p.hive_slug) continue; // members are handled (+ seeded) above
+      if (!eligibility(p).eligible) continue; // homes / views / non-repos / vanished paths
+      try {
+        const existing = await getRoutine(detectSql as Sql, p.slug);
+        if (!existing) result.unseeded.push(p.slug);
+      } catch {
+        // best-effort — a per-row read blip never fails the sweep
+      }
+    }
+  }
+
   return result;
 }
 
@@ -128,7 +184,7 @@ let _reconciledOnce = false;
  */
 export function ensureGitSyncRoutinesReconciledOnce(
   workspaceIds: string[],
-  seams?: Pick<ReconcileGitSyncOpts, 'loadRegistry' | 'sql' | 'seedMember'>,
+  seams?: Pick<ReconcileGitSyncOpts, 'loadRegistry' | 'sql' | 'seedMember' | 'eligibility' | 'getRoutine'>,
 ): void {
   if (_reconciledOnce) return;
   _reconciledOnce = true;
@@ -138,10 +194,13 @@ export function ensureGitSyncRoutinesReconciledOnce(
       if (r.error) {
         // eslint-disable-next-line no-console
         console.warn(`[git-sync-reconcile] sweep failed for workspace '${workspaceId}': ${r.error}`);
-      } else if (r.seeded.length || r.skipped.some((s) => s.reason.startsWith('error:'))) {
+      } else if (r.seeded.length || r.unseeded.length || r.skipped.some((s) => s.reason.startsWith('error:'))) {
         // eslint-disable-next-line no-console
         console.log(
           `[git-sync-reconcile] boot sweep (${workspaceId}): seeded=[${r.seeded.join(', ')}]` +
+            // P-014: an eligible-but-unseeded registered repo is a blind-spot
+            // ALARM — a registered checkout that would silently never sync.
+            (r.unseeded.length ? ` ⚠ eligible-but-UNSEEDED=[${r.unseeded.join(', ')}]` : '') +
             (r.skipped.length
               ? ` skipped=${r.skipped.map((s) => `${s.slug}:${s.reason}`).join(', ')}`
               : ''),

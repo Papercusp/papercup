@@ -36,7 +36,6 @@ const KIND_LABEL: Record<AttentionKind, string> = {
   'coord-escalation': 'escalation',
   'coord-message': 'message',
   'smoke-fail': 'smoke',
-  'plan-review': 'review',
   'operator-report': 'report',
 };
 

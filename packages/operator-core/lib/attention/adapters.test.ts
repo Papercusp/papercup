@@ -16,7 +16,6 @@ import {
   coordEscalationToAttention,
   coordMessageToAttention,
   smokeFailToAttention,
-  planReviewToAttention,
 } from './adapters';
 import { isAutonomyCategory } from '../autonomy/categories';
 
@@ -198,15 +197,6 @@ describe('smokeFailToAttention — alert tier', () => {
   });
 });
 
-describe('planReviewToAttention — decision tier (gate)', () => {
-  it('is a decision (a gate awaiting approval)', () => {
-    const a = planReviewToAttention({ harnessSlug: 'papercup', content: '# Plan' });
-    expect(a.tier).toBe('decision');
-    expect(a.needsHuman).toBe(true);
-    expect(a.actions.map((x) => x.id)).toEqual(['open', 'chat', 'message-owner']);
-  });
-});
-
 describe('unified shape invariants', () => {
   it('every adapter: unique-prefixed id, ref kind matches, needsHuman===decision, untriaged default, message-owner present', () => {
     const items: AttentionItem[] = [
@@ -214,7 +204,6 @@ describe('unified shape invariants', () => {
       coordEscalationToAttention({ msgId: 'm', severity: 'question', summary: 's' }),
       coordMessageToAttention({ msgId: 'm', summary: 's' }),
       smokeFailToAttention({ harnessSlug: 'h' }),
-      planReviewToAttention({ harnessSlug: 'h' }),
     ];
     for (const it of items) {
       expect(it.id.startsWith(`${it.kind}:`)).toBe(true);
@@ -246,12 +235,12 @@ describe('needsHuman drops at the source (Brief 21 — the 62→12 intent)', () 
       planItemToAttention({ slug: 's', harnessSlug: 'h', id: 'P-NH', text: 'sign off', storedStatus: 'needs-human', effectiveStatus: 'needs-human', importance: 'urgent' }),
       coordEscalationToAttention({ msgId: 'blk', severity: 'blocker', summary: 'blocked decision' }),
       coordEscalationToAttention({ msgId: 'ask', severity: 'question', summary: 'ask-owner question' }),
-      planReviewToAttention({ harnessSlug: 'h' }),
     ];
     const needsHuman = items.filter((i) => i.needsHuman);
-    // 20 items, only the 4 genuine decisions await the human.
-    expect(items.length).toBe(20);
-    expect(needsHuman.length).toBe(4);
+    // 19 items, only the 3 genuine decisions await the human (the needs-human
+    // plan item + the blocker + the question escalation; plan-review retired P-101).
+    expect(items.length).toBe(19);
+    expect(needsHuman.length).toBe(3);
     expect(needsHuman.every((i) => i.tier === 'decision')).toBe(true);
   });
 });
@@ -262,7 +251,6 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
     'coord-escalation',
     'coord-message',
     'smoke-fail',
-    'plan-review',
     'operator-report',
   ];
 
@@ -281,7 +269,6 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
     expect(planItem.category).toBe('plan-governance');
     expect(coordEscalationToAttention({ msgId: 'm', severity: 'blocker', summary: 's' }).category).toBe('escalations');
     expect(coordMessageToAttention({ msgId: 'm', summary: 's' }).category).toBe('inbox-triage');
-    expect(planReviewToAttention({ harnessSlug: 'h' }).category).toBe('plan-governance');
   });
 
   it('ungoverned signals/reports carry a null category (fail-safe: nothing for the gate to open)', () => {
@@ -296,7 +283,6 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
       coordEscalationToAttention({ msgId: 'm', severity: 'question', summary: 's' }),
       coordMessageToAttention({ msgId: 'm', summary: 's' }),
       smokeFailToAttention({ harnessSlug: 'h' }),
-      planReviewToAttention({ harnessSlug: 'h' }),
     ];
     for (const it of items) expect(it.category).toBe(attentionCategory(it.kind));
   });

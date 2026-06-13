@@ -171,6 +171,12 @@ export function ensureJoinStatesReconciledOnce(
   seams?: Omit<ReconcileJoinStatesOpts, 'workspaceId'>,
 ): void {
   if (_reconciledOnce) return;
+  // The default lister reads the REAL ~/.papercusp/join-state dir and the heal
+  // does a live registry write — neither belongs in an unrelated booting unit
+  // test (it couples the test to the box's on-disk join-state + the registry
+  // mock's exports). Mirror join-shared-harness's EI-339 vitest guard: tests of
+  // THIS sweep inject seams and run; the boot wiring no-ops under vitest.
+  if (process.env.VITEST && !seams) return;
   _reconciledOnce = true;
   void (async () => {
     const r = await reconcileJoinStates({ workspaceId, ...seams });

@@ -4887,36 +4887,6 @@
       }
     },
     {
-      "name": "harness:plan_reviews",
-      "http": {
-        "path": "/api/agent-tools/harness/plan_reviews",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Load all harness plan-review entries (slug, verdict, summary, mtimeMs) across the workspace.",
-      "capabilities": [
-        "harness:read"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "queen",
-        "documenter",
-        "curator"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "Cross-harness plan-review status — \"what plans have been reviewed\", \"any verdicts?\". Single-harness lookups use `harness:pending_reviews`.",
-        "notWhen": "For one harness's pending reviews, use `harness:pending_reviews`. For all-harness LIVE health, use `harness:list` then `harness:status` per slug."
-      }
-    },
-    {
       "name": "harness:status",
       "http": {
         "path": "/api/agent-tools/harness/status",
@@ -5404,6 +5374,39 @@
         "when": "You want one hive in depth: is the Queen scheduled to wake, who are the bees and how loaded, how much work is queued.",
         "notWhen": "A list of all hives — hive:list. The raw per-agent fleet view across the workspace — fleet:assignments.",
         "chaining": "hive:list to find the slug; hive:wake to fire the Queen now; hive:declare-wake to change the cadence; hive:dissolve to tear it down."
+      }
+    },
+    {
+      "name": "hive:leave",
+      "http": {
+        "path": "/api/agent-tools/hive/leave",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Leave a shared hive you JOINED (root-only, pass confirm:true): stop federating (leave the swarm topic), delete the member git-sync routines, drop local presence rows, and deregister the remote_hive view + its member clones. Idempotent + best-effort. Clone dirs are kept by default — deleteClones:true also removes them. NOT for a local hive you own — that is hive:dissolve.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A joiner cleanly leaving a shared hive they joined — stop federating, deregister the joined view + members, kill their git-sync routines. Operator/user only.",
+        "notWhen": "Tearing down a LOCAL hive you OWN (stop its Queen, cancel its bees) — hive:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a bee — not allowed.",
+        "chaining": "hive:list / hive:get to find the joined hive (remote_hive) view slug before; re-join via the hive directory join flow if you change your mind."
       }
     },
     {
@@ -8498,7 +8501,7 @@
           "POST"
         ]
       },
-      "description": "The Planning tab's unified attention feed: plan items + coord escalations + coord messages-to-human + smoke-fails + plan-reviews + operator <report> turns, mapped to a single AttentionItem shape, grouped by plan (+ per-harness Alerts bucket), importance-sorted. Each source best-effort.",
+      "description": "The Planning tab's unified attention feed: plan items + coord escalations + coord messages-to-human + smoke-fails + operator <report> turns, mapped to a single AttentionItem shape, grouped by plan (+ per-harness Alerts bucket), importance-sorted. Each source best-effort.",
       "capabilities": [
         "plans:read"
       ],

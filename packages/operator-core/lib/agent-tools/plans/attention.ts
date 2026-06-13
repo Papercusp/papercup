@@ -45,7 +45,7 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .optional()
-    .describe('Restrict the harness-scoped sources (smoke-fails, plan-reviews) to one harness. Omit for workspace-wide.'),
+    .describe('Restrict the harness-scoped sources (smoke-fails) to one harness. Omit for workspace-wide.'),
   includeArchived: z.boolean().optional().describe('Include items from archived plans. Default false.'),
   harness: harnessArg,
 });

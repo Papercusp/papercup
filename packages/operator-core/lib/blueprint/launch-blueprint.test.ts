@@ -10,6 +10,7 @@ import {
   fireLaunchBlueprintForEvent,
   setLaunchBlueprintFire,
   setLaunchBlueprintResolver,
+  buildLaunchSpawnRequest,
   type LaunchFireFn,
 } from './launch-blueprint';
 
@@ -49,6 +50,28 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       expect(target.url).toContain('/api/harness/papercup/invoke');
       expect(target.url).toContain('ws=ws_test');
     }
+  });
+
+  it('buildLaunchSpawnRequest opts the implement worker INTO a fleet:tree row (EI-403 round-2)', async () => {
+    // The durable path otherwise records no spawned_agents row — round 1's implement
+    // workers ran invisibly. The seam must request the row so durableSpawnFireImpl
+    // writes it; the itemId rides bodyExtra.improvementDispatch so fleet:tree shows
+    // which EI the worker is on.
+    const req = await buildLaunchSpawnRequest(
+      'implement',
+      { ...opts, bodyExtra: { improvementDispatch: { dispatchId: 'd1', itemId: 'EI-9', attempt: 2 } } },
+      'implement:EI-9:2',
+    );
+    expect(req.idempotencyKey).toBe('implement:EI-9:2');
+    expect(req.url).toContain('role=worker');
+    expect(req.spawnRecord).toBeDefined();
+    expect(req.spawnRecord).toMatchObject({
+      workspaceId: 'ws_test',
+      harnessSlug: 'papercup',
+      childRole: 'worker',
+      parentRole: 'operator', // parentless system launch
+      itemId: 'EI-9',
+    });
   });
 
   it('the event map binds each event-triggered launch blueprint by its trigger key', () => {

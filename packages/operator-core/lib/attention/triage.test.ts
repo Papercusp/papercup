@@ -8,7 +8,21 @@ import {
   type AttentionItem,
   type TriageRecord,
 } from './types';
-import { coordMessageToAttention, planReviewToAttention, smokeFailToAttention } from './adapters';
+import { coordMessageToAttention, planItemToAttention, smokeFailToAttention } from './adapters';
+
+/** A decision-tier item from a still-live adapter (a needs-human plan item) —
+ *  the plan-governance gate that replaced the retired plan-review source (P-101). */
+function decisionItemFor(slug: string): AttentionItem {
+  return planItemToAttention({
+    slug,
+    harnessSlug: 'h',
+    id: 'P-1',
+    text: 'sign off',
+    storedStatus: 'needs-human',
+    effectiveStatus: 'needs-human',
+    importance: 'normal',
+  });
+}
 
 describe('needsHumanForTier', () => {
   it('only the decision tier awaits the human', () => {
@@ -35,7 +49,7 @@ describe('untriaged', () => {
 });
 
 describe('applyTriage (D-006)', () => {
-  const decisionItem = planReviewToAttention({ harnessSlug: 'h' }); // tier=decision, needsHuman
+  const decisionItem = decisionItemFor('s'); // tier=decision, needsHuman
   const rec = (action: TriageRecord['action']): TriageRecord => ({
     action,
     note: 'because reasons',
@@ -76,10 +90,10 @@ describe('applyTriage (D-006)', () => {
 describe('groupByTier', () => {
   it('partitions into four importance-sorted buckets with counts', () => {
     const items: AttentionItem[] = [
-      planReviewToAttention({ harnessSlug: 'h' }), // decision
+      decisionItemFor('s'), // decision
       smokeFailToAttention({ harnessSlug: 'h' }), // alert
       coordMessageToAttention({ msgId: 'a', summary: 'x', auto: true, lifecycle: 'intent' }), // activity
-      applyTriage(planReviewToAttention({ harnessSlug: 'h2' }), {
+      applyTriage(decisionItemFor('s2'), {
         action: 'downgrade',
         note: 'dup',
         triagedBy: 'op',

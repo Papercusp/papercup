@@ -63,3 +63,25 @@ export {
 } from './store';
 
 export { createPgHiveEvalStore } from './store-pg';
+
+export {
+  computeOutcomeMetrics,
+  detectFabrication,
+  liveAcceptancePorts,
+  type OutcomeMetrics,
+  type OutcomeMetricsDeps,
+  type AcceptancePorts,
+  type RunGroundTruth,
+  type WorkItemTruth,
+  type FabricationResult,
+  type TestResult,
+} from './outcome-metrics';
+
+export { computeSpeedMetrics, type SpeedMetrics, type RunTimings } from './speed-metrics';
+
+export {
+  computeEfficiencyMetrics,
+  type EfficiencyMetrics,
+  type RunBehavior,
+  type MetricPairing,
+} from './efficiency-metrics';

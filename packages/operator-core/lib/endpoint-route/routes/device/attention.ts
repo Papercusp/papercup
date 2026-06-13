@@ -11,7 +11,7 @@
  * Two layers, both scoped to the device's workspace:
  *   1. `groups` — the canonical attention groups from the `plans:attention`
  *      reader (plan items + coord escalations + coord messages-to-human +
- *      smoke-fails + plan-reviews), the SAME shape the desktop Planning
+ *      smoke-fails), the SAME shape the desktop Planning
  *      tab renders, so mobile and desktop share the AttentionItem contract.
  *   2. `workItems` — the unified work-item surface (feature/bug/change)
  *      filtered to attention-worthy states. This is what makes the feed

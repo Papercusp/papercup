@@ -53,7 +53,7 @@ import { ChatwootWidget } from './ChatwootWidget';
  * designed to be embedded in iframes.
  *
  * Why this exists: operator routes like `/pi` and `/project-docs` are
- * mounted inside iframes by harness plugin tabs (pi-coding, fumadocs).
+ * mounted inside iframes by harness plugin tabs (pi-coding, starlight).
  * The chrome belongs in the parent harness page, not inside the iframe.
  * Previously the chrome rendered for every route and was hidden via a
  * useEffect-applied body class — that caused a flash of header/dock

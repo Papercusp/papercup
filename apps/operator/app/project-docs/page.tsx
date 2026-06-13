@@ -7,8 +7,8 @@
  * file is selected via `?path=<rel>`; default loads `index.md` (or the
  * shallowest readable file).
  *
- * This is the iframe target for the @papercupai/fumadocs plugin's per-
- * harness Docs tab. It is intentionally separate from the operator's own
+ * This is the iframe target for the @papercupai/starlight plugin's per-
+ * harness Docs tab (successor to the retired @papercupai/fumadocs plugin). It is intentionally separate from the operator's own
  * /docs route (which serves the Papercusp specification — operator-owned
  * content, not harness-owned).
  */

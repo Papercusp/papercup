@@ -112,6 +112,18 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // improvements queue (new capture volume). The widening act itself (the
   // autoKinds/policy edit) is NEVER automated regardless of this flag.
   FLAGS.GRADUATION_TRACKER,
+  // agent-capability-confinement-2026-06-13 B-06 (P-012): the per-role capability
+  // envelope ENFORCEMENT at the dispatch chokepoint. DELIBERATE dark ship (NOT the
+  // alpha flags-default-on policy) — enabling would DENY autonomous-fleet MCP calls
+  // outside the still-initial per-role allowlist before the B-18 fleet cutover wires
+  // the fleet onto the gated capability defineTools. Runs OBSERVE-ONLY (annotates
+  // the ledger, never blocks) while dark; the pending flip is the B-18 act.
+  FLAGS.CAPABILITY_ENVELOPE,
+  // queen-autonomy-policy-2026-06-13 B-12 (P-092): the autonomy decider ARMING GATE.
+  // OFF ⇒ the decider gates EVERY item (autonomy dark, behavior-neutral, D-007); the
+  // owner's P-092 act flips it ON, and even then every category ships never-auto
+  // (D-005) so arming alone auto-decides nothing. The pending flip is owner-only.
+  FLAGS.QUEEN_AUTONOMY_ARMED,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

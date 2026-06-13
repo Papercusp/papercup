@@ -4,8 +4,12 @@
  * Asserts the split: registered joins are left to boot-all (cosmetic record);
  * only an unregistered clone-on-disk is re-registered; no-clone is abandoned.
  */
-import { describe, it, expect } from 'vitest';
-import { reconcileJoinStates } from './join-state-reconcile';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  reconcileJoinStates,
+  ensureJoinStatesReconciledOnce,
+  __resetJoinStateReconcileForTests,
+} from './join-state-reconcile';
 import type { HarnessRegistry } from '../harness-registry';
 import type { JoinState } from './join-shared-harness';
 
@@ -96,5 +100,39 @@ describe('reconcileJoinStates (P-013)', () => {
     });
     expect(r.error).toMatch(/readdir boom/);
     expect(r.reregistered).toEqual([]);
+  });
+});
+
+describe('ensureJoinStatesReconciledOnce (boot trigger)', () => {
+  it('runs once per process when seams are injected (repeat calls no-op)', async () => {
+    __resetJoinStateReconcileForTests();
+    const lists: number[] = [];
+    const seams = {
+      listJoinStates: async () => {
+        lists.push(1);
+        return [];
+      },
+      loadRegistry: async () => ({ projects: [] }),
+    };
+    ensureJoinStatesReconciledOnce('ws', seams);
+    ensureJoinStatesReconciledOnce('ws', seams);
+    await vi.waitFor(() => expect(lists).toHaveLength(1)); // ran exactly once
+  });
+
+  it('no-ops under vitest WITHOUT seams (the boot-wiring guard — never touches real FS)', async () => {
+    __resetJoinStateReconcileForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      // No seams → the default lister would read ~/.papercusp/join-state; the
+      // guard must skip entirely (no log, no warn, no real-FS read).
+      ensureJoinStatesReconciledOnce('ws');
+      await new Promise((r) => setTimeout(r, 5));
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
   });
 });

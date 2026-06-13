@@ -60,6 +60,30 @@ export {
 } from './lock-set-reconstructor';
 
 export {
+  LOCK_EVENT_TABLE,
+  reconstructLockSet,
+  lockEventHbKey,
+  lockEventToPeerLogOp,
+  peerLogOpToLockEvent,
+  recordLockEvent,
+  setLockEventSink,
+  getLockEventSink,
+  setLockEventReader,
+  getLockEventReader,
+  PeerLogLockEventSink,
+  PeerLogLockEventReader,
+  type LockEvent,
+  type LockEventSink,
+  type LockEventReader,
+  type OwnLogAppender,
+  type OwnLogResolver,
+  type ReadableLog,
+  type AdmittedLogsResolver,
+} from './lock-event-stream';
+
+export { wireLockEventStream } from './lock-event-wiring';
+
+export {
   registerFileLockAuthorityOps,
   buildFileLockAuthorityHandlers,
   FILE_LOCK_OP_KINDS,

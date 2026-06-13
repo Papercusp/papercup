@@ -12,10 +12,6 @@ vi.mock('./harness-markdown-index', () => ({
   loadHarnessMarkdownIndex: () => ({}),
   renderHarnessMarkdownIndexForPrompt: () => '',
 }));
-vi.mock('./harness-plan-reviews', () => ({
-  loadHarnessPlanReviews: async () => [],
-  renderHarnessPlanReviewsForPrompt: () => '',
-}));
 
 import { buildOperatorPrompt } from './operator-prompt';
 

@@ -18,7 +18,7 @@
  *      mid-turn), pointing at the conversation so they reply in-thread.
  *
  * `to` (the owning agent) is optional: an item with no single agent owner
- * (plan-item / smoke-fail / plan-review) opens a harness-scoped conversation
+ * (plan-item / smoke-fail) opens a harness-scoped conversation
  * with no direct ping — its harness's agents still see it via scope/topic
  * (D-005 graceful degradation).
  */

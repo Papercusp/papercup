@@ -91,7 +91,7 @@ describe('reconcileGitSyncRoutines — scope + walk', () => {
       loadRegistry: regOf(papercup, creatorHome, member('shop', 'shop-hive'), member('warehouse', 'shop-hive')),
       seedMember: seed,
     });
-    expect(out).toEqual({ seeded: ['shop', 'warehouse'], skipped: [] });
+    expect(out).toEqual({ seeded: ['shop', 'warehouse'], skipped: [], unseeded: [] });
     expect(calls.map((c) => c.installSlug)).toEqual(['shop', 'warehouse']);
     // every call carried the workspace + the member's own registry entry
     expect(calls[0]).toMatchObject({ workspaceId: 'ws-1', entry: { slug: 'shop', hive_slug: 'shop-hive' } });
@@ -185,8 +185,73 @@ describe('reconcileGitSyncRoutines — scope + walk', () => {
       },
       seedMember: seed,
     });
-    expect(out).toEqual({ seeded: [], skipped: [], error: 'pg exploded' });
+    expect(out).toEqual({ seeded: [], skipped: [], unseeded: [], error: 'pg exploded' });
     expect(calls).toEqual([]);
+  });
+});
+
+describe('reconcileGitSyncRoutines — P-014 blind-spot detection', () => {
+  const orphan: ProjectEntry = { slug: 'orphan-repo', path: '/repos/orphan' };
+  const eligibleSet =
+    (slugs: string[]) =>
+    (p: ProjectEntry) =>
+      slugs.includes(p.slug)
+        ? ({ eligible: true } as const)
+        : ({ eligible: false, reason: 'not_a_git_repo' } as const);
+  const routineFor = (withRoutine: string[]) =>
+    (async (_sql: unknown, slug: string) =>
+      withRoutine.includes(slug) ? ({ id: 'rt', installSlug: slug } as never) : null) as ReconcileGitSyncOpts['getRoutine'];
+
+  it('flags an eligible NON-member checkout that has no routine row (the blind spot)', async () => {
+    const { seed } = fakeSeed();
+    const out = await reconcileGitSyncRoutines({
+      workspaceId: 'ws',
+      loadRegistry: regOf(papercup, member('shop', 'shop-hive'), orphan),
+      seedMember: seed,
+      sql: sqlFake,
+      eligibility: eligibleSet(['papercup', 'orphan-repo']),
+      getRoutine: routineFor(['papercup']), // papercup carries its hand-tuned row
+    });
+    // shop is a member (member loop); papercup has a routine (excluded);
+    // orphan-repo is eligible + non-member + no routine ⇒ surfaced.
+    expect(out.unseeded).toEqual(['orphan-repo']);
+    expect(out.seeded).toEqual(['shop']);
+  });
+
+  it('a repo WITH a routine (papercup) is never flagged', async () => {
+    const out = await reconcileGitSyncRoutines({
+      workspaceId: 'ws',
+      loadRegistry: regOf(papercup),
+      sql: sqlFake,
+      eligibility: eligibleSet(['papercup']),
+      getRoutine: routineFor(['papercup']),
+    });
+    expect(out.unseeded).toEqual([]);
+  });
+
+  it('ineligible homes / remote_hive views never appear (members handled by the loop)', async () => {
+    const { seed } = fakeSeed();
+    const out = await reconcileGitSyncRoutines({
+      workspaceId: 'ws',
+      loadRegistry: regOf(creatorHome, joinerHome, member('shop', 'shop-hive')),
+      seedMember: seed,
+      sql: sqlFake,
+      eligibility: eligibleSet([]), // homes/views ineligible; the member is skipped anyway
+      getRoutine: routineFor([]),
+    });
+    expect(out.unseeded).toEqual([]);
+  });
+
+  it('detection no-ops when no sql/reader is resolvable (unit walks stay clean)', async () => {
+    // db-org getOrgPg is mocked to throw; with neither sql nor getRoutine
+    // injected, detection skips — no false alarm, no fs/PG touch.
+    const { seed } = fakeSeed();
+    const out = await reconcileGitSyncRoutines({
+      workspaceId: 'ws',
+      loadRegistry: regOf(orphan),
+      seedMember: seed,
+    });
+    expect(out.unseeded).toEqual([]);
   });
 });
 
@@ -210,7 +275,7 @@ describe('reconcileGitSyncRoutines — composes the REAL spine', () => {
       sql: sqlFake,
       // no seedMember seam — the real seedGitSyncRoutineForMember runs
     });
-    expect(out).toEqual({ seeded: ['shop'], skipped: [] });
+    expect(out).toEqual({ seeded: ['shop'], skipped: [], unseeded: [] });
     expect(upsertRoutineMock).toHaveBeenCalledTimes(1);
     expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({
       workspaceId: 'ws-live',
@@ -298,6 +363,23 @@ describe('ensureGitSyncRoutinesReconciledOnce (P-004 boot trigger)', () => {
       await vi.waitFor(() => expect(calls).toHaveLength(1));
       await vi.waitFor(() =>
         expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('seeded=[shop]')),
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('P-014: logs an eligible-but-unseeded repo as a blind-spot alarm', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      ensureGitSyncRoutinesReconciledOnce(['ws-a'], {
+        loadRegistry: regOf({ slug: 'orphan-repo', path: '/repos/orphan' }),
+        sql: sqlFake,
+        eligibility: () => ({ eligible: true }),
+        getRoutine: (async () => null) as ReconcileGitSyncOpts['getRoutine'],
+      });
+      await vi.waitFor(() =>
+        expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('UNSEEDED=[orphan-repo]')),
       );
     } finally {
       logSpy.mockRestore();

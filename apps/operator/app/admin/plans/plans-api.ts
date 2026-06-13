@@ -135,7 +135,6 @@ export type AttentionKind =
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'plan-review'
   | 'operator-report';
 
 export type AttentionActionId =

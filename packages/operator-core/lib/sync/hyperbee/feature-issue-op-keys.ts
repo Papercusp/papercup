@@ -88,6 +88,21 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
 };
 
 /**
+ * The PG tables whose LOCAL writes are CDC-captured into `substrate_outbox` by a
+ * `capture_substrate_outbox` / `capture_hive_members_outbox` trigger (migrations
+ * 108/125/144/145/149/150/186/189/197) and federated by the drain — i.e. the
+ * "PG-first" federated set. Derived from `TABLE_NAME_TO_TABLE_TAG` so it stays
+ * the single source of truth: adding a CDC-captured table here (paired with its
+ * SQL trigger + projection) is the one edit. Consumed by the capture-coverage
+ * guard (`capture-coverage.ts` / `harness-state` `checkCaptureCoverage`), which
+ * asserts every `sync:'peer-log'` registry table has SOME producer — a CDC
+ * trigger here, a log-first append, or a documented accepted-unfederated entry —
+ * so a NEW federated table can't silently ship with no capture (the EI-382 class
+ * at the data layer; shared-hive-hardening P-011).
+ */
+export const CDC_CAPTURED_TABLES: readonly string[] = Object.keys(TABLE_NAME_TO_TABLE_TAG);
+
+/**
  * Shape of one `substrate_outbox` row, as the drain reads it. `row` is the
  * `to_jsonb` of the full consolidated row (a superset of the projection row),
  * or `null` for a `del`.

@@ -189,8 +189,8 @@ export async function resolveAttentionAction(
     return { resolved: true };
   }
 
-  // smoke-fail / plan-review have only navigate actions (view-log / open) —
-  // nothing terminal to resolve here.
+  // smoke-fail has only navigate actions (view-log / open) — nothing terminal
+  // to resolve here.
   return { resolved: false };
 }
 

@@ -240,8 +240,9 @@ export function runBootstrap(): void {
     })();
   }
   // device-intervention-watcher (60s poll) retired (P-021) — escalation /
-  // smoke-fail / plan-review now push at the source via notifyAttention from
-  // their /api/internal/*-event producers; needs-human≥high from set-status.
+  // smoke-fail now push at the source via notifyAttention from their
+  // /api/internal/*-event producers; needs-human≥high from set-status.
+  // (plan-review push retired with the harness_plan_review source — B-14/P-101.)
 
   // Harness FS watcher — mirrors .papercusp/{summary.md,pending-reviews,proposals}
   // to PG so panels can read via Zero push instead of polling. Idempotent;

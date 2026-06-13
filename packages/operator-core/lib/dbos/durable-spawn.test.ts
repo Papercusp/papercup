@@ -16,6 +16,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   startWorkflow: vi.fn((_wf: unknown, _opts: unknown) => (_input: unknown) => Promise.resolve()),
   loopbackFetch: vi.fn(async () => ({ ok: true, status: 200 })),
+  recordSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
+  finishSpawn: vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => {}),
   state: { dbosOn: true },
 }));
 
@@ -34,8 +36,10 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 });
 vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn }));
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
+vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 
-import { durableSpawnFire, startDurableSpawns } from './durable-spawn';
+import { durableSpawnFire, durableSpawnFireImpl, startDurableSpawns } from './durable-spawn';
 
 const INPUT = {
   url: 'http://x/api/harness/h/invoke?role=worker',
@@ -48,6 +52,10 @@ beforeEach(() => {
   h.state.dbosOn = true;
   h.startWorkflow.mockReset();
   h.startWorkflow.mockImplementation((_wf, _opts) => (_input) => Promise.resolve());
+  h.recordSpawn.mockClear();
+  h.finishSpawn.mockClear();
+  h.loopbackFetch.mockReset();
+  h.loopbackFetch.mockImplementation(async () => ({ ok: true, status: 200 }));
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => { vi.restoreAllMocks(); });
@@ -113,5 +121,67 @@ describe('startDurableSpawns (EI-403-A — the workflow-layer drain seam)', () =
     const res = await startDurableSpawns([INPUT, REQ2]);
     expect(res).toEqual({ enqueued: 1, total: 2 });
     expect(h.startWorkflow).toHaveBeenCalledTimes(2);
+  });
+});
+
+// EI-403 round-2: the durable path used to write NO spawned_agents row, so the
+// implement worker ran invisibly to fleet:tree (round 1's fire-and-forget fallback
+// DID record it, via WI-108). The workflow body now records/finishes the row when a
+// caller opts in via `spawnRecord` — these guard that behaviour AND its opt-in shape
+// (hive launches, which record their own rows, must NOT double-count → omit it).
+describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () => {
+  const IMPL = {
+    url: 'http://x/api/harness/h/invoke?role=worker',
+    body: { kickoff: 'go' },
+    idempotencyKey: 'implement:EI-9:2',
+    label: 'h/worker',
+  };
+
+  it('records a spawned_agents row (stable id) then finishes it `done` when spawnRecord is set', async () => {
+    await durableSpawnFireImpl({
+      ...IMPL,
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9' },
+    });
+    expect(h.recordSpawn).toHaveBeenCalledTimes(1);
+    const rec = h.recordSpawn.mock.calls[0][1];
+    // Stable spawn_id = the durable workflow id → idempotent across retry/recovery.
+    expect(rec.spawnId).toBe('durable-spawn:implement:EI-9:2');
+    expect(rec.runId).toBe('implement:EI-9:2');
+    expect(rec.childRole).toBe('worker');
+    expect(rec.parentRole).toBe('operator'); // parentless system launch
+    expect(rec.itemId).toBe('EI-9');
+    expect(rec.status).toBe('running');
+    // The fire still happened.
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
+    // Closed out `done`.
+    expect(h.finishSpawn).toHaveBeenCalledTimes(1);
+    const fin = h.finishSpawn.mock.calls[0][1];
+    expect(fin.spawnId).toBe('durable-spawn:implement:EI-9:2');
+    expect(fin.status).toBe('done');
+  });
+
+  it('does NOT record when spawnRecord is omitted (hive launches own their rows)', async () => {
+    await durableSpawnFireImpl(IMPL);
+    expect(h.recordSpawn).not.toHaveBeenCalled();
+    expect(h.finishSpawn).not.toHaveBeenCalled();
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the spawn `failed` (and rethrows) when the fire exhausts retries', async () => {
+    h.loopbackFetch.mockResolvedValue({ ok: false, status: 503 });
+    await expect(
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'worker' } }),
+    ).rejects.toThrow(/HTTP 503/);
+    expect(h.recordSpawn).toHaveBeenCalledTimes(1);
+    expect(h.finishSpawn).toHaveBeenCalledTimes(1);
+    expect(h.finishSpawn.mock.calls[0][1].status).toBe('failed');
+  });
+
+  it('a recordSpawn failure never aborts the fire (best-effort bookkeeping)', async () => {
+    h.recordSpawn.mockRejectedValueOnce(new Error('pg down'));
+    await expect(
+      durableSpawnFireImpl({ ...IMPL, spawnRecord: { workspaceId: 'ws', childRole: 'worker' } }),
+    ).resolves.toBeUndefined();
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1); // fired anyway
   });
 });

@@ -35,6 +35,7 @@
 
 import { getHarnessStore, type HarnessStoreOpts } from './corestore';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp } from './peer-log';
+import { stampOpHlc } from './hlc-stamp';
 import {
   createMergeCursor,
   mergeAdmittedLogsIncremental,
@@ -152,6 +153,14 @@ export interface LocalWriteOp {
   schema_version: number;
   /** Local-writer pubkey (hex), threaded to clobber-event attribution. */
   writerPubkey?: string;
+  /**
+   * Hybrid Logical Clock stamp (`encodeHlc` string, P-010). Normally left unset
+   * by the per-table helpers — `handle.append` stamps it from the process HLC
+   * clock so EVERY federated write carries a causal order key. A caller may
+   * pre-set it (the stamp is preserved, not overwritten) e.g. to replay a
+   * captured HLC.
+   */
+  hlc?: string;
 }
 
 export interface BootHarnessOpts {
@@ -1343,16 +1352,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     store,
     ownLog,
     async append(op: LocalWriteOp): Promise<void> {
+      // P-010 SEND seam: stamp a causal HLC on every federated write so
+      // `lwwPick` orders cross-peer conflicts by HLC, not bare wall-clock `ts`.
+      // A pre-set `op.hlc` is preserved. This is the single choke point every
+      // LWW producer funnels through (the CDC drain + the log-first queue /
+      // working-set / contributor / presence helpers all call `handle.append`);
+      // the append-only claim path uses the raw `ownLog.append` and correctly
+      // carries no HLC (claims are distinct-key per attempt, never LWW).
+      const stamped = stampOpHlc(op);
       await ownLog.append({
-        type: op.type,
-        table: op.table,
-        hbKey: op.hbKey,
-        value: op.value,
-        ts: op.ts,
-        schema_version: op.schema_version,
+        type: stamped.type,
+        table: stamped.table,
+        hbKey: stamped.hbKey,
+        value: stamped.value,
+        ts: stamped.ts,
+        schema_version: stamped.schema_version,
+        hlc: stamped.hlc,
         // STAGE-5: thread the real device pubkey. Until then attribute to
         // the write's clobber pubkey (or empty), which the merge tolerates.
-        author_pubkey: op.writerPubkey ?? '',
+        author_pubkey: stamped.writerPubkey ?? '',
       });
     },
     admitted,

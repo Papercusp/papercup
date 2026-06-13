@@ -189,10 +189,21 @@ const requesterDeps: LockAuthorityDeps = {
   ],
 };
 
+/** The unified op-result type so routeToAuthority<T> infers one T for both the
+ *  local branch and remote.decode (local + remote must agree on T). */
+type LockOpResult = {
+  ok: boolean;
+  lockId?: string;
+  busy?: Array<{ path: string; owner: string }>;
+  released?: string[];
+  viaLocal?: boolean;
+};
+const localFalse = async (): Promise<LockOpResult> => ({ ok: false });
+
 const acquireOp = (owner: string, paths: string[]) => ({
   kind: FILE_LOCK_OP_KINDS.acquire,
   payload: { owner, paths, intent: 'edit', ttlSec: 1200, coordinationDomain: DOMAIN },
-  decode: (raw: unknown) => raw as { ok: boolean; lockId?: string; busy?: Array<{ path: string; owner: string }> },
+  decode: (raw: unknown) => raw as LockOpResult,
 });
 
 beforeEach(() => {
@@ -205,11 +216,11 @@ describe('option-(c) transport serializes a contended lock at the authority (in-
     await flush(); // HELLOs settle
     setPeerRpcTransport(transportA);
 
-    const res = await routeToAuthority('h1', { local: async () => ({ ok: false }), remote: acquireOp('owner-A', ['x.ts']) }, requesterDeps);
+    const res = await routeToAuthority('h1', { local: localFalse, remote: acquireOp('owner-A', ['x.ts']) }, requesterDeps);
 
     expect(res.via).toBe('remote-authority');
     expect(res.value).toMatchObject({ ok: true });
-    expect((res.value as { lockId?: string }).lockId).toBeTruthy();
+    expect(res.value.lockId).toBeTruthy();
   });
 
   it('a second requester contending the same path is refused (mutual exclusion at one store)', async () => {
@@ -217,15 +228,13 @@ describe('option-(c) transport serializes a contended lock at the authority (in-
     await flush();
     setPeerRpcTransport(transportA);
 
-    const first = await routeToAuthority('h1', { local: async () => ({ ok: false }), remote: acquireOp('owner-A', ['shared.ts']) }, requesterDeps);
-    expect((first.value as { ok: boolean }).ok).toBe(true);
+    const first = await routeToAuthority('h1', { local: localFalse, remote: acquireOp('owner-A', ['shared.ts']) }, requesterDeps);
+    expect(first.value.ok).toBe(true);
 
-    const second = await routeToAuthority('h1', { local: async () => ({ ok: false }), remote: acquireOp('owner-C', ['shared.ts']) }, requesterDeps);
+    const second = await routeToAuthority('h1', { local: localFalse, remote: acquireOp('owner-C', ['shared.ts']) }, requesterDeps);
     expect(second.via).toBe('remote-authority');
-    expect((second.value as { ok: boolean }).ok).toBe(false);
-    expect((second.value as { busy?: Array<{ path: string; owner: string }> }).busy).toEqual([
-      { path: 'shared.ts', owner: 'owner-A' },
-    ]);
+    expect(second.value.ok).toBe(false);
+    expect(second.value.busy).toEqual([{ path: 'shared.ts', owner: 'owner-A' }]);
   });
 
   it('release frees the path so a contender can then acquire it', async () => {
@@ -233,27 +242,27 @@ describe('option-(c) transport serializes a contended lock at the authority (in-
     await flush();
     setPeerRpcTransport(transportA);
 
-    const acq = await routeToAuthority('h1', { local: async () => ({ ok: false }), remote: acquireOp('owner-A', ['p.ts']) }, requesterDeps);
-    const lockId = (acq.value as { lockId: string }).lockId;
+    const acq = await routeToAuthority('h1', { local: localFalse, remote: acquireOp('owner-A', ['p.ts']) }, requesterDeps);
+    const lockId = acq.value.lockId;
 
     const rel = await routeToAuthority(
       'h1',
       {
-        local: async () => ({ ok: false }),
+        local: localFalse,
         remote: {
           kind: FILE_LOCK_OP_KINDS.release,
           payload: { owner: 'owner-A', lockId, coordinationDomain: DOMAIN },
-          decode: (raw: unknown) => raw as { ok: boolean; released?: string[] },
+          decode: (raw: unknown) => raw as LockOpResult,
         },
       },
       requesterDeps,
     );
     expect(rel.via).toBe('remote-authority');
-    expect((rel.value as { released?: string[] }).released).toEqual(['p.ts']);
+    expect(rel.value.released).toEqual(['p.ts']);
 
     // Now a contender can take it.
-    const reacq = await routeToAuthority('h1', { local: async () => ({ ok: false }), remote: acquireOp('owner-C', ['p.ts']) }, requesterDeps);
-    expect((reacq.value as { ok: boolean }).ok).toBe(true);
+    const reacq = await routeToAuthority('h1', { local: localFalse, remote: acquireOp('owner-C', ['p.ts']) }, requesterDeps);
+    expect(reacq.value.ok).toBe(true);
   });
 
   it('fails open (local) when the transport has no channel to the authority', async () => {
@@ -265,7 +274,10 @@ describe('option-(c) transport serializes a contended lock at the authority (in-
 
     const res = await routeToAuthority(
       'h1',
-      { local: async () => ({ ok: true, viaLocal: true }), remote: acquireOp('owner-A', ['y.ts']) },
+      {
+        local: async (): Promise<LockOpResult> => ({ ok: true, viaLocal: true }),
+        remote: acquireOp('owner-A', ['y.ts']),
+      },
       requesterDeps,
     );
     expect(res.via).toBe('fail-open');

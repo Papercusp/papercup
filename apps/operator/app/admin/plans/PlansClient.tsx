@@ -73,7 +73,6 @@ type ItemStatusFilter =
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'plan-review'
   | 'operator-report';
 const ITEM_STATUS_IDS = [
   'needs-human',
@@ -82,12 +81,11 @@ const ITEM_STATUS_IDS = [
   'coord-escalation',
   'coord-message',
   'smoke-fail',
-  'plan-review',
   'operator-report',
 ] as const;
 // The non-plan-item facets — each maps 1:1 to an AttentionItem kind from
 // the plans:attention reader (the "Other" surfaces, now split out).
-const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail', 'plan-review', 'operator-report'] as const;
+const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail', 'operator-report'] as const;
 type OtherKind = (typeof OTHER_KIND_IDS)[number];
 
 /** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
@@ -109,7 +107,6 @@ const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }>
   { id: 'coord-escalation', label: 'Escalations', hint: 'Agent escalations from the coord log — a decision is blocking progress.' },
   { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
   { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
-  { id: 'plan-review', label: 'Reviews', hint: 'Plans awaiting your review.' },
   { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the inbox (chat stays conversation only).' },
 ];
 
@@ -120,7 +117,6 @@ const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'coord-escalation': 'Escalations',
   'coord-message': 'Messages',
   'smoke-fail': 'Smoke',
-  'plan-review': 'Reviews',
   'operator-report': 'Reports',
 };
 
@@ -380,7 +376,6 @@ export default function PlansClient() {
       'coord-escalation': 0,
       'coord-message': 0,
       'smoke-fail': 0,
-      'plan-review': 0,
       'operator-report': 0,
     };
     for (const e of taggedItems) {

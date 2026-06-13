@@ -10,7 +10,7 @@
  * (device_id, platform), and the existing send path
  * (device-push-dispatcher.notifyWorkspace ← attention-notify) fans a
  * push out to every registered token in the workspace when an inbox
- * event fires (escalation / smoke-fail / plan-review / needs-human).
+ * event fires (escalation / smoke-fail / needs-human).
  *
  * The route that this rebuilds (`POST /api/device/push/register`) went
  * missing in the endpoint-route migration (Phase E4) — the storage

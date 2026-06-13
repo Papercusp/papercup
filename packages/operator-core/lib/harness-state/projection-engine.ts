@@ -91,6 +91,77 @@ export function checkPeerLogConsistency(registeredTags: readonly string[]): Peer
   };
 }
 
+export interface CaptureCoverage {
+  ok: boolean;
+  /**
+   * `sync:'peer-log'` tables with NO producer — neither a CDC capture trigger
+   * (`capturedTables`) nor a log-first append (`logFirstTables`) nor a
+   * documented accepted-unfederated entry. THE EI-382 CLASS at the data layer:
+   * a federated table whose local writes silently never reach the peer-log.
+   * A non-empty list is a real bug — wire a producer (or, if it genuinely should
+   * not federate, add it to the accepted-unfederated set with a reason).
+   */
+  uncaptured: string[];
+  /**
+   * Tables claimed by BOTH a CDC trigger AND a log-first append. A table must
+   * have exactly one producer mechanism: a PG-first table's own-log op is a
+   * replay of a row PG already authored (the EI-117 echo-storm shape), so a
+   * table can't safely be both. A non-empty list is a wiring conflict.
+   */
+  doubleCaptured: string[];
+  /**
+   * Producer-set entries (CDC / log-first / accepted-unfederated) whose table is
+   * NOT `sync:'peer-log'` in the registry — a producer for a table that should
+   * not federate, or a stale entry left after a table was reclassified.
+   */
+  orphanProducer: string[];
+}
+
+/**
+ * Assert that EVERY federated (`sync:'peer-log'`) table has exactly one capture
+ * mechanism, and that no capture mechanism points at a non-federated table —
+ * the write-side dual of `checkPeerLogConsistency` (which guards the read-side
+ * projection tags). Pure + substrate-free: the caller passes the producer sets
+ * from `lib/sync/hyperbee` (`capture-coverage.ts`), so this module never drags
+ * the Hyperbee dep graph, exactly like `checkPeerLogConsistency`.
+ *
+ * Closes the EI-382 class at the data layer (shared-hive-hardening P-011): a new
+ * `sync:'peer-log'` table added to the registry without wiring a capture trigger
+ * or a log-first append would silently never federate. With this guard pinned by
+ * a test, that omission fails CI instead of shipping a write path that drops on
+ * the floor.
+ *
+ *   - `capturedTables`     — PG-first: a `substrate_outbox` CDC trigger captures
+ *     local writes; the drain federates them (`CDC_CAPTURED_TABLES`).
+ *   - `logFirstTables`     — the application appends the op directly to the own
+ *     log (claims / queue / working-set / contributors / presence).
+ *   - `acceptedUnfederated`— `sync:'peer-log'` in the registry but intentionally
+ *     NOT produced (documented — e.g. a GitHub-derived per-machine cache).
+ */
+export function checkCaptureCoverage(
+  peerLogTables: readonly string[],
+  capturedTables: readonly string[],
+  logFirstTables: readonly string[],
+  acceptedUnfederated: readonly string[] = [],
+): CaptureCoverage {
+  const peerSet = new Set(peerLogTables);
+  const cdc = new Set(capturedTables);
+  const logFirst = new Set(logFirstTables);
+  const accepted = new Set(acceptedUnfederated);
+
+  const produced = new Set<string>([...cdc, ...logFirst, ...accepted]);
+  const uncaptured = peerLogTables.filter((t) => !produced.has(t));
+  const doubleCaptured = [...cdc].filter((t) => logFirst.has(t));
+  const orphanProducer = [...produced].filter((t) => !peerSet.has(t));
+
+  return {
+    ok: uncaptured.length === 0 && doubleCaptured.length === 0 && orphanProducer.length === 0,
+    uncaptured,
+    doubleCaptured,
+    orphanProducer,
+  };
+}
+
 export interface InventoryCoverage {
   total: number;
   /** tables flagged NEEDS_REVIEW — must be empty (P-002 closed it). */

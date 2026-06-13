@@ -18,6 +18,7 @@
 
 import type { OpEnvelope } from './op-envelope-types';
 import { observeMergedOp } from './clobber-events';
+import { observeRemoteHlc } from './hlc-stamp';
 
 /**
  * G1 Provenance context (P-002). Passed to `writeToPg` so each per-table writer
@@ -180,6 +181,22 @@ export async function applyOpVia(
     op.sourceLogKeyHex === applyOpts.ownLogKeyHex
   ) {
     return false;
+  }
+  // P-010 RECV seam: observing a REMOTE op's HLC advances this process's logical
+  // clock past the remote causal frontier, so a subsequent LOCAL write is
+  // stamped strictly-greater — the cross-machine happens-before that makes
+  // `lwwPick` causal rather than wall-clock-skew-dependent. Fires for every
+  // applied remote op (put or del) that carries an `hlc`; own ops never advance
+  // (we authored them). Gated on log-source: only with `ownLogKeyHex` known can
+  // we tell remote from own — the single-harness/global-registry path has no
+  // remote peers, so skipping the advance there is correct.
+  if (
+    op.hlc &&
+    applyOpts?.ownLogKeyHex !== undefined &&
+    op.sourceLogKeyHex !== undefined &&
+    op.sourceLogKeyHex !== applyOpts.ownLogKeyHex
+  ) {
+    observeRemoteHlc(op.hlc);
   }
   if (op.type === 'del') {
     if (!op.hbKey) return false;

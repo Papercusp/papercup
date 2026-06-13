@@ -44,8 +44,7 @@ export type ItemStatusFilter =
   | 'blocked'
   | 'coord-escalation'
   | 'coord-message'
-  | 'smoke-fail'
-  | 'plan-review';
+  | 'smoke-fail';
 
 export const ITEM_STATUS_IDS = [
   'needs-human',
@@ -54,10 +53,9 @@ export const ITEM_STATUS_IDS = [
   'coord-escalation',
   'coord-message',
   'smoke-fail',
-  'plan-review',
 ] as const;
 
-const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail', 'plan-review'] as const;
+const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail'] as const;
 type OtherKind = (typeof OTHER_KIND_IDS)[number];
 
 export const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }> = [
@@ -67,7 +65,6 @@ export const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: st
   { id: 'coord-escalation', label: 'Escalations', hint: 'Agent escalations from the coord log — a decision is blocking progress.' },
   { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
   { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
-  { id: 'plan-review', label: 'Reviews', hint: 'Plans awaiting your review.' },
 ];
 
 export const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
@@ -77,7 +74,6 @@ export const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'coord-escalation': 'Escalations',
   'coord-message': 'Messages',
   'smoke-fail': 'Smoke',
-  'plan-review': 'Reviews',
 };
 
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
@@ -318,7 +314,6 @@ export function useInboxData(opts: {
       'coord-escalation': 0,
       'coord-message': 0,
       'smoke-fail': 0,
-      'plan-review': 0,
     };
     for (const e of taggedItems) {
       if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;

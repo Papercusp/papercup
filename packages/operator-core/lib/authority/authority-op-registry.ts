@@ -39,14 +39,31 @@ export interface AuthorityRpcEnvelope {
 /** A handler that executes one op kind locally on the authority. */
 export type AuthorityOpHandler = (payload: unknown, harnessSlug: string) => Promise<unknown>;
 
+/** Per-op registration options. */
+export interface RegisterAuthorityOpOpts {
+  /**
+   * The op is a PEER-TO-PEER op any peer answers, NOT an authority-only op — so
+   * {@link handleAuthorityRpc} skips the `verifyIsAuthority` gate for it (P-016
+   * `peer.probe`: a relay liveness query answerable by a non-authority peer).
+   * The caller-signature gate (verifyCaller) still applies.
+   */
+  authorityExempt?: boolean;
+}
+
 const _handlers = new Map<string, AuthorityOpHandler>();
+const _exempt = new Set<string>();
 
 /** Register the handler for one op kind. Throws on a duplicate (a programming
  *  error — two producers claiming the same kind). */
-export function registerAuthorityOp(kind: string, handler: AuthorityOpHandler): void {
+export function registerAuthorityOp(
+  kind: string,
+  handler: AuthorityOpHandler,
+  opts: RegisterAuthorityOpOpts = {},
+): void {
   if (!kind) throw new Error('registerAuthorityOp: kind required');
   if (_handlers.has(kind)) throw new Error(`registerAuthorityOp: kind '${kind}' already registered`);
   _handlers.set(kind, handler);
+  if (opts.authorityExempt) _exempt.add(kind);
 }
 
 /** The kinds currently registered (debug / tests). */
@@ -54,9 +71,15 @@ export function registeredAuthorityOpKinds(): string[] {
   return [..._handlers.keys()].sort();
 }
 
+/** The kinds registered as authority-exempt (peer-to-peer, skip verifyIsAuthority). */
+export function getAuthorityExemptKinds(): ReadonlySet<string> {
+  return _exempt;
+}
+
 /** Test-only: clear the registry. */
 export function __resetAuthorityOpsForTests(): void {
   _handlers.clear();
+  _exempt.clear();
 }
 
 export interface HandleAuthorityRpcResult {
@@ -90,6 +113,13 @@ export interface HandleAuthorityRpcOpts {
    * its own handler set — a single process can only hold one global registry.
    */
   handlers?: Record<string, AuthorityOpHandler>;
+  /**
+   * Op kinds that skip the `verifyIsAuthority` gate (peer-to-peer ops any peer
+   * answers — P-016 `peer.probe`). Defaults to the kinds registered with
+   * `authorityExempt` ({@link getAuthorityExemptKinds}); a rig using `handlers`
+   * passes its own set since it bypasses the global registry.
+   */
+  authorityExemptKinds?: ReadonlySet<string>;
 }
 
 /**

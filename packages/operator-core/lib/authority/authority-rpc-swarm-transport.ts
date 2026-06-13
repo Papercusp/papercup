@@ -99,6 +99,23 @@ export type AuthorityRpcDispatch = (
   env: AuthorityRpcEnvelope,
 ) => Promise<HandleAuthorityRpcResult> | HandleAuthorityRpcResult;
 
+/** The minimal protomux channel surface this transport drives — a message
+ *  add (encoding + inbound handler → an outbound send) and `open()`. */
+export interface ProtomuxChannelLike {
+  addMessage(opts: { encoding?: unknown; onmessage?: (frame: unknown) => void }): { send(value: unknown): void };
+  open(): void;
+}
+/** The minimal muxer surface — `createChannel` returns a channel, or null when a
+ *  channel for that protocol already exists on the muxer (duplicate). */
+export interface ProtomuxMuxerLike {
+  createChannel(spec: { protocol: string; onopen?: () => void; onclose?: () => void }): ProtomuxChannelLike | null;
+}
+/** The minimal Protomux surface — `from(socket)` → the (possibly shared) muxer.
+ *  The real `Protomux` and the test fakes both satisfy this structurally. */
+export interface ProtomuxLike {
+  from(socket: unknown): ProtomuxMuxerLike;
+}
+
 export interface AuthorityRpcSwarmTransportOpts {
   /** The shared process swarm (`getSharedSwarm()`); a fake in tests. */
   swarm: HyperswarmLike;
@@ -115,9 +132,9 @@ export interface AuthorityRpcSwarmTransportOpts {
   /** Injected request-id generator (tests). Default: `<self6>-<seq>` — unique
    *  per sender without needing randomness. */
   genId?: () => string;
-  /** Injected Protomux (tests mock the module; this lets a test inject directly
-   *  too). Default: the real `Protomux`. */
-  protomux?: Pick<typeof Protomux, 'from'>;
+  /** Injected Protomux (tests pass a controllable fake — the same seam
+   *  cross-hive-swarm-transport.test.ts mocks). Default: the real `Protomux`. */
+  protomux?: ProtomuxLike;
 }
 
 export interface AuthorityRpcSwarmTransport extends PeerRpcTransport {
@@ -143,7 +160,7 @@ export function makeAuthorityRpcSwarmTransport(
   if (!opts.swarm) throw new Error('makeAuthorityRpcSwarmTransport: swarm required');
   if (!opts.selfDevicePubkey) throw new Error('makeAuthorityRpcSwarmTransport: selfDevicePubkey required');
 
-  const mux = opts.protomux ?? Protomux;
+  const mux: ProtomuxLike = opts.protomux ?? (Protomux as unknown as ProtomuxLike);
   const timeoutMs = opts.timeoutMs ?? 5000;
   const dispatch: AuthorityRpcDispatch =
     opts.dispatch ?? (() => ({ ok: false, error: 'unknown_kind', message: 'no authority RPC dispatch wired' }));
@@ -270,10 +287,11 @@ export function makeAuthorityRpcSwarmTransport(
         },
       });
       if (!channel) return; // already open on this muxer (duplicate) — nothing to do
-      message = channel.addMessage<AuthorityRpcFrame>({
+      message = channel.addMessage({
         encoding: c.json,
-        onmessage: (frame: AuthorityRpcFrame) => {
-          if (!frame || typeof frame !== 'object') return;
+        onmessage: (raw: unknown) => {
+          if (!raw || typeof raw !== 'object') return;
+          const frame = raw as AuthorityRpcFrame;
           if (frame.t === 'hello' && typeof frame.device_pubkey === 'string') {
             oc.remoteDevicePubkey = frame.device_pubkey;
             return;

@@ -20,6 +20,9 @@ import { readPlanBySlug } from './source';
 import { parsePromotePolicy, buildWaveFeatures, type PromoteWave } from './promote-policy';
 import { loopbackFetch } from '../../loopback-fetch';
 
+/** The org-PG tagged-template client type — for the optional test seam below. */
+type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
 function operatorBase(): string {
   const port = process.env.PORT ?? '3055';
   return process.env.INTERNAL_API_BASE ?? `http://127.0.0.1:${port}`;
@@ -120,9 +123,27 @@ export async function expandGeneratorsForFeature(input: {
   featureId: string;
   workspaceId: string;
   requireItems?: boolean;
+  /**
+   * Test seam (DI): inject the org-PG client, the plan reader, and the
+   * /features/import fetch. All default to the real ones — production callers
+   * (the publish-time call + the DONE-finalizer) pass none. Lets the driver
+   * glue (source-plan + items lookup, the D-012a "never silently yields zero"
+   * escalation, import success/failure, per-wave isolation) be unit-tested
+   * without PG or a live loopback endpoint.
+   */
+  deps?: {
+    sql?: OrgSql;
+    readPlan?: (slug: string) => Promise<{ parsed: { raw: string } } | null>;
+    fetchImport?: (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body: string },
+    ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+  };
 }): Promise<ExpandResult> {
   const { harnessSlug, featureId, workspaceId } = input;
-  const { sql } = getOrgPg();
+  const sql = input.deps?.sql ?? getOrgPg().sql;
+  const readPlan = input.deps?.readPlan ?? readPlanBySlug;
+  const fetchImport = input.deps?.fetchImport ?? loopbackFetch;
 
   const frows = await sql<Array<{ title: string | null; source_plan: string | null }>>`
     SELECT title, metadata->>'source_plan' AS source_plan
@@ -133,7 +154,7 @@ export async function expandGeneratorsForFeature(input: {
   const sourcePlan = frows[0]?.source_plan;
   if (!sourcePlan) return EMPTY;
 
-  const planFile = await readPlanBySlug(sourcePlan);
+  const planFile = await readPlan(sourcePlan);
   if (!planFile) return EMPTY;
   const { policy } = parsePromotePolicy(planFile.parsed.raw);
   if (!policy) return EMPTY;
@@ -167,7 +188,7 @@ export async function expandGeneratorsForFeature(input: {
       continue;
     }
     try {
-      const r = await loopbackFetch(
+      const r = await fetchImport(
         `${operatorBase()}/api/harness/${encodeURIComponent(harnessSlug)}/features/import`,
         { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ features: children }) },
       );

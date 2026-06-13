@@ -29,8 +29,6 @@ import { getFlag } from '@papercusp/flags/server';
 import { recordBehaviorChange, type RecordBehaviorChangeInput } from './change-ledger';
 import { PROMPT_SCAN_GIT_ARGS, scanRepoPromptEdits } from './prompt-file-scan';
 
-const execFile = promisify(execFileCb);
-
 // packages/operator-core/lib/change-ledger → repo root. ESM-safe: bare
 // `__dirname` is UNDEFINED under tsx file-mode in this type:module package — a
 // top-level reference here threw at import, poisoned the register-system-actions
@@ -40,6 +38,13 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 /** The live git-log scan against THIS process's repo tree (the serving tree). */
 async function defaultRunGitLog(paths: readonly string[], sinceDays: number): Promise<string> {
+  // Promisify LAZILY (not at module top level): a partial `node:child_process`
+  // mock — several tests mock only `spawn` (e.g. release-actions.test.ts) — leaves
+  // `execFile` undefined, and a top-level `promisify(undefined)` would THROW at
+  // import, poisoning every test whose graph includes this module (the same
+  // import-poisoning class as the __dirname note above). Doing it here keeps the
+  // import inert under any mock; it only runs on the real default-deps path.
+  const execFile = promisify(execFileCb);
   const { stdout } = await execFile('git', PROMPT_SCAN_GIT_ARGS(paths, sinceDays), {
     cwd: REPO_ROOT,
     maxBuffer: 16 * 1024 * 1024,

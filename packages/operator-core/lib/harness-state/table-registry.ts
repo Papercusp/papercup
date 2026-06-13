@@ -188,7 +188,7 @@ const WORKSPACE_OWNED_EXPLICIT = [
   // P-002 completeness review (classifyInventory over live schema surfaced these per-workspace tables):
   'harness_registry',          // per-workspace harness membership list (one JSONB row/workspace) — NOT slug-shared
   'autoloop_state', 'harness_dock_layouts', 'saved_prompts',
-  'harness_brainstorm', 'harness_plan_review', 'plan_revisions', 'plan_runs', 'plan_run_turns', // §7.4 LOCAL Plans = workspace-scoped
+  'harness_brainstorm', 'plan_revisions', 'plan_runs', 'plan_run_turns', // §7.4 LOCAL Plans = workspace-scoped (harness_plan_review retired by B-14/P-101)
   // NB: engineer_issues moved to PEER_LOG_WORKSPACE_OWNED (fed-reanchor B5) — the
   // work-queue's issue/task family now federates over the Hive peer-log.
 ];

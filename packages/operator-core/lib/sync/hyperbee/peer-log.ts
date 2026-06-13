@@ -55,6 +55,16 @@ export interface PeerLogOp {
    * attribute an op to a peer identity independent of which core carried it.
    */
   author_pubkey: string;
+  /**
+   * Hybrid Logical Clock stamp (D-003), `encodeHlc`-encoded (sortable string).
+   * Stamped at the append seam (`boot.ts` `handle.append`, P-010) for every
+   * LWW-federated write, so `lwwPick` orders cross-peer conflicts by causal HLC
+   * instead of bare wall-clock `ts` (skew-robust + happens-before across
+   * machines). Optional + additive: ops written without it (e.g. the
+   * append-only, never-LWW claim path, or pre-P-010 history) fall back to `ts`.
+   * Round-trips through `valueEncoding:'json'` like every other field.
+   */
+  hlc?: string;
 }
 
 // Compile-time guard that catches field-REMOVAL drift only: if a field named

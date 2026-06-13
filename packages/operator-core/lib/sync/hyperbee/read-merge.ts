@@ -141,6 +141,10 @@ function toEnvelope(op: PeerLogOp, sourceLogKeyHex: string): OpEnvelope {
     value: op.value,
     ts: op.ts,
     schema_version: op.schema_version,
+    // P-010: carry the HLC through so `lwwPick`/`beatsStored` can order by it.
+    // Before this, the envelope dropped `hlc`, so even an op that DID carry one
+    // (e.g. a peer on a newer build) fell back to wall-clock `ts` at merge time.
+    ...(op.hlc ? { hlc: op.hlc } : {}),
     writerPubkey: op.author_pubkey,
     sourceLogKeyHex,
   };

@@ -522,7 +522,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── Batch 6: summary / phases / smoke-test / plan-review / brainstorm ─
+  // ── Batch 6: summary / phases / smoke-test / brainstorm ─
 
   // summary.byHarness — single summary row per (harness, workspace, phase).
   //   zql.harnessSummaries.where(harnessSlug).where(workspaceId).where(phase).limit(1)
@@ -585,24 +585,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.harnessSmokeTestInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
-        .limit(1)) as unknown[];
-    },
-  },
-
-  // harnessPlanReview.byHarness — single plan-review row per harness.
-  //   zql.harnessPlanReview.where(harnessSlug).limit(1)
-  'harnessPlanReview.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
-    resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { eq } = await import('drizzle-orm');
-      const t = generated.harnessPlanReviewInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()

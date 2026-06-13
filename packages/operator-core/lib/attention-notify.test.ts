@@ -22,7 +22,7 @@ afterEach(() => {
 
 describe('notifyAttention', () => {
   it('fans out to BOTH the mobile and desktop channels', async () => {
-    await notifyAttention({ kind: 'plan-review', title: 'T', body: 'B', harnessSlug: 'h1', importance: 'high' });
+    await notifyAttention({ kind: 'smoke-fail', title: 'T', body: 'B', harnessSlug: 'h1', importance: 'high' });
     expect(notifyWorkspace).toHaveBeenCalledTimes(1);
     expect(notifySyncInvalidate).toHaveBeenCalledTimes(1);
     expect(notifySyncInvalidate.mock.calls[0][0]).toBe(ATTENTION_NOTIFY_EVENT);
@@ -71,7 +71,7 @@ describe('notifyAttention', () => {
       throw new Error('apns down');
     });
     await expect(
-      notifyAttention({ kind: 'plan-review', title: 'T', body: 'B' }),
+      notifyAttention({ kind: 'smoke-fail', title: 'T', body: 'B' }),
     ).resolves.toBeUndefined();
     expect(notifySyncInvalidate).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalled();

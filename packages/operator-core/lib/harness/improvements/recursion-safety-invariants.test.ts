@@ -426,9 +426,8 @@ describe('P-049.4 — one change-ledger row per prompt mutation; the writer set 
     expect(referencingFiles).toEqual(
       [
         'change-ledger/change-ledger.ts', // the seam itself (+ gymPromotionRecorder)
-        'change-ledger/scan-loop.ts', // repo-scan orchestration (runChangeLedgerScan) — the SHARED path the routine action + the change-ledger:scan blueprint step both run (deterministic-blueprints-migration P-004); same `repo-scan` source, in the allowed seam, NOT a learner lane
+        'change-ledger/scan-loop.ts', // repo-scan orchestration (runChangeLedgerScan) — the SHARED path the `system:change-ledger-scan` routine action AND the `change-ledger:scan` blueprint step both delegate to (deterministic-blueprints-migration P-004). The repo-scan WRITE moved HERE from harness/routines/change-ledger-scan-action.ts (which now only calls runChangeLedgerScan, no direct recordBehaviorChange). Same `repo-scan` source, allowed seam, NOT a learner lane.
         'gym/control-plane.ts', // gym:accept — the committer
-        'harness/routines/change-ledger-scan-action.ts', // repo-scan wiring (binds prompt-file-scan's injected `record`)
         'endpoint-route/routes/harness/prompts.ts', // prompts-api (set/clear × both branches)
       ].sort(),
     );

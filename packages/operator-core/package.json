@@ -25,6 +25,7 @@
     "@papercusp/deployment-driver": "*",
     "@papercusp/eval-battery": "*",
     "@papercusp/event-reaction": "*",
+    "@papercusp/failure-detector": "*",
     "@papercusp/locks-core": "*",
     "@papercusp/model-pricing": "*",
     "@papercusp/p2p-voice": "*",

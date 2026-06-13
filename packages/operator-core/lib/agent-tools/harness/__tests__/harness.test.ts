@@ -1,5 +1,5 @@
 /**
- * harness:* tools — plan_reviews, phase_path, markdown_index.
+ * harness:* tools — phase_path, markdown_index.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,7 +22,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.doUnmock('../../../harness-plan-reviews');
   vi.doUnmock('../../../harness-phases');
   vi.doUnmock('../../../harness-registry');
   vi.doUnmock('../../../harness-markdown-index');
@@ -31,21 +30,6 @@ afterEach(() => {
 function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
 }
-
-describe('harness:plan_reviews', () => {
-  it('returns loadHarnessPlanReviews entries', async () => {
-    const entries = [
-      { slug: 'sheets', verdict: 'accept', summary: 's', mtimeMs: 1 },
-    ];
-    vi.doMock('../../../harness-plan-reviews', () => ({
-      loadHarnessPlanReviews: vi.fn(async () => entries),
-    }));
-    const { default: tool } = await import('../plan_reviews');
-    const result = await tool.handler({}, MAKE_CTX());
-    const payload = parsePayload(result as never);
-    expect(payload).toEqual({ entries });
-  });
-});
 
 describe('harness:phase_path', () => {
   it('resolves (slug, phase) → path via phasePath', async () => {
