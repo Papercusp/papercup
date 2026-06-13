@@ -19,8 +19,9 @@
  *     action, not reconciliation.
  *   - Joiner detection: a member whose HOME entry (`projects.find(p =>
  *     p.slug === member.hive_slug)`) carries `remote_hive: true` is a
- *     joiner-side clone ⇒ the spine seeds it INACTIVE with push:false
- *     (P-005/B-02 semantics); otherwise creator-side semantics apply.
+ *     joiner-side clone ⇒ the spine seeds it ACTIVE (D-008) with push:false
+ *     (a local commit+fetch+merge mirror, no push — B-02 semantics); otherwise
+ *     creator-side semantics apply.
  *
  * Per-member seeding COMPOSES `seedGitSyncRoutineForMember` (git-sync-routine.ts)
  * — eligibility gate, non-clobber idempotency, probe→decider push, jittered

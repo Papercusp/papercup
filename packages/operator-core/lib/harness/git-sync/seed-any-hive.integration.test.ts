@@ -26,7 +26,7 @@
  *      (harness:create{hive} seeds coord-less FIRST): step 7.25's coords-rich
  *      seed now UPGRADES the untouched machine-default row (probed push +
  *      branch land, `upgraded: true` surfaced) via the seeder's carve-out.
- *   2. Join → row     — joinHiveAsView ⇒ joiner member inactive + push:false +
+ *   2. Join → row     — joinHiveAsView ⇒ joiner member active (D-008) + push:false +
  *      per-install-salted cron; never the remote_hive view.
  *   3. Reconcile      — pre-plan registry ⇒ exactly the missing eligible members
  *      seeded; already-seeded + papercup-shaped rows untouched; 2nd run no-op.
@@ -419,7 +419,7 @@ describe('S1: hive:create_from_repo seeds the MEMBER routine, never the home', (
 // Scenario 2 — Join → row (joinHiveAsView)
 // ════════════════════════════════════════════════════════════════════════════
 
-describe('S2: joinHiveAsView seeds joiner members inactive/push:false, never the view', () => {
+describe('S2: joinHiveAsView seeds joiner members active/push:false, never the view', () => {
   const TOPIC = 'a'.repeat(64);
   const JREPO = `jrepo${RUN}`;
   const REPO_ID = 424242;
@@ -464,10 +464,10 @@ describe('S2: joinHiveAsView seeds joiner members inactive/push:false, never the
     expect(row).toBeDefined();
     expect(row).toMatchObject({
       workspace_id: WS2,
-      active: GIT_SYNC_SEED_ACTIVE_JOINER, // false — joiner clones seed INACTIVE
+      active: GIT_SYNC_SEED_ACTIVE_JOINER, // D-008: joiner clones seed ACTIVE (push:false ⇒ local mirror only)
     });
     const cfg = cfgOf(row);
-    expect(cfg.push).toBe(false); // joiner_side — read-only by design
+    expect(cfg.push).toBe(false); // joiner_side — read-only by design (no push regardless of active)
     // D-004: the cron jitter key is salted per install on the joiner side.
     expect(cfg.cron).toBe(gitSyncCronForKey(`${JREPO}:${WS2}`));
     expect(cfg).not.toHaveProperty('branch'); // join links carry no default branch
@@ -599,8 +599,8 @@ describe('S3: reconcile seeds exactly the missing eligible members', () => {
       push_submodules: true,
     });
 
-    // M_D: joiner-side (home entry carries remote_hive) → inactive, push:false,
-    // per-install-salted cron.
+    // M_D: joiner-side (home entry carries remote_hive) → active (D-008),
+    // push:false (local mirror only), per-install-salted cron.
     const dRow = await routineRow(M_D);
     expect(dRow).toMatchObject({ workspace_id: WS3, active: GIT_SYNC_SEED_ACTIVE_JOINER });
     expect(cfgOf(dRow)).toEqual({

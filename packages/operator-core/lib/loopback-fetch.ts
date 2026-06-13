@@ -21,12 +21,38 @@ export function isTransientNetworkError(err: unknown): boolean {
   const cause = (err as { cause?: { code?: string } } | null)?.cause;
   const code = cause?.code;
   if (code) {
-    // Transient OS-level errors: connection refused/reset, DNS failures, timeouts
-    return /^E(CONNREFUSED|CONNRESET|NOTFOUND|TIMEDOUT|NETWORK)$/.test(code);
+    // Transient OS-level errors: connection refused/reset, DNS failures, timeouts.
+    if (/^E(CONNREFUSED|CONNRESET|NOTFOUND|TIMEDOUT|NETWORK)$/.test(code)) return true;
+    // undici surfaces a mid-request server shutdown as `TypeError: fetch failed`
+    // whose cause is a SocketError/timeout with a UND_ERR_* code — NOT an E-code.
+    // The operator restarts on every deploy (no hot-reload), so a loopback call
+    // that was connecting/in-flight gets "other side closed" (UND_ERR_SOCKET) or a
+    // connect/headers timeout. These are exactly the EI-390 queen-launch failures —
+    // the old early `return` on `code` swallowed them as non-transient (no retry).
+    if (/^UND_ERR_(SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT)$/.test(code)) return true;
+    // Unknown code: don't assume non-transient — fall through to the message heuristic.
   }
   const msg = err instanceof Error ? err.message : String(err);
   // Catch error message patterns for transient network issues
-  return /ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|ENETWORK|Connection (refused|reset)|timeout/i.test(msg);
+  return /ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|ENETWORK|Connection (refused|reset)|other side closed|timeout/i.test(msg);
+}
+
+/**
+ * Render a fetch error with its underlying cause code so a persisted failure is
+ * self-diagnosing. undici's `fetch()` throws a generic `TypeError: fetch failed`
+ * and hides the real reason in `.cause` — recording only `.message` (as the
+ * spawn-launch path does) yields a blind "fetch failed" the watchdog can't act on
+ * (EI-390 was undiagnosable for exactly this reason). Keeps the original message as
+ * a prefix so existing classifiers/matchers (classifySpawnError → 'network') still
+ * fire; appends `(CODE: detail)` when a cause code is present and not already shown.
+ */
+export function describeFetchError(err: unknown): string {
+  const base = err instanceof Error ? err.message : String(err);
+  const cause = (err as { cause?: { code?: string; message?: string } } | null)?.cause;
+  const code = cause?.code;
+  if (!code || base.includes(code)) return base;
+  const detail = cause?.message && cause.message !== base ? `: ${cause.message}` : '';
+  return `${base} (${code}${detail})`;
 }
 
 /** @deprecated Use isTransientNetworkError instead. */

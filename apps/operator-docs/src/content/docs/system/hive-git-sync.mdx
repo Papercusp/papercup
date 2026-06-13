@@ -1,6 +1,6 @@
 ---
 title: Hive git-sync — per-member seeding and the multi-pusher model
-description: How git-sync generalizes to any hive — one routine per member checkout (never homes or views), the push decision table, creator/joiner seed-active split, deterministic cron jitter, and the origin-serialized multi-pusher model for shared hives.
+description: How git-sync generalizes to any hive — one routine per member checkout (never homes or views), the push decision table, the all-active seed default, deterministic cron jitter, and the origin-serialized multi-pusher model for shared hives.
 sidebar:
   order: 6
 ---
@@ -19,12 +19,13 @@ converge on one origin branch. Source plan: `git-sync-any-hive-2026-06-12`
 itself was built in `git-sync-auto-commit-2026-06-03` and hardened in
 `git-sync-system-audit-2026-06-09`.
 
-<Aside type="caution" title="One decision on this page is PROVISIONAL">
-The **creator-ACTIVE / joiner-INACTIVE seed split** (P-005) is a provisional
-default (plan decision D-005), implemented as one-line constants so a later
-ratification is a trivial flip. The **multi-pusher origin-serialized model**
-(D-004) has passed its P-010 two-peer convergence verification — no ping-pong,
-no backoff needed — see [Verification status](#verification-status).
+<Aside type="note" title="Both governing decisions are settled">
+The **seed-active default** (P-005) was ratified **all-active** on 2026-06-13
+(plan decision D-008): every member checkout seeds ACTIVE, with joiner-side
+clones still `push: false` so "active" there means a local commit+fetch+merge
+mirror only. The **multi-pusher origin-serialized model** (D-004) has passed its
+P-010 two-peer convergence verification — no ping-pong, no backoff needed — see
+[Verification status](#verification-status).
 </Aside>
 
 ## The model in one paragraph
@@ -97,24 +98,25 @@ A seeded row carries, in `trigger_config`:
 - **`branch`** — the member's `github_default_branch` registry coord when
   known (the pipeline falls back to its own per-repo branch resolution
   otherwise);
-- **`active`** — from the provisional creator/joiner split (below).
+- **`active`** — from the ratified all-active default (below).
 
-## Seed-active split (P-005 — provisional)
+## Seed-active default (P-005 — ratified all-active, D-008)
 
-Creator-side members seed **ACTIVE**; joiner-side clones seed **INACTIVE**.
+Every member checkout seeds **ACTIVE**, both creator-side and joiner-side.
 The constants live in `git-sync-eligibility.ts`:
 
 ```ts
-export const GIT_SYNC_SEED_ACTIVE_CREATOR = true;  // provisional P-005
-export const GIT_SYNC_SEED_ACTIVE_JOINER = false;  // provisional P-005
+export const GIT_SYNC_SEED_ACTIVE_CREATOR = true;  // D-008 (ratified 2026-06-13)
+export const GIT_SYNC_SEED_ACTIVE_JOINER = true;   // D-008 (ratified 2026-06-13)
 ```
 
-Rationale for the default: creator-side follows the flags-default-enabled
-culture (escalations surface problems); joiner-side clones are read-only by
-design (fork-PR is the contribution path), so even commit-only churn stays
-opt-in until a human flips the routine on
-(`setGitSyncRoutineActive(sql, slug, true)`). The owner may ratify or flip
-either constant — they are deliberately one-line.
+Rationale: this follows the flags-default-enabled culture (escalations surface
+problems) and keeps every checkout's local mirror fresh from origin without a
+manual go-live step. Joiner-side `active` is **not** a push — joiner clones are
+`push: false` by the decision table below (fork-PR stays the contribution path),
+so an active joiner routine only commits, fetches, and merges its local mirror.
+The constants stay one-line so a future re-gate (e.g. back to a creator/joiner
+split, or all-inactive) is still a trivial flip.
 
 ## The push decision table
 
@@ -170,7 +172,7 @@ cron through this helper (no seed site bypasses it), and the schedule shape is
 the same one papercup's hand-seeded row already uses, parsed by the routines
 engine's `computeNextFireAt`.
 
-## The multi-pusher model (D-004 — provisional)
+## The multi-pusher model (D-004 — verified, D-007)
 
 For shared hives, **every push-capable peer runs its own git-sync
 independently**. There is no single-pusher election and no new coordination

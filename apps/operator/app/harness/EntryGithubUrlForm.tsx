@@ -276,6 +276,13 @@ export interface EntryGithubUrlFormProps {
   hiveScope?: string | null;
   /** Seed mode from the picker fork. Default new-hive — the headline flow. */
   initialMode?: FormMode;
+  /**
+   * Pre-filled repository URL (comb-hive-native-sharing P-009): when the user
+   * picks a result from the GitHub search panel (or pastes a URL there), that
+   * repo seeds the URL field so they land on the configured create form, not a
+   * blank one. The user can still edit it. Absent ⇒ the blank-URL entry.
+   */
+  initialUrl?: string;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -311,14 +318,17 @@ function InfoCard({ children }: { children: ReactNode }) {
   );
 }
 
-export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initialMode = 'new-hive' }: EntryGithubUrlFormProps) {
+export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initialMode = 'new-hive', initialUrl = '' }: EntryGithubUrlFormProps) {
   const t = useLexicon();
   const hiveLabel = t('pot'); // "Hive" | "Pot"
   const hiveLower = t('pot', { lower: true });
 
   // Transient form drafts — useState per the nuqs transient-lifecycle exception.
   const [mode, setMode] = useState<FormMode>(initialMode === 'into-hive' && !hiveScope ? 'new-hive' : initialMode);
-  const [url, setUrl] = useState('');
+  // P-009: seed from a picked/pasted search result (the search panel feeds the
+  // create flow); still editable. Mount-time seed only — re-picking remounts
+  // this form (the search panel keys on the picked url), so no sync effect.
+  const [url, setUrl] = useState(initialUrl);
   const [urlError, setUrlError] = useState('');
   const [visibility, setVisibility] = useState<Visibility>('public');
   // D-001 (hive-from-repo-hardening): verifying the detected test command RUNS

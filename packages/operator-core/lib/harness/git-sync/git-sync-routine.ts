@@ -38,7 +38,8 @@ export interface GitSyncRoutineInput {
   cron?: string;
   push?: boolean;
   pushSubmodules?: boolean;
-  /** Seeded INACTIVE by default — go-live flips this to true. */
+  /** Defaults INACTIVE when omitted; seed callers always pass it explicitly
+   *  (D-008 ratified all-active, so seeded rows are active). */
   active?: boolean;
   /**
    * Superproject branch for the sync (git-sync-any-hive P-001) — written into
@@ -187,7 +188,7 @@ function isUntouchedCoordslessCreatorSeed(row: RoutineRow, installSlug: string):
  *     `github_remote` (the seed-time signal; B-04's reconcile can revisit), with
  *     the GitHub permissions probe run only when it could change the answer
  *     (creator-side + upstream known — the decider short-circuits the rest);
- *   - `active` from the P-005 provisional split (creator true / joiner false);
+ *   - `active` from the P-005 ratified default (D-008: all members seed active);
  *   - `cron` = gitSyncCronForKey(cronKey ?? installSlug) (deterministic jitter,
  *     D-004; joiner-side callers salt the key per-install — see `cronKey`);
  *   - `branch` = the entry's `github_default_branch` when present.

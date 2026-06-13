@@ -232,8 +232,9 @@ export async function joinHiveAsView(
   }, opts.workspaceId);
 
   // 3 — best-effort git-sync seeding per joined member clone (git-sync-any-hive
-  //     P-003): joiner-side rows seed INACTIVE + push:false (P-005/D-005 via the
-  //     seeder), non-clobber idempotent (re-join reports routine_exists), and the
+  //     P-003): joiner-side rows seed ACTIVE (D-008) + push:false (so a local
+  //     commit+fetch+merge mirror only) via the seeder, non-clobber idempotent
+  //     (re-join reports routine_exists), and the
   //     remote_hive VIEW is never a member here (eligibility would refuse it
   //     anyway). The cron jitter key is salted per-install — on a shared hive the
   //     same member slug exists on N peer boxes. A failure NEVER fails the join;

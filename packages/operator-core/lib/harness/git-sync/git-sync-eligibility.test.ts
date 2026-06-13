@@ -159,9 +159,9 @@ describe('gitSyncCronForKey — deterministic jittered every-10-min cron', () =>
   });
 });
 
-describe('P-005 provisional seed-active split (D-005: constants, no owner override)', () => {
-  it('creator-side seeds ACTIVE; joiner-side seeds INACTIVE', () => {
+describe('P-005 seed-active default (D-008: ratified all-active 2026-06-13)', () => {
+  it('both creator-side and joiner-side seed ACTIVE', () => {
     expect(GIT_SYNC_SEED_ACTIVE_CREATOR).toBe(true);
-    expect(GIT_SYNC_SEED_ACTIVE_JOINER).toBe(false);
+    expect(GIT_SYNC_SEED_ACTIVE_JOINER).toBe(true);
   });
 });

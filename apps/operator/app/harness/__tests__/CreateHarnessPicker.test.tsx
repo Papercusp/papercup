@@ -1,9 +1,12 @@
 /**
  * @vitest-environment jsdom
  *
- * CreateHarnessPicker — P-012a/b/c/d unit tests + the hive-from-github-url
- * P-012 integration (flag-gated GitHub-URL entry, Entry-4 demotion, ?picker=
- * nuqs step). Uses @testing-library/react + vitest only (no jest-dom matchers).
+ * CreateHarnessPicker — the legacy P-012a/b/c/d picker tests PLUS the
+ * comb-hive-native-sharing P-006/P-007/P-009 rework: the hive-native Create /
+ * Join layout (flag-on), per-entry outcome explainers, and the "Search GitHub"
+ * entry routing to the EntryGithubSearchForm panel (which feeds the
+ * create-from-repo flow). Uses @testing-library/react + vitest only (no
+ * jest-dom matchers).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,7 +33,7 @@ vi.mock('../../adv/harnesses/useViewer', () => ({
   isViewer: () => false,
 }));
 
-// Per-key flag override map — the picker gates the GitHub-URL entry on
+// Per-key flag override map — the picker gates the hive-native layout on
 // HIVE_FROM_GITHUB_URL and useLexicon reads THE_HIVE. Unset keys default true
 // (both flags default-ON in FLAG_DEFAULTS). Mocking the hook keeps jsdom away
 // from the real flag bootstrap (fetch + EventSource). vi.hoisted: the factory
@@ -86,44 +89,50 @@ function lastCreateBody(): Record<string, unknown> {
   return JSON.parse((call?.[1] as RequestInit).body as string) as Record<string, unknown>;
 }
 
-// ── P-012a — picker renders the entry cards ────────────────────────────────
+// ── P-006/P-007 — the hive-native Create / Join layout (flag on) ────────────
 
-describe('P-012a — picker step', () => {
-  it('renders 3 entry cards + the demoted harness-link affordance (flag on)', () => {
+describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
+  it('renders the Create cards + the Join cards with outcome explainers', () => {
     renderPicker();
-    // getByText throws if not found — asserts presence without jest-dom
+    // Create group — getByText throws if not found (presence assert, no jest-dom).
     screen.getByText('New local directory');
     screen.getByText('Existing local repo');
-    screen.getByText('GitHub URL');
-    // Entry-4 demotion (hive-from-github-url D-001): no Harness-link CARD —
-    // the secondary "I have a link" affordance replaces it.
-    expect(screen.queryByText('Harness link')).toBeNull();
-    screen.getByText(/I have a harness link/);
-    // Hardening P-006: the invitee door sits beside it.
-    screen.getByText(/I have a hive invite/);
-  });
-
-  it('renders the legacy 4 cards when HIVE_FROM_GITHUB_URL is off', () => {
-    flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
-    renderPicker();
-    screen.getByText('New local directory');
-    screen.getByText('Existing local repo');
-    screen.getByText('GitHub URL');
+    screen.getByText('Search GitHub');
+    // Join group — the demoted underline affordances are gone; these are cards now.
+    screen.getByText('Browse the Comb');
+    screen.getByText('Hive invite');
     screen.getByText('Harness link');
+    // The renamed entry replaces the old "GitHub URL" card.
+    expect(screen.queryByText('GitHub URL')).toBeNull();
+    // No leftover demoted affordances.
     expect(screen.queryByText(/I have a harness link/)).toBeNull();
     expect(screen.queryByText(/I have a hive invite/)).toBeNull();
   });
 
-  it('flag on: the GitHub URL card carries the hive framing description', () => {
+  it('groups entries under Create and Join headings (not Local/Shared)', () => {
     renderPicker();
-    screen.getByText(
-      'Create a hive from a GitHub repository. Forks nothing — clones and registers; auto-publishes to the directory.',
-    );
+    screen.getByRole('heading', { name: 'Create' });
+    screen.getByRole('heading', { name: 'Join' });
+    expect(screen.queryByRole('heading', { name: 'Local' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Shared' })).toBeNull();
   });
 
-  it('renders no Phase 1b badge in the picker (label removed)', () => {
+  it('shows the Create + Join subheadings (hive-framed copy)', () => {
     renderPicker();
-    expect(screen.queryByText('Phase 1b')).toBeNull();
+    screen.getByText('Start a new hive, or add a repository to one.');
+    screen.getByText('Collaborate on a hive someone else published.');
+  });
+
+  it('the Search GitHub card carries the create-or-join outcome explainer (P-007)', () => {
+    renderPicker();
+    screen.getByText('Find any repo on GitHub and create or join a hive from it.');
+  });
+
+  it('Browse the Comb is a link to /cupboard', () => {
+    renderPicker();
+    const link = screen.getByText('Browse the Comb').closest('a');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe('/cupboard');
   });
 
   it('shows the add-a-harness heading', () => {
@@ -131,15 +140,29 @@ describe('P-012a — picker step', () => {
     screen.getByRole('heading', { name: 'Add a harness' });
   });
 
-  it('groups entries under Local and Shared headings', () => {
+  it('renders no Phase 1b badge in the picker (label removed)', () => {
     renderPicker();
+    expect(screen.queryByText('Phase 1b')).toBeNull();
+  });
+});
+
+// ── Legacy layout (flag off) — preserved byte-for-byte ──────────────────────
+
+describe('legacy picker layout (HIVE_FROM_GITHUB_URL off)', () => {
+  it('renders the legacy 4 cards under Local / Shared', () => {
+    flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
+    renderPicker();
+    screen.getByText('New local directory');
+    screen.getByText('Existing local repo');
+    screen.getByText('GitHub URL');
+    screen.getByText('Harness link');
     screen.getByRole('heading', { name: 'Local' });
     screen.getByRole('heading', { name: 'Shared' });
-  });
-
-  it('shows the Shared collaboration subheading', () => {
-    renderPicker();
-    screen.getByText('Work on these repositories collaboratively.');
+    // None of the hive-native surfaces.
+    expect(screen.queryByText('Search GitHub')).toBeNull();
+    expect(screen.queryByText('Browse the Comb')).toBeNull();
+    expect(screen.queryByText(/I have a harness link/)).toBeNull();
+    expect(screen.queryByText(/I have a hive invite/)).toBeNull();
   });
 });
 
@@ -273,19 +296,22 @@ describe('P-012d — error messages', () => {
   });
 });
 
-// ── hive-from-github-url P-012 — the GitHub-URL entry routing ──────────────
+// ── P-009 — the Search GitHub entry routing ────────────────────────────────
 
-describe('P-012 (hive-from-github-url) — GitHub URL entry routing', () => {
-  it('flag on (default): the card opens the real EntryGithubUrlForm', async () => {
+describe('P-009 — Search GitHub entry', () => {
+  it('flag on (default): the card opens the search panel (not the create form yet)', async () => {
     const user = userEvent.setup();
     renderPicker();
-    await user.click(screen.getByText('GitHub URL'));
-    expect(screen.queryByText('Coming soon')).toBeNull();
-    screen.getByRole('heading', { name: 'GitHub URL' });
-    screen.getByPlaceholderText('https://github.com/owner/repo');
+    await user.click(screen.getByText('Search GitHub'));
+    // The search panel — its own heading + searchbox; the create-form heading
+    // ('GitHub URL') only appears after a result/URL is picked.
+    screen.getByRole('heading', { name: 'Search GitHub' });
+    screen.getByRole('searchbox');
+    expect(screen.queryByRole('heading', { name: 'GitHub URL' })).toBeNull();
+    // The selected entry rides the nuqs `?picker=github-url` axis (unchanged id).
   });
 
-  it('flag off: the card still shows the coming-soon stub', async () => {
+  it('flag off: the GitHub URL card still shows the coming-soon stub', async () => {
     flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
     const user = userEvent.setup();
     renderPicker();
@@ -302,34 +328,48 @@ describe('P-012 (hive-from-github-url) — GitHub URL entry routing', () => {
     screen.getByRole('heading', { name: 'Add a harness' });
   });
 
-  it('the demoted "I have a link" affordance opens the EntryHarnessLinkForm', async () => {
+  it('pasting a URL in search short-circuits to the create form, prefilled', async () => {
     const user = userEvent.setup();
     renderPicker();
-    await user.click(screen.getByText(/I have a harness link/));
-    // EntryHarnessLinkForm renders a textarea for the harness link.
-    expect(screen.queryByText('Coming soon')).toBeNull();
-    screen.getByPlaceholderText('papercusp://harness?topic=…&github=owner/repo&repo_id=…');
+    await user.click(screen.getByText('Search GitHub'));
+    await user.type(screen.getByRole('searchbox'), 'https://github.com/octocat/hello-world');
+    // The URL short-circuit affordance — Continue → the create flow.
+    await user.click(await screen.findByTestId('gh-search-url-continue'));
+    // EntryGithubUrlForm now mounted with the URL prefilled.
+    screen.getByRole('heading', { name: 'GitHub URL' });
+    const urlInput = screen.getByPlaceholderText('https://github.com/owner/repo') as HTMLInputElement;
+    expect(urlInput.value).toBe('https://github.com/octocat/hello-world');
   });
 
-  it('into-hive picker mode seeds the form with the Add-to-<hive> fork selected', async () => {
+  it('into-hive picker mode threads into-hive into the create form opened from search', async () => {
     const user = userEvent.setup();
     renderPicker({ hiveScope: 'acme' });
-    // Default picker mode is into-hive when a scope is selected.
-    await user.click(screen.getByText('GitHub URL'));
+    await user.click(screen.getByText('Search GitHub'));
+    await user.type(screen.getByRole('searchbox'), 'https://github.com/octocat/hello-world');
+    await user.click(await screen.findByTestId('gh-search-url-continue'));
+    // The create form inherits the picker fork (into-hive when a scope is set).
     const addBtn = screen.getByRole('button', { name: 'Add to acme' });
     expect(addBtn.getAttribute('aria-pressed')).toBe('true');
   });
-});
 
-// ── hive-from-repo-hardening P-006 — the hive-invite door (invitee side) ────
-
-describe('P-006 (hive-from-repo-hardening) — I have a hive invite', () => {
-  const INVITE_LINK = `papercusp://hive?secret=${'deadbeef'.repeat(4)}&title=Acme+Shop`;
-
-  it('the affordance opens the join form', async () => {
+  it('the Harness link card opens the EntryHarnessLinkForm', async () => {
     const user = userEvent.setup();
     renderPicker();
-    await user.click(screen.getByText(/I have a hive invite/));
+    await user.click(screen.getByText('Harness link'));
+    expect(screen.queryByText('Coming soon')).toBeNull();
+    screen.getByPlaceholderText('papercusp://harness?topic=…&github=owner/repo&repo_id=…');
+  });
+});
+
+// ── P-006 — the Join "Hive invite" card (invitee side) ─────────────────────
+
+describe('P-006 — Hive invite card', () => {
+  const INVITE_LINK = `papercusp://hive?secret=${'deadbeef'.repeat(4)}&title=Acme+Shop`;
+
+  it('the card opens the join form', async () => {
+    const user = userEvent.setup();
+    renderPicker();
+    await user.click(screen.getByText('Hive invite'));
     screen.getByRole('heading', { name: 'Join a hive by invite' });
     screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…');
   });
@@ -344,7 +384,7 @@ describe('P-006 (hive-from-repo-hardening) — I have a hive invite', () => {
       }
       return new Response(JSON.stringify({}), { status: 200 });
     });
-    await user.click(screen.getByText(/I have a hive invite/));
+    await user.click(screen.getByText('Hive invite'));
     await user.type(
       screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
       INVITE_LINK,
@@ -366,7 +406,7 @@ describe('P-006 (hive-from-repo-hardening) — I have a hive invite', () => {
   it('a malformed link errors inline without POSTing (the route parser runs client-side too)', async () => {
     const user = userEvent.setup();
     renderPicker();
-    await user.click(screen.getByText(/I have a hive invite/));
+    await user.click(screen.getByText('Hive invite'));
     await user.type(
       screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
       'not-an-invite-link',
@@ -384,7 +424,7 @@ describe('P-006 (hive-from-repo-hardening) — I have a hive invite', () => {
     mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: false, code: 'directory_unavailable' }), { status: 503 }),
     );
-    await user.click(screen.getByText(/I have a hive invite/));
+    await user.click(screen.getByText('Hive invite'));
     await user.type(
       screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
       INVITE_LINK,

@@ -65,13 +65,15 @@ export function gitSyncEligibility(
   return { eligible: true };
 }
 
-// ── Seed-active split (P-005, PROVISIONAL — D-005: no owner override yet) ──────
-// One-line constants so a later ratification is a trivial flip. Creator-side
-// members seed ACTIVE; joiner-side clones seed INACTIVE (read-only by design —
-// fork-PR is the contribution path; B-03 wires the joiner seeding).
+// ── Seed-active default (P-005, RATIFIED 2026-06-13 — D-008: all-active) ───────
+// The owner ratified "all members seed ACTIVE on create" (su-a72aa). Both sides
+// seed active: creator-side members commit+fetch+merge+push; joiner-side clones
+// are push:false (decideGitSyncPush), so "active" there means a local
+// commit+fetch+merge mirror only — never a push. fork-PR stays the contribution
+// path for joiners. Kept as constants so a future re-gate is still a one-liner.
 
 export const GIT_SYNC_SEED_ACTIVE_CREATOR = true;
-export const GIT_SYNC_SEED_ACTIVE_JOINER = false;
+export const GIT_SYNC_SEED_ACTIVE_JOINER = true;
 
 // ── Jittered per-key cron (D-004 multi-pusher) ─────────────────────────────────
 

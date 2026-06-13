@@ -9,11 +9,19 @@
  *   P-012c  Entry 3 (Existing local repo) happy path
  *   P-012d  Per-error-code error messages
  *
- * Entries are grouped under "Local" (new / existing local) and "Shared".
- * The GitHub-URL entry is the hive-level Entry 2 (hive-from-github-url
- * P-011/P-012, gated on HIVE_FROM_GITHUB_URL — flag off keeps the legacy
- * coming-soon stub); with it on, the Entry-4 harness-link card demotes to a
- * secondary "I have a link" affordance (still fully functional, D-001).
+ * Entries are grouped around the hive model (comb-hive-native-sharing P-006):
+ * a **Create** group (new local · existing local · search GitHub → create or
+ * join a hive from any repo) and a **Join** group (browse the Comb · hive
+ * invite · harness link). The whole hive-native layout is gated on
+ * HIVE_FROM_GITHUB_URL — flag OFF keeps the legacy Local/Shared 4-card layout
+ * (coming-soon GitHub stub + harness-link card). Every card carries a one-line
+ * OUTCOME explainer (P-007) — what that entry produces.
+ *
+ * The "Search GitHub" entry is the P-009 search panel (EntryGithubSearchForm)
+ * feeding the create-from-repo flow; the github-url step id is unchanged so the
+ * `?picker=github-url` deep link and its e2e keep working. "Browse the Comb" is
+ * a plain link to /cupboard (the hive directory browse, where Phase 1's join
+ * lives).
  *
  * The SELECTED entry rides the `?picker=` nuqs param (user-meaningful state →
  * URL, the house rule); form drafts inside each entry stay useState.
@@ -28,8 +36,9 @@ import { FLAGS } from '@papercusp/flags';
 import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
+import { useLexicon } from '@/lib/useLexicon';
 import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
-import { EntryGithubUrlForm } from './EntryGithubUrlForm';
+import { EntryGithubSearchForm } from './EntryGithubSearchForm';
 import { PublishHiveCard } from './PublishHiveCard';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -562,10 +571,15 @@ function ComingSoonStub({ title, onBack }: { title: string; onBack: () => void }
 // ── Picker cards ───────────────────────────────────────────────────────────
 
 interface PickerEntry {
-  id: Step;
+  /** React key + e2e/test anchor. For a step entry, equals the step it opens. */
+  key: string;
   label: string;
   description: string;
   icon: string;
+  /** The in-modal picker step this entry opens. Omit for an `href` entry. */
+  step?: EntryStep;
+  /** A navigation target (the Comb at /cupboard) — renders an <a>, not a step. */
+  href?: string;
   /** Routes to a not-yet-available stub; renders dimmed (no visible badge). */
   comingSoon?: boolean;
 }
@@ -573,67 +587,134 @@ interface PickerEntry {
 interface PickerSection {
   heading: string;
   subheading?: string;
+  /** P-006: the creation-mode fork (New hive · Add to <hive> · Standalone)
+   *  renders inside this section's header (only the Create group governs it). */
+  showForkToggle?: boolean;
   entries: PickerEntry[];
 }
 
 /**
- * Sections are built per-render: the GitHub-URL entry's copy + routing depend
- * on the HIVE_FROM_GITHUB_URL flag (P-012) and the hive label is lexicon-bound.
- * With the flag ON the Entry-4 harness-link card demotes out of the grid — it
- * becomes the "I have a link" secondary affordance under the Shared section.
+ * Sections are built per-render: the hive-native Create/Join layout (P-006)
+ * lights up on HIVE_FROM_GITHUB_URL; flag OFF keeps the legacy Local/Shared
+ * 4-card layout (coming-soon GitHub stub + harness-link card). Labels are
+ * lexicon-bound; every card carries a one-line OUTCOME explainer (P-007).
  */
-function buildSections(opts: { hiveLower: string; githubUrlEnabled: boolean }): PickerSection[] {
-  const { hiveLower, githubUrlEnabled } = opts;
+function buildSections(opts: {
+  hiveLower: string;
+  hivesLower: string;
+  combLabel: string;
+  githubUrlEnabled: boolean;
+}): PickerSection[] {
+  const { hiveLower, hivesLower, combLabel, githubUrlEnabled } = opts;
+
+  if (!githubUrlEnabled) {
+    // Legacy layout (flag off) — preserved byte-for-byte.
+    return [
+      {
+        heading: 'Local',
+        entries: [
+          {
+            key: 'new-local',
+            step: 'new-local',
+            label: 'New local directory',
+            description: 'Create a new folder, run git init, and register it as a harness.',
+            icon: '📁',
+          },
+          {
+            key: 'existing-local',
+            step: 'existing-local',
+            label: 'Existing local repo',
+            description: 'Register an existing local directory or git repo as a harness.',
+            icon: '📂',
+          },
+        ],
+      },
+      {
+        heading: 'Shared',
+        subheading: 'Work on these repositories collaboratively.',
+        entries: [
+          {
+            key: 'github-url',
+            step: 'github-url',
+            label: 'GitHub URL',
+            description: 'Clone a GitHub repository and register it. Requires GitHub auth.',
+            icon: '🐙',
+            comingSoon: true,
+          },
+          {
+            key: 'harness-link',
+            step: 'harness-link',
+            label: 'Harness link',
+            description: 'Join a shared harness via a papercusp://harness?… invite link.',
+            icon: '🔗',
+          },
+        ],
+      },
+    ];
+  }
+
+  // Hive-native layout (P-006): Create + Join, each card a one-line outcome.
   return [
     {
-      heading: 'Local',
+      heading: 'Create',
+      subheading: `Start a new ${hiveLower}, or add a repository to one.`,
+      showForkToggle: true,
       entries: [
         {
-          id: 'new-local',
+          key: 'new-local',
+          step: 'new-local',
           label: 'New local directory',
-          description: 'Create a new folder, run git init, and register it as a harness.',
+          description: 'A fresh folder, git-initialised and registered as a harness.',
           icon: '📁',
         },
         {
-          id: 'existing-local',
+          key: 'existing-local',
+          step: 'existing-local',
           label: 'Existing local repo',
-          description: 'Register an existing local directory or git repo as a harness.',
+          description: 'Link a local repo in place — nothing is moved or copied.',
           icon: '📂',
+        },
+        {
+          key: 'github-url',
+          step: 'github-url',
+          label: 'Search GitHub',
+          description: `Find any repo on GitHub and create or join a ${hiveLower} from it.`,
+          icon: '🔎',
         },
       ],
     },
     {
-      heading: 'Shared',
-      subheading: 'Work on these repositories collaboratively.',
+      heading: 'Join',
+      subheading: `Collaborate on a ${hiveLower} someone else published.`,
       entries: [
-        githubUrlEnabled
-          ? {
-              id: 'github-url',
-              label: 'GitHub URL',
-              description: `Create a ${hiveLower} from a GitHub repository. Forks nothing — clones and registers; auto-publishes to the directory.`,
-              icon: '🐙',
-            }
-          : {
-              id: 'github-url',
-              label: 'GitHub URL',
-              description: 'Clone a GitHub repository and register it. Requires GitHub auth.',
-              icon: '🐙',
-              comingSoon: true,
-            },
-        // Flag off: the harness-link card keeps its legacy primary spot.
-        ...(githubUrlEnabled
-          ? []
-          : [
-              {
-                id: 'harness-link' as Step,
-                label: 'Harness link',
-                description: 'Join a shared harness via a papercusp://harness?… invite link.',
-                icon: '🔗',
-              },
-            ]),
+        {
+          key: 'browse-comb',
+          href: '/cupboard',
+          label: `Browse the ${combLabel}`,
+          description: `Browse published ${hivesLower} in the ${combLabel} and join one.`,
+          icon: '🍯',
+        },
+        {
+          key: 'hive-invite',
+          step: 'hive-invite',
+          label: `${capitalize(hiveLower)} invite`,
+          description: `Paste a papercusp://hive invite link to join a private ${hiveLower}.`,
+          icon: '✉️',
+        },
+        {
+          key: 'harness-link',
+          step: 'harness-link',
+          label: 'Harness link',
+          description: 'Join a single shared harness via a papercusp://harness link.',
+          icon: '🔗',
+        },
       ],
     },
   ];
+}
+
+function capitalize(s: string): string {
+  return s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
 /**
@@ -691,6 +772,7 @@ function PickerStep({
   onMode,
   hiveScope,
   hiveLabel,
+  combLabel,
   githubUrlEnabled,
 }: {
   onSelect: (step: Step) => void;
@@ -698,19 +780,31 @@ function PickerStep({
   onMode: (m: CreateMode) => void;
   hiveScope: string | null;
   hiveLabel: string;
+  combLabel: string;
   githubUrlEnabled: boolean;
 }) {
+  const hiveLower = hiveLabel.toLowerCase();
   const intoHive = mode === 'into-hive' && hiveScope;
-  const sections = buildSections({ hiveLower: hiveLabel.toLowerCase(), githubUrlEnabled });
+  const sections = buildSections({
+    hiveLower,
+    hivesLower: `${hiveLower}s`,
+    combLabel,
+    githubUrlEnabled,
+  });
+  const fork = (
+    <ForkToggle mode={mode} onMode={onMode} onNewHive={() => onSelect('new-hive')} hiveScope={hiveScope} hiveLabel={hiveLabel} />
+  );
   return (
     <div>
-      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Add a {hiveLabel.toLowerCase() === 'hive' ? 'harness' : 'harness'}</h2>
+      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Add a harness</h2>
       <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--fg-dim)' }}>
         {intoHive
           ? <>New harnesses will be added into <code>{hiveScope}</code>.</>
           : 'Choose how to add a new harness to this workspace.'}
       </p>
-      <ForkToggle mode={mode} onMode={onMode} onNewHive={() => onSelect('new-hive')} hiveScope={hiveScope} hiveLabel={hiveLabel} />
+      {/* Flag OFF: the fork toggle sits at the top (legacy layout). Flag ON it
+          moves inside the Create section — only creation reads the mode (P-006). */}
+      {!githubUrlEnabled && fork}
       {sections.map((section) => (
         <div key={section.heading} style={{ marginBottom: 18 }}>
           <div style={{ marginBottom: 10 }}>
@@ -732,56 +826,55 @@ function PickerStep({
               </p>
             )}
           </div>
+          {section.showForkToggle && githubUrlEnabled && <div style={{ marginBottom: 12 }}>{fork}</div>}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            {section.entries.map((entry) => (
-              <button
-                key={entry.id}
-                type="button"
-                onClick={() => onSelect(entry.id)}
-                className="pc-create-harness-entry"
-                style={{
-                  textAlign: 'left',
-                  padding: 16,
-                  background: 'var(--bg-2)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  cursor: 'pointer',
-                  position: 'relative',
-                  transition: 'border-color 0.1s',
-                }}
-              >
-                <span style={{ fontSize: 24, display: 'block', marginBottom: 8 }}>{entry.icon}</span>
-                <strong style={{ fontSize: 13, display: 'block', marginBottom: 4, color: entry.comingSoon ? 'var(--fg-mute)' : 'var(--fg)' }}>
-                  {entry.label}
-                </strong>
-                <span style={{ fontSize: 12, color: 'var(--fg-mute)', lineHeight: 1.4, display: 'block' }}>
-                  {entry.description}
-                </span>
-              </button>
-            ))}
+            {section.entries.map((entry) => {
+              const cardStyle: React.CSSProperties = {
+                textAlign: 'left',
+                padding: 16,
+                background: 'var(--bg-2)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                cursor: 'pointer',
+                position: 'relative',
+                transition: 'border-color 0.1s',
+                display: 'block',
+                textDecoration: 'none',
+              };
+              const inner = (
+                <>
+                  <span style={{ fontSize: 24, display: 'block', marginBottom: 8 }}>{entry.icon}</span>
+                  <strong style={{ fontSize: 13, display: 'block', marginBottom: 4, color: entry.comingSoon ? 'var(--fg-mute)' : 'var(--fg)' }}>
+                    {entry.label}
+                  </strong>
+                  <span style={{ fontSize: 12, color: 'var(--fg-mute)', lineHeight: 1.4, display: 'block' }}>
+                    {entry.description}
+                  </span>
+                </>
+              );
+              // "Browse the Comb" navigates to /cupboard (a real route) — an <a>
+              // so it behaves like a link (cmd-click, etc.), matching the
+              // success-card links elsewhere in the picker family.
+              if (entry.href) {
+                return (
+                  <a key={entry.key} href={entry.href} className="pc-create-harness-entry" style={cardStyle}>
+                    {inner}
+                  </a>
+                );
+              }
+              return (
+                <button
+                  key={entry.key}
+                  type="button"
+                  onClick={() => entry.step && onSelect(entry.step)}
+                  className="pc-create-harness-entry"
+                  style={cardStyle}
+                >
+                  {inner}
+                </button>
+              );
+            })}
           </div>
-          {/* Entry-4 demotion (hive-from-github-url D-001/P-012): with the
-              GitHub-URL door live, the harness-link card becomes a secondary
-              "I have a link" affordance — same flow, lower billing. Beside it,
-              the invitee door for a hive invite artifact (hardening P-006). */}
-          {section.heading === 'Shared' && githubUrlEnabled && (
-            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 10 }}>
-              <button
-                type="button"
-                onClick={() => onSelect('harness-link')}
-                style={{ background: 'none', border: 'none', color: 'var(--fg-dim)', cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
-              >
-                I have a harness link (papercusp://…) →
-              </button>
-              <button
-                type="button"
-                onClick={() => onSelect('hive-invite')}
-                style={{ background: 'none', border: 'none', color: 'var(--fg-dim)', cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
-              >
-                I have a {hiveLabel.toLowerCase()} invite →
-              </button>
-            </div>
-          )}
         </div>
       ))}
     </div>
@@ -827,9 +920,15 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   // sharing is retired (comb-retire-per-harness-sharing-2026-06-11) — the
   // share offer is hive-publish or nothing.
   const [createdHiveSlug, setCreatedHiveSlug] = useState<string | null>(null);
-  // P-012 (hive-from-github-url): the GitHub-URL entry goes live behind this
-  // flag; off = the legacy coming-soon stub + the old Shared-section layout.
+  // P-012 (hive-from-github-url): the hive-native Create/Join layout + the
+  // GitHub search entry go live behind this flag; off = the legacy
+  // Local/Shared 4-card layout (coming-soon GitHub stub + harness-link card).
   const githubUrlEnabled = useFlag(FLAGS.HIVE_FROM_GITHUB_URL);
+  // The Comb term for the "Browse the Comb" Join card (P-006) — lexicon-bound
+  // (t('cupboard') = "Comb" | "Cupboard"). The hive term still rides the
+  // parent-passed `hiveLabel` prop.
+  const t = useLexicon();
+  const combLabel = t('cupboard');
 
   const handleClose = () => {
     setStep('picker');
@@ -881,22 +980,23 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
         {/* A deep-linked `?picker=share-offer` has no created slug (transient
             result state is useState) — fall back to the grid. */}
         {(step === 'picker' || (step === 'share-offer' && createdSlug === null)) && (
-          <PickerStep onSelect={setStep} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} githubUrlEnabled={githubUrlEnabled} />
+          <PickerStep onSelect={setStep} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} combLabel={combLabel} githubUrlEnabled={githubUrlEnabled} />
         )}
         {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
         {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
         {step === 'new-hive' && <NewHiveForm onBack={goBack} onSuccess={handleSuccess} hiveLabel={hiveLabel} />}
         {step === 'github-url' && !githubUrlEnabled && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
         {step === 'github-url' && githubUrlEnabled && (
-          <EntryGithubUrlForm
+          <EntryGithubSearchForm
             onBack={goBack}
             hiveScope={hiveScope}
             // The entry's own 3-mode fork (P-012): the picker's into-hive
             // selection carries over; otherwise the headline new-hive default.
+            // The search panel threads this into the create form it opens (P-009).
             initialMode={mode === 'into-hive' && hiveScope ? 'into-hive' : 'new-hive'}
             onCreated={(slug, opts) => {
-              // The form already showed its own success/publish summary (and a
-              // hive auto-publishes per visibility) — skip the share offer.
+              // The create form already showed its own success/publish summary
+              // (and a hive auto-publishes per visibility) — skip the share offer.
               if (opts?.hive) onCreated?.(slug, { hive: opts.hive });
               else onCreated?.(slug);
               handleClose();

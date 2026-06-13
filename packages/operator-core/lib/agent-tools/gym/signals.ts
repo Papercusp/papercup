@@ -79,11 +79,11 @@ export type _DrillContractWirePin = Assignable<z.infer<typeof drillOutcome>, Gym
 export default defineTool({
   name: 'gym:signals',
   description:
-    "Evaluate a target blueprint's deterministic gym signals (un-gameable guardrails) over one run's inputs. Pass `signals` (names from the target's blueprint.gym.signals) + any of {preTests, postTests, plantedBug, harnessOutputText, drillOutcomes}. Returns {results:[{name,value,applicable,metric?}], unknown, known, drillSource}. Built-ins: regressionsFromTests (needs pre+post tests), plantedBugCaught (needs plantedBug+harnessOutputText), drillResolveRate / drillTriageAccuracy / drillMttsh (need drill rows with planted known answers; value = SLO verdict, metric = the raw rate/ms). Drill rows: pass `drillOutcomes` directly, or set `loadDrillOutcomes` to read the live sandbox drill corpus from PG.",
+    "Evaluate a target blueprint's deterministic gym signals (un-gameable guardrails) over one run's inputs. Pass `signals` (from the target's blueprint.gym.signals) + any of {preTests, postTests, plantedBug, harnessOutputText, drillOutcomes}. Returns {results:[{name,value,applicable,metric?}], unknown, known, drillSource}. Built-ins: regressionsFromTests (pre+post tests), plantedBugCaught (plantedBug+harnessOutputText), drillResolveRate/drillTriageAccuracy/drillMttsh (drill rows w/ planted known answers; value=SLO verdict, metric=raw rate/ms). Drill rows: pass drillOutcomes, or set loadDrillOutcomes to read the live sandbox corpus from PG.",
   guidance: {
-    when: "Scoring a gym run's deterministic guardrails — the optimizer cannot game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's declared gym.signals by name. For the drill signals, set loadDrillOutcomes to pull the live red-queen sandbox corpus instead of hand-assembling rows.",
+    when: "Scoring a gym run's deterministic guardrails — the optimizer can't game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's gym.signals by name; set loadDrillOutcomes to pull the live red-queen sandbox corpus for the drill signals.",
     notWhen: 'Subjective quality scoring — that is the frozen judge (gym:judge). Running the pipeline — the gym runner.',
-    chaining: 'gym runner → collect run inputs (tests/output) → gym:signals (loadDrillOutcomes for drill targets) → feed results into the proposer + the trace summary.',
+    chaining: 'gym runner → collect run inputs (tests/output) → gym:signals (loadDrillOutcomes for drill targets) → proposer + trace summary.',
   },
   capability: 'harness:read',
   requirePrincipal: false,

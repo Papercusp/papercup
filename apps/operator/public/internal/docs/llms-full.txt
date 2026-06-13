@@ -4064,6 +4064,20 @@ After the implement lane was armed (learning-system-audit-improvements-2026-06-0
 
 Repaired live on 2026-06-12: the 48 wedged rows were backfilled `assigned_at = now()` so they re-enter the dispatchable pool \~2 h later, after the deploy train carries the fixed code to :3070. Full context: learning-system-audit-improvements-2026-06-09 D-010.
 
+## Live proof + two residual failure modes (2026-06-12 supervised re-enable)
+
+[Section titled “Live proof + two residual failure modes (2026-06-12 supervised re-enable)”](#live-proof--two-residual-failure-modes-2026-06-12-supervised-re-enable)
+
+The lane was re-enabled under a supervised proof (consume-edges P-013) and the first real armed dispatch (15:00:03, EI-75) confirmed **all three triad fixes green in production**: the ledger row (`harness_shared.improvement_dispatches`) named the item with `assigned_at` stamped at fire time (dateless-claim pool held at 0), the spawn record landed via the fallback path with `parent_role='operator'` (no NOT NULL violation, visible in the fleet), and the worker’s death was a real exit-1 at \~2 s — **not** the old exit-143 SIGTERM at 280 s. The triad is closed.
+
+The proof itself was env-killed (the worker’s entire stdout was *“You’ve hit your weekly limit · resets Jun 18, 7am”* — the fleet-wide claude-token exhaustion), so the last leg (≥1 genuine auto-resolve *landing*) is still unproven. But the supervised run surfaced **two new failure modes downstream of the triad fix** — both filed and owner-gated (do not patch without owner ratification; they touch the protected routines path / attempt-accounting policy):
+
+1. **Durable-spawn enqueue always fails from routine context → silent fire-and-forget (EI-403).** The implement routine runs as one DBOS *step* (system-actions contract), and inside it the dispatch calls `fireLaunchBlueprint` → durable-spawn enqueue, which DBOS forbids from within a step/transaction (`Invalid call to a 'workflow' function from within a 'step'`). **Every** dispatch therefore rides the fire-and-forget fallback — a host restart mid-dispatch loses the fire (the ledger row + claim survive, so it resurfaces as an orphan \~2 h later instead of being re-fired durably). The enqueue must move outside the step context (enqueue from the workflow layer, or make the dispatch its own workflow invocation). Repro: the `[durable-spawn] could not enqueue durable fire … falling back to fire-and-forget` warn on every :00/:30 tick.
+
+2. **Dead-on-arrival env failures charge full attempts → a credential outage self-drains the auto pool (EI-406).** The attempts cap (`DEFAULT_MAX_ATTEMPTS=3`, resolve-core.ts) exists to retire hopeless items, but an env failure (rate-limit / credential / spawn-infra) says nothing about the item — yet it still increments the counter. The env-killed EI-75 dispatch above pushed it to attempt 2/3 without any worker ever reading the issue; left enabled through a credential outage, every tick burns one attempt off the top-ranked eligible item until the whole auto-eligible pool graduates to human-only on dead spawns. **This is the one safety precondition before any unattended re-enable.** Proposed shape: classify worker deaths before charging — a sub-floor exit (e.g. under 30 s) with an env-failure signature (rate-limit text / auth error / empty output) should not increment attempts, and N consecutive env-failures should trip a lane-level protective pause rather than per-item exhaustion.
+
+**Re-enable checklist (run on the next armed tick, e.g. after the Jun 18 token reset or a credential swap):** verify the triad invariants above still hold (ledger names the item + `assigned_at` stamped · dateless-claim pool 0 · spawn visible · no exit-143 at 280 s), confirm a worker actually *reads and resolves* an issue (the leg the env outage blocked), and watch EI-406’s attempt-charging: if the credential is still exhausted at re-enable, abort before the lane drains the pool.
+
 # In-repo lib tests — JSX runtime + which vitest runs
 
 > Why a component test in an in-repo lib throws "React is not defined" from root vitest, and how the affected-tests walker actually runs workspace tests.
@@ -42031,7 +42045,7 @@ The `packages/operator-core/lib/operator-state-pg.ts` helpers branch on `ENCRYPT
 
 # Hive git-sync — per-member seeding and the multi-pusher model
 
-> How git-sync generalizes to any hive — one routine per member checkout (never homes or views), the push decision table, creator/joiner seed-active split, deterministic cron jitter, and the origin-serialized multi-pusher model for shared hives.
+> How git-sync generalizes to any hive — one routine per member checkout (never homes or views), the push decision table, the all-active seed default, deterministic cron jitter, and the origin-serialized multi-pusher model for shared hives.
 
 # Hive git-sync
 
@@ -42039,9 +42053,9 @@ The `packages/operator-core/lib/operator-state-pg.ts` helpers branch on `ENCRYPT
 
 The git-sync pipeline (`packages/operator-core/lib/harness/git-sync/run-git-sync.ts`) commits the whole tree, fetches, merges, and pushes — for **any** registered checkout, not just papercup. This page documents how that pipeline is *wired* to hives: which registry entries get a `system:git-sync` routine, who seeds it, what the seeded config says, and how N independent peers on a shared hive converge on one origin branch. Source plan: `git-sync-any-hive-2026-06-12` (see the [plans index](/internal/docs/reference/plans-index)); the pipeline itself was built in `git-sync-auto-commit-2026-06-03` and hardened in `git-sync-system-audit-2026-06-09`.
 
-One decision on this page is PROVISIONAL
+Both governing decisions are settled
 
-The **creator-ACTIVE / joiner-INACTIVE seed split** (P-005) is a provisional default (plan decision D-005), implemented as one-line constants so a later ratification is a trivial flip. The **multi-pusher origin-serialized model** (D-004) has passed its P-010 two-peer convergence verification — no ping-pong, no backoff needed — see [Verification status](#verification-status).
+The **seed-active default** (P-005) was ratified **all-active** on 2026-06-13 (plan decision D-008): every member checkout seeds ACTIVE, with joiner-side clones still `push: false` so “active” there means a local commit+fetch+merge mirror only. The **multi-pusher origin-serialized model** (D-004) has passed its P-010 two-peer convergence verification — no ping-pong, no backoff needed — see [Verification status](#verification-status).
 
 ## The model in one paragraph
 
@@ -42086,20 +42100,20 @@ A seeded row carries, in `trigger_config`:
 * **`cron`** — jittered every-10-minutes schedule (below);
 * **`push`** — from the decision table (below);
 * **`branch`** — the member’s `github_default_branch` registry coord when known (the pipeline falls back to its own per-repo branch resolution otherwise);
-* **`active`** — from the provisional creator/joiner split (below).
+* **`active`** — from the ratified all-active default (below).
 
-## Seed-active split (P-005 — provisional)
+## Seed-active default (P-005 — ratified all-active, D-008)
 
-[Section titled “Seed-active split (P-005 — provisional)”](#seed-active-split-p-005--provisional)
+[Section titled “Seed-active default (P-005 — ratified all-active, D-008)”](#seed-active-default-p-005--ratified-all-active-d-008)
 
-Creator-side members seed **ACTIVE**; joiner-side clones seed **INACTIVE**. The constants live in `git-sync-eligibility.ts`:
+Every member checkout seeds **ACTIVE**, both creator-side and joiner-side. The constants live in `git-sync-eligibility.ts`:
 
 ```ts
-export const GIT_SYNC_SEED_ACTIVE_CREATOR = true;  // provisional P-005
-export const GIT_SYNC_SEED_ACTIVE_JOINER = false;  // provisional P-005
+export const GIT_SYNC_SEED_ACTIVE_CREATOR = true;  // D-008 (ratified 2026-06-13)
+export const GIT_SYNC_SEED_ACTIVE_JOINER = true;   // D-008 (ratified 2026-06-13)
 ```
 
-Rationale for the default: creator-side follows the flags-default-enabled culture (escalations surface problems); joiner-side clones are read-only by design (fork-PR is the contribution path), so even commit-only churn stays opt-in until a human flips the routine on (`setGitSyncRoutineActive(sql, slug, true)`). The owner may ratify or flip either constant — they are deliberately one-line.
+Rationale: this follows the flags-default-enabled culture (escalations surface problems) and keeps every checkout’s local mirror fresh from origin without a manual go-live step. Joiner-side `active` is **not** a push — joiner clones are `push: false` by the decision table below (fork-PR stays the contribution path), so an active joiner routine only commits, fetches, and merges its local mirror. The constants stay one-line so a future re-gate (e.g. back to a creator/joiner split, or all-inactive) is still a trivial flip.
 
 ## The push decision table
 
@@ -42136,9 +42150,9 @@ Every member keeps a 10-minute cadence, but members land on different minute off
 
 Jitter is structural, not configurable: the seeding spine always computes the cron through this helper (no seed site bypasses it), and the schedule shape is the same one papercup’s hand-seeded row already uses, parsed by the routines engine’s `computeNextFireAt`.
 
-## The multi-pusher model (D-004 — provisional)
+## The multi-pusher model (D-004 — verified, D-007)
 
-[Section titled “The multi-pusher model (D-004 — provisional)”](#the-multi-pusher-model-d-004--provisional)
+[Section titled “The multi-pusher model (D-004 — verified, D-007)”](#the-multi-pusher-model-d-004--verified-d-007)
 
 For shared hives, **every push-capable peer runs its own git-sync independently**. There is no single-pusher election and no new coordination machinery. Convergence relies on the origin branch as the serializer:
 

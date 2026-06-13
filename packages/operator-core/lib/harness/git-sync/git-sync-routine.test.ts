@@ -156,7 +156,7 @@ describe('seedGitSyncRoutineForMember (P-001/P-008 seed side)', () => {
     expect('branch' in (upsertRoutineMock.mock.calls[0][1] as { triggerConfig: Record<string, unknown> }).triggerConfig).toBe(false);
   });
 
-  it('joinerSide seeds INACTIVE + push:false (joiner_side) without probing', async () => {
+  it('joinerSide seeds ACTIVE (D-008) + push:false (joiner_side) without probing', async () => {
     const { deps, probeCalls } = seedDeps();
     const out = await seedGitSyncRoutineForMember(
       { workspaceId: 'ws', installSlug: 'shop', entry: memberEntry(), joinerSide: true },
@@ -169,7 +169,7 @@ describe('seedGitSyncRoutineForMember (P-001/P-008 seed side)', () => {
       pushReason: expect.stringContaining('joiner_side'),
     });
     expect(probeCalls).toEqual([]);
-    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({ active: false });
+    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({ active: GIT_SYNC_SEED_ACTIVE_JOINER });
   });
 
   it('cronKey salts the jitter key (B-03 joiner-side per-install salt); default stays installSlug', async () => {

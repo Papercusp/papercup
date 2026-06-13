@@ -28,7 +28,7 @@
 import { randomUUID } from 'node:crypto';
 import { loadBuiltinBlueprint, assertNotNestedHive, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { getOrgPg } from '@papercusp/db-org';
-import { loopbackFetch } from '../loopback-fetch';
+import { loopbackFetch, describeFetchError } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
@@ -277,15 +277,16 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
       }
     })
     .catch((e) => {
-      console.warn(
-        `[launch-blueprint] fire failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
-      );
+      // describeFetchError surfaces undici's hidden cause code (e.g. UND_ERR_SOCKET)
+      // so the persisted error_message + watchdog signal are self-diagnosing (EI-390).
+      const detail = describeFetchError(e);
+      console.warn(`[launch-blueprint] fire failed (${installSlug}/${role}): ${detail}`);
       if (pg) {
         void finishSpawn(pg.sql, {
           spawnId,
           workspaceId,
           status: 'failed',
-          errorMessage: e instanceof Error ? e.message : String(e),
+          errorMessage: detail,
         }).catch(() => {});
       }
     });

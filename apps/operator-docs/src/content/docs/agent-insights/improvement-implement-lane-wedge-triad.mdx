@@ -2,7 +2,7 @@
 title: Implement-lane wedge triad — dateless claims, 280s SIGTERM, untracked launches
 description: Why the armed auto-implement loop resolved only 7/58 dispatches — claimIssue never stamped assigned_at (permanent in-flight), the 280s timeout SIGTERM'd workers mid-fix (exit 143), and the launch-blueprint fallback spawn record violated parent_role NOT NULL (invisible in fleet:tree).
 discovered: 2026-06-12
-tags: [improvements, auto-implement, routines, launch-blueprint, spawned-agents, timeouts]
+tags: [improvements, auto-implement, routines, launch-blueprint, spawned-agents, timeouts, dbos, attempt-accounting, supervised-proof]
 status: active
 ---
 
@@ -75,3 +75,58 @@ Repaired live on 2026-06-12: the 48 wedged rows were backfilled
 `assigned_at = now()` so they re-enter the dispatchable pool ~2 h later, after
 the deploy train carries the fixed code to :3070. Full context:
 learning-system-audit-improvements-2026-06-09 D-010.
+
+## Live proof + two residual failure modes (2026-06-12 supervised re-enable)
+
+The lane was re-enabled under a supervised proof (consume-edges P-013) and the
+first real armed dispatch (15:00:03, EI-75) confirmed **all three triad fixes
+green in production**: the ledger row (`harness_shared.improvement_dispatches`)
+named the item with `assigned_at` stamped at fire time (dateless-claim pool
+held at 0), the spawn record landed via the fallback path with
+`parent_role='operator'` (no NOT NULL violation, visible in the fleet), and the
+worker's death was a real exit-1 at ~2 s — **not** the old exit-143 SIGTERM at
+280 s. The triad is closed.
+
+The proof itself was env-killed (the worker's entire stdout was *"You've hit
+your weekly limit · resets Jun 18, 7am"* — the fleet-wide claude-token
+exhaustion), so the last leg (≥1 genuine auto-resolve *landing*) is still
+unproven. But the supervised run surfaced **two new failure modes downstream of
+the triad fix** — both filed and owner-gated (do not patch without owner
+ratification; they touch the protected routines path / attempt-accounting
+policy):
+
+1. **Durable-spawn enqueue always fails from routine context → silent
+   fire-and-forget (EI-403).** The implement routine runs as one DBOS *step*
+   (system-actions contract), and inside it the dispatch calls
+   `fireLaunchBlueprint` → durable-spawn enqueue, which DBOS forbids from within
+   a step/transaction (`Invalid call to a 'workflow' function from within a
+   'step'`). **Every** dispatch therefore rides the fire-and-forget fallback —
+   a host restart mid-dispatch loses the fire (the ledger row + claim survive,
+   so it resurfaces as an orphan ~2 h later instead of being re-fired durably).
+   The enqueue must move outside the step context (enqueue from the workflow
+   layer, or make the dispatch its own workflow invocation). Repro: the
+   `[durable-spawn] could not enqueue durable fire … falling back to
+   fire-and-forget` warn on every :00/:30 tick.
+
+2. **Dead-on-arrival env failures charge full attempts → a credential outage
+   self-drains the auto pool (EI-406).** The attempts cap
+   (`DEFAULT_MAX_ATTEMPTS=3`, resolve-core.ts) exists to retire hopeless items,
+   but an env failure (rate-limit / credential / spawn-infra) says nothing about
+   the item — yet it still increments the counter. The env-killed EI-75 dispatch
+   above pushed it to attempt 2/3 without any worker ever reading the issue;
+   left enabled through a credential outage, every tick burns one attempt off
+   the top-ranked eligible item until the whole auto-eligible pool graduates to
+   human-only on dead spawns. **This is the one safety precondition before any
+   unattended re-enable.** Proposed shape: classify worker deaths before
+   charging — a sub-floor exit (e.g. under 30 s) with an env-failure signature
+   (rate-limit text / auth error / empty output) should not increment attempts,
+   and N consecutive env-failures should trip a lane-level protective pause
+   rather than per-item exhaustion.
+
+**Re-enable checklist (run on the next armed tick, e.g. after the Jun 18 token
+reset or a credential swap):** verify the triad invariants above still hold
+(ledger names the item + `assigned_at` stamped · dateless-claim pool 0 · spawn
+visible · no exit-143 at 280 s), confirm a worker actually *reads and resolves*
+an issue (the leg the env outage blocked), and watch EI-406's attempt-charging:
+if the credential is still exhausted at re-enable, abort before the lane drains
+the pool.
