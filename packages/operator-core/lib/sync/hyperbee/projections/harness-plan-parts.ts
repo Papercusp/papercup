@@ -18,7 +18,7 @@ import type postgres from 'postgres';
 import { joinFederatedParts, hashPlanContent, type FederatedPart, type PlanPartKind } from '@papercusp/plan-parser';
 import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
-import { PgPlanPartsStore, type PlanPartsStore } from '../../plan-parts/store';
+import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store';
 
 /** The federated subset of a harness_plan_parts row (the wire shape). */
 export interface PlanPartWireRow {
@@ -73,8 +73,8 @@ async function flagOn(opts: HarnessPlanPartsProjectionOpts): Promise<boolean> {
 }
 
 /** LWW-guarded UPDATE of harness_plans.content from the recomposed parts (only
- *  the federated DOCUMENT fields; version/op_*/workspace stay as the whole-blob
- *  projection manages them — mirrors projections/harness-plans.ts). */
+ *  the federated DOCUMENT fields; version, op-state, and workspace stay as the
+ *  whole-blob projection (projections/harness-plans.ts) manages them). */
 function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
   return async (planSlug: string, content: string, contentHash: string, provenance?: ProvenanceContext): Promise<void> => {
     const sql = opts.sql ?? getOrgPg().sql;

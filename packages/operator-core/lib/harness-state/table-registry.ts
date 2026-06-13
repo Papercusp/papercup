@@ -182,6 +182,13 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // the Hive home) and stamps it as harness_slug for the projection demux. Listed here
   // so it resolves to sync:'peer-log' BEFORE the WORKSPACE_OWNED_EXPLICIT entry would.
   'engineer_issues',
+  // plan-federation-regrain-2026-06-13 (P-005/P-006): per-PART plan federation —
+  // each plan part (item/decision/section) federates as its own LWW key so
+  // concurrent edits to DIFFERENT parts merge (D-009). Producer = the CDC capture
+  // trigger (mig 271); projection 'plan-parts' (projections/harness-plan-parts.ts).
+  // DARK until papercusp-plan-part-federation flips: nothing writes this table
+  // locally until the flag-gated capture lands, so the trigger never fires.
+  'harness_plan_parts',
 ];
 
 /**
