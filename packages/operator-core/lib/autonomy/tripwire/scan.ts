@@ -357,10 +357,11 @@ export async function gatherTripwireSignals(
 /**
  * Live deps: PG store + the policy store (graduated_level writes via
  * setAutonomyPolicy, which audits + clamps ≤ ceiling) + captureImprovement for
- * the owner rail. The revert executor is a documented STUB until the Queen
- * execution layer wires real reverts (queen-autonomous-execution) — until then a
- * trip still records + demotes + notifies (the safety), and the owner alert flags
- * that a manual revert may be needed.
+ * the owner rail. The revert executor dispatches through revert-executor.ts's
+ * registry (built-in reverters for the canonical work-item-state/-priority
+ * handle kinds; the Queen execution layer registers reverters for its own
+ * kinds). An unrecognized handle kind → reverted:false — the trip still records +
+ * demotes + alerts (the safety), with the handle surfaced for a manual undo.
  */
 export function defaultAutonomyTrustScanDeps(sql: Sql, workspaceId: string): AutonomyTrustScanDeps {
   return {
@@ -374,13 +375,12 @@ export function defaultAutonomyTrustScanDeps(sql: Sql, workspaceId: string): Aut
     listArmed: () => listArmedTripwires(sql, workspaceId),
     gatherSignals: (sinceMs) => gatherTripwireSignals(sql, workspaceId, sinceMs),
     async executeRevert(row) {
-      // The Queen execution layer (queen-autonomous-execution) owns the real
-      // revert per revert_handle.kind. Until it wires an executor here, a trip is
-      // recorded + demoted + the owner is alerted to revert manually.
-      return {
-        reverted: false,
-        note: `no revert executor wired for handle kind '${row.revertHandle.kind}' (Queen execution layer dark)`,
-      };
+      // B-16 owns the revert-handle vocabulary + dispatch (revert-executor.ts):
+      // built-in reverters for the canonical kinds (work-item-state/-priority);
+      // the Queen execution layer registers reverters for its own action kinds.
+      // An unknown kind → reverted:false (the trip still demotes + alerts).
+      const { executeRevertVia, makeRevertRegistry, defaultRevertHelpers } = await import('./revert-executor');
+      return executeRevertVia(row, makeRevertRegistry(), defaultRevertHelpers());
     },
     markCleared: (id, nowMs) => markTripwireCleared(sql, workspaceId, id, nowMs),
     markTripped: (id, reason, nowMs, by) => markTripwireTripped(sql, workspaceId, id, reason, nowMs, by),

@@ -89,6 +89,7 @@ export {
   type AutonomyTrustScanOutcome,
   type ArmTripwireForDecisionInput,
   type ArmTripwireForDecisionResult,
+  type RevertOutcome,
   runAutonomyTrustScan,
   runAutonomyTripwireSweep,
   runAutonomyGraduationLeg,
@@ -96,3 +97,14 @@ export {
   defaultAutonomyTrustScanDeps,
   DEFAULT_AUTONOMY_TRUST_SCAN_OPTIONS,
 } from './tripwire/scan';
+// The revert-handle vocabulary + executor registry (B-16 / P-081) — the Queen
+// execution layer registers reverters for its own action kinds.
+export {
+  type RevertHelpers,
+  type Reverter,
+  BUILTIN_REVERTERS,
+  makeRevertRegistry,
+  registerReverter,
+  executeRevertVia,
+  defaultRevertHelpers,
+} from './tripwire/revert-executor';
