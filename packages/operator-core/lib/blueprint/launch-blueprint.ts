@@ -95,6 +95,18 @@ export async function resolveLaunchTarget(
 }
 
 /**
+ * Resolve a launch/program blueprint by id (the same `_resolver` seam
+ * `fireLaunchBlueprint` uses). Lets a caller INSPECT the resolved blueprint —
+ * e.g. `system:blueprint-run` checks `isProgramSpine(bp.spine)` to route a
+ * program-mode launch (a migrated deterministic/hybrid loop) to the program
+ * runner instead of a decider fire (deterministic-blueprints-migration-2026-06-13
+ * P-011).
+ */
+export async function resolveLaunchBlueprint(blueprintId: string): Promise<Blueprint> {
+  return _resolver(blueprintId);
+}
+
+/**
  * Resolve just the ROLE a launch blueprint fires (its `spine.decider`). For a
  * caller that spawns the role through a path OTHER than the invoke route — the
  * auditor lane uses `spawnInvokeOnce` (a direct subprocess), so it needs the role

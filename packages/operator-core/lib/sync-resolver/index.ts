@@ -1494,6 +1494,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //     when PG is unreachable — the UI shows "unavailable", never a 500.
   // Returns a 1-element array { insights, memory }. NOT table-backed — refreshes
   // on mount + the panel's manual `invalidate()`.
+  // ── autonomy.policy — the Queen autonomy policy (queen-autonomy-policy B-03) ──
+  //
+  // Per-category risk ceilings / locks / graduated levels for the active
+  // workspace (harness_shared.autonomy_policy, migration 259), each annotated
+  // with the derived effectiveCeiling (min(ceiling, graduated); locked ⇒ none).
+  // readAutonomyPolicy returns ALL 13 canonical categories — stored rows
+  // overlaid on the behavior-neutral defaults — so the owner settings surface
+  // (B-15) always renders a complete policy, and a not-yet-applied migration
+  // degrades to all-defaults (42P01 swallowed in the store, never a 500). NOT
+  // table-backed: autonomy:policy_set fires notifySyncInvalidate('autonomy.policy')
+  // after each write.
+  'autonomy.policy': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readAutonomyPolicy } = await import('../autonomy/policy-store');
+      const { effectiveCeiling } = await import('../autonomy/policy');
+      const rows = await readAutonomyPolicy(getOrgPg().sql, activeWorkspaceId());
+      return rows.map((p) => ({ ...p, effectiveCeiling: effectiveCeiling(p) }));
+    },
+  },
+
+  // Returns a 1-element array { insights, memory }. NOT table-backed — refreshes
+  // on mount + the panel's manual `invalidate()`.
   'learning.knowledge': {
     resolve: async () => {
       const { readInsightsSnapshot, readMemoryHealth } = await import('../memory/knowledge-read');

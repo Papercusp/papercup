@@ -12,6 +12,14 @@
 
 import { type CoordEnvelope } from './envelope';
 
+/**
+ * Escalation severity. As of queen-autonomy-policy-2026-06-13 (P-013) this is no
+ * longer an independent risk scale — it is a labeled band of the canonical
+ * `risk_tier` (trivial · low · moderate · high · critical). The fold lives in the
+ * operator (`attention/types.ts` `severityToRiskTier`: blocker→critical,
+ * question→high, advisory→low); this generic lib keeps the human-facing label
+ * and stays decoupled from the risk vocabulary.
+ */
 export type EscalationSeverity = 'blocker' | 'question' | 'advisory';
 
 export interface EscalationOption {

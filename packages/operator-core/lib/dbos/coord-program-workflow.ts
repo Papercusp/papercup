@@ -21,7 +21,8 @@
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
-import '../coord-ops/index.js'; // register every op
+import '../coord-ops/index.js'; // register every coord op
+import '../blueprint-steps/index.js'; // register every deterministic step-op (P-010)
 import { requireCoordOp } from '../coord-ops/registry.js';
 import { runProgramCore, type RunOp } from '../coord-ops/program-runner.js';
 import { buildCoordOpCtx, setProgramBlueprintResolver, type ProgramBlueprintResolver } from '../coord-ops/prod-caps.js';

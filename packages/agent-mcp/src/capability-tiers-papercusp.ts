@@ -80,6 +80,15 @@ const EXACT: Record<string, CapabilityTier> = {
   // operator's superuser-token. Defense-in-depth: handler enforces a
   // kind allowlist + writes audit_log on every call.
   'processes:kill': 'high',
+  // Fleet capability surface (agent-capability-confinement-2026-06-13, B-05):
+  // the gated defineTool re-exposure of native capabilities. High for anything
+  // that executes code, mutates the tree, or reaches the network; low for the
+  // read-only file read. The capability-envelope (B-06) keys on these strings.
+  'capability:bash': 'high',
+  'capability:fs-read': 'low',
+  'capability:fs-write': 'high',
+  'capability:git': 'high',
+  'capability:net': 'high',
 };
 
 const PREFIX_HIGH = ['secrets:', 'http:fetch:', 'data:read:'];

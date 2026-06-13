@@ -19,6 +19,7 @@ import {
   type DeciderFireFn,
 } from './blueprint-run-action';
 import { setLaunchBlueprintFire, type LaunchFireFn } from './launch-blueprint';
+import { setNegativeSpaceScanDeps } from '../blueprint-steps/ops/negative-space-scan';
 
 const coding = loadBuiltinBlueprint('coding').blueprint;
 const withDecider = (role: string): Blueprint => ({ ...coding, spine: { ...coding.spine, decider: role } });
@@ -35,6 +36,7 @@ afterEach(() => {
   setBlueprintResolver(null);
   setBlueprintRunFire(null);
   setLaunchBlueprintFire(null);
+  setNegativeSpaceScanDeps(null);
   gateState.verdict = { allow: true, consecutiveErrors: 0 };
 });
 
@@ -130,6 +132,37 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
 
     expect(fired).toHaveLength(1);
     expect(fired[0].timeoutMs).toBeUndefined();
+  });
+
+  it('payload.blueprintId for a PROGRAM-mode blueprint runs its deterministic program inline (P-011)', async () => {
+    // deterministic-blueprints-migration P-011: a migrated loop's routine seeds
+    // `{ blueprintId: 'negative-space' }`. The handler must detect program-mode and
+    // run the steps+gate program inline (the deterministic `negative-space:scan`
+    // step) — NOT fire a decider. The op's own seam keeps the miner off PG.
+    let ranTick = false;
+    setNegativeSpaceScanDeps({
+      flag: async () => true,
+      governorGate: async () => ({ allow: true, remainingUsd: 0 }),
+      tickDeps: {
+        readRows: async () => {
+          ranTick = true;
+          return [];
+        },
+        persist: async (_ws, entries) => entries,
+        capture: async () => ({ created: false, possibleDuplicates: [], reason: 'stub' }) as never,
+        markFiled: async () => {},
+        log: () => {},
+      },
+    });
+    const launchFired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      launchFired.push(input);
+    });
+
+    await handleBlueprintRun(ctx({ payloadTemplate: { blueprintId: 'negative-space' } }));
+
+    expect(ranTick).toBe(true); // the deterministic step ran the miner tick inline
+    expect(launchFired).toHaveLength(0); // a program blueprint never fires a decider/launch
   });
 
   // mode='work-item' touches getOrgPg().sql (the work_items base insert), so it is covered

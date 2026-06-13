@@ -23,6 +23,8 @@ import {
   needsHumanForTier,
   reportTier,
   severityToImportance,
+  severityToRiskTier,
+  riskTierIsDecision,
   untriaged,
 } from './types';
 
@@ -116,10 +118,14 @@ export interface CoordEscalationInput {
 
 export function coordEscalationToAttention(e: CoordEscalationInput): AttentionItem {
   const options = e.options ?? [];
-  // Tier (D-002/D-001): a blocker/question escalation is a genuine human
-  // Decision — this is where coord:ask-owner + coord:escalate(blocker) land.
-  // An advisory escalation is FYI → an Alert (surface, don't demand).
-  const tier: AttentionTier = e.severity === 'advisory' ? 'alert' : 'decision';
+  // Tier (D-002/D-001) via the canonical risk scale (queen-autonomy-policy P-013):
+  // the escalation's severity folds into `risk_tier`, and the alert-vs-decision
+  // tier derives from THAT — one scale, not two. blocker/question (critical/high)
+  // → Decision (a genuine human call: coord:ask-owner + coord:escalate(blocker)
+  // land here); advisory (low) → Alert (surface, don't demand). Behavior-identical
+  // to the prior direct `severity === 'advisory'` test.
+  const riskTier = severityToRiskTier(e.severity);
+  const tier: AttentionTier = riskTierIsDecision(riskTier) ? 'decision' : 'alert';
   const needsHuman = needsHumanForTier(tier);
   return {
     id: `coord-escalation:${e.msgId}`,

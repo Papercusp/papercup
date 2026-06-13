@@ -13,6 +13,18 @@ import {
   resolveCardResponse,
 } from '@papercusp/agent-mcp';
 
+// B-10: the handler reads two flags via @papercusp/flags/server. Mock getFlag so
+// the bee-interception path is deterministic; an unconfigured vi.fn() returns
+// undefined (falsy) ⇒ the legacy un-intercepted path, which every pre-existing
+// test below depends on.
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
+import { configureCoordLog, resetCoordLog } from '../coordination/log';
+import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
+import { listEscalations } from '../coordination/escalations';
+import { AGENT_CARD_TIMEOUT_MS } from '../coordination/agent-question-gate';
+
 // Import the tool's handler directly. The tool definition is the default
 // export of the module; we exercise the handler with a mock context.
 import askChoiceTool from './ask_choice';
@@ -273,5 +285,102 @@ describe('chat:ask_choice handler', () => {
     expect(parsed.picks).toEqual([{ option_id: 'b', label: 'B' }]);
     // openCards should be empty after resolve.
     expect(getSnapshot('r-e2e')!.snapshot.openCards).toEqual([]);
+  });
+});
+
+// ── B-10 card interception (queen-autonomous-execution P-041/P-045) ──────────
+// A FLEET AGENT's blocking card is intercepted: the spec gets a bounded timeout
+// (so the agent never freezes) AND the question is mirrored into a routable
+// agent-question escalation. Interactive callers are untouched.
+describe('chat:ask_choice — B-10 autonomous-agent card interception', () => {
+  // A bee: verified fleet-spawn (uiClientId baked from the signed MCP URL +
+  // sigVerifiedSpawn), no superuser/power-user/principal ⇒ resolveAgentIdentity
+  // returns source:'fleet-spawn'.
+  const beeCtx = (askUser: unknown) => ({
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    workspaceId: ws,
+    runId: 'r-bee',
+    uiClientId: 'opspawn-bee-1',
+    sigVerifiedSpawn: true,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    askUser: askUser as any,
+  });
+  // An interactive engineer: resolves to source:'omp-hook-session' (a human is
+  // at the card) ⇒ never intercepted.
+  const suCtx = (askUser: unknown) => ({
+    ...beeCtx(askUser),
+    isSuperuser: true,
+    sigVerifiedSpawn: false,
+  });
+
+  // askUser stand-in that captures the spec, fires onCard (as the real correlator
+  // does on registration), and returns the pick.
+  const capturingAskUser = (corr: string) =>
+    vi.fn(async (spec: { onCard?: (i: { correlationId: string; runId: string; workspaceId: string }) => void }) => {
+      spec.onCard?.({ correlationId: corr, runId: 'r-bee', workspaceId: ws });
+      return { action: 'submit', payload: { picks: ['a'] } };
+    });
+
+  beforeEach(() => {
+    configureCoordLog(new InMemoryCoordLog());
+    _resetCardCorrelatorForTests();
+    _resetStateChannelForTests();
+    vi.mocked(getFlag).mockReset();
+  });
+  afterEach(() => {
+    resetCoordLog();
+  });
+
+  it('bee + flag ON: spec gets the bounded timeout AND a routable agent-question escalation is written', async () => {
+    vi.mocked(getFlag).mockImplementation(async (key: unknown) => key === FLAGS.QUEEN_CARD_INTERCEPTION);
+    const askUser = capturingAskUser('corr-bee-1');
+
+    await (askChoiceTool as any).handler(
+      { question: 'deploy now?', options: [{ id: 'a', label: 'Yes' }, { id: 'b', label: 'No' }] },
+      beeCtx(askUser),
+    );
+
+    const spec = askUser.mock.calls[0][0] as { timeoutMs?: number };
+    expect(spec.timeoutMs).toBe(AGENT_CARD_TIMEOUT_MS);
+
+    const escs = await listEscalations();
+    expect(escs.length).toBe(1);
+    const e = escs[0] as Record<string, unknown>;
+    expect(e.category).toBe('agent-question');
+    expect(e.autonomous).toBe(true);
+    expect(e.rung).toBe('owner-queue');
+    expect(e.cardCorrelationId).toBe('corr-bee-1');
+    expect(e.cardWorkspaceId).toBe(ws);
+  });
+
+  it('interactive superuser + flag ON: NOT intercepted (no timeout, no escalation — a human is watching)', async () => {
+    vi.mocked(getFlag).mockImplementation(async (key: unknown) => key === FLAGS.QUEEN_CARD_INTERCEPTION);
+    const askUser = capturingAskUser('corr-su');
+
+    await (askChoiceTool as any).handler(
+      { question: 'q?', options: [{ id: 'a', label: 'A' }] },
+      suCtx(askUser),
+    );
+
+    const spec = askUser.mock.calls[0][0] as { timeoutMs?: number };
+    expect(spec.timeoutMs).toBeUndefined();
+    expect((await listEscalations()).length).toBe(0);
+  });
+
+  it('bee + flag OFF: legacy un-intercepted path (no timeout, no escalation)', async () => {
+    vi.mocked(getFlag).mockResolvedValue(false);
+    const askUser = capturingAskUser('corr-off');
+
+    await (askChoiceTool as any).handler(
+      { question: 'q?', options: [{ id: 'a', label: 'A' }] },
+      beeCtx(askUser),
+    );
+
+    const spec = askUser.mock.calls[0][0] as { timeoutMs?: number };
+    expect(spec.timeoutMs).toBeUndefined();
+    expect((await listEscalations()).length).toBe(0);
   });
 });

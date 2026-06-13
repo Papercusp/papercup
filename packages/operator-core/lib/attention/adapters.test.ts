@@ -3,6 +3,9 @@ import {
   importanceRank,
   sortByImportance,
   severityToImportance,
+  severityToRiskTier,
+  riskTierIsDecision,
+  DECISION_RISK_TIER,
   type AttentionItem,
 } from './types';
 import {
@@ -34,6 +37,38 @@ describe('importance helpers', () => {
     expect(severityToImportance('blocker')).toBe('urgent');
     expect(severityToImportance('question')).toBe('high');
     expect(severityToImportance('advisory')).toBe('low');
+  });
+});
+
+describe('P-013 — escalation severity folds into risk_tier', () => {
+  it('maps severity to risk_tier (blocker→critical, question→high, advisory→low)', () => {
+    expect(severityToRiskTier('blocker')).toBe('critical');
+    expect(severityToRiskTier('question')).toBe('high');
+    expect(severityToRiskTier('advisory')).toBe('low');
+  });
+
+  it('risk_tier ⊥ importance: the two axes derive from severity INDEPENDENTLY (P-014)', () => {
+    // blocker: importance urgent, but risk critical — different bands, same input.
+    expect(severityToImportance('blocker')).toBe('urgent');
+    expect(severityToRiskTier('blocker')).toBe('critical');
+  });
+
+  it('riskTierIsDecision splits at the moderate threshold (advisory=alert, else decision)', () => {
+    expect(DECISION_RISK_TIER).toBe('moderate');
+    expect(riskTierIsDecision('low')).toBe(false); // advisory → alert
+    expect(riskTierIsDecision('moderate')).toBe(true);
+    expect(riskTierIsDecision('high')).toBe(true); // question → decision
+    expect(riskTierIsDecision('critical')).toBe(true); // blocker → decision
+  });
+
+  it('the escalation tier is now DERIVED from risk_tier (one scale, not two)', () => {
+    // The adapter computes tier = riskTierIsDecision(severityToRiskTier(sev)) — assert
+    // the live tier matches that fold for every severity (and stays behavior-neutral).
+    for (const sev of ['blocker', 'question', 'advisory'] as const) {
+      const a = coordEscalationToAttention({ msgId: `m-${sev}`, severity: sev, summary: 's' });
+      const expected = riskTierIsDecision(severityToRiskTier(sev)) ? 'decision' : 'alert';
+      expect(a.tier).toBe(expected);
+    }
   });
 });
 

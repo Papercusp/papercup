@@ -32,14 +32,18 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
-import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { loadBuiltinBlueprint, isProgramSpine, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { resolveProjectDir } from '../spawn-config';
 import { loopbackFetch } from '../loopback-fetch';
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
 import { checkFireGate, recordFire } from '../autoloop';
 import { getEffectiveBlueprint } from './project-to-pg';
-import { fireLaunchBlueprint } from './launch-blueprint';
+import { fireLaunchBlueprint, resolveLaunchBlueprint } from './launch-blueprint';
 import { operatorApiBase } from '../operator-api-base';
+import '../coord-ops/index'; // register coord ops (program-mode spine steps)
+import '../blueprint-steps/index'; // register deterministic step-ops (P-010)
+import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner';
+import { buildCoordOpCtx } from '../coord-ops/prod-caps';
 
 const operatorBase = operatorApiBase;
 
@@ -205,6 +209,44 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
   console.log(`[blueprint-run] ${installSlug}: created scheduled work-item ${featureId} (item_kind=${itemKind})`);
 }
 
+/**
+ * Run a PROGRAM-mode blueprint (a migrated deterministic / hybrid learning loop —
+ * deterministic-blueprints-migration-2026-06-13 P-011) inline as this durable
+ * step, via the pure `runProgramCore` + `inlineRunOp`. Behavior-neutral with the
+ * bespoke loops, which also ran inline in their `system:<loop>` step (D-004): the
+ * whole steps+gate program runs to completion in one step; a crash replays it
+ * (the loops are idempotent / cadence-recovered). A HYBRID loop's agent step
+ * (`orchestrator:spawn-roles`) still routes through `coordSpawnRunner` →
+ * `spawnInvokeOnce`, THE governed launch chokepoint (D-005) — so blueprint-izing
+ * closes the eval-battery second-spawn-path seam for free.
+ *
+ * `inlineRunOp` runs each op directly (no nested `DBOS.runStep`) — required,
+ * since the system action IS already one DBOS step (nested steps are illegal).
+ * Never throws: a program failure logs + returns (the durable-step contract).
+ */
+async function runScheduledProgram(
+  bp: Blueprint,
+  opts: { installSlug: string; workspaceId: string; payload?: Record<string, unknown> | null },
+): Promise<void> {
+  const payload = opts.payload && typeof opts.payload === 'object' ? opts.payload : {};
+  const ctx = buildCoordOpCtx({
+    identity: { ownerId: 'system:blueprint-run', ownerLabel: 'blueprint-run' },
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.installSlug,
+    depth: 0,
+  });
+  try {
+    const outcome = await runProgramCore({ blueprint: bp, payload, ctx, runOp: inlineRunOp });
+    console.log(
+      `[blueprint-run] ${opts.installSlug}: ran program '${bp.id}' → ${outcome.outcome} (resolved=${outcome.resolved})`,
+    );
+  } catch (e) {
+    console.warn(
+      `[blueprint-run] ${opts.installSlug}: program '${bp.id}' FAILED: ${e instanceof Error ? e.message : e}`,
+    );
+  }
+}
+
 /** The registered `system:blueprint-run` handler. */
 export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void> {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
@@ -218,6 +260,25 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void> {
   // `triggers.schedule` materialization path.)
   const launchId = typeof payloadTemplate?.blueprintId === 'string' ? payloadTemplate.blueprintId.trim() : '';
   if (launchId) {
+    // A PROGRAM-mode launch (a migrated deterministic / hybrid loop, e.g.
+    // `{ blueprintId: 'negative-space' }`) has no single decider to fire — run its
+    // steps+gate program inline instead of `fireLaunchBlueprint` (P-011). Resolve
+    // through the same seam fireLaunchBlueprint uses; a resolve failure falls
+    // through to the launch path (which logs its own error).
+    let launchBp: Blueprint | null = null;
+    try {
+      launchBp = await resolveLaunchBlueprint(launchId);
+    } catch (e) {
+      console.warn(`[blueprint-run] ${installSlug}: could not resolve launch blueprint '${launchId}': ${e instanceof Error ? e.message : e}`);
+    }
+    if (launchBp && isProgramSpine(launchBp.spine)) {
+      await runScheduledProgram(launchBp, {
+        installSlug,
+        workspaceId,
+        payload: (payloadTemplate?.payload as Record<string, unknown> | undefined) ?? null,
+      });
+      return;
+    }
     const kickoff =
       typeof payloadTemplate?.kickoff === 'string' && payloadTemplate.kickoff.trim()
         ? payloadTemplate.kickoff
@@ -243,6 +304,16 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void> {
 
   if (mode === 'work-item') {
     await createWorkItem(ctx, bp);
+    return;
+  }
+  // A harness whose OWN effective blueprint is program-mode (a deterministic /
+  // hybrid loop) runs its program inline rather than firing a decider (P-011).
+  if (isProgramSpine(bp.spine)) {
+    await runScheduledProgram(bp, {
+      installSlug,
+      workspaceId,
+      payload: (payloadTemplate?.payload as Record<string, unknown> | undefined) ?? null,
+    });
     return;
   }
   // mode === 'run' (default): start a blueprint run by firing the declared decider.

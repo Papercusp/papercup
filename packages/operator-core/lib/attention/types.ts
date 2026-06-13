@@ -15,7 +15,7 @@
  * type (per the plans-api decoupling pattern).
  */
 
-import { type Importance, IMPORTANCE_LEVELS } from '@papercusp/plan-parser';
+import { type Importance, IMPORTANCE_LEVELS, type RiskTier, riskTierRank } from '@papercusp/plan-parser';
 import type { ReportBlock } from '@papercusp/chat-protocol';
 
 export type AttentionKind =
@@ -265,6 +265,44 @@ export function severityToImportance(sev: 'blocker' | 'question' | 'advisory'): 
     default:
       return 'normal';
   }
+}
+
+/**
+ * Map a coord escalation severity onto the canonical `risk_tier` scale
+ * (queen-autonomy-policy-2026-06-13 / P-013): escalation severity is no longer
+ * an independent PARALLEL scale — it is a labeled band of `risk_tier`, so the
+ * autonomy gate and the inbox reason about ONE risk vocabulary, not two.
+ *   - `blocker`  → `critical` (fully blocks; a decision the human must make)
+ *   - `question` → `high` (an agent's explicit escalation of a paused decision)
+ *   - `advisory` → `low` (FYI)
+ * Kept SEPARATE from {@link severityToImportance} (P-014): `risk_tier` drives the
+ * autonomy gate / the alert-vs-decision tier; `importance` drives the
+ * within-tier ranker. The two derive from severity INDEPENDENTLY.
+ */
+export function severityToRiskTier(sev: 'blocker' | 'question' | 'advisory'): RiskTier {
+  switch (sev) {
+    case 'blocker':
+      return 'critical';
+    case 'question':
+      return 'high';
+    case 'advisory':
+      return 'low';
+    default:
+      return 'moderate';
+  }
+}
+
+/**
+ * The `risk_tier` at/above which an item is a human DECISION rather than an FYI
+ * Alert. Set to `moderate` so the escalation fold is behavior-neutral:
+ * `advisory` (low) → Alert; `question`/`blocker` (high/critical) → Decision —
+ * exactly the prior `severity === 'advisory' ? 'alert' : 'decision'` outcome.
+ */
+export const DECISION_RISK_TIER: RiskTier = 'moderate';
+
+/** Whether a `risk_tier` rises to a human DECISION (≥ {@link DECISION_RISK_TIER}). */
+export function riskTierIsDecision(t: RiskTier): boolean {
+  return riskTierRank(t) >= riskTierRank(DECISION_RISK_TIER);
 }
 
 /** Per-tier buckets, each importance-sorted, plus counts — the shape the

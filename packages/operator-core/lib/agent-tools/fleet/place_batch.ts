@@ -1,0 +1,264 @@
+/**
+ * fleet:place_batch — one-wake BATCH placement for the Queen
+ * (queen-autonomous-execution-2026-06-13, B-07 / P-001 + P-002).
+ *
+ * Collapses the Queen's SERIAL "for each ready task pick placement" loop into a
+ * SINGLE call: gather the ready frontier + the live bees + the free-slot
+ * headroom, rank each task↔bee by affinity (explicit-intent > file-overlap >
+ * recent-activity > queue-similarity — placement-affinity.ts), then fan
+ * placements across the fleet —
+ *
+ *   warm-inject onto a warm bee  →  fresh `fleet:spawn` into a free slot  →  queue back
+ *
+ * — up to the fleet cap, in ONE turn. Affinity + the batch decision are pure
+ * (placement-affinity.ts / batch-placement.ts); this tool is the gather→plan→
+ * execute wrapper. Each placement is isolated (one failure never aborts the
+ * batch), and warm-inject obeys the woken:0 ladder (a bee with no armed wake is
+ * released + re-placed as a fresh spawn — queen.md "climb the ladder").
+ *
+ * Scale past the fleet ceiling (~16) is bounded by the credential pool, not this
+ * tool (D-006): a batch larger than headroom simply spawns up to the ceiling and
+ * queues the rest with an `await_event` to retry on a freed slot.
+ */
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
+import { COORD_ROLES } from '../coordination/roles';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { planBatchPlacement, type BatchPlacementPlan } from '../../fleet/batch-placement';
+import { gatherFrontier, gatherLiveBees } from '../../fleet/placement-gather';
+import type { PlacementTask } from '../../fleet/placement-affinity';
+
+interface PlacementResult {
+  task: string;
+  action: 'spawned' | 'injected' | 'inject-raced' | 'unplaced' | 'deferred' | 'spawn-failed' | 'error';
+  bee?: string;
+  spawn_id?: string | null;
+  harness?: string | null;
+  rank?: number;
+  climbed_from?: string;
+  await_event?: string;
+  reason: string;
+  error?: string;
+}
+
+export default defineTool({
+  name: 'fleet:place_batch',
+  profile: 'engineer',
+  description:
+    'Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Queen\'s serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.',
+  guidance: {
+    when: 'You (the Queen) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping fleet:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm bees by affinity in one turn.',
+    notWhen:
+      'Placing a SINGLE task (just fleet:spawn or coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.',
+    chaining:
+      'work_items:list (the frontier) + fleet:assignments (bee load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot.',
+  },
+  capability: 'work_items:write',
+  requirePrincipal: false,
+  // Placement is the Queen's (or operator's) surface — same carve-out as fleet:spawn:
+  // the worker-bee + the watch-only sentinel are excluded (they don't place agents).
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'),
+  args: z.object({
+    tasks: z
+      .array(z.string().min(1).max(120))
+      .max(64)
+      .optional()
+      .describe('Ordered work-item ids (WI-/F-/EI-), IMPORTANCE order (index 0 = highest) — your ranked ready frontier. Omit to pull the open unassigned backlog from `harness`.'),
+    harness: z
+      .string()
+      .max(80)
+      .optional()
+      .describe('Pull the OPEN unassigned backlog from this member harness (priority order) when `tasks` is not given. Also the spawn target for fresh bees.'),
+    max: z.number().int().min(1).max(64).optional().describe('Hard cap on total placements this batch (default 32 / frontier size).'),
+    brief: z.string().max(2000).optional().describe('Situational overlay applied to every placement (spawn prompt + warm-inject body) — the context the bees are MISSING, not a restatement of the work-item.'),
+    tier: z.string().max(40).optional().describe('Model tier for fresh spawns (quick/standard/deep/max — see your tier menu). Omit for the bee role default.'),
+    inject_load_threshold: z.number().int().min(1).max(20).optional().describe('A bee whose projected load reaches this is no longer a warm-inject target (default 3).'),
+    min_inject_affinity: z.number().min(0).max(100).optional().describe('Minimum affinity score to warm-inject vs fresh-spawn (default 1 ≈ one fully-fired low-tier signal).'),
+    max_inject_per_bee: z.number().int().min(1).max(10).optional().describe('Max items to warm-inject onto one bee in this batch (default 2).'),
+    dry_run: z.boolean().optional().describe('Return the placement PLAN (decisions + counts) WITHOUT spawning/injecting — preview the batch.'),
+    workspace: z.string().max(120).optional(),
+  }),
+  async handler(args, ctx) {
+    const actor = resolveAgentIdentity(ctx);
+    const actorWs = actor.workspaceId && actor.workspaceId !== '*' ? actor.workspaceId : null;
+    const workspaceId = args.workspace ?? actorWs ?? activeWorkspaceId();
+    const limit = args.max ?? 32;
+
+    const [{ tasks, skipped }, bees] = await Promise.all([
+      gatherFrontier({ ids: args.tasks, harness: args.harness, limit }),
+      gatherLiveBees(workspaceId),
+    ]);
+
+    const { getSpawnHeadroom } = await import('../../fleet/operator-spawn');
+    const { headroom } = await getSpawnHeadroom(workspaceId);
+
+    const plan = planBatchPlacement({
+      tasks,
+      bees,
+      headroom,
+      max: args.max,
+      injectLoadThreshold: args.inject_load_threshold,
+      minInjectAffinity: args.min_inject_affinity,
+      maxInjectPerBee: args.max_inject_per_bee,
+      now: Date.now(),
+    });
+
+    if (args.dry_run) {
+      return json({
+        ok: true,
+        dry_run: true,
+        surveyed: { frontier: tasks.length, bees: bees.length, headroom },
+        plan: summarizePlan(plan),
+        skipped,
+      });
+    }
+
+    const exec = await executeBatch({ plan, headroom, brief: args.brief ?? null, tier: args.tier ?? null, actor, role: (ctx as { role?: string }).role ?? 'operator', workspaceId });
+    return json({
+      ok: true,
+      surveyed: { frontier: tasks.length, bees: bees.length, headroom },
+      ...exec,
+      skipped,
+    });
+  },
+});
+
+function json(obj: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+}
+
+function summarizePlan(plan: BatchPlacementPlan) {
+  return {
+    spawn: plan.spawnCount,
+    warm_inject: plan.injectCount,
+    unplaced: plan.unplacedCount,
+    decisions: plan.decisions.map((d) => ({
+      task: d.task.id,
+      disposition: d.disposition,
+      ...(d.bee ? { bee: d.bee } : {}),
+      ...(d.rank != null ? { rank: d.rank } : {}),
+      reason: d.reason,
+    })),
+  };
+}
+
+/**
+ * Execute a planned batch. Each placement is independent + try/caught so one
+ * failure never aborts the rest. Fresh spawns draw from the reserved headroom;
+ * woken:0 warm-inject fallbacks draw from the leftover (headroom − planned
+ * spawns) so a fallback can never starve a planned spawn.
+ */
+async function executeBatch(opts: {
+  plan: BatchPlacementPlan;
+  headroom: number;
+  brief: string | null;
+  tier: string | null;
+  actor: AgentIdentity;
+  role: string;
+  workspaceId: string;
+}): Promise<{ placements: PlacementResult[]; summary: Record<string, number>; await_event?: string; next?: string }> {
+  const { plan, headroom, brief, tier, actor, role, workspaceId } = opts;
+  const [{ spawnAgentInHarness }, { claimWorkItem, releaseWorkItem, reorderWorkItem }, { sendMessage }, { wakeRecipients }] =
+    await Promise.all([
+      import('../../fleet/operator-spawn'),
+      import('../../work-items'),
+      import('../coordination/messages'),
+      import('../coordination/inbox-wake'),
+    ]);
+
+  const ownerId = actor.ownerId ?? '';
+  const parentSpawnId = /^s-/.test(ownerId) ? ownerId : null;
+  let extraSpawnBudget = Math.max(0, headroom - plan.spawnCount);
+  let awaitEvent: string | null = null;
+  const placements: PlacementResult[] = [];
+
+  const doSpawn = async (task: PlacementTask, reason: string, climbedFrom?: string): Promise<PlacementResult> => {
+    if (awaitEvent) {
+      return { task: task.id, action: 'deferred', reason: 'fleet ceiling reached earlier this batch', await_event: awaitEvent };
+    }
+    const res = await spawnAgentInHarness({
+      workspaceId,
+      harness: task.harness,
+      role: 'bee',
+      featureId: task.id,
+      brief,
+      tier,
+      parentSpawnId,
+      parentRole: role,
+    });
+    if (!res.ok && res.awaitEvent) {
+      awaitEvent = res.awaitEvent;
+      return { task: task.id, action: 'deferred', reason: res.error ?? 'over fleet ceiling', await_event: res.awaitEvent };
+    }
+    return {
+      task: task.id,
+      action: res.ok ? 'spawned' : 'spawn-failed',
+      spawn_id: res.spawnId,
+      harness: res.harness,
+      reason,
+      ...(climbedFrom ? { climbed_from: climbedFrom } : {}),
+      ...(res.error ? { error: res.error } : {}),
+    };
+  };
+
+  for (const d of plan.decisions) {
+    try {
+      if (d.disposition === 'unplaced') {
+        placements.push({ task: d.task.id, action: 'unplaced', reason: d.reason });
+        continue;
+      }
+      if (d.disposition === 'spawn') {
+        placements.push(await doSpawn(d.task, d.reason));
+        continue;
+      }
+      // warm-inject: assign → rank (Queen overlay) → wake.
+      const bee = d.bee as string;
+      const harness = d.task.harness ?? undefined;
+      const claim = await claimWorkItem(d.task.id, bee, { harness });
+      if (!claim) {
+        placements.push({ task: d.task.id, action: 'inject-raced', bee, reason: 'item was claimed by another agent first — left as-is' });
+        continue;
+      }
+      await reorderWorkItem(d.task.id, d.rank ?? 0, { writer: 'queen', harness });
+      const summary = `Queen warm-inject: ${d.task.id}`;
+      const body =
+        brief ??
+        `Queen placement — ${d.task.id} ("${d.task.title}") is on your work-list at head-of-line (${d.affinity?.reasons.join(', ') || 'context affinity'}). Claim_next / work it next.`;
+      await sendMessage(actor, { to: [bee], summary, body, extra: { wake: true } });
+      const fan = await wakeRecipients([bee], { summary, source: ownerId, workspaceId });
+      if (fan.woken === 0) {
+        // No armed wake — don't strand the item on a dead/asleep bee. Release it
+        // and climb the ladder: a fresh spawn if a slot is free, else queue back.
+        await releaseWorkItem(d.task.id, { harness }).catch(() => {});
+        if (extraSpawnBudget > 0 && !awaitEvent) {
+          extraSpawnBudget--;
+          placements.push(await doSpawn(d.task, 'warm-inject undelivered (woken:0) → fresh spawn', bee));
+        } else {
+          placements.push({ task: d.task.id, action: 'unplaced', bee, reason: 'warm-inject undelivered (woken:0); no spawn headroom — released to the frontier' });
+        }
+        continue;
+      }
+      placements.push({ task: d.task.id, action: 'injected', bee, rank: d.rank ?? 0, reason: d.reason });
+    } catch (err) {
+      placements.push({ task: d.task.id, action: 'error', reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  const count = (a: PlacementResult['action']) => placements.filter((p) => p.action === a).length;
+  const summary = {
+    spawned: count('spawned'),
+    injected: count('injected'),
+    raced: count('inject-raced'),
+    unplaced: count('unplaced'),
+    deferred: count('deferred'),
+    failed: count('spawn-failed') + count('error'),
+  };
+  return {
+    placements,
+    summary,
+    ...(awaitEvent
+      ? { await_event: awaitEvent, next: `over the fleet ceiling — events:await { event: "${awaitEvent}" }, end your turn, and re-run fleet:place_batch for the deferred tasks on wake.` }
+      : {}),
+  };
+}

@@ -31,27 +31,41 @@ const SLUG = process.env.NEGATIVE_SPACE_HARNESS ?? 'papercup';
 // (release-trigger :00/:15/:30/:45, green-checkpoint ~:30), the gym's
 // :10/:40, and iq-battery's :20, so a deploy-restart at a shared boundary
 // never kills the tick (the iq-battery precedent).
-const ROUTINE = { name: 'negative-space-mine', target: 'system:negative-space-mine', cron: '0 25 */6 * * *' };
+//
+// MIGRATED (deterministic-blueprints-migration-2026-06-13 P-110): the routine
+// now fires the `negative-space` PROGRAM blueprint via `system:blueprint-run`
+// (which detects program-mode and runs the deterministic `negative-space:scan`
+// step inline) rather than the bespoke `system:negative-space-mine` action. Same
+// cadence, same flag + governor gates (the op runs them) — behavior-neutral
+// (D-004). The bespoke action is retired in P-130; the lib logic it called lives
+// on as the op's impl.
+const ROUTINE = { name: 'negative-space-mine', target: 'system:blueprint-run', cron: '0 25 */6 * * *' };
+/** The program blueprint the routine fires (its deterministic step IS the miner). */
+const BLUEPRINT_PAYLOAD = { blueprintId: 'negative-space' };
 
 async function main(): Promise<void> {
   const active = process.argv.includes('--active');
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
   const id = `rt_${SLUG}_${ROUTINE.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  // COALESCE on conflict: a re-seed must not wipe an owner-tuned payload
-  // (fire bars minMisses/minAgents/maxPerTick, windowDays).
+  // payload_template carries the blueprint pointer; owner fire-bar tuning lives
+  // under `payload_template.payload`. On conflict, ENSURE the blueprintId (a
+  // pre-migration row targeted the bespoke action) while PRESERVING any existing
+  // keys (an owner-tuned `payload`): `{blueprintId} || (existing - blueprintId)`.
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
        payload_template, concurrency, catchup, active, next_fire_at)
     VALUES (${id}, ${SLUG}, ${ws}, ${ROUTINE.name}, 'cron',
             ${JSON.stringify({ cron: ROUTINE.cron })}::text::jsonb, ${ROUTINE.target},
-            NULL::jsonb,
+            ${JSON.stringify(BLUEPRINT_PAYLOAD)}::text::jsonb,
             'skip', 'skip-old', ${active}, now())
     ON CONFLICT (install_slug, name) DO UPDATE SET
       target_role = EXCLUDED.target_role,
       trigger_config = EXCLUDED.trigger_config,
-      payload_template = COALESCE(harness_shared.routines.payload_template, EXCLUDED.payload_template),
+      payload_template =
+        ${JSON.stringify(BLUEPRINT_PAYLOAD)}::text::jsonb
+        || COALESCE(harness_shared.routines.payload_template - 'blueprintId', '{}'::jsonb),
       active = EXCLUDED.active,
       workspace_id = EXCLUDED.workspace_id,
       updated_at = now()

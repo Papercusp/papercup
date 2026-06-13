@@ -1,0 +1,206 @@
+---
+title: Queen action surface — the human-driving action audit + category taxonomy
+description: The authoritative audit (P-015) of every action a human takes to drive the system, partitioned into the 13 autonomy categories (D-009), with per-action reversibility, authority, and Queen-verb coverage. The substrate that makes "everything a human does is accessible to the Queen" verifiable.
+sidebar:
+  order: 38
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This page is the human-readable face of the **action-surface audit** built by
+`queen-autonomy-policy-2026-06-13` **B-04** (P-015 audit · P-016 coverage · P-020
+taxonomy encoding). The **canonical, machine-checkable** form lives in code and is
+the source of truth — this page can lag it:
+
+- `packages/operator-core/lib/autonomy/categories.ts` — the 13-category taxonomy.
+- `packages/operator-core/lib/autonomy/capability-category-map.ts` — tool/verb → category.
+- `packages/operator-core/lib/autonomy/action-surface.ts` — the audit inventory + coverage.
+
+<Aside type="note">
+Nothing here ARMS anything. B-04 is the behavior-neutral foundation: pure data +
+pure functions. The gate that consumes it (B-12), the policy store keyed on it
+(B-03), and the owner arming gate (P-092) are elsewhere. The migration ships with
+every category ceiling at **never-auto** (D-007), so the day it lands behavior is
+identical to today.
+</Aside>
+
+## Why this exists (D-010)
+
+The owner's requirement: *"all the things a human does to drive it must be
+accessible to the Queen."* That is a **claim**, and a claim is only worth what
+verifies it. This audit is the verification substrate — every place an agent or
+the pipeline asks the human to act, enumerated as typed data, so two invariants
+become unit assertions rather than hopes:
+
+- **Completeness** — the categories are a *total partition*: every human-driving
+  action maps to exactly one (pinned by `action-surface.test.ts`; the P-090
+  coverage invariant extends it).
+- **Accessible ≠ auto** — every action gets a Queen-accessible verb + a category,
+  so the Queen can always at least *propose / decide-and-await-ratification*. The
+  category **ceiling** governs only whether she may EXECUTE without asking.
+  `authority: 'owner'` rows and PROTECTED categories always gate — accessible as
+  propose→ratify, never auto.
+
+## The three axes
+
+The gate composes three **orthogonal** axes (D-002), never one scalar:
+
+| Axis | Owns | Module |
+| --- | --- | --- |
+| **risk tier** | likelihood-of-error — the earned dial | `harness/improvements/policy.ts` |
+| **reversibility** | blast radius — a hard floor (`unknown`→irreversible) | `harness/improvements/reversibility.ts` (B-02) |
+| **authority** | the owner's by right — a categorical override | B-01 schema |
+
+The **category** (this page) is the *primary* control axis (D-003): the owner sets
+a per-category risk **ceiling** (category = row, risk tier = slider). Gating
+function (D-004):
+
+```
+auto ⟺ risk_tier ≤ min(category_ceiling, graduated_level)
+        ∧ reversible(action)
+        ∧ ¬authority_owner(item)
+        ∧ ¬protected(category)
+```
+
+## The 13 categories (D-009)
+
+The partition. **PROTECTED** = ceiling locked at zero by default and cannot
+graduate (D-005); accessible as propose→ratify, never auto.
+
+| Category | Covers | Default posture |
+| --- | --- | --- |
+| **inbox-triage** | tier / downgrade / dismiss / resolve inbox items | early-autonomy |
+| **escalations** | resolve escalations; answer `ctx.askUser` cards + the owner-decision-queue | mixed |
+| **plan-governance** | ratify `needs-human` items & milestone gates; ratify `D-NNN`; set status / Now; promote plan → features | mixed |
+| **work-prioritization** | set work-item priority / importance; reorder the backlog; steer claims | early-autonomy |
+| **ideation-intake** | grade Scout ideas; triage / promote improvements & issues | low-risk |
+| **implementation** | approve / dispatch auto-implement code changes | risk-graded |
+| **review-merge** | approve reviews; approve merges | risk-graded |
+| **release-deploy** | approve deploys / releases / promotion to green | **PROTECTED** |
+| **spend-budget** | approve spend, budgets, account scaling | **PROTECTED** |
+| **agent-lifecycle** | spawn / cancel / drain agents; model-tier; fleet admission | risk-graded |
+| **credentials-auth** | register / approve credentials; auth-affecting flags | **PROTECTED** |
+| **knowledge-curation** | memory approve / forget; docs & insights publish; learning-pack / blueprint publish | low-risk |
+| **system-control** | arm / disarm loops; flag flips; routines; the learning loop itself | **PROTECTED** |
+
+## The category map keys on the TOOL NAME, not the capability string
+
+The natural guess — derive the category from the `capability` RBAC string — is
+**wrong, and dangerously so**. The capability is a coarse RBAC bucket; many
+distinct governance actions across different categories and posture levels share
+one capability. Under `harness:write` **alone**:
+
+| Tool (verb) | Category | Posture |
+| --- | --- | --- |
+| `deploy:harness` | release-deploy | **PROTECTED** |
+| `accounts:scale_out` | spend-budget | **PROTECTED** |
+| `accounts:register` | credentials-auth | **PROTECTED** |
+| `hive:create` | agent-lifecycle | risk-graded |
+| `scout:grade-idea` | ideation-intake | low-risk |
+| `learning_packs:publish` | knowledge-curation | low-risk |
+
+Keying on `capability` would collapse a low-risk grade and a PROTECTED deploy to
+the same category — exactly the confident-but-catastrophic ≡ shaky-but-trivial
+collapse D-002 forbids. So the map matches the stable MCP **tool name**
+(`group:verb`), which the dispatch chokepoint already has in hand. D-009's phrasing
+is "the capability/**tool**" — the tool name is the authoritative key; the
+capability string is only a coarse, **protected-direction-only** last-resort
+fallback (`secrets:*`→credentials-auth, `compute:exec:*`→system-control).
+
+**Fail-safe (D-009):** no rule matches ⇒ `null` ⇒ the gate treats it as
+**never-auto**. Non-governance tool calls (reads, coordination plumbing, locks) are
+also `null` — but those never reach the decision gate (the cheap capability
+*envelope* governs them, confinement-plan D-003), so a `null` there is correct, not
+a gap.
+
+## The audit (P-015)
+
+Every human-driving action, its category, reversibility, decision authority, the
+Queen verb(s) that realize it, and a coverage verdict. (Canonical form:
+`action-surface.ts`.)
+
+| Action | Category | Rev. | Authority | Queen verb(s) | Coverage |
+| --- | --- | --- | --- | --- | --- |
+| Tier / downgrade an inbox item | inbox-triage | rev | system | `inbox:triage` | covered |
+| Dismiss / resolve an inbox message | inbox-triage | rev | system | `messages:dismiss` | covered |
+| Resolve an escalation | escalations | rev | system | `coord:resolve` | covered |
+| Answer an agent question | escalations | rev | system | `conversations:answer` | covered |
+| Answer a `ctx.askUser` card | escalations | rev | owner | `conversations:answer` | partial |
+| Ask another hive / request work | escalations | rev | system | `hive:ask`, `hive:request_work` | covered |
+| Ratify a `needs-human` plan item | plan-governance | rev | owner | `plans:set-status` | covered |
+| Ratify a `D-NNN` decision | plan-governance | rev | owner | `plans:add-decision` | partial |
+| Set plan status / Now / priority | plan-governance | rev | system | `plans:set-plan-status`, `plans:set-now` | covered |
+| Promote plan → features / waves | plan-governance | rev | system | `plans:promote` | covered |
+| Convert plan item → work-item | plan-governance | rev | system | `plan_items:convert` | covered |
+| Set work-item priority / importance | work-prioritization | rev | system | `work_items:set_priority` | covered |
+| Reorder the backlog | work-prioritization | rev | system | `work_items:reorder` | covered |
+| Set / steer work-item state | work-prioritization | rev | system | `work_items:set_state` | covered |
+| Grade a Scout idea | ideation-intake | rev | system | `scout:grade-idea` | covered |
+| Triage / resolve an improvement | ideation-intake | rev | system | `improvements:triage` | covered |
+| Triage / promote an issue | ideation-intake | rev | system | `issues:promote` | covered |
+| Promote a conversation → tracked work | ideation-intake | rev | system | `conversations:promote` | covered |
+| Approve / dispatch auto-implement | implementation | rev | system | `work_items:create` | partial |
+| Judge a gym candidate | review-merge | rev | system | `gym:judge` | covered |
+| Record a design reviewer verdict | review-merge | rev | system | `design-phase:record_review` | covered |
+| **Approve a code review / merge** | review-merge | rev | system | — | **gap** |
+| Approve / run a deploy | release-deploy | **irrev** | owner | `deploy:harness` | covered |
+| Tear down a deploy target | release-deploy | **irrev** | owner | `deploy:teardown` | covered |
+| Promote staging → green | release-deploy | **irrev** | owner | — (automation) | partial |
+| Approve spend / set a budget | spend-budget | **irrev** | owner | `operator:budget` | covered |
+| Scale out accounts | spend-budget | **irrev** | owner | `accounts:scale_out` | covered |
+| Spawn an agent | agent-lifecycle | rev | system | `fleet:spawn` | covered |
+| Cancel / drain an agent | agent-lifecycle | rev | system | `fleet:cancel`, `fleet:drain` | covered |
+| Admit / supervise / govern the fleet | agent-lifecycle | rev | system | `fleet:admit`, `fleet:governor` | covered |
+| Create / start / pause / dissolve a hive | agent-lifecycle | rev | system | `hive:create`, `hive:start` | covered |
+| Approve a new subagent | agent-lifecycle | rev | system | `new_subagent:approve` | covered |
+| Choose the model tier for a spawn | agent-lifecycle | rev | system | `fleet:spawn` (param) | partial |
+| Register / remove a credential account | credentials-auth | **irrev** | owner | `accounts:register` | covered |
+| Grant cross-hive authorization | credentials-auth | rev | owner | `hive:cross_grant` | covered |
+| Flip an auth-affecting flag | credentials-auth | rev | owner | `flags:set` | partial |
+| Approve / forget / update a memory | knowledge-curation | rev | system | `memory:remember`, `memory:forget` | covered |
+| Publish / install a learning pack | knowledge-curation | rev | system | `learning_packs:publish` | covered |
+| Author / extend a blueprint | knowledge-curation | rev | system | `blueprint:create`, `blueprint:extend` | covered |
+| Publish documentation | knowledge-curation | rev | system | `docs:write` | covered |
+| Arm / disarm the loop | system-control | rev | owner | `autoloop:control` | covered |
+| Flip a feature flag | system-control | rev | owner | `flags:set` | covered |
+| Activate / pause a routine | system-control | rev | owner | `routines:write` | covered |
+| Snapshot / restore / rollback state | system-control | **irrev** | owner | `backup:restore`, `backup:rollback` | covered |
+| Kill a runaway process | system-control | **irrev** | owner | `processes:kill` | covered |
+
+## Coverage gaps (P-016)
+
+For every action the audit found, a Queen-accessible verb should exist. The
+genuine **gap** (human-only, no Queen verb) and the notable **partials** are filed
+as build items so the coverage invariant can eventually go green for the whole
+surface:
+
+- **`review.approve-code-review-merge`** *(gap)* — code-review approval +
+  merge-to-staging is handled by pipeline roles + the git-sync routine +
+  merge-resolver; there is no Queen-accessible "approve review / approve merge"
+  verb. Until one exists, **review & merge** is observable but not a governable
+  category.
+- **`plan.ratify-decision`** *(partial)* — `plans:add-decision` authors a decision
+  but ratification is encoded as prose ("RATIFIED by owner"); there is no explicit
+  ratification state/verb to distinguish propose vs ratify.
+- **`escalations.answer-card`** *(partial)* — answering a `ctx.askUser` card routes
+  through conversations / the owner-decision-queue; there is no first-class
+  "answer card N" verb keyed to the card id.
+- **`implementation.dispatch-auto-implement`** *(partial)* — driven by the
+  promote-policy + improvement triage rather than one owner-facing
+  "approve this implementation" verb.
+
+`release.promote-to-green` (partial) and `credentials.auth-flag` (partial) are
+**intentional** non-gaps: promotion to green is automation-only by design, and
+`flags:set` maps to system-control (also PROTECTED), so the gate is never-auto
+either way.
+
+## Consumers (the shared seam)
+
+Three consumers resolve to the exact category ids in `categories.ts` and would
+break if they diverged — they all import it, none redefines it:
+
+- **B-03** `autonomy_policy` store seeds + keys its per-category ceiling rows on
+  `AUTONOMY_CATEGORY_IDS` (`PROTECTED_CATEGORIES` → locked-zero).
+- **B-12** gate resolves an action's category via `categoryForAction()`.
+- **P-090** recursion-safety invariants assert the completeness + coverage of
+  this surface.

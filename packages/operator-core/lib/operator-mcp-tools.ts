@@ -40,6 +40,13 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // per-persona per-domain trust weights from recorded bets — what the brain
   // consults before taking a persona's stated confidence at face value.
   'mcp__agentmcp__calibration:summary',
+  // The Queen's per-category autonomy ceilings (queen-autonomy-policy B-03):
+  // what she may auto-decide vs. must route to the owner. Read-only here on
+  // purpose — autonomy:policy_set is owner-authority (D-005: ceilings are the
+  // owner's cap, not the Queen's to raise on herself), so it is deliberately
+  // NOT on the brain's tool surface; the owner changes ceilings via the
+  // settings page / an SU session.
+  'mcp__agentmcp__autonomy:policy_get',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
   // Plans read surface — the needs-human inbox + importance the scanner
@@ -90,6 +97,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // they exist on every surface; what's spawned shows up in fleet:tree
   // and is cancellable with fleet:cancel.
   'mcp__agentmcp__fleet:spawn',
+  // One-wake BATCH placement (queen-autonomous-execution B-07): affinity-ranked
+  // fan of spawn + warm-inject across the fleet in a single call.
+  'mcp__agentmcp__fleet:place_batch',
   'mcp__agentmcp__fleet:tree',
   'mcp__agentmcp__fleet:cancel',
   // The canonical "who's on what" state query (state-not-chat-fleet-state):

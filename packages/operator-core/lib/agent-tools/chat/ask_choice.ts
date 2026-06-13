@@ -21,7 +21,12 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { openEscalation, resolveEscalation as resolveEscalationRecord } from '../coordination/escalations';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
+import {
+  classifyAgentQuestion,
+  isAutonomousAgent,
+  openAgentQuestionEscalation,
+} from '../coordination/agent-question-gate';
 
 const MAX_OPTIONS = 6;
 const MAX_QUESTION_LEN = 500;
@@ -127,21 +132,59 @@ export default defineTool({
           ...(normalized.voiceAnswerable === true ? { voiceAnswerable: true } : {}),
         };
 
-    // inbox-cards-unification Phase D (P-034): when the flag is on, ALSO write
-    // a durable coord escalation linked to this card's correlationId, so the
-    // human can answer it from the inbox and this blocked agent resumes
-    // (coord:resolve → resolveCardResponse, P-035). Default OFF ⇒ no escalation
-    // and zero behavior change. Best-effort throughout: a write/resolve failure
-    // never breaks the card flow.
-    let durableEscalation = false;
+    // Identity-aware interception. A decision card is mirrored into a durable,
+    // card-linked coord escalation via one of two paths — resolved as ONE record
+    // either way (the human/Queen answers via coord:resolve → unblockLinkedCard →
+    // resolveCardResponse, which resolves THIS card and resumes the caller):
+    //
+    //   (1) B-10 card interception (QUEEN_CARD_INTERCEPTION, queen-autonomous-execution
+    //       P-041/P-045): the caller is a FLEET AGENT (bee / signed-spawn) — no human
+    //       is watching the card surface, so a blocking card is a freeze. Route it
+    //       through the agent-question gate (owner Queue today; autonomy-policy injects
+    //       the rung) AND give the card a bounded timeout so it degrades to
+    //       {action:'cancel'} instead of holding the agent's run forever. Takes
+    //       precedence over (2) — one escalation, not two.
+    //   (2) inbox-cards-unification Phase D (INBOX_DURABLE_ESCALATIONS, P-034): an
+    //       INTERACTIVE card ALSO lands in the owner inbox so it can be answered live
+    //       OR later. Unchanged; the live card is left to block (a human is there).
+    //
+    // Best-effort throughout: a flag read / identity resolve / escalation write
+    // failure never breaks the card flow.
+    let flagIntercept = false;
+    let flagDurable = false;
     try {
       const { getFlag } = await import('@papercusp/flags/server');
       const { FLAGS } = await import('@papercusp/flags');
-      durableEscalation = await getFlag(FLAGS.INBOX_DURABLE_ESCALATIONS, 'system');
+      [flagIntercept, flagDurable] = await Promise.all([
+        getFlag(FLAGS.QUEEN_CARD_INTERCEPTION, 'system'),
+        getFlag(FLAGS.INBOX_DURABLE_ESCALATIONS, 'system'),
+      ]);
     } catch {
-      durableEscalation = false;
+      flagIntercept = false;
+      flagDurable = false;
     }
+
+    let identity: AgentIdentity | null = null;
+    try {
+      identity = resolveAgentIdentity(ctx);
+    } catch {
+      // Unattributable ctx (e.g. an out-of-band caller / test mock) — no
+      // interception, no mirror; the live card path is untouched.
+      identity = null;
+    }
+
+    const intercept = flagIntercept && identity !== null && isAutonomousAgent(identity);
+    const durableMirror = !intercept && flagDurable;
+    const optionPairs = normalized.options.map((o) => ({ id: o.id, label: o.label }));
+
+    // Intercepted agent cards classify up-front so the bounded timeout is on the
+    // spec before the card registers (the gate decides the rung + timeout).
+    const interceptRouting = intercept
+      ? classifyAgentQuestion({ identity: identity!, question: normalized.question, options: optionPairs })
+      : null;
+
     let escalationP: Promise<{ msg_id: string } | null> = Promise.resolve(null);
+    const wantsOnCard = intercept || durableMirror;
 
     const response = await ctx.askUser({
       prompt: normalized.question,
@@ -149,16 +192,31 @@ export default defineTool({
       presentation,
       fallbackText,
       allowDecline: normalized.allowDecline ?? true,
-      ...(durableEscalation
+      ...(interceptRouting ? { timeoutMs: interceptRouting.timeoutMs } : {}),
+      ...(wantsOnCard
         ? {
             onCard: ({ correlationId, workspaceId }) => {
               try {
-                escalationP = openEscalation(resolveAgentIdentity(ctx), {
-                  severity: 'question',
-                  summary: normalized.question,
-                  options: normalized.options.map((o) => ({ id: o.id, label: o.label })),
-                  meta: { cardCorrelationId: correlationId, cardWorkspaceId: workspaceId },
-                }).catch(() => null);
+                if (intercept) {
+                  escalationP = openAgentQuestionEscalation(
+                    identity!,
+                    {
+                      identity: identity!,
+                      question: normalized.question,
+                      options: optionPairs,
+                      cardCorrelationId: correlationId,
+                      cardWorkspaceId: workspaceId,
+                    },
+                    interceptRouting!.rung,
+                  ).catch(() => null);
+                } else {
+                  escalationP = openEscalation(identity ?? resolveAgentIdentity(ctx), {
+                    severity: 'question',
+                    summary: normalized.question,
+                    options: optionPairs,
+                    meta: { cardCorrelationId: correlationId, cardWorkspaceId: workspaceId },
+                  }).catch(() => null);
+                }
               } catch {
                 /* identity/write failure must not break the card */
               }
@@ -169,8 +227,9 @@ export default defineTool({
 
     // Close the inbox copy once the card resolves. Idempotent: if it was the
     // INBOX that resolved the card (via coord:resolve), the escalation is
-    // already resolved and this is a no-op ('already_resolved').
-    if (durableEscalation) {
+    // already resolved and this is a no-op ('already_resolved'). On a timeout/
+    // cancel the agent moved on, so the now-stale question is closed too.
+    if (wantsOnCard) {
       const esc = await escalationP;
       if (esc) {
         const choice =

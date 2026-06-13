@@ -71,6 +71,8 @@ import './discovery/set_hive';
 import './hive/declare_wake';
 import './hive/wake';
 import './hive/status';
+// queen-autonomous-execution B-08 — the Queen's plan-aware placement survey:
+import './hive/survey';
 import './hive/start';
 import './hive/pause';
 // hive-tool-namespace-2026-06-08 — local hive lifecycle (read + create/dissolve/update):
@@ -201,6 +203,10 @@ import './flags/list';
 import './flags/get';
 import './flags/set';
 
+// Queen autonomy policy — per-category risk ceilings (queen-autonomy-policy B-03).
+import './autonomy/get';
+import './autonomy/set';
+
 import './saved_prompts/list';
 
 import './backup/snapshot_create';
@@ -241,6 +247,18 @@ import './locks/acquire_granular';
 import './locks/release_granular';
 import './locks/list';
 import './locks/check_command';
+// Fleet capability surface (agent-capability-confinement-2026-06-13, B-05):
+// gated defineTool re-exposure of native capabilities. bash is a thin shell
+// wrapper with output-spill + async/background jobs; write/edit acquire the
+// per-path file lock inside dispatch (P-013, file-lock-guard).
+import './capability/bash';
+import './capability/bash_output';
+import './capability/bash_kill';
+import './capability/read';
+import './capability/write';
+import './capability/edit';
+import './capability/git';
+import './capability/fetch';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
 import './dev/service_health';
@@ -413,6 +431,10 @@ import './fleet/spawn';
 // fleet:assignments — the canonical "who's on what" state query over the
 // fleet_assignment view (state-not-chat-fleet-state-2026-06-05 D-002).
 import './fleet/assignments';
+// fleet:place_batch — one-wake BATCH placement (queen-autonomous-execution
+// B-07 / P-001+P-002): ranks task↔bee affinity + fans spawn/warm-inject across
+// the fleet in a single call (the Queen's serial placement loop, collapsed).
+import './fleet/place_batch';
 // fleet:drain — graceful wind-down signal for bee eviction (local-hive P-051).
 // Distinct from fleet:cancel's hard kill; the bee cooperates to release locks/claims.
 import './fleet/drain';

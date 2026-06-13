@@ -293,6 +293,32 @@ export const FLAGS = {
   // but it FILES into the improvements queue, so it ships dark until the
   // plan's P-001 arming gate closes (D-001).
   GRADUATION_TRACKER: "papercusp-graduation-tracker",
+  // queen-autonomous-execution-2026-06-13 B-10 (P-041/P-045): card interception
+  // for the Queen hive loop. When ON, a fleet AGENT's (bee / signed-spawn) blocking
+  // chat:ask_choice / ctx.askUser is intercepted — routed through the agent-question
+  // gate as a durable, routable escalation (category=agent-question, owner-Queue by
+  // default; autonomy-policy's classifier injects the rung) instead of a frozen card
+  // no human is watching, and the card gets a bounded timeout that degrades to
+  // {action:'cancel'} so the bee never spins forever. ON by default (behavior-neutral
+  // throughput improvement, D-007): interactive callers (human/operator) are untouched.
+  QUEEN_CARD_INTERCEPTION: "papercusp-queen-card-interception",
+  // agent-capability-confinement-2026-06-13 B-06 (P-012): ENFORCEMENT of the per-role
+  // capability envelope at the dispatch chokepoint. OFF by default — DELIBERATE (not the
+  // alpha flags-default-on policy): enabling it would DENY autonomous-fleet MCP tool calls
+  // outside the (still-initial) per-role allowlist before the B-18 fleet cutover wires the
+  // fleet onto the gated capability defineTools (B-05). When OFF the envelope runs in
+  // OBSERVE-ONLY/shadow mode — it evaluates + annotates the ledger posture ('gated' =
+  // would-deny) but never blocks — giving B-18 real arming data safely. SU / power-user /
+  // non-fleet callers are exempt regardless (D-002). Surfaced loudly in the plan ## Now +
+  // the completion report as the pending B-18 flip.
+  CAPABILITY_ENVELOPE: "papercusp-capability-envelope",
+  // agent-capability-confinement-2026-06-13 B-06 (P-011) ⨯ queen-autonomy-policy D-012/P-110:
+  // the Queen decision-ledger ACTION-CHOKEPOINT emit — one append-only row per governed
+  // (tier != 'low') action by a non-SU principal, from the dispatch postInvoke seam. ON by
+  // default: pure additive record-keeping, no LLM spend, a subset of tool_invocations — the
+  // same Phase-0-foundation call as CHANGE_LEDGER (rows must accumulate before queen-autonomy
+  // B-13's surface + the autonomy gate consume them). OFF is the kill-switch (the emit no-ops).
+  DECISION_LEDGER: "papercusp-decision-ledger",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -473,6 +499,20 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (⇒ refused by THIS gate) until the P-001 arming act. OFF is the
   // kill-switch (mirrors no-op; preflight refuses 'governor-dark').
   [FLAGS.LEARNING_GOVERNOR]: true,
+  // ON by default (alpha flags-default-on policy) — queen-autonomous-execution
+  // B-10 (P-041/P-045). Behavior-neutral throughput improvement (D-007): it only
+  // changes what happens to a FLEET AGENT's otherwise-frozen card (route to a
+  // routable owner-Queue escalation + bounded timeout). Interactive human/operator
+  // callers are untouched. OFF = the legacy un-intercepted ctx.askUser path.
+  [FLAGS.QUEEN_CARD_INTERCEPTION]: true,
+  // OFF by default — DELIBERATE (capability-confinement B-06 / P-012): envelope ENFORCEMENT
+  // would deny fleet tool calls before the B-18 cutover + B-05 capability tools exist. OFF =
+  // observe-only/shadow (evaluate + annotate, never block). The B-18 flip is the arming act.
+  [FLAGS.CAPABILITY_ENVELOPE]: false,
+  // ON by default — Phase-0 foundation record-keeping (B-06 / P-011), same call as
+  // CHANGE_LEDGER: append-only governed-action rows, no LLM spend, subset of tool_invocations.
+  // OFF is the kill-switch (the emit no-ops).
+  [FLAGS.DECISION_LEDGER]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);
