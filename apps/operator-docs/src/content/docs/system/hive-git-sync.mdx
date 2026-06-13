@@ -82,14 +82,23 @@ coords-less re-seeds still report `routine_exists`.
 | `hive:add-member` | `agent-tools/hive/_add-member.ts` (both success paths — a re-add heals a missing row) | creator | member slug |
 | `harness:create { hive }` | `agent-tools/harness/create.ts` (step 5a) | creator | member slug |
 | Hive join | `lib/harness/join-hive.ts` (`joinHiveAsView` per-member loop) | joiner | `<slug>:<workspaceId>` |
+| Bare join link | `endpoint-route/routes/harness/join-link.ts` (`handleJoinLink`, after clone registration — EI-382) | joiner | `<slug>:<workspaceId>` |
 | Boot reconcile | `git-sync-reconcile.ts`, fired once per process from `lib/sync/hyperbee/boot-all.ts` | detected per member | slug, or salted when joiner-detected |
 
 The boot reconcile is the **backfill**: it walks each workspace's registry,
 visits only hive members (`hive_slug` set), detects joiner-side members by
 their home entry's `remote_hive` flag, and add-only seeds whatever is missing —
 so hives created before the seed sites existed (or members that slipped past
-them) converge on next boot. Members joined via a **bare join link** (outside
-`joinHiveAsView`) carry no `hive_slug` and are not covered.
+them) converge on next boot.
+
+Members joined via a **bare join link** (the Entry-4 `handleJoinLink` route,
+outside `joinHiveAsView`) register a minimal `{ slug, path }` entry with no
+`hive_slug`, so the `hive_slug`-scoped reconcile never visits them. They are
+instead seeded **inline at join time** (EI-382): `handleJoinLink` seeds the
+clone joiner-side (`push: false` — a local mirror; the contribution path is the
+owner's pushes / a fork-PR) right after registration, best-effort so a seed
+failure never fails the join. The reconcile deliberately stays hive-scoped — a
+bare-link clone is a standalone shared-harness checkout, not a hive member.
 
 A seeded row carries, in `trigger_config`:
 

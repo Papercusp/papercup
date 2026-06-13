@@ -28,7 +28,7 @@ checks kill that conclusion in under a minute:
    [llm-429-check-the-transport-not-the-account](/internal/docs/agent-insights/llm-429-check-the-transport-not-the-account)
    and the `reference_max_oauth_needs_claude_code_framing` memory.)
 
-2. **Re-probe LIVE — don't parrot a snapshot.** A "resets <date>" string in a
+2. **Re-probe LIVE — don't parrot a snapshot.** A `"resets <date>"` string in a
    `harness_run_output` row (or a peer's escalation citing it) is a *timestamp
    of a past failure*, not current state. The limit may have reset; it may have
    been transport-specific. Run the one-line discrimination test below against
