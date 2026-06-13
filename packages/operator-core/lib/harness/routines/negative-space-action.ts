@@ -28,18 +28,18 @@
  * carry-forward + capture-core watchdogKey dedup), so a replay is a clean
  * no-op-ish re-mine.
  */
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { negativeSpaceGovernorGate } from '../../negative-space/governor';
-import { demandOptionsFromPayload } from '../../negative-space/miner-core';
-import {
-  defaultNegativeSpaceDeps,
-  runNegativeSpaceTick,
-  type NegativeSpaceTickDeps,
-} from '../../negative-space/scan';
+import type { NegativeSpaceTickDeps } from '../../negative-space/scan';
+import { runNegativeSpaceMine } from '../../negative-space/mine';
+
+/**
+ * The flag → governor → tick orchestration this action runs is SHARED with the
+ * `negative-space:scan` deterministic blueprint step via `runNegativeSpaceMine`
+ * (deterministic-blueprints-migration-2026-06-13 P-010 / D-004 — provably
+ * behavior-neutral: one gated tick, two callers). This action keeps its own
+ * injectable seams (the test pins them) and passes them into the shared core.
+ */
 
 /** The tick-deps seam — injectable for tests (mirrors setBenchmarkBatteryRunner). */
 let _deps: NegativeSpaceTickDeps | null = null;
@@ -56,25 +56,26 @@ export function setNegativeSpaceGovernorGate(gate: NegativeSpaceGovernorGate | n
 }
 
 registerSystemAction('negative-space-mine', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.NEGATIVE_SPACE_MINER, `routine:${ctx.installSlug}`))) {
-    console.log(
-      '[negative-space-mine] flag papercusp-negative-space-miner is OFF (frontier arming gate, ' +
-        'self-learning-frontier P-001) — skipping',
-    );
-    return;
-  }
-  const verdict = await (_governorGate ?? negativeSpaceGovernorGate)(ctx.workspaceId);
-  if (!verdict.allow) {
-    console.log(
-      `[negative-space-mine] learning-governor refused (${verdict.reason}) — skipping ` +
-        '(D-004: an unattended frontier loop runs only registered + budgeted)',
-    );
-    return;
-  }
-  const opts = demandOptionsFromPayload(ctx.payloadTemplate);
-  const deps = _deps ?? defaultNegativeSpaceDeps(getOrgPg().sql);
   try {
-    const result = await runNegativeSpaceTick(ctx.workspaceId, deps, opts);
+    const outcome = await runNegativeSpaceMine(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payload: ctx.payloadTemplate },
+      { governorGate: _governorGate ?? undefined, tickDeps: _deps ?? undefined },
+    );
+    if (!outcome.ran) {
+      if (outcome.skipReason === 'flag-off') {
+        console.log(
+          '[negative-space-mine] flag papercusp-negative-space-miner is OFF (frontier arming gate, ' +
+            'self-learning-frontier P-001) — skipping',
+        );
+      } else {
+        console.log(
+          `[negative-space-mine] learning-governor refused (${outcome.governorReason}) — skipping ` +
+            '(D-004: an unattended frontier loop runs only registered + budgeted)',
+        );
+      }
+      return;
+    }
+    const result = outcome.result!;
     console.log(
       `[negative-space-mine] ${result.scanned} zero-hit search(es) → ${result.demandEntries} demand entr(ies)` +
         `, filed ${result.filed.length}${result.filed.length ? ` (${result.filed.join(', ')})` : ''}` +
