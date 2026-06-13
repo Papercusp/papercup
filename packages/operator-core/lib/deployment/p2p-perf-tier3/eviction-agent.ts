@@ -219,7 +219,9 @@ async function main(): Promise<void> {
   //    elected authority run against OUR store). Registered globally; handleAuthorityRpc
   //    dispatches from the global registry. ──
   const coordinator = inMemoryCoordinator();
-  registerFileLockAuthorityOps(coordinator);
+  // emit:no-op — this proof isolates eviction; the P-015 lock-event capture is proven elsewhere
+  // and the default sink would be a needless no-op on a PG-less frame anyway.
+  registerFileLockAuthorityOps(coordinator, { emit: () => {} });
 
   // ── The REAL relay-side `peer.probe` op, answering from THIS peer's polled view (the
   //    injected isPeerLive — the documented test seam). Authority-EXEMPT (any peer answers). ──
@@ -318,8 +320,13 @@ async function main(): Promise<void> {
 
   out({ evt: 'ready', devicePubkey: cfg.devicePubkey, httpPort: cfg.httpPort });
 
-  /** Snapshot the agent's current view for a `state` query. */
-  function snapshot(nonce: string): void {
+  /** Snapshot the agent's current view for a `state` query. Re-resolves the authority FRESH
+   *  (rather than reading the resolve-loop's cached value) so the reported authority is
+   *  consistent with the live evicted set — they update on different cadences, and a one-tick
+   *  lag would otherwise show the just-evicted authority for a beat. */
+  async function snapshot(nonce: string): Promise<void> {
+    const res = await lockAuthorityFor(cfg.scope, deps);
+    lastResolution = res;
     const nowMs = Date.now();
     const evicted = monitor ? [...monitor.excludedPubkeys(cfg.scope)] : [];
     const presenceAgeMs: Record<string, number> = {};
@@ -327,9 +334,9 @@ async function main(): Promise<void> {
     out({
       evt: 'state',
       nonce,
-      authorityPubkey: lastResolution.isSelf ? cfg.devicePubkey : (lastResolution.peer?.devicePubkey ?? null),
-      isSelf: lastResolution.isSelf,
-      liveCount: lastResolution.liveCount,
+      authorityPubkey: res.isSelf ? cfg.devicePubkey : (res.peer?.devicePubkey ?? null),
+      isSelf: res.isSelf,
+      liveCount: res.liveCount,
       evicted,
       presenceAgeMs,
       heldPaths: coordinator.heldPaths(),
@@ -358,13 +365,15 @@ async function main(): Promise<void> {
       },
       deps,
     );
+    // Re-resolve FRESH for the reported authority (consistent with the route just taken).
+    const res = await lockAuthorityFor(cfg.scope, deps);
     out({
       evt: 'acquired',
       nonce,
       path,
       ok: route.value.ok,
       via: route.via,
-      authorityPubkey: lastResolution.isSelf ? cfg.devicePubkey : (lastResolution.peer?.devicePubkey ?? null),
+      authorityPubkey: res.isSelf ? cfg.devicePubkey : (res.peer?.devicePubkey ?? null),
     });
   }
 
@@ -374,7 +383,7 @@ async function main(): Promise<void> {
     const line = await lines.next();
     if (line === null || line === 'stop') break;
     const [cmd, nonce, ...rest] = line.split(/\s+/);
-    if (cmd === 'state' && nonce) snapshot(nonce);
+    if (cmd === 'state' && nonce) await snapshot(nonce);
     else if (cmd === 'acquire' && nonce && rest[0]) await acquire(nonce, rest[0]);
   }
 

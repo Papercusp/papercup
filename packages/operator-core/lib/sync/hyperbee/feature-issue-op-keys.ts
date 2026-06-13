@@ -39,6 +39,7 @@ import type { CoordThreadPostRow } from './projections/coord-thread-post';
 import type { PlanItemAssignmentRow } from './projections/plan-item-assignments';
 import type { HiveMemberRow } from './projections/hive-members';
 import type { EngineerIssueRow } from './projections/engineer-issues';
+import type { PlanPartWireRow } from './projections/harness-plan-parts';
 
 /**
  * The two consolidated table names the Stage-1 trigger writes into the outbox
@@ -85,6 +86,11 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // (projections/engineer-issues.ts); key == issue_id. The capture trigger (mig 197)
   // derives the federation slug from `scope` + stamps it into the row as harness_slug.
   engineer_issues: 'engineer-issues',
+  // plan-federation-regrain-2026-06-13 (P-006): per-PART plan federation. Projection
+  // 'plan-parts' (projections/harness-plan-parts.ts); key == '<plan_slug>/<part_key>'
+  // (the harness_plan_parts.part_fed_key generated column, mig 270). DARK until the
+  // papercusp-plan-part-federation flag flips (capture trigger is mig 271).
+  harness_plan_parts: 'plan-parts',
 };
 
 /**
@@ -426,6 +432,22 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `PlanPartWireRow` the plan-parts projection
+ *  consumes — the federated subset of harness_plan_parts (plan-federation-regrain
+ *  P-006). part_key/kind/body/ordinal/tombstone are the part; fed_ts + author ride
+ *  the op provenance, not the row. */
+function toPlanPartValue(row: Record<string, unknown>): PlanPartWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    plan_slug: String(row.plan_slug ?? ''),
+    part_key: String(row.part_key ?? ''),
+    kind: String(row.kind ?? 'item') as PlanPartWireRow['kind'],
+    body: typeof row.body === 'string' ? row.body : '',
+    ordinal: typeof row.ordinal === 'number' ? row.ordinal : Number(row.ordinal ?? 0),
+    tombstone: row.tombstone === true,
+  };
+}
+
 /**
  * Thrown when an outbox row names a `table_name` this build has no mapper for.
  * This is BOTH a programming error (a new trigger shipped without its mapper) AND
@@ -482,7 +504,8 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | PlanItemAssignmentRow
     | HiveSettingRow
     | HiveMemberRow
-    | EngineerIssueRow;
+    | EngineerIssueRow
+    | PlanPartWireRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
@@ -516,6 +539,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'engineer_issues':
       value = toEngineerIssueValue(row);
+      break;
+    case 'harness_plan_parts':
+      value = toPlanPartValue(row);
       break;
     default:
       value = toIssueValue(row);

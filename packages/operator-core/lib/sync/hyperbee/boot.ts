@@ -39,12 +39,17 @@ import { stampOpHlc } from './hlc-stamp';
 import {
   createMergeCursor,
   mergeAdmittedLogsIncremental,
+  seedCursorFromSnapshots,
+  findLatestSnapshotIndex,
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
 } from './read-merge';
+import { produceLogSnapshot, shouldCompactOwnLog } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
-import { acceptOpVersion, type SchemaVersionAlert } from './schema-version';
+import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { loadRevokedPubkeys } from './load-revoked-pubkeys';
 import {
   registerAllHarnessProjections,
@@ -756,6 +761,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // at 0; lwwPick's total order makes fold order irrelevant) — no reset.
   let mergeCursor = createMergeCursor();
 
+  // substrate-peer-log-compaction-2026-06-13 (design A, D-005) — FLAG-GATED, dark.
+  // When on: (a) seed a fresh/reset cursor at each log's latest `__snapshot__`
+  // index so a new joiner folds from the snapshot instead of replaying full
+  // history (P-007), and (b) periodically compact the OWN log once it grows past
+  // SNAPSHOT_COMPACT_EVERY_OPS ops since its last snapshot (P-005). The flag is
+  // read ONCE at boot (boot-scoped, like the authority transports — a runtime
+  // flip needs a reboot to take effect). OFF ⇒ both no-ops, cursor seeds at 0,
+  // byte-identical to today. `lastSnapshotCoversUpTo` is seeded from the existing
+  // latest snapshot so a restart (the watchdog recycles ~every 12 min) does NOT
+  // re-compact a log that hasn't grown a threshold since.
+  const snapshotEnabled = await getFlag(FLAGS.SUBSTRATE_LOG_SNAPSHOT, 'system').catch(() => false);
+  let lastSnapshotCoversUpTo = snapshotEnabled
+    ? ((await findLatestSnapshotIndex(ownLog).catch(() => null)) ?? 0)
+    : 0;
+
   // ── Admission queue (audit P-022, EI-115/EI-116 contributor) ── admitPeer
   // used to mutate admitted/pubkeyToLogKey/admittedIdentities directly while a
   // merge pass could be iterating them, and its mergeNow() no-op'd against an
@@ -909,6 +929,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
 
+      // P-007 (design A, flag-gated): seed a FRESH/reset cursor at each log's
+      // latest snapshot so a new joiner (or a post-reset re-fold) starts from the
+      // snapshot, not index 0. Idempotent — only seeds logs with no cursor
+      // position yet, so steady-state passes are O(logs) cheap `.has()` checks.
+      // OFF ⇒ never called ⇒ cursor seeds at 0 (unchanged).
+      if (snapshotEnabled) {
+        await seedCursorFromSnapshots(logs, mergeCursor);
+      }
+
       // EI-79 steady-state skip (cursor form): nothing new past any log's
       // cursor → skip decode/fold/apply entirely. Lengths are post-update()
       // so growth is caught promptly; the cadenced refresh/reverify hooks
@@ -969,6 +998,33 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         result = await mergeAdmittedLogsIncremental(logs, mergeCursor, mergeOpts);
       }
       const { applied } = result;
+
+      // P-005 (design A, flag-gated): compact the OWN log once it has grown past
+      // the threshold since its last snapshot — append ONE additive snapshot op
+      // (no fork). Runs inside the serialized merge block so it can't race a pass;
+      // fires only every ~SNAPSHOT_COMPACT_EVERY_OPS ops (the O(history) own-log
+      // read is amortized). Best-effort: a failed compaction must NEVER abort the
+      // merge pass. OFF ⇒ never runs (no snapshot ops ever produced).
+      if (snapshotEnabled && shouldCompactOwnLog(ownLog.length, lastSnapshotCoversUpTo)) {
+        try {
+          const snap = await produceLogSnapshot(ownLog, {
+            now: Date.now(),
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+          });
+          if (snap.appended) lastSnapshotCoversUpTo = snap.coversUpTo;
+        } catch (e) {
+          try {
+            recordBootEvent(
+              opts.workspaceId,
+              opts.harnessSlug,
+              'peer_capped',
+              `log compaction failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          } catch {
+            // observability must never abort the merge pass
+          }
+        }
+      }
 
       // ── Merge-refresh (D-002): ALWAYS run inside the serialized merge block
       // (merging=true) so it cannot race a concurrent merge pass. This collapses

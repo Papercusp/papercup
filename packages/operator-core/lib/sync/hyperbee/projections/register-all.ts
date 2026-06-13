@@ -44,6 +44,7 @@ import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
 import { buildHiveMembersProjection } from './hive-members';
 import { buildEngineerIssuesProjection } from './engineer-issues';
+import { buildHarnessPlanPartsProjection } from './harness-plan-parts';
 
 export interface RegisterAllOpts {
   workspaceId: string;
@@ -133,6 +134,10 @@ function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown
     buildHiveSettingsProjection(opts),
     buildHiveMembersProjection(opts),
     buildEngineerIssuesProjection(opts),
+    // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
+    // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation
+    // is on (capture is flag-gated) and its harness_plans recompose is itself flag-gated.
+    buildHarnessPlanPartsProjection(opts),
   ] as TableProjection<unknown>[];
 }
 
