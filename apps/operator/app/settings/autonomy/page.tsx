@@ -11,9 +11,11 @@
  * re-invalidates the query). nuqs holds the filter + selected category.
  *
  * Scope note: the page CORE ships here. The "recent auto-decisions" feed (P-031)
- * and inline graduation-eligible prompts (P-032) need the tripwire + decision
- * ledger + graduation engine (B-16) and are stubbed as labelled placeholders
- * until those land — no data source exists for them yet.
+ * is now live — <RecentAutoDecisions/> renders the decision ledger's disposition
+ * layer via the `decision.ledger` sync query (queen-autonomy B-13 / P-113);
+ * per-row one-click undo lights up once B-16's tripwire records a revert handle.
+ * Inline graduation-eligible prompts (P-032) still need the graduation engine
+ * (B-16) and stay a labelled placeholder until that lands.
  */
 import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
@@ -326,15 +328,10 @@ export default function AutonomySettingsPage() {
         )}
       </section>
 
-      {/* ── Deferred: P-031 recent auto-decisions feed (needs B-16 tripwire + ledger) ── */}
-      <section className="pc-settings-section" aria-label="Recent auto-decisions" style={{ marginTop: 28 }}>
-        <h2>Recent auto-decisions</h2>
-        <p style={{ color: 'var(--fg-mute)', fontSize: 13 }}>
-          The feed of recent auto-decisions with one-click undo lights up once the tripwire and
-          decision ledger land (B-16 · P-031).{' '}
-          <span style={{ fontStyle: 'italic' }}>Coming soon.</span>
-        </p>
-      </section>
+      {/* P-031 recent-auto-decisions feed — a filtered view of the decision ledger's
+          disposition layer (queen-autonomy B-13 / P-113). One-click undo per row
+          lights up once B-16's tripwire records a revert handle. */}
+      <RecentAutoDecisions />
 
       {/* ── Deferred: P-032 inline graduation-eligible prompts (needs B-16 graduation engine) ── */}
       <section className="pc-settings-section" aria-label="Graduation" style={{ marginTop: 8 }}>

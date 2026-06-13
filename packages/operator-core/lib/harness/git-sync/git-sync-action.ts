@@ -35,7 +35,7 @@ import { registerSystemAction, type SystemActionCtx } from '../routines/system-a
 import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
-import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized } from './run-git-sync';
+import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized, type ScopedContentError } from './run-git-sync';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_TTL_SEC = 600;
@@ -66,6 +66,28 @@ const ESCALATION_KIND = 'git-sync-conflict';
 const ESCALATION_ERROR_KIND = 'git-sync-error';
 /** The event key the `merge-resolution` launch blueprint declares (its trigger). */
 const CONFLICT_EVENT = 'git-sync:conflict';
+
+/**
+ * EI-438 content guard (git-sync-content-guard-2026-06-13 P-004/P-005). Broken
+ * files (an .mdx that won't compile, a curly quote used as code) are quarantined
+ * from the auto-commit by the content guard (run-git-sync) so they never reach
+ * `staging`; the action layer escalates them + dispatches a `content-fixer`.
+ *
+ * Content escalations get their OWN phase ('git-sync-content'), a SEPARATE row
+ * from the conflict/error escalation (phase 'git-sync') — so a content quarantine
+ * and a merge conflict coexist + clear independently, never clobbering each other
+ * on the single (harness_slug, phase) row. The content-fixer reads its files from
+ * the `--git-sync-content-error` extra (below), not this row, so the phase-loose
+ * `getEscalation` (mtime-ordered) reader can never feed it the wrong escalation.
+ */
+const CONTENT_ESCALATION_PHASE = 'git-sync-content';
+const CONTENT_ERROR_KIND = 'git-sync-content-error';
+/** The event key the `content-fix` launch blueprint declares (its trigger). */
+const CONTENT_ERROR_EVENT = 'git-sync:content-error';
+/** After this many consecutive ticks with the file STILL broken, stop auto-dispatching
+ *  the content-fixer and surface to a human (P-005: never an infinite silent fix loop).
+ *  The file stays quarantined regardless, so `staging` is never at risk. */
+const MAX_CONTENT_FIXER_ATTEMPTS = 5;
 
 /** Coord identity for git-sync's own broadcasts (mirrors service-health's). */
 const GIT_SYNC_IDENTITY: AgentIdentity = {
@@ -290,8 +312,9 @@ async function writeGitSyncEscalation(slug: string, workspaceId: string, conflic
   );
 }
 
-/** Clear git-sync escalations of the given kinds after a clean sync (other kinds intact). */
-async function clearGitSyncEscalation(slug: string, kinds: string[]): Promise<void> {
+/** Clear git-sync escalations of the given kinds after a clean sync (other kinds intact).
+ *  `phase` defaults to the conflict/error phase; content escalations pass their own. */
+async function clearGitSyncEscalation(slug: string, kinds: string[], phase: string = ESCALATION_PHASE): Promise<void> {
   const { sql } = getOrgPg();
   await sql.unsafe(
     `UPDATE harness_shared.harness_escalations
@@ -299,7 +322,43 @@ async function clearGitSyncEscalation(slug: string, kinds: string[]): Promise<vo
       WHERE harness_slug = $1 AND phase = $3
         AND escalation IS NOT NULL
         AND (escalation::jsonb ->> 'kind') = ANY($4)`,
-    [slug, Date.now(), ESCALATION_PHASE, kinds],
+    [slug, Date.now(), phase, kinds],
+  );
+}
+
+/**
+ * EI-438 (P-004): write/refresh the `git-sync-content-error` escalation — the
+ * human-visible record that broken files are quarantined (and, once it has failed
+ * MAX_CONTENT_FIXER_ATTEMPTS ticks, that a human must step in). Its own phase row,
+ * unconditional upsert (no other kind shares 'git-sync-content').
+ */
+async function writeGitSyncContentEscalation(
+  slug: string,
+  workspaceId: string,
+  contentErrors: ScopedContentError[],
+  consecutiveTicks: number,
+  needsHuman: boolean,
+): Promise<void> {
+  const { sql } = getOrgPg();
+  const files = contentErrors.map((c) => ({ scope: c.scope, file: c.file, detector: c.detectorKey, error: c.error }));
+  const list = contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`).join(', ');
+  const body = JSON.stringify({
+    kind: CONTENT_ERROR_KIND,
+    harness_slug: slug,
+    files,
+    consecutive_content_error_ticks: consecutiveTicks,
+    needs_human: needsHuman,
+    emitted_at: Date.now(),
+    detail: needsHuman
+      ? `git-sync content guard: ${files.length} file(s) STILL failing their content check after ${consecutiveTicks} ticks — the content-fixer could not repair them; a human must fix: ${list}. (They are quarantined — excluded from every auto-commit — so staging stays clean while they wait.)`
+      : `git-sync quarantined ${files.length} broken file(s) (excluded from the auto-commit so staging stays clean); content-fixer dispatched: ${list}.`,
+  });
+  await sql.unsafe(
+    `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (harness_slug, phase)
+     DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
+    [slug, CONTENT_ESCALATION_PHASE, body, Date.now(), workspaceId],
   );
 }
 

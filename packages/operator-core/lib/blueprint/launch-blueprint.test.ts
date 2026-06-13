@@ -31,6 +31,8 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       'merge-resolution': 'merge-resolver',
       // release-pipeline-resilience-2026-06-09 P-006: the gate-fixer's decider IS the release-fixer role.
       'release-fix': 'release-fixer',
+      // git-sync-content-guard-2026-06-13 P-006: the content-guard fixer's decider IS the content-fixer role.
+      'content-fix': 'content-fixer',
       audit: 'auditor',
       // local-hive P-071 (2026-06-10): the hive's decider is the QUEEN — the
       // operator specialized for placement (D-001); `operator` remains the
@@ -84,6 +86,9 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     // release-pipeline-resilience-2026-06-09 P-007: the gate-red event binds the release-fix clone.
     expect(map['green-checkpoint:red']).toBe('release-fix');
     expect(resolveLaunchTriggerEvent('green-checkpoint:red')).toBe('release-fix');
+    // git-sync-content-guard-2026-06-13 P-006: the content-error event binds the content-fix clone.
+    expect(map['git-sync:content-error']).toBe('content-fix');
+    expect(resolveLaunchTriggerEvent('git-sync:content-error')).toBe('content-fix');
     expect(resolveLaunchTriggerEvent('nope:nonexistent')).toBeNull();
   });
 

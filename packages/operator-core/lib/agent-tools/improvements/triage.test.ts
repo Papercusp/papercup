@@ -53,15 +53,32 @@ describe('improvements:triage tool', () => {
   });
 
   const mockItem = (p: Partial<ScoredItem> & { id: string }): ScoredItem => ({
-    id: p.id,
-    kind: p.kind || 'change',
-    severity: p.severity || 'minor',
-    title: p.title || 'test idea',
-    scope: p.scope || 'harness:papercup',
-    tier: p.tier || 'human',
-    score: p.score || 0.5,
-    ageDays: p.ageDays || 0,
-    tierReason: p.tierReason || 'test reason',
+    kind: 'change',
+    severity: 'minor',
+    title: 'test idea',
+    scope: 'harness:papercup',
+    tier: 'human',
+    score: 0.5,
+    ageDays: 0,
+    tierReason: 'test reason',
+    ...p,
+  });
+
+  // buildDigest's return type (ImprovementDigest) has grown beyond the handful of
+  // fields these tests assert on; a complete-shape helper keeps the mocks valid
+  // without restating every field at each call site.
+  const mockDigest = (p: Partial<ImprovementDigest>): ImprovementDigest => ({
+    generatedAt: new Date(0).toISOString(),
+    total: 0,
+    open: 0,
+    byKind: { bug: 0, change: 0, feature: 0 },
+    bySeverity: {},
+    byState: {},
+    autoEligible: [],
+    humanQueue: [],
+    likelyDuplicates: [],
+    recurringSignatures: [],
+    headline: 'test digest',
     ...p,
   });
 
@@ -70,7 +87,7 @@ describe('improvements:triage tool', () => {
     expect(triageTool.name).toBe('improvements:triage');
     expect(triageTool.description).toContain('D-005 taxonomy');
     expect(triageTool.guidance).toBeDefined();
-    expect(triageTool.guidance.when).toBeDefined();
+    expect(triageTool.guidance?.when).toBeDefined();
   });
 
   describe('handler - summary mode', () => {
@@ -79,14 +96,10 @@ describe('improvements:triage tool', () => {
         mockItem({ id: '1', scope: 'harness:sheets' }),
         mockItem({ id: '2', scope: 'operator' }),
       ];
-      mockReadImprovementItems.mockResolvedValue(items);
-      mockBuildDigest.mockReturnValue({
-        total: 2,
-        open: 2,
-        byKind: { bug: 0, change: 2, feature: 0 },
-        autoEligible: [],
-        humanQueue: items,
-      });
+      mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
+      mockBuildDigest.mockReturnValue(
+        mockDigest({ total: 2, open: 2, byKind: { bug: 0, change: 2, feature: 0 }, humanQueue: items }),
+      );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'summary' }, ctx)) as any;
@@ -104,14 +117,10 @@ describe('improvements:triage tool', () => {
 
     it('defaults to summary mode when no mode is specified', async () => {
       const items = [mockItem({ id: '1' })];
-      mockReadImprovementItems.mockResolvedValue(items);
-      mockBuildDigest.mockReturnValue({
-        total: 1,
-        open: 1,
-        byKind: { bug: 0, change: 1, feature: 0 },
-        autoEligible: [],
-        humanQueue: items,
-      });
+      mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
+      mockBuildDigest.mockReturnValue(
+        mockDigest({ total: 1, open: 1, byKind: { bug: 0, change: 1, feature: 0 }, humanQueue: items }),
+      );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({}, ctx)) as any;
@@ -129,14 +138,10 @@ describe('improvements:triage tool', () => {
         mockItem({ id: '1', scope: 'harness:sheets', title: 'add feature' }),
         mockItem({ id: '2', scope: 'operator', title: 'fix scheduler' }),
       ];
-      mockReadImprovementItems.mockResolvedValue(items);
-      mockBuildDigest.mockReturnValue({
-        total: 2,
-        open: 2,
-        byKind: { bug: 0, change: 2, feature: 0 },
-        autoEligible: [],
-        humanQueue: items,
-      });
+      mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
+      mockBuildDigest.mockReturnValue(
+        mockDigest({ total: 2, open: 2, byKind: { bug: 0, change: 2, feature: 0 }, humanQueue: items }),
+      );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'triage-all' }, ctx)) as any;
@@ -162,13 +167,7 @@ describe('improvements:triage tool', () => {
 
     it('includes the Queen\'s instructions in the response', async () => {
       mockReadImprovementItems.mockResolvedValue([]);
-      mockBuildDigest.mockReturnValue({
-        total: 0,
-        open: 0,
-        byKind: { bug: 0, change: 0, feature: 0 },
-        autoEligible: [],
-        humanQueue: [],
-      });
+      mockBuildDigest.mockReturnValue(mockDigest({}));
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'triage-all' }, ctx)) as any;
@@ -182,13 +181,7 @@ describe('improvements:triage tool', () => {
   describe('handler - triage-one mode', () => {
     it('requires ideaId and rejects without it', async () => {
       mockReadImprovementItems.mockResolvedValue([]);
-      mockBuildDigest.mockReturnValue({
-        total: 0,
-        open: 0,
-        byKind: { bug: 0, change: 0, feature: 0 },
-        autoEligible: [],
-        humanQueue: [],
-      });
+      mockBuildDigest.mockReturnValue(mockDigest({}));
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'triage-one' }, ctx)) as any;
@@ -281,13 +274,7 @@ describe('improvements:triage tool', () => {
   describe('handler - unknown mode', () => {
     it('returns error for unknown mode', async () => {
       mockReadImprovementItems.mockResolvedValue([]);
-      mockBuildDigest.mockReturnValue({
-        total: 0,
-        open: 0,
-        byKind: { bug: 0, change: 0, feature: 0 },
-        autoEligible: [],
-        humanQueue: [],
-      });
+      mockBuildDigest.mockReturnValue(mockDigest({}));
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'unknown' as any }, ctx)) as any;

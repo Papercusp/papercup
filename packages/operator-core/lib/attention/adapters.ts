@@ -103,7 +103,13 @@ export function planItemToAttention(it: PlanItemInput): AttentionItem {
   };
 }
 
-/* ── coord escalation (P-010) ───────────────────────────────────────── */
+/* ── coord escalation (P-010) ───────────────────────────────────────────
+ * The DECISION coord-channel (P-102/D-011): an escalation is a BLOCKED decision
+ * whose disposition is RESOLVE-WITH-CHOICE (coord:resolve, picking a named
+ * option). blocker/question → Decision; advisory → Alert. Distinct from a
+ * `coord-message` (a communication, ack) and a `conversation` (a non-blocking
+ * coord:ask question, Alert). These three are the coherent coord disposition set.
+ */
 
 export interface CoordEscalationInput {
   msgId: string;
@@ -157,7 +163,12 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
   };
 }
 
-/* ── coord message addressed to the human (P-027) ───────────────────── */
+/* ── coord message addressed to the human (P-027) ───────────────────────
+ * The COMMUNICATION coord-channel (P-102/D-011): a message's disposition is ACK
+ * (acknowledge/dismiss) — it is NEVER a Decision. A blocked decision is an
+ * `coord-escalation` (resolve-with-choice); an open question is a `conversation`
+ * (coord:ask). A directly-addressed message is an Alert; a broadcast is Activity.
+ */
 
 export interface CoordMessageInput {
   msgId: string;
@@ -178,12 +189,18 @@ export interface CoordMessageInput {
 }
 
 export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
-  // Tier (D-002/D-003): classify from STRUCTURED fields, never the text.
-  // A lifecycle auto-broadcast (auto:true or lifecycle set) → Activity. A
-  // non-auto message addressed directly to the human → a Decision (a real
-  // ping the owner should see). A non-auto plain broadcast → Activity (FYI).
+  // Tier (D-002/D-003 + P-102/D-011): classify from STRUCTURED fields, never the
+  // text. A message is a COMMUNICATION (its disposition is `ack`), NEVER a
+  // Decision — acking is not deciding. Genuine human decisions route through
+  // ESCALATIONS (coord:escalate → resolve-with-choice) or open QUESTIONS
+  // (coord:ask → conversation); a plain coord:send to the human is an FYI. So:
+  // a non-auto message addressed directly to the human → Alert (worth surfacing,
+  // but ack-only); an auto/lifecycle broadcast or a plain `*` broadcast →
+  // Activity. This collapses the old question-escalation ↔ direct-message overlap
+  // (both used to land in Decisions): escalations are now the sole decision
+  // coord-channel.
   const isAuto = m.auto === true || (typeof m.lifecycle === 'string' && m.lifecycle.length > 0);
-  const tier: AttentionTier = isAuto ? 'activity' : m.directToOwner ? 'decision' : 'activity';
+  const tier: AttentionTier = isAuto ? 'activity' : m.directToOwner ? 'alert' : 'activity';
   const needsHuman = needsHumanForTier(tier);
   return {
     id: `coord-message:${m.msgId}`,

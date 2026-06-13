@@ -177,11 +177,13 @@ describe('coordMessageToAttention — structured classification (D-003)', () => 
     expect(a.needsHuman).toBe(false);
   });
 
-  it('a non-auto message addressed directly to the human → decision', () => {
+  it('a non-auto message addressed directly to the human → alert, NOT a decision (P-102: a message is a communication, ack-only; decisions route through escalations)', () => {
     const a = coordMessageToAttention({ msgId: 'm-4', summary: 'can you confirm the rename?', directToOwner: true, from: 'su-worker' });
-    expect(a.tier).toBe('decision');
-    expect(a.needsHuman).toBe(true);
+    expect(a.tier).toBe('alert');
+    expect(a.needsHuman).toBe(false);
     expect(a.ownerAgentId).toBe('su-worker');
+    // disposition stays ACK (a communication), never resolve-with-choice.
+    expect(a.actions.some((x) => x.id === 'ack')).toBe(true);
   });
 
   it('an auto message addressed to the human is STILL activity (lifecycle wins)', () => {

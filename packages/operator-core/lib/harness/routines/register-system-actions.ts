@@ -173,7 +173,9 @@ import '../../blueprint/blueprint-run-action';
 import './release-actions';
 import './improvement-actions';
 import './p2p-perf-actions';
-import '../../scout/register-scout-action';
+// (scout's bespoke system:scout-cycle action is RETIRED — P-130; scout runs via the
+//  `scout` blueprint. register-scout-action no longer registers anything; the
+//  scout:cycle op lazy-imports productionScoutRunner from it directly.)
 import './session-dir-gc-action';
 import './claim-discipline-action';
 import './wake-brain-action';

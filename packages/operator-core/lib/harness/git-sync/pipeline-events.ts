@@ -20,7 +20,7 @@ import { hostname } from 'node:os';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 
-export type PipelineEventKind = 'git_sync' | 'merge_resolver' | 'green_checkpoint' | 'deploy' | 'release_fixer';
+export type PipelineEventKind = 'git_sync' | 'merge_resolver' | 'content_fixer' | 'green_checkpoint' | 'deploy' | 'release_fixer';
 
 function db(sql?: Sql): Sql {
   return sql ?? (getOrgPg().sql as unknown as Sql);

@@ -1,24 +1,25 @@
 /**
- * peer-rpc-transport — the pluggable wire-leg for {@link routeToAuthority}.
+ * peer-rpc-transport — the pluggable wire-leg INTERFACE + null default for
+ * {@link routeToAuthority}. This file owns the `PeerRpcTransport` contract,
+ * `PeerUnreachableError`, and the `setPeerRpcTransport` registration seam — NOT
+ * a concrete transport.
  *
- * There is no peer-to-peer request/response RPC transport in the tree yet: the
- * Model-B Hyperswarm substrate REPLICATES append-only data (it is not a
- * request/response channel), `coord_event_log` is a PG table, and `loopbackFetch`
- * only reaches localhost. So routing to a *remote* lock authority has nothing to
- * call over today.
+ * The real transports register at boot (see `transport-wiring.ts`):
+ *   - `HttpPeerRpcTransport` (`http-peer-rpc-transport.ts`) — POST to the
+ *     authority peer's operator endpoint; works server↔server (publicly
+ *     reachable peers), proven on Hetzner.
+ *   - `AuthorityRpcSwarmTransport` (`authority-rpc-swarm-transport.ts`) — the
+ *     PRIMARY for the NAT'd desktop fleet: an RPC channel multiplexed over the
+ *     existing per-hive Hyperswarm connection (shared-hive-hardening D-007). The
+ *     connection is already open + hole-punched, so it needs NO address
+ *     discovery — the connection IS the address, keyed by `device_pubkey`.
+ *   - `CompositePeerRpcTransport` (`composite-peer-rpc-transport.ts`) combines
+ *     the two (swarm transport for the desktop fleet, HTTP fallback for reachable peers).
  *
- * Rather than block Track B on building a whole network stack, the remote leg is
- * a seam. The default transport reports every peer unreachable, which makes
- * {@link routeToAuthority} fail open — exactly the designed degradation (D-004:
- * git-merge is the data-safety backstop, so a missed serialization only costs
- * extra merge churn, never correctness).
- *
- * When a real transport lands — the natural candidates are (a) HTTP to the
- * authority peer's operator endpoint over the existing mesh/tunnel (mirroring the
- * lock hook's POST to `:3070`), or (b) an RPC channel multiplexed over the
- * Hyperswarm connection the substrate already holds open per harness — register
- * it once via {@link setPeerRpcTransport} and the remote path activates with zero
- * changes to callers.
+ * The default {@link NULL_PEER_RPC_TRANSPORT} (tests / before wiring) reports
+ * every peer unreachable, so {@link routeToAuthority} fails open — the designed
+ * degradation (D-004: git-merge is the data-safety backstop, so a missed
+ * serialization only costs extra merge churn, never correctness).
  */
 
 import type { PeerRef } from './lock-authority';
