@@ -39,8 +39,7 @@ triggers now emit at the source.
 
 The fs-watcher mirror for these three tables is **retired** (see the long
 comment block in `harness-fs-watcher.ts`). They're now written **at producer
-time** by three internal endpoints, called by `bash run.sh` / `bin/supervisor.sh`
-/ `bin/service-smoke-test.sh`:
+time** by three internal endpoints:
 
 * `POST /api/internal/escalation-event`  → `harness_escalations`
 * `POST /api/internal/smoke-test-event`  → `harness_smoke_test`

@@ -671,7 +671,7 @@ Everything funnels through **`notifyAttention()`** in `packages/operator-core/li
 
 [Section titled “Where those rows are written (the producer chokepoints)”](#where-those-rows-are-written-the-producer-chokepoints)
 
-The fs-watcher mirror for these three tables is **retired** (see the long comment block in `harness-fs-watcher.ts`). They’re now written **at producer time** by three internal endpoints, called by `bash run.sh` / `bin/supervisor.sh` / `bin/service-smoke-test.sh`:
+The fs-watcher mirror for these three tables is **retired** (see the long comment block in `harness-fs-watcher.ts`). They’re now written **at producer time** by three internal endpoints:
 
 * `POST /api/internal/escalation-event` → `harness_escalations`
 * `POST /api/internal/smoke-test-event` → `harness_smoke_test`
@@ -1494,9 +1494,9 @@ The bootstrap lives at `packages/operator-core/lib/dbos/bootstrap.ts` (`startDbo
 
 [Section titled “1. Boot from the live host path, not the retired instrumentation hook”](#1-boot-from-the-live-host-path-not-the-retired-instrumentation-hook)
 
-The instinct is to launch DBOS from `apps/operator/instrumentation-node.ts` — that’s the Next.js instrumentation hook, the “run once at server start” idiom. **It’s retired.** The operator is served by the `operator-vite` + Hono host (`bin/hono-host.ts` → `bin/host-bootstrap.ts`), not by Next any more. A DBOS launch wired into `instrumentation-node.ts` simply never runs in the desktop product.
+The instinct is to launch DBOS from the Next.js instrumentation hook — **it’s retired.** The operator is served by the `operator-vite` + Hono host (`apps/operator/bin/hono-host.ts` → `apps/operator/bin/host-bootstrap.ts`), not by Next any more.
 
-`startDbos()` must be called from **`bin/host-bootstrap.ts`** (the live boot path). The tell that you got this wrong: the `dbos` schema never appears in the embedded PG even though `PAPERCUSP_DBOS_ENABLE=1`. See also `operator-next-is-retired`.
+`startDbos()` must be called from **`apps/operator/bin/host-bootstrap.ts`** (the live boot path). The tell that you got this wrong: the `dbos` schema never appears in the embedded PG even though `PAPERCUSP_DBOS_ENABLE=1`. See also `operator-next-is-retired`.
 
 ## 2. Probe the resolved PG — the source label can’t tell dead from live
 
@@ -1572,7 +1572,7 @@ That purity is also why the durable pipeline is **sequential-only**. The moment 
 
 ***
 
-**Where this is wired:** `packages/operator-core/lib/dbos/` — `bootstrap.ts` (launch + probe + flags), `orchestrator-workflow.ts` (the durable pipeline), `orchestrator-runner.ts` (spawns `invoke-once` with the idempotency key), `periodic-workflows.ts` (the timers). Full design + decision log: the plans `dbos-durable-jobs-2026-05-31` and `dbos-orchestrator-durability-2026-05-31`.
+**Where this is wired:** `packages/operator-core/lib/dbos/` — `bootstrap.ts` (launch + probe + flags), `orchestrator-workflow.ts` (the durable pipeline), `orchestrator-runner.ts` (spawns `invoke-once` with the idempotency key), `periodic-workflows.ts` (the timers). Bootstrapping happens from `apps/operator/bin/host-bootstrap.ts`. Full design + decision log: the plans `dbos-durable-jobs-2026-05-31` and `dbos-orchestrator-durability-2026-05-31`.
 
 Note
 
@@ -1701,7 +1701,7 @@ Because `sys:http` blankets all same-origin `/api/*` fetch + EventSource, **per-
 * **`open_devtools()` doesn’t exist in release** — it’s compiled out unless the tauri `devtools` feature is on; gate it `#[cfg(debug_assertions)]` (fixed 2026-05-31). This had kept the release binary \~3 weeks stale.
 * **A debug binary launched directly is still “dev mode”** — the sidecar-spawn gate is the compile profile (`debug_assertions`), not how you launch it. Don’t expect IPC from `target/debug/papercusp-desktop`.
 * **Raw `cargo build --release` keeps the DEV frontend.** A bare `cargo build --release` produces a release-*profile* binary (so it takes the IPC/sidecar path) but bakes in the `tauri.conf.json` **`devUrl` (`:3055`)**, not the production bootstrap — so the window loads `http://localhost:3055`, never navigates to `papercusp://localhost`, and the polyfill stays *native* (no IPC). Use `tauri build` (or `npm run build`) to bake the production frontend; only that path navigates to `papercusp://localhost` (verified 2026-06-02).
-* **`build.rs` re-assembles the sidecar on every cargo build — don’t run it while a sidecar is live.** Each `cargo build` copies sidecar binaries (`code-server/lib/node`, `embedded-postgres/bin/postgres`, …); if a prior desktop’s sidecar/code-server is still running it triggers `Text file busy (ETXTBSY)`, and `kill -9` mid-copy can leave the binaries corrupt → `embedded-postgres did not accept TCP` / code-server `Exec format error`. Kill ALL release/sidecar processes first, then build; re-run `bin/build-desktop-sidecar.sh` to restore if a copy got interrupted (verified 2026-06-02).
+* **`build.rs` re-assembles the sidecar on every cargo build — don’t run it while a sidecar is live.** Each `cargo build` copies sidecar binaries (`code-server/lib/node`, `embedded-postgres/bin/postgres`, …); if a prior desktop’s sidecar/code-server is still running it triggers `Text file busy (ETXTBSY)`, and `kill -9` mid-copy can leave the binaries corrupt → `embedded-postgres did not accept TCP` / code-server `Exec format error`. Kill ALL release/sidecar processes first, then retry the build (verified 2026-06-02).
 * **Embedded-PG boot can crash on a migration `42P01`→`42703` chain.** A migration whose one-`BEGIN…COMMIT` file `ALTER`s a table created by *ensure-schema* (not by a migration — e.g. `feature_queue`) throws `42P01` at embedded-boot (migrations run BEFORE ensure-schema), rolling back the WHOLE file → a later migration that uses the un-added column hard-crashes the entire PG boot with `42703` (no database at all). Fix: `ALTER TABLE IF EXISTS` on ensure-schema tables (graceful no-op at boot). Found + fixed in 097/098 on 2026-06-02.
 
 See the plan `desktop-ipc-transport-completion-2026-05-20` for the broader effort.
@@ -1853,7 +1853,7 @@ Two helpers make Papercusp dogfood itself:
 
 Together: Papercusp dogfoods itself. The user finds `papercup` in their harness dropdown when they switch to `papercusp-workspace` — no manual `harness create` step.
 
-Files:
+Files (current boot location):
 
 * `packages/operator-core/lib/harness/papercusp-workspace.ts`
 * `packages/operator-core/lib/harness/register-papercup.ts`
@@ -1861,7 +1861,7 @@ Files:
 
 Caution
 
-**Update (2026-06):** The original boot wiring was `apps/operator/instrumentation-node.ts` (the Next.js instrumentation hook), which is **retired** along with the Next standalone operator. The two helper modules moved from `apps/operator/lib/harness/` to `packages/operator-core/lib/harness/`. As of this audit there is **no live boot-time caller** of `ensurePapercuspWorkspace()` / `registerPapercupHarness()` in the operator source — they are exercised only by the one-shot driver `apps/operator/scripts/run-dogfood-bootstrap.ts` (npm `verify:dogfood-bootstrap`) and their unit tests. Run the driver manually to flip dogfooding on; the rest of this page (sentinel name, the scoped-write trick, `detectPapercupRoot`) is still accurate.
+**Update (2026-06):** The original boot wiring was the Next.js instrumentation hook (apps/operator/instrumentation-node.ts), which is **retired** along with the Next standalone operator. The two helper modules moved from apps/operator/lib/harness/ to `packages/operator-core/lib/harness/`. As of this audit there is **no live boot-time caller** of `ensurePapercuspWorkspace()` / `registerPapercupHarness()` in the operator source — they are exercised only by the one-shot driver `apps/operator/scripts/run-dogfood-bootstrap.ts` (npm `verify:dogfood-bootstrap`) and their unit tests. Run the driver manually to flip dogfooding on; the rest of this page (sentinel name, the scoped-write trick, `detectPapercupRoot`) is still accurate.
 
 ## Why two helpers, not one
 
@@ -1954,6 +1954,10 @@ harness_registry@papercusp-workspace: 1 projects
 # Dogfood go-live runbooks — P-026 orchestrator run + P-051b Cupboard deploy
 
 > Step-by-step runbooks for the two remaining user-driven dogfood items. P-026 is the first end-to-end orchestrator run on a real papercup feature; P-051b is the Cupboard server deploy. Both require user creds or live UI interaction — autonomous agents cannot complete them.
+
+Caution
+
+**Update (2026-06):** This runbook references plan files dated 2026-05-24, which predate the autoloop retirement (2026-06-05). The director-cadence loop mechanism (`director-config.json`, autoloop `setInterval`, DBOS `autoloop-workflow.ts`) is **retired** — both loops are GONE. Step 4 in P-026 (letting autoloop pick the feature) no longer applies. Drive features manually via “Start working” + deliberate dispatch, or schedule via blueprint `triggers.schedule` instead. The rest of this runbook (pre-flight, run sequence, verification checklist, Cupboard deploy) remains valid.
 
 ## When this applies
 
@@ -3349,13 +3353,15 @@ Because the gym is now a blueprint, you do **not** extend it by editing core gym
 * **`waitForOperatorReady`** (`lib/gym/operator-ready.ts`) — all five gym runners (autoloop-cycle, ab-run, blueprint-cycle-run, smoke, wake-mode) now gate on readiness AND **fail fast the moment the child exits**, with the boot-log tail in the error. Falls back to the legacy llms.txt probe when a pinned checkout predates the route (404). The blind `sleep(4000)` “giving DBOS a moment” is gone.
 * **`PAPERCUSP_UTILITY_HOST=1`** (`lib/background-workers.ts` → `utilityHostEnabled`, set by `lib/gym/boot-spec.ts`) — the gym-operator now boots a *headless utility profile*: no voice cluster, no hyperbee/holepunch substrate, no boot-time embedder warm-up. `backgroundWorkersEnabled()` could not express this (it bundles the DBOS launch with the shared-DB drains; the gym needs DBOS ON).
 
-## The Napi abort itself — open, with a subtraction trap armed
+## The Napi abort itself — subtraction-trap RESULT (2026-06-12/13, FB-16)
 
-[Section titled “The Napi abort itself — open, with a subtraction trap armed”](#the-napi-abort-itself--open-with-a-subtraction-trap-armed)
+[Section titled “The Napi abort itself — subtraction-trap RESULT (2026-06-12/13, FB-16)”](#the-napi-abort-itself--subtraction-trap-result-2026-06-1213-fb-16)
 
-The abort’s `what()` is empty and apport drops cores for non-dpkg binaries (linuxbrew node), so the throwing module is still unidentified. The suspect set was the native modules loaded by boot legs the gym never needed — holepunch (`sodium-native`, `udx-native`, `rocksdb-native` via the substrate
+The armed subtraction trap has run. **Result: the abort does not reproduce by isolated repeated boots — 0 crashes across 80+ boots** spanning every profile (full-profile ×15 then ×25, two gdb-wrapped lanes, minimal utility-host), serial and concurrent-across-lanes. And **zero Napi aborts have appeared in any gym-operator log since the fix landed (2026-06-12 04:24)** — across every real gym-cycle boot (latest observed 2026-06-13 02:20) plus the trap boots. The crash is a load/timing-dependent native-init race, not a deterministic boot failure, so the subtraction trap cannot collapse it to a single `.node`.
 
-* voice cluster) and `onnxruntime` (embedder warm-up) — all on a bleeding-edge node (25.9). The utility-host profile removes them from the gym-operator process entirely; if the abort recurs on a minimal boot, the remaining suspect set is small (pg/tsx/plugin-host daemons) and the fail-fast path now prints the boot-log tail at the moment of death instead of a downstream SQL error.
+**Sharper localization from the two surviving captures** (`/tmp/gym-loop-op-fde36122.log` 2026-06-12 02:10 and `-e2972346.log` 2026-06-11 01:10 — the only 2 of 61 gym-operator logs that carry the abort): the `terminate called … 'Napi::Error'` (empty `what()`) fires in the boot window **after** `[plugin-host] warmed` / `Running DBOS system database migrations…` and **before** `Initializing DBOS (v4.18.10)` / `DBOS launched!`. By that point `[voice-node] local audio socket` is already created and `[hyperbee-substrate] boot complete` has logged — so **the holepunch/voice natives (`sodium-native`, `udx-native`) are NOT the throw site; their init completed cleanly before the abort.** The throw is an uncaught C++ exception from a NAPI addon active in the concurrent DBOS-migration/late-boot phase under Node 25.9. `@dbos-inc/dbos-sdk` 4.18.10 ships no `.node` of its own, so DBOS is the *timing marker* here, not necessarily the culprit; the empty `what()` + no usable core (apport skips non-dpkg linuxbrew node) leaves the exact addon unconfirmed.
+
+**Disposition:** the deployed containment — the utility-host minimal profile (removes the heavy natives) + the fail-fast readiness gate (turns a dying boot into an immediate logged error with the boot-log tail, instead of a downstream `was_forked_from` SQL symptom) — has held with zero recurrence. Exact-native identification is blocked on a reproduction that does not occur in isolation; chasing it further would need the original concurrent-load conditions of the live `:3070` host, not a boot loop. EI-368 is contained, not root-fixed.
 
 ## Postscript — the vocabulary itself was retired (2026-06-12, EI-399)
 

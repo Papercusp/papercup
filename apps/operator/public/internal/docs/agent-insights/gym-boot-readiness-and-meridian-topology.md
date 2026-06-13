@@ -50,18 +50,40 @@ bug is the dead process behind it.
   could not express this (it bundles the DBOS launch with the shared-DB
   drains; the gym needs DBOS ON).
 
-## The Napi abort itself — open, with a subtraction trap armed
+## The Napi abort itself — subtraction-trap RESULT (2026-06-12/13, FB-16)
 
-The abort's `what()` is empty and apport drops cores for non-dpkg binaries
-(linuxbrew node), so the throwing module is still unidentified. The suspect
-set was the native modules loaded by boot legs the gym never needed —
-holepunch (`sodium-native`, `udx-native`, `rocksdb-native` via the substrate
+The armed subtraction trap has run. **Result: the abort does not reproduce by
+isolated repeated boots — 0 crashes across 80+ boots** spanning every profile
+(full-profile ×15 then ×25, two gdb-wrapped lanes, minimal utility-host),
+serial and concurrent-across-lanes. And **zero Napi aborts have appeared in
+any gym-operator log since the fix landed (2026-06-12 04:24)** — across every
+real gym-cycle boot (latest observed 2026-06-13 02:20) plus the trap boots.
+The crash is a load/timing-dependent native-init race, not a deterministic
+boot failure, so the subtraction trap cannot collapse it to a single `.node`.
 
-* voice cluster) and `onnxruntime` (embedder warm-up) — all on a bleeding-edge
-  node (25.9). The utility-host profile removes them from the gym-operator
-  process entirely; if the abort recurs on a minimal boot, the remaining suspect
-  set is small (pg/tsx/plugin-host daemons) and the fail-fast path now prints
-  the boot-log tail at the moment of death instead of a downstream SQL error.
+**Sharper localization from the two surviving captures**
+(`/tmp/gym-loop-op-fde36122.log` 2026-06-12 02:10 and `-e2972346.log`
+2026-06-11 01:10 — the only 2 of 61 gym-operator logs that carry the abort):
+the `terminate called … 'Napi::Error'` (empty `what()`) fires in the boot
+window **after** `[plugin-host] warmed` / `Running DBOS system database
+migrations…` and **before** `Initializing DBOS (v4.18.10)` / `DBOS launched!`.
+By that point `[voice-node] local audio socket` is already created and
+`[hyperbee-substrate] boot complete` has logged — so **the holepunch/voice
+natives (`sodium-native`, `udx-native`) are NOT the throw site; their init
+completed cleanly before the abort.** The throw is an uncaught C++ exception
+from a NAPI addon active in the concurrent DBOS-migration/late-boot phase
+under Node 25.9. `@dbos-inc/dbos-sdk` 4.18.10 ships no `.node` of its own, so
+DBOS is the *timing marker* here, not necessarily the culprit; the empty
+`what()` + no usable core (apport skips non-dpkg linuxbrew node) leaves the
+exact addon unconfirmed.
+
+**Disposition:** the deployed containment — the utility-host minimal profile
+(removes the heavy natives) + the fail-fast readiness gate (turns a dying boot
+into an immediate logged error with the boot-log tail, instead of a downstream
+`was_forked_from` SQL symptom) — has held with zero recurrence. Exact-native
+identification is blocked on a reproduction that does not occur in isolation;
+chasing it further would need the original concurrent-load conditions of the
+live `:3070` host, not a boot loop. EI-368 is contained, not root-fixed.
 
 ## Postscript — the vocabulary itself was retired (2026-06-12, EI-399)
 

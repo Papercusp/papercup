@@ -5,6 +5,8 @@ Step-by-step runbooks for the two remaining user-driven dogfood items. P-026 is 
 
 import { Aside } from '@astrojs/starlight/components';
 
+**Update (2026-06):** This runbook references plan files dated 2026-05-24, which predate the autoloop retirement (2026-06-05). The director-cadence loop mechanism (`director-config.json`, autoloop `setInterval`, DBOS `autoloop-workflow.ts`) is **retired** — both loops are GONE. Step 4 in P-026 (letting autoloop pick the feature) no longer applies. Drive features manually via "Start working" + deliberate dispatch, or schedule via blueprint `triggers.schedule` instead. The rest of this runbook (pre-flight, run sequence, verification checklist, Cupboard deploy) remains valid.
+
 ## When this applies
 
 You (a human) want to drive Papercusp's dogfood plan to substantial
