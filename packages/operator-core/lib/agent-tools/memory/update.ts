@@ -11,6 +11,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export default defineTool({
   name: 'memory:update',
   capability: 'memory:write',
@@ -29,7 +31,7 @@ export default defineTool({
   // enforced); the all-roles lists + quotas formerly here were dead inputs
   // (memory-taxonomy-and-debt-followups P-004).
   args: z.object({
-    id: z.string().min(1),
+    id: z.string().uuid('Memory ID must be a valid UUID'),
     content: z.string().min(1).max(2000),
   }),
   async handler(args) {

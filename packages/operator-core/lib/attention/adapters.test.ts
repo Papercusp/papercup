@@ -273,6 +273,9 @@ describe('P-100 — folded disposition channels (B-14 / D-011)', () => {
     expect(a.harnessSlug).toBe('sheets');
     expect(a.id).toBe('standing-approval:harness:write:sheets');
     expect(a.ref).toEqual({ kind: 'standing-approval', capability: 'harness:write', targetHarness: 'sheets' });
+    // D-027 follow-on (1): inline terminal grant/dismiss (no navigate-to-source).
+    expect(a.actions.map((x) => x.id)).toEqual(['grant', 'dismiss']);
+    expect(a.actions.find((x) => x.id === 'grant')?.primary).toBe(true);
   });
 
   it('conversation: an open question is an Alert (surfaced, not demanded), escalations category', () => {
@@ -285,6 +288,9 @@ describe('P-100 — folded disposition channels (B-14 / D-011)', () => {
     expect(a.ref).toEqual({ kind: 'conversation', conversationId: 'CONV-7' });
     // Carries Message owner (it has an asking agent), unlike improvement/scout.
     expect(a.actions.some((x) => x.id === 'message-owner')).toBe(true);
+    // D-027 follow-on (1): the primary action is now inline Answer (a navigate id
+    // that reveals the InputCard → conversations:resolve), not navigate-to-source.
+    expect(a.actions[0]).toMatchObject({ id: 'answer', primary: true });
   });
 
   it('scout-grade: ONE Activity-tier rollup (optional feedback, never per-idea)', () => {

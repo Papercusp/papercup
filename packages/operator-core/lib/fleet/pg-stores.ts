@@ -89,8 +89,8 @@ function rowToNode(r: SpawnRowDb): SpawnNode {
     restartStrategy: (r.restart_strategy as RestartStrategy) || 'one_for_one',
     restartCount: Number(r.restart_count ?? 0),
     restartWindowStart: r.restart_window_start,
-    heartbeatAt: r.heartbeat_at ?? null,
-    lastOutputAt: r.last_output_at ?? null,
+    heartbeatAt: r.heartbeat_at,
+    lastOutputAt: r.last_output_at,
     depth: Number(r.depth ?? 0),
   };
 }

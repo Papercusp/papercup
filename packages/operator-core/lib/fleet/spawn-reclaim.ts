@@ -132,9 +132,12 @@ export function isPossiblyWedged(
   const silentMs = opts.silentMs ?? WEDGE_SILENT_MS;
   const staleMs = opts.staleMs ?? RECLAIM_STALE_MS;
   if (row.status !== 'running' && row.status !== 'restarting') return false;
-  if (!row.heartbeatAt || now - row.heartbeatAt.getTime() > staleMs) return false; // not supervised-live → the reclaim path owns it
+  if (!row.heartbeatAt) return false;
+  const heartbeatMs = row.heartbeatAt instanceof Date ? row.heartbeatAt.getTime() : typeof row.heartbeatAt === 'string' ? new Date(row.heartbeatAt).getTime() : NaN;
+  if (isNaN(heartbeatMs) || now - heartbeatMs > staleMs) return false; // not supervised-live → the reclaim path owns it
   if (!row.lastOutputAt) return false;
-  return now - row.lastOutputAt.getTime() > silentMs;
+  const lastOutputMs = row.lastOutputAt instanceof Date ? row.lastOutputAt.getTime() : typeof row.lastOutputAt === 'string' ? new Date(row.lastOutputAt).getTime() : NaN;
+  return !isNaN(lastOutputMs) && now - lastOutputMs > silentMs;
 }
 
 export interface ReclaimResult {

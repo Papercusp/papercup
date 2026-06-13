@@ -14,6 +14,8 @@ vi.mock('./plans-api', () => ({
   setItemStatus: vi.fn(async () => ({ ok: true, oldStatus: 'needs-human', newStatus: 'done', itemId: 'P-7' })),
   addPlanDecision: vi.fn(async () => ({ ok: true, decisionId: 'D-1', slug: 'p' })),
   triageAttentionItem: vi.fn(async () => ({ ok: true })),
+  decideStandingApproval: vi.fn(async () => ({ ok: true })),
+  resolveConversationAnswer: vi.fn(async () => ({ ok: true, state: 'resolved' })),
 }));
 
 import {
@@ -27,6 +29,8 @@ import {
   setItemStatus,
   addPlanDecision,
   triageAttentionItem,
+  decideStandingApproval,
+  resolveConversationAnswer,
 } from './plans-api';
 import type { AttentionItem } from './plans-api';
 
@@ -119,6 +123,23 @@ const smoke = item({
   actions: [{ id: 'view-log', label: 'View log', primary: true }, { id: 'chat', label: 'Chat' }],
   ref: { kind: 'smoke-fail', harnessSlug: 'h' },
 });
+// D-027 follow-on (1): inline-disposition fixtures.
+const standingApproval = item({
+  kind: 'standing-approval',
+  status: 'pending-approval',
+  tier: 'decision',
+  needsHuman: true,
+  actions: [{ id: 'grant', label: 'Grant', primary: true }, { id: 'dismiss', label: 'Dismiss' }],
+  ref: { kind: 'standing-approval', capability: 'harness:write', targetHarness: 'sheets' },
+});
+const conversation = item({
+  kind: 'conversation',
+  status: 'open',
+  tier: 'alert',
+  needsHuman: false,
+  actions: [{ id: 'answer', label: 'Answer', primary: true }, { id: 'message-owner', label: 'Message owner' }],
+  ref: { kind: 'conversation', conversationId: 'CONV-7' },
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -189,6 +210,20 @@ describe('attentionItemToCardSpec (P-010)', () => {
     expect(spec.question).toBe('Fleet status');
     expect(ids(spec)).toEqual(['resolve']);
   });
+
+  it('standing-approval: Grant + Dismiss are both terminal (no navigate) — D-027 follow-on (1)', () => {
+    const spec = attentionItemToCardSpec(standingApproval);
+    expect(ids(spec)).toEqual(['grant', 'dismiss']);
+    expect(byId(spec, 'grant').terminal).toBeUndefined(); // terminal (renderer default)
+    expect(byId(spec, 'dismiss').terminal).toBeUndefined();
+    expect(byId(spec, 'grant').style).toBe('primary');
+  });
+
+  it('conversation: Answer is navigate (reveals the InputCard), Message owner navigate — D-027 follow-on (1)', () => {
+    const spec = attentionItemToCardSpec(conversation);
+    expect(byId(spec, 'answer').terminal).toBe(false); // navigate — InputCard owns it
+    expect(byId(spec, 'message-owner').terminal).toBe(false);
+  });
 });
 
 describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
@@ -246,6 +281,25 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
     expect(setItemStatus).not.toHaveBeenCalled();
     expect(resolveEscalation).not.toHaveBeenCalled();
   });
+
+  // D-027 follow-on (1): inline disposition for the folded kinds.
+  it('standing-approval Grant → decideStandingApproval(approve) from the ref', async () => {
+    const r = await resolveAttentionAction(standingApproval, 'grant');
+    expect(decideStandingApproval).toHaveBeenCalledWith({ capability: 'harness:write', targetHarness: 'sheets', decision: 'approve' });
+    expect(r.resolved).toBe(true);
+  });
+
+  it('standing-approval Dismiss → decideStandingApproval(dismiss)', async () => {
+    const r = await resolveAttentionAction(standingApproval, 'dismiss');
+    expect(decideStandingApproval).toHaveBeenCalledWith({ capability: 'harness:write', targetHarness: 'sheets', decision: 'dismiss' });
+    expect(r.resolved).toBe(true);
+  });
+
+  it('conversation Answer is a navigate id — not dispatched here (the InputCard submit owns it)', async () => {
+    const r = await resolveAttentionAction(conversation, 'answer');
+    expect(r.resolved).toBe(false);
+    expect(resolveConversationAnswer).not.toHaveBeenCalled();
+  });
 });
 
 describe('answerAttentionItem (P-021 Answer flow parity)', () => {
@@ -261,5 +315,15 @@ describe('answerAttentionItem (P-021 Answer flow parity)', () => {
     const r = await answerAttentionItem(needsHuman, '   ');
     expect(addPlanDecision).not.toHaveBeenCalled();
     expect(r.resolved).toBe(false);
+  });
+
+  // D-027 follow-on (1): a conversation answers by RESOLVING with the owner's text
+  // as the accepted answer (no plan decision / loop resume).
+  it('conversation answer → resolveConversationAnswer({conversation_id, accepted_answer}), no plan-item writes', async () => {
+    const r = await answerAttentionItem(conversation, 'use approach B');
+    expect(resolveConversationAnswer).toHaveBeenCalledWith({ conversation_id: 'CONV-7', accepted_answer: 'use approach B' });
+    expect(addPlanDecision).not.toHaveBeenCalled();
+    expect(setItemStatus).not.toHaveBeenCalled();
+    expect(r.resolved).toBe(true);
   });
 });

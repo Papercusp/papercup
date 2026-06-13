@@ -165,7 +165,7 @@ async function dispatchActionsBlockFromOutput(
  */
 function resolveInvokeTimeoutMs(bodyTimeoutMs: unknown, isHiveLaunch: boolean): number {
   const fallback = isHiveLaunch ? 1_200_000 : 90_000;
-  return Math.max(5_000, Math.min(1_200_000, Number(bodyTimeoutMs ?? fallback)));
+  return Math.max(5_000, Math.min(2_700_000, Number(bodyTimeoutMs ?? fallback)));
 }
 
 /**
@@ -190,13 +190,12 @@ const invoke = defineTool({
   path: '/harness/:slug/invoke',
   auth: 'loopback',
   // A single-role agent invocation runs an LLM to completion — far longer than
-  // the 30s route default. The handler caps the child at `timeoutMs` (≤1200s —
-  // raised from 300s for long single-role launches: a scheduled `scan` blueprint
-  // run sweeps the workspace for many turns; unify-agent-launches P-009 smoke
-  // showed 300s SIGTERMs a real scan with zero output). Give the route a ceiling
-  // just above the cap so it never aborts a within-limits agent mid-run
-  // (claude-code promote reads the plan + calls plans:promote, ~30-120s).
-  timeoutSec: 1210,
+  // the 30s route default. The handler caps the child at `timeoutMs` (≤2700s —
+  // supports long-running auto-fix implementations; raised from 1200s to support
+  // 45min implementTimeoutMs). Give the route a ceiling just above the cap so it
+  // never aborts a within-limits agent mid-run (claude-code promote reads the
+  // plan + calls plans:promote, ~30-120s).
+  timeoutSec: 2710,
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolveProject(ctx.params.slug as string);

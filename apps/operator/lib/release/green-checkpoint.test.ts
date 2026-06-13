@@ -148,3 +148,91 @@ describe('extractFailingTests (P-012 failure signature)', () => {
     expect(extractFailingTests('All affected tests passed.\nTests 1200 passed')).toEqual([]);
   });
 });
+
+// HE-02 gap #10 (hive-run-evaluation-2026-06-13, D-017): the realCheckpointDeps
+// "real path" — the inline env-strip + output processing in runGreen — twice held
+// `main` red for hours via leaked host env (2026-06-06/07). The orchestration is
+// already tested above with stub deps; these cover the pure pieces of the heavy
+// path that don't need a real suite-run.
+describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () => {
+  it('strips ALL PAPERCUSP_* and HOST_ENV_STRIP keys, preserves unrelated env', () => {
+    const src = {
+      PATH: '/usr/bin',
+      HOME: '/home/t',
+      PAPERCUSP_FLAG_DEMO: '1', // the 2026-06-06 leaked-flag class
+      PAPERCUSP_OPERATOR_URL: 'http://host', // the 2026-06-07 non-flag class
+      SPAWN_SU_BEARER: 'tok', // NOT PAPERCUSP_-prefixed and not in HOST_ENV_STRIP — survives
+      AGENT_MODELS: '{"worker":"opus"}', // the 2026-06-09 invoke.test class
+    };
+    const env = buildGreenCheckpointEnv('base123', src);
+    expect(env.PAPERCUSP_FLAG_DEMO).toBeUndefined();
+    expect(env.PAPERCUSP_OPERATOR_URL).toBeUndefined();
+    expect(env.AGENT_MODELS).toBeUndefined();
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.HOME).toBe('/home/t');
+    expect(env.SPAWN_SU_BEARER).toBe('tok');
+    // pure — never mutates the caller's env object
+    expect(src.PAPERCUSP_FLAG_DEMO).toBe('1');
+  });
+
+  it('sets GREEN_CHECKPOINT=1 and AFFECTED_BASE only when a base is given', () => {
+    const withBase = buildGreenCheckpointEnv('abc', {});
+    expect(withBase.GREEN_CHECKPOINT).toBe('1');
+    expect(withBase.AFFECTED_BASE).toBe('abc');
+    const noBase = buildGreenCheckpointEnv(null, {});
+    expect(noBase.GREEN_CHECKPOINT).toBe('1');
+    expect(noBase.AFFECTED_BASE).toBeUndefined();
+  });
+
+  it('defaults the vitest cap + retry but never clobbers a pre-set value', () => {
+    const defaulted = buildGreenCheckpointEnv('b', {});
+    expect(defaulted.VITEST_MAX_FORKS).toBe('8');
+    expect(defaulted.VITEST_MAX_THREADS).toBe('8');
+    expect(defaulted.AFFECTED_RETRY_FAILED).toBe('1');
+    const preset = buildGreenCheckpointEnv('b', { VITEST_MAX_FORKS: '2', AFFECTED_RETRY_FAILED: '0' });
+    expect(preset.VITEST_MAX_FORKS).toBe('2'); // honored
+    expect(preset.VITEST_MAX_THREADS).toBe('8'); // still defaulted
+    expect(preset.AFFECTED_RETRY_FAILED).toBe('0'); // '0' is a value, not absent — honored
+  });
+});
+
+describe('checkpointFailureSignature (P-012 dedup, SPA-build folded in)', () => {
+  it('is empty on a green run even if the output contains FAIL-looking text', () => {
+    expect(checkpointFailureSignature(' FAIL  lib/x.test.ts > c', true, true)).toEqual([]);
+  });
+
+  it('is the suite signature (no vite sentinel) when the suite failed but the build is ok', () => {
+    expect(checkpointFailureSignature(' FAIL  lib/x.test.ts > c', false, true)).toEqual(['lib/x.test.ts']);
+  });
+
+  it('appends @papercusp/operator-vite when the build (not the suite) is what failed', () => {
+    // suite passed (no FAIL markers) but build broke → only the build sentinel
+    expect(
+      checkpointFailureSignature('\n=== SPA BUILD FAILED (@papercusp/operator-vite) ===\nerror', false, false),
+    ).toEqual(['@papercusp/operator-vite']);
+  });
+
+  it('does not duplicate the build sentinel when it is already in the extracted set', () => {
+    const sig = checkpointFailureSignature('>>> @papercusp/operator-vite FAILED — retry', false, false);
+    expect(sig).toEqual(['@papercusp/operator-vite']);
+  });
+});
+
+describe('summarizeSuiteOutput (de-noised held-gate tail)', () => {
+  it('drops npm error boilerplate, keeps FAIL + assertion signal', () => {
+    const out = [
+      'npm error code 1',
+      ' FAIL  lib/x.test.ts > case',
+      'npm error A complete log of this run can be found in:',
+      'AssertionError: expected 1 to be 2',
+    ].join('\n');
+    const s = summarizeSuiteOutput(out);
+    expect(s).not.toMatch(/npm error/);
+    expect(s).toContain('FAIL  lib/x.test.ts');
+    expect(s).toContain('AssertionError: expected 1 to be 2');
+  });
+
+  it('keeps only the last 2000 chars', () => {
+    expect(summarizeSuiteOutput('x'.repeat(3000))).toHaveLength(2000);
+  });
+});
