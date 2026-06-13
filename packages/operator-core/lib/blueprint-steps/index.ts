@@ -28,3 +28,12 @@ import './ops/fleet-ekg-scan.js';
 import './ops/scout-cycle.js';
 import './ops/transfer-distill.js';
 import './ops/prompt-ablation.js';
+// Bucket A (deterministic-blueprints-migration-2026-06-13 D-012 / P-101): four more
+// pure-deterministic loops — change-ledger repo scan (flag-only, NO governor: pure
+// bookkeeping), deferral-interest refit, calibration resolution sweep, graduation
+// tracker (files an OWNER REPORT, never auto-widens). Each wraps its existing gated
+// tick (behavior-neutral, D-004).
+import './ops/change-ledger-scan.js';
+import './ops/deferral-interest-refit.js';
+import './ops/calibration-resolve.js';
+import './ops/graduation-scan.js';

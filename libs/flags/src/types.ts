@@ -341,6 +341,15 @@ export const FLAGS = {
   // consume-edges live proof. The decider's default deps fail-DARK on a flag-IO
   // error so a hiccup can never arm autonomy. Surfaced loudly as the pending P-092 flip.
   QUEEN_AUTONOMY_ARMED: "papercusp-queen-autonomy-armed",
+  // queen-autonomy-policy-2026-06-13 B-15 (P-030): the owner control surface —
+  // /settings/autonomy, where the owner sets per-category risk ceilings / locks
+  // and sees the earned graduated + derived effective level. ON by default (alpha
+  // flags-default-on policy): the page only reads + writes the already-audited
+  // autonomy_policy (every category ships never-auto, and editing a ceiling never
+  // ARMS autonomy — that's the separate QUEEN_AUTONOMY_ARMED / P-092 gate). OFF is
+  // the kill-switch that hides the nav entry (the page's auto-decisions feed +
+  // graduation prompts are still stubbed pending B-16).
+  QUEEN_AUTONOMY_SETTINGS: "papercusp-queen-autonomy-settings",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -543,6 +552,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // behavior-neutral, D-007). The owner's P-092 act flips it ON — and even then
   // every category ships never-auto (D-005), so arming alone auto-decides nothing.
   [FLAGS.QUEEN_AUTONOMY_ARMED]: false,
+  // ON by default (alpha flags-default-on policy) — the owner control surface
+  // (B-15) reads + writes the already-audited never-auto policy and arms nothing;
+  // OFF hides the /settings/autonomy nav entry.
+  [FLAGS.QUEEN_AUTONOMY_SETTINGS]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

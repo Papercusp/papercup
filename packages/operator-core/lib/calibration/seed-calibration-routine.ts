@@ -31,26 +31,40 @@ const SLUG = process.env.CALIBRATION_HARNESS ?? 'papercup';
 // :10/:40, iq-battery's :20, change-ledger-scan's :20, and the
 // negative-space miner's :25, so a deploy-restart at a shared boundary never
 // kills the tick (the iq-battery precedent).
-const ROUTINE = { name: 'calibration-resolve', target: 'system:calibration-resolve', cron: '0 50 */6 * * *' };
+// MIGRATED (deterministic-blueprints-migration-2026-06-13 bucket A): the routine
+// now fires the `calibration` PROGRAM blueprint via `system:blueprint-run`
+// (which detects program-mode and runs the deterministic `calibration:resolve`
+// step inline) rather than the bespoke `system:calibration-resolve` action. Same
+// cadence, same flag + governor gates (the op runs them) — behavior-neutral
+// (D-004). The bespoke action is retained + lint-guarded; the lib logic it called
+// lives on as the op's impl.
+const ROUTINE = { name: 'calibration-resolve', target: 'system:blueprint-run', cron: '0 50 */6 * * *' };
+/** The program blueprint the routine fires (its deterministic step IS the sweep). */
+const BLUEPRINT_PAYLOAD = { blueprintId: 'calibration' };
 
 async function main(): Promise<void> {
   const active = process.argv.includes('--active');
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
   const id = `rt_${SLUG}_${ROUTINE.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  // COALESCE on conflict: a re-seed must not wipe an owner-tuned payload (maxPerTick).
+  // payload_template carries the blueprint pointer; owner tuning (maxPerTick)
+  // lives under `payload_template.payload`. On conflict, ENSURE the blueprintId
+  // (a pre-migration row targeted the bespoke action) while PRESERVING any
+  // existing keys: `{blueprintId} || (existing - blueprintId)`.
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
        payload_template, concurrency, catchup, active, next_fire_at)
     VALUES (${id}, ${SLUG}, ${ws}, ${ROUTINE.name}, 'cron',
             ${JSON.stringify({ cron: ROUTINE.cron })}::text::jsonb, ${ROUTINE.target},
-            NULL::jsonb,
+            ${JSON.stringify(BLUEPRINT_PAYLOAD)}::text::jsonb,
             'skip', 'skip-old', ${active}, now())
     ON CONFLICT (install_slug, name) DO UPDATE SET
       target_role = EXCLUDED.target_role,
       trigger_config = EXCLUDED.trigger_config,
-      payload_template = COALESCE(harness_shared.routines.payload_template, EXCLUDED.payload_template),
+      payload_template =
+        ${JSON.stringify(BLUEPRINT_PAYLOAD)}::text::jsonb
+        || COALESCE(harness_shared.routines.payload_template - 'blueprintId', '{}'::jsonb),
       active = EXCLUDED.active,
       workspace_id = EXCLUDED.workspace_id,
       updated_at = now()

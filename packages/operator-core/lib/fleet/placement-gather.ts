@@ -17,6 +17,15 @@ import { listPresence } from '../agent-tools/coordination/presence';
 import { groupByAgent, listFleetAssignments } from './assignments';
 import { getWorkItem, listWorkItems, type WorkItem } from '../work-items';
 import type { PlacementBee, PlacementTask } from './placement-affinity';
+// Reuse the SAME readiness the survey + DBOS orchestrator dispatch by (D-007's
+// shared seam: filterReadyFrontier → selectReady over getFeatureBlockers). No
+// duplicated blocked_by logic — one readiness, every consumer (queen-wave-dispatch P-030).
+import {
+  filterReadyFrontier,
+  fetchHarnessBlockGraph,
+  type HarnessBlockGraph,
+  type FrontierRow,
+} from '../hive/survey';
 
 /** Feature/issue states that mean "settled" — never a placeable frontier item. */
 const TERMINAL_STATES = new Set([
@@ -118,6 +127,14 @@ function planSlugFromPayload(payload: unknown): string | null {
   return typeof s === 'string' && s ? s : null;
 }
 
+/** Pull the per-lane situational brief off a work-item payload (queen-wave-dispatch
+ *  P-021 stamps it at `payload.brief` from a `## Promote` lane's `brief:` field). */
+function briefFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const b = (payload as Record<string, unknown>).brief;
+  return typeof b === 'string' && b.trim() ? b : null;
+}
+
 /** Map a WorkItem to the planner's PlacementTask shape. */
 export function workItemToTask(wi: WorkItem): PlacementTask {
   return {
@@ -126,6 +143,7 @@ export function workItemToTask(wi: WorkItem): PlacementTask {
     title: wi.title,
     files: filesFromPayload(wi.payload),
     planSlug: planSlugFromPayload(wi.payload),
+    brief: briefFromPayload(wi.payload),
   };
 }
 
@@ -135,12 +153,73 @@ export interface GatherFrontierOpts {
   /** Else, pull the OPEN unassigned backlog from this harness (priority order). */
   harness?: string;
   limit: number;
+  /** Workspace for the blocked_by readiness filter (P-030). */
+  workspaceId: string;
 }
 
 export interface GatherFrontierResult {
   tasks: PlacementTask[];
-  /** Ids the caller named that are missing / already-assigned / settled (skipped). */
+  /** Ids the caller named that are missing / already-assigned / settled / blocked (skipped). */
   skipped: { id: string; reason: string }[];
+}
+
+/**
+ * Partition placement candidates by blocked_by readiness — the SAME predicate the
+ * survey + DBOS orchestrator dispatch by (`filterReadyFrontier` → `selectReady`;
+ * D-007's shared readiness seam). A lane is ready iff every blocker is TERMINAL
+ * (passed/deprecated) or absent, so a wave's tier2 can NEVER be placed before
+ * tier1 completes — the brief-discipline made structural at the placement
+ * chokepoint (queen-wave-dispatch P-030 / D-006). Pure: the caller supplies the
+ * per-harness blocking graph so this unit-tests with no database.
+ */
+export function partitionTasksByReadiness(
+  tasks: PlacementTask[],
+  graphByHarness: ReadonlyMap<string, HarnessBlockGraph>,
+): { ready: PlacementTask[]; blocked: PlacementTask[] } {
+  if (tasks.length === 0) return { ready: [], blocked: [] };
+  const rows: FrontierRow[] = tasks.map((t) => ({
+    feature_id: t.id,
+    harness_slug: t.harness ?? '',
+    title: t.title,
+    item_kind: 'feature',
+    created_ts: null,
+    feature_order: null,
+  }));
+  const { ready } = filterReadyFrontier(rows, graphByHarness);
+  const readyIds = new Set(ready.map((r) => r.feature_id));
+  return {
+    ready: tasks.filter((t) => readyIds.has(t.id)),
+    blocked: tasks.filter((t) => !readyIds.has(t.id)),
+  };
+}
+
+/**
+ * Resolve each candidate harness's blocking graph (fail-open per harness — a flaky
+ * blocker read treats that harness's lanes as unblocked rather than blanking the
+ * frontier) and partition the tasks by readiness. The thin PG wrapper around the
+ * pure `partitionTasksByReadiness`.
+ */
+async function filterFrontierReadiness(
+  tasks: PlacementTask[],
+  workspaceId: string,
+): Promise<{ ready: PlacementTask[]; blocked: PlacementTask[] }> {
+  const harnesses = [...new Set(tasks.map((t) => t.harness).filter((h): h is string => !!h))];
+  if (harnesses.length === 0) return { ready: tasks, blocked: [] };
+  const { sql } = getOrgPg();
+  const graphByHarness = new Map<string, HarnessBlockGraph>();
+  await Promise.all(
+    harnesses.map(async (h) => {
+      try {
+        graphByHarness.set(h, await fetchHarnessBlockGraph(sql, workspaceId, h));
+      } catch (e) {
+        console.warn(
+          `[placement-gather] block-graph read failed for '${h}' — lanes treated unblocked:`,
+          e instanceof Error ? e.message : e,
+        );
+      }
+    }),
+  );
+  return partitionTasksByReadiness(tasks, graphByHarness);
 }
 
 /**
@@ -151,9 +230,10 @@ export interface GatherFrontierResult {
  */
 export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFrontierResult> {
   const skipped: { id: string; reason: string }[] = [];
+  let candidates: PlacementTask[];
 
   if (opts.ids && opts.ids.length > 0) {
-    const tasks: PlacementTask[] = [];
+    candidates = [];
     for (const id of opts.ids.slice(0, opts.limit)) {
       const wi = await getWorkItem(id).catch(() => null);
       if (!wi) {
@@ -168,21 +248,30 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
         skipped.push({ id, reason: `settled (${wi.state})` });
         continue;
       }
-      tasks.push(workItemToTask(wi));
+      candidates.push(workItemToTask(wi));
     }
-    return { tasks, skipped };
+  } else {
+    // Harness backlog: OPEN unassigned items, priority-ordered.
+    const items = await listWorkItems({ harness: opts.harness, limit: Math.min(opts.limit * 3, 500) });
+    candidates = items
+      .filter((wi) => !wi.assignee && !TERMINAL_STATES.has(wi.state))
+      .sort((a, b) => {
+        const pa = a.priority ?? Number.POSITIVE_INFINITY;
+        const pb = b.priority ?? Number.POSITIVE_INFINITY;
+        if (pa !== pb) return pa - pb;
+        return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+      })
+      .slice(0, opts.limit)
+      .map(workItemToTask);
   }
 
-  // Harness backlog: OPEN unassigned items, priority-ordered.
-  const items = await listWorkItems({ harness: opts.harness, limit: Math.min(opts.limit * 3, 500) });
-  const ready = items
-    .filter((wi) => !wi.assignee && !TERMINAL_STATES.has(wi.state))
-    .sort((a, b) => {
-      const pa = a.priority ?? Number.POSITIVE_INFINITY;
-      const pb = b.priority ?? Number.POSITIVE_INFINITY;
-      if (pa !== pb) return pa - pb;
-      return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
-    })
-    .slice(0, opts.limit);
-  return { tasks: ready.map(workItemToTask), skipped };
+  // Honor blocked_by (P-030): a blocked lane (tier2 before tier1 completes) is
+  // NEVER a placement candidate — the SAME readiness the survey/orchestrator use,
+  // applied to BOTH the explicit-ids and harness-backlog paths so the Queen can't
+  // place a blocked wave lane by any route (D-006: structural, not by convention).
+  const { ready, blocked } = await filterFrontierReadiness(candidates, opts.workspaceId);
+  for (const t of blocked) {
+    skipped.push({ id: t.id, reason: 'blocked — an upstream lane (blocked_by) is not yet complete' });
+  }
+  return { tasks: ready, skipped };
 }

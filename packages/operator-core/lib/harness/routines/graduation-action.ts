@@ -7,38 +7,28 @@
  * threshold. It NEVER widens autoKinds itself — the widening act stays a
  * reviewed policy.ts config edit riding the release gate (P-046, D-008).
  *
- * Thin glue over the injectable tick (`lib/graduation/scan.ts`; the counting
- * core is pure in core.ts). SQL-only — no LLM calls, zero spend (no spend
- * events are ledgered); the gates are:
+ * MIGRATED (deterministic-blueprints-migration-2026-06-13 bucket A): the gates +
+ * tick now live in the shared `runGraduationScan` orchestration
+ * (lib/graduation/scan-loop.ts), which the `graduation:scan` deterministic
+ * blueprint step ALSO calls — provably behavior-neutral (D-004):
  *
- *   - the `papercusp-graduation-tracker` flag, default OFF — the frontier
- *     program's D-001 owner-ratified arming gate. OFF → log + return.
- *   - the learning-governor preflight (D-004 / FB-01, enforcement
- *     'governor'): governor dark / unregistered / unbudgeted / exhausted ⇒
- *     refuse — `lib/graduation/governor.ts`. Arming at P-001 therefore takes
- *     BOTH the flag flip AND an owner-set budget on loop `graduation-tracker`
- *     (per-cycle; 0 is an honest cap for a zero-spend loop).
- *   - the routine itself is SEEDED INACTIVE
- *     (lib/graduation/seed-graduation-routine.ts).
+ *   - the `papercusp-graduation-tracker` flag, default OFF — the frontier D-001
+ *     arming gate.
+ *   - the learning-governor preflight (D-004 / FB-01, enforcement 'governor').
  *
  * Thresholds tune from payload_template (threshold, recurrenceWindowDays,
- * lookbackDays, maxReportsPerTick, neverGraduateClassPatterns —
- * graduationOptionsFromPayload); `mineOnly: true` is the supervised dry mode
- * (standings only, no filing). Runs as ONE durable step and never throws; the
- * tick is idempotent (full recompute + watchdogKey dedup), so a replay is a
- * clean no-op.
+ * lookbackDays, maxReportsPerTick, neverGraduateClassPatterns,
+ * graduationOptionsFromPayload); `mineOnly: true` is the supervised dry mode.
+ * This action is retained, registered, and lint-guarded (the orphaned-action
+ * retirement is a separate pass); the seed routine now fires the `graduation`
+ * blueprint via `system:blueprint-run`. Runs as ONE durable step and never
+ * throws (the try/catch below); the tick is idempotent (the OWNER-REPORT filing
+ * dedups on a watchdogKey — never an auto-edit).
  */
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { graduationGovernorGate } from '../../graduation/governor';
-import {
-  defaultGraduationTickDeps,
-  graduationOptionsFromPayload,
-  runGraduationTick,
-  type GraduationTickDeps,
-} from '../../graduation/scan';
+import { runGraduationScan, type GraduationScanDeps } from '../../graduation/scan-loop';
+import type { GraduationTickDeps } from '../../graduation/scan';
 
 /** The tick-deps seam — injectable for tests (mirrors setNegativeSpaceTickDeps). */
 let _deps: GraduationTickDeps | null = null;
@@ -55,33 +45,38 @@ export function setGraduationGovernorGate(gate: GraduationGovernorGate | null): 
 }
 
 registerSystemAction('graduation-scan', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.GRADUATION_TRACKER, `routine:${ctx.installSlug}`))) {
-    console.log(
-      '[graduation-scan] flag papercusp-graduation-tracker is OFF (frontier arming gate, ' +
-        'self-learning-frontier P-001) — skipping',
-    );
-    return;
-  }
-  const verdict = await (_governorGate ?? graduationGovernorGate)(ctx.workspaceId);
-  if (!verdict.allow) {
-    console.log(
-      `[graduation-scan] learning-governor refused (${verdict.reason}) — skipping ` +
-        '(D-004: an unattended frontier loop runs only registered + budgeted)',
-    );
-    return;
-  }
-  const opts = graduationOptionsFromPayload(ctx.payloadTemplate);
-  const deps =
-    _deps ?? defaultGraduationTickDeps((await import('@papercusp/db-org')).getOrgPg().sql, ctx.workspaceId);
+  const deps: GraduationScanDeps = {};
+  if (_governorGate) deps.governorGate = _governorGate;
+  if (_deps) deps.tickDeps = _deps;
   try {
-    const result = await runGraduationTick(deps, opts);
-    console.log(
-      `[graduation-scan] ${result.classes} class(es) counted, ${result.eligible.length} eligible` +
-        `${result.eligible.length ? ` (${result.eligible.join(', ')})` : ''}` +
-        `, filed ${result.filed.length}${result.filed.length ? ` (${result.filed.join(', ')})` : ''}` +
-        (result.declined ? `, ${result.declined} deduped` : '') +
-        ` — rails: gym ${result.legs.gym ? 'live' : 'inactive'}, ekg ${result.legs.ekg ? 'live' : 'inactive'}`,
+    const outcome = await runGraduationScan(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payload: ctx.payloadTemplate },
+      deps,
     );
+    if (outcome.skipReason === 'flag-off') {
+      console.log(
+        '[graduation-scan] flag papercusp-graduation-tracker is OFF (frontier arming gate, ' +
+          'self-learning-frontier P-001) — skipping',
+      );
+      return;
+    }
+    if (outcome.skipReason === 'governor-refused') {
+      console.log(
+        `[graduation-scan] learning-governor refused (${outcome.governorReason}) — skipping ` +
+          '(D-004: an unattended frontier loop runs only registered + budgeted)',
+      );
+      return;
+    }
+    if (outcome.result) {
+      const result = outcome.result;
+      console.log(
+        `[graduation-scan] ${result.classes} class(es) counted, ${result.eligible.length} eligible` +
+          `${result.eligible.length ? ` (${result.eligible.join(', ')})` : ''}` +
+          `, filed ${result.filed.length}${result.filed.length ? ` (${result.filed.join(', ')})` : ''}` +
+          (result.declined ? `, ${result.declined} deduped` : '') +
+          ` — rails: gym ${result.legs.gym ? 'live' : 'inactive'}, ekg ${result.legs.ekg ? 'live' : 'inactive'}`,
+      );
+    }
   } catch (e) {
     // Never throw from a durable step (replay = a second tick for nothing).
     console.warn('[graduation-scan] tick FAILED:', e instanceof Error ? e.message : e);

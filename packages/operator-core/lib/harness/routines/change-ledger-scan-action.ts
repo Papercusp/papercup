@@ -7,55 +7,34 @@
  * process's repo tree and offer one ledger row per (commit, file). Pure
  * bookkeeping: no LLM, no filing into queues; idempotent via the ledger's
  * dedupe index (re-offered (sha, file) pairs no-op), so re-runs after a crash
- * are free and no watermark state exists. Flag-gated by CHANGE_LEDGER
- * (recordBehaviorChange itself also checks — this gate just skips the git
- * work). Seeded by seed-change-ledger-scan-routine.ts.
+ * are free and no watermark state exists. Flag-gated by CHANGE_LEDGER (the only
+ * gate — no learning-governor here, unlike the frontier miners).
+ *
+ * MIGRATED (deterministic-blueprints-migration-2026-06-13 bucket A): the gate +
+ * git-log scan now live in the shared `runChangeLedgerScan` orchestration
+ * (lib/change-ledger/scan-loop.ts), which the `change-ledger:scan` deterministic
+ * blueprint step ALSO calls — provably behavior-neutral (D-004). This action is
+ * retained, registered, and lint-guarded (the orphaned-action retirement is a
+ * separate pass); the seed routine now fires the `change-ledger` blueprint via
+ * `system:blueprint-run`. Seeded by seed-change-ledger-scan-routine.ts.
  */
 
-import { execFile as execFileCb } from 'node:child_process';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
-import { recordBehaviorChange } from '../../change-ledger/change-ledger';
-import {
-  PROMPT_SCAN_GIT_ARGS,
-  scanRepoPromptEdits,
-} from '../../change-ledger/prompt-file-scan';
+import { runChangeLedgerScan } from '../../change-ledger/scan-loop';
 import { registerSystemAction } from './system-actions';
 
-const execFile = promisify(execFileCb);
-
-// packages/operator-core/lib/harness/routines → repo root. ESM-safe: bare
-// `__dirname` is UNDEFINED under tsx file-mode in this type:module package —
-// a top-level reference here threw at import, poisoned the whole
-// register-system-actions chain, and killed DBOS routines fleet-wide on the
-// 2026-06-12 05:30 deploy. Never use __dirname in operator-core.
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../../..');
-
 registerSystemAction('change-ledger-scan', async (ctx) => {
-  if (!(await getFlag(FLAGS.CHANGE_LEDGER, `routine:${ctx.installSlug}`))) {
+  const outcome = await runChangeLedgerScan({
+    workspaceId: ctx.workspaceId,
+    installSlug: ctx.installSlug,
+    payload: ctx.payloadTemplate,
+  });
+  if (!outcome.ran) {
     console.log('[change-ledger-scan] CHANGE_LEDGER flag off — skipping');
     return;
   }
   const sinceDays = Number(ctx.payloadTemplate?.sinceDays) || 14;
-  const result = await scanRepoPromptEdits(
-    {
-      workspaceId: ctx.workspaceId,
-      record: recordBehaviorChange,
-      runGitLog: async (paths, days) => {
-        const { stdout } = await execFile('git', PROMPT_SCAN_GIT_ARGS(paths, days), {
-          cwd: REPO_ROOT,
-          maxBuffer: 16 * 1024 * 1024,
-        });
-        return stdout;
-      },
-    },
-    { sinceDays },
-  );
   console.log(
-    `[change-ledger-scan] ${result.edits} prompt-file edit(s) in the trailing ${sinceDays}d window, ` +
-      `${result.recorded} new ledger row(s) (rest deduped)`,
+    `[change-ledger-scan] ${outcome.edits} prompt-file edit(s) in the trailing ${sinceDays}d window, ` +
+      `${outcome.recorded} new ledger row(s) (rest deduped)`,
   );
 });

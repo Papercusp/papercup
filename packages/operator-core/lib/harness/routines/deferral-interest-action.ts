@@ -5,36 +5,27 @@
  * pricing model (lib/deferral-interest/) the one queue ranker (P-040 / FB-12)
  * reads as its deferral-interest feature.
  *
- * Thin glue over the injectable tick (`lib/deferral-interest/refit.ts`; the
- * backfill + fit cores are pure). SQL-only — no LLM calls, zero spend (so no
- * spend events are ledgered); the gates are:
+ * MIGRATED (deterministic-blueprints-migration-2026-06-13 bucket A): the gates +
+ * tick now live in the shared `runDeferralInterestRefitGated` orchestration
+ * (lib/deferral-interest/refit-loop.ts), which the `deferral-interest:refit`
+ * deterministic blueprint step ALSO calls — provably behavior-neutral (D-004):
  *
- *   - the `papercusp-deferral-interest` flag, default OFF — the frontier
- *     program's D-001 owner-ratified arming gate (frontier loops ship built,
- *     tested, DARK until the plan's P-001 closes). OFF → log + return.
- *   - the learning-governor preflight (D-004 / FB-01, enforcement
- *     'governor'): governor dark / unregistered / unbudgeted / exhausted ⇒
- *     refuse — `lib/deferral-interest/governor.ts`. Arming at P-001 therefore
- *     takes BOTH the flag flip AND an owner-set budget on loop
- *     `deferral-interest-refit` (per-cycle; 0 is honest for a zero-spend loop).
- *   - the routine itself is SEEDED INACTIVE
- *     (lib/deferral-interest/seed-deferral-interest-routine.ts).
+ *   - the `papercusp-deferral-interest` flag, default OFF — the frontier D-001
+ *     owner-ratified arming gate (frontier loops ship built, tested, DARK).
+ *   - the learning-governor preflight (D-004 / FB-01, enforcement 'governor').
  *
- * Runs as ONE durable step and never throws; the tick is idempotent in effect
- * (full-corpus recompute; a replay just appends another model version trained
- * on the same data).
+ * This action is retained, registered, and lint-guarded (the orphaned-action
+ * retirement is a separate pass); the seed routine now fires the
+ * `deferral-interest` blueprint via `system:blueprint-run`. Runs as ONE durable
+ * step and never throws (the try/catch below); the tick is idempotent.
  */
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { deferralInterestGovernorGate } from '../../deferral-interest/governor';
 import {
-  defaultDeferralRefitDeps,
-  runDeferralInterestRefit,
-  type DeferralRefitDeps,
-} from '../../deferral-interest/refit';
+  runDeferralInterestRefitGated,
+  type DeferralRefitGateDeps,
+} from '../../deferral-interest/refit-loop';
+import type { DeferralRefitDeps } from '../../deferral-interest/refit';
 
 /** The tick-deps seam — injectable for tests (mirrors setNegativeSpaceTickDeps). */
 let _deps: DeferralRefitDeps | null = null;
@@ -51,24 +42,28 @@ export function setDeferralGovernorGate(gate: DeferralGovernorGate | null): void
 }
 
 registerSystemAction('deferral-interest-refit', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.DEFERRAL_INTEREST, `routine:${ctx.installSlug}`))) {
-    console.log(
-      '[deferral-interest-refit] flag papercusp-deferral-interest is OFF (frontier arming gate, ' +
-        'self-learning-frontier P-001) — skipping',
-    );
-    return;
-  }
-  const verdict = await (_governorGate ?? deferralInterestGovernorGate)(ctx.workspaceId);
-  if (!verdict.allow) {
-    console.log(
-      `[deferral-interest-refit] learning-governor refused (${verdict.reason}) — skipping ` +
-        '(D-004: an unattended frontier loop runs only registered + budgeted)',
-    );
-    return;
-  }
-  const deps = _deps ?? defaultDeferralRefitDeps(getOrgPg().sql, ctx.workspaceId);
+  const deps: DeferralRefitGateDeps = {};
+  if (_governorGate) deps.governorGate = _governorGate;
+  if (_deps) deps.tickDeps = _deps;
   try {
-    await runDeferralInterestRefit(deps);
+    const outcome = await runDeferralInterestRefitGated(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug },
+      deps,
+    );
+    if (outcome.skipReason === 'flag-off') {
+      console.log(
+        '[deferral-interest-refit] flag papercusp-deferral-interest is OFF (frontier arming gate, ' +
+          'self-learning-frontier P-001) — skipping',
+      );
+      return;
+    }
+    if (outcome.skipReason === 'governor-refused') {
+      console.log(
+        `[deferral-interest-refit] learning-governor refused (${outcome.governorReason}) — skipping ` +
+          '(D-004: an unattended frontier loop runs only registered + budgeted)',
+      );
+      return;
+    }
   } catch (e) {
     // Never throw from a durable step (replay = a second refit for nothing).
     console.warn('[deferral-interest-refit] tick FAILED:', e instanceof Error ? e.message : e);

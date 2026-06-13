@@ -153,15 +153,26 @@ assigned_at IS NULL AND state NOT IN ('resolved','closed')` was 0. A raw
 issue is legitimately dateless (7 such here), and unrelated interactive-agent
 assignees inflate it further (96 unscoped). Only OPEN runner claims wedge.
 
-**Residual gap (still open, EI-403 cluster): the durable path's workers run
-INVISIBLY.** Both `durableSpawnFire` workflows
-(`durable-spawn:implement:<EI>:<n>`) read **PENDING** in `dbos.workflow_status`
-(updated\_at frozen at creation, no `dbos.workflow_queue` row) and neither worker
-ever got a `harness_shared.spawned_agents` row — yet both demonstrably ran and
-resolved. So EI-403-B/EI-437 made the resolve work end-to-end, but traded round
-1's fire-and-forget (worker *was* recorded via the fallback) for a durable
-enqueue whose **outer workflow never marks complete and never writes the spawn
-record** — implement workers don't appear in `fleet:tree` and the durableSpawnFire
-status is permanently PENDING. Functional resolves land; observability/durability
-of the spawn does not. Confirm this leg is closed before treating D-010 as fully
-done.
+**Residual gap (observability, EI-403 cluster): implement workers run invisibly
+to `fleet:tree`.** ⚠ Watch-out for the next monitor: the `durableSpawnFire`
+workflow `updated_at` does NOT advance while its `/invoke` step runs (the step
+blocks for the worker's first \~6-8 min — `loopbackFetch` holds the connection),
+so a mid-run check looks like a "frozen PENDING / stuck" workflow. It is not —
+both implement workflows completed **SUCCESS** (recovery\_attempts=2, step output
+checkpointed in `dbos.operation_outputs`); EI-403's core durability fix works and
+does not double-dispatch. Don't call "stuck" from a single PENDING snapshot —
+re-check after the step's block window.
+
+The genuine residual is narrower: **the durable-spawn path writes no
+`spawned_agents` row.** In `launch-blueprint.ts` the durable branch of
+`defaultFire` returns `{spawnId: null, runId: idempotencyKey, durable: true}`
+and `buildLaunchSpawnRequest` (the EI-403-A implement seam) just returns the
+`DurableSpawnFireInput` — neither calls `recordSpawn`; only the fire-and-forget
+fallback does (the WI-108 fix). So round 1's worker WAS in `spawned_agents`
+(`s-…-983e57d1`, child\_role=worker, via the fallback) but round 2's two workers
+appear in neither `spawned_agents` nor `agent_runs_consolidated` — invisible in
+`fleet:tree`. EI-403-A/EI-437 fixed durability but regressed visibility vs round
+
+1. Fix shape: have the durable path `recordSpawn` keyed off the workflow id and
+   `finishSpawn` from the workflow's terminal status. Tracked on EI-403 (comment
+   \#45122).

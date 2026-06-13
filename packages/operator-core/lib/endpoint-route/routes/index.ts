@@ -243,6 +243,7 @@ import agentMcp_runCommandSse from './agent-mcp/run-command-sse';
 import agentMcp_runCommand from './agent-mcp/run-command';
 import agentMcp_capabilities from './agent-mcp/capabilities';
 import agentMcp_runTool from './agent-mcp/run-tool';
+import agentMcp_autonomyPolicySet from './agent-mcp/autonomy-policy-set';
 import agentMcp_spawnPi from './agent-mcp/spawn-pi';
 import agentMcp_voiceDebug from './agent-mcp/voice-debug';
 import agentMcp_voiceUtteranceLog from './agent-mcp/voice-utterance-log';
@@ -474,6 +475,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_runCommand as AnyRoute),
   ...flatten(agentMcp_capabilities as AnyRoute),
   ...flatten(agentMcp_runTool as AnyRoute),
+  ...flatten(agentMcp_autonomyPolicySet as AnyRoute),
   ...flatten(agentMcp_spawnPi as AnyRoute),
   ...flatten(agentMcp_voiceDebug as AnyRoute[]),
   ...flatten(agentMcp_voiceUtteranceLog as AnyRoute),

@@ -11,6 +11,7 @@ const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
   '/settings/oracle':     FLAGS.TESTING,
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
+  '/settings/autonomy':   FLAGS.QUEEN_AUTONOMY_SETTINGS,
 };
 
 interface SettingsLink {
@@ -46,6 +47,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     links: [
       { href: '/settings/oracle', label: 'Oracle assistant', keywords: ['oracle', 'assistant', 'prompt', 'memory'] },
       { href: '/settings/operator', label: 'Papercup agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
+      { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'queen', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
       { href: '/settings/voice', label: 'Voice & speech', keywords: ['voice', 'speech', 'stt', 'tts', 'microphone', 'wake word', 'elevenlabs', 'openai', 'cartesia', 'deepgram'] },
     ],
   },
@@ -120,11 +122,13 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
   const testingEnabled = useFlag(FLAGS.TESTING);
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
+  const autonomySettingsEnabled = useFlag(FLAGS.QUEEN_AUTONOMY_SETTINGS);
 
   const flagEnabled: Record<FlagKey, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.TESTING]: testingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
+    [FLAGS.QUEEN_AUTONOMY_SETTINGS]: autonomySettingsEnabled,
     [FLAGS.HARNESS_PHASES]: true,
   };
 

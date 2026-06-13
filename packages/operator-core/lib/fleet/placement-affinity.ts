@@ -29,6 +29,12 @@ export interface PlacementTask {
   subsystem?: string | null;
   /** Plan this task belongs to, if any (strengthens explicit-intent). */
   planSlug?: string | null;
+  /** Per-lane situational brief carried from the work-item's `payload.brief`
+   *  (queen-wave-dispatch P-021/P-031) — the context the placed bee is MISSING,
+   *  not a restatement of the item. Merged with the Queen's batch overlay at
+   *  spawn / warm-inject so each placed bee gets ITS lane's brief, not just the
+   *  one batch-wide overlay. */
+  brief?: string | null;
 }
 
 /** One live fleet bee, mapped from presence + fleet-assignment + the nursery. */
