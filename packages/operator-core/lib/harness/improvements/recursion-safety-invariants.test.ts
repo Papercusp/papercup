@@ -48,6 +48,7 @@ import {
   type RiskTierPolicy,
   type WorkItemKind,
 } from './policy';
+import { classifyReversibility, isAutoReversible, type Reversibility } from './reversibility';
 import { ORGANIC_ONLY, SIGNAL_ORIGINS, type SignalOrigin } from './provenance';
 import { readImprovementItems } from './read-items';
 import { buildDigest, type ScoredItem } from './digest';
@@ -514,5 +515,79 @@ describe('P-049.5 — triage consumes the policy tier verbatim; auto-implement i
     const { decisions } = partitionByTier([protectedCand, cleanCand]);
     expect(prot.tier).toBe(decisions['EI-prot'].tier);
     expect(clean.tier).toBe(decisions['EI-clean'].tier);
+  });
+});
+
+// ── 6. reversibility is a HARD fail-safe axis, orthogonal to the risk dial ────
+//
+// queen-autonomy-policy-2026-06-13 B-02 / P-012 pins the SECOND autonomy axis
+// here (the recursion guards that keep Phase 5/6 autonomy safe): the model
+// (P-090) makes "irreversible never auto" a hard gate, and the tag fails safe
+// (unknown → irreversible). The recursion hazard this closes: the ONLY widening
+// dial is graduation (the autoKinds config edit) — it must be impossible for any
+// graduation to turn an irreversible action auto-runnable. Reversibility takes NO
+// policy input, so the dial cannot reach it; this suite pins that orthogonality.
+
+describe('P-049.6 — reversibility: irreversible/unknown never auto-safe; the graduation dial cannot reach this axis', () => {
+  const REVERSIBILITY_VALUES: Reversibility[] = ['reversible', 'irreversible', 'unknown'];
+
+  it('the fail-safe collapse: isAutoReversible passes ONLY "reversible" — irreversible AND unknown both fail (unknown→irreversible)', () => {
+    expect(REVERSIBILITY_VALUES.filter(isAutoReversible)).toEqual(['reversible']);
+  });
+
+  /** Every irreversible surface the never-auto protected set names (P-090) must
+   *  classify irreversible — the classifier is the source of "irreversible". */
+  const IRREVERSIBLE_SURFACE_REPRESENTATIVES: Array<[cls: string, path: string]> = [
+    ['schema/data migration', 'libs/papercusp/libs/db/sql/261-autonomy-policy.sql'],
+    ['deploy/release (operator-core)', 'packages/operator-core/lib/release/deploy-cli.ts'],
+    ['deploy/release (apps/operator)', 'apps/operator/lib/release/rollback.ts'],
+    ['credentials', 'packages/operator-core/lib/credentials/store.ts'],
+    ['auth', 'apps/operator/lib/auth/session.ts'],
+  ];
+  it.each(IRREVERSIBLE_SURFACE_REPRESENTATIVES)('%s classifies irreversible → never auto-safe', (_cls, path) => {
+    const d = classifyReversibility(cand({ id: 'irr', kind: 'bug', paths: [path] }));
+    expect(d.reversibility).toBe('irreversible');
+    expect(isAutoReversible(d.reversibility)).toBe(false);
+  });
+
+  it('an un-scoped candidate (no paths, no marker) fails safe to unknown → never auto-safe (the scoper must supply paths first)', () => {
+    const d = classifyReversibility(cand({ id: 'bare', kind: 'bug', title: 'fix the inbox dedup' }));
+    expect(d.reversibility).toBe('unknown');
+    expect(isAutoReversible(d.reversibility)).toBe(false);
+  });
+
+  it('the graduation dial (autoKinds) CANNOT make an irreversible action reversible — the axes are orthogonal', () => {
+    const migration = cand({ id: 'mig', kind: 'bug', paths: ['libs/papercusp/libs/db/sql/261-x.sql'] });
+    // The risk/tier dial graduates KINDS — even fully graduated, the protected path gates it…
+    expect(classifyImprovement(migration, FULLY_GRADUATED).tier).toBe('human');
+    // …and reversibility is computed with NO policy input, so no dial can reach it: it stays irreversible.
+    for (const policy of [DEFAULT_RISK_TIER_POLICY, FULLY_GRADUATED]) {
+      void policy; // reversibility takes no policy — same verdict regardless of the dial
+      expect(classifyReversibility(migration).reversibility).toBe('irreversible');
+    }
+    expect(isAutoReversible(classifyReversibility(migration).reversibility)).toBe(false);
+  });
+
+  it('the axis is NOT vacuously closed: a clean repo edit IS positively reversible (auto-safe on this axis)', () => {
+    const clean = cand({ id: 'clean', kind: 'bug', paths: ['apps/operator/app/inbox/EmptyState.tsx'] });
+    const d = classifyReversibility(clean);
+    expect(d.reversibility).toBe('reversible');
+    expect(isAutoReversible(d.reversibility)).toBe(true);
+  });
+
+  it('behavior-neutral (P-091): today the auto lane is already free of irreversible actions, so wiring this axis later cannot change the partition', () => {
+    // The irreversible surfaces (migration / deploy / credential / auth paths) are a
+    // SUBSET of the tier policy's protected set, so EVERY irreversible item is already
+    // gated to human by the existing policy — even fully graduated. There is no item
+    // that is both tier=auto AND irreversible. Hence B-02 (which only EXPOSES the
+    // axis) changes nothing live, and B-12 (which ANDs reversibility into the gate)
+    // is redundant for today's vocabulary — the proof that adding the classifier is
+    // safe. The axis earns its keep once B-04's category model admits categories
+    // whose surfaces the protected-path list doesn't already cover.
+    for (const [, path] of IRREVERSIBLE_SURFACE_REPRESENTATIVES) {
+      const item = cand({ id: 'bn', kind: 'bug', paths: [path] });
+      expect(classifyReversibility(item).reversibility).toBe('irreversible');
+      expect(classifyImprovement(item, FULLY_GRADUATED).tier).toBe('human');
+    }
   });
 });

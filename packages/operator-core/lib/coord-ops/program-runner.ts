@@ -78,8 +78,9 @@ export async function runProgramCore(input: RunProgramArgs): Promise<ProgramOutc
   ctx.blueprintId = bp.id;
 
   const scope = buildScope(bp, payload, ctx);
+  const hasGate = (bp.spine.gate?.length ?? 0) > 0;
 
-  return runProgram<CoordOpCtx>({
+  const outcome = await runProgram<CoordOpCtx>({
     program: { steps: bp.spine.steps ?? [], gate: bp.spine.gate },
     scope,
     ctx,
@@ -99,6 +100,15 @@ export async function runProgramCore(input: RunProgramArgs): Promise<ProgramOutc
     log: ctx.log,
     programId: bp.id,
   });
+
+  // A DETERMINISTIC pipeline (no gate — deterministic-blueprints-migration-2026-06-13
+  // P-010) "resolves" by running every step. The generic runner reports an absent
+  // gate as `no-gate-match` / unresolved (correct for a decision program that fell
+  // through), so map a completed gateless run to a clean terminal `done`.
+  if (!hasGate && outcome.outcome === 'no-gate-match') {
+    return { ...outcome, outcome: 'done', resolved: true };
+  }
+  return outcome;
 }
 
 /**
