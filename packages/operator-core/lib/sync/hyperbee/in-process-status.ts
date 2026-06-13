@@ -30,6 +30,7 @@ import {
   summariseWorkspaceSubstrate,
   type WorkspaceSubstrateSummary,
 } from './summary';
+import { collectSubstrateLogStats, type HarnessLogStats } from './log-stats';
 
 export interface InProcessHarnessHealth {
   workspaceId: string;
@@ -50,6 +51,13 @@ export interface InProcessSubstrateStatus {
   bootedCount: number;
   summary: WorkspaceSubstrateSummary;
   harnesses: InProcessHarnessHealth[];
+  /**
+   * Per-harness log-growth + new-joiner replay-cost (substrate-peer-log-compaction
+   * P-001/P-002). Surfaces the unbounded-growth signal P-009 flagged: `replayCostOps`
+   * is what a fresh joiner folds; a future compaction must shrink it. Empty when no
+   * harness is booted.
+   */
+  logStats: HarnessLogStats[];
 }
 
 export interface GetInProcessStatusOpts {
@@ -118,5 +126,7 @@ export function getInProcessSubstrateStatus(
     bootedCount: booted.length,
     summary,
     harnesses,
+    // P-001/P-002: read-only per-harness log-growth + replay-cost snapshot.
+    logStats: collectSubstrateLogStats(),
   };
 }

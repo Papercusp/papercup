@@ -39,7 +39,10 @@ describe('smartQuotesDetector', () => {
     expect(smartQuotesDetector.matches('packages/x/lib/a.ts')).toBe(true);
     expect(smartQuotesDetector.matches('apps/operator/components/B.tsx')).toBe(true);
     expect(smartQuotesDetector.matches('README.md')).toBe(false);
-    expect(smartQuotesDetector.matches('node_modules/pkg/index.ts')).toBe(false);
+    // exclusions mirror check-smart-quotes.mjs EXACTLY (D-003): nested node_modules/dist
+    // + the _retired/ prefix. (A top-level node_modules/ path is gitignored, so it is
+    // never a tracked/dirty input — the predicate matches CI rather than over-excluding.)
+    expect(smartQuotesDetector.matches('packages/x/node_modules/pkg/index.ts')).toBe(false);
     expect(smartQuotesDetector.matches('_retired/old/a.ts')).toBe(false);
     expect(smartQuotesDetector.matches('packages/x/dist/a.ts')).toBe(false);
   });

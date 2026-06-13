@@ -69,6 +69,48 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(out.status).toBe('nothing');
   });
 
+  // EI-438 content guard (P-001/P-002/P-008): the broken file is EXCLUDED from the
+  // commit + left dirty (quarantine, don't stall) while every clean file still syncs.
+  it('content guard: commits the clean files, EXCLUDES + reports a broken one (quarantine, dont stall)', async () => {
+    writeFileSync(join(repo, 'good.txt'), 'fine\n');
+    writeFileSync(join(repo, 'bad.md'), 'this is BROKEN\n');
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
+
+    expect(out.status).toBe('synced'); // the clean file synced despite the broken sibling
+    expect(out.contentErrors).toEqual([
+      { scope: 'superproject', file: 'bad.md', detectorKey: 'fake-broken', error: 'contains BROKEN', fixerRole: 'content-fixer' },
+    ]);
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('good.txt'); // the clean file reached origin…
+    expect(originFiles).not.toContain('bad.md'); // …but the broken one did NOT (excluded)
+    // the broken file is left dirty/uncommitted in the working tree for the content-fixer
+    expect(git(repo, 'status', '--porcelain')).toContain('bad.md');
+  });
+
+  it('content guard: the NEXT tick commits the file once it passes the detector (self-heal)', async () => {
+    writeFileSync(join(repo, 'bad.md'), 'this is BROKEN\n');
+    await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('bad.md');
+
+    // the content-fixer repairs the file (no longer BROKEN) → the next tick commits it
+    writeFileSync(join(repo, 'bad.md'), 'this is fine now\n');
+    const out2 = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
+
+    expect(out2.status).toBe('synced');
+    expect(out2.contentErrors).toEqual([]);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('bad.md'); // now it reaches origin
+    expect(git(repo, 'status', '--porcelain')).toBe(''); // tree clean
+  });
+
+  it('content guard is a no-op when no detector matches the dirty files (clean tree commits as today)', async () => {
+    writeFileSync(join(repo, 'plain.txt'), 'no detector targets .txt\n');
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
+    expect(out.status).toBe('synced');
+    expect(out.contentErrors).toEqual([]);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('commits locally but does not push when push:false', async () => {
     writeFileSync(join(repo, 'local.txt'), 'x\n');
     const before = originLog();

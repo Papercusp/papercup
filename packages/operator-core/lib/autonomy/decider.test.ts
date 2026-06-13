@@ -238,8 +238,8 @@ describe('P-071 — economic signal routing (calibration/deferral → evidence; 
   });
 
   it('extractEconomicSignals returns undefined when there is no rank breakdown', () => {
-    expect(extractEconomicSignals({ id: 'x' })).toBeUndefined();
-    expect(extractEconomicSignals({ id: 'x', rank: { score: 0, features: [{ feature: 'staleness', value: 1 }] } })).toBeUndefined();
+    expect(extractEconomicSignals({})).toBeUndefined();
+    expect(extractEconomicSignals({ rank: { features: [{ feature: 'staleness', value: 1 }] } })).toBeUndefined();
   });
 });
 

@@ -199,7 +199,7 @@ export default function PlansClient() {
   // item inbox. The Plans / Inbox header buttons flip it.
   const [view, setView] = useQueryState(
     'view',
-    parseAsStringEnum<'plans' | 'inbox' | 'sessions'>(['plans', 'inbox', 'sessions']).withDefault('plans'),
+    parseAsStringEnum<'plans' | 'queue' | 'sessions'>(['plans', 'queue', 'sessions']).withDefault('plans'),
   );
   // Inbox tier filter (D-006) — Decisions ▸ Handled ▸ Alerts ▸ Activity (or all).
   // Only the Decisions tier demands the user; this lets them focus on it.
@@ -537,9 +537,9 @@ export default function PlansClient() {
     [leaveGuard, setSlug, istatus, setIstatus],
   );
 
-  // "Inbox" — jump to the items view with item-status filters cleared
+  // "Queue" — jump to the items view with item-status filters cleared
   // (active plan-status / harness filters stay). Closes any open plan +
-  // search + per-plan rail selection so the full cross-plan inbox shows.
+  // search + per-plan rail selection so the full cross-plan Queue shows.
   const goInbox = useCallback(() => {
     if (!leaveGuard()) return;
     setPane('read');
@@ -547,7 +547,7 @@ export default function PlansClient() {
     void setQ(null);
     void setIstatus([]);
     void setItemPlans([]);
-    void setView('inbox');
+    void setView('queue');
   }, [leaveGuard, setPane, setSlug, setQ, setIstatus, setItemPlans, setView]);
 
   // "Plans" — the plan browser view. Closes any open plan + search; plan-status
@@ -681,12 +681,12 @@ export default function PlansClient() {
           </button>
           <button
             type="button"
-            className={`pc-plans__inbox-btn${view === 'inbox' ? ' is-active' : ''}`}
+            className={`pc-plans__inbox-btn${view === 'queue' ? ' is-active' : ''}`}
             onClick={goInbox}
-            title="Open the Inbox — every item & attention surface across plans, with item filters cleared (plan filters stay)."
+            title="Open the Queue — every decision & action surface across plans the Queen did not auto-handle, with item filters cleared (plan filters stay)."
           >
             <Inbox size={14} aria-hidden />
-            <span className="pc-plans__inbox-btn-label">Inbox</span>
+            <span className="pc-plans__inbox-btn-label">Queue</span>
             {inboxTotal > 0 ? <span className="pc-plans__inbox-btn-count">{inboxTotal}</span> : null}
           </button>
           <button
@@ -807,12 +807,12 @@ export default function PlansClient() {
                     showStale={sStale}
                     onToggleStale={() => void setSStale(!sStale)}
                   />
-                ) : view === 'inbox' ? (
+                ) : view === 'queue' ? (
                   <div className="pc-inbox__list">
                     {/* Tier bar (D-006): Decisions ▸ Handled ▸ Alerts ▸ Activity.
                         Only Decisions demands the user; the rest declutter into
                         their own tiers. */}
-                    <nav className="pc-inbox__tiers" aria-label="Inbox tiers">
+                    <nav className="pc-inbox__tiers" aria-label="Queue tiers">
                       {INBOX_TIER_FILTERS.map((t) => {
                         const active = inboxTier === t;
                         const label = t === 'all' ? 'All' : TIER_LABEL[t];
@@ -842,7 +842,7 @@ export default function PlansClient() {
                       })}
                     </nav>
                     {/* Item filters, sticky atop the inbox list column. */}
-                    <nav className="pc-inbox__filters" aria-label="Inbox item filters">
+                    <nav className="pc-inbox__filters" aria-label="Queue item filters">
                       {ITEM_FILTERS.map((f) => {
                         const active = istatus.includes(f.id);
                         return (

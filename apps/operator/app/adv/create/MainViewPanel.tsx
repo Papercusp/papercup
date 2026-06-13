@@ -92,7 +92,7 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
     );
   }
   if (view === 'sessions') return <SessionsPanel />;
-  if (view === 'inbox') return <TwoPaneShell list={<InboxPanel />} detail={<PreviewPanel />} />;
+  if (view === 'queue') return <TwoPaneShell list={<InboxPanel />} detail={<PreviewPanel />} />;
   // view === 'plans': a search finds another plan; otherwise we're between the
   // list loading and the auto-open effect firing (or there are no plans).
   if (searching) return <PlanSearchResults query={q} onPick={(s) => void setPlan(s)} />;

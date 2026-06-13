@@ -56,7 +56,7 @@ describe('TwoPaneShell', () => {
       }, []);
       return <span data-testid="sentinel" />;
     }
-    function Harness({ view }: { view: 'plans' | 'inbox' | 'sessions' }) {
+    function Harness({ view }: { view: 'plans' | 'queue' | 'sessions' }) {
       return (
         <TwoPaneShell
           className={view === 'sessions' ? 'pc-twopane--sessions' : undefined}
@@ -67,7 +67,7 @@ describe('TwoPaneShell', () => {
     }
     const { container, rerender } = render(<Harness view="plans" />);
     const frameBefore = container.querySelector('[data-testid="pc-twopane"]');
-    rerender(<Harness view="inbox" />);
+    rerender(<Harness view="queue" />);
     rerender(<Harness view="sessions" />);
     const frameAfter = container.querySelector('[data-testid="pc-twopane"]');
 

@@ -1464,6 +1464,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.hiveEvalTrend — the Benchmark view's "Hive orchestration" trend (HE-07, P-050) ──
+  //
+  // The Hive-RUN evaluation scoreboard: one summary row per code generation (instance),
+  // newest-first, over the hive_eval instances/runs/scores tables (migrations 264/268). The
+  // SIBLING of learning.apiary — its OWN tables, so Hive-run scores never contaminate the apiary
+  // instance-evolution trend (D-011). Scoped to the current rubric so incomparable scores never
+  // mix. Returns a 1-element array { instances }. NOT table-backed — refreshes on mount + manual
+  // invalidate (the cadence fires notifySyncInvalidate on a new generation). Best-effort: the live
+  // cadence is owner-gated (P-051), so pre-baseline a missing table / PG error degrades to
+  // instances:[] — the clean empty state, not a 500 (mirrors learning.apiary's P-042 degrade).
+  'learning.hiveEvalTrend': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readHiveEvalInstanceSummaries } = await import('../hive-eval/trend-read');
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) => {
+          const instances = await readHiveEvalInstanceSummaries(tx, { workspaceId: ws, limit: 20 });
+          return [{ instances }];
+        });
+      } catch (err) {
+        console.warn('[learning.hiveEvalTrend] hive-eval trend read failed:', err instanceof Error ? err.message : err);
+        return [{ instances: [] }];
+      }
+    },
+  },
+
   // ── learning.knowledge — the Learning tab's Knowledge view (operator-learning-tab P-008) ──
   //
   // Two best-effort halves (learning-system-audit P-042), each degrading

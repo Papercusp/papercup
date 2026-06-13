@@ -119,3 +119,28 @@ export {
 } from './scoring';
 
 export { type HiveEvalScoreRow } from './store';
+
+// HE-07 — the scored generation runner (battery → HE-06 score → persist), the cadence's invocation
+// target + the full-battery integration subject (P-050/P-061).
+export {
+  runHiveEvalGeneration,
+  type HiveEvalGenerationDeps,
+  type HiveEvalGenerationResult,
+  type HiveEvalScoreExtractor,
+  type HiveRunScoreInputs,
+  type ScoredRun,
+  type ScoredScenarioDistribution,
+} from './generation-runner';
+
+// HE-07 — the cadence orchestration (P-050; the `hive-eval:gen` blueprint op wraps this).
+export { runHiveEvalGen, type HiveEvalGenDeps } from './gen-loop';
+export {
+  runHiveEvalCadenceTick,
+  ownerBudgetUsd,
+  type HiveEvalCadenceOutcome,
+  type HiveEvalRunRequest,
+  type HiveEvalRunFn,
+} from './cadence-tick';
+
+// HE-07 — the Benchmark-tab "Hive orchestration" trend read (P-050).
+export { readHiveEvalInstanceSummaries, type HiveEvalGenerationSummary } from './trend-read';

@@ -126,12 +126,12 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
         </button>
         <button
           type="button"
-          className={`pc-plans__inbox-btn${view === 'inbox' ? ' is-active' : ''}`}
-          onClick={() => void setView('inbox')}
-          title="Inbox — every item & attention surface across plans (list + detail)."
+          className={`pc-plans__inbox-btn${view === 'queue' ? ' is-active' : ''}`}
+          onClick={() => void setView('queue')}
+          title="Queue — every decision & action surface across plans the Queen did not auto-handle (list + detail)."
         >
           <Inbox size={14} aria-hidden />
-          <span className="pc-plans__inbox-btn-label">Inbox</span>
+          <span className="pc-plans__inbox-btn-label">Queue</span>
         </button>
         <button
           type="button"

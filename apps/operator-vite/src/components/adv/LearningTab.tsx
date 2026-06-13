@@ -43,7 +43,7 @@ import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/li
 import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
 import type { HiveThroughputSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read';
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
-import { BenchmarkTrend } from './BenchmarkTrend';
+import { BenchmarkTrend, type BenchmarkTrendInstance } from './BenchmarkTrend';
 import { EkgPanel } from './EkgPanel';
 import { RedQueenPanel } from './RedQueenPanel';
 import { DemandPanel } from './DemandPanel';
@@ -777,6 +777,8 @@ function ApiaryView() {
 
       <BenchmarkTrend instances={instances} />
 
+      <HiveEvalTrendView />
+
       <EkgPanel />
 
       <RedQueenPanel />
@@ -836,6 +838,107 @@ function ApiaryView() {
         </ul>
       )}
     </section>
+  );
+}
+
+// ─── Hive orchestration trend (hive-eval battery — hive-run-evaluation HE-07) ──
+//
+// The SIBLING of the apiary trend: where the apiary scores how good the agents' CODE gets over
+// generations, this scores how good the Hive's ORCHESTRATION gets (outcome quality · efficiency ·
+// speed, gated un-gameably). Its own `learning.hiveEvalTrend` snapshot over the hive_eval tables;
+// reuses the BenchmarkTrend surface. Owner-gated (P-051) — graceful-empty until the first armed run.
+
+interface HiveEvalGeneration {
+  instanceId: string;
+  codeSha: string;
+  createdAt: string;
+  totalRuns: number;
+  scoredRuns: number;
+  meanComposite: number | null;
+  meanEfficiency: number | null;
+  meanSpeed: number | null;
+  meanCriticalPathRatio: number | null;
+  outcomeGatePassRate: number | null;
+  fabricationRate: number | null;
+}
+
+const ratioLabel = (v: number | null): string => (v == null ? '—' : `${v.toFixed(2)}×`);
+
+function HiveEvalTrendView() {
+  const sync = useSyncQuery<{ instances: HiveEvalGeneration[] }>({
+    queryName: 'learning.hiveEvalTrend',
+    args: {},
+    staleTime: 30_000,
+  });
+  const instances = sync.data?.[0]?.instances ?? [];
+  const latest = instances[0];
+  // Reuse the BenchmarkTrend surface — the composite per generation, oldest→newest.
+  const trendInstances: BenchmarkTrendInstance[] = instances.map((i) => ({
+    instanceId: i.instanceId,
+    codeSha: i.codeSha,
+    createdAt: i.createdAt,
+    totalRuns: i.totalRuns,
+    successfulRuns: i.scoredRuns,
+    meanComposite: i.meanComposite,
+  }));
+
+  return (
+    <div className="pc-learning__hive-eval">
+      <div className="pc-learning__sectionhead">
+        <h2>Hive orchestration <em>good · efficient · fast?</em></h2>
+        <button
+          type="button"
+          className="pc-learning__refresh"
+          aria-label="Reload the Hive-orchestration trend"
+          disabled={sync.fetching}
+          onClick={() => sync.invalidate()}
+        >
+          <RefreshCw size={13} aria-hidden />
+        </button>
+      </div>
+
+      {instances.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <Gauge size={20} aria-hidden />
+          <strong>No Hive-eval generations yet</strong>
+          <span>
+            This benchmark runs the WHOLE Hive (Queen + bees) on seeded scenarios and grades each run on
+            outcome quality, efficiency, and speed — with an un-gameable gate (a fast-but-wrong run scores
+            zero). Every run spends real budget, so it’s owner-gated: it runs when the owner sets the monthly
+            cadence’s budget (P-051). Once generations land, the composite trend appears here — the yardstick
+            for whether queen-execution / wave-dispatch / autonomy actually made the Hive better.
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="pc-learning__scoreboard" aria-label="Hive orchestration summary">
+            <Stat
+              label="composite"
+              value={latest ? compositeLabel(latest.meanComposite) : '—'}
+              tone="good"
+              hint="Latest generation’s mean Hive-run composite (0–10) — gated on outcome quality, then efficiency + speed. Higher is better; watch the trend, not the absolute number."
+            />
+            <Stat
+              label="outcome gate"
+              value={latest ? pctLabel(latest.outcomeGatePassRate) : '—'}
+              hint="Share of runs that did a GOOD job (passed acceptance + caught the planted bug + no fabrication). Efficiency/speed earn ZERO below the gate."
+            />
+            <Stat
+              label="critical-path"
+              value={latest ? ratioLabel(latest.meanCriticalPathRatio) : '—'}
+              hint="Measured wall-clock ÷ the computable ideal. ~1× = optimally parallel; higher = serialized/bottlenecked (a computed, un-gameable signal)."
+            />
+            <Stat
+              label="fabrication"
+              value={latest ? pctLabel(latest.fabricationRate) : '—'}
+              tone="human"
+              hint="Share of runs with a fabricated DONE (a claim ground truth contradicts). Lower is better — ideally zero."
+            />
+          </div>
+          <BenchmarkTrend instances={trendInstances} />
+        </>
+      )}
+    </div>
   );
 }
 

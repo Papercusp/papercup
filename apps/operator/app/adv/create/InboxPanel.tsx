@@ -48,7 +48,7 @@ export default function InboxPanel(_props?: Partial<PanelComponentProps>) {
 
   return (
     <div className="pc-inbox__list" style={{ height: '100%', overflow: 'auto' }}>
-      <nav className="pc-inbox__filters" aria-label="Inbox item filters">
+      <nav className="pc-inbox__filters" aria-label="Queue item filters">
         {ITEM_FILTERS.map((f) => {
           const active = istatus.includes(f.id);
           return (

@@ -1706,6 +1706,100 @@ Handlers that are *already* PG-bound (e.g. `system:gym-cycle` calls `getOrgPg()`
 
 **Check before you ship** (FB-05..FB-15 will all wire glue like this): grep the factory’s existing `.test.ts` — if its tests invoke the handler without PG, your new default must not reach a pool. `enabled()`-first ordering is not enough once the flag defaults ON.
 
+# Deploy pipeline silently stalled: the dead-executor dedup wedge (and the health-probe 406)
+
+> main/:3070 frozen on old code for hours while green-checkpoint 'fires' but never advances — a routineFire stuck PENDING on a DEAD executor holds its dedup forever, and the stall-detector misses it (consecutiveReds stays 0). Plus the post-deploy 406 that auto-rolls-back every deploy. Two distinct layers; check both.
+
+If `origin/main` and the live `:3070` operator are stuck on hours-old code while staging is many commits ahead, the deploy pipeline has silently stalled. It has **two independent layers** — green-checkpoint (FF `main`) and release-trigger (deploy `main` → `:3070`). Check both; the symptoms look identical from the outside.
+
+## First: what is `:3070` actually serving?
+
+[Section titled “First: what is :3070 actually serving?”](#first-what-is-3070-actually-serving)
+
+```bash
+cd papercupai-workspace/papercup-release && git log -1 --format='%h %ci'
+git cat-file -e HEAD:<a-file-you-expect-deployed> && echo present || echo ABSENT
+git -C ../papercup log origin/main -1   # is main even advancing?
+```
+
+If `papercup-release` (what `:3070` runs) is stale **and** `origin/main` is stale → layer 1 (green-checkpoint). If `origin/main` is current but `papercup-release` is stale → layer 2 (release-trigger/deploy).
+
+## Layer 1: the dead-executor dedup wedge (green-checkpoint never advances)
+
+[Section titled “Layer 1: the dead-executor dedup wedge (green-checkpoint never advances)”](#layer-1-the-dead-executor-dedup-wedge-green-checkpoint-never-advances)
+
+**Symptom:** the `green-checkpoint` routine is `active` with a recent `last_fired_at` (looks alive), but `metadata->gate_health` shows `lastGreenAt` hours stale, `consecutiveReds: 0`, `stallAlerted: false`. No open `red-test` signals (staging isn’t actually red). It *fires* but never produces a verdict.
+
+**Root cause:** a `routineFire` DBOS workflow is stuck `PENDING` on a **dead executor** (a transient repro/debug host that’s gone), holding the routine’s `deduplication_id`. The dedup unique index is **status-independent**:
+
+```sql
+-- uq_workflow_status_dedup_id
+CREATE UNIQUE INDEX ... ON dbos.workflow_status (queue_name, deduplication_id)
+  WHERE deduplication_id IS NOT NULL;
+```
+
+DBOS frees a dedup by **NULLing `deduplication_id` on dequeue** — a workflow that never dequeued (its executor died) never clears it, so every future `routineFire` for that routine collapses on the held dedup. `claimDueRoutine` keeps bumping `last_fired_at` (the routine *looks* alive) but the fire never runs. The `ROUTINE_FIRE_TIMEOUT_MS` release valve **cannot fire for a dead executor** — DBOS recovery is per-executor, and live hosts don’t reap a dead host’s PENDING workflows.
+
+**Diagnose:**
+
+```sql
+SELECT status, executor_id, deduplication_id,
+       to_timestamp(created_at/1000) AS created
+FROM dbos.workflow_status
+WHERE name='routineFire' AND status='PENDING'
+ORDER BY created_at;
+-- a PENDING row on an executor_id with no recent activity, holding a
+-- deduplication_id = routine:<id>, is the wedge. Confirm the executor is dead:
+SELECT max(to_timestamp(updated_at/1000)) FROM dbos.workflow_status
+WHERE executor_id='<that-executor>';
+```
+
+**Fix (clears the dedup so the next tick re-enqueues + runs):**
+
+```sql
+UPDATE dbos.workflow_status
+   SET deduplication_id = NULL, status = 'CANCELLED'
+ WHERE workflow_uuid = '<the stuck uuid>';
+-- then force it due (don't wait for the cron):
+UPDATE harness_shared.routines SET next_fire_at = now()
+ WHERE name='green-checkpoint' AND install_slug='papercup';
+```
+
+Setting `status` alone is **not** enough — the index keys on `deduplication_id` being non-NULL regardless of status; you must NULL it. Within \~30s the next `routinesTick` re-enqueues a fresh fire on a live executor.
+
+**The blind spot:** `trackGateStall` (release-actions.ts) increments `consecutiveReds` only on a red *verdict*. A running-but-collapsed routine never verdicts, so `consecutiveReds` stays 0 and `stallAlerted` never fires — the silent part. (Tracked: EI-455 — the deeper fix is a dead-executor workflow reaper / dedup TTL **and** a “no green verdict in N hours” alarm independent of the red counter.)
+
+This applies to **any** routine, not just green-checkpoint — a `system:git-sync`, `release-trigger`, gym, etc. can wedge the same way (a gym cycle wedged 7.5h on a dead repro host, 2026-06-12).
+
+## Layer 2: the post-deploy 406 (main advances but :3070 stays stale)
+
+[Section titled “Layer 2: the post-deploy 406 (main advances but :3070 stays stale)”](#layer-2-the-post-deploy-406-main-advances-but-3070-stays-stale)
+
+Once `main` advances, `release-trigger` runs the scripted deploy — which can fail its post-restart health probe and **auto-roll-back**, leaving `main` green but `:3070` on the old code:
+
+```sql
+SELECT to_char(created_at,'MM-DD HH24:MI') ts, status, detail
+FROM harness_shared.pipeline_events
+WHERE install_slug='papercup' AND kind='deploy' ORDER BY created_at DESC LIMIT 5;
+-- "failed: health probe failed after restart: MCP initialization failed: status 406"
+```
+
+**Root cause (EI-459):** the probe (`apps/operator/lib/release/health-probe.ts`, `probeMcpInitialize`) POSTed the MCP `initialize` **without** an `Accept` header. The MCP streamable-HTTP endpoint (`endpoint-route/.../agent-tools/catchall.ts`) requires `Accept: application/json, text/event-stream` and returns **406** without it. Verify live:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST :3170/api/mcp \
+  -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+# 406 ; add  -H 'accept: application/json, text/event-stream'  → 200 text/event-stream
+```
+
+Fix = the probe sends `Accept` (the probe runs from the **integration tree**, so the fix takes effect on the next deploy without itself needing to deploy). After a failed deploy, **P-013 back-off** (`shouldBackOff`, release-actions.ts) refuses to re-deploy the *same* `targetSha` for 60 min — a new green sha (or the window elapsing) clears it. General lesson: a spec-strict server surface + a non-spec internal client → sweep other internal MCP callers for the missing `Accept`.
+
+## The meta-lesson
+
+[Section titled “The meta-lesson”](#the-meta-lesson)
+
+“The deploy isn’t landing” is two questions: *is `main` advancing?* (green-checkpoint) and *is `main` reaching `:3070`?* (release-trigger/deploy). They fail independently and silently. Always verify what `:3070` **actually serves** (the `papercup-release` HEAD), not just that `main` went green.
+
 # Desktop IPC transport map — what rides IPC, what's dormant, how to turn it on
 
 > The desktop routes webview /api traffic over Tauri IPC to dodge WebKitGTK's ~6-conn libsoup cap. Three mechanisms, all gated behind PAPERCUSP_DESKTOP_IPC + a release-only sidecar spawn. Here's the whole map + the turn-on recipe + the SSE-over-IPC reconnect/churn contract (D-006) + how to verify with window.__ipcInspector + the gotchas.

@@ -41,3 +41,7 @@ import './ops/graduation-scan.js';
 // (spawnAgentInHarness → spawnInvokeOnce, internal to the op, not a spawn-roles step)
 // → det persist. NOT a flag/governor loop — gated on the owner-set budgetUsd.
 import './ops/iq-battery-gen.js';
+// hive-run-evaluation-2026-06-13 (HE-07, P-050): the SIBLING benchmark — det cadence →
+// whole-Hive runs over the seeded scenario corpus (internal to the op) → HE-06 score +
+// persist to its OWN tables. Also gated on the owner-set budgetUsd; live runner P-051.
+import './ops/hive-eval-gen.js';
