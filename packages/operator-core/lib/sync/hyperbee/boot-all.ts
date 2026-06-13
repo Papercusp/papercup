@@ -401,6 +401,24 @@ export async function bootAllHarnessesForActiveWorkspace(
     }
   })();
 
+  // shared-hive-hardening-2026-06-13 P-013 (B-04): once-per-process join-state
+  // self-heal — re-register the ONE residual boot-all can't heal itself, a join
+  // whose clone landed on disk but whose registry write also failed (so this
+  // boot never visited it). Registered joins are already federated by the boot
+  // loop above; this only closes the unregistered-ghost gap. Joins target the
+  // active workspace (activeWorkspaceId at join time), so heal into it. Same
+  // posture as the reconcile blocks above: lazy-import + fire-and-forget with
+  // its own catch + module once-guard — it must NEVER affect harness boot.
+  void (async () => {
+    try {
+      const { activeWorkspaceId } = await import('../../workspace-registry');
+      const { ensureJoinStatesReconciledOnce } = await import('../../harness/join-state-reconcile');
+      ensureJoinStatesReconciledOnce(activeWorkspaceId());
+    } catch {
+      /* best-effort; boot-all never fails on join-state reconcile */
+    }
+  })();
+
   return {
     attempted: results.length,
     booted: results.filter((r) => r.state === 'booted').length,

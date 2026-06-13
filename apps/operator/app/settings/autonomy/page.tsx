@@ -259,9 +259,11 @@ export default function AutonomySettingsPage() {
                       Protected
                     </span>
                   )}
-                  <span style={{ display: 'block', fontSize: 11, color: 'var(--fg-mute)', marginTop: 2 }}>
-                    {POSTURE_LABEL[row.suggestedPosture] ?? row.suggestedPosture}
-                  </span>
+                  {!row.protected && (
+                    <span style={{ display: 'block', fontSize: 11, color: 'var(--fg-mute)', marginTop: 2 }}>
+                      {POSTURE_LABEL[row.suggestedPosture] ?? row.suggestedPosture}
+                    </span>
+                  )}
                 </button>
 
                 {/* Ceiling slider */}

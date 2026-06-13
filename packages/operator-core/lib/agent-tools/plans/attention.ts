@@ -10,7 +10,6 @@
  *   - open coord escalations               → coordEscalationToAttention
  *   - coord messages addressed to 'human'  → coordMessageToAttention
  *   - failing smoke tests (harness_smoke_test)  → smokeFailToAttention
- *   - plans awaiting review (harness_plan_review) → planReviewToAttention
  *   - operator `<report>` turns (operator_turns.report) → reportTurnsToAttention
  *     (report-cards-inbox-reconciliation-2026-06-05 — the operator's
  *     structured output routes to the Inbox, not the chat stream)
@@ -35,7 +34,6 @@ import {
   coordEscalationToAttention,
   coordMessageToAttention,
   smokeFailToAttention,
-  planReviewToAttention,
 } from '../../attention/adapters';
 import { planItemsToAttention, reportTurnsToAttention } from '../../attention/sources';
 import { buildAttentionGroups } from '../../attention/group';
@@ -55,7 +53,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:attention',
   description:
-    "The Planning tab's unified attention feed: plan items + coord escalations + coord messages-to-human + smoke-fails + plan-reviews + operator <report> turns, mapped to a single AttentionItem shape, grouped by plan (+ per-harness Alerts bucket), importance-sorted. Each source best-effort.",
+    "The Planning tab's unified attention feed: plan items + coord escalations + coord messages-to-human + smoke-fails + operator <report> turns, mapped to a single AttentionItem shape, grouped by plan (+ per-harness Alerts bucket), importance-sorted. Each source best-effort.",
   guidance: {
     when: 'You want everything awaiting the human / pickable, in one importance-sorted feed — the Planning tab inbox, or to find the single most-urgent open thing.',
     notWhen:
@@ -160,7 +158,10 @@ export default defineTool({
       /* best-effort */
     }
 
-    // 4 + 5. Failing smoke tests + plans awaiting review (PG, workspace-scoped).
+    // 4. Failing smoke tests (PG, workspace-scoped). (The plan-review source
+    //    was retired by B-14/P-101 — needs-human plan items, a plan-governance
+    //    Decision, are the review gate now; harness_plan_review had no live
+    //    writer after the bash orchestrator was archived.)
     try {
       const { getOrgPg } = await import('@papercusp/db-org');
       const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -177,16 +178,6 @@ export default defineTool({
       `;
       for (const r of smoke) {
         items.push(smokeFailToAttention({ harnessSlug: r.harness_slug, failureContent: r.failure_content }));
-      }
-
-      const reviews = await sql<{ harness_slug: string; content: string | null }[]>`
-        SELECT harness_slug, content
-          FROM harness_shared.harness_plan_review
-         WHERE workspace_id = ${wid}
-           AND (${hf}::text IS NULL OR harness_slug = ${hf})
-      `;
-      for (const r of reviews) {
-        items.push(planReviewToAttention({ harnessSlug: r.harness_slug, content: r.content }));
       }
     } catch {
       /* best-effort */

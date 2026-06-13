@@ -246,38 +246,6 @@ export function smokeFailToAttention(s: SmokeFailInput): AttentionItem {
   };
 }
 
-/* ── plan ready for review (P-026) ──────────────────────────────────── */
-
-export interface PlanReviewInput {
-  harnessSlug: string;
-  content?: string | null;
-}
-
-export function planReviewToAttention(r: PlanReviewInput): AttentionItem {
-  // A plan awaiting the human's review is a gate → Decision.
-  const tier: AttentionTier = 'decision';
-  return {
-    id: `plan-review:${r.harnessSlug}`,
-    kind: 'plan-review',
-    category: ATTENTION_KIND_CATEGORY['plan-review'],
-    source: 'harness',
-    harnessSlug: r.harnessSlug,
-    planSlug: null, // the review row is harness-keyed, not tied to a plan slug
-    itemRef: null,
-    title: `Plan ready for review — ${r.harnessSlug}`,
-    body: (r.content ?? '').trim() || 'A plan is awaiting your review.',
-    status: 'pending-review',
-    importance: 'high',
-    tier,
-    needsHuman: needsHumanForTier(tier),
-    ownerAgentId: null,
-    ownerLabel: null,
-    ...untriaged(),
-    actions: [{ id: 'open', label: 'Review', primary: true }, CHAT, MESSAGE_OWNER],
-    ref: { kind: 'plan-review', harnessSlug: r.harnessSlug },
-  };
-}
-
 /* ── operator `<report>` turn (report-cards-inbox-reconciliation P-003) ── */
 
 export interface OperatorReportInput {

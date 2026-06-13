@@ -164,6 +164,8 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__hive:create',
   'mcp__agentmcp__hive:update',
   'mcp__agentmcp__hive:dissolve',
+  // shared-hive-hardening-2026-06-13 P-012 — a joiner leaves a shared hive (root-only).
+  'mcp__agentmcp__hive:leave',
 
   // cross-hive-boundary-2026-06-08 P-002 — the owner's cross-Hive admission
   // surface. discovery:hives finds a peer Hive's pubkey on the P2P directory;

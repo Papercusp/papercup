@@ -59,6 +59,11 @@ export const MIGRATED_LOOPS = [
   { loop: 'scout-cycle', retiredTarget: 'system:scout-cycle', blueprintId: 'scout' },
   { loop: 'transfer-distill', retiredTarget: 'system:transfer-distill', blueprintId: 'transfer' },
   { loop: 'prompt-ablation', retiredTarget: 'system:prompt-ablation', blueprintId: 'prompt-ablation' },
+  // Ratified reclassified pure-deterministic loops (D-012; seeds repointed 2026-06-13).
+  { loop: 'change-ledger-scan', retiredTarget: 'system:change-ledger-scan', blueprintId: 'change-ledger' },
+  { loop: 'deferral-interest-refit', retiredTarget: 'system:deferral-interest-refit', blueprintId: 'deferral-interest' },
+  { loop: 'calibration-resolve', retiredTarget: 'system:calibration-resolve', blueprintId: 'calibration' },
+  { loop: 'graduation-scan', retiredTarget: 'system:graduation-scan', blueprintId: 'graduation' },
 ];
 
 /** The retired bespoke action names that must never be a routine target again. */

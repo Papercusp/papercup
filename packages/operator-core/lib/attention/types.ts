@@ -6,7 +6,7 @@
  * into, so they render in one master-detail view: left list grouped by
  * plan, right detail pane, per-kind action buttons. Plan items remain
  * the authoring surface; the other kinds (coord escalations, coord
- * messages-to-human, smoke-fails, plan reviews) ADAPT in — they are NOT
+ * messages-to-human, smoke-fails) ADAPT in — they are NOT
  * rewritten as plan markdown. `planSlug`/`itemRef` are nullable: an
  * unattached item (an escalation with no plan, a smoke-fail) carries
  * only a body message and groups under a synthetic "Alerts" bucket.
@@ -24,7 +24,6 @@ export type AttentionKind =
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'plan-review'
   | 'operator-report';
 
 export type AttentionSource = 'plan' | 'coord' | 'harness' | 'operator';
@@ -48,7 +47,6 @@ export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | n
   'coord-escalation': 'escalations', // resolve a blocker/question/advisory escalation
   'coord-message': 'inbox-triage', // ack / dismiss an inbox message
   'smoke-fail': null, // an alert/signal, not a governed decision
-  'plan-review': 'plan-governance', // a plan approval gate (folds into plan-governance; source retired by P-101)
   'operator-report': null, // a status report, not a governed decision
 };
 
@@ -62,8 +60,9 @@ export function attentionCategory(kind: AttentionKind): AutonomyCategory | null 
  * The four inbox tiers (inbox-tiering-and-message-agent-2026-06-05 D-002/D-006).
  * Orthogonal to {@link AttentionKind} — every item is exactly one tier, ordered
  * Decision ▸ Handled ▸ Alert ▸ Activity (only Decisions demands the user):
- *   - `decision` — demands the human: needs-human plan items, plan-review
- *     gates, blocker/question escalations, direct non-auto messages to the
+ *   - `decision` — demands the human: needs-human plan items (the plan-
+ *     governance gate that replaced the retired plan-review source, P-101),
+ *     blocker/question escalations, direct non-auto messages to the
  *     human (untriaged), plus operator-confirmed/escalated items. The ONLY
  *     tier that sets `needsHuman: true`.
  *   - `handled` — the operator triaged it away (downgraded a false positive,
@@ -141,7 +140,6 @@ export type AttentionRef =
   | { kind: 'coord-escalation'; msgId: string; options: { id: string; label: string }[] }
   | { kind: 'coord-message'; msgId: string }
   | { kind: 'smoke-fail'; harnessSlug: string }
-  | { kind: 'plan-review'; harnessSlug: string }
   | { kind: 'operator-report'; turnId: string; conversationId: string };
 
 export interface AttentionItem {

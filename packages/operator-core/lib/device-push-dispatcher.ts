@@ -2,7 +2,6 @@
  * APNs + FCM dispatcher. Sends a push to every registered device when:
  *   - A harness escalates (intervention required)
  *   - A smoke test fails
- *   - A proposal is awaiting plan-review
  *   - User-defined notification rules fire (future)
  *
  * Registered tokens live in harness_shared.mobile_push_tokens (migration 009).
@@ -24,7 +23,6 @@ import { request } from 'node:https';
  */
 export type PushKind =
   | 'intervention'
-  | 'plan-review'
   | 'smoke-fail'
   | 'operator-suggestion';
 
@@ -40,7 +38,7 @@ interface PushPayload {
    *   card_id: operator card id (for kind='operator-suggestion')
    */
   data: Record<string, string> & { kind?: PushKind };
-  /** Notification category for actions (intervention | smoke-fail | plan-review) */
+  /** Notification category for actions (intervention | smoke-fail) */
   category?: string;
 }
 

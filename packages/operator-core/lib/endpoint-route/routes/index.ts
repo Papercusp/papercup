@@ -163,7 +163,6 @@ import internalCheckpointEvent from './internal/checkpoint-event';
 import internalFeatureDebugNoteEvent from './internal/feature-debug-note-event';
 import internalHookLogEvent from './internal/hook-log-event';
 import internalIdentitySnapshot from './internal/identity-snapshot';
-import internalPlanReviewEvent from './internal/plan-review-event';
 import internalPrEvent from './internal/pr-event';
 import internalSkillSnapshot from './internal/skill-snapshot';
 import internalSmokeTestEvent from './internal/smoke-test-event';
@@ -615,7 +614,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(internalFeatureDebugNoteEvent as AnyRoute),
   ...flatten(internalHookLogEvent as AnyRoute),
   ...flatten(internalIdentitySnapshot as AnyRoute),
-  ...flatten(internalPlanReviewEvent as AnyRoute),
   ...flatten(internalPrEvent as AnyRoute),
   ...flatten(internalSkillSnapshot as AnyRoute),
   ...flatten(internalSmokeTestEvent as AnyRoute),

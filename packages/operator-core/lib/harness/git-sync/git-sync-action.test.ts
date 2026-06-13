@@ -124,7 +124,7 @@ vi.mock('../docs/sweep-after-sync', () => ({
 // --- fake PG: the org `sql` is used as a tagged template (reads) + `.unsafe` (writes).
 type Row = Record<string, unknown>;
 /** Rows returned for the resolverInFlight read (`metadata->'last_resolver'`). */
-let resolverRows: Array<{ lr: { status?: string; at?: number } | null }> = [];
+let resolverRows: Array<{ lr: { status?: string; at?: number; instance?: string } | null }> = [];
 /** Rows returned for the EI-18 counters read (`consecutive_error_ticks`/`last_oversized`). */
 let counterRows: Array<{ et: number; lo: string[] | null }> = [];
 /** Every `sql.unsafe(text, params)` write, in order. */
@@ -149,6 +149,7 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
 // importing the action module registers `git-sync` into the system-action registry,
 // exactly as production's register-system-actions side-effect import does.
 import './git-sync-action';
+import { isResolverInFlight } from './git-sync-action';
 import { getSystemAction, type SystemActionCtx } from '../routines/system-actions';
 
 // --- helpers over the captured PG writes ------------------------------------------
@@ -588,6 +589,29 @@ describe('P-010/P-012 merge-conflict path', () => {
     warn.mockRestore();
   });
 
+  it('P-006: RE-dispatches a marker ORPHANED by an operator restart (different process instance) — within the 20-min window, not waiting it out', async () => {
+    runGitSyncMock.mockResolvedValue(conflictOutcome);
+    // A 'dispatched' marker recorded 1 min ago by a PRIOR operator incarnation:
+    // its fire-and-forget settle promise died with that process and can never land
+    // here, so it is NOT really in flight even though it is well inside the TTL.
+    resolverRows = [{ lr: { status: 'dispatched', at: Date.now() - 60_000, instance: 'a-prior-process-incarnation' } }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    // the fresh dispatch is stamped with the LIVE instance (not the orphan's).
+    const dispatched = routinePatches().find(
+      (p) => (p.last_resolver as Record<string, unknown> | undefined)?.status === 'dispatched',
+    );
+    expect((dispatched!.last_resolver as Record<string, unknown>).instance).toBeTypeOf('string');
+    expect((dispatched!.last_resolver as Record<string, unknown>).instance).not.toBe('a-prior-process-incarnation');
+    await vi.waitFor(() => {
+      expect(appendPipelineEventMock).toHaveBeenCalledWith(expect.objectContaining({ kind: 'merge_resolver' }));
+    });
+    warn.mockRestore();
+  });
+
   it('skips the dispatch (warning) when no launch blueprint declares git-sync:conflict — escalation still written', async () => {
     runGitSyncMock.mockResolvedValue(conflictOutcome);
     resolveLaunchTargetForEventMock.mockResolvedValue(null);
@@ -601,6 +625,60 @@ describe('P-010/P-012 merge-conflict path', () => {
     expect(routinePatches().some((p) => 'last_resolver' in p)).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('no launch blueprint declares'));
     warn.mockRestore();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// P-006/P-007 — the resolver dedup WINDOW, pure. `isResolverInFlight` keys ONLY
+// on PG timestamps + the process instance, never on git round-trip timing, so
+// the window holds identically whether a fetch/push takes 1ms or 5s (P-007: real
+// latency is negligible against the 20-min TTL / 900s resolver ceiling). The
+// instance leg is the P-006 restart-liveness path.
+// ════════════════════════════════════════════════════════════════════════════
+describe('isResolverInFlight — dedup window (P-006/P-007)', () => {
+  const NOW = 1_000_000_000_000;
+  const ME = 'pid.live';
+  const WINDOW = 20 * 60_000;
+
+  it('no marker / never run → not in flight (free to dispatch)', () => {
+    expect(isResolverInFlight(null, NOW, ME)).toBe(false);
+    expect(isResolverInFlight(undefined, NOW, ME)).toBe(false);
+    expect(isResolverInFlight({}, NOW, ME)).toBe(false);
+  });
+
+  it('a SETTLED marker (ok/failed/error) → not in flight, regardless of age', () => {
+    for (const status of ['ok', 'failed', 'error']) {
+      expect(isResolverInFlight({ status, at: NOW - 1000, instance: ME }, NOW, ME)).toBe(false);
+    }
+  });
+
+  it('same-instance dispatched, INSIDE the window → in flight (deduped)', () => {
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 60_000, instance: ME }, NOW, ME)).toBe(true);
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - (WINDOW - 1), instance: ME }, NOW, ME)).toBe(true);
+  });
+
+  it('same-instance dispatched, PAST the window (stale) → not in flight (TTL expiry)', () => {
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - WINDOW, instance: ME }, NOW, ME)).toBe(false);
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 2 * WINDOW, instance: ME }, NOW, ME)).toBe(false);
+  });
+
+  it('P-006: dispatched by a DIFFERENT instance (restart orphan) → not in flight even INSIDE the window', () => {
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 60_000, instance: 'prior-incarnation' }, NOW, ME)).toBe(false);
+    // and once stale it's still not in flight (both reasons agree)
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 2 * WINDOW, instance: 'prior-incarnation' }, NOW, ME)).toBe(false);
+  });
+
+  it('a legacy marker with NO instance falls back to the pure TTL (no regression, no spurious re-dispatch)', () => {
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 60_000 }, NOW, ME)).toBe(true); // in window → deduped
+    expect(isResolverInFlight({ status: 'dispatched', at: NOW - 2 * WINDOW }, NOW, ME)).toBe(false); // stale → retry
+  });
+
+  it('P-007: latency-invariance — the window verdict depends on the marker timestamp delta, not wall-time of the git ops', () => {
+    // Whatever real latency a tick incurred, the only inputs are `now` and `at`.
+    // A 5s-latency tick that records `at` and re-reads 5s later is still ~5s < 20min.
+    const at = NOW;
+    expect(isResolverInFlight({ status: 'dispatched', at, instance: ME }, NOW + 5_000, ME)).toBe(true);
+    expect(isResolverInFlight({ status: 'dispatched', at, instance: ME }, NOW + WINDOW + 5_000, ME)).toBe(false);
   });
 });
 

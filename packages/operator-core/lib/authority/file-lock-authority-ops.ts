@@ -24,6 +24,7 @@
  */
 
 import { registerAuthorityOp } from './authority-op-registry';
+import { recordLockEvent, type LockEvent } from './lock-event-stream';
 
 /** Acquire a file-claim lock on behalf of `owner` (the requesting peer). */
 export interface FileLockAcquireParams {
@@ -84,18 +85,53 @@ export const FILE_LOCK_OP_KINDS = {
   queue: 'lock.queue',
 } as const;
 
+/** Options for {@link buildFileLockAuthorityHandlers} — the lock-event capture
+ *  seam (P-015) + an injectable clock, both defaulted for production. */
+export interface FileLockAuthorityHandlerOpts {
+  /** Injectable clock for the emitted lock-event `ts`. Default `Date.now`. */
+  now?: () => number;
+  /**
+   * Emit a lock-event when the authority grants/releases on a peer's behalf
+   * (P-015 instant-handover stream). Default: fire-and-forget {@link recordLockEvent}
+   * into the installed sink (no-op single box). Tests inject a capture to assert.
+   */
+  emit?: (event: LockEvent) => void;
+}
+
+/** Best-effort: derive the absolute expiry ms from the store's ISO `expiresTs`,
+ *  falling back to `now + ttlSec*1000` when the store didn't return one. */
+function expiryMs(expiresTs: string | undefined, nowMs: number, ttlSec: number): number {
+  if (expiresTs) {
+    const parsed = Date.parse(expiresTs);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return nowMs + ttlSec * 1000;
+}
+
 /**
  * Build the file-lock authority op handlers bound to `coordinator` — the same
  * validation + dispatch {@link registerFileLockAuthorityOps} installs globally,
  * as a plain map. Lets a multi-instance rig (e.g. the cross-machine failover
  * E2E) run the REAL handlers against per-instance stores, where the process-
  * global registry can only model one machine.
+ *
+ * P-015: on a SUCCESSFUL acquire/release the handler emits a lock-event into the
+ * federated stream (`opts.emit`, default {@link recordLockEvent}). This is the
+ * authority-side capture point — every cross-machine grant routes through here
+ * (`routeToAuthority` → this handler on the elected authority), so the stream is
+ * the authority's record of what it has granted, which a NEW authority reads to
+ * reconstruct instantly on failover. Emission is fire-and-forget and never
+ * affects the op result (capture failure → heartbeat fallback).
  */
 export function buildFileLockAuthorityHandlers(
   coordinator: FileLockCoordinator,
+  opts: FileLockAuthorityHandlerOpts = {},
 ): Record<string, (payload: unknown, harnessSlug: string) => Promise<unknown>> {
+  const now = opts.now ?? Date.now;
+  const emit = opts.emit ?? ((event: LockEvent) => void recordLockEvent(event));
+
   return {
-    [FILE_LOCK_OP_KINDS.acquire]: async (payload) => {
+    [FILE_LOCK_OP_KINDS.acquire]: async (payload, scope) => {
       const p = payload as Partial<FileLockAcquireParams>;
       if (
         !p ||
@@ -106,29 +142,46 @@ export function buildFileLockAuthorityHandlers(
       ) {
         throw new Error('lock.acquire: invalid payload (owner, paths[], intent, coordinationDomain required)');
       }
-      return coordinator.acquire({
+      const ttlSec = typeof p.ttlSec === 'number' ? p.ttlSec : 1200;
+      const result = await coordinator.acquire({
         owner: p.owner,
         ownerLabel: p.ownerLabel,
         paths: p.paths,
         intent: p.intent,
-        ttlSec: typeof p.ttlSec === 'number' ? p.ttlSec : 1200,
+        ttlSec,
         waitMaxSec: p.waitMaxSec,
         coordinationDomain: p.coordinationDomain,
       });
+      if (result.ok) {
+        const ts = now();
+        const expiresAtMs = expiryMs(result.expiresTs, ts, ttlSec);
+        for (const path of p.paths) {
+          emit({ kind: 'acquire', scope, path, owner: p.owner, expiresAtMs, ts });
+        }
+      }
+      return result;
     },
 
-    [FILE_LOCK_OP_KINDS.release]: async (payload) => {
+    [FILE_LOCK_OP_KINDS.release]: async (payload, scope) => {
       const p = payload as Partial<FileLockReleaseParams>;
       if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
         throw new Error('lock.release: invalid payload (owner, coordinationDomain required)');
       }
-      return coordinator.release({
-        owner: p.owner,
+      const owner = p.owner;
+      const result = await coordinator.release({
+        owner,
         lockId: p.lockId,
         paths: p.paths,
         allMine: p.allMine,
         coordinationDomain: p.coordinationDomain,
       });
+      if (result.ok && result.released) {
+        const ts = now();
+        for (const path of result.released) {
+          emit({ kind: 'release', scope, path, owner, ts });
+        }
+      }
+      return result;
     },
 
     [FILE_LOCK_OP_KINDS.queue]: async (payload) => {
@@ -144,9 +197,13 @@ export function buildFileLockAuthorityHandlers(
 /**
  * Register the file-lock authority op handlers against `coordinator`. Call ONCE
  * at boot. Each handler validates the payload shape, then runs the op locally.
+ * `opts` threads the P-015 lock-event capture (default: the installed sink).
  */
-export function registerFileLockAuthorityOps(coordinator: FileLockCoordinator): void {
-  for (const [kind, handler] of Object.entries(buildFileLockAuthorityHandlers(coordinator))) {
+export function registerFileLockAuthorityOps(
+  coordinator: FileLockCoordinator,
+  opts: FileLockAuthorityHandlerOpts = {},
+): void {
+  for (const [kind, handler] of Object.entries(buildFileLockAuthorityHandlers(coordinator, opts))) {
     registerAuthorityOp(kind, handler);
   }
 }

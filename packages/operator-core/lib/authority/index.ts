@@ -92,3 +92,13 @@ export {
   resolvePeerAddress,
   PEER_ADDRESSES_ENV,
 } from './transport-wiring';
+
+export {
+  makeAuthorityRpcSwarmTransport,
+  AUTHORITY_RPC_PROTOCOL,
+  type AuthorityRpcSwarmTransport,
+  type AuthorityRpcSwarmTransportOpts,
+  type AuthorityRpcDispatch,
+} from './authority-rpc-swarm-transport';
+
+export { CompositePeerRpcTransport } from './composite-peer-rpc-transport';

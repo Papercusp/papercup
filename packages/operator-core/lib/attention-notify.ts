@@ -16,14 +16,14 @@
  *                event is harmless when no desktop consumer is listening.
  *
  * Callers own the importance gate: needs-human emits only at ≥high; the
- * escalation / smoke-fail / plan-review producers are inherently high so they
+ * escalation / smoke-fail producers are inherently high so they
  * always notify. The helper does not re-gate.
  */
 import { notifyWorkspace, type PushKind } from './device-push-dispatcher';
 import { notifySyncInvalidate } from './sync-sse';
 import { activeWorkspaceId } from './workspace-registry';
 
-export type AttentionNotifyKind = 'needs-human' | 'intervention' | 'smoke-fail' | 'plan-review';
+export type AttentionNotifyKind = 'needs-human' | 'intervention' | 'smoke-fail';
 
 /** Fine-grained kind → the mobile PushKind the app's push-routing understands
  *  (needs-human has no dedicated mobile route yet → folds into intervention). */
@@ -31,7 +31,6 @@ const MOBILE_KIND: Record<AttentionNotifyKind, PushKind> = {
   'needs-human': 'intervention',
   intervention: 'intervention',
   'smoke-fail': 'smoke-fail',
-  'plan-review': 'plan-review',
 };
 
 /** SSE event name the desktop webview listens for to raise a native notification. */

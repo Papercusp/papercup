@@ -33,6 +33,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import { dispatchAction } from '../execute-action';
 import { activeWorkspaceId } from '../workspace-registry';
 
+/** The org-PG tagged-template client type — for the optional test seam below. */
+type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
 export interface NotifyParentResult {
   notified: boolean;
   parent?: string;
@@ -49,13 +52,22 @@ export async function notifyParentOnDone(opts: {
    *  drain count (its own status flip may not have landed yet). */
   featureId?: string;
   log?: (m: string) => void;
+  /**
+   * Test seam (DI): inject the org-PG client + the action dispatcher. Both
+   * default to the real ones — production callers (orchestrator-runner's
+   * afterDone step) pass neither. Lets the full branch matrix (no_parent /
+   * queue_not_drained / drained→notify / send_failed / lookup_failed) be
+   * unit-tested without PG or a global vi.mock.
+   */
+  deps?: { sql?: OrgSql; dispatch?: typeof dispatchAction };
 }): Promise<NotifyParentResult> {
   const log = opts.log ?? (() => {});
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const dispatch = opts.deps?.dispatch ?? dispatchAction;
 
   let parent: string | null = null;
   try {
-    const { sql } = getOrgPg();
+    const sql = opts.deps?.sql ?? getOrgPg().sql;
     const rows = await sql<{ parent_slug: string | null }[]>`
       SELECT parent_slug FROM harness_shared.projects
        WHERE slug = ${opts.harnessSlug} AND parent_slug IS NOT NULL
@@ -84,7 +96,7 @@ export async function notifyParentOnDone(opts: {
   }
 
   try {
-    const r = await dispatchAction(opts.harnessSlug, {
+    const r = await dispatch(opts.harnessSlug, {
       op: 'send_message',
       to: [parent],
       kind: 'Completion',

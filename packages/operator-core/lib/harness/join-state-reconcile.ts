@@ -1,0 +1,199 @@
+/**
+ * join-state-reconcile — boot-time self-heal for soft-failed joins
+ * (shared-hive-hardening-2026-06-13 P-013).
+ *
+ * The 6-step Model B join (join-shared-harness.ts) marks `boot_federate` /
+ * `await_admission_merge` `phase_0_pending` when the substrate can't reach a
+ * peer within the timeout, and persists `~/.papercusp/join-state/<slug>.json`.
+ *
+ * CONFIRMED (the investigation behind this module): for a join whose clone got
+ * REGISTERED, federation self-heals WITHOUT any re-drive —
+ * `bootAllHarnessesForActiveWorkspace` boots every registered harness on the
+ * next session, re-running `defaultResolveSwarmBinding` → re-joining the swarm,
+ * and `await_admission_merge`'s phase_0 just means "no peer yet, the read-merge
+ * loop admits one when it comes online." So the join-state record is COSMETIC
+ * once the harness is registered — boot-all is the heal. We do NOT re-drive that
+ * case (it isn't broken).
+ *
+ * The ONE residual boot-all does NOT heal: a join where REGISTRATION itself also
+ * failed (both the pre-boot `mutateHarnessRegistry` and the route's post-join
+ * `saveRegistry` blew up) — the clone sits on disk with a pending join-state but
+ * is absent from the registry, so boot-all never visits it and it stays a ghost.
+ * This sweep closes exactly that gap: re-register any join-state slug whose clone
+ * dir still exists on disk but is missing from the registry, so the NEXT boot
+ * pass federates it. Everything else (registered → boot-all heals; no clone dir →
+ * truly abandoned) is reported, never silently dropped.
+ *
+ * Posture mirrors `ensureGitSyncRoutinesReconciledOnce` (git-sync-reconcile.ts):
+ * module once-flag + detached fire-and-forget + never throws — a reconcile
+ * failure must never wedge boot, and it adds nothing to cold-start when there
+ * are no join-state files.
+ */
+
+import { readdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+import {
+  loadHarnessRegistry,
+  mutateHarnessRegistry,
+  type HarnessRegistry,
+} from '../harness-registry';
+import type { JoinState } from './join-shared-harness';
+
+function joinStateDir(): string {
+  return resolve(homedir(), '.papercusp', 'join-state');
+}
+
+/** Read every persisted join-state file. Missing dir → []. Best-effort: a
+ *  corrupt/unparseable file is skipped, never fatal. */
+async function defaultListJoinStates(): Promise<JoinState[]> {
+  const dir = joinStateDir();
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return []; // no join-state dir → nothing to reconcile
+  }
+  const out: JoinState[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const raw = await readFile(join(dir, name), 'utf8');
+      const js = JSON.parse(raw) as JoinState;
+      if (js && typeof js.slug === 'string' && js.slug) out.push(js);
+    } catch {
+      // skip a corrupt/partial file — never fatal
+    }
+  }
+  return out;
+}
+
+export interface ReconcileJoinStatesOpts {
+  /** Active workspace to register heals into / check registration against
+   *  (joins use activeWorkspaceId()). */
+  workspaceId: string;
+  /** Join-state lister (test seam; default reads ~/.papercusp/join-state). */
+  listJoinStates?: () => Promise<JoinState[]>;
+  loadRegistry?: (workspaceId?: string) => Promise<HarnessRegistry>;
+  mutateRegistry?: typeof mutateHarnessRegistry;
+  /** Clone-dir existence check (test seam; default fs.existsSync). */
+  pathExists?: (p: string) => boolean;
+}
+
+export interface ReconcileJoinStatesResult {
+  /** Slugs RE-REGISTERED this sweep (clone on disk, was missing from registry)
+   *  — the residual heal boot-all couldn't do. */
+  reregistered: string[];
+  /** Slugs already registered — boot-all heals federation; the record is cosmetic. */
+  healedByBoot: string[];
+  /** Slugs with a pending join-state, no registry entry, AND no clone dir on
+   *  disk — truly abandoned; reported (logged), nothing to re-drive. */
+  abandoned: string[];
+  /** Set when the sweep itself failed before walking (reported, never thrown). */
+  error?: string;
+}
+
+/**
+ * Idempotent boot-time sweep. Never throws — a load failure folds into
+ * `result.error`, per-file failures are skipped. Re-registers exactly the joins
+ * boot-all cannot heal (unregistered clone on disk).
+ */
+export async function reconcileJoinStates(
+  opts: ReconcileJoinStatesOpts,
+): Promise<ReconcileJoinStatesResult> {
+  const result: ReconcileJoinStatesResult = {
+    reregistered: [],
+    healedByBoot: [],
+    abandoned: [],
+  };
+  const listJoinStates = opts.listJoinStates ?? defaultListJoinStates;
+  const loadRegistry = opts.loadRegistry ?? loadHarnessRegistry;
+  const mutate = opts.mutateRegistry ?? mutateHarnessRegistry;
+  const pathExists = opts.pathExists ?? existsSync;
+
+  let states: JoinState[];
+  let registered: Set<string>;
+  try {
+    states = await listJoinStates();
+    const reg = await loadRegistry(opts.workspaceId);
+    registered = new Set((reg.projects ?? []).map((p) => p.slug));
+  } catch (e) {
+    result.error = e instanceof Error ? e.message : String(e);
+    return result;
+  }
+
+  for (const js of states) {
+    if (registered.has(js.slug)) {
+      // boot-all already federates this on its registered path — cosmetic record.
+      result.healedByBoot.push(js.slug);
+      continue;
+    }
+    // Not registered. Re-register iff the clone dir is still on disk (the
+    // residual heal); otherwise it's an abandoned ghost (no tree to federate).
+    const cloneDir = js.cloneDir;
+    if (cloneDir && pathExists(cloneDir)) {
+      try {
+        await mutate(
+          (cur: HarnessRegistry) =>
+            cur.projects.some((p) => p.slug === js.slug)
+              ? cur
+              : { ...cur, projects: [...cur.projects, { slug: js.slug, path: cloneDir }] },
+          opts.workspaceId,
+        );
+        registered.add(js.slug);
+        result.reregistered.push(js.slug);
+      } catch {
+        // best-effort — a registry write blip; next boot retries.
+        result.abandoned.push(js.slug);
+      }
+    } else {
+      result.abandoned.push(js.slug);
+    }
+  }
+  return result;
+}
+
+// ── Once-per-process boot trigger (git-sync-reconcile.ts posture) ─────────────
+
+let _reconciledOnce = false;
+
+/**
+ * Fire the join-state self-heal sweep once per process, detached. Synchronous +
+ * void: the caller never awaits, and `reconcileJoinStates` never throws, so this
+ * can NEVER block or fail boot. Quiet at steady state — logs only when a slug
+ * was re-registered or abandoned. `seams` is the test seam; the boot site passes
+ * only the workspace id.
+ */
+export function ensureJoinStatesReconciledOnce(
+  workspaceId: string,
+  seams?: Omit<ReconcileJoinStatesOpts, 'workspaceId'>,
+): void {
+  if (_reconciledOnce) return;
+  _reconciledOnce = true;
+  void (async () => {
+    const r = await reconcileJoinStates({ workspaceId, ...seams });
+    if (r.error) {
+      // eslint-disable-next-line no-console
+      console.warn(`[join-state-reconcile] sweep failed for workspace '${workspaceId}': ${r.error}`);
+    } else if (r.reregistered.length || r.abandoned.length) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[join-state-reconcile] boot sweep (${workspaceId}): reregistered=[${r.reregistered.join(', ')}]` +
+          (r.abandoned.length ? ` abandoned=[${r.abandoned.join(', ')}]` : ''),
+      );
+    }
+  })().catch((e) => {
+    // unreachable (reconcileJoinStates never throws) — belt and braces
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[join-state-reconcile] boot sweep crashed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  });
+}
+
+/** Test seam: drop the once-flag so the next ensure call re-runs. */
+export function __resetJoinStateReconcileForTests(): void {
+  _reconciledOnce = false;
+}

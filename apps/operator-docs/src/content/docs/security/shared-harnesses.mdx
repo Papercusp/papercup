@@ -7,13 +7,26 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Proposed design — not yet implemented">
+<Aside type="caution" title="Partially built — model is being implemented in phases">
 This page records the security model for **shared harnesses** (the peer-to-peer,
 multi-engineer sync substrate), the research it rests on, and the tradeoffs we are
-choosing **intentionally**. As of 2026-05-31 the substrate's trust layer is **not built** —
-the model below is the agreed direction, tracked in the design memo
-`apps/operator/docs/plans/papercusp-trust-model-2026-05-31.md`. Sections marked **Today**
-describe the current (insecure) state; **Recommended** describes the target.
+choosing **intentionally**. The model below is the agreed direction, tracked in the design
+memo `apps/operator/docs/plans/papercusp-trust-model-2026-05-31.md`. Sections marked
+**Today** describe the original (2026-05-31) insecure state; **Recommended** describes the
+target.
+
+**Build-state update (2026-06-13).** The substrate trust layer is now substantially built:
+**per-log admission** (signed announce + GitHub-anchored `verifyBinding` attestation),
+**revocation** (`revoked_pubkeys` projection drop-list, gated on a live GitHub repo-admin
+check), and **identity attestation** (`verifyAttestation`) are all wired. Crucially, a
+confirmation audit (P-017, plan `shared-hive-hardening-2026-06-13`) verified that the
+model's load-bearing invariant — **every decision-bearing fact re-derives from GitHub at
+the point of action** — holds across all current call sites. See
+[The advisory-vs-trusted boundary](#the-advisory-vs-trusted-boundary) for the verified
+call-site table. Per-op signing (Phase 2 below) remains a defense-in-depth future
+enhancement, not a shipped gate — the shipped model is **per-log** admission, so an
+admitted peer's ops are trusted wholesale (the accepted equivocation tradeoff), which is
+why the GitHub re-derivation invariant is what actually carries the safety.
 </Aside>
 
 ## What a shared harness is
@@ -38,13 +51,23 @@ anything that happens on the swarm.
 
 ## The trust problem
 
-<Aside type="danger" title="Today: the substrate is wide open">
-Replicated Autobase ops are **not signed, authenticated, or authorized on receipt** — the
-only admission check is a schema-version filter. Because the swarm topic is derivable from
-the public repo id, **any peer who can reach the DHT can join and write forged
+<Aside type="danger" title="Original 2026-05-31 state: the substrate was wide open">
+Replicated Autobase ops were **not signed, authenticated, or authorized on receipt** — the
+only admission check was a schema-version filter. Because the swarm topic is derivable from
+the public repo id, **any peer who could reach the DHT could join and write forged
 feature/PR/contributor/claim rows into every other peer's local database.** The designed
-defenses (per-op signatures, an `addWriter` admission step, a `revoked_pubkeys` drop-list,
-gating on the two-channel binding) exist on paper but have **no production callers**.
+defenses (an admission step gated on the two-channel binding, a `revoked_pubkeys`
+drop-list) existed on paper but had **no production callers**.
+
+**Update (2026-06-13):** admission is now wired (Model B per-log: signed announce +
+GitHub-anchored `verifyBinding` + `revoked_pubkeys` veto — see
+`packages/operator-core/lib/sync/hyperbee/read-admission.ts`), so a peer is admitted only
+on a verified GitHub-anchored attestation, not by mere DHT reachability. What remains
+**intentionally** unbuilt is **per-op** signature verification at projection time: once a
+peer is admitted, its ops are projected wholesale (the accepted equivocation tradeoff). The
+forged-advisory-row surface is therefore narrowed to *already-admitted* peers and, per the
+verified invariant below, **no decision-bearing action acts on those rows without
+re-deriving from GitHub**.
 </Aside>
 
 Keep two threat models separate:
@@ -188,6 +211,46 @@ The central decision: which synced surfaces are advisory vs must-re-derive-from-
 | Completion / "shipped ✓" | no | **GitHub-derived only** |
 
 Anything in the right column must never be acted on from peer state alone.
+
+### Confirmation pass — 2026-06-13 (P-017): every decision-bearing fact re-derives
+
+The shipped substrate uses **per-log** admission: a peer is admitted on a verified
+signed-announce + GitHub-anchored attestation, after which its ops are trusted **wholesale**
+into the projection (no per-op authz — the accepted equivocation tradeoff). That is safe
+**iff** every decision-bearing fact re-derives from GitHub at the point of action. A
+call-site audit (plan `shared-hive-hardening-2026-06-13`, P-017) confirmed this invariant
+holds across **all** authorization-bearing consumers of peer-synced state — there is **no
+gap**. The federated tables are `contributors`, `queue` / `features-by-id`
+(→ `harness_features_consolidated`), `working-set`/`claims`, `prs`, `presence`, plans, and
+coord; the table below enumerates every site that *acts* on one (display-only reads omitted).
+
+| Call-site | Authorization decision | Reads | Re-derives from GitHub? |
+|---|---|---|---|
+| `harness/binding-service.ts` · `claimBinding` | claim a repo binding (needs maintain/admin) | local cache + **live** `getRepoPermission` | **Yes** — `getRepoPermission(owner,repo,login)` at point of action |
+| `harness/binding-service.ts` · `supersedeBinding` | supersede a binding (needs admin) | local cache + **live** `getRepoPermission` | **Yes** — live permission check, admin required |
+| `harness/binding-service.ts` · claimant re-verify sweep | demote a claimant who lost write access | cached claimants | **Yes** — per-claimant live permission check |
+| `sync/hyperbee/revoke-contributor.ts` | revoke a contributor's device key | `contributors` row | **Yes** — `repos.get → permissions.admin` gate before any write |
+| `sync/hyperbee/read-admission.ts` (+ `boot.ts`) | admit a peer's log to the substrate | signed announce | **Yes** — announce-sig verify + `verifyBinding` (GitHub-hosted attestation); `revoked_pubkeys` veto |
+| `harness/fork-pr-on-feature-pass.ts` | fork-PR vs direct-push mode on feature pass | local pipeline pass event | **Yes** — **live** `getPermission` (fork iff `read`/`none`) |
+| `pr-host/auto-merge.ts` · `tryAutoMerge` → `host.merge` | merge a PR | `Pr` object from **GitHub** poll (`PrHost`/`github.ts`) | **Yes** — PR state read live from GitHub; merge enforced by GitHub write-access + branch protection |
+| `pr-host/auto-approve.ts` · `tryAutoApprove` | post an approving review | **local** `trusted_authors` + GitHub PR author | **N/A** — trust list is local config (not federated); approval still doesn't bypass GitHub's merge authority |
+| `harness/completion-ref-verifier.ts` | stamp the "shipped ✓" verified tier | `completion_ref` on the feature row | **Yes** — `git ls-remote <remote> <sha>` (GitHub native auth) confirms the SHA is on the remote |
+| `dbos/orchestrator-finalize.ts` · `reconcileDoneStatus` | flip a feature `validating → passed` | `harness_features_consolidated.status` (federated) | **N/A — advisory.** Fires only from the **local** orchestrator's own pipeline reaching an unblocked DONE (`outcome==='done'`); a peer's forged row cannot make the local pipeline run a feature to DONE. `passed` is internal pipeline coordination, **not** a "shipped"/authz fact — every downstream effect (push/PR/merge) is independently GitHub-gated. |
+| `contributors` / `claims` / `queue` / `working-set` readers (claim avatars, status badges, queue UI) | display & coordination only | federated rows | **N/A** — advisory by design; gate no action |
+
+**Why the federated feature `status` is not a gap (the one row worth tracing).**
+`harness_features_consolidated.status` *is* a federated projection target (tag
+`features-by-id`), so an admitted peer can write a `status` value into another peer's PG.
+But no authorization decision acts on it: a forged `status='shipped'` does not earn the
+verified ✓ badge (that re-derives via `git ls-remote`), and `reconcileDoneStatus` only
+closes the `validating→passed` loop as the **local** pipeline's own terminal verdict on a
+feature it actually executed — it cannot be driven by a peer-supplied row. The real "did it
+ship" authority remains GitHub's merge state, and code only lands through GitHub's
+write-access + branch-protection. This is the security doc's own placement of "feature
+queue / status" in the **advisory** column, confirmed at the code level.
+
+**Verdict:** the wholesale-trust-of-admitted-peer model is sound **because** the
+re-derivation invariant is universal. No remediation needed; P-017 closed `done`.
 
 ## Accepted-insecurity tradeoffs
 

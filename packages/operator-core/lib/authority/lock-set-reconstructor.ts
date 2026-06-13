@@ -12,12 +12,25 @@
  *
  * This is that reconstruction, as a pure, injected-clock state machine:
  *  - `assert(path, owner, ttlMs)` — a holder re-asserts a lock (a heartbeat).
+ *  - `hydrateFromEvents(locks)` — seed the set INSTANTLY from the federated
+ *    lock-event stream (P-015), skipping the heartbeat-interval wait.
  *  - `current()` — the active (non-expired) lock set.
- *  - `isRebuilt()` — true once a full heartbeat interval has elapsed since the
- *    authority took over (so every live holder has had a chance to re-assert).
+ *  - `isRebuilt()` — true once the set is authoritative: either hydrated from the
+ *    lock-event stream, or a full heartbeat interval has elapsed since takeover
+ *    (so every live holder has had a chance to re-assert).
  *  - `shouldFailOpen()` — true during the rebuild gap; the authority grants
  *    optimistically (fail-open) until rebuilt, so a contended acquire mid-handover
  *    never blocks on incomplete state.
+ *
+ * Two reconstruction sources, instant preferred with the slow path as the floor:
+ *  1. INSTANT (P-015) — `hydrateFromEvents` folds the append-only lock-event
+ *     stream on the peer-log (see ./lock-event-stream) the moment the new
+ *     authority takes over. When the stream yields state, the set is authoritative
+ *     immediately (no fail-open gap).
+ *  2. FALLBACK — holders re-assert their TTL heartbeats; the set is authoritative
+ *     after one heartbeat interval. This is the floor when the stream is
+ *     unavailable (no replica yet, not federating, read error) — the fail-open
+ *     contract (D-004) is preserved either way.
  *
  * The transport that carries the heartbeats (holder → authority RPC) is the same
  * PeerRpcTransport seam; this state machine is the authority-side accumulation it
@@ -43,10 +56,38 @@ export class LockSetReconstructor {
   private readonly locks = new Map<string, HeldLock>();
   private readonly startMs: number;
   private readonly heartbeatMs: number;
+  /** True once the set was seeded instantly from the lock-event stream (P-015):
+   *  the set is then authoritative immediately, bypassing the heartbeat wait. */
+  private hydrated = false;
 
   constructor(opts: LockSetReconstructorOpts) {
     this.startMs = opts.becameAuthorityAtMs;
     this.heartbeatMs = opts.heartbeatMs;
+  }
+
+  /**
+   * INSTANT handover (P-015): seed the lock set from the federated lock-event
+   * stream — the live locks already folded by `reconstructLockSet`. When `locks`
+   * is non-empty the set becomes authoritative IMMEDIATELY (`isRebuilt` true, no
+   * fail-open gap), so the new authority serializes against the real lock set
+   * without waiting a heartbeat interval. Returns true when it hydrated.
+   *
+   * An EMPTY `locks` is a no-op that leaves the reconstructor in the
+   * heartbeat-reassert fallback — the documented behavior when the stream is
+   * unavailable (no replica / not federating / read error). Only TTL-live locks
+   * are kept (an already-expired event contributes nothing).
+   */
+  hydrateFromEvents(locks: HeldLock[], nowMs: number): boolean {
+    if (locks.length === 0) return false;
+    let seeded = false;
+    for (const l of locks) {
+      if (l.expiresAtMs > nowMs) {
+        this.locks.set(l.path, { path: l.path, owner: l.owner, expiresAtMs: l.expiresAtMs });
+        seeded = true;
+      }
+    }
+    if (seeded) this.hydrated = true;
+    return seeded;
   }
 
   /** A holder re-asserts its lock (a heartbeat RPC). Last assertion per path wins
@@ -75,10 +116,11 @@ export class LockSetReconstructor {
     return !!l && l.expiresAtMs > nowMs && l.owner !== owner;
   }
 
-  /** True once a full heartbeat interval has elapsed since takeover — every live
-   *  holder has had the chance to re-assert, so the set is authoritative. */
+  /** True once the set is authoritative: either hydrated instantly from the
+   *  lock-event stream (P-015), or a full heartbeat interval has elapsed since
+   *  takeover (every live holder has had the chance to re-assert). */
   isRebuilt(nowMs: number): boolean {
-    return nowMs - this.startMs >= this.heartbeatMs;
+    return this.hydrated || nowMs - this.startMs >= this.heartbeatMs;
   }
 
   /** True during the rebuild gap: the authority should grant optimistically

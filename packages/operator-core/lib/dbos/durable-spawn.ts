@@ -50,24 +50,112 @@ export interface DurableSpawnFireInput {
   idempotencyKey: string;
   /** For logging — "<slug>/<role>". */
   label?: string;
+  /**
+   * OPT-IN fleet:tree visibility (EI-403 round-2). When set, the durable workflow
+   * writes a `spawned_agents` row (stable `spawn_id = durable-spawn:<idempotencyKey>`,
+   * idempotent on conflict so a step retry / DBOS recovery replay never duplicates
+   * it) BEFORE the fire and `finishSpawn`s it after — so a durably-fired launch
+   * appears in fleet:tree, the same invariant the fire-and-forget fallback holds
+   * (WI-108). Recording is best-effort: a bookkeeping failure never aborts the fire.
+   * OMIT for callers whose spawn is recorded by another path (e.g. hive launches
+   * write their own queen/bee rows — recording here too would double-count).
+   */
+  spawnRecord?: {
+    workspaceId: string;
+    harnessSlug?: string;
+    childRole: string;
+    /** Defaults to 'operator' — a parentless system launch (matches every root spawn). */
+    parentRole?: string;
+    parentSpawnId?: string | null;
+    /** e.g. the improvement-lane `EI-NNN` the worker is fixing — shows in fleet:tree. */
+    itemId?: string | null;
+  };
 }
 
-async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promise<void> {
-  await DBOS.runStep(
-    async () => {
-      const r = await loopbackFetch(input.url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(input.body),
-      });
-      // A non-2xx is a transient fire failure → throw so the step retries (and a
-      // host crash mid-run is resumed by DBOS recovery, re-firing once).
-      if (!r.ok) {
-        throw new Error(`durable-spawn fire ${input.label ?? ''} → HTTP ${r.status}`);
-      }
-    },
-    { name: 'durable-spawn-fire', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 10, backoffRate: 2 },
-  );
+export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promise<void> {
+  const rec = input.spawnRecord;
+  // Stable so a step retry / recovery replay updates the SAME row, not a new one.
+  const spawnId = `durable-spawn:${input.idempotencyKey}`;
+
+  // Make the durable launch visible in fleet:tree (opt-in), mirroring the
+  // fire-and-forget fallback's recordSpawn (WI-108). Best-effort: a bookkeeping
+  // failure must never abort the actual fire below.
+  if (rec) {
+    await DBOS.runStep(
+      async () => {
+        try {
+          const { recordSpawn } = await import('../fleet/spawn-tree');
+          const { getOrgPg } = await import('@papercusp/db-org');
+          await recordSpawn(getOrgPg().sql, {
+            spawnId,
+            workspaceId: rec.workspaceId,
+            harnessSlug: rec.harnessSlug,
+            parentSpawnId: rec.parentSpawnId ?? null,
+            parentRole: rec.parentRole ?? 'operator',
+            childRole: rec.childRole,
+            runId: input.idempotencyKey,
+            itemId: rec.itemId ?? null,
+            status: 'running',
+          });
+        } catch (e) {
+          console.warn(
+            `[durable-spawn] record-spawn failed (${input.label ?? ''}): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      },
+      { name: 'durable-spawn-record', retriesAllowed: false },
+    );
+  }
+
+  let fireError: unknown = null;
+  try {
+    await DBOS.runStep(
+      async () => {
+        const r = await loopbackFetch(input.url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input.body),
+        });
+        // A non-2xx is a transient fire failure → throw so the step retries (and a
+        // host crash mid-run is resumed by DBOS recovery, re-firing once).
+        if (!r.ok) {
+          throw new Error(`durable-spawn fire ${input.label ?? ''} → HTTP ${r.status}`);
+        }
+      },
+      { name: 'durable-spawn-fire', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 10, backoffRate: 2 },
+    );
+  } catch (e) {
+    fireError = e;
+  }
+
+  // Close the fleet:tree row — `done` when the fire landed, `failed` (with the
+  // error) when it exhausted retries. The /invoke fire holds the connection for the
+  // worker's run, so `done` ≈ the worker completed (matches the fallback's finish).
+  if (rec) {
+    await DBOS.runStep(
+      async () => {
+        try {
+          const { finishSpawn } = await import('../fleet/spawn-tree');
+          const { getOrgPg } = await import('@papercusp/db-org');
+          await finishSpawn(getOrgPg().sql, {
+            spawnId,
+            workspaceId: rec.workspaceId,
+            status: fireError ? 'failed' : 'done',
+            errorMessage: fireError ? (fireError instanceof Error ? fireError.message : String(fireError)) : null,
+          });
+        } catch (e) {
+          console.warn(
+            `[durable-spawn] finish-spawn failed (${input.label ?? ''}): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      },
+      { name: 'durable-spawn-finish', retriesAllowed: false },
+    );
+  }
+
+  // Preserve the original contract: a fully-failed fire throws so the workflow ends
+  // ERROR (and DBOS recovery can retry it), exactly as before this change.
+  if (fireError) throw fireError;
 }
 
 export const durableSpawnFireWorkflow = DBOS.registerWorkflow(durableSpawnFireImpl, {

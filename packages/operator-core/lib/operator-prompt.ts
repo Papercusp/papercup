@@ -74,12 +74,6 @@ export async function buildOperatorPrompt(args: BuildPromptArgs): Promise<BuildP
     const indexText = renderHarnessMarkdownIndexForPrompt(loadHarnessMarkdownIndex());
     if (indexText) sections.push(indexText);
   } catch { /* index optional */ }
-  try {
-    const { loadHarnessPlanReviews, renderHarnessPlanReviewsForPrompt } =
-      require('./harness-plan-reviews') as typeof import('./harness-plan-reviews');
-    const planReviewText = renderHarnessPlanReviewsForPrompt(await loadHarnessPlanReviews());
-    if (planReviewText) sections.push(planReviewText);
-  } catch { /* plan-reviews optional */ }
   sections.push(`## Request\n\n${args.request}`);
 
   return { promptText: sections.join('\n\n---\n\n'), isFirstRun };

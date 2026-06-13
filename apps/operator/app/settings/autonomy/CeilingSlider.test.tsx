@@ -10,8 +10,8 @@ describe('CeilingSlider', () => {
     render(<CeilingSlider value="low" onChange={() => {}} />);
     const radios = screen.getAllByRole('radio');
     expect(radios).toHaveLength(CEILING_LEVELS.length);
-    expect(screen.getByRole('radio', { name: 'Low' })).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByRole('radio', { name: 'Never' })).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'Never' }).getAttribute('aria-checked')).toBe('false');
   });
 
   it('calls onChange with the clicked level', () => {

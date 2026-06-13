@@ -267,11 +267,25 @@ export async function buildLaunchSpawnRequest(
   idempotencyKey: string,
 ): Promise<DurableSpawnFireInput> {
   const target = await resolveLaunchTarget(blueprintId, input);
+  // EI-403 round-2: the durable path otherwise records NO spawned_agents row, so the
+  // implement worker ran invisibly (round 1's fire-and-forget fallback DID record it,
+  // via the WI-108 fix below). Opt INTO recordSpawn so the durably-fired worker shows
+  // in fleet:tree — `durableSpawnFireImpl` writes/finishes the row (stable id =
+  // durable-spawn:<key>). The implement lane's itemId rides bodyExtra.improvementDispatch.
+  const dispatch = (input.bodyExtra?.improvementDispatch ?? undefined) as { itemId?: string } | undefined;
   return {
     url: target.url,
     body: buildInvokeBody(target.blueprintId, input),
     idempotencyKey,
     label: `${input.installSlug}/${target.role}`,
+    spawnRecord: {
+      workspaceId: input.workspaceId,
+      harnessSlug: input.installSlug,
+      childRole: target.role,
+      parentRole: input.parent?.role ?? 'operator',
+      parentSpawnId: input.parent?.spawnId ?? null,
+      itemId: dispatch?.itemId ?? null,
+    },
   };
 }
 

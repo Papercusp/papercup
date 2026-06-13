@@ -207,23 +207,65 @@ async function acquireLocks(cd: string, slug: string, resources: string[], acqui
 const RESOLVER_INFLIGHT_MS = 20 * 60_000;
 
 /**
- * Whether a merge-resolver is GENUINELY in-flight for this harness — i.e. a dispatch
- * was recorded recently and hasn't settled. This replaces the old "is an escalation
- * open?" dedup, which permanently suppressed the resolver after a SILENT dispatch
- * failure (the escalation stayed open but nothing was ever working it). Now a failed/
- * settled/never-dispatched resolver re-dispatches on the next conflict tick.
+ * This operator process incarnation (P-006). The merge-resolver dispatch is a
+ * FIRE-AND-FORGET `loopbackFetch` whose settle-recording `.then`/`.catch` lives
+ * only in THIS process's memory — so a 'dispatched' marker tagged with a DIFFERENT
+ * instance was orphaned by a restart (the operator died mid-resolution; that promise
+ * can never settle here) and is NOT really in-flight. Tagging the marker with the
+ * instance lets `isResolverInFlight` re-dispatch such an orphan on the very next
+ * conflict tick instead of stranding the conflict for the full RESOLVER_INFLIGHT_MS
+ * TTL. pid + process-start stamp is unique per incarnation (a restart reusing the
+ * same pid in the same millisecond is not physically possible).
  */
+const PROCESS_INSTANCE_ID = `${process.pid}.${Date.now().toString(36)}`;
+
+/** The shape of the `metadata->'last_resolver'` marker the dedup reads. */
+export interface ResolverMarker {
+  status?: string;
+  at?: number;
+  /** The operator instance that fired the dispatch (P-006). Absent on legacy
+   *  markers written before instance-tagging — those fall back to the pure TTL. */
+  instance?: string;
+}
+
+/**
+ * Whether a merge-resolver is GENUINELY in-flight for this harness — pure so the
+ * dedup WINDOW is directly unit-testable (P-007: the window is keyed on PG
+ * timestamps, never on git round-trip timing, so seconds of real fetch/push
+ * latency are negligible against the minutes-scale RESOLVER_INFLIGHT_MS / 900s
+ * resolver ceiling). This replaced the old "is an escalation open?" dedup, which
+ * permanently suppressed the resolver after a SILENT dispatch failure. The rules:
+ *   - never-run / already-settled (status !== 'dispatched') → NOT in flight (retry);
+ *   - P-006: a 'dispatched' marker from a DIFFERENT process instance was orphaned
+ *     by a restart (its fire-and-forget settle can never land here) → NOT in flight
+ *     (re-dispatch next tick, not after the 20-min TTL). A marker with NO instance
+ *     (legacy / pre-instance-tagging) falls through to the TTL — no regression;
+ *   - same-instance 'dispatched' → in flight only until the RESOLVER_INFLIGHT_MS
+ *     TTL lapses (the backstop for a genuinely-slow resolver in a live process).
+ */
+export function isResolverInFlight(
+  lr: ResolverMarker | null | undefined,
+  now: number,
+  instanceId: string,
+): boolean {
+  if (!lr || lr.status !== 'dispatched') return false; // never-run or already settled → retry
+  // P-006: orphaned by an operator restart — a marker tagged with a prior incarnation
+  // can never settle in this process, so it is not really in flight. (A marker with
+  // no instance predates instance-tagging → fall through to the TTL, preserving the
+  // old behavior rather than risk a double-dispatch on a live same-process resolver.)
+  if (lr.instance !== undefined && lr.instance !== instanceId) return false;
+  return typeof lr.at === 'number' && now - lr.at < RESOLVER_INFLIGHT_MS;
+}
+
 async function resolverInFlight(slug: string): Promise<boolean> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ lr: { status?: string; at?: number } | null }[]>`
+  const rows = await sql<{ lr: ResolverMarker | null }[]>`
     SELECT metadata->'last_resolver' AS lr
       FROM harness_shared.routines
      WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
      LIMIT 1
   `;
-  const lr = rows[0]?.lr;
-  if (!lr || lr.status !== 'dispatched') return false; // never-run or already settled → retry
-  return typeof lr.at === 'number' && Date.now() - lr.at < RESOLVER_INFLIGHT_MS;
+  return isResolverInFlight(rows[0]?.lr, Date.now(), PROCESS_INSTANCE_ID);
 }
 
 async function writeGitSyncEscalation(slug: string, workspaceId: string, conflicts: RepoConflict[]): Promise<void> {
@@ -344,7 +386,10 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
   const dispatchedAt = Date.now();
 
   // (1) durable "dispatched" marker, awaited — observable even if (2) is lost.
-  await recordResolverDispatch(slug, { at: dispatchedAt, status: 'dispatched', scopes });
+  // P-006: stamp THIS process instance so a restart-orphaned dispatch (whose
+  // settle-recording promise died with the old process) re-dispatches on the next
+  // conflict tick instead of waiting out the RESOLVER_INFLIGHT_MS TTL.
+  await recordResolverDispatch(slug, { at: dispatchedAt, status: 'dispatched', scopes, instance: PROCESS_INSTANCE_ID });
 
   // Pipeline history (mig 177): log each resolver SETTLE (not the dispatch) so the
   // Git tab can show resolver success rate. Best-effort, like recordResolverDispatch.

@@ -82,6 +82,8 @@ import './hive/create';
 // hive-from-github-url-2026-06-11 P-006 — create a Hive FROM a GitHub URL:
 import './hive/create_from_repo';
 import './hive/dissolve';
+// shared-hive-hardening-2026-06-13 P-012 — a joiner cleanly LEAVES a shared hive:
+import './hive/leave';
 import './hive/update';
 // cross-hive-boundary-2026-06-08 P-002 — owner cross-Hive capability grants:
 import './hive/cross_grant';
@@ -119,7 +121,6 @@ import './autoloop/status';
 import './autoloop/control';
 import './operator/dedup_check';
 import './wiki/backlinks';
-import './harness/plan_reviews';
 import './harness/phase_path';
 import './harness/markdown_index';
 import './harness/escalation';
