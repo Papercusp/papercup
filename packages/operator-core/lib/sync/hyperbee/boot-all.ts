@@ -401,6 +401,20 @@ export async function bootAllHarnessesForActiveWorkspace(
     }
   })();
 
+  // plan-federation-regrain-2026-06-13 P-005/P-007: once-per-process per-part
+  // plan-federation reconcile/backfill — decompose each plan into harness_plan_parts
+  // (origin='local') so local plan edits federate per-part. FLAG-GATED inside the
+  // function: it no-ops unless papercusp-plan-part-federation is on, so this is DARK
+  // by default. Same fire-and-forget + own-catch posture; must NEVER affect boot.
+  void (async () => {
+    try {
+      const { ensurePlanPartsReconciledOnce } = await import('../../plan-parts/reconcile');
+      ensurePlanPartsReconciledOnce(workspaceIds);
+    } catch {
+      /* best-effort; boot-all never fails on plan-parts reconcile */
+    }
+  })();
+
   // shared-hive-hardening-2026-06-13 P-013 (B-04): once-per-process join-state
   // self-heal — re-register the ONE residual boot-all can't heal itself, a join
   // whose clone landed on disk but whose registry write also failed (so this

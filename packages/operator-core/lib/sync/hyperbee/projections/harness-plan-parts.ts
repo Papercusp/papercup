@@ -111,7 +111,7 @@ async function applyPart(opts: HarnessPlanPartsProjectionOpts, row: PlanPartWire
     ...(provenance?.authorPubkey ? { author: provenance.authorPubkey } : {}),
     ...(row.tombstone ? { tombstone: true as const } : {}),
   };
-  await store.upsertPart(row.plan_slug, part); // always safe (dark table); LWW in the store
+  await store.upsertPart(row.plan_slug, part, 'remote'); // origin='remote' → echo-guard skips re-federating our own apply
   await recompose(opts, store, row.plan_slug, provenance);
 }
 
@@ -121,7 +121,7 @@ async function deletePart(opts: HarnessPlanPartsProjectionOpts, key: string, del
   const planSlug = key.slice(0, slash);
   const partKey = key.slice(slash + 1);
   const store = storeFor(opts);
-  await store.upsertPart(planSlug, { key: partKey, kind: 'item', text: '', order: 0, fedTs: delTs ?? 0, tombstone: true });
+  await store.upsertPart(planSlug, { key: partKey, kind: 'item', text: '', order: 0, fedTs: delTs ?? 0, tombstone: true }, 'remote');
   await recompose(opts, store, planSlug);
 }
 

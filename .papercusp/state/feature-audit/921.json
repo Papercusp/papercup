@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781388033029-08ba7f5c",
+  "feature_id": "F-FIX-008",
+  "field": "__created",
+  "id": 921,
+  "new_value": "{\"id\":\"F-FIX-008\",\"title\":\"fleet:tree throws handler_error: row.heartbeatAt.getTime is not a function\",\"sourceIssueId\":\"EI-482\"}",
+  "old_value": "null",
+  "ts": 1781388611788
+}

@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781388033029-08ba7f5c",
+  "feature_id": "F-FIX-002",
+  "field": "__created",
+  "id": 915,
+  "new_value": "{\"id\":\"F-FIX-002\",\"title\":\"Test failing repeatedly: packages/operator-core/lib/agent-tools/locks/__tests__/su-lock-store.test.ts\",\"sourceIssueId\":\"EI-445\"}",
+  "old_value": "null",
+  "ts": 1781388534547
+}

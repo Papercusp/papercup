@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781388033029-08ba7f5c",
+  "feature_id": "F-FIX-007",
+  "field": "__created",
+  "id": 920,
+  "new_value": "{\"id\":\"F-FIX-007\",\"title\":\"claim-discipline-watch keeps nagging hourly after a session clears its plan intent + releases all claims (reads stale source, not live presence/assignments)\",\"sourceIssueId\":\"EI-483\"}",
+  "old_value": "null",
+  "ts": 1781388611739
+}

@@ -24,8 +24,12 @@ export interface PlanPartsStore {
    * LWW upsert: applies `part` iff it is not strictly-older than the stored part
    * for that key (higher `fedTs` wins; equal `fedTs` → higher `author` wins). A
    * `tombstone` part removes the key (still LWW-guarded). Idempotent + commutative.
+   *
+   * `origin` is the echo-guard tag persisted to PG: applied REMOTE ops pass
+   * 'remote' so the capture trigger (mig 271) skips re-federating them; local
+   * writes default 'local' and DO federate. The in-memory impl ignores it.
    */
-  upsertPart(planSlug: string, part: FederatedPart): Promise<void>;
+  upsertPart(planSlug: string, part: FederatedPart, origin?: 'local' | 'remote'): Promise<void>;
 }
 
 /** In-process store — reuses the pure `mergeFederatedPart` LWW from plan-parser. */
@@ -36,9 +40,9 @@ export class InMemoryPlanPartsStore implements PlanPartsStore {
     return new Map(this.byPlan.get(planSlug) ?? new Map());
   }
 
-  async upsertPart(planSlug: string, part: FederatedPart): Promise<void> {
+  async upsertPart(planSlug: string, part: FederatedPart, _origin: 'local' | 'remote' = 'local'): Promise<void> {
     const cur = this.byPlan.get(planSlug) ?? new Map<string, FederatedPart>();
-    this.byPlan.set(planSlug, mergeFederatedPart(cur, part));
+    this.byPlan.set(planSlug, mergeFederatedPart(cur, part)); // origin is a PG echo-guard concern; n/a in-memory
   }
 }
 
@@ -88,20 +92,21 @@ export class PgPlanPartsStore implements PlanPartsStore {
     return out;
   }
 
-  async upsertPart(planSlug: string, part: FederatedPart): Promise<void> {
+  async upsertPart(planSlug: string, part: FederatedPart, origin: 'local' | 'remote' = 'local'): Promise<void> {
     await this.sql`
       INSERT INTO harness_shared.harness_plan_parts
-        (workspace_id, harness_slug, plan_slug, part_key, kind, body, ordinal, fed_ts, author, tombstone)
+        (workspace_id, harness_slug, plan_slug, part_key, kind, body, ordinal, fed_ts, author, tombstone, origin)
       VALUES
         (${this.workspaceId}, ${this.harnessSlug}, ${planSlug}, ${part.key}, ${part.kind},
-         ${part.text}, ${part.order}, ${part.fedTs}, ${part.author ?? null}, ${part.tombstone ?? false})
+         ${part.text}, ${part.order}, ${part.fedTs}, ${part.author ?? null}, ${part.tombstone ?? false}, ${origin})
       ON CONFLICT (workspace_id, harness_slug, plan_slug, part_key) DO UPDATE SET
         kind      = EXCLUDED.kind,
         body      = EXCLUDED.body,
         ordinal   = EXCLUDED.ordinal,
         fed_ts    = EXCLUDED.fed_ts,
         author    = EXCLUDED.author,
-        tombstone = EXCLUDED.tombstone
+        tombstone = EXCLUDED.tombstone,
+        origin    = EXCLUDED.origin
       WHERE EXCLUDED.fed_ts > harness_shared.harness_plan_parts.fed_ts
          OR (EXCLUDED.fed_ts = harness_shared.harness_plan_parts.fed_ts
              AND COALESCE(EXCLUDED.author, '') > COALESCE(harness_shared.harness_plan_parts.author, ''))

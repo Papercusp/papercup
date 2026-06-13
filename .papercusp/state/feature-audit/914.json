@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781388033029-08ba7f5c",
+  "feature_id": "F-FIX-001",
+  "field": "__created",
+  "id": 914,
+  "new_value": "{\"id\":\"F-FIX-001\",\"title\":\"Tool work_items:set_state returns a structural error\",\"sourceIssueId\":\"EI-450\"}",
+  "old_value": "null",
+  "ts": 1781388534178
+}

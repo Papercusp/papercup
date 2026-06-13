@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781388033029-08ba7f5c",
+  "feature_id": "F-FIX-004",
+  "field": "__created",
+  "id": 917,
+  "new_value": "{\"id\":\"F-FIX-004\",\"title\":\"Tool plans:add-decision returns a structural error\",\"sourceIssueId\":\"EI-470\"}",
+  "old_value": "null",
+  "ts": 1781388593829
+}
