@@ -11,7 +11,7 @@ A coarse, grouped map of the MCP tool surface — one row per tool group with it
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**402 MCP tools** across **78 groups**.
+**403 MCP tools** across **78 groups**.
 
 ## Groups
 
@@ -28,7 +28,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `artifacts` | 4 | `append` `delete` `load` `save` | `artifacts:read` `artifacts:write` |
 | `audit` | 1 | `list` | `audit:read` |
 | `autoloop` | 2 | `control` `status` | `autoloop:read` `autoloop:write` |
-| `autonomy` | 2 | `policy_get` `policy_set` | `audit:write` `intel:read` |
+| `autonomy` | 3 | `decide` `policy_get` `policy_set` | `audit:write` `intel:read` |
 | `backup` | 8 | `diff` `promote` `restore` `rollback` `settings_get` `settings_set` `snapshot_create` `snapshot_list` | `backup:read` `backup:write` |
 | `blueprint` | 4 | `catalog` `create` `extend` `validate` | `harness:read` `harness:write` |
 | `brainstorm` | 1 | `chat` | `harness:write` |
@@ -52,9 +52,9 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `generators` | 1 | `publish` | `coord:write` |
 | `goals` | 2 | `get` `list` | `goals:read` |
 | `gym` | 2 | `judge` `signals` | `harness:read` |
-| `harness` | 14 | `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `migrate-config-json` `pending_reviews` `phase_path` `plan_reviews` `status` | `harness:read` `harness:write` |
+| `harness` | 13 | `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `migrate-config-json` `pending_reviews` `phase_path` `status` | `harness:read` `harness:write` |
 | `harness_docs` | 7 | `anchor` `ingest` `list` `record` `regenerate` `set_overlay` `verify` | `docs:read` `docs:write` |
-| `hive` | 17 | `ask` `asks` `beacon_consent` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `list` `pause` `request_work` `start` `status` `survey` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:read` `work_items:write` |
+| `hive` | 18 | `ask` `asks` `beacon_consent` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `leave` `list` `pause` `request_work` `start` `status` `survey` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:read` `work_items:write` |
 | `hooks` | 1 | `known` | `roles:read` |
 | `improvements` | 5 | `capture` `digest` `resolve` `triage` `watchdog-status` | `coord:read` `coord:write` |
 | `inbox` | 1 | `triage` | `coord:write` |

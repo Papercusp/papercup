@@ -172,7 +172,13 @@ fallback does (the WI-108 fix). So round 1's worker WAS in `spawned_agents`
 (`s-…-983e57d1`, child\_role=worker, via the fallback) but round 2's two workers
 appear in neither `spawned_agents` nor `agent_runs_consolidated` — invisible in
 `fleet:tree`. EI-403-A/EI-437 fixed durability but regressed visibility vs round
-
-1. Fix shape: have the durable path `recordSpawn` keyed off the workflow id and
-   `finishSpawn` from the workflow's terminal status. Tracked on EI-403 (comment
-   \#45122).
+**Fixed (staging, rides the release gate — EI-403 comment #45125):**
+`DurableSpawnFireInput` gained an opt-in `spawnRecord`; `durableSpawnFireImpl` now
+`recordSpawn`s (stable `spawn_id = durable-spawn:<key>`, idempotent on conflict →
+recovery/retry-safe) before the fire and `finishSpawn`s it after (`done`, or
+`failed`+error if the fire exhausts retries), and `buildLaunchSpawnRequest` (the
+implement seam) opts in — deliberately NOT the `defaultFire` durable branch, since
+hive launches record their own queen/bee rows and would otherwise double-count in
+fleet:tree. Close criterion (re-verify post-deploy): the next durably-fired
+implement worker shows a `spawned_agents` row (child\_role=worker,
+parent\_role=operator, item\_id=EI-NNN) and appears in `fleet:tree`.

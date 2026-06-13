@@ -149,7 +149,10 @@ export async function handleAuthorityRpc(
     }
   }
 
-  if (opts.verifyIsAuthority) {
+  // Authority-exempt kinds (peer-to-peer ops like `peer.probe`) skip the
+  // authority gate — ANY peer answers them, not just the elected authority.
+  const exemptKinds = opts.authorityExemptKinds ?? _exempt;
+  if (opts.verifyIsAuthority && !exemptKinds.has(env.kind)) {
     let isAuth = false;
     try {
       isAuth = await opts.verifyIsAuthority(env.harnessSlug);

@@ -84,6 +84,31 @@ export {
 export { wireLockEventStream } from './lock-event-wiring';
 
 export {
+  AuthorityEvictionMonitor,
+  setAuthorityEvictionMonitor,
+  getAuthorityEvictionMonitor,
+  transportRelayProbe,
+  peerLabel,
+  PEER_PROBE_OP_KIND,
+  DEFAULT_PROBE_FANOUT,
+  type AuthorityEvictionMonitorOpts,
+  type PresenceObservation,
+} from './peer-eviction';
+
+export {
+  registerPeerProbeOp,
+  buildPeerProbeHandler,
+  defaultPeerLiveness,
+  type PeerProbeResult,
+  type PeerProbeDeps,
+  type PeerLivenessCheck,
+} from './peer-probe-op';
+
+export { getAuthorityExemptKinds } from './authority-op-registry';
+
+export { wirePeerEviction } from './eviction-wiring';
+
+export {
   registerFileLockAuthorityOps,
   buildFileLockAuthorityHandlers,
   FILE_LOCK_OP_KINDS,

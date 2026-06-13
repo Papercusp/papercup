@@ -107,7 +107,7 @@ let _wired = false;
  * keychain) → the RPC goes unsigned, the same safe degradation as the fail-open
  * transport. The transport memoizes this, so the async resolution runs once.
  */
-async function resolveDeviceEnvelopeSigner(): Promise<EnvelopeSignerConfig | null> {
+export async function resolveDeviceEnvelopeSigner(): Promise<EnvelopeSignerConfig | null> {
   try {
     const user = await getAuthenticatedGithubUser();
     if (!user) return null;

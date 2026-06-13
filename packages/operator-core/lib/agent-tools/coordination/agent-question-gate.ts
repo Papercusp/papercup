@@ -54,6 +54,19 @@ export interface AgentQuestionInput {
   question: string;
   options: { id: string; label: string }[];
   planSlug?: string;
+  /**
+   * Optional decision-context describing WHAT the question is about — the action
+   * the bee would take + its risk/authority/reversibility. The B-12 decider-backed
+   * gate ({@link deciderAgentQuestionGate}) feeds these to `resolveAutonomyDecision`;
+   * the default owner-Queue gate ignores them. A question with no context fail-safes
+   * to gated/owner-Queue (the decider treats it as unmapped → never-auto). B-17/P-040
+   * (the bee declaring its decision's reversibility) populates these. Loosely typed
+   * as strings so this hot-path module stays free of the autonomy type imports.
+   */
+  action?: string;
+  riskTier?: string;
+  authority?: string;
+  reversibility?: string;
 }
 
 /** A routing decision. `rung` selects the ladder step; `timeoutMs` optionally
@@ -64,8 +77,13 @@ export interface AgentQuestionRouting {
 }
 
 /** The injectable classifier. autonomy-policy supplies the real one (its D-004
- *  gating function); the default routes everything to the owner Queue. */
-export type AgentQuestionGate = (input: AgentQuestionInput) => AgentQuestionRouting;
+ *  gating function, via {@link deciderAgentQuestionGate}); the default routes
+ *  everything to the owner Queue. May be sync or async — the real decider reads
+ *  the policy store + the arming flag, so a classifier returning a Promise is
+ *  expected and awaited. */
+export type AgentQuestionGate = (
+  input: AgentQuestionInput,
+) => AgentQuestionRouting | Promise<AgentQuestionRouting>;
 
 const DEFAULT_GATE: AgentQuestionGate = () => ({ rung: 'owner-queue' });
 
@@ -105,17 +123,19 @@ export function isAutonomousAgent(identity: AgentIdentity): boolean {
 
 /**
  * Classify one question via the injected gate (default: owner Queue) and resolve
- * the bounded card timeout. PURE — no card handle, no write — so it can run BEFORE
- * the card is registered (the spec's `timeoutMs` must be set up-front). A gate that
- * throws falls safe to the owner Queue.
+ * the bounded card timeout. No card handle, no write — so it runs BEFORE the card
+ * is registered (the spec's `timeoutMs` must be set up-front). Async because the
+ * real (B-12 decider) gate reads the policy store + arming flag; a gate that throws
+ * OR rejects falls safe to the owner Queue (a classifier failure must never freeze
+ * a bee or silently auto-decide).
  */
-export function classifyAgentQuestion(input: AgentQuestionInput): {
+export async function classifyAgentQuestion(input: AgentQuestionInput): Promise<{
   rung: QuestionRung;
   timeoutMs: number;
-} {
+}> {
   let routing: AgentQuestionRouting;
   try {
-    routing = currentGate()(input);
+    routing = await currentGate()(input);
   } catch {
     routing = { rung: 'owner-queue' };
   }
@@ -181,7 +201,7 @@ export async function routeAgentQuestion(
   identity: AgentIdentity,
   input: RouteAgentQuestionInput,
 ): Promise<RouteAgentQuestionResult> {
-  const { rung, timeoutMs } = classifyAgentQuestion(input);
+  const { rung, timeoutMs } = await classifyAgentQuestion(input);
   const escalation = await openAgentQuestionEscalation(identity, input, rung);
   return { rung, timeoutMs, escalation };
 }

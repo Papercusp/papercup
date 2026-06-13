@@ -77,6 +77,22 @@ export {
   type TestResult,
 } from './outcome-metrics';
 
+export {
+  buildGroundTruth,
+  collectGroundTruth,
+  commitBacksWorkItem,
+  deriveActuals,
+  gitLogCommits,
+  liveGroundTruthPorts,
+  type GroundTruthRaw,
+  type GroundTruthCtx,
+  type GroundTruthPorts,
+  type LiveGroundTruthDeps,
+  type WorkItemClaim,
+  type WorkItemActual,
+  type ObservedCommit,
+} from './ground-truth';
+
 export { computeSpeedMetrics, type SpeedMetrics, type RunTimings } from './speed-metrics';
 
 export {

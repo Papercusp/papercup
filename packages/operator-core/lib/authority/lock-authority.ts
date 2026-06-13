@@ -55,6 +55,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveUsageActor } from '../harness/usage-actor';
 import { getPeerRpcTransport, PeerUnreachableError } from './peer-rpc-transport';
+import { getAuthorityEvictionMonitor, type AuthorityEvictionMonitor } from './peer-eviction';
 
 /**
  * A peer in a harness swarm, identified by the same `(github_user_id,
@@ -120,6 +121,14 @@ export interface LockAuthorityDeps {
   now?: () => number;
   /** Staleness window in ms. Defaults to {@link DEFAULT_AUTHORITY_STALE_MS}. */
   staleMs?: number;
+  /**
+   * P-016 eviction monitor. When present (or installed globally at boot behind
+   * the flag), a remote peer that relays confirm DEAD is excluded from candidacy
+   * before the staleness window elapses. `undefined` → use the global monitor
+   * (`getAuthorityEvictionMonitor`); `null` → force-disable (no eviction, the
+   * pre-P-016 staleness-only behavior). Default (no global installed) → no-op.
+   */
+  evictionMonitor?: AuthorityEvictionMonitor | null;
 }
 
 /**
@@ -214,12 +223,17 @@ export function selectAuthorityFromRows(
   self: SelfSwarmIdentity | null,
   nowMs: number,
   staleMs: number,
+  excluded?: ReadonlySet<string>,
 ): AuthorityResolution {
   const cutoff = nowMs - staleMs;
-  // Dedup by device_pubkey, keeping the freshest row per pubkey.
+  // Dedup by device_pubkey, keeping the freshest row per pubkey. A pubkey in
+  // `excluded` (P-016: relay-confirmed dead) is dropped from candidacy here, the
+  // same as if it had gone stale — but earlier than the staleness window. Self is
+  // never excluded (added unconditionally below); the monitor never evicts self.
   const byPubkey = new Map<string, LivePeerRow>();
   for (const r of rows) {
     if (!r.device_pubkey || r.last_seen_ms <= cutoff) continue;
+    if (excluded?.has(r.device_pubkey)) continue;
     const prior = byPubkey.get(r.device_pubkey);
     if (!prior || r.last_seen_ms > prior.last_seen_ms) byPubkey.set(r.device_pubkey, r);
   }
@@ -290,7 +304,32 @@ export async function lockAuthorityFor(
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
   const [rows, self] = await Promise.all([fetchRows(harnessSlug), resolveSelf()]);
-  return selectAuthorityFromRows(rows, self, now(), staleMs);
+  const nowMs = now();
+  const excluded = evictionExclusions(harnessSlug, rows, self, nowMs, deps);
+  return selectAuthorityFromRows(rows, self, nowMs, staleMs, excluded);
+}
+
+/**
+ * P-016: consult the eviction monitor for a scope. Resolves the monitor
+ * (`deps.evictionMonitor`, else the global), feeds it the presence rows + kicks a
+ * throttled background relay probe, and returns the CURRENT cached evicted set
+ * (sync, never awaits). `undefined` when no monitor is installed → selection is
+ * staleness-only (pre-P-016 behavior).
+ */
+function evictionExclusions(
+  scope: string,
+  rows: LivePeerRow[],
+  self: SelfSwarmIdentity | null,
+  nowMs: number,
+  deps: LockAuthorityDeps,
+): ReadonlySet<string> | undefined {
+  const monitor = deps.evictionMonitor !== undefined ? deps.evictionMonitor : getAuthorityEvictionMonitor();
+  if (!monitor) return undefined;
+  const observations = rows.map((r) => ({
+    peer: { devicePubkey: r.device_pubkey, githubUserId: r.github_user_id, machineLabel: r.machine_label },
+    lastSeenMs: r.last_seen_ms,
+  }));
+  return monitor.beforeSelect(scope, observations, self?.devicePubkey ?? null, nowMs);
 }
 
 /**
@@ -320,7 +359,9 @@ export async function lockAuthorityForHive(
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
   const [rows, self] = await Promise.all([fetchRows(hiveSlug), resolveSelf()]);
-  return selectAuthorityFromRows(rows, self, now(), staleMs);
+  const nowMs = now();
+  const excluded = evictionExclusions(hiveSlug, rows, self, nowMs, deps);
+  return selectAuthorityFromRows(rows, self, nowMs, staleMs, excluded);
 }
 
 /**

@@ -40,6 +40,8 @@ import {
   configureFileLockHiveResolver,
 } from '../../authority/file-lock-routing';
 import { wireAuthorityRpcTransport } from '../../authority/transport-wiring';
+import { wireLockEventStream } from '../../authority/lock-event-wiring';
+import { wirePeerEviction } from '../../authority/eviction-wiring';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { inWorkspaceTxn } from './in-workspace-txn';

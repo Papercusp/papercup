@@ -51,6 +51,10 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // (the Queen may decide without asking) vs gated (→ the owner Queue), with the
   // reasons. Behavior-neutral (always gated) until the owner arms the policy (P-092).
   'mcp__agentmcp__autonomy:decide',
+  // The decision-disposition log (queen-autonomy-policy B-13 / P-111): the Queen
+  // records what she chose for a considered item (act/defer/reject/route-to-research/
+  // no-op) → the decision ledger + the owner's recent-auto-decisions feed.
+  'mcp__agentmcp__autonomy:record_disposition',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
   // Plans read surface — the needs-human inbox + importance the scanner

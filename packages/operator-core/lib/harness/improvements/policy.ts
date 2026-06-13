@@ -20,6 +20,7 @@
  */
 
 import { DETERMINISTIC_EXECUTOR_TCB_PATTERNS } from '../../blueprint-steps/tcb';
+import { CAPABILITY_DISPATCH_TCB_PATTERNS } from '../../capability-envelope/tcb';
 
 /** Work-item kinds (forward-compatible with unify-work-items-2026-06-04 D-002). */
 export type WorkItemKind = 'feature' | 'bug' | 'change' | 'research-task' | 'chunk';

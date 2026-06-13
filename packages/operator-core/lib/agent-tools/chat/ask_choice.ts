@@ -180,7 +180,7 @@ export default defineTool({
     // Intercepted agent cards classify up-front so the bounded timeout is on the
     // spec before the card registers (the gate decides the rung + timeout).
     const interceptRouting = intercept
-      ? classifyAgentQuestion({ identity: identity!, question: normalized.question, options: optionPairs })
+      ? await classifyAgentQuestion({ identity: identity!, question: normalized.question, options: optionPairs })
       : null;
 
     let escalationP: Promise<{ msg_id: string } | null> = Promise.resolve(null);

@@ -47,6 +47,18 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // signup on a single-owner box mints real accounts. The zero-users
   // bootstrap path in the route keeps fresh installs working while dark.
   FLAGS.OPEN_SIGNUP,
+  // shared-hive-hardening-2026-06-13 P-001 / D-005: the option-(c) Hyperswarm-mux
+  // lock-authority RPC transport is wired but its cross-machine path is
+  // real-hardware-unverified (P-003). OFF is byte-identical to today (HTTP-only
+  // addressing) + fails open (D-004); the flip is gated on the two-machine
+  // serialization proof, not unfinished code.
+  FLAGS.AUTHORITY_RPC_PROTOMUX,
+  // shared-hive-hardening-2026-06-13 P-016: the φ+SWIM eviction probe is wired +
+  // unit/loopback-tested, but its LIVE cross-machine path rides the (also-dark)
+  // protomux transport and is real-hardware-unverified (D-003, P-003 two-machine
+  // proof). OFF = staleness-only authority selection, byte-identical to pre-P-016
+  // + fail-open (D-004); the flip is gated on the two-machine eviction proof.
+  FLAGS.AUTHORITY_EVICTION_PROBE,
   // self-learning-frontier D-001 (owner-ratified dark-ship rule): every
   // frontier LEARNING LOOP ships built + tested + DARK, arming only when the
   // plan's P-001 gate closes (consume-edges P-013 live proof + owner

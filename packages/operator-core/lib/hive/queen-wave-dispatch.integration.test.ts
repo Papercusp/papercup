@@ -71,13 +71,21 @@ async function seedQueenSession(): Promise<void> {
     VALUES (${WS}, 'omp', ${'hive · ' + HIVE + '/sess-1'}, ${QUEEN}, now())`;
 }
 
-/** A converted wave lane: a `todo` feature-family work-item carrying its per-lane brief. */
+/**
+ * A converted wave lane: a `todo` feature-family work-item carrying its per-lane
+ * brief. The brief goes in as a real jsonb OBJECT via `sql.json()` — under this
+ * client's `prepare:false`, interpolating a pre-`JSON.stringify`'d string (with or
+ * without a `::jsonb` cast) double-encodes it into a jsonb STRING SCALAR, so
+ * `payload->>'brief'` would read null. `sql.json()` is the form that stores a
+ * true object, matching production's stored representation (createWorkItem's
+ * `$N::jsonb` write) that the placement read (`workItemToTask`) expects.
+ */
 async function seedLane(opts: { id: string; status?: string; brief?: string; order: number }): Promise<void> {
   await sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, payload, feature_order, created_ts, updated_ts)
     VALUES (${HIVE}, ${opts.id}, 'feature', ${opts.status ?? 'todo'}, ${null}, ${WS},
-            ${opts.brief != null ? JSON.stringify({ brief: opts.brief }) : null}, ${opts.order}, 0, 0)`;
+            ${opts.brief != null ? sql.json({ brief: opts.brief }) : null}, ${opts.order}, 0, 0)`;
 }
 
 async function seedBee(owner: string, featureId: string, status: string): Promise<void> {
@@ -186,6 +194,10 @@ describe('queen wave dispatch — wave ordering through bee placement (real PG, 
     // A standalone generate wave (no blocked_by) — its lanes are ready at once.
     await seedLane({ id: 'F-601', brief: 'Universal schema offers: single handler, offers-specific tests', order: 1 });
     await seedLane({ id: 'F-602', brief: 'Universal schema reviews: single handler, reviews-specific tests', order: 2 });
+
+    const diag = await sql`SELECT feature_id, payload, pg_typeof(payload) AS ty, payload->>'brief' AS brief_op
+                             FROM harness_shared.harness_features_consolidated WHERE feature_id = 'F-601'`;
+    console.log('[DIAG2] raw:', JSON.stringify(diag[0]), 'typeof payload:', typeof diag[0]?.payload);
 
     const f = await gatherFrontier({ harness: HIVE, workspaceId: WS, limit: 10 });
     expect(f.tasks.map((t) => t.id).sort()).toEqual(['F-601', 'F-602']);

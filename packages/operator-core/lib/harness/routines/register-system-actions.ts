@@ -197,3 +197,7 @@ import './change-ledger-scan-action';
 import './deferral-interest-action';
 import './calibration-action';
 import './graduation-action';
+// queen-autonomy-policy-2026-06-13 B-16: the auto-revert tripwire + graduation
+// sweep (`system:autonomy-trust-scan`). Self-gates on QUEEN_AUTONOMY_ARMED (P-092);
+// the seed routine ships INACTIVE (go-live activates it).
+import './autonomy-trust-scan-action';

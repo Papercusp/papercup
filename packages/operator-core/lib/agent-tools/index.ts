@@ -209,6 +209,8 @@ import './autonomy/get';
 import './autonomy/set';
 // The Queen autonomy decider gate (queen-autonomy-policy B-12 / P-070).
 import './autonomy/decide';
+// The Queen decision-disposition log (queen-autonomy-policy B-13 / P-111).
+import './autonomy/record_disposition';
 
 import './saved_prompts/list';
 

@@ -129,6 +129,26 @@ export const FLAGS = {
   // box where every peer runs current code; the flag is the cross-machine
   // rollout lever (sign everywhere → then enforce).
   AUTHORITY_RPC_SIGNED: "papercusp-authority-rpc-signed",
+  // shared-hive-hardening-2026-06-13 P-001 / D-005 (owner-ratified option c):
+  // route remote lock-authority RPCs over the EXISTING per-harness Hyperswarm
+  // connection (a papercusp/authority-rpc protomux channel) so NAT'd desktop
+  // peers — unreachable by a raw :3070 URL — are served; the connection IS the
+  // address. Composes with the HTTP transport (addressable peers) and fails open
+  // (D-004) when no channel/address exists. DEFAULT OFF: the cross-machine path
+  // is real-hardware-unverified (P-003) — flipping it on is gated on the
+  // two-machine serialization proof. OFF = byte-identical to today (HTTP-only).
+  AUTHORITY_RPC_PROTOMUX: "papercusp-authority-rpc-protomux",
+  // shared-hive-hardening-2026-06-13 P-016: wire the φ-accrual + SWIM failure
+  // detector into authority selection so a CRASHED authority is evicted promptly
+  // (relays confirm it dead over the same RPC seam) instead of waiting out the 90s
+  // staleness window. When ON, boot installs the eviction monitor; selection
+  // excludes a peer ONLY when a reachable relay confirms it dead (never on our own
+  // blindness — single box / no transport is a no-op, fail-open preserved). DEFAULT
+  // OFF (dark): the live cross-machine eviction path is real-hardware-unverified
+  // (D-003, like the sibling AUTHORITY_RPC_PROTOMUX it rides) — the flip is gated
+  // on the two-machine proof. OFF = staleness-only selection, byte-identical to
+  // pre-P-016. Listed in KNOWN_DARK_FLAGS.
+  AUTHORITY_EVICTION_PROBE: "papercusp-authority-eviction-probe",
   // EI-316 (hive completion split-brain): when ON, work_items:create refuses a
   // title that embeds an existing OPEN work-item id (the "WI-118: …" mirror
   // signal) — the creator must work the given id, not fork a duplicate it then
@@ -423,6 +443,17 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (deploy signing everywhere, THEN this stays/comes on) and the emergency
   // revert if a real unsigned peer must be tolerated.
   [FLAGS.AUTHORITY_RPC_SIGNED]: true,
+  // DEFAULT OFF (dark): the option-(c) Hyperswarm-mux RPC transport is wired but
+  // its cross-machine path has never been verified on real hardware (P-003). OFF
+  // is byte-identical to today (HTTP-only addressing); the flip is gated on the
+  // two-machine serialization proof. Listed in KNOWN_DARK_FLAGS.
+  [FLAGS.AUTHORITY_RPC_PROTOMUX]: false,
+  // DEFAULT OFF (dark): the φ+SWIM eviction probe's live cross-machine path rides
+  // the (also-dark) protomux transport and is real-hardware-unverified (D-003,
+  // P-003 two-machine proof). OFF = staleness-only authority selection,
+  // byte-identical to pre-P-016. Listed in KNOWN_DARK_FLAGS; flip gated on the
+  // two-machine eviction proof.
+  [FLAGS.AUTHORITY_EVICTION_PROBE]: false,
   // ON by default (alpha flags-default-on policy + EI-316 correctness fix): the
   // guard fires only on a title that embeds an id resolving to a live OPEN
   // work-item — a near-zero-false-positive signal — and force:true is the
