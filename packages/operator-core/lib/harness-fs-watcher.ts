@@ -60,13 +60,12 @@ const execFileP = promisify(execFile);
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { getOrgPg, generated } from '@papercusp/db-org';
-import { and, desc, eq, sql as dsql } from 'drizzle-orm';
+import { and, eq, sql as dsql } from 'drizzle-orm';
 
 const hsum = generated.harnessSummariesInHarnessShared;
 const prev = generated.pendingReviewsInHarnessShared;
 const hps = generated.harnessProposalsSharedInHarnessShared;
 const hph = generated.harnessPhasesInHarnessShared;
-const hgl = generated.harnessGitLogInHarnessShared;
 const hba = generated.harnessBranchActionsInHarnessShared;
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { activeWorkspaceId } from './workspace-registry';
@@ -542,112 +541,13 @@ async function upsertPhases(project: ProjectEntry): Promise<void> {
 // time by bash run.sh's log() → /api/internal/decision-event. The
 // fs.watch + tail-grep parser was deleted in the same commit.
 
-// ── Mirror 7i: harness_git_log (`git log` for the project's repo) ──────
-//
-// Runs `git log --all --date-order` and mirrors the most-recent N commits.
-// Stable PK (slug, sha) so re-runs only insert new commits without churning
-// existing rows. Capped at GIT_LOG_KEEP to bound the table.
-
-const GIT_LOG_KEEP = 300;
-const GIT_LOG_SEP = '\x1f';
-
-async function replaceGitLog(slug: string, projectPath: string): Promise<void> {
-  if (!existsSync(join(projectPath, '.git'))) {
-    await deleteGitLogAll(slug);
-    return;
-  }
-  let stdout = '';
-  try {
-    const out = await execFileP(
-      'git',
-      [
-        '-C', projectPath,
-        'log', '--all', '--date-order',
-        `--format=%H${GIT_LOG_SEP}%P${GIT_LOG_SEP}%s${GIT_LOG_SEP}%an${GIT_LOG_SEP}%at${GIT_LOG_SEP}%D`,
-        '-n', String(GIT_LOG_KEEP),
-      ],
-      { maxBuffer: 16 * 1024 * 1024, timeout: 15_000 },
-    );
-    stdout = out.stdout;
-  } catch {
-    // Most likely: not a git repo yet (no commits) — leave PG empty.
-    return;
-  }
-  type Parsed = { sha: string; parents: string[]; subject: string; author: string; ts: number; refs: string[] };
-  const commits: Parsed[] = stdout
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const [sha, parents, subject, author, ts, refs] = line.split(GIT_LOG_SEP);
-      // %at is epoch seconds; the existing /git/log REST route normalizes
-      // to milliseconds so the UI's lastSeen comparison (localStorage ms)
-      // works without a conversion. Match that.
-      return {
-        sha,
-        parents: parents ? parents.split(' ').filter(Boolean) : [],
-        subject: subject ?? '',
-        author: author ?? '',
-        ts: (Number(ts) || 0) * 1000,
-        refs: refs ? refs.split(',').map((r) => r.trim()).filter(Boolean) : [],
-      };
-    });
-  const seen = new Set(commits.map((c) => c.sha));
-  const { db } = getOrgPg();
-  const ws = activeWorkspaceId();
-  // Only fire SSE invalidate if the visible commit set changed.
-  const topSha = commits[0]?.sha ?? '';
-  const { count, notInArray } = await import('drizzle-orm');
-  const [topRow, cntRow] = await Promise.all([
-    db.select({ sha: hgl.sha }).from(hgl).where(eq(hgl.harnessSlug, slug)).orderBy(desc(hgl.ts)).limit(1),
-    db.select({ n: count() }).from(hgl).where(eq(hgl.harnessSlug, slug)),
-  ]);
-  const before = [{
-    top_sha: topRow[0]?.sha ?? '',
-    cnt: String(cntRow[0]?.n ?? 0),
-  }];
-  for (const c of commits) {
-    await db
-      .insert(hgl)
-      .values({
-        harnessSlug: slug,
-        sha: c.sha,
-        parents: c.parents as any,
-        subject: c.subject,
-        author: c.author,
-        ts: c.ts,
-        refs: c.refs as any,
-        workspaceId: ws,
-      })
-      .onConflictDoUpdate({
-        target: [hgl.harnessSlug, hgl.sha],
-        set: {
-          parents: dsql`EXCLUDED.parents`,
-          subject: dsql`EXCLUDED.subject`,
-          author: dsql`EXCLUDED.author`,
-          ts: dsql`EXCLUDED.ts`,
-          refs: dsql`EXCLUDED.refs`,
-          workspaceId: dsql`EXCLUDED.workspace_id`,
-        },
-      });
-  }
-  // Drop commits that fell off the recency cap.
-  await db
-    .delete(hgl)
-    .where(and(eq(hgl.harnessSlug, slug), notInArray(hgl.sha, Array.from(seen))));
-  const prev = before[0];
-  const changed = !prev || prev.top_sha !== topSha || prev.cnt !== String(commits.length);
-  if (changed) {
-    await notifySyncInvalidate('harnessGitLog.byHarness', { harnessSlug: slug });
-  }
-}
-
-async function deleteGitLogAll(slug: string): Promise<void> {
-  const { db } = getOrgPg();
-  const result = await db.delete(hgl).where(eq(hgl.harnessSlug, slug)).returning({ sha: hgl.sha });
-  if (result.length > 0) {
-    await notifySyncInvalidate('harnessGitLog.byHarness', { harnessSlug: slug });
-  }
-}
+// ── Mirror 7i RETIRED: harness_git_log → on-demand REST ────────────────
+// The git_log mirror was a pure cache over `git log` (git is the canonical
+// producer). The UI (RealGitPanel / AdvGitPanel) now reads the on-demand
+// /api/harness/<slug>/git/log route (3s-TTL cached, shells out live) — it
+// always did, so the mirror was already UI-orphaned. The
+// harness_shared.harness_git_log table is dropped in migration 258.
+// (fs-watcher-retirement-2026-05-10 step 1.)
 
 // ── Mirror 7k: harness_branch_actions (per-branch enriched action list) ─
 //
@@ -766,12 +666,10 @@ function classifyAndDispatch(
   path: string,
   kind: 'add' | 'change' | 'unlink',
 ): void {
-  // Git ref change: chokidar dispatch retired. git is the producer
-  // and we don't have a producer-event for "user committed". The
-  // reconcileAll() sweep below still refreshes harness_git_log at
-  // 60s cadence, which is acceptable polling for human commit
-  // velocity. UI also has an explicit refresh button if the user
-  // wants immediate sync.
+  // Git ref change: not dispatched. git is the producer and there's no
+  // producer-event for "user committed" — and the harness_git_log mirror
+  // is retired (fs-watcher-retirement step 1). The UI reads the on-demand
+  // /api/harness/<slug>/git/log REST route (3s-TTL cached) instead.
 
   const match = phaseForPath(state, path);
   if (!match) return;
@@ -956,15 +854,6 @@ async function reconcileAll(state: WatcherState): Promise<void> {
 
   // Per-project sweeps (not phase-scoped).
   for (const proj of newProjects) {
-    // Git log: only mirror if the project root has a real git repo.
-    try {
-      if (existsSync(join(proj.path, '.git'))) {
-        await replaceGitLog(proj.slug, proj.path);
-      } else {
-        await deleteGitLogAll(proj.slug);
-      }
-    } catch {}
-
     // Branch actions: recompute all 3 branches per project. This is the
     // catch-all for plugin-config / global-manifest changes that aren't
     // wired into chokidar — those land at 60s reconcile cadence.

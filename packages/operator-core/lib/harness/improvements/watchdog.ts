@@ -103,6 +103,16 @@ export interface WatchdogSignal {
    */
   latestAt?: string;
   /**
+   * Resolution cooldown (ms). When set, a signal whose key matches only RESOLVED
+   * dups is suppressed (→ `staleResolved`) if the newest resolution landed within
+   * this window before the signal's `latestAt`. For collectors whose SCANNED tree
+   * lags the source-of-truth tree by a deploy window — insight-staleness scans the
+   * release/green checkout, behind staging — so a resolve-then-still-stale re-file
+   * is a deploy-lag artifact, not a regression (EI-427). Omitted by every other
+   * collector (a fast resolve→refail there IS a real regression worth re-filing).
+   */
+  resolutionCooldownMs?: number;
+  /**
    * Learning-signal provenance (frontier P-002/D-002): organic (default) | drill
    * | replay | shadow. A drill harness's collectors tag their planted frictions
    * so the capture rides the drill lane end-to-end while staying out of organic
@@ -293,6 +303,9 @@ export interface SignalPartition {
  *   - an OPEN match → `knownOpen` (already filed; do not burn a capture slot);
  *   - only RESOLVED matches + `latestAt` <= the newest resolution `updatedAt`
  *     → `staleResolved` (pre-fix window evidence, not a regression);
+ *   - only RESOLVED matches + the signal opted into `resolutionCooldownMs` and
+ *     the newest resolution is within that window before `latestAt`
+ *     → `staleResolved` (fix landed, still propagating — EI-427 deploy lag);
  *   - otherwise → `fresh` (genuinely new, or a real regression with fresh
  *     evidence — including a live-state signal with no `latestAt`, whose firing
  *     means the problem exists NOW).
@@ -322,9 +335,22 @@ export function partitionSignalsByKnownKeys(signals: WatchdogSignal[], dups: Wat
     if (matches.length > 0 && s.latestAt) {
       const evidenceMs = Date.parse(s.latestAt);
       const newestResolutionMs = Math.max(...matches.map((m) => Date.parse(m.updatedAt)));
-      if (Number.isFinite(evidenceMs) && Number.isFinite(newestResolutionMs) && newestResolutionMs >= evidenceMs) {
-        out.staleResolved.push(s);
-        continue;
+      if (Number.isFinite(evidenceMs) && Number.isFinite(newestResolutionMs)) {
+        // (a) evidence pre-dates the resolution → stale lookback-window evidence.
+        const evidencePreResolution = newestResolutionMs >= evidenceMs;
+        // (b) resolution cooldown (EI-427): the fix resolved within the cooldown
+        //     BEFORE this scan → suppress the re-file and let it propagate. Only
+        //     for collectors that opt in via `resolutionCooldownMs` (the scanned
+        //     tree lags the source-of-truth tree by a deploy window).
+        const sinceResolutionMs = evidenceMs - newestResolutionMs;
+        const withinCooldown =
+          s.resolutionCooldownMs != null &&
+          sinceResolutionMs >= 0 &&
+          sinceResolutionMs <= s.resolutionCooldownMs;
+        if (evidencePreResolution || withinCooldown) {
+          out.staleResolved.push(s);
+          continue;
+        }
       }
     }
     out.fresh.push(s);

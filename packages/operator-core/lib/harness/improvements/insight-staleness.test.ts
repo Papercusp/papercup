@@ -3,7 +3,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { extractCitedPaths, scanInsightStaleness } from './insight-staleness';
+import {
+  extractCitedPaths,
+  scanInsightStaleness,
+  DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS,
+} from './insight-staleness';
 
 const insight = (slug: string, raw: string, status = 'active') => ({ slug, status, raw });
 
@@ -62,5 +66,35 @@ describe('scanInsightStaleness', () => {
       insight(`stale-${i}`, `See \`packages/x/missing-${i}.ts\`.`),
     );
     expect(scanInsightStaleness(many, exists([]), { maxSignals: 3 })).toHaveLength(3);
+  });
+
+  it('classifies all-citations-missing as apoptotic (supersede) vs partial as repoint-review (EI-441)', () => {
+    const [apoptotic] = scanInsightStaleness(
+      [insight('all-gone', 'Only `packages/x/gone-a.ts` and `packages/x/gone-b.ts` here.')],
+      exists([]),
+    );
+    expect(apoptotic.title).toMatch(/obsolete .* all cited files are gone/i);
+    expect(apoptotic.body).toMatch(/every citation is gone/i);
+    expect(apoptotic.body).toMatch(/status: superseded/);
+    expect(apoptotic.title).not.toMatch(/\d/); // still a stable, count-free title
+
+    const [partial] = scanInsightStaleness(
+      [insight('one-moved', 'Live `libs/flags/src/types.ts`, gone `packages/x/gone.ts`.')],
+      exists(['libs/flags/src/types.ts']),
+    );
+    expect(partial.title).toMatch(/cites files that no longer exist/i);
+    expect(partial.title).not.toMatch(/obsolete/i);
+  });
+
+  it('stamps a resolution cooldown on every signal — default + override (EI-427 deploy-lag suppressor)', () => {
+    const [def] = scanInsightStaleness([insight('s', 'See `packages/x/gone.ts`.')], exists([]));
+    expect(def.resolutionCooldownMs).toBe(DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS);
+
+    const [overridden] = scanInsightStaleness(
+      [insight('s', 'See `packages/x/gone.ts`.')],
+      exists([]),
+      { resolutionCooldownMs: 1000 },
+    );
+    expect(overridden.resolutionCooldownMs).toBe(1000);
   });
 });

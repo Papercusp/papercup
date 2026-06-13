@@ -1,8 +1,8 @@
 ---
-title: DBOS durable execution — the eight gotchas that bite on first integration
-description: Hard-won findings from wiring DBOS Transact into the operator (dbos-durable-jobs-2026-05-31) — boot path, PG connect-probe, version pinning, scheduled-workflow registration, dedup vs concurrency, interrupted-step re-execution, and why the durable pipeline is sequential-only.
+title: DBOS durable execution — the nine gotchas that bite on first integration
+description: Hard-won findings from wiring DBOS Transact into the operator (dbos-durable-jobs-2026-05-31) — boot path, PG connect-probe, version pinning, scheduled-workflow registration, dedup vs concurrency, interrupted-step re-execution, why the durable pipeline is sequential-only, and how to durably spawn a child workflow from inside a routine step.
 discovered: 2026-05-31
-tags: [dbos, durable-execution, orchestrator, embedded-pg, boot, idempotency]
+tags: [dbos, durable-execution, orchestrator, embedded-pg, boot, idempotency, routines]
 status: active
 sidebar:
   order: 31
@@ -138,6 +138,30 @@ stop modelling the work. The durable workflow handles the common sequential pipe
 that feature to the legacy main loop. Don't try to model parallel lanes as nested
 DBOS workflows without first redesigning the ownership/claim model — that's the
 live-integration boundary the plan stops at, not a quick extension.
+
+## 9. To durably spawn a child workflow from a routine step, RETURN the request — don't fire it in the step
+
+`DBOS.startWorkflow` is **illegal from inside a step** (a step is not a workflow
+context). A routine `system:<action>` runs as ONE step inside `routineFireWorkflow`,
+so its handler cannot durably spawn a child: `durableSpawnFire` catches the rejection
+and silently falls back to fire-and-forget, which a host crash loses. This was EI-403
+— every auto-implement dispatch ran non-durably for two days, surfacing only as a
+"could not enqueue durable fire (...); falling back to fire-and-forget: Invalid call
+to a 'workflow' function from within a 'step'" log line.
+
+The fix (EI-403-A) is a generic seam, not a one-off: the action **returns** its spawn
+requests as `SystemActionResult.durableSpawns`; `routineFireImpl` drains them via
+`startDurableSpawns` **after** the step returns — back in the workflow body, where
+`startWorkflow` is legal. Recovery-safe by construction (ties to #7): the step's
+return value is checkpointed, so a replay re-drains the SAME requests, and each fire
+is idempotency-keyed — but ONLY if the key is **stable**. Derive it from durable
+state (`implement:<itemId>:<attempt>`), NEVER from `Date.now()`: a clock-derived key
+gets a new value on replay and double-dispatches. Wired in `routines-workflow.ts`
+(the post-step drain), `system-actions.ts` (the `SystemActionResult` contract),
+`durable-spawn.ts` (`startDurableSpawns` + `durableSpawnFire`), first consumer in
+`harness/routines/improvement-actions.ts`. The cadence/orphan-collector recovery
+(EI-403 Option B) stays as the belt-and-suspenders net for worker death; this seam
+makes the *fire enqueue* itself durable.
 
 ---
 

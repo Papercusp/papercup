@@ -45,9 +45,23 @@ export function extractCitedPaths(raw: string): string[] {
   return [...out];
 }
 
+/**
+ * Resolution cooldown for insight-staleness signals (EI-441 / EI-427). After an
+ * insight-staleness item is resolved, the fix lands on the source-of-truth tree
+ * (staging) but the live operator scans the release/green checkout, which lags
+ * by the deploy window — so the same citation still reads as missing and the
+ * signal re-files under a new id (the EI-413→EI-430 loop). Suppressing re-files
+ * for this window after a resolution lets the fix propagate. 7 days comfortably
+ * covers a normal deploy (and the abnormal green-checkpoint stalls seen during
+ * alpha) while still re-surfacing a fix that genuinely never deployed.
+ */
+export const DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface ScanOpts {
   /** Cap signals per sweep (the watchdog has its own per-tick cap on top). */
   maxSignals?: number;
+  /** Cooldown (ms) stamped on each signal. Default DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS. */
+  resolutionCooldownMs?: number;
 }
 
 /**
@@ -60,6 +74,7 @@ export function scanInsightStaleness(
   opts: ScanOpts = {},
 ): WatchdogSignal[] {
   const maxSignals = opts.maxSignals ?? 5;
+  const resolutionCooldownMs = opts.resolutionCooldownMs ?? DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS;
   const signals: WatchdogSignal[] = [];
   for (const insight of insights) {
     if (signals.length >= maxSignals) break;
@@ -69,22 +84,38 @@ export function scanInsightStaleness(
     if (cited.length === 0) continue;
     const missing = cited.filter((p) => !existsFn(p));
     if (missing.length === 0) continue;
+    // Apoptosis (EI-441): EVERY cited file is gone → the runbook's whole evidence
+    // base has evaporated, so the guidance is almost certainly obsolete. Surface
+    // it as a clean "supersede" (not "repoint") so the resolver retires it rather
+    // than hunting for moved files. Partial loss stays a repoint-or-supersede review.
+    const apoptotic = missing.length === cited.length;
     signals.push({
       source: 'insight-staleness',
       key: insight.slug,
       // STABLE title (no counts) — the cross-tick search-first dedup matches on it.
-      title: `Agent insight '${insight.slug}' cites files that no longer exist — review for superseded`,
-      body:
-        `The active agent-insight runbook \`${insight.slug}\` cites repo file(s) that are missing:\n` +
-        missing.map((p) => `  - \`${p}\``).join('\n') +
-        `\n\n(${missing.length} of ${cited.length} cited paths missing.)\n` +
-        `Review the runbook: update the paths if the code moved, or set frontmatter ` +
-        `\`status: superseded\` if the guidance no longer applies — a wrong runbook keeps ` +
-        `being injected into agent preludes until this is done.`,
+      title: apoptotic
+        ? `Agent insight '${insight.slug}' is obsolete — all cited files are gone (supersede)`
+        : `Agent insight '${insight.slug}' cites files that no longer exist — review for superseded`,
+      body: apoptotic
+        ? `The active agent-insight runbook \`${insight.slug}\` cites repo file(s) that are ALL missing:\n` +
+          missing.map((p) => `  - \`${p}\``).join('\n') +
+          `\n\n(${missing.length} of ${cited.length} cited paths missing — every citation is gone.)\n` +
+          `Its entire evidence base has been deleted or moved, so the guidance is almost certainly ` +
+          `obsolete. Set frontmatter \`status: superseded\` (do NOT hunt for moved files) so it stops ` +
+          `being injected into agent preludes.`
+        : `The active agent-insight runbook \`${insight.slug}\` cites repo file(s) that are missing:\n` +
+          missing.map((p) => `  - \`${p}\``).join('\n') +
+          `\n\n(${missing.length} of ${cited.length} cited paths missing.)\n` +
+          `Review the runbook: update the paths if the code moved, or set frontmatter ` +
+          `\`status: superseded\` if the guidance no longer applies — a wrong runbook keeps ` +
+          `being injected into agent preludes until this is done.`,
       severity: 'minor',
       kind: 'change',
       paths: [`apps/operator-docs/src/content/docs/agent-insights/${insight.slug}.mdx`],
       latestAt: new Date().toISOString(),
+      // EI-427: suppress re-files for the deploy-propagation window after a
+      // resolution (the scanned release tree lags the staging fix).
+      resolutionCooldownMs,
     });
   }
   return signals;

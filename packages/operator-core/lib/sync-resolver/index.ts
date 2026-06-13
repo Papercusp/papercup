@@ -409,28 +409,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // harnessGitLog.byHarness — commit log ordered by ts desc, capped.
-  //   zql.harnessGitLog.where(harnessSlug).orderBy('ts', 'desc').limit(limit)
-  'harnessGitLog.byHarness': {
-    argsSchema: z.object({
-      harnessSlug: z.string(),
-      limit: z.number().int().positive().max(2000).default(300),
-    }),
-    resolve: async (args) => {
-      const { harnessSlug, limit } = args as { harnessSlug: string; limit: number };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
-      const t = generated.harnessGitLogInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
-        .orderBy(desc(t.ts))
-        .limit(limit)) as unknown[];
-    },
-  },
-
   // featurePrs.byHarness — feature PRs ordered by feature id.
   //   zql.harnessFeaturePrs.where(harnessSlug).orderBy('featureId', 'asc')
   'featurePrs.byHarness': {

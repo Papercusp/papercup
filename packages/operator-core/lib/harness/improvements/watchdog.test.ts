@@ -941,6 +941,32 @@ describe('partitionSignalsByKnownKeys — key pre-filter (audit P-004/P-005)', (
   });
 });
 
+describe('partitionSignalsByKnownKeys — resolution cooldown (EI-427 deploy-lag suppressor)', () => {
+  const dup = (watchdogKey: string, state: string, updatedAt: string): WatchdogKeyDup => ({ watchdogKey, state, updatedAt });
+  const COOLDOWN = 2 * 60 * 60 * 1000; // 2h
+
+  it('suppresses a re-file when the fix resolved WITHIN the cooldown before the scan (still deploying)', () => {
+    // latestAt (scan) is 1h after the resolution → without a cooldown this would
+    // re-file as a "real regression"; the cooldown holds it for the deploy window.
+    const s = sig({ key: 'dbos', source: 'insight-staleness', latestAt: '2026-06-09T01:00:00.000Z', resolutionCooldownMs: COOLDOWN });
+    const out = partitionSignalsByKnownKeys([s], [dup('insight-staleness:dbos', 'resolved', '2026-06-09T00:00:00.000Z')]);
+    expect(out.staleResolved).toEqual([s]);
+    expect(out.fresh).toEqual([]);
+  });
+
+  it('re-files once the resolution is OLDER than the cooldown (the fix genuinely never deployed)', () => {
+    const s = sig({ key: 'dbos', source: 'insight-staleness', latestAt: '2026-06-09T05:00:00.000Z', resolutionCooldownMs: COOLDOWN });
+    const out = partitionSignalsByKnownKeys([s], [dup('insight-staleness:dbos', 'resolved', '2026-06-09T00:00:00.000Z')]);
+    expect(out.fresh).toEqual([s]); // resolved 5h ago, past the 2h cooldown
+  });
+
+  it('cooldown is opt-in — a signal without resolutionCooldownMs still re-files on post-resolution evidence', () => {
+    const s = sig({ key: 'dbos', source: 'insight-staleness', latestAt: '2026-06-09T01:00:00.000Z' });
+    const out = partitionSignalsByKnownKeys([s], [dup('insight-staleness:dbos', 'resolved', '2026-06-09T00:00:00.000Z')]);
+    expect(out.fresh).toEqual([s]);
+  });
+});
+
 describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-004)', () => {
   function captureRec() {
     const calls: Array<Record<string, unknown>> = [];

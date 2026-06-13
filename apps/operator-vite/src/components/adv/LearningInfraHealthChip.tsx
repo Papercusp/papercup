@@ -39,7 +39,7 @@ export default function LearningInfraHealthChip() {
   if (!health || !(health.status in TONES)) return null;
   const tone = TONES[health.status];
   const hint =
-    `The learning system's own infrastructure — the LLM spine (gym judge, llm-testing — anthropic-direct or meridian), ` +
+    `The learning system's own infrastructure — the LLM spine (gym judge, llm-testing — the stateless anthropic-direct transport), ` +
     `the runner spawn path (auto-implement workers), and the gym fire circuit. ` +
     `When this goes offline you are notified directly: these failures can't be auto-fixed by the improvement queue.\n\n` +
     health.legs.map((l) => `${l.name}: ${l.status} — ${l.detail}`).join('\n') +

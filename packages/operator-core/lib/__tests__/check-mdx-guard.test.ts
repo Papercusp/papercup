@@ -24,8 +24,9 @@ describe('check-mdx guard detector (EI-438)', () => {
     const hit = await findMdxCompileError('bad.mdx', bad);
     expect(hit).not.toBeNull();
     expect(hit.reason).toMatch(/closing tag for `<date>`/i);
-    // Frontmatter is blanked with line count preserved, so the line still points at source.
-    expect(hit.line).toBe(5);
+    // Frontmatter is blanked with line count preserved, so the line still
+    // points at source (the `<date>` is on the 7th line of `bad`).
+    expect(hit.line).toBe(7);
   });
 
   it('does NOT flag the same placeholder inside an inline code span', async () => {

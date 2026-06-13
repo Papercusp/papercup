@@ -47,7 +47,6 @@ describe('sync-resolver v2 registry', () => {
         'harnessLanes.byHarness',
         'harnessEscalations.byHarness',
         'harnessCheckpoints.byHarness',
-        'harnessGitLog.byHarness',
         'featurePrs.byHarness',
       ]) {
         expect(names).toContain(expected);
