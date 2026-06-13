@@ -35,7 +35,6 @@ import { buildHarnessFeaturesProjection } from './harness-features';
 import { buildHarnessPlansProjection } from './harness-plans';
 import { buildIssuesProjection } from './issues';
 import { buildPresenceProjection } from './presence';
-import { buildPrsProjection } from './prs';
 import { buildUsageProjection } from './usage';
 import { buildCoordConversationProjection } from './coord-conversation';
 import { buildCoordMessageProjection } from './coord-message';
@@ -68,7 +67,7 @@ export interface RegisterAllOpts {
 }
 
 /**
- * The 8 table tags this helper registers. Kept here as a named
+ * The table tags this helper registers. Kept here as a named
  * constant so callers + tests can assert coverage without hard-
  * coding the literal list.
  */
@@ -81,7 +80,6 @@ export const REGISTERED_PROJECTION_TAGS = [
   'plans-by-slug',
   'issues',
   'presence',
-  'prs',
   'usage',
   // distributed-coordination-shared-harness-2026-06-04 (Track A): harness-scoped
   // coordination conversations federate over the peer-log.
@@ -111,7 +109,7 @@ export const REGISTERED_PROJECTION_TAGS = [
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
 
 /**
- * Build this harness's 9 projections as a fresh array. Single source of truth
+ * Build this harness's projections as a fresh array. Single source of truth
  * for the per-harness projection SET — both the global-registry registration
  * (`registerAllHarnessProjections`) and the per-harness scoped apply
  * (`buildHarnessProjectionApply`) derive from it, so they never drift.
@@ -126,7 +124,6 @@ function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown
     buildHarnessPlansProjection(opts),
     buildIssuesProjection(opts),
     buildPresenceProjection(opts),
-    buildPrsProjection(opts),
     buildUsageProjection(opts),
     buildCoordConversationProjection(opts),
     buildCoordMessageProjection(opts),

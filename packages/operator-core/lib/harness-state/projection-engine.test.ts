@@ -26,9 +26,9 @@ describe('harness-state projection-engine (P-003a)', () => {
 
   it('detects a peer-log table that lost its projection (missingProjection)', () => {
     // drop one tag → its table is now unprojected
-    const c = checkPeerLogConsistency(REGISTERED_PROJECTION_TAGS.filter((t) => t !== 'prs'));
+    const c = checkPeerLogConsistency(REGISTERED_PROJECTION_TAGS.filter((t) => t !== 'contributors'));
     expect(c.ok).toBe(false);
-    expect(c.missingProjection).toContain('harness_feature_prs');
+    expect(c.missingProjection).toContain('contributors');
   });
 
   it('detects a projection tag with no registry peer-log entry (orphanTag)', () => {

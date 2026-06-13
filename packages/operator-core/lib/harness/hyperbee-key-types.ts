@@ -25,12 +25,15 @@
  *   usage/<github_user_id>/<event_id>            (append-only)
  *   presence/<github_user_id>/<machine_label>
  *   claims/<feature_id>/<seq>                    (append-only)
- *   prs/<feature_id>
  *   issues/<issue_id>
+ *
+ * NB: the `prs/<feature_id>` shape was retired (EI-479) — `harness_feature_prs`
+ * never federated (no producer; the projection never fired), so PR state is now
+ * a PG-local table (sync:'none'), GitHub-derived + re-polled per machine.
  */
 
 /**
- * The 10 canonical Hyperbee table tags. Append-only tables (usage,
+ * The canonical Hyperbee table tags. Append-only tables (usage,
  * claims) are flagged separately via APPEND_ONLY_TAGS so the
  * projection can refuse `put`-overwrites on them.
  */
@@ -44,7 +47,6 @@ export const HYPERBEE_TABLE_TAGS = [
   'usage',
   'presence',
   'claims',
-  'prs',
   'issues',
 ] as const;
 export type HyperbeeTableTag = (typeof HYPERBEE_TABLE_TAGS)[number];
@@ -74,7 +76,6 @@ export const HYPERBEE_TAG_TO_PREFIX: Record<HyperbeeTableTag, string> = {
   usage: 'usage/',
   presence: 'presence/',
   claims: 'claims/',
-  prs: 'prs/',
   issues: 'issues/',
 };
 
@@ -96,7 +97,6 @@ export const HYPERBEE_PREFIX_TO_TAG: Record<string, HyperbeeTableTag> = {
   'usage/': 'usage',
   'presence/': 'presence',
   'claims/': 'claims',
-  'prs/': 'prs',
   'issues/': 'issues',
 };
 
@@ -156,12 +156,6 @@ export function keyClaim(featureId: string, seq: number): string {
   return 'claims/' + featureId + '/' + seq;
 }
 
-/** prs/<feature_id> */
-export function keyPr(featureId: string): string {
-  assertNonEmpty('feature_id', featureId);
-  return 'prs/' + featureId;
-}
-
 /** issues/<issue_id> */
 export function keyIssue(issueId: string): string {
   assertNonEmpty('issue_id', issueId);
@@ -182,7 +176,6 @@ export type ParsedHyperbeeKey =
   | { tag: 'usage'; github_user_id: number; event_id: string }
   | { tag: 'presence'; github_user_id: number; machine_label: string }
   | { tag: 'claims'; feature_id: string; seq: number }
-  | { tag: 'prs'; feature_id: string }
   | { tag: 'issues'; issue_id: string };
 
 /**
@@ -268,13 +261,6 @@ export function parseHyperbeeKey(key: string): ParsedHyperbeeKey | null {
     if (!Number.isInteger(seq) || seq < 0) return null;
     if (!feature_id) return null;
     return { tag: 'claims', feature_id, seq };
-  }
-
-  // prs/<feature_id>
-  if (key.startsWith('prs/')) {
-    const rest = key.slice('prs/'.length);
-    if (!rest || rest.includes('/')) return null;
-    return { tag: 'prs', feature_id: rest };
   }
 
   // issues/<issue_id>

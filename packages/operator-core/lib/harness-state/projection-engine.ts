@@ -34,7 +34,6 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   'plans-by-slug': 'harness_plans',
   issues: 'harness_issues_consolidated',
   presence: 'shared_presence',
-  prs: 'harness_feature_prs',
   usage: 'contributor_usage_events',
   // distributed-coordination-shared-harness-2026-06-04 (Track A): harness-scoped
   // coordination conversations (projections/coord-conversation.ts → coord_conversations).

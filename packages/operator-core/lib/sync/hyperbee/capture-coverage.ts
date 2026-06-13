@@ -51,21 +51,17 @@ export const LOG_FIRST_PRODUCED_TABLES: Readonly<Record<string, string>> = {
  * Tables the registry classifies `sync:'peer-log'` but which are intentionally
  * NOT produced onto the peer-log — a documented, accepted gap (NOT the EI-382
  * bug). Each entry MUST carry the reason it is safe to leave unfederated.
+ *
+ * Currently EMPTY. `harness_feature_prs` was the sole entry — a Phase-5a
+ * aspiration to move PR state onto Hyperbee — but it never had a producer (no
+ * CDC trigger, no log-first append; the poll daemon was never built), so the
+ * projection never fired. EI-479 retired that orphan projection + reclassified
+ * the table `sync:'none'` (PR state is GitHub-derived + re-polled per-machine,
+ * so PG is the local store-of-record and federation is redundant). A new entry
+ * here would name a genuinely `sync:'peer-log'` table that is deliberately left
+ * unproduced, with the reason it is safe.
  */
-export const ACCEPTED_UNFEDERATED_TABLES: Readonly<Record<string, string>> = {
-  // shared-hive-hardening-2026-06-13 P-011 finding: PR state is GitHub-derived and
-  // re-polled per-machine (GitHub is the authority of record for PRs / "shipped",
-  // per the trust model + Phase-6 P-017). A read projection (projections/prs.ts)
-  // exists — a Phase-5a aspiration to move PR state onto Hyperbee — but NO peer
-  // produces `prs` ops (no CDC trigger, no log-first append), so the projection
-  // never fires on the live path. Federating it would be redundant: each machine
-  // already derives current PR state from GitHub directly. The registry's
-  // `sync:'peer-log'` classification is therefore aspirational; reclassifying it
-  // to `sync:'none'` (and retiring the orphan projection) is a registry tidy-up
-  // tracked for the table-registry owner — surfaced, not silently changed here.
-  harness_feature_prs:
-    'PR state is GitHub-derived + re-polled per-machine (GitHub is the PR authority); read projection exists but no peer produces prs ops. Federation redundant. Registry classification aspirational — reclassify to sync:none is a registry-owner follow-up.',
-};
+export const ACCEPTED_UNFEDERATED_TABLES: Readonly<Record<string, string>> = {};
 
 /**
  * The bound coverage check for the live substrate: assert every `PEER_LOG_TABLES`

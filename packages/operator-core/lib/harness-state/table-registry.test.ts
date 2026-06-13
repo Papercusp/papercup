@@ -81,6 +81,14 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
     expect(resolveTableSpec('pr_check_status_cache')).toEqual(DEFAULT_SPEC);
   });
 
+  it('harness_feature_prs is NOT federated — reclassified sync:none (EI-479)', () => {
+    // PR state is GitHub-derived + re-polled per-machine; no producer ever
+    // existed, so it falls through to DEFAULT (slug-shared / sync:'none') rather
+    // than the retired sync:'peer-log' classification + orphan Hyperbee projection.
+    expect(resolveTableSpec('harness_feature_prs')).toEqual(DEFAULT_SPEC);
+    expect(resolveTableSpec('harness_feature_prs').sync).toBe('none');
+  });
+
   it('strips a schema qualifier before resolving', () => {
     expect(resolveTableSpec('harness_shared.harness_decisions')).toMatchObject({ sync: 'git' });
     // strip still works for a non-harness_shared qualifier:

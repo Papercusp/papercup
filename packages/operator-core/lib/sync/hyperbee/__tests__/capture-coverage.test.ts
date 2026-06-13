@@ -54,13 +54,15 @@ describe('substrate capture coverage (P-011)', () => {
     );
   });
 
-  it('harness_feature_prs is the documented accepted-unfederated table (GitHub-derived)', () => {
-    // The P-011 finding: prs has a read projection but no producer. It is an
-    // accepted gap (GitHub is the PR authority), NOT the EI-382 bug. Pinning it
-    // here documents the decision; removing it from ACCEPTED (without wiring a
-    // producer or reclassifying the registry) re-reds the coverage check.
-    expect(Object.keys(ACCEPTED_UNFEDERATED_TABLES)).toContain('harness_feature_prs');
-    expect(ACCEPTED_UNFEDERATED_TABLES.harness_feature_prs).toMatch(/GitHub/i);
+  it('harness_feature_prs is retired from federation (EI-479) — not peer-log, not a carve-out', () => {
+    // It was the sole ACCEPTED_UNFEDERATED entry (a Phase-5a aspiration). EI-479
+    // reclassified it sync:'none' (no producer ever existed; GitHub is the PR
+    // authority of record), retiring the orphan projection. It must no longer be
+    // a federated table nor an accepted-unfederated carve-out, and the carve-out
+    // map is now empty.
+    expect(PEER_LOG_TABLES).not.toContain('harness_feature_prs');
+    expect(Object.keys(ACCEPTED_UNFEDERATED_TABLES)).not.toContain('harness_feature_prs');
+    expect(Object.keys(ACCEPTED_UNFEDERATED_TABLES)).toEqual([]);
   });
 
   describe('checkCaptureCoverage (pure invariant)', () => {

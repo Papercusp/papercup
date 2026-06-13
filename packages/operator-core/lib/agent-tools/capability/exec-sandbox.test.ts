@@ -19,31 +19,77 @@ import {
 
 const CMD = ['/usr/bin/bash', '-c', 'echo hi'];
 const CWD = '/proj/work';
-const base: Omit<BuildSandboxOpts, 'enabled'> = { bwrapWorks: true, homeDir: '/home/op', bwrapBinary: 'bwrap' };
+// srtBin:null pins the BWRAP-fallback path deterministically (the srt-preferred
+// path is exercised separately); without it the result would depend on whether
+// `srt` happens to be on the test host's PATH.
+const base: Omit<BuildSandboxOpts, 'enabled'> = {
+  bwrapWorks: true,
+  srtBin: null,
+  homeDir: '/home/op',
+  bwrapBinary: 'bwrap',
+};
 
 describe('buildCapabilitySandboxCommand — fail-open', () => {
-  it('flag OFF → raw command, not sandboxed (reason flag-off)', () => {
+  it('flag OFF → raw command, not sandboxed (reason flag-off, mode raw)', () => {
     const d = buildCapabilitySandboxCommand({ cmd: CMD, cwd: CWD }, { ...base, enabled: false });
     expect(d.sandboxed).toBe(false);
+    expect(d.mode).toBe('raw');
     expect(d.reason).toBe('flag-off');
     expect(d.binary).toBe('/usr/bin/bash');
     expect(d.argv).toEqual(['-c', 'echo hi']);
   });
 
-  it('flag ON but bwrap unavailable → raw command, not sandboxed (reason bwrap-unavailable)', () => {
-    const d = buildCapabilitySandboxCommand({ cmd: CMD, cwd: CWD }, { ...base, enabled: true, bwrapWorks: false });
+  it('flag ON but bwrap unavailable → raw (srt rests on bwrap too, so neither can sandbox here)', () => {
+    // bwrapWorks:false; srt is intentionally present to prove it is NOT used when
+    // the underlying bubblewrap can't sandbox (a failing srt would NOT be fail-open).
+    const d = buildCapabilitySandboxCommand(
+      { cmd: CMD, cwd: CWD },
+      { ...base, enabled: true, bwrapWorks: false, srtBin: '/usr/bin/srt', srtSettingsPath: '/tmp/s.json' },
+    );
     expect(d.sandboxed).toBe(false);
+    expect(d.mode).toBe('raw');
     expect(d.reason).toBe('bwrap-unavailable');
     expect(d.binary).toBe('/usr/bin/bash');
-    expect(d.argv).toEqual(['-c', 'echo hi']);
+  });
+});
+
+describe('buildCapabilitySandboxCommand — srt preferred (P-033 egress allowlist)', () => {
+  const d = buildCapabilitySandboxCommand(
+    { cmd: CMD, cwd: CWD },
+    { ...base, enabled: true, srtBin: '/opt/srt', srtSettingsPath: '/tmp/srt-settings.json' },
+  );
+
+  it('when srt is present (and bwrap works), srt wraps the command — mode srt, binary = srt', () => {
+    expect(d.sandboxed).toBe(true);
+    expect(d.mode).toBe('srt');
+    expect(d.reason).toBeNull();
+    expect(d.binary).toBe('/opt/srt');
+  });
+
+  it('passes the settings file via -s and runs the command via -c (srt egress-allowlist proxy + fs sandbox)', () => {
+    expect(d.argv[0]).toBe('-s');
+    expect(d.argv[1]).toBe('/tmp/srt-settings.json');
+    expect(d.argv[2]).toBe('-c');
+    // The inner shell clears no_proxy (so egress routes through srt's proxy) and
+    // execs the original command, single-quote escaped (no injection).
+    const inner = d.argv[3];
+    expect(inner).toContain("exec '/usr/bin/bash' '-c' 'echo hi'");
+    expect(inner).toContain('no_proxy');
+  });
+
+  it('falls back to bwrap when srt is absent even though bwrap works (mode bwrap)', () => {
+    const b = buildCapabilitySandboxCommand({ cmd: CMD, cwd: CWD }, { ...base, enabled: true, srtBin: null });
+    expect(b.mode).toBe('bwrap');
+    expect(b.binary).toBe('bwrap');
   });
 });
 
 describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)', () => {
   const d = buildCapabilitySandboxCommand({ cmd: CMD, cwd: CWD }, { ...base, enabled: true });
 
-  it('spawns bwrap, sandboxed, no reason', () => {
+  it('spawns bwrap, sandboxed, no reason (mode bwrap — srt absent)', () => {
     expect(d.sandboxed).toBe(true);
+    expect(d.mode).toBe('bwrap');
     expect(d.reason).toBeNull();
     expect(d.binary).toBe('bwrap');
   });

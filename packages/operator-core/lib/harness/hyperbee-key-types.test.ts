@@ -9,7 +9,6 @@ import {
   keyFeatureById,
   keyFeatureByStatus,
   keyIssue,
-  keyPr,
   keyPresence,
   keyQueueEntry,
   keyUsageEvent,
@@ -22,8 +21,9 @@ import {
 
 describe('table tags', () => {
   it('HYPERBEE_TABLE_TAGS has all federated tables', () => {
-    // 10 v5 tables + plans-by-slug (plans-pg-canonical-migration-2026-06-03).
-    expect(HYPERBEE_TABLE_TAGS.length).toBe(11);
+    // 9 v5 tables + plans-by-slug (plans-pg-canonical-migration-2026-06-03).
+    // `prs` was retired (EI-479) — harness_feature_prs never federated.
+    expect(HYPERBEE_TABLE_TAGS.length).toBe(10);
     for (const t of [
       'features-by-id',
       'features-by-status',
@@ -34,7 +34,6 @@ describe('table tags', () => {
       'usage',
       'presence',
       'claims',
-      'prs',
       'issues',
     ]) {
       expect([...HYPERBEE_TABLE_TAGS]).toContain(t);
@@ -85,10 +84,6 @@ describe('composers', () => {
   it('keyClaim builds canonical form', () => {
     expect(keyClaim('F-001', 42)).toBe('claims/F-001/42');
     expect(keyClaim('F-001', 0)).toBe('claims/F-001/0');
-  });
-
-  it('keyPr builds canonical form', () => {
-    expect(keyPr('F-001')).toBe('prs/F-001');
   });
 
   it('keyIssue builds canonical form', () => {
@@ -164,13 +159,6 @@ describe('parseHyperbeeKey — happy paths', () => {
     });
   });
 
-  it('parses prs', () => {
-    expect(parseHyperbeeKey('prs/F-001')).toEqual({
-      tag: 'prs',
-      feature_id: 'F-001',
-    });
-  });
-
   it('parses issues', () => {
     expect(parseHyperbeeKey('issues/I-001')).toEqual({
       tag: 'issues',
@@ -188,7 +176,6 @@ describe('parseHyperbeeKey — composer round-trip', () => {
     expect(parseHyperbeeKey(keyUsageEvent(1, 'e'))?.tag).toBe('usage');
     expect(parseHyperbeeKey(keyPresence(1, 'm'))?.tag).toBe('presence');
     expect(parseHyperbeeKey(keyClaim('F-1', 0))?.tag).toBe('claims');
-    expect(parseHyperbeeKey(keyPr('F-1'))?.tag).toBe('prs');
     expect(parseHyperbeeKey(keyIssue('I-1'))?.tag).toBe('issues');
   });
 });
@@ -217,14 +204,12 @@ describe('parseHyperbeeKey — malformed', () => {
     expect(parseHyperbeeKey('queue/12345/')).toBeNull();
     expect(parseHyperbeeKey('contributors/')).toBeNull();
     expect(parseHyperbeeKey('claims/F-1/')).toBeNull();
-    expect(parseHyperbeeKey('prs/')).toBeNull();
     expect(parseHyperbeeKey('issues/')).toBeNull();
   });
 
   it('rejects multi-slash extension in single-id tables', () => {
     expect(parseHyperbeeKey('features/by-id/F-1/extra')).toBeNull();
     expect(parseHyperbeeKey('contributors/12345/extra')).toBeNull();
-    expect(parseHyperbeeKey('prs/F-1/extra')).toBeNull();
     expect(parseHyperbeeKey('issues/I-1/extra')).toBeNull();
   });
 
@@ -254,7 +239,7 @@ describe('parseHyperbeeKey — malformed', () => {
 describe('tagOfKey', () => {
   it('returns the tag for a well-formed key', () => {
     expect(tagOfKey('contributors/12345')).toBe('contributors');
-    expect(tagOfKey('prs/F-1')).toBe('prs');
+    expect(tagOfKey('issues/I-1')).toBe('issues');
   });
 
   it('returns null for malformed', () => {

@@ -117,8 +117,16 @@ const GIT_DOCS = [
 const PEER_LOG_LIVE = [
   'harness_features_consolidated', 'harness_issues_consolidated',
   'feature_claims', 'feature_queue', 'feature_working_set',
-  'contributors', 'contributor_usage_events', 'harness_feature_prs',
+  'contributors', 'contributor_usage_events',
   'shared_presence',
+  // NB: `harness_feature_prs` was here (a Phase-5a aspiration to move PR state
+  // onto the peer-log) but is REMOVED — falls through to DEFAULT (slug-shared /
+  // sync:'none'). NO peer ever produced `prs` ops (no CDC trigger, no log-first
+  // append; the poll daemon was never built), so the read projection never fired
+  // and the classification was purely aspirational. PR state is GitHub-derived +
+  // re-polled per-machine (GitHub is the PR authority of record), so federation
+  // is redundant: PG is the local store-of-record, never synced. The orphan
+  // `prs` projection + Hyperbee key shape were retired alongside this (EI-479).
 ];
 
 /**

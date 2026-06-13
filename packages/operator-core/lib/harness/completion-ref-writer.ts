@@ -15,10 +15,11 @@
  *     consolidated` is keyed by `(harness_slug, feature_id)` but `reviewPr` only
  *     has `slug` + PR number. Resolution order: (1) the caller-supplied
  *     `feature_id` (a feature-context review knows it); (2) fallback lookup in
- *     `harness_feature_prs` by `pr_url`. NOTE: `harness_feature_prs` is populated
- *     only by the gated Hyperbee `prs` projection today, so the fallback is
- *     empty unless the substrate is on — populating it at PR-open time (outside
- *     the substrate) is the remaining step to make this fire by default.
+ *     `harness_feature_prs` by `pr_url`. NOTE: `harness_feature_prs` is a PG-local
+ *     table (sync:'none') with NO current producer — the GitHub poll daemon was
+ *     never built and the Hyperbee `prs` projection was retired as never-firing
+ *     (EI-479) — so this fallback is empty today. Populating it at PR-open / poll
+ *     time (GitHub-derived, per-machine) is the remaining step to make it fire.
  *
  *   - `stampCompletionRefOnMerge` — the write. `status='shipped'` + a fresh
  *     `updated_ts` are REQUIRED: the verifier's select only picks up
