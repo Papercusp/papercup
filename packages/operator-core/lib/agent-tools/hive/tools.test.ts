@@ -238,10 +238,10 @@ describe('hive:declare-wake', () => {
     }
   });
 
-  it('uses ctx.harnessSlug when no explicit harness is passed', async () => {
+  it('ignores ctx.harnessSlug and requires an explicit harness or PAPERCUSP_HIVE_HOME_SLUG', async () => {
     const res = parse(await tool.handler({ at: '2026-07-01T00:00:00.000Z' }, ctx({ harnessSlug: 'ctx-slug' })));
-    expect(res.ok).toBe(true);
-    expect(res.harness).toBe('ctx-slug');
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('no_home_harness');
   });
 
   describe('arg-schema refine guards', () => {

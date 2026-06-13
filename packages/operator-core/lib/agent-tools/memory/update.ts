@@ -43,7 +43,7 @@ export default defineTool({
     }).safeParse(args);
 
     if (!validation.success) {
-      const errors = validation.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
+      const errors = validation.error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: false, error: errors }) }],
       };

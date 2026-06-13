@@ -78,7 +78,7 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
+    const installSlug = resolveHiveHomeSlug(args.harness, undefined);
     if (!installSlug) {
       return {
         content: [
