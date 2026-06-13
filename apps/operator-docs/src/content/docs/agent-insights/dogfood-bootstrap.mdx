@@ -26,16 +26,15 @@ Together: Papercusp dogfoods itself.
 The user finds `papercup` in their harness dropdown when they
 switch to `papercusp-workspace` — no manual `harness create` step.
 
-Files:
+Files (current boot location):
 - `packages/operator-core/lib/harness/papercusp-workspace.ts`
 - `packages/operator-core/lib/harness/register-papercup.ts`
 - `apps/operator/scripts/run-dogfood-bootstrap.ts` (one-shot manual driver)
 
 <Aside type="caution">
-**Update (2026-06):** The original boot wiring was
-`apps/operator/instrumentation-node.ts` (the Next.js instrumentation hook),
-which is **retired** along with the Next standalone operator. The two helper
-modules moved from `apps/operator/lib/harness/` to
+**Update (2026-06):** The original boot wiring was the Next.js instrumentation hook
+(apps/operator/instrumentation-node.ts), which is **retired** along with the Next 
+standalone operator. The two helper modules moved from apps/operator/lib/harness/ to
 `packages/operator-core/lib/harness/`. As of this audit there is **no live
 boot-time caller** of `ensurePapercuspWorkspace()` / `registerPapercupHarness()`
 in the operator source — they are exercised only by the one-shot driver
