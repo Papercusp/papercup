@@ -64,6 +64,32 @@ export async function leaseClaimedWorkItem(opts: {
 }
 
 /**
+ * The serializable subset of a held work-item lease that the DBOS pipeline carries so it
+ * can RENEW the lease + SELF-ABORT if it is stolen mid-run (shared-hive-loop-e2e-testing
+ * D-007). Plain data — threaded through `PipelineInput` (DBOS-serializable). `workItemId`,
+ * `harnessSlug`, `workspaceId` are already on `PipelineInput`, so only the lease identity
+ * lives here. The heartbeat re-keys on (workItemId, claimId, owner) routed by `hiveSlug`.
+ */
+export interface WorkItemClaimLeaseHandle {
+  claimId: string;
+  /** THIS Swarm's lease owner (its device pubkey, or the swarm-local fallback). */
+  owner: string;
+  hiveSlug: string | null;
+  holderPubkey: string | null;
+}
+
+/** The outcome of an executor lease attempt: whether this Swarm may run the feature, plus
+ *  the lease HANDLE to thread into the pipeline when it took one (D-007). */
+export interface FeatureLeaseResult {
+  /** This Swarm may run the feature (it holds the lease, or fail-open). */
+  ok: boolean;
+  /** The acquired lease, present only when `ok` AND a real claim was taken. ABSENT on
+   *  refusal (another Swarm holds it) AND on the fail-open path (no handle to heartbeat →
+   *  the pipeline runs WITHOUT the D-007 zombie-guard, exactly as before the lease landed). */
+  claim?: WorkItemClaimLeaseHandle;
+}
+
+/**
  * The orchestrator-side (per-Swarm executor) lease gate — decentralized-dispatch-scaling
  * P-007/P-008. Before the DBOS executor dispatches a READY feature (eligibility still
  * decided by computeFrontier), acquire the per-Hive lease so that cross-Swarm exactly ONE
@@ -73,18 +99,21 @@ export async function leaseClaimedWorkItem(opts: {
  *
  * Owner = THIS Swarm's device pubkey so two Swarms are DISTINCT holders (a shared owner
  * would both "win" the acquire's own-extend clause). Returns whether this Swarm may run
- * the feature.
+ * the feature AND (on success) the lease handle to thread into the pipeline — the running
+ * pipeline then renews the lease + self-aborts on a steal (D-007), which retires the old
+ * dispatch-loop keep-alive re-acquire (a long pipeline keeps its OWN lease alive now).
  *
- * FAIL-OPEN (D-007): any resolution / authority / PG error → returns true so dispatch
- * proceeds. The lease gate must NEVER wedge the live dispatcher; a rare cross-Swarm
- * double-run (e.g. a lease that lapses mid-pipeline) is the tolerate-and-reconcile case
- * (work-item-claim-reconcile, P-005). A generous TTL covers a long pipeline.
+ * FAIL-OPEN (D-007): any resolution / authority / PG error → returns `{ ok: true }` (no
+ * handle) so dispatch proceeds. The lease gate must NEVER wedge the live dispatcher; a
+ * rare cross-Swarm double-run (e.g. a lease that lapses mid-pipeline) is the
+ * tolerate-and-reconcile case (work-item-claim-reconcile, P-005). A generous TTL (2h)
+ * covers a long pipeline and an enqueue-wait before the pipeline starts heartbeating.
  */
 export async function leaseFeatureForExecutor(opts: {
   workspaceId: string;
   harness: string;
   featureId: string;
-}): Promise<boolean> {
+}): Promise<FeatureLeaseResult> {
   try {
     const booted = getBootedHarness(opts.workspaceId, opts.harness);
     const owner = (booted ? resolveMyPubkey(booted) : null) ?? `swarm-local:${opts.harness}`;
@@ -104,8 +133,17 @@ export async function leaseFeatureForExecutor(opts: {
       intent: 'executor dispatch (orchestrator)',
       ttlSec: 7200,
     });
-    return res.ok;
+    if (!res.ok) return { ok: false };
+    return {
+      ok: true,
+      claim: {
+        claimId: res.claim.claimId,
+        owner: res.claim.owner,
+        hiveSlug: res.claim.hiveSlug,
+        holderPubkey: res.claim.holderPubkey,
+      },
+    };
   } catch {
-    return true; // fail-open — never let the lease gate wedge the live dispatcher
+    return { ok: true }; // fail-open — never let the lease gate wedge the live dispatcher
   }
 }

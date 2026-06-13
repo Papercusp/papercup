@@ -157,15 +157,26 @@ export async function closeDispatchesForItem(
 }
 
 /**
- * Mark one open dispatch 'orphaned' (worker death) — the P-011 collector's
- * write. No-op (false) when the row is already terminal, so the collector and
- * a late resolve can race safely.
+ * Mark one open dispatch 'orphaned' (worker death). The two writers:
+ *   - the P-011 orphan collector (the 2h catch-all, `by` defaults here), and
+ *   - the worker-exit back-edge (EI-404 — `recordImplementWorkerExit`, by
+ *     'worker-exit-backedge'), which fires in SECONDS when the worker exits
+ *     without resolving, instead of waiting for the 2h threshold.
+ * No-op (false) when the row is already terminal, so the collector, the
+ * back-edge, and a late resolve can all race safely. `detail` (exit code +
+ * bounded output tail) is stored on `fire_error` for diagnosis — a dead
+ * worker's last words; COALESCE keeps any prior detail when none is supplied.
  */
-export async function markDispatchOrphaned(dispatchId: string, by = 'orphaned-dispatch-collector'): Promise<boolean> {
+export async function markDispatchOrphaned(
+  dispatchId: string,
+  by = 'orphaned-dispatch-collector',
+  detail?: string,
+): Promise<boolean> {
   const { sql } = getOrgPg();
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.improvement_dispatches
-       SET outcome = 'orphaned', resolved_at = now(), resolved_by = ${by}
+       SET outcome = 'orphaned', resolved_at = now(), resolved_by = ${by},
+           fire_error = COALESCE(${detail ?? null}, fire_error)
      WHERE id = ${dispatchId} AND outcome IS NULL
      RETURNING id`;
   return rows.length > 0;

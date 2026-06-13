@@ -45,11 +45,13 @@ import {
   setPipelineDebuggerHook,
   setPipelineFeaturePassedHook,
   setPipelineTestDigestHook,
+  setPipelineLeaseHeartbeatHook,
   type PipelineInvokeRunner,
   type PipelineFinalizer,
   type PipelineDebuggerHook,
   type PipelineTestDigestHook,
 } from './orchestrator-workflow';
+import { heartbeatClaim } from '../work-item-claims';
 import { digestTestOutput } from './pre-validator-test-digest';
 import { saveTextArtifact } from '../text-artifacts';
 import { handleFeaturePassed, type FeaturePassedDeps } from '../harness/fork-pr-on-feature-pass';
@@ -1047,6 +1049,31 @@ export function wireOrchestratorInvokeRunner(): void {
   // token-usage-reduction P-010: run the harness's test command once before a
   // validator spawn and hand it the digest, replacing run-and-reread loops.
   setPipelineTestDigestHook(realTestDigestHook);
+  // D-007 (shared-hive-loop-e2e-testing): at each dispatching turn, RENEW + verify the
+  // executor's per-Hive work-item lease through the real authority-routed heartbeat.
+  // `renewed:false` (lapsed / stolen by another Swarm) makes the pipeline self-abort
+  // before its next side effect. FAIL-OPEN: any PG/authority error returns `renewed:true`
+  // — the lease check must NEVER kill a live pipeline (the next turn re-checks; adoption
+  // rule 2 is the backstop for an un-aborted zombie).
+  setPipelineLeaseHeartbeatHook(async ({ harnessSlug, featureId, workspaceId, claim }) => {
+    try {
+      const r = await heartbeatClaim({
+        workspaceId: workspaceId ?? activeWorkspaceId(),
+        harnessSlug,
+        workItemId: featureId,
+        hiveSlug: claim.hiveSlug,
+        claimId: claim.claimId,
+        owner: claim.owner,
+        holderPubkey: claim.holderPubkey,
+      });
+      return { renewed: r.renewed, reason: r.reason };
+    } catch (e) {
+      return {
+        renewed: true,
+        reason: `heartbeat-error-fail-open: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  });
   // #1: a finished feature immediately refills its harness's freed slot with the
   // next queued feature, instead of waiting up to 30s for the periodic tick.
   setPipelineSettledHook((slug, workspaceId) =>

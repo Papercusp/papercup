@@ -3,13 +3,16 @@
  * calls to the :3070 host (rides over the no-hot-reload restart window and network hiccups).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loopbackFetch, isConnRefused, isTransientNetworkError } from './loopback-fetch';
+import { loopbackFetch, isConnRefused, isTransientNetworkError, describeFetchError } from './loopback-fetch';
 
 const FAST = { backoffsMs: [1, 1, 1] };
 const refused = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
 const connReset = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } });
 const notFound = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } });
 const timedOut = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ETIMEDOUT' } });
+// undici codes surfaced when the operator closes the connection mid-request (deploy restart) — EI-390.
+const socketClosed = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET', message: 'other side closed' } });
+const connectTimeout = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_CONNECT_TIMEOUT', message: 'Connect Timeout Error' } });
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -25,6 +28,18 @@ describe('isTransientNetworkError', () => {
   });
   it('detects ETIMEDOUT via cause.code (timeout, EI-390)', () => {
     expect(isTransientNetworkError(timedOut())).toBe(true);
+  });
+  it('detects undici UND_ERR_SOCKET "other side closed" via cause.code (EI-390: restart mid-request)', () => {
+    expect(isTransientNetworkError(socketClosed())).toBe(true);
+  });
+  it('detects undici UND_ERR_CONNECT_TIMEOUT via cause.code (EI-390)', () => {
+    expect(isTransientNetworkError(connectTimeout())).toBe(true);
+  });
+  it('falls through to the message heuristic on an unknown cause code (EI-390)', () => {
+    const transient = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3070'), { cause: { code: 'UND_ERR_WHATEVER' } });
+    expect(isTransientNetworkError(transient)).toBe(true);
+    const nonTransient = Object.assign(new Error('bad argument'), { cause: { code: 'UND_ERR_INVALID_ARG' } });
+    expect(isTransientNetworkError(nonTransient)).toBe(false);
   });
   it('detects ECONNREFUSED message form', () => {
     expect(isTransientNetworkError(new Error('connect ECONNREFUSED 127.0.0.1:3070'))).toBe(true);
@@ -97,6 +112,16 @@ describe('loopbackFetch', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('retries undici UND_ERR_SOCKET "other side closed" and succeeds (EI-390: operator restart mid-request)', async () => {
+    const ok = new Response('ok', { status: 200 });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(socketClosed())
+      .mockResolvedValueOnce(ok);
+    const res = await loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST);
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('throws after exhausting retries when still refused (then the caller fails open)', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(refused());
     await expect(loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST)).rejects.toThrow(/fetch failed/);
@@ -114,5 +139,24 @@ describe('loopbackFetch', () => {
     const res = await loopbackFetch('http://127.0.0.1:3070/x', undefined, FAST);
     expect(res.status).toBe(500);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('describeFetchError (EI-390: self-diagnosing persisted failures)', () => {
+  it('appends the undici cause code + detail so "fetch failed" is no longer blind', () => {
+    expect(describeFetchError(socketClosed())).toBe('fetch failed (UND_ERR_SOCKET: other side closed)');
+  });
+  it('still contains "fetch failed" so classifySpawnError keeps classifying it network', () => {
+    expect(describeFetchError(socketClosed())).toMatch(/fetch failed/);
+  });
+  it('returns the bare message when there is no cause code', () => {
+    expect(describeFetchError(new Error('socket hang up'))).toBe('socket hang up');
+  });
+  it('does not double-append when the message already names the code', () => {
+    const err = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3070'), { cause: { code: 'ECONNREFUSED' } });
+    expect(describeFetchError(err)).toBe('connect ECONNREFUSED 127.0.0.1:3070');
+  });
+  it('handles a non-Error value', () => {
+    expect(describeFetchError('weird')).toBe('weird');
   });
 });

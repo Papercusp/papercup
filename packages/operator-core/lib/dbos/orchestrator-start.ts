@@ -19,6 +19,7 @@ import { workspacesForHarness } from '../harness-membership';
 import { resolveProjectDir } from '../spawn-config';
 import { loadBlueprintFromFile, type BlueprintSpine } from '@papercusp/orchestrator/blueprint';
 import { startFeaturePipeline } from './orchestrator-workflow';
+import type { WorkItemClaimLeaseHandle } from '../work-item-claim-lease-wiring';
 
 /** DBOS statuses that mean a pipeline still OWNS its feature (in-flight). */
 const LIVE_STATUSES = new Set(['PENDING', 'ENQUEUED']);
@@ -126,6 +127,12 @@ export async function ensureFeaturePipeline(
   /** Explicit workspace to pin (the dispatch loop already knows it). When omitted,
    *  the harness's home workspace is resolved — see `resolveHomeWorkspace`. */
   workspaceId?: string,
+  /** D-007 (shared-hive-loop-e2e-testing): the executor's per-Hive work-item lease,
+   *  threaded into the pipeline so it can heartbeat (renew) + self-abort if the lease is
+   *  stolen mid-run. Omitted when the lease flag is OFF / the claim couldn't be taken
+   *  (fail-open) → the pipeline runs without the heartbeat seam (byte-identical). Only
+   *  applied when a NEW pipeline is started; a reused live pipeline keeps its captured lease. */
+  claim?: WorkItemClaimLeaseHandle,
 ): Promise<EnsurePipelineResult> {
   // `:e` suffix on the prefix disambiguates F-1 from F-12 (F-12's id continues
   // with `2:e…`, not `:e…`), so this returns only THIS feature's pipelines.
@@ -152,6 +159,7 @@ export async function ensureFeaturePipeline(
       epoch: decision.epoch,
       workspaceId: captureWs,
       spine,
+      claim,
     });
   }
   return { ...decision, started: decision.action === 'start' };

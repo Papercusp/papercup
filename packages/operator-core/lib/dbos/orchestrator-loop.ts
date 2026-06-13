@@ -80,7 +80,11 @@ import { convertOpenIssuesToFeatures } from '../promote-issue';
 import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
 import type { Issue } from '../harness/issue-types';
 import { ensureFeaturePipeline } from './orchestrator-start';
-import { workItemClaimLeaseEnabled, leaseFeatureForExecutor } from '../work-item-claim-lease-wiring';
+import {
+  workItemClaimLeaseEnabled,
+  leaseFeatureForExecutor,
+  type WorkItemClaimLeaseHandle,
+} from '../work-item-claim-lease-wiring';
 import { getFeatureBlockers } from './feature-blockers-edges';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 
@@ -632,22 +636,25 @@ export async function dispatchOneHarness(
     // workflow-id dedup stays the LOCAL exactly-once guard, D-006). Flag-off → no gate
     // (this loop is byte-identical to before). The gate is fail-open (helper never throws).
     const executorLeaseOn = workItemClaimLeaseEnabled();
-    // Keep this Swarm's IN-FLIGHT leases alive (P-007/P-008 lease lifecycle): re-acquire
-    // each owned (PENDING/ENQUEUED) feature's lease — same owner re-extends `expires_ts`
-    // (the acquire's own-extend clause), so a long-running pipeline's lease doesn't lapse
-    // mid-run and get stolen by another Swarm. Best-effort + fail-open; flag-off → skipped.
-    if (executorLeaseOn) {
-      for (const fid of owned) {
-        await leaseFeatureForExecutor({ workspaceId, harness: slug, featureId: fid }).catch(() => {});
-      }
-    }
+    // NOTE (shared-hive-loop-e2e-testing D-007): the old keep-alive re-acquire of every
+    // `owned` feature's lease was RETIRED here. It was the INTERIM renewal mechanism
+    // (P-007/P-008) for "a long pipeline's lease doesn't lapse mid-run" — explicitly the
+    // job D-007 moves INTO the pipeline. A running pipeline now heartbeats its OWN lease
+    // each dispatching turn (renew + steal-detect → self-abort, orchestrator-workflow.ts),
+    // so a second acquirer here would only churn `claim_id` out from under it. Enqueued
+    // (not-yet-running) features are covered by the generous 2h acquire TTL below until
+    // their pipeline starts heartbeating.
     for (const fid of toStart) {
-      if (executorLeaseOn && !(await leaseFeatureForExecutor({ workspaceId, harness: slug, featureId: fid }))) {
-        continue; // another Swarm holds the Hive lease for this feature — it runs it
+      let claim: WorkItemClaimLeaseHandle | undefined;
+      if (executorLeaseOn) {
+        const lease = await leaseFeatureForExecutor({ workspaceId, harness: slug, featureId: fid });
+        if (!lease.ok) continue; // another Swarm holds the Hive lease for this feature — it runs it
+        // Thread the lease into the pipeline so it can renew + self-abort on a steal (D-007).
+        claim = lease.claim;
       }
       // Pass the tick's own workspaceId so the pipeline pins THIS workspace rather
       // than the volatile active one (which can differ from the harness's home).
-      const r = await ensureFeaturePipeline(slug, fid, workspaceId);
+      const r = await ensureFeaturePipeline(slug, fid, workspaceId, claim);
       if (r.started) started.push(fid);
     }
     return { harness: slug, started };

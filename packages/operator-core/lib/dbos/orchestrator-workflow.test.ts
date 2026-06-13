@@ -45,6 +45,7 @@ import {
   setPipelineDebuggerHook,
   setPipelineSettledHook,
   setPipelineTestDigestHook,
+  setPipelineLeaseHeartbeatHook,
   type PipelineInput,
   type PipelineInvokeRunner,
 } from './orchestrator-workflow';
@@ -66,6 +67,7 @@ let finalizer: ReturnType<typeof vi.fn>;
 let settledHook: ReturnType<typeof vi.fn>;
 let debuggerHook: ReturnType<typeof vi.fn>;
 let testDigestHook: ReturnType<typeof vi.fn>;
+let leaseHeartbeatHook: ReturnType<typeof vi.fn>;
 
 const ORCH = 'director';
 
@@ -101,6 +103,12 @@ beforeEach(() => {
   // dedicated test overrides it.
   testDigestHook = vi.fn(async () => ({ extras: [] as string[] }));
   setPipelineTestDigestHook(testDigestHook);
+
+  // Default lease-heartbeat hook (D-007) renews cleanly; it only FIRES when an
+  // input carries `claim`, so no-lease tests are unaffected. The dedicated abort
+  // test overrides it to report a stolen lease.
+  leaseHeartbeatHook = vi.fn(async () => ({ renewed: true }));
+  setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -256,5 +264,81 @@ describe('featurePipelineWorkflow — bounded + gated', () => {
     testDigestHook.mockClear();
     await featurePipelineWorkflow(input());
     expect(testDigestHook).not.toHaveBeenCalled();
+  });
+});
+
+describe('featurePipelineWorkflow — D-007 lease heartbeat + zombie self-abort', () => {
+  const lease = (over: Partial<PipelineInput['claim'] & object> = {}) => ({
+    claimId: 'claim-A',
+    owner: 'swarm-A',
+    hiveSlug: 'hive-x',
+    holderPubkey: 'pk-A',
+    ...over,
+  });
+
+  it('no lease → the heartbeat hook never fires (byte-identical to the pre-lease path)', async () => {
+    directorOutputs = ['NEXT_WORKER F-1', 'DONE'];
+
+    const result = await featurePipelineWorkflow(input()); // no `claim`
+
+    expect(result).toBe('pipeline-complete (last=DONE)');
+    expect(leaseHeartbeatHook).not.toHaveBeenCalled();
+    expect(finalizer).toHaveBeenCalledTimes(1);
+  });
+
+  it('with a lease, heartbeats ONCE per dispatching turn (before the side effect) and runs to DONE while renewed', async () => {
+    directorOutputs = ['NEXT_WORKER F-1', 'NEXT_VALIDATOR F-1', 'DONE'];
+    const claim = lease();
+
+    const result = await featurePipelineWorkflow(input({ claim }));
+
+    expect(result).toBe('pipeline-complete (last=DONE)');
+    // 2 dispatching turns (worker, validator); the terminal DONE turn dispatches
+    // nothing, so it does NOT heartbeat — the seam guards side effects only.
+    expect(leaseHeartbeatHook).toHaveBeenCalledTimes(2);
+    expect(leaseHeartbeatHook).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug: 'sheets', featureId: 'F-1', workspaceId: 'ws-1', claim }),
+    );
+    // Renewed throughout → the pipeline completes + finalizes normally.
+    expect(runnerCalls.map((c) => c.role)).toEqual(['director', 'worker', 'director', 'validator', 'director']);
+    expect(finalizer).toHaveBeenCalledTimes(1);
+  });
+
+  it('renewed:false (lease stolen) self-aborts BEFORE the next side effect: no further dispatch, no finalize, no settled hook', async () => {
+    directorOutputs = ['NEXT_WORKER F-1', 'NEXT_VALIDATOR F-1', 'DONE'];
+    // Renew the first dispatching turn (worker), then report the lease stolen before
+    // the second (validator) — the stealer took it while the worker ran.
+    let beats = 0;
+    leaseHeartbeatHook = vi.fn(async () =>
+      ++beats === 2 ? { renewed: false, reason: 'held by another owner (swarm-B)' } : { renewed: true },
+    );
+    setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
+
+    const result = await featurePipelineWorkflow(input({ claim: lease() }));
+
+    // Aborted before the validator dispatch — marker names the role we refused to run.
+    expect(result).toBe('pipeline-complete (last=LEASE_LOST:VALIDATOR)');
+    const roles = runnerCalls.map((c) => c.role);
+    expect(roles).toEqual(['director', 'worker', 'director']); // the validator NEVER ran
+    expect(roles).not.toContain('validator');
+    // A zombie does NOT finalize (the feature stays for the stealer) and does NOT
+    // refill a slot (no successful completion).
+    expect(finalizer).not.toHaveBeenCalled();
+    expect(settledHook).not.toHaveBeenCalled();
+    expect(leaseHeartbeatHook).toHaveBeenCalledTimes(2);
+  });
+
+  it('aborts before the FIRST side effect when the lease is already gone at turn 0', async () => {
+    directorOutputs = ['NEXT_WORKER F-1', 'DONE'];
+    leaseHeartbeatHook = vi.fn(async () => ({ renewed: false, reason: 'claim has lapsed' }));
+    setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
+
+    const result = await featurePipelineWorkflow(input({ claim: lease() }));
+
+    expect(result).toBe('pipeline-complete (last=LEASE_LOST:WORKER)');
+    // Only the turn-0 decide ran; the worker was never dispatched.
+    expect(runnerCalls.map((c) => c.role)).toEqual(['director']);
+    expect(finalizer).not.toHaveBeenCalled();
+    expect(settledHook).not.toHaveBeenCalled();
   });
 });

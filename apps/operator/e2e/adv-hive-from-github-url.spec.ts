@@ -1,17 +1,22 @@
 /**
- * /adv Harnesses tab — create a Hive from a GitHub URL
+ * /adv Harnesses tab — create a Hive from a GitHub repo
  * (hive-from-github-url-2026-06-11 P-018 e2e). Drives the REAL header "New" →
- * CreateHarnessPicker → GitHub URL entry on the live default path
+ * CreateHarnessPicker → Search GitHub entry on the live default path
  * (`/adv?tab=harnesses&slug=<hive>` → `?create=true` → `?picker=github-url`,
  * both nuqs axes), NOT a component story with injected props (the EI-89 /
  * D-007 bug class is "works under injected props, mis-wired on the live
  * default path").
  *
+ * comb-hive-native-sharing P-006/P-009 reworked this entry: the picker now
+ * groups Create / Join, and the "Search GitHub" card opens a search panel; a
+ * pasted repo URL short-circuits to the create form (EntryGithubUrlForm).
+ * These specs drive that path. (Not yet live-run under Tauri — that's P-013.)
+ *
  * Covers:
- *   P-018a  the picker (HIVE_FROM_GITHUB_URL on — the default) shows the LIVE
- *           GitHub URL entry with the hive-framed description, and the Entry-4
- *           harness-link card demoted to the secondary "I have a link"
- *           affordance (D-001).
+ *   P-018a  the picker (HIVE_FROM_GITHUB_URL on — the default) shows the
+ *           hive-native Create / Join layout: the "Search GitHub" entry with
+ *           its create-or-join explainer, and the Join cards (Browse the Comb,
+ *           hive invite, harness link).
  *   P-018b  selecting the entry renders EntryGithubUrlForm on the real URL
  *           axis: new-hive is the headline default mode, visibility defaults
  *           Public, and the slug auto-derives from the repo name
@@ -203,30 +208,38 @@ async function openPicker(page: Page): Promise<Locator> {
   return dialog;
 }
 
-/** Picker grid → the GitHub URL entry → EntryGithubUrlForm (`?picker=github-url`). */
+/**
+ * Picker grid → Search GitHub → paste the repo URL → short-circuit to the
+ * create form (EntryGithubUrlForm, `?picker=github-url`). The pasted URL
+ * prefills the form's URL field (P-009).
+ */
 async function openGithubUrlForm(page: Page): Promise<Locator> {
   const dialog = await openPicker(page);
-  await dialog.getByRole('button', { name: /GitHub URL/ }).click();
+  await dialog.getByRole('button', { name: /Search GitHub/ }).click();
+  await dialog.getByRole('searchbox').fill(REPO_URL);
+  await dialog.getByTestId('gh-search-url-continue').click();
   await expect(dialog.getByRole('heading', { name: 'GitHub URL' })).toBeVisible({ timeout: 10_000 });
   return dialog;
 }
 
-test.describe('/adv Harnesses tab — Hive from GitHub URL (P-018)', () => {
-  test('P-018a picker shows the live GitHub URL entry (flag-on default) + the demoted "I have a link" affordance', async ({ page }) => {
+test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
+  test('P-018a picker shows the hive-native Create / Join layout (flag-on default)', async ({ page }) => {
     await stubBase(page);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
     test.skip(!mounted, SKIP_MSG);
 
     const dialog = await openPicker(page);
-    // The live (non-coming-soon) entry card with the HIVE-framed description (P-011/P-012).
-    const card = dialog.getByRole('button', { name: /GitHub URL/ });
-    await expect(card).toBeVisible();
-    await expect(dialog.getByText(/Create a hive from a GitHub repository/)).toBeVisible();
-    await expect(dialog.getByText(/Forks nothing/)).toBeVisible();
-    // Entry-4 demotion (D-001): the harness-link CARD is out of the grid…
-    await expect(dialog.getByText(/Join a shared harness via/)).toHaveCount(0);
-    // …replaced by the secondary "I have a link" affordance (still functional).
-    await expect(dialog.getByRole('button', { name: /I have a harness link/ })).toBeVisible();
+    // Create group — the Search GitHub entry with its create-or-join explainer.
+    await expect(dialog.getByRole('button', { name: /Search GitHub/ })).toBeVisible();
+    await expect(dialog.getByText(/Find any repo on GitHub and create or join/)).toBeVisible();
+    // The old "GitHub URL" card label is gone (folded into search, P-006).
+    await expect(dialog.getByRole('button', { name: 'GitHub URL' })).toHaveCount(0);
+    // Join group — the cards (no more demoted underline affordances). "Browse
+    // the Comb" is a link to /cupboard; the other two are buttons.
+    await expect(dialog.getByRole('link', { name: /Browse the Comb/ })).toHaveAttribute('href', '/cupboard');
+    await expect(dialog.getByRole('button', { name: /Hive invite/ })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: /Harness link/ })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: /I have a harness link/ })).toHaveCount(0);
   });
 
   test('P-018b entry renders EntryGithubUrlForm: new-hive default, visibility Public, slug auto-derive', async ({ page }) => {

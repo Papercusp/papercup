@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   evaluateProbe,
+  attributeBreach,
   runProbeCycle,
   evaluateInvariants,
   planSharedHiveCapture,
@@ -32,6 +33,7 @@ function fakeDeps(over: Partial<ProbeDeps> = {}): ProbeDeps & { held: Map<string
   let clock = 0;
   const deps: ProbeDeps & { held: Map<string, string> } = {
     held,
+    baseline: async () => ({ ok: true }),
     send: async () => ({ msg_id: `m-${++seq}`, ts: new Date(1_700_000_000_000 + seq).toISOString() }),
     inboxHas: async () => true,
     ack: async () => {},
@@ -52,11 +54,11 @@ function fakeDeps(over: Partial<ProbeDeps> = {}): ProbeDeps & { held: Map<string
 }
 
 describe('runProbeCycle + evaluateProbe', () => {
-  it('happy path: all seven steps pass and the lock ends free', async () => {
+  it('happy path: all eight steps (baseline first) pass and the lock ends free', async () => {
     const deps = fakeDeps();
     const steps = await runProbeCycle(deps, idA, idB);
     expect(steps.map((s) => s.step)).toEqual([
-      'ping', 'inbox', 'ack', 'lock-acquire', 'lock-contend', 'lock-release', 'lock-regrant',
+      'baseline', 'ping', 'inbox', 'ack', 'lock-acquire', 'lock-contend', 'lock-release', 'lock-regrant',
     ]);
     expect(steps.every((s) => s.ok)).toBe(true);
     expect(deps.held.size).toBe(0);
@@ -81,9 +83,17 @@ describe('runProbeCycle + evaluateProbe', () => {
   it('a throwing step records the failure and stops the cycle', async () => {
     const deps = fakeDeps({ inboxHas: async () => Promise.reject(new Error('inbox query died')) });
     const steps = await runProbeCycle(deps, idA, idB);
-    expect(steps.map((s) => s.step)).toEqual(['ping', 'inbox']);
-    expect(steps[1].ok).toBe(false);
-    expect(steps[1].detail).toContain('inbox query died');
+    expect(steps.map((s) => s.step)).toEqual(['baseline', 'ping', 'inbox']);
+    expect(steps[2].ok).toBe(false);
+    expect(steps[2].detail).toContain('inbox query died');
+  });
+
+  it('a failed baseline (DB unreachable) aborts before any coord verb', async () => {
+    const deps = fakeDeps({ baseline: async () => Promise.reject(new Error('SELECT 1 timed out')) });
+    const steps = await runProbeCycle(deps, idA, idB);
+    expect(steps.map((s) => s.step)).toEqual(['baseline']);
+    expect(steps[0].ok).toBe(false);
+    expect(steps[0].detail).toContain('SELECT 1 timed out');
   });
 
   it('a clean-but-slow cycle breaches the SLO', () => {
@@ -95,6 +105,29 @@ describe('runProbeCycle + evaluateProbe', () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.sloBreached).toBe(true);
     expect(verdict.failedStep).toBeUndefined();
+  });
+});
+
+describe('attributeBreach (EI-401 self-attribution)', () => {
+  const step = (s: string, ms: number): ProbeStep => ({ step: s, ok: true, ms });
+
+  it('blames DB-wide contention when the control baseline is itself slow', () => {
+    const hint = attributeBreach([step('baseline', 9_000), step('ping', 12_000), step('ack', 9_000)]);
+    expect(hint).toContain('DB-wide');
+    expect(hint).toContain('9000ms');
+    expect(hint).not.toContain('coord INSERT');
+  });
+
+  it('blames the coord write path when baseline is fast but ping/ack are slow', () => {
+    const hint = attributeBreach([step('baseline', 5), step('ping', 12_000), step('ack', 9_000), step('inbox', 477)]);
+    expect(hint).toContain('coord INSERT+commit+NOTIFY');
+    expect(hint).toContain('ping 12000ms');
+    expect(hint).not.toContain('DB-wide');
+  });
+
+  it('falls back to cumulative-load when nothing dominates', () => {
+    const hint = attributeBreach([step('baseline', 5), step('ping', 100), step('ack', 80)]);
+    expect(hint).toContain('no single step dominates');
   });
 });
 

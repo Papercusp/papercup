@@ -10,7 +10,10 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 // module-level vars inside hoisted vi.mock calls.
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
-vi.mock('../loopback-fetch', () => ({ loopbackFetch: vi.fn() }));
+vi.mock('../loopback-fetch', async (importActual) => ({
+  ...(await importActual<typeof import('../loopback-fetch')>()),
+  loopbackFetch: vi.fn(),
+}));
 // DBOS inactive → goes straight to fire-and-forget fallback.
 vi.mock('../dbos/dbos-flags', () => ({ dbosOrchestratorActive: vi.fn(() => false) }));
 

@@ -166,6 +166,14 @@ export interface FireLaunchInput {
   /** Per-launch timeout for the invoke route (defaults to the route's own). */
   timeoutMs?: number;
   /**
+   * Extra fields merged into the /invoke POST body (NOT forwarded to the child as
+   * args). The route reads these for its own bookkeeping — e.g. the auto-implement
+   * lane passes `{ improvementDispatch: { dispatchId, itemId, attempt } }` so the
+   * route can run the worker-exit back-edge (EI-404) when the worker exits. Generic
+   * so launch-blueprint stays domain-agnostic.
+   */
+  bodyExtra?: Record<string, unknown>;
+  /**
    * The parent/initiator context, when this launch is fired BY something with a
    * parent (a spawning agent, a recursion parent). Presence of a parent triggers
    * the no-nest guard (local-hive D-009 / swarm D-018): a `kind:'hive'` blueprint

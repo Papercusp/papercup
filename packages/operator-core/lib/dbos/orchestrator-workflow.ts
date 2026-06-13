@@ -25,6 +25,7 @@ import { parseDecisionFor } from '@papercusp/orchestrator';
 import { deriveNext, loadBuiltinBlueprint, type BlueprintSpine } from '@papercusp/orchestrator/blueprint';
 import { runWithRateLimitTolerance } from './decide-rate-limit';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
+import type { WorkItemClaimLeaseHandle } from '../work-item-claim-lease-wiring';
 
 export interface PipelineInput {
   harnessSlug: string;
@@ -58,6 +59,15 @@ export interface PipelineInput {
    * interprets a different declared graph. Plain data → DBOS-serializable.
    */
   spine?: BlueprintSpine;
+  /**
+   * D-007 (shared-hive-loop-e2e-testing): the per-Hive work-item lease this pipeline runs
+   * under, captured when the executor claimed one (`PAPERCUSP_WORKITEM_CLAIM_LEASE` ON).
+   * Threaded so the pipeline can RENEW the lease and, before each side-effecting step,
+   * SELF-ABORT if it was stolen/lapsed (heartbeat → `renewed:false`, rule 5). Absent when
+   * the lease flag is off / the claim couldn't be taken (fail-open) → the heartbeat seam
+   * is skipped, byte-identical to before. Plain data → DBOS-serializable.
+   */
+  claim?: WorkItemClaimLeaseHandle;
 }
 
 /**
@@ -193,6 +203,33 @@ export function setPipelineFeaturePassedHook(fn: PipelineFeaturePassedHook): voi
   _featurePassedHook = fn;
 }
 
+/**
+ * Lease-heartbeat hook (shared-hive-loop-e2e-testing D-007, rule 5). Fired at the top of
+ * each DISPATCHING turn when the pipeline carries a work-item lease (`input.claim`):
+ * RENEWS the lease AND reports whether it is still held. `renewed: false` means the lease
+ * lapsed or another Swarm STOLE it — the workflow self-aborts BEFORE the next
+ * side-effecting step, leaving the feature for the live holder (completion-adoption rule 2
+ * is the backstop for an un-aborted zombie). This is the production wiring of the seam the
+ * brief-11 rig proved (loop-agent.ts's `routeHeartbeat`); it RETIRES the orchestrator-loop
+ * keep-alive re-acquire (the pipeline now keeps its own lease alive).
+ *
+ * The operator wires this to the real `heartbeatClaim` (routed through the per-Hive claim
+ * authority), FAIL-OPEN on any PG/authority error (a transient blip must never kill a live
+ * pipeline → it returns `renewed:true`; the next turn re-checks). Unwired in tests / no
+ * `input.claim` → the seam is skipped entirely (byte-identical). Run inside a checkpointed
+ * DBOS step, so workflow replay reuses the recorded result (deterministic).
+ */
+export type PipelineLeaseHeartbeatHook = (input: {
+  harnessSlug: string;
+  featureId: string;
+  workspaceId?: string;
+  claim: WorkItemClaimLeaseHandle;
+}) => Promise<{ renewed: boolean; reason?: string }>;
+let _leaseHeartbeatHook: PipelineLeaseHeartbeatHook | null = null;
+export function setPipelineLeaseHeartbeatHook(fn: PipelineLeaseHeartbeatHook): void {
+  _leaseHeartbeatHook = fn;
+}
+
 // The blueprint spine drives the dispatch loop: `deriveNext` replaces the legacy
 // `classifyDecision` switch (P-004, D-002). Loaded lazily + memoized; every harness
 // today is a coding harness, so the built-in `coding` spine is the behavior-preserving
@@ -281,6 +318,40 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
       // not handled per-feature (D-001). Stop; the dispatcher owns cross-feature work.
       lastVerb = `UNSUPPORTED:${action.verb}`;
       break;
+    }
+
+    // D-007 (shared-hive-loop-e2e-testing P-004, rule 5): before any side-effecting
+    // dispatch, RENEW + verify the work-item lease. `renewed:false` means the lease
+    // lapsed or another Swarm STOLE it — self-abort before the next side effect, leaving
+    // the feature for the live holder (completion-adoption rule 2 is the backstop for an
+    // un-aborted zombie). One checkpointed step per dispatching turn, so it also keeps a
+    // long legit pipeline's lease alive past its TTL (retiring the dispatch-loop keep-alive).
+    // Skipped byte-identically when the pipeline carries no lease (flag off / fail-open) or
+    // the hook is unwired (tests). `action.kind === 'dispatch'` is guaranteed here.
+    if (input.claim && _leaseHeartbeatHook) {
+      const beat = _leaseHeartbeatHook;
+      const claim = input.claim;
+      const hb = await DBOS.runStep(
+        () =>
+          beat({
+            harnessSlug: input.harnessSlug,
+            featureId: input.featureId,
+            workspaceId: input.workspaceId,
+            claim,
+          }),
+        { name: `lease-heartbeat-${turn}` },
+      );
+      if (!hb.renewed) {
+        lastVerb = `LEASE_LOST:${action.role.toUpperCase()}`;
+        console.warn(
+          `[dbos-pipeline] ${input.harnessSlug}/${input.featureId} lease not renewed ` +
+            `(claim=${claim.claimId}; ${hb.reason ?? 'stolen/lapsed'}) — aborting before ` +
+            `${action.role} (D-007 rule 5)`,
+        );
+        // No `terminal` set → NO finalize: the feature is NOT marked done/escalated; it
+        // stays for the holder that stole the lease (or re-dispatch on a fresh epoch).
+        break;
+      }
     }
 
     // P-012: before a WORKER run, optionally fire the read-only debugger once

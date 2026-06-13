@@ -203,9 +203,11 @@ export function EntryGithubSearchForm({
     };
   }, [query]);
 
-  // Keep the keyboard-selected row in view.
+  // Keep the keyboard-selected row in view (guarded — jsdom has no real
+  // scrollIntoView).
   useEffect(() => {
-    activeRowRef.current?.scrollIntoView({ block: 'nearest' });
+    const row = activeRowRef.current;
+    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
   }, [activeIdx]);
 
   // A repo was picked / a URL short-circuited → hand off to the create form

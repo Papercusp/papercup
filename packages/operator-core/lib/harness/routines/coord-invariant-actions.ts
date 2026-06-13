@@ -7,14 +7,20 @@
  * rather than growing a second framework.
  *
  *   - `system:coord-probe-canary` (P-012, every 15 min): two synthetic probe
- *     identities run the live verb cycle — ping → inbox → ack → file-lock
- *     acquire → contend-busy → release → contender wins — through the REAL
- *     host adapters (sendMessage/readInbox/appendAck, tryAcquire/tryRelease
- *     over the live su-lock store). Per-step latency + a total-cycle SLO; a
- *     failed step or SLO breach files a forensics-laden improvement
- *     (coord-log + lock-table rows) through the watchdog capture core
- *     (deduped, dedupScope 'open'). Probe hygiene: rows older than 24h are
- *     swept each fire, so the canary never becomes its own bloat incident.
+ *     identities run the live verb cycle — baseline → ping → inbox → ack →
+ *     file-lock acquire → contend-busy → release → contender wins — through the
+ *     REAL host adapters (sendMessage/readInbox/appendAck, tryAcquire/tryRelease
+ *     over the live su-lock store). The leading `baseline` step is a control
+ *     DB round-trip (SELECT 1) that touches neither the coord write path nor its
+ *     NOTIFY triggers, so a breach is self-attributing: baseline slow ⇒ DB-wide
+ *     / pool contention; baseline fast but ping/ack slow ⇒ the coord
+ *     INSERT+commit+NOTIFY path (EI-401 — the first real breach was mis-read as
+ *     a slow read path; see agent-insight coord-canary-breach-attribute-per-step).
+ *     Per-step latency + a total-cycle SLO; a failed step or SLO breach files a
+ *     forensics-laden improvement (coord-log + lock-table rows) through the
+ *     watchdog capture core (deduped, dedupScope 'open'). Probe hygiene: rows
+ *     older than 24h are swept each fire, so the canary never becomes its own
+ *     bloat incident.
  *
  *   - `system:coord-invariant-monitor` (P-013, hourly): cheap SQL/adapter
  *     snapshots checked against thresholds —
@@ -97,8 +103,30 @@ export function evaluateProbe(steps: ProbeStep[], totalSloMs: number): ProbeVerd
   };
 }
 
+/** Pure: a one-line attribution hint for an SLO breach. Compares the control
+ *  `baseline` round-trip against the coord write steps so a breach is not
+ *  mis-read as a read-path cost — the EI-401 failure mode (see agent-insight
+ *  coord-canary-breach-attribute-per-step). */
+export function attributeBreach(steps: ProbeStep[], slowMs = 2_000): string {
+  const ms = (step: string) => steps.find((s) => s.step === step)?.ms;
+  const baseline = ms('baseline');
+  const ping = ms('ping') ?? 0;
+  const ack = ms('ack') ?? 0;
+  if (baseline == null) return 'Attribution: no baseline control sampled.';
+  if (baseline > slowMs) {
+    return `Attribution: baseline control (SELECT 1) took ${baseline}ms — DB-wide / connection-pool contention, NOT coord-specific.`;
+  }
+  if (Math.max(ping, ack) > slowMs) {
+    return `Attribution: baseline control fast (${baseline}ms) but coord write slow (ping ${ping}ms / ack ${ack}ms) — the cost is the coord INSERT+commit+NOTIFY path (NOTIFY-queue serialization / substrate_outbox capture), not the read path or the DB at large.`;
+  }
+  return `Attribution: baseline ${baseline}ms, ping ${ping}ms, ack ${ack}ms — no single step dominates; likely cumulative load.`;
+}
+
 /** The verb cycle, over an injectable deps bag (unit tests run on fakes). */
 export interface ProbeDeps {
+  /** Control round-trip (SELECT 1) — no coord write path, no NOTIFY. Isolates
+   *  DB-wide / pool latency from coord-substrate latency in a breach report. */
+  baseline: () => Promise<{ ok: boolean; detail?: string }>;
   send: (from: AgentIdentity, to: string, summary: string) => Promise<{ msg_id: string; ts: string }>;
   inboxHas: (owner: string, msgId: string, sinceTs: string) => Promise<boolean>;
   ack: (acker: AgentIdentity, msgId: string, from: string) => Promise<void>;
@@ -123,6 +151,12 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
     }
   };
 
+  // 0. Baseline control: a trivial DB round-trip that does NOT touch the coord
+  //    write path or its NOTIFY triggers. If `baseline` is slow too, the whole
+  //    DB is contended (pool/IO); if it is fast but ping/ack are slow, the cost
+  //    is in the coord INSERT+commit+NOTIFY path. A hard failure means the DB is
+  //    unreachable, so the rest of the cycle would fail anyway — abort.
+  if (!(await timed('baseline', () => deps.baseline()))) return steps;
   // 1. ping A→B …
   let msgId = '';
   let sentTs = '';
@@ -185,6 +219,12 @@ function probeIdentity(ownerId: string, workspaceId: string): AgentIdentity {
 /** The real-seam deps the live routine composes. */
 function liveProbeDeps(): ProbeDeps {
   return {
+    baseline: async () => {
+      // Control: pure connection-acquire + query, no coord write, no NOTIFY.
+      const { sql } = getOrgPg();
+      await sql`SELECT 1`;
+      return { ok: true };
+    },
     send: async (from, to, summary) => {
       const env = await sendMessage(from, { to: [to], summary, category: 'probe-canary' });
       return { msg_id: env.msg_id, ts: env.ts };
@@ -280,7 +320,9 @@ registerSystemAction('coord-probe-canary', async (ctx: SystemActionCtx) => {
       subTopic: 'coordination',
       body:
         `The scheduled probe-pair canary (coord-system-e2e P-012) ${verdict.failedStep ? `failed at step '${verdict.failedStep}'` : `completed but took ${verdict.totalMs}ms (SLO ${sloMs}ms)`}.\n\n` +
-        `Cycle:\n${stepLines}\n\n${await probeForensics(ctx.workspaceId)}`,
+        `Cycle:\n${stepLines}\n\n` +
+        (verdict.sloBreached ? `${attributeBreach(steps)}\n\n` : '') +
+        `${await probeForensics(ctx.workspaceId)}`,
     });
   }
 });
