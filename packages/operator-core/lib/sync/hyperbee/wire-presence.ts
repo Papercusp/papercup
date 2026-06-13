@@ -20,6 +20,7 @@
 import type { LocalWriteOp } from './boot';
 import {
   startPresenceAnnounceLoop,
+  buildPresenceTombstoneOp,
   type PresenceAnnounceLoopHandle,
   type PresenceIdentity,
   type PresenceState,
@@ -82,19 +83,7 @@ export async function wirePresenceAnnounceForHarness(
   }
 
   const resolveIdentity =
-    opts.resolveIdentity ??
-    (async (): Promise<PresenceIdentity | null> => {
-      try {
-        const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });
-        return {
-          githubUserId: id.githubUserId,
-          devicePubkey: id.devicePubkeyBase64,
-          machineLabel: machineFingerprint(),
-        };
-      } catch {
-        return null; // gh unauthenticated → the loop ticks but never announces (no-op)
-      }
-    });
+    opts.resolveIdentity ?? (() => defaultResolvePresenceIdentity(handle));
 
   const getState =
     opts.getState ??
@@ -120,4 +109,65 @@ export async function wirePresenceAnnounceForHarness(
   });
   handle.registerCloseHook(() => loop.stop());
   return loop;
+}
+
+/** The default presence-identity resolver for a booted handle: this machine's
+ *  github user + device pubkey + machine fingerprint, or null when gh is
+ *  unauthenticated (then we never announce/tombstone — no-op). Shared by the
+ *  announce loop and the leave tombstone. */
+async function defaultResolvePresenceIdentity(
+  handle: Pick<PresenceWireHandle, 'ownLog'>,
+): Promise<PresenceIdentity | null> {
+  try {
+    const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });
+    return {
+      githubUserId: id.githubUserId,
+      devicePubkey: id.devicePubkeyBase64,
+      machineLabel: machineFingerprint(),
+    };
+  } catch {
+    return null; // gh unauthenticated → nothing to announce/retract
+  }
+}
+
+export interface PublishPresenceTombstoneOpts {
+  /** Resolve this machine's swarm identity (test seam; default the shared resolver). */
+  resolveIdentity?: () => Promise<PresenceIdentity | null>;
+  now?: () => number;
+}
+
+/**
+ * Publish a presence TOMBSTONE (a `del` on this device's presence key) to a
+ * booted harness's own log so peers drop the leaver's `shared_presence` row at
+ * once rather than aging it out by TTL (shared-hive-hardening EI-469). The
+ * caller (hive:leave) MUST invoke this BEFORE closing the harness handle — the
+ * swarm must still be live for the del op to replicate.
+ *
+ * Best-effort + gated, mirroring the announce wiring: a private/local harness
+ * (no swarm) or a gh-unauthenticated box (no identity) is a no-op (returns
+ * false). Returns true when the tombstone was appended.
+ *
+ * ⚠ Cross-machine delivery is NOT guaranteed here: appending then immediately
+ * closing the swarm can out-race live replication, so a peer that hasn't
+ * replicated the block falls back to the TTL (today's behavior — safe). A
+ * flush/await-replication-before-close is the real-hardware-gated refinement
+ * (plan D-003) — the deterministic single-box piece (the publisher + the
+ * before-close ordering) is what this builds.
+ */
+export async function publishPresenceTombstoneForHarness(
+  handle: PresenceWireHandle,
+  opts: PublishPresenceTombstoneOpts = {},
+): Promise<boolean> {
+  if (!handle.swarm) return false; // private/local → no peers to tell
+  const resolveIdentity = opts.resolveIdentity ?? (() => defaultResolvePresenceIdentity(handle));
+  let identity: PresenceIdentity | null;
+  try {
+    identity = await resolveIdentity();
+  } catch {
+    identity = null;
+  }
+  if (!identity) return false; // gh unauthed → nothing to retract
+  const now = (opts.now ?? Date.now)();
+  await handle.append(buildPresenceTombstoneOp(identity, now));
+  return true;
 }

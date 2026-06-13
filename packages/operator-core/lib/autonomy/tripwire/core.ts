@@ -93,6 +93,12 @@ export interface TripwireArming {
   revertHandle: RevertHandle;
   /** The AutonomyDecision snapshot, persisted for the ledger / "why" surface. */
   decision: AutonomyDecision;
+  /**
+   * The shared id linking this tripwire to its decision-ledger disposition row
+   * (B-13) so the recent-auto-decisions feed can join + surface the undo. Minted
+   * by the Queen execution layer per auto-decision; omitted when uncorrelated.
+   */
+  decisionId?: string;
   armedAtMs: number;
   windowUntilMs: number;
 }
@@ -105,6 +111,8 @@ export interface ArmTripwireInput {
   revertHandle: RevertHandle;
   /** The (category, class) sub-key. Default: the decision's action slug, else 'unclassified'. */
   findingClass?: string;
+  /** The decision-ledger link id (B-13), if the caller correlated it. */
+  decisionId?: string;
   /** Watch-window length in hours (D-006 "a short watch"). */
   windowHours: number;
   nowMs: number;
@@ -161,6 +169,7 @@ export function armTripwire(input: ArmTripwireInput): ArmTripwireResult {
       riskTier: decision.riskTier,
       revertHandle: input.revertHandle,
       decision,
+      ...(input.decisionId !== undefined ? { decisionId: input.decisionId } : {}),
       armedAtMs: input.nowMs,
       windowUntilMs: input.nowMs + windowHours * HOUR_MS,
     },

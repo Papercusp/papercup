@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 
@@ -9,6 +9,7 @@ let syncResult: { data: unknown[]; loading: boolean; error: Error | null };
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ ...syncResult, fetching: false, invalidate: vi.fn() }),
 }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import RecentAutoDecisions from './RecentAutoDecisions';
 
@@ -26,6 +27,7 @@ function decision(over: Record<string, unknown> = {}) {
     disposition: 'act',
     why: 'Reranked the backlog by blocking-impact',
     revertHandle: null,
+    tripwireId: null,
     links: null,
     metadata: null,
     ...over,
@@ -51,17 +53,35 @@ describe('RecentAutoDecisions', () => {
     expect(screen.getByText('work-prioritization')).toBeTruthy();
     expect(screen.getByText('Auto')).toBeTruthy(); // posture auto → "Auto"
     expect(screen.getByText(/Reranked the backlog/i)).toBeTruthy();
-    // No revert handle → no undo affordance.
+    // No tripwireId → no undo affordance.
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
   });
 
-  it('shows a (currently disabled) Undo button only when a revert handle is present', () => {
-    syncResult = { data: [decision({ revertHandle: 'rev-abc123' })], loading: false, error: null };
+  it('shows an enabled Undo button only when a tripwireId is present', () => {
+    syncResult = { data: [decision({ tripwireId: 'tw-abc123' })], loading: false, error: null };
     render(<RecentAutoDecisions />);
     const undo = screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement;
     expect(undo).toBeTruthy();
-    // The revert ACTION is B-16's (P-080) — the button is present but inert until then.
-    expect(undo.disabled).toBe(true);
+    expect(undo.disabled).toBe(false);
+  });
+
+  it('clicking Undo posts the tripwireId to the revert route', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ ok: true, demoted: true }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      syncResult = { data: [decision({ tripwireId: 'tw-xyz' })], loading: false, error: null };
+      render(<RecentAutoDecisions />);
+      fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('/api/agent-mcp/autonomy-tripwire-revert');
+      expect(JSON.parse(String(opts.body)).tripwireId).toBe('tw-xyz');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('maps each disposition kind to its human label', () => {

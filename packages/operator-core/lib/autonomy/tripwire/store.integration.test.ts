@@ -88,7 +88,7 @@ describe('armTripwireForDecision + store round-trip', () => {
     const ok = await armTripwireForDecision(
       db.adminSql,
       WS,
-      { decision: decision(), revertHandle: { kind: 'config-edit', sha: 'deadbeef' }, windowHours: 24 },
+      { decision: decision(), revertHandle: { kind: 'config-edit', sha: 'deadbeef' }, decisionId: 'disp-123', windowHours: 24 },
       Date.now(),
     );
     expect(ok.armed).toBe(true);
@@ -105,6 +105,7 @@ describe('armTripwireForDecision + store round-trip', () => {
     expect(armed[0]!.category).toBe('implementation');
     expect(armed[0]!.findingClass).toBe('work_items:create');
     expect(armed[0]!.revertHandle).toMatchObject({ kind: 'config-edit', sha: 'deadbeef' });
+    expect(armed[0]!.decisionId).toBe('disp-123'); // mig 269 link slot round-trips
     expect(armed[0]!.status).toBe('armed');
   });
 

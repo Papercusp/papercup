@@ -20,9 +20,8 @@
  * synthetic rows — no LLM spend.
  */
 import type postgres from 'postgres';
-import type { LiveGroundTruthDeps, GroundTruthCtx, WorkItemClaim, WorkItemActual } from './ground-truth';
-import { liveGroundTruthPorts } from './ground-truth';
-import type { GroundTruthPorts } from './ground-truth';
+import type { LiveGroundTruthDeps, GroundTruthCtx, GroundTruthPorts, WorkItemClaim, WorkItemActual } from './ground-truth';
+import { commitBacksWorkItem, gitLogCommits } from './ground-truth';
 import type { TestResult } from './outcome-metrics';
 
 /** HFC `status` values that count as the Hive CLAIMING the work-item done (the normalized DONE state). */
@@ -124,16 +123,35 @@ export function makeLiveGroundTruthDeps(cfg: LiveGroundTruthConfig): LiveGroundT
 
 /**
  * Convenience: the full live {@link GroundTruthPorts} from a sql client + config — what live-ports.ts's
- * collectRunData composes: `collectGroundTruth(liveGroundTruthPortsFromSql({ sql }), ctx)`. The commit
- * leg defaults to the real `gitLogCommits(ctx.repoPath)`; pass `readCommits` to inject (tests), and
- * `filesByItem` to sharpen commit-backing with each item's expected files.
+ * collectRunData composes: `collectGroundTruth(liveGroundTruthPortsFromSql({ sql }), ctx)`.
+ *
+ * Unlike the generic `liveGroundTruthPorts` (ground-truth.ts, which matches commits by the SCENARIO id),
+ * this LIVE assembly matches commit-backing by the **feature id** the bee actually committed under
+ * (`idMap`-resolved) — the harness commit convention references the feature/work-item id, so an
+ * idMap'd run (feature_id = WI-NNN ≠ scenario id) still finds its real commits. `filesByItem` sharpens
+ * the match with each item's expected repo files; `readCommits` defaults to the real
+ * `gitLogCommits(ctx.repoPath)` and is injectable for tests. (Confirming the exact commit convention is
+ * a first-live-run validation — P-051.)
  */
 export function liveGroundTruthPortsFromSql(
   cfg: LiveGroundTruthConfig & Pick<LiveGroundTruthDeps, 'readCommits' | 'filesByItem'>,
 ): GroundTruthPorts {
-  return liveGroundTruthPorts({
-    ...makeLiveGroundTruthDeps(cfg),
-    filesByItem: cfg.filesByItem,
-    readCommits: cfg.readCommits,
-  });
+  const deps = makeLiveGroundTruthDeps(cfg);
+  const idMap = cfg.idMap ?? new Map<string, string>();
+  const featureIdOf = (scenarioItemId: string) => idMap.get(scenarioItemId) ?? scenarioItemId;
+  const readCommits = cfg.readCommits ?? ((ctx: GroundTruthCtx) => gitLogCommits(ctx.repoPath));
+  return {
+    readClaims: (ctx) => deps.readClaims(ctx),
+    readReviewOutput: (ctx) => deps.readReviewOutput(ctx),
+    readBaselineTests: (ctx) => deps.readBaselineTests(ctx),
+    async readActuals(ctx): Promise<readonly WorkItemActual[]> {
+      const [completion, commits] = await Promise.all([deps.readItemCompletion(ctx), readCommits(ctx)]);
+      return ctx.scenario.workItems.map((w) => ({
+        workItemId: w.id,
+        actuallyDone: completion.get(w.id) ?? false,
+        // Match the commit under the FEATURE id the bee worked, not the scenario id (D-014 live-aware).
+        hasCommit: commitBacksWorkItem(commits, { id: featureIdOf(w.id), files: cfg.filesByItem?.get(w.id) }),
+      }));
+    },
+  };
 }

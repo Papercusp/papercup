@@ -44,7 +44,12 @@ export type ItemStatusFilter =
   | 'blocked'
   | 'coord-escalation'
   | 'coord-message'
-  | 'smoke-fail';
+  | 'smoke-fail'
+  | 'operator-report'
+  | 'improvement'
+  | 'standing-approval'
+  | 'conversation'
+  | 'scout-grade';
 
 export const ITEM_STATUS_IDS = [
   'needs-human',
@@ -53,9 +58,27 @@ export const ITEM_STATUS_IDS = [
   'coord-escalation',
   'coord-message',
   'smoke-fail',
+  'operator-report',
+  'improvement',
+  'standing-approval',
+  'conversation',
+  'scout-grade',
 ] as const;
 
-const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail'] as const;
+// The non-plan-item facets — each maps 1:1 to an AttentionItem kind from the
+// plans:attention reader. Mirrors PlansClient (B-14 / P-100 folded the
+// disposition channels onto the Queue; D-027 follow-on (2) extends this shell's
+// previously-narrower set to match so the new kinds are filterable + counted).
+const OTHER_KIND_IDS = [
+  'coord-escalation',
+  'coord-message',
+  'smoke-fail',
+  'operator-report',
+  'improvement',
+  'standing-approval',
+  'conversation',
+  'scout-grade',
+] as const;
 type OtherKind = (typeof OTHER_KIND_IDS)[number];
 
 export const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }> = [
@@ -65,6 +88,11 @@ export const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: st
   { id: 'coord-escalation', label: 'Escalations', hint: 'Agent escalations from the coord log — a decision is blocking progress.' },
   { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
   { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
+  { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the inbox (chat stays conversation only).' },
+  { id: 'improvement', label: 'Improvements', hint: 'Self-improvements the auto-implement loop routed to you for triage.' },
+  { id: 'standing-approval', label: 'Approvals', hint: 'Standing-approval candidates — grant the operator auto-dispatch, or dismiss.' },
+  { id: 'conversation', label: 'Questions', hint: 'Open agent questions / coord:ask conversations awaiting an answer.' },
+  { id: 'scout-grade', label: 'Scout', hint: 'Routed Scout ideas awaiting your optional grade.' },
 ];
 
 export const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
@@ -74,6 +102,11 @@ export const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'coord-escalation': 'Escalations',
   'coord-message': 'Messages',
   'smoke-fail': 'Smoke',
+  'operator-report': 'Reports',
+  improvement: 'Improvements',
+  'standing-approval': 'Approvals',
+  conversation: 'Questions',
+  'scout-grade': 'Scout',
 };
 
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
@@ -314,6 +347,11 @@ export function useInboxData(opts: {
       'coord-escalation': 0,
       'coord-message': 0,
       'smoke-fail': 0,
+      'operator-report': 0,
+      improvement: 0,
+      'standing-approval': 0,
+      conversation: 0,
+      'scout-grade': 0,
     };
     for (const e of taggedItems) {
       if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;

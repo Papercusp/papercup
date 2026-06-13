@@ -25,10 +25,13 @@ const MEMBER = (slug: string, hive_slug: string) => ({
 function fakes(initialProjects: HarnessRegistry['projects']) {
   const calls = {
     registry: [...initialProjects] as HarnessRegistry['projects'],
+    tombstoned: [] as string[],
     closed: [] as string[],
     routinesRemoved: [] as string[],
     presenceDropped: [] as string[],
     rmDirs: [] as string[],
+    /** interleaved op log to assert tombstone precedes close per member. */
+    order: [] as string[],
   };
   const deps: LeaveHiveDeps = {
     loadRegistry: async () => ({ projects: calls.registry }),
@@ -37,8 +40,14 @@ function fakes(initialProjects: HarnessRegistry['projects']) {
       return undefined as never;
     }) as never,
     sql: {} as Sql,
+    tombstonePresence: async (_ws, slug) => {
+      calls.tombstoned.push(slug);
+      calls.order.push(`tombstone:${slug}`);
+      return true;
+    },
     closeHandle: async (_ws, slug) => {
       calls.closed.push(slug);
+      calls.order.push(`close:${slug}`);
       return true;
     },
     removeRoutine: async (_sql, slug) => {
@@ -70,12 +79,20 @@ describe('leaveHive (P-012)', () => {
     expect(res.viewSlug).toBe('shop-hive');
     expect(res.viewRemoved).toBe(true);
     expect(res.members.map((m) => m.slug).sort()).toEqual(['docs', 'shop']);
-    expect(res.members.every((m) => m.federationClosed && m.routineRemoved && m.presenceRowsDropped === 1)).toBe(true);
+    expect(
+      res.members.every(
+        (m) => m.presenceTombstoned && m.federationClosed && m.routineRemoved && m.presenceRowsDropped === 1,
+      ),
+    ).toBe(true);
 
     // members closed (+ the view, for symmetry); routines + presence dropped per member.
+    expect(calls.tombstoned.sort()).toEqual(['docs', 'shop']);
     expect(calls.closed.sort()).toEqual(['docs', 'shop', 'shop-hive']);
     expect(calls.routinesRemoved.sort()).toEqual(['docs', 'shop']);
     expect(calls.presenceDropped.sort()).toEqual(['docs', 'shop']);
+    // EI-469: each member's tombstone is published BEFORE its handle closes.
+    expect(calls.order.indexOf('tombstone:shop')).toBeLessThan(calls.order.indexOf('close:shop'));
+    expect(calls.order.indexOf('tombstone:docs')).toBeLessThan(calls.order.indexOf('close:docs'));
     // registry: view + members gone, the unrelated harness kept.
     expect(calls.registry.map((p) => p.slug)).toEqual(['papercup']);
   });

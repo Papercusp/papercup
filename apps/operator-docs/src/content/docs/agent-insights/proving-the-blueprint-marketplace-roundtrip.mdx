@@ -69,7 +69,16 @@ it via the Cupboard path and runs it — the thing a lib+routine cannot do.
 
 ## Completing the live leg (owner-gated)
 
-Outward-facing + credential-gated; do not run autonomously:
+> Done once, live, 2026-06-13 (owner-authorized, **private** repos): a private
+> `papercupai/*` repo + the real `POST /api/cupboard/install-blueprint` route
+> (gh-https-authed private clone) + a staging-runner run of the installed copy
+> — dark (flag off → zero mining), distinct id (no built-in shadow), no
+> `harness:create` (no cadence routine materialized). See
+> `deterministic-blueprints-migration-2026-06-13` D-016. Key gotcha: a live
+> install requires the **distinct-id** guard or it shadows the shared built-in
+> for every peer on the box.
+
+Outward-facing + credential-gated; do not run autonomously without an owner OK:
 
 1. Deploy P-010/P-110 to green (green-checkpoint FF, or
    `npx tsx apps/operator/lib/release/deploy-cli.ts --execute`).

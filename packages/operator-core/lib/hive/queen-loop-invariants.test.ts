@@ -15,19 +15,18 @@
  *     definition of "operating well" and they have teeth (a guard test proves
  *     each catches its violation).
  *
- *  2. **The BEHAVIORAL contract — `it.todo`, lights up with its brief.** The
- *     Queen's placement loop is 100% PROMPT-DRIVEN today (blueprints/hive/
- *     prompts/queen.md) — there is no deterministic placement function to drive,
- *     and the behaviors P-051 asserts (batch placement, dead-bee re-placement,
- *     cursed-item breaker, drive-to-empty, question-unblock) are exactly what
- *     B-07 / B-09 / B-10 / B-17 BUILD. Each behavioral clause starts as a precise
- *     `it.todo` naming the brief that lands it, and CONVERTS to a live assertion
- *     over the real seam the moment that brief ships its deterministic decider —
- *     so the contract is a living, registered spec, not vapor. B-09's
- *     completion-guarantee seam (placement-watchdog.ts) has landed, so its three
- *     clauses (terminal tracking, dead-bee re-placement, cursed-item breaker)
- *     are now LIVE below; B-07 (batch placement) and B-10/B-17 (question ladder)
- *     remain `it.todo` until their seams land.
+ *  2. **The BEHAVIORAL contract — now FULLY LIVE.** P-051's behaviors (batch
+ *     placement, dead-bee re-placement, cursed-item breaker, drive-to-empty,
+ *     question-unblock) were `it.todo` while the Queen loop was prompt-only; as
+ *     each predecessor brief shipped its deterministic seam, the matching clause
+ *     converted to a live assertion over the REAL seam (the scout-loop-invariants
+ *     pattern — contract altitude, not a re-test of the seam internals):
+ *       - B-07 batch fan-out  → `fleet/batch-placement.ts` `planBatchPlacement`
+ *       - B-08 ranking        → `placement-ranker.ts` `rankPlacements`
+ *       - B-09 completion     → `placement-watchdog.ts` `evaluatePlacement`/`deriveBeeLiveness`
+ *       - B-09/P-030 drive    → `wake-frontier-guard.ts` `evaluateWakeFrontierGuard`
+ *       - B-10/B-12 question  → `autonomy/decider.ts` `decideAutonomy`
+ *     0 `it.todo` remain — the full behavioral contract is pinned over real code.
  *
  * See queen-autonomous-execution-2026-06-13 (B-11; D-007 behavior-neutral-now).
  */
@@ -47,6 +46,10 @@ import {
   type PlacementObservation,
 } from './placement-watchdog';
 import { rankPlacements, type PlacementCandidate } from './placement-ranker';
+import { planBatchPlacement } from '../fleet/batch-placement';
+import type { PlacementTask, PlacementBee } from '../fleet/placement-affinity';
+import { evaluateWakeFrontierGuard } from './wake-frontier-guard';
+import { decideAutonomy } from '../autonomy/decider';
 
 const NOW = 1_700_000_000_000;
 const MIN = 60_000;
@@ -206,8 +209,117 @@ describe('P-051 Queen-loop contract — BEHAVIORAL prioritization (B-08 ranker L
   });
 });
 
-describe('P-051 Queen-loop contract — BEHAVIORAL (pending predecessor briefs)', () => {
-  it.todo('B-07: a started Hive with N ready units + M free slots places min(N,M) bees in ONE wake');
-  it.todo('B-09: the Queen drives the frontier to empty, every unit verified terminal, then idles (P-030)');
-  it.todo('B-10/B-17: a reversible bee question is unblocked without the owner (intercepted card, not a freeze)');
+describe('P-051 Queen-loop contract — BEHAVIORAL batch fan-out (B-07 seam LIVE)', () => {
+  // B-07's batch-placement seam landed (fleet/batch-placement.ts, su-a8aa4): the
+  // pure `planBatchPlacement` (warm-inject → fresh-spawn → unplaced ladder, cap-
+  // aware). The P-051 contract asserts "places min(N,M) in ONE wake" over it.
+  const task = (id: string): PlacementTask => ({ id, harness: null, title: id });
+
+  it('places min(N,M) in one wake — slot-bound: 5 ready, 3 free slots, no warm bees → 3 spawns + 2 queued back', () => {
+    const plan = planBatchPlacement({ tasks: [task('A'), task('B'), task('C'), task('D'), task('E')], bees: [], headroom: 3 });
+    expect(plan.spawnCount).toBe(3); // min(5, 3)
+    expect(plan.injectCount).toBe(0);
+    expect(plan.unplacedCount).toBe(2); // the rest stay on the frontier for the next wake
+    expect(idealPlacements(5, 3)).toBe(plan.spawnCount + plan.injectCount); // matches the yardstick
+  });
+
+  it('frontier-bound: 2 ready, 8 free slots → places all 2, none unplaced', () => {
+    const plan = planBatchPlacement({ tasks: [task('A'), task('B')], bees: [], headroom: 8 });
+    expect(plan.spawnCount).toBe(2);
+    expect(plan.unplacedCount).toBe(0);
+  });
+
+  it('fans across the fleet in ONE wake — a same-plan task warm-injects, the rest spawn (not serial)', () => {
+    const bee: PlacementBee = { ownerId: 's-1', harness: 'mem-a', currentPlanSlug: 'p1', load: 0, alive: true };
+    const plan = planBatchPlacement({
+      tasks: [{ id: 'X', harness: 'mem-a', title: 'x', planSlug: 'p1' }, task('Y')],
+      bees: [bee],
+      headroom: 1,
+    });
+    expect(plan.injectCount).toBe(1); // X → warm-inject onto the same-plan bee (explicit-intent)
+    expect(plan.spawnCount).toBe(1); // Y → fresh spawn
+    expect(plan.unplacedCount).toBe(0); // both placed in the single batch
+  });
+});
+
+describe('P-051 Queen-loop contract — BEHAVIORAL drive-to-empty (B-09/P-030 seam LIVE)', () => {
+  // P-030's drive-to-empty seam landed (wake-frontier-guard.ts): the pure
+  // `evaluateWakeFrontierGuard` refuses an idle (no-time) wake while the frontier
+  // is non-empty OR placements are still in flight, and allows idle only when both
+  // are clear — i.e. the Queen drives to empty, then idles.
+  it('refuses idle while ready work waits (frontier not empty)', () => {
+    expect(evaluateWakeFrontierGuard({ hasTimeWake: false, frontierIds: ['WI-1'], openPlacementIds: [] })).not.toBeNull();
+  });
+
+  it('refuses idle while a placement is still non-terminal (drive every unit to completion)', () => {
+    expect(evaluateWakeFrontierGuard({ hasTimeWake: false, frontierIds: [], openPlacementIds: ['WI-2'] })).not.toBeNull();
+  });
+
+  it('allows idle ONLY when the frontier is empty AND every placement is terminal', () => {
+    expect(evaluateWakeFrontierGuard({ hasTimeWake: false, frontierIds: [], openPlacementIds: [] })).toBeNull();
+  });
+
+  it('a time-wake always passes — the Queen re-wakes to place/monitor', () => {
+    expect(evaluateWakeFrontierGuard({ hasTimeWake: true, frontierIds: ['WI-1'], openPlacementIds: ['WI-2'] })).toBeNull();
+  });
+});
+
+describe('P-051 Queen-loop contract — BEHAVIORAL question-unblock (B-10/B-12 gate seam LIVE)', () => {
+  // The autonomy gate landed (autonomy/decider.ts, B-12): the pure `decideAutonomy`.
+  // The P-051 contract asserts a reversible, in-envelope, non-owner bee question
+  // self-resolves (not the owner) once armed; owner-reserved / irreversible ones
+  // still gate to the owner; and it's behavior-neutral (gated) until armed.
+  const escalations = 'escalations' as const; // the agent-question category (not protected)
+
+  it('a reversible, below-ceiling, non-owner question self-resolves when armed (no owner)', () => {
+    const d = decideAutonomy({
+      category: escalations,
+      authority: 'system',
+      reversibility: 'reversible',
+      riskTier: 'low',
+      effectiveCeiling: 'moderate',
+      armed: true,
+    });
+    expect(d.posture).toBe('auto'); // unblocked without the owner
+    expect(d.wouldAutoIfArmed).toBe(true);
+  });
+
+  it('an owner-authority question ALWAYS gates to the owner, even reversible + armed', () => {
+    const d = decideAutonomy({
+      category: escalations,
+      authority: 'owner',
+      reversibility: 'reversible',
+      riskTier: 'low',
+      effectiveCeiling: 'moderate',
+      armed: true,
+    });
+    expect(d.posture).toBe('gated');
+    expect(d.reasons).toContain('owner-authority');
+  });
+
+  it('an irreversible question gates (blast-radius hard floor)', () => {
+    const d = decideAutonomy({
+      category: escalations,
+      authority: 'system',
+      reversibility: 'irreversible',
+      riskTier: 'low',
+      effectiveCeiling: 'moderate',
+      armed: true,
+    });
+    expect(d.posture).toBe('gated');
+    expect(d.reasons).toContain('irreversible-action');
+  });
+
+  it('behavior-neutral until armed: the same in-envelope question is gated dark, but would self-resolve once armed', () => {
+    const dark = decideAutonomy({
+      category: escalations,
+      authority: 'system',
+      reversibility: 'reversible',
+      riskTier: 'low',
+      effectiveCeiling: 'moderate',
+      armed: false,
+    });
+    expect(dark.posture).toBe('gated'); // nothing auto-decides until the owner arms (D-007)
+    expect(dark.wouldAutoIfArmed).toBe(true); // …but the gate proves it WOULD, without the owner
+  });
 });

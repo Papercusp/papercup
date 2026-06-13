@@ -4,7 +4,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { wirePresenceAnnounceForHarness, type PresenceWireHandle } from '../wire-presence';
+import {
+  wirePresenceAnnounceForHarness,
+  publishPresenceTombstoneForHarness,
+  type PresenceWireHandle,
+} from '../wire-presence';
 import type { LocalWriteOp } from '../boot';
 import type { PresenceIdentity } from '../presence-announce';
 
@@ -113,5 +117,42 @@ describe('wirePresenceAnnounceForHarness (P-008 publisher wiring)', () => {
     expect(loop).not.toBeNull();
     await loop!.tickOnce();
     expect((appended[0].value as { hive_slug?: string | null }).hive_slug).toBeNull();
+  });
+});
+
+describe('publishPresenceTombstoneForHarness (EI-469 leave retract)', () => {
+  it('appends a del op on this device key when swarmed + identity resolves', async () => {
+    const { handle, appended } = mockHandle();
+    const ok = await publishPresenceTombstoneForHarness(handle, {
+      resolveIdentity: async () => identity,
+      now: () => 4242,
+    });
+    expect(ok).toBe(true);
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({ type: 'del', table: 'presence', hbKey: '7/m1', ts: 4242 });
+    expect(appended[0].value).toBeUndefined(); // a tombstone carries no row
+  });
+
+  it('no-op (false) for a private/local harness (no swarm) — no peers to tell', async () => {
+    const { handle, appended } = mockHandle({ swarm: null });
+    expect(await publishPresenceTombstoneForHarness(handle, { resolveIdentity: async () => identity })).toBe(false);
+    expect(appended).toHaveLength(0);
+  });
+
+  it('no-op (false) when gh is unauthenticated (identity null) — nothing to retract', async () => {
+    const { handle, appended } = mockHandle();
+    expect(await publishPresenceTombstoneForHarness(handle, { resolveIdentity: async () => null })).toBe(false);
+    expect(appended).toHaveLength(0);
+  });
+
+  it('an identity-resolver throw is swallowed → false, never throws', async () => {
+    const { handle, appended } = mockHandle();
+    const ok = await publishPresenceTombstoneForHarness(handle, {
+      resolveIdentity: async () => {
+        throw new Error('keychain locked');
+      },
+    });
+    expect(ok).toBe(false);
+    expect(appended).toHaveLength(0);
   });
 });

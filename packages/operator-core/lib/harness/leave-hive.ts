@@ -44,7 +44,8 @@ import {
   type HarnessRegistry,
   type ProjectEntry,
 } from '../harness-registry';
-import { closeBootedHarness } from '../sync/hyperbee/boot-all';
+import { closeBootedHarness, getBootedHarness } from '../sync/hyperbee/boot-all';
+import { publishPresenceTombstoneForHarness } from '../sync/hyperbee/wire-presence';
 import { removeGitSyncRoutine } from './git-sync/git-sync-routine';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -62,6 +63,9 @@ export interface LeaveHiveOpts {
 
 export interface LeaveHiveMember {
   slug: string;
+  /** Did a presence tombstone get published before close (false = not booted /
+   *  no swarm / gh-unauthed — peers then fall back to TTL aging, EI-469). */
+  presenceTombstoned: boolean;
   /** Did the federation handle close (false = wasn't booted — fine). */
   federationClosed: boolean;
   /** Did a git-sync routine row get deleted (false = none existed — fine). */
@@ -89,6 +93,11 @@ export interface LeaveHiveDeps {
   mutateRegistry?: typeof mutateHarnessRegistry;
   /** PG handle for routine + presence deletes (default: getOrgPg().sql). */
   sql?: Sql;
+  /** Publish a presence tombstone for one member BEFORE its handle closes, so
+   *  peers drop the leaver's presence row at once instead of by TTL (EI-469).
+   *  Default: getBootedHarness → publishPresenceTombstoneForHarness. Returns
+   *  false when not booted / no swarm / gh-unauthed (best-effort). */
+  tombstonePresence?: (workspaceId: string, slug: string) => Promise<boolean>;
   /** Stop federating one harness (default closeBootedHarness). */
   closeHandle?: (workspaceId: string, slug: string) => Promise<boolean>;
   /** Delete one harness's git-sync routine (default removeGitSyncRoutine). */
@@ -98,6 +107,14 @@ export interface LeaveHiveDeps {
   dropPresence?: (sql: Sql, workspaceId: string, harnessSlug: string) => Promise<number>;
   /** rm -rf a clone dir (default fs.rm recursive force). */
   rmDir?: (path: string) => Promise<void>;
+}
+
+/** Default presence-tombstone: publish a `del` on the leaver's presence key via
+ *  the still-live booted handle (EI-469). No-op (false) when not booted. */
+async function defaultTombstonePresence(workspaceId: string, slug: string): Promise<boolean> {
+  const handle = getBootedHarness(workspaceId, slug);
+  if (!handle) return false;
+  return publishPresenceTombstoneForHarness(handle);
 }
 
 async function defaultDropPresence(
@@ -121,6 +138,7 @@ export async function leaveHive(
 ): Promise<LeaveHiveResult> {
   const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
   const mutateRegistry = deps.mutateRegistry ?? mutateHarnessRegistry;
+  const tombstone = deps.tombstonePresence ?? defaultTombstonePresence;
   const closeHandle = deps.closeHandle ?? closeBootedHarness;
   const removeRoutine = deps.removeRoutine ?? removeGitSyncRoutine;
   const dropPresence = deps.dropPresence ?? defaultDropPresence;
@@ -185,10 +203,18 @@ export async function leaveHive(
   for (const m of memberEntries) {
     const out: LeaveHiveMember = {
       slug: m.slug,
+      presenceTombstoned: false,
       federationClosed: false,
       routineRemoved: false,
       presenceRowsDropped: 0,
     };
+    // EI-469: tombstone presence FIRST, while the swarm is still live, so peers
+    // drop our row at once; THEN stop federating. Best-effort either way.
+    try {
+      out.presenceTombstoned = await tombstone(opts.workspaceId, m.slug);
+    } catch {
+      /* best-effort — not booted / no swarm / gh-unauthed; TTL is the backstop */
+    }
     try {
       out.federationClosed = await closeHandle(opts.workspaceId, m.slug);
     } catch {

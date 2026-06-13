@@ -29,6 +29,7 @@ function row(over: Partial<TripwireRow> & { status: TripwireRow['status']; armed
     reversibility: 'reversible',
     revertHandle: { kind: 'config-edit' },
     decision: null,
+    decisionId: null,
     tripReason: null,
     windowUntilMs: over.armedAtMs + 86_400_000,
     resolvedAtMs: over.status === 'armed' ? null : over.armedAtMs + 86_400_000,

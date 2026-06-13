@@ -131,6 +131,33 @@ export function buildPresenceAnnounceOp(
   };
 }
 
+/**
+ * Build the presence TOMBSTONE op — a `del` on this device's presence key
+ * (shared-hive-hardening-2026-06-13 EI-469). Published when a peer LEAVES a hive
+ * (hive:leave) so OTHER peers delete the leaver's `shared_presence` row at once
+ * (the projection's ts-guarded deleteFromPg) instead of waiting out the ~90s
+ * staleness TTL — which also drops one stale vote from the per-Hive lock-authority
+ * election.
+ *
+ * Deliberately NOT published on graceful shutdown: going offline is TRANSIENT
+ * (you'll reappear on next boot, and a quick restart should not blink out of
+ * peers' rosters) — the TTL models that correctly. A tombstone means "I LEFT",
+ * not "I'm briefly offline". Key mirrors buildPresenceAnnounceOp /
+ * the projection composeKey: `<github_user_id>/<machine_label>`.
+ */
+export function buildPresenceTombstoneOp(
+  identity: Pick<PresenceIdentity, 'githubUserId' | 'machineLabel'>,
+  nowMs: number,
+): LocalWriteOp {
+  return {
+    type: 'del',
+    table: 'presence',
+    hbKey: `${identity.githubUserId}/${identity.machineLabel}`,
+    ts: nowMs,
+    schema_version: CURRENT_SCHEMA_VERSION,
+  };
+}
+
 export interface AnnounceLocalPresenceDeps {
   /** Append the op to this machine's Hypercore log (the booted substrate handle).
    *  Injected so the decision + op are tested without a live swarm. */

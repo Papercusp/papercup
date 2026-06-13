@@ -424,6 +424,9 @@ export interface ArmTripwireForDecisionInput {
   decision: AutonomyDecision;
   revertHandle: RevertHandle;
   findingClass?: string;
+  /** The decision-ledger link id (B-13) — mint it once + pass the SAME id to the
+   *  ledger disposition emit so the feed can join tripwire ↔ disposition. */
+  decisionId?: string;
   windowHours?: number;
 }
 
@@ -449,6 +452,7 @@ export async function armTripwireForDecision(
     decision: input.decision,
     revertHandle: input.revertHandle,
     ...(input.findingClass !== undefined ? { findingClass: input.findingClass } : {}),
+    ...(input.decisionId !== undefined ? { decisionId: input.decisionId } : {}),
     windowHours: input.windowHours ?? 0, // 0 ⇒ the core's default window
     nowMs,
   });

@@ -49,6 +49,8 @@ export interface TripwireRow extends ArmedTripwire {
   reversibility: string;
   revertHandle: RevertHandle;
   decision: AutonomyDecision | null;
+  /** Link to the decision-ledger disposition row (B-13), or null if uncorrelated. */
+  decisionId: string | null;
   tripReason: TripwireSignalKind | null;
   resolvedAtMs: number | null;
   revertedAtMs: number | null;
@@ -65,6 +67,7 @@ interface RawRow {
   reversibility: string;
   revert_handle: RevertHandle | null;
   decision: AutonomyDecision | null;
+  decision_id: string | null;
   status: string;
   trip_reason: string | null;
   armed_at: Date | string;
@@ -85,6 +88,7 @@ function rowFrom(r: RawRow): TripwireRow {
     reversibility: r.reversibility,
     revertHandle: (r.revert_handle ?? { kind: 'unknown' }) as RevertHandle,
     decision: r.decision,
+    decisionId: r.decision_id ?? null,
     status: r.status as TripwireStatus,
     tripReason: (r.trip_reason ?? null) as TripwireSignalKind | null,
     armedAtMs: toMs(r.armed_at),
@@ -96,7 +100,7 @@ function rowFrom(r: RawRow): TripwireRow {
 }
 
 const SELECT_COLS = `id, workspace_id, category, finding_class, action, risk_tier, reversibility,
-  revert_handle, decision, status, trip_reason, armed_at, window_until, resolved_at, reverted_at, resolved_by`;
+  revert_handle, decision, decision_id, status, trip_reason, armed_at, window_until, resolved_at, reverted_at, resolved_by`;
 
 /**
  * Persist one armed tripwire. Returns its id, or null if the table isn't applied
@@ -114,11 +118,12 @@ export async function insertTripwire(
     await sql`
       INSERT INTO harness_shared.autonomy_tripwires
         (id, workspace_id, category, finding_class, action, risk_tier, reversibility,
-         revert_handle, decision, status, armed_at, window_until)
+         revert_handle, decision, decision_id, status, armed_at, window_until)
       VALUES (${id}, ${workspaceId}, ${arming.category}, ${arming.findingClass},
               ${arming.action ?? null}, ${arming.riskTier}, 'reversible',
               ${JSON.stringify(arming.revertHandle)}::text::jsonb,
               ${JSON.stringify(arming.decision)}::text::jsonb,
+              ${arming.decisionId ?? null},
               'armed', ${new Date(arming.armedAtMs)}, ${new Date(arming.windowUntilMs)})`;
     return id;
   } catch (err) {

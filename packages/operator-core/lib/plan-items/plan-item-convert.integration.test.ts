@@ -84,6 +84,9 @@ const convert = await import('./convert');
 const asg = await import('./assignments');
 const liveness = await import('./liveness');
 const wi = await import('../work-items');
+// planItemRef / PLAN_ITEM_KIND are pure helpers, but import them through the same
+// post-mock dynamic seam as convert so module load-order never races the mocks.
+const { planItemRef, PLAN_ITEM_KIND } = await import('../issue-blocks-merge');
 
 let db: FreshPgDb;
 
@@ -302,5 +305,63 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     const second = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-B' });
     expect(second.status).toBe('converted');
     if (second.status === 'converted') expect(second.workItem.id).not.toBe(first.workItem.id);
+  });
+});
+
+/**
+ * listConvertedPlanItemRefs (queen-autonomy-policy B-14 / P-104 · D-013) — the
+ * decision↔execution boundary's queryable truth. It is what the unified Queue
+ * (plans:attention → dropConvertedPlanItems) reads to hide an item that has been
+ * picked up for execution so it shows ONLY in Working, never in both. D-027
+ * follow-on (5): a thin integration proof against live coord_links, since the
+ * convert path's other assertions only check the raw `implements` edge, not this
+ * read. The dst-side filter (rel='implements', dst_kind='plan_item') + DISTINCT
+ * are the contract.
+ */
+describe('listConvertedPlanItemRefs (P-104/D-013): the decision↔execution boundary read', () => {
+  it('returns the <plan>#<item> ref of a converted item; excludes never-picked-up ones', async () => {
+    // P-001 converted; P-002 left a plain todo (no implements edge).
+    const r = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
+    expect(r.status).toBe('converted');
+
+    const refs = await convert.listConvertedPlanItemRefs();
+    expect(refs.has(planItemRef(PLAN, 'P-001'))).toBe(true); // carries an implements edge
+    expect(refs.has(planItemRef(PLAN, 'P-002'))).toBe(false); // never converted
+    expect(refs.size).toBe(1);
+  });
+
+  it('is DISTINCT over multiple work_items implementing the SAME plan item (one ref, not two)', async () => {
+    await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
+    // A second, distinct implements edge (different src_ref) to the SAME plan item —
+    // the unique edge index permits it; SELECT DISTINCT dst_ref must fold both to one.
+    await db.sql`
+      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES (${WS}, 'feature', ${`${HARNESS}#WI-999`}, ${PLAN_ITEM_KIND}, ${planItemRef(PLAN, 'P-001')}, ${convert.IMPLEMENTS_REL})`;
+
+    const refs = await convert.listConvertedPlanItemRefs();
+    expect(refs.size).toBe(1);
+    expect(refs.has(planItemRef(PLAN, 'P-001'))).toBe(true);
+  });
+
+  it('captures a kind=feature conversion (the qualified src ref still maps to dst <plan>#<item>)', async () => {
+    const r = await convert.convertPlanItem({ ...base, itemId: 'P-002', owner: 'sess-A', ownerName: 'builder-1', kind: 'feature' });
+    expect(r.status).toBe('converted');
+    const refs = await convert.listConvertedPlanItemRefs();
+    expect(refs.has(planItemRef(PLAN, 'P-002'))).toBe(true);
+  });
+
+  it('only the implements relation counts — a foreign rel/kind edge to the item is ignored', async () => {
+    // A blocks-edge and a non-plan_item dst exist, but neither is an implements→plan_item.
+    await db.sql`
+      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES (${WS}, 'issue', 'WI-77', ${PLAN_ITEM_KIND}, ${planItemRef(PLAN, 'P-001')}, 'blocks'),
+             (${WS}, 'issue', 'WI-78', 'issue', 'WI-1', ${convert.IMPLEMENTS_REL})`;
+    const refs = await convert.listConvertedPlanItemRefs();
+    expect(refs.size).toBe(0);
+  });
+
+  it('empty when nothing has been converted', async () => {
+    const refs = await convert.listConvertedPlanItemRefs();
+    expect(refs.size).toBe(0);
   });
 });

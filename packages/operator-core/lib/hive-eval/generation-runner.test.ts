@@ -23,6 +23,7 @@ const INSTANCE: InstanceManifest = {
   codeSha: 'test',
   genomeId: undefined,
   batterySliceId: 'hive-eval',
+  createdAt: new Date(0),
 };
 
 const PER_ITEM_MS = 100;

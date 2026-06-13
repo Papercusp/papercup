@@ -24,6 +24,7 @@ function rowWith(revertHandle: RevertHandle): TripwireRow {
     reversibility: 'reversible',
     revertHandle,
     decision: null,
+    decisionId: null,
     status: 'tripped',
     tripReason: 'gym-regression',
     armedAtMs: 1000,

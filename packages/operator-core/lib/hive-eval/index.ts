@@ -93,6 +93,14 @@ export {
   type ObservedCommit,
 } from './ground-truth';
 
+export {
+  makeLiveGroundTruthDeps,
+  liveGroundTruthPortsFromSql,
+  DEFAULT_DONE_STATUSES,
+  DEFAULT_WORKED_STATUSES,
+  type LiveGroundTruthConfig,
+} from './ground-truth-live';
+
 export { computeSpeedMetrics, type SpeedMetrics, type RunTimings } from './speed-metrics';
 
 export {

@@ -5,15 +5,22 @@
  * P-113) — a filtered view of the Queen decision ledger's DISPOSITION layer: what
  * she chose for each item she considered (act / defer / reject / route-to-research
  * / no-op), newest first, with the category, posture, and why. Reads the live
- * `decision.ledger` sync query (layer=disposition); the row's `revertHandle` lights
- * up one-click undo once the tripwire (B-16 / P-080) populates it — until then the
- * feed is read-only.
+ * `decision.ledger` sync query (layer=disposition); a row's one-click Undo appears
+ * when `tripwireId` is set — i.e. a reversible auto-decision with an armed tripwire
+ * (decision.ledger ⟕ autonomy_tripwires ON decision_id, su-94495's D-025 contract).
+ * Undo rejects the decision (owner thumbs-down) + demotes the category one step via
+ * the loopback autonomy-tripwire-revert route; the LITERAL action auto-revert
+ * executor lands with the queen execution layer (D-020), so until then the trip +
+ * demotion ARE the effect. Empty-until-armed: no rows carry a tripwireId until
+ * autonomy is armed and queen-execution threads decisionId.
  *
  * Self-contained so the B-15 settings page drops it in where the P-031 placeholder
- * was; no interactive state (a read-only list), so nothing to put in nuqs.
+ * was; the only interactive state is the transient per-row "reverting" lifecycle
+ * (useState — not user-meaningful, so not nuqs).
  */
-import { useMemo, type CSSProperties } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { toast } from 'sonner';
 
 /* Wire type — mirrors DecisionLedgerEntry (operator-core/lib/decision-ledger/read.ts),
  * kept local per the client wire-type decoupling convention. */
@@ -30,8 +37,32 @@ interface DecisionRow {
   disposition: string | null;
   why: string | null;
   revertHandle: string | null;
+  /** The armed tripwire's id (decision.ledger ⟕ autonomy_tripwires ON decision_id —
+   *  su-94495's D-025 contract). Set only on a reversible auto-decision with an
+   *  armed tripwire; drives the one-click Undo. Null until queen-execution threads
+   *  decisionId, so the feed is empty-until-armed. */
+  tripwireId: string | null;
   links: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
+}
+
+/** POST the revert to the dedicated loopback route (mirrors GraduationPrompts'
+ *  ratify): autonomy:tripwire_revert REQUIRES args so it's palette-excluded — the
+ *  feed writes through /api/agent-mcp/autonomy-tripwire-revert instead. */
+async function revertDecision(tripwireId: string, reason: string): Promise<void> {
+  const r = await fetch('/api/agent-mcp/autonomy-tripwire-revert', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tripwireId, reason }),
+  });
+  const text = await r.text();
+  let data: { ok?: boolean; error?: string } = {};
+  try {
+    data = JSON.parse(text) as { ok?: boolean; error?: string };
+  } catch {
+    /* non-JSON */
+  }
+  if (!r.ok || data.ok === false) throw new Error(data.error ?? `HTTP ${r.status}`);
 }
 
 const POSTURE_STYLE: Record<string, { fg: string; bg: string; label: string }> = {
@@ -66,18 +97,40 @@ function relativeTime(iso: string): string {
 }
 
 export default function RecentAutoDecisions() {
-  const { data, loading, error } = useSyncQuery<DecisionRow>({
+  const { data, loading, error, invalidate } = useSyncQuery<DecisionRow>({
     queryName: 'decision.ledger',
     args: { layer: 'disposition', limit: 25 },
   });
   const rows = useMemo<DecisionRow[]>(() => data ?? [], [data]);
+  const [reverting, setReverting] = useState<string | null>(null);
+
+  const onUndo = async (row: DecisionRow) => {
+    if (!row.tripwireId) return;
+    setReverting(row.tripwireId);
+    try {
+      await revertDecision(
+        row.tripwireId,
+        `Owner undo of ${row.category ?? 'decision'}${row.action ? ` (${row.action})` : ''}`,
+      );
+      // The revert trips + demotes server-side and invalidates decision.ledger;
+      // nudge the local query so the row reflects it promptly.
+      invalidate();
+      toast.success('Auto-decision rejected — category demoted one step.');
+    } catch (err) {
+      toast.error(`Couldn’t undo: ${err instanceof Error ? err.message : 'failed'}`);
+    } finally {
+      setReverting(null);
+    }
+  };
 
   return (
     <section className="pc-settings-section" aria-label="Recent auto-decisions" style={{ marginTop: 28 }}>
       <h2>Recent auto-decisions</h2>
       <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginTop: 0 }}>
-        What the Queen has decided per item she considered — newest first. One-click undo lights up
-        per row once the auto-revert tripwire records a revert handle (B-16).
+        What the Queen has decided per item she considered — newest first. A row’s Undo rejects the
+        auto-decision (owner thumbs-down) and demotes that category one step; it appears once a
+        reversible auto-decision has an armed tripwire (the literal action-revert lands with the
+        execution layer).
       </p>
 
       {error && (
@@ -123,9 +176,11 @@ export default function RecentAutoDecisions() {
               <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-mute)' }} title={row.ts}>
                 {relativeTime(row.ts)}
               </span>
-              {row.revertHandle ? (
+              {row.tripwireId ? (
                 <button
                   type="button"
+                  onClick={() => void onUndo(row)}
+                  disabled={reverting === row.tripwireId}
                   style={{
                     fontSize: 11,
                     padding: '2px 8px',
@@ -133,14 +188,11 @@ export default function RecentAutoDecisions() {
                     border: '1px solid var(--border)',
                     background: 'var(--bg-2)',
                     color: 'var(--fg)',
-                    cursor: 'pointer',
+                    cursor: reverting === row.tripwireId ? 'default' : 'pointer',
                   }}
-                  title="Undo this auto-decision (B-16 revert handle)"
-                  // The revert action is B-16's (auto-revert tripwire / P-080); the
-                  // handle exists, the wiring lands with that brief.
-                  disabled
+                  title="Undo: reject this auto-decision (owner thumbs-down) and demote the category one step. The literal action-revert lands with the queen execution layer."
                 >
-                  Undo
+                  {reverting === row.tripwireId ? 'Undoing…' : 'Undo'}
                 </button>
               ) : null}
             </div>
