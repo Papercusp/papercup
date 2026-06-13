@@ -166,7 +166,10 @@ beforeAll(async () => {
   process.env.INTERNAL_API_BASE = `http://127.0.0.1:${port}`;
 
   // The ACT: one apply over both waves. Tests below assert facets of this outcome.
-  const r = await runPromote({ slug: SLUG, all_waves: true, apply: true });
+  // mark_items is passed explicitly: calling .handler() directly bypasses the zod
+  // schema's `.default(true)` (defaults are applied by the dispatch layer, not the
+  // raw handler), so an omitted mark_items would read as undefined → no mark step.
+  const r = await runPromote({ slug: SLUG, all_waves: true, apply: true, mark_items: true });
   applyData = r.data;
   expect(r.isError).toBe(false);
 }, 120_000);
@@ -231,7 +234,7 @@ describe('plans:promote APPLY path (apply:true, all_waves)', () => {
 
   it('marks the covered plan items done and writes back the ## Promoted block + draft→active (real PG)', async () => {
     // marked_items reported on the (single) apply result.
-    expect({ marked: applyData.applied.marked_items, skipped: applyData.applied.skipped_items }).toEqual('DUMP');
+    expect((applyData.applied.marked_items as string[]).sort()).toEqual(['P-001', 'P-002']);
 
     const [row] = await admin<{ content: string }[]>`
       SELECT content FROM harness_shared.harness_plans
