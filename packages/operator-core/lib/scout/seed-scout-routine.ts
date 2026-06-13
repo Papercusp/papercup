@@ -30,6 +30,16 @@ const PAYLOAD = {
   budget: { maxCostUsd: 3.0, maxIdeators: 6, maxCriticsPerIdea: 2 },
 };
 
+// MIGRATED (deterministic-blueprints-migration-2026-06-13 P-121): the routine now
+// fires the `scout` PROGRAM blueprint via `system:blueprint-run` (which detects
+// program-mode and runs the deterministic `scout:cycle` step inline) rather than the
+// bespoke `system:scout-cycle` action. The cadence/budget overrides move UNDER
+// `payload_template.payload` (the blueprint interpolates `{{ payload.cadence }}` /
+// `{{ payload.budget }}` into the op's args). Same heartbeat cron, same structural
+// self-gate (cadence → fire-gate → claim → budget, inside the tick) — behavior-neutral
+// (D-004). The bespoke action is retired in P-130.
+const BLUEPRINT_PAYLOAD = { blueprintId: 'scout', payload: PAYLOAD };
+
 async function main(): Promise<void> {
   const active = process.argv.includes('--active');
   const ws = activeWorkspaceId();
@@ -41,7 +51,7 @@ async function main(): Promise<void> {
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
        payload_template, concurrency, catchup, active, next_fire_at)
     VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify({ cron: CRON })}::text::jsonb,
-            'system:scout-cycle', ${JSON.stringify(PAYLOAD)}::text::jsonb,
+            'system:blueprint-run', ${JSON.stringify(BLUEPRINT_PAYLOAD)}::text::jsonb,
             'skip', 'skip-old', ${active}, now())
     ON CONFLICT (install_slug, name) DO UPDATE SET
       target_role = EXCLUDED.target_role,
@@ -53,7 +63,8 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-scout-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `cron heartbeat fires system:scout-cycle, which self-gates on idle/friction + budget. ` +
+      `cron heartbeat fires the scout blueprint via system:blueprint-run; the scout:cycle step ` +
+      `self-gates on idle/friction + budget. ` +
       (active ? 'Cadence LIVE.' : 'Inactive — enable with --active or the routines admin.'),
   );
 }

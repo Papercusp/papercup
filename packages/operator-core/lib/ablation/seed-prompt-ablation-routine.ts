@@ -36,26 +36,38 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { promptAblationRegistrationInput } from './governor';
 
 const SLUG = process.env.PROMPT_ABLATION_HARNESS ?? 'papercup';
-const ROUTINE = { name: 'prompt-ablation', target: 'system:prompt-ablation', cron: '0 35 4 * * 1' };
+// MIGRATED (deterministic-blueprints-migration-2026-06-13 P-121): the routine now
+// fires the `prompt-ablation` PROGRAM blueprint via `system:blueprint-run` (which
+// detects program-mode and runs the deterministic `prompt:ablation` step inline)
+// rather than the bespoke `system:prompt-ablation` action. Same cadence, same flag +
+// governor gates, same shadow-ablate→replay→record cycle (the op runs them) —
+// behavior-neutral (D-004). The bespoke action is retired in P-130.
+const ROUTINE = { name: 'prompt-ablation', target: 'system:blueprint-run', cron: '0 35 4 * * 1' };
+/** The program blueprint the routine fires (its deterministic step IS the cycle). */
+const BLUEPRINT_PAYLOAD = { blueprintId: 'prompt-ablation' };
 
 async function main(): Promise<void> {
   const active = process.argv.includes('--active');
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
   const id = `rt_${SLUG}_${ROUTINE.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  // COALESCE on conflict: a re-seed must not wipe an owner-tuned payload.
+  // payload_template carries the blueprint pointer; owner tuning lives under
+  // `payload_template.payload`. On conflict ENSURE blueprintId (a pre-migration row
+  // targeted the bespoke action) while PRESERVING existing keys.
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
        payload_template, concurrency, catchup, active, next_fire_at)
     VALUES (${id}, ${SLUG}, ${ws}, ${ROUTINE.name}, 'cron',
             ${JSON.stringify({ cron: ROUTINE.cron })}::text::jsonb, ${ROUTINE.target},
-            NULL::jsonb,
+            ${JSON.stringify(BLUEPRINT_PAYLOAD)}::text::jsonb,
             'skip', 'skip-old', ${active}, now())
     ON CONFLICT (install_slug, name) DO UPDATE SET
       target_role = EXCLUDED.target_role,
       trigger_config = EXCLUDED.trigger_config,
-      payload_template = COALESCE(harness_shared.routines.payload_template, EXCLUDED.payload_template),
+      payload_template =
+        ${JSON.stringify(BLUEPRINT_PAYLOAD)}::text::jsonb
+        || COALESCE(harness_shared.routines.payload_template - 'blueprintId', '{}'::jsonb),
       active = EXCLUDED.active,
       workspace_id = EXCLUDED.workspace_id,
       updated_at = now()

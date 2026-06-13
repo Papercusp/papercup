@@ -42,6 +42,12 @@ The proof lives in
    op's test deps (`setNegativeSpaceScanDeps`) so the tick never touches PG.
    Assert it reaches a clean `done` AND stays dark (no-op, `skipReason:flag-off`)
    when its flag is off — behavior-neutral in the new hive too (D-004).
+5. **fire (production path)** — drive the *real* `handleBlueprintRun`
+   (`system:blueprint-run`) with `{ blueprintId: '<id>' }` and point its launch
+   resolver at the installed copy via `setLaunchBlueprintResolver` (the same seam
+   the operator overrides for installed/Cupboard launch blueprints). It detects
+   program-mode and runs the program inline — proving the installed blueprint
+   fires through the production trigger, not just a direct `runProgramCore` call.
 
 Net: a host that has **never** seen the blueprint in its installed tier acquires
 it via the Cupboard path and runs it — the thing a lib+routine cannot do.

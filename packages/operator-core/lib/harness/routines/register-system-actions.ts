@@ -186,13 +186,14 @@ import './cross-hive-drain-action';
 import './benchmark-actions';
 import './human-queue-digest-action';
 import './change-ledger-scan-action';
-import './negative-space-action';
-import './neologism-action';
-import './regret-action';
-import './transfer-distill-action';
-import './fleet-ekg-action';
-import './prompt-ablation-action';
+// P-130 (deterministic-blueprints-migration-2026-06-13): seven bucket-A learning
+// loops migrated to deterministic blueprints — their bespoke `system:<loop>` action
+// handlers are RETIRED (negative-space / neologism / regret / transfer / fleet-ekg /
+// prompt-ablation / red-queen). Their seeds fire `system:blueprint-run {blueprintId}`;
+// the lib logic lives on as each op's impl (the shared `run<Loop>` orchestration);
+// the no-retired-style guard (P-132) blocks re-wiring. Scout's registration stays —
+// register-scout-action also provides `productionScoutRunner`, which the scout:cycle
+// op depends on (scout's bespoke-registration retirement is a follow-up).
 import './deferral-interest-action';
 import './calibration-action';
 import './graduation-action';
-import './red-queen-action';

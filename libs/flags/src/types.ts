@@ -330,6 +330,17 @@ export const FLAGS = {
   // (D-007): the sweep only acts on STARTED hives, and the hive is owner-gated.
   // OFF = the kill-switch (the sweep returns immediately).
   HIVE_PLACEMENT_WATCHDOG: "papercusp-hive-placement-watchdog",
+  // queen-autonomy-policy-2026-06-13 B-12 (P-070/P-092): the ARMING GATE for the
+  // Queen autonomy decider (lib/autonomy/decider.ts). When OFF the decider returns
+  // `gated` for EVERY queue item — autonomy is dark, behavior identical to today
+  // (D-007). When ON the D-004 gating function applies, but every category still
+  // ships at `never-auto` (D-007), so nothing auto-decides until the owner ALSO
+  // lowers a per-category ceiling and a class graduates within it (D-005). OFF by
+  // default — DELIBERATE, NOT the alpha flags-default-on policy: flipping it is the
+  // owner's P-092 arming act, gated on B-19's behavior-neutral proof + the frontier
+  // consume-edges live proof. The decider's default deps fail-DARK on a flag-IO
+  // error so a hiccup can never arm autonomy. Surfaced loudly as the pending P-092 flip.
+  QUEEN_AUTONOMY_ARMED: "papercusp-queen-autonomy-armed",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -527,6 +538,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // ON by default — behavior-neutral throughput (B-09 / D-007): the placement
   // completion watchdog only acts on STARTED hives. OFF = the kill-switch.
   [FLAGS.HIVE_PLACEMENT_WATCHDOG]: true,
+  // OFF by default — DELIBERATE (queen-autonomy-policy B-12 / P-092): the autonomy
+  // decider ARMING GATE. OFF ⇒ the decider gates EVERY item (autonomy dark,
+  // behavior-neutral, D-007). The owner's P-092 act flips it ON — and even then
+  // every category ships never-auto (D-005), so arming alone auto-decides nothing.
+  [FLAGS.QUEEN_AUTONOMY_ARMED]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

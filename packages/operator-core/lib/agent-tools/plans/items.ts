@@ -150,7 +150,12 @@ export default defineTool({
       );
       for (const item of resolvedItems) {
         if (args.actionable && item.effectiveStatus !== 'todo') continue;
-        if (args.needsHuman && item.storedStatus !== 'needs-human') continue;
+        // needsHuman keys on the DERIVED top band (B-12 / P-072), not the raw
+        // stored token — so an authority=owner item gates the orchestrator DONE-gate
+        // and, once the owner arms autonomy (P-092), a high-risk item above its
+        // ceiling does too. Behavior-neutral today: `needsHuman` equals
+        // `storedStatus === 'needs-human'` while unarmed (D-007).
+        if (args.needsHuman && !item.needsHuman) continue;
         if (args.status && item.effectiveStatus !== args.status) continue;
         rows.push({
           plan: row.planSlug,

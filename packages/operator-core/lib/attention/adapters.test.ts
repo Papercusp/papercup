@@ -6,7 +6,10 @@ import {
   severityToRiskTier,
   riskTierIsDecision,
   DECISION_RISK_TIER,
+  ATTENTION_KIND_CATEGORY,
+  attentionCategory,
   type AttentionItem,
+  type AttentionKind,
 } from './types';
 import {
   planItemToAttention,
@@ -15,6 +18,7 @@ import {
   smokeFailToAttention,
   planReviewToAttention,
 } from './adapters';
+import { isAutonomyCategory } from '../autonomy/categories';
 
 describe('importance helpers', () => {
   it('ranks urgent→low ascending', () => {
@@ -249,5 +253,58 @@ describe('needsHuman drops at the source (Brief 21 — the 62→12 intent)', () 
     expect(items.length).toBe(20);
     expect(needsHuman.length).toBe(4);
     expect(needsHuman.every((i) => i.tier === 'decision')).toBe(true);
+  });
+});
+
+describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009/D-011)', () => {
+  const ALL_KINDS: AttentionKind[] = [
+    'plan-item',
+    'coord-escalation',
+    'coord-message',
+    'smoke-fail',
+    'plan-review',
+    'operator-report',
+  ];
+
+  it('the kind to category map covers every AttentionKind (no kind silently uncategorized)', () => {
+    expect(Object.keys(ATTENTION_KIND_CATEGORY).sort()).toEqual([...ALL_KINDS].sort());
+  });
+
+  it('every non-null mapped category is one of the 13 canonical autonomy categories', () => {
+    for (const cat of Object.values(ATTENTION_KIND_CATEGORY)) {
+      if (cat !== null) expect(isAutonomyCategory(cat)).toBe(true);
+    }
+  });
+
+  it('each adapter stamps its kind category (the disposition domain, not the underlying work)', () => {
+    const planItem = planItemToAttention({ slug: 's', harnessSlug: null, id: 'P-1', text: 't', storedStatus: 'needs-human', effectiveStatus: 'needs-human', importance: 'normal' });
+    expect(planItem.category).toBe('plan-governance');
+    expect(coordEscalationToAttention({ msgId: 'm', severity: 'blocker', summary: 's' }).category).toBe('escalations');
+    expect(coordMessageToAttention({ msgId: 'm', summary: 's' }).category).toBe('inbox-triage');
+    expect(planReviewToAttention({ harnessSlug: 'h' }).category).toBe('plan-governance');
+  });
+
+  it('ungoverned signals/reports carry a null category (fail-safe: nothing for the gate to open)', () => {
+    expect(smokeFailToAttention({ harnessSlug: 'h' }).category).toBeNull();
+    expect(ATTENTION_KIND_CATEGORY['operator-report']).toBeNull();
+    expect(attentionCategory('smoke-fail')).toBeNull();
+  });
+
+  it('the adapter category always agrees with attentionCategory(kind) — one source of truth', () => {
+    const items: AttentionItem[] = [
+      planItemToAttention({ slug: 's', harnessSlug: null, id: 'P-1', text: 't', storedStatus: 'todo', effectiveStatus: 'todo', importance: 'normal' }),
+      coordEscalationToAttention({ msgId: 'm', severity: 'question', summary: 's' }),
+      coordMessageToAttention({ msgId: 'm', summary: 's' }),
+      smokeFailToAttention({ harnessSlug: 'h' }),
+      planReviewToAttention({ harnessSlug: 'h' }),
+    ];
+    for (const it of items) expect(it.category).toBe(attentionCategory(it.kind));
+  });
+
+  it('behavior-neutral: tagging category leaves tier + needsHuman untouched', () => {
+    const a = planItemToAttention({ slug: 's', harnessSlug: null, id: 'P-1', text: 't', storedStatus: 'needs-human', effectiveStatus: 'needs-human', importance: 'urgent' });
+    expect(a.tier).toBe('decision');
+    expect(a.needsHuman).toBe(true);
+    expect(a.category).toBe('plan-governance'); // the new axis rides alongside, changing nothing
   });
 });

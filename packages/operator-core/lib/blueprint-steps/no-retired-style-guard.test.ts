@@ -67,15 +67,24 @@ describe('no-retired-style guard predicate (P-132)', () => {
   });
 
   it('does NOT flag a NON-migrated loop targeting its own (still-live) bespoke action', () => {
-    // prompt-ablation / scout-cycle / transfer-distill are NOT yet migrated — their
-    // seeds legitimately target their own `system:*` action; only MIGRATED_LOOPS are forbidden.
-    const live = "const ROUTINE = { name: 'prompt-ablation', target: 'system:prompt-ablation', cron: '0 35 4 * * 1' };";
+    // bucket-B plumbing (git-sync stays a routine forever) legitimately targets its
+    // own `system:*` action; only MIGRATED_LOOPS are forbidden as targets.
+    const live = "const ROUTINE = { name: 'git-sync', target: 'system:git-sync', cron: '0 */5 * * * *' };";
     expect(isRetiredRoutineRewire(live)).toBe(false);
   });
 
-  it('the migrated set is well-formed: 4 known loops, each retiredTarget = system:<loop>, each with a blueprintId', () => {
+  it('the migrated set is well-formed: 8 known loops, each retiredTarget = system:<loop>, each with a blueprintId', () => {
     expect(MIGRATED_LOOPS.map((m) => m.loop).sort()).toEqual(
-      ['fleet-ekg-scan', 'negative-space-mine', 'neologism-mine', 'regret-mine'],
+      [
+        'fleet-ekg-scan',
+        'negative-space-mine',
+        'neologism-mine',
+        'prompt-ablation',
+        'red-queen-drill',
+        'regret-mine',
+        'scout-cycle',
+        'transfer-distill',
+      ],
     );
     for (const m of MIGRATED_LOOPS) {
       expect(m.retiredTarget).toBe(`system:${m.loop}`);

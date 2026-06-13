@@ -83,6 +83,7 @@ import {
 } from '../../autonomy/categories';
 import { categoryForAction } from '../../autonomy/capability-category-map';
 import { ACTION_SURFACE } from '../../autonomy/action-surface';
+import { decideAutonomy } from '../../autonomy/decider';
 
 import {
   checkLoopVerdict,
@@ -657,8 +658,13 @@ const maximalPolicy = (category: AutonomyCategory): AutonomyCategoryPolicy =>
   policyFor(category, { locked: false, ceiling: 'critical', graduatedLevel: 'critical' });
 
 /**
- * The D-004 unified gate, composed from the shipped pure functions (see the
- * banner above). Returns whether the Queen may auto-decide WITHOUT asking.
+ * The D-004 unified gate. B-12 landed the real decider (`decideAutonomy`), so —
+ * per the banner above ("when B-12 lands a real `decide(...)`, repoint
+ * `autoAllowed` below at it and these stay the spec") — this now delegates to the
+ * LIVE gate, armed, so every P-090/P-091 invariant pins the production decider
+ * rather than a re-implementation. The decider derives the same verdict from the
+ * same shipped pure functions (deriveNeedsHuman ∧ isAutoReversible, protection via
+ * `effectiveCeiling`'s locked⇒never-auto), so the spec is unchanged.
  */
 function autoAllowed(args: {
   policy: AutonomyCategoryPolicy;
@@ -666,13 +672,16 @@ function autoAllowed(args: {
   authority: 'owner' | 'system';
   reversibility: Reversibility;
 }): boolean {
-  const needsHuman = deriveNeedsHuman({
-    riskTier: args.riskTier,
-    authority: args.authority,
-    ceiling: effectiveCeiling(args.policy),
-    armed: true,
-  });
-  return !needsHuman && isAutoReversible(args.reversibility);
+  return (
+    decideAutonomy({
+      category: args.policy.category,
+      effectiveCeiling: effectiveCeiling(args.policy),
+      riskTier: args.riskTier,
+      authority: args.authority,
+      reversibility: args.reversibility,
+      armed: true,
+    }).posture === 'auto'
+  );
 }
 
 // ── 7. the per-category autonomy gate's recursion-safety invariants (P-090) ───

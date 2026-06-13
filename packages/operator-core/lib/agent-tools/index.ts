@@ -206,6 +206,8 @@ import './flags/set';
 // Queen autonomy policy — per-category risk ceilings (queen-autonomy-policy B-03).
 import './autonomy/get';
 import './autonomy/set';
+// The Queen autonomy decider gate (queen-autonomy-policy B-12 / P-070).
+import './autonomy/decide';
 
 import './saved_prompts/list';
 

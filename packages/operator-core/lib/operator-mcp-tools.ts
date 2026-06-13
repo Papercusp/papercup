@@ -47,6 +47,10 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // NOT on the brain's tool surface; the owner changes ceilings via the
   // settings page / an SU session.
   'mcp__agentmcp__autonomy:policy_get',
+  // The decider gate (queen-autonomy-policy B-12 / P-070): per queue item, auto
+  // (the Queen may decide without asking) vs gated (→ the owner Queue), with the
+  // reasons. Behavior-neutral (always gated) until the owner arms the policy (P-092).
+  'mcp__agentmcp__autonomy:decide',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
   // Plans read surface — the needs-human inbox + importance the scanner

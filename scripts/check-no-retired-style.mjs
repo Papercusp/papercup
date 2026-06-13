@@ -54,6 +54,11 @@ export const MIGRATED_LOOPS = [
   { loop: 'regret-mine', retiredTarget: 'system:regret-mine', blueprintId: 'regret' },
   { loop: 'neologism-mine', retiredTarget: 'system:neologism-mine', blueprintId: 'neologism' },
   { loop: 'fleet-ekg-scan', retiredTarget: 'system:fleet-ekg-scan', blueprintId: 'fleet-ekg' },
+  // P-121/P-122 waves (seeds repointed to system:blueprint-run, 2026-06-13).
+  { loop: 'red-queen-drill', retiredTarget: 'system:red-queen-drill', blueprintId: 'red-queen' },
+  { loop: 'scout-cycle', retiredTarget: 'system:scout-cycle', blueprintId: 'scout' },
+  { loop: 'transfer-distill', retiredTarget: 'system:transfer-distill', blueprintId: 'transfer' },
+  { loop: 'prompt-ablation', retiredTarget: 'system:prompt-ablation', blueprintId: 'prompt-ablation' },
 ];
 
 /** The retired bespoke action names that must never be a routine target again. */

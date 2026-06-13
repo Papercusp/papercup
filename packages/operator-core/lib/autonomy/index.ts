@@ -44,3 +44,17 @@ export {
   partialCoverage,
   categoriesInAudit,
 } from './action-surface';
+
+export {
+  type AutonomyPosture,
+  type EconomicSignals,
+  type AutonomyDecisionInput,
+  type AutonomyDecision,
+  type DeciderDeps,
+  decideAutonomy,
+  resolveAutonomyDecision,
+  decideRankedItem,
+  defaultDeciderDeps,
+  graduationEvidenceSignals,
+  extractEconomicSignals,
+} from './decider';

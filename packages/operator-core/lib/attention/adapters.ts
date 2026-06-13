@@ -188,6 +188,7 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
   return {
     id: `coord-message:${m.msgId}`,
     kind: 'coord-message',
+    category: ATTENTION_KIND_CATEGORY['coord-message'],
     source: 'coord',
     harnessSlug: m.harnessSlug ?? null,
     planSlug: m.planSlug ?? null,
@@ -226,6 +227,7 @@ export function smokeFailToAttention(s: SmokeFailInput): AttentionItem {
   return {
     id: `smoke-fail:${s.harnessSlug}`,
     kind: 'smoke-fail',
+    category: ATTENTION_KIND_CATEGORY['smoke-fail'],
     source: 'harness',
     harnessSlug: s.harnessSlug,
     planSlug: null, // unattached → synthetic "Alerts" bucket
@@ -257,6 +259,7 @@ export function planReviewToAttention(r: PlanReviewInput): AttentionItem {
   return {
     id: `plan-review:${r.harnessSlug}`,
     kind: 'plan-review',
+    category: ATTENTION_KIND_CATEGORY['plan-review'],
     source: 'harness',
     harnessSlug: r.harnessSlug,
     planSlug: null, // the review row is harness-keyed, not tied to a plan slug
@@ -328,6 +331,7 @@ export function operatorReportToAttention(r: OperatorReportInput): AttentionItem
   return {
     id: `operator-report:${r.turnId}`,
     kind: 'operator-report',
+    category: ATTENTION_KIND_CATEGORY['operator-report'],
     source: 'operator',
     harnessSlug: null, // the operator conversation is workspace-level
     planSlug,
