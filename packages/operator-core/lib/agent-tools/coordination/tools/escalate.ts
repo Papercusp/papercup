@@ -30,7 +30,15 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // The launch-fixer roles (merge-resolver / release-fixer / content-fixer) each
+  // declare coord:escalate in their blueprint deps as their "can't safely fix → hand
+  // to a human" escape hatch, but none are in COORD_ROLES — so a spawned fixer's
+  // escalate hit role_not_allowed (a declared-but-ungated dependency). Granted HERE
+  // only (least-privilege: just escalate, not the whole coord:* surface). The fixers'
+  // primary human-surfacing is still their system routine's own escalation; this
+  // makes the agent's richer per-file escalation actually fire. (git-sync-content-guard
+  // D-008; fixes the inherited merge-resolver/release-fixer gap in the same edit.)
+  agentRoles: [...COORD_ROLES, 'merge-resolver', 'release-fixer', 'content-fixer'],
   // Demand surfaces as an EVENT (start-hive-wake P-001 / D-001). The escalation
   // record goes to the human; this lifecycle emit reaches the plan's watchers
   // ([] when plan-less ⇒ recorded, delivered to no inbox — audit without noise).

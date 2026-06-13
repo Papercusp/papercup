@@ -55,13 +55,40 @@ Two program shapes, discriminated by the gate (no schema field):
    program **inline as its durable step** via `runProgramCore` + `inlineRunOp`
    (behavior-neutral: the bespoke loops also ran inline in their step).
 
-5. **Hybrid loops** (det select → agent → det persist, e.g. regret): the agent
-   step is `orchestrator:spawn-roles`, which routes through `coordSpawnRunner` →
-   `spawnInvokeOnce` — **the one governed launch chokepoint**. So blueprint-izing a
-   hybrid loop closes the eval-battery "second spawn path" seam for free (D-005).
+5. **Hybrid loops** (det → agent → det, e.g. regret / transfer / prompt-ablation /
+   iq-battery): the agent leg stays **INTERNAL to the op** (Option A), NOT an
+   `orchestrator:spawn-roles` step. Two reasons (D-009 / D-013): (a) those loops'
+   "agents" are governed `llmCall`s (regret/transfer/ablation) or fleet bees that
+   already route through `spawnAgentInHarness → fleet:spawn → spawnInvokeOnce` —
+   **the one governed chokepoint** — so there is NO ungoverned second spawn path to
+   "close"; (b) `spawn-roles` is for **role fan-out** (vote's per-lens voters): its
+   agents take a harness *role/persona*. A loop whose agent takes a *brief* (a corpus
+   case, a transcript continuation) doesn't fit that contract — keep the spawn inside
+   the op. So "deterministic step" = deterministic *top level* (the gate logic), with
+   internal governed spawns, NOT "no spawns." iq-battery is the worked hybrid:
+   `iq-battery:gen` op wraps `runIqBatteryGen` (cadence-tick + the gen-0 bee runner).
 
 ## Gotchas
 
+- **Before migrating, check it isn't ALREADY a blueprint role.** The worker chunk
+  loop (`worker-chunk-loop.ts`) looked like a bespoke loop to migrate, but it IS the
+  coding blueprint's `worker` role body — already blueprint-integrated, running in the
+  `invoke-once` subprocess with the subprocess's `InvokeContext`. "Migrating" it is a
+  cross-process durability RE-ARCHITECTURE (the op runs in the operator's program
+  workflow, a different context), not a gap. Don't re-migrate the already-integrated.
+- **No top-level throwing computation in a wrapped lib** (the same class as the
+  `__dirname` deploy incident). `change-ledger/scan-loop.ts` did
+  `const x = promisify(execFile)` at module scope; a test that partially mocks
+  `node:child_process` (only `spawn`) made `execFile` undefined → `promisify(undefined)`
+  threw AT IMPORT, poisoning every test whose graph includes the module. Promisify /
+  resolve lazily INSIDE the function.
+- **Workspace-singleton cadence ≠ blueprint `triggers.schedule` materialization.**
+  The migrated loops are workspace SINGLETONS (one routine per workspace), but
+  `materializeBlueprintTriggers` creates one routine PER INSTALL (keyed
+  `(install_slug, name)`) seeded ACTIVE. So the loops keep their bespoke singleton
+  SEED scripts (which also do governor registration); the blueprint's `triggers.schedule`
+  is DOCUMENTATION of the cadence, not the live materializer (D-010 / D-012). Making
+  it the live mechanism needs a per-workspace host-slug convention — an open design call.
 - `validateBlueprint` is called WITHOUT `knownOps` at every current call site, so a
   program op that doesn't exist is caught at RUN time (`requireCoordOp` throws), not
   load time. Register your op (import the family index) wherever the program runs.
@@ -69,6 +96,10 @@ Two program shapes, discriminated by the gate (no schema field):
   misconfigured fire), not silently mine the wrong scope.
 - `runProgramCore` maps a gateless completed run (`no-gate-match` from the generic
   runner) to a clean `done` — don't reintroduce a gate just to terminate.
+- **Gating varies per loop** — replicate the ACTUAL gate: most are flag + learning-
+  governor; change-ledger is flag-only (pure bookkeeping); scout is structural
+  (cadence/fire-gate/claim/budget, no flag); iq-battery is owner-budget (refuse if no
+  `budgetUsd`). Read the action; don't assume flag+governor.
 
 ## Files (pilot A — negative-space, the reference)
 

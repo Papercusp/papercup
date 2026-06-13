@@ -44,6 +44,28 @@ blocks it. Switching the fleet to the pool account (install its token at
 recovery you perform yourself** — not a "burns the test account" escalation to
 the owner. Only escalate after the live probe shows **every** account refusing.
 
+## If you are a fleet-monitor about to file "the fleet is blocked"
+
+This insight keeps getting re-escalated by *automated fleet-health summaries*,
+not just humans — and the recurrence is a **propagation loop, not a real
+outage**:
+
+- **A still-open peer escalation citing "weekly limit · resets &lt;date&gt;" is
+  NOT current truth.** Each monitor reads the last open blocker escalation and
+  re-files it forward, so one stale 2026-06-12 snapshot kept regenerating
+  "blocked until Jun 18" escalations for *days* after both tokens were live
+  (re-verified `exit=0` on 06-12, 06-13 08:08, and again 06-13 17:12). Before
+  you re-escalate, run the STOP checks above; if they pass, **`coord:resolve`
+  the open escalation with the live evidence** instead of filing a new one.
+  Don't propagate a snapshot.
+- **A dead-spawn signature is more often EI-85 than a quota cap.** EI-85
+  (open, critical): a restart of the shared `:3170` staging-api host cgroup-kills
+  every in-flight `fleet:spawn` child, and the nursery mislabels it as
+  stale-heartbeat reclaim. The fleet bounces `:3170` for live smoke tests
+  several times a day, so "spawn exited 1 / empty output" *right after* a
+  `:3170` restart is almost certainly EI-85 — check for a recent
+  `papercup-staging-api.service` restart before you conclude "weekly limit."
+
 ## Symptom (genuine exhaustion — verify it's real via the STOP checks above first)
 
 Autonomous LLM work dies fleet-wide while every *interactive* agent session

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 403,
+  "count": 409,
   "tools": [
     {
       "name": "ablation:report",
@@ -733,6 +733,30 @@
       }
     },
     {
+      "name": "autonomy:graduation_status",
+      "http": {
+        "path": "/api/agent-tools/autonomy/graduation_status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the Queen trust-graduation standings: per-(category, class) clean-auto-pass streaks from the tripwire ledger, each category's earned graduated_level vs its current level + ceiling, and which classes are graduation-eligible (an owner ratification ask to raise a ceiling). Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Rendering the owner graduation surface, or checking how close a category is to earning more autonomy. Pairs with autonomy:policy_get (ceilings) + autonomy:tripwire_list (the underlying passes).",
+        "notWhen": "To raise a ceiling use autonomy:policy_set (owner authority). The graduated_level itself is written by the autonomy-trust-scan routine, not here."
+      }
+    },
+    {
       "name": "autonomy:policy_get",
       "http": {
         "path": "/api/agent-tools/autonomy/policy_get",
@@ -775,6 +799,84 @@
       "guidance": {
         "when": "The owner (or the owner control surface) deliberately changes a category's autonomy — lower/raise the risk ceiling, lock/unlock (protected = never-auto), or the graduation engine records an earned level (clamped ≤ the ceiling).",
         "notWhen": "To read the policy use autonomy:policy_get. This does not arm autonomy — categories ship never-auto and widen only after the owner lowers a ceiling AND the arming gate (P-092)."
+      }
+    },
+    {
+      "name": "autonomy:record_disposition",
+      "http": {
+        "path": "/api/agent-tools/autonomy/record_disposition",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Log the Queen's disposition of a considered item to the decision ledger (P-111): act | defer | reject | route-to-research | no-op. Resolves the autonomy gate from the action + risk/authority/reversibility (same as autonomy:decide), then records one disposition row with the decision axes, the chosen disposition, why, and links (the item, a realized action row, or a routed research task). Behavior-neutral record-keeping.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the Queen and you've DECIDED what to do with a queue item — record the disposition so it lands in the decision ledger / the owner's recent-auto-decisions feed. Use disposition='act' (links the action row), 'defer' (+revisitAt), 'reject' (+why), 'route-to-research' (+researchTaskId), or 'no-op' (+why).",
+        "notWhen": "Just QUERYING whether you may auto-handle something (no commitment yet) → autonomy:decide. Changing a category ceiling → autonomy:policy_set.",
+        "chaining": "autonomy:decide (or the same inputs) → act on the item → autonomy:record_disposition to log what you did. The worked example: a plan that \"needs more research\" → record_disposition { action:\"plans:add-item\", disposition:\"route-to-research\", researchTaskId } → a plan-governance disposition linked to the spawned research task."
+      }
+    },
+    {
+      "name": "autonomy:tripwire_list",
+      "http": {
+        "path": "/api/agent-tools/autonomy/tripwire_list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List recent Queen auto-decisions and their auto-revert tripwires (category, class, action, watch status armed/cleared/tripped/reverted, revert handle). Backs the settings recent-auto-decisions feed. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Rendering the owner recent-auto-decisions feed, or inspecting which auto-decisions are under watch / tripped. Filter by status (armed|cleared|tripped|reverted) or category.",
+        "notWhen": "To UNDO one use autonomy:tripwire_revert. To see graduation standings use autonomy:graduation_status. To read ceilings use autonomy:policy_get."
+      }
+    },
+    {
+      "name": "autonomy:tripwire_revert",
+      "http": {
+        "path": "/api/agent-tools/autonomy/tripwire_revert",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Owner one-click undo of a Queen auto-decision: trip its tripwire (owner-thumbs-down), revert the action, and demote the category one step. Owner-authority; the strongest counter-signal.",
+      "capabilities": [
+        "audit:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner rejects a recent auto-decision in the settings feed — undo the action + tell the graduation engine this category was too aggressive (demote one step).",
+        "notWhen": "To just LIST auto-decisions use autonomy:tripwire_list. To change a ceiling directly use autonomy:policy_set."
       }
     },
     {
@@ -1976,7 +2078,10 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "merge-resolver",
+        "release-fixer",
+        "content-fixer"
       ],
       "guidance": {
         "when": "A decision you should not make alone, a blocker that requires human input, or a risky operation that needs explicit confirmation.",
@@ -2976,6 +3081,72 @@
         "when": "BEFORE creating a new SQL migration file — reserve the number first instead of `ls | tail`, so a concurrent agent cannot pick the same NNN.",
         "notWhen": "Applying a migration (that is the boot auto-apply / db:migrate) or checking drift (db:check_drift).",
         "chaining": "db:next-migration { name } → write the returned path → restart the operator (boot auto-applies) or db:migrate."
+      }
+    },
+    {
+      "name": "decision_ledger:list",
+      "http": {
+        "path": "/api/agent-tools/decision_ledger/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Queen's decision ledger newest-first: governed actions (layer=action — what ran, with posture auto/gated/rejected) and the Queen's per-item dispositions (layer=disposition — act/defer/reject/route-to-research/no-op + why). Filter by layer/category/posture/disposition/time. Each row carries the autonomy axes (category, risk_tier, reversibility, authority) + provenance links. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Auditing what the Queen has decided / what the fleet has done: 'what auto-decisions happened?', 'show the gated actions in spend-budget', 'what did she defer?'. Pair with autonomy:policy_get to see why a category gates.",
+        "notWhen": "A roll-up of counts by posture/category — decision_ledger:summary. Prompt/rule mutations specifically — change_ledger:list. The live policy ceilings — autonomy:policy_get.",
+        "chaining": "decision_ledger:summary (the shape) → decision_ledger:list { layer, category, posture } for the rows → a row.links (runId/spawnId/itemRef) to drill to the transcript / item."
+      }
+    },
+    {
+      "name": "decision_ledger:summary",
+      "http": {
+        "path": "/api/agent-tools/decision_ledger/summary",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Roll-up of the Queen decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. The cheap shape-read before decision_ledger:list. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Getting oriented: 'how much is the Queen auto-deciding vs gating?', 'which categories see the most gated actions?', 'what's the disposition mix this week?'. Then decision_ledger:list for the rows.",
+        "notWhen": "You want the actual rows — decision_ledger:list. Live ceilings — autonomy:policy_get.",
+        "chaining": "decision_ledger:summary → decision_ledger:list { the posture/category that stands out }."
       }
     },
     {

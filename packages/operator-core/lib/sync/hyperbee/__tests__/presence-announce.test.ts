@@ -7,6 +7,7 @@ import {
   shouldAnnounce,
   buildPresenceAnnounceRow,
   buildPresenceAnnounceOp,
+  buildPresenceTombstoneOp,
   announceLocalPresence,
   startPresenceAnnounceLoop,
   type PresenceState,
@@ -61,6 +62,14 @@ describe('buildPresenceAnnounceRow / Op', () => {
     expect(op.table).toBe('presence');
     expect(op.hbKey).toBe('4242/thinkpad');
     expect((op as { value: { harness_slug: string } }).value.harness_slug).toBe('papercup');
+  });
+  it('buildPresenceTombstoneOp builds a del op on the same key, carrying no row (EI-469)', () => {
+    const op = buildPresenceTombstoneOp(ID, NOW);
+    expect(op.type).toBe('del');
+    expect(op.table).toBe('presence');
+    expect(op.hbKey).toBe('4242/thinkpad'); // same key the put uses → the del retracts it
+    expect(op.ts).toBe(NOW);
+    expect(op.value).toBeUndefined();
   });
 });
 
