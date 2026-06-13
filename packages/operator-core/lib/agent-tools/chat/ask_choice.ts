@@ -61,6 +61,25 @@ const argsSchema = z.object({
    * click on the chat surface. Plan §C.3 (default false / H3 review).
    */
   voiceAnswerable: z.boolean().optional(),
+  /**
+   * B-17/P-040 decision-context: when an AUTONOMOUS agent (bee) asks, declare WHAT
+   * the decision is about so the autonomy gate can route it (reversible + in-envelope
+   * + below-ceiling → the bee may self-decide; else → the owner Queue). Ignored for
+   * interactive callers and while the autonomy gate is disarmed (owner P-092 OFF).
+   */
+  decision: z
+    .object({
+      action: z
+        .string()
+        .max(120)
+        .optional()
+        .describe('Tool/verb or short slug of the action the decision is about (maps to an autonomy category, B-04).'),
+      riskTier: z.enum(['trivial', 'low', 'moderate', 'high', 'critical']).optional(),
+      authority: z.enum(['system', 'owner']).optional(),
+      reversibility: z.enum(['reversible', 'irreversible', 'unknown']).optional(),
+    })
+    .optional()
+    .describe('Decision-context for the autonomy gate (B-17/P-040) — only the bee self-answer path uses it; omit for ordinary human-facing questions.'),
 });
 
 export default defineTool({
@@ -180,8 +199,42 @@ export default defineTool({
     // Intercepted agent cards classify up-front so the bounded timeout is on the
     // spec before the card registers (the gate decides the rung + timeout).
     const interceptRouting = intercept
-      ? await classifyAgentQuestion({ identity: identity!, question: normalized.question, options: optionPairs })
+      ? await classifyAgentQuestion({
+          identity: identity!,
+          question: normalized.question,
+          options: optionPairs,
+          ...(normalized.decision?.action ? { action: normalized.decision.action } : {}),
+          ...(normalized.decision?.riskTier ? { riskTier: normalized.decision.riskTier } : {}),
+          ...(normalized.decision?.authority ? { authority: normalized.decision.authority } : {}),
+          ...(normalized.decision?.reversibility ? { reversibility: normalized.decision.reversibility } : {}),
+        })
       : null;
+
+    // B-17/P-040 — bee SELF-ANSWER short-circuit. When the autonomy gate permits the
+    // autonomous caller to self-decide this question (reversible · in-envelope · below
+    // the per-category ceiling — only reachable once the owner arms P-092), do NOT
+    // open an owner escalation or block on the card: return immediately so the bee
+    // proceeds with its sensible default. The dispatch/confinement layer arms the
+    // D-006 revert-handle on the auto reversible action it then takes
+    // (armTripwireForDecision). DARK until armed: while disarmed the gate returns
+    // owner-queue, so this branch is never taken (behavior-neutral, D-007).
+    if (interceptRouting?.rung === 'bee-self') {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              self_decide: true,
+              rung: 'bee-self',
+              options: optionPairs,
+              message:
+                'Autonomy gate permits self-decision (reversible · in-envelope · below-ceiling). Pick the sensible default and proceed — do NOT wait on the owner. Your reversible action is auto-watched with a revert-handle (D-006); undo if it trips.',
+            }),
+          },
+        ],
+      };
+    }
 
     let escalationP: Promise<{ msg_id: string } | null> = Promise.resolve(null);
     const wantsOnCard = intercept || durableMirror;

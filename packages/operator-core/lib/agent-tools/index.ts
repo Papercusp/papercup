@@ -98,6 +98,9 @@ import './hive/asks';
 // `network.board` named sync query that backs the dock Network tab:
 import './network/board';
 import './chat/ask_choice';
+// queen-autonomous-execution B-17/P-043 — install the B-12 decider-backed classifier
+// into the B-10 agent-question gate (behavior-neutral until owner P-092 arming):
+import './coordination/wire-agent-question-gate';
 import './search/fulltext';
 import './search/semantic';
 import './memory/remember';
