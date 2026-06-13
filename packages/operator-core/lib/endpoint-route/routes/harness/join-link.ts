@@ -28,9 +28,16 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../../../harness-registry';
+import type { ProjectEntry } from '../../../harness-registry';
 import { scaffoldHarnessSchema } from '../../../scaffold-harness-schema';
 import { parseHarnessLink } from '../../../harness/url-scheme';
 import { joinSharedHarness, JoinStepError } from '../../../harness/join-shared-harness';
+import {
+  seedGitSyncRoutineForMember,
+  type SeedGitSyncRoutineOpts,
+  type SeedGitSyncRoutineOutcome,
+} from '../../../harness/git-sync/git-sync-routine';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { resolveDeviceKeychainId } from '../../../identity/device-keychain-id';
 import {
   resolveLocalGithubIdentity,
@@ -48,6 +55,10 @@ export interface JoinLinkDeps {
   saveRegistry: typeof saveHarnessRegistry;
   joinHarness: (opts: Parameters<typeof joinSharedHarness>[0]) => Promise<JoinState>;
   scaffold: (slug: string) => Promise<void>;
+  /** EI-382: seed the joined clone's git-sync routine (best-effort). */
+  seedGitSync: (opts: SeedGitSyncRoutineOpts) => Promise<SeedGitSyncRoutineOutcome>;
+  /** Active workspace id for the seed (injectable for hermetic tests). */
+  resolveWorkspaceId: () => string;
 }
 
 export const realJoinLinkDeps: JoinLinkDeps = {
@@ -56,6 +67,8 @@ export const realJoinLinkDeps: JoinLinkDeps = {
   saveRegistry: saveHarnessRegistry,
   joinHarness: joinSharedHarness,
   scaffold: scaffoldHarnessSchema,
+  seedGitSync: (opts) => seedGitSyncRoutineForMember(opts),
+  resolveWorkspaceId: activeWorkspaceId,
 };
 
 // ─── core handler (injectable, exported for tests) ────────────────────────────
@@ -133,6 +146,36 @@ export async function handleJoinLink(
       await deps.scaffold(slug);
     } catch {
       // Non-fatal — harness is still usable without schema.
+    }
+
+    // EI-382: seed the joined clone's git-sync routine. A bare-link join
+    // registers a minimal { slug, path } entry with no `hive_slug`, so neither
+    // joinHiveAsView's per-member loop (the only OTHER join-side seeder) nor the
+    // `hive_slug`-filtered boot reconcile would ever seed it — the clone would
+    // silently never sync, contradicting the "git-sync owns the tree" contract.
+    // Joiner-side ⇒ push:false (D-002: a local commit+fetch+merge mirror; the
+    // owner's pushes / a fork-PR is the contribution path), active per D-008,
+    // and the cron jitter key is salted per-install (D-004) because the same
+    // shared repo may be joined under the same slug on N peer boxes. Best-effort
+    // exactly like joinHiveAsView: a seed failure NEVER fails the join (the
+    // routine can be backfilled later).
+    try {
+      const workspaceId = deps.resolveWorkspaceId();
+      const entry: ProjectEntry = {
+        slug,
+        path: state.cloneDir,
+        github_remote: `https://github.com/${link.github}`,
+        github_repository_id: link.repoId,
+      };
+      await deps.seedGitSync({
+        workspaceId,
+        installSlug: slug,
+        entry,
+        joinerSide: true,
+        cronKey: `${slug}:${workspaceId}`,
+      });
+    } catch {
+      // Non-fatal — the boot reconcile / a manual seed can backfill later.
     }
   }
 

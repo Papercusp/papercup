@@ -8,6 +8,8 @@
  *   - gh NOT authed → 401 { code: 'gh_auth_required' }; joinHarness NOT called
  *   - slug conflict → 409 { code: 'slug_conflict' }
  *   - invalid / missing harnessLinkUrl → 400 { code: 'invalid_link' } (via handler)
+ *   - EI-382: seeds the joined clone's git-sync routine (joiner-side, salted
+ *     cron, github coords from the link); skipped when no cloneDir; best-effort
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -50,6 +52,14 @@ function makeDeps(overrides: Partial<JoinLinkDeps> = {}): JoinLinkDeps {
     saveRegistry: vi.fn(async () => {}),
     joinHarness: vi.fn(async () => FAKE_STATE),
     scaffold: vi.fn(async () => {}),
+    seedGitSync: vi.fn(async () => ({
+      seeded: true as const,
+      active: true,
+      push: false,
+      pushReason: 'joiner_side',
+      cron: '0 0,10,20,30,40,50 * * * *',
+    })),
+    resolveWorkspaceId: vi.fn(() => 'ws-test'),
     ...overrides,
   };
 }
@@ -168,6 +178,47 @@ describe('handleJoinLink', () => {
     });
     const res = await handleJoinLink(VALID_INPUT, deps);
     expect(res.status).toBe(200);
+  });
+
+  // ── EI-382: bare-link joins seed their own git-sync routine ─────────────────
+
+  it('seeds the joined clone git-sync routine joiner-side with github coords + salted cron', async () => {
+    const deps = makeDeps();
+    await handleJoinLink(VALID_INPUT, deps);
+
+    expect(deps.seedGitSync).toHaveBeenCalledTimes(1);
+    const seedArg = (deps.seedGitSync as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(seedArg).toMatchObject({
+      workspaceId: 'ws-test',
+      installSlug: 'my-harness',
+      joinerSide: true, // D-002: push:false — a local mirror, not a pusher
+      cronKey: 'my-harness:ws-test', // D-004: salted per-install (shared repo, N peers)
+      entry: {
+        slug: 'my-harness',
+        path: '/tmp/my-harness',
+        github_remote: 'https://github.com/Papercusp/papercup',
+        github_repository_id: 12345,
+      },
+    });
+  });
+
+  it('does NOT seed git-sync when cloneDir is missing', async () => {
+    const stateNoClone: JoinState = { ...FAKE_STATE, cloneDir: undefined };
+    const deps = makeDeps({ joinHarness: vi.fn(async () => stateNoClone) });
+    await handleJoinLink(VALID_INPUT, deps);
+    expect(deps.seedGitSync).not.toHaveBeenCalled();
+  });
+
+  it('swallows git-sync seed errors — the join still returns 200', async () => {
+    const deps = makeDeps({
+      seedGitSync: vi.fn(async () => {
+        throw new Error('seed boom (PG down)');
+      }),
+    });
+    const res = await handleJoinLink(VALID_INPUT, deps);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
   });
 });
 

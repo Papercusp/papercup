@@ -21,7 +21,13 @@ import { activeWorkspaceId } from '../../workspace-registry';
 
 const SLUG = process.env.COORD_WATCH_SLUG ?? 'papercup';
 const ROUTINES = [
-  { name: 'coord-probe-canary', target: 'system:coord-probe-canary', cron: '0 7/15 * * * *', payload: { totalSloMs: 10_000 } },
+  // 30s cycle SLO: a 10s budget was unrealistic for a shared dev box at peak fleet
+  // load — the EI-401 breach was a transient ~23s coord-write spike (NOTIFY-queue
+  // commit serialization under fleet write load), not a regression. 30s still catches
+  // a genuinely-stuck/2×-degraded cycle; the per-step `baseline` control + attributeBreach
+  // remain so a real breach is still self-attributing. (NOTE: the ON CONFLICT below does
+  // NOT update payload_template, so existing rows are tuned directly in harness_shared.routines.)
+  { name: 'coord-probe-canary', target: 'system:coord-probe-canary', cron: '0 7/15 * * * *', payload: { totalSloMs: 30_000 } },
   { name: 'coord-invariant-monitor', target: 'system:coord-invariant-monitor', cron: '0 37 * * * *', payload: {} },
 ] as const;
 

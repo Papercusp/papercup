@@ -297,7 +297,9 @@ async function probeForensics(workspaceId: string): Promise<string> {
 }
 
 registerSystemAction('coord-probe-canary', async (ctx: SystemActionCtx) => {
-  const sloMs = Number((ctx.payloadTemplate?.totalSloMs as number | undefined) ?? 10_000);
+  // Default 30s (EI-401): a 10s cycle SLO false-alarmed on transient peak-load coord-write
+  // spikes on a shared dev box. The live value is the routine's payload_template.totalSloMs.
+  const sloMs = Number((ctx.payloadTemplate?.totalSloMs as number | undefined) ?? 30_000);
   await ensureBootstrap();
   const idA = probeIdentity(PROBE_A, ctx.workspaceId);
   const idB = probeIdentity(PROBE_B, ctx.workspaceId);
