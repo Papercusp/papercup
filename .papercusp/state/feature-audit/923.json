@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781389022320-f9820ca1",
+  "feature_id": "F-FIX-010",
+  "field": "__created",
+  "id": 923,
+  "new_value": "{\"id\":\"F-FIX-010\",\"title\":\"Queen fires fleet:spawn with harness slug \\\\\\\"papercup-su\\\\\\\"/\\\\\\\"papercusp-su\\\\\\\" (the SU MCP slug, not a project) — every spawn rejected, wastes Queen turns under the no-spawn constraint\",\"sourceIssueId\":\"EI-429\"}",
+  "old_value": "null",
+  "ts": 1781389175177
+}

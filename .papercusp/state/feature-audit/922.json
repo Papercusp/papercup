@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781389022320-f9820ca1",
+  "feature_id": "F-FIX-009",
+  "field": "__created",
+  "id": 922,
+  "new_value": "{\"id\":\"F-FIX-009\",\"title\":\"Implement worker timeout is silently capped at 20min by the /invoke route, contradicting the 45min implementTimeoutMs (a long auto-fix gets SIGTERM'd mid-work — the D-010 failure mode)\",\"sourceIssueId\":\"EI-433\"}",
+  "old_value": "null",
+  "ts": 1781389174562
+}
