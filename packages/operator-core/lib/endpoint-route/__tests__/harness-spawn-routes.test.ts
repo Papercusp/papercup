@@ -260,12 +260,12 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
 describe('invoke helpers (__test)', () => {
   it('resolveInvokeTimeoutMs: 90s default for plain launches, ceiling default for hive', () => {
     expect(spawnTest.resolveInvokeTimeoutMs(undefined, false)).toBe(90_000);
-    expect(spawnTest.resolveInvokeTimeoutMs(undefined, true)).toBe(1_200_000);
+    expect(spawnTest.resolveInvokeTimeoutMs(undefined, true)).toBe(2_700_000);
   });
-  it('resolveInvokeTimeoutMs: explicit timeoutMs wins, clamped to [5s, 1200s]', () => {
+  it('resolveInvokeTimeoutMs: explicit timeoutMs wins, clamped to [5s, 2700s]', () => {
     expect(spawnTest.resolveInvokeTimeoutMs(300_000, true)).toBe(300_000);
     expect(spawnTest.resolveInvokeTimeoutMs(1, false)).toBe(5_000);
-    expect(spawnTest.resolveInvokeTimeoutMs(99_999_999, false)).toBe(1_200_000);
+    expect(spawnTest.resolveInvokeTimeoutMs(99_999_999, false)).toBe(2_700_000);
   });
   it('extractKickoff: trims, caps at 4000 chars, empty for non-strings', () => {
     expect(spawnTest.extractKickoff('  why  ')).toBe('why');

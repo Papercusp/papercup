@@ -237,6 +237,7 @@ export async function applyPlanBlock(
     for (const item of phase.items) {
       await callTool('add-item', {
         slug,
+        harness: harnessSlug || 'all',
         phase: phase.name,
         text: item.text,
         blockedBy: item.blockedBy.length > 0 ? item.blockedBy : undefined,
@@ -253,6 +254,7 @@ export async function applyPlanBlock(
   for (const dec of parsed.decisions) {
     await callTool('add-decision', {
       slug,
+      harness: harnessSlug || 'all',
       title: dec.title,
       body: dec.body,
     }, harnessSlug);

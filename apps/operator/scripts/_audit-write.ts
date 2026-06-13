@@ -19,7 +19,7 @@ function txt(r:any){ return JSON.parse(r.content[0].text); }
     console.log('add-item 2:', c.itemId, 'blocked-by', b.itemId);
     const d = txt(await (setStatus as any).handler({ slug, itemId: b.itemId, status: 'done' }, ctx));
     console.log('set-status', b.itemId, '->', d.ok ? d.newStatus : d.error);
-    const e = txt(await (addDecision as any).handler({ slug, title: 'Smoke decision', body: 'Because audit.', refs: [b.itemId] }, ctx));
+    const e = txt(await (addDecision as any).handler({ slug, harness: 'all', title: 'Smoke decision', body: 'Because audit.', refs: [b.itemId] }, ctx));
     console.log('add-decision:', e.decisionId ?? e.error);
     const f = txt(await (setNow as any).handler({ slug, state: 'Smoke in progress.', next: 'finish audit.' }, ctx));
     console.log('set-now:', f.ok ?? f.error);

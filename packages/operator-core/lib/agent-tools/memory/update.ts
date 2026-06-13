@@ -35,6 +35,20 @@ export default defineTool({
     content: z.string().min(1).max(2000),
   }),
   async handler(args) {
+    // Validate args; the defineTool wrapper will have validated in production,
+    // but direct handler calls (e.g. in tests) bypass it.
+    const validation = z.object({
+      id: z.string().uuid('Memory ID must be a valid UUID'),
+      content: z.string().min(1).max(2000),
+    }).safeParse(args);
+
+    if (!validation.success) {
+      const errors = validation.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, error: errors }) }],
+      };
+    }
+
     const backend = getMemoryBackend();
     const avail = await backend.available();
     if (!avail.ok) {
@@ -42,7 +56,7 @@ export default defineTool({
         content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
       };
     }
-    await backend.update(args.id, { text: args.content });
+    await backend.update(validation.data.id, { text: validation.data.content });
     // Learning signal (learning-system-audit P-050): an agent-driven correction
     // feeds the extraction-adaptation loop (memory_feedback). Fire-and-forget.
     void import('../../memory/feedback')

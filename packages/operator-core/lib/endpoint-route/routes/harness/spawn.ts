@@ -160,11 +160,11 @@ async function dispatchActionsBlockFromOutput(
  * (survey → place → record), not a short single-role call — the old 90s
  * default SIGTERM'd every Queen wake ~mid-survey (local-hive P-071 smoke,
  * 2026-06-10: two consecutive wakes exited 143 at ~91s with the kickoff
- * unread). Hive launches default to the route's ceiling; an explicit
- * `body.timeoutMs` still wins for both kinds.
+ * unread). Hive launches default to the route's ceiling (2700s) to support
+ * 45min implementTimeoutMs; an explicit `body.timeoutMs` still wins for both kinds.
  */
 function resolveInvokeTimeoutMs(bodyTimeoutMs: unknown, isHiveLaunch: boolean): number {
-  const fallback = isHiveLaunch ? 1_200_000 : 90_000;
+  const fallback = isHiveLaunch ? 2_700_000 : 90_000;
   return Math.max(5_000, Math.min(2_700_000, Number(bodyTimeoutMs ?? fallback)));
 }
 

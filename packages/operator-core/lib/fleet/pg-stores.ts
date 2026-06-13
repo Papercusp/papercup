@@ -58,8 +58,8 @@ interface SpawnRowDb {
   restart_strategy: string | null;
   restart_count: number | null;
   restart_window_start: Date | null;
-  heartbeat_at: Date | null;
-  last_output_at: Date | null;
+  heartbeat_at: string | Date | null;
+  last_output_at: string | Date | null;
   depth?: number;
 }
 
@@ -69,6 +69,10 @@ const SELECT_COLS = `spawn_id, parent_spawn_id, workspace_id, harness_slug, pare
   restart_window_start, heartbeat_at, last_output_at`;
 
 function rowToNode(r: SpawnRowDb): SpawnNode {
+  const toDate = (v: string | Date | null | undefined): Date | null => {
+    if (!v) return null;
+    return v instanceof Date ? v : new Date(v);
+  };
   return {
     spawnId: r.spawn_id,
     parentSpawnId: r.parent_spawn_id,
@@ -89,8 +93,8 @@ function rowToNode(r: SpawnRowDb): SpawnNode {
     restartStrategy: (r.restart_strategy as RestartStrategy) || 'one_for_one',
     restartCount: Number(r.restart_count ?? 0),
     restartWindowStart: r.restart_window_start,
-    heartbeatAt: r.heartbeat_at,
-    lastOutputAt: r.last_output_at,
+    heartbeatAt: toDate(r.heartbeat_at),
+    lastOutputAt: toDate(r.last_output_at),
     depth: Number(r.depth ?? 0),
   };
 }
