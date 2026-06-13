@@ -18,12 +18,14 @@
  * unknown category never auto-decides.
  */
 import type { Sql } from 'postgres';
+import type { AutonomyCeiling } from '@papercusp/plan-parser';
 import { type AutonomyCategory, AUTONOMY_CATEGORY_IDS, isAutonomyCategory } from './categories';
 import {
   type AutonomyCategoryPolicy,
   defaultPolicyFor,
+  isAutonomyCeiling,
+  minCeiling,
 } from './policy';
-import { type CeilingLevel, isCeilingLevel, minCeiling } from './risk-tiers';
 
 /** PG error code for "relation does not exist" — table not applied yet. */
 const UNDEFINED_TABLE = '42P01';
@@ -40,10 +42,10 @@ interface PolicyRow {
 /** Normalize a raw DB row into the value type, defensively clamping levels. */
 function rowToPolicy(r: PolicyRow): AutonomyCategoryPolicy {
   const category = r.category as AutonomyCategory;
-  const ceiling: CeilingLevel = isCeilingLevel(r.ceiling) ? r.ceiling : 'none';
-  const storedGraduated: CeilingLevel = isCeilingLevel(r.graduated_level)
+  const ceiling: AutonomyCeiling = isAutonomyCeiling(r.ceiling) ? r.ceiling : 'never-auto';
+  const storedGraduated: AutonomyCeiling = isAutonomyCeiling(r.graduated_level)
     ? r.graduated_level
-    : 'none';
+    : 'never-auto';
   return {
     category,
     ceiling,
@@ -144,19 +146,19 @@ export async function setAutonomyPolicy(
   if (!isAutonomyCategory(input.category)) {
     throw new Error(`autonomy:policy_set — unknown category "${input.category}"`);
   }
-  if (input.ceiling !== undefined && !isCeilingLevel(input.ceiling)) {
+  if (input.ceiling !== undefined && !isAutonomyCeiling(input.ceiling)) {
     throw new Error(`autonomy:policy_set — invalid ceiling "${input.ceiling}"`);
   }
-  if (input.graduatedLevel !== undefined && !isCeilingLevel(input.graduatedLevel)) {
+  if (input.graduatedLevel !== undefined && !isAutonomyCeiling(input.graduatedLevel)) {
     throw new Error(`autonomy:policy_set — invalid graduated_level "${input.graduatedLevel}"`);
   }
   const category = input.category as AutonomyCategory;
   const current = await getAutonomyCategoryPolicy(sql, workspaceId, category);
 
-  const ceiling: CeilingLevel = (input.ceiling ?? current.ceiling) as CeilingLevel;
+  const ceiling: AutonomyCeiling = (input.ceiling ?? current.ceiling) as AutonomyCeiling;
   const locked = input.locked ?? current.locked;
-  const requestedGraduated: CeilingLevel = (input.graduatedLevel ??
-    current.graduatedLevel) as CeilingLevel;
+  const requestedGraduated: AutonomyCeiling = (input.graduatedLevel ??
+    current.graduatedLevel) as AutonomyCeiling;
   const graduatedLevel = minCeiling(requestedGraduated, ceiling);
   const thresholdOverrides = input.thresholdOverrides ?? current.thresholdOverrides;
   const ownerOverride =

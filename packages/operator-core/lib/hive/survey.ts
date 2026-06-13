@@ -33,6 +33,8 @@ import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/sourc
 import { reconcileStartStatus } from '../agent-tools/plans/plan-start-state';
 import { rankPlacements, type PlacementCandidate } from './placement-ranker';
 import type { Ranked } from '../queue-ranker';
+import { getFeatureBlockers } from '../dbos/feature-blockers-edges';
+import { selectReady, type ReadinessNode } from '../dbos/frontier-readiness';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -155,6 +157,75 @@ export function frontierRowToCandidate(row: FrontierRow, now: number): Placement
   };
 }
 
+// ── Readiness: honor blocked_by so the survey skips blocked lanes (W-01/P-010) ─
+
+/**
+ * One harness's feature→feature blocking graph, as the readiness filter needs it:
+ * the blocker sets (reused from the orchestrator's single source of truth,
+ * `getFeatureBlockers` → `coord_links rel='blocks'`) plus the statuses of the
+ * referenced blockers (so terminal-ness — passed/deprecated → satisfied — is
+ * resolvable). Empty maps ⇒ nothing in this harness is blocked.
+ */
+export interface HarnessBlockGraph {
+  /** blocked feature_id → blocker feature_ids (within-harness, bare ids). */
+  blockers: Map<string, string[]>;
+  /** feature_id → status, for the referenced blockers (terminal resolution). */
+  statuses: Map<string, string>;
+}
+
+/** Dispatchable status for the survey's frontier: an unplaced lane is a `todo` item. */
+const FRONTIER_READINESS: ReadonlySet<string> = new Set(['todo']);
+
+/**
+ * Drop frontier rows whose `blocked_by` isn't satisfied — the same predicate the
+ * DBOS orchestrator dispatches by (`selectReady`, frontier-readiness.ts): a lane
+ * is ready iff every blocker is TERMINAL (passed/deprecated) or absent. So a wave's
+ * tier2 stays out of the Queen's frontier until tier1 completes (D-002: one
+ * readiness, two consumers). Feature ids aren't globally unique, so readiness is
+ * computed per-harness. Returns the kept (ready) rows and the count dropped.
+ */
+export function filterReadyFrontier(
+  rows: readonly FrontierRow[],
+  graphByHarness: ReadonlyMap<string, HarnessBlockGraph>,
+): { ready: FrontierRow[]; blockedCount: number } {
+  const byHarness = new Map<string, FrontierRow[]>();
+  for (const r of rows) {
+    const g = byHarness.get(r.harness_slug);
+    if (g) g.push(r);
+    else byHarness.set(r.harness_slug, [r]);
+  }
+  const ready: FrontierRow[] = [];
+  let blockedCount = 0;
+  for (const [harness, hRows] of byHarness) {
+    const graph = graphByHarness.get(harness);
+    if (!graph || graph.blockers.size === 0) {
+      ready.push(...hRows); // nothing blocked in this harness
+      continue;
+    }
+    // Build the node set selectReady scores: each candidate (a `todo` lane) plus
+    // its referenced blockers (carrying their real status so terminal blockers
+    // satisfy). A blocker with no resolved status is simply absent ⇒ satisfied.
+    const nodes = new Map<string, ReadinessNode>();
+    for (const r of hRows) {
+      nodes.set(r.feature_id, { id: r.feature_id, status: 'todo', blockedBy: graph.blockers.get(r.feature_id) ?? [] });
+    }
+    for (const r of hRows) {
+      for (const blocker of graph.blockers.get(r.feature_id) ?? []) {
+        if (nodes.has(blocker)) continue; // already a candidate node
+        const status = graph.statuses.get(blocker);
+        if (status != null) nodes.set(blocker, { id: blocker, status, blockedBy: [] });
+      }
+    }
+    const { ready: readyNodes } = selectReady([...nodes.values()], new Set(), FRONTIER_READINESS);
+    const readyIds = new Set(readyNodes.map((n) => n.id));
+    for (const r of hRows) {
+      if (readyIds.has(r.feature_id)) ready.push(r);
+      else blockedCount += 1;
+    }
+  }
+  return { ready, blockedCount };
+}
+
 // ── PG reads (thin) ─────────────────────────────────────────────────────────
 
 /**
@@ -182,6 +253,32 @@ export async function fetchFrontierRows(
   return rows;
 }
 
+/**
+ * One harness's blocking graph for the readiness filter: the blocker sets (the
+ * orchestrator's single source of truth, `getFeatureBlockers`) plus the statuses
+ * of the referenced blockers (one indexed lookup; skipped when nothing blocks).
+ */
+export async function fetchHarnessBlockGraph(
+  sql: postgres.Sql,
+  workspaceId: string,
+  harness: string,
+): Promise<HarnessBlockGraph> {
+  const blockers = await getFeatureBlockers(harness);
+  const blockerIds = new Set<string>();
+  for (const arr of blockers.values()) for (const b of arr) blockerIds.add(b);
+  let statuses = new Map<string, string>();
+  if (blockerIds.size > 0) {
+    const rows = await sql<{ feature_id: string; status: string }[]>`
+      SELECT feature_id, status
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${harness}
+         AND feature_id = ANY(${Array.from(blockerIds)})`;
+    statuses = new Map(rows.map((r) => [r.feature_id, r.status]));
+  }
+  return { blockers, statuses };
+}
+
 // ── The assembled survey ────────────────────────────────────────────────────
 
 export interface HiveSurvey {
@@ -190,14 +287,18 @@ export interface HiveSurvey {
   scope: 'members' | 'workspace';
   /** Started plans, ranked (which plan to pour bees into) — PLAN view. */
   plans: Ranked<PlacementCandidate>[];
-  /** Unplaced work-items, ranked (which ready item to place) — FRONTIER view. */
+  /** Unplaced + READY work-items, ranked (which ready item to place) — FRONTIER view. */
   frontier: Ranked<PlacementCandidate>[];
+  /** Frontier rows dropped because their `blocked_by` wasn't satisfied (W-01/P-010). */
+  frontierBlocked: number;
 }
 
 export interface SurveyDeps {
   loadRegistry: (ws: string) => Promise<{ projects: { slug: string; hive_slug?: string }[] }>;
   listPlanRows: (harnessSlug: string) => Promise<PlanIndexRow[]>;
   fetchFrontier: (surveySlugs: readonly string[], limit: number) => Promise<FrontierRow[]>;
+  /** Resolve one harness's blocking graph for the readiness filter (W-01/P-010). */
+  fetchBlockGraph: (harness: string) => Promise<HarnessBlockGraph>;
   now: () => number;
 }
 
@@ -208,6 +309,10 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
     fetchFrontier: (surveySlugs, limit) => {
       const { sql } = getOrgPg();
       return fetchFrontierRows(sql, workspaceId, surveySlugs, limit);
+    },
+    fetchBlockGraph: (harness) => {
+      const { sql } = getOrgPg();
+      return fetchHarnessBlockGraph(sql, workspaceId, harness);
     },
     now: () => Date.now(),
   };
@@ -259,12 +364,33 @@ export async function surveyHive(
       if (c) planCandidates.push(c);
     }
   }
-  const frontierCandidates = frontierRows.map((r) => frontierRowToCandidate(r, now));
+
+  // Honor blocked_by (W-01/P-010): resolve each surveyed harness's blocking graph
+  // and drop frontier lanes whose blockers aren't satisfied — the SAME readiness
+  // the orchestrator dispatches by. Per-harness because feature ids aren't global.
+  const frontierHarnesses = [...new Set(frontierRows.map((r) => r.harness_slug))];
+  const graphByHarness = new Map<string, HarnessBlockGraph>();
+  await Promise.all(
+    frontierHarnesses.map(async (h) => {
+      try {
+        graphByHarness.set(h, await deps.fetchBlockGraph(h));
+      } catch (err) {
+        // Fail-open: a flaky blocker read must not blank the frontier — treat as
+        // unblocked (an empty graph) so placement still proceeds, but say so.
+        console.warn(`[hive-survey] block-graph read failed for '${h}' — lanes treated unblocked:`, err instanceof Error ? err.message : err);
+      }
+    }),
+  );
+  const { ready: readyFrontierRows, blockedCount } = filterReadyFrontier(frontierRows, graphByHarness);
+  if (blockedCount > 0) {
+    console.log(`[hive-survey] frontier: ${blockedCount} lane(s) held back by unsatisfied blocked_by; ${readyFrontierRows.length} ready`);
+  }
+  const frontierCandidates = readyFrontierRows.map((r) => frontierRowToCandidate(r, now));
 
   const [plans, frontier] = await Promise.all([
     rankPlacements(planCandidates),
     rankPlacements(frontierCandidates),
   ]);
 
-  return { home: membership.home, members: membership.members, scope: membership.scope, plans, frontier };
+  return { home: membership.home, members: membership.members, scope: membership.scope, plans, frontier, frontierBlocked: blockedCount };
 }

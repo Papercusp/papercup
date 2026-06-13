@@ -1,0 +1,213 @@
+/**
+ * placement-watchdog.integration.test.ts — the COMPLETION GUARANTEE sweep against
+ * REAL migrated PG (queen-autonomous-execution B-09, migration 263).
+ *
+ * Validates the schema + every sweep query end-to-end: the migration applies (a
+ * broken 263 throws in beforeAll), and reconcileOneHive's real SQL — the bee-spawn
+ * join, the candidate fetch, the hive_placements upsert, and the stranded-blocker
+ * coord_links/split_part query — round-trips against live rows, producing the
+ * right P-020 (recover/completed), P-021 (cursed) and P-022 (stranded) decisions.
+ *
+ * The two side-effect modules (recovery wake, owner escalation) are mocked so the
+ * test asserts they fire WITHOUT touching the coord substrate — the durable proof
+ * is the hive_placements row state, the same way the system reads it.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import type { OrgTestDb } from '../../test/_org-test-db';
+import { createOrgTestDb } from '../../test/_org-test-db';
+
+const mocks = vi.hoisted(() => ({
+  wakeRecipients: vi.fn(async () => ({ woken: 1 })),
+  openEscalation: vi.fn(async () => ({ msg_id: 'esc-test', ts: new Date(0).toISOString() })),
+}));
+vi.mock('../agent-tools/coordination/inbox-wake', async (orig) => ({
+  ...(await (orig as () => Promise<Record<string, unknown>>)()),
+  wakeRecipients: mocks.wakeRecipients,
+}));
+vi.mock('../agent-tools/coordination/escalations', async (orig) => ({
+  ...(await (orig as () => Promise<Record<string, unknown>>)()),
+  openEscalation: mocks.openEscalation,
+}));
+
+import { reconcileOneHive, type PlacementConfig } from './placement-watchdog';
+
+const WS = 'default'; // coord_links default workspace == the org workspace here
+const HIVE = 'papercup';
+const QUEEN = 'queen-owner-1';
+const CFG: PlacementConfig = { breakerThreshold: 3, recoveryDebounceMs: 5 * 60_000 };
+const NOW = 1_900_000_000_000;
+
+let db: OrgTestDb;
+let sql: Sql;
+
+async function seedQueenSession(): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.adv_sessions (workspace_id, mode, label, coord_owner_id, started_at)
+    VALUES (${WS}, 'omp', ${'hive · ' + HIVE + '/sess-1'}, ${QUEEN}, now())`;
+}
+
+async function seedBee(opts: {
+  owner: string;
+  featureId: string | null;
+  status: string;
+  heartbeatAtMs?: number;
+  lastOutputAtMs?: number | null;
+}): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.spawned_agents
+      (spawn_id, workspace_id, harness_slug, parent_spawn_id, parent_role, child_role,
+       session_owner, feature_id, run_id, status, heartbeat_at, last_output_at, started_at)
+    VALUES (
+      ${opts.owner}, ${WS}, ${HIVE}, ${QUEEN}, 'queen', 'bee',
+      ${opts.owner}, ${opts.featureId}, ${'run-' + opts.owner}, ${opts.status},
+      ${new Date(opts.heartbeatAtMs ?? NOW)},
+      ${opts.lastOutputAtMs == null ? null : new Date(opts.lastOutputAtMs)},
+      now())`;
+}
+
+async function seedUnit(opts: {
+  id: string;
+  status: string;
+  takenBy?: string | null;
+  harness?: string;
+}): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
+    VALUES (${opts.harness ?? HIVE}, ${opts.id}, 'feature', ${opts.status},
+            ${opts.takenBy ?? null}, ${WS}, 0, 0)`;
+}
+
+async function readPlacement(id: string): Promise<{ status: string; fail_count: number; escalation_msg_id: string | null } | null> {
+  const rows = await sql<{ status: string; fail_count: number; escalation_msg_id: string | null }[]>`
+    SELECT status, fail_count, escalation_msg_id
+      FROM harness_shared.hive_placements
+     WHERE workspace_id = ${WS} AND install_slug = ${HIVE} AND work_item_id = ${id}`;
+  return rows[0] ?? null;
+}
+
+describe('hive_placements completion sweep (real PG, migration 263)', () => {
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    sql = db.adminSql;
+  }, 120_000);
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+  beforeEach(async () => {
+    mocks.wakeRecipients.mockClear();
+    mocks.openEscalation.mockClear();
+    await sql`TRUNCATE harness_shared.hive_placements, harness_shared.spawned_agents,
+                       harness_shared.harness_features_consolidated, harness_shared.coord_links,
+                       harness_shared.adv_sessions`;
+    await seedQueenSession();
+  });
+
+  it('P-020: a dead bee on a non-terminal unit → recovering + a recovery wake to the Queen', async () => {
+    await seedBee({ owner: 'bee-1', featureId: 'F-100', status: 'failed' });
+    await seedUnit({ id: 'F-100', status: 'in_progress', takenBy: 'bee-1' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-100');
+    expect(p?.status).toBe('recovering');
+    expect(p?.fail_count).toBe(1);
+    expect(out.find((r) => r.workItemId === 'F-100')?.decision).toBe('recover');
+    expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1);
+    expect(mocks.wakeRecipients.mock.calls[0]![0]).toEqual([QUEEN]);
+  });
+
+  it('P-020: a live bee on a non-terminal unit → working, no wake (steering, hands-off)', async () => {
+    await seedBee({ owner: 'bee-1', featureId: 'F-110', status: 'running', heartbeatAtMs: NOW - 1000, lastOutputAtMs: NOW - 1000 });
+    await seedUnit({ id: 'F-110', status: 'in_progress', takenBy: 'bee-1' });
+
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-110'))?.status).toBe('working');
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  it('P-020: a re-placement that took (unit now held by a LIVE bee) reads healthy, not failed', async () => {
+    // Old bee died on F-120; a new live bee re-claimed it.
+    await seedBee({ owner: 'bee-dead', featureId: 'F-120', status: 'failed' });
+    await seedBee({ owner: 'bee-live', featureId: null, status: 'running', heartbeatAtMs: NOW - 1000, lastOutputAtMs: NOW - 1000 });
+    await seedUnit({ id: 'F-120', status: 'in_progress', takenBy: 'bee-live' });
+
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-120'))?.status).toBe('working');
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  it('P-020: a unit that reached terminal → completed (the placement succeeded)', async () => {
+    await seedBee({ owner: 'bee-1', featureId: 'F-130', status: 'done' });
+    await seedUnit({ id: 'F-130', status: 'passed', takenBy: 'bee-1' });
+
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-130'))?.status).toBe('completed');
+  });
+
+  it('P-021: a unit at the breaker threshold → cursed + an owner escalation, no further wake', async () => {
+    // Pre-seed two prior failed placements, past the debounce window.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, last_recovery_at, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-200', ${HIVE}, ${QUEEN},
+              'recovering', 2, ${new Date(NOW - 6 * 60_000)}, now(), now(), now())`;
+    await seedBee({ owner: 'bee-2', featureId: 'F-200', status: 'failed' });
+    await seedUnit({ id: 'F-200', status: 'in_progress', takenBy: 'bee-2' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-200');
+    expect(p?.status).toBe('cursed');
+    expect(p?.fail_count).toBe(3);
+    expect(p?.escalation_msg_id).toBe('esc-test');
+    expect(out.find((r) => r.workItemId === 'F-200')?.decision).toBe('breaker');
+    expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled(); // breaker STOPS re-placing
+  });
+
+  it('P-022: a stuck failing blocker gating a non-terminal downstream → stranded + one escalation', async () => {
+    await seedUnit({ id: 'F-300', status: 'failing' }); // the stuck blocker
+    await seedUnit({ id: 'F-301', status: 'todo' }); // the gated downstream
+    await sql`
+      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES ('default', 'feature', ${HIVE + '#F-300'}, 'feature', ${HIVE + '#F-301'}, 'blocks')`;
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-300');
+    expect(p?.status).toBe('stranded');
+    expect(p?.escalation_msg_id).toBe('esc-test');
+    expect(out.find((r) => r.workItemId === 'F-300')?.decision).toBe('stranded');
+    expect(mocks.openEscalation).toHaveBeenCalledTimes(1);
+  });
+
+  it('P-022: a stuck blocker gating ONLY terminal downstream is NOT stranded (nothing to un-gate)', async () => {
+    await seedUnit({ id: 'F-310', status: 'failing' });
+    await seedUnit({ id: 'F-311', status: 'passed' }); // already terminal
+    await sql`
+      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES ('default', 'feature', ${HIVE + '#F-310'}, 'feature', ${HIVE + '#F-311'}, 'blocks')`;
+
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect(await readPlacement('F-310')).toBeNull();
+    expect(mocks.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('returns no placements + no side effects when the hive has no resolvable Queen session', async () => {
+    await sql`TRUNCATE harness_shared.adv_sessions`; // no queen owner to attribute bees / wake
+    await seedBee({ owner: 'bee-x', featureId: 'F-400', status: 'failed' });
+    await seedUnit({ id: 'F-400', status: 'in_progress', takenBy: 'bee-x' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect(out).toEqual([]);
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled();
+  });
+});

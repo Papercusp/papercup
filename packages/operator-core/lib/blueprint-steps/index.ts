@@ -21,3 +21,10 @@ import './ops/regret-mine.js';
 import './ops/red-queen-drill.js';
 import './ops/neologism-mine.js';
 import './ops/fleet-ekg-scan.js';
+// The replay family (P-121): scout / transfer / ablation — behavior-neutral
+// deterministic pipelines wrapping each loop's existing gated tick (D-009: their
+// agent legs are governed llmCalls, not fleet spawns — so a single det step, not a
+// spawn-roles hybrid).
+import './ops/scout-cycle.js';
+import './ops/transfer-distill.js';
+import './ops/prompt-ablation.js';

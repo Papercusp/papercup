@@ -19,6 +19,8 @@
  * deploy machinery, migrations, the loop itself — bootstrapping).
  */
 
+import { DETERMINISTIC_EXECUTOR_TCB_PATTERNS } from '../../blueprint-steps/tcb';
+
 /** Work-item kinds (forward-compatible with unify-work-items-2026-06-04 D-002). */
 export type WorkItemKind = 'feature' | 'bug' | 'change' | 'research-task' | 'chunk';
 
@@ -138,6 +140,14 @@ export const DEFAULT_RISK_TIER_POLICY: RiskTierPolicy = {
     // Auth / security surfaces.
     '**/auth/**',
     '**/credentials/**',
+    // The deterministic-blueprint executor TCB (deterministic-blueprints-migration
+    // P-141 / agent-capability-confinement D-007): the spine executor + the
+    // deterministic-step runner cannot graduate their own permissions — an
+    // auto-edit to the dispatch/validation/runner code stays human-gated under any
+    // graduation dial. Declared in blueprint-steps/tcb.ts; pinned by
+    // tcb-invariants.test.ts. (The durable executor + spawn chokepoint are already
+    // covered above by `dbos/**`; the routine cadence layer by `harness/routines/**`.)
+    ...DETERMINISTIC_EXECUTOR_TCB_PATTERNS,
   ],
   protectedKeywords: [
     'migration',

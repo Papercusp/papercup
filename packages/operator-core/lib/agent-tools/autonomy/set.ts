@@ -13,8 +13,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-
-import { CEILING_LEVELS } from '../../autonomy/risk-tiers';
+import { AUTONOMY_CEILINGS } from '@papercusp/plan-parser';
 
 export default defineTool({
   name: 'autonomy:policy_set',
@@ -35,12 +34,12 @@ export default defineTool({
   args: z.object({
     category: z.string().describe('One of the 13 canonical autonomy category ids.'),
     ceiling: z
-      .enum(CEILING_LEVELS as unknown as [string, ...string[]])
+      .enum(AUTONOMY_CEILINGS as unknown as [string, ...string[]])
       .optional()
-      .describe('Owner-set risk ceiling. `none` = never-auto.'),
+      .describe('Owner-set risk ceiling. `never-auto` = nothing auto-runs.'),
     locked: z.boolean().optional().describe('Never-auto regardless of ceiling (protected).'),
     graduatedLevel: z
-      .enum(CEILING_LEVELS as unknown as [string, ...string[]])
+      .enum(AUTONOMY_CEILINGS as unknown as [string, ...string[]])
       .optional()
       .describe('Graduation engine earned level; clamped to ≤ ceiling.'),
     thresholdOverrides: z.record(z.string(), z.unknown()).optional(),

@@ -20,10 +20,14 @@
  *     prompts/queen.md) — there is no deterministic placement function to drive,
  *     and the behaviors P-051 asserts (batch placement, dead-bee re-placement,
  *     cursed-item breaker, drive-to-empty, question-unblock) are exactly what
- *     B-07 / B-09 / B-10 / B-17 BUILD. Each behavioral clause is a precise
- *     `it.todo` naming the brief that lands it, so the contract is a living,
- *     registered spec — not vapor — that fails-to-green-light the day its
- *     mechanism ships, rather than being silently absent.
+ *     B-07 / B-09 / B-10 / B-17 BUILD. Each behavioral clause starts as a precise
+ *     `it.todo` naming the brief that lands it, and CONVERTS to a live assertion
+ *     over the real seam the moment that brief ships its deterministic decider —
+ *     so the contract is a living, registered spec, not vapor. B-09's
+ *     completion-guarantee seam (placement-watchdog.ts) has landed, so its three
+ *     clauses (terminal tracking, dead-bee re-placement, cursed-item breaker)
+ *     are now LIVE below; B-07 (batch placement) and B-10/B-17 (question ladder)
+ *     remain `it.todo` until their seams land.
  *
  * See queen-autonomous-execution-2026-06-13 (B-11; D-007 behavior-neutral-now).
  */
@@ -35,6 +39,13 @@ import {
   isOperatingWell,
   type HiveThroughputInput,
 } from './throughput';
+import {
+  deriveBeeLiveness,
+  evaluatePlacement,
+  isUnitTerminal,
+  placementConfig,
+  type PlacementObservation,
+} from './placement-watchdog';
 
 const NOW = 1_700_000_000_000;
 const MIN = 60_000;
@@ -115,12 +126,53 @@ describe('P-051 Queen-loop contract — OBSERVABILITY yardstick (green today)', 
  * (registered, named) makes P-051 a living contract: the day B-07/B-09/B-10 land
  * a deterministic placement seam, these convert from todo to real assertions.
  */
+describe('P-051 Queen-loop contract — BEHAVIORAL completion guarantee (B-09 seam LIVE)', () => {
+  // B-09's completion-guarantee seam landed (placement-watchdog.ts, su-17e08): the
+  // pure deciders `evaluatePlacement` / `deriveBeeLiveness` / `isUnitTerminal`. The
+  // P-051 contract now asserts the loop's completion guarantee over those REAL
+  // functions (the scout-loop-invariants pattern: contract-altitude, not a re-test
+  // of the watchdog internals). Converts D-012's first three behavioral it.todos.
+  const cfg = placementConfig();
+  const obs = (over: Partial<PlacementObservation> = {}): PlacementObservation => ({
+    workItemId: 'W-1',
+    unitExists: true,
+    unitTerminal: false,
+    hasLiveHolder: false,
+    failCount: 0,
+    placementStatus: null,
+    lastRecoveryAtMs: null,
+    now: NOW,
+    ...over,
+  });
+
+  it('tracks every placed unit to terminal — a terminal unit reads as completed, not re-placed', () => {
+    expect(isUnitTerminal('passed')).toBe(true);
+    expect(isUnitTerminal('todo')).toBe(false);
+    expect(evaluatePlacement(obs({ unitTerminal: true }), cfg).kind).toBe('completed');
+    // a unit that vanished is abandoned, never silently re-placed forever
+    expect(evaluatePlacement(obs({ unitExists: false }), cfg).kind).toBe('abandon');
+  });
+
+  it('re-places a dead bee — a killed/stale bee reads dead and its orphaned non-terminal unit recovers', () => {
+    expect(deriveBeeLiveness({ status: 'failed', heartbeatAtMs: NOW, lastOutputAtMs: NOW, now: NOW })).toBe('dead');
+    expect(
+      deriveBeeLiveness({ status: 'running', heartbeatAtMs: NOW - 24 * 60 * 60_000, lastOutputAtMs: null, now: NOW }),
+    ).toBe('dead');
+    // a LIVE holder is healthy (no spurious re-place); a dead one recovers (re-place)
+    expect(evaluatePlacement(obs({ hasLiveHolder: true }), cfg).kind).toBe('healthy');
+    expect(evaluatePlacement(obs({ hasLiveHolder: false }), cfg).kind).toBe('recover');
+  });
+
+  it('trips the cursed-item breaker at the threshold — escalates instead of re-placing again', () => {
+    // below threshold → keep recovering; the failure that REACHES the threshold → breaker
+    expect(evaluatePlacement(obs({ failCount: cfg.breakerThreshold - 2 }), cfg).kind).toBe('recover');
+    expect(evaluatePlacement(obs({ failCount: cfg.breakerThreshold - 1 }), cfg).kind).toBe('breaker');
+  });
+});
+
 describe('P-051 Queen-loop contract — BEHAVIORAL (pending predecessor briefs)', () => {
   it.todo('B-07: a started Hive with N ready units + M free slots places min(N,M) bees in ONE wake');
   it.todo('B-07: placements are ranked plan-importance-first across 2+ member harnesses (queue-ranker)');
-  it.todo('B-09: every placed unit is tracked to a terminal state without waiting for the next idle wake');
-  it.todo('B-09: a bee killed mid-task is re-placed by the completion watchdog without a long idle wait');
-  it.todo('B-09: a cursed item (N failed placements) trips the circuit breaker into the D-011 Queue, no 6th spawn');
-  it.todo('B-09: the Queen drives the frontier to empty, every unit verified terminal, then idles');
+  it.todo('B-09: the Queen drives the frontier to empty, every unit verified terminal, then idles (P-030)');
   it.todo('B-10/B-17: a reversible bee question is unblocked without the owner (intercepted card, not a freeze)');
 });

@@ -108,6 +108,7 @@
     "lint:smart-quotes": "node scripts/check-smart-quotes.mjs",
     "lint:mdx": "node scripts/check-mdx.mjs",
     "lint:no-retired": "node scripts/check-no-retired-imports.mjs",
+    "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",

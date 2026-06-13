@@ -75,6 +75,13 @@ export interface ConvertPlanItemOpts {
   kind?: WorkItemKind;
   /** Override the work-item title (default: the plan item's text, truncated). */
   title?: string;
+  /** Per-lane situational brief (queen-wave-dispatch P-021) — the Queen's
+   *  situational overlay, persisted on the minted work-item's
+   *  `payload.brief` so the placement read (and the placed bee) sees the
+   *  context it is MISSING. Carried from a `## Promote` lane's `brief:` field
+   *  (promote-policy `BuiltFeature.brief`). Stamped at MINT only; a resume of
+   *  an existing work-item keeps its as-placed brief. */
+  brief?: string;
   owner: string;
   ownerLabel?: string | null;
   ownerName?: string | null;

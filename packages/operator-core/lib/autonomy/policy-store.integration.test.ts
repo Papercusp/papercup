@@ -44,8 +44,8 @@ describe('autonomy_policy seed + read (migration 259)', () => {
     const policy = await readAutonomyPolicy(db.adminSql, 'default');
     expect(policy.map((p) => p.category)).toEqual([...AUTONOMY_CATEGORY_IDS]);
     for (const p of policy) {
-      expect(p.ceiling).toBe('none'); // D-007: never-auto shipped default
-      expect(effectiveCeiling(p)).toBe('none');
+      expect(p.ceiling).toBe('never-auto'); // D-007: never-auto shipped default
+      expect(effectiveCeiling(p)).toBe('never-auto');
     }
     const locked = new Set(policy.filter((p) => p.locked).map((p) => p.category));
     expect(locked).toEqual(new Set(PROTECTED_CATEGORIES)); // D-005
@@ -54,7 +54,7 @@ describe('autonomy_policy seed + read (migration 259)', () => {
   it('an unseeded workspace reads as all-defaults — fail-safe never-auto (D-010)', async () => {
     const policy = await readAutonomyPolicy(db.adminSql, 'ws-never-seeded');
     expect(policy).toHaveLength(AUTONOMY_CATEGORY_IDS.length);
-    expect(policy.every((p) => effectiveCeiling(p) === 'none')).toBe(true);
+    expect(policy.every((p) => effectiveCeiling(p) === 'never-auto')).toBe(true);
     const locked = new Set(policy.filter((p) => p.locked).map((p) => p.category));
     expect(locked).toEqual(new Set(PROTECTED_CATEGORIES));
   });
@@ -86,8 +86,8 @@ describe('setAutonomyPolicy', () => {
     expect(r.ceiling).toBe('low');
     // The owner set the CAP; graduation hasn't earned anything yet, so the
     // effective auto-decide level is still none (D-004: min(ceiling, graduated)).
-    expect(r.graduatedLevel).toBe('none');
-    expect(effectiveCeiling(r)).toBe('none');
+    expect(r.graduatedLevel).toBe('never-auto');
+    expect(effectiveCeiling(r)).toBe('never-auto');
     const read = await getAutonomyCategoryPolicy(db.adminSql, WS, 'inbox-triage');
     expect(read.ceiling).toBe('low');
     // A second set updates in place (upsert on the (workspace, category) PK).
@@ -138,7 +138,7 @@ describe('setAutonomyPolicy', () => {
     );
     expect(r.locked).toBe(true);
     expect(r.ceiling).toBe('high');
-    expect(effectiveCeiling(r)).toBe('none');
+    expect(effectiveCeiling(r)).toBe('never-auto');
   });
 
   it('rejects an unknown category and an invalid level', async () => {

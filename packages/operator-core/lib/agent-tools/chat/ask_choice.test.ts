@@ -45,6 +45,14 @@ function makeCtx(askUser: unknown) {
   };
 }
 
+// The ctx.askUser mocks below are mostly declared with no params, so to TS
+// `mock.calls[0]` is the empty tuple `[]` and `[0]` trips TS2493. Read the first
+// CardSpec the handler passed through this typed accessor instead of indexing the
+// tuple directly (callers narrow it with their own `as {…}`).
+function firstSpec(askUser: { mock: { calls: unknown[][] } }): Record<string, unknown> {
+  return askUser.mock.calls[0][0] as Record<string, unknown>;
+}
+
 describe('chat:ask_choice handler', () => {
   beforeEach(() => {
     _resetCardCorrelatorForTests();

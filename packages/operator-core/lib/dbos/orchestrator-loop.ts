@@ -86,6 +86,7 @@ import {
   type WorkItemClaimLeaseHandle,
 } from '../work-item-claim-lease-wiring';
 import { getFeatureBlockers } from './feature-blockers-edges';
+import { selectReady } from './frontier-readiness';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 
 // ─── G2 Auditor lane injection seam (P-007) ──────────────────────────────────
@@ -201,9 +202,6 @@ export function resolvePerHarnessCap(opts: {
   return Math.max(1, Math.min(base, fleetClamped));
 }
 
-/** Statuses that make a feature TERMINAL — a blocker in this set is satisfied. */
-const TERMINAL = new Set(['passed', 'deprecated']);
-
 /** A feature as the frontier sees it (P-042): status + resolved blocked_by edges
  *  + which plan it belongs to + its within-plan order. */
 export interface FrontierFeature {
@@ -248,13 +246,11 @@ export function computeFrontier(
   slots: number,
   readiness: ReadonlySet<string> = NEEDS_WORK,
 ): { toStart: string[]; stuck: boolean } {
-  const present = new Set(features.map((f) => f.id));
-  const terminal = new Set(features.filter((f) => TERMINAL.has(f.status)).map((f) => f.id));
-  const satisfied = (blockerId: string): boolean => !present.has(blockerId) || terminal.has(blockerId);
-
-  const ready = features.filter(
-    (f) => readiness.has(f.status) && !owned.has(f.id) && f.blockedBy.every(satisfied),
-  );
+  // Readiness is the SHARED predicate (frontier-readiness.ts) the Queen's
+  // placement survey reuses verbatim (W-01/D-002) — a feature is ready iff its
+  // status is dispatchable, it isn't owned (in-flight), and every blocked_by is
+  // satisfied (terminal or absent). ORDERING below stays orchestrator-specific.
+  const { ready, blocked } = selectReady(features, owned, readiness);
 
   // Group ready by plan ('' = manual / no source_plan).
   const groups = new Map<string, FrontierFeature[]>();
@@ -285,8 +281,9 @@ export function computeFrontier(
   }
 
   const toStart = slots > 0 ? ordered.slice(0, slots) : [];
-  const pendingWork = features.some((f) => readiness.has(f.status) && !owned.has(f.id));
-  return { toStart, stuck: pendingWork && ready.length === 0 };
+  // stuck = dispatchable, non-owned work remains (ready+blocked) but none is ready
+  // — the P-044 stuck-wave signal. `blocked.length` carries the "remains" half.
+  return { toStart, stuck: ready.length === 0 && blocked.length > 0 };
 }
 
 /** Explicit opt-out sentinels (e.g. the shared dev box, to avoid flooding it). */

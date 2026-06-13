@@ -21,61 +21,40 @@
  */
 
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
-import { runScoutTick, buildScoutTickDeps, type ScoutCycleLike, type ScoutTickDeps } from './scheduler';
-import { readHiveIdleRatio, readFrictionSignalCount } from './cadence-signals';
-import type { ScoutCadenceOptions } from './cadence';
-import { resolveScoutBudget, type ScoutBudget } from './budget';
 import { recordScoutTickToGovernor } from '../learning-governor/registrants';
+import {
+  runScoutCycleTick,
+  parseScoutCycleConfig,
+  productionDepsBuilder,
+  type ScoutCycleRunner,
+  type ScoutTickDepsBuilder,
+  type ScoutCycleActionConfig,
+} from './run';
+
+/**
+ * The cadence-gated tick orchestration this action runs is SHARED with the
+ * `scout:cycle` deterministic blueprint step via `runScoutCycleTick`
+ * (deterministic-blueprints-migration-2026-06-13 P-121 / D-004 — provably
+ * behavior-neutral: one self-gated tick, two callers, the SAME production deps).
+ * Re-exported here so the action's existing test contract (which imports them from
+ * this module) keeps working.
+ */
+export {
+  parseScoutCycleConfig,
+  type ScoutCycleRunner,
+  type ScoutTickDepsBuilder,
+  type ScoutCycleActionConfig,
+};
 
 /** The action name; a routine targets it via `target_role: 'system:scout-cycle'`. */
 export const SCOUT_CYCLE_ACTION = 'scout-cycle';
 
-/** Runs ONE budgeted Scout cycle for a harness (wraps cb4b9's runScoutCycle + ports). */
-export type ScoutCycleRunner = (ctx: {
-  harnessSlug: string;
-  workspaceId: string;
-  budget: Required<ScoutBudget>;
-  cycleId: string;
-}) => Promise<ScoutCycleLike>;
-
-export interface ScoutCycleActionConfig {
-  cadence?: ScoutCadenceOptions;
-  budget?: ScoutBudget;
-}
-
-/**
- * Parse a routine's payload_template into cadence + budget overrides. Unknown
- * keys are ignored; bad shapes fall back to the gate/budget defaults.
- */
-export function parseScoutCycleConfig(payload: Record<string, unknown> | null): ScoutCycleActionConfig {
-  if (!payload || typeof payload !== 'object') return {};
-  const cadence = isObj(payload.cadence) ? (payload.cadence as ScoutCadenceOptions) : undefined;
-  const budget = isObj(payload.budget) ? (payload.budget as ScoutBudget) : undefined;
-  return { ...(cadence ? { cadence } : {}), ...(budget ? { budget } : {}) };
-}
-
-/**
- * Build the production {@link ScoutTickDeps} from the routine ctx + a cycle runner:
- * cadence signals (idle ratio + friction) + ledger persistence via
- * {@link buildScoutTickDeps}. Swapped for a fake in unit tests.
- */
-export type ScoutTickDepsBuilder = (ctx: SystemActionCtx, runCycle: ScoutCycleRunner) => ScoutTickDeps;
-
-const productionDepsBuilder: ScoutTickDepsBuilder = (ctx, runCycle) =>
-  buildScoutTickDeps({
-    harnessSlug: ctx.installSlug,
-    workspaceId: ctx.workspaceId,
-    runCycle: ({ budget, cycleId }) =>
-      runCycle({ harnessSlug: ctx.installSlug, workspaceId: ctx.workspaceId, budget, cycleId }),
-    readIdleRatio: () => readHiveIdleRatio({ workspaceId: ctx.workspaceId }),
-    readFrictionSignals: () => readFrictionSignalCount({ harnessSlug: ctx.installSlug }),
-  });
-
 /**
  * Build the `system:scout-cycle` handler from an injected per-harness cycle
  * runner. The handler wires the production cadence signals + the P-013 ledger via
- * {@link buildScoutTickDeps}, then runs one self-gated tick. `buildDeps` is an
- * injection seam for unit tests (default = production wiring).
+ * {@link productionDepsBuilder}, then runs one self-gated tick (via the shared
+ * {@link runScoutCycleTick}). `buildDeps` is an injection seam for unit tests
+ * (default = production wiring).
  */
 export function makeScoutCycleAction(
   runCycle: ScoutCycleRunner,
@@ -86,30 +65,10 @@ export function makeScoutCycleAction(
   recordGovernor?: typeof recordScoutTickToGovernor,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
-    const cfg = parseScoutCycleConfig(ctx.payloadTemplate);
-    const deps = buildDeps(ctx, runCycle);
-
-    const result = await runScoutTick(deps, {
-      ...(cfg.cadence ? { cadence: cfg.cadence } : {}),
-      ...(cfg.budget ? { budget: cfg.budget } : {}),
-    });
-
-    // FB-01 (self-learning-frontier P-003): mirror scout's per-cycle cap onto
-    // the shared learning-governor ledger as its sub-budget + accumulate a
-    // fired cycle's reported spend. Flag-gated (papercusp-learning-governor —
-    // the kill-switch) and best-effort by contract — it never throws, so
-    // governor bookkeeping can never fail (or replay) the tick.
-    if (recordGovernor) {
-      await recordGovernor({
-        workspaceId: ctx.workspaceId,
-        harnessSlug: ctx.installSlug,
-        perCycleBudgetUsd: resolveScoutBudget(cfg.budget).maxCostUsd,
-        fired:
-          result.fired && result.costUsd != null
-            ? { costUsd: result.costUsd, ...(result.cycleId ? { cycleId: result.cycleId } : {}) }
-            : null,
-      });
-    }
+    const result = await runScoutCycleTick(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payloadTemplate: ctx.payloadTemplate },
+      { runCycle, buildDeps, ...(recordGovernor ? { recordGovernor } : {}) },
+    );
 
     if (result.fired) {
       // eslint-disable-next-line no-console
@@ -134,8 +93,4 @@ export function registerScoutCycleAction(runCycle: ScoutCycleRunner): void {
     SCOUT_CYCLE_ACTION,
     makeScoutCycleAction(runCycle, undefined, recordScoutTickToGovernor),
   );
-}
-
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }

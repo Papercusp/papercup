@@ -303,7 +303,11 @@ export async function reconcileHivePlacements(opts: { now?: number } = {}): Prom
   return results;
 }
 
-async function reconcileOneHive(
+/** Reconcile ONE hive's placements against `sql` (injected so it integration-tests
+ *  with a test DB). Resolves the Queen owner, derives each placed unit's holder
+ *  liveness, and applies the P-020/P-021/P-022 decisions. Exported for the
+ *  integration test + the P-051 invariant test. */
+export async function reconcileOneHive(
   sql: Sql,
   workspaceId: string,
   installSlug: string,

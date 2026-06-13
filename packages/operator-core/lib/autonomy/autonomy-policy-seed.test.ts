@@ -6,7 +6,7 @@
  * taxonomy), so the two could silently diverge — and a divergent seed would key
  * autonomy rows on ids the gate (B-12) can't resolve. This reads the migration
  * file and asserts its seeded category set === AUTONOMY_CATEGORY_IDS, its
- * locked set === PROTECTED_CATEGORIES, and every seeded ceiling is `none`
+ * locked set === PROTECTED_CATEGORIES, and every seeded ceiling is `never-auto`
  * (D-007 behavior-neutral). Pure — reads the file, no DB.
  */
 import { readFileSync } from 'node:fs';
@@ -19,11 +19,11 @@ const MIGRATION = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/259-autonomy-policy.sql', import.meta.url),
 );
 
-/** Parse the seed VALUES rows: ('default', '<cat>', 'none', <locked>, 'none', 'migration:259'). */
+/** Parse the seed VALUES rows: ('default', '<cat>', '<ceiling>', <locked>, '<grad>', 'migration:259'). */
 function parseSeed(): { categories: string[]; ceilings: Set<string>; locked: Set<string> } {
   const sql = readFileSync(MIGRATION, 'utf8');
   const re =
-    /\(\s*'default',\s*'([a-z0-9-]+)',\s*'([a-z]+)',\s*(true|false),\s*'[a-z]+',\s*'migration:259'\s*\)/g;
+    /\(\s*'default',\s*'([a-z0-9-]+)',\s*'([a-z-]+)',\s*(true|false),\s*'[a-z-]+',\s*'migration:259'\s*\)/g;
   const categories: string[] = [];
   const ceilings = new Set<string>();
   const locked = new Set<string>();
@@ -47,8 +47,8 @@ describe('migration 259 autonomy_policy seed', () => {
     expect(locked).toEqual(new Set(PROTECTED_CATEGORIES));
   });
 
-  it('ships every category at ceiling `none` — behavior-neutral (D-007)', () => {
+  it('ships every category at ceiling `never-auto` — behavior-neutral (D-007)', () => {
     const { ceilings } = parseSeed();
-    expect(ceilings).toEqual(new Set(['none']));
+    expect(ceilings).toEqual(new Set(['never-auto']));
   });
 });

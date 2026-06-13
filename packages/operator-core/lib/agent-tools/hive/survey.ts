@@ -105,7 +105,7 @@ export default defineTool({
             home: survey.home,
             members: survey.members,
             scope: survey.scope,
-            counts: { plans: survey.plans.length, frontier: survey.frontier.length },
+            counts: { plans: survey.plans.length, frontier: survey.frontier.length, frontierBlocked: survey.frontierBlocked },
             plans: survey.plans.slice(0, limit).map(compact),
             frontier: survey.frontier.slice(0, limit).map(compact),
             ranker: placementRankerSpec(),

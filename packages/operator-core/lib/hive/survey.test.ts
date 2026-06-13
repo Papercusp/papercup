@@ -8,11 +8,13 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanIndexRow } from '../agent-tools/plans/source';
 import {
+  filterReadyFrontier,
   frontierRowToCandidate,
   planToCandidate,
   resolveHiveMembership,
   surveyHive,
   type FrontierRow,
+  type HarnessBlockGraph,
   type SurveyDeps,
 } from './survey';
 
@@ -132,7 +134,12 @@ describe('frontierRowToCandidate', () => {
 });
 
 describe('surveyHive (P-012 regression)', () => {
-  const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({ now: () => NOW, ...over });
+  const noBlockers: HarnessBlockGraph = { blockers: new Map(), statuses: new Map() };
+  const depsFor = (over: Partial<SurveyDeps>): Partial<SurveyDeps> => ({
+    now: () => NOW,
+    fetchBlockGraph: async () => noBlockers,
+    ...over,
+  });
 
   it('surfaces a MEMBER harness work-item even though the home seat is empty (the 2026-06-11 bug)', async () => {
     const calls: { planSlugs: string[]; frontierScope: readonly string[] } = { planSlugs: [], frontierScope: [] };
@@ -195,5 +202,74 @@ describe('surveyHive (P-012 regression)', () => {
     });
     expect(survey.plans[0].id).toBe('urgent-plan');
     expect(survey.plans[0].rank.score).toBeGreaterThan(survey.plans[1].rank.score);
+  });
+
+  // ── blocked_by readiness (W-01 / P-010) ──────────────────────────────────
+  it('holds back a frontier lane whose blocker is still in flight, surfaces it once the blocker passes', async () => {
+    const common = {
+      loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+      listPlanRows: async () => [],
+    };
+
+    // Phase 1 — tier1 (WI-1) + tier2 (WI-2, blocked_by WI-1) are both unplaced
+    // todo lanes; WI-1 is in flight (todo), so WI-2 is held back.
+    const blocked = await surveyHive('default', 'papercup-hive', {
+      deps: depsFor({
+        ...common,
+        fetchFrontier: async () => [
+          frontierRow({ feature_id: 'WI-1', harness_slug: 'papercup' }),
+          frontierRow({ feature_id: 'WI-2', harness_slug: 'papercup' }),
+        ],
+        fetchBlockGraph: async () => ({ blockers: new Map([['WI-2', ['WI-1']]]), statuses: new Map([['WI-1', 'todo']]) }),
+      }),
+    });
+    expect(blocked.frontier.map((c) => c.id)).toEqual(['WI-1']);
+    expect(blocked.frontierBlocked).toBe(1);
+
+    // Phase 2 — WI-1 has passed, so it drops out of the todo frontier; WI-2's
+    // blocker is now terminal (resolved via the block-graph statuses) → it surfaces.
+    const ready = await surveyHive('default', 'papercup-hive', {
+      deps: depsFor({
+        ...common,
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-2', harness_slug: 'papercup' })],
+        fetchBlockGraph: async () => ({ blockers: new Map([['WI-2', ['WI-1']]]), statuses: new Map([['WI-1', 'passed']]) }),
+      }),
+    });
+    expect(ready.frontier.map((c) => c.id)).toEqual(['WI-2']);
+    expect(ready.frontierBlocked).toBe(0);
+  });
+});
+
+describe('filterReadyFrontier (W-01 / P-010 — the shared readiness, pure)', () => {
+  const row = (id: string, harness = 'h'): FrontierRow => frontierRow({ feature_id: id, harness_slug: harness });
+
+  it('keeps every row when a harness has no blockers', () => {
+    const { ready, blockedCount } = filterReadyFrontier([row('A'), row('B')], new Map());
+    expect(ready.map((r) => r.feature_id)).toEqual(['A', 'B']);
+    expect(blockedCount).toBe(0);
+  });
+
+  it('drops a lane with a non-terminal blocker, keeps one whose blocker is absent or passed', () => {
+    const graph: HarnessBlockGraph = {
+      blockers: new Map([['blocked', ['mid']], ['gone', ['ghost']], ['done-dep', ['fin']]]),
+      statuses: new Map([['mid', 'wip'], ['fin', 'passed']]), // 'ghost' unresolved ⇒ absent ⇒ satisfied
+    };
+    const { ready, blockedCount } = filterReadyFrontier(
+      [row('blocked'), row('gone'), row('done-dep'), row('free')],
+      new Map([['h', graph]]),
+    );
+    expect(ready.map((r) => r.feature_id).sort()).toEqual(['done-dep', 'free', 'gone']);
+    expect(blockedCount).toBe(1);
+  });
+
+  it('computes readiness per-harness (ids are not globally unique)', () => {
+    const ha: HarnessBlockGraph = { blockers: new Map([['F-1', ['F-0']]]), statuses: new Map([['F-0', 'wip']]) };
+    const hb: HarnessBlockGraph = { blockers: new Map(), statuses: new Map() };
+    const { ready } = filterReadyFrontier(
+      [row('F-1', 'a'), row('F-1', 'b')], // same id, different harness
+      new Map([['a', ha], ['b', hb]]),
+    );
+    // a/F-1 is blocked; b/F-1 has no blockers → only b's survives.
+    expect(ready.map((r) => r.harness_slug)).toEqual(['b']);
   });
 });

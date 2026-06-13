@@ -59,6 +59,11 @@ export const StaticFeatureSchema = z.object({
   from_items: z.array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form')).optional(),
   acceptance: z.array(z.string().min(1)).optional(),
   body: z.string().optional(),
+  /** Per-lane situational brief (queen-wave-dispatch P-021): the Queen's
+   *  situational overlay, carried onto the placed work-item at convert time —
+   *  distinct from `body` (the durable feature description). Optional; like
+   *  `body`, it is `{item}`-substituted in a generative wave's template. */
+  brief: z.string().optional(),
   /** Pipeline role hint carried into the feature import (worker/architect/…). */
   assigned_role: z.string().optional(),
   /** Within-wave ordering: titles/ids of features that must finish first. */
@@ -101,6 +106,8 @@ export const GenerateRuleSchema = z.object({
     title: z.string().min(1),
     acceptance: z.array(z.string().min(1)).optional(),
     body: z.string().optional(),
+    /** Per-lane situational brief (P-021) — `{item}`-substituted per generated lane. */
+    brief: z.string().optional(),
     assigned_role: z.string().optional(),
     agent_hint: z.string().optional(),
   }),
@@ -280,6 +287,9 @@ export interface BuiltFeature {
   from_items?: string[];
   acceptance?: string[];
   body?: string;
+  /** Per-lane situational brief (P-021) carried onto the placed work-item as the
+   *  Queen's situational overlay (via `plan_items:convert`'s `brief`). */
+  brief?: string;
   assigned_role?: string;
   blocked_by?: string[];
   order?: number;
@@ -361,6 +371,7 @@ export function buildWaveFeatures(
         title: sub(t.title, item),
         ...(t.acceptance && { acceptance: t.acceptance.map((a) => sub(a, item)) }),
         ...(bodyParts.length > 0 && { body: bodyParts.join('\n\n') }),
+        ...(t.brief && { brief: sub(t.brief, item) }),
         ...(t.assigned_role && { assigned_role: t.assigned_role }),
         generated: true,
       });
