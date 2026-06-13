@@ -11,6 +11,10 @@
 import { DEFAULT_GATEWAY_PORT } from './launch';
 
 export const GATEWAY_BASE_URL_ENV = 'ANTHROPIC_BASE_URL';
+/** The papercusp-specific override the in-process anthropic-direct SDK transport reads
+ *  (chat-stream.ts `anthropicDirectTransport`), distinct from the standard `ANTHROPIC_BASE_URL`
+ *  the `claude` CLI honors. */
+export const GATEWAY_SDK_URL_ENV = 'PAPERCUSP_ANTHROPIC_URL';
 
 /** The localhost gateway port (env override → default 8788). */
 export function gatewayPort(): number {
@@ -26,4 +30,18 @@ export function gatewayPort(): number {
 export function gatewaySpawnEnv(enabled: boolean): Record<string, string> {
   if (!enabled) return {};
   return { [GATEWAY_BASE_URL_ENV]: `http://127.0.0.1:${gatewayPort()}` };
+}
+
+/**
+ * The env patch for an IN-PROCESS caller that makes anthropic-direct SDK calls (the gym's
+ * judge/proposer `llmCall`, FB-16). The spawn chokepoint only patches SPAWNED subprocesses, so an
+ * in-process LLM call never receives `gatewaySpawnEnv`. This returns BOTH the standard
+ * `ANTHROPIC_BASE_URL` (for any `claude` CLI subprocess the caller in turn spawns) and the
+ * papercusp `PAPERCUSP_ANTHROPIC_URL` (read by `anthropicDirectTransport`) so every egress —
+ * subprocess or in-process SDK — routes through the localhost pacing gateway. `{}` when disabled.
+ */
+export function gatewayLlmEnv(enabled: boolean): Record<string, string> {
+  if (!enabled) return {};
+  const url = `http://127.0.0.1:${gatewayPort()}`;
+  return { [GATEWAY_BASE_URL_ENV]: url, [GATEWAY_SDK_URL_ENV]: url };
 }

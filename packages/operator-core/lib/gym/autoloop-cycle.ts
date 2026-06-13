@@ -46,6 +46,9 @@ import { GYM_JUDGE_RUBRIC_V1, rubricHash } from './judge-scoring';
 import type { JudgeLlmCall } from './judge';
 import type { GymLlmCall } from './task-generator';
 import { waitForOperatorReady } from './operator-ready';
+import { gatewayLlmEnv, gatewayPort } from '../inference-gateway/spawn-env';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
@@ -176,6 +179,23 @@ export async function runOneAutoloopCycle(
   const NOVELTY_WEIGHT = Math.min(1, Math.max(0, opts.noveltyWeight ?? Number(process.env.GYM_LOOP_NOVELTY_WEIGHT ?? 0.3)));
   const manageRow = opts.manageAutoloopRow ?? true;
   const log = opts.log ?? ((m: string) => process.stdout.write(`[gym-loop] ${m}\n`));
+
+  // FB-16 / EI-368 follow-up: route the gym's IN-PROCESS judge + proposer through the pacing
+  // gateway when the INFERENCE_GATEWAY flag is ON. Spawned pipeline agents already egress through
+  // it (operator-spawn.ts merges gatewaySpawnEnv → ANTHROPIC_BASE_URL at the spawn chokepoint), but
+  // the in-process anthropic-direct llmCalls (judgeCall/proposerCall in loop-deps.ts) never pass
+  // through that chokepoint — on the live :3070 cycle they hit api.anthropic.com directly with the
+  // org-blocked OAuth → LlmCallError 401, opening the circuit every tick. Point the anthropic-direct
+  // SDK (PAPERCUSP_ANTHROPIC_URL) AND any claude-CLI subprocess (ANTHROPIC_BASE_URL) at the localhost
+  // gateway so every gym LLM call egresses through the bound pool account, exactly like the agents.
+  // Flag-OFF → unchanged (direct egress). Respects an explicit pre-set override.
+  if (!FAKE && (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) {
+    for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {
+      // Respect an explicit pre-set override (e.g. a test or a manual GYM_LOOP run).
+      if (!process.env[k]) process.env[k] = v;
+    }
+    log(`inference-gateway ON → routing judge/proposer LLM calls through http://127.0.0.1:${gatewayPort()}`);
+  }
 
   const HEX = randomBytes(4).toString('hex');
   const DB_NAME = `papercusp_gym_loop_${HEX}`;
