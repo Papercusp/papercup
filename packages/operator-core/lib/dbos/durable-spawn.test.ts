@@ -35,7 +35,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn }));
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
 
-import { durableSpawnFire } from './durable-spawn';
+import { durableSpawnFire, startDurableSpawns } from './durable-spawn';
 
 const INPUT = {
   url: 'http://x/api/harness/h/invoke?role=worker',
@@ -77,5 +77,41 @@ describe('durableSpawnFire (P-010)', () => {
       throw new Error('cannot start a child workflow from inside a step');
     });
     await expect(durableSpawnFire(INPUT)).resolves.toBe(false);
+  });
+});
+
+describe('startDurableSpawns (EI-403-A — the workflow-layer drain seam)', () => {
+  const REQ2 = { url: 'http://x/api/harness/h/invoke?role=worker', body: { kickoff: 'b' }, idempotencyKey: 'k2', label: 'h/worker' };
+
+  it('no-ops (0/0, no enqueue) on undefined or empty', async () => {
+    expect(await startDurableSpawns(undefined)).toEqual({ enqueued: 0, total: 0 });
+    expect(await startDurableSpawns([])).toEqual({ enqueued: 0, total: 0 });
+    expect(h.startWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('enqueues every request once and reports enqueued===total when DBOS is on', async () => {
+    const res = await startDurableSpawns([INPUT, REQ2]);
+    expect(res).toEqual({ enqueued: 2, total: 2 });
+    expect(h.startWorkflow).toHaveBeenCalledTimes(2);
+    const ids = h.startWorkflow.mock.calls.map((c) => (c[1] as { workflowID: string }).workflowID);
+    expect(ids).toEqual(['durable-spawn:k1', 'durable-spawn:k2']);
+  });
+
+  it('tolerates declined fires (DBOS off ⇒ enqueued 0, total N, never throws)', async () => {
+    h.state.dbosOn = false;
+    const res = await startDurableSpawns([INPUT, REQ2]);
+    expect(res).toEqual({ enqueued: 0, total: 2 });
+    expect(h.startWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('a single failed enqueue does not block the rest (partial enqueue count)', async () => {
+    h.startWorkflow
+      .mockImplementationOnce(() => {
+        throw new Error('enqueue blip');
+      })
+      .mockImplementation((_wf, _opts) => (_input) => Promise.resolve());
+    const res = await startDurableSpawns([INPUT, REQ2]);
+    expect(res).toEqual({ enqueued: 1, total: 2 });
+    expect(h.startWorkflow).toHaveBeenCalledTimes(2);
   });
 });

@@ -32,6 +32,7 @@ import { loopbackFetch, describeFetchError } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
+import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 
 // The invoke route is a Hono API route on the operator's API port — derive the base from
 // the shared helper (operator-api-base.ts), never the stale `:3055` Vite SPA default.
@@ -214,19 +215,56 @@ export function setLaunchBlueprintFire(fn: LaunchFireFn | null): void {
   _fire = fn;
 }
 
-const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs, workspaceId, parent, bodyExtra }) => {
+/**
+ * Build the /invoke POST body for a role launch — shared by the fire-and-forget
+ * `defaultFire` and the build-without-firing `buildLaunchSpawnRequest` (EI-403-A),
+ * so both produce a byte-identical body.
+ */
+function buildInvokeBody(
+  blueprintId: string,
+  input: { kickoff?: string; extra?: string[]; timeoutMs?: number; bodyExtra?: Record<string, unknown> },
+): Record<string, unknown> {
   const body: Record<string, unknown> = {};
-  if (kickoff) body.kickoff = kickoff;
+  if (input.kickoff) body.kickoff = input.kickoff;
   // `BLUEPRINT_ID=<id>` scopes the role's prompt resolution to
   // `blueprints/<id>/prompts/<role>.md` (invoke.ts), falling back to the global
   // `prompts/<role>.md` — so a launch blueprint can ship its own role prompt (the
   // `scan` blueprint does, to capture work-items instead of operator cards) while
   // the others inherit their global persona unchanged.
-  body.extra = [`BLUEPRINT_ID=${blueprintId}`, ...(extra ?? [])];
-  if (timeoutMs) body.timeoutMs = timeoutMs;
+  body.extra = [`BLUEPRINT_ID=${blueprintId}`, ...(input.extra ?? [])];
+  if (input.timeoutMs) body.timeoutMs = input.timeoutMs;
   // Route-only bookkeeping fields (not child args) — e.g. the implement lane's
   // improvementDispatch correlation for the worker-exit back-edge (EI-404).
-  if (bodyExtra) Object.assign(body, bodyExtra);
+  if (input.bodyExtra) Object.assign(body, input.bodyExtra);
+  return body;
+}
+
+/**
+ * Resolve a launch blueprint + build its /invoke fire as a DURABLE-SPAWN REQUEST,
+ * WITHOUT firing it (EI-403-A). The auto-implement lane uses this from inside its
+ * routine step — where `durableSpawnFire`'s `startWorkflow` is illegal — and
+ * returns the request as `SystemActionResult.durableSpawns`; the routine workflow
+ * starts it durably AFTER the step (`startDurableSpawns`). The caller MUST pass a
+ * STABLE `idempotencyKey` (derived from durable state, not a clock) so a recovery
+ * replay dedups. Mirrors `fireLaunchBlueprint`'s resolution; the parentless
+ * implement launch needs no no-nest hive guard.
+ */
+export async function buildLaunchSpawnRequest(
+  blueprintId: string,
+  input: FireLaunchInput,
+  idempotencyKey: string,
+): Promise<DurableSpawnFireInput> {
+  const target = await resolveLaunchTarget(blueprintId, input);
+  return {
+    url: target.url,
+    body: buildInvokeBody(target.blueprintId, input),
+    idempotencyKey,
+    label: `${input.installSlug}/${target.role}`,
+  };
+}
+
+const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs, workspaceId, parent, bodyExtra }) => {
+  const body = buildInvokeBody(blueprintId, { kickoff, extra, timeoutMs, bodyExtra });
 
   // DURABLE when DBOS is on (unify-agent-spawn-chokepoint P-010): the launch runs
   // inside a registered, step-retried DBOS workflow that survives a host crash +

@@ -6,6 +6,7 @@ import {
   listSystemActions,
   SYSTEM_TARGET_PREFIX,
   type SystemActionCtx,
+  type SystemActionResult,
 } from './system-actions';
 
 describe('computeNextFireAt', () => {
@@ -60,5 +61,24 @@ describe('system-action registry', () => {
     registerSystemAction(name, a);
     registerSystemAction(name, b);
     expect(getSystemAction(name)).toBe(b);
+  });
+
+  // EI-403-A: the SystemAction return widened from Promise<void> to
+  // Promise<void | SystemActionResult>. A void handler is unchanged; one that
+  // returns durableSpawns hands the engine fire requests to start at the workflow
+  // layer. Both must round-trip through the registry.
+  it('accepts a void handler (unchanged) AND a durableSpawns-returning handler', async () => {
+    const voidName = `unit-test-void-${Math.floor(performance.now())}`;
+    registerSystemAction(voidName, async () => {
+      /* returns nothing */
+    });
+    await expect(getSystemAction(voidName)!({} as SystemActionCtx)).resolves.toBeUndefined();
+
+    const spawnName = `unit-test-spawn-${Math.floor(performance.now())}`;
+    const result: SystemActionResult = {
+      durableSpawns: [{ url: 'http://x/invoke?role=worker', body: { kickoff: 'go' }, idempotencyKey: 'implement:row-1', label: 'h/worker' }],
+    };
+    registerSystemAction(spawnName, async () => result);
+    await expect(getSystemAction(spawnName)!({} as SystemActionCtx)).resolves.toEqual(result);
   });
 });

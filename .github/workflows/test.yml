@@ -158,6 +158,15 @@ jobs:
       - name: Lint smart quotes in code
         run: npm run lint:smart-quotes
 
+      # MDX compile guard (EI-438): a bare `<word>` placeholder in docs prose
+      # (e.g. `<date>`, `<id>`) is parsed as an unclosed JSX tag and HARD-fails
+      # `astro build`, blocking the whole apps/operator-docs build (every agent's
+      # doc regen) — and git-sync auto-commits it before the break is visible.
+      # GATING — compiles every tracked .mdx with the MDX core + remark-gfm
+      # (matches starlight), so a non-compiling doc never reaches main.
+      - name: Lint MDX compiles
+        run: npm run lint:mdx
+
       # TSC type-error gate (lint-tsc-gating-EI-60): operator-core has a
       # pre-existing baseline of type errors. This gates NEW errors above the
       # baseline while allowing legacy errors. Baseline is stored in

@@ -33,8 +33,9 @@
 
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
+import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from './system-actions';
+import { buildLaunchSpawnRequest } from '../../blueprint/launch-blueprint';
+import type { DurableSpawnFireInput } from '../../dbos/durable-spawn';
 import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
 import { recordDispatchFired, recordFireResult } from '../improvements/dispatch-ledger';
@@ -205,8 +206,12 @@ registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
 
 /**
  * The dispatch seam — injectable for tests (mirrors blueprint-run-action's fire fn).
- * May return the spawn correlation (the dispatch ledger records it as
- * spawned_run_id); a seam that returns void just leaves the column NULL.
+ * EI-403-A: the default no longer FIRES inside the routine step (a child workflow
+ * can't start there). It BUILDS a durable-spawn request and returns it as
+ * `durableSpawn`; the dispatch loop collects these and returns them as
+ * `SystemActionResult.durableSpawns`, which the routine workflow starts durably
+ * AFTER the step. A seam that returns void / no `durableSpawn` (the test default)
+ * dispatches nothing — exactly as before.
  */
 export type ImplementFireFn = (input: {
   runnerHarness: string;
@@ -219,7 +224,10 @@ export type ImplementFireFn = (input: {
 }) => void | ImplementFireResult | Promise<void | ImplementFireResult>;
 
 export interface ImplementFireResult {
+  /** spawn correlation recorded on the ledger row as spawned_run_id (NULL if absent). */
   spawnedRunId?: string | null;
+  /** EI-403-A: the durable fire to start at the workflow layer after the step. */
+  durableSpawn?: DurableSpawnFireInput;
 }
 
 let _fire: ImplementFireFn | null = null;
@@ -269,19 +277,33 @@ export function implementTimeoutMs(): number {
 }
 
 const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candidate, dispatchId }) => {
-  const target = await fireLaunchBlueprint('implement', {
-    installSlug: runnerHarness,
-    workspaceId,
-    kickoff: implementKickoff(candidate),
-    timeoutMs: implementTimeoutMs(),
-    // Correlation for the worker-exit back-edge (EI-404): the /invoke route records
-    // the worker's death on THIS ledger row at close time (visible in seconds, vs
-    // the 2h orphan threshold) and rolls back the attempt on an env-failure (EI-406).
-    bodyExtra: dispatchId
-      ? { improvementDispatch: { dispatchId, itemId: candidate.id, attempt: (candidate.attempts ?? 0) + 1 } }
-      : undefined,
-  });
-  return { spawnedRunId: target.spawn?.runId ?? null };
+  const attempt = (candidate.attempts ?? 0) + 1;
+  // STABLE idempotency key (EI-403-A): derived from durable item state, never a
+  // clock, so a recovery replay of this dispatch re-fires the SAME durable workflow
+  // (`durable-spawn:<key>`) and dedups instead of double-dispatching. One key per
+  // genuine attempt (markDispatched bumps the attempt each dispatch).
+  const idempotencyKey = `implement:${candidate.id}:${attempt}`;
+  const durableSpawn = await buildLaunchSpawnRequest(
+    'implement',
+    {
+      installSlug: runnerHarness,
+      workspaceId,
+      kickoff: implementKickoff(candidate),
+      timeoutMs: implementTimeoutMs(),
+      // Correlation for the worker-exit back-edge (EI-404): the /invoke route records
+      // the worker's death on THIS ledger row at close time (visible in seconds, vs
+      // the 2h orphan threshold) and rolls back the attempt on an env-failure (EI-406).
+      bodyExtra: dispatchId
+        ? { improvementDispatch: { dispatchId, itemId: candidate.id, attempt } }
+        : undefined,
+    },
+    idempotencyKey,
+  );
+  // The fire happens at the workflow layer (the engine drains durableSpawns); the
+  // durable workflow id IS the spawn correlation, recorded now (fire_result 'ok'
+  // here means "durably handed off" — the same optimistic point the old fire-and-
+  // forget recorded 'ok', before its loopbackFetch even landed).
+  return { spawnedRunId: `durable-spawn:${idempotencyKey}`, durableSpawn };
 };
 
 /**
@@ -347,7 +369,7 @@ const defaultFlipExhausted: ExhaustedFlipFn = async (candidate, maxAttempts) => 
   });
 };
 
-registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
+registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Promise<void | SystemActionResult> => {
   const items = await readImprovementItems({ state: 'open' });
   const flagEnabled = await getFlag(FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, `routine:${ctx.installSlug}`);
   const runnerHarness = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || null;
@@ -388,6 +410,10 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
   const fire = _fire ?? defaultFire;
   const markDispatched = _markDispatched ?? defaultMarkDispatched;
   const ledger = _ledger ?? { recordDispatchFired, recordFireResult };
+  // EI-403-A: the action no longer fires inside this step — it COLLECTS the durable
+  // fire requests and returns them; the routine workflow starts them durably AFTER
+  // the step (where startWorkflow is legal). See routines-workflow.ts → startDurableSpawns.
+  const durableSpawns: DurableSpawnFireInput[] = [];
   for (const candidate of plan.candidates) {
     // Bookkeeping FIRST (claim + attempt bump) so a fire that crashes mid-loop
     // still leaves the item in-flight rather than double-dispatchable.
@@ -406,6 +432,7 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
     });
     try {
       const fired = await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate, dispatchId });
+      if (fired && typeof fired === 'object' && fired.durableSpawn) durableSpawns.push(fired.durableSpawn);
       if (dispatchId) {
         const spawnedRunId = fired && typeof fired === 'object' ? (fired.spawnedRunId ?? null) : null;
         await ledger.recordFireResult(dispatchId, { ok: true, spawnedRunId });
@@ -416,4 +443,7 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
       if (dispatchId) await ledger.recordFireResult(dispatchId, { ok: false, error: msg });
     }
   }
+  // Hand the collected fires to the engine to start durably at the workflow layer
+  // (EI-403-A). Nothing to start ⇒ void (a build seam that returned no request).
+  return durableSpawns.length ? { durableSpawns } : undefined;
 });

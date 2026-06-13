@@ -60,12 +60,12 @@ async function routineFireImpl(
   await runWithWorkspace(workspaceId, async () => {
     if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
       const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
-      await DBOS.runStep(
-        async () => {
+      const actionResult = await DBOS.runStep(
+        async (): Promise<SystemActionResult | undefined> => {
           const fn = getSystemAction(action);
           if (!fn) {
             console.warn(`[routines] no handler registered for system:${action} (routine ${routineId}) — skipping`);
-            return;
+            return undefined;
           }
           // Record a throw in `routines.metadata.last_error` so a silently-wedged
           // system action is visible (the improvement-watchdog's `routine-failure`
@@ -74,12 +74,16 @@ async function routineFireImpl(
           // wipes an error an action manages ITSELF (git-sync records its own).
           const { sql } = getOrgPg();
           try {
-            await fn({ installSlug, workspaceId, triggerConfig, payloadTemplate });
+            const result = await fn({ installSlug, workspaceId, triggerConfig, payloadTemplate });
             await sql`
               UPDATE harness_shared.routines
                  SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
                      updated_at = now()
                WHERE id = ${routineId} AND metadata->>'last_error_source' = 'runner'`.catch(() => {});
+            // Carry the action's durable-spawn requests out of the step so the
+            // workflow layer can start them (EI-403-A) — a child workflow cannot
+            // start from inside this step. Checkpointed return ⇒ replay-safe.
+            return result ?? undefined;
           } catch (e) {
             const msg = (e instanceof Error ? e.message : String(e)).slice(0, 600);
             await sql`
@@ -93,6 +97,21 @@ async function routineFireImpl(
         },
         { name: `system:${action}`, retriesAllowed: true, maxAttempts: 2, intervalSeconds: 15 },
       );
+
+      // EI-403-A: start any durable child fires the action requested, AT THE
+      // WORKFLOW LAYER (we are back in routineFireImpl's body, NOT inside a step —
+      // `startWorkflow` is legal here). Dynamic import mirrors launch-blueprint.ts,
+      // keeping durable-spawn's workflow registration off the import path when DBOS
+      // is inactive. Recovery-safe: `actionResult` is the step's checkpointed
+      // return, so a replay re-drains the same requests and the stable per-request
+      // idempotency keys dedup the re-fire.
+      if (actionResult?.durableSpawns?.length) {
+        const { startDurableSpawns } = await import('./durable-spawn');
+        const { enqueued, total } = await startDurableSpawns(actionResult.durableSpawns);
+        console.log(
+          `[routines] system:${action} (routine ${routineId}) → ${enqueued}/${total} durable spawn(s) enqueued at the workflow layer`,
+        );
+      }
     } else {
       // Agent-role routine: kick off the role for this harness via the invoke route
       // (the same autonomous launch path the git-sync merge-resolver spawn uses).
