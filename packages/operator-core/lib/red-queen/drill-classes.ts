@@ -270,10 +270,18 @@ const engineDeathDrill: DrillClass = {
     const snapshot = (planted.payload?.snapshot ?? []) as RoutineLivenessRow[];
     return [engineDeathDrillCollector(snapshot)];
   },
-  heal: async () => {
+  heal: async (_sql, planted) => {
     // The remedy for a dead engine is a restart that brings every routine back
-    // inside its window — represented here by the drill harness recording the
-    // heal; no substrate rows exist to mutate.
+    // inside its window. There are no substrate rows to mutate — the snapshot
+    // lives only in the drill payload — so "engine recovered" means pushing
+    // every routine's next_fire_at into the future, in place, so the post-heal
+    // re-sweep reads a healthy snapshot and the detector returns alive.
+    const snapshot = (planted.payload?.snapshot ?? []) as RoutineLivenessRow[];
+    const healedAt = Date.now();
+    for (const row of snapshot) {
+      row.active = true;
+      row.nextFireAt = new Date(healedAt + 5 * 60_000).toISOString();
+    }
   },
   cleanup: async () => {},
 };
