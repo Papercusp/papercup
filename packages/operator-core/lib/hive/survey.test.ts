@@ -44,6 +44,7 @@ function planRow(over: Partial<PlanIndexRow>): PlanIndexRow {
     decisions: [],
     nowState: null,
     nowNext: null,
+    ...over,
   } as unknown as PlanIndexRow;
 }
 

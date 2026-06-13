@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../coordination/presence', () => ({ getPresence: vi.fn() }));
 
-import { enrichBusy } from '../acquire';
+import { enrichBusy } from '../enrich-busy';
 import { getPresence } from '../../coordination/presence';
 import type { AcquireBusy } from '../su-lock-store';
 

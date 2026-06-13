@@ -21,6 +21,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   PASS_THROUGH,
   papercuspComputeQuotaWindow,
+  type CapabilityEnvelopeVerdict,
   type DispatchProjectedDeps,
   type PostInvokeEvent,
   type PreconditionFireRequest,
@@ -28,9 +29,14 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
+
 import { getOverride } from '@papercusp/testing-shell/llm';
 import { recordToolAuthzEvent } from './tool-authz-audit';
 import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
+import { evaluateCapabilityEnvelope } from './capability-envelope/policy';
+import { recordDecisionLedger } from './decision-ledger/emit';
 
 /**
  * The event-reaction system installs its `postInvoke` handler here at startup
@@ -189,6 +195,33 @@ async function recordInvocationImpl(input: {
 }
 
 /**
+ * Capability-envelope port impl (agent-capability-confinement-2026-06-13 B-06 / P-012).
+ * Runs the cheap, static, per-role evaluator; only on a beyond-envelope hit does it read
+ * the enforce flag, so the within-envelope hot path stays pure-sync. Exempt callers
+ * (SU / power-user / non-fleet / roleless) → null (the dispatch step no-ops). Enforce vs
+ * observe is the CAPABILITY_ENVELOPE flag (default OFF ⇒ observe/shadow: annotate + log,
+ * never block).
+ */
+async function checkCapabilityEnvelopeImpl(input: {
+  toolName: string;
+  capabilities: readonly string[];
+  ctx: UnifiedToolContext;
+  args: unknown;
+}): Promise<CapabilityEnvelopeVerdict | null> {
+  const decision = evaluateCapabilityEnvelope({
+    toolName: input.toolName,
+    capabilities: input.capabilities,
+    ctx: input.ctx,
+  });
+  if (!decision.applied) return null; // exempt — no verdict; ledger records posture 'auto'
+  if (decision.withinEnvelope) return { decision: 'allow', posture: 'auto', applied: true };
+  const enforce = await getFlag(FLAGS.CAPABILITY_ENVELOPE, 'system');
+  return enforce
+    ? { decision: 'deny', posture: 'rejected', applied: true, reason: decision.reason }
+    : { decision: 'observe', posture: 'gated', applied: true, reason: decision.reason };
+}
+
+/**
  * Per-call override lookup. The llm-testing framework registers a
  * `ToolDispatchOverride` for a runId via lib/llm-testing/dispatch-override.
  * Here we connect the dispatcher to that registry: parse ctx.uiClientId
@@ -219,6 +252,10 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
   overrideTool: overrideToolImpl,
+  // Capability-envelope port (agent-capability-confinement B-06 / P-012). Evaluates the
+  // cheap per-role envelope at the dispatch chokepoint; SU/non-fleet callers are exempt
+  // (D-002). Enforce-vs-observe is the CAPABILITY_ENVELOPE flag (default OFF ⇒ shadow).
+  checkCapabilityEnvelope: checkCapabilityEnvelopeImpl,
   // Event-reaction observation point (event-reaction-system D-001). Fires after
   // every tool settles; the host engine matches rules + schedules reactions.
   // Best-effort + non-blocking — swallow throws so a reaction never breaks its
@@ -228,6 +265,14 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
       reactionPostInvoke?.(event);
     } catch {
       // a reaction must never break its trigger
+    }
+    // Decision-ledger action-chokepoint emit (agent-capability-confinement B-06 / P-011 ⨯
+    // queen-autonomy D-012). Fire-and-forget; recordDecisionLedger swallows its own errors,
+    // but guard anyway so the ledger can never break its trigger.
+    try {
+      recordDecisionLedger(event);
+    } catch {
+      // the ledger must never break its trigger
     }
   },
   // RFC tooldef-auth Phase 1b: persist every authorize allow/deny + policy bypass.

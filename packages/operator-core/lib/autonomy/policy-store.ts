@@ -25,9 +25,6 @@ import {
 } from './policy';
 import { type CeilingLevel, isCeilingLevel, minCeiling } from './risk-tiers';
 
-/** Fully-qualified table name (the admin/test clients don't search_path it). */
-const TABLE = 'harness_shared.autonomy_policy';
-
 /** PG error code for "relation does not exist" — table not applied yet. */
 const UNDEFINED_TABLE = '42P01';
 
@@ -70,12 +67,10 @@ export async function readAutonomyPolicy(
 ): Promise<AutonomyCategoryPolicy[]> {
   const stored = new Map<AutonomyCategory, AutonomyCategoryPolicy>();
   try {
-    const rows = (await sql.unsafe(
-      `SELECT category, ceiling, locked, graduated_level, threshold_overrides, owner_override
-         FROM ${TABLE}
-        WHERE workspace_id = $1`,
-      [workspaceId],
-    )) as unknown as PolicyRow[];
+    const rows = (await sql`
+      SELECT category, ceiling, locked, graduated_level, threshold_overrides, owner_override
+        FROM harness_shared.autonomy_policy
+       WHERE workspace_id = ${workspaceId}`) as unknown as PolicyRow[];
     for (const r of rows) {
       // Ignore rows for ids not in the canonical taxonomy (fail-safe).
       if (isAutonomyCategory(r.category)) stored.set(r.category, rowToPolicy(r));
@@ -98,13 +93,11 @@ export async function getAutonomyCategoryPolicy(
   const id = category as AutonomyCategory;
   if (!isAutonomyCategory(category)) return defaultPolicyFor(id);
   try {
-    const rows = (await sql.unsafe(
-      `SELECT category, ceiling, locked, graduated_level, threshold_overrides, owner_override
-         FROM ${TABLE}
-        WHERE workspace_id = $1 AND category = $2
-        LIMIT 1`,
-      [workspaceId, category],
-    )) as unknown as PolicyRow[];
+    const rows = (await sql`
+      SELECT category, ceiling, locked, graduated_level, threshold_overrides, owner_override
+        FROM harness_shared.autonomy_policy
+       WHERE workspace_id = ${workspaceId} AND category = ${category}
+       LIMIT 1`) as unknown as PolicyRow[];
     if (rows.length > 0 && isAutonomyCategory(rows[0]!.category)) return rowToPolicy(rows[0]!);
   } catch (err) {
     if ((err as { code?: string }).code !== UNDEFINED_TABLE) throw err;
@@ -169,29 +162,25 @@ export async function setAutonomyPolicy(
   const ownerOverride =
     input.ownerOverride !== undefined ? input.ownerOverride : current.ownerOverride;
 
-  await sql.unsafe(
-    `INSERT INTO ${TABLE}
-       (workspace_id, category, ceiling, locked, graduated_level, threshold_overrides, owner_override, updated_by, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, now())
-     ON CONFLICT (workspace_id, category) DO UPDATE SET
-       ceiling = EXCLUDED.ceiling,
-       locked = EXCLUDED.locked,
-       graduated_level = EXCLUDED.graduated_level,
-       threshold_overrides = EXCLUDED.threshold_overrides,
-       owner_override = EXCLUDED.owner_override,
-       updated_by = EXCLUDED.updated_by,
-       updated_at = EXCLUDED.updated_at`,
-    [
-      workspaceId,
-      category,
-      ceiling,
-      locked,
-      graduatedLevel,
-      JSON.stringify(thresholdOverrides),
-      ownerOverride === null ? null : JSON.stringify(ownerOverride),
-      actor,
-    ],
-  );
+  // jsonb columns bound as `${JSON.stringify(v)}::text::jsonb` — the
+  // client-agnostic idiom that stores a real jsonb object under BOTH the
+  // operator runtime client and the testcontainer client (a bare `::jsonb`
+  // double-encodes under the test client). See agent-insights/postgres-js-jsonb-binding.
+  await sql`
+    INSERT INTO harness_shared.autonomy_policy
+      (workspace_id, category, ceiling, locked, graduated_level, threshold_overrides, owner_override, updated_by, updated_at)
+    VALUES (${workspaceId}, ${category}, ${ceiling}, ${locked}, ${graduatedLevel},
+            ${JSON.stringify(thresholdOverrides)}::text::jsonb,
+            ${ownerOverride == null ? null : JSON.stringify(ownerOverride)}::text::jsonb,
+            ${actor}, now())
+    ON CONFLICT (workspace_id, category) DO UPDATE SET
+      ceiling = EXCLUDED.ceiling,
+      locked = EXCLUDED.locked,
+      graduated_level = EXCLUDED.graduated_level,
+      threshold_overrides = EXCLUDED.threshold_overrides,
+      owner_override = EXCLUDED.owner_override,
+      updated_by = EXCLUDED.updated_by,
+      updated_at = EXCLUDED.updated_at`;
 
   await recordAutonomyAudit(sql, actor, 'autonomy:policy_set', category, workspaceId, {
     ceiling,
@@ -219,11 +208,11 @@ export async function recordAutonomyAudit(
 ): Promise<void> {
   try {
     const id = `aut-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await sql.unsafe(
-      `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
-      [id, Date.now(), actor, action, subject, JSON.stringify(extra ?? {}), workspaceId],
-    );
+    // `::text::jsonb` — the client-agnostic jsonb bind (see policy-store upsert).
+    await sql`
+      INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+      VALUES (${id}, ${Date.now()}, ${actor}, ${action}, ${subject},
+              ${JSON.stringify(extra ?? {})}::text::jsonb, ${workspaceId})`;
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[autonomy] audit write failed:', (err as Error)?.message);

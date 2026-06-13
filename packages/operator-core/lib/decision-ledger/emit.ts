@@ -31,6 +31,69 @@ import { papercuspTierFor, type CapabilityTier, type PostInvokeEvent } from '@pa
 
 const TIER_RANK: Record<CapabilityTier, number> = { low: 0, medium: 1, high: 2 };
 
+/** The columns one action-chokepoint ledger row carries (the host fills the rest by default). */
+export interface DecisionLedgerRow {
+  workspaceId: string;
+  harnessSlug: string | null;
+  action: string;
+  capability: string | null;
+  tier: CapabilityTier;
+  category: string | null;
+  posture: 'auto' | 'gated' | 'rejected';
+  outcome: 'ok' | 'error';
+  outcomeCode: string | null;
+  why: string | null;
+  links: Record<string, unknown> | null;
+  actorRole: string | null;
+  actorSpawnId: string | null;
+  actorPrincipal: string | null;
+  transport: string | null;
+  durationMs: number | null;
+  argsDigest: string | null;
+}
+
+/**
+ * PURE decision + field computation: does this settled call earn a ledger row, and if so
+ * what does it hold? Returns null to SKIP (no workspace · superuser · no declared
+ * capability · a read (tier 'low')). No PG, no flag — those are the impl's job — so this is
+ * directly unit-testable. Exported for the emit tests.
+ */
+export function buildDecisionLedgerRow(event: PostInvokeEvent): DecisionLedgerRow | null {
+  const { ctx, toolName, result, durationMs } = event;
+  if (!ctx.workspaceId) return null;
+  // SU = supervised human driving directly, not the autonomous Queen/fleet (D-002).
+  if (ctx.isSuperuser) return null;
+
+  const caps = event.capabilities ?? [];
+  // No declared capability ⇒ a public/ungated utility — not a classifiable governed action.
+  if (caps.length === 0) return null;
+  const tier = highestTier(caps);
+  // Reads (tier 'low') are execution, not governance — they belong in tool_invocations only.
+  if (tier === 'low') return null;
+
+  const verdict = event.envelopeVerdict ?? null;
+  const primaryCap = caps[0] ?? null;
+  return {
+    workspaceId: ctx.workspaceId,
+    harnessSlug: ctx.harnessSlug ?? null,
+    action: toolName,
+    capability: primaryCap,
+    tier,
+    category: categoryFor(primaryCap, toolName),
+    posture: verdict?.posture ?? 'auto',
+    outcome: result.ok ? 'ok' : 'error',
+    outcomeCode: result.ok ? null : (result.error?.code ?? null),
+    why: verdict?.reason ?? null,
+    links: buildLinks(ctx),
+    actorRole: ctx.role ?? null,
+    actorSpawnId: ctx.spawnId ?? null,
+    actorPrincipal: ctx.principal?.slug ?? null,
+    transport: ctx.transport ?? null,
+    durationMs: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+    argsDigest: digestArgs(event.args),
+  };
+}
+
 /** Fire-and-forget entry point wired into PROJECTED_DEPS.postInvoke. Never throws. */
 export function recordDecisionLedger(event: PostInvokeEvent): void {
   void recordDecisionLedgerImpl(event).catch((err) => {
@@ -40,36 +103,15 @@ export function recordDecisionLedger(event: PostInvokeEvent): void {
 }
 
 async function recordDecisionLedgerImpl(event: PostInvokeEvent): Promise<void> {
-  const { ctx, toolName, result, durationMs } = event;
-  if (!ctx.workspaceId) return;
-  // SU = supervised human driving directly, not the autonomous Queen/fleet (D-002).
-  if (ctx.isSuperuser) return;
-
-  const caps = event.capabilities ?? [];
-  // No declared capability ⇒ a public/ungated utility — not a classifiable governed action.
-  if (caps.length === 0) return;
-  const tier = highestTier(caps);
-  // Reads (tier 'low') are execution, not governance — they belong in tool_invocations only.
-  if (tier === 'low') return;
-
-  // Kill-switch (checked AFTER the cheap governed-action filter so a disabled ledger costs
-  // nothing on the read-heavy bulk of traffic). getFlag is cached (no per-call network).
+  const row = buildDecisionLedgerRow(event);
+  if (!row) return; // cheap governed-action filter first (no flag read on read-heavy traffic)
+  // Kill-switch. getFlag is cached (no per-call network).
   if (!(await getFlag(FLAGS.DECISION_LEDGER, 'system'))) return;
-
-  const verdict = event.envelopeVerdict ?? null;
-  const posture = verdict?.posture ?? 'auto';
-  const primaryCap = caps[0] ?? null;
-  const category = categoryFor(primaryCap, toolName);
-  const outcome = result.ok ? 'ok' : 'error';
-  const outcomeCode = result.ok ? null : (result.error?.code ?? null);
-  const why = verdict?.reason ?? null;
-  const links = buildLinks(ctx);
-  const argsDigest = digestArgs(event.args);
 
   try {
     const { sql } = getOrgPg();
     await sql.begin(async (tx) => {
-      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [ctx.workspaceId]);
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [row.workspaceId]);
       await tx.unsafe(
         `INSERT INTO harness_shared.decision_ledger
            (workspace_id, harness_slug, action, capability, tier, category,
@@ -77,23 +119,23 @@ async function recordDecisionLedgerImpl(event: PostInvokeEvent): Promise<void> {
             actor_role, actor_spawn_id, actor_principal, transport, duration_ms, args_digest)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17)`,
         [
-          ctx.workspaceId,
-          ctx.harnessSlug ?? null,
-          toolName,
-          primaryCap,
-          tier,
-          category,
-          posture,
-          outcome,
-          outcomeCode,
-          why,
-          links ? JSON.stringify(links) : null,
-          ctx.role ?? null,
-          ctx.spawnId ?? null,
-          ctx.principal?.slug ?? null,
-          ctx.transport ?? null,
-          Number.isFinite(durationMs) ? Math.round(durationMs) : null,
-          argsDigest,
+          row.workspaceId,
+          row.harnessSlug,
+          row.action,
+          row.capability,
+          row.tier,
+          row.category,
+          row.posture,
+          row.outcome,
+          row.outcomeCode,
+          row.why,
+          row.links ? JSON.stringify(row.links) : null,
+          row.actorRole,
+          row.actorSpawnId,
+          row.actorPrincipal,
+          row.transport,
+          row.durationMs,
+          row.argsDigest,
         ],
       );
     });

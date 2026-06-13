@@ -28,18 +28,18 @@
  * (full-window recompute + capture-core watchdogKey dedup), so a replay is
  * a clean no-op-ish re-mine.
  */
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { neologismGovernorGate } from '../../neologism/governor';
-import { neologismOptionsFromPayload } from '../../neologism/miner-core';
-import {
-  defaultNeologismDeps,
-  runNeologismTick,
-  type NeologismTickDeps,
-} from '../../neologism/scan';
+import type { NeologismTickDeps } from '../../neologism/scan';
+import { runNeologismMine } from '../../neologism/mine';
+
+/**
+ * The flag → governor → tick orchestration this action runs is SHARED with the
+ * `neologism:mine` deterministic blueprint step via `runNeologismMine`
+ * (deterministic-blueprints-migration-2026-06-13 P-011 / P-120 / D-004 — provably
+ * behavior-neutral: one gated tick, two callers). This action keeps its own
+ * injectable seams (the test pins them) and passes them into the shared core.
+ */
 
 /** The tick-deps seam — injectable for tests (mirrors setNegativeSpaceTickDeps). */
 let _deps: NeologismTickDeps | null = null;
@@ -56,25 +56,26 @@ export function setNeologismGovernorGate(gate: NeologismGovernorGate | null): vo
 }
 
 registerSystemAction('neologism-mine', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.NEOLOGISM_MINER, `routine:${ctx.installSlug}`))) {
-    console.log(
-      '[neologism-mine] flag papercusp-neologism-miner is OFF (frontier arming gate, ' +
-        'self-learning-frontier P-001) — skipping',
-    );
-    return;
-  }
-  const verdict = await (_governorGate ?? neologismGovernorGate)(ctx.workspaceId);
-  if (!verdict.allow) {
-    console.log(
-      `[neologism-mine] learning-governor refused (${verdict.reason}) — skipping ` +
-        '(D-004: an unattended frontier loop runs only registered + budgeted)',
-    );
-    return;
-  }
-  const opts = neologismOptionsFromPayload(ctx.payloadTemplate);
-  const deps = _deps ?? defaultNeologismDeps(getOrgPg().sql);
   try {
-    const result = await runNeologismTick(ctx.workspaceId, deps, opts);
+    const outcome = await runNeologismMine(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payload: ctx.payloadTemplate },
+      { governorGate: _governorGate ?? undefined, tickDeps: _deps ?? undefined },
+    );
+    if (!outcome.ran) {
+      if (outcome.skipReason === 'flag-off') {
+        console.log(
+          '[neologism-mine] flag papercusp-neologism-miner is OFF (frontier arming gate, ' +
+            'self-learning-frontier P-001) — skipping',
+        );
+      } else {
+        console.log(
+          `[neologism-mine] learning-governor refused (${outcome.governorReason}) — skipping ` +
+            '(D-004: an unattended frontier loop runs only registered + budgeted)',
+        );
+      }
+      return;
+    }
+    const result = outcome.result!;
     console.log(
       `[neologism-mine] ${result.scannedRows} coord row(s) + ${result.insightDocs} insight doc(s) → ` +
         `${result.terms} term(s), ${result.overBars} over bars` +

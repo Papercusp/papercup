@@ -26,18 +26,18 @@
  * window-day) shift upsert + notified_at alarm dedup), so a replay is a clean
  * re-scan.
  */
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { fleetEkgGovernorGate } from '../../fleet-ekg/governor';
-import {
-  defaultFleetEkgDeps,
-  ekgOptionsFromPayload,
-  runFleetEkgTick,
-  type FleetEkgTickDeps,
-} from '../../fleet-ekg/scan';
+import type { FleetEkgTickDeps } from '../../fleet-ekg/scan';
+import { runFleetEkgScan } from '../../fleet-ekg/run';
+
+/**
+ * The flag → governor → tick orchestration this action runs is SHARED with the
+ * `fleet-ekg:scan` deterministic blueprint step via `runFleetEkgScan`
+ * (deterministic-blueprints-migration-2026-06-13 P-030 / P-120 / D-004 — provably
+ * behavior-neutral: one gated tick, two callers). This action keeps its own
+ * injectable seams (the test pins them) and passes them into the shared core.
+ */
 
 /** The tick-deps seam — injectable for tests (mirrors setNegativeSpaceTickDeps). */
 let _deps: FleetEkgTickDeps | null = null;
@@ -54,25 +54,26 @@ export function setFleetEkgGovernorGate(gate: FleetEkgGovernorGate | null): void
 }
 
 registerSystemAction('fleet-ekg-scan', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.FLEET_EKG, `routine:${ctx.installSlug}`))) {
-    console.log(
-      '[fleet-ekg-scan] flag papercusp-fleet-ekg is OFF (frontier arming gate, ' +
-        'self-learning-frontier P-001) — skipping',
-    );
-    return;
-  }
-  const verdict = await (_governorGate ?? fleetEkgGovernorGate)(ctx.workspaceId);
-  if (!verdict.allow) {
-    console.log(
-      `[fleet-ekg-scan] learning-governor refused (${verdict.reason}) — skipping ` +
-        '(D-004: an unattended frontier loop runs only registered + budgeted)',
-    );
-    return;
-  }
-  const opts = ekgOptionsFromPayload(ctx.payloadTemplate);
-  const deps = _deps ?? defaultFleetEkgDeps(getOrgPg().sql);
   try {
-    const result = await runFleetEkgTick(ctx.workspaceId, deps, opts);
+    const outcome = await runFleetEkgScan(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payload: ctx.payloadTemplate },
+      { governorGate: _governorGate ?? undefined, tickDeps: _deps ?? undefined },
+    );
+    if (!outcome.ran) {
+      if (outcome.skipReason === 'flag-off') {
+        console.log(
+          '[fleet-ekg-scan] flag papercusp-fleet-ekg is OFF (frontier arming gate, ' +
+            'self-learning-frontier P-001) — skipping',
+        );
+      } else {
+        console.log(
+          `[fleet-ekg-scan] learning-governor refused (${outcome.governorReason}) — skipping ` +
+            '(D-004: an unattended frontier loop runs only registered + budgeted)',
+        );
+      }
+      return;
+    }
+    const result = outcome.result!;
     console.log(
       `[fleet-ekg-scan] embedded ${result.embedded}, status ${result.status}: ` +
         `${result.findings} shift(s) (${result.unattributable} unattributable, ${result.alarmed} alarmed)`,

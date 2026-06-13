@@ -115,6 +115,13 @@ async function probeMcpInitialize(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        // MCP streamable-HTTP REQUIRES both media types in Accept; a spec-compliant
+        // endpoint returns 406 without it (endpoint-route/.../agent-tools/catchall.ts
+        // gates on `accept.includes('text/event-stream')`). Omitting this header made
+        // the post-deploy probe 406 on every deploy of the strict-MCP code → health
+        // check failed → auto-rollback → main froze undeployed. (Verified live: no-Accept
+        // → 406; with-Accept → 200 text/event-stream.)
+        'accept': 'application/json, text/event-stream',
         'authorization': 'Bearer health-probe',
       },
       body: JSON.stringify(initMessage),

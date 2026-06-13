@@ -41,6 +41,7 @@ import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/impro
 import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
 import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
 import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
+import type { HiveThroughputSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read';
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 import { BenchmarkTrend } from './BenchmarkTrend';
 import { EkgPanel } from './EkgPanel';
@@ -51,7 +52,7 @@ import MemoryHealthCard from './MemoryHealthCard';
 import HumanQueueDrain from './HumanQueueDrain';
 import LearningPackCandidates from './LearningPackCandidates';
 
-const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'knowledge', 'learnings'] as const;
+const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'throughput', 'knowledge', 'learnings'] as const;
 type LView = (typeof LVIEWS)[number];
 
 /** The plain-language pipeline behind each sub-view, rendered as the "how this works" strip. */
@@ -114,6 +115,20 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
     {
       title: 'Grade',
       desc: 'Grade routed ideas 1–5 with an optional note — the Queen auto-grades the rest, and your grade always wins. Grades shift the lens weights below, and recent notes are quoted to the next cycle’s ideators.',
+    },
+  ],
+  throughput: [
+    {
+      title: 'Place',
+      desc: 'The Queen ranks the ready work and fans it onto bees — as many per wake as there are free slots. Frontier depth is how much waits; placements/wake is how fast she pours.',
+    },
+    {
+      title: 'Run',
+      desc: 'Each placed bee runs to completion. Busy-vs-cap is fleet utilization, mean-time-to-complete is how long a placement takes, and a stuck count flags bees that stopped advancing.',
+    },
+    {
+      title: 'Unblock',
+      desc: 'When a bee hits a question, where it resolves — itself, a peer vote, the Queen, or you — is the question-rung split. A loop operating well keeps the frontier draining without pegging the fleet or stranding placements.',
     },
   ],
   knowledge: [
@@ -211,6 +226,16 @@ export default function LearningTab() {
           <button
             type="button"
             role="tab"
+            aria-selected={lview === 'throughput'}
+            className={`pc-learning__subtab${lview === 'throughput' ? ' is-active' : ''}`}
+            onClick={() => void setLview('throughput')}
+          >
+            <Activity size={13} aria-hidden />
+            <span>Throughput<em>queen loop</em></span>
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={lview === 'knowledge'}
             className={`pc-learning__subtab${lview === 'knowledge' ? ' is-active' : ''}`}
             onClick={() => void setLview('knowledge')}
@@ -260,6 +285,8 @@ export default function LearningTab() {
         <ApiaryView />
       ) : view === 'scout' ? (
         <ScoutView />
+      ) : view === 'throughput' ? (
+        <ThroughputView />
       ) : view === 'knowledge' ? (
         <KnowledgeView />
       ) : view === 'learnings' ? (
@@ -945,6 +972,111 @@ function GradePanel({
         </button>
       </div>
     </div>
+  );
+}
+
+/** ms → compact human duration: "45s", "2m 0s", "1h 3m". */
+function formatDurationMs(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+/**
+ * Throughput view (queen-autonomous-execution B-11 / P-050): the Queen-loop's
+ * operating-well yardstick — per-hive frontier depth, placements/wake,
+ * bees-busy-vs-cap, stuck count, mean-time-to-complete, and the question-rung
+ * split, read from hive_throughput_ticks (mig 261) via learning.hiveThroughput.
+ */
+function ThroughputView() {
+  const sync = useSyncQuery<HiveThroughputSnapshot>({ queryName: 'learning.hiveThroughput', args: {}, staleTime: 30_000 });
+  const hives = sync.data?.[0]?.hives ?? [];
+
+  return (
+    <section className="pc-learning__section">
+      {hives.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <strong>No throughput recorded yet</strong>
+          <span>
+            The Queen hive loop records a tick every ~30s while a hive is <strong>started</strong> with queued work.
+            Start a hive (or wait for its next wake) and its placement metrics appear here.
+          </span>
+        </div>
+      ) : (
+        hives.map((h) => {
+          const m = h.latest;
+          const rungs = m?.questionRungs ?? {};
+          const rungTotal = Object.values(rungs).reduce<number>((a, b) => a + (Number(b) || 0), 0);
+          const tickMs = m?.tickAt ? Date.parse(m.tickAt) : NaN;
+          const utilPct = m ? Math.round(m.utilization * 100) : 0;
+          const saturated = !!m && !h.operatingWell && m.utilization >= 1 && m.frontierDepth > 0;
+          return (
+            <div key={h.hiveSlug} className="pc-learning__throughputhive">
+              <div className="pc-learning__flow" aria-label={`${h.hiveSlug} throughput health`}>
+                <span
+                  className={`pc-learning__flowchip ${h.operatingWell ? 'pc-learning__flowchip--wd-good' : 'pc-learning__flowchip--wd-warn'}`}
+                  title="The hive whose Queen-loop throughput this is, how recently it ticked, and whether the loop is operating well (frontier draining, fleet not pegged, no stuck placements)."
+                >
+                  <Activity size={11} aria-hidden />
+                  {h.hiveSlug}
+                  <strong>{m && !Number.isNaN(tickMs) ? whenLabel(tickMs) : 'no ticks'}</strong>
+                  <em>{h.operatingWell ? 'operating well' : 'needs attention'}</em>
+                </span>
+              </div>
+
+              <div className="pc-learning__scoreboard" aria-label={`${h.hiveSlug} throughput`}>
+                <Stat label="frontier" value={m ? m.frontierDepth : '—'} hint="Ready work waiting for placement (todo items) — the queue the Queen pours from." />
+                <Stat
+                  label="bees busy"
+                  value={m ? `${m.beesBusy}/${m.beesCap}` : '—'}
+                  tone={saturated ? 'human' : 'good'}
+                  hint="Live placed bees vs the fleet ceiling. Pegged at cap with work still queued = starvation (raise the ceiling / widen the credential pool, D-006)."
+                />
+                <Stat label="utilization" value={m ? `${utilPct}%` : '—'} hint="Fleet utilization: bees busy ÷ cap." />
+                <Stat label="placed / wake" value={m ? m.placements : '—'} tone="auto" hint="Bees newly placed since the previous tick — how fast the Queen fans work out." />
+                <Stat label="completed" value={m ? m.completed : '—'} tone="auto" hint="Bees that finished in the tick window." />
+                <Stat label="avg complete" value={formatDurationMs(m?.mttcMs)} hint="Mean-time-to-complete over bees that finished — how long a placement takes." />
+                <Stat
+                  label="stuck"
+                  value={m ? m.stuckCount : '—'}
+                  {...(m && m.stuckCount > 0 ? { tone: 'human' as const } : {})}
+                  hint="Placed bees with a stale heartbeat — placements that stopped advancing and need a recovery wake (the placement watchdog, P-020)."
+                />
+                <Stat label="questions" value={rungTotal} hint="Bee questions resolved this window, split by rung below. Lights up when the question-ladder (B-10/B-17) lands; 0 until then." />
+              </div>
+
+              {rungTotal > 0 ? (
+                <div className="pc-learning__flow" aria-label={`${h.hiveSlug} question rungs`}>
+                  <span className="pc-learning__flowchip" title="Where bee questions resolved: bee-self / peer-vote / Queen / owner. The lower the rung, the less the owner was needed.">
+                    <HelpCircle size={11} aria-hidden />
+                    question rungs
+                  </span>
+                  {Object.entries(rungs).map(([rung, count]) => (
+                    <span key={rung} className="pc-learning__lens" title={`${String(count)} question(s) resolved at the ${rung} rung`}>
+                      <em>{rung}</em>
+                      <strong>{String(count)}</strong>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })
+      )}
+      <button
+        type="button"
+        className="pc-learning__refresh"
+        aria-label="Reload hive throughput"
+        disabled={sync.fetching}
+        onClick={() => sync.invalidate()}
+      >
+        <RefreshCw size={13} aria-hidden />
+      </button>
+    </section>
   );
 }
 
@@ -1751,6 +1883,8 @@ function LearningStyles() {
       .pc-learning__flowdot--bad { background: #f87171; box-shadow: 0 0 5px rgba(248, 113, 113, 0.6); }
 
       .pc-learning__scoreboard { display: flex; flex-wrap: wrap; gap: 8px; }
+      .pc-learning__throughputhive { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
+      .pc-learning__throughputhive + .pc-learning__throughputhive { border-top: 1px solid var(--border, rgba(125, 211, 252, 0.12)); padding-top: 12px; }
       .pc-learning__stat {
         display: flex; flex-direction: column; gap: 2px; min-width: 96px;
         padding: 9px 13px; border-radius: 10px;

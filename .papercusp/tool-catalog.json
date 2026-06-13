@@ -1,7 +1,40 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 383,
+  "count": 402,
   "tools": [
+    {
+      "name": "ablation:report",
+      "http": {
+        "path": "/api/agent-tools/ablation/report",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Prompt-sedimentology dead-weight report: per-SU-playbook-rule shadow-ablation standings (dead-weight-candidate / load-bearing / insufficient-evidence) aggregated across weekly cycles, candidates first, plus recent cycle rows (verdict, pass-rate delta, regressions, cost). Read-only over harness_shared.prompt_ablation_runs.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Reviewing which SU-playbook governance rules earn their tokens: \"which rules survived repeated ablation with zero behavioral delta?\" — the owner review queue for prompt slimming, or checking what last week's shadow cycle measured.",
+        "notWhen": "You want prompt MUTATION history (who changed what) — change_ledger:list. You want to RUN an ablation — the system:prompt-ablation routine (dark until the frontier P-001 arming gate).",
+        "chaining": "ablation:report → for a candidate rule, read its ruleKey rows ({ ruleKey }) for the per-scenario evidence → an actual removal is a normal reviewed playbook edit (rides the change ledger + the su llm-test suite)."
+      }
+    },
     {
       "name": "accounts:list",
       "http": {
@@ -667,6 +700,51 @@
       }
     },
     {
+      "name": "autonomy:policy_get",
+      "http": {
+        "path": "/api/agent-tools/autonomy/policy_get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the Queen autonomy policy (per-category risk ceilings, locks, graduated levels, and the derived effective ceiling) for this workspace.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Inspecting the Queen's per-category autonomy ceilings — the decider checking whether a category may auto-decide, or the owner settings surface rendering the policy. Pass `category` for one row; omit for all 13.",
+        "notWhen": "To CHANGE a ceiling use autonomy:policy_set. For feature flags use flags:get."
+      }
+    },
+    {
+      "name": "autonomy:policy_set",
+      "http": {
+        "path": "/api/agent-tools/autonomy/policy_set",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set the Queen autonomy ceiling / lock / graduated level for one category. High-risk: widens or narrows what the Queen may auto-decide without asking. Audited; provide a reason.",
+      "capabilities": [
+        "audit:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner (or the owner control surface) deliberately changes a category's autonomy — lower/raise the risk ceiling, lock/unlock (protected = never-auto), or the graduation engine records an earned level (clamped ≤ the ceiling).",
+        "notWhen": "To read the policy use autonomy:policy_get. This does not arm autonomy — categories ship never-auto and widen only after the owner lowers a ceiling AND the arming gate (P-092)."
+      }
+    },
+    {
       "name": "backup:diff",
       "http": {
         "path": "/api/agent-tools/backup/diff",
@@ -1019,6 +1097,353 @@
         "operator"
       ],
       "profile": "engineer"
+    },
+    {
+      "name": "calibration:summary",
+      "http": {
+        "path": "/api/agent-tools/calibration/summary",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Per-persona per-domain calibration from recorded bets: Brier score, base rate, sample size, and the shrunk trust weight (0.5 = unknown, →1 proven-sharp, →0 proven-noisy) — plus the open-bet rollup. Read-only over harness_shared.calibration_predictions.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Weighing how much to trust a persona's stated confidence — before acting on a 'fixed, 0.9 sure' claim, when triaging items whose ranker breakdown shows a calibration contribution, or when reviewing whose bets are sharp vs noise.",
+        "notWhen": "You want the queue order itself — improvements:digest (the ranker already folds calibration in as a feature). You want raw bet rows — they are deliberately not exposed; the scores are the consumption surface.",
+        "chaining": "improvements:digest (rank.features shows a 'calibration' contribution) → calibration:summary { predictor } for that bettor's record → weigh their claim accordingly."
+      }
+    },
+    {
+      "name": "capability:bash",
+      "http": {
+        "path": "/api/agent-tools/capability/bash",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output.",
+      "capabilities": [
+        "capability:bash"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Run any shell command — build, test, git status, file inspection, scripts. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output.",
+        "notWhen": "To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For git, prefer capability:git.",
+        "chaining": "run_in_background:true → returns a bash_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused)."
+      }
+    },
+    {
+      "name": "capability:bash_kill",
+      "http": {
+        "path": "/api/agent-tools/capability/bash_kill",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Stop a background shell job (started by capability:bash run_in_background:true). Sends SIGTERM then SIGKILL. Returns the final tail of output.",
+      "capabilities": [
+        "capability:bash"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Stop a background job you no longer need (a dev server, a runaway build).",
+        "notWhen": "A job that already finished — capability:bash_output already shows its terminal status.",
+        "chaining": "capability:bash { run_in_background:true } → … → capability:bash_kill { bash_id }."
+      }
+    },
+    {
+      "name": "capability:bash_output",
+      "http": {
+        "path": "/api/agent-tools/capability/bash_output",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read new output from a background shell job (started by capability:bash run_in_background:true). Returns output since the last read plus status (running/completed/failed/…) and exit code.",
+      "capabilities": [
+        "capability:bash"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves \"running\" gives the tail + exit code.",
+        "notWhen": "For a foreground command — its output is in the capability:bash result directly.",
+        "chaining": "capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early."
+      }
+    },
+    {
+      "name": "capability:edit",
+      "http": {
+        "path": "/api/agent-tools/capability/edit",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Exact string replacement in a file, like the native Edit tool. old_string must match exactly and (unless replace_all) be unique. Acquires the per-path file lock server-side before editing. Path is absolute or relative to the project dir.",
+      "capabilities": [
+        "capability:fs-write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Make a targeted in-place change to an existing file. Include enough surrounding context in old_string to make it unique, or set replace_all.",
+        "notWhen": "Creating a file or replacing it wholesale — use capability:write. Reading — use capability:read.",
+        "chaining": "capability:read → capability:edit. On a file_locked result, wait/pivot/coordinate with the holder."
+      }
+    },
+    {
+      "name": "capability:fetch",
+      "http": {
+        "path": "/api/agent-tools/capability/fetch",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Make an outbound HTTP(S) request and return status, headers, and (truncated) body. Body beyond the byte cap spills to a file. The sandbox egress policy bounds which hosts are reachable.",
+      "capabilities": [
+        "capability:net"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Fetch a URL — an API, a raw file, a docs page. For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.",
+        "notWhen": "Reading a local file — use capability:read. Running a network CLI — use capability:bash (curl/wget).",
+        "chaining": "Standalone. Large bodies spill to a log path you can capability:read."
+      }
+    },
+    {
+      "name": "capability:git",
+      "http": {
+        "path": "/api/agent-tools/capability/git",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run a git subcommand (argv, no shell) in the project dir. `push` is refused (git-sync owns push). Output spills to a log if large.",
+      "capabilities": [
+        "capability:git"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Inspect or stage git state — status, diff, log, show, add, commit (within a worktree). Prefer this over capability:bash for git so the action is gated as git, not arbitrary shell.",
+        "notWhen": "Pushing (refused — git-sync owns push). Arbitrary shell — use capability:bash.",
+        "chaining": "capability:git { args: [\"status\",\"--porcelain\"] } → inspect → capability:git { args: [\"add\",\"-A\"] } etc."
+      }
+    },
+    {
+      "name": "capability:read",
+      "http": {
+        "path": "/api/agent-tools/capability/read",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a file (text) with line numbers, like the native Read tool. offset/limit window large files; long lines are truncated. Path is absolute or relative to the project dir.",
+      "capabilities": [
+        "capability:fs-read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Read a source/text file before editing it, or to inspect content. Use offset+limit to page through a large file.",
+        "notWhen": "To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.",
+        "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite)."
+      }
+    },
+    {
+      "name": "capability:write",
+      "http": {
+        "path": "/api/agent-tools/capability/write",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Write a file (create or overwrite) like the native Write tool. Acquires the per-path file lock server-side before writing (busy → returns who holds it). Path is absolute or relative to the project dir.",
+      "capabilities": [
+        "capability:fs-write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Create a new file, or fully replace an existing one. For a partial change to an existing file prefer capability:edit.",
+        "notWhen": "A small in-place change — use capability:edit (exact string replacement). Reading first — use capability:read.",
+        "chaining": "capability:read (if overwriting) → capability:write. On a file_locked result, wait/pivot/coordinate with the holder."
+      }
+    },
+    {
+      "name": "change_ledger:calendar",
+      "http": {
+        "path": "/api/agent-tools/change_ledger/calendar",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The mutation-calendar advisory over the behavior-change ledger: per mutation class (gym, manual-prompt, repo-prompt, ablation) the activity count, first/last timestamps, and liveness inside the window — plus the D-003 overlap advisory when more than one AUTOMATED class is live (\"one live mutation class at a time\" is policy, not enforcement).",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Before starting/scheduling a prompt-layer mutator (gym autoloop bring-up, an ablation run) — is another mutation class already live? Also the EKG's \"what could explain this shift window\" first read.",
+        "notWhen": "You want the individual mutation rows — change_ledger:list.",
+        "chaining": "change_ledger:calendar → on overlap, serialize with the other class's owner → change_ledger:list { mutationClass } for the specific rows."
+      }
+    },
+    {
+      "name": "change_ledger:list",
+      "http": {
+        "path": "/api/agent-tools/change_ledger/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List recent behavior-affecting changes — every ledgered prompt/rule mutation (gym champion commits, prompt-override API edits, repo playbook/persona file edits, ablations) newest first, with source, mutation class, target, diff ref, and actor. Read-only over harness_shared.behavior_change_ledger.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Attributing a behavior shift: \"what changed in the prompt layer recently?\" — after a fleet anomaly, before/after a gym promotion, or when auditing who mutated which role prompt and when.",
+        "notWhen": "You want the overlap advisory / per-class liveness rollup — change_ledger:calendar. You want prompt CONTENT — read the prompt source or harness_prompt_overrides.",
+        "chaining": "change_ledger:calendar (which classes are live) → change_ledger:list { mutationClass } for the rows → the diff_ref (gym proposal id / git sha) for the change content."
+      }
     },
     {
       "name": "chat:ask_choice",
@@ -1428,7 +1853,7 @@
       "guidance": {
         "when": "Starting a distinct piece of work, so other agents see what you have taken on. When the work is plan items, pass them as `items` — that claims your lane structurally instead of describing it in prose.",
         "notWhen": "Every turn — the OMP hook heartbeats automatically; call this when your intent changes.",
-        "chaining": "coord:declare-intent { intent, current_plan_slug, items: [\"P-001\", \"P-002\"] } → work → plans:set-status done releases each as you finish. A reported conflict means a live peer holds that item — coordinate or re-lane."
+        "chaining": "coord:declare-intent { intent, current_plan_slug, items: [\"P-001\", \"P-002\"] } → work → plans:set-status done releases each as you finish. A reported conflict means a live peer holds that item — coordinate or re-lane. Items in `claims.unknown` did not parse as plan items and were NOT claimed — fix the plan format or the ids."
       }
     },
     {
@@ -2497,7 +2922,7 @@
           "POST"
         ]
       },
-      "description": "Atomically reserve the next migration number for a libs/papercusp/libs/db/sql/<NNN>-*.sql file. Hands out GREATEST(max-on-disk, max-reserved)+1 under a pg advisory lock so two agents racing `ls | tail` never collide. Returns the number + a suggested filename/path; write the file there and it auto-applies on the next operator restart (A1 boot-apply).",
+      "description": "Atomically reserve the next migration number for a libs/papercusp/libs/db/sql/<NNN>-*.sql file. Hands out GREATEST(max-on-disk across the serving + canonical staging trees, max-reserved, max-applied)+1 under a pg advisory lock so two agents racing `ls | tail` never collide. Returns the number + a suggested filename/path; write the file there and it auto-applies on the next operator restart (A1 boot-apply).",
       "capabilities": [
         "locks:write"
       ],
@@ -3000,7 +3425,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "Diagnose whether agent spawns / meridian calls are being paced or paused by the rate-limit governor (e.g. \"why are runs slow / stalled?\"), or read the fleet cap / effective concurrency / usage% the top-bar shows.",
+        "when": "Diagnose whether agent spawns / stateless LLM calls are being paced or paused by the rate-limit governor (e.g. \"why are runs slow / stalled?\"), or read the fleet cap / effective concurrency / usage% the top-bar shows.",
         "notWhen": "Service up/down — dev:service_health. Migration drift — db:check_drift. EDITING the cap — operator:rate_limit_config."
       }
     },
@@ -3787,6 +4212,37 @@
       }
     },
     {
+      "name": "fleet:place_batch",
+      "http": {
+        "path": "/api/agent-tools/fleet/place_batch",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Queen's serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "queen"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You (the Queen) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping fleet:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm bees by affinity in one turn.",
+        "notWhen": "Placing a SINGLE task (just fleet:spawn or coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.",
+        "chaining": "work_items:list (the frontier) + fleet:assignments (bee load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot."
+      }
+    },
+    {
       "name": "fleet:sandbox_deps",
       "http": {
         "path": "/api/agent-tools/fleet/sandbox_deps",
@@ -4038,7 +4494,7 @@
           "POST"
         ]
       },
-      "description": "Evaluate a target blueprint's deterministic gym signals (un-gameable guardrails) over one run's inputs. Pass `signals` (names from the target's blueprint.gym.signals) + any of {preTests, postTests, plantedBug, harnessOutputText}. Returns {results:[{name,value,applicable}], unknown, known}. Built-ins: regressionsFromTests (needs pre+post tests), plantedBugCaught (needs plantedBug+harnessOutputText).",
+      "description": "Evaluate a target blueprint's deterministic gym signals (un-gameable guardrails) over one run's inputs. Pass `signals` (from the target's blueprint.gym.signals) + any of {preTests, postTests, plantedBug, harnessOutputText, drillOutcomes}. Returns {results:[{name,value,applicable,metric?}], unknown, known, drillSource}. Built-ins: regressionsFromTests (pre+post tests), plantedBugCaught (plantedBug+harnessOutputText), drillResolveRate/drillTriageAccuracy/drillMttsh (drill rows w/ planted known answers; value=SLO verdict, metric=raw rate/ms). Drill rows: pass drillOutcomes, or set loadDrillOutcomes to read the live sandbox corpus from PG.",
       "capabilities": [
         "harness:read"
       ],
@@ -4055,9 +4511,9 @@
         "queen"
       ],
       "guidance": {
-        "when": "Scoring a gym run's deterministic guardrails — the optimizer cannot game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's declared gym.signals by name.",
+        "when": "Scoring a gym run's deterministic guardrails — the optimizer can't game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's gym.signals by name; set loadDrillOutcomes to pull the live red-queen sandbox corpus for the drill signals.",
         "notWhen": "Subjective quality scoring — that is the frozen judge (gym:judge). Running the pipeline — the gym runner.",
-        "chaining": "gym runner → collect run inputs (tests/output) → gym:signals → feed results into the proposer + the trace summary."
+        "chaining": "gym runner → collect run inputs (tests/output) → gym:signals (loadDrillOutcomes for drill targets) → proposer + trace summary."
       }
     },
     {
@@ -4793,7 +5249,7 @@
           "POST"
         ]
       },
-      "description": "Owner cross-Hive capability grants: grant/revoke which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive, or list current grants. DIRECTED — direction:'in' admits a peer's asks/work-requests INTO this Hive; direction:'out' lets THIS Hive send asks/work-requests TO a peer (required before the Queen can ask another Hive). Default-deny both directions. Grants federate to all of this Hive's Swarms.",
+      "description": "Owner-managed cross-Hive grants: grant/revoke/list which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive. DIRECTED: 'in' admits a peer's traffic INTO this Hive; 'out' lets THIS Hive send to a peer (required before the Queen can ask another Hive). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Hive's Swarms.",
       "capabilities": [
         "work_items:write"
       ],
@@ -4813,9 +5269,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Setting this Hive's cross-Hive policy. direction:'in' — allow a peer Hive (by pubkey, from discovery:hives) to send asks/work-requests INTO this Hive. direction:'out' — authorize THIS Hive to send asks/work-requests TO a peer (the owner-gated step before the Queen's first hive:ask to a new peer). Or list/revoke current grants.",
-        "notWhen": "Within-Hive coordination (coord:* / topics) or placing work on a Swarm (work_items:co_locate). This is ONLY the sovereignty boundary between separate Hives.",
-        "chaining": "Inbound: discovery:hives (find a peer Hive's pubkey) → hive:cross_grant { action:\"grant\", direction:\"in\", peerHivePubkey, kinds }. Outbound (before the Queen asks a peer): hive:cross_grant { action:\"grant\", direction:\"out\", peerHivePubkey, kinds } → hive:ask / hive:request_work."
+        "when": "Setting this Hive's cross-Hive policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Queen's first hive:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
+        "notWhen": "Within-Hive coordination (coord:*/topics) or Swarm work placement (work_items:co_locate) — this is only the sovereignty boundary between Hives.",
+        "chaining": "discovery:hives (peer pubkey) → hive:cross_grant {action:\"grant\", direction, peerHivePubkey, kinds}; \"out\" before hive:ask / hive:request_work."
       }
     },
     {
@@ -5082,6 +5538,39 @@
       }
     },
     {
+      "name": "hive:survey",
+      "http": {
+        "path": "/api/agent-tools/hive/survey",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Queen's plan-aware placement survey: started plans ranked (which plan to pour bees into) AND the unplaced work-item frontier ranked (which ready item to place), across EVERY member harness — one ranker, two views. Read-only; call it at the top of a placement wake.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the Queen starting a placement wake — survey what to work on next (which plan matters, which ready items to place) across all member harnesses.",
+        "notWhen": "You already hold a specific work-item id and just need to place it — go straight to fleet:spawn / the batch placement.",
+        "chaining": "hive:survey → place the top frontier items (fleet:spawn / batch placement) and steer plan order (work_items:set_priority / plans:set-priority); hive:status to inspect the wake declaration."
+      }
+    },
+    {
       "name": "hive:update",
       "http": {
         "path": "/api/agent-tools/hive/update",
@@ -5285,7 +5774,7 @@
           "POST"
         ]
       },
-      "description": "Queen-turn triage: read the scored improvements:digest and type-route each idea (product→place, process→gate/gym). Updates idea lifecycle state with the Queen's decision. (P-010) Supports per-Hive scope filtering. (P-012) Routes product-ideas to target project, process/prompt-ideas to papercusp gate.",
+      "description": "Queen-turn triage: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier's lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.",
       "capabilities": [
         "coord:write"
       ],
@@ -5305,9 +5794,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "To triage captured ideas: read the digest summary, classify each by type, decide (place/gate/gym/reject), and record the Queen's judgment. (P-010) Pass harnessSlug to triage a specific Hive's ideas. (P-012) Type-routing: product→place as work-item in target; process/prompt→papercusp gate/gym.",
+        "when": "To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item's rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Queen's judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.",
         "notWhen": "You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.",
-        "chaining": "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas."
+        "chaining": "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas. A rank breakdown showing a 'calibration' contribution → calibration:summary { predictor } to weigh the bettor's claim before deciding."
       }
     },
     {
@@ -5318,7 +5807,7 @@
           "POST"
         ]
       },
-      "description": "Inspect the improvement watchdog: the last N tick records (collector health, signals, captured ids, known-open/stale-resolved pre-filter drops, deferred keys, self-escalations) plus a rollup summary. Read-only — the diagnostic surface over harness_shared.watchdog_ticks.",
+      "description": "Inspect the improvement watchdog: the last N tick records (collector health, signals, captured ids, known-open/stale-resolved pre-filter drops, deferred keys, self-escalations) plus a rollup summary AND the auto-implement dispatch ledger (counts by state + recent dispatches). Read-only — the diagnostic surface over harness_shared.watchdog_ticks + improvement_dispatches.",
       "capabilities": [
         "coord:read"
       ],
@@ -5338,9 +5827,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for \"why did/didn't the watchdog file X?\".",
+        "when": "To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for \"why did/didn't the watchdog file X?\" — and for the auto-implement lane's dispatch ledger (\"did the dispatch fire / is a worker on it / did it die?\").",
         "notWhen": "You want the captured backlog itself — improvements:digest. You want one improvement — issues:get { id }. You want to file one — improvements:capture.",
-        "chaining": "improvements:watchdog-status → issues:get on a captured/self-escalated id → improvements:digest for the full backlog triage."
+        "chaining": "improvements:watchdog-status → issues:get on a captured/self-escalated/dispatched id → improvements:digest for the full backlog triage."
       }
     },
     {
@@ -5930,6 +6419,42 @@
       "guidance": {
         "when": "Refine an issue you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), or attach the feature that will fix it.",
         "notWhen": "Resolving it (issues:close), adding a note (issues:comment), or routing it to a topic (issues:tag)."
+      }
+    },
+    {
+      "name": "learning_packs:candidates",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/candidates",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List learning-pack item CANDIDATEs — cross-hive recurring lessons the recurrence-escalation loop staged for owner review (default: pending only). Each carries provenance: the friction signature, the scopes it recurred across, the recurrence count, and the source improvement-item ids.",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "The owner asks what fleet lessons await review, or before learning_packs:decide_candidate (the id comes from here).",
+        "notWhen": "To read a hive's installed learnings (learning_packs:list / memory:list) or the pack catalog (learning_packs:list).",
+        "chaining": "learning_packs:decide_candidate { id, action } to adopt into the fleet-lessons pack or dismiss; after an adopt, hives pick the item up via learning_packs:install/upgrade."
+      }
+    },
+    {
+      "name": "learning_packs:decide_candidate",
+      "http": {
+        "path": "/api/agent-tools/learning_packs/decide_candidate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Decide one pending learning-pack candidate: adopt (write it into the fleet-lessons pack — version bumps so hives see updateAvailable; optionally edit title/text first) or dismiss (terminal — the signature never re-stages). This is an OWNER decision; candidates are never auto-published.",
+      "capabilities": [
+        "memory:write"
+      ],
+      "guidance": {
+        "when": "The owner has reviewed a pending candidate (learning_packs:candidates) and says adopt/dismiss — or asks you to apply their edits while adopting.",
+        "notWhen": "To seed a lesson into a hive pool directly (adoption only updates the PACK; hives adopt via learning_packs:install/upgrade). Unprompted bulk adoption — each candidate is an explicit owner call.",
+        "chaining": "learning_packs:candidates first (ids + drafts). After adopt: hives with fleet-lessons installed show updateAvailable → learning_packs:upgrade { hive, pack: \"fleet-lessons\" }; others via learning_packs:install."
       }
     },
     {
@@ -9418,6 +9943,37 @@
       }
     },
     {
+      "name": "slash:dispatch",
+      "http": {
+        "path": "/api/agent-tools/slash/dispatch",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Fire a slash-exposed tool command AT another running agent: renders the same instruction a typed slash command yields and delivers it as the target's next turn via deliver-and-wake. The target executes the tool over its OWN session with its own gates; a manual-wake-mode target stages the command for owner review instead. For tip [Apply] buttons, wake-board actions, and agent-to-agent command dispatch.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel"
+      ],
+      "guidance": {
+        "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the queen, a UI 'run this on that agent' action, a queen placing a precise command (not prose) onto a bee.",
+        "notWhen": "Running the tool YOURSELF — just call it directly (the slash layer adds nothing in-session). Free-form coordination prose — coord:send. Reviewing what a manual-mode target staged — coord:wake-queue."
+      }
+    },
+    {
       "name": "substrate:revoke_contributor",
       "http": {
         "path": "/api/agent-tools/substrate/revoke_contributor",
@@ -10674,8 +11230,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are the Queen steering the SHARED backlog after reading the rolled-up change feed (curation:change-feed) + the frontier (work_items:list): promote/demote what the fleet should claim next. Use position:'top'/'bottom' for the common 'make this most/least urgent', or an explicit priority integer for fine control.",
-        "notWhen": "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). This sets the GLOBAL backlog order, not a per-bee queue, and applies to feature-family items only.",
+        "when": "You are the Queen steering the SHARED backlog (read curation:change-feed + work_items:list): promote/demote what the fleet claims next — position:'top'/'bottom' for most/least urgent, or an explicit integer. In a multi-Swarm Hive only the steering-lease holder commits; a non-holder's set returns proposed:true (recorded for the holding Queen to dispose; local placement is unaffected).",
+        "notWhen": "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
         "chaining": "curation:change-feed (what shipped / where momentum is) + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first."
       }
     },

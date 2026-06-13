@@ -152,6 +152,7 @@ export {
   type DispatchProjectedErrorCode,
   type DispatchStreamEvent,
   type PostInvokeEvent,
+  type CapabilityEnvelopeVerdict,
   type ToolDispatchOverrideFn,
 } from '@papercusp/tooldef';
 // Declarative preconditions (`requires:` — autoloop-pot-operator-rebuild D-006):

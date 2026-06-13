@@ -204,6 +204,48 @@ async function routinesTickImpl(): Promise<void> {
     },
     { name: 'hive-watchdog-sweep' },
   );
+
+  // queen-autonomous-execution-2026-06-13 B-09 (P-020/P-021/P-022): the placement
+  // COMPLETION watchdog — the liveness watchdog above keeps the QUEEN awake; this
+  // guarantees every unit she PLACED reaches terminal. Same deterministic dead-
+  // man's-switch shape (a recovery wake / cursed-item or stranded-blocker
+  // escalation is the exception path, not a cadence). Runs before the throughput
+  // tick so its placement-state is fresh for the metrics. Fail-soft inside the
+  // module; one durable step so a crash mid-sweep resumes.
+  await DBOS.runStep(
+    async () => {
+      const { reconcileHivePlacements } = await import('../hive/placement-watchdog');
+      const results = await reconcileHivePlacements();
+      for (const res of results) {
+        if (res.decision === 'recover' || res.decision === 'breaker' || res.decision === 'stranded') {
+          console.warn(
+            `[hive-placement-watchdog] tick ${res.decision} ${res.workItemId}` +
+              `${res.detail ? ` (${res.detail})` : ''}`,
+          );
+        }
+      }
+    },
+    { name: 'hive-placement-watchdog-sweep' },
+  );
+
+  // queen-autonomous-execution B-11 / P-050: hive THROUGHPUT instrumentation —
+  // one snapshot tick per started hive, riding the same 30s sweep. Records the
+  // six metrics (frontier depth, placements/wake, busy-vs-cap, stuck, MTTC,
+  // question-rung split) to hive_throughput_ticks (mig 261) and files an FB-21
+  // breach signal on saturation/stuck. Best-effort + one durable step so a crash
+  // resumes; observability must never fail the loop it watches.
+  await DBOS.runStep(
+    async () => {
+      const [{ listStartedHives }, { recordHiveThroughputTick }] = await Promise.all([
+        import('../hive/started'),
+        import('../hive/throughput'),
+      ]);
+      for (const { workspaceId, installSlug } of await listStartedHives()) {
+        await recordHiveThroughputTick({ workspaceId, hiveSlug: installSlug }).catch(() => {});
+      }
+    },
+    { name: 'hive-throughput-tick' },
+  );
 }
 
 const routinesTickWorkflow = DBOS.registerWorkflow(routinesTickImpl, { name: 'routinesTick' });

@@ -32,15 +32,20 @@
  * minFileScore. Runs as ONE durable step and never throws; the tick is
  * idempotent (known-run skip + carry-forward upsert + watchdogKey dedup).
  */
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import type { GovernorVerdict } from '../../learning-governor/core';
-import { regretGovernorGate } from '../../replay/regret/governor';
-import { regretOptionsFromPayload, runRegretTick, type RegretTickDeps } from '../../replay/regret/mine';
-import { governedRegretRunner } from '../../replay/regret/replay-adapter';
-import { defaultRegretDeps } from '../../replay/regret/store';
+import type { RegretTickDeps } from '../../replay/regret/mine';
+import { runRegretMine } from '../../replay/regret/run-mine';
+
+/**
+ * The flag → governor → cap → tick orchestration this action runs is SHARED with
+ * the `regret:mine` deterministic blueprint step via `runRegretMine`
+ * (deterministic-blueprints-migration-2026-06-13 P-111 / D-004 — provably
+ * behavior-neutral: one gated tick, two callers). This action keeps its own
+ * injectable seams (the test pins them) and passes them into the shared core.
+ * (D-009: regret's replay is a governed `llmCall`, not a fleet spawn — so this is
+ * a behavior-neutral migration, not a re-route onto the fleet launch chokepoint.)
+ */
 
 /** The tick-deps seam — injectable for tests (mirrors setNegativeSpaceTickDeps). */
 let _deps: RegretTickDeps | null = null;
@@ -57,32 +62,26 @@ export function setRegretGovernorGate(gate: RegretGovernorGate | null): void {
 }
 
 registerSystemAction('regret-mine', async (ctx: SystemActionCtx) => {
-  if (!(await getFlag(FLAGS.REGRET_MINING, `routine:${ctx.installSlug}`))) {
-    console.log(
-      '[regret-mine] flag papercusp-regret-mining is OFF (frontier arming gate, ' +
-        'self-learning-frontier P-001) — skipping',
-    );
-    return;
-  }
-  const verdict = await (_governorGate ?? regretGovernorGate)(ctx.workspaceId);
-  if (!verdict.allow) {
-    console.log(
-      `[regret-mine] learning-governor refused (${verdict.reason}) — skipping ` +
-        '(D-004: an unattended frontier loop runs only registered + budgeted)',
-    );
-    return;
-  }
-  const opts = regretOptionsFromPayload(ctx.payloadTemplate);
-  // The governor's per-cycle cap bounds replay spend; the payload may lower it.
-  const governorCapUsd = verdict.remainingUsd ?? 0;
-  opts.replayBudgetUsd = Math.min(opts.replayBudgetUsd ?? governorCapUsd, governorCapUsd);
-  // Boot-path composition (the hermetic-glue insight): the live replay runner
-  // is wired HERE, not in the PG deps factory. Spend is ledgered ONCE by the
-  // replay substrate itself (runGovernedReplay, loop frontier:replay-harness,
-  // runRef `regret:<runId>`) — regret-mining must not double-ledger it.
-  const deps = _deps ?? { ...defaultRegretDeps(getOrgPg().sql), replayRunner: governedRegretRunner() };
   try {
-    const result = await runRegretTick(ctx.workspaceId, deps, opts);
+    const outcome = await runRegretMine(
+      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payload: ctx.payloadTemplate },
+      { governorGate: _governorGate ?? undefined, tickDeps: _deps ?? undefined },
+    );
+    if (!outcome.ran) {
+      if (outcome.skipReason === 'flag-off') {
+        console.log(
+          '[regret-mine] flag papercusp-regret-mining is OFF (frontier arming gate, ' +
+            'self-learning-frontier P-001) — skipping',
+        );
+      } else {
+        console.log(
+          `[regret-mine] learning-governor refused (${outcome.governorReason}) — skipping ` +
+            '(D-004: an unattended frontier loop runs only registered + budgeted)',
+        );
+      }
+      return;
+    }
+    const result = outcome.result!;
     console.log(
       `[regret-mine] ${result.scanned} terminal spawn(s) → ${result.candidates} bad-session candidate(s), ` +
         `${result.mined} mined (${result.skippedKnown} known), ${result.replayed} replayed ` +

@@ -319,6 +319,17 @@ export const FLAGS = {
   // same Phase-0-foundation call as CHANGE_LEDGER (rows must accumulate before queen-autonomy
   // B-13's surface + the autonomy gate consume them). OFF is the kill-switch (the emit no-ops).
   DECISION_LEDGER: "papercusp-decision-ledger",
+  // queen-autonomous-execution-2026-06-13 B-09 (P-020/P-021/P-022): the placement
+  // completion watchdog for the Queen hive loop. When ON, the 30s routinesTick
+  // reconciles each Queen-placed unit (hive_placements, mig 263) against live bee
+  // state (hive_placements, mig 263): a non-terminal placed unit whose serving bee
+  // died/stalled and is not re-claimed fires ONE recovery wake to the Queen (P-020); after N
+  // failed placements the unit flips `cursed` and is escalated to the owner
+  // instead of re-placed forever (P-021); a stuck `failing`/`failed` blocker
+  // gating downstream work is escalated once (P-022). Behavior-neutral throughput
+  // (D-007): the sweep only acts on STARTED hives, and the hive is owner-gated.
+  // OFF = the kill-switch (the sweep returns immediately).
+  HIVE_PLACEMENT_WATCHDOG: "papercusp-hive-placement-watchdog",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -513,6 +524,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // CHANGE_LEDGER: append-only governed-action rows, no LLM spend, subset of tool_invocations.
   // OFF is the kill-switch (the emit no-ops).
   [FLAGS.DECISION_LEDGER]: true,
+  // ON by default — behavior-neutral throughput (B-09 / D-007): the placement
+  // completion watchdog only acts on STARTED hives. OFF = the kill-switch.
+  [FLAGS.HIVE_PLACEMENT_WATCHDOG]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

@@ -12,12 +12,13 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**368 MCP tools** across **69 groups**.
+**402 MCP tools** across **78 groups**.
 
 ## Groups
 
 | Group | Verbs | Names | Capabilities |
 |---|---|---|---|
+| `ablation` | 1 | `report` | `intel:read` |
 | `accounts` | 5 | `list` `register` `remove` `scale_out` `status` | `harness:read` `harness:write` |
 | `actions` | 1 | `recent` | `actions:read` |
 | `activity` | 2 | `recent` `report` | `activity:read` `activity:report` |
@@ -28,39 +29,45 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `artifacts` | 4 | `append` `delete` `load` `save` | `artifacts:read` `artifacts:write` |
 | `audit` | 1 | `list` | `audit:read` |
 | `autoloop` | 2 | `control` `status` | `autoloop:read` `autoloop:write` |
+| `autonomy` | 2 | `policy_get` `policy_set` | `audit:write` `intel:read` |
 | `backup` | 8 | `diff` `promote` `restore` `rollback` `settings_get` `settings_set` `snapshot_create` `snapshot_list` | `backup:read` `backup:write` |
 | `blueprint` | 4 | `catalog` `create` `extend` `validate` | `harness:read` `harness:write` |
 | `brainstorm` | 1 | `chat` | `harness:write` |
+| `calibration` | 1 | `summary` | `intel:read` |
+| `capability` | 8 | `bash` `bash_kill` `bash_output` `edit` `fetch` `git` `read` `write` | `capability:bash` `capability:fs-read` `capability:fs-write` `capability:git` `capability:net` |
+| `change_ledger` | 2 | `calendar` `list` | `intel:read` |
 | `chat` | 1 | `ask_choice` | `chat:write` |
 | `conversations` | 7 | `answer` `get` `join` `list` `post` `promote` `resolve` | `coord:read` `coord:write` |
-| `coord` | 26 | `ack` `ask` `ask-owner` `await-inbox` `declare-intent` `deliberate` `emit` `escalate` `escalations` `feed` `handoff` `handoffs` `inbox` `message-agent` `plan-events` `presence` `resolve` `send` `thread` `thread-post` `vote` `wake-mode` `wake-queue` `watermark` `watermark-set` `whoami` | `audit:read` `coord:read` `coord:write` |
+| `coord` | 27 | `ack` `ask` `ask-owner` `await-inbox` `declare-intent` `deliberate` `emit` `escalate` `escalations` `feed` `glance` `handoff` `handoffs` `inbox` `message-agent` `plan-events` `presence` `resolve` `send` `thread` `thread-post` `vote` `wake-mode` `wake-queue` `watermark` `watermark-set` `whoami` | `audit:read` `coord:read` `coord:write` |
 | `cross_harness` | 10 | `docs_get` `docs_outline` `docs_search` `inbox` `outbox` `plans_get` `plans_list` `plans_search` `recent_activity` `supervisor_notes` | `cross_harness:read` `harness:read` `plans:read` |
 | `curation` | 3 | `change-feed` `feed` `state-of-hive` | `curation:read` |
 | `db` | 3 | `check_drift` `migrate` `next-migration` | `locks:read` `locks:write` |
 | `deploy` | 5 | `harness` `hive` `status` `teardown` `teardown_hive` | `harness:read` `harness:write` |
-| `dev` | 21 | `activity` `audit` `build_status` `coord_categorize` `dogfood_substrate_status` `event_emitter` `harnesses` `hello-card` `ipc_echo` `omp_session` `pg_active_queries` `pg_health` `pg_table_sizes` `processes` `rate_governor_status` `restart` `service_health` `session_detail` `sessions` `state_counter` `telemetry` | `audit:read` `harness:read` `intel:read` `locks:write` `tasks:read` |
+| `dev` | 20 | `activity` `audit` `build_status` `coord_categorize` `dogfood_substrate_status` `event_emitter` `harnesses` `ipc_echo` `omp_session` `pg_active_queries` `pg_health` `pg_table_sizes` `processes` `rate_governor_status` `restart` `service_health` `session_detail` `sessions` `state_counter` `telemetry` | `audit:read` `harness:read` `intel:read` `locks:write` `tasks:read` |
 | `discovery` | 2 | `hives` `set_hive` | `discovery:read` `discovery:write` |
 | `docs` | 3 | `get` `outline` `search` | `docs:read` |
 | `events` | 5 | `await` `cancel` `emit` `graph` `status` | `coord:read` `coord:write` `events:read` |
 | `features` | 5 | `get` `history` `list_related` `search` `tag_vocabulary` | `features:read` |
 | `flags` | 3 | `get` `list` `set` | `audit:write` `intel:read` |
-| `fleet` | 11 | `admit` `assignments` `bee_mail` `cancel` `drain` `governor` `sandbox_deps` `selected_bee` `spawn` `supervise` `tree` | `coord:read` `coord:write` `intel:read` `work_items:read` `work_items:write` |
+| `fleet` | 12 | `admit` `assignments` `bee_mail` `cancel` `drain` `governor` `place_batch` `sandbox_deps` `selected_bee` `spawn` `supervise` `tree` | `coord:read` `coord:write` `intel:read` `work_items:read` `work_items:write` |
 | `generators` | 1 | `publish` | `coord:write` |
 | `goals` | 2 | `get` `list` | `goals:read` |
 | `gym` | 2 | `judge` `signals` | `harness:read` |
 | `harness` | 14 | `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `migrate-config-json` `pending_reviews` `phase_path` `plan_reviews` `status` | `harness:read` `harness:write` |
 | `harness_docs` | 7 | `anchor` `ingest` `list` `record` `regenerate` `set_overlay` `verify` | `docs:read` `docs:write` |
-| `hive` | 11 | `create` `cross_grant` `declare-wake` `dissolve` `get` `list` `pause` `start` `status` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:write` |
+| `hive` | 17 | `ask` `asks` `beacon_consent` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `list` `pause` `request_work` `start` `status` `survey` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:read` `work_items:write` |
 | `hooks` | 1 | `known` | `roles:read` |
 | `improvements` | 5 | `capture` `digest` `resolve` `triage` `watchdog-status` | `coord:read` `coord:write` |
 | `inbox` | 1 | `triage` | `coord:write` |
 | `instance` | 3 | `boot` `capture` `clone` | `harness:read` `harness:write` |
 | `intel` | 2 | `artifacts` `spawn_tree` | `intel:read` |
 | `issues` | 13 | `claim` `close` `comment` `create` `get` `link` `list` `promote` `release` `search` `subscribe` `tag` `update` | `coord:read` `coord:write` |
+| `learning_packs` | 10 | `candidates` `decide_candidate` `export` `install` `list` `publish` `set_enabled` `sweep` `uninstall` `upgrade` | `harness:write` `memory:read` `memory:write` |
 | `lexicon` | 1 | `active_pack` | `work_items:read` |
 | `locks` | 12 | `acquire` `acquire_granular` `acquire_resource` `cancel_wait` `check_command` `heartbeat` `heartbeat_resource` `list` `queue` `release` `release_granular` `release_resource` | `locks:read` `locks:write` |
 | `memory` | 5 | `forget` `list` `remember` `search` `update` | `memory:read` `memory:write` |
 | `messages` | 4 | `dismiss` `inbox` `outbox` `send` | `messages:read` `messages:write` |
+| `network` | 1 | `board` | `harness:read` |
 | `new_subagent` | 2 | `approve` `request` | `coord:write` |
 | `notifications` | 1 | `recent` | `notifications:read` |
 | `omp` | 2 | `config` `sessions` | `omp:read` `omp:write` |
@@ -76,7 +83,9 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `rationale` | 2 | `feed` `reproject` | `coord:read` `coord:write` |
 | `roles` | 4 | `firing_on` `get` `known` `list` | `roles:read` |
 | `saved_prompts` | 1 | `list` | `intel:read` |
+| `scout` | 1 | `grade-idea` | `harness:write` |
 | `search` | 3 | `fulltext` `query` `semantic` | `search:read` |
+| `slash` | 1 | `dispatch` | `coord:write` |
 | `substrate` | 2 | `revoke_contributor` `revoke_self_device` | `intel:write` |
 | `tasks` | 3 | `create` `get` `list` | `tasks:read` `tasks:write` |
 | `topics` | 7 | `create` `feed` `list` `merge` `subscribe` `tag` `unsubscribe` | `coord:read` `coord:write` |

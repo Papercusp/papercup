@@ -163,4 +163,24 @@ describe('probeHealth', () => {
     expect(r.status).toBe(200);
     expect(r.attempts).toBe(1);
   });
+
+  it('sends Accept: application/json + text/event-stream on the MCP probe (regression — the missing header 406d every deploy → auto-rollback)', async () => {
+    let mcpHeaders: Record<string, string> | undefined;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/health')) return jsonRes(200, { ok: true });
+      if (url.includes('/mcp')) {
+        mcpHeaders = (init?.headers ?? {}) as Record<string, string>;
+        return new Response(':stream-open\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', { timeoutMs: 5_000, intervalMs: 1, requestTimeoutMs: 50, probeMcp: true });
+
+    expect(r.healthy).toBe(true);
+    const accept = String(mcpHeaders?.accept ?? mcpHeaders?.Accept ?? '');
+    expect(accept).toContain('application/json');
+    expect(accept).toContain('text/event-stream');
+  });
 });

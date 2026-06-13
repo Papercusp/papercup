@@ -1,0 +1,47 @@
+/**
+ * Registration smoke test (P-010, B-05): importing each capability tool module
+ * must project it into the shared catalog with the right MCP name, capability
+ * string, and fleet agentRoles. Verifies the defineTool wiring end-to-end
+ * (name derivation, tier lookup, role allowlist) without a live operator.
+ */
+import { describe, expect, it } from 'vitest';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
+import './bash';
+import './bash_output';
+import './bash_kill';
+import './read';
+import './write';
+import './edit';
+import './git';
+import './fetch';
+
+const EXPECTED: Array<{ name: string; capability: string }> = [
+  { name: 'capability:bash', capability: 'capability:bash' },
+  { name: 'capability:bash_output', capability: 'capability:bash' },
+  { name: 'capability:bash_kill', capability: 'capability:bash' },
+  { name: 'capability:read', capability: 'capability:fs-read' },
+  { name: 'capability:write', capability: 'capability:fs-write' },
+  { name: 'capability:edit', capability: 'capability:fs-write' },
+  { name: 'capability:git', capability: 'capability:git' },
+  { name: 'capability:fetch', capability: 'capability:net' },
+];
+
+describe('capability tool registration', () => {
+  for (const e of EXPECTED) {
+    it(`projects ${e.name} with capability ${e.capability} for fleet roles`, () => {
+      const tool = lookupByMcpName(e.name);
+      expect(tool, `${e.name} not registered`).toBeDefined();
+      expect(tool!.capabilities).toContain(e.capability);
+      // The fleet execution roles (SU_ROLES + bee) must be allowed.
+      expect(tool!.agentRoles).toContain('worker');
+      expect(tool!.agentRoles).toContain('bee');
+    });
+  }
+
+  it('the file-mutation tools carry guidance (tools-md-sync requirement)', () => {
+    for (const name of ['capability:write', 'capability:edit', 'capability:bash']) {
+      const tool = lookupByMcpName(name);
+      expect(tool!.guidance?.when, `${name} missing guidance.when`).toBeTruthy();
+    }
+  });
+});

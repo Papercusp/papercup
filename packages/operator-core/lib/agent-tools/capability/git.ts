@@ -86,7 +86,7 @@ function runGit(
     };
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onData);
-    const onAbort = (): void => child.kill('SIGKILL');
+    const onAbort = (): void => { child.kill('SIGKILL'); };
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });
     child.on('error', (err) => {

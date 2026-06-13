@@ -40,7 +40,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { readIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { normalizePaths, tryAcquire, tryRelease, type AcquireBusy } from './su-lock-store';
-import { enrichBusy } from './acquire';
+import { enrichBusy } from './enrich-busy';
 
 /** Default lease — same as the PreToolUse hook (`ttl_sec: 1200`). The body runs
  *  while held and releases in a finally, so this is just the crash/abort

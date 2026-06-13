@@ -1645,6 +1645,33 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.hiveThroughput — Queen-loop throughput metrics (B-11 / P-050) ──
+  //
+  // Per-hive throughput ticks (migration 261): latest metric cards + a recent
+  // trend window + the operating-well verdict, for the Learning tab's
+  // "Throughput" sub-view. Best-effort: a pre-migration substrate / read failure
+  // degrades to the empty snapshot (the tab shows "no throughput recorded yet"),
+  // never a 500. Pushed by recordHiveThroughputTick (the 30s routinesTick edge).
+  // Returns a 1-element array (client reads data[0]).
+  'learning.hiveThroughput': {
+    argsSchema: z.object({ hive: z.string().max(120).optional() }),
+    resolve: async (args) => {
+      const hive = typeof (args as { hive?: unknown })?.hive === 'string' ? (args as { hive: string }).hive : undefined;
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readHiveThroughputSnapshot } = await import('./learning-hive-throughput-read');
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) => [
+          await readHiveThroughputSnapshot(tx, ws, hive ? { hiveSlug: hive } : {}),
+        ]);
+      } catch (err) {
+        console.warn('[learning.hiveThroughput] read failed:', err instanceof Error ? err.message : err);
+        return [{ hives: [] }];
+      }
+    },
+  },
+
   // ── learning.hive — one hive's shared learnings pool (learning-packs P-008) ──
   //
   // Rows + per-pack rollups + organic count for `hive:<args.hive>`, pack
