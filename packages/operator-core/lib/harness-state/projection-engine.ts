@@ -58,6 +58,10 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // fed-reanchor B5: the work-queue's issue/task family federates over the peer-log
   // (projections/engineer-issues.ts → engineer_issues; key == issue_id).
   'engineer-issues': 'engineer_issues',
+  // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
+  // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation
+  // is on (capture is flag-gated) and its harness_plans recompose is itself flag-gated.
+  'plan-parts': 'harness_plan_parts',
 };
 
 export interface PeerLogConsistency {

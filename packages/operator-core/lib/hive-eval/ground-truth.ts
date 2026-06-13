@@ -204,6 +204,51 @@ export async function gitLogCommits(repoPath: string, opts: { maxCount?: number;
 }
 
 /**
+ * Parse a TAP stream (node --test output) into per-test {@link TestResult}s — PURE. Reads the
+ * `ok N - name` / `not ok N - name` lines (the per-test verdicts), stripping TAP directives
+ * (`# SKIP`/`# TODO`). The regression-floor read's parser; deterministic + unit-tested.
+ */
+export function parseTapResults(tap: string): TestResult[] {
+  const results: TestResult[] = [];
+  for (const line of tap.split('\n')) {
+    const m = /^\s*(ok|not ok)\s+\d+\s+-\s+(.+?)\s*$/.exec(line);
+    if (!m) continue;
+    let name = m[2];
+    const hash = name.indexOf(' # ');
+    if (hash >= 0) name = name.slice(0, hash);
+    results.push({ name: name.trim(), passed: m[1] === 'ok' });
+  }
+  return results;
+}
+
+/**
+ * Run a repo's baseline test suite (default `node --test`, the seed-app's regression floor) and
+ * parse the TAP into {@link TestResult}s — the pre/post-run regression-floor read (D-012's
+ * `regressions` signal). A failing suite still emits TAP on a non-zero exit, so the verdicts are
+ * parsed from stdout regardless of exit code. The live run captures this BEFORE (pre) and AFTER
+ * (post) the drive; `regressionsFromTests(pre, post)` flags a pre-green test that flipped red.
+ */
+export async function runBaselineSuite(
+  repoPath: string,
+  opts: { command?: string; args?: string[]; timeoutMs?: number } = {},
+): Promise<TestResult[]> {
+  const command = opts.command ?? 'node';
+  const args = opts.args ?? ['--test'];
+  try {
+    const { stdout } = await execFileP(command, args, {
+      cwd: repoPath,
+      timeout: opts.timeoutMs ?? 60_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return parseTapResults(stdout);
+  } catch (err) {
+    // A failing suite exits non-zero but still printed its TAP — parse it rather than losing the floor.
+    const e = err as { stdout?: string; stderr?: string };
+    return parseTapResults(`${e.stdout ?? ''}${e.stderr ?? ''}`);
+  }
+}
+
+/**
  * The throwaway-hive reads that genuinely require a live run (owner-gated P-051, D-011): the
  * Hive's per-item CLAIM state, per-item actual COMPLETION, and the reviewer output — plus the
  * seed-app baseline suite. The live run wiring (HE-04+/the owner-armed cadence) injects these;

@@ -105,6 +105,10 @@ export const REGISTERED_PROJECTION_TAGS = [
   // kind ∈ bug|change|task) federates over the Hive peer-log. The capture trigger
   // (mig 197) derives the federation slug from `scope` + stamps it as harness_slug.
   'engineer-issues',
+  // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
+  // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation
+  // is on (capture is flag-gated) and its harness_plans recompose is itself flag-gated.
+  'plan-parts',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
