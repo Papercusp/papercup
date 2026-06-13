@@ -15,10 +15,10 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { listPlanRowsMatchingAnyToken, syntheticPlanPath } from './source';
+import { listPlanRowsMatchingAnyToken, syntheticPlanPath, VALID_PLAN_SLUG } from './source';
 import { parsePlan } from './parser';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
-import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { harnessArg, harnessScopedCtx, HARNESS_ALL, isAllHarnessSentinel } from '../_harness-scope';
 
 /**
  * SQL candidate cap (audit P-042). Scoring needs ≥1 exact-token hit and
@@ -122,6 +122,10 @@ export default defineTool({
       };
     }
 
+    // Check if query looks like an exact plan slug (e.g., P-001, feature-name, etc.)
+    const queryIsSlugLike = VALID_PLAN_SLUG.test(args.query) && args.query.trim().length < 50;
+    const isExplicitAllScope = isAllHarnessSentinel(args.harness);
+
     const sctx = harnessScopedCtx(args.harness, ctx);
     const opts = await ctxToPlanSourceOpts(sctx);
     // SQL candidate prefilter (audit P-042 — EI-98/EI-174/EI-175): only
@@ -132,7 +136,26 @@ export default defineTool({
       ...opts,
       limit: CANDIDATE_LIMIT,
     });
-    const parsedPlans = candidates.map((row) => ({
+
+    // EI-397: If query looks like an exact slug and we got zero hits in the
+    // scoped harness, retry across all harnesses to avoid the "plan exists but
+    // hidden by harness scope" problem (harness-scoped agents searching for
+    // Papercusp plans would get zero hits).
+    let finalCandidates = candidates;
+    let crossHarnessHit = false;
+    if (queryIsSlugLike && candidates.length === 0 && !isExplicitAllScope && opts.harnessSlug !== HARNESS_ALL) {
+      const crossOpts = await ctxToPlanSourceOpts({ harnessSlug: HARNESS_ALL });
+      const { rows: crossCandidates } = await listPlanRowsMatchingAnyToken(queryTokens, {
+        includeArchived,
+        ...crossOpts,
+        limit: CANDIDATE_LIMIT,
+      });
+      if (crossCandidates.length > 0) {
+        finalCandidates = crossCandidates;
+        crossHarnessHit = true;
+      }
+    }
+    const parsedPlans = finalCandidates.map((row) => ({
       parsed: parsePlan(row.content, {
         filePath: syntheticPlanPath(row.harnessSlug, row.planSlug),
       }),
@@ -215,6 +238,7 @@ export default defineTool({
       scopes,
       count: trimmed.length,
       ...(truncated ? { truncatedCandidates: true } : {}),
+      ...(crossHarnessHit ? { crossHarnessHit: true } : {}),
     });
 
     return {
@@ -226,6 +250,7 @@ export default defineTool({
           // covered the first CANDIDATE_LIMIT matching plans only. Narrow the
           // query (or scope by harness) for exhaustive coverage.
           ...(truncated ? { truncatedCandidates: true } : {}),
+          ...(crossHarnessHit ? { crossHarnessHit: 'Zero hits in scoped harness; result is from cross-harness search.' } : {}),
         }),
       }],
     };

@@ -18,6 +18,7 @@ import {
   type CoordKind,
   type InboxOptions,
 } from '@papercusp/coordination/core';
+import { getOrgPg } from '@papercusp/db-org';
 import { coordLog } from './log';
 import { hasAudienceSelector, expandAudience } from './audience';
 import { hostAudienceResolvers, audienceMode } from './audience-host';
@@ -135,14 +136,35 @@ export async function readInbox(
  * suppress that message from the human's inbox even though the human never
  * acked it (visibility suppression). Callers pass the principal whose inbox is
  * being rendered, so only that principal's own acks dismiss their view.
+ *
+ * Optimized to query database directly (EI-401): avoid loading all messages
+ * when table is large; use WHERE kind='ack' AND from=? filter at DB level.
  */
 export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>> {
   const acked = new Set<string>();
   if (!ackerOwnerId) return acked;
-  const lines = await coordLog.readLines('messages');
-  for (const l of lines) {
-    if (l.kind === 'ack' && l.from === ackerOwnerId && typeof l.related_msg_id === 'string') {
-      acked.add(l.related_msg_id);
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ related_msg_id: string | null }[]>`
+      SELECT body->>'related_msg_id' AS related_msg_id
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = 'default'
+         AND surface = 'messages'
+         AND body->>'kind' = 'ack'
+         AND body->>'from' = ${ackerOwnerId}
+    `;
+    for (const row of rows) {
+      if (typeof row.related_msg_id === 'string') {
+        acked.add(row.related_msg_id);
+      }
+    }
+  } catch {
+    // Fallback to the slow path if the query fails
+    const lines = await coordLog.readLines('messages');
+    for (const l of lines) {
+      if (l.kind === 'ack' && l.from === ackerOwnerId && typeof l.related_msg_id === 'string') {
+        acked.add(l.related_msg_id);
+      }
     }
   }
   return acked;

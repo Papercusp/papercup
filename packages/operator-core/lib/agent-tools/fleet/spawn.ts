@@ -42,7 +42,7 @@ export default defineTool({
     harness: z.string().min(1).max(80).optional()
       .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),
     role: z.string().min(1).max(64)
-      .describe('Child agent role (e.g. validator, scoper, worker, reviewer).'),
+      .describe('Child agent role (one of: scoper, architect, worker, validator, reviewer, debugger, operator, documenter, curator). role="worker" requires chunk.'),
     feature: z.string().max(120).optional().describe('Feature id the child should pick up.'),
     chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
     brief: z.string().max(2000).optional()
