@@ -241,6 +241,32 @@ export async function getHarnessByGithubRepoId(
   return row ?? null;
 }
 
+/**
+ * Batch repo→listing lookup (comb-hive-native-sharing P-011): the active
+ * harness-kind listings for a SET of GitHub repo ids, for the search panel's
+ * "hive exists" badges (P-010). One query over the existing repo-id index,
+ * mirroring getHarnessByGithubRepoId's harness-kind + active-row scoping —
+ * batched. The caller validates + caps the id set.
+ */
+export async function getHarnessesByGithubRepoIds(
+  db: D1Database,
+  github_repository_ids: number[],
+): Promise<HarnessRow[]> {
+  if (github_repository_ids.length === 0) return [];
+  const placeholders = github_repository_ids.map(() => '?').join(',');
+  const stmt = db.prepare(
+    `SELECT * FROM harnesses
+       WHERE github_repository_id IN (${placeholders})
+         AND listing_kind = 'harness' AND unlisted_at IS NULL`,
+  );
+  // .bind is variadic — spread the ids in one call (same cast as listHarnesses).
+  const bound = (stmt as unknown as { bind: (...vs: unknown[]) => D1PreparedStatement }).bind(
+    ...github_repository_ids,
+  );
+  const res = await bound.all<HarnessRow>();
+  return res.results ?? [];
+}
+
 export interface ListOpts {
   limit?: number;
   cursor?: number | null;          // pagination by last_activity_at DESC, secondary id

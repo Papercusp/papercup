@@ -29,6 +29,21 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { EntryGithubUrlForm, parseGithubUrlClient, type FormMode } from './EntryGithubUrlForm';
 import { useLexicon } from '@/lib/useLexicon';
+import { CLAIM_STATUS_COPY } from '../_components/ClaimStatusBadge';
+
+/**
+ * A repo→Hive binding from the P-011 batch lookup (GET /api/cupboard/bindings).
+ * When `hive_pubkey` is set, a Hive already exists for the repo — the result
+ * row badges "Hive exists" + claim status and picking it opens the join offer
+ * (P-010). Best-effort: an empty/unavailable lookup just shows no badges.
+ */
+interface RepoBinding {
+  repo_id: number;
+  hive_pubkey: string | null;
+  hive_title: string | null;
+  claim_status: string;
+  listing_id: string;
+}
 
 /**
  * The result shape the P-008 proxy projects (search-repos.ts
@@ -133,6 +148,8 @@ export function EntryGithubSearchForm({
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [retryAfterSec, setRetryAfterSec] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
+  // P-010: repo_id → existing-Hive binding, batch-resolved for the result page.
+  const [bindings, setBindings] = useState<Map<number, RepoBinding>>(new Map());
   const activeRowRef = useRef<HTMLButtonElement | null>(null);
 
   const urlMatch = parseGithubUrlClient(query);
@@ -209,6 +226,39 @@ export function EntryGithubSearchForm({
     const row = activeRowRef.current;
     if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
   }, [activeIdx]);
+
+  // P-010: batch-resolve the result page's repo ids against the Cupboard
+  // (the P-011 /api/cupboard/bindings proxy) so each row can badge an existing
+  // Hive. Best-effort + non-blocking — the results render immediately; badges
+  // fill in when (and if) the lookup answers. Degrades to no badges when the
+  // worker predates P-011 or the Cupboard is unreachable.
+  useEffect(() => {
+    if (phase !== 'results' || results.length === 0) {
+      setBindings(new Map());
+      return;
+    }
+    const ids = results.map((r) => r.repoId).filter((n) => Number.isInteger(n) && n > 0);
+    if (ids.length === 0) return;
+    const ctrl = new AbortController();
+    void (async () => {
+      try {
+        const res = await fetch(`/api/cupboard/bindings?repo_ids=${ids.join(',')}`, {
+          signal: ctrl.signal,
+        });
+        if (!res.ok) return;
+        const body = (await res.json().catch(() => null)) as { bindings?: RepoBinding[] } | null;
+        if (ctrl.signal.aborted || !Array.isArray(body?.bindings)) return;
+        const next = new Map<number, RepoBinding>();
+        for (const b of body.bindings) {
+          if (typeof b?.repo_id === 'number') next.set(b.repo_id, b);
+        }
+        setBindings(next);
+      } catch {
+        /* badges are a best-effort enhancement */
+      }
+    })();
+    return () => ctrl.abort();
+  }, [phase, results]);
 
   // A repo was picked / a URL short-circuited → hand off to the create form
   // prefilled. Back from there returns to this search list (setPicked(null)).
@@ -371,6 +421,37 @@ export function EntryGithubSearchForm({
                     {r.language ? ` · ${r.language}` : ''}
                     {updated ? ` · updated ${updated}` : ''}
                   </span>
+                  {/* P-010: existing-Hive badge. A hive-bound repo flips the
+                      row's outcome to "join" — picking it opens the create
+                      form, whose paste-time lookup offers Join (with
+                      Create-anyway). */}
+                  {(() => {
+                    const b = bindings.get(r.repoId);
+                    if (!b?.hive_pubkey) return null;
+                    const claimed = b.claim_status === 'claimed';
+                    const claimCopy =
+                      CLAIM_STATUS_COPY[b.claim_status as keyof typeof CLAIM_STATUS_COPY] ?? '';
+                    return (
+                      <span
+                        data-testid="gh-search-hive-badge"
+                        title={claimCopy}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          marginTop: 6,
+                          fontSize: 10.5,
+                          color: 'var(--accent)',
+                          border: '1px solid var(--accent)',
+                          borderRadius: 4,
+                          padding: '1px 6px',
+                        }}
+                      >
+                        🍯 Hive exists{b.hive_title ? `: ${b.hive_title}` : ''} ·{' '}
+                        {claimed ? 'claimed' : 'unclaimed'} — pick to join
+                      </span>
+                    );
+                  })()}
                 </button>
               );
             })}

@@ -149,6 +149,15 @@ jobs:
       - name: Lint no-restart imports
         run: npm run lint:no-restart
 
+      # Smart-quote guard (EI-418, found via EI-412): a curly quote used as a
+      # code delimiter (copy-paste through a smart-quoting surface) is a hard
+      # esbuild/tsc parse failure that reads as mysterious. GATING — flags
+      # U+2018/2019/201C/201D in code position (precise: leaves curly quotes in
+      # strings/comments/JSX alone) so the whole file never silently fails to
+      # transform.
+      - name: Lint smart quotes in code
+        run: npm run lint:smart-quotes
+
       # TSC type-error gate (lint-tsc-gating-EI-60): operator-core has a
       # pre-existing baseline of type errors. This gates NEW errors above the
       # baseline while allowing legacy errors. Baseline is stored in

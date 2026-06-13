@@ -133,6 +133,40 @@ const getCupboardListing = defineTool({
   },
 });
 
+// ─── GET /cupboard/bindings ──────────────────────────────────────
+// Batch repo→Hive lookup proxy (comb-hive-native-sharing P-011): forwards a
+// page of GitHub-search result repo ids to the worker's GET /bindings so the
+// picker's search panel can badge "Hive exists / claimed" per result (P-010).
+// Public read (no token, like the single /binding lookup). It degrades to an
+// empty list when the worker predates the route (404) or is unreachable, so
+// the badges are a silent enhancement — never a hard dependency on the worker
+// deploy landing (the P-011 worker deploy is owner-coordinated).
+
+export const getCupboardBindings = defineTool({
+  method: 'GET',
+  path: '/cupboard/bindings',
+  auth: 'public',
+  async handler(req) {
+    const repoIds = (new URL(req.url).searchParams.get('repo_ids') ?? '').trim();
+    if (!repoIds) return Response.json({ bindings: [] });
+    const base = resolveCupboardBaseUrl();
+    try {
+      const res = await fetch(`${base}/bindings?repo_ids=${encodeURIComponent(repoIds)}`, {
+        headers: { 'User-Agent': 'papercusp-operator/1' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      // A worker predating P-011 (no /bindings route) or any upstream failure ⇒
+      // "no badges yet", not an error: the search panel stays fully functional.
+      if (!res.ok) return Response.json({ bindings: [], unavailable: true });
+      const data = (await res.json().catch(() => null)) as { bindings?: unknown } | null;
+      const bindings = Array.isArray(data?.bindings) ? data.bindings : [];
+      return Response.json({ bindings });
+    } catch {
+      return Response.json({ bindings: [], unavailable: true });
+    }
+  },
+});
+
 // ─── GET /cupboard/tools ─────────────────────────────────────────
 // The marketplace's Tools discovery section (tool-distribution-granularity
 // P-006/D-005 + tool-distribution-discovery P-005/P-007): every known tool
@@ -337,6 +371,7 @@ const reviewCupboardListing = defineTool({
 export default [
   listCupboardListings,
   getCupboardListing,
+  getCupboardBindings,
   listCupboardTools,
   resolveCupboardProvides,
   claimCupboardListing,

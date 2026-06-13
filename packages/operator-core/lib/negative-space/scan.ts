@@ -64,10 +64,11 @@ export interface NegativeSpaceTickDeps {
   markFiled: (workspaceId: string, entry: DemandEntry, improvementId: string) => Promise<void>;
   /**
    * Does the demanded artifact actually EXIST under this exact identifier?
-   * Returns its ref (`plan:<slug>` / `doc:<slug>`) or null. Drives the
-   * kind-fidelity split (frontier P-044): exists + zero-hit = resolution gap
-   * (kind=bug, EI-397 shape); absent = missing knowledge (kind=change).
-   * Only called for reference-shaped queries; absent dep ⇒ never bug-shaped.
+   * Returns its ref (`plan:<slug>` / `doc:<slug>` / `memory-anchor:<value>`) or
+   * null. Drives the kind-fidelity split (frontier P-044): exists + zero-hit =
+   * resolution gap (kind=bug, EI-397 shape); absent = missing knowledge
+   * (kind=change). Only called for reference-shaped queries; absent dep ⇒
+   * never bug-shaped.
    */
   probeArtifact?: (surface: DemandSurface, queryNorm: string) => Promise<string | null>;
   log?: (message: string) => void;
@@ -174,8 +175,13 @@ const DOCS_CONTENT_DIR = join(REPO_ROOT, 'apps/operator-docs/src/content/docs');
  *   docs   — a page whose slug (basename or section/slug path) equals the
  *            query, in the MDX corpus (missing corpus degrades to null, the
  *            neologism reader's stripped-deploy-tree rule);
- *   memory — no clear-correct-state probe exists (recall is similarity-based,
- *            not identifier-based) → always null, always judgment-shaped.
+ *   memory — an ACTIVE memory whose anchor (file/plan/symbol/feature/migration)
+ *            value equals the query exactly: the record exists under that exact
+ *            identifier yet recall zero-hit it. memory_anchors ARE the
+ *            identifier-keyed index (the cosine + lexical recall legs are
+ *            similarity-based, which is why the original FB-18 probe left this
+ *            null); the reference-shaped gate keeps collision-prone bare words
+ *            from ever reaching here.
  * Never throws: a probe failure means "not proven to exist" — the candidate
  * files in today's change shape rather than a falsely-confident bug.
  */
@@ -205,7 +211,24 @@ export async function probeDemandArtifact(
       }
       return null;
     }
-    return null; // memory: no identifier-keyed existence check
+    if (surface === 'memory') {
+      // An ACTIVE memory anchored to this exact value that a memory:search
+      // still zero-hit is a recall RESOLUTION GAP, not missing knowledge — the
+      // record exists under that exact identifier (anchors are the
+      // identifier-keyed index; cosine/lexical recall is similarity-based).
+      // Global match mirrors the cross-scope plans probe (the EI-397 shape). A
+      // non-active (forgotten/superseded/…) memory is a deliberate removal, not
+      // a gap — state='active' only.
+      const rows = await sql<{ value: string }[]>`
+        SELECT a.value
+          FROM harness_shared.memory_anchors a
+          JOIN harness_shared.memory_canonical m ON m.id = a.memory_id
+         WHERE m.state = 'active'
+           AND lower(a.value) = ${queryNorm}
+         LIMIT 1`;
+      return rows.length > 0 ? `memory-anchor:${rows[0].value}` : null;
+    }
+    return null;
   } catch {
     return null;
   }

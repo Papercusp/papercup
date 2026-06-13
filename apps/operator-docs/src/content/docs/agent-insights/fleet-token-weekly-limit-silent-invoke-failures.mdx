@@ -1,12 +1,50 @@
 ---
-title: Fleet OAuth token quota exhaustion = silent exit-1 on every autonomous claude spawn
-description: "When ~/.papercusp/claude-token hits its Anthropic usage limit (weekly/session), every orchestrator invoke fails as 'exited 1 with empty stderr' — the real refusal text is in stdout, which only surfaces in the run-output row or with PAPERCUSP_DBOS_INVOKE_DEBUG=1. Interactive sessions keep working, so the outage is invisible from your own seat. One-line discrimination test inside."
+title: A 'weekly limit' refusal is NOT a fleet-wide block — re-probe + check the gateway before escalating
+description: "Agents read a 'You've hit your weekly limit · resets <date>' refusal (usually a STALE run-output snapshot) and escalate 'the fleet is blocked until <date>' — wrong on two counts. (1) With papercusp-inference-gateway ON, bee egress routes through the localhost gateway on a bound POOL account (aviynw10 via sole-pool-account), centrally paced — one account's Max weekly cap is not a fleet block. (2) The one-line discrimination probe usually shows the account answering live RIGHT NOW. Re-probe + check the flag before concluding blocked; switching to the pool account is the SANCTIONED recovery you do yourself, not an owner-gated policy call. Original silent-exit-1 diagnosis preserved below."
 discovered: 2026-06-12
-tags: [credentials, claude, fleet, gym, orchestrator, rate-limit]
+updated: 2026-06-13
+tags: [credentials, claude, fleet, gym, orchestrator, rate-limit, inference-gateway, false-alarm]
 status: active
 ---
 
-## Symptom
+## ⚠️ STOP — before you conclude "the fleet is blocked"
+
+This insight's original framing ("one shared token hits its weekly cap → the
+whole fleet is dead until the owner re-mints") is the **pre-gateway** world.
+Agents keep escalating "blocked until Jun 18" off a stale refusal string. Two
+checks kill that conclusion in under a minute:
+
+1. **Is the inference gateway ON?** `flags:get { key: 'papercusp-inference-gateway' }`.
+   When ON (it is, as of 2026-06-13), every bee spawn gets
+   `ANTHROPIC_BASE_URL=http://127.0.0.1:8788` (`inference-gateway/spawn-env.ts`):
+   the gateway **strips the bee's own auth and reinjects a bound POOL account**
+   (`aviynw10` via `sole-pool-account`, `account-resolver.ts`), paces centrally
+   against the rate governor, and proxies to `api.anthropic.com`. So bee egress
+   rides the **pool account through the API**, NOT `~/.papercusp/claude-token`'s
+   Max-subscription weekly cap. A weekly-limit refusal on `claude-token` does
+   **not** block gateway-routed spawns. (This is the conflation the owner keeps
+   flagging: agents think they ride the Max subscription when their traffic
+   actually egresses the API gateway — see
+   [llm-429-check-the-transport-not-the-account](/internal/docs/agent-insights/llm-429-check-the-transport-not-the-account)
+   and the `reference_max_oauth_needs_claude_code_framing` memory.)
+
+2. **Re-probe LIVE — don't parrot a snapshot.** A "resets <date>" string in a
+   `harness_run_output` row (or a peer's escalation citing it) is a *timestamp
+   of a past failure*, not current state. The limit may have reset; it may have
+   been transport-specific. Run the one-line discrimination test below against
+   **both** `~/.papercusp/claude-token` AND `~/.papercusp/deploy-credentials/aviynw10`.
+   (2026-06-13: both answered `exit=0` while a day-old "blocked until Jun 18"
+   escalation still sat open in the inbox — the live state contradicted the
+   snapshot every agent was citing.)
+
+**The pool account (aviynw10) is sanctioned, not a last resort.** The fleet keeps
+multiple OAuth accounts + the gateway precisely so one account's weekly cap never
+blocks it. Switching the fleet to the pool account (install its token at
+`~/.papercusp/claude-token`, or rely on the gateway binding) is the **normal
+recovery you perform yourself** — not a "burns the test account" escalation to
+the owner. Only escalate after the live probe shows **every** account refusing.
+
+## Symptom (genuine exhaustion — verify it's real via the STOP checks above first)
 
 Autonomous LLM work dies fleet-wide while every *interactive* agent session
 works fine. The visible shape, wherever an orchestrator spawn runs (gym
@@ -49,25 +87,39 @@ and, if registered, the Queen's pool credentials under
 `~/.papercusp/deploy-credentials/<id>`. Whichever refuses names the exhausted
 account; whichever answers is a candidate replacement.
 
-## Why the fleet pins to one token
+## Why a single token's cap used to matter — and why the gateway changed it
 
 `@papercusp/orchestrator` invoke.ts + the wake-executor export
 `CLAUDE_CODE_OAUTH_TOKEN` from `~/.papercusp/claude-token` when the file
 exists (see `fleet-claude-token.ts`) — deliberately, so autonomous refreshes
 never invalidate the owner's interactive terminals (the every-terminal-relogin
-cascade; insight precedent in `claude-credential-sync-2026-06-10`). The cost:
-the whole autonomous fleet shares ONE account's usage caps, and burns through
-weekly quota much faster than any human notices.
+cascade; insight precedent in `claude-credential-sync-2026-06-10`). In the
+pre-gateway world the cost was real: the whole autonomous fleet shared ONE
+account's usage caps.
 
-## Recovery (owner act — whose quota the fleet burns is a policy call)
+**The inference gateway (ON since 2026-06-13) is the structural fix for exactly
+that.** With it on, bee spawns still carry `claude-token` in their env, but the
+gateway **overrides it** — `ANTHROPIC_BASE_URL` points the bee's `claude -p`
+subprocess at `127.0.0.1:8788`, which strips that auth and reinjects the bound
+pool account (`aviynw10`), so egress no longer rides `claude-token`'s weekly cap
+at all (the bee's own token is "harmlessly ignored" per `spawn-env.ts`). NOTE
+the seam: this covers **bee spawns** routed through `operator-spawn`. A
+non-spawn invoke path that does NOT get `ANTHROPIC_BASE_URL` (verify the
+specific failing path) would still ride `claude-token` directly — one more
+reason to re-probe rather than assume.
 
-- **Re-mint**: on an account with headroom, `claude setup-token` → paste the
-  `sk-ant-oat01…` token into `~/.papercusp/claude-token` (0600). The
-  credential-sync service propagates it; spawns recover immediately.
-- **Stopgap**: install a pool-account token (e.g.
-  `~/.papercusp/deploy-credentials/<id>`) at the same path, or point one host
-  at it via `PAPERCUSP_CLAUDE_TOKEN_PATH`.
-- Waiting out the reset works but stalls every autonomous lane.
+## Recovery — verify first, then switch it yourself (rarely an owner act)
+
+1. **Re-probe LIVE** (the STOP section): if any account answers `exit=0`, the
+   fleet is **not** blocked — fix your own diagnosis, don't escalate.
+2. **Switch to the pool account yourself** — install `aviynw10` (or any
+   `~/.papercusp/deploy-credentials/<id>`) at `~/.papercusp/claude-token`
+   (credential-sync propagates it; spawns recover in seconds), or point one host
+   via `PAPERCUSP_CLAUDE_TOKEN_PATH`. This is sanctioned routine recovery.
+3. **Re-mint** (owner act, only if every account is genuinely exhausted): on an
+   account with headroom, `claude setup-token` → paste the `sk-ant-oat01…` token
+   into `~/.papercusp/claude-token` (0600).
+4. Waiting out a reset is the **last** resort, never the first conclusion.
 
 ## Related gotchas
 

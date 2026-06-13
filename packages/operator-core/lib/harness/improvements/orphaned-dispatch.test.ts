@@ -163,6 +163,7 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
 
   it('recovers a host-restart victim: orphans with host-restart-recovery, releases the claim, rolls the attempt back (EI-403 Option B)', async () => {
     const bootMs = NOW - 0.5 * 3_600_000; // booted 30 min ago
+    vi.mocked(markDispatchOrphaned).mockResolvedValue(true); // explicit — clearAllMocks doesn't reset a prior mockResolvedValue
     vi.mocked(readRecentDispatches).mockResolvedValue([
       row({ id: 'd1', itemId: 'EI-1', firedAt: hoursAgo(1), attempt: 2 }), // fired before boot → restart victim
     ]);

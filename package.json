@@ -105,6 +105,7 @@
     "lint:knip:fix": "knip --fix --no-config-hints",
     "lint:drizzle-drift": "node scripts/check-drizzle-drift.mjs",
     "lint:no-restart": "node scripts/check-no-restart-imports.mjs",
+    "lint:smart-quotes": "node scripts/check-smart-quotes.mjs",
     "lint:no-retired": "node scripts/check-no-retired-imports.mjs",
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",

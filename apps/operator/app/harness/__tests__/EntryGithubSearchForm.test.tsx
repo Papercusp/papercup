@@ -65,6 +65,20 @@ function mockSearch(payload: Record<string, unknown>, status = 200) {
   });
 }
 
+/** Route the search GET → items, and the P-011 batch lookup → bindings (P-010). */
+function mockSearchAndBindings(items: unknown[], bindings: unknown[]) {
+  mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('/api/github/search-repos')) {
+      return new Response(JSON.stringify({ ok: true, authed: true, items }), { status: 200 });
+    }
+    if (url.includes('/api/cupboard/bindings')) {
+      return new Response(JSON.stringify({ bindings }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  });
+}
+
 function renderSearch(props?: { hiveScope?: string | null; initialMode?: 'new-hive' | 'into-hive' | 'standalone' }) {
   const onBack = vi.fn();
   const onCreated = vi.fn();
@@ -179,5 +193,55 @@ describe('EntryGithubSearchForm — P-009 search panel', () => {
 
     const addBtn = screen.getByRole('button', { name: 'Add to acme' });
     expect(addBtn.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+describe('EntryGithubSearchForm — P-010 existing-hive badges', () => {
+  it('badges a result whose repo already has a Hive (claimed)', async () => {
+    const user = userEvent.setup();
+    mockSearchAndBindings(RESULTS, [
+      { repo_id: 1, hive_pubkey: 'K'.repeat(43) + '=', hive_title: 'Demo Hive', claim_status: 'claimed', listing_id: 'h1' },
+    ]);
+    renderSearch();
+    await user.type(screen.getByRole('searchbox'), 'hello');
+    const badge = await screen.findByTestId('gh-search-hive-badge');
+    expect(badge.textContent).toContain('Hive exists: Demo Hive');
+    expect(badge.textContent).toContain('claimed');
+    // Only the bound repo (id 1) is badged — the other result has no binding.
+    expect(screen.getAllByTestId('gh-search-hive-badge')).toHaveLength(1);
+  });
+
+  it('shows "unclaimed" when the existing Hive listing is unclaimed', async () => {
+    const user = userEvent.setup();
+    mockSearchAndBindings(RESULTS, [
+      { repo_id: 1, hive_pubkey: 'K'.repeat(43) + '=', hive_title: 'Demo Hive', claim_status: 'unclaimed', listing_id: 'h1' },
+    ]);
+    renderSearch();
+    await user.type(screen.getByRole('searchbox'), 'hello');
+    const badge = await screen.findByTestId('gh-search-hive-badge');
+    expect(badge.textContent).toContain('unclaimed');
+  });
+
+  it('a binding without a hive_pubkey (legacy shared harness) is not badged', async () => {
+    const user = userEvent.setup();
+    mockSearchAndBindings(RESULTS, [
+      { repo_id: 1, hive_pubkey: null, hive_title: null, claim_status: 'unclaimed', listing_id: 'h1' },
+    ]);
+    renderSearch();
+    await user.type(screen.getByRole('searchbox'), 'hello');
+    await screen.findAllByTestId('gh-search-result');
+    // Give the (resolved) bindings fetch a tick — still no badge.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('gh-search-hive-badge')).toBeNull();
+  });
+
+  it('degrades to no badges when the batch lookup is empty/unavailable', async () => {
+    const user = userEvent.setup();
+    mockSearch({ ok: true, authed: true, items: RESULTS }); // /api/cupboard/bindings → {}
+    renderSearch();
+    await user.type(screen.getByRole('searchbox'), 'hello');
+    await screen.findAllByTestId('gh-search-result');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('gh-search-hive-badge')).toBeNull();
   });
 });

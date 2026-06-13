@@ -140,6 +140,27 @@ describe('runNegativeSpaceTick — kind fidelity at the filing edge (frontier P-
     expect(input.watchdogKey).toBe(`negative-space:plans:${SLUG}`);
   });
 
+  it('a memory:search for an existing anchor files the bug-shaped resolution gap (FB-18 follow-on)', async () => {
+    const FILE = 'lib/replay/regret/mine.ts';
+    const memRows: ZeroHitRow[] = ['a', 'b', 'c'].map((agent) => ({
+      toolName: 'memory:search',
+      query: FILE,
+      agent,
+      invokedAt: '2026-06-11T10:00:00.000Z',
+    }));
+    const probeArtifact = vi.fn(async () => `memory-anchor:${FILE}`);
+    const { deps, capture } = makeDeps(memRows, { probeArtifact });
+    await runNegativeSpaceTick('ws-1', deps);
+
+    expect(probeArtifact).toHaveBeenCalledWith('memory', FILE);
+    const input = capture.mock.calls[0]![0];
+    expect(input.kind).toBe('bug');
+    expect(input.findingClass).toBe('negative-space:resolution-gap');
+    expect(input.severity).toBe('major');
+    // Surface-scoped, stable dedup identity — the memory leg doesn't fork it.
+    expect(input.watchdogKey).toBe(`negative-space:memory:${FILE}`);
+  });
+
   it('an exact slug that does NOT exist stays the judgment-shaped missing-knowledge change', async () => {
     const { deps, capture } = makeDeps(slugRows(['a', 'b', 'c']), { probeArtifact: async () => null });
     await runNegativeSpaceTick('ws-1', deps);
