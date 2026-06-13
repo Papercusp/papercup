@@ -50,7 +50,8 @@ function makeCtx(askUser: unknown) {
 // CardSpec the handler passed through this typed accessor instead of indexing the
 // tuple directly (callers narrow it with their own `as {…}`).
 function firstSpec(askUser: { mock: { calls: unknown[][] } }): Record<string, unknown> {
-  return askUser.mock.calls[0][0] as Record<string, unknown>;
+  const calls = askUser.mock.calls;
+  return calls[0][0] as Record<string, unknown>;
 }
 
 describe('chat:ask_choice handler', () => {
@@ -105,7 +106,7 @@ describe('chat:ask_choice handler', () => {
       makeCtx(askUser),
     );
     expect(askUser).toHaveBeenCalled();
-    const spec = askUser.mock.calls[0][0] as {
+    const spec = firstSpec(askUser) as {
       presentation: { kind: string };
       prompt: string;
       fallbackText?: string;
@@ -128,7 +129,7 @@ describe('chat:ask_choice handler', () => {
       { question: 'Test?', options: [{ id: 'Yes', label: 'Yes' }, { id: 'NO', label: 'No' }] },
       makeCtx(askUser),
     );
-    const spec = askUser.mock.calls[0][0] as { presentation: { options: Array<{ id: string }> } };
+    const spec = firstSpec(askUser) as { presentation: { options: Array<{ id: string }> } };
     expect(spec.presentation.options.map((o) => o.id)).toEqual(['yes', 'no']);
     const parsed = JSON.parse((r.content[0] as { text: string }).text);
     expect(parsed.picks).toEqual([{ option_id: 'yes', label: 'Yes' }]);
@@ -150,7 +151,7 @@ describe('chat:ask_choice handler', () => {
       },
       makeCtx(askUser),
     );
-    expect((askUser.mock.calls[0][0] as { presentation: { kind: string } }).presentation.kind)
+    expect((firstSpec(askUser) as { presentation: { kind: string } }).presentation.kind)
       .toBe('checkbox');
     const parsed = JSON.parse((r.content[0] as { text: string }).text);
     expect(parsed.picks).toEqual([
@@ -200,7 +201,7 @@ describe('chat:ask_choice handler', () => {
       },
       makeCtx(askUser),
     );
-    const spec = askUser.mock.calls[0][0] as { allowDecline?: boolean };
+    const spec = firstSpec(askUser) as { allowDecline?: boolean };
     expect(spec.allowDecline).toBe(false);
   });
 
@@ -214,7 +215,7 @@ describe('chat:ask_choice handler', () => {
       },
       makeCtx(askUser),
     );
-    const spec = askUser.mock.calls[0][0] as { presentation?: { kind: string; voiceAnswerable?: boolean } };
+    const spec = firstSpec(askUser) as { presentation?: { kind: string; voiceAnswerable?: boolean } };
     expect(spec.presentation?.kind).toBe('radio');
     expect(spec.presentation?.voiceAnswerable).toBe(true);
   });
@@ -228,7 +229,7 @@ describe('chat:ask_choice handler', () => {
       },
       makeCtx(askUser),
     );
-    const spec = askUser.mock.calls[0][0] as { presentation?: { kind: string; voiceAnswerable?: boolean } };
+    const spec = firstSpec(askUser) as { presentation?: { kind: string; voiceAnswerable?: boolean } };
     expect(spec.presentation?.kind).toBe('radio');
     expect(spec.presentation?.voiceAnswerable).toBeUndefined();
   });
@@ -244,7 +245,7 @@ describe('chat:ask_choice handler', () => {
       },
       makeCtx(askUser),
     );
-    const spec = askUser.mock.calls[0][0] as { presentation?: { kind: string; voiceAnswerable?: boolean } };
+    const spec = firstSpec(askUser) as { presentation?: { kind: string; voiceAnswerable?: boolean } };
     expect(spec.presentation?.kind).toBe('checkbox');
     expect((spec.presentation as { voiceAnswerable?: boolean }).voiceAnswerable).toBeUndefined();
   });
@@ -351,7 +352,7 @@ describe('chat:ask_choice — B-10 autonomous-agent card interception', () => {
       beeCtx(askUser),
     );
 
-    const spec = askUser.mock.calls[0][0] as { timeoutMs?: number };
+    const spec = firstSpec(askUser) as { timeoutMs?: number };
     expect(spec.timeoutMs).toBe(AGENT_CARD_TIMEOUT_MS);
 
     const escs = await listEscalations();
@@ -373,7 +374,7 @@ describe('chat:ask_choice — B-10 autonomous-agent card interception', () => {
       suCtx(askUser),
     );
 
-    const spec = askUser.mock.calls[0][0] as { timeoutMs?: number };
+    const spec = firstSpec(askUser) as { timeoutMs?: number };
     expect(spec.timeoutMs).toBeUndefined();
     expect((await listEscalations()).length).toBe(0);
   });
@@ -387,7 +388,7 @@ describe('chat:ask_choice — B-10 autonomous-agent card interception', () => {
       beeCtx(askUser),
     );
 
-    const spec = askUser.mock.calls[0][0] as { timeoutMs?: number };
+    const spec = firstSpec(askUser) as { timeoutMs?: number };
     expect(spec.timeoutMs).toBeUndefined();
     expect((await listEscalations()).length).toBe(0);
   });

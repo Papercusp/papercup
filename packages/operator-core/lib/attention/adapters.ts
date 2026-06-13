@@ -20,6 +20,7 @@ import {
   type AttentionItem,
   type AttentionAction,
   type AttentionTier,
+  ATTENTION_KIND_CATEGORY,
   needsHumanForTier,
   reportTier,
   severityToImportance,
@@ -83,6 +84,7 @@ export function planItemToAttention(it: PlanItemInput): AttentionItem {
   return {
     id: `plan-item:${it.slug}:${it.id}`,
     kind: 'plan-item',
+    category: ATTENTION_KIND_CATEGORY['plan-item'],
     source: 'plan',
     harnessSlug: it.harnessSlug,
     planSlug: it.slug,
@@ -130,6 +132,7 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
   return {
     id: `coord-escalation:${e.msgId}`,
     kind: 'coord-escalation',
+    category: ATTENTION_KIND_CATEGORY['coord-escalation'],
     source: 'coord',
     harnessSlug: e.harnessSlug ?? null,
     planSlug: e.planSlug ?? null,

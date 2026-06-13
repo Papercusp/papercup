@@ -103,6 +103,13 @@ export default defineTool({
         "work_item kind to mint (default 'task' — the generic execution record; pick feature/bug/… when the item warrants a pipeline-shaped unit)",
       ),
     title: z.string().max(200).optional().describe('override the work-item title (default: the plan-item text)'),
+    brief: z
+      .string()
+      .max(2000)
+      .optional()
+      .describe(
+        "per-lane situational overlay persisted on the work-item's payload.brief — the context the placed bee is MISSING, not a restatement of the item (queen-wave-dispatch P-021; carried from a `## Promote` lane's brief: field)",
+      ),
     intent: z.string().max(400).optional().describe('one line on what you are doing'),
     mode: z
       .enum(['availability', 'activity'])
@@ -121,6 +128,7 @@ export default defineTool({
       itemId: args.item,
       kind: args.kind as WorkItemKind | undefined,
       title: args.title,
+      brief: args.brief,
       owner: id.ownerId,
       ownerLabel: id.ownerLabel,
       ownerName,

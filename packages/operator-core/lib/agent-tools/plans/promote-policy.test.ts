@@ -55,6 +55,25 @@ describe('parsePromotePolicy', () => {
     });
   });
 
+  it('parses a per-lane brief field (P-021)', () => {
+    const withBrief = wrap(
+      '## Promote\n\n```yaml\n' +
+        'target_harness: restart\n' +
+        'waves:\n' +
+        '  - id: tier1\n' +
+        '    features:\n' +
+        '      - title: "Fix fetchers"\n' +
+        '        from_items: [P-001]\n' +
+        '        brief: "Schema moved under marketplace/v3 — touch only the fetchers."\n' +
+        '```',
+    );
+    const { policy, warnings } = parsePromotePolicy(withBrief);
+    expect(warnings).toEqual([]);
+    expect(policy?.waves[0].features?.[0].brief).toBe(
+      'Schema moved under marketplace/v3 — touch only the fetchers.',
+    );
+  });
+
   it('parses a generative wave with blocked_by + a placeholder template', () => {
     const { policy, warnings } = parsePromotePolicy(GENERATIVE);
     expect(warnings).toEqual([]);
@@ -306,6 +325,32 @@ describe('buildWaveFeatures', () => {
     const r = buildWaveFeatures(wave);
     expect(r.features[0].spawn_child_slug).toBeUndefined();
   });
+
+  it('P-021: carries a static lane\'s brief verbatim', () => {
+    const wave: PromoteWave = {
+      id: 'tier1',
+      features: [{ title: 'Fix fetchers', from_items: ['P-001'], brief: 'sole-owner: lib/fetchers/**' }],
+    };
+    const r = buildWaveFeatures(wave);
+    expect(r.features[0].brief).toBe('sole-owner: lib/fetchers/**');
+  });
+
+  it('P-021: substitutes {item} in a generated lane\'s brief', () => {
+    const wave: PromoteWave = {
+      id: 'tier2',
+      generate: {
+        for_each: 'universal_type',
+        feature_template: { title: 'Universal schema: {item}', brief: 'derive grain for {item} only' },
+      },
+    };
+    const r = buildWaveFeatures(wave, { generateItems: ['LAPTOP', 'CAMERA'] });
+    expect(r.features.map((f) => f.brief)).toEqual(['derive grain for LAPTOP only', 'derive grain for CAMERA only']);
+  });
+
+  it('P-021: a lane WITHOUT a brief leaves brief undefined (additive)', () => {
+    const wave: PromoteWave = { id: 'plain', features: [{ title: 'x' }] };
+    expect(buildWaveFeatures(wave).features[0].brief).toBeUndefined();
+  });
 });
 
 describe('applyInterWaveEdges — cross-wave ordering as feature blocked_by (P-044)', () => {
@@ -344,5 +389,15 @@ describe('applyInterWaveEdges — cross-wave ordering as feature blocked_by (P-0
     const m = new Map<string, BuiltFeature[]>([['w1', [{ title: 'A' }]]]);
     applyInterWaveEdges([{ id: 'w1' }], m);
     expect(m.get('w1')![0].blocked_by).toBeUndefined();
+  });
+
+  it('P-021: a per-lane brief does not disturb the cross-wave edges (compiler unchanged)', () => {
+    const m = new Map<string, BuiltFeature[]>([
+      ['w1', [{ title: 'A', brief: 'lane A overlay' }]],
+      ['w2', [{ title: 'C', brief: 'lane C overlay' }]],
+    ]);
+    applyInterWaveEdges([{ id: 'w1' }, { id: 'w2', blocked_by: 'w1' }], m);
+    expect(m.get('w2')![0].blocked_by).toEqual(['A']); // edges still emitted
+    expect(m.get('w2')![0].brief).toBe('lane C overlay'); // overlay preserved through edge compile
   });
 });

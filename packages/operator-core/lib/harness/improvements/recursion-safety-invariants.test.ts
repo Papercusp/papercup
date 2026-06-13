@@ -55,6 +55,35 @@ import { buildDigest, type ScoredItem } from './digest';
 import { triageIdea, type IdeaType } from './triage';
 import type { EngineerIssue } from '../../issues-engineer';
 
+// queen-autonomy-policy-2026-06-13 B-19 (P-090 / P-091): the per-category Queen-
+// autonomy gate modules. Sections 1 + 6 above pin the IMPROVEMENTS-loop model
+// (classifyImprovement / the autoKinds dial); the two sections at the BOTTOM of
+// this file compose these into the D-004 unified gate to pin the Queen-as-decider
+// per-category model's recursion-safety invariants (P-090) and the behavior-
+// neutral migration proof (P-091) — the model B-12/P-070 will wire live.
+import {
+  RISK_TIERS,
+  AUTONOMY_CEILINGS,
+  DEFAULT_AUTHORITY,
+  deriveNeedsHuman,
+  type RiskTier,
+  type AutonomyCeiling,
+} from '@papercusp/plan-parser';
+import {
+  type AutonomyCategoryPolicy,
+  effectiveCeiling,
+  autoEverAllowed,
+  defaultPolicyFor,
+} from '../../autonomy/policy';
+import {
+  type AutonomyCategory,
+  AUTONOMY_CATEGORY_IDS,
+  PROTECTED_CATEGORIES,
+  isProtectedCategory,
+} from '../../autonomy/categories';
+import { categoryForAction } from '../../autonomy/capability-category-map';
+import { ACTION_SURFACE } from '../../autonomy/action-surface';
+
 import {
   checkLoopVerdict,
   summarizeLearningSpend,
@@ -590,4 +619,326 @@ describe('P-049.6 — reversibility: irreversible/unknown never auto-safe; the g
       expect(classifyImprovement(item, FULLY_GRADUATED).tier).toBe('human');
     }
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// queen-autonomy-policy-2026-06-13 — B-19 (P-090 / P-091)
+//
+// Sections 1 + 6 pin the IMPROVEMENTS-loop self-modification model. Sections 7 + 8
+// pin the SIBLING model the same plan introduces: the per-category Queen-autonomy
+// gate (B-01 risk-model · B-03 policy store · B-04 categories + action-surface),
+// which B-12/P-070 will wire into the live decider. The unified gate (D-004) is:
+//
+//     auto ⟺ risk_tier ≤ min(ceiling, graduated) ∧ reversible
+//                       ∧ ¬authority_owner ∧ ¬protected
+//
+// No production module composes that formula yet (P-070 is the wiring; today only
+// the get/set tools + sync resolver read `effectiveCeiling` for DISPLAY). So this
+// suite composes the SHIPPED pure functions into the gate and pins the invariants
+// the live decider MUST satisfy — when B-12 lands a real `decide(...)`, repoint
+// `autoAllowed` below at it and these stay the spec.
+//   • `deriveNeedsHuman` folds in  risk ≤ effectiveCeiling ∧ ¬authority_owner
+//                                   ∧ (effectiveCeiling ≠ never-auto)
+//   • `effectiveCeiling`   folds in  ¬protected, via `locked ⇒ never-auto`
+//   • reversibility (B-02) is the one orthogonal hard gate, ANDed here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A policy row for `category`, starting from the shipped default (so a PROTECTED
+ *  category keeps its `locked: true`) with `over` applied on top. */
+const policyFor = (
+  category: AutonomyCategory,
+  over: Partial<AutonomyCategoryPolicy> = {},
+): AutonomyCategoryPolicy => ({ ...defaultPolicyFor(category), ...over });
+
+/** The MOST PERMISSIVE policy an owner could ever set for a category: UNLOCKED,
+ *  ceiling + graduation both cranked to the top. The hard-gate invariants
+ *  (irreversible / authority=owner) must hold even against this worst case. */
+const maximalPolicy = (category: AutonomyCategory): AutonomyCategoryPolicy =>
+  policyFor(category, { locked: false, ceiling: 'critical', graduatedLevel: 'critical' });
+
+/**
+ * The D-004 unified gate, composed from the shipped pure functions (see the
+ * banner above). Returns whether the Queen may auto-decide WITHOUT asking.
+ */
+function autoAllowed(args: {
+  policy: AutonomyCategoryPolicy;
+  riskTier: RiskTier;
+  authority: 'owner' | 'system';
+  reversibility: Reversibility;
+}): boolean {
+  const needsHuman = deriveNeedsHuman({
+    riskTier: args.riskTier,
+    authority: args.authority,
+    ceiling: effectiveCeiling(args.policy),
+    armed: true,
+  });
+  return !needsHuman && isAutoReversible(args.reversibility);
+}
+
+// ── 7. the per-category autonomy gate's recursion-safety invariants (P-090) ───
+
+describe('P-090 — per-category autonomy gate: the five recursion-safety invariants (B-19)', () => {
+  // ── 7.1 the never-auto protected set cannot graduate ───────────────────────
+  describe('7.1 — the never-auto protected set cannot graduate', () => {
+    it('the protected set is EXACTLY the four named never-auto categories (no drift)', () => {
+      expect(new Set(PROTECTED_CATEGORIES)).toEqual(
+        new Set(['release-deploy', 'spend-budget', 'credentials-auth', 'system-control']),
+      );
+    });
+
+    it('every protected category ships locked at never-auto (ceiling AND lock, both zero)', () => {
+      for (const cat of PROTECTED_CATEGORIES) {
+        const d = defaultPolicyFor(cat);
+        expect(d.locked, `${cat} ships unlocked`).toBe(true);
+        expect(d.ceiling, `${cat} ceiling`).toBe('never-auto');
+        expect(d.graduatedLevel, `${cat} graduated`).toBe('never-auto');
+        expect(autoEverAllowed(d), `${cat} can auto`).toBe(false);
+      }
+    });
+
+    it('graduation CANNOT bypass the lock: a locked category stays never-auto even with ceiling+graduation cranked to critical', () => {
+      // The graduation engine (B-16) only moves `graduatedLevel`; the store clamps
+      // it ≤ ceiling. Model the worst the engine could ever attempt — both dials at
+      // the top — while the category is still locked (its shipped posture):
+      for (const cat of PROTECTED_CATEGORIES) {
+        const graduated = policyFor(cat, {
+          locked: true,
+          ceiling: 'critical',
+          graduatedLevel: 'critical',
+        });
+        expect(effectiveCeiling(graduated), `${cat} effective`).toBe('never-auto');
+        // …so the gate is never-auto for EVERY risk tier + reversibility.
+        for (const riskTier of RISK_TIERS) {
+          expect(
+            autoAllowed({ policy: graduated, riskTier, authority: 'system', reversibility: 'reversible' }),
+            `${cat} @ ${riskTier} auto-ran while locked`,
+          ).toBe(false);
+        }
+      }
+    });
+
+    it('the lock is the load-bearing floor: unlocking is the ONLY way to widen a protected category (a deliberate, audited owner act)', () => {
+      // Proves the invariant isn't vacuous: the category CAN auto once the owner
+      // explicitly unlocks + raises the ceiling — i.e. graduation alone never does
+      // it; an owner authority decision (the unlock) is required (D-005).
+      const cat: AutonomyCategory = 'release-deploy';
+      const locked = policyFor(cat, { ceiling: 'critical', graduatedLevel: 'critical' }); // still locked
+      const unlocked = policyFor(cat, { locked: false, ceiling: 'low', graduatedLevel: 'low' });
+      expect(effectiveCeiling(locked)).toBe('never-auto');
+      expect(effectiveCeiling(unlocked)).toBe('low');
+    });
+  });
+
+  // ── 7.2 irreversible never auto ────────────────────────────────────────────
+  describe('7.2 — irreversible (and unknown-reversibility) actions never auto, under ANY policy', () => {
+    it('every IRREVERSIBLE action in the surface stays human even under the most permissive policy + full risk sweep', () => {
+      const irreversible = ACTION_SURFACE.filter((a) => a.reversibility === 'irreversible');
+      expect(irreversible.length).toBeGreaterThan(0); // the axis is exercised
+      for (const a of irreversible) {
+        for (const riskTier of RISK_TIERS) {
+          expect(
+            autoAllowed({ policy: maximalPolicy(a.category), riskTier, authority: 'system', reversibility: a.reversibility }),
+            `${a.id} (${a.reversibility}) auto-ran @ ${riskTier}`,
+          ).toBe(false);
+        }
+      }
+    });
+
+    it('reversibility is orthogonal to the risk dial: flipping risk/ceiling never makes an irreversible action auto', () => {
+      // The same action, only its reversibility changed reversible→irreversible,
+      // flips the gate from auto-eligible to gated — the proof reversibility is a
+      // hard, dial-independent axis. Use a non-protected category so the risk half
+      // alone WOULD permit it.
+      const cat: AutonomyCategory = 'knowledge-curation';
+      const policy = maximalPolicy(cat);
+      expect(autoAllowed({ policy, riskTier: 'trivial', authority: 'system', reversibility: 'reversible' })).toBe(true);
+      for (const reversibility of ['irreversible', 'unknown'] as Reversibility[]) {
+        expect(autoAllowed({ policy, riskTier: 'trivial', authority: 'system', reversibility })).toBe(false);
+      }
+    });
+  });
+
+  // ── 7.3 authority = owner never auto ───────────────────────────────────────
+  describe('7.3 — authority=owner gates unconditionally (the owner’s call, by right)', () => {
+    it('deriveNeedsHuman is TRUE for owner-authority across every armed/ceiling/risk combination', () => {
+      for (const armed of [false, true]) {
+        for (const ceiling of AUTONOMY_CEILINGS) {
+          for (const riskTier of RISK_TIERS) {
+            expect(
+              deriveNeedsHuman({ authority: 'owner', armed, ceiling, riskTier, storedNeedsHuman: false }),
+              `owner auto-ran (armed=${armed}, ceiling=${ceiling}, risk=${riskTier})`,
+            ).toBe(true);
+          }
+        }
+      }
+    });
+
+    it('every OWNER-authority action in the surface stays human under the most permissive policy', () => {
+      const ownerActions = ACTION_SURFACE.filter((a) => a.authority === 'owner');
+      expect(ownerActions.length).toBeGreaterThan(0);
+      for (const a of ownerActions) {
+        for (const riskTier of RISK_TIERS) {
+          // reversible on purpose — isolates the authority gate from the reversibility gate.
+          expect(
+            autoAllowed({ policy: maximalPolicy(a.category), riskTier, authority: 'owner', reversibility: 'reversible' }),
+            `${a.id} (owner) auto-ran @ ${riskTier}`,
+          ).toBe(false);
+        }
+      }
+    });
+  });
+
+  // ── 7.4 unmapped category → never-auto (fail-safe) ─────────────────────────
+  describe('7.4 — an unmapped action fails safe to never-auto', () => {
+    it('a non-governance / unknown tool resolves to NO category (null)', () => {
+      for (const action of ['search:fulltext', 'locks:acquire', 'coord:send', 'totally:unknown']) {
+        expect(categoryForAction(action), action).toBeNull();
+      }
+    });
+
+    it('with no category there is no policy row, so the gate consults the never-auto default ⇒ human', () => {
+      // The decider's fail-safe (D-009): a null category has no policy, so the
+      // effective ceiling defaults to never-auto. deriveNeedsHuman with an absent
+      // ceiling models exactly that — and gates, for every risk tier.
+      for (const riskTier of RISK_TIERS) {
+        expect(deriveNeedsHuman({ armed: true, ceiling: null, riskTier }), `risk=${riskTier}`).toBe(true);
+        expect(deriveNeedsHuman({ armed: true, ceiling: undefined, riskTier }), `risk=${riskTier}`).toBe(true);
+      }
+    });
+
+    it('unknown risk also fails safe: armed + a real ceiling but a null risk tier ⇒ treated as critical', () => {
+      // A governed action whose risk the scoper hasn't set yet must not slip
+      // through just because its category has a non-zero ceiling.
+      expect(deriveNeedsHuman({ armed: true, ceiling: 'high', riskTier: null })).toBe(true);
+      expect(deriveNeedsHuman({ armed: true, ceiling: 'critical', riskTier: null })).toBe(false); // only a critical ceiling admits unknown(=critical) risk
+    });
+  });
+
+  // ── 7.5 coverage: the gate sees the WHOLE human-driving surface ────────────
+  describe('7.5 — coverage invariant: every covered human-driving action routes to a governed real category', () => {
+    it('every COVERED action’s Queen verb resolves (via the runtime map) to a real, non-null category — no ungoverned auto escape', () => {
+      const covered = ACTION_SURFACE.filter((a) => a.coverage === 'covered');
+      expect(covered.length).toBeGreaterThan(0);
+      for (const a of covered) {
+        expect(a.queenVerbs.length, `${a.id} covered but verbless`).toBeGreaterThan(0);
+        for (const verb of a.queenVerbs) {
+          const cat = categoryForAction(verb);
+          expect(cat, `${a.id}: verb ${verb} is ungoverned (null)`).not.toBeNull();
+          expect(cat, `${a.id}: verb ${verb} routes to the wrong ceiling`).toBe(a.category);
+        }
+      }
+    });
+
+    it('the surface only ever assigns categories the gate knows: every action’s category has a default policy + a ceiling', () => {
+      for (const a of ACTION_SURFACE) {
+        const policy = defaultPolicyFor(a.category);
+        expect(policy.category).toBe(a.category);
+        expect(AUTONOMY_CEILINGS).toContain(effectiveCeiling(policy));
+        expect(AUTONOMY_CATEGORY_IDS).toContain(a.category);
+      }
+    });
+
+    it('every PROTECTED-category action in the surface is never-auto under its shipped policy', () => {
+      for (const a of ACTION_SURFACE) {
+        if (!isProtectedCategory(a.category)) continue;
+        for (const riskTier of RISK_TIERS) {
+          expect(
+            autoAllowed({ policy: defaultPolicyFor(a.category), riskTier, authority: a.authority, reversibility: a.reversibility }),
+            `${a.id} (protected) auto-ran`,
+          ).toBe(false);
+        }
+      }
+    });
+  });
+});
+
+// ── 8. the behavior-neutral migration proof — identical to today (P-091) ──────
+//
+// D-007: every category ceiling ships never-auto and the gate stays behavior-
+// neutral until the owner's P-092 arming act, so the day this lands behavior is
+// IDENTICAL to today. This section is that proof, in four legs.
+
+describe('P-091 — behavior-neutral migration proof: the model lands identical to today (B-19)', () => {
+  const TIER_INPUTS: (RiskTier | null)[] = [...RISK_TIERS, null];
+  const CEILING_INPUTS: (AutonomyCeiling | null)[] = [...AUTONOMY_CEILINGS, null];
+
+  it('LEG 1 — unarmed, the gate is the IDENTITY on the legacy stored token, for EVERY risk/ceiling input', () => {
+    // armed=false (no caller arms before P-092) ⇒ deriveNeedsHuman returns exactly
+    // `storedNeedsHuman`, whatever the (unconsulted) risk/ceiling. This is the core
+    // of the proof: with the model present-but-unarmed, the DONE-gate reads exactly
+    // the same token it read before the migration.
+    let sweep = 0;
+    for (const storedNeedsHuman of [true, false]) {
+      for (const riskTier of TIER_INPUTS) {
+        for (const ceiling of CEILING_INPUTS) {
+          for (const authority of [undefined, 'system'] as const) {
+            expect(
+              deriveNeedsHuman({ storedNeedsHuman, riskTier, ceiling, authority, armed: false }),
+              `identity broke @ stored=${storedNeedsHuman} risk=${riskTier} ceiling=${ceiling} authority=${authority}`,
+            ).toBe(storedNeedsHuman);
+            sweep++;
+          }
+        }
+      }
+    }
+    expect(sweep).toBe(2 * TIER_INPUTS.length * CEILING_INPUTS.length * 2); // the sweep actually ran
+  });
+
+  it('LEG 2 — authority=owner is the SINGLE unarmed exception, and no legacy item carries authority (default = system), so it never fires today', () => {
+    // The one branch that fires while unarmed is authority=owner — but that axis is
+    // net-new (B-01) and the default is `system`, so no pre-migration item triggers
+    // it. Hence the unarmed gate is behavior-identical with no caveat in practice.
+    expect(DEFAULT_AUTHORITY).toBe('system');
+    expect(deriveNeedsHuman({ authority: 'owner', armed: false, storedNeedsHuman: false })).toBe(true);
+    // …and with the default (system) authority, the identity of LEG 1 holds.
+    expect(deriveNeedsHuman({ authority: DEFAULT_AUTHORITY, armed: false, storedNeedsHuman: false })).toBe(false);
+    expect(deriveNeedsHuman({ authority: DEFAULT_AUTHORITY, armed: false, storedNeedsHuman: true })).toBe(true);
+  });
+
+  it('LEG 3 — even an ACCIDENTAL arm changes nothing: under the shipped defaults, every action in the surface still gates', () => {
+    // The strongest form of behavior-neutral: were the policy somehow armed BEFORE
+    // the owner lowers any ceiling, the armed path ALSO routes every human-driving
+    // action to a human — because every shipped default is never-auto.
+    for (const id of AUTONOMY_CATEGORY_IDS) {
+      expect(autoEverAllowed(defaultPolicyFor(id)), `${id} could auto at ship`).toBe(false);
+    }
+    for (const a of ACTION_SURFACE) {
+      for (const riskTier of RISK_TIERS) {
+        expect(
+          autoAllowed({ policy: defaultPolicyFor(a.category), riskTier, authority: a.authority, reversibility: a.reversibility }),
+          `${a.id} auto-ran under shipped defaults`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('LEG 4 — the dial is REAL but ships at zero: widening requires a deliberate owner ceiling-lower (not graduation, not arming alone)', () => {
+    // Proves the migration is behavior-neutral WITHOUT being vacuous — the gate
+    // genuinely opens once, and only when, the owner acts. A reversible, system-
+    // authority action in a non-protected category:
+    const action = ACTION_SURFACE.find((a) => a.id === 'inbox.triage-item')!;
+    expect(action.authority).toBe('system');
+    expect(action.reversibility).toBe('reversible');
+    const at = (policy: AutonomyCategoryPolicy, riskTier: RiskTier) =>
+      autoAllowed({ policy, riskTier, authority: action.authority, reversibility: action.reversibility });
+
+    // shipped default → gated even at the lowest risk.
+    expect(at(defaultPolicyFor(action.category), 'trivial')).toBe(false);
+    // owner lowers the ceiling to `low` (unlocked, graduated up to it) → NOW it opens,
+    // but still only within the cap: trivial/low auto, moderate+ still gated.
+    const opened = policyFor(action.category, { locked: false, ceiling: 'low', graduatedLevel: 'low' });
+    expect(at(opened, 'trivial')).toBe(true);
+    expect(at(opened, 'low')).toBe(true);
+    expect(at(opened, 'moderate')).toBe(false);
+    expect(at(opened, 'critical')).toBe(false);
+    // graduation can't outrun the cap: ceiling stays `low`, so cranking graduated to
+    // critical changes nothing above the ceiling.
+    const overGraduated = policyFor(action.category, { locked: false, ceiling: 'low', graduatedLevel: 'critical' });
+    expect(effectiveCeiling(overGraduated)).toBe('low');
+    expect(at(overGraduated, 'moderate')).toBe(false);
+  });
+
+  // The store-level default-read (an unseeded workspace / pre-boot 42P01 → all
+  // defaults) is pinned against real PG in policy-store.integration.test.ts; this
+  // pure suite pins the gate arithmetic those defaults flow into.
 });

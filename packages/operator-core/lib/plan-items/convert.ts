@@ -218,7 +218,7 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
     title,
     summary: item.text ?? undefined,
     harness: opts.harnessSlug,
-    payload: { plan_item: stamp },
+    payload: { plan_item: stamp, ...(opts.brief ? { brief: opts.brief } : {}) },
     createdBy: opts.owner,
     // Issue-family kinds take the assignee at creation; feature-family is
     // claimed right after (no assignee column on insert).

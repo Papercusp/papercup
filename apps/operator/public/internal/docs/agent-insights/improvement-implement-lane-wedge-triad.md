@@ -127,3 +127,41 @@ visible · no exit-143 at 280 s), confirm a worker actually *reads and resolves*
 an issue (the leg the env outage blocked), and watch EI-406's attempt-charging:
 if the credential is still exhausted at re-enable, abort before the lane drains
 the pool.
+
+## Round 2 (2026-06-13): resolve leg PROVEN — plus a worker-spawn tracking gap
+
+Re-enabled via a **gateway-credential swap** (not the Jun 18 reset) on green
+:3070 (deploy ad56905b, lane fixes EI-403-B/404/406/408 + EI-437 live). The
+independent co-monitor checklist verdict: **PASS, including the leg round 1
+couldn't reach.** Two dispatches fired and **both genuinely auto-resolved**,
+each with an evidence-backed resolution + a fails-before/passes-after regression
+guard:
+
+* **EI-75** (worker `49130510`) — root-caused to EI-317, live-DB repro (bee
+  coord writes 0 → 191 across 33 bees), regression test in
+  `prompt-build.test.ts`; ideaLifecycle → `applied`.
+* **EI-201** (worker `3f4c8aa2`) — source-invariant Cargo `mod patch_regression`
+  guarding the vendored-wry toplevel-walk, `cargo test … patch_regression → ok`;
+  ideaLifecycle → `applied`.
+
+Triad invariants all held (items named + `assigned_at` stamped at fire, no
+exit-143 env-kill — the gateway creds let workers actually run). **Scope the
+dateless-claim invariant to OPEN issues:** `assignee='improvement-runner' AND
+assigned_at IS NULL AND state NOT IN ('resolved','closed')` was 0. A raw
+`assigned_at IS NULL` count is *not* the wedge signal — `releaseIssue` clears
+`assigned_at` on resolve but leaves `assignee` set, so every resolved-by-runner
+issue is legitimately dateless (7 such here), and unrelated interactive-agent
+assignees inflate it further (96 unscoped). Only OPEN runner claims wedge.
+
+**Residual gap (still open, EI-403 cluster): the durable path's workers run
+INVISIBLY.** Both `durableSpawnFire` workflows
+(`durable-spawn:implement:<EI>:<n>`) read **PENDING** in `dbos.workflow_status`
+(updated\_at frozen at creation, no `dbos.workflow_queue` row) and neither worker
+ever got a `harness_shared.spawned_agents` row — yet both demonstrably ran and
+resolved. So EI-403-B/EI-437 made the resolve work end-to-end, but traded round
+1's fire-and-forget (worker *was* recorded via the fallback) for a durable
+enqueue whose **outer workflow never marks complete and never writes the spawn
+record** — implement workers don't appear in `fleet:tree` and the durableSpawnFire
+status is permanently PENDING. Functional resolves land; observability/durability
+of the spawn does not. Confirm this leg is closed before treating D-010 as fully
+done.

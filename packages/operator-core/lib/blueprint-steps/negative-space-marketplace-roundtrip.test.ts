@@ -22,6 +22,10 @@
  *   run     — `runProgramCore` runs the installed copy's gateless program; the
  *             deterministic `negative-space:scan` step executes and reaches a
  *             clean `done` — and stays DARK (no-op) when its flag is off (D-004).
+ *             The final case drives the PRODUCTION trigger end-to-end: the real
+ *             `system:blueprint-run` handler resolves the INSTALLED copy (via the
+ *             installed-tier launch resolver) and runs its program inline — the
+ *             exact path a migrated loop's seed routine fires on its cadence.
  *
  * Only the git-clone binary is stubbed (copy the published repo dir) — the same
  * seam install-blueprint-core.test.ts + resolve-and-install.e2e.test.ts inject;
@@ -50,6 +54,8 @@ import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner.js';
 import { makeFakeCaps, makeCtx } from '../coord-ops/test-support.js';
 import { setNegativeSpaceScanDeps } from './ops/negative-space-scan.js';
 import type { NegativeSpaceTickDeps } from '../negative-space/scan.js';
+import { handleBlueprintRun, setBlueprintRunFire } from '../blueprint/blueprint-run-action.js';
+import { setLaunchBlueprintResolver, setLaunchBlueprintFire } from '../blueprint/launch-blueprint.js';
 
 /**
  * The bundled negative-space blueprint dir — the "export source". The official
@@ -135,6 +141,9 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   setNegativeSpaceScanDeps(null);
+  setLaunchBlueprintResolver(null);
+  setLaunchBlueprintFire(null);
+  setBlueprintRunFire(null);
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -212,4 +221,56 @@ test('dark stays dark in the second hive: flag OFF → the installed blueprint n
   const scan = out.scope?.scan as { ran: boolean; skipReason?: string } | undefined;
   assert.equal(scan?.ran, false);
   assert.equal(scan?.skipReason, 'flag-off');
+});
+
+test('production fire path: the real system:blueprint-run handler resolves the INSTALLED copy and runs its program inline', async () => {
+  await installIntoHive2();
+
+  // In production the operator's launch resolver spans the installed/Cupboard
+  // tier; point resolveLaunchBlueprint at the second hive's installed copy — the
+  // exact resolution a Cupboard-installed launch blueprint gets (setLaunchBlueprintResolver
+  // is the same seam the operator overrides for non-built-in launch blueprints).
+  setLaunchBlueprintResolver(async (id) => {
+    assert.equal(id, 'negative-space');
+    const raw = parseYaml(await fs.readFile(join(installedDir, 'negative-space', 'blueprint.yaml'), 'utf8'));
+    const res = resolveAndValidateBlueprint(raw as Record<string, unknown>, hive2Resolver());
+    assert.ok(res.blueprint, 'installed launch blueprint failed to resolve');
+    return res.blueprint!;
+  });
+
+  let ranTick = false;
+  setNegativeSpaceScanDeps({
+    flag: async () => true,
+    governorGate: async () => ({ allow: true, remainingUsd: 0 }),
+    tickDeps: {
+      readRows: async () => {
+        ranTick = true;
+        return [];
+      },
+      persist: async (_ws, entries) => entries,
+      capture: async () => ({ created: false, possibleDuplicates: [], reason: 'stub' }) as never,
+      markFiled: async () => {},
+      log: () => {},
+    },
+  });
+  // Capture any decider/launch fire so we can prove a program blueprint fires NEITHER.
+  const launchFired: unknown[] = [];
+  setLaunchBlueprintFire((input) => { launchFired.push(input); });
+  const deciderFired: unknown[] = [];
+  setBlueprintRunFire((input) => { deciderFired.push(input); });
+
+  // The exact SystemActionCtx the routine cadence dispatches for a migrated loop's
+  // seed routine: payload_template { blueprintId: 'negative-space' }.
+  await handleBlueprintRun({
+    installSlug: 'mktp-roundtrip-hive',
+    workspaceId: 'hive2-ws',
+    triggerConfig: {},
+    payloadTemplate: { blueprintId: 'negative-space' },
+  });
+
+  // The installed copy's deterministic step ran inline through the PRODUCTION
+  // handler — and a program blueprint never fires a decider/launch.
+  assert.equal(ranTick, true);
+  assert.equal(launchFired.length, 0);
+  assert.equal(deciderFired.length, 0);
 });

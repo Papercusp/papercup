@@ -17,6 +17,7 @@
 
 import { type Importance, IMPORTANCE_LEVELS, type RiskTier, riskTierRank } from '@papercusp/plan-parser';
 import type { ReportBlock } from '@papercusp/chat-protocol';
+import type { AutonomyCategory } from '../autonomy/categories';
 
 export type AttentionKind =
   | 'plan-item'
@@ -27,6 +28,35 @@ export type AttentionKind =
   | 'operator-report';
 
 export type AttentionSource = 'plan' | 'coord' | 'harness' | 'operator';
+
+/**
+ * The autonomy CATEGORY each attention kind belongs to (queen-autonomy-policy
+ * B-14 / P-100 · D-009/D-011): the functional domain whose per-category ceiling
+ * (B-03 `autonomy_policy`) governs whether the Queen may AUTO-dispose the item
+ * vs. surface it to the human on the unified Queue. The category is the
+ * DISPOSITION's domain, not the underlying work's — a needs-human plan-item is a
+ * `plan-governance` ratification whatever feature it gates. Mirrors the B-04
+ * action-surface audit ({@link ../autonomy/action-surface}).
+ *
+ * `null` for an ephemeral SIGNAL / status report that is NOT a governed
+ * human-driving decision (a failing smoke test, an operator status `<report>`):
+ * it stays an Alert/Activity and is never auto-disposed — the fail-safe, since a
+ * `null` category gives the gate nothing to open (D-009 unmapped → never-auto).
+ */
+export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | null> = {
+  'plan-item': 'plan-governance', // ratify a needs-human item / milestone gate
+  'coord-escalation': 'escalations', // resolve a blocker/question/advisory escalation
+  'coord-message': 'inbox-triage', // ack / dismiss an inbox message
+  'smoke-fail': null, // an alert/signal, not a governed decision
+  'plan-review': 'plan-governance', // a plan approval gate (folds into plan-governance; source retired by P-101)
+  'operator-report': null, // a status report, not a governed decision
+};
+
+/** The autonomy category for an attention kind — `null` for an ungoverned
+ *  signal/report (see {@link ATTENTION_KIND_CATEGORY}). */
+export function attentionCategory(kind: AttentionKind): AutonomyCategory | null {
+  return ATTENTION_KIND_CATEGORY[kind];
+}
 
 /**
  * The four inbox tiers (inbox-tiering-and-message-agent-2026-06-05 D-002/D-006).
@@ -159,6 +189,13 @@ export interface AttentionItem {
    *  in the detail pane (desktop card / TUI two-tier list). Absent on every
    *  other kind. report-cards-inbox-reconciliation-2026-06-05 D-001/D-003. */
   report?: ReportBlock;
+  /** The autonomy category this item's disposition belongs to (B-14 / P-100 ·
+   *  D-009/D-011), or `null` for an ungoverned signal/report. Set by the
+   *  adapters from {@link ATTENTION_KIND_CATEGORY}; the unified Queue groups +
+   *  the Queen decider (B-12) reads it to apply the per-category ceiling.
+   *  Optional only so hand-built fixtures / the decoupled UI wire-type need not
+   *  carry it — every adapted item sets it. */
+  category?: AutonomyCategory | null;
 }
 
 /** The untriaged-default triage fields every adapter spreads into its item

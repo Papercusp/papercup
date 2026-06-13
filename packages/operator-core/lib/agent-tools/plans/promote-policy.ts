@@ -18,6 +18,7 @@
  *         - title: "Fix marketplace schema fetchers"
  *           from_items: [P-001]
  *           assigned_role: worker
+ *           brief: "Schema moved under marketplace/v3 — touch only the fetchers."  # P-021: per-lane overlay → work-item payload.brief
  *     - id: tier2
  *       blocked_by: tier1
  *       generate:

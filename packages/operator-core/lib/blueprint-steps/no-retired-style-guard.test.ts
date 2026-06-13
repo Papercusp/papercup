@@ -15,12 +15,14 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate + scan.
-import {
-  isRetiredRoutineRewire,
-  findOffenders,
-  MIGRATED_LOOPS,
-  RETIRED_ROUTINE_TARGETS,
-} from '../../../../scripts/check-no-retired-style.mjs';
+import * as guard from '../../../../scripts/check-no-retired-style.mjs';
+
+// Type the untyped .mjs surface (no .d.ts) so the suite stays noImplicitAny-clean.
+type MigratedLoop = { loop: string; retiredTarget: string; blueprintId: string };
+const isRetiredRoutineRewire = guard.isRetiredRoutineRewire as (text: string) => boolean;
+const findOffenders = guard.findOffenders as () => string[];
+const MIGRATED_LOOPS = guard.MIGRATED_LOOPS as MigratedLoop[];
+const RETIRED_ROUTINE_TARGETS = guard.RETIRED_ROUTINE_TARGETS as Set<string>;
 
 describe('no-retired-style guard predicate (P-132)', () => {
   it('FLAGS a TS routine re-pointed at a retired bespoke action (target: system:negative-space-mine)', () => {

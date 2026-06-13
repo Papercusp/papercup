@@ -196,6 +196,33 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     expect(r.planItem).toMatchObject({ plan: PLAN, item: 'P-001', status: 'todo' });
   });
 
+  it('P-021: stamps a per-lane brief onto payload.brief, alongside the plan_item stamp', async () => {
+    const BRIEF = 'Schema moved under marketplace/v3 — touch only the fetchers.';
+    const r = await convert.convertPlanItem({
+      ...base,
+      itemId: 'P-001',
+      owner: 'sess-A',
+      ownerName: 'builder-1',
+      brief: BRIEF,
+    });
+    expect(r.status).toBe('converted');
+    if (r.status !== 'converted') return;
+    const payload = r.workItem.payload as { plan_item?: unknown; brief?: unknown };
+    // The Queen's situational overlay rides payload.brief…
+    expect(payload.brief).toBe(BRIEF);
+    // …without disturbing the plan_item stamp the reflect rules read.
+    expect(payload.plan_item).toEqual({ plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS });
+  });
+
+  it('P-021: omitting the brief leaves payload.brief unset (additive — byte-identical to before)', async () => {
+    const r = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
+    expect(r.status).toBe('converted');
+    if (r.status !== 'converted') return;
+    const payload = r.workItem.payload as { plan_item?: unknown; brief?: unknown };
+    expect(payload.brief).toBeUndefined();
+    expect(payload.plan_item).toEqual({ plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS });
+  });
+
   it('re-pickup RESUMES the same work_item — no duplicate row, same id (idempotent)', async () => {
     const first = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
     expect(first.status).toBe('converted');

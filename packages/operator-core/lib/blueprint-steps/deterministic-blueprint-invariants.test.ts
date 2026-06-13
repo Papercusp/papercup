@@ -169,7 +169,7 @@ describe('P-140.2 — the validator accepts deterministic + hybrid spines (rejec
   });
 
   it('a decision gate with NO fallback branch is rejected (some scope would never resolve)', () => {
-    const gate = [{ when: { 'scan.ran': { truthy: true } }, op: 'resolve', args: {} }];
+    const gate = [{ when: { 'scan.ran': { truthy: true } }, else: false, op: 'resolve', args: {} }];
     const v = validateBlueprint(withSpine(base(), 'no-fallback', [detStep], gate), { knownOps: knownOps() });
     expect(v.ok).toBe(false);
     expect(v.errors.map((e) => e.code)).toContain('gate-no-fallback');
