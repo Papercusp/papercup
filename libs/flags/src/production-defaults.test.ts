@@ -136,6 +136,18 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // owner's P-092 act flips it ON, and even then every category ships never-auto
   // (D-005) so arming alone auto-decides nothing. The pending flip is owner-only.
   FLAGS.QUEEN_AUTONOMY_ARMED,
+  // agent-capability-confinement-2026-06-13 B-18 (P-020): the FLEET CUTOVER. DELIBERATE
+  // dark ship (NOT the alpha default-on policy) — ON removes native write/exec tools from
+  // autonomous-fleet spawns and routes them to the gated capability:* tools; flipping it
+  // before capability:* ergonomics are validated on a live bee would strand the fleet.
+  // P-023 makes the flip an owner act. OFF = today's allowlist, zero live-fleet change.
+  FLAGS.FLEET_CAPABILITY_ONLY,
+  // agent-capability-confinement-2026-06-13 B-18 (P-022 / D-008): the server-side
+  // capability-exec sandbox. FAIL-OPEN (bwrap-unavailable ⇒ raw spawn), so it is safe to
+  // ship, but the bwrap argv path needs end-to-end validation on a bwrap-capable host
+  // (this dev box's unprivileged userns is AppArmor-restricted — bwrap can't map uids).
+  // The owner arms after that validation. OFF = today's raw operator-side spawn.
+  FLAGS.CAPABILITY_EXEC_SANDBOX,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

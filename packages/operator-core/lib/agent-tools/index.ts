@@ -211,6 +211,11 @@ import './autonomy/set';
 import './autonomy/decide';
 // The Queen decision-disposition log (queen-autonomy-policy B-13 / P-111).
 import './autonomy/record_disposition';
+// The auto-revert tripwire + graduation surface (queen-autonomy-policy B-16 /
+// P-080-082): the recent-auto-decisions feed, one-click undo, graduation status.
+import './autonomy/tripwire_list';
+import './autonomy/tripwire_revert';
+import './autonomy/graduation_status';
 
 import './saved_prompts/list';
 

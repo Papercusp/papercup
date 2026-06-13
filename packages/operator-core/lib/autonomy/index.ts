@@ -58,3 +58,41 @@ export {
   graduationEvidenceSignals,
   extractEconomicSignals,
 } from './decider';
+
+// The auto-revert tripwire + graduation engine (B-16 / P-080-082, D-006/D-005).
+export {
+  type RevertHandle,
+  type TripwireSignalKind,
+  type TripwireWatchSignal,
+  type TripwireStatus,
+  type TripwireArming,
+  type ArmedTripwire,
+  type TripwireVerdict,
+  TRIPWIRE_SIGNAL_KINDS,
+  DEFAULT_TRIPWIRE_WINDOW_HOURS,
+  armTripwire,
+  evaluateTripwire,
+  demoteGraduatedLevel,
+  findingClassForDecision,
+} from './tripwire/core';
+export {
+  type AutonomyGraduationPolicy,
+  type CategoryGraduationTarget,
+  DEFAULT_AUTONOMY_GRADUATION_POLICY,
+  computeAutonomyStandings,
+  computeCategoryGraduationTargets,
+  earnedLevelForStreak,
+  buildAutonomyGraduationReport,
+} from './tripwire/graduation';
+export {
+  type AutonomyTrustScanDeps,
+  type AutonomyTrustScanOutcome,
+  type ArmTripwireForDecisionInput,
+  type ArmTripwireForDecisionResult,
+  runAutonomyTrustScan,
+  runAutonomyTripwireSweep,
+  runAutonomyGraduationLeg,
+  armTripwireForDecision,
+  defaultAutonomyTrustScanDeps,
+  DEFAULT_AUTONOMY_TRUST_SCAN_OPTIONS,
+} from './tripwire/scan';

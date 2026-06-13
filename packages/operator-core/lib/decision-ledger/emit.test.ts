@@ -56,11 +56,15 @@ describe('buildDecisionLedgerRow — skip filters', () => {
 });
 
 describe('buildDecisionLedgerRow — governed actions', () => {
-  it('records a governed write with derived tier + coarse category + posture auto', () => {
+  it('records a governed write with derived tier + authoritative category + surface axes + posture auto', () => {
     const row = buildDecisionLedgerRow(ev());
     expect(row).not.toBeNull();
     expect(row!.tier).toBe('medium');
-    expect(row!.category).toBe('plans');
+    // B-04 authoritative category (plans:set-status → plan-governance), not the coarse group.
+    expect(row!.category).toBe('plan-governance');
+    // B-02/B-01 per-action-TYPE axes from ACTION_SURFACE (plans:set-status is a Queen verb).
+    expect(row!.reversibility).toBe('reversible');
+    expect(row!.authority).toBe('owner');
     expect(row!.capability).toBe('plans:write');
     expect(row!.posture).toBe('auto');
     expect(row!.outcome).toBe('ok');
@@ -72,10 +76,13 @@ describe('buildDecisionLedgerRow — governed actions', () => {
     expect(row!.argsDigest).toBe('slug,status');
   });
 
-  it('derives tier high for a high-tier capability', () => {
+  it('derives tier high for a high-tier capability + NULL axes off the Queen surface', () => {
     const row = buildDecisionLedgerRow(ev({ capabilities: ['secrets:read:db'], toolName: 'secrets.read' }));
     expect(row!.tier).toBe('high');
-    expect(row!.category).toBe('secrets');
+    expect(row!.category).toBe('credentials-auth');
+    // secrets:read is not a human-driving Queen action → no per-action-type axes (honest null).
+    expect(row!.reversibility).toBeNull();
+    expect(row!.authority).toBeNull();
   });
 
   it('takes the highest tier across multiple capabilities', () => {
@@ -104,9 +111,9 @@ describe('buildDecisionLedgerRow — governed actions', () => {
     expect(row!.why).toBe('protected');
   });
 
-  it('derives category from a dotted capability group too (fleet:spawn → fleet)', () => {
+  it('normalizes a dotted tool name to colon form for the B-04 map (fleet.spawn → agent-lifecycle)', () => {
     const row = buildDecisionLedgerRow(ev({ capabilities: ['fleet:spawn'], toolName: 'fleet.spawn' }));
-    expect(row!.category).toBe('fleet');
+    expect(row!.category).toBe('agent-lifecycle');
     expect(row!.tier).toBe('medium');
   });
 });

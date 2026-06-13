@@ -370,6 +370,27 @@ export const FLAGS = {
   // the kill-switch that hides the nav entry (the page's auto-decisions feed +
   // graduation prompts are still stubbed pending B-16).
   QUEEN_AUTONOMY_SETTINGS: "papercusp-queen-autonomy-settings",
+  // agent-capability-confinement-2026-06-13 B-18 (P-020/P-021): the FLEET CUTOVER —
+  // when ON, autonomous-fleet (bee/pipeline) claude-code spawns drop the native
+  // WRITE/exec tools (Bash/Edit/Write/WebFetch) from `--allowed-tools` and route
+  // them to the gated `capability:*` defineTools (B-05), keeping only the read-only
+  // natives (Read/Glob/Grep/WebSearch) + the role-scoped `mcp__papercusp` wildcard.
+  // OFF by default — DELIBERATE (not the alpha default-on policy): it is the owner
+  // arming act (P-023 is an owner item) and removing native exec before capability:*
+  // ergonomics are validated on a live bee would strand the fleet. Pairs with
+  // CAPABILITY_ENVELOPE (the enforcement gate) + CAPABILITY_EXEC_SANDBOX (re-containment).
+  // OFF = today's allowlist (native tools granted), zero live-fleet change.
+  FLEET_CAPABILITY_ONLY: "papercusp-fleet-capability-only",
+  // agent-capability-confinement-2026-06-13 B-18 (P-022 / D-008): re-apply the OS
+  // sandbox to the SERVER-SIDE capability exec path. The capability:bash / capability:git
+  // tools spawn real subprocesses in the operator (Hono host) process — OUTSIDE the
+  // per-spawn agent sandbox (bwrap+egress) that contains native Bash — so the cutover
+  // would move exec from a sandboxed context to an unsandboxed one. When ON (and bwrap
+  // is available) those subprocesses are wrapped in bwrap with the fleet-sandbox
+  // credential masking + cwd-confinement. FAIL-OPEN: bwrap unavailable / flag OFF ⇒ raw
+  // spawn (today's behavior) — it can never break a non-bwrap host. OFF by default until
+  // validated end-to-end on a bwrap-capable host (this dev box's userns is restricted).
+  CAPABILITY_EXEC_SANDBOX: "papercusp-capability-exec-sandbox",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -587,6 +608,17 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (B-15) reads + writes the already-audited never-auto policy and arms nothing;
   // OFF hides the /settings/autonomy nav entry.
   [FLAGS.QUEEN_AUTONOMY_SETTINGS]: true,
+  // OFF by default — DELIBERATE (capability-confinement B-18 / P-020): the fleet
+  // cutover removes native write/exec tools from autonomous spawns. The owner arms
+  // it (P-023 is an owner item) after capability:* ergonomics are validated on a live
+  // bee. OFF = today's allowlist, zero live-fleet change. Listed in KNOWN_DARK_FLAGS.
+  [FLAGS.FLEET_CAPABILITY_ONLY]: false,
+  // OFF by default — DELIBERATE (capability-confinement B-18 / P-022 / D-008): the
+  // server-side capability-exec sandbox. FAIL-OPEN (bwrap-unavailable ⇒ raw spawn), so
+  // it is safe, but the bwrap argv path needs end-to-end validation on a bwrap-capable
+  // host (this box's unprivileged userns is AppArmor-restricted). Owner arms after that
+  // validation. OFF = today's raw operator-side spawn. Listed in KNOWN_DARK_FLAGS.
+  [FLAGS.CAPABILITY_EXEC_SANDBOX]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

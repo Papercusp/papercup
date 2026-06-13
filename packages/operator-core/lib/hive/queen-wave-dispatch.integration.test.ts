@@ -195,10 +195,6 @@ describe('queen wave dispatch — wave ordering through bee placement (real PG, 
     await seedLane({ id: 'F-601', brief: 'Universal schema offers: single handler, offers-specific tests', order: 1 });
     await seedLane({ id: 'F-602', brief: 'Universal schema reviews: single handler, reviews-specific tests', order: 2 });
 
-    const diag = await sql`SELECT feature_id, payload, pg_typeof(payload) AS ty, payload->>'brief' AS brief_op
-                             FROM harness_shared.harness_features_consolidated WHERE feature_id = 'F-601'`;
-    console.log('[DIAG2] raw:', JSON.stringify(diag[0]), 'typeof payload:', typeof diag[0]?.payload);
-
     const f = await gatherFrontier({ harness: HIVE, workspaceId: WS, limit: 10 });
     expect(f.tasks.map((t) => t.id).sort()).toEqual(['F-601', 'F-602']);
     expect(f.tasks.find((t) => t.id === 'F-601')?.brief).toContain('offers-specific tests');

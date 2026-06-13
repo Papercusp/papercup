@@ -7,6 +7,7 @@
 // and the llm-spine leg's transport-probe mapping (credential presence, NOT a
 // :3456 TCP probe — the retired meridian router not running is the healthy state on this box).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { StatelessTransportProbe } from '@papercusp/papercup-shared/agent';
 import {
   checkLlmSpineLeg,
   composeLearningHealth,
@@ -157,24 +158,64 @@ describe('runLearningInfraHealthTick', () => {
 });
 
 describe('checkLlmSpineLeg', () => {
-  it('a resolvable transport reads ok, with the transport label as evidence', () => {
-    const probed = checkLlmSpineLeg(() => ({ ok: true, label: 'anthropic-direct' }));
+  const okProbe = (): StatelessTransportProbe => ({ ok: true, label: 'anthropic-direct' });
+  const downProbe = (): StatelessTransportProbe => ({ ok: false, error: 'stateless LLM path needs a live Claude session …' });
+  const gwOff = async () => false;
+  const gwOn = async () => true;
+
+  it('credential present + gateway OFF → ok with the transport label (direct egress, unchanged)', async () => {
+    const probed = await checkLlmSpineLeg({ probe: okProbe, gatewayEnabled: gwOff });
     expect(probed).toEqual({ name: 'llm-spine', status: 'ok', detail: 'stateless transport: anthropic-direct' });
-    expect(checkLlmSpineLeg(() => ({ ok: true, label: 'anthropic-direct' })).detail).toBe('stateless transport: anthropic-direct');
   });
 
-  it('no usable credential reads down, carrying the resolver error as evidence', () => {
-    const probed = checkLlmSpineLeg(() => ({ ok: false, error: 'stateless LLM path needs a live Claude session …' }));
-    expect(probed.name).toBe('llm-spine');
+  it('no usable credential → down, carrying the resolver error; the gateway is never consulted', async () => {
+    const gatewayReachable = vi.fn(async () => ({ reachable: true, detail: 'HTTP 200' }));
+    const probed = await checkLlmSpineLeg({ probe: downProbe, gatewayEnabled: gwOn, gatewayReachable });
     expect(probed.status).toBe('down');
     expect(probed.detail).toContain('live Claude session');
+    expect(gatewayReachable).not.toHaveBeenCalled(); // the credential gate short-circuits first
   });
 
-  it('the real probe returns a well-formed leg whatever this box holds (never a :3456 TCP read)', () => {
-    // No injected probe: rides the real credential files via papercup-shared.
-    // Box-independent assertions only — ok on a dev box with a live Claude
-    // session, down in a bare sandbox; never 'unknown', never an exception.
-    const probed = checkLlmSpineLeg();
+  it('credential present + gateway ON + /healthz answers → ok, evidence names the gateway', async () => {
+    const probed = await checkLlmSpineLeg({
+      probe: okProbe,
+      gatewayEnabled: gwOn,
+      gatewayPort: () => 8788,
+      gatewayReachable: async () => ({ reachable: true, detail: 'HTTP 200' }),
+    });
+    expect(probed.status).toBe('ok');
+    expect(probed.detail).toContain('via inference-gateway :8788');
+    expect(probed.detail).toContain('HTTP 200');
+  });
+
+  it('a 503 rate-limit PAUSE is still reachable (gateway alive, pacing) → ok, not a fabricated outage', async () => {
+    const probed = await checkLlmSpineLeg({
+      probe: okProbe,
+      gatewayEnabled: gwOn,
+      gatewayPort: () => 8788,
+      gatewayReachable: async () => ({ reachable: true, detail: 'HTTP 503' }),
+    });
+    expect(probed.status).toBe('ok');
+    expect(probed.detail).toContain('HTTP 503');
+  });
+
+  it('credential present + gateway ON but /healthz unreachable → DOWN (the false-"ok" gap closed)', async () => {
+    const probed = await checkLlmSpineLeg({
+      probe: okProbe,
+      gatewayEnabled: gwOn,
+      gatewayPort: () => 8788,
+      gatewayReachable: async () => ({ reachable: false, detail: 'ECONNREFUSED' }),
+    });
+    expect(probed.status).toBe('down');
+    expect(probed.detail).toContain('inference-gateway :8788 unreachable');
+    expect(probed.detail).toContain('ECONNREFUSED');
+    expect(probed.detail).toContain('despite a present anthropic-direct credential');
+  });
+
+  it('the real credential probe returns a well-formed leg whatever this box holds (never a :3456 read; gateway pinned off for hermeticity)', async () => {
+    // Real credential resolution via papercup-shared; the gateway dimension is
+    // pinned OFF so this stays box-independent and does no network IO.
+    const probed = await checkLlmSpineLeg({ gatewayEnabled: async () => false });
     expect(probed.name).toBe('llm-spine');
     expect(['ok', 'down']).toContain(probed.status);
     expect(probed.detail.length).toBeGreaterThan(0);

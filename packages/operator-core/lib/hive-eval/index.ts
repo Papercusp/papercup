@@ -101,3 +101,21 @@ export {
   type RunBehavior,
   type MetricPairing,
 } from './efficiency-metrics';
+
+export {
+  computeHiveScore,
+  hiveScoreRubricHash,
+  hiveScoreToRow,
+  DEFAULT_HIVE_SCORE_RUBRIC_V1,
+  type HiveScore,
+  type HiveScoreRubric,
+  type HiveAxisScore,
+  type ScoreComponent,
+  type DeterministicFloor,
+  type AxisWeights,
+  type EfficiencyWeights,
+  type SpeedWeights,
+  type HiveScoreThresholds,
+} from './scoring';
+
+export { type HiveEvalScoreRow } from './store';

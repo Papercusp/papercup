@@ -153,18 +153,17 @@ export function computeCategoryGraduationTargets(
     const current: AutonomyCeiling = cat?.graduatedLevel ?? 'never-auto';
     const locked = cat?.locked ?? isProtectedCategory(category);
 
-    // The strongest class drives the category's earned level.
-    let driver: ClassGraduationStanding | null = null;
-    let bestLevel: AutonomyCeiling = 'never-auto';
+    // The category's earned level = the MAX earned across its classes; the driver
+    // (for the report / log) is the class with the strongest clean streak.
+    let bestRank = 0;
     for (const s of classStandings) {
-      const earned = earnedLevelForStreak(s.cleanStreak, policy.threshold, ceiling);
-      if (ceilingRank(earned) > ceilingRank(bestLevel) || driver === null) {
-        if (ceilingRank(earned) >= ceilingRank(bestLevel)) {
-          bestLevel = earned;
-          if (driver === null || s.cleanStreak > driver.cleanStreak) driver = s;
-        }
-      }
+      bestRank = Math.max(bestRank, ceilingRank(earnedLevelForStreak(s.cleanStreak, policy.threshold, ceiling)));
     }
+    const bestLevel = AUTONOMY_CEILINGS[bestRank]!;
+    const driver = classStandings.reduce<ClassGraduationStanding | null>(
+      (best, s) => (best === null || s.cleanStreak > best.cleanStreak ? s : best),
+      null,
+    );
     // Never raise above the ceiling (defensive; earnedLevelForStreak already clamps).
     const target = minCeiling(bestLevel, ceiling);
 

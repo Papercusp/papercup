@@ -16,6 +16,10 @@ import {
   coordEscalationToAttention,
   coordMessageToAttention,
   smokeFailToAttention,
+  improvementToAttention,
+  standingApprovalToAttention,
+  conversationToAttention,
+  scoutGradeToAttention,
 } from './adapters';
 import { isAutonomyCategory } from '../autonomy/categories';
 
@@ -245,6 +249,72 @@ describe('needsHuman drops at the source (Brief 21 — the 62→12 intent)', () 
   });
 });
 
+describe('P-100 — folded disposition channels (B-14 / D-011)', () => {
+  it('improvement: a human-routed improvement is a Decision (ideation-intake)', () => {
+    const a = improvementToAttention({ issueId: 'EI-42', title: 'fix the thing', severity: 'major', harnessSlug: 'papercup' });
+    expect(a.kind).toBe('improvement');
+    expect(a.category).toBe('ideation-intake');
+    expect(a.tier).toBe('decision');
+    expect(a.needsHuman).toBe(true);
+    expect(a.importance).toBe('high'); // major → high
+    expect(a.id).toBe('improvement:EI-42');
+    expect(a.ref).toEqual({ kind: 'improvement', issueId: 'EI-42' });
+    expect(a.actions.map((x) => x.id)).toEqual(['open']);
+  });
+
+  it('standing-approval is a Decision in the PROTECTED system-control category (never-auto)', () => {
+    const a = standingApprovalToAttention({ capability: 'harness:write', targetHarness: 'sheets', count: 4 });
+    expect(a.kind).toBe('standing-approval');
+    expect(a.category).toBe('system-control'); // protected: the Queen can never auto-grant herself this
+    expect(a.tier).toBe('decision');
+    expect(a.needsHuman).toBe(true);
+    expect(a.harnessSlug).toBe('sheets');
+    expect(a.id).toBe('standing-approval:harness:write:sheets');
+    expect(a.ref).toEqual({ kind: 'standing-approval', capability: 'harness:write', targetHarness: 'sheets' });
+  });
+
+  it('conversation: an open question is an Alert (surfaced, not demanded), escalations category', () => {
+    const a = conversationToAttention({ conversationId: 'CONV-7', title: 'which approach?', askerId: 'su-abc', harnessSlug: 'h' });
+    expect(a.kind).toBe('conversation');
+    expect(a.category).toBe('escalations');
+    expect(a.tier).toBe('alert');
+    expect(a.needsHuman).toBe(false);
+    expect(a.ownerAgentId).toBe('su-abc');
+    expect(a.ref).toEqual({ kind: 'conversation', conversationId: 'CONV-7' });
+    // Carries Message owner (it has an asking agent), unlike improvement/scout.
+    expect(a.actions.some((x) => x.id === 'message-owner')).toBe(true);
+  });
+
+  it('scout-grade: ONE Activity-tier rollup (optional feedback, never per-idea)', () => {
+    const a = scoutGradeToAttention({ count: 12 });
+    expect(a.kind).toBe('scout-grade');
+    expect(a.category).toBe('ideation-intake');
+    expect(a.tier).toBe('activity');
+    expect(a.needsHuman).toBe(false);
+    expect(a.importance).toBe('low');
+    expect(a.id).toBe('scout-grade:pending'); // stable singleton id (rollup)
+    expect(a.title).toContain('12 Scout ideas');
+    expect(scoutGradeToAttention({ count: 1 }).title).toContain('1 Scout idea ');
+  });
+
+  it('all four: id is kind-prefixed, ref.kind matches, needsHuman === (tier === decision)', () => {
+    const items: AttentionItem[] = [
+      improvementToAttention({ issueId: 'EI-1', title: 't' }),
+      standingApprovalToAttention({ capability: 'c', targetHarness: 'h', count: 3 }),
+      conversationToAttention({ conversationId: 'CONV-1', title: 'q' }),
+      scoutGradeToAttention({ count: 5 }),
+    ];
+    for (const it of items) {
+      expect(it.id.startsWith(`${it.kind}:`)).toBe(true);
+      expect(it.ref.kind).toBe(it.kind);
+      expect(it.actions.length).toBeGreaterThan(0);
+      expect(it.needsHuman).toBe(it.tier === 'decision');
+      expect(it.triageState).toBe('untriaged');
+      expect(it.category).toBe(attentionCategory(it.kind));
+    }
+  });
+});
+
 describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009/D-011)', () => {
   const ALL_KINDS: AttentionKind[] = [
     'plan-item',
@@ -252,6 +322,10 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
     'coord-message',
     'smoke-fail',
     'operator-report',
+    'improvement',
+    'standing-approval',
+    'conversation',
+    'scout-grade',
   ];
 
   it('the kind to category map covers every AttentionKind (no kind silently uncategorized)', () => {

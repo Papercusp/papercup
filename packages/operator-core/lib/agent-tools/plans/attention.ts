@@ -11,6 +11,12 @@
  *   - coord messages addressed to 'human'  → coordMessageToAttention
  *   - failing smoke tests (harness_smoke_test)  → smokeFailToAttention
  *   - operator `<report>` turns (operator_turns.report) → reportTurnsToAttention
+ *   - B-14/P-100 folded disposition channels (D-011), each filtered to the
+ *     awaiting-human slice (never the execution backlog):
+ *       · human-routed improvements (engineer_issues needsHuman) → improvementToAttention
+ *       · standing-approval candidates                          → standingApprovalToAttention
+ *       · open coord:ask questions                              → conversationToAttention
+ *       · ungraded routed Scout ideas (one rollup)              → scoutGradeToAttention
  *     (report-cards-inbox-reconciliation-2026-06-05 — the operator's
  *     structured output routes to the Inbox, not the chat stream)
  *
@@ -34,6 +40,10 @@ import {
   coordEscalationToAttention,
   coordMessageToAttention,
   smokeFailToAttention,
+  improvementToAttention,
+  standingApprovalToAttention,
+  conversationToAttention,
+  scoutGradeToAttention,
 } from '../../attention/adapters';
 import { planItemsToAttention, reportTurnsToAttention } from '../../attention/sources';
 import { buildAttentionGroups } from '../../attention/group';
@@ -195,7 +205,96 @@ export default defineTool({
       /* best-effort */
     }
 
-    // 7. Operator triage overlay (D-006): a downgrade/resolve moves the item to
+    // ── B-14 / P-100 (D-011): the folded disposition channels. Each surfaces
+    //    ONLY the genuinely-awaiting-human slice (never the execution backlog —
+    //    work_items stay separate); the Queen auto-handles the rest once armed.
+
+    // 7. Human-routed improvements — engineer_issues the auto-implement loop
+    //    flagged `needsHuman` (NOT the whole open backlog; that stays pull on the
+    //    Learning tab, operator-learning-tab D-001).
+    try {
+      const { readImprovementItems } = await import('../../harness/improvements/read-items');
+      const improvements = await readImprovementItems({
+        state: 'open',
+        ...(harnessFilter ? { harnessSlug: harnessFilter } : {}),
+      });
+      for (const c of improvements) {
+        if (c.needsHuman !== true) continue;
+        const slug = c.scope?.startsWith('harness:') ? c.scope.slice('harness:'.length) : null;
+        items.push(
+          improvementToAttention({
+            issueId: c.id,
+            title: c.title,
+            body: c.body,
+            severity: c.severity,
+            harnessSlug: slug,
+          }),
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    // 8. Standing-approval candidates awaiting the owner (≥3 silent dispatches
+    //    in 24h). Cheap cached read — never re-queries audit_log here.
+    try {
+      const { readCandidates } = await import('../../operator-standing-candidates');
+      const cands = await readCandidates();
+      for (const s of cands) {
+        if (harnessFilter && s.targetHarness !== harnessFilter) continue;
+        items.push(
+          standingApprovalToAttention({
+            capability: s.capability,
+            targetHarness: s.targetHarness,
+            count: s.count,
+            lastSeenAt: s.lastSeenAt,
+          }),
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    // 9. Open agent questions / coord:ask conversations awaiting an answer.
+    try {
+      const { listConversationsWithTopics } = await import('../coordination/conversations');
+      const convs = await listConversationsWithTopics({
+        kind: 'question',
+        state: 'open',
+        ...(harnessFilter ? { harness_slug: harnessFilter } : {}),
+      });
+      for (const c of convs as unknown as Array<Record<string, unknown>>) {
+        // Already-answered (accepted) questions are not awaiting the human.
+        const answered = typeof c.accepted_answer === 'string' && c.accepted_answer.trim().length > 0;
+        if (answered) continue;
+        const id = typeof c.id === 'string' ? c.id : null;
+        if (!id) continue;
+        items.push(
+          conversationToAttention({
+            conversationId: id,
+            title: typeof c.title === 'string' ? c.title : 'Open question',
+            body: typeof c.body === 'string' ? c.body : null,
+            askerId: typeof c.asker_id === 'string' ? c.asker_id : null,
+            harnessSlug: resolveHarness(c.harness_slug, null),
+          }),
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    // 10. Scout grading — ONE rollup nudge if any routed idea is ungraded
+    //     (optional feedback, never one item per idea — there can be thousands).
+    try {
+      const { readRoutedIdeas } = await import('../../scout/routed-ledger');
+      const routed = await readRoutedIdeas(harnessFilter ? { harnessSlug: harnessFilter } : {});
+      const ungraded = routed.filter((r) => r.humanGrade === undefined).length;
+      if (ungraded > 0) items.push(scoutGradeToAttention({ count: ungraded }));
+    } catch {
+      /* best-effort */
+    }
+
+    // 11. Operator triage overlay (D-006): a downgrade/resolve moves the item to
     //    the auditable "Handled by operator" tier, an escalate/confirm keeps it
     //    a Decision — never a silent vanish. Best-effort: no triage table / PG
     //    offline degrades to "untriaged", never a failed feed.

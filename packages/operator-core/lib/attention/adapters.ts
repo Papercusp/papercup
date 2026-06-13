@@ -318,3 +318,181 @@ export function operatorReportToAttention(r: OperatorReportInput): AttentionItem
     report: r.report,
   };
 }
+
+/* ── B-14 / P-100: the folded disposition channels (D-011) ───────────────────
+ *
+ * Each is a categorized decision/action the Queen did not auto-handle, surfaced
+ * on the unified Queue. Resolution stays on the dedicated surface via a navigate
+ * `open` action (the smoke-fail/operator-report pattern) — inline-disposition
+ * buttons are a follow-on, not a blocker for the fold. CRITICAL: each adapter's
+ * READER (plans:attention) filters to the genuinely-AWAITING-HUMAN slice, never
+ * the full backlog — improvements only when `needsHuman` (the auto-implement
+ * loop's human-routing flag); the execution backlog (work_items) stays separate.
+ */
+
+/** issue/improvement severity → importance (distinct from escalation severity). */
+function issueSeverityToImportance(sev: string | null | undefined): Importance {
+  switch (sev) {
+    case 'critical':
+      return 'urgent';
+    case 'major':
+      return 'high';
+    case 'nit':
+      return 'low';
+    default:
+      return 'normal'; // 'minor' / unknown
+  }
+}
+
+/* ── improvement awaiting human triage (P-100) ──────────────────────────── */
+
+export interface ImprovementInput {
+  /** engineer_issues id (EI-NNN / WI-NNN). */
+  issueId: string;
+  title: string;
+  body?: string | null;
+  severity?: string | null;
+  harnessSlug?: string | null;
+}
+
+export function improvementToAttention(i: ImprovementInput): AttentionItem {
+  // The auto-implement loop set needsHuman → it explicitly routed this to the
+  // owner (the reader only passes needsHuman-flagged items), so it is a Decision.
+  const tier: AttentionTier = 'decision';
+  return {
+    id: `improvement:${i.issueId}`,
+    kind: 'improvement',
+    category: ATTENTION_KIND_CATEGORY['improvement'],
+    source: 'harness',
+    harnessSlug: i.harnessSlug ?? null,
+    planSlug: null, // unattached → the synthetic "Alerts" bucket
+    itemRef: null,
+    title: clip(i.title),
+    body: (i.body ?? '').trim() || i.title,
+    status: 'needs-triage',
+    importance: issueSeverityToImportance(i.severity),
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: null,
+    ownerLabel: null,
+    ...untriaged(),
+    actions: [{ id: 'open', label: 'Triage', primary: true }],
+    ref: { kind: 'improvement', issueId: i.issueId },
+  };
+}
+
+/* ── standing-approval candidate awaiting the owner (P-100) ──────────────── */
+
+export interface StandingApprovalInput {
+  capability: string;
+  targetHarness: string;
+  /** Silent dispatches in the trailing 24h window (≥3 to qualify). */
+  count: number;
+  lastSeenAt?: string | null;
+}
+
+export function standingApprovalToAttention(s: StandingApprovalInput): AttentionItem {
+  // The owner must decide whether to grant standing auto-dispatch — a genuine
+  // Decision. Category system-control is PROTECTED (never-auto): the Queen can
+  // never auto-grant herself a standing approval (the recursion D-005 guards).
+  const tier: AttentionTier = 'decision';
+  return {
+    id: `standing-approval:${s.capability}:${s.targetHarness}`,
+    kind: 'standing-approval',
+    category: ATTENTION_KIND_CATEGORY['standing-approval'],
+    source: 'operator',
+    harnessSlug: s.targetHarness,
+    planSlug: null,
+    itemRef: null,
+    title: `Standing approval? ${s.capability} → ${s.targetHarness}`,
+    body: `The operator has auto-dispatched ${s.capability} to ${s.targetHarness} ${s.count}× in the last 24h. Grant a standing approval (auto-dispatch without asking) or dismiss.`,
+    status: 'pending-approval',
+    importance: 'normal',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: null,
+    ownerLabel: null,
+    ...untriaged(),
+    actions: [{ id: 'open', label: 'Review approval', primary: true }],
+    ref: { kind: 'standing-approval', capability: s.capability, targetHarness: s.targetHarness },
+  };
+}
+
+/* ── open conversation / coord:ask awaiting an answer (P-100) ────────────── */
+
+export interface ConversationInput {
+  conversationId: string;
+  title: string;
+  body?: string | null;
+  /** The asking agent (drives Message owner). */
+  askerId?: string | null;
+  askerLabel?: string | null;
+  harnessSlug?: string | null;
+}
+
+export function conversationToAttention(c: ConversationInput): AttentionItem {
+  // An open question is surfaced as an Alert, not a Decision: many coord:ask
+  // conversations are agent↔agent and resolve without the human. The owner can
+  // still answer; we surface, we don't demand (mirrors advisory escalations).
+  const tier: AttentionTier = 'alert';
+  return {
+    id: `conversation:${c.conversationId}`,
+    kind: 'conversation',
+    category: ATTENTION_KIND_CATEGORY['conversation'],
+    source: 'coord',
+    harnessSlug: c.harnessSlug ?? null,
+    planSlug: null,
+    itemRef: null,
+    title: clip(c.title),
+    body: (c.body ?? '').trim() || c.title,
+    status: 'open',
+    importance: 'normal',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: c.askerId ?? null,
+    ownerLabel: c.askerLabel ?? c.askerId ?? null,
+    ...untriaged(),
+    actions: c.harnessSlug
+      ? [{ id: 'open', label: 'Answer', primary: true }, CHAT, MESSAGE_OWNER]
+      : [{ id: 'open', label: 'Answer', primary: true }, MESSAGE_OWNER],
+    ref: { kind: 'conversation', conversationId: c.conversationId },
+  };
+}
+
+/* ── Scout grading rollup (P-100) ────────────────────────────────────────── */
+
+export interface ScoutGradeInput {
+  /** Number of routed Scout ideas with no human grade yet. */
+  count: number;
+}
+
+/**
+ * ONE rollup item for the whole ungraded-Scout-ideas set (never one per idea —
+ * routed ideas can number in the thousands, and a grade is OPTIONAL feedback
+ * that tunes routing, not an owner-blocking decision). Activity tier, low
+ * importance; navigates to the Scout/Learning grade view. The reader emits this
+ * only when count > 0.
+ */
+export function scoutGradeToAttention(g: ScoutGradeInput): AttentionItem {
+  const tier: AttentionTier = 'activity';
+  return {
+    id: 'scout-grade:pending',
+    kind: 'scout-grade',
+    category: ATTENTION_KIND_CATEGORY['scout-grade'],
+    source: 'operator',
+    harnessSlug: null,
+    planSlug: null,
+    itemRef: null,
+    title: `${g.count} Scout idea${g.count === 1 ? '' : 's'} awaiting your grade`,
+    body: 'Routed Scout ideas have no human grade yet — optional feedback (1–5) that tunes idea routing. Grade them in the Scout view.',
+    status: 'ungraded',
+    importance: 'low',
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: null,
+    ownerLabel: null,
+    ...untriaged(),
+    actions: [{ id: 'open', label: 'Grade ideas', primary: true }],
+    ref: { kind: 'scout-grade', count: g.count },
+  };
+}

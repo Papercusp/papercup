@@ -65,6 +65,30 @@ export async function setBudget(dailyCapUsd: number): Promise<BudgetState> {
     spend: existing?.spend ?? [],
   };
   await writeOperatorState('operator_budget', next);
+  // queen-autonomy P-112: route the budget decision through the disposition log
+  // (spend-budget category, owner-authority). Fire-and-forget + flag-gated — a
+  // logging miss must never break a budget write.
+  void (async () => {
+    try {
+      const [{ recordProactiveDisposition }, { activeWorkspaceId }] = await Promise.all([
+        import('./decision-ledger/disposition'),
+        import('./workspace-registry'),
+      ]);
+      await recordProactiveDisposition({
+        workspaceId: activeWorkspaceId(),
+        decisionInput: {
+          action: 'operator:budget',
+          riskTier: 'high',
+          authority: 'owner',
+          reversibility: 'reversible',
+        },
+        why: `daily budget cap ${existing?.dailyCapUsd != null ? `$${existing.dailyCapUsd}` : 'unset'} → $${dailyCapUsd}`,
+        metadata: { previousCapUsd: existing?.dailyCapUsd ?? null, dailyCapUsd },
+      });
+    } catch {
+      /* never break a budget write on a ledger miss */
+    }
+  })();
   return next;
 }
 

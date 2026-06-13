@@ -89,8 +89,9 @@ export function buildPeerProbeHandler(
   };
 }
 
-/** Register the `peer.probe` op at boot. Idempotent-safe only once (the registry
- *  throws on a duplicate kind — guard at the caller). */
+/** Register the `peer.probe` op at boot, marked authority-EXEMPT so any peer
+ *  answers it (a relay need not be the elected authority). Idempotent-safe only
+ *  once (the registry throws on a duplicate kind — guard at the caller). */
 export function registerPeerProbeOp(deps: PeerProbeDeps = {}): void {
-  registerAuthorityOp(PEER_PROBE_OP_KIND, buildPeerProbeHandler(deps));
+  registerAuthorityOp(PEER_PROBE_OP_KIND, buildPeerProbeHandler(deps), { authorityExempt: true });
 }

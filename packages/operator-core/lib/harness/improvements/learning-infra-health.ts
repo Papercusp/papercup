@@ -10,13 +10,19 @@
  * to offline + a standing Learning-tab chip — instead of only queueing.
  *
  * Three legs feed the composite:
- *   - **llm-spine** — a stateless LLM call can resolve a transport right now
- *     (live Claude session → anthropic-direct).
+ *   - **llm-spine** — can a stateless LLM call actually reach an LLM right now?
  *     The spine: the gym judge, llm-testing, and implement-lane judging all
- *     ride it. Deliberately a credential-presence probe on the SAME resolution
- *     the real calls use — never a :3456 TCP probe, which reads permanently
- *     red on a healthy box (the retired router not running is the normal state here;
- *     B-01's verified topology, agent-insights/gym-boot-readiness-and-meridian-topology).
+ *     ride it. TWO dimensions, because the real egress changed under this leg:
+ *     (1) CREDENTIAL — a transport resolves (live Claude session →
+ *     anthropic-direct) on the SAME resolution the real calls use, never a
+ *     :3456 TCP probe (the retired Meridian router not running is the healthy
+ *     state — B-01, agent-insights/gym-boot-readiness-and-meridian-topology);
+ *     (2) GATEWAY — when INFERENCE_GATEWAY is ON those in-process calls egress
+ *     through the localhost pacing gateway (operator-spawn + autoloop-cycle
+ *     point ANTHROPIC_BASE_URL/PAPERCUSP_ANTHROPIC_URL at it), which can be DOWN
+ *     while the credential is present — the false-"ok" mirror of EI-398's
+ *     false-"offline" — so the leg ALSO requires the gateway's /healthz to
+ *     answer. Flag off → credential alone (unchanged direct egress).
  *   - **spawn-path** — an OPEN improvement on the runner-spawn structural
  *     watchdog key means the auto-implement lane cannot dispatch workers.
  *   - **gym-circuit** — any enabled gym autoloop whose fire circuit is OPEN
@@ -81,6 +87,16 @@ export const SPAWN_PATH_WATCHDOG_KEY = 'repeated-tool-error:fleet:spawn:structur
 // and this leaf is also loaded from the sync resolver.
 const GYM_CYCLE_FIRE_ROLE = 'gym-cycle';
 
+// A deliberate light copy of inference-gateway/spawn-env.ts's gatewayPort() +
+// DEFAULT_GATEWAY_PORT — importing that module would transitively pull the
+// gateway HTTP server + credential store into this sync-resolver leaf (same
+// keep-this-leaf-light reason as GYM_CYCLE_FIRE_ROLE above).
+const GATEWAY_DEFAULT_PORT = 8788;
+function gatewayPort(): number {
+  const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  return Number.isFinite(p) && p > 0 ? p : GATEWAY_DEFAULT_PORT;
+}
+
 // ── pure core ────────────────────────────────────────────────────────────────
 
 /** Compose the three legs into the ONE status the chip + notification carry. */
@@ -119,19 +135,84 @@ export function diffLearningHealth(
 
 // ── leg collectors (IO — each fails soft to 'unknown') ──────────────────────
 
+/** Reachability of the gateway's own `/healthz`. */
+export interface GatewayReachability {
+  reachable: boolean;
+  /** Evidence: "HTTP 200" / "HTTP 503" (alive, pacing) when reachable; the network error otherwise. */
+  detail: string;
+}
+
 /**
- * The LLM spine: would a stateless LLM call resolve a transport right now?
- * Credential presence (live Claude session → anthropic-direct) on the SAME
- * resolution the real calls use — the leg can never
- * disagree with the call path. Replaced the original :3456 TCP probe, which
- * raised "learning system OFFLINE" by construction on this box where
- * the (since-retired, EI-399) router not running is the healthy state (B-01, 2026-06-12).
+ * Probe the localhost inference-gateway's `/healthz`. ANY HTTP answer — incl. a
+ * 503 rate-limit PAUSE, which is the gateway pacing by design — means the
+ * gateway PROCESS is alive and the spine is reachable; only a transport-level
+ * failure (connection refused / timeout) is `reachable:false`, mirroring
+ * exactly what a real `llmCall` through the gateway would hit. Unlike the
+ * retired :3456 probe this is FAITHFUL precisely because the gateway IS in the
+ * call path when the flag is on (EI-398's lesson was about probing a router
+ * the calls did NOT use).
  */
-export function checkLlmSpineLeg(probe: () => StatelessTransportProbe = probeStatelessTransport): InfraLeg {
-  const result = probe();
-  return result.ok
-    ? { name: 'llm-spine', status: 'ok', detail: `stateless transport: ${result.label}` }
-    : { name: 'llm-spine', status: 'down', detail: result.error };
+async function probeGatewayHealthz(port: number, timeoutMs = 2500): Promise<GatewayReachability> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(timeoutMs) });
+    return { reachable: true, detail: `HTTP ${res.status}` };
+  } catch (e) {
+    const detail =
+      e instanceof Error ? (e.name === 'TimeoutError' ? `timeout after ${timeoutMs}ms` : e.message) : String(e);
+    return { reachable: false, detail };
+  }
+}
+
+/** Injectable seams for checkLlmSpineLeg — tests pass fakes; production uses the defaults. */
+export interface LlmSpineDeps {
+  probe: () => StatelessTransportProbe;
+  gatewayEnabled: () => Promise<boolean>;
+  gatewayPort: () => number;
+  gatewayReachable: (port: number) => Promise<GatewayReachability>;
+}
+
+const defaultLlmSpineDeps: LlmSpineDeps = {
+  probe: probeStatelessTransport,
+  // Same flag + distinctId the egress chokepoints read (operator-spawn.ts, autoloop-cycle.ts).
+  gatewayEnabled: () => getFlag(FLAGS.INFERENCE_GATEWAY, 'system'),
+  gatewayPort,
+  gatewayReachable: (port) => probeGatewayHealthz(port),
+};
+
+/**
+ * The LLM spine leg (see the module header for the two-dimension rationale):
+ *   1. CREDENTIAL — `resolveStatelessTransport` resolves a transport, shared
+ *      with the real call path so the leg can never disagree with it.
+ *   2. GATEWAY — when INFERENCE_GATEWAY is ON the resolved transport actually
+ *      egresses through the localhost gateway, so a creds-present box with a
+ *      dead gateway is still spine-down; require `/healthz` to answer. Flag
+ *      off → credential alone.
+ * No credential ⇒ down (regardless of the gateway). A gateway-probe error
+ * surfaces as `reachable:false` (= down) deliberately: when the flag is on a
+ * gateway that won't answer IS a real outage. (`legSafe` still catches an
+ * unexpected throw → 'unknown', so a bug never fabricates an outage.)
+ */
+export async function checkLlmSpineLeg(deps: Partial<LlmSpineDeps> = {}): Promise<InfraLeg> {
+  const d = { ...defaultLlmSpineDeps, ...deps };
+  const result = d.probe();
+  if (!result.ok) return { name: 'llm-spine', status: 'down', detail: result.error };
+
+  if (!(await d.gatewayEnabled())) {
+    return { name: 'llm-spine', status: 'ok', detail: `stateless transport: ${result.label}` };
+  }
+  const port = d.gatewayPort();
+  const gw = await d.gatewayReachable(port);
+  return gw.reachable
+    ? {
+        name: 'llm-spine',
+        status: 'ok',
+        detail: `stateless transport: ${result.label} via inference-gateway :${port} (${gw.detail})`,
+      }
+    : {
+        name: 'llm-spine',
+        status: 'down',
+        detail: `inference-gateway :${port} unreachable (${gw.detail}) — gym/llm-testing/implement-lane egress is down despite a present ${result.label} credential`,
+      };
 }
 
 /** The runner spawn path: an OPEN improvement on the structural-spawn key = down. */
@@ -179,7 +260,7 @@ async function legSafe(name: InfraLegName, run: () => Promise<InfraLeg>): Promis
 
 async function collectLegs(): Promise<InfraLeg[]> {
   return Promise.all([
-    legSafe('llm-spine', async () => checkLlmSpineLeg()),
+    legSafe('llm-spine', () => checkLlmSpineLeg()),
     legSafe('spawn-path', checkSpawnPathLeg),
     legSafe('gym-circuit', checkGymCircuitLeg),
   ]);

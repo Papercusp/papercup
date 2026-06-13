@@ -24,7 +24,14 @@ export type AttentionKind =
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'operator-report';
+  | 'operator-report'
+  // B-14 / P-100 (D-011): the folded disposition channels — each a categorized
+  // decision/action the Queen did not auto-handle, surfaced on the unified Queue
+  // (NOT the execution backlog: work_items stay separate).
+  | 'improvement' // a human-routed self-improvement awaiting triage (ideation-intake)
+  | 'standing-approval' // a standing-approval candidate awaiting the owner (system-control)
+  | 'conversation' // an open agent question / coord:ask awaiting an answer (escalations)
+  | 'scout-grade'; // a rollup nudge: N routed Scout ideas await the owner's grade (ideation-intake)
 
 export type AttentionSource = 'plan' | 'coord' | 'harness' | 'operator';
 
@@ -48,6 +55,11 @@ export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | n
   'coord-message': 'inbox-triage', // ack / dismiss an inbox message
   'smoke-fail': null, // an alert/signal, not a governed decision
   'operator-report': null, // a status report, not a governed decision
+  // B-14 / P-100 folded disposition channels (D-011):
+  'improvement': 'ideation-intake', // triage / promote a human-routed improvement
+  'standing-approval': 'system-control', // grant standing auto-dispatch — autonomy-widening, owner-authority (PROTECTED, never-auto: the recursion D-005 guards)
+  'conversation': 'escalations', // answer an open agent question (coord:ask / the owner-decision-queue)
+  'scout-grade': 'ideation-intake', // grade routed Scout ideas
 };
 
 /** The autonomy category for an attention kind — `null` for an ungoverned
@@ -140,7 +152,12 @@ export type AttentionRef =
   | { kind: 'coord-escalation'; msgId: string; options: { id: string; label: string }[] }
   | { kind: 'coord-message'; msgId: string }
   | { kind: 'smoke-fail'; harnessSlug: string }
-  | { kind: 'operator-report'; turnId: string; conversationId: string };
+  | { kind: 'operator-report'; turnId: string; conversationId: string }
+  // B-14 / P-100 folded disposition channels (D-011):
+  | { kind: 'improvement'; issueId: string }
+  | { kind: 'standing-approval'; capability: string; targetHarness: string }
+  | { kind: 'conversation'; conversationId: string }
+  | { kind: 'scout-grade'; count: number };
 
 export interface AttentionItem {
   /** Unique within a reader response. `<kind>:<...>`. */

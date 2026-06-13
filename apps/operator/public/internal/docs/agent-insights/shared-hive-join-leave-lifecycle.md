@@ -1,0 +1,40 @@
+# Shared-hive join/leave lifecycle — what self-heals, what to call, what ages out
+URL: /internal/docs/agent-insights/shared-hive-join-leave-lifecycle
+
+A joiner LEAVES via hive:leave (the inverse of joinHiveAsView). A phase_0_pending join needs NO re-drive when registered — boot-all re-federates it; only an unregistered clone is a ghost. Presence drops by TTL.
+
+## TL;DR
+
+Three lifecycle facts that aren't obvious from the code (shared-hive-hardening-2026-06-13 P-012/P-013/P-014):
+
+1. **Leaving a joined hive = `hive:leave`** (the inverse of `joinHiveAsView`). `hive:dissolve` is the OWNER teardown of a LOCAL hive — it does **nothing** for a joiner (no de-federation, no routine/presence/registry cleanup). Don't reach for dissolve to leave.
+2. **A `phase_0_pending` join self-heals on the next boot — if its clone got registered.** Do not build a re-drive for that; `bootAllHarnessesForActiveWorkspace` re-joins the swarm. The only ghost is a clone that landed on disk but whose registry write *also* failed.
+3. **A leaver's presence on OTHER peers ages out by TTL** (no published del-op). Locally it's deleted immediately.
+
+## hive:leave — the joiner's inverse of joinHiveAsView
+
+`joinHiveAsView` (join-hive.ts) builds four things per member: a swarm-joined federation handle, a `system:git-sync` routine row, `shared_presence` rows, and registry entries (the `remote_hive` view + members with `hive_slug`). `hive:leave` (`harness/leave-hive.ts` + `agent-tools/hive/leave.ts`) tears down exactly those, in the safe order (stop the moving parts before removing the coords they read):
+
+1. **Stop federating** — `closeBootedHarness(ws, member)` per member: `SwarmHandle.close()` leaves the topic, the presence-announce loop's close-hook stops, the corestore closes.
+2. **Delete git-sync routines** — `removeGitSyncRoutine(sql, member)` (a row delete, not `setActive(false)` — the member is being deregistered).
+3. **Drop presence** — delete the member's local `shared_presence` rows.
+4. **Deregister** — one atomic `mutateHarnessRegistry` removing the view + all members. Clone dirs are KEPT by default (re-joinable, data-safe); `deleteClones:true` also `rm -rf`s them.
+
+Root-only + `confirm:true` (mirrors dissolve), idempotent + best-effort: every leg tolerates already-done, so a partial leave is fully re-runnable.
+
+**Gated (real-hardware, plan D-003):** presence has **no published del-op** — a leaver's rows on OTHER peers age out by the lock-authority's 90s staleness window rather than dropping instantly. A federated presence tombstone (publish a retract to the peer-log so LWW deletes it cross-machine) is the enhancement; it needs two real machines to verify and is filed separately.
+
+## phase\_0\_pending is (almost always) cosmetic — boot-all is the heal
+
+A join soft-fails `boot_federate` / `await_admission_merge` to `phase_0_pending` (`join-shared-harness.ts`) when no peer is reachable within the timeout. This is **not** a stuck state:
+
+* The clone is registered (the join-link route registers it pre-boot AND post-join), so **`bootAllHarnessesForActiveWorkspace` re-boots it next session** → `defaultResolveSwarmBinding` re-joins the swarm → federation re-establishes. `await_admission_merge`'s phase\_0 just means "no peer yet"; the read-merge admit loop picks one up when it comes online — even in the same session.
+* The `~/.papercusp/join-state/<slug>.json` record is **cosmetic** once the clone is registered — nothing reads it except the join orchestrator's own idempotent resume.
+
+So **don't build a re-drive for the registered case** — it isn't broken. The one residual boot-all can't heal: a join where the registry write *also* failed → a clone on disk, pending, absent from the registry → boot-all never visits it. `harness/join-state-reconcile.ts` (`ensureJoinStatesReconciledOnce`, a boot hook beside `git-sync-reconcile`) closes exactly that: re-register any join-state slug whose clone dir exists but is missing from the registry; report (don't silently drop) the rest.
+
+> Gotcha that bit me: this boot sweep reads the **real** `~/.papercusp/join-state` FS + writes the registry, so it must NOT run in unrelated booting unit tests (which partially-mock `harness-registry`). It's `process.env.VITEST`-guarded when no seams are injected — same idiom as join-shared-harness's EI-339 live-write guard. The sweep logic is unit-tested directly with seams.
+
+## P-014: the reconcile blind-spot alarm
+
+`git-sync-reconcile` only ever visited `hive_slug` members, so a NEW registered checkout that isn't a hive member and isn't seeded at creation would silently never sync. The reconcile now also **detects** (does not auto-seed — a non-member isn't assumed wanted-synced) any non-member, git-sync-eligible checkout with no routine row and surfaces it as `unseeded` (logged `⚠ eligible-but-UNSEEDED=[…]`). `papercup` (hand-tuned row) and anything with a routine are excluded.

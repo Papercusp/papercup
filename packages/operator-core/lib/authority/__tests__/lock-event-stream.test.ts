@@ -5,6 +5,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PeerLogOp } from '../../sync/hyperbee/peer-log';
+import { LockSetReconstructor } from '../lock-set-reconstructor';
 import {
   LOCK_EVENT_TABLE,
   reconstructLockSet,
@@ -225,5 +226,39 @@ describe('PeerLogLockEventReader', () => {
   it('routes through the installed reader', async () => {
     setLockEventReader({ readLockEvents: async () => [acquire('a.ts', 'p1', T0)] });
     expect(await getLockEventReader().readLockEvents('h', T0)).toHaveLength(1);
+  });
+});
+
+describe('end-to-end instant handover (sink → peer-log → reader → fold → reconstructor)', () => {
+  it('a NEW authority reconstructs the live lock set from the stream — held minus released', async () => {
+    // An in-memory peer-log that is BOTH the own-log (append) and a readable
+    // replica (get/length) — the authority writes, a new authority reads it back.
+    const ops: PeerLogOp[] = [];
+    const log = {
+      append: async (op: PeerLogOp) => void ops.push(op),
+      get length() {
+        return ops.length;
+      },
+      get: async (i: number) => ops[i] ?? null,
+    };
+    // The (old) authority records grants/releases as it serves them.
+    const sink = new PeerLogLockEventSink({ resolveOwnLog: () => log, authorPubkey: 'auth-dev' });
+    await sink.record(acquire('apps/a.ts', 'peer-1', T0)); // held by peer-1
+    await sink.record(acquire('apps/b.ts', 'peer-2', T0 + 1)); // held by peer-2
+    await sink.record(release('apps/b.ts', 'peer-2', T0 + 2)); // peer-2 releases b
+
+    // The NEW authority reads the stream, folds it, hydrates instantly.
+    const reader = new PeerLogLockEventReader({ resolveLogs: () => [log] });
+    const events = await reader.readLockEvents('h', T0 + 100);
+    const live = reconstructLockSet(events, T0 + 100);
+    const recon = new LockSetReconstructor({ becameAuthorityAtMs: T0 + 100, heartbeatMs: 10_000 });
+    expect(recon.shouldFailOpen(T0 + 101)).toBe(true); // before hydration
+    expect(recon.hydrateFromEvents(live, T0 + 101)).toBe(true);
+    // Rebuilt instantly (no heartbeat-interval wait), and the set is exactly the
+    // still-held lock (a.ts by peer-1); b.ts was released.
+    expect(recon.isRebuilt(T0 + 101)).toBe(true);
+    expect(recon.current(T0 + 101).map((l) => `${l.path}:${l.owner}`)).toEqual(['apps/a.ts:peer-1']);
+    expect(recon.isHeldByOther('apps/a.ts', 'peer-9', T0 + 101)).toBe(true);
+    expect(recon.isHeldByOther('apps/b.ts', 'peer-9', T0 + 101)).toBe(false);
   });
 });

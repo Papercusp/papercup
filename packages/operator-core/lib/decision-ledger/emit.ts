@@ -28,8 +28,40 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { papercuspTierFor, type CapabilityTier, type PostInvokeEvent } from '@papercusp/agent-mcp';
+import { categoryForAction } from '../autonomy/capability-category-map';
+import { ACTION_SURFACE } from '../autonomy/action-surface';
 
 const TIER_RANK: Record<CapabilityTier, number> = { low: 0, medium: 1, high: 2 };
+
+/**
+ * Per-action-TYPE autonomy axes (queen-autonomy B-04 ACTION_SURFACE): tool name →
+ * its FIXED reversibility + authority. Built once. Only the human-driving Queen
+ * actions are catalogued; a governed action outside the surface gets NULL axes
+ * here — honest, since its per-call footprint isn't known at the chokepoint
+ * (reversibility's path/keyword classifier needs the candidate's footprint, which
+ * a settled tool call doesn't carry). The authoritative CATEGORY map (B-04) covers
+ * far more than the surface, so category is populated separately below.
+ */
+const ACTION_AXES: ReadonlyMap<string, { reversibility: string; authority: string }> = (() => {
+  const m = new Map<string, { reversibility: string; authority: string }>();
+  for (const a of ACTION_SURFACE) {
+    for (const v of a.queenVerbs) m.set(v, { reversibility: a.reversibility, authority: a.authority });
+  }
+  return m;
+})();
+
+/**
+ * Normalize a settled tool name to the `group:verb` colon form the category map +
+ * the action surface key on. The dispatch chokepoint uses colon names
+ * (`plans:set-status`), but the in-process/IPC legs can hand a dotted form
+ * (`plans.set-status`); coerce the first `.` to `:` only when there's no `:`
+ * already so a lookup never silently misses on a form mismatch.
+ */
+function normalizeAction(toolName: string): string {
+  if (toolName.includes(':')) return toolName;
+  const dot = toolName.indexOf('.');
+  return dot > 0 ? `${toolName.slice(0, dot)}:${toolName.slice(dot + 1)}` : toolName;
+}
 
 /** The columns one action-chokepoint ledger row carries (the host fills the rest by default). */
 export interface DecisionLedgerRow {
@@ -39,6 +71,10 @@ export interface DecisionLedgerRow {
   capability: string | null;
   tier: CapabilityTier;
   category: string | null;
+  /** Per-action-TYPE reversibility (B-02 vocab) from the action surface; null off-surface. */
+  reversibility: string | null;
+  /** Decision authority (B-01) from the action surface; null off-surface. */
+  authority: string | null;
   posture: 'auto' | 'gated' | 'rejected';
   outcome: 'ok' | 'error';
   outcomeCode: string | null;
@@ -73,13 +109,20 @@ export function buildDecisionLedgerRow(event: PostInvokeEvent): DecisionLedgerRo
 
   const verdict = event.envelopeVerdict ?? null;
   const primaryCap = caps[0] ?? null;
+  const normAction = normalizeAction(toolName);
+  const axes = ACTION_AXES.get(normAction);
   return {
     workspaceId: ctx.workspaceId,
     harnessSlug: ctx.harnessSlug ?? null,
     action: toolName,
     capability: primaryCap,
     tier,
-    category: categoryFor(primaryCap, toolName),
+    // The AUTHORITATIVE 13-category map (B-04) when it resolves; the coarse
+    // capability-group placeholder otherwise (covers governed actions outside the
+    // mapped Queen surface so the column is never empty for filtering).
+    category: categoryForAction(normAction, primaryCap ?? undefined) ?? categoryFor(primaryCap, toolName),
+    reversibility: axes?.reversibility ?? null,
+    authority: axes?.authority ?? null,
     posture: verdict?.posture ?? 'auto',
     outcome: result.ok ? 'ok' : 'error',
     outcomeCode: result.ok ? null : (result.error?.code ?? null),
@@ -115,9 +158,10 @@ async function recordDecisionLedgerImpl(event: PostInvokeEvent): Promise<void> {
       await tx.unsafe(
         `INSERT INTO harness_shared.decision_ledger
            (workspace_id, harness_slug, action, capability, tier, category,
+            reversibility, authority,
             posture, outcome, outcome_code, why, links,
             actor_role, actor_spawn_id, actor_principal, transport, duration_ms, args_digest)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18,$19)`,
         [
           row.workspaceId,
           row.harnessSlug,
@@ -125,6 +169,8 @@ async function recordDecisionLedgerImpl(event: PostInvokeEvent): Promise<void> {
           row.capability,
           row.tier,
           row.category,
+          row.reversibility,
+          row.authority,
           row.posture,
           row.outcome,
           row.outcomeCode,

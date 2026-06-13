@@ -153,4 +153,29 @@ describe('buildDispositionRow — field mapping', () => {
     expect(row.category).toBeNull();
     expect(row.why).toBe('unmapped-category');
   });
+
+  it('honors an explicit posture override (the P-112 back-fill posture=auto on a gated decision)', () => {
+    const row = buildDispositionRow({
+      workspaceId: 'd',
+      decision: decision({ posture: 'gated', category: 'spend-budget', wouldAutoIfArmed: false }),
+      disposition: 'act',
+      posture: 'auto',
+    });
+    // without the override, dispositionPosture(gated, act) would be 'proposed'.
+    expect(row.posture).toBe('auto');
+    // the honest gate view still rides metadata.
+    expect(row.metadata.wouldAutoIfArmed).toBe(false);
+  });
+
+  it('merges extraMetadata into the row metadata (decision-specific facts: score/tier)', () => {
+    const row = buildDispositionRow({
+      workspaceId: 'd',
+      decision: decision(),
+      disposition: 'act',
+      extraMetadata: { gymScore: 0.82, modelTier: 'sonnet' },
+    });
+    expect(row.metadata).toMatchObject({ gymScore: 0.82, modelTier: 'sonnet' });
+    // the decision context is still present alongside the extra facts.
+    expect(row.metadata).toHaveProperty('wouldAutoIfArmed');
+  });
 });

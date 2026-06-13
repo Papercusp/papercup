@@ -40,6 +40,7 @@ import {
   configureFileLockHiveResolver,
 } from '../../authority/file-lock-routing';
 import { wireAuthorityRpcTransport } from '../../authority/transport-wiring';
+import { wireAuthorityRpcSwarmTransport } from '../../authority/authority-rpc-swarm-wiring';
 import { wireLockEventStream } from '../../authority/lock-event-wiring';
 import { wirePeerEviction } from '../../authority/eviction-wiring';
 import { loadHarnessRegistry } from '../../harness-registry';
@@ -145,6 +146,22 @@ export function wireFileLockAuthority(): void {
   // configurePeerAddressResolver / PAPERCUSP_AUTHORITY_PEER_ADDRESSES). No address →
   // fail-open, exactly the pre-wiring behavior.
   wireAuthorityRpcTransport();
+  // shared-hive-hardening P-001 / D-005 (owner-ratified option c): compose the
+  // Hyperswarm-mux RPC transport IN FRONT of the HTTP one so NAT'd desktop peers
+  // are reachable over the existing connection. Async (resolves the device signer
+  // + shared swarm) + flag-gated (papercusp-authority-rpc-protomux, default OFF —
+  // cross-machine path is real-hardware-unverified, P-003); a no-op + never-throws
+  // when off, leaving the HTTP-only registration above in place.
+  void wireAuthorityRpcSwarmTransport().catch(() => {
+    /* fail-open: HTTP-only transport stands (D-004) */
+  });
+  // P-015: the lock-event stream (authority grants/releases append to the peer-log
+  // so a NEW authority reconstructs the live lock set instantly on failover; no-op
+  // when not federating). P-016: the φ+SWIM eviction probe (flag-gated, dark) so a
+  // crashed authority is evicted before the 90s staleness window. Both are dormant
+  // single-box / fail-open, like the rest of this module.
+  wireLockEventStream();
+  wirePeerEviction();
 
   void refreshResolverSnapshot().catch(() => {
     /* best-effort: empty maps → resolve local; the timer retries */

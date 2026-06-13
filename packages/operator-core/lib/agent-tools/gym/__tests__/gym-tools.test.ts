@@ -28,11 +28,12 @@ describe('gym:signals tool', () => {
     const byName = Object.fromEntries(out.results.map((r: any) => [r.name, r]));
     expect(byName.regressionsFromTests).toEqual({ name: 'regressionsFromTests', value: true, applicable: true });
     expect(byName.plantedBugCaught).toEqual({ name: 'plantedBugCaught', value: true, applicable: true });
-    // The original pair + the FB-23 drill-ground-truth trio (P-048).
+    // The original pair + the FB-23 drill-ground-truth trio (P-048) + fabricationDetected (HE-06).
     expect(out.known.sort()).toEqual([
       'drillMttsh',
       'drillResolveRate',
       'drillTriageAccuracy',
+      'fabricationDetected',
       'plantedBugCaught',
       'regressionsFromTests',
     ]);

@@ -11,15 +11,16 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config';
 import { createPgHiveEvalStore } from './store-pg';
-import type { HiveEvalRunRow, HiveEvalScenarioRow, InstanceManifest } from './store';
+import type { HiveEvalRunRow, HiveEvalScenarioRow, HiveEvalScoreRow, InstanceManifest } from './store';
 
-const MIGRATION = '264-hive-eval-battery.sql';
+// 264 records the runs; 268 (HE-06) adds the scores table that FK-references the runs.
+const MIGRATIONS = ['264-hive-eval-battery.sql', '268-hive-eval-scores.sql'];
 
-function readMigration(): string {
+function readMigration(name: string): string {
   const candidates = [
-    join(__dirname, '../../../../libs/papercusp/libs/db/sql/' + MIGRATION),
-    join(__dirname, '../../../libs/papercusp/libs/db/sql/' + MIGRATION),
-    '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/' + MIGRATION,
+    join(__dirname, '../../../../libs/papercusp/libs/db/sql/' + name),
+    join(__dirname, '../../../libs/papercusp/libs/db/sql/' + name),
+    '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/' + name,
   ];
   for (const p of candidates) {
     try {
@@ -28,10 +29,10 @@ function readMigration(): string {
       /* next */
     }
   }
-  throw new Error(`could not locate ${MIGRATION}`);
+  throw new Error(`could not locate ${name}`);
 }
 
-describe('hive-eval PG store (migration 264)', () => {
+describe('hive-eval PG store (migrations 264 + 268)', () => {
   let sql: postgres.Sql;
 
   beforeAll(async () => {
@@ -47,7 +48,7 @@ describe('hive-eval PG store (migration 264)', () => {
     u.pathname = `/${dbName}`;
     sql = postgres(u.toString(), { max: 4, onnotice: () => {} });
     await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
-    await sql.unsafe(readMigration());
+    for (const m of MIGRATIONS) await sql.unsafe(readMigration(m));
   }, 60_000);
 
   afterAll(async () => {
@@ -136,5 +137,68 @@ describe('hive-eval PG store (migration 264)', () => {
     const [row] = await sql`SELECT terminal_state, finished_at FROM harness_shared.hive_eval_runs WHERE run_id = ${runRow(0).runId}`;
     expect(row.terminal_state).toBeNull(); // reset
     expect(row.finished_at).toBeNull();
+  });
+
+  // ── HE-06 scores (migration 268) ──
+  const scoreRow = (over: Partial<HiveEvalScoreRow> = {}): HiveEvalScoreRow => ({
+    runId: runRow(0).runId,
+    rubricHash: 'rubric-abc',
+    rubricVersion: 'hive-score-v1',
+    outcomeGatePassed: true,
+    efficiencyScore: 8.5,
+    speedScore: 9.1,
+    composite: 8.8,
+    judgeComposite: 7.2,
+    regressions: false,
+    plantedBugCaught: true,
+    fabricationDetected: false,
+    criticalPathRatio: 1.1,
+    floorCeiling: 10,
+    detail: { axis: 'demo' },
+    ...over,
+  });
+
+  it('round-trips a score and is idempotent on (run_id, rubric_hash)', async () => {
+    const store = createPgHiveEvalStore(sql);
+    await store.upsertInstance(instance);
+    await store.upsertScenario(scenario);
+    await store.startRun(runRow(0));
+    await store.upsertScore(scoreRow());
+
+    const got = await store.getScore(runRow(0).runId, 'rubric-abc');
+    expect(got?.composite).toBe(8.8);
+    expect(got?.judgeComposite).toBe(7.2);
+    expect(got?.outcomeGatePassed).toBe(true);
+    expect((got?.detail as { axis: string }).axis).toBe('demo');
+
+    // re-score the same (run, rubric) → overwrite, not a second row.
+    await store.upsertScore(scoreRow({ composite: 2.0, regressions: true, floorCeiling: 3 }));
+    const re = await store.getScore(runRow(0).runId, 'rubric-abc');
+    expect(re?.composite).toBe(2.0);
+    expect(re?.regressions).toBe(true);
+    const [{ count }] = await sql`SELECT count(*)::int AS count FROM harness_shared.hive_eval_scores WHERE run_id = ${runRow(0).runId}`;
+    expect(count).toBe(1);
+  });
+
+  it('a different rubric_hash writes a DISTINCT score row (scores never mix across rubrics)', async () => {
+    const store = createPgHiveEvalStore(sql);
+    await store.upsertInstance(instance);
+    await store.upsertScenario(scenario);
+    await store.startRun(runRow(0));
+    await store.upsertScore(scoreRow({ rubricHash: 'rubric-abc', composite: 8.8 }));
+    await store.upsertScore(scoreRow({ rubricHash: 'rubric-xyz', composite: 4.4 }));
+    const [{ count }] = await sql`SELECT count(*)::int AS count FROM harness_shared.hive_eval_scores WHERE run_id = ${runRow(0).runId}`;
+    expect(count).toBe(2);
+    expect((await store.getScore(runRow(0).runId, 'rubric-xyz'))?.composite).toBe(4.4);
+  });
+
+  it('a score is removed when its run is deleted (FK ON DELETE CASCADE)', async () => {
+    const store = createPgHiveEvalStore(sql);
+    await store.upsertInstance(instance);
+    await store.upsertScenario(scenario);
+    await store.startRun(runRow(0));
+    await store.upsertScore(scoreRow());
+    await sql`DELETE FROM harness_shared.hive_eval_runs WHERE run_id = ${runRow(0).runId}`;
+    expect(await store.getScore(runRow(0).runId, 'rubric-abc')).toBeNull();
   });
 });

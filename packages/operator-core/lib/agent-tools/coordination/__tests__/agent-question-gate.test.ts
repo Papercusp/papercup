@@ -82,28 +82,28 @@ describe('isAutonomousAgent', () => {
 });
 
 describe('classifyAgentQuestion (the injectable gate)', () => {
-  it('defaults to the owner Queue with the bounded timeout (D-007: no auto rung until armed)', () => {
-    const r = classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] });
+  it('defaults to the owner Queue with the bounded timeout (D-007: no auto rung until armed)', async () => {
+    const r = await classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] });
     expect(r).toEqual({ rung: 'owner-queue', timeoutMs: AGENT_CARD_TIMEOUT_MS });
   });
 
-  it('honors an injected classifier (autonomy-policy composes, it does not fork)', () => {
+  it('honors an injected classifier (autonomy-policy composes, it does not fork)', async () => {
     configureAgentQuestionGate(() => ({ rung: 'queen', timeoutMs: 1234 }));
-    expect(classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] }))
+    expect(await classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] }))
       .toEqual({ rung: 'queen', timeoutMs: 1234 });
   });
 
-  it('falls safe to the owner Queue when the injected gate throws', () => {
+  it('falls safe to the owner Queue when the injected gate throws', async () => {
     configureAgentQuestionGate(() => {
       throw new Error('classifier blew up');
     });
-    expect(classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] }))
+    expect(await classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] }))
       .toEqual({ rung: 'owner-queue', timeoutMs: AGENT_CARD_TIMEOUT_MS });
   });
 
-  it('ignores a non-positive timeout override and uses the bounded default', () => {
+  it('ignores a non-positive timeout override and uses the bounded default', async () => {
     configureAgentQuestionGate(() => ({ rung: 'peer-vote', timeoutMs: 0 }));
-    expect(classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] }))
+    expect(await classifyAgentQuestion({ identity: idOf('fleet-spawn'), question: 'q', options: [] }))
       .toEqual({ rung: 'peer-vote', timeoutMs: AGENT_CARD_TIMEOUT_MS });
   });
 });

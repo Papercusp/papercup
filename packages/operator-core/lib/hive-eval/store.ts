@@ -76,12 +76,46 @@ export interface HiveEvalRunFinish {
   traceRef?: string;
 }
 
+/**
+ * One run's SCORE under one rubric (HE-06). Keyed `(run_id, rubric_hash)` like the beekeeper
+ * score store — re-scoring the same run under the same rubric is an idempotent overwrite, and a
+ * rubric change (new hash) writes a distinct row, so scores under different rubrics never mix.
+ * The flat columns are the indexable headline; `detail` keeps the whole {@link HiveScore} (per-axis
+ * components + the `why`s + the gate reason) for the trend surface + audits.
+ */
+export interface HiveEvalScoreRow {
+  runId: string;
+  rubricHash: string;
+  rubricVersion: string;
+  /** D-002 gate: did the run do a good job (else efficiency/speed credit is zeroed)? */
+  outcomeGatePassed: boolean;
+  efficiencyScore: number;
+  speedScore: number;
+  /** The gated, floor-capped 0–10 composite (the headline). */
+  composite: number;
+  /** Advisory LLM-judge composite — recorded, never folded into `composite` (P-041). */
+  judgeComposite?: number;
+  // ── the deterministic floor signals (P-041), promoted for indexable trend reads ──
+  regressions: boolean;
+  plantedBugCaught: boolean;
+  fabricationDetected: boolean;
+  criticalPathRatio: number;
+  floorCeiling: number;
+  /** The whole {@link HiveScore} (per-axis components + why + gate reason) as recorded JSON. */
+  detail: unknown;
+  scoredAt?: Date;
+}
+
 /** The injectable store seam — an in-memory impl for tests, a PG impl for the live battery. */
 export interface HiveEvalStore {
   upsertInstance(m: InstanceManifest): Promise<void>;
   upsertScenario(s: HiveEvalScenarioRow): Promise<void>;
   startRun(r: HiveEvalRunRow): Promise<void>;
   finishRun(runId: string, fields: HiveEvalRunFinish): Promise<void>;
+  /** Record (or idempotently overwrite) a run's score under its rubric (HE-06). */
+  upsertScore(row: HiveEvalScoreRow): Promise<void>;
+  /** Read back one run's score under a rubric (null if unscored under that rubric). */
+  getScore(runId: string, rubricHash: string): Promise<HiveEvalScoreRow | null>;
 }
 
 /** An in-memory store that also captures everything written, for test assertions. */
@@ -89,16 +123,22 @@ export interface InMemoryHiveEvalStore extends HiveEvalStore {
   instances: Map<string, InstanceManifest>;
   scenarios: Map<string, HiveEvalScenarioRow>;
   runs: Map<string, HiveEvalRunRow>;
+  /** Keyed `${runId}::${rubricHash}` — every (run, rubric) score. */
+  scores: Map<string, HiveEvalScoreRow>;
 }
+
+const scoreKey = (runId: string, rubricHash: string): string => `${runId}::${rubricHash}`;
 
 export function createInMemoryHiveEvalStore(): InMemoryHiveEvalStore {
   const instances = new Map<string, InstanceManifest>();
   const scenarios = new Map<string, HiveEvalScenarioRow>();
   const runs = new Map<string, HiveEvalRunRow>();
+  const scores = new Map<string, HiveEvalScoreRow>();
   return {
     instances,
     scenarios,
     runs,
+    scores,
     async upsertInstance(m) {
       instances.set(m.instanceId, m);
     },
@@ -112,6 +152,12 @@ export function createInMemoryHiveEvalStore(): InMemoryHiveEvalStore {
       const existing = runs.get(runId);
       if (!existing) throw new Error(`finishRun: no startRun for ${runId}`);
       runs.set(runId, { ...existing, ...fields });
+    },
+    async upsertScore(row) {
+      scores.set(scoreKey(row.runId, row.rubricHash), { ...row, scoredAt: row.scoredAt ?? new Date(0) });
+    },
+    async getScore(runId, rubricHash) {
+      return scores.get(scoreKey(runId, rubricHash)) ?? null;
     },
   };
 }

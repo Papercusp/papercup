@@ -149,6 +149,14 @@ export const DEFAULT_RISK_TIER_POLICY: RiskTierPolicy = {
     // tcb-invariants.test.ts. (The durable executor + spawn chokepoint are already
     // covered above by `dbos/**`; the routine cadence layer by `harness/routines/**`.)
     ...DETERMINISTIC_EXECUTOR_TCB_PATTERNS,
+    // The capability dispatch GATE TCB (agent-capability-confinement P-030 / D-007):
+    // once the fleet is confined, every capability flows through one chokepoint —
+    // the envelope PDP, the decision-ledger, the host wiring, the dispatch stack,
+    // and the gated capability tools. The gate cannot graduate its own permissions,
+    // so an auto-edit to any of it stays human-gated under every graduation dial.
+    // Declared in capability-envelope/tcb.ts; pinned by
+    // capability-envelope/tcb-invariants.test.ts.
+    ...CAPABILITY_DISPATCH_TCB_PATTERNS,
   ],
   protectedKeywords: [
     'migration',

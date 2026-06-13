@@ -30,7 +30,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import type { AutonomyDecision } from '../autonomy/decider';
+import { decideAutonomy, type AutonomyDecision, type AutonomyDecisionInput } from '../autonomy/decider';
 
 /** The P-111 disposition verbs (the Queen's chosen response to a considered item). */
 export const DISPOSITIONS = ['act', 'defer', 'reject', 'route-to-research', 'no-op'] as const;
@@ -61,6 +61,14 @@ export interface RecordDispositionInput {
   /** The decider's verdict for this item (B-12). The disposition's substrate. */
   decision: AutonomyDecision;
   disposition: Disposition;
+  /**
+   * Override the derived ledger posture. Default is `dispositionPosture(decision,
+   * disposition)`. The back-fill path (P-112) passes 'auto' for a proactive
+   * decision the system ALREADY executed autonomously (model-tier, gym score,
+   * governor budget) — it ran, even though the gate is unarmed; the gate's honest
+   * "would it auto once armed?" still rides metadata.wouldAutoIfArmed.
+   */
+  posture?: DispositionPosture;
   /** Short human "why". Defaults to the decision's reasons, joined. */
   why?: string | null;
   links?: DispositionLinks | null;
@@ -70,6 +78,8 @@ export interface RecordDispositionInput {
   actorSpawnId?: string | null;
   actorPrincipal?: string | null;
   transport?: string | null;
+  /** Decision-specific facts merged into the row's metadata (e.g. {score}, {tier}). */
+  extraMetadata?: Record<string, unknown>;
 }
 
 /**
@@ -135,7 +145,7 @@ export function buildDispositionRow(input: RecordDispositionInput): DispositionL
     riskTier: decision.riskTier,
     reversibility: decision.reversibility,
     authority: decision.authority,
-    posture: dispositionPosture(decision, input.disposition),
+    posture: input.posture ?? dispositionPosture(decision, input.disposition),
     disposition: input.disposition,
     why,
     links: Object.keys(links).length > 0 ? links : null,
@@ -151,6 +161,7 @@ export function buildDispositionRow(input: RecordDispositionInput): DispositionL
       ...(reasons.length > 0 ? { reasons } : {}),
       ...(decision.signals ? { signals: decision.signals } : {}),
       ...(decision.graduationEvidence ? { graduationEvidence: decision.graduationEvidence } : {}),
+      ...(input.extraMetadata ?? {}),
     },
     actorRole: input.actorRole ?? null,
     actorSpawnId: input.actorSpawnId ?? null,
@@ -214,4 +225,52 @@ export async function recordDecisionDisposition(
     );
     return null;
   }
+}
+
+export interface ProactiveDispositionInput {
+  workspaceId: string;
+  harnessSlug?: string | null;
+  /** The action this proactive decision realizes (keys the category + the gate axes). */
+  decisionInput: AutonomyDecisionInput;
+  /** Defaults to 'act' — a proactive decision the system carried out. */
+  disposition?: Disposition;
+  why?: string | null;
+  links?: DispositionLinks | null;
+  /** Extra decision-specific facts to fold into metadata (e.g. {score}, {tier}). */
+  metadata?: Record<string, unknown>;
+  actorRole?: string | null;
+  actorSpawnId?: string | null;
+  actorPrincipal?: string | null;
+}
+
+/**
+ * Back-fill a currently-unlogged PROACTIVE decision into the disposition log
+ * (queen-autonomy P-112) — model-tier per spawn, gym:judge score+rationale,
+ * governor budget changes. These don't pass the action chokepoint (they're not
+ * governed MCP tool calls) and aren't a gated queue item, but they ARE autonomous
+ * decisions the system makes; routing them here gives the ledger + the
+ * recent-auto-decisions feed ONE honest record.
+ *
+ * Runs the PURE gate (`decideAutonomy`, unarmed) to derive the decision axes +
+ * `wouldAutoIfArmed`, then records posture='auto' (it executed autonomously) with
+ * disposition='act' by default. Best-effort + flag-gated via
+ * recordDecisionDisposition — never throws into the caller's hot path.
+ */
+export async function recordProactiveDisposition(
+  input: ProactiveDispositionInput,
+): Promise<number | null> {
+  const decision = decideAutonomy(input.decisionInput);
+  return recordDecisionDisposition({
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug ?? null,
+    decision,
+    disposition: input.disposition ?? 'act',
+    posture: 'auto', // it executed autonomously today; wouldAutoIfArmed rides metadata
+    ...(input.why !== undefined ? { why: input.why } : {}),
+    ...(input.links ? { links: input.links } : {}),
+    ...(input.metadata ? { extraMetadata: input.metadata } : {}),
+    actorRole: input.actorRole ?? null,
+    actorSpawnId: input.actorSpawnId ?? null,
+    actorPrincipal: input.actorPrincipal ?? null,
+  });
 }

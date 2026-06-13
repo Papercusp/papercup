@@ -18,16 +18,18 @@ import type { BlueprintGym } from '@papercusp/orchestrator/blueprint';
 
 describe('GYM_SIGNAL_REGISTRY / resolveSignals', () => {
   it('exposes the built-in deterministic signals by name', () => {
-    // The original pair + the FB-23 drill-ground-truth trio (P-048, drill-signals.ts).
+    // The original pair + the FB-23 drill-ground-truth trio (P-048) + fabricationDetected (HE-06).
     expect(knownSignals().sort()).toEqual([
       'drillMttsh',
       'drillResolveRate',
       'drillTriageAccuracy',
+      'fabricationDetected',
       'plantedBugCaught',
       'regressionsFromTests',
     ]);
     expect(typeof GYM_SIGNAL_REGISTRY.regressionsFromTests).toBe('function');
     expect(typeof GYM_SIGNAL_REGISTRY.plantedBugCaught).toBe('function');
+    expect(typeof GYM_SIGNAL_REGISTRY.fabricationDetected).toBe('function');
   });
 
   it('resolves known names and reports unknown ones (no silent drop)', () => {
@@ -54,6 +56,22 @@ describe('evaluateSignals', () => {
     };
     const { results } = evaluateSignals(['plantedBugCaught'], ctx);
     expect(results[0]).toEqual({ name: 'plantedBugCaught', value: true, applicable: true });
+  });
+
+  it('fabricationDetected fires true on a claimed-done item ground truth contradicts (HE-06, P-041)', () => {
+    const ctx: SignalContext = {
+      claimedItems: [
+        { claimedDone: true, actuallyDone: true, hasCommit: true }, // genuinely done
+        { claimedDone: true, actuallyDone: false, hasCommit: false }, // FABRICATED
+      ],
+    };
+    const { results } = evaluateSignals(['fabricationDetected'], ctx);
+    expect(results[0]).toEqual({ name: 'fabricationDetected', value: true, applicable: true });
+  });
+
+  it('fabricationDetected is inapplicable (not a fake pass) for a non-Hive target with no claim rows', () => {
+    const { results } = evaluateSignals(['fabricationDetected'], { harnessOutputText: 'done' });
+    expect(results[0]).toEqual({ name: 'fabricationDetected', value: false, applicable: false });
   });
 
   it('marks a signal NOT-applicable (not a false value) when its inputs are absent', () => {

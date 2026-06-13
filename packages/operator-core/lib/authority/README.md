@@ -147,14 +147,26 @@ All three cutover steps are **wired at boot** (side-effect import of
 3. ✅ **Domain→harness mapping** — `configureFileLockDomainResolver` /
    `configureFileLockHiveResolver` wired from the harness-registry snapshot.
 
-**The one remaining residual is ADDRESSING** (coord-system-e2e-testing-2026-06-10
-P-006 note): `shared_presence` carries identity, not a network address, so
-`transport-wiring.ts` resolves a peer's operator base URL via
-`configurePeerAddressResolver(fn)` (for a mesh/topology layer) or the
-`PAPERCUSP_AUTHORITY_PEER_ADDRESSES` env map
-(`{"<device_pubkey>":"http://host:3070"}`). With neither configured every
-remote-authority op fails open (D-004) with a loud warning — the pre-cutover
-behavior, unchanged.
+**ADDRESSING — resolved via option (c)** (shared-hive-hardening-2026-06-13 D-005,
+owner-ratified). The original residual was that `shared_presence` carries identity
+(`device_pubkey`), not a network address, so `HttpPeerRpcTransport` had no
+production address source — and a raw `:3070` URL can't reach a NAT'd desktop
+anyway. The fix does NOT plumb an address: `authority-rpc-swarm-transport.ts`
+multiplexes a `papercusp/authority-rpc` protomux channel onto the EXISTING
+per-harness Hyperswarm connection (mirrors `cross-hive-swarm-transport.ts`; HELLO
+carries `device_pubkey`; the connection IS the address — NAT already traversed).
+`composite-peer-rpc-transport.ts` composes it IN FRONT of the HTTP transport
+(addressable peers: the `PAPERCUSP_AUTHORITY_PEER_ADDRESSES` env map /
+`configurePeerAddressResolver`), and `authority-rpc-swarm-wiring.ts` boot-wires it
+behind flag `papercusp-authority-rpc-protomux`.
+
+The flag is **DEFAULT OFF** (in `KNOWN_DARK_FLAGS`): the cross-machine path is
+real-hardware-unverified (the in-process two-instance loopback
+`__tests__/authority-rpc-swarm-loopback.test.ts` proves serialization at one
+authority store, but reachability/NAT/latency need two machines — plan P-003,
+`needs-human`). OFF is byte-identical to before: no flag → HTTP-only → no address
+→ every remote-authority op fails open (D-004) with a loud warning. Flipping the
+flag ON is the one remaining act, gated on the two-machine serialization proof.
 
 ## Tests
 

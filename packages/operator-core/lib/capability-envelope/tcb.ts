@@ -27,9 +27,10 @@
  *
  * Already covered by the existing protected set (so deliberately NOT repeated
  * here — pinned by the same policy under broader patterns):
- *   - the credential / auth perimeter — under `**/auth/**` + `**/credentials/**`.
- *   - the file-lock authority a write capability coordinates through — under
- *     `libs/papercusp/packages/locks/**`.
+ *   - the credential / auth perimeter — under the existing auth + credentials
+ *     globs in policy.ts.
+ *   - the file-lock authority a write capability coordinates through — under the
+ *     existing locks-package glob in policy.ts.
  *
  * Pure constant (no imports, no runtime) so the safety policy can import it
  * without pulling in the dispatch runtime.

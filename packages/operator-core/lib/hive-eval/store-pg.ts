@@ -7,7 +7,14 @@
  * RESETS the row to a fresh attempt rather than colliding. Scoring is HE-06's table.
  */
 import postgres from 'postgres';
-import type { HiveEvalStore, HiveEvalRunFinish, HiveEvalRunRow, HiveEvalScenarioRow, InstanceManifest } from './store';
+import type {
+  HiveEvalStore,
+  HiveEvalRunFinish,
+  HiveEvalRunRow,
+  HiveEvalScenarioRow,
+  HiveEvalScoreRow,
+  InstanceManifest,
+} from './store';
 
 export class HiveEvalStorePg implements HiveEvalStore {
   constructor(private sql: postgres.Sql) {}
@@ -89,6 +96,84 @@ export class HiveEvalStorePg implements HiveEvalStore {
         trace_ref = ${fields.traceRef || null}
       WHERE run_id = ${runId}
     `;
+  }
+
+  async upsertScore(row: HiveEvalScoreRow): Promise<void> {
+    // Idempotent (beekeeper pattern): the PK is (run_id, rubric_hash). Re-scoring the same run
+    // under the same rubric OVERWRITES; a rubric change writes a distinct row, so scores under
+    // different rubrics never mix (migration 267).
+    await this.sql`
+      INSERT INTO harness_shared.hive_eval_scores
+        (run_id, rubric_hash, rubric_version, outcome_gate_passed, efficiency_score, speed_score,
+         composite, judge_composite, regressions, planted_bug_caught, fabrication_detected,
+         critical_path_ratio, floor_ceiling, detail)
+      VALUES
+        (${row.runId}, ${row.rubricHash}, ${row.rubricVersion}, ${row.outcomeGatePassed},
+         ${row.efficiencyScore}, ${row.speedScore}, ${row.composite}, ${row.judgeComposite ?? null},
+         ${row.regressions}, ${row.plantedBugCaught}, ${row.fabricationDetected},
+         ${row.criticalPathRatio}, ${row.floorCeiling}, ${this.sql.json(row.detail as postgres.JSONValue)})
+      ON CONFLICT (run_id, rubric_hash) DO UPDATE SET
+        rubric_version = EXCLUDED.rubric_version,
+        outcome_gate_passed = EXCLUDED.outcome_gate_passed,
+        efficiency_score = EXCLUDED.efficiency_score,
+        speed_score = EXCLUDED.speed_score,
+        composite = EXCLUDED.composite,
+        judge_composite = EXCLUDED.judge_composite,
+        regressions = EXCLUDED.regressions,
+        planted_bug_caught = EXCLUDED.planted_bug_caught,
+        fabrication_detected = EXCLUDED.fabrication_detected,
+        critical_path_ratio = EXCLUDED.critical_path_ratio,
+        floor_ceiling = EXCLUDED.floor_ceiling,
+        detail = EXCLUDED.detail,
+        scored_at = now()
+    `;
+  }
+
+  async getScore(runId: string, rubricHash: string): Promise<HiveEvalScoreRow | null> {
+    const rows = await this.sql<
+      Array<{
+        run_id: string;
+        rubric_hash: string;
+        rubric_version: string;
+        outcome_gate_passed: boolean;
+        efficiency_score: string;
+        speed_score: string;
+        composite: string;
+        judge_composite: string | null;
+        regressions: boolean;
+        planted_bug_caught: boolean;
+        fabrication_detected: boolean;
+        critical_path_ratio: string;
+        floor_ceiling: string;
+        detail: unknown;
+        scored_at: Date;
+      }>
+    >`
+      SELECT run_id, rubric_hash, rubric_version, outcome_gate_passed, efficiency_score, speed_score,
+             composite, judge_composite, regressions, planted_bug_caught, fabrication_detected,
+             critical_path_ratio, floor_ceiling, detail, scored_at
+      FROM harness_shared.hive_eval_scores
+      WHERE run_id = ${runId} AND rubric_hash = ${rubricHash}
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      runId: r.run_id,
+      rubricHash: r.rubric_hash,
+      rubricVersion: r.rubric_version,
+      outcomeGatePassed: r.outcome_gate_passed,
+      efficiencyScore: Number(r.efficiency_score),
+      speedScore: Number(r.speed_score),
+      composite: Number(r.composite),
+      judgeComposite: r.judge_composite == null ? undefined : Number(r.judge_composite),
+      regressions: r.regressions,
+      plantedBugCaught: r.planted_bug_caught,
+      fabricationDetected: r.fabrication_detected,
+      criticalPathRatio: Number(r.critical_path_ratio),
+      floorCeiling: Number(r.floor_ceiling),
+      detail: r.detail,
+      scoredAt: r.scored_at,
+    };
   }
 }
 
