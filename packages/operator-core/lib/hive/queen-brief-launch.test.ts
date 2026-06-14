@@ -10,11 +10,14 @@ const summarizeOpenPlacements = vi.fn(
   async (..._a: unknown[]) => ({ recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] as unknown[] }),
 );
 const gatherFleetSignals = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
+const gatherCompletions = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 vi.mock('./survey', () => ({ surveyHive: (...a: unknown[]) => surveyHive(...a) }));
 vi.mock('./wake', () => ({ getHiveCarryNote: (...a: unknown[]) => getHiveCarryNote(...a) }));
 vi.mock('./placement-watchdog', () => ({ summarizeOpenPlacements: (...a: unknown[]) => summarizeOpenPlacements(...a) }));
 vi.mock('../curation/fleet-signals', () => ({ gatherFleetSignals: (...a: unknown[]) => gatherFleetSignals(...a) }));
 vi.mock('../curation/deps', () => ({ buildFleetReaders: () => ({}) }));
+vi.mock('../curation/change-feed', () => ({ gatherCompletions: (...a: unknown[]) => gatherCompletions(...a) }));
+vi.mock('../curation/change-feed-deps', () => ({ buildChangeFeedReaders: () => ({}) }));
 
 const { computeQueenWakeBrief } = await import('./queen-brief-launch');
 
@@ -52,6 +55,25 @@ test('computeQueenWakeBrief — fleet escalations flow into the floor (P-007); a
   const out2 = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(out2, 'the brief survives a failed escalations read');
   assert.doesNotMatch(out2!, /### Open escalations/);
+});
+
+test('computeQueenWakeBrief — change-feed (steering digest) flows into the floor (P-007); fail-soft', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getHiveCarryNote.mockResolvedValue(null);
+  gatherCompletions.mockResolvedValue([
+    { id: 'c1', kind: 'completion', title: 'wi-080 shipped', ref: 'wi:080', ts: '2026-06-14' },
+    { id: 'c2', kind: 'plan-run', title: 'plan-x run finished', ref: 'plan:x', ts: '2026-06-14' },
+  ]);
+  const out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out);
+  assert.match(out!, /### Change feed/);
+  assert.match(out!, /completion: wi-080 shipped/);
+  assert.match(out!, /plan-run: plan-x run finished/);
+
+  gatherCompletions.mockRejectedValueOnce(new Error('change-feed pg down'));
+  const out2 = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out2, 'the brief survives a failed change-feed read');
+  assert.doesNotMatch(out2!, /### Change feed/);
 });
 
 test('computeQueenWakeBrief — empty floor + no carry-note still renders (skip-the-survey signal)', async () => {
