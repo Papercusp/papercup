@@ -26,6 +26,7 @@ import {
   materializeBlueprintTriggers,
   SINGLETON_TRIGGER_HOST_SLUG,
 } from '@papercusp/operator-core/lib/blueprint/materialize-triggers';
+import { materializeLearningSingletons } from '@papercusp/operator-core/lib/blueprint/seed-learning-singletons';
 
 let adminUri: string;
 let dbName: string;
@@ -301,6 +302,54 @@ describe('materializeBlueprintTriggers — workspace-singleton triggers (D-018)'
     expect(db[0].target_role).toBe('system:blueprint-run');
     expect(db[0].trigger_config.cron).toBe('0 5 4 * * *'); // byte-identical cadence to the seed
     expect(db[0].payload_template?.blueprintId).toBe('graduation');
+  });
+});
+
+describe('materializeLearningSingletons — the seed-replacement cutover (P-144)', () => {
+  const seedLegacyGraduation = (active: boolean) => sql`
+    INSERT INTO harness_shared.routines
+      (id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template, active, workspace_id)
+    VALUES ('rt_papercup_graduation-scan', 'papercup', 'graduation-scan', 'cron',
+            ${JSON.stringify({ cron: '0 5 4 * * *' })}::text::jsonb, 'system:blueprint-run',
+            ${JSON.stringify({ blueprintId: 'graduation' })}::text::jsonb, ${active}, ${WS})`;
+
+  it('execute + retire-legacy: creates the dark @singleton row and deletes the DARK legacy papercup row', async () => {
+    await seedLegacyGraduation(false); // the post-EI-498 live shape: dark, repointed to blueprint-run
+    const res = await materializeLearningSingletons(sql, WS, { only: 'graduation', execute: true, retireLegacy: true });
+    expect(res).toHaveLength(1);
+    expect(res[0].declaresSingleton).toBe(true);
+    expect(res[0].materialized?.[0]?.name).toBe('bp-singleton-graduation-0');
+    expect(res[0].legacy.deleted).toBe(true);
+
+    const sing = await sql<{ active: boolean; bp: string | null }[]>`
+      SELECT active, payload_template->>'blueprintId' AS bp
+        FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG} AND name='bp-singleton-graduation-0'`;
+    expect(sing).toHaveLength(1);
+    expect(sing[0].active).toBe(false); // dark
+    expect(sing[0].bp).toBe('graduation'); // fires the right program
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    expect(legacy).toHaveLength(0); // legacy retired
+  });
+
+  it('active-loop guard: NEVER deletes an ACTIVE legacy row — keeps it, still materializes', async () => {
+    await seedLegacyGraduation(true); // an ACTIVE legacy row (the change-ledger/scout/iq-battery class)
+    const res = await materializeLearningSingletons(sql, WS, { only: 'graduation', execute: true, retireLegacy: true });
+    expect(res[0].legacy.keptActive).toBe(true);
+    expect(res[0].legacy.deleted).toBe(false);
+    const legacy = await sql<{ active: boolean }[]>`
+      SELECT active FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    expect(legacy).toHaveLength(1); // NOT deleted
+    expect(legacy[0].active).toBe(true);
+  });
+
+  it('dry-run writes nothing', async () => {
+    await seedLegacyGraduation(false);
+    const res = await materializeLearningSingletons(sql, WS, { only: 'graduation', execute: false, retireLegacy: true });
+    expect(res[0].materialized).toBeUndefined();
+    const sing = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
+    expect(sing).toHaveLength(0); // nothing created
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE name='graduation-scan'`;
+    expect(legacy).toHaveLength(1); // nothing deleted
   });
 });
 

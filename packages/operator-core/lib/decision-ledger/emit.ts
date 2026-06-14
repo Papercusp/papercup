@@ -186,8 +186,16 @@ async function recordDecisionLedgerImpl(event: PostInvokeEvent): Promise<void> {
       );
     });
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[decision-ledger] insert failed: ${err instanceof Error ? err.message : String(err)}`);
+    // 42P01 = undefined_table: harness_shared.decision_ledger is absent in isolated
+    // test/e2e PG fixtures (no migrations run there). This emit is fire-and-forget
+    // bookkeeping that degrades gracefully, so the missing-table case is expected —
+    // swallow it silently (otherwise vitest-fail-on-console reds every e2e that
+    // drives a governed dispatch). Warn loudly on any real insert failure. Mirrors
+    // the expirable-registry.ts / work-items.ts 42P01-swallow precedent. (EI-499)
+    if ((err as { code?: string })?.code !== '42P01') {
+      // eslint-disable-next-line no-console
+      console.warn(`[decision-ledger] insert failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 
