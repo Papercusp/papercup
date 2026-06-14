@@ -20,6 +20,11 @@ vi.mock('@papercusp/sync', () => ({
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }) }));
 
+// The armed banner reads the autonomy arming flag; mock the hook so the page
+// renders deterministically without the flag bootstrap / SSE stream.
+const flagMock = vi.fn(() => true);
+vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => flagMock() }));
+
 // Self-contained nuqs stand-in (no NuqsAdapter needed): useState-backed.
 vi.mock('nuqs', async () => {
   const React = await import('react');
@@ -75,6 +80,7 @@ const ROWS = [
 
 beforeEach(() => {
   mutateMock.mockClear();
+  flagMock.mockReturnValue(true);
   syncResult = { data: ROWS, loading: false, error: null };
 });
 afterEach(cleanup);
@@ -86,6 +92,16 @@ describe('AutonomySettingsPage', () => {
     expect(screen.getByText('Implementation')).toBeTruthy();
     expect(screen.getByText('Release & deploy')).toBeTruthy();
     expect(screen.getByText('Protected')).toBeTruthy();
+  });
+
+  it('reflects the autonomy arming flag in the status banner', () => {
+    flagMock.mockReturnValue(true);
+    const armed = render(<AutonomySettingsPage />);
+    expect(screen.getByText('Autonomy is armed.')).toBeTruthy();
+    armed.unmount();
+    flagMock.mockReturnValue(false);
+    render(<AutonomySettingsPage />);
+    expect(screen.getByText('Autonomy is not armed.')).toBeTruthy();
   });
 
   it('explains why effective is None even when a ceiling is set (the D-005 case)', () => {

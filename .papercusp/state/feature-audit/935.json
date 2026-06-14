@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781457915933-af41850d",
+  "feature_id": "F-FIX-022",
+  "field": "__created",
+  "id": 935,
+  "new_value": "{\"id\":\"F-FIX-022\",\"title\":\"tauri-agent-tools `screenshot` is Wayland-only — fails on an X11 Xvfb agent-e2e instance\",\"sourceIssueId\":\"EI-576\"}",
+  "old_value": "null",
+  "ts": 1781458441555
+}

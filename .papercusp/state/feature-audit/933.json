@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781457915933-af41850d",
+  "feature_id": "F-FIX-020",
+  "field": "__created",
+  "id": 933,
+  "new_value": "{\"id\":\"F-FIX-020\",\"title\":\"Agent-chat (working tab) silently swallows a failed turn — thinking cursor vanishes, no reply, no error\",\"sourceIssueId\":\"EI-577\"}",
+  "old_value": "null",
+  "ts": 1781458440774
+}

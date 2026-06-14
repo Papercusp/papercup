@@ -302,14 +302,22 @@ export function ColumnFilterBar<TRow>({
           value={ADD_FILTER}
           onChange={(key) => {
             if (key === ADD_FILTER) return;
-            // Open the editor on the NEXT frame, not synchronously inside the
+            // Open the editor on a fresh MACROTASK, not synchronously inside the
             // Select's onValueChange. Opening the editor Popover in the same
-            // click gesture lets the Select's closing pointer event land on the
-            // freshly-mounted Popover's dismissable layer as an "outside"
+            // click gesture lets the Select's closing pointer/focus events land
+            // on the freshly-mounted Popover's dismissable layer as an "outside"
             // interaction, which dismisses it instantly — the "clicking + Add
-            // filter does nothing" bug. Deferring one frame lets the Select fully
-            // close + settle focus first, so the editor Popover stays open.
-            requestAnimationFrame(() => setEditingKey(key));
+            // filter does nothing" bug.
+            //
+            // A `requestAnimationFrame` defer is NOT enough: rAF runs before the
+            // next paint, which on Chromium is still inside the same task tail as
+            // the Select's trailing pointerup/focusout dispatch, so the Popover
+            // opens and is dismissed in the same gesture (verified in
+            // e2e/adv-work-items-filter.spec.ts — rAF reproduces the bug, this
+            // setTimeout fixes it). A `setTimeout(0)` schedules a macrotask that
+            // runs AFTER those events have fully drained, so the Select is closed
+            // and the gesture is over before the editor mounts → it stays open.
+            setTimeout(() => setEditingKey(key), 0);
           }}
           ariaLabel="Add a column filter"
           triggerClassName="pc-advpanel__chip"

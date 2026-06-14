@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781457915933-af41850d",
+  "feature_id": "F-FIX-021",
+  "field": "__created",
+  "id": 934,
+  "new_value": "{\"id\":\"F-FIX-021\",\"title\":\"Tripwire arm-call-site never fires: planWorkItemArm fail-safes to critical risk → gated → 0 tripwires armed (no graduation evidence + no auto-revert net)\",\"sourceIssueId\":\"EI-570\"}",
+  "old_value": "null",
+  "ts": 1781458441190
+}

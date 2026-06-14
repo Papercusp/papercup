@@ -17,12 +17,14 @@
  * Inline graduation-eligible prompts (P-032) still need the graduation engine
  * (B-16) and stay a labelled placeholder until that lands.
  */
-import { useCallback, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 import { Checkbox } from '../../harness/Checkbox';
-import { CeilingSlider, CEILING_SHORT_LABEL, type Ceiling } from './CeilingSlider';
+import { CeilingSlider, CEILING_LEVELS, CEILING_SHORT_LABEL, type Ceiling } from './CeilingSlider';
 import RecentAutoDecisions from './RecentAutoDecisions';
 import GraduationPrompts from './GraduationPrompts';
 
@@ -91,6 +93,15 @@ function effectiveSummary(row: PolicyRow): string {
   return `Auto-runs ${CEILING_SHORT_LABEL[row.effectiveCeiling]}-risk and below — the lower of your ceiling (${CEILING_SHORT_LABEL[row.ceiling]}) and the earned level (${CEILING_SHORT_LABEL[row.graduatedLevel]}).`;
 }
 
+/** Lower-of-two ceilings by ordinal (mirrors operator-core `minCeiling`). */
+function minCeiling(a: Ceiling, b: Ceiling): Ceiling {
+  return CEILING_LEVELS.indexOf(a) <= CEILING_LEVELS.indexOf(b) ? a : b;
+}
+/** Effective ceiling = min(ceiling, graduated); never-auto when locked (B-03). */
+function deriveEffective(ceiling: Ceiling, graduated: Ceiling, locked: boolean): Ceiling {
+  return locked ? 'never-auto' : minCeiling(ceiling, graduated);
+}
+
 function levelChipStyle(level: Ceiling): CSSProperties {
   const off = level === 'never-auto';
   return {
@@ -124,6 +135,10 @@ const ROW_GRID: CSSProperties = {
 export default function AutonomySettingsPage() {
   const { data, loading, error } = useSyncQuery<PolicyRow>({ queryName: 'autonomy.policy' });
   const rows = useMemo<PolicyRow[]>(() => data ?? [], [data]);
+  // The master switch (P-092). The whole policy is dormant unless this is on, so
+  // the page must SHOW it — a stale "armed is pending" claim is what hid that
+  // autonomy was already live. Owner flips it via /admin/features, not here.
+  const armed = useFlag(FLAGS.QUEEN_AUTONOMY_ARMED);
 
   const [filter, setFilter] = useQueryState(
     'filter',
@@ -137,14 +152,54 @@ export default function AutonomySettingsPage() {
   );
   const [savingCat, setSavingCat] = useState<string | null>(null);
 
+  // Optimistic overlay — the slider/lock must move on CLICK, not on the SSE
+  // round-trip. Each patch is applied locally the instant the owner clicks, then
+  // reconciled away once the server's autonomy.policy refetch reports the same
+  // value (the effect below); a failed write drops the entry so the row snaps back
+  // to server truth. Without this the dot only moves after the invalidation push,
+  // and a slow/dropped SSE event leaves it stuck until the 180s drift-repair poll —
+  // the "doesn't always work" flakiness.
+  const [optimistic, setOptimistic] = useState<
+    Record<string, Partial<Pick<PolicyRow, 'ceiling' | 'locked'>>>
+  >({});
+
+  // Reconcile: once server rows reflect an optimistic patch, drop it so later
+  // server-driven changes (e.g. a graduation demotion) aren't masked by stale local state.
+  useEffect(() => {
+    setOptimistic((prev) => {
+      if (Object.keys(prev).length === 0) return prev;
+      let changed = false;
+      const next = { ...prev };
+      for (const r of rows) {
+        const o = next[r.category];
+        if (!o) continue;
+        const ceilingOk = o.ceiling === undefined || o.ceiling === r.ceiling;
+        const lockedOk = o.locked === undefined || o.locked === r.locked;
+        if (ceilingOk && lockedOk) {
+          delete next[r.category];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [rows]);
+
   const applyChange = useCallback(
     async (row: PolicyRow, patch: Partial<Pick<PolicySetArgs, 'ceiling' | 'locked'>>, reason: string) => {
+      // Apply optimistically first so the control moves on click.
+      setOptimistic((o) => ({ ...o, [row.category]: { ...o[row.category], ...patch } }));
       setSavingCat(row.category);
       try {
         await setPolicy({ category: row.category, reason, ...patch });
-        // The write fires notifySyncInvalidate('autonomy.policy') server-side, so
-        // useSyncQuery refetches the new row — no optimistic local state needed.
+        // The server fires notifySyncInvalidate('autonomy.policy'); the refetch
+        // reconciles (and clears) the optimistic entry via the effect above.
       } catch (err) {
+        // Roll back to server truth on failure.
+        setOptimistic((o) => {
+          const next = { ...o };
+          delete next[row.category];
+          return next;
+        });
         toast.error(`Couldn't update ${row.label}: ${err instanceof Error ? err.message : 'failed'}`);
       } finally {
         setSavingCat(null);
@@ -172,12 +227,26 @@ export default function AutonomySettingsPage() {
     void applyChange(row, { locked: checked }, `Owner ${checked ? 'locked' : 'unlocked'} ${row.label}`);
   };
 
+  // Server rows with any pending optimistic patch applied (ceiling/lock + the
+  // derived effective level), so the table reflects clicks immediately.
+  const mergedRows = useMemo<PolicyRow[]>(
+    () =>
+      rows.map((r) => {
+        const o = optimistic[r.category];
+        if (!o) return r;
+        const ceiling = o.ceiling ?? r.ceiling;
+        const locked = o.locked ?? r.locked;
+        return { ...r, ceiling, locked, effectiveCeiling: deriveEffective(ceiling, r.graduatedLevel, locked) };
+      }),
+    [rows, optimistic],
+  );
+
   const visible = useMemo(
     () =>
-      rows.filter((r) =>
+      mergedRows.filter((r) =>
         filter === 'all' ? true : filter === 'protected' ? r.protected : !r.protected,
       ),
-    [rows, filter],
+    [mergedRows, filter],
   );
 
   return (
@@ -186,10 +255,40 @@ export default function AutonomySettingsPage() {
       <p className="pc-settings-intro">
         Per-category ceilings for what the Papercup Queen may decide on her own versus escalate to
         you. Nothing auto-runs until you raise a category’s ceiling <em>and</em> it earns a track
-        record within that cap — and the whole policy stays off until autonomy is armed (still
-        pending). Protected categories (release &amp; deploy, spend, credentials, system control) are
-        locked at never-auto.
+        record within that cap — and the whole policy only takes effect while autonomy is armed.
+        Protected categories (release &amp; deploy, spend, credentials, system control) are locked at
+        never-auto.
       </p>
+
+      <div
+        role="status"
+        style={{
+          marginBottom: 16,
+          padding: '10px 14px',
+          borderRadius: 8,
+          fontSize: 13,
+          lineHeight: 1.45,
+          border: `1px solid ${armed ? 'var(--accent)' : 'var(--border)'}`,
+          background: armed
+            ? 'color-mix(in srgb, var(--accent), transparent 88%)'
+            : 'var(--bg-2)',
+          color: 'var(--fg)',
+        }}
+      >
+        {armed ? (
+          <>
+            <strong>Autonomy is armed.</strong> Categories whose <em>Effective</em> level is above{' '}
+            <em>None</em> can auto-run now (decisions at that risk and below, reversible, not
+            owner-only). Lower a ceiling or lock a category to pull it back.
+          </>
+        ) : (
+          <>
+            <strong>Autonomy is not armed.</strong> Nothing auto-runs regardless of the ceilings
+            below — every decision still routes to you. Arming is the master switch (flag{' '}
+            <code>papercusp-queen-autonomy-armed</code>, set in <code>/admin/features</code>).
+          </>
+        )}
+      </div>
 
       {error && (
         <p role="alert" style={{ color: 'var(--bad)', marginBottom: 16, fontSize: 13 }}>

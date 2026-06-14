@@ -8,6 +8,11 @@
  * after the stream closed, clobbering the error state the loop had just set. The
  * user saw the "thinking" indicator appear then vanish with no reply and no
  * error. This pins that the inline error banner appears AND stays.
+ *
+ * Also covers the follow-up gap: a stream that closes with NEITHER a `done` nor
+ * an `error` event (operator recycle / OOM / network drop). No failure marker
+ * is persisted server-side, so the panel must surface the gap itself instead of
+ * resetting to idle — same vanish symptom, different cause.
  */
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -112,6 +117,71 @@ describe('ChatPanel — failed turn (EI-577)', () => {
       ([u]) => typeof u === 'string' && u.includes('/messages'),
     );
     expect(messageCalls.length).toBe(1);
+  });
+
+  it('surfaces an error when the stream closes with no done/error event (dropped connection)', async () => {
+    // Operator recycle / OOM / network blip: the SSE body closes WITHOUT a
+    // terminal `done` or `error`. The server never persisted a failure marker,
+    // so the panel itself must surface the gap instead of resetting to idle.
+    syncRows = [chatRow()];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/messages')) {
+        // Heartbeat only, then the connection drops — no done, no error.
+        return new Response(sseStream([': hb\n\n']), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }
+      return new Response(JSON.stringify(chatRow()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+    const textarea = await screen.findByPlaceholderText(/Message worker/i);
+    fireEvent.change(textarea, { target: { value: 'what happened?' } });
+    fireEvent.submit(textarea.closest('form')!);
+
+    const banner = await screen.findByRole('alert');
+    expect(banner.textContent).toMatch(/connection closed|restarted/i);
+
+    // Stays put — not clobbered by a post-stream idle reset.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByRole('alert')?.textContent).toMatch(/connection closed|restarted/i);
+
+    // No post-error refetch fired (the live subscription backfills if needed).
+    const refetches = fetchMock.mock.calls.filter(
+      ([u]) => typeof u === 'string' && u.includes('/agent-chats/') && !u.includes('/messages'),
+    );
+    expect(refetches.length).toBe(0);
+  });
+
+  it('flags an incomplete reply when the stream drops mid-delta', async () => {
+    // Partial text streamed, then the connection drops before `done`.
+    syncRows = [chatRow()];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/messages')) {
+        return new Response(
+          sseStream([`event: delta\ndata: ${JSON.stringify({ text: 'Looking at the' })}\n\n`]),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }
+      return new Response(JSON.stringify(chatRow()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+    const textarea = await screen.findByPlaceholderText(/Message worker/i);
+    fireEvent.change(textarea, { target: { value: 'what happened?' } });
+    fireEvent.submit(textarea.closest('form')!);
+
+    const banner = await screen.findByRole('alert');
+    expect(banner.textContent).toMatch(/incomplete/i);
   });
 
   it('renders a persisted failure-marker turn distinctly on load', async () => {

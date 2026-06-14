@@ -1824,12 +1824,29 @@ impl App {
     /// bump the badge + the OS-notify sequence. The proper "ping the human"
     /// channel — driven by `attention.notify` SSE events, which are already
     /// importance-gated at the source.
+    ///
+    /// Exception: coord *escalation* entries are agent↔agent coordination events
+    /// the human-facing inbox forwards. As a popup they're pure noise — the SAME
+    /// escalation flashes in EVERY pinned dock pane (owner report 2026-06-14).
+    /// They still land in history (reachable via `N`) and bump the unseen badge,
+    /// but they never raise the transient toast or the OS desktop notification.
+    /// Leaving both the toast and `notif_seq` untouched suppresses BOTH popup
+    /// channels — the run loop only fires `os_notify` when a fresh notif bumps
+    /// `notif_seq` AND a toast is present.
     pub fn push_notif(&mut self, n: Notif) {
-        self.toast = Some(n.clone());
+        if !Self::is_escalation_level(&n.level) {
+            self.toast = Some(n.clone());
+            self.notif_seq += 1;
+        }
         self.notifs.insert(0, n);
         self.notifs.truncate(NOTIF_HISTORY_CAP);
         self.unseen_notifs += 1;
-        self.notif_seq += 1;
+    }
+
+    /// True for coord escalation notifications ("escalation" / "coord-escalation").
+    /// These are recorded in history but never popped as a toast / OS notification.
+    fn is_escalation_level(level: &str) -> bool {
+        level.to_ascii_lowercase().contains("escalation")
     }
 
     /// Backfill notification history from `/api/toast-log` (no toast/badge bump).
@@ -7623,6 +7640,29 @@ mod tests {
         assert_eq!(a.unseen_notifs, 1);
         assert_eq!(a.toast.as_ref().unwrap().message, "Decide P-002");
         assert_eq!(a.notifs.len(), 1);
+    }
+
+    #[test]
+    fn escalation_notif_records_history_but_never_pops() {
+        let mut a = App::new();
+        // An escalation lands in history + bumps the unseen badge, but raises
+        // NO toast and does NOT bump notif_seq (so the run loop skips os_notify).
+        a.update(Event::Notify(notif("escalation", "s-178: escalation")));
+        assert_eq!(a.notifs.len(), 1);
+        assert_eq!(a.notifs[0].message, "s-178: escalation");
+        assert_eq!(a.unseen_notifs, 1);
+        assert!(a.toast.is_none(), "escalation must not raise a toast popup");
+        assert_eq!(a.notif_seq, 0, "escalation must not bump the OS-notify seq");
+        // The coord-escalation variant is suppressed the same way.
+        a.update(Event::Notify(notif("coord-escalation", "x: esc")));
+        assert!(a.toast.is_none());
+        assert_eq!(a.notif_seq, 0);
+        // A non-escalation notif still toasts + bumps seq as before — and must
+        // not be masked by the escalation currently sitting in front of history.
+        a.update(Event::Notify(notif("high", "Decide P-002")));
+        assert_eq!(a.toast.as_ref().unwrap().message, "Decide P-002");
+        assert_eq!(a.notif_seq, 1);
+        assert_eq!(a.unseen_notifs, 3);
     }
 
     #[test]
