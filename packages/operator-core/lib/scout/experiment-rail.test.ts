@@ -26,6 +26,7 @@ const decision = (proposalId: string, rail: RoutingDecision['rail']): RoutingDec
   rail,
   routedRef: '',
   reason: '',
+  followedHint: false,
 });
 
 describe('proposalToExperimentRequest', () => {

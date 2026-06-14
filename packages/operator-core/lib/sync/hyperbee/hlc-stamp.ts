@@ -39,12 +39,22 @@ import { encodeHlc, decodeHlc, processHlc, type HlcClock } from '@papercusp/lock
  * interleave their stamps and break per-peer causal ordering (the two cells'
  * concurrent drains would race the same counter). Defaults to `processHlc()`.
  */
-export function stampOpHlc<T extends { hlc?: string }>(
+export function stampOpHlc<T extends { hlc?: string; ts?: number }>(
   op: T,
   clock: HlcClock = processHlc(),
 ): T & { hlc: string } {
   if (op.hlc) return op as T & { hlc: string };
-  return { ...op, hlc: encodeHlc(clock.now()) };
+  // Seed the HLC's physical component from the op's OWN recorded `ts` (the
+  // write/capture time), NOT the wall clock at stamp time. The op is stamped at
+  // DRAIN, which can be later than — and in a different order than — the writes,
+  // so a bare `clock.now()` orders by drain-interleave instead of write order.
+  // The projection's PG LWW guard orders by `fed_ts` (the write time); seeding
+  // the HLC from the same write-time `ts` keeps the merge's HLC order consistent
+  // with that guard, so a fold-winner is never silently rejected at PG (the
+  // split-brain cross-cell DIVERGENCE). `send(physicalNow)` is built for exactly
+  // this ("seed from an event's own recorded ms") and stays monotone via
+  // bumpCount when `ts` is in the past. Undefined `ts` → falls back to now().
+  return { ...op, hlc: encodeHlc(clock.now(op.ts)) };
 }
 
 /**
