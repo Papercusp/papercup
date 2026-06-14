@@ -16,7 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { listPresence } from '../agent-tools/coordination/presence';
 import { groupByAgent, listFleetAssignments } from './assignments';
 import { getWorkItem, listWorkItems, type WorkItem } from '../work-items';
-import { isAutoPickable } from '../work-items-admission';
+import { isAutoPickable, loadTrustedGithubUserIds } from '../work-items-admission';
 import type { PlacementBee, PlacementTask } from './placement-affinity';
 // Reuse the SAME readiness the survey + DBOS orchestrator dispatch by (D-007's
 // shared seam: filterReadyFrontier → selectReady over getFeatureBlockers). No
@@ -233,6 +233,12 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
   const skipped: { id: string; reason: string }[] = [];
   let candidates: PlacementTask[];
 
+  // P-008 trust fast-path (consumer side of P-010): a remote+un-admitted item is
+  // also placeable when its VERIFIED author is in this workspace's local trust
+  // list. Loaded once, workspace-scoped (D-004) — the SQL claim paths already do
+  // the equivalent via autoPickableWhereSql(sql, workspaceId).
+  const trustedAuthors = await loadTrustedGithubUserIds(opts.workspaceId);
+
   if (opts.ids && opts.ids.length > 0) {
     candidates = [];
     for (const id of opts.ids.slice(0, opts.limit)) {
@@ -252,7 +258,7 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
       // G2 admission (shared-hive-trust-admission P-005): the Queen must not place a remote,
       // un-admitted item even by explicit id — it stays quarantined until the auditor admits
       // it (or its author is trusted, Phase 3).
-      if (!isAutoPickable(wi.origin, wi.auditVerdict)) {
+      if (!isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trustedAuthors)) {
         skipped.push({ id, reason: 'remote work not yet auditor-admitted (quarantined)' });
         continue;
       }
@@ -263,7 +269,12 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
     const items = await listWorkItems({ harness: opts.harness, limit: Math.min(opts.limit * 3, 500) });
     candidates = items
       // G2 admission (P-005): exclude remote, un-admitted work from placement candidates.
-      .filter((wi) => !wi.assignee && !TERMINAL_STATES.has(wi.state) && isAutoPickable(wi.origin, wi.auditVerdict))
+      .filter(
+        (wi) =>
+          !wi.assignee &&
+          !TERMINAL_STATES.has(wi.state) &&
+          isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trustedAuthors),
+      )
       .sort((a, b) => {
         const pa = a.priority ?? Number.POSITIVE_INFINITY;
         const pb = b.priority ?? Number.POSITIVE_INFINITY;

@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import type { HarnessFeatureRow } from './sync/hyperbee/projections/harness-features';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -27,6 +28,8 @@ vi.mock('./workspace-registry', async () => {
 
 const { claimNextWorkItem, claimWorkItem, listWorkItems } = await import('./work-items');
 const { claimReplicaSlot } = await import('./work-item-redundancy');
+const { resolveVerifiedAuthorGithubId } = await import('./work-items-admission');
+const { buildHarnessFeaturesProjection } = await import('./sync/hyperbee/projections/harness-features');
 
 const WS = 'default';
 const HARNESS = 'h1';
@@ -38,16 +41,39 @@ const HFC_DDL = `
     feature_id text NOT NULL,
     title text, summary text, status text DEFAULT 'todo',
     item_kind text DEFAULT 'feature',
+    attempts integer, claims integer,
+    notes text, metadata jsonb, kind text, project_id text,
+    expected_cost_cents integer, tags jsonb, needs_human_review boolean,
+    ts bigint, goal_id text, expires_at timestamptz,
     taken_by text, taken_at timestamptz,
     parent_id text, payload jsonb,
     assignee_rank integer, rank_writer text, rank_updated_at timestamptz,
     swarm_affinity text, feature_order integer,
     redundancy integer,
+    author_pubkey text, fed_ts bigint,
     origin text NOT NULL DEFAULT 'local',
     audit_verdict text,
     verified_author_github_user_id bigint,
     created_ts bigint, updated_ts bigint,
     PRIMARY KEY (harness_slug, feature_id))`;
+
+// P-008: the admission records the verified-author resolver reads. Minimal shape
+// mirroring harness_shared.hive_members (migration 185): a member's bound devices
+// (device_attestations jsonb array of {device_pubkey,...}) + the revoked blocklist
+// + binding_status. The resolver returns github_user_id ONLY for a verified,
+// non-revoked, attested pubkey.
+const HIVE_MEMBERS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.hive_members (
+    workspace_id text NOT NULL,
+    hive_home_slug text NOT NULL,
+    github_user_id bigint NOT NULL,
+    github_username text NOT NULL,
+    display_name text, avatar_url text,
+    device_attestations jsonb,
+    revoked_pubkeys text[],
+    binding_status text NOT NULL DEFAULT 'unverified',
+    joined_at bigint,
+    PRIMARY KEY (workspace_id, hive_home_slug, github_user_id))`;
 
 // Phase 3 / P-009: the owner-keyed LOCAL trust list the admission predicate consults.
 const USER_TRUST_LIST_DDL = `
@@ -113,6 +139,7 @@ beforeAll(async () => {
   await db.sql.unsafe(REPLICAS_DDL);
   await db.sql.unsafe(ISSUES_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await db.sql.unsafe(HIVE_MEMBERS_DDL);
 }, 60_000);
 
 afterAll(async () => {
@@ -123,6 +150,7 @@ beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.harness_features_consolidated`;
   await db.sql`DELETE FROM harness_shared.work_item_replicas`;
   await db.sql`DELETE FROM harness_shared.user_trust_list`;
+  await db.sql`DELETE FROM harness_shared.hive_members`;
 });
 
 /** Seed a feature with a VERIFIED author id (what P-008 stamps) — for the trust-leg cases. */
@@ -138,6 +166,71 @@ function trust(githubId: number, ws: string = WS) {
   return h.sql`
     INSERT INTO harness_shared.user_trust_list (workspace_id, trusted_github_user_id, created_ts)
     VALUES (${ws}, ${githubId}, 1)`;
+}
+
+/** Seed a hive_members admission row (P-008 producer source). `pubkeys` become
+ *  device_attestations; `revoked` go on revoked_pubkeys; `binding` is the binding_status. */
+function seedMember(
+  githubId: number,
+  pubkeys: string[],
+  binding: 'verified' | 'pending' | 'unverified',
+  revoked: string[] = [],
+  hive = 'hive-a',
+  ws: string = WS,
+) {
+  const attestations = pubkeys.map((pk, i) => ({
+    device_pubkey: pk,
+    gist_id: `g${i}`,
+    gist_url: 'u',
+    device_label: 'd',
+    created_at: 1,
+    signature_by_device: 's',
+  }));
+  return h.sql`
+    INSERT INTO harness_shared.hive_members
+      (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status, joined_at)
+    VALUES (${ws}, ${hive}, ${githubId}, ${'user' + githubId}, ${JSON.stringify(attestations)}::text::jsonb, ${revoked}, ${binding}, 1)`;
+}
+
+/** A minimal valid HarnessFeatureRow for driving the projection's writeToPg. */
+function featureRow(fid: string): HarnessFeatureRow {
+  return {
+    harness_slug: HARNESS,
+    feature_id: fid,
+    title: fid,
+    summary: '',
+    status: 'todo',
+    attempts: 0,
+    claims: 0,
+    notes: null,
+    metadata: null,
+    kind: null,
+    project_id: null,
+    expected_cost_cents: null,
+    tags: null,
+    needs_human_review: false,
+    ts: 1,
+    created_ts: 1,
+    updated_ts: 1,
+    parent_id: null,
+    goal_id: null,
+    taken_by: null,
+    taken_at: null,
+    expires_at: null,
+    item_kind: 'feature',
+    feature_order: null,
+    swarm_affinity: null,
+    redundancy: null,
+    payload: null,
+  } as unknown as HarnessFeatureRow;
+}
+
+async function verifiedCol(fid: string): Promise<number | null> {
+  const rows = await h.sql<{ v: string | number | null }[]>`
+    SELECT verified_author_github_user_id AS v FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${HARNESS} AND feature_id = ${fid}`;
+  const v = rows[0]?.v;
+  return v == null ? null : Number(v);
 }
 
 describe('G2 admission gate — every claim path (real PG)', () => {
@@ -239,5 +332,73 @@ describe('G2 trust leg — owner-keyed LOCAL trust list (Phase 3 / P-010, real P
     await trust(42);
     const ok = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-TRUSTED', owner: 'bee' });
     expect(ok.ok).toBe(true);
+  });
+});
+
+// P-008 — the PRODUCER of verified_author_github_user_id. Each case is a security
+// assertion: a wrong resolution would let un-screened foreign work auto-run (D-002).
+describe('P-008 — resolveVerifiedAuthorGithubId (verified-attestation resolver, real PG)', () => {
+  it('resolves a VERIFIED, non-revoked, attested pubkey to its github_user_id', async () => {
+    await seedMember(42, ['pk-verified'], 'verified');
+    expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: 'pk-verified' })).toBe(42);
+  });
+  it('REFUSES a revoked pubkey (a verifier MUST refuse a revoked attestation) → null', async () => {
+    await seedMember(42, ['pk-revoked'], 'verified', ['pk-revoked']);
+    expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: 'pk-revoked' })).toBeNull();
+  });
+  it('REFUSES an unverified/pending binding → null', async () => {
+    await seedMember(42, ['pk-pending'], 'pending');
+    expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: 'pk-pending' })).toBeNull();
+  });
+  it('REFUSES a pubkey with no attestation (never a self-claimed id) → null', async () => {
+    await seedMember(42, ['pk-other'], 'verified');
+    expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: 'pk-unknown' })).toBeNull();
+  });
+  it('is WORKSPACE-scoped — a verified attestation in another workspace does NOT resolve here', async () => {
+    await seedMember(42, ['pk-verified'], 'verified', [], 'hive-a', 'other-ws');
+    expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: 'pk-verified' })).toBeNull();
+  });
+  it('handles NULL revoked_pubkeys / device_attestations without error', async () => {
+    await h.sql`
+      INSERT INTO harness_shared.hive_members
+        (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status, joined_at)
+      VALUES (${WS}, 'hive-a', 7, 'u7', ${JSON.stringify([{ device_pubkey: 'pk-7' }])}::text::jsonb, NULL, 'verified', 1)`;
+    expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: 'pk-7' })).toBe(7);
+    expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: '' })).toBeNull();
+  });
+});
+
+describe('P-008 — projection stamp (producer wiring → the gate), real PG', () => {
+  const proj = () => buildHarnessFeaturesProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: h.sql });
+
+  it('stamps a REMOTE row whose author_pubkey is verified', async () => {
+    await seedMember(42, ['pk-verified'], 'verified');
+    await proj().writeToPg(featureRow('F-R'), { authorPubkey: 'pk-verified', origin: 'remote', ts: 1 });
+    expect(await verifiedCol('F-R')).toBe(42);
+  });
+  it('leaves a LOCAL row NULL even when the pubkey would verify (local never trust-stamped)', async () => {
+    await seedMember(42, ['pk-verified'], 'verified');
+    await proj().writeToPg(featureRow('F-L'), { authorPubkey: 'pk-verified', origin: 'local', ts: 1 });
+    expect(await verifiedCol('F-L')).toBeNull();
+  });
+  it('leaves a REMOTE row NULL when its author pubkey is revoked', async () => {
+    await seedMember(42, ['pk-revoked'], 'verified', ['pk-revoked']);
+    await proj().writeToPg(featureRow('F-RV'), { authorPubkey: 'pk-revoked', origin: 'remote', ts: 1 });
+    expect(await verifiedCol('F-RV')).toBeNull();
+  });
+  it('leaves a REMOTE row NULL when its author binding is unverified', async () => {
+    await seedMember(42, ['pk-pending'], 'pending');
+    await proj().writeToPg(featureRow('F-UV'), { authorPubkey: 'pk-pending', origin: 'remote', ts: 1 });
+    expect(await verifiedCol('F-UV')).toBeNull();
+  });
+  it('END-TO-END: a verified remote feature gets stamped → and (when its author is trusted) becomes claimable through the gate', async () => {
+    await seedMember(99, ['pk-99'], 'verified');
+    await proj().writeToPg(featureRow('F-E2E'), { authorPubkey: 'pk-99', origin: 'remote', ts: 1 });
+    expect(await verifiedCol('F-E2E')).toBe(99);
+    // Untrusted: the stamped-but-untrusted remote item stays quarantined.
+    expect(await claimWorkItem('F-E2E', 'bee', { harness: HARNESS })).toBeNull();
+    // Trust the author → the SAME item is now claimable (producer + gate together).
+    await trust(99);
+    expect(await claimWorkItem('F-E2E', 'bee2', { harness: HARNESS })).not.toBeNull();
   });
 });
