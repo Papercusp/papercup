@@ -210,14 +210,19 @@ describe('materializeBlueprintTriggers — workspace-singleton triggers (D-018)'
     // It landed under the reserved slug, NOT the real install slug, and seeded INACTIVE/dark.
     const underReal = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='regret-harness'`;
     expect(underReal).toHaveLength(0);
-    const db = await sql<{ name: string; active: boolean; workspace_id: string; target_role: string }[]>`
-      SELECT name, active, workspace_id, target_role
+    const db = await sql<
+      { name: string; active: boolean; workspace_id: string; target_role: string; payload_template: { blueprintId?: string } | null }[]
+    >`
+      SELECT name, active, workspace_id, target_role, payload_template
         FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
     expect(db).toHaveLength(1);
     expect(db[0].name).toBe('bp-singleton-regret-0');
     expect(db[0].active).toBe(false); // dark — armed explicitly, not on install
     expect(db[0].workspace_id).toBe(WS);
     expect(db[0].target_role).toBe('system:blueprint-run');
+    // It names its blueprint in the payload — a harness-less singleton row can't resolve the
+    // blueprint any other way; system:blueprint-run reads payload_template.blueprintId.
+    expect(db[0].payload_template?.blueprintId).toBe('regret');
   });
 
   it('is workspace-singleton: re-installing the blueprint upserts the SAME one row', async () => {
@@ -271,6 +276,31 @@ describe('materializeBlueprintTriggers — workspace-singleton triggers (D-018)'
     expect(singleton).toHaveLength(1);
     expect(singleton[0].name).toBe('bp-singleton-mixed-1');
     expect(singleton[0].active).toBe(false); // singleton seeded DARK
+  });
+
+  it('PILOT (P-144): the real `graduation` blueprint materializes one dark @singleton row carrying its blueprintId', async () => {
+    // The built-in graduation blueprint now declares `singleton: true` on its schedule
+    // trigger (the P-144 pilot). Materializing it must produce exactly the row that replaces
+    // the bespoke seed-graduation-routine.ts: one @singleton dark row, named blueprint-uniquely,
+    // stamped { blueprintId: 'graduation' } so the harness-less row fires the graduation program.
+    const graduation = loadBuiltinBlueprint('graduation').blueprint;
+    expect(graduation.triggers?.schedule?.[0]?.singleton).toBe(true); // the yaml declares it
+
+    const rows = await materializeBlueprintTriggers(graduation.id, graduation, { workspaceId: WS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].singleton).toBe(true);
+    expect(rows[0].name).toBe('bp-singleton-graduation-0');
+    expect(rows[0].hostSlug).toBe(SINGLETON_TRIGGER_HOST_SLUG);
+
+    const db = await sql<
+      { name: string; active: boolean; target_role: string; trigger_config: { cron: string }; payload_template: { blueprintId?: string } | null }[]
+    >`SELECT name, active, target_role, trigger_config, payload_template
+        FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
+    expect(db).toHaveLength(1);
+    expect(db[0].active).toBe(false); // dark — armed by the owner, not on materialize
+    expect(db[0].target_role).toBe('system:blueprint-run');
+    expect(db[0].trigger_config.cron).toBe('0 5 4 * * *'); // byte-identical cadence to the seed
+    expect(db[0].payload_template?.blueprintId).toBe('graduation');
   });
 });
 

@@ -130,6 +130,37 @@ test('renderQueenBrief — most-salient why is the highest-contribution feature 
   assert.doesNotMatch(out, /aged a bit/);
 });
 
+test('renderQueenBrief — open placements (completion mandate) render with counts + items (P-007/P-008)', () => {
+  const out = renderQueenBrief({
+    floor: {
+      frontier: [],
+      openPlacements: {
+        recovering: 2,
+        cursed: 1,
+        stranded: 0,
+        workingTracked: 3,
+        items: [
+          { workItemId: 'wi-50', status: 'recovering', failCount: 1, harness: 'papercup' },
+          { workItemId: 'wi-51', status: 'cursed', failCount: 3, harness: 'member-a' },
+        ],
+      },
+    },
+  });
+  assert.match(out, /### Placements — drive to terminal \(your completion mandate\)/);
+  assert.match(out, /recovering 2 \(re-place NOW\)/);
+  assert.match(out, /cursed 1 \(STOP re-placing\)/);
+  assert.match(out, /working 3 \(in flight\)/);
+  assert.match(out, /wi-50 \[recovering\] \(papercup\) ×1 fails/);
+  assert.match(out, /wi-51 \[cursed\] \(member-a\) ×3 fails/);
+});
+
+test('renderQueenBrief — no placement section when nothing is open', () => {
+  const out = renderQueenBrief({
+    floor: { frontier: [], openPlacements: { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] } },
+  });
+  assert.doesNotMatch(out, /### Placements/);
+});
+
 test('floorFromSurvey — maps survey frontier/plans/blocked and merges watchdog signals (P-005 reuse)', () => {
   const survey = { frontier: frontier3, plans: [], frontierBlocked: 4 };
   const bees: BriefBee[] = [{ id: 'b1', load: 1, alive: true }];

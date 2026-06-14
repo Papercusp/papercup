@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { InMemoryPlanPartsStore } from './store';
-import { capturePlanParts, applyRemotePlanParts } from './federation';
+import { capturePlanParts, applyRemotePlanParts, ensurePlanPartsBaseline } from './federation';
 
 const BASE = `---
 title: Shared plan
@@ -116,5 +116,50 @@ describe('plan-parts federation — the two-peer merge gate', () => {
     const bFinal = await applyRemotePlanParts(B, slug, ops);
     expect(bFinal).not.toContain('second item.');
     expect(bFinal).toContain('first item.'); // sibling intact
+  });
+});
+
+describe('ensurePlanPartsBaseline (P-010 — deterministic restart-free baseline)', () => {
+  const slug = 'shared-2026-06-13';
+
+  it('seeds parts from content at fed_ts=0 when empty, and is a NO-OP once any part exists', async () => {
+    const s = new InMemoryPlanPartsStore();
+    expect(await ensurePlanPartsBaseline(s, slug, BASE)).toBe(true);
+    const seeded = await s.getParts(slug);
+    expect(seeded.size).toBeGreaterThan(0);
+    for (const part of seeded.values()) expect(part.fedTs).toBe(0); // deterministic clock
+
+    // A real edit lands at a real ts…
+    await capturePlanParts(s, slug, BASE.replace('`todo` first item.', '`done` real.'), 500, 'A');
+    // …and a re-baseline must NOT clobber it (no-op once parts exist).
+    expect(await ensurePlanPartsBaseline(s, slug, BASE)).toBe(false);
+    expect((await s.getParts(slug)).get('item:P-001')?.text).toContain('`done` real.');
+  });
+
+  it('a baseline does not federate (fed_ts=0 loses LWW to every real edit)', async () => {
+    // Two peers self-seed the SAME baseline independently (no exchange), then one
+    // edits an item: the edit (ts>0) wins the LWW; the unchanged parts tie.
+    const A = new InMemoryPlanPartsStore();
+    const B = new InMemoryPlanPartsStore();
+    await ensurePlanPartsBaseline(A, slug, BASE);
+    await ensurePlanPartsBaseline(B, slug, BASE);
+    const ops = await capturePlanParts(A, slug, BASE.replace('`todo` first item.', '`done` by A.'), 600, 'A');
+    expect(ops.map((o) => o.key)).toEqual(['item:P-001']); // only the changed item — baseline gave a clean diff
+    const bFinal = await applyRemotePlanParts(B, slug, ops);
+    expect(bFinal).toContain('`done` by A.'); // edit applied
+    expect(bFinal).toContain('second item.'); // unchanged baseline part intact
+  });
+
+  it('RECEIVE-side: a peer with only a baseline + ONE incoming part recomposes the WHOLE plan (not join({1 part}))', async () => {
+    // Peer B federated C0 via the whole-blob path pre-cutover (it has the content
+    // but NO parts). The flag flips; A's edit to P-001 arrives as a lone part op.
+    // B self-baselines from its local content first, so the recompose merges.
+    const B = new InMemoryPlanPartsStore();
+    await ensurePlanPartsBaseline(B, slug, BASE); // <-- the receive-side baseline step
+    const lonePart = [{ key: 'item:P-001', kind: 'item' as const, text: '- **P-001** `done` edited by A.', order: 0, fedTs: 700, author: 'A' }];
+    const merged = await applyRemotePlanParts(B, slug, lonePart);
+    expect(merged).toContain('`done` edited by A.'); // the incoming edit
+    expect(merged).toContain('second item.'); // the rest of the plan survived
+    expect(merged).toContain('### D-001 — A decision'); // not a broken one-part doc
   });
 });

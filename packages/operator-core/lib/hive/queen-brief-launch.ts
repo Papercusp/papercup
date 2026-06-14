@@ -17,6 +17,7 @@
  */
 import { surveyHive } from './survey';
 import { getHiveCarryNote } from './wake';
+import { summarizeOpenPlacements } from './placement-watchdog';
 import { renderQueenBrief, floorFromSurvey } from './queen-brief';
 
 export async function computeQueenWakeBrief(
@@ -25,12 +26,16 @@ export async function computeQueenWakeBrief(
   opts: { wokeBy?: string } = {},
 ): Promise<string | null> {
   try {
-    const [survey, carryNote] = await Promise.all([
+    // The watchdog's placement state (recovering/cursed/stranded — the completion
+    // mandate) is read alongside the survey; summarizeOpenPlacements is fail-soft
+    // (returns empty on error) so it never blocks the brief (D-004 / D-014).
+    const [survey, carryNote, openPlacements] = await Promise.all([
       surveyHive(workspaceId, installSlug),
       getHiveCarryNote(workspaceId),
+      summarizeOpenPlacements(workspaceId, installSlug),
     ]);
     const wokeBy = opts.wokeBy?.trim();
-    const floor = floorFromSurvey(survey, wokeBy ? { wokeBy } : {});
+    const floor = floorFromSurvey(survey, { ...(wokeBy ? { wokeBy } : {}), openPlacements });
     return renderQueenBrief({ floor, carryNote });
   } catch (err) {
     console.warn(

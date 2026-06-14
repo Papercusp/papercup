@@ -28,6 +28,7 @@
 import type { Ranked } from '../queue-ranker';
 import type { PlacementCandidate } from './placement-ranker';
 import type { HiveSurvey } from './survey';
+import type { OpenPlacementSummary } from './placement-watchdog';
 
 /** A live bee's load + liveness, from `fleet:assignments`. */
 export interface BriefBee {
@@ -80,6 +81,15 @@ export interface QueenBriefFloor {
   changeFeed?: readonly string[];
   /** Open escalations needing attention. */
   escalations?: readonly BriefEscalation[];
+  /**
+   * Open placements the Queen must DRIVE to terminal (the completion mandate) —
+   * the watchdog's already-computed state (summarizeOpenPlacements): recovering
+   * (re-place NOW), cursed (stop re-placing), stranded (a blocker is stuck),
+   * workingTracked (in flight). This is the D-004 "the watchdog already computed
+   * it" floor element — surfaced so she clears recoveries each wake without a
+   * separate hive:status round-trip.
+   */
+  openPlacements?: OpenPlacementSummary;
 }
 
 /** Per-section list caps so the brief stays a DIGEST, never a raw dump (P-004). */
@@ -90,6 +100,7 @@ export interface QueenBriefCaps {
   inbox: number;
   changeFeed: number;
   escalations: number;
+  placements: number;
 }
 
 export const DEFAULT_QUEEN_BRIEF_CAPS: QueenBriefCaps = {
@@ -99,6 +110,7 @@ export const DEFAULT_QUEEN_BRIEF_CAPS: QueenBriefCaps = {
   inbox: 10,
   changeFeed: 8,
   escalations: 10,
+  placements: 12,
 };
 
 export interface QueenBriefInput {
@@ -195,6 +207,23 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     caps.plans,
     'hive:survey to drill down',
   );
+
+  // Open placements — the completion mandate (drive to terminal). The watchdog's
+  // already-computed state; surfaced so she clears recoveries each wake (D-004).
+  const op = f.openPlacements;
+  if (op && op.recovering + op.cursed + op.stranded + op.workingTracked > 0) {
+    out.push('');
+    out.push('### Placements — drive to terminal (your completion mandate)');
+    out.push(
+      `recovering ${op.recovering} (re-place NOW) · cursed ${op.cursed} (STOP re-placing) · ` +
+        `stranded ${op.stranded} (blocker stuck) · working ${op.workingTracked} (in flight)`,
+    );
+    for (const it of op.items.slice(0, caps.placements)) {
+      out.push(`- ${it.workItemId} [${it.status}]${it.harness ? ` (${it.harness})` : ''}${it.failCount ? ` ×${it.failCount} fails` : ''}`);
+    }
+    const overflow = op.items.length - caps.placements;
+    if (overflow > 0) out.push(`…+${overflow} more (hive:status to drill down)`);
+  }
 
   section(
     out,

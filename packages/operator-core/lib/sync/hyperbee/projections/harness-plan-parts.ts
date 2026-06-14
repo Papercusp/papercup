@@ -128,9 +128,34 @@ function storeFor(opts: HarnessPlanPartsProjectionOpts): PlanPartsStore {
   return opts.store ?? new PgPlanPartsStore(opts.sql ?? getOrgPg().sql, opts.workspaceId, opts.harnessSlug);
 }
 
+async function readLocalPlanContent(opts: HarnessPlanPartsProjectionOpts, planSlug: string): Promise<string | null> {
+  if (opts.readLocalContent) return opts.readLocalContent(planSlug);
+  const sql = opts.sql ?? getOrgPg().sql;
+  const [r] = (await sql`
+    SELECT content FROM harness_shared.harness_plans
+     WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug} AND plan_slug = ${planSlug}
+  `) as unknown as Array<{ content: string }>;
+  return r?.content ?? null;
+}
+
 async function applyPart(opts: HarnessPlanPartsProjectionOpts, row: PlanPartWireRow, provenance?: ProvenanceContext): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const store = storeFor(opts);
+  // P-010 receive-side baseline: before applying the FIRST incoming part for a
+  // plan, seed the full baseline from the local harness_plans.content (deterministic
+  // fed_ts=0), so the recompose merges into the WHOLE plan rather than a broken
+  // join({one part}). Flag-gated (DARK stays inert) + best-effort (a baseline
+  // failure must never drop the incoming op). No-op once any part exists.
+  if (await flagOn(opts)) {
+    try {
+      if ((await store.getParts(row.plan_slug)).size === 0) {
+        const localContent = await readLocalPlanContent(opts, row.plan_slug);
+        if (localContent) await ensurePlanPartsBaseline(store, row.plan_slug, localContent);
+      }
+    } catch {
+      /* best-effort baseline — never drop the op */
+    }
+  }
   const part: FederatedPart = {
     key: row.part_key,
     kind: row.kind,

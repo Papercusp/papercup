@@ -6,8 +6,12 @@ import assert from 'node:assert/strict';
 // vi.mock factory sees the consts.
 const surveyHive = vi.fn();
 const getHiveCarryNote = vi.fn();
+const summarizeOpenPlacements = vi.fn(
+  async (..._a: unknown[]) => ({ recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] as unknown[] }),
+);
 vi.mock('./survey', () => ({ surveyHive: (...a: unknown[]) => surveyHive(...a) }));
 vi.mock('./wake', () => ({ getHiveCarryNote: (...a: unknown[]) => getHiveCarryNote(...a) }));
+vi.mock('./placement-watchdog', () => ({ summarizeOpenPlacements: (...a: unknown[]) => summarizeOpenPlacements(...a) }));
 
 const { computeQueenWakeBrief } = await import('./queen-brief-launch');
 

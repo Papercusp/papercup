@@ -150,6 +150,12 @@ export async function materializeBlueprintTriggers(
     // Singleton → reserved host-slug + seeded dark; per-install → real slug + seeded active.
     const hostSlug = spec.singleton ? SINGLETON_TRIGGER_HOST_SLUG : installSlug;
     const active = !spec.singleton;
+    // A singleton row has NO harness to resolve the blueprint from, so it must name the
+    // blueprint in its payload — `system:blueprint-run` reads `payload_template.blueprintId`
+    // and runs THAT program inline (else it falls back to the harness's effective blueprint,
+    // which for the `@singleton` slug is the coding fallback). Per-install rows leave it null
+    // and resolve from the harness (unchanged). Mirrors the bespoke seeds' `{ blueprintId }`.
+    const payloadTemplate = spec.singleton ? { blueprintId: blueprint.id } : undefined;
     const row = await upsertRoutine(
       sql,
       {
@@ -159,6 +165,7 @@ export async function materializeBlueprintTriggers(
         triggerKind: 'cron',
         triggerConfig: { cron: spec.cron },
         targetRole: spec.targetRole,
+        payloadTemplate,
         active,
       },
       computeNextFireAt,

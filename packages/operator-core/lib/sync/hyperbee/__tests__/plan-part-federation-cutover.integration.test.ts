@@ -37,7 +37,7 @@ import { buildHarnessPlansProjection, type HarnessPlanRow } from '../projections
 import { buildHarnessPlanPartsProjection, type PlanPartWireRow } from '../projections/harness-plan-parts';
 import { PgPlanPartsStore } from '../../../plan-parts/store';
 import { capturePlanParts } from '../../../plan-parts/federation';
-import { hashPlanContent } from '@papercusp/plan-parser';
+import { hashPlanContent, splitPlanIntoParts } from '@papercusp/plan-parser';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -275,6 +275,23 @@ describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no cl
       300,
     );
     expect((await p.getPlan())!.status).toBe('active'); // scalar re-derived from frontmatter part
+  });
+
+  it('7. flag ON RECEIVE baseline (P-010): a parts-empty peer (content via whole-blob) merges a lone incoming part — not a broken one-part doc', async () => {
+    const c0 = planMarkdown('one', 'two');
+    await p.recvWholeBlob(c0, 100); // content present via whole-blob bootstrap…
+    expect((await p.store.getParts(SLUG)).size).toBe(0); // …but harness_plan_parts is EMPTY (no backfill)
+
+    // A lone remote part op for P-001 arrives. applyPart must self-baseline from
+    // the local harness_plans.content FIRST, then merge — else recompose would
+    // produce join({1 part}) and erase P-002.
+    const edited = splitPlanIntoParts(planMarkdown('one-REMOTE', 'two')).find((pt) => pt.key === 'item:P-001')!;
+    await p.recvPart({ harness_slug: H, plan_slug: SLUG, part_key: edited.key, kind: edited.kind, body: edited.text, ordinal: edited.order, tombstone: false }, 700);
+
+    const content = (await p.getPlan())!.content;
+    expect(content).toContain('one-REMOTE'); // the incoming edit applied
+    expect(content).toContain('`todo` two'); // P-002 survived (baseline seeded it)
+    expect(content).toContain('## Phase 1 — work'); // structure intact, not a 1-part doc
   });
 });
 

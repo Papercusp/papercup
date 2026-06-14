@@ -20,6 +20,7 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
 import { hashPlanContent } from './content-hash';
 import {
   resolvePlanScope,
@@ -27,6 +28,37 @@ import {
   deriveIndexFromContent,
   VALID_PLAN_SLUG,
 } from './source';
+
+/**
+ * plan-federation-regrain P-010 — ONGOING per-part capture for a committed plan
+ * write. Flag-gated (papercusp-plan-part-federation), best-effort, and run in its
+ * OWN post-commit transaction so a capture failure can NEVER roll back or block the
+ * plan write. Baselines from the PRE-edit body (deterministic fed_ts=0) so the diff
+ * captures only the CHANGED part — not every part — on the first edit after the flip;
+ * capturePlanParts then writes the changed parts (origin='local' → mig-271 federates
+ * them). Inert when the flag is OFF (one cached getFlag read, then return).
+ */
+async function capturePlanPartsForWrite(
+  workspaceId: string,
+  harnessSlug: string,
+  slug: string,
+  priorBody: string | null,
+  newBody: string,
+): Promise<void> {
+  try {
+    const { getFlag } = await import('@papercusp/flags/server');
+    if (!getFlag(FLAGS.PLAN_PART_FEDERATION, 'system')) return; // DARK: no-op when off
+    const { PgPlanPartsStore } = await import('../../plan-parts/store');
+    const { capturePlanParts, ensurePlanPartsBaseline } = await import('../../plan-parts/federation');
+    await withWorkspace(workspaceId, async (tx) => {
+      const store = new PgPlanPartsStore(tx, workspaceId, harnessSlug);
+      if (priorBody) await ensurePlanPartsBaseline(store, slug, priorBody);
+      await capturePlanParts(store, slug, newBody, Date.now(), 'local');
+    });
+  } catch {
+    /* best-effort: per-part federation must never break a committed plan write */
+  }
+}
 
 /** Current state handed to the mutator alongside the body — for version CAS. */
 export interface PlanWriteMeta {
@@ -232,7 +264,10 @@ export async function withPlanLock<T>(
       filePath,
       version: newVersion,
       writtenBody: newBody,
-    } satisfies AppliedResult<T> & { writtenBody: string | null };
+      // P-010: the PRE-edit content, threaded to the post-commit per-part capture
+      // so it can baseline (deterministic fed_ts=0) before diffing the new content.
+      priorBody: cur?.content ?? null,
+    } satisfies AppliedResult<T> & { writtenBody: string | null; priorBody: string | null };
   }).then(async (result) => {
     // EI-118 (audit P-007): afterWrite (revision recording) runs AFTER the
     // withWorkspace transaction commits — never inside it. Inside, a stalled
@@ -241,11 +276,17 @@ export async function withPlanLock<T>(
     // deliberate: a failed afterWrite now loses one revision row instead of
     // rolling back the committed plan write (and instead of wedging the fleet).
     if (result.kind === 'applied') {
-      const { writtenBody, ...applied } = result as AppliedResult<T> & {
+      const { writtenBody, priorBody, ...applied } = result as AppliedResult<T> & {
         writtenBody: string | null;
+        priorBody: string | null;
       };
       if (writtenBody !== null && opts.afterWrite) {
         await opts.afterWrite(writtenBody, { workspaceId, harnessSlug });
+      }
+      // P-010 ongoing per-part federation — flag-gated + best-effort (never throws),
+      // so it can't disturb the committed write or the afterWrite revision.
+      if (writtenBody !== null) {
+        await capturePlanPartsForWrite(workspaceId, harnessSlug, slug, priorBody, writtenBody);
       }
       return applied;
     }
