@@ -4,8 +4,12 @@ import {
   measureBehavioralDetection,
   measureSupervision,
   ekgDriftDetector,
+  scopeViolationDetector,
+  convergenceChurnDetector,
+  fullBehavioralDetector,
   EXPECTED_RECOVERY_LATENCY_MS,
-  type BehavioralDetector,
+  EKG_WINDOW_MS,
+  COLLECTOR_DETECTION_LATENCY_MS,
 } from './supervision-metrics';
 import { SUPERVISION_CASES, casesForFamily } from './supervision-scenarios';
 
@@ -68,28 +72,47 @@ describe('measureBehavioralDetection (P-065) — the hard family; EKG drift is a
   });
 });
 
-describe('the yardstick (D-007): a future P-052 detector plugs in and raises the rate', () => {
-  it('a detector that sees file-lane + churn lifts behavioral detection to 100% with no new FPs', () => {
-    // Stand-in for the P-052 scope-violation + convergence-churn collectors: flags every
-    // misbehaving case (it can see the file-lane + re-placement signals EKG can't).
-    const p052: BehavioralDetector = {
-      name: 'p052-stub (scope-violation + convergence-churn)',
-      detect: (c) => ({ detected: c.misbehaving, latencyMs: c.misbehaving ? 60_000 : null }),
-    };
-    const r = measureBehavioralDetection(p052);
-    expect(r.detectionRate).toBe(1);
-    expect(r.falsePositiveRate).toBe(0);
-    expect(r.undetectedHardCases).toEqual([]);
+describe('the P-052/P-003 collectors close the gap (D-007 yardstick — now REAL, not a stub)', () => {
+  it('scope-violation catches the stealth off-brief case (and ONLY it among behavioral cases)', () => {
+    const r = measureBehavioralDetection(scopeViolationDetector());
+    expect(outcome(r, 'behavioral-off-brief-stealth').detected).toBe(true); // wrong files, out of lane
+    expect(outcome(r, 'behavioral-off-brief-shift').detected).toBe(false); // in-lane; EKG's job
+    expect(outcome(r, 'behavioral-churn-no-convergence').detected).toBe(false); // in-lane; churn's job
+    expect(r.falsePositiveRate).toBe(0); // healthy bee in-lane → not flagged
+  });
+
+  it('convergence-churn catches the churn case (and ONLY it)', () => {
+    const r = measureBehavioralDetection(convergenceChurnDetector());
+    expect(outcome(r, 'behavioral-churn-no-convergence').detected).toBe(true); // re-placed, never converged
+    expect(outcome(r, 'behavioral-off-brief-stealth').detected).toBe(false);
+    expect(outcome(r, 'behavioral-off-brief-shift').detected).toBe(false);
+    expect(r.falsePositiveRate).toBe(0); // healthy bee converged → not flagged
+  });
+
+  it('the FULL family (EKG + scope + churn) lifts detection 1/3 → 3/3 with FP held at 0', () => {
+    const ekgOnly = measureBehavioralDetection(ekgDriftDetector());
+    expect(ekgOnly.detectionRate).toBeCloseTo(1 / 3, 5); // the Brief D baseline
+
+    const full = measureBehavioralDetection(fullBehavioralDetector());
+    expect(full.detectionRate).toBe(1); // every misbehaving case now caught
+    expect(full.undetectedHardCases).toEqual([]);
+    expect(full.falsePositiveRate).toBe(0); // no control falsely flagged
+  });
+
+  it('the dedicated collectors detect FASTER than EKG drift (sweep cadence vs the EKG window)', () => {
+    const full = measureBehavioralDetection(fullBehavioralDetector());
+    expect(outcome(full, 'behavioral-off-brief-stealth').latencyMs).toBe(COLLECTOR_DETECTION_LATENCY_MS);
+    expect(COLLECTOR_DETECTION_LATENCY_MS).toBeLessThan(EKG_WINDOW_MS);
   });
 });
 
 describe('measureSupervision — both families in one report', () => {
   const { liveness, behavioral } = measureSupervision();
-  it('returns a per-family report; liveness solid, behavioral partial (the honest state)', () => {
+  it('returns a per-family report; both solid now the P-052/P-003 collectors are built', () => {
     expect(liveness.family).toBe('liveness');
     expect(liveness.detectionRate).toBe(1);
     expect(behavioral.family).toBe('behavioral');
-    expect(behavioral.detectionRate).toBeLessThan(1); // the gap is real
+    expect(behavioral.detectionRate).toBe(1); // full-family default — the gap is closed
     expect(behavioral.falsePositiveRate).toBe(0);
   });
   it('the corpus is the registered set', () => {

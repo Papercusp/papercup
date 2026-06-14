@@ -20,6 +20,14 @@ import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 import { deriveBeeLiveness, evaluatePlacement, placementConfig, type PlacementConfig } from '../hive/placement-watchdog';
 import { detectDrift, type DriftOptions } from '../fleet-ekg/drift';
 import type { SessionVector } from '../fleet-ekg/features';
+import {
+  scopeViolation,
+  convergenceChurn,
+  shouldWakeOnScopeViolation,
+  shouldWakeOnChurn,
+  DEFAULT_BEHAVIORAL_WAKE_POLICY,
+  type BehavioralWakePolicy,
+} from '../hive/behavioral-supervision';
 import { casesForFamily, type SupervisionCase, type SupervisionFamily, type BehavioralSeed, type ChannelBehavior } from './supervision-scenarios';
 
 /** The placement watchdog runs on the 30s routinesTick — the model of its sweep cadence. */
@@ -197,6 +205,63 @@ export function ekgDriftDetector(opts: { drift?: DriftOptions; cohortSize?: numb
   };
 }
 
+/** The dedicated collectors fire on the bee's own activity (a commit / declared-files change / a
+ *  re-placement) — checkable on the supervision tick, NOT bound to the EKG window. So they detect in
+ *  ~a watchdog sweep, far faster than {@link EKG_WINDOW_MS} — itself a reason the dedicated family
+ *  matters (the EKG drift catch is hours-late). */
+export const COLLECTOR_DETECTION_LATENCY_MS = WATCHDOG_SWEEP_MS;
+
+/** The P-052/P-003 SCOPE-VIOLATION collector as a behavioral detector: flag the bee off-brief iff it
+ *  touched files outside its declared lane (above the wake policy's threshold). Catches the stealth
+ *  off-brief case EKG drift is blind to. */
+export function scopeViolationDetector(policy: BehavioralWakePolicy = DEFAULT_BEHAVIORAL_WAKE_POLICY): BehavioralDetector {
+  return {
+    name: 'scope-violation (declared-lane vs touched files)',
+    detect(c) {
+      const seed = c.behavioral;
+      if (!seed?.declaredLane || !seed.touchedFiles) return { detected: false, latencyMs: null };
+      const v = scopeViolation({ declaredLane: seed.declaredLane, touchedFiles: seed.touchedFiles });
+      const detected = shouldWakeOnScopeViolation(v, policy);
+      return { detected, latencyMs: detected ? COLLECTOR_DETECTION_LATENCY_MS : null };
+    },
+  };
+}
+
+/** The P-052/P-003 CONVERGENCE-CHURN collector as a behavioral detector: flag the bee iff it has
+ *  re-attempted without converging (above the wake policy's threshold). Catches the churn case that
+ *  lives in hive_placements, not EKG sessions. */
+export function convergenceChurnDetector(policy: BehavioralWakePolicy = DEFAULT_BEHAVIORAL_WAKE_POLICY): BehavioralDetector {
+  return {
+    name: 'convergence-churn (re-placement without convergence)',
+    detect(c) {
+      const p = c.behavioral?.placement;
+      if (!p) return { detected: false, latencyMs: null };
+      const detected = shouldWakeOnChurn(convergenceChurn(p), policy);
+      return { detected, latencyMs: detected ? COLLECTOR_DETECTION_LATENCY_MS : null };
+    },
+  };
+}
+
+/** Compose detectors into one (the full behavioral-supervision family): flagged iff ANY sub-detector
+ *  fires; latency = the FASTEST detector that fired. */
+export function compositeDetector(detectors: BehavioralDetector[]): BehavioralDetector {
+  return {
+    name: `composite(${detectors.map((d) => d.name).join(' + ')})`,
+    detect(c) {
+      const hits = detectors.map((d) => d.detect(c)).filter((r) => r.detected);
+      if (hits.length === 0) return { detected: false, latencyMs: null };
+      const latencies = hits.map((r) => r.latencyMs).filter((l): l is number => l != null);
+      return { detected: true, latencyMs: latencies.length > 0 ? Math.min(...latencies) : null };
+    },
+  };
+}
+
+/** The full behavioral-supervision family as ONE detector (EKG drift + scope-violation +
+ *  convergence-churn) — the P-052/P-003 collectors now real, not the Brief D stub. */
+export function fullBehavioralDetector(policy: BehavioralWakePolicy = DEFAULT_BEHAVIORAL_WAKE_POLICY): BehavioralDetector {
+  return compositeDetector([ekgDriftDetector(), scopeViolationDetector(policy), convergenceChurnDetector(policy)]);
+}
+
 /** Measure a behavioral detector over the off-brief corpus → rate / latency / false-positive. */
 export function measureBehavioralDetection(detector: BehavioralDetector, opts: { cases?: SupervisionCase[] } = {}): SupervisionDetectionReport {
   const cases = opts.cases ?? casesForFamily('behavioral');
@@ -215,6 +280,8 @@ export function measureSupervision(opts: { behavioralDetector?: BehavioralDetect
 } {
   return {
     liveness: measureLivenessDetection({ cfg: opts.cfg }),
-    behavioral: measureBehavioralDetection(opts.behavioralDetector ?? ekgDriftDetector()),
+    // Default is now the FULL family (EKG drift + the P-052/P-003 collectors) — pass ekgDriftDetector()
+    // explicitly to measure the EKG-only baseline.
+    behavioral: measureBehavioralDetection(opts.behavioralDetector ?? fullBehavioralDetector()),
   };
 }
