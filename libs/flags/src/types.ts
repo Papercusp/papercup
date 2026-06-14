@@ -460,6 +460,12 @@ export const FLAGS = {
   // = the new surfaces render nothing (per-hive start/stop in AdvNowRunning is
   // unchanged either way).
   HIVE_CONTROL: "papercusp-hive-control",
+  // queen-interactive-brain-fresh-context-2026-06-14: when ON (default), the
+  // interactive `psu --brain` pane launches FRESH per open (new session + an
+  // injected computeQueenWakeBrief) instead of resuming the persistent D-013
+  // pinned brain (which grows → Claude compacts → the resume picker). Reverses
+  // native-terminal-desktop D-013; OFF = the persistent-resume brain (today's).
+  QUEEN_BRAIN_FRESH: "papercusp-queen-brain-fresh",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -467,6 +473,8 @@ export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT ON (alpha flags-default-on) — additive hive-control surfacing.
   [FLAGS.HIVE_CONTROL]: true,
+  // DEFAULT ON — fresh-context interactive brain (reversible to D-013).
+  [FLAGS.QUEEN_BRAIN_FRESH]: true,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,

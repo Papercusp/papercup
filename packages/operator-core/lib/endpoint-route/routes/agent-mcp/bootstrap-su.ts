@@ -138,6 +138,28 @@ const optionsForOptions = defineTool({
  * picker-free resume (and falls back to a fresh re-pinning launch when null
  * or no longer resumable).
  */
+/**
+ * Hive scope for the interactive brain's wake brief
+ * (queen-interactive-brain-fresh-context P-002): the started hive she's actually
+ * operating — the launch harness when it's a started hive, else the first started
+ * hive in the workspace. Null when nothing is started (→ no brief, fail-soft).
+ */
+export async function resolveBrainHiveSlug(
+  workspaceId: string,
+  harnessSlug: string | null,
+): Promise<string | null> {
+  try {
+    const { listStartedHives } = await import('../../../hive/started');
+    const started = (await listStartedHives())
+      .filter((h) => h.workspaceId === workspaceId)
+      .map((h) => h.installSlug);
+    if (harnessSlug && started.includes(harnessSlug)) return harnessSlug;
+    return started[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const brainGet = defineTool({
   method: 'GET',
   path: '/agent-mcp/console/bootstrap-su/brain',
@@ -146,6 +168,14 @@ const brainGet = defineTool({
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
     try {
+      // queen-interactive-brain-fresh-context P-003: when fresh-context is ON,
+      // report NO pin so `psu --brain` always takes its fresh mint-launch path
+      // (the POST injects the Queen brief). OFF → resume the pinned D-013 brain.
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      if (await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system')) {
+        return jsonRes({ brainSessionId: null });
+      }
       const { getBrainSession } = await import('../../../brain-pin');
       return jsonRes({ brainSessionId: await getBrainSession() });
     } catch (e: any) {
@@ -421,7 +451,29 @@ const post = defineTool({
       } else {
         promptFile = launchContextPathFor(sessionKey);
         mkdirSync(launchContextDir(), { recursive: true });
-        writeFileSync(promptFile, spec.promptText, { mode: 0o600 });
+        let promptText = spec.promptText;
+        // queen-interactive-brain-fresh-context P-002: a fresh-context brain
+        // launch opens already-briefed — append the precomputed Queen wake brief
+        // (the same computeQueenWakeBrief the autonomous wakes inject) so the
+        // interactive Queen skips the survey round-trips. Fail-soft: no brief →
+        // just the su launch-context. Gated by FLAGS.QUEEN_BRAIN_FRESH.
+        if (brain) {
+          try {
+            const { getFlag } = await import('@papercusp/flags/server');
+            const { FLAGS } = await import('@papercusp/flags');
+            if (await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system')) {
+              const hiveSlug = await resolveBrainHiveSlug(workspace, harnessSlug);
+              if (hiveSlug) {
+                const { computeQueenWakeBrief } = await import('../../../hive/queen-brief-launch');
+                const brief = await computeQueenWakeBrief(workspace, hiveSlug, { wokeBy: 'interactive-brain' });
+                if (brief) promptText = `${promptText}\n\n${brief}`;
+              }
+            }
+          } catch {
+            /* fail-soft: launch with just the su launch-context */
+          }
+        }
+        writeFileSync(promptFile, promptText, { mode: 0o600 });
       }
     } catch (e: any) {
       return jsonRes({ status: 'error', error: `write su launch artifacts: ${e?.message}` }, 500);

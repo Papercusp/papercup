@@ -18,10 +18,15 @@
  *
  * Why an e2e (not a jsdom render test): the dismiss is a REAL Radix
  * dismissable-layer pointer-event race — jsdom fires no layout/pointer events
- * for it, so the synchronous version "passes" there. Only a real browser
- * engine reproduces the bug, which is exactly what this spec exercises. Flip
- * the rAF back to a synchronous `setEditingKey(key)` and this spec goes red
- * (the editor never opens) — that is the causation guard for the fix.
+ * for it, so the synchronous version "passes" there. Only a real browser engine
+ * reproduces the bug. Flip the defer back to synchronous `setEditingKey(key)`
+ * (or rAF, which is also insufficient) and this spec goes red — the causation
+ * guard for the fix.
+ *
+ * ONE test, ONE mount: the /adv dock mount is the expensive + occasionally-flaky
+ * step against a reused dev server, so we mount once and exercise every editor
+ * type + interaction in sequence rather than re-mounting per case (a batch of
+ * separate mounts was flaky when run together; each passed in isolation).
  *
  * Hermetic via route-stubbing (mirrors adv-contributors-panel.spec.ts): the
  * shell's projects/lite is stubbed so the slug always mounts the dock, and the
@@ -30,10 +35,9 @@
  * enum option lists non-empty) without depending on a populated substrate.
  *
  * NB: like the sibling adv specs this drives the operator-vite SPA in the e2e
- * Chromium project. A stale HMR-disabled :3055 serves a blank #root — the
- * shell never mounts and the spec SKIPS (it does not falsely fail). Run against
- * an HMR-enabled Vite (the config's own webServer boots one) to actually
- * exercise it.
+ * Chromium project. A stale HMR-disabled :3055 serves a blank #root — the shell
+ * never mounts and the spec SKIPS (it does not falsely fail). Run against an
+ * HMR-enabled Vite (the config's own webServer boots one) to actually exercise it.
  */
 import { test, expect, type Page } from '@playwright/test';
 
@@ -102,8 +106,7 @@ const SKIP_MSG =
  *   - the sync batch endpoint returns rows per query NAME (workItems.byHarness
  *     → our two rows; everything else → []). The batch contract is
  *     `POST /api/zero-harness/rest-query-batch` with body
- *     `{ queries: [{ name, args }] }` → `{ results: [{ rows, version }] }` in
- *     order (libs/generic/sync/.../batch-fetcher.ts).
+ *     `{ queries: [{ name, args }] }` → `{ results: [{ rows, version }] }`.
  */
 async function stubApis(page: Page) {
   await page.route('**/api/harness/projects/lite', async (route) => {
@@ -201,7 +204,7 @@ function wifParam(page: Page): string | null {
 }
 
 test.describe('/adv Work items panel — column filter bar', () => {
-  test('+ Add filter → picking a column opens the editor popover (the dismiss-race fix)', async ({
+  test('add (dismiss-race), chip-edit reopen, Clear all, and text/number Enter-to-close', async ({
     page,
   }) => {
     await stubApis(page);
@@ -209,110 +212,68 @@ test.describe('/adv Work items panel — column filter bar', () => {
     test.skip(!mounted, SKIP_MSG);
 
     const bar = await openWorkItemsPanel(page);
-
-    // Open the "+ Add filter" Select (aria-label "Add a column filter").
     const addFilter = bar.getByRole('combobox', { name: 'Add a column filter' });
     await expect(addFilter).toBeVisible();
+
+    // ── 1. ENUM add — the dismiss-race fix. Picking a column from the Select
+    //       must OPEN the editor and keep it open. With the synchronous (buggy)
+    //       setEditingKey the Select's closing pointer event dismisses it in the
+    //       same gesture, so this dialog never appears.
     await addFilter.click();
-
-    // Pick the State column from the Select's listbox.
     await page.getByRole('option', { name: 'State', exact: true }).click();
-
-    // THE ASSERTION THE BUG BREAKS: the per-column editor popover must OPEN and
-    // STAY open. With the synchronous (buggy) setEditingKey the Select's closing
-    // pointer event dismisses it in the same gesture, so this dialog never
-    // appears. With the rAF fix it survives.
-    const editor = page.getByRole('dialog', { name: 'Edit State filter' });
-    await expect(editor).toBeVisible({ timeout: 5_000 });
-
-    // The enum editor lists the live state values (derived from the stubbed
-    // rows): "open" and "in_progress".
-    await expect(editor.getByText('open', { exact: true })).toBeVisible();
-    await expect(editor.getByText('in_progress', { exact: true })).toBeVisible();
-
-    // Select a value → a removable chip appears AND the URL gains the `wif` param.
-    await editor.getByRole('checkbox', { name: 'open' }).click();
-
-    const chip = bar.locator('.pc-advpanel__chip', { hasText: 'State: open' });
-    await expect(chip).toBeVisible({ timeout: 5_000 });
+    const stateEditor = page.getByRole('dialog', { name: 'Edit State filter' });
+    await expect(stateEditor).toBeVisible({ timeout: 5_000 });
+    // The enum editor lists the live values derived from the stubbed rows.
+    await expect(stateEditor.getByText('open', { exact: true })).toBeVisible();
+    await expect(stateEditor.getByText('in_progress', { exact: true })).toBeVisible();
+    await stateEditor.getByRole('checkbox', { name: 'open' }).click();
+    const stateChip = bar.locator('.pc-advpanel__chip', { hasText: 'State: open' });
+    await expect(stateChip).toBeVisible({ timeout: 5_000 });
     await expect.poll(() => wifParam(page), { timeout: 10_000 }).not.toBeNull();
+    await stateEditor.getByRole('button', { name: 'Close filter editor' }).click();
+    await expect(stateEditor).toBeHidden({ timeout: 5_000 });
 
-    // Close the editor, then "Clear all" drops the filter + the URL param.
-    await editor.getByRole('button', { name: 'Close filter editor' }).click();
+    // ── 2. CHIP-EDIT — clicking an existing chip must REOPEN its editor. This
+    //       path also set editingKey synchronously and hit the same dismiss
+    //       race; the shared openEditor setTimeout(0) defer fixes it.
+    await stateChip.click();
+    const reopened = page.getByRole('dialog', { name: 'Edit State filter' });
+    await expect(reopened).toBeVisible({ timeout: 5_000 });
+    await reopened.getByRole('button', { name: 'Close filter editor' }).click();
+    await expect(reopened).toBeHidden({ timeout: 5_000 });
+
+    // ── 3. CLEAR ALL — drops the chip + the wif URL param.
     await bar.getByRole('button', { name: 'Clear all' }).click();
     await expect(bar.locator('.pc-advpanel__chip', { hasText: 'State: open' })).toHaveCount(0);
     await expect.poll(() => wifParam(page), { timeout: 10_000 }).toBeNull();
-  });
 
-  test('text filter: typing + Enter saves the filter and closes the editor', async ({ page }) => {
-    await stubApis(page);
-    const mounted = await dockMounts(page);
-    test.skip(!mounted, SKIP_MSG);
-    const bar = await openWorkItemsPanel(page);
-
-    await bar.getByRole('combobox', { name: 'Add a column filter' }).click();
+    // ── 4. TEXT + Enter — value saves live as you type; Enter SAVES + CLOSES the
+    //       box (the user-requested behaviour).
+    await addFilter.click();
     await page.getByRole('option', { name: 'Title', exact: true }).click();
-
-    const editor = page.getByRole('dialog', { name: 'Edit Title filter' });
-    await expect(editor).toBeVisible({ timeout: 5_000 });
-
-    const input = editor.getByRole('textbox', { name: 'Filter Title' });
-    await input.fill('First');
-    // The chip reflects the live value as you type (value saves per keystroke).
+    const titleEditor = page.getByRole('dialog', { name: 'Edit Title filter' });
+    await expect(titleEditor).toBeVisible({ timeout: 5_000 });
+    const titleInput = titleEditor.getByRole('textbox', { name: 'Filter Title' });
+    await titleInput.fill('First');
     await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Title: First' })).toBeVisible();
-
-    // ENTER saves + closes the box — the user-requested behaviour.
-    await input.press('Enter');
-    await expect(editor).toBeHidden({ timeout: 5_000 });
-
-    // Value persisted: chip remains + the wif URL param carries the text filter.
+    await titleInput.press('Enter');
+    await expect(titleEditor).toBeHidden({ timeout: 5_000 });
     await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Title: First' })).toBeVisible();
     await expect.poll(() => wifParam(page), { timeout: 10_000 }).toContain('title:');
-  });
+    await bar.getByRole('button', { name: 'Clear all' }).click();
+    await expect.poll(() => wifParam(page), { timeout: 10_000 }).toBeNull();
 
-  test('number filter: typing a bound + Enter saves and closes', async ({ page }) => {
-    await stubApis(page);
-    const mounted = await dockMounts(page);
-    test.skip(!mounted, SKIP_MSG);
-    const bar = await openWorkItemsPanel(page);
-
-    await bar.getByRole('combobox', { name: 'Add a column filter' }).click();
+    // ── 5. NUMBER + Enter — same: typing a bound saves live, Enter closes.
+    await addFilter.click();
     await page.getByRole('option', { name: 'Prio', exact: true }).click();
-
-    const editor = page.getByRole('dialog', { name: 'Edit Prio filter' });
-    await expect(editor).toBeVisible({ timeout: 5_000 });
-
-    const min = editor.getByRole('spinbutton', { name: 'Prio minimum' });
-    await min.fill('2');
+    const prioEditor = page.getByRole('dialog', { name: 'Edit Prio filter' });
+    await expect(prioEditor).toBeVisible({ timeout: 5_000 });
+    const prioMin = prioEditor.getByRole('spinbutton', { name: 'Prio minimum' });
+    await prioMin.fill('2');
     await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Prio: ≥2' })).toBeVisible();
-
-    await min.press('Enter');
-    await expect(editor).toBeHidden({ timeout: 5_000 });
+    await prioMin.press('Enter');
+    await expect(prioEditor).toBeHidden({ timeout: 5_000 });
     await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Prio: ≥2' })).toBeVisible();
     await expect.poll(() => wifParam(page), { timeout: 10_000 }).toContain('priority:');
-  });
-
-  test('clicking an existing chip reopens its editor (chip-edit dismiss-race fix)', async ({ page }) => {
-    await stubApis(page);
-    const mounted = await dockMounts(page);
-    test.skip(!mounted, SKIP_MSG);
-    const bar = await openWorkItemsPanel(page);
-
-    // Create a State filter (chip), then close the editor.
-    await bar.getByRole('combobox', { name: 'Add a column filter' }).click();
-    await page.getByRole('option', { name: 'State', exact: true }).click();
-    const editor = page.getByRole('dialog', { name: 'Edit State filter' });
-    await expect(editor).toBeVisible({ timeout: 5_000 });
-    await editor.getByRole('checkbox', { name: 'open' }).click();
-    const chip = bar.locator('.pc-advpanel__chip', { hasText: 'State: open' });
-    await expect(chip).toBeVisible();
-    await editor.getByRole('button', { name: 'Close filter editor' }).click();
-    await expect(editor).toBeHidden({ timeout: 5_000 });
-
-    // Click the chip body → the editor must REOPEN. This path set editingKey
-    // synchronously and hit the same dismiss race; the openEditor setTimeout(0)
-    // defer fixes it (sync → this assertion fails; the defer makes it pass).
-    await chip.click();
-    await expect(page.getByRole('dialog', { name: 'Edit State filter' })).toBeVisible({ timeout: 5_000 });
   });
 });
