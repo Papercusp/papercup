@@ -138,6 +138,50 @@ describe('spawnInvokeOnce', () => {
   });
 });
 
+// ── governor back-edge: subprocess 429 → shared bucket penalty (EI-86) ───────
+// The dominant traffic class is the spawned claude-CLI bee, NOT the in-process
+// anthropic-direct lane — so without this back-edge the (provider,modelClass)
+// governor stays GREEN while the account chokes, the AIMD never engages, and
+// `did we hit a rate limit?` is unanswerable from instruments. spawnInvokeOnce
+// classifies the child's outcome (classifyTurnError, unit-tested in
+// turn-error.test.ts) and, on an account-wide stop (429/overload/usage-cap),
+// PENALIZES the shared governor bucket. These assert that wiring actually fires:
+// a rate-limited child pauses the bucket; a clean child leaves it green. The
+// mocked resolveSpawnBackendModel keys the omp bucket (`unknown:self`) — the
+// classifier is provider-agnostic, so a rate-limited child still pauses it.
+describe('spawnInvokeOnce → governor back-edge (EI-86)', () => {
+  beforeEach(() => {
+    resetGovernorRegistry();
+    // feedGovernor keys the bucket to PAPERCUSP_ACCOUNT_ID (a frame's bound
+    // account) or the global bucket when unset — pin it empty so the assertion
+    // resolves the SAME no-account bucket the spawn penalizes.
+    vi.stubEnv('PAPERCUSP_ACCOUNT_ID', '');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetGovernorRegistry();
+  });
+
+  it('penalizes the shared bucket when a child prints a rate-limit marker and fails', async () => {
+    // The claude/codex CLIs print API errors to STDOUT and exit non-zero — the
+    // exact shape classifySubprocessResult folds into the scan on a failed exit.
+    H.cmd = node('process.stdout.write("API Error: rate limited, retry after 30s\\n");process.exit(1)');
+    const before = governorForBackend('omp', '').snapshot().pausedUntil;
+    const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {});
+    expect(r.exitCode).toBe(1);
+    const after = governorForBackend('omp', '').snapshot().pausedUntil;
+    expect(after).toBeGreaterThan(before); // the back-edge fired
+    expect(after).toBeGreaterThan(Date.now()); // bucket parked until the retry-after
+  });
+
+  it('leaves the bucket green on a clean child run (no false penalty)', async () => {
+    H.cmd = node('process.stdout.write("DONE\\n");process.exit(0)');
+    const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {});
+    expect(r.exitCode).toBe(0);
+    expect(governorForBackend('omp', '').snapshot().pausedUntil).toBe(0); // stays unpaused
+  });
+});
+
 // ── per-agent DISPLAY leasing (hive-frame-desktops-live-view P-002) ─────────
 describe('spawnInvokeOnce display leasing', () => {
   beforeEach(() => {
