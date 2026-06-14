@@ -74,6 +74,26 @@ struct PuiCompanion {
     /// re-check on each `TabUpdate` until the active preset matches (bounded so an
     /// unknown name can't loop forever). `None` when not seeking.
     pending_swap: Option<(String, u8)>,
+    /// One-shot latch for the EI-9 self-hide retry. zellij launches a
+    /// `zellij pipe -p` plugin in a focused **floating** pane by default (the
+    /// CLI's `floating_plugin` defaults to floating) — but this companion is
+    /// headless: `render()` is empty. We `hide_self()` in `load()` to suppress
+    /// that pane, then once more on the first `PaneUpdate` in case the pane
+    /// wasn't part of the session yet when `load()` ran. A suppressed pane is no
+    /// longer in the tiled/floating sets, so the retry is an idempotent no-op
+    /// when load-time hiding already worked. `false` until that retry flips it.
+    self_hide_retried: bool,
+}
+
+impl PuiCompanion {
+    /// One-shot guard for the post-load `hide_self()` retry (EI-9): returns
+    /// `true` exactly the first time it is called, then `false` forever, so the
+    /// companion re-suppresses its floating pane on the *first* `PaneUpdate`
+    /// after load and never spams `hide_self()` on later updates. Pure +
+    /// native-testable; the `hide_self()` host call it gates is wasm-only.
+    fn should_retry_self_hide(&mut self) -> bool {
+        !std::mem::replace(&mut self.self_hide_retried, true)
+    }
 }
 
 /// Marker substring identifying the pui HUD pane by its command (`pui hud`). The
@@ -179,12 +199,31 @@ impl ZellijPlugin for PuiCompanion {
             EventType::CommandPaneExited,
             EventType::PaneClosed,
         ]);
+        // Headless companion (D-008): zellij gives a `zellij pipe -p`-launched
+        // plugin a focused FLOATING pane by default (EI-9) — and since this
+        // plugin renders nothing, that pane sits blank over the workbench and
+        // STEALS keystrokes from the tiled `pui` HUD until the user discovers
+        // Ctrl-p w. Suppress our own pane immediately. `hide_self()` needs no
+        // permission (always granted), and when ours is the only floating pane
+        // zellij also hides the floating layer + returns focus to the tiled HUD
+        // (tab::extract_pane → hide_floating_panes + move_clients_out_of_pane),
+        // so the HUD is driveable on first paint. Re-issued once on the first
+        // PaneUpdate (the pane may not be in the session yet here) — see
+        // `should_retry_self_hide`.
+        hide_self();
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PaneUpdate(manifest) => {
                 self.panes = manifest;
+                // EI-9 race insurance: if our floating pane wasn't part of the
+                // session yet when `load()` fired `hide_self()`, it is now.
+                // Re-suppress exactly once (idempotent — a one-shot latch keeps
+                // this off every later PaneUpdate).
+                if self.should_retry_self_hide() {
+                    hide_self();
+                }
                 self.emit_topology();
             }
             Event::TabUpdate(tabs) => {
@@ -550,5 +589,24 @@ mod tests {
     #[test]
     fn work_set_empty_when_no_panes() {
         assert!(work_terminal_pane_ids(&PaneManifest::default(), &[]).is_empty());
+    }
+
+    #[test]
+    fn self_hide_retry_latch_fires_exactly_once() {
+        // EI-9: the companion suppresses its own auto-created floating pane with
+        // `hide_self()` in load() and retries once on the first PaneUpdate (the
+        // pane may not exist yet at load time). The latch must fire EXACTLY once
+        // so the retry never spams `hide_self()` on every subsequent PaneUpdate
+        // (PaneUpdates arrive continuously as agent panes open/close).
+        let mut c = PuiCompanion::default();
+        assert!(
+            c.should_retry_self_hide(),
+            "the first PaneUpdate after load must trigger the hide_self retry"
+        );
+        assert!(
+            !c.should_retry_self_hide(),
+            "subsequent PaneUpdates must NOT re-fire hide_self"
+        );
+        assert!(!c.should_retry_self_hide());
     }
 }

@@ -1,59 +1,59 @@
-# Worker log — EI-39 `locks:release {all_mine:true}` "channel name too long"
+# Worker log — EI-9 (auto-implement, attempt 3)
 
-## Diagnosis
-EI-39 (filed 2026-06-05): `locks:release { all_mine: true }` returned
-`handler_error: channel name too long` and released nothing, leaving PreToolUse
-locks wedged to their 20-min TTL.
+**Bug:** `pui workbench` — the companion zellij plugin opens a focus-stealing
+floating pane on first launch, blocking pui input until hidden (Ctrl-p w).
 
-Root cause: PG channel names cap at NAMEDATALEN-1 = 63 bytes. The coordination
-domain is the repo realpath; `'ch_coord_' || domain` crosses 63 bytes for the
-live checkout. `pg_notify()` (text arg) RAISES on an over-long name (while LISTEN
-silently truncates), so any grant cascade that fired a NOTIFY aborted the whole
-release transaction. The `all_mine` path is doubly exposed: it runs BOTH the
-file-lock `grant_cascade` (via `tryRelease`) AND the resource `resource_grant_cascade`
-(via `releaseAllResourcesForOwner` in `libs/papercusp/packages/locks/src/resource-lock-store.ts:422`).
+## Root cause (confirmed from zellij 0.44.3 source)
+`zellij pipe --plugin <url>` launches the plugin with `floating_plugin`
+defaulting to **floating** (`zellij-utils/src/cli.rs` Pipe.floating_plugin —
+"defaults to floating"). There is **no** CLI flag for a background/no-pane
+launch (only floating ↔ tiled ↔ in-place — all visible), so the launch path
+(`apps/tui/src/companion.rs::pipe_argv`) cannot make it headless. The companion
+renders nothing (`render()` empty) so the pane sits blank and, being focused,
+steals keystrokes from the tiled `pui hud` pane.
 
-The issue speculated about a resource-keyed or owner-keyed channel; that was
-unfounded — the ONLY variable-length channel is domain-keyed.
+## Fix (plugin-side, `apps/pui-zellij-plugin/src/main.rs`)
+The plugin suppresses its own pane via `hide_self()`:
+- Called in `load()`, and once more on the first `PaneUpdate` (one-shot latch
+  `should_retry_self_hide`) as race insurance for the case where the pane isn't
+  in the session yet at `load()` time. The retry is idempotent — once the pane
+  is suppressed it's no longer in the tiled/floating sets.
+- Verified from zellij source that this is correct + complete:
+  - `hide_self` → `SuppressPane(PaneId::Plugin(self))`; permission-free
+    (falls through to the catch-all `Granted` in `check_command_permission`).
+  - `tab::has_non_suppressed_pane_with_pid` + `extract_pane` both handle
+    **floating** panes, so the floating companion pane is suppressed.
+  - When ours is the **only** floating pane, `extract_pane` calls
+    `hide_floating_panes()` + `move_clients_out_of_pane()` — hiding the floating
+    layer *and* returning focus to the tiled HUD. Both bug symptoms fixed in one
+    call. The plugin stays alive (suppressed ≠ closed), so the pipe link holds.
 
-## Already-shipped fix (NOT mine)
-The channel-overflow root cause was fixed AFTER EI-39 was filed, by the 2026-06-09
-"channel name too long" incident work:
-- `libs/papercusp/packages/locks/src/sql/013-bounded-notify-channel.sql` — adds
-  `coord_notify_channel(domain) = 'ch_coord_' || md5(domain)` (41 bytes, always
-  valid) + a legacy bridge channel, and rewrites BOTH `grant_cascade` and
-  `resource_grant_cascade` to use it.
-- `sql/014-grant-cascade-expired-steal.sql` — re-creates `grant_cascade` keeping
-  the bounded channel.
-- `libs/papercusp/packages/locks/src/workspace-listener.ts` `coordNotifyChannel`
-  mirrors the md5 on the TS LISTEN side.
-
-So the bug no longer reproduces. Per the implement contract ("evidence says it no
-longer exists → that IS a verified fix"), this resolves `fixed`.
-
-## My change (test-only, non-protected surface)
-The existing regression test (`su-locks-wait.integration.test.ts`) covered only
-the FILE-lock cascade on a long domain. EI-39's exact repro is the RESOURCE
-sweep on `all_mine:true`, which had no dedicated coverage. Added one:
-- `packages/operator-core/lib/agent-tools/locks/__tests__/resource-locks.integration.test.ts`
-  — new `it`: `releaseAllResourcesForOwner` on a >63-byte raw-channel domain must
-  not raise "channel name too long" and must still flip a draining exclusive →
-  held through the cascade's `pg_notify`. Mirrors the existing drain test's
-  draining→held assertion.
-
-No production/authority/migration code touched.
+## Why the prior attempt (su-ad289) failed, and why this differs
+Attempt 1 fired an **external** `zellij action toggle-floating-panes` on
+`Event::CompanionReady` — it raced pane creation (pane appeared *after* the
+toggle → no-op). `hide_self()` is issued **from inside the plugin** during
+`load()` (the pane already hosts the plugin) and is retried on first PaneUpdate,
+so it is not subject to that race. It also targets only the plugin's own pane,
+never a work pane, and never toggles all floating panes.
 
 ## Verification
-- `npx vitest run --config vitest.integration.config.ts lib/agent-tools/locks/__tests__/resource-locks.integration.test.ts`
-  → 12 passed (was 11; my new EI-39 test green). DB live, not skipped.
-- `npx vitest run --config vitest.integration.config.ts lib/agent-tools/locks/__tests__/su-locks-wait.integration.test.ts`
-  → 6 passed (companion file-lock channel regression still green).
+- `cd apps/pui-zellij-plugin && cargo test` → 9 passed (incl. new
+  `self_hide_retry_latch_fires_exactly_once`, which pins the retry to one-shot).
+- `cargo build --release --target wasm32-wasip1` → clean (compiles the wasm
+  `hide_self()` call sites — the real ship target).
+- `cargo clippy --release --target wasm32-wasip1` → clean.
 
-## For the validator to re-verify
-- The new test genuinely exercises a `pg_notify` on a >63-byte raw channel (the
-  draining→held flip fires `resource_grant_cascade`; migration 013 shows its
-  pg_notify on exactly that transition). Could not prove RED by reverting the
-  migration (out of scope — STOP condition on migrations); confidence rests on
-  the parallel su-locks-wait test proven against the original incident.
-- The lands-via-release-gate path: no migration/authority edits, so deploy is a
-  no-op beyond shipping the new test.
+## For the validator / live verification
+The behavioral assertion (no floating pane on first `pui workbench`; HUD
+driveable immediately) needs a **live zellij** session — not runnable in this
+runner and not expressible in the four canonical test frameworks (the
+`hide_self()` host call is wasm-only). Repro harness from the original session:
+`/tmp/pui-livetest/drive_spawn2.py`. The installed wasm
+(`~/.papercusp/pui-companion.wasm`) must be rebuilt+reinstalled by the normal
+build/release pipeline for the fix to take effect live — this worker does not
+deploy.
+
+## Scope check
+Plugin-side only. Touches no protected surface (no release/deploy machinery,
+scheduler, git-sync, lock authority, migrations, flags, auth, or the
+self-improvement loop). Self/inline-sized: 1 file, +58 lines.
