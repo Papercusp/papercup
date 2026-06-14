@@ -565,9 +565,11 @@ import './harness/generate_from_repo';
 import './gym/judge';
 import './gym/signals';
 
-// experiment-registry-invocation-api-2026-06-14 P-030 — the universal experiment/test
-// discovery surface over the eval-battery registry (experiment:run/status are P-031/P-032).
+// experiment-registry-invocation-api-2026-06-14 P-030/P-031 — the universal experiment
+// surface over the eval-battery registry: catalog (discover) + run (offline replay,
+// riding frontier:replay-harness). experiment:status is the P-032 sibling.
 import './experiment/catalog';
+import './experiment/run';
 
 // scout-idea-grading-2026-06-12 B-03 (C-3) — grade a routed Scout idea 1–5
 // (+ optional critique) over the C-2 ledger seam; owner grades are sovereign.

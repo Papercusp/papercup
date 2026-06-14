@@ -438,11 +438,13 @@ async function sweepSuiteWorkspace(sql: Sql, runId: string): Promise<void> {
 /**
  * The REAL Hive presence query feeding the REAL election. Seeds `shared_presence`
  * rows under a run-scoped synthetic Hive, proves `queryPresenceRowsForHive` returns
- * exactly that Hive's Swarms (excludes a different Hive's row AND an empty-pubkey
- * row — the SQL `WHERE hive_slug = ? AND device_pubkey <> ''`), and that piping the
- * real query into `lockAuthorityForHive` elects the live argmin (the stale Swarm
- * dropped by the TS freshness filter). The other-Hive row uses pubkey '000' (a
- * global min) so a scoping leak would visibly change the winner.
+ * exactly that Hive's Swarms — excluding a DIFFERENT Hive's row, a NULL-hive_slug
+ * row (a non-Hive harness's presence, which must never pollute a Hive election), and
+ * an empty-pubkey row (the SQL `WHERE hive_slug = ? AND device_pubkey <> ''`) — and
+ * that piping the real query into `lockAuthorityForHive` elects the live argmin (the
+ * stale Swarm dropped by the TS freshness filter). The other-Hive and NULL-slug rows
+ * use `000-*` pubkeys (global minima) so any scoping leak would visibly change both
+ * the returned set AND the elected winner.
  */
 async function checkPresenceElectionPg(runId: string, sql: Sql): Promise<CheckResult> {
   const ws = SUITE_WS(runId);
@@ -462,6 +464,7 @@ async function checkPresenceElectionPg(runId: string, sql: Sql): Promise<CheckRe
     await seed('mmm-fresh', 'm-mmm', now - 1_000, hive);
     await seed('bbb-stale', 'm-bbb', now - (DEFAULT_AUTHORITY_STALE_MS + 60_000), hive); // dropped by freshness
     await seed('000-other', 'm-oth', now - 1_000, otherHive); // different Hive — must NOT leak
+    await seed('000-nullhive', 'm-null', now - 1_000, null); // non-Hive harness (hive_slug NULL) — must NOT leak
     await seed('', 'm-empty', now - 1_000, hive); // empty pubkey — excluded by SQL
 
     const rows = await queryPresenceRowsForHive(sql as never, hive);

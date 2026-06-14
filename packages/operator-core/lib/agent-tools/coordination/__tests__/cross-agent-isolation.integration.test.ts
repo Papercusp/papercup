@@ -27,7 +27,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
-import { PgPresenceStore } from '@papercusp/coordination/presence';
+import { PgPresenceStore, ensureCoordPresenceTable } from '@papercusp/coordination/presence';
 import { PRESENCE_STALE_MS } from '@papercusp/pubsub-substrate/presence';
 import {
   InMemoryEntitySubscriptionStore,
@@ -61,9 +61,11 @@ try {
   await sql`SELECT 1`;
   // coord_event_log via the package's own canonical DDL (idempotent).
   await ensureCoordEventLogTable(sql);
-  // coord_presence + power_user_sessions (the revoked-roster JOIN target),
-  // mirrored verbatim from presence-conformance.test.ts so the store runs.
-  await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
+  // coord_presence via the package's own canonical DDL (idempotent + self-healing
+  // ALTERs), so the store's schema (incl. the presence-v2 columns agent_role /
+  // hive_slug / last_active_at) never drifts from hand-rolled per-test DDL.
+  await ensureCoordPresenceTable(sql);
+  // power_user_sessions — the revoked-roster JOIN target (stable schema, no store).
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.power_user_sessions (
       auth_session_id TEXT PRIMARY KEY,
@@ -72,20 +74,6 @@ try {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
       last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
       revoked_at      TIMESTAMPTZ
-    )`);
-  await sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
-      owner_id          TEXT PRIMARY KEY,
-      owner_label       TEXT NOT NULL DEFAULT '',
-      workspace_id      TEXT NOT NULL DEFAULT 'default',
-      source            TEXT NOT NULL DEFAULT '',
-      intent            TEXT NOT NULL DEFAULT '',
-      current_plan_slug TEXT,
-      current_files     JSONB NOT NULL DEFAULT '[]'::jsonb,
-      host              TEXT NOT NULL DEFAULT '',
-      pid               INTEGER,
-      started_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-      heartbeat_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
   pgOk = true;
 } catch (e) {

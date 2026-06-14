@@ -238,3 +238,48 @@ export class PgPresenceStore implements PresenceStore {
     return rows.length;
   }
 }
+
+/**
+ * Bootstrap `harness_shared.coord_presence` for tests / fresh test rigs —
+ * the presence analog of `ensureCoordEventLogTable`. The CREATE mirrors
+ * `000-baseline.sql`; the `ADD COLUMN IF NOT EXISTS` block mirrors the
+ * presence-v2 migration (`277-coord-presence-v2-columns.sql`) so a table left
+ * over from before those columns existed (the `getTestPg` container is reused
+ * across files AND runs) is migrated IN PLACE rather than left stale. This is
+ * the one place the test schema is defined, kept beside the `PgPresenceStore`
+ * SQL that consumes it — so a new column the store reads is added HERE in the
+ * same change, never re-drifting across hand-rolled per-test DDL (the recurring
+ * "column does not exist" failure class). Pre-alpha, test-only: no production
+ * data on this path, so the in-place column add is safe.
+ *
+ * Production schema is owned by the migrations; this never runs there.
+ */
+export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
+  await sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
+      owner_id          text        NOT NULL PRIMARY KEY,
+      owner_label       text        NOT NULL DEFAULT '',
+      workspace_id      text        NOT NULL DEFAULT 'default',
+      source            text        NOT NULL DEFAULT '',
+      intent            text        NOT NULL DEFAULT '',
+      current_plan_slug text,
+      current_files     jsonb       NOT NULL DEFAULT '[]'::jsonb,
+      host              text        NOT NULL DEFAULT '',
+      pid               integer,
+      started_at        timestamptz NOT NULL DEFAULT now(),
+      heartbeat_at      timestamptz NOT NULL DEFAULT now(),
+      last_active_at    timestamptz,
+      agent_role        text,
+      hive_slug         text
+    )
+  `;
+  // presence-v2 (migration 277) columns the store reads/writes — added in place
+  // for a pre-v2 table left in the reused test container.
+  await sql`
+    ALTER TABLE harness_shared.coord_presence
+      ADD COLUMN IF NOT EXISTS last_active_at timestamptz,
+      ADD COLUMN IF NOT EXISTS agent_role     text,
+      ADD COLUMN IF NOT EXISTS hive_slug      text
+  `;
+}

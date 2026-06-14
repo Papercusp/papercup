@@ -67,9 +67,16 @@ export async function sendMessage(
   // stored on the envelope so the inbox filter + federation projection are
   // unchanged (D-001/D-003); an empty resolution → empty `to` → no inbox
   // delivery, but the row still persists (D-004).
-  const to = hasAudienceSelector(opts.to)
-    ? await expandAudience(opts.to, hostAudienceResolvers, audienceMode())
+  // B2 / park-for-slot: @role:/@wave:/@feature: entries address a SLOT that may
+  // have no agent yet — split them off so they PARK (below) instead of resolving
+  // to live ownerIds; only the non-slot addressees are delivered now.
+  const slots = slotSelectorsIn(opts.to);
+  const liveAddrs = slots.length
+    ? opts.to.filter((t) => parseSlotSelector(t) === null)
     : opts.to;
+  const to = hasAudienceSelector(liveAddrs)
+    ? await expandAudience(liveAddrs, hostAudienceResolvers, audienceMode())
+    : liveAddrs;
   const env: CoordEnvelope = {
     ts: new Date().toISOString(),
     msg_id: newMsgId(),
@@ -95,7 +102,22 @@ export async function sendMessage(
       if (!RESERVED.has(k) && v !== undefined) env[k] = v;
     }
   }
-  await coordLog.appendLine('messages', identity.ownerId, env);
+  // Park the envelope durably for each addressed slot (./slot-parked-store) —
+  // drained into the spawnee's handoff when an agent spawns into the slot (P-023).
+  if (slots.length) {
+    const sql = getOrgPg().sql;
+    const nowMs = Date.now();
+    for (const slot of slots) {
+      await parkSlotMessage(sql, { slot, harnessSlug: opts.harnessSlug ?? null, envelope: env, nowMs });
+    }
+  }
+  // Deliver to the live inbox when there's a live audience — or when there were
+  // no slots at all (preserve the legacy "audience resolved to nobody still
+  // persists the row" behaviour, ./audience D-004). A purely-slot send is
+  // delivered by the park alone.
+  if (liveAddrs.length > 0 || slots.length === 0) {
+    await coordLog.appendLine('messages', identity.ownerId, env);
+  }
   return env;
 }
 

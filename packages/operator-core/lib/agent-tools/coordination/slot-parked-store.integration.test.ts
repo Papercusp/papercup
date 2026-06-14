@@ -24,7 +24,7 @@ import {
 
 const MIGRATION = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  '../../../../../libs/papercusp/libs/db/sql/280-slot-parked-messages.sql',
+  '../../../../../libs/papercusp/libs/db/sql/286-slot-parked-messages.sql',
 );
 
 let db: FreshPgDb;

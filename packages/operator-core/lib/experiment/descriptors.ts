@@ -42,8 +42,10 @@ interface ReplayPayload {
   cases: ReplayCase[];
 }
 
-/** Map an arm → a ReplayVariant. The empty-knobs arm IS the historical baseline. */
-function armToReplayVariant(arm: KnobArm): ReplayVariant {
+/** Map an arm → a ReplayVariant. The empty-knobs arm IS the historical baseline.
+ *  Exported for the experiment:run path (run-core), which routes the same mapping
+ *  through the governed replay substrate. */
+export function armToReplayVariant(arm: KnobArm): ReplayVariant {
   if (Object.keys(arm.knobs).length === 0) return REPLAY_BASELINE_VARIANT;
   const { overlay } = partitionArm(arm);
   const policy: ReplayVariant['policy'] = {};
@@ -52,7 +54,9 @@ function armToReplayVariant(arm: KnobArm): ReplayVariant {
   return { variantId: arm.id, label: arm.label ?? arm.id, policy };
 }
 
-function replayResultToExperimentResult(r: ReplayBatteryResult): ExperimentRunResult {
+/** Normalize a ReplayBatteryResult → the common ExperimentRunResult. Exported for
+ *  the experiment:run path (run-core). */
+export function replayResultToExperimentResult(r: ReplayBatteryResult): ExperimentRunResult {
   return {
     testId: 'replay',
     tier: 'offline',

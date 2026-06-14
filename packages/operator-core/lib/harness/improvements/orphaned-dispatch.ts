@@ -67,6 +67,21 @@ export const ORPHAN_MAX_SIGNALS = 5;
 /** Ledger rows the glue reads per sweep (newest-first; ~10 days at the lane's cadence). */
 export const ORPHAN_SCAN_READ_LIMIT = 500;
 
+/**
+ * Env-outage detection (D-004 @ relight-self-learning-edges-2026-06-14): when the
+ * fleet's shared credential pool is exhausted (rate-limit / weekly-limit / auth),
+ * EVERY dispatch dies — and the ones the back-edge couldn't tag (durable fire lost,
+ * or the worker killed before it reported) surface as CAUSE-UNKNOWN 2h-collector
+ * orphans. Those are outage casualties, not lane breakage, yet they pass
+ * isLaneBreakageOrphan (no env marker on the row) → a false "lane broken" EI →
+ * which is itself auto-implement-eligible → DOA on the SAME outage → another orphan
+ * EI: the EI-536/523/512/509 self-amplifying loop. So while a lane env-outage is
+ * detected, cause-unknown orphans are suppressed too (the env outage is captured
+ * separately as service-down; once it clears, a genuine orphan re-signals).
+ */
+export const ENV_OUTAGE_WINDOW_MS = 6 * 60 * 60 * 1000; // 6h — a credential window
+export const ENV_OUTAGE_MIN_DEATHS = 2; // ≥2 env deaths in-window ⇒ the lane is in an outage
+
 export interface OrphanScanOpts {
   nowMs: number;
   /** Open-row age past which the worker is presumed dead. Default dispatchOverdueAfterMs(). */
@@ -115,6 +130,12 @@ export interface OrphanSignalOpts {
   evidenceWindowMs?: number;
   /** Cap signals per sweep. Default ORPHAN_MAX_SIGNALS. */
   maxSignals?: number;
+  /**
+   * When the lane is in a detected env outage ({@link laneInEnvOutage}), cause-unknown
+   * orphans are outage casualties, not lane breakage — suppressed to break the EI-536
+   * noise loop. Default false (healthy lane: a cause-unknown orphan IS worth a signal).
+   */
+  envOutage?: boolean;
 }
 
 /**
@@ -140,6 +161,43 @@ export function isLaneBreakageOrphan(r: ImprovementDispatchRow): boolean {
   return true;
 }
 
+/** An ENV-failure death (rate-limit / auth / credential, EI-406) — says nothing about the item. */
+export function isEnvFailureDeath(r: ImprovementDispatchRow): boolean {
+  return r.resolvedBy === 'worker-exit-backedge-env' || (r.fireError ?? '').includes('[env-failure');
+}
+
+/**
+ * The lane is in an env outage when ≥ENV_OUTAGE_MIN_DEATHS dispatches died with an
+ * env-failure signature inside the recent window — the shared credential pool is
+ * exhausted, so a death says nothing about any one item. Pure over the ledger rows.
+ */
+export function laneInEnvOutage(
+  rows: readonly ImprovementDispatchRow[],
+  opts: { nowMs: number; windowMs?: number; minDeaths?: number },
+): boolean {
+  const windowMs = opts.windowMs ?? ENV_OUTAGE_WINDOW_MS;
+  const minDeaths = opts.minDeaths ?? ENV_OUTAGE_MIN_DEATHS;
+  let n = 0;
+  for (const r of rows) {
+    if (!isEnvFailureDeath(r)) continue;
+    const ts = Date.parse(r.resolvedAt ?? r.firedAt);
+    if (!Number.isNaN(ts) && opts.nowMs - ts <= windowMs) n += 1;
+  }
+  return n >= minDeaths;
+}
+
+/**
+ * A CAUSE-UNKNOWN orphan: the 2h timeout collector drove it terminal with no
+ * recorded death cause (no back-edge ever fired — durable-fire lost, or the worker
+ * killed before it reported). Indistinguishable from an env casualty DURING an
+ * outage; a genuine-breakage signal when the lane is healthy. Only suppressed while
+ * {@link laneInEnvOutage} — a 2h-collector orphan that DID carry a real (non-env)
+ * fireError is genuine breakage and still signals.
+ */
+export function isCauseUnknownOrphan(r: ImprovementDispatchRow): boolean {
+  return r.resolvedBy === 'orphaned-dispatch-collector' && (r.fireError ?? '').trim() === '';
+}
+
 /**
  * Pure: one signal per ITEM with orphaned-dispatch evidence inside the window.
  * `evidence` is rows with outcome 'orphaned' (just-marked rows included, with
@@ -154,9 +212,11 @@ export function buildOrphanedDispatchSignals(
 ): WatchdogSignal[] {
   const windowMs = opts.evidenceWindowMs ?? ORPHAN_EVIDENCE_WINDOW_MS;
   const maxSignals = opts.maxSignals ?? ORPHAN_MAX_SIGNALS;
+  const envOutage = opts.envOutage ?? false;
 
   const inWindow = evidence.filter((r) => {
     if (r.outcome !== 'orphaned' || !isLaneBreakageOrphan(r)) return false;
+    if (envOutage && isCauseUnknownOrphan(r)) return false; // env-outage casualty, not lane breakage
     const ts = r.resolvedAt ? Date.parse(r.resolvedAt) : NaN;
     return !Number.isNaN(ts) && opts.nowMs - ts <= windowMs;
   });
@@ -291,9 +351,11 @@ export async function collectOrphanedDispatchSignals(
   }
 
   const evidence = [...marked, ...rows.filter((r) => r.outcome === 'orphaned')];
-  const signals = buildOrphanedDispatchSignals(evidence, { nowMs });
+  const envOutage = laneInEnvOutage(rows, { nowMs });
+  const signals = buildOrphanedDispatchSignals(evidence, { nowMs, envOutage });
   const notes: string[] = [];
   if (marked.length) notes.push(`marked ${marked.length} open dispatch(es) orphaned (worker presumed dead)`);
   if (recovered) notes.push(`recovered ${recovered} host-restart victim(s) (claim released + attempt rolled back)`);
+  if (envOutage) notes.push('lane env-outage detected — cause-unknown orphans suppressed (EI-536 noise-loop guard)');
   return { signals, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }

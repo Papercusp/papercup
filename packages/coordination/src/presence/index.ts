@@ -6,4 +6,4 @@
  */
 
 export * from '@papercusp/pubsub-substrate/presence';
-export { PgPresenceStore, type PgPresenceStoreOptions } from './pg-store';
+export { PgPresenceStore, ensureCoordPresenceTable, type PgPresenceStoreOptions } from './pg-store';
