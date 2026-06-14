@@ -31,6 +31,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { getWorkItem, setWorkItemState } from './work-items';
+import { isWorkItemAutoPickable } from './work-items-admission';
 import { getWorkItemReplicaAuthority } from './work-item-replica-authority';
 import { hiveHomeSlugForHarness } from './hive-federation';
 import {
@@ -195,7 +196,7 @@ export interface ClaimReplicaOpts {
 
 export type ClaimReplicaResult =
   | { ok: true; replica: WorkItemReplica; reused: boolean }
-  | { ok: false; reason: 'item-not-found' | 'not-redundant' | 'all-slots-held'; redundancy?: number };
+  | { ok: false; reason: 'item-not-found' | 'not-redundant' | 'not-admitted' | 'all-slots-held'; redundancy?: number };
 
 /**
  * Claim one of the item's N replica slots: assign the caller the lowest free slot (0..N-1),
@@ -226,6 +227,11 @@ export async function claimReplicaSlotLocal(opts: ClaimReplicaOpts): Promise<Cla
   const redundancy = await getItemRedundancy(opts.workItemId, { harness: opts.harnessSlug });
   if (redundancy == null) return { ok: false, reason: 'item-not-found' };
   if (redundancy < MIN_REDUNDANCY) return { ok: false, reason: 'not-redundant', redundancy };
+  // G2 admission (shared-hive-trust-admission P-004): a remote, un-admitted item must not
+  // be dispatched via the redundancy fan-out any more than via claim_next/claim.
+  if (!(await isWorkItemAutoPickable(opts.workItemId, { harness: opts.harnessSlug, workspaceId }))) {
+    return { ok: false, reason: 'not-admitted' };
+  }
 
   const { sql } = getOrgPg();
 

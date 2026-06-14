@@ -44,6 +44,7 @@ import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
+import { autoPickableWhereSql } from './work-items-admission';
 import {
   ISSUE_KIND,
   type IssueKind,
@@ -107,6 +108,16 @@ export interface WorkItem {
   /** Parent work-item id (a chunk's parent, D-004). */
   parent: string | null;
   payload: unknown | null;
+  /**
+   * Provenance (shared-hive-trust-admission P-005). `origin`: 'local' = authored on this
+   * install, 'remote' = federated from a peer. `auditVerdict`: the G2 auditor's verdict on
+   * a remote item ('admit'|'reject'|'pending'|null). The pair drives isAutoPickable — surfaced
+   * so the Queen/UI can see "remote · pending-audit" and the placement gather can exclude
+   * un-admitted remote work. Issue-family: origin reported 'local' (bug/change run inline, not
+   * the autonomous remote-dispatch surface), auditVerdict null.
+   */
+  origin: string | null;
+  auditVerdict: string | null;
   /**
    * Position within this item's ASSIGNEE's ordered work-list (local-hive P-020/D-004).
    * Lower = nearer head-of-line; null = unranked. Only meaningful relative to the other
@@ -186,6 +197,10 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     rankWriter: i.rankWriter,
     rankUpdatedAt: i.rankUpdatedAt,
     priority: null, // issue-family (bug/change/task) isn't the dispatched backlog — no feature_order
+    // Issue-family isn't auditor-gated (bug/change run inline, not autonomous remote
+    // dispatch) — report 'local' so isAutoPickable treats them as pickable (unchanged).
+    origin: 'local',
+    auditVerdict: null,
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
   };
@@ -207,6 +222,8 @@ interface FeatureRowDb {
   feature_order: number | null;
   created_ts: unknown;
   updated_ts: unknown;
+  origin: string | null;
+  audit_verdict: string | null;
 }
 function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
   return {
@@ -226,13 +243,16 @@ function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     rankWriter: isRankWriter(r.rank_writer) ? r.rank_writer : null,
     rankUpdatedAt: r.rank_updated_at == null ? null : tsIso(r.rank_updated_at),
     priority: r.feature_order,
+    origin: r.origin ?? 'local',
+    auditVerdict: r.audit_verdict,
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
   };
 }
 
 const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
-  parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts`;
+  parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
+  origin, audit_verdict`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
@@ -517,6 +537,8 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     rankWriter: null,
     rankUpdatedAt: null,
     priority: null, // freshly created → unprioritized until the Queen sets feature_order
+    origin: 'local', // created here ⇒ local-authored; no auditor screening needed
+    auditVerdict: null,
     createdAt: tsIso(now),
     updatedAt: tsIso(now),
   };
@@ -647,6 +669,9 @@ export async function claimWorkItem(id: string, assignee: string, opts: { harnes
          SET taken_by = ${assignee}, taken_at = now(), updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
          AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee})
+         -- G2 admission (shared-hive-trust-admission P-003): an explicit named claim
+         -- can't bypass the auditor either — remote, un-admitted stays unclaimable.
+         AND ${autoPickableWhereSql(sql)}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
@@ -713,6 +738,9 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
         WHERE harness_slug = ${filter.harness}
           AND workspace_id = ${ws}
           AND item_kind IN ('feature', 'research-task', 'chunk')
+          -- G2 admission (shared-hive-trust-admission P-002): never self-select a
+          -- remote, un-admitted item — the same gate the feature frontier enforces.
+          AND ${autoPickableWhereSql(sql)}
           AND ${filter.kind ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
           AND (taken_by IS NULL OR taken_by = '')
           AND status = ANY(${states}::text[])

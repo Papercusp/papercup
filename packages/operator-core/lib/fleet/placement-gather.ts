@@ -16,6 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { listPresence } from '../agent-tools/coordination/presence';
 import { groupByAgent, listFleetAssignments } from './assignments';
 import { getWorkItem, listWorkItems, type WorkItem } from '../work-items';
+import { isAutoPickable } from '../work-items-admission';
 import type { PlacementBee, PlacementTask } from './placement-affinity';
 // Reuse the SAME readiness the survey + DBOS orchestrator dispatch by (D-007's
 // shared seam: filterReadyFrontier → selectReady over getFeatureBlockers). No
@@ -248,13 +249,21 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
         skipped.push({ id, reason: `settled (${wi.state})` });
         continue;
       }
+      // G2 admission (shared-hive-trust-admission P-005): the Queen must not place a remote,
+      // un-admitted item even by explicit id — it stays quarantined until the auditor admits
+      // it (or its author is trusted, Phase 3).
+      if (!isAutoPickable(wi.origin, wi.auditVerdict)) {
+        skipped.push({ id, reason: 'remote work not yet auditor-admitted (quarantined)' });
+        continue;
+      }
       candidates.push(workItemToTask(wi));
     }
   } else {
     // Harness backlog: OPEN unassigned items, priority-ordered.
     const items = await listWorkItems({ harness: opts.harness, limit: Math.min(opts.limit * 3, 500) });
     candidates = items
-      .filter((wi) => !wi.assignee && !TERMINAL_STATES.has(wi.state))
+      // G2 admission (P-005): exclude remote, un-admitted work from placement candidates.
+      .filter((wi) => !wi.assignee && !TERMINAL_STATES.has(wi.state) && isAutoPickable(wi.origin, wi.auditVerdict))
       .sort((a, b) => {
         const pa = a.priority ?? Number.POSITIVE_INFINITY;
         const pb = b.priority ?? Number.POSITIVE_INFINITY;

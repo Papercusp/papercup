@@ -27,6 +27,8 @@ const wi = (id: string, family: 'feature' | 'issue'): WorkItem => ({
   rankWriter: null,
   rankUpdatedAt: null,
   priority: null,
+  origin: 'local',
+  auditVerdict: null,
   createdAt: '',
   updatedAt: '',
 });

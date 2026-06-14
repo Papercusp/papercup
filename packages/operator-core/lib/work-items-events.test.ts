@@ -23,6 +23,8 @@ const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
   rankWriter: null,
   rankUpdatedAt: null,
   priority: null,
+  origin: 'local',
+  auditVerdict: null,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
   ...over,

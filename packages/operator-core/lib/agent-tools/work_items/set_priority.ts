@@ -52,6 +52,15 @@ export default defineTool({
       .enum(['top', 'bottom'])
       .optional()
       .describe("Bump to head ('top', most urgent) or tail ('bottom') of this harness's backlog — computed relative to the current extreme."),
+    // P-114: an AUTONOMOUS agent declares the action's risk/authority so the
+    // auto-revert tripwire arms faithfully (the verb has no inherent item risk).
+    // Absent ⇒ fail-safe `critical`. Ignored for human callers.
+    decision: z
+      .object({
+        riskTier: z.enum(['trivial', 'low', 'moderate', 'high', 'critical']).optional(),
+        authority: z.enum(['system', 'owner']).optional(),
+      })
+      .optional(),
   }),
   async handler(args, ctx) {
     const opt = { harness: args.harness };
@@ -73,6 +82,7 @@ export default defineTool({
       'priority',
       args.workItem,
       args.harness,
+      args.decision,
     ).catch(() => null);
 
     // Explicit mode — caller named the order (or null to clear); overrides position.
