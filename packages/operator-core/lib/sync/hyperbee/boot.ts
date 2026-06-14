@@ -36,6 +36,7 @@
 import { getHarnessStore, type HarnessStoreOpts } from './corestore';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp } from './peer-log';
 import { stampOpHlc } from './hlc-stamp';
+import type { HlcClock } from '@papercusp/locks-core';
 import {
   createMergeCursor,
   mergeAdmittedLogsIncremental,
@@ -310,6 +311,18 @@ export interface BootHarnessOpts {
    * default swallows errors and the call site does not await it.
    */
   recordTelemetryOverride?: (kind: TelemetryKind, payload: Record<string, unknown>) => void;
+  /**
+   * Test seam — a PER-HANDLE HLC clock for the SEND seam (`stampOpHlc`) instead
+   * of the process-global `processHlc()`. Production leaves this undefined (one
+   * clock per process is correct — every local write is monotone w.r.t. the
+   * others). A test harness simulating MULTIPLE peers in ONE process MUST pass a
+   * distinct clock per peer: real peers are separate processes with independent
+   * clocks, so a shared global clock lets two peers' concurrent drains interleave
+   * the same counter and decide cross-peer LWW by drain-race instead of causal
+   * order. Pair it with the same clock on the apply seam's `ApplyOpOpts.hlcClock`
+   * (the RECV seam) so receive-advances land on the right peer's clock.
+   */
+  hlcClock?: HlcClock;
 }
 
 export interface BootedHarnessHandle {
@@ -1415,7 +1428,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // working-set / contributor / presence helpers all call `handle.append`);
       // the append-only claim path uses the raw `ownLog.append` and correctly
       // carries no HLC (claims are distinct-key per attempt, never LWW).
-      const stamped = stampOpHlc(op);
+      const stamped = stampOpHlc(op, opts.hlcClock);
       await ownLog.append({
         type: stamped.type,
         table: stamped.table,

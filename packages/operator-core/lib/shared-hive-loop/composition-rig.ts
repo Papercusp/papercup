@@ -88,6 +88,7 @@ import {
   type WorkItemClaim,
 } from '../work-item-claims';
 import { InMemoryWorkItemClaimStore } from '../work-item-claim-mem-store';
+import { HlcClock } from '@papercusp/locks-core';
 import { registerWorkItemClaimAuthorityOps } from '../work-item-claim-authority-ops';
 import {
   handleAuthorityRpc,
@@ -368,6 +369,7 @@ function buildCellApply(
   ownLogKeyHex: string,
   opts: { workspaceId: string; harnessSlug: string },
   extraProjections?: CompositionRigOpts['extraProjections'],
+  hlcClock?: HlcClock,
 ): (op: OpEnvelope) => Promise<boolean> {
   const popts = { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, sql };
   const scoped = new Map<string, TableProjection<unknown>>();
@@ -380,7 +382,9 @@ function buildCellApply(
     scoped.set(p.tableTag, p);
   }
   const lookup: ProjectionLookup = (tag) => scoped.get(tag) ?? null;
-  return (op: OpEnvelope) => applyOpVia(lookup, op, { ownLogKeyHex });
+  // hlcClock: this cell's OWN HLC (the RECV seam advances it on remote ops) — NOT
+  // the process-global one, so two cells in one process don't share a clock.
+  return (op: OpEnvelope) => applyOpVia(lookup, op, { ownLogKeyHex, hlcClock });
 }
 
 // ── The rig ──────────────────────────────────────────────────────────────────
@@ -508,6 +512,15 @@ export class CompositionRig {
     const dbB: FreshPgDb = await createFreshPgDb('shlB');
     this.cleanups.push(() => dbB.cleanup());
     const schemaOpts = { workspaceId: this.workspaceId, harnessSlug: this.harnessSlug };
+    // Per-cell HLC clocks (NOT the process-global processHlc()): two real Swarms
+    // are separate processes with independent clocks, so each simulated cell gets
+    // its own — both SEND (boot's stampOpHlc) and RECV (apply's observeRemoteHlc)
+    // seams use it. Driven by the rig's injectable `now()` so advanceClock() moves
+    // the causal frontier deterministically. Without this, both cells share one
+    // global clock and their concurrent drains race the same counter — deciding
+    // cross-swarm LWW by drain-interleave rather than causal order.
+    const hlcA = new HlcClock({ physical: () => this.now() });
+    const hlcB = new HlcClock({ physical: () => this.now() });
     await setupCellSchema(dbA.sql, schemaOpts);
     await setupCellSchema(dbB.sql, schemaOpts);
     if (this.extraCellSetup) {
@@ -568,13 +581,14 @@ export class CompositionRig {
       swarmOverride: mkSwarm(),
       verifyBindingOverride: async (_pk, _login, userId) => (userId === idB.userId ? 'verified' : 'fail'),
       applyOverride: (op) => {
-        applyA ??= buildCellApply(dbA.sql, handleA!.ownLog.keyHex, schemaOpts, this.extraProjections);
+        applyA ??= buildCellApply(dbA.sql, handleA!.ownLog.keyHex, schemaOpts, this.extraProjections, hlcA);
         return applyA(op);
       },
       mergePollMs: 0,
       pendingRetryMs: 0,
       loadRevokedOverride: async () => new Set(),
       announceIdentityOverride: idA.override,
+      hlcClock: hlcA,
     });
     this.cleanups.push(async () => {
       await handleA?.close();
