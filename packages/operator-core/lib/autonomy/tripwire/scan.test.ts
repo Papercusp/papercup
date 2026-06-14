@@ -143,6 +143,20 @@ describe('runAutonomyTripwireSweep', () => {
     expect(calls.writes).toEqual([]); // locked → no demotion write
   });
 
+  it('DOES demote a PINNED category on a trip — a ceiling pin freezes the raise, not the safety demote (EI-513 / D-003)', async () => {
+    const armedRows = [row({ status: 'armed', armedAtMs: 1000 })];
+    const signals: TripwireWatchSignal[] = [{ kind: 'gym-regression', atMs: 1000 + HOUR, label: 'x', global: true }];
+    const policies = new Map<AutonomyCategory, AutonomyCategoryPolicy>([
+      ['implementation', policy({ category: 'implementation', ceiling: 'high', graduatedLevel: 'low', ownerOverride: { pinned: true } })],
+    ]);
+    const { deps, calls } = makeDeps({ armedRows, signals, policies, revertOk: true });
+    const res = await runAutonomyTripwireSweep(deps, OPTS);
+    expect(res.tripped).toBe(1);
+    expect(calls.writes).toEqual([{ cat: 'implementation', level: 'trivial' }]); // pinned → safety demote STILL applied (low → trivial)
+    expect(res.demotions[0]).toMatchObject({ category: 'implementation', from: 'low', to: 'trivial' });
+    expect(calls.notifies[0]!.body).toMatch(/safety demote still applied/);
+  });
+
   it('mineOnly mutates nothing', async () => {
     const armedRows = [row({ status: 'armed', armedAtMs: 1000 })];
     const signals: TripwireWatchSignal[] = [{ kind: 'gym-regression', atMs: 1000 + HOUR, label: 'x', global: true }];

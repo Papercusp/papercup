@@ -199,8 +199,19 @@ export async function runAutonomyTripwireSweep(
     const from = policy.graduatedLevel;
     const to = demoteGraduatedLevel(from);
     const pinned = policy.ownerOverride != null && (policy.ownerOverride as { pinned?: unknown }).pinned === true;
-    if (!policy.locked && !pinned && to !== from) {
-      await deps.writeGraduatedLevel(row.category, to, `tripwire trip (${verdict.reason}) on ${row.id}`);
+    // The demote is a SAFETY action and ALWAYS fires on a trip. An owner ceiling
+    // PIN (ownerOverride.pinned) freezes the graduation RAISE (the graduation leg
+    // below), but must NEVER disable this safety demote (EI-513 /
+    // relight-self-learning-edges D-003) — a Queen pinned for a stable go-live must
+    // still shrink its autonomy when a tripwire trips. `locked` (a protected/owner-
+    // locked category) is already never-auto-effective, so a demote there is moot;
+    // gated only to skip a no-op write.
+    if (!policy.locked && to !== from) {
+      await deps.writeGraduatedLevel(
+        row.category,
+        to,
+        `tripwire trip (${verdict.reason}) on ${row.id}${pinned ? ' [ceiling pinned — safety demote still applied]' : ''}`,
+      );
     }
     demotions.push({ category: row.category, from, to, reverted: revertOk });
 
@@ -212,7 +223,7 @@ export async function runAutonomyTripwireSweep(
         `An auto-decided REVERSIBLE action tripped its watch (${verdict.reason}: ${verdict.signal.label}).\n\n` +
         `- Action: \`${row.action ?? '—'}\` · category \`${row.category}\` · class \`${row.findingClass}\`\n` +
         `- Auto-revert: ${revertOk ? 'executed' : 'NOT executed (no executor wired / failed) — manual revert may be needed'}\n` +
-        `- Graduation demoted: \`${from}\` → \`${to}\`${policy.locked || pinned ? ' (skipped: locked/pinned)' : ''}\n` +
+        `- Graduation demoted: \`${from}\` → \`${to}\`${policy.locked ? ' (skipped: category locked)' : pinned ? ' (ceiling pinned — safety demote still applied)' : ''}\n` +
         `- Revert handle: \`${JSON.stringify(row.revertHandle)}\`\n\n` +
         `Tripwire ${row.id} (queen-autonomy-policy P-081 / D-006).`,
       watchdogKey: `autonomy-tripwire-trip:${row.id}`,
