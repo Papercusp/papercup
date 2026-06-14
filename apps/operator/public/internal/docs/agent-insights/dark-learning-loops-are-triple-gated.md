@@ -1,0 +1,77 @@
+# A self-learning loop is "dark" until THREE gates open — a flag being ON is not "armed"
+URL: /internal/docs/agent-insights/dark-learning-loops-are-triple-gated
+
+The recurring self-learning failure class is a loop built-but-never-armed — each frontier loop (calibration, graduation, scout, …) is triple-gated (inactive @singleton routine + dark flag + unbudgeted learning-governor), so flipping just the flag leaves it dead. calibration-markets was flag-ON yet scored:0 with 53 unmaturing bets, starving the ranker's weight-8 calibration feature. Detect dark loops with improvements:learning_loops; arm via the per-lane runbook.
+
+The self-learning system's most common failure is not a crash — it's a loop that
+was **built, shipped, and then left silently dark**. Nothing surfaces it, so it
+rots: the ranker prioritizes on a dead signal, the gym never produces a champion,
+calibration never matures a bet. This is the same class the team has hit twice as
+*wedges* (gym dead-lock `learning-system-audit-improvements-2026-06-09` D-007;
+the implement-lane triad — see [improvement-implement-lane-wedge-triad](/internal/docs/agent-insights/improvement-implement-lane-wedge-triad)),
+and once here as *never-armed* (`relight-self-learning-edges-2026-06-14`).
+
+## The triple gate
+
+A frontier learning loop (the 10 dark loops in `LEARNING_SINGLETONS`,
+`packages/operator-core/lib/blueprint/seed-learning-singletons.ts`) runs **only
+when all three are true**:
+
+1. **Routine active** — a `@singleton/bp-singleton-<id>-0` cadence row that is
+   `active = true` (the blueprint seeds it **inactive**).
+2. **Flag ON** — e.g. `papercusp-calibration-markets` (frontier flags default OFF).
+3. **Governor budgeted** — a `learning_governor_loops` row with a budget; first
+   armed contact self-registers it **unbudgeted** on the D-004 watch list and the
+   preflight keeps refusing until the owner sets a budget.
+
+**A flag being ON is NOT "armed."** Observed 2026-06-14: `papercusp-calibration-markets`
+resolved `true`, yet `calibration_summary` showed `scored: 0` with the open
+`fix-survival` bets climbing (19 → 53 in one session) — bets were being *placed*
+but never *matured*, because the maturation routine was inactive and the governor
+unbudgeted. The downstream cost is invisible-but-real: the queue ranker weights
+its `calibration` feature at **8** (vs 1/1/2 for the others,
+`packages/operator-core/lib/queue-ranker/calibration-feature.ts`) but it
+contributes **0** to every item while the loop is dark — the backlog is
+prioritized nearly blind on its single most important signal.
+
+## How to spot it
+
+* **`improvements:learning_loops`** (the dark-loop health surface, P-030) — per
+  loop: `firing` / `stale` (active but not firing — a wedge) / `dark-by-design`
+  (frontier, unarmed) / `should-be-on-but-dark` (an always-on loop gone dark — a
+  real gap) / `absent`, plus the `@singleton`↔legacy `collision`. First stop for
+  "which learning loops are dark / wedged / never armed?"
+* A loop's own telemetry flat-lining: `calibration_summary scored:0` with open
+  bets growing; `scout_ticks` all `gated`; `scout_lens_weights` 0 rows; gym with
+  1 champion ever.
+* **Don't infer "armed" from the flag** — check the routine `active` flag and the
+  `learning_governor_loops` budget too.
+
+## Arming (the per-lane runbook)
+
+Flag ON **+** `@singleton` routine `active` **+** governor budget set
+(`registerLearningLoop`). For a SQL-only loop (calibration's sweep is pure SQL,
+**zero LLM spend**) the budget is a conscious arming bit, not a real cost. Arm
+the **right** row: activate `@singleton/bp-singleton-<id>-0`, **not** the legacy
+`papercup/<name>` row — both active is the D-023 double-state the migration
+collision guards prevent (`improvements:learning_loops` reports it as
+`collision`). This is a **coordinated frontier campaign** (the
+`self-learning-frontier` P-001 gate arms all parked lanes together); prefer it
+over a hand-flip. Full runbook + the zero-cost finding:
+`relight-self-learning-edges-2026-06-14` D-006.
+
+## The general lesson
+
+Two sibling shapes, one class:
+
+* **Never-armed:** a loop seeded inactive behind a default-OFF flag that nobody
+  finished arming. Rots silently — there is no error, just no output.
+* **Wedged:** an *active* loop whose liveness mechanism is keyed on a timestamp
+  nobody writes (claim with no `assigned_at`; autoloop stuck `status='running'`),
+  so its stale-reclaim can never fire. See the wedge-triad insight.
+
+Both are invisible without a health surface. When you ship a learning loop, also
+answer "how will anyone know if it goes dark?" — and if you add a "skip while
+in-flight" guard, it needs both a **written** liveness timestamp and a **tested**
+stale path (pinned by an ordering invariant, e.g. worker-timeout \<
+orphan-threshold \< stale-claim-window).

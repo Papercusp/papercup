@@ -22,6 +22,7 @@ import {
   AGENTS,
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
+  fetchWithResilience,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 
@@ -659,5 +660,74 @@ describe('reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
     await expect(
       reportSessionEnded(17, 1, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('fetchWithResilience (psu connection-retry hardening)', () => {
+  // A fake clock advanced by the injected sleep makes retry timing deterministic
+  // without real timers or sockets.
+  function fakeClock() {
+    let t = 0;
+    return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+  }
+  const connFail = () => { throw new TypeError('fetch failed'); };
+  const timeoutErr = () => { const e = new Error('timed out'); e.name = 'TimeoutError'; throw e; };
+
+  it('rides through a recycle: retries a connection failure on a backoff and returns once the host is back', async () => {
+    const clock = fakeClock();
+    let n = 0;
+    const fetchImpl = async () => { n += 1; if (n < 3) connFail(); return { ok: true, id: 'live' } as unknown as Response; };
+    const res = await fetchWithResilience('http://op/x', {}, {
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000,
+    });
+    expect((res as unknown as { id: string }).id).toBe('live');
+    expect(n).toBe(3); // two dead-window failures ridden through, third succeeds
+  });
+
+  it('exhausts the connect budget then throws "could not reach … after Ns"', async () => {
+    const clock = fakeClock();
+    let n = 0;
+    const fetchImpl = async () => { n += 1; connFail(); return undefined as unknown as Response; };
+    await expect(
+      fetchWithResilience('http://op/x', {}, {
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 5_000,
+      }),
+    ).rejects.toThrow(/could not reach the operator .* after \d+s/);
+    expect(n).toBeGreaterThan(1); // it retried within the budget, not a single shot
+  });
+
+  it('announces the connection retry exactly once, not per attempt', async () => {
+    const clock = fakeClock();
+    const notices: string[] = [];
+    const fetchImpl = async () => { connFail(); return undefined as unknown as Response; };
+    await fetchWithResilience('http://op/x', {}, {
+      fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: (m) => notices.push(m), connectBudgetMs: 6_000,
+    }).catch(() => {});
+    expect(notices.filter((m) => /unreachable .* retrying for up to/.test(m))).toHaveLength(1);
+  });
+
+  it('caps timeout retries (reachable-but-slow) and throws "did not respond within"', async () => {
+    const clock = fakeClock();
+    let n = 0;
+    const fetchImpl = async () => { n += 1; timeoutErr(); return undefined as unknown as Response; };
+    await expect(
+      fetchWithResilience('http://op/x', {}, {
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, timeoutRetries: 1,
+      }),
+    ).rejects.toThrow(/did not respond within \d+ms/);
+    expect(n).toBe(2); // initial attempt + 1 capped retry, then give up
+  });
+
+  it('a caller-supplied AbortSignal disables retry (caller owns the lifetime)', async () => {
+    const clock = fakeClock();
+    let n = 0;
+    const fetchImpl = async () => { n += 1; connFail(); return undefined as unknown as Response; };
+    const ac = new AbortController();
+    await expect(
+      fetchWithResilience('http://op/x', { signal: ac.signal }, {
+        fetchImpl, now: clock.now, sleep: clock.sleep, onNotice: () => {}, connectBudgetMs: 30_000,
+      }),
+    ).rejects.toThrow(/could not reach/);
+    expect(n).toBe(1); // single attempt — no retry when the caller owns the signal
   });
 });

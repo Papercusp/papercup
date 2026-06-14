@@ -17,6 +17,7 @@ import createTestnet from 'hyperdht/testnet.js';
 import type { PeerChildConfig, PeerChildResult } from './peer-child';
 import type { PerfArtifact } from './artifact';
 import type { ScenarioMeter } from './metrics';
+import { MeshFormationError } from './mesh-outcome';
 
 const CHILD_PATH = fileURLToPath(new URL('./peer-child.ts', import.meta.url));
 
@@ -214,7 +215,7 @@ export async function spawnProcMesh(opts: {
   const writerReady = await writer.waitFor('ready', meshTimeout);
   if (!writerReady) {
     writer.kill('SIGKILL');
-    throw new Error('proc mesh: writer never became ready');
+    throw new MeshFormationError('proc mesh: writer never became ready');
   }
 
   const readers = Array.from({ length: opts.readers }, (_, i) =>
@@ -238,7 +239,10 @@ export async function spawnProcMesh(opts: {
     if (!ok) {
       writer.kill('SIGKILL');
       for (const rr of readers) rr.kill('SIGKILL');
-      throw new Error(`proc mesh: reader ${r.cfg.peerIndex} never admitted the writer`);
+      throw new MeshFormationError(
+        `proc mesh: reader ${r.cfg.peerIndex} never admitted the writer`,
+        r.cfg.peerIndex,
+      );
     }
   }
 

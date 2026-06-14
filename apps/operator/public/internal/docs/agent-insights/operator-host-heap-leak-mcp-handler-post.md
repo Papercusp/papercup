@@ -34,11 +34,17 @@ tool catalog + the SDK Protocol's response/progress/abort Maps + the transport).
   (transport/Protocol internals) past the handler; absent a retaining root it
   would just GC. Verify by counting, not by reasoning about GC.
 * The host env was later reconfigured (`--max-old-space-size=131072` + Node-native
-  PSI-GC via `MEMORY_PRESSURE_WATCH`) but the in-process watchdog's **3.2 GB**
-  threshold was left stale — so it force-recycles long before the new strategy or
-  the 251 GB host's 135 GB free would ever matter. Fixing the leak makes the
-  recycle stop firing; don't just raise the threshold (V8 GC pauses still bite a
-  multi-GB single-thread heap).
+  PSI-GC via `MEMORY_PRESSURE_WATCH`) but the in-process watchdog's threshold was
+  left stale at **3.2 GB** — and once the leak was patched the steady boot baseline
+  (\~3.8 GB; see *Related* below) settled just ABOVE it, so the watchdog
+  **false-tripped on every boot** and crash-looped `:3070` (\~one recycle / 2 min,
+  47 restarts) until the cap was bumped (3.2 GB → 24 GB, 2026-06-14;
+  `operator-memory-and-psu-resilience-2026-06-14` P-005 then retuned it → 12 GB
+  once the fix was verified flat — not lower, since the \~3.8 GB baseline grows
+  O(harness count) and a tight cap would re-trip).
+  Lesson stands: fix the cause, don't just raise the threshold (V8 GC pauses still
+  bite a multi-GB single-thread heap, and a bigger cap only hides the next
+  regression).
 
 ## Fix
 
@@ -80,3 +86,22 @@ add a dep patch, **verify it's actually applied post-deploy** —
 pipeline (green-checkpoint applies the patch on `npm install` + runs the guard).
 To watch RSS live: `systemctl --user show papercup-dev-api.service -p MemoryPeak`
 and the `[memory-watchdog] RSS above soft threshold` journal lines.
+
+## Related: the steady \~3.8 GB baseline is mostly the substrate, not this leak
+
+Once the leak is patched, RSS plateaus \~3.8 GB. Attribution via a zero-disruption
+control — `:3170` runs the same binary with `PAPERCUSP_BACKGROUND_WORKERS=0` and
+sits flat at **\~1.0 GB** for 13h+:
+
+* **\~1.0 GB** base app = tsx-loaded TS module graph + Hono app + projected tool
+  catalog + 21 warmed plugins + voice cluster + IPC.
+* **\~2.7 GB** background-workers block, dominated by the **Model-B / hyperbee sync
+  substrate booting ALL harnesses at startup** (`[hyperbee-substrate] boot
+  complete — attempted=25 booted=25`), \~108 MB each (Hypercore corestore +
+  Hyperbee + Hyperswarm peer + git-export drain loop), plus the onnxruntime
+  embedder warm.
+
+It's **O(harness count)** — 50 harnesses → \~5 GB. So a "why is :3070 huge / why did
+it false-trip the watchdog" question is usually this baseline, not a live leak.
+Reducing it (lazy + bounded substrate boot via the existing `closeHarnessStore`)
+is tracked in `operator-memory-and-psu-resilience-2026-06-14`.

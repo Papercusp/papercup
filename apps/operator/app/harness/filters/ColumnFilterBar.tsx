@@ -21,7 +21,7 @@
  * frost tokens (they don't inherit the theme) or reuse the panel classes.
  */
 
-import { useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { ListFilter, X } from 'lucide-react';
 import { FLAGS } from '@papercusp/flags';
 import type { ColumnFilterValue, FilterableColumn, NumberFilterValue } from '@papercusp/grid-core';
@@ -120,13 +120,25 @@ function asBool(v: ColumnFilterValue | undefined): boolean | undefined {
 function FilterEditor<TRow>({
   col,
   controller,
+  onClose,
 }: {
   col: FilterableColumn<TRow>;
   controller: ColumnFilterController<TRow>;
+  /** Commit + close the editor — bound to Enter in the text/number inputs. The
+   *  value is already saved live via setValue, so this just dismisses the box. */
+  onClose: () => void;
 }) {
   const spec = col.filter;
   if (!spec) return null;
   const value = controller.valueFor(col.key);
+
+  // Text + number editors save live as you type; Enter just closes the box.
+  const onInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      onClose();
+    }
+  };
 
   if (spec.type === 'text') {
     return (
@@ -136,6 +148,7 @@ function FilterEditor<TRow>({
         autoFocus
         value={asString(value)}
         onChange={(e) => controller.setValue(col.key, e.target.value)}
+        onKeyDown={onInputKeyDown}
         placeholder={`Filter ${headerText(col as FilterableColumn<unknown>)}…`}
         aria-label={`Filter ${headerText(col as FilterableColumn<unknown>)}`}
         style={{ width: '100%' }}
@@ -200,6 +213,7 @@ function FilterEditor<TRow>({
           style={NUMBER_INPUT_STYLE}
           value={range.min ?? ''}
           onChange={(e) => setBound('min', e.target.value)}
+          onKeyDown={onInputKeyDown}
           placeholder="min"
           aria-label={`${headerText(col as FilterableColumn<unknown>)} minimum`}
         />
@@ -209,6 +223,7 @@ function FilterEditor<TRow>({
           style={NUMBER_INPUT_STYLE}
           value={range.max ?? ''}
           onChange={(e) => setBound('max', e.target.value)}
+          onKeyDown={onInputKeyDown}
           placeholder="max"
           aria-label={`${headerText(col as FilterableColumn<unknown>)} maximum`}
         />
@@ -263,6 +278,19 @@ export function ColumnFilterBar<TRow>({
   const addable = controller.filterableColumns.filter((c) => !activeKeys.has(c.key));
   const editingCol = controller.filterableColumns.find((c) => c.key === editingKey) ?? null;
 
+  // Open an editor on a fresh MACROTASK, never synchronously inside the click
+  // gesture that requested it — whether that's the Add-filter Select closing OR
+  // a chip button click. That gesture dispatches trailing pointerup/focusout
+  // events; mounting the editor Popover in the same tick lets its dismissable
+  // layer catch one as an "outside" interaction and dismiss it instantly.
+  // requestAnimationFrame is NOT enough (it runs before paint, same task tail);
+  // setTimeout(0) is a macrotask that runs after those events drain. See
+  // agent-insights/radix-popover-from-select-dismiss-race +
+  // e2e/adv-work-items-filter.spec.ts.
+  const openEditor = (key: string) => {
+    setTimeout(() => setEditingKey(key), 0);
+  };
+
   const addOptions = [
     { value: ADD_FILTER, label: 'Add filter…', disabled: true },
     ...addable.map((c) => ({
@@ -281,7 +309,7 @@ export function ColumnFilterBar<TRow>({
           type="button"
           className="pc-advpanel__chip"
           aria-pressed
-          onClick={() => setEditingKey(chip.colKey)}
+          onClick={() => openEditor(chip.colKey)}
           title="Edit filter"
         >
           {chip.label}
@@ -301,23 +329,7 @@ export function ColumnFilterBar<TRow>({
         <Select
           value={ADD_FILTER}
           onChange={(key) => {
-            if (key === ADD_FILTER) return;
-            // Open the editor on a fresh MACROTASK, not synchronously inside the
-            // Select's onValueChange. Opening the editor Popover in the same
-            // click gesture lets the Select's closing pointer/focus events land
-            // on the freshly-mounted Popover's dismissable layer as an "outside"
-            // interaction, which dismisses it instantly — the "clicking + Add
-            // filter does nothing" bug.
-            //
-            // A `requestAnimationFrame` defer is NOT enough: rAF runs before the
-            // next paint, which on Chromium is still inside the same task tail as
-            // the Select's trailing pointerup/focusout dispatch, so the Popover
-            // opens and is dismissed in the same gesture (verified in
-            // e2e/adv-work-items-filter.spec.ts — rAF reproduces the bug, this
-            // setTimeout fixes it). A `setTimeout(0)` schedules a macrotask that
-            // runs AFTER those events have fully drained, so the Select is closed
-            // and the gesture is over before the editor mounts → it stays open.
-            setTimeout(() => setEditingKey(key), 0);
+            if (key !== ADD_FILTER) openEditor(key);
           }}
           ariaLabel="Add a column filter"
           triggerClassName="pc-advpanel__chip"
@@ -359,7 +371,7 @@ export function ColumnFilterBar<TRow>({
                 <X size={12} />
               </button>
             </div>
-            <FilterEditor col={editingCol} controller={controller} />
+            <FilterEditor col={editingCol} controller={controller} onClose={() => setEditingKey(null)} />
           </>
         ) : null}
       </Popover>

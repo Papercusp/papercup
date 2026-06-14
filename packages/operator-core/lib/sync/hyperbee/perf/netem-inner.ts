@@ -20,6 +20,7 @@
 import { execFileSync } from 'node:child_process';
 import createTestnet from 'hyperdht/testnet.js';
 import { spawnProcMesh, foldChildResults } from './child-driver';
+import { resolveNetemFailure } from './mesh-outcome';
 import { ScenarioMeter, summarize } from './metrics';
 import { expectedWinnersFor } from './scenarios/churn';
 import type { NetemInnerConfig, NetemProfile } from './netem-types';
@@ -101,6 +102,12 @@ async function main(): Promise<void> {
     jitterMs: cfg.profile.jitterMs,
     lossPct: cfg.profile.lossPct,
   };
+  const scenarioId =
+    cfg.mode === 'sustained'
+      ? 'netem.sustained'
+      : cfg.mode === 'cold-join'
+        ? 'netem.cold-join'
+        : 'netem.loss-curve';
   const execPrefixFor = (i: number) => ['ip', 'netns', 'exec', `p${i}`];
   // Generous budgets: 300ms RTT + 2% loss makes everything slow on purpose.
   const budget = 5 * 60_000;
@@ -227,8 +234,21 @@ async function main(): Promise<void> {
       }
     }
   } catch (e) {
-    out({ evt: 'fatal', message: e instanceof Error ? (e.stack ?? e.message) : String(e) });
-    process.exitCode = 1;
+    // A mesh that never forms under the impaired link is a MEASURED outcome of
+    // the netem profile, not a harness fault: record a did-not-form cell and
+    // let the sweep continue instead of crashing the whole Tier-2 run (EI-116).
+    const resolved = resolveNetemFailure(e, {
+      scenario: scenarioId,
+      tier: 2,
+      params: { ...profileParams, peers, mode: cfg.mode },
+    });
+    if (resolved.kind === 'artifact') {
+      log(`mesh did not form (loss=${cfg.profile.lossPct}% rtt=${cfg.profile.rttMs}ms) — recording did-not-form cell (EI-116)`);
+      out({ evt: 'artifact', artifact: resolved.artifact });
+    } else {
+      out({ evt: 'fatal', message: resolved.message });
+      process.exitCode = 1;
+    }
   } finally {
     try {
       await testnet.destroy();

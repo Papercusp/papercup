@@ -517,30 +517,48 @@ function readToken() {
   }
 }
 
-async function api(path, opts = {}) {
-  const token = readToken();
+/**
+ * Resilient fetch: retries CONNECTION failures (refused/reset — "fetch failed",
+ * i.e. the operator is mid-recycle) on a short backoff until `connectBudgetMs`
+ * elapses, so a launch rides THROUGH a memory-watchdog drain+restart window
+ * instead of failing on the first dead tick. TIMEOUTs (reachable but slow —
+ * wedged, not restarting) are retried only a small fixed number of times, since
+ * each retry costs another full timeout. A caller-supplied `init.signal` owns
+ * the request lifetime and disables retry. Returns the Response (caller reads
+ * the body); throws a descriptive Error when every attempt fails.
+ *
+ * Deps are injected for tests (psu-launcher.test.ts) — `fetchImpl`/`sleep`/`now`
+ * make the retry timing deterministic without real timers or sockets.
+ */
+export async function fetchWithResilience(
+  url,
+  init = {},
+  {
+    fetchImpl = fetch,
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    now = () => Date.now(),
+    onNotice = (msg) => process.stderr.write(msg),
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    connectBudgetMs = CONNECT_RETRY_BUDGET_MS,
+    timeoutRetries = TIMEOUT_RETRIES,
+    label = url,
+  } = {},
+) {
   // A caller-supplied AbortSignal owns the request lifetime — never retry it.
-  const retryable = !opts.signal;
+  const callerSignal = init.signal ?? null;
+  const retryable = !callerSignal;
   // Wall-clock deadline for retrying CONNECTION failures (host mid-recycle).
-  const connectDeadline = Date.now() + CONNECT_RETRY_BUDGET_MS;
-  let timeoutRetriesLeft = TIMEOUT_RETRIES;
+  const connectDeadline = now() + connectBudgetMs;
+  let timeoutRetriesLeft = timeoutRetries;
   let announcedConnRetry = false;
-  let res;
   let lastErr;
   for (;;) {
     try {
-      res = await fetch(OPERATOR_URL + path, {
-        ...opts,
+      return await fetchImpl(url, {
+        ...init,
         // Without a timeout a wedged operator hangs psu indefinitely. Fail fast.
-        signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        headers: {
-          'content-type': 'application/json',
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
-          ...(opts.headers || {}),
-        },
+        signal: callerSignal ?? AbortSignal.timeout(timeoutMs),
       });
-      lastErr = null;
-      break;
     } catch (e) {
       lastErr = e;
       if (!retryable) break;
@@ -550,8 +568,8 @@ async function api(path, opts = {}) {
         // full timeout, so only a small fixed number of them.
         if (timeoutRetriesLeft <= 0) break;
         timeoutRetriesLeft -= 1;
-        process.stderr.write(`psu: ${path} timed out after ${REQUEST_TIMEOUT_MS}ms — retrying…\n`);
-        await new Promise((r) => setTimeout(r, 1_500));
+        onNotice(`psu: ${label} timed out after ${timeoutMs}ms — retrying…\n`);
+        await sleep(1_500);
         continue;
       }
       // Connection refused/reset ("fetch failed") — the operator is almost
@@ -559,32 +577,46 @@ async function api(path, opts = {}) {
       // on a short backoff until the budget elapses so the launch rides through,
       // instead of failing on the first dead window (the single 1.5s retry this
       // replaced couldn't span a recycle).
-      const remaining = connectDeadline - Date.now();
+      const remaining = connectDeadline - now();
       if (remaining <= 0) break;
       if (!announcedConnRetry) {
-        process.stderr.write(
-          `psu: operator at ${OPERATOR_URL} unreachable (${path}) — it may be restarting; ` +
-            `retrying for up to ${Math.ceil(CONNECT_RETRY_BUDGET_MS / 1000)}s…\n`,
+        onNotice(
+          `psu: operator at ${OPERATOR_URL} unreachable (${label}) — it may be restarting; ` +
+            `retrying for up to ${Math.ceil(connectBudgetMs / 1000)}s…\n`,
         );
         announcedConnRetry = true;
       }
-      await new Promise((r) => setTimeout(r, Math.min(2_000, remaining)));
+      await sleep(Math.min(2_000, remaining));
     }
   }
-  if (lastErr) {
-    const e = lastErr;
-    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
-      throw new Error(
-        `the operator at ${OPERATOR_URL} did not respond within ${REQUEST_TIMEOUT_MS}ms (${path}). ` +
-          `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), ` +
-          `or raise the cap with PAPERCUSP_PSU_TIMEOUT_MS.`,
-      );
-    }
+  const e = lastErr;
+  if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
     throw new Error(
-      `could not reach the operator at ${OPERATOR_URL} after ${Math.ceil(CONNECT_RETRY_BUDGET_MS / 1000)}s (${e?.message || e}). ` +
-        `Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL.`,
+      `the operator at ${OPERATOR_URL} did not respond within ${timeoutMs}ms (${label}). ` +
+        `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), ` +
+        `or raise the cap with PAPERCUSP_PSU_TIMEOUT_MS.`,
     );
   }
+  throw new Error(
+    `could not reach the operator at ${OPERATOR_URL} after ${Math.ceil(connectBudgetMs / 1000)}s (${e?.message || e}). ` +
+      `Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL.`,
+  );
+}
+
+async function api(path, opts = {}) {
+  const token = readToken();
+  const res = await fetchWithResilience(
+    OPERATOR_URL + path,
+    {
+      ...opts,
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(opts.headers || {}),
+      },
+    },
+    { label: path },
+  );
   const text = await res.text();
   let json;
   try {
