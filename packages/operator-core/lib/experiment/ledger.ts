@@ -12,6 +12,22 @@
 import type { Sql } from 'postgres';
 import type { ExperimentArmResult } from './types';
 
+/** Coerce a jsonb column read to an array. Some pg clients parse jsonb to a JS value,
+ *  others (e.g. the testcontainer client) return the raw JSON string — be robust to both
+ *  so the scoreboard read never breaks on the client's jsonb-parsing config. */
+export function coerceJsonArray<T>(v: unknown): T[] {
+  if (Array.isArray(v)) return v as T[];
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 export interface ExperimentLedgerRow {
   workspaceId: string;
   batteryId: string;
@@ -64,7 +80,7 @@ export class PgExperimentLedger implements ExperimentLedger {
       testId: r.test_id as string,
       tier: r.tier as string,
       winner: (r.winner ?? null) as string | null,
-      arms: (r.arms ?? []) as ExperimentArmResult[],
+      arms: coerceJsonArray<ExperimentArmResult>(r.arms),
       totalCostUsd: Number(r.total_cost_usd),
       budgetExhausted: Boolean(r.budget_exhausted),
       decision: r.decision as string,
@@ -79,8 +95,8 @@ export class PgExperimentLedger implements ExperimentLedger {
          total_cost_usd, budget_exhausted)
       VALUES (
         ${row.workspaceId}, ${row.batteryId}, ${row.testId}, ${row.tier},
-        ${this.sql.json(row.arms as never)}, ${row.baselineId}, ${row.winner},
-        ${row.comparison === null || row.comparison === undefined ? null : this.sql.json(row.comparison as never)},
+        ${JSON.stringify(row.arms)}::jsonb, ${row.baselineId}, ${row.winner},
+        ${row.comparison == null ? null : JSON.stringify(row.comparison)}::jsonb,
         ${row.totalCostUsd}, ${row.budgetExhausted}
       )
       ON CONFLICT (workspace_id, battery_id) DO UPDATE SET

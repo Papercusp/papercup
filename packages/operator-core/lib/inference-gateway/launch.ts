@@ -87,6 +87,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       accountId: account.accountId,
       token: () => resolver.current(),
       invalidateToken: () => resolver.invalidate(),
+      // Carry the credential channel so the gateway picks the auth header (key → x-api-key, no
+      // OAuth beta; token/file → Bearer + oauth beta) — P-002.
+      kind: resolver.kind,
     })),
     { log },
   );

@@ -2,7 +2,7 @@
 import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createInferenceGateway, estimateTokens, parseRateReset } from './gateway';
+import { createInferenceGateway, estimateTokens, parseRateReset, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercup-shared/agent';
 
@@ -230,4 +230,86 @@ test('priority queue bounds forwarded concurrency (P-011 wiring)', async () => {
     Array.from({ length: 6 }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
   );
   assert.ok(peak <= 2, `upstream peak concurrency ${peak} must be ≤ the queue cap (2)`);
+});
+
+test('fails over to a second account when the active one hits its 5h budget (EI-535)', async () => {
+  resetGovernorRegistry();
+  const resetSec = Math.round(Date.now() / 1000) + 3600;
+  // Upstream: 429-with-unified-rejected for account A's token; 200 for account B's token.
+  upstream = await startUpstream((req, res) => {
+    if (req.headers['authorization'] === 'Bearer A-tok') {
+      res.writeHead(429, {
+        'content-type': 'application/json',
+        'anthropic-ratelimit-unified-5h-status': 'rejected',
+        'anthropic-ratelimit-unified-5h-reset': String(resetSec),
+      });
+      res.end('{"type":"error","error":{"type":"rate_limit_error"}}');
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    }
+  });
+  const pool = createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  port = await gw.listen(0);
+
+  // First request → account A → real 5h-rejected 429 → triggers failover to B.
+  const first = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(first.status, 429, 'A returns its real 5h-rejected 429');
+  assert.equal(pool.active().accountId, 'B', 'gateway failed over to B');
+
+  // Next request → account B (fresh bucket) → 200, egressing on B's token.
+  const second = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(second.status, 200, 'B has budget → 200');
+  assert.equal(upstream.last.headers['authorization'], 'Bearer B-tok', 'now egressing on B');
+
+  const s = (await (await ask('/stats')).json()) as { accountId: string; failovers: number };
+  assert.equal(s.accountId, 'B', '/stats reflects the new active account');
+  assert.equal(s.failovers, 1);
+  resetGovernorRegistry();
+});
+
+test('per-request x-papercusp-account header routes to the named pool account (P-002/P-003)', async () => {
+  const acctA: ActiveAccount = { accountId: 'acctA', token: async () => 'tokA' };
+  const acctB: ActiveAccount = { accountId: 'acctB', token: async () => 'tokB' };
+  const pool: AccountPool = {
+    active: () => acctA,
+    onExhausted: () => null,
+    select: (id) => (id === 'acctA' ? acctA : id === 'acctB' ? acctB : null),
+  };
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  }, { pool });
+  // no header → the active account (acctA)
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer tokA');
+  // header pins to acctB
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'acctB' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer tokB');
+  // the internal routing header is stripped before the upstream forward
+  assert.equal(upstream.last.headers['x-papercusp-account'], undefined);
+});
+
+test('a key-kind account authenticates with x-api-key and no OAuth beta (P-002)', async () => {
+  const billed: ActiveAccount = { accountId: 'billed', kind: 'key', token: async () => 'sk-ant-api03-K' };
+  const pool: AccountPool = { active: () => billed, onExhausted: () => null };
+  await boot((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  }, { pool });
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(upstream.last.headers['x-api-key'], 'sk-ant-api03-K');
+  assert.equal(upstream.last.headers['authorization'], undefined, 'no Bearer for an API key');
+  assert.ok(
+    !String(upstream.last.headers['anthropic-beta'] ?? '').includes('oauth-2025-04-20'),
+    'no oauth beta for an API key',
+  );
 });

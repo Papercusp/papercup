@@ -57,5 +57,13 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     return null;
   }
 
-  return { active, onExhausted };
+  /** Per-request cache-affinity routing (inference-gateway-multi-credential-routing P-002):
+   *  the pool entry named by the `x-papercusp-account` header, or null when unknown (the gateway
+   *  falls back to active()). Pins a bee to its account regardless of which one is `active` — a
+   *  failover moves `active`, but a header-pinned request stays on its own credential's cache. */
+  function select(accountId: string): ActiveAccount | null {
+    return entries.find((e) => e.accountId === accountId) ?? null;
+  }
+
+  return { active, onExhausted, select };
 }

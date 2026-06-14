@@ -47,7 +47,7 @@ import {
 } from '../../attention/adapters';
 import { planItemsToAttention, reportTurnsToAttention, dropConvertedPlanItems } from '../../attention/sources';
 import { buildAttentionGroups } from '../../attention/group';
-import { applyTriage, groupByTier, type AttentionItem } from '../../attention/types';
+import { applyTriage, deriveAuthorization, groupByTier, type AttentionItem } from '../../attention/types';
 import { readTriageByWorkspace } from '../../attention/triage-store';
 
 const argsSchema = z.object({
@@ -324,6 +324,25 @@ export default defineTool({
           return rec ? applyTriage(it, rec) : it;
         });
       }
+    } catch {
+      /* best-effort */
+    }
+
+    // 13. Authorizer split (queue-authorization-redesign P-002 / D-001): stamp WHO
+    //     must sign off + WHY each Decision is gated, for the Queue's A1 grouping.
+    //     One flag read; pure per-item derivation. Best-effort — on failure items
+    //     keep undefined authorizer/whyGated and the UI falls back to the tier list.
+    try {
+      let armed = false;
+      try {
+        const { FLAGS } = await import('@papercusp/flags');
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { activeWorkspaceId } = await import('../../workspace-registry');
+        armed = await getFlag(FLAGS.QUEEN_AUTONOMY_ARMED, `autonomy:${activeWorkspaceId()}`);
+      } catch {
+        /* fail-safe: treat as unarmed */
+      }
+      triaged = triaged.map((it) => ({ ...it, ...deriveAuthorization(it, armed) }));
     } catch {
       /* best-effort */
     }

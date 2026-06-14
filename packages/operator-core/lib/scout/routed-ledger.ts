@@ -413,13 +413,14 @@ export async function getScoutLensWeights(
   opts: ScoutLedgerOpts & { floorFraction?: number; extraIdeatorBudget?: number } = {},
 ): Promise<{ lensWeights: Record<CreativeLens, number>; extraIdeatorBudget: number }> {
   // Resolve the hive home slug from harnessSlug (per-hive lens weights, D-008).
-  let hiveSlug = opts.hiveSlug;
-  if (!hiveSlug && opts.harnessSlug) {
+  // A standalone harness (not part of a shared Hive) scopes weights under its own slug.
+  let hiveSlug = opts.hiveSlug ?? opts.harnessSlug;
+  if (!opts.hiveSlug && opts.harnessSlug) {
     try {
       const { hiveHomeSlugForHarness } = await import('../hive-federation');
-      hiveSlug = (await hiveHomeSlugForHarness(opts.workspaceId ?? activeWorkspaceId(), opts.harnessSlug)) ?? undefined;
+      hiveSlug = (await hiveHomeSlugForHarness(opts.workspaceId ?? activeWorkspaceId(), opts.harnessSlug)) ?? opts.harnessSlug;
     } catch {
-      // best-effort: fall through to a workspace-wide read (collapses across hives)
+      // best-effort: keep the harnessSlug fallback
     }
   }
   let persisted: Partial<Record<CreativeLens, number>> = {};

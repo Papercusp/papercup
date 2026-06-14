@@ -34,9 +34,12 @@ const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
 /** Header a bee/spawn sets to prioritise its requests (interactive/queen > batch). */
 export const PRIORITY_HEADER = 'x-papercusp-priority';
+/** Header a spawn sets to pin its requests to one pool account for cache affinity
+ *  (inference-gateway-multi-credential-routing P-003). Stripped before the upstream forward. */
+export const ACCOUNT_HEADER = 'x-papercusp-account';
 const ANTHROPIC_VERSION = '2023-06-01';
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
-const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
+const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
 
 /** The account the gateway currently egresses through — its id + a fresh-token getter. */
@@ -44,6 +47,10 @@ export interface ActiveAccount {
   accountId: string;
   token(): Promise<string>;
   invalidateToken?(): void;
+  /** Credential channel — decides the upstream auth header. `key` (a billed API key) is sent as
+   *  `x-api-key` with NO OAuth beta; `token`/`file`/undefined (subscription OAuth) use
+   *  `Authorization: Bearer` + the oauth beta. */
+  kind?: 'token' | 'file' | 'key';
 }
 
 /**
@@ -56,6 +63,11 @@ export interface ActiveAccount {
 export interface AccountPool {
   active(): ActiveAccount;
   onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null;
+  /** Per-request cache-affinity routing (inference-gateway-multi-credential-routing P-002): return
+   *  the pool entry named by the `x-papercusp-account` header, or null when the id is unknown (the
+   *  caller falls back to `active()`). A bee is pinned to one account for its whole life so its
+   *  conversation cache — which is per-credential — survives. Optional: a single-account pool omits it. */
+  select?(accountId: string): ActiveAccount | null;
 }
 
 export interface GatewayDeps {
@@ -228,7 +240,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         /* non-JSON body (e.g. a count_tokens variant) — keep defaults */
       }
     }
-    const active = pool.active();
+    // Cache-affinity routing (P-002/P-003): a spawn pins its requests to one account via the
+    // x-papercusp-account header so its per-credential conversation cache survives; an unknown id
+    // (or no header / a single-account pool) falls back to the active account — today's behavior.
+    const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
+    const active = (wantAccount && pool.select?.(wantAccount)) || pool.active();
     const gov = governorForAccount(model, active.accountId);
 
     totalRequests++;
@@ -253,8 +269,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
         headers[k] = Array.isArray(v) ? v.join(', ') : v;
       }
-      headers['authorization'] = `Bearer ${token}`;
-      headers['anthropic-beta'] = withOAuthBeta(headers['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined));
+      if (active.kind === 'key') {
+        // Billed API key — `x-api-key` auth, NO OAuth beta (the subscription-only flag would 400).
+        headers['x-api-key'] = token;
+        delete headers['authorization'];
+      } else {
+        // Subscription OAuth (token/file/undefined) — Bearer + the required oauth beta.
+        headers['authorization'] = `Bearer ${token}`;
+        headers['anthropic-beta'] = withOAuthBeta(headers['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined));
+      }
       if (!headers['anthropic-version']) headers['anthropic-version'] = ANTHROPIC_VERSION;
       headers['accept-encoding'] = 'identity';
 

@@ -62,7 +62,7 @@ export async function resolveAccountPool(ws?: string): Promise<ResolvedAccount[]
   }
   const wanted = process.env.PAPERCUSP_ACCOUNT_ID?.trim();
   if (wanted) {
-    const idx = all.findIndex((a) => a.id === wanted);
+    const idx = all.findIndex((a) => a.accountId === wanted);
     if (idx < 0) throw new Error(`inference-gateway: PAPERCUSP_ACCOUNT_ID='${wanted}' not in the account pool`);
     const [primary] = all.splice(idx, 1);
     return [{ ...primary, source: 'env' }, ...all];

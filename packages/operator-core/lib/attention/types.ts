@@ -17,7 +17,7 @@
 
 import { type Importance, IMPORTANCE_LEVELS, type RiskTier, riskTierRank } from '@papercusp/plan-parser';
 import type { ReportBlock } from '@papercusp/chat-protocol';
-import type { AutonomyCategory } from '../autonomy/categories';
+import { type AutonomyCategory, isProtectedCategory } from '../autonomy/categories';
 
 export type AttentionKind =
   | 'plan-item'
@@ -66,6 +66,101 @@ export const ATTENTION_KIND_CATEGORY: Record<AttentionKind, AutonomyCategory | n
  *  signal/report (see {@link ATTENTION_KIND_CATEGORY}). */
 export function attentionCategory(kind: AttentionKind): AutonomyCategory | null {
   return ATTENTION_KIND_CATEGORY[kind];
+}
+
+/**
+ * WHO must authorize an attention item's disposition once it reaches the human
+ * Queue (queue-authorization-redesign-2026-06-14 P-002 / D-001) — the axis the
+ * Queue's A1 split groups on:
+ *   - `you`            — the owner, by right. PROTECTED categories + owner-authority
+ *                        dispositions (ratify a needs-human item; grant a standing
+ *                        approval) always land here; the Queen can never auto them.
+ *   - `queen-eligible` — a system-authority, non-protected disposition the Queen
+ *                        COULD auto-handle if her autonomy were widened (armed +
+ *                        the category graduated high enough). Here only because it
+ *                        isn't — i.e. an invitation to widen the ceiling.
+ *   - `null`           — not a pending human decision.
+ */
+export type Authorizer = 'you' | 'queen-eligible' | null;
+
+/**
+ * WHY an item is gated to the human rather than auto-disposed (P-002). Mirrors the
+ * live decider's hard-gate reasons (../autonomy/decider `decideAutonomy`),
+ * coarsened to what is derivable from an attention item (which carries a
+ * `category` + `kind`, not a concrete action's risk_tier/reversibility):
+ *   - `protected`     — the category is PROTECTED (locked never-auto): release /
+ *                       spend / credentials / system-control. Owner's by right.
+ *   - `owner-only`    — a non-protected category but an owner-authority disposition
+ *                       (e.g. ratify a `needs-human` plan item). Owner's by right.
+ *   - `unarmed`       — a Queen-eligible disposition gated only because the autonomy
+ *                       loop isn't armed (`QUEEN_AUTONOMY_ARMED` off).
+ *   - `above-ceiling` — a Queen-eligible disposition the Queen isn't taking under
+ *                       the current per-category ceiling/graduation. Widen it to
+ *                       delegate these.
+ *   - `null`          — not a gated decision.
+ *
+ * (`irreversible` is intentionally absent: an attention item carries no per-item
+ * reversibility — irreversible-heavy work lives in the PROTECTED categories, which
+ * already resolve to `protected`. queue-authorization-redesign D-005.)
+ */
+export type WhyGated = 'protected' | 'owner-only' | 'unarmed' | 'above-ceiling' | null;
+
+/**
+ * The decision AUTHORITY of each attention kind's disposition — `owner` when the
+ * disposition is the owner's by right (ratify a needs-human plan item; grant a
+ * standing approval), else `system` (a disposition the Queen could in principle
+ * own). Mirrors the B-04 action-surface audit's per-disposition `authority`
+ * (../autonomy/action-surface). The category ({@link ATTENTION_KIND_CATEGORY})
+ * governs the ceiling; this governs owner-by-right. Drives {@link deriveAuthorization}.
+ */
+export const ATTENTION_KIND_AUTHORITY: Record<AttentionKind, 'owner' | 'system'> = {
+  'plan-item': 'owner', // ratify a needs-human item / milestone gate
+  'coord-escalation': 'system', // resolve a blocker/question escalation
+  'coord-message': 'system', // ack / dismiss an inbox message
+  'smoke-fail': 'system', // ungoverned signal (category null)
+  'operator-report': 'system', // ungoverned status report (category null)
+  'improvement': 'system', // triage / promote a human-routed improvement
+  'standing-approval': 'owner', // grant standing auto-dispatch — autonomy-widening, owner-only
+  'conversation': 'system', // answer an open agent question
+  'scout-grade': 'system', // grade routed Scout ideas
+};
+
+/** The gating fields {@link deriveAuthorization} stamps onto an item. */
+export interface AttentionAuthorization {
+  whyGated: WhyGated;
+  authorizer: Authorizer;
+}
+
+/**
+ * Derive WHO must authorize an item's disposition and WHY it's gated — the A1
+ * authorizer-split the Queue UI groups on (P-002 / D-001). PURE: the reader reads
+ * the live `QUEEN_AUTONOMY_ARMED` flag ONCE and passes it in.
+ *
+ * Only `needsHuman` (Decision-tier) items get a non-null result — those are the
+ * dispositions a working agent escalated for sign-off. Everything else (alerts,
+ * activity, handled, ungoverned signals) is `{ whyGated: null, authorizer: null }`.
+ *
+ * Mirrors the decider's hard gates, coarsened to item granularity (D-005):
+ *   PROTECTED category          → protected / you
+ *   owner-authority disposition → owner-only / you
+ *   category null (fail-safe)   → owner-only / you  (never auto an unmapped decision)
+ *   else (system, non-protected, queen-eligible):
+ *     ¬armed                    → unarmed
+ *     armed                     → above-ceiling
+ */
+export function deriveAuthorization(
+  item: Pick<AttentionItem, 'kind' | 'category' | 'needsHuman'>,
+  armed: boolean,
+): AttentionAuthorization {
+  if (!item.needsHuman) return { whyGated: null, authorizer: null };
+  const category = item.category ?? attentionCategory(item.kind);
+  if (category == null) return { whyGated: 'owner-only', authorizer: 'you' };
+  if (isProtectedCategory(category)) return { whyGated: 'protected', authorizer: 'you' };
+  if (ATTENTION_KIND_AUTHORITY[item.kind] === 'owner') {
+    return { whyGated: 'owner-only', authorizer: 'you' };
+  }
+  if (!armed) return { whyGated: 'unarmed', authorizer: 'queen-eligible' };
+  return { whyGated: 'above-ceiling', authorizer: 'queen-eligible' };
 }
 
 /**
@@ -215,6 +310,14 @@ export interface AttentionItem {
    *  Optional only so hand-built fixtures / the decoupled UI wire-type need not
    *  carry it — every adapted item sets it. */
   category?: AutonomyCategory | null;
+  /**
+   * WHO must authorize this item's disposition on the human Queue + WHY it is
+   * gated (queue-authorization-redesign P-002 / D-001). Stamped by the reader via
+   * {@link deriveAuthorization} for `needsHuman` items; `null`/undefined otherwise.
+   * The Queue's A1 split groups on `authorizer`. Optional so fixtures / the
+   * decoupled wire-type need not carry them. */
+  authorizer?: Authorizer;
+  whyGated?: WhyGated;
 }
 
 /** The untriaged-default triage fields every adapter spreads into its item

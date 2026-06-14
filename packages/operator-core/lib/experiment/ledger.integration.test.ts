@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { PgExperimentLedger } from './ledger';
+import { PgExperimentLedger, coerceJsonArray } from './ledger';
 
 const EXPERIMENT_RUNS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.experiment_runs (
@@ -71,8 +71,9 @@ describe('PgExperimentLedger', () => {
     expect(r.winner).toBe('cand');
     expect(r.decision).toBe('proposed'); // DB default — a winner is a proposal (D-006)
     expect(r.signal_origin).toBe('replay'); // DB default (provenance D-002)
-    expect((r.arms as Array<{ id: string }>).map((a) => a.id)).toEqual(['baseline', 'cand']);
-    expect((r.comparison as { selected: string }).selected).toBe('cand');
+    expect(coerceJsonArray<{ id: string }>(r.arms).map((a) => a.id)).toEqual(['baseline', 'cand']);
+    const comparison = typeof r.comparison === 'string' ? JSON.parse(r.comparison) : r.comparison;
+    expect((comparison as { selected: string }).selected).toBe('cand');
     expect(Number(r.total_cost_usd)).toBeCloseTo(0.01, 5);
   });
 

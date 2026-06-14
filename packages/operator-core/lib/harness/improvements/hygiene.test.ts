@@ -179,15 +179,15 @@ const ageRow = (id: string, ageDays: number): IssueAgeRow => ({ id, createdAt: d
 
 describe('planObservationRetention — window + cap intersection', () => {
   it('prunes ONLY rows that are BOTH older than the window AND beyond the cap', () => {
+    // Newest-first by age: recent-a (2d), recent-b (5d), old-within-cap (60d), old-surplus (90d).
     const rows: IssueAgeRow[] = [
-      ageRow('fresh-under-cap', 10), // recent + within cap → keep
-      ageRow('fresh-over-cap', 5), // recent but over cap → keep (window protects)
-      ageRow('old-under-cap', 60), // old but within cap → keep (cap protects)
-      ageRow('old-over-cap', 90), // old AND over cap → PRUNE
+      ageRow('recent-a', 2), // newest, within cap, within window → keep
+      ageRow('recent-b', 5), // within cap, within window → keep
+      ageRow('old-within-cap', 60), // beyond window BUT within cap (idx 2 < cap 3) → keep (cap protects)
+      ageRow('old-surplus', 90), // beyond window AND beyond cap (idx 3 ≥ cap 3) → PRUNE
     ];
-    // cap=2 → only the two newest are within the cap; window=30d.
-    const prune = planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 2 });
-    expect(prune).toEqual(['old-over-cap']);
+    const prune = planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 3 });
+    expect(prune).toEqual(['old-surplus']);
   });
 
   it('keeps every row younger than the window regardless of the cap (busy fleet)', () => {
