@@ -25,6 +25,7 @@ const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
   priority: null,
   origin: 'local',
   auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
   ...over,

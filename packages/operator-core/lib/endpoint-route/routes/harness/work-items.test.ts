@@ -29,6 +29,7 @@ const wi = (id: string, family: 'feature' | 'issue'): WorkItem => ({
   priority: null,
   origin: 'local',
   auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
   createdAt: '',
   updatedAt: '',
 });
