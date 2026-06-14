@@ -109,16 +109,21 @@ describe('buildInvokeOnce — env-resolution nuances', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
   });
 
+  // These two isolate CLAUDE/AGENT_CMD resolution, so they use `reviewer` — a role
+  // with NO committed ROLE_MODEL_DEFAULTS floor. spec()'s default `merge-resolver`
+  // now pins opus:xhigh (D-008 follow-up), which applyRoleModel appends as
+  // `--model opus --effort xhigh` even with AGENT_MODELS unset — the committed-floor
+  // twin of the env trap the beforeEach neutralizes.
   it("CLAUDE defaults to 'omp -p' when neither AGENT_CMD nor CLAUDE is set", () => {
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('CLAUDE', undefined as unknown as string);
-    expect(buildInvokeOnce(spec()).env.CLAUDE).toBe('omp -p');
+    expect(buildInvokeOnce(spec({ role: 'reviewer' })).env.CLAUDE).toBe('omp -p');
   });
 
   it('CLAUDE prefers AGENT_CMD over CLAUDE', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('CLAUDE', 'should-not-win');
-    expect(buildInvokeOnce(spec()).env.CLAUDE).toBe('claude -p');
+    expect(buildInvokeOnce(spec({ role: 'reviewer' })).env.CLAUDE).toBe('claude -p');
   });
 
   it('DATABASE_URL: an EMPTY string falls through to the resolved admin URL (|| not ??)', () => {

@@ -30,7 +30,15 @@ describe('roleDefaultSpec — the floor input', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(roleDefaultSpec('bee')).toBe('haiku');
     expect(roleDefaultSpec('release-manager')).toBe('opus:xhigh');
-    expect(roleDefaultSpec('merge-resolver')).toBe('');
+    // The launch-fixer family's committed floors (git-sync-content-guard D-008
+    // follow-up): the two fleet-blast-radius fixers pin opus:xhigh — merge-resolver
+    // no longer silently downgrades on a host without AGENT_MODELS — and the bounded
+    // content repairer pins the sonnet execution tier.
+    expect(roleDefaultSpec('merge-resolver')).toBe('opus:xhigh');
+    expect(roleDefaultSpec('release-fixer')).toBe('opus:xhigh');
+    expect(roleDefaultSpec('content-fixer')).toBe('sonnet');
+    // A role with neither an env entry nor a committed default → empty.
+    expect(roleDefaultSpec('reviewer')).toBe('');
   });
 });
 
@@ -67,7 +75,9 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
 
   it('a role with no resolvable default (no floor) takes any tier unclamped', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    const r = resolveTierSpec({ tier: 'quick', role: 'merge-resolver' });
+    // `reviewer` is a judgment role with no committed ROLE_MODEL_DEFAULTS floor
+    // (merge-resolver used to serve here, but it now pins opus:xhigh — D-008 follow-up).
+    const r = resolveTierSpec({ tier: 'quick', role: 'reviewer' });
     expect(r).toMatchObject({ ok: true, spec: 'haiku', tier: 'quick' });
   });
 

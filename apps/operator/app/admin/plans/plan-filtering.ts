@@ -13,9 +13,19 @@
 import type { PlanListRow } from './plans-api';
 import { withinDateWindow, type DateWindow } from './PlanFilters';
 
+/** The owner saved-view lens (shared-hive-collaboration P-002): all plans,
+ *  only mine, or only others'. Keyed on the viewer's plan-owner email. */
+export const OWNER_VIEWS = ['all', 'mine', 'others'] as const;
+export type OwnerView = (typeof OWNER_VIEWS)[number];
+
 export interface PlanFilterState {
   date: DateWindow | null;
   owner: string | null;
+  /** P-002 saved-view: 'all' (default) | 'mine' | 'others'. */
+  view: OwnerView;
+  /** The viewer's plan-owner email (git config user.email), or null when
+   *  unresolvable — then 'mine'/'others' degrade to no-op (show all). */
+  viewerEmail: string | null;
   archived: boolean;
   legacy: boolean;
   inbox: boolean;
@@ -37,6 +47,13 @@ export function applyPlanFilters(
   searchHitSlugs?: ReadonlySet<string>,
 ): PlanListRow[] {
   let working = plans;
+  // P-002 owner saved-view (keyed on the viewer's email). Degrades to no-op when
+  // the viewer email is unknown, so 'mine'/'others' never hide everything blindly.
+  if (f.viewerEmail) {
+    const me = f.viewerEmail.toLowerCase();
+    if (f.view === 'mine') working = working.filter((p) => (p.owner ?? '').toLowerCase() === me);
+    else if (f.view === 'others') working = working.filter((p) => !!p.owner && p.owner.toLowerCase() !== me);
+  }
   if (f.owner) working = working.filter((p) => p.owner === f.owner);
   if (f.date) working = working.filter((p) => withinDateWindow(p.updated, f.date));
   working = working.filter((p) => (f.archived ? p.archived : !p.archived));

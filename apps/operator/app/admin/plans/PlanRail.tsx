@@ -27,9 +27,10 @@ import {
   type ItemStatus,
   type PlanStatus,
   type PlanBucket,
+  usePlanViewerEmail,
 } from './plans-api';
 import { type DateWindow } from './PlanFilters';
-import { applyPlanFilters } from './plan-filtering';
+import { applyPlanFilters, OWNER_VIEWS, type OwnerView } from './plan-filtering';
 import { comparePlans, PLAN_SORT_IDS, type PlanSort } from './plan-sorting';
 import { Tooltip } from '@/app/harness/Tooltip';
 
@@ -104,6 +105,8 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     parseAsStringEnum<DateWindow>(['today', '7d', '30d']),
   );
   const [fOwner] = useQueryState('pOwner', parseAsString);
+  const [fView] = useQueryState('pView', parseAsStringEnum<OwnerView>([...OWNER_VIEWS]).withDefault('all'));
+  const fViewerEmail = usePlanViewerEmail();
   const [fArchived] = useQueryState('pArchived', parseAsBoolean.withDefault(false));
   const [fLegacy] = useQueryState('pLegacy', parseAsBoolean.withDefault(false));
   const [fInbox] = useQueryState('pInbox', parseAsBoolean.withDefault(false));
@@ -121,7 +124,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const sorted = useMemo<PlanListRow[]>(() => {
     const filtered = applyPlanFilters(
       plans,
-      { date: fDate, owner: fOwner, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable, scout: fScout },
+      { date: fDate, owner: fOwner, view: fView, viewerEmail: fViewerEmail, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable, scout: fScout },
       query,
       searchHitSlugs,
     );
@@ -150,7 +153,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       return 0;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fSort, query, searchHitSlugs, selectedKey, runningOrder]);
+  }, [plans, fBucketsKey, fOwner, fView, fViewerEmail, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fSort, query, searchHitSlugs, selectedKey, runningOrder]);
 
   useImperativeHandle(
     ref,

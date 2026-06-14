@@ -112,6 +112,33 @@ export {
   type MetricPairing,
 } from './efficiency-metrics';
 
+// P-064/P-065 (D-021) — the adversarial SUPERVISION battery: seed a misbehaving bee, MEASURE the
+// supervision layer's detection rate / latency / false-positive (don't assume it).
+export {
+  SUPERVISION_CASES,
+  casesForFamily,
+  type SupervisionCase,
+  type SupervisionFamily,
+  type LivenessSeed,
+  type ChannelBehavior,
+  type BehavioralSeed,
+} from './supervision-scenarios';
+
+export {
+  measureLivenessDetection,
+  measureBehavioralDetection,
+  measureSupervision,
+  ekgDriftDetector,
+  EXPECTED_RECOVERY_LATENCY_MS,
+  WATCHDOG_SWEEP_MS,
+  DETECTION_HORIZON_MS,
+  EKG_WINDOW_MS,
+  type BehavioralDetector,
+  type SupervisionDetectionReport,
+  type DetectionOutcome,
+  type DetectionVerdict,
+} from './supervision-metrics';
+
 export {
   computeHiveScore,
   hiveScoreRubricHash,

@@ -79,6 +79,15 @@ export const AGENT_ROLES = [
   // redoes the merge fresh on `main`, resolves, commits, leaves the tree clean, and
   // does NOT push (the next git-sync tick pushes). Not feature-scoped.
   'merge-resolver',
+  // git-sync CONTENT-guard repairer (git-sync-content-guard-2026-06-13 D-008 follow-up;
+  // the merge-resolver's content-side twin). Spawned by the `system:git-sync` content
+  // guard (EI-438) when a dirty file fails a content detector and is quarantined out of
+  // the auto-commit — an .mdx that won't MDX-compile, a curly quote used as code. Fixes
+  // ONLY the named files' syntax so they pass the detector, leaves the tree clean, does
+  // NOT push. Registered late (mirrors the merge-resolver/release-fixer launch-fixer
+  // family): the `content-fix` blueprint declared the role, but the registry never knew
+  // it, so it lived as an untyped bare string in tool allowlists.
+  'content-fixer',
   // Release manager (release-gate-ready-branch-2026-06-04 D-011). The judgment
   // half of the deploy chokepoint — Claude Opus 4.8 @ xhigh effort, because the
   // blast radius is the whole running fleet. Spawned by the `system:release-trigger`
@@ -86,6 +95,15 @@ export const AGENT_ROLES = [
   // migrations, makes the go/no-go call, runs the scripted deploy mechanics, then
   // reads health and decides rollback. The script is the hands; this is the brain.
   'release-manager',
+  // green-checkpoint GATE fixer (release-pipeline-resilience-2026-06-09 P-006; the
+  // release-manager's execution-side twin, and the launch-fixer family's third member
+  // alongside merge-resolver/content-fixer). Spawned by the `system:release-trigger` /
+  // green-checkpoint routine when the gate goes RED: reads the checkpoint log, reproduces
+  // the failing test to classify regression-vs-flake, then fixes the code or removes a
+  // proven flake (hermetic / tier-out / accountable quarantine), leaves the tree clean,
+  // does NOT push. Registered late (mirrors merge-resolver): the `release-fix` blueprint
+  // declared the role, but the registry never knew it.
+  'release-fixer',
   // The SENTINEL — the fleet watcher split out of the overloaded "operator"
   // (unify-launch-mechanics-2026-06-09 D-004). "operator" meant both the Queen
   // (steer: schedule + place + prioritize) AND a watcher; they are now separate.

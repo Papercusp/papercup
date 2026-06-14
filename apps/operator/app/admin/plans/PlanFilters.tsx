@@ -30,9 +30,12 @@
 
 import { useMemo, type RefObject } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
-import { type AsyncResult, type PlanListRow } from './plans-api';
+import { type AsyncResult, type PlanListRow, usePlanViewerEmail } from './plans-api';
+import { OWNER_VIEWS, type OwnerView } from './plan-filtering';
 import { PLAN_SORTS, PLAN_SORT_IDS, planSortLabel, type PlanSort } from './plan-sorting';
 import { Select } from '@/app/harness/Select';
+
+const OWNER_VIEW_LABELS: Record<OwnerView, string> = { all: 'all', mine: 'mine', others: "others'" };
 
 export type DateWindow = 'today' | '7d' | '30d';
 const DATE_WINDOWS: Array<{ id: DateWindow; label: string }> = [
@@ -63,6 +66,13 @@ export default function PlanFilters({
     parseAsStringEnum<DateWindow>(['today', '7d', '30d']),
   );
   const [owner, setOwner] = useQueryState('pOwner', parseAsString);
+  const [view, setView] = useQueryState(
+    'pView',
+    parseAsStringEnum<OwnerView>([...OWNER_VIEWS]).withDefault('all'),
+  );
+  // The viewer's plan-owner email; null ⇒ identity unresolvable, so hide the
+  // my/others view toggle (the raw owner dropdown still works).
+  const viewerEmail = usePlanViewerEmail();
   const [archivedOnly, setArchivedOnly] = useQueryState(
     'pArchived',
     parseAsBoolean.withDefault(false),
@@ -99,6 +109,7 @@ export default function PlanFilters({
 
   const activeCount =
     (dateWindow ? 1 : 0) +
+    (view !== 'all' ? 1 : 0) +
     (owner ? 1 : 0) +
     (archivedOnly ? 1 : 0) +
     (legacyOnly ? 1 : 0) +
@@ -110,6 +121,7 @@ export default function PlanFilters({
   const activeTokens = [
     sort !== 'default' ? { key: 'sort', label: `sort: ${planSortLabel(sort)}`, clear: () => setSort(null) } : null,
     dateWindow ? { key: 'date', label: `updated: ${dateWindowLabel(dateWindow)}`, clear: () => setDateWindow(null) } : null,
+    view !== 'all' ? { key: 'view', label: `view: ${OWNER_VIEW_LABELS[view]}`, clear: () => setView(null) } : null,
     owner ? { key: 'owner', label: `owner: ${owner}`, clear: () => setOwner(null) } : null,
     inbox ? { key: 'needs-human', label: 'has needs-human', clear: () => setInbox(false) } : null,
     actionable ? { key: 'actionable', label: 'has actionable', clear: () => setActionable(false) } : null,
@@ -120,6 +132,7 @@ export default function PlanFilters({
 
   const clearAll = () => {
     setDateWindow(null);
+    setView(null);
     setOwner(null);
     setArchivedOnly(false);
     setLegacyOnly(false);
@@ -181,6 +194,22 @@ export default function PlanFilters({
           triggerClassName="pc-filters__select"
         />
       </div>
+
+      {viewerEmail ? (
+        <div className="pc-filters__views" role="group" aria-label="Plan owner view">
+          {OWNER_VIEWS.map((v) => (
+            <button
+              key={v}
+              type="button"
+              className={`pc-filter-chip ${view === v ? 'is-on' : ''}`}
+              aria-pressed={view === v}
+              onClick={() => setView(v === 'all' ? null : v)}
+            >
+              {OWNER_VIEW_LABELS[v]}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <div className="pc-filters__quick" role="group" aria-label="Quick plan filters">
         {DATE_WINDOWS.map((d) => (

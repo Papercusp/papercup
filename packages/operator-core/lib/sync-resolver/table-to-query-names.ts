@@ -130,9 +130,24 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   // the heartbeat churn; grant/ask/beacon changes ride explicit
   // notifySyncInvalidate('network.board', {}) from their writers + the 60s
   // consumer safety-net).
-  'harness_shared.coord_presence': ['fleetAssignments.byHarness', 'network.board'],
+  // dev.coordPresence is the live-agents roster (the Mod+U PresenceRail +
+  // /coord dashboard read it): a heartbeat/intent/claim write must push the
+  // roster too, not just the fleet view (shared-hive-collaboration P-006 — the
+  // rail was a 30s poll before; SSE push replaces it).
+  'harness_shared.coord_presence': [
+    'fleetAssignments.byHarness',
+    'network.board',
+    'dev.coordPresence',
+  ],
   'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board'],
   'harness_shared.claim_audit': ['fleetAssignments.byHarness'],
+  // dev.coordFeed is the live coordination firehose (the PresenceRail Activity
+  // tab + the /adv Conversations Feed). The emit_change_notify trigger on
+  // coord_event_log is filtered to ORIGINAL rows (body->>'notify_kind' IS NULL)
+  // so the per-subscriber fan-out delivery copies don't each fire — the busiest
+  // coord table stays cheap (shared-hive-collaboration P-006). The (name,args)
+  // dedupe bounds burst refetches.
+  'harness_shared.coord_event_log': ['dev.coordFeed'],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 
   // ── Insights / activity ledger (v5 addendum 3) ──────────────────

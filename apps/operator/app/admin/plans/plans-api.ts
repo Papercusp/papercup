@@ -675,6 +675,20 @@ export function usePlanList(params?: {
   return useSyncResource<PlanListRow, 'plans'>('plans.list', args, 'plans');
 }
 
+const EMPTY_ARGS: Record<string, unknown> = {};
+
+/**
+ * The current viewer's plan-owner email (git config user.email), for the
+ * "my / others' / all" owner saved-views (shared-hive-collaboration P-002).
+ * null while loading or when the identity can't be resolved (then mine/others
+ * degrade to showing all). Shared sync cache — calling this in several
+ * components dedupes to one query.
+ */
+export function usePlanViewerEmail(): string | null {
+  const r = useSyncRows<{ email: string | null }>('plans.viewer', EMPTY_ARGS);
+  return r.data?.[0]?.email ?? null;
+}
+
 export function usePlan(slug: string | null) {
   return useAsyncJson<PlanGetResult | null>(
     (signal) => (slug ? fetchPlan(slug, signal) : Promise.resolve(null)),

@@ -1265,6 +1265,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return Array.isArray(r?.plans) ? r.plans : [];
     },
   },
+  // plans.viewer — the current viewer's plan-OWNER identity (their git email),
+  // for the plans list "my / others' / all" saved views (shared-hive-collaboration
+  // P-002). One row: [{ email }] (email null when unresolvable → UI degrades).
+  'plans.viewer': {
+    resolve: async () => {
+      const { getViewerOwnerEmail } = await import('../agent-tools/plans/viewer-identity');
+      const email = await getViewerOwnerEmail();
+      return [{ email }];
+    },
+  },
   'plans.items': {
     resolve: async (args) => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
