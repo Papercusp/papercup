@@ -22,7 +22,10 @@ import { getSystemAction, type SystemActionCtx } from '@papercusp/operator-core/
 import { setBlueprintResolver, setBlueprintRunFire } from '@papercusp/operator-core/lib/blueprint/blueprint-run-action';
 // Side-effect import: registers system:blueprint-run (the path routinesTick imports).
 import '@papercusp/operator-core/lib/harness/routines/register-system-actions';
-import { materializeBlueprintTriggers } from '@papercusp/operator-core/lib/blueprint/materialize-triggers';
+import {
+  materializeBlueprintTriggers,
+  SINGLETON_TRIGGER_HOST_SLUG,
+} from '@papercusp/operator-core/lib/blueprint/materialize-triggers';
 
 let adminUri: string;
 let dbName: string;
@@ -189,6 +192,85 @@ describe('materializeBlueprintTriggers', () => {
     expect(rows).toEqual([]);
     const db = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='demo'`;
     expect(db).toHaveLength(0);
+  });
+});
+
+describe('materializeBlueprintTriggers — workspace-singleton triggers (D-018)', () => {
+  it('writes ONE dark routine under the reserved host-slug, named blueprint-uniquely', async () => {
+    const bp = {
+      id: 'regret',
+      triggers: { schedule: [{ cron: '0 35 */6 * * *', action: 'system:blueprint-run', singleton: true }] },
+    };
+    const rows = await materializeBlueprintTriggers('regret-harness', bp, { workspaceId: WS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].singleton).toBe(true);
+    expect(rows[0].name).toBe('bp-singleton-regret-0');
+    expect(rows[0].hostSlug).toBe(SINGLETON_TRIGGER_HOST_SLUG);
+
+    // It landed under the reserved slug, NOT the real install slug, and seeded INACTIVE/dark.
+    const underReal = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='regret-harness'`;
+    expect(underReal).toHaveLength(0);
+    const db = await sql<{ name: string; active: boolean; workspace_id: string; target_role: string }[]>`
+      SELECT name, active, workspace_id, target_role
+        FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
+    expect(db).toHaveLength(1);
+    expect(db[0].name).toBe('bp-singleton-regret-0');
+    expect(db[0].active).toBe(false); // dark — armed explicitly, not on install
+    expect(db[0].workspace_id).toBe(WS);
+    expect(db[0].target_role).toBe('system:blueprint-run');
+  });
+
+  it('is workspace-singleton: re-installing the blueprint upserts the SAME one row', async () => {
+    const bp = {
+      id: 'regret',
+      triggers: { schedule: [{ cron: '0 35 */6 * * *', action: 'system:blueprint-run', singleton: true }] },
+    };
+    // Two distinct installs of the same blueprint (different real slugs) → still ONE row.
+    await materializeBlueprintTriggers('regret-harness-a', bp, { workspaceId: WS });
+    await materializeBlueprintTriggers('regret-harness-b', bp, { workspaceId: WS });
+    const db = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
+    expect(db).toHaveLength(1); // not N-duplicated across installs
+  });
+
+  it('two different singleton blueprints get two distinct rows (name embeds the id)', async () => {
+    await materializeBlueprintTriggers(
+      'h1',
+      { id: 'regret', triggers: { schedule: [{ cron: 'a', action: 'system:blueprint-run', singleton: true }] } },
+      { workspaceId: WS },
+    );
+    await materializeBlueprintTriggers(
+      'h2',
+      { id: 'negative-space', triggers: { schedule: [{ cron: 'b', action: 'system:blueprint-run', singleton: true }] } },
+      { workspaceId: WS },
+    );
+    const names = await sql<{ name: string }[]>`
+      SELECT name FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG} ORDER BY name`;
+    expect(names.map((r) => r.name)).toEqual(['bp-singleton-negative-space-0', 'bp-singleton-regret-0']);
+  });
+
+  it('mixes per-install (active, real slug) and singleton (dark, reserved slug) in one blueprint', async () => {
+    const bp = {
+      id: 'mixed',
+      triggers: {
+        schedule: [
+          { cron: '0 0 9 * * *', action: 'system:blueprint-run' }, // per-install
+          { cron: '0 35 */6 * * *', action: 'system:blueprint-run', singleton: true }, // singleton
+        ],
+      },
+    };
+    const rows = await materializeBlueprintTriggers('mixed-harness', bp, { workspaceId: WS });
+    expect(rows).toHaveLength(2);
+
+    const perInstall = await sql<{ active: boolean }[]>`
+      SELECT active FROM harness_shared.routines WHERE install_slug='mixed-harness'`;
+    expect(perInstall).toHaveLength(1);
+    expect(perInstall[0].active).toBe(true); // per-install seeded ACTIVE
+
+    const singleton = await sql<{ name: string; active: boolean }[]>`
+      SELECT name, active FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
+    expect(singleton).toHaveLength(1);
+    expect(singleton[0].name).toBe('bp-singleton-mixed-1');
+    expect(singleton[0].active).toBe(false); // singleton seeded DARK
   });
 });
 

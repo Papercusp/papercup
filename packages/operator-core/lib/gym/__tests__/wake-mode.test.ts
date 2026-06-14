@@ -47,7 +47,7 @@ describe('wakeBlueprintYaml', () => {
       const { blueprint } = loadBlueprintFromFile(file);
       const specs = triggerRoutineSpecs(blueprint);
       expect(specs).toEqual([
-        { name: 'bp-schedule-0', cron: '*/15 * * * * *', targetRole: 'system:blueprint-run' },
+        { name: 'bp-schedule-0', cron: '*/15 * * * * *', targetRole: 'system:blueprint-run', singleton: false },
       ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });

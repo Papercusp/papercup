@@ -19,6 +19,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
+import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
 
 /**
@@ -73,6 +74,23 @@ export interface HarnessPlansProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of the global getOrgPg().sql. */
   sql?: postgres.Sql;
+  /**
+   * Test seam — the per-PART federation gate (default: getFlag(PLAN_PART_FEDERATION,'system')).
+   * plan-federation-regrain-2026-06-13 D-004: when ON, the per-part recompose
+   * (projections/harness-plan-parts.ts) is the SOLE writer of harness_plans
+   * content + scalars, so this whole-blob projection drops to BOOTSTRAP-ONLY
+   * (INSERT … ON CONFLICT DO NOTHING) — it can create a never-seen plan but
+   * never UPDATE an existing one, so a stale whole-blob snapshot can never
+   * clobber a per-part merge. When OFF, the whole-blob path is authoritative
+   * (the full upsert) exactly as before.
+   */
+  isFlagOn?: () => Promise<boolean>;
+}
+
+async function planPartFederationOn(opts: HarnessPlansProjectionOpts): Promise<boolean> {
+  if (opts.isFlagOn) return opts.isFlagOn();
+  const { getFlag } = await import('@papercusp/flags/server');
+  return getFlag(FLAGS.PLAN_PART_FEDERATION, 'system');
 }
 
 function composeKey(row: HarnessPlanRow): string {
@@ -94,6 +112,26 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  // plan-federation-regrain D-004: when per-part federation is ON, the per-part
+  // recompose owns content + scalars. This whole-blob path drops to BOOTSTRAP-
+  // ONLY: INSERT a never-seen plan (so a brand-new plan still lands on a remote
+  // peer) but DO NOTHING on an existing row — never updating content or scalars,
+  // so a stale whole-blob snapshot cannot clobber a per-part merge. The single
+  // fed_ts stays a single LWW stream (recompose owns updates).
+  if (await planPartFederationOn(opts)) {
+    await sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version,
+         title, status, created, updated, owner, supersedes, superseded_by,
+         archived, is_legacy, author_pubkey, origin, fed_ts)
+      VALUES
+        (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
+         ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.supersedes}, ${row.superseded_by},
+         ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs})
+      ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
+    `;
+    return;
+  }
   // workspace_id is the LOCAL projection's bound workspace (not the sender's) —
   // a remote plan lands in the workspace this harness is bound to here. version
   // is the local CAS counter: 0 on first insert, bumped on every remote apply so

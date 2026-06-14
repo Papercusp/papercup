@@ -15,7 +15,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import { joinFederatedParts, hashPlanContent, type FederatedPart, type PlanPartKind } from '@papercusp/plan-parser';
+import { joinFederatedParts, hashPlanContent, parsePlan, type FederatedPart, type PlanPartKind } from '@papercusp/plan-parser';
 import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store';
@@ -72,18 +72,41 @@ async function flagOn(opts: HarnessPlanPartsProjectionOpts): Promise<boolean> {
   return getFlag(FLAGS.PLAN_PART_FEDERATION, 'system');
 }
 
-/** LWW-guarded UPDATE of harness_plans.content from the recomposed parts (only
- *  the federated DOCUMENT fields; version, op-state, and workspace stay as the
- *  whole-blob projection (projections/harness-plans.ts) manages them). */
+/** UPDATE harness_plans from the recomposed parts. Per-part federation D-004:
+ *  when the flag is ON this is the SOLE writer of harness_plans for the plan (the
+ *  whole-blob projection is bootstrap-only — INSERT … DO NOTHING), so it writes
+ *  BOTH the document (content/content_hash) AND the scalar columns the whole-blob
+ *  path used to federate — re-derived from the recomposed frontmatter (title /
+ *  status / created / updated / owner / supersedes / superseded_by / is_legacy).
+ *  origin='remote' + a moved fed_ts make mig-214 return the row verbatim (no
+ *  re-stamp) and mig-125 skip re-capture (the echo guard), so the single fed_ts
+ *  stays ONE LWW stream. The `content_hash IS DISTINCT FROM` guard skips a no-op
+ *  recompose (an older/duplicate part op whose merge changes nothing) — no
+ *  version churn, no spurious capture. No fed_ts LWW guard is needed: the parts
+ *  table is the content LWW authority, so the recompose always reflects the
+ *  current merged state. */
 function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
   return async (planSlug: string, content: string, contentHash: string, provenance?: ProvenanceContext): Promise<void> => {
     const sql = opts.sql ?? getOrgPg().sql;
     const fedTs = provenance?.ts ?? null;
+    const { frontmatter: fm, isLegacy } = parsePlan(content);
     await sql`
       UPDATE harness_shared.harness_plans
-         SET content = ${content}, content_hash = ${contentHash}, version = version + 1, fed_ts = ${fedTs}
+         SET content       = ${content},
+             content_hash  = ${contentHash},
+             version       = version + 1,
+             title         = ${fm.title ?? null},
+             status        = ${fm.status ?? null},
+             created       = ${fm.created ?? null},
+             updated       = ${fm.updated ?? null},
+             owner         = ${fm.owner ?? null},
+             supersedes    = ${fm.supersedes ?? []},
+             superseded_by = ${fm.supersededBy ?? null},
+             is_legacy     = ${isLegacy},
+             origin        = 'remote',
+             fed_ts        = ${fedTs}
        WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug} AND plan_slug = ${planSlug}
-         AND (fed_ts IS NULL OR ${fedTs}::bigint IS NULL OR ${fedTs}::bigint >= fed_ts)
+         AND content_hash IS DISTINCT FROM ${contentHash}
     `;
   };
 }

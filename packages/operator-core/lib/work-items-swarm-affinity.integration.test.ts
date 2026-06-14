@@ -39,6 +39,7 @@ const HFC_DDL = `
     swarm_affinity text,
     feature_order integer,
     ts bigint, created_ts bigint, updated_ts bigint,
+    origin text NOT NULL DEFAULT 'local', audit_verdict text,
     PRIMARY KEY (harness_slug, feature_id))`;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { triggerRoutineSpecs, DEFAULT_SCHEDULE_ACTION } from './materialize-triggers';
+import {
+  triggerRoutineSpecs,
+  DEFAULT_SCHEDULE_ACTION,
+  SINGLETON_TRIGGER_HOST_SLUG,
+} from './materialize-triggers';
 
 describe('triggerRoutineSpecs (P-021 / D-018)', () => {
   it('returns [] when the blueprint declares no triggers', () => {
@@ -18,8 +22,8 @@ describe('triggerRoutineSpecs (P-021 / D-018)', () => {
       },
     });
     expect(specs).toEqual([
-      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run' },
-      { name: 'bp-schedule-1', cron: '*/30 * * * * *', targetRole: 'system:git-sync' },
+      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false },
+      { name: 'bp-schedule-1', cron: '*/30 * * * * *', targetRole: 'system:git-sync', singleton: false },
     ]);
   });
 
@@ -46,5 +50,59 @@ describe('triggerRoutineSpecs (P-021 / D-018)', () => {
     const names = specs.map((s) => s.name);
     expect(names).toEqual(['bp-schedule-0', 'bp-schedule-1', 'bp-schedule-2']);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe('triggerRoutineSpecs — workspace-singleton triggers (D-018)', () => {
+  it('singleton defaults to false (a plain entry is per-install)', () => {
+    const specs = triggerRoutineSpecs({
+      id: 'demo',
+      triggers: { schedule: [{ cron: '0 0 9 * * *', action: 'system:blueprint-run' }] },
+    });
+    expect(specs[0].singleton).toBe(false);
+    expect(specs[0].name).toBe('bp-schedule-0');
+  });
+
+  it('a singleton entry is named blueprint-uniquely (carries the blueprint id)', () => {
+    const specs = triggerRoutineSpecs({
+      id: 'regret',
+      triggers: {
+        schedule: [
+          { cron: '0 0 9 * * *', action: 'system:blueprint-run' }, // per-install
+          { cron: '0 35 */6 * * *', action: 'system:blueprint-run', singleton: true }, // singleton
+        ],
+      },
+    });
+    expect(specs).toEqual([
+      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false },
+      { name: 'bp-singleton-regret-1', cron: '0 35 */6 * * *', targetRole: 'system:blueprint-run', singleton: true },
+    ]);
+  });
+
+  it('two different blueprints never collide on the singleton name (it embeds the id)', () => {
+    const a = triggerRoutineSpecs({
+      id: 'regret',
+      triggers: { schedule: [{ cron: 'x', action: 'system:blueprint-run', singleton: true }] },
+    });
+    const b = triggerRoutineSpecs({
+      id: 'negative-space',
+      triggers: { schedule: [{ cron: 'x', action: 'system:blueprint-run', singleton: true }] },
+    });
+    expect(a[0].name).toBe('bp-singleton-regret-0');
+    expect(b[0].name).toBe('bp-singleton-negative-space-0');
+    expect(a[0].name).not.toBe(b[0].name);
+  });
+
+  it('throws when a singleton trigger is declared without a blueprint id', () => {
+    expect(() =>
+      triggerRoutineSpecs({
+        triggers: { schedule: [{ cron: 'x', action: 'system:blueprint-run', singleton: true }] },
+      }),
+    ).toThrow(/singleton.*requires the blueprint id/i);
+  });
+
+  it('the reserved host-slug is disjoint from real harness slugs (leading @)', () => {
+    expect(SINGLETON_TRIGGER_HOST_SLUG).toBe('@singleton');
+    expect(SINGLETON_TRIGGER_HOST_SLUG.startsWith('@')).toBe(true);
   });
 });
