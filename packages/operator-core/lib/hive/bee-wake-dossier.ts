@@ -39,9 +39,10 @@ export interface BeeRosterPeer {
 export interface BeeDossierCaps {
   blocks: number;
   topics: number;
+  comments: number;
   roster: number;
 }
-export const DEFAULT_BEE_DOSSIER_CAPS: BeeDossierCaps = { blocks: 12, topics: 12, roster: 20 };
+export const DEFAULT_BEE_DOSSIER_CAPS: BeeDossierCaps = { blocks: 12, topics: 12, comments: 6, roster: 20 };
 
 export interface BeeDossierInput {
   /** The work-item (core — required). */
@@ -52,6 +53,8 @@ export interface BeeDossierInput {
   blocks?: readonly string[];
   /** Topic tags on the item. */
   topics?: readonly string[];
+  /** Recent thread comments on the item, newest-first, each a pre-trimmed `author: body`. */
+  comments?: readonly string[];
   /** The hive-peer roster snapshot (D-008) — live peers the bee shares the hive with. */
   roster?: readonly BeeRosterPeer[];
   caps?: Partial<BeeDossierCaps>;
@@ -108,6 +111,15 @@ export function renderBeeDossier(input: BeeDossierInput): string {
     out.push('');
     out.push('### Topics');
     out.push(topics.slice(0, caps.topics).join(', '));
+  }
+
+  const comments = input.comments ?? [];
+  if (comments.length > 0) {
+    out.push('');
+    out.push('### Recent comments (newest first)');
+    for (const c of comments.slice(0, caps.comments)) out.push(`- ${c}`);
+    const overflow = comments.length - caps.comments;
+    if (overflow > 0) out.push(`…+${overflow} more (work_items:get to read the full thread)`);
   }
 
   const roster = input.roster ?? [];
@@ -205,6 +217,16 @@ export async function computeBeeWakeDossier(input: ComputeBeeWakeDossierInput): 
   const links = detail?.links ?? [];
   const planItem = links.find((l) => (l.dst as { kind?: string } | undefined)?.kind?.includes('plan'))?.dst;
   const blocks = links.filter((l) => l.rel === 'blocks').map((l) => dstLabel(l.dst));
+  // Recent thread comments — newest-first (listPosts is chronological), each compacted.
+  const comments = (detail?.posts ?? [])
+    .slice()
+    .reverse()
+    .map((p) => {
+      const who = p.author_id ?? 'someone';
+      const body = (p.body ?? '').replace(/\s+/g, ' ').trim();
+      return body ? `${who}: ${body.slice(0, 200)}` : '';
+    })
+    .filter(Boolean);
   const roster = await deps.listRoster(workspaceId).catch(() => [] as BeeRosterPeer[]);
 
   return renderBeeDossier({
@@ -212,6 +234,7 @@ export async function computeBeeWakeDossier(input: ComputeBeeWakeDossierInput): 
     planItem: planItem ? dstLabel(planItem) : null,
     blocks,
     topics: detail?.topics ?? [],
+    comments,
     roster,
     caps: input.caps,
   });

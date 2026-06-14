@@ -34,11 +34,17 @@ function wi(over: Partial<WorkItem> = {}): WorkItem {
   };
 }
 
-function detail(over: { topics?: string[]; links?: { rel: string; dst: unknown }[] } = {}): WorkItemDetail {
+function detail(
+  over: {
+    topics?: string[];
+    links?: { rel: string; dst: unknown }[];
+    posts?: { author_id: string | null; body: string }[];
+  } = {},
+): WorkItemDetail {
   return {
     ...wi(),
     topics: over.topics ?? [],
-    posts: [],
+    posts: (over.posts ?? []) as unknown as WorkItemDetail['posts'],
     links: (over.links ?? []) as unknown as WorkItemDetail['links'],
   };
 }
@@ -81,11 +87,19 @@ describe('renderBeeDossier (pure)', () => {
     expect(s).toContain('(bee)');
   });
 
-  it('omits empty sections (no plan/blocks/topics/roster ⇒ just the item)', () => {
+  it('renders recent comments (newest-first list)', () => {
+    const s = renderBeeDossier({ item: wi(), comments: ['su-b: did Y', 'su-a: did X'] });
+    expect(s).toContain('### Recent comments');
+    expect(s).toContain('su-b: did Y');
+    expect(s).toContain('su-a: did X');
+  });
+
+  it('omits empty sections (no plan/blocks/topics/comments/roster ⇒ just the item)', () => {
     const s = renderBeeDossier({ item: wi() });
     expect(s).not.toContain('### Plan');
     expect(s).not.toContain('### Blocks');
     expect(s).not.toContain('### Topics');
+    expect(s).not.toContain('### Recent comments');
     expect(s).not.toContain('### Hive peers');
   });
 
@@ -106,6 +120,11 @@ describe('computeBeeWakeDossier (fail-soft, injected deps)', () => {
         { rel: 'blocks', dst: { kind: 'feature', id: 'WI-9' } },
         { rel: 'sourced-from', dst: { kind: 'plan_item', id: 'pl/P-003' } },
       ],
+      // chronological; the dossier renders newest-first.
+      posts: [
+        { author_id: 'su-old', body: 'first note' },
+        { author_id: 'su-new', body: 'latest note' },
+      ],
     });
     const s = await computeBeeWakeDossier({
       ...base,
@@ -119,6 +138,8 @@ describe('computeBeeWakeDossier (fail-soft, injected deps)', () => {
     expect(s).toContain('WI-9'); // outgoing blocks edge
     expect(s).toContain('pl/P-003'); // plan_item edge → the Plan section
     expect(s).toContain('cache'); // topic
+    expect(s).toContain('su-new: latest note'); // comment, newest-first
+    expect(s!.indexOf('su-new: latest note')).toBeLessThan(s!.indexOf('su-old: first note')); // newest before oldest
     expect(s).toContain('Hive peers');
   });
 
