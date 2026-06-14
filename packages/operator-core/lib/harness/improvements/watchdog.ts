@@ -31,6 +31,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { lastServiceHealth, lastServiceHealthAt, type ProbeResult } from '../../service-health';
+import { STALE_PLAN_CLAIM_GRACE_MS } from '../../plan-items/stale-claims';
 import { checkMigrationDrift } from '../../migration-drift';
 import { findIssuesByWatchdogKeys } from '../../issues-engineer';
 import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
@@ -405,6 +406,10 @@ export interface CollectOptions extends LearningSloOptions {
   expiredLeaseWindowDays?: number;
   /** expired-lease fire threshold. Default 15. */
   expiredLeaseMinCount?: number;
+  /** expired-lease grace (EI-530): only count claims lapsed > this long, matching the
+   *  reclaim sweep's grace — so a claim the sweep hasn't yet had a chance to reap
+   *  isn't double-reported as abandoned. Default STALE_PLAN_CLAIM_GRACE_MS (10 min). */
+  expiredLeaseGraceMs?: number;
   /** failed-spawn lookback window. Default 6h. */
   failedSpawnWindowHours?: number;
   /** failed-spawn fire threshold (total failures in the window). Default 5. */
@@ -1009,15 +1014,48 @@ export function expiredLeaseSignalsFromRows(
   }];
 }
 
-/** expired-lease: AGGREGATE — plan-item claims whose lease expired RECENTLY (P-006 window). */
+/**
+ * expired-lease: AGGREGATE — plan-item claims whose lease expired RECENTLY and
+ * whose holder is genuinely GONE (P-006 window).
+ *
+ * EI-530: the old query counted EVERY expired-but-present claim, regardless of
+ * holder liveness — so a long-lived session that's still heartbeating but let a
+ * lease lapse (which the reclaim sweep CORRECTLY skips) was falsely counted as
+ * "the holder died/vanished", firing this signal forever. The watchdog now joins
+ * the SAME alias-aware liveness rule + grace the reclaim sweep uses
+ * (`reclaimExpiredPlanItemClaims`, plan-items/stale-claims.ts), so it counts ONLY
+ * the set the sweep targets but hasn't reaped — i.e. genuine abandonment the GC
+ * is failing to clean. If the sweep is healthy this is ~0; a sustained non-zero
+ * count is the real "lease GC / liveness needs attention" signal the body
+ * describes. Live-holder lapses are a claim-discipline concern (EI-483), not this.
+ */
 export async function collectExpiredLeaseSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
   const windowDays = opts.expiredLeaseWindowDays ?? 7;
+  const graceSec = Math.max(1, Math.round((opts.expiredLeaseGraceMs ?? STALE_PLAN_CLAIM_GRACE_MS) / 1000));
   const rows = await sql<ExpiredLeaseRow[]>`
-    SELECT expires_ts
-      FROM harness_shared.plan_item_claims
-     WHERE expires_ts < now()
-       AND expires_ts > now() - make_interval(days => ${windowDays})
-     ORDER BY expires_ts DESC
+    WITH live_holder AS (
+      -- Mirror reclaimExpiredPlanItemClaims's mig-225 alias-aware liveness join:
+      -- fresh coord_presence rows…
+      SELECT owner_id AS alias
+        FROM harness_shared.coord_presence
+       WHERE heartbeat_at IS NOT NULL
+         AND (now() - heartbeat_at) < make_interval(secs => ${graceSec})
+      UNION
+      -- …plus every alias of a RUNNING nursery row with a fresh heartbeat.
+      SELECT a.alias
+        FROM harness_shared.spawned_agents n
+        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+       WHERE n.status IN ('running', 'restarting')
+         AND n.heartbeat_at IS NOT NULL
+         AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
+         AND a.alias IS NOT NULL AND a.alias <> ''
+    )
+    SELECT c.expires_ts
+      FROM harness_shared.plan_item_claims c
+     WHERE c.expires_ts < now() - make_interval(secs => ${graceSec})
+       AND c.expires_ts > now() - make_interval(days => ${windowDays})
+       AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = c.owner)
+     ORDER BY c.expires_ts DESC
      LIMIT 500`;
   return expiredLeaseSignalsFromRows(rows, { windowDays, minCount: opts.expiredLeaseMinCount });
 }

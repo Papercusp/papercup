@@ -185,6 +185,8 @@ beforeAll(async () => {
   // Stage-3 derived-index columns (items/decisions/now_*) — the write path
   // (with-plan-lock) and the start tool's source reads expect them at head.
   await rootSql.unsafe(readMigration('128-harness-plans-normalize.sql')).simple();
+  // The initiative grouping column (284) — plans:start's source-derive reads/writes it.
+  await rootSql.unsafe(readMigration('284-harness-plans-initiative.sql')).simple();
   h.sql = rootSql;
 
   // Arm the Queen's defaults (P-002) — the live reaction rules the chain rides.

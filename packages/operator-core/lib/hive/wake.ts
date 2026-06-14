@@ -213,7 +213,7 @@ export async function setHiveEventSubscriptions(
     ...cur,
     subscriptions: subs,
     declaredAt: Date.now(),
-  }));
+  }), workspaceId);
   return syncHiveWakeRules(workspaceId, subs);
 }
 
@@ -285,6 +285,7 @@ export async function recordHiveWake(workspaceId?: string): Promise<void> {
     'hive_wake',
     EMPTY_STATE,
     (cur) => ({ ...cur, lastWakeAt: Date.now() }),
+    workspaceId,
   );
 }
 

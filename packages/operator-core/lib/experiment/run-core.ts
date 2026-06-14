@@ -19,6 +19,7 @@ import { runGovernedReplay, type ReplayGlueDeps } from '../replay/governed';
 import type { ReplayCase, ReplayRunner, ReplayVariant } from '../replay/types';
 import { armToReplayVariant, registerExperimentDescriptors, replayResultToExperimentResult } from './descriptors';
 import { validateArm } from './knob-space';
+import type { ExperimentLedger } from './ledger';
 import type { ExperimentRunResult } from './types';
 
 export interface RunExperimentArm {
@@ -52,6 +53,12 @@ export interface RunExperimentDeps {
   judge: ReplayBatteryDeps['llmCall'];
   now?: () => number;
   glue?: ReplayGlueDeps;
+  /** Cell-lifecycle store. Omit → the governed substrate uses PgReplayStore; an
+   *  integration test (or a future ledger writer) injects its own. */
+  store?: ReplayBatteryDeps['store'];
+  /** The experiment ledger (P-050). When present, a finished run writes its
+   *  run-level summary row (best-effort — a ledger failure never loses the result). */
+  ledger?: ExperimentLedger;
 }
 
 export interface RunExperimentOutcome {
@@ -124,10 +131,31 @@ export async function runExperiment(
       runner: deps.replayRunner,
       llmCall: deps.judge,
       now: deps.now ?? (() => Date.now()),
+      ...(deps.store ? { store: deps.store } : {}),
     },
     deps.glue,
   );
 
   if (!result) return { ok: false, refused: { reason: verdict.reason } };
-  return { ok: true, result: replayResultToExperimentResult(result) };
+
+  const normalized = replayResultToExperimentResult(result);
+  if (deps.ledger) {
+    try {
+      await deps.ledger.record({
+        workspaceId: ctx.workspaceId,
+        batteryId: input.batteryId,
+        testId: normalized.testId,
+        tier: normalized.tier,
+        arms: normalized.arms,
+        baselineId: normalized.baselineId,
+        winner: normalized.winner,
+        comparison: normalized.comparison,
+        totalCostUsd: normalized.totalCostUsd,
+        budgetExhausted: normalized.budgetExhausted,
+      });
+    } catch {
+      // Best-effort: never lose a finished experiment result to a ledger write.
+    }
+  }
+  return { ok: true, result: normalized };
 }

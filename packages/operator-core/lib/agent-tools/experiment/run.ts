@@ -13,6 +13,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { runGovernedReplay } from '../../replay/governed';
 import { runExperiment } from '../../experiment/run-core';
 import { experimentJudge, experimentReplayRunner } from '../../experiment/replay-ports';
+import { PgExperimentLedger } from '../../experiment/ledger';
 
 export default defineTool({
   name: 'experiment:run',

@@ -179,6 +179,8 @@ beforeAll(async () => {
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();
   await rootSql.unsafe(readMigration('128-harness-plans-normalize.sql')).simple();
+  // The initiative grouping column (284) — plans:start's source-derive reads/writes it.
+  await rootSql.unsafe(readMigration('284-harness-plans-initiative.sql')).simple();
   // The declare-wake frontier guard (wake-frontier-guard.ts) reads this table.
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = rootSql;
