@@ -28,7 +28,7 @@ import PlanChat from './PlanChat';
 import MessageOwnerThread from './MessageOwnerThread';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
 import { InputCard, type InputCardResponse } from '@/app/_components/chat/InputCard';
-import { InboxCardActions } from './InboxCardActions';
+import { QueueCardActions } from './QueueCardActions';
 import { attentionItemToCardSpec, resolveAttentionAction, answerAttentionItem } from './attention-card';
 import { TIER_LABEL, type AttentionGroup, type AttentionItem, type AttentionKind, type AttentionTier } from './plans-api';
 
@@ -332,7 +332,7 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
         ) : null}
         {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
         {/* #4: actions live in the toolbar, not in the card body. */}
-        <InboxCardActions
+        <QueueCardActions
           options={spec.options}
           answered={answered}
           busy={busy}

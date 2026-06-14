@@ -54,8 +54,9 @@ interface SpawnRow {
   duration_ms: string | number | null;
 }
 
-/** The run's confirmed `spawned_agents` rows for the member, mapped to {@link SpawnRunRow}. */
-async function readSpawnRows(sql: postgres.Sql, member: string, workspaceId: string): Promise<SpawnRunRow[]> {
+/** The run's confirmed `spawned_agents` rows for the member, mapped to {@link SpawnRunRow}. Exported
+ *  for the integration test (verifies the SQL + the bigint/timestamp coercions against the real schema). */
+export async function readMemberSpawnRows(sql: postgres.Sql, member: string, workspaceId: string): Promise<SpawnRunRow[]> {
   const rows = await sql<SpawnRow[]>`
     SELECT spawn_id, feature_id, status, started_at, finished_at, duration_ms
       FROM harness_shared.spawned_agents
@@ -71,13 +72,23 @@ async function readSpawnRows(sql: postgres.Sql, member: string, workspaceId: str
 }
 
 /** The run's stats from the member's HFC rows (cost is first-live-run EKG wiring — see file header). */
-async function readLiveRunStats(sql: postgres.Sql, member: string, workspaceId: string): Promise<LiveRunStats> {
+export async function readMemberRunStats(sql: postgres.Sql, member: string, workspaceId: string): Promise<LiveRunStats> {
   const rows = await sql<{ total: number; completed: number }[]>`
     SELECT count(*)::int AS total,
            count(*) FILTER (WHERE status = 'passed')::int AS completed
       FROM harness_shared.harness_features_consolidated
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${member}`;
   return { costUsd: 0, workItemsTotal: rows[0]?.total ?? 0, workItemsCompleted: rows[0]?.completed ?? 0 };
+}
+
+/** Placements still in flight for a hive home: `hive_placements` rows in a non-terminal status (the
+ *  drained predicate's "a bee is still working" input). Exported for the integration test. */
+export async function countHivePlacementsInFlight(sql: postgres.Sql, hiveHome: string, workspaceId: string): Promise<number> {
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM harness_shared.hive_placements
+     WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveHome}
+       AND status = ANY(${[...IN_FLIGHT_PLACEMENT_STATUSES]})`;
+  return rows[0]?.n ?? 0;
 }
 
 export interface CaptureRunDataInput {
@@ -111,7 +122,7 @@ export async function captureRunData(
   };
   const groundTruth = await collectGroundTruth(liveGroundTruthPortsFromSql({ sql, baseline }), ctx);
 
-  const spawnRows = await readSpawnRows(sql, member, workspaceId);
+  const spawnRows = await readMemberSpawnRows(sql, member, workspaceId);
 
   const capture: LiveRunCapture = { acceptance, groundTruth, spawnRows };
 
@@ -203,16 +214,9 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
       return { plans: s.plans, frontier: s.frontier };
     },
 
-    async countInFlightPlacements({ hiveHome, workspaceId }) {
-      const sql = sqlClient();
-      const rows = await sql<{ n: number }[]>`
-        SELECT count(*)::int AS n FROM harness_shared.hive_placements
-         WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveHome}
-           AND status = ANY(${[...IN_FLIGHT_PLACEMENT_STATUSES]})`;
-      return rows[0]?.n ?? 0;
-    },
+    countInFlightPlacements: ({ hiveHome, workspaceId }) => countHivePlacementsInFlight(sqlClient(), hiveHome, workspaceId),
 
-    readRunStats: ({ member, workspaceId }) => readLiveRunStats(sqlClient(), member, workspaceId),
+    readRunStats: ({ member, workspaceId }) => readMemberRunStats(sqlClient(), member, workspaceId),
 
     readRunTrace: (input) => captureRunData(sqlClient(), input),
 

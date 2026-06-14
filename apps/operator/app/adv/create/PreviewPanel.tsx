@@ -4,7 +4,7 @@
  * create:preview dock panel — the shared item/Other detail reader.
  *
  * Renders whichever selection is live (?item → PlanItemPreview, ?other →
- * OtherDetail), exactly as PlansClient's renderInboxPreview did. The list
+ * OtherDetail), exactly as PlansClient's renderQueuePreview did. The list
  * panels set ?item/?other; this panel reacts. "View full plan" opens (or
  * focuses) the create:plan-editor panel for that slug.
  */
@@ -35,8 +35,8 @@ export function openPlanEditor(slug: string, jump?: string): void {
 export default function PreviewPanel(_props?: Partial<PanelComponentProps>) {
   const scope = useCreateScope();
   const maps = usePlanListMaps(scope);
-  const [inboxItemSel] = useQueryState('item', parseAsString);
-  const [inboxOtherSel, setInboxOtherSel] = useQueryState('other', parseAsString);
+  const [queueItemSel] = useQueryState('item', parseAsString);
+  const [queueOtherSel, setQueueOtherSel] = useQueryState('other', parseAsString);
 
   const attention = usePlanAttention(
     scope.scopeMode === 'all'
@@ -48,13 +48,13 @@ export default function PreviewPanel(_props?: Partial<PanelComponentProps>) {
     [attention.data],
   );
 
-  if (inboxItemSel) {
-    const idx = inboxItemSel.indexOf('::');
-    const pSlug = idx === -1 ? null : inboxItemSel.slice(0, idx);
-    const iId = idx === -1 ? null : inboxItemSel.slice(idx + 2);
+  if (queueItemSel) {
+    const idx = queueItemSel.indexOf('::');
+    const pSlug = idx === -1 ? null : queueItemSel.slice(0, idx);
+    const iId = idx === -1 ? null : queueItemSel.slice(idx + 2);
     return (
       <PlanItemPreview
-        key={inboxItemSel}
+        key={queueItemSel}
         planSlug={pSlug}
         itemId={iId}
         harnessSlug={pSlug ? maps.harnessByPlan.get(pSlug) ?? null : null}
@@ -63,14 +63,14 @@ export default function PreviewPanel(_props?: Partial<PanelComponentProps>) {
       />
     );
   }
-  if (inboxOtherSel) {
-    const sel = otherItems.find((i) => i.id === inboxOtherSel) ?? null;
+  if (queueOtherSel) {
+    const sel = otherItems.find((i) => i.id === queueOtherSel) ?? null;
     return (
       <OtherDetail
-        key={inboxOtherSel}
+        key={queueOtherSel}
         item={sel}
         onResolved={() => {
-          void setInboxOtherSel(null);
+          void setQueueOtherSel(null);
           attention.refresh();
         }}
       />

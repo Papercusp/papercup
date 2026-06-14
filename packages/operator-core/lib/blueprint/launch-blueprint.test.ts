@@ -14,10 +14,23 @@ import {
   type LaunchFireFn,
 } from './launch-blueprint';
 
+// queen-brief-cache-assembly B-03: stub the Queen wake-brief builder so the
+// queen-launch path is deterministic (no real survey/PG) and the injection is
+// assertable. Arrow-deref so the hoisted vi.mock factory sees the const.
+const computeQueenWakeBrief = vi.fn(
+  async (_ws: string, _slug: string, _opts?: { wokeBy?: string }) => 'QUEEN-BRIEF::floor+carrynote',
+);
+vi.mock('../hive/queen-brief-launch', () => ({
+  computeQueenWakeBrief: (...a: unknown[]) =>
+    computeQueenWakeBrief(...(a as [string, string, { wokeBy?: string }?])),
+}));
+
 afterEach(() => {
   setLaunchBlueprintFire(null);
   setLaunchBlueprintResolver(null);
   resetLaunchBlueprintTriggerMap();
+  computeQueenWakeBrief.mockClear();
+  computeQueenWakeBrief.mockResolvedValue('QUEEN-BRIEF::floor+carrynote');
 });
 
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
@@ -188,6 +201,30 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect(target.role).toBe('queen'); // hive decider since P-071 (2026-06-10)
     expect(fired).toHaveLength(1);
     expect(fired[0]).toMatchObject({ blueprintId: 'hive', role: 'queen' });
+    // queen-brief-cache-assembly B-03: the Queen's precomputed wake brief is threaded
+    // into the fire body (bodyExtra.queenBrief), computed with the kickoff as wokeBy.
+    expect(computeQueenWakeBrief).toHaveBeenCalledWith('ws_test', 'papercup', { wokeBy: 'wake' });
+    expect(fired[0].bodyExtra?.queenBrief).toBe('QUEEN-BRIEF::floor+carrynote');
+  });
+
+  it('a non-Queen launch does NOT compute a Queen wake-brief (gated on role)', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+    await fireLaunchBlueprint('deploy', { ...opts, kickoff: 'go' });
+    expect(computeQueenWakeBrief).not.toHaveBeenCalled();
+    expect(fired[0].bodyExtra?.queenBrief).toBeUndefined();
+  });
+
+  it('a pre-supplied bodyExtra.queenBrief (the watchdog snapshot, P-008) is NOT recomputed', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+    await fireLaunchBlueprint('hive', { ...opts, kickoff: 'wake', bodyExtra: { queenBrief: 'PRECOMPUTED' } });
+    expect(computeQueenWakeBrief).not.toHaveBeenCalled();
+    expect(fired[0].bodyExtra?.queenBrief).toBe('PRECOMPUTED');
   });
 
   it('a parented kind:harness launch (a bee placed by the Queen) is ALLOWED', async () => {

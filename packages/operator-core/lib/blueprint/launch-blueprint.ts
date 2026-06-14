@@ -391,8 +391,24 @@ export async function fireLaunchBlueprint(
     assertNotNestedHive(bp, true);
   }
   const target = await resolveLaunchTarget(blueprintId, input);
+
+  // queen-brief-cache-assembly B-03/B-04 (D-004): precompute the Queen's wake
+  // brief (ranked hive:survey floor + her carry-note) and thread it through the
+  // /invoke body so she opens already-briefed and skips the ~5 survey round-trips.
+  // ALL Queen wake paths converge here (declared time-wake via system:blueprint-run,
+  // inbox/await fresh-wake, urgent-wake, hive:wake, create), so this one seam covers
+  // them. Fail-soft (null → she calls the tools herself). A caller that already
+  // computed the snapshot (the watchdog, P-008) pre-supplies bodyExtra.queenBrief so
+  // we don't re-survey. Gated on the resolved role so non-Queen launches are untouched.
+  let fireInput = input;
+  if (target.role === 'queen' && input.bodyExtra?.queenBrief == null) {
+    const { computeQueenWakeBrief } = await import('../hive/queen-brief-launch');
+    const brief = await computeQueenWakeBrief(input.workspaceId, input.installSlug, { wokeBy: input.kickoff });
+    if (brief) fireInput = { ...input, bodyExtra: { ...input.bodyExtra, queenBrief: brief } };
+  }
+
   const fire = _fire ?? defaultFire;
-  const fired = (await fire({ ...input, ...target })) as LaunchSpawnInfo | undefined;
+  const fired = (await fire({ ...fireInput, ...target })) as LaunchSpawnInfo | undefined;
   return { ...target, spawn: fired ?? null };
 }
 

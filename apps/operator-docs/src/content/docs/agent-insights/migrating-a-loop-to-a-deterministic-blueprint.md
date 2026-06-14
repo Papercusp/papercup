@@ -100,6 +100,24 @@ Two program shapes, discriminated by the gate (no schema field):
   governor; change-ledger is flag-only (pure bookkeeping); scout is structural
   (cadence/fire-gate/claim/budget, no flag); iq-battery is owner-budget (refuse if no
   `budgetUsd`). Read the action; don't assume flag+governor.
+- **Editing the seed `.ts` does NOT repoint the LIVE routine row — you MUST re-run the
+  seed (step 4 is a runtime act, not just a source edit).** Changing `target` /
+  `payload_template` in the seed script only affects FUTURE upserts. An already-seeded
+  `harness_shared.routines` row — *especially one an owner ACTIVATED before the
+  migration deployed* — still has `target_role = 'system:<loop>'` (now retired, no
+  registered handler) and the old payload shape, so when it fires it hits a dead target
+  and silently no-ops. After the migration lands, **re-run each loop's seed against the
+  live workspace DB** (`PAPERCUSP_WORKSPACE_ID=<ws> tsx lib/.../seed-<loop>-routine.ts
+  [--active]`); the upsert's `ON CONFLICT` repoints target + payload (and the well-
+  written seeds preserve owner payload keys — change-ledger keeps `sinceDays`, iq-battery
+  keeps `budgetUsd`). This bit **`iq-battery-gen`, `scout-cycle`, `change-ledger-scan`**
+  — all active, all firing at a retired target (Scout + change-ledger loops were dead)
+  until re-seeded 2026-06-13. **Corollary — the INACTIVE migrated rows are latent
+  traps:** flipping `active=true` in the routines admin WITHOUT re-seeding fires the
+  retired target. Arm a migrated loop by **re-running its seed with `--active`**, never
+  by an admin active-flip alone. (Quick audit: `SELECT name,target_role,active FROM
+  harness_shared.routines WHERE target_role <> 'system:blueprint-run'` — every row whose
+  target isn't a still-registered action is suspect.)
 
 ## Files (pilot A — negative-space, the reference)
 

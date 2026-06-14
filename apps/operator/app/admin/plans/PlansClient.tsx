@@ -106,8 +106,8 @@ const OTHER_KIND_IDS = [
 type OtherKind = (typeof OTHER_KIND_IDS)[number];
 
 /** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
-type InboxTierFilter = AttentionTier | 'all';
-const INBOX_TIER_FILTERS = ['all', ...ATTENTION_TIERS] as const;
+type QueueTierFilter = AttentionTier | 'all';
+const QUEUE_TIER_FILTERS = ['all', ...ATTENTION_TIERS] as const;
 
 /** Map a plan-item status category to its inbox tier (D-006): needs-human → a
  *  Decision, blocked → an Alert, an actionable todo → Activity. Plan items don't
@@ -203,16 +203,19 @@ export default function PlansClient() {
   );
   // Inbox tier filter (D-006) — Decisions ▸ Handled ▸ Alerts ▸ Activity (or all).
   // Only the Decisions tier demands the user; this lets them focus on it.
-  const [inboxTier, setInboxTier] = useQueryState(
+  // The local is queueTier, but the URL key stays 'inboxTier' — it's a cross-app
+  // deep-link contract (operator-vite's AdvOverviewTab tiles write ?inboxTier=),
+  // not internal naming-debt. Renaming the key would be a functional change.
+  const [queueTier, setQueueTier] = useQueryState(
     'inboxTier',
-    parseAsStringEnum<InboxTierFilter>([...INBOX_TIER_FILTERS]).withDefault('all'),
+    parseAsStringEnum<QueueTierFilter>([...QUEUE_TIER_FILTERS]).withDefault('all'),
   );
   // Inbox shared-preview selection: a plan-item (`?item=`, "<plan>::<id>") or
   // an Other attention item (`?other=`). The two list sections each set their
   // own param and clear the sibling, so at most one is live; the single shared
   // preview pane (right column) renders whichever it is.
-  const [inboxItemSel] = useQueryState('item', parseAsString);
-  const [inboxOtherSel, setInboxOtherSel] = useQueryState('other', parseAsString);
+  const [queueItemSel] = useQueryState('item', parseAsString);
+  const [queueOtherSel, setQueueOtherSel] = useQueryState('other', parseAsString);
 
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -381,12 +384,12 @@ export default function PlansClient() {
         // Inbox tier filter (D-006): plan-item tier derives from its category.
         .filter(
           (e) =>
-            inboxTier === 'all' ||
-            tierOfPlanCategory(e.category as 'needs-human' | 'todo' | 'blocked') === inboxTier,
+            queueTier === 'all' ||
+            tierOfPlanCategory(e.category as 'needs-human' | 'todo' | 'blocked') === queueTier,
         )
         .map((e) => e.row),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [taggedItems, istatusKey, pBucketsKey, planBucketBySlug, inboxTier],
+    [taggedItems, istatusKey, pBucketsKey, planBucketBySlug, queueTier],
   );
 
   // Per-status counts for the item-status chips — scoped by the active
@@ -540,7 +543,7 @@ export default function PlansClient() {
   // "Queue" — jump to the items view with item-status filters cleared
   // (active plan-status / harness filters stay). Closes any open plan +
   // search + per-plan rail selection so the full cross-plan Queue shows.
-  const goInbox = useCallback(() => {
+  const goQueue = useCallback(() => {
     if (!leaveGuard()) return;
     setPane('read');
     setSlug(null);
@@ -616,14 +619,14 @@ export default function PlansClient() {
   // The inbox's single shared sticky preview — renders the selected plan-item
   // (`?item=`) or Other attention item (`?other=`), or an empty prompt. Both
   // list sections feed this one pane instead of each owning a detail column.
-  const renderInboxPreview = () => {
-    if (inboxItemSel) {
-      const idx = inboxItemSel.indexOf('::');
-      const pSlug = idx === -1 ? null : inboxItemSel.slice(0, idx);
-      const iId = idx === -1 ? null : inboxItemSel.slice(idx + 2);
+  const renderQueuePreview = () => {
+    if (queueItemSel) {
+      const idx = queueItemSel.indexOf('::');
+      const pSlug = idx === -1 ? null : queueItemSel.slice(0, idx);
+      const iId = idx === -1 ? null : queueItemSel.slice(idx + 2);
       return (
         <PlanItemPreview
-          key={inboxItemSel}
+          key={queueItemSel}
           planSlug={pSlug}
           itemId={iId}
           harnessSlug={pSlug ? harnessByPlan.get(pSlug) ?? null : null}
@@ -632,14 +635,14 @@ export default function PlansClient() {
         />
       );
     }
-    if (inboxOtherSel) {
-      const sel = otherItems.find((i) => i.id === inboxOtherSel) ?? null;
+    if (queueOtherSel) {
+      const sel = otherItems.find((i) => i.id === queueOtherSel) ?? null;
       return (
         <OtherDetail
-          key={inboxOtherSel}
+          key={queueOtherSel}
           item={sel}
           onResolved={() => {
-            void setInboxOtherSel(null);
+            void setQueueOtherSel(null);
             refreshItems();
           }}
         />
@@ -682,7 +685,7 @@ export default function PlansClient() {
           <button
             type="button"
             className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
-            onClick={goInbox}
+            onClick={goQueue}
             title="Open the Queue — every decision & action surface across plans the Queen did not auto-handle, with item filters cleared (plan filters stay)."
           >
             <Inbox size={14} aria-hidden />
@@ -813,8 +816,8 @@ export default function PlansClient() {
                         Only Decisions demands the user; the rest declutter into
                         their own tiers. */}
                     <nav className="pc-queue__tiers" aria-label="Queue tiers">
-                      {INBOX_TIER_FILTERS.map((t) => {
-                        const active = inboxTier === t;
+                      {QUEUE_TIER_FILTERS.map((t) => {
+                        const active = queueTier === t;
                         const label = t === 'all' ? 'All' : TIER_LABEL[t];
                         const count =
                           t === 'all'
@@ -826,7 +829,7 @@ export default function PlansClient() {
                             type="button"
                             className={`pc-queue__tier pc-queue__tier--${t}${active ? ' is-active' : ''}`}
                             aria-pressed={active}
-                            onClick={() => void setInboxTier(active && t !== 'all' ? 'all' : t)}
+                            onClick={() => void setQueueTier(active && t !== 'all' ? 'all' : t)}
                             title={
                               t === 'decision'
                                 ? 'Decisions — the only tier that demands you'
@@ -872,7 +875,7 @@ export default function PlansClient() {
                           title="Other"
                           kinds={otherFacets}
                           planFilters={itemPlans}
-                          tierFilter={inboxTier}
+                          tierFilter={queueTier}
                         />
                       ) : null}
                       {showPlanItems ? (
@@ -914,7 +917,7 @@ export default function PlansClient() {
                     onSelectAgent={(id) => void setSelectedAgent(id)}
                   />
                 ) : (
-                  renderInboxPreview()
+                  renderQueuePreview()
                 )
               }
             />

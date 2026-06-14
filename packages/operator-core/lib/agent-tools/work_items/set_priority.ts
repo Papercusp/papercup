@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemPriority, getWorkItemPriority, bumpWorkItemPriority } from '../../work-items';
+import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
@@ -52,20 +53,33 @@ export default defineTool({
       .optional()
       .describe("Bump to head ('top', most urgent) or tail ('bottom') of this harness's backlog — computed relative to the current extreme."),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const opt = { harness: args.harness };
 
-    // Read mode — no directive → report the current backlog priority.
+    // Read mode — no directive → report the current backlog priority. No write, no arming.
     if (args.priority === undefined && !args.position) {
       const cur = await getWorkItemPriority(args.workItem, opt);
       if (!cur) return json({ ok: false, error: `work-item ${args.workItem} not found` });
       return json({ ok: true, mode: 'read', workItem: cur.id, priority: cur.priority, applicable: cur.applicable });
     }
 
+    // P-114 arm-call-site: gate-FIRST (before the write) so the captured prior-priority
+    // handle is faithful. `null` on the common path (human caller / disarmed / never-auto
+    // = today's whole population, D-007); committed only when the write actually LANDS —
+    // a non-lease-holder proposal (set.proposed) changed nothing, so it is never armed.
+    const armPlan = await planWorkItemArm(
+      ctx,
+      'work_items:set_priority',
+      'priority',
+      args.workItem,
+      args.harness,
+    ).catch(() => null);
+
     // Explicit mode — caller named the order (or null to clear); overrides position.
     if (args.priority !== undefined) {
       const set = await setWorkItemPriority(args.workItem, args.priority, opt);
       if (!set) return json({ ok: false, error: `work-item ${args.workItem} not found` });
+      if (armPlan && !set.proposed) await commitWorkItemArm(armPlan).catch(() => {});
       return json({
         ok: true,
         mode: 'set',
@@ -83,6 +97,7 @@ export default defineTool({
     // Bump mode — move to the head/tail of the backlog relative to the current extreme.
     const set = await bumpWorkItemPriority(args.workItem, args.position!, opt);
     if (!set) return json({ ok: false, error: `work-item ${args.workItem} not found` });
+    if (armPlan && !set.proposed) await commitWorkItemArm(armPlan).catch(() => {});
     return json({
       ok: true,
       mode: 'bump',

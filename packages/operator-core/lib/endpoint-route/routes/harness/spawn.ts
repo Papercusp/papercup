@@ -308,6 +308,13 @@ const invoke = defineTool({
       env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
     }
     if (kickoff) env.QUEEN_BRIEF = kickoff;
+    // queen-brief-cache-assembly B-03 (P-006): the Queen's precomputed wake brief
+    // (ranked survey floor + carry-note), assembled by fireLaunchBlueprint when it
+    // resolves role='queen'. invoke.ts hands it to buildPrompt({ queenBrief }), which
+    // renders it as a <system-reminder> in the volatile tail (D-006). Distinct from
+    // QUEEN_BRIEF (the kickoff / Queen→bee overlay).
+    const queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
+    if (queenWakeBrief.trim()) env.QUEEN_WAKE_BRIEF = queenWakeBrief;
     const spawnStartMs = Date.now();
     const r = await spawnInvokeOnce(
       project.path,

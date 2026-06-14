@@ -21,37 +21,48 @@ distribution. **HE-04/05** read `hive_eval_runs.observations` to compute outcome
 speed metrics; **HE-06** layers the LLM judge / composite / un-gameable gate over the recorded
 runs (each carries a `distilledTrace` a judge reads); **HE-07** schedules the cadence + trend.
 
-## Wiring the LIVE ports (HE-04/HE-07 — owner-budget-gated, P-051)
+## The LIVE ports — BOUND (P-063 / D-011); arming is a budget-flip (P-051)
 
-The harness's I/O is the `HiveRunPorts` seam (`run-harness.ts`); the unit tests use
-`makeFakeHivePorts`. A live whole-Hive run is real LLM spend (gated on owner P-051), so it is
-NOT executed yet. When arming it, implement `HiveRunPorts` against these verified seams (the
-HE-01 reuse map + the explore done for D-009):
+The live `HiveRunPorts` + the score extractor are **built and green**. P-051 is now a
+budget-flip, not a build: set a budget + activate the routine and the cadence runs the whole
+Hive on the seeded corpus and trends the composite.
 
-- **`bootHive`** → `createHiveHarness({ slug: identity.hiveSlug, workspaceId, … })`
-  (`lib/agent-tools/hive/_create.ts`) over a substrate clone of the scenario's `sandbox`
-  (`SEED_APP_DIR`) at a pinned commit, materialized with the gym hermetic isolation
-  (`gym/clone.ts` `cloneSubstrate` + `gym/runner-ports.ts` `registerThrowawayHarness`). Reuse
-  `gymRunIdentity`'s hyphen-free-slug discipline (already done in `run-identity.ts`).
-- **`seedScenario`** → insert each `scenario.workItems[]` (respecting `dependsOn`) into the
-  hive via `work_items:create` / `harness_features_consolidated` (the planted defect is already
-  in the cloned repo).
-- **`driveToCompletion`** → `hive:start` then drive the Queen autonomously; detect completion
-  by polling `surveyHive(...)` until `frontier.length === 0 && plans.length === 0` and no
-  `hive_placements` in flight (`lib/hive/survey.ts`, `lib/hive/placement-watchdog.ts`), bounded
-  by `timeoutMs` → `terminalState 'drained' | 'timeout'`.
-- **`collectRunData`** → read the run's spawn/work-item/cost rows for the distilled trace +
-  `costUsd`; the raw work-item/spawn refs are what HE-04's fabrication-detection consumes.
-- **`teardown`** → drop the throwaway `harness_<slug>` schema + remove the clone (`gym`
-  `teardownHarness`).
+**The capture→replay architecture (the load-bearing constraint).** `runHiveScenarioOnce`
+(`run-harness.ts`) runs `collectRunData` then **tears the hive down** (drops the member schema +
+removes the clone) in a `finally`, *before* the record reaches the battery; `runHiveEvalGeneration`
+scores each record afterward, when every throwaway hive is gone. So the live reads (acceptance over
+the clone, the ground-truth rows, the seed-app baseline, the spawn rows) **cannot** happen in the
+extractor. They happen in `collectRunData` (pre-teardown), are serialized into
+`record.observations.extra.capture` as a `LiveRunCapture`, and the extractor **replays** them — the
+judge-free separation (D-009) is preserved; the capture is just the recorded run's reality made
+replayable.
 
-`createPgHiveEvalStore(sql)` is the live store (migration 264). The battery is otherwise
-unchanged: `runHiveScenarioBattery({ instance, scenarios: HIVE_EVAL_SCENARIOS, repeats, seed,
-budgetUsdCap, beeCap }, { store, ports })`.
+| File | What |
+|------|------|
+| `live-ports.ts` | `makeLiveHivePorts(ops, { workspaceId })` — the `HiveRunPorts` over the injected `LiveHiveOps` seam (boot/seed/drive/collect/teardown orchestration + the pure materialize/seed-DAG/drained helpers). Unit-tested over fake ops. |
+| `live-ops.ts` | `liveHiveOps({ workspaceId })` — the **concrete** `LiveHiveOps`: git/fs, `createHiveHarness` (Queen seat) + registry-member + `scaffoldHarnessSchema`, the HFC seed insert + `syncFeatureBlockEdges`, `setHiveStarted` + `requestUrgentHiveWake` (start), `surveyHive` + the `hive_placements` in-flight read (drive), the spawn/HFC reads + the live `captureRunData`, and the dissolve/drop teardown. |
+| `live-capture.ts` | `LiveRunCapture` + `makeReplayExtractor()` (the live `HiveEvalScoreExtractor`) + the pure `behaviorFromSpawnRows` / `timingsFromSpawnRows` transforms. The extractor derives behavior/timings using the record's authoritative `wallClockMs` + `startedAt` (the single source of timing truth) and runs the same `computeOutcomeMetrics`/`Efficiency`/`Speed` the fake extractor does. |
+| `ground-truth-live.ts` (P-062, b459e) | `liveGroundTruthPortsFromSql({ sql })` — the claims↔reality reads `captureRunData` composes. |
+| `gen-loop.ts` | the cadence default `runBattery` is now the live runner: `makeLiveHivePorts(liveHiveOps(…))` + `makeReplayExtractor()` → `runHiveEvalGeneration`. The budget gate still refuses every unattended tick without an owner `budgetUsd`. |
+
+**First-live-run validation surface (genuinely owner-gated, P-051).** Everything above is
+typecheck-clean + tested (the read SQL by `live-ops.integration.test.ts`, the replay extractor by
+`live-capture.test.ts`), EXCEPT what only a real armed run can confirm:
+- The **real Queen drive** (`driveToCompletion`) — the one real-LLM-spend seam.
+- **Cost / tokens / coord-volume / collisions / lock-contention** behavior fields — there is no
+  cost column on `spawned_agents`; these are EKG/cost-ledger wiring, defaulted to `0` for now (each
+  is a denominator or a failure-pair, so `0` never inflates a score — the **outcome gate + the
+  un-gameable floor** are fully sourced from ground-truth + baseline + timings).
+- The exact **commit convention** the bees use (the `commitBacksWorkItem` token match) and the
+  precise **hive:start** incantation — confirmed at the first run.
+
+Arm it: `tsx lib/hive-eval/seed-hive-eval-routine.ts --active --budget=<usd>` (migrations 264/268
+boot-apply on the next operator restart).
 
 ## Tests
 
-`scenario.test.ts` · `run-harness.test.ts` · `battery.test.ts` (Vitest, 29 tests) + the
-`store-pg.integration.test.ts` (migration round-trip). Registered as the `run-eval` section of
-the `hive` test domain (sibling of `apiary`). The `seed-app` fixture's own `node --test` suite
-is the scenario's regression floor, not an operator test.
+`scenario.test.ts` · `run-harness.test.ts` · `battery.test.ts` · `live-ports.test.ts` ·
+`live-capture.test.ts` (Vitest) + `store-pg.integration.test.ts` · `ground-truth-live.integration.test.ts`
+· `live-ops.integration.test.ts` (synthetic-row DB reads — no LLM). Registered as the `run-eval`
+section of the `hive` test domain (sibling of `apiary`). The `seed-app` fixture's own `node --test`
+suite is the scenario's regression floor, not an operator test.
