@@ -164,6 +164,24 @@ rewiring the ~13 loops onto it — retiring each bespoke seed + folding its
 <code dir="auto">registerLearningLoop</code> governor registration — is the per-loop follow-on (D-018 step 2,
 reverses D-012(b) one loop at a time under the arming gates), NOT the capability. Until a
 loop is rewired, its bespoke seed stays the live materializer.</li>
+<li><strong>The live <code dir="auto">@singleton</code> cutover RACES the seed-based arming workflow — sequence it, don’t
+race it (D-023).</strong> The cutover (<code dir="auto">seed-learning-singletons.ts</code>: materialize the <code dir="auto">@singleton</code>
+row + delete the legacy <code dir="auto">papercup</code> row) is incompatible-while-concurrent with how loops get
+ARMED: an arming agent re-runs <code dir="auto">seed-&#x3C;loop>-routine.ts --active</code>, which RE-CREATES the
+<code dir="auto">papercup</code> row ACTIVE. Run the cutover during a live frontier-arming campaign and you get a
+double-state (a dark <code dir="auto">@singleton</code> row beside a re-armed <code dir="auto">papercup</code> row → latent double-fire);
+this actually happened (calibration/deferral/neologism) and had to be reverted (all rows
+restored to <code dir="auto">papercup</code>). <strong>Correct sequence: (1) let arming settle; (2) RETIRE the bespoke
+seeds FIRST so arming can only target the <code dir="auto">@singleton</code> row; (3) then run the cutover.</strong></li>
+<li><strong>Two hardenings the collision forced, now in the capability (D-024):</strong> (a) singleton
+materialize is RE-RUN-SAFE — <code dir="auto">upsertSingletonRoutine</code> seeds dark + <code dir="auto">concurrency:'skip'</code> on
+first creation, but on conflict PRESERVES <code dir="auto">active</code>/<code dir="auto">next_fire_at</code>/<code dir="auto">concurrency</code> and MERGES
+the payload (ensure <code dir="auto">blueprintId</code>, keep owner tuning). The generic <code dir="auto">upsertRoutine</code> overwrites
+those, so a naive re-materialize would DARKEN an armed loop + DROP tuning — never use it for
+singletons. (b) the cutover CLI is COLLISION-SAFE — it SKIPS any loop whose <code dir="auto">papercup</code> row is
+ACTIVE (<code dir="auto">skipped:'legacy-active'</code>) instead of minting a dark duplicate; an active loop needs
+the owner-watched ATOMIC active cutover (copy active+payload+timing → <code dir="auto">@singleton</code>, delete
+<code dir="auto">papercup</code>, one transaction), not the dark CLI.</li>
 <li><strong>worker-chunk-loop → operator-hosted op (P-142/D-017, Option A) is NOT a thin op-wrap —
 it needs a NEW operator-side worker-spawn primitive.</strong> <code dir="auto">runChunkLoopCore</code> is cleanly
 extracted (stage a) and takes injected <code dir="auto">ChunkLoopDeps</code>, so an op CALLING it is easy. The

@@ -6,7 +6,7 @@ The mobile API moved off the bespoke _hono/mobile.ts router onto defineRoute und
 ## What changed
 
 The `/api/mobile/*` routes used to live in a bespoke Hono router
-(`apps/operator/app/api/_hono/mobile.ts`, \~1000 LOC) with its own
+(`_hono/mobile.ts`, \~1000 LOC, since deleted) with its own
 `cors()` block, its own `deviceAuth()` middleware, and lazy DDL. As of
 the endpoint-unification arc (`endpoint-unification-2026-05-21`) they are
 ordinary `defineRoute` modules under

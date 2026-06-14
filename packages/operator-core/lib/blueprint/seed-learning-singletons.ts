@@ -155,11 +155,9 @@ export async function materializeLearningSingletons(
       log(`DRY-RUN ${t.blueprintId}: would upsert @singleton/${plannedNames.join(', ')} (dark) + payload.blueprintId=${t.blueprintId}`);
     }
 
-    // Retire the legacy papercup-slug row — DARK ONLY. Never darken an active loop.
-    if (legacy.found && legacy.active === true) {
-      legacy.keptActive = true;
-      log(`KEEP-ACTIVE ${t.blueprintId}: legacy papercup/${t.legacyRoutine} is ACTIVE — NOT deleting (active-loop guard); cut it over under owner watch`);
-    } else if (legacy.found && opts.retireLegacy) {
+    // Retire the legacy papercup row. It is DARK here — ACTIVE loops were skipped by the
+    // collision guard above — so the `AND active = false` is a belt-and-braces final guard.
+    if (legacy.found && opts.retireLegacy) {
       if (opts.execute) {
         await sql`
           DELETE FROM harness_shared.routines
@@ -179,33 +177,127 @@ export async function materializeLearningSingletons(
   return out;
 }
 
+export interface ActiveCutoverResult {
+  blueprintId: string;
+  /** The legacy `papercup` row existed. */
+  found: boolean;
+  /** It was ACTIVE (this mode only acts on active loops). */
+  legacyActive: boolean;
+  /** We copied it → `@singleton` and deleted the legacy row (one transaction). */
+  cutOver: boolean;
+  /** The `@singleton` routine name the loop now fires from. */
+  singletonName: string;
+  /** Why skipped, if it was: `not-found` (no legacy row) or `legacy-dark` (use the dark CLI). */
+  skipped?: 'not-found' | 'legacy-dark';
+}
+
+/**
+ * Cut over an ACTIVE migrated loop from its `papercup` row to a `@singleton` row,
+ * BEHAVIOR-NEUTRAL by copy (deterministic-blueprints-migration D-023 step 4): in ONE
+ * transaction, INSERT a `@singleton` row copying EVERY column of the legacy row (active,
+ * payload, next_fire_at, last_fired_at, concurrency, catchup, metadata — byte-identical except
+ * install_slug/name/id), then DELETE the legacy `papercup` row. The loop keeps firing, unchanged,
+ * from the new row — there is no behavior change and no firing gap. Loops whose `papercup` row is
+ * DARK are skipped (use `materializeLearningSingletons` for those). DRY-RUN unless `execute`.
+ *
+ * PREREQUISITE (D-023): the loop's bespoke `seed-*-routine.ts` must be RETIRED first, otherwise a
+ * concurrent arming re-creates the `papercup` row and the cutover re-collides. Run only when the
+ * frontier-arming campaign has settled + the seeds are gone.
+ */
+export async function cutoverActiveLearningSingleton(
+  sql: Sql,
+  workspaceId: string,
+  entry: LearningSingleton,
+  opts: { execute: boolean; log?: (m: string) => void },
+): Promise<ActiveCutoverResult> {
+  const log = opts.log ?? (() => {});
+  const { blueprint } = loadBuiltinBlueprint(entry.blueprintId);
+  const singletonName =
+    triggerRoutineSpecs(blueprint).find((s) => s.singleton)?.name ?? `bp-singleton-${entry.blueprintId}-0`;
+  const singletonId = `rt_${SINGLETON_TRIGGER_HOST_SLUG}_${singletonName}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+
+  const legacy = await sql<{ active: boolean }[]>`
+    SELECT active FROM harness_shared.routines
+     WHERE install_slug='papercup' AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}`;
+  if (legacy.length === 0) {
+    log(`SKIP ${entry.blueprintId}: no legacy papercup/${entry.legacyRoutine} row`);
+    return { blueprintId: entry.blueprintId, found: false, legacyActive: false, cutOver: false, singletonName, skipped: 'not-found' };
+  }
+  if (legacy[0].active !== true) {
+    log(`SKIP ${entry.blueprintId}: papercup/${entry.legacyRoutine} is DARK — use the dark CLI (this mode is for ACTIVE loops)`);
+    return { blueprintId: entry.blueprintId, found: true, legacyActive: false, cutOver: false, singletonName, skipped: 'legacy-dark' };
+  }
+  if (!opts.execute) {
+    log(`DRY-RUN ${entry.blueprintId}: would copy ACTIVE papercup/${entry.legacyRoutine} → @singleton/${singletonName} (preserve active+payload+timing) + delete legacy, atomically`);
+    return { blueprintId: entry.blueprintId, found: true, legacyActive: true, cutOver: false, singletonName };
+  }
+
+  await sql.begin(async (tx) => {
+    await tx`
+      INSERT INTO harness_shared.routines
+        (id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template,
+         concurrency, catchup, active, last_fired_at, next_fire_at, workspace_id, metadata, created_at, updated_at)
+      SELECT ${singletonId}, ${SINGLETON_TRIGGER_HOST_SLUG}, ${singletonName}, trigger_kind, trigger_config,
+             target_role, payload_template, concurrency, catchup, active, last_fired_at, next_fire_at,
+             workspace_id, metadata, now(), now()
+        FROM harness_shared.routines
+       WHERE install_slug='papercup' AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}
+      ON CONFLICT (install_slug, name) DO UPDATE SET
+        trigger_config = EXCLUDED.trigger_config, target_role = EXCLUDED.target_role,
+        payload_template = EXCLUDED.payload_template, concurrency = EXCLUDED.concurrency,
+        catchup = EXCLUDED.catchup, active = EXCLUDED.active,
+        last_fired_at = EXCLUDED.last_fired_at, next_fire_at = EXCLUDED.next_fire_at, updated_at = now()`;
+    await tx`
+      DELETE FROM harness_shared.routines
+       WHERE install_slug='papercup' AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}`;
+  });
+  log(`CUT OVER ${entry.blueprintId}: ACTIVE papercup/${entry.legacyRoutine} → @singleton/${singletonName} (behavior-neutral copy)`);
+  return { blueprintId: entry.blueprintId, found: true, legacyActive: true, cutOver: true, singletonName };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const execute = argv.includes('--execute');
   const retireLegacy = argv.includes('--retire-legacy');
+  const activeCutover = argv.includes('--active-cutover');
   const onlyIdx = argv.indexOf('--only');
   const only = onlyIdx >= 0 ? argv[onlyIdx + 1] : undefined;
 
   const workspaceId =
     process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE ?? activeWorkspaceId();
   const { sql } = getOrgPg();
+  const mode = activeCutover ? 'ACTIVE-CUTOVER (copy)' : 'DARK-MATERIALIZE';
   console.log(
-    `[seed-learning-singletons] ws=${workspaceId} ${execute ? 'EXECUTE' : 'DRY-RUN'}` +
-      `${retireLegacy ? ' +retire-legacy' : ''}${only ? ` only=${only}` : ' (all migrated loops)'}`,
+    `[seed-learning-singletons] ws=${workspaceId} ${mode} ${execute ? 'EXECUTE' : 'DRY-RUN'}` +
+      `${retireLegacy && !activeCutover ? ' +retire-legacy' : ''}${only ? ` only=${only}` : ' (all migrated loops)'}`,
   );
   try {
+    const targets = only ? LEARNING_SINGLETONS.filter((s) => s.blueprintId === only) : LEARNING_SINGLETONS;
+    if (only && targets.length === 0) throw new Error(`unknown blueprint '${only}' (not in LEARNING_SINGLETONS)`);
+
+    if (activeCutover) {
+      // ACTIVE loops only — behavior-neutral copy (D-023 step 4). Requires the bespoke seeds to be
+      // RETIRED first (else arming re-creates the papercup row mid-cutover).
+      let cut = 0;
+      for (const t of targets) {
+        const r = await cutoverActiveLearningSingleton(sql, workspaceId, t, { execute, log: (m) => console.log(`  ${m}`) });
+        if (r.cutOver) cut++;
+      }
+      console.log(`[seed-learning-singletons] active-cutover: ${execute ? 'cut over' : 'would cut over'} ${cut}/${targets.length} active loop(s).`);
+      return;
+    }
+
     const results = await materializeLearningSingletons(sql, workspaceId, {
       only,
       execute,
       retireLegacy,
       log: (m) => console.log(`  ${m}`),
     });
-    const acted = results.filter((r) => r.declaresSingleton);
+    const acted = results.filter((r) => r.declaresSingleton && !r.skipped);
     console.log(
-      `[seed-learning-singletons] ${acted.length}/${results.length} loop(s) declare singleton:true` +
-        ` — ${execute ? 'materialized' : 'would materialize'} ${acted.length}; ` +
+      `[seed-learning-singletons] ${acted.length}/${results.length} loop(s) ${execute ? 'materialized' : 'would materialize'}; ` +
         `legacy: ${results.filter((r) => r.legacy.deleted).length} deleted, ` +
-        `${results.filter((r) => r.legacy.keptActive).length} kept-active(guarded).`,
+        `${results.filter((r) => r.skipped === 'legacy-active').length} skipped-active(collision guard).`,
     );
   } finally {
     await sql.end({ timeout: 5 });

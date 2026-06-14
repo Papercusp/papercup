@@ -26,7 +26,10 @@ import {
   materializeBlueprintTriggers,
   SINGLETON_TRIGGER_HOST_SLUG,
 } from '@papercusp/operator-core/lib/blueprint/materialize-triggers';
-import { materializeLearningSingletons } from '@papercusp/operator-core/lib/blueprint/seed-learning-singletons';
+import {
+  materializeLearningSingletons,
+  cutoverActiveLearningSingleton,
+} from '@papercusp/operator-core/lib/blueprint/seed-learning-singletons';
 
 let adminUri: string;
 let dbName: string;
@@ -378,6 +381,59 @@ describe('materializeLearningSingletons — the seed-replacement cutover (P-144)
     expect(sing).toHaveLength(0); // nothing created
     const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE name='graduation-scan'`;
     expect(legacy).toHaveLength(1); // nothing deleted
+  });
+});
+
+describe('cutoverActiveLearningSingleton — behavior-neutral active cutover (P-144 / D-023)', () => {
+  const seedActiveLegacy = (active: boolean, payloadExtra: Record<string, unknown> = {}) => sql`
+    INSERT INTO harness_shared.routines
+      (id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template,
+       concurrency, catchup, active, last_fired_at, next_fire_at, workspace_id)
+    VALUES ('rt_papercup_graduation-scan', 'papercup', 'graduation-scan', 'cron',
+            ${JSON.stringify({ cron: '0 5 4 * * *' })}::text::jsonb, 'system:blueprint-run',
+            ${JSON.stringify({ blueprintId: 'graduation', ...payloadExtra })}::text::jsonb,
+            'skip', 'skip-old', ${active}, now(), now(), ${WS})`;
+
+  it('copies an ACTIVE legacy → @singleton (active+tuning+timing preserved) and deletes the legacy, atomically', async () => {
+    await seedActiveLegacy(true, { payload: { budgetUsd: 7 } });
+    const r = await cutoverActiveLearningSingleton(sql, WS, { blueprintId: 'graduation', legacyRoutine: 'graduation-scan' }, { execute: true });
+    expect(r.cutOver).toBe(true);
+    expect(r.singletonName).toBe('bp-singleton-graduation-0');
+
+    const sing = await sql<{ active: boolean; bp: string | null; tuning: string | null; concurrency: string; nfa: Date | null }[]>`
+      SELECT active, payload_template->>'blueprintId' AS bp, payload_template->'payload'->>'budgetUsd' AS tuning,
+             concurrency, next_fire_at AS nfa
+        FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG} AND name='bp-singleton-graduation-0'`;
+    expect(sing).toHaveLength(1);
+    expect(sing[0].active).toBe(true); // kept firing — no behavior change
+    expect(sing[0].bp).toBe('graduation');
+    expect(sing[0].tuning).toBe('7'); // owner tuning preserved
+    expect(sing[0].concurrency).toBe('skip'); // copied verbatim
+    expect(sing[0].nfa).not.toBeNull(); // cadence preserved
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    expect(legacy).toHaveLength(0); // legacy retired in the SAME transaction (no firing gap, no dup)
+  });
+
+  it('SKIPS a DARK legacy row — that is the dark CLI\'s job', async () => {
+    await seedActiveLegacy(false);
+    const r = await cutoverActiveLearningSingleton(sql, WS, { blueprintId: 'graduation', legacyRoutine: 'graduation-scan' }, { execute: true });
+    expect(r.skipped).toBe('legacy-dark');
+    expect(r.cutOver).toBe(false);
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    expect(legacy).toHaveLength(1); // untouched
+    const sing = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
+    expect(sing).toHaveLength(0);
+  });
+
+  it('dry-run writes nothing', async () => {
+    await seedActiveLegacy(true);
+    const r = await cutoverActiveLearningSingleton(sql, WS, { blueprintId: 'graduation', legacyRoutine: 'graduation-scan' }, { execute: false });
+    expect(r.legacyActive).toBe(true);
+    expect(r.cutOver).toBe(false);
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    expect(legacy).toHaveLength(1); // untouched
+    const sing = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
+    expect(sing).toHaveLength(0); // nothing created
   });
 });
 

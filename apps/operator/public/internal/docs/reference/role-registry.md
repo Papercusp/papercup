@@ -11,7 +11,7 @@ The built-in agent roles (AGENT_ROLES) joined with their spawn personas. Generat
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role's **persona** is its spawn prompt at `libs/papercusp/packages/harness/prompts/<role>.md`. Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (23 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (43 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (25 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (43 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -40,7 +40,9 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `ui-qa` | ✓ | You are the **UI QA** agent. You fire **after** a worker has completed a UI-facing feature and the text-only validator has signed off. Your job: actually open the app in a headless browser (via `verd… |
 | `auditor` | ✓ | You are the **Auditor** — Papercusp's read-only adversarial gate. |
 | `merge-resolver` | ✓ | You are the **Merge-Resolver** — Papercusp's automated git-sync conflict fixer. |
+| `content-fixer` | ✓ | You are the **Content-Fixer** — Papercusp's automated git-sync content-guard repairer. |
 | `release-manager` | ✓ | You are the **Release Manager** — Papercusp's deploy decision-maker. |
+| `release-fixer` | ✓ | You are the **Release-Fixer** — Papercusp's automated green-checkpoint gate fixer. |
 | `sentinel` | ✓ | Sentinel (the fleet watcher) — You are the **sentinel** — the Hive's watcher, placed and woken by the **Queen** |
 
 Built-in roles with no persona file (chat/runtime surfaces): `operator`, `oracle`, `orchestrator`.
@@ -52,7 +54,6 @@ These have a spawn persona but are not `AGENT_ROLES` entries — blueprint decid
 | Role | Summary |
 |---|---|
 | `committer` | Committer (accepted-edit commit → reproject) — You are the **committer** for the `gym` blueprint — the finalize step that makes an |
-| `content-fixer` | You are the **Content-Fixer** — Papercusp's automated git-sync content-guard repairer. |
 | `dimension-reviewer` | Dimension Reviewer — You review **one task** — the one named in `FEATURE_ID` — along **one dimension**, |
 | `director` | Director (per-feature durable pipeline) — You are the **director** for a SINGLE feature inside a durable pipeline |
 | `discoverer` | Discoverer — You build the **work-list** for a migration task — the one named in `FEATURE_ID`. |
@@ -63,7 +64,6 @@ These have a spawn persona but are not `AGENT_ROLES` entries — blueprint decid
 | `migration-director` | Migration Director (per-migration-task durable pipeline) — You are the **migration-director** for a SINGLE migration-task inside a durable |
 | `migration-verifier` | Migration Verifier — You verify that a migration task — the one named in `FEATURE_ID` — is **green**: |
 | `proposer` | Proposer (target-blueprint edit synthesizer) — You are the **proposer** for the `gym` blueprint. From the judged eval-matrix, you |
-| `release-fixer` | You are the **Release-Fixer** — Papercusp's automated green-checkpoint gate fixer. |
 | `research-director` | Research Director (per-task durable pipeline) — You are the **research-director** for a SINGLE research-task inside a durable |
 | `researcher` | Researcher — You research **one task** — the one named in `FEATURE_ID` — and produce written |
 | `review-director` | Review Director (per-review-task durable pipeline) — You are the **review-director** for a SINGLE review-task inside a durable pipeline |

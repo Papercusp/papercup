@@ -92,6 +92,24 @@ Two program shapes, discriminated by the gate (no schema field):
   `registerLearningLoop` governor registration — is the per-loop follow-on (D-018 step 2,
   reverses D-012(b) one loop at a time under the arming gates), NOT the capability. Until a
   loop is rewired, its bespoke seed stays the live materializer.
+- **The live `@singleton` cutover RACES the seed-based arming workflow — sequence it, don't
+  race it (D-023).** The cutover (`seed-learning-singletons.ts`: materialize the `@singleton`
+  row + delete the legacy `papercup` row) is incompatible-while-concurrent with how loops get
+  ARMED: an arming agent re-runs `seed-<loop>-routine.ts --active`, which RE-CREATES the
+  `papercup` row ACTIVE. Run the cutover during a live frontier-arming campaign and you get a
+  double-state (a dark `@singleton` row beside a re-armed `papercup` row → latent double-fire);
+  this actually happened (calibration/deferral/neologism) and had to be reverted (all rows
+  restored to `papercup`). **Correct sequence: (1) let arming settle; (2) RETIRE the bespoke
+  seeds FIRST so arming can only target the `@singleton` row; (3) then run the cutover.**
+- **Two hardenings the collision forced, now in the capability (D-024):** (a) singleton
+  materialize is RE-RUN-SAFE — `upsertSingletonRoutine` seeds dark + `concurrency:'skip'` on
+  first creation, but on conflict PRESERVES `active`/`next_fire_at`/`concurrency` and MERGES
+  the payload (ensure `blueprintId`, keep owner tuning). The generic `upsertRoutine` overwrites
+  those, so a naive re-materialize would DARKEN an armed loop + DROP tuning — never use it for
+  singletons. (b) the cutover CLI is COLLISION-SAFE — it SKIPS any loop whose `papercup` row is
+  ACTIVE (`skipped:'legacy-active'`) instead of minting a dark duplicate; an active loop needs
+  the owner-watched ATOMIC active cutover (copy active+payload+timing → `@singleton`, delete
+  `papercup`, one transaction), not the dark CLI.
 - **worker-chunk-loop → operator-hosted op (P-142/D-017, Option A) is NOT a thin op-wrap —
   it needs a NEW operator-side worker-spawn primitive.** `runChunkLoopCore` is cleanly
   extracted (stage a) and takes injected `ChunkLoopDeps`, so an op CALLING it is easy. The
