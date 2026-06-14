@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 
@@ -122,6 +122,31 @@ describe('AutonomySettingsPage', () => {
     expect(arg).toMatchObject({ category: 'inbox-triage', ceiling: 'low' });
     expect(typeof arg.reason).toBe('string');
     expect((arg.reason as string).length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('moves the ceiling optimistically on click (before any server refetch)', () => {
+    render(<AutonomySettingsPage />);
+    const slider = screen.getByRole('radiogroup', { name: /Inbox triage risk ceiling/i });
+    expect(within(slider).getByRole('radio', { name: 'Never' }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(within(slider).getByRole('radio', { name: 'Low' }));
+    // syncResult is unchanged (no server push), so a checked 'Low' here is the local
+    // optimistic overlay — the fix for "the dot doesn't move until the SSE round-trip".
+    expect(within(slider).getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('rolls the ceiling back to server truth when the write fails', async () => {
+    mutateMock.mockRejectedValueOnce(new Error('write boom'));
+    render(<AutonomySettingsPage />);
+    const slider = screen.getByRole('radiogroup', { name: /Inbox triage risk ceiling/i });
+    fireEvent.click(within(slider).getByRole('radio', { name: 'Low' }));
+    // Optimistic move shows immediately…
+    expect(within(slider).getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
+    // …then the rejected write rolls it back to never-auto + toasts the error.
+    await waitFor(() =>
+      expect(within(slider).getByRole('radio', { name: 'Never' }).getAttribute('aria-checked')).toBe('true'),
+    );
+    const { toast } = await import('sonner');
+    expect(toast.error).toHaveBeenCalled();
   });
 
   it('locks a configurable category directly via the toggle', () => {

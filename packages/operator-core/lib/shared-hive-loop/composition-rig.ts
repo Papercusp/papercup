@@ -837,14 +837,19 @@ export class CompositionRig {
       // Staggered created_ts — the claim path tiebreaks on created_ts ASC, so
       // seeded ties would make the no-steering claim order nondeterministic.
       const t = base + i;
+      // `redundancy` MUST be seeded (migration 195 loaded above adds the column).
+      // P-007 (redundancy-two-swarm) + P-012/P-013 (fleet-monitors) assert the
+      // marker federates / the double-completion scanner stays quiet on declared
+      // redundancy — both go red if this column is dropped from the INSERT (it
+      // was, once, on a "column doesn't exist" misdiagnosis — it does exist).
       await cell.sql`
         INSERT INTO harness_shared.harness_features_consolidated
           (workspace_id, harness_slug, feature_id, title, summary, status, attempts,
-           item_kind, needs_human_review, ts, created_ts, updated_ts)
+           item_kind, needs_human_review, ts, created_ts, updated_ts, redundancy)
         VALUES
           (${this.workspaceId}, ${this.harnessSlug}, ${it.id},
            ${it.title ?? `Item ${it.id}`}, ${'seeded by the composition rig'}, 'todo', 0,
-           ${it.kind ?? 'feature'}, FALSE, ${t}, ${t}, ${t})
+           ${it.kind ?? 'feature'}, FALSE, ${t}, ${t}, ${t}, ${it.redundancy ?? null})
         ON CONFLICT (harness_slug, feature_id) DO NOTHING`;
     }
   }
