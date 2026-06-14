@@ -126,6 +126,10 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
+  // user_trust_list (migration 276) — the claim path's auto-pickable trust-leg join
+  // (autoPickableWhereSql) consults it; harness_features_consolidated gained the
+  // matching verified_author_github_user_id column in 273 (added to the shared fixture).
+  await db.sql.unsafe(readMigration('276-user-trust-list.sql')).simple();
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — this test uses a
   // minimal hand-rolled HFC DDL + the 131 issues table, so add the columns the unified
   // FEATURE_COLS/ISSUE_COLS selects now include.

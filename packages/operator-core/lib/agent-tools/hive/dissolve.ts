@@ -25,6 +25,7 @@ import { cancelSubtree } from '../../fleet/nursery';
 import { clearHiveTimeWake } from '../../hive/wake';
 import { dropHarnessSchema } from '../../scaffold-harness-schema';
 import { removeHarnessFromWorkspace } from '../../harness-membership';
+import { requireHiveTier } from '../../hive/member-tier-gate';
 import { resolveHive } from './_resolve';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -84,6 +85,21 @@ export default defineTool({
         ok: false,
         error: 'hive_not_found',
         message: `No kind:'hive' harness '${args.slug}' in this workspace (already dissolved?). Use hive:list to see the hives.`,
+      });
+    }
+
+    // B11 / P-014 owner-action gate: only an owner-tier member (admin|maintain on
+    // the hive's repo, re-derived LIVE from GitHub — never federated state) may
+    // dissolve a SHARED hive. Composes with the root-only/confirm gates above; a
+    // SOLO/unbound hive is a no-op (the local owner keeps owner tier).
+    const gate = await requireHiveTier({ workspaceId, hiveSlug: hive.slug, minTier: 'owner' });
+    if (!gate.ok) {
+      return text({
+        ok: false,
+        error: 'insufficient_tier',
+        message: gate.message ?? 'You lack owner-tier access to this hive.',
+        tier: gate.tier,
+        reason: gate.reason,
       });
     }
 

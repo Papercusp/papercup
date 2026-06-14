@@ -155,6 +155,33 @@ export function describePresenceConformance(
       expect(ms(rec!.heartbeatAt)).toBeGreaterThanOrEqual(ms(before!.heartbeatAt)); // bumped
     });
 
+    it('D-003 split: touchActivity bumps last_active_at; touchHeartbeat (keepalive) does NOT', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const id = ident(store, 'act');
+      // A declared write IS activity → last_active_at is set.
+      await store.write(id, { intent: 'work' });
+      const w = await store.get(id.ownerId);
+      expect(w!.lastActiveAt).not.toBeNull();
+
+      // KEEPALIVE: heartbeat advances, last_active_at MUST stay put (the whole
+      // point of D-003 — the 60s supervisor beat is "process alive", not active).
+      await delay(8);
+      await store.touchHeartbeat(id.ownerId);
+      await store.touchHeartbeat(`${runPrefix}-nobody-hb`); // missing owner: no-op
+      const hb = await store.get(id.ownerId);
+      expect(ms(hb!.heartbeatAt)).toBeGreaterThanOrEqual(ms(w!.heartbeatAt));
+      expect(ms(hb!.lastActiveAt!)).toBe(ms(w!.lastActiveAt!)); // UNCHANGED — the guard
+
+      // ACTIVITY: touchActivity bumps BOTH.
+      await delay(8);
+      await store.touchActivity(id.ownerId);
+      await store.touchActivity(`${runPrefix}-nobody-act`); // missing owner: no-op
+      const act = await store.get(id.ownerId);
+      expect(ms(act!.lastActiveAt!)).toBeGreaterThan(ms(hb!.lastActiveAt!)); // moved now
+      expect(ms(act!.heartbeatAt)).toBeGreaterThanOrEqual(ms(hb!.heartbeatAt));
+    });
+
     it('clear removes the row', async () => {
       if (skip) return;
       const store = makeStore();

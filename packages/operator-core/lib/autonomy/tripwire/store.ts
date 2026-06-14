@@ -224,10 +224,16 @@ export async function readTripwireEvidence(
 ): Promise<TripwireRow[]> {
   const sinceMs = opts.nowMs - opts.lookbackDays * 86_400_000;
   try {
+    // Bind `sinceMs` as a NUMBER + convert in SQL, NOT `${new Date(sinceMs)}`: a Date
+    // parameter combined with the `sql.unsafe(SELECT_COLS)` fragment in the same query
+    // mis-binds under postgres-js (it routes the Date through the string serializer →
+    // `Buffer.byteLength(Date)` throws ERR_INVALID_ARG_TYPE). This threw on EVERY call,
+    // breaking both autonomy:graduation_status and the live autonomy-trust-scan routine's
+    // graduation leg. A numeric param binds cleanly past the unsafe fragment.
     const rows = (await sql`
       SELECT ${sql.unsafe(SELECT_COLS)}
         FROM harness_shared.autonomy_tripwires
-       WHERE workspace_id = ${workspaceId} AND armed_at >= ${new Date(sinceMs)}
+       WHERE workspace_id = ${workspaceId} AND armed_at >= to_timestamp(${sinceMs} / 1000.0)
        ORDER BY armed_at ASC`) as unknown as RawRow[];
     return rows.filter((r) => isAutonomyCategory(r.category)).map(rowFrom);
   } catch (err) {

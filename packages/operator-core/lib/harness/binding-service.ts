@@ -198,9 +198,12 @@ async function getAuthenticatedUser(): Promise<{ login: string; id: number }> {
 /**
  * Get the acting user's permission level on `owner/repo`. Maps
  * GitHub's `RepositoryPermissionResponse.permission` to our
- * `GithubRepoPermission` enum. 404 → 'none'.
+ * `GithubRepoPermission` enum. 404 → 'none'. Throws a BindingServiceError
+ * (GITHUB_API_DOWN / GITHUB_API_RATE_LIMIT) when GitHub is unreachable —
+ * callers that gate on it (the B11 hive-tier resolver) must fail CLOSED.
+ * Exported for reuse by the hive role-tier resolver (member-tier-gate.ts).
  */
-async function getRepoPermission(
+export async function getRepoPermission(
   owner: string,
   repo: string,
   username: string,

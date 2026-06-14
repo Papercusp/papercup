@@ -115,6 +115,13 @@ export interface RemoteLog {
    * `get(i)` calls resolve as blocks arrive.
    */
   prefetch(start: number, end: number): void;
+  /** True iff block `i` is downloaded locally (Hypercore `has`). A snapshot-seeded
+   *  joiner never requests blocks before its snapshot index, so this is false there —
+   *  the sparse-fetch the compaction buys (substrate-peer-log-compaction P-008). */
+  has(i: number): boolean;
+  /** Length of the contiguous downloaded prefix from index 0 (Hypercore
+   *  `contiguousLength`); 0 when block 0 is absent — i.e. a sparse-from-snapshot replica. */
+  readonly contiguousLength: number;
   /** Known length of the remote log (call `update()` first to refresh). */
   readonly length: number;
   /** 64-char lowercase hex hypercore key this replica tracks. */
@@ -134,6 +141,10 @@ interface CoreLike {
   /** Hypercore ranged download — returns a Range whose `done()` resolves when
    *  the range is local. Optional in the structural view (present on real cores). */
   download?(range: { start: number; end: number }): { done(): Promise<void> };
+  /** Whether block `index` is downloaded locally. Present on real cores. */
+  has?(index: number): boolean;
+  /** Length of the contiguous downloaded prefix from 0. Present on real cores. */
+  readonly contiguousLength?: number;
   readonly length: number;
   readonly key: Buffer;
   readonly writable: boolean;
@@ -218,6 +229,12 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
       } catch {
         // A failed request degrades to per-op sequential fetch — still correct.
       }
+    },
+    has(i: number): boolean {
+      return typeof core.has === 'function' ? !!core.has(i) : false;
+    },
+    get contiguousLength(): number {
+      return core.contiguousLength ?? 0;
     },
     get length(): number {
       return core.length;

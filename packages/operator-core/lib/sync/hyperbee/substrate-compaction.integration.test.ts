@@ -39,8 +39,14 @@ import type { PeerChildConfig } from './perf/peer-child';
 
 const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_SUBSTRATE_LOG_SNAPSHOT';
 const TEN_MIN = 10 * 60_000;
-// > SNAPSHOT_COMPACT_EVERY_OPS (1000) so the writer's merge pass auto-compacts MID-STREAM.
-const COUNT = 1500;
+// MUST exceed read-merge's SNAPSHOT_SCAN_LOOKBACK (SNAPSHOT_COMPACT_EVERY_OPS * 4 = 4000) for
+// the BYTE-SKIP (proof 3) to manifest: `findLatestSnapshotIndex` floors its backward snapshot
+// scan at `max(0, len - 4000)`, so a log SHORTER than the lookback floors at 0 and a fresh
+// joiner scans (= downloads) the whole log to find the snapshot — no skip. Above the lookback,
+// the floor is > 0 and the joiner touches only the tail `[snapshotIndex, len)`, skipping the
+// pre-snapshot prefix. (1000 is also > SNAPSHOT_COMPACT_EVERY_OPS so the writer auto-compacts
+// mid-stream regardless — proofs 1/2.)
+const COUNT = 4600;
 
 describe('substrate compaction under live replication — $0 local parity (multi-process, local testnet)', () => {
   it(
@@ -72,7 +78,9 @@ describe('substrate compaction under live replication — $0 local parity (multi
         //    auto-compacts once the own log passes 1000 ops (one additive `__snapshot__`). ──
         const writer = spawnPeerChild(cfg({ role: 'writer', peerIndex: 0, root: root('w'), rate: 0, count: COUNT, seed: 7 }), () => {});
         handles.push(writer);
-        expect(await writer.waitFor('ready', TEN_MIN)).toBeTruthy();
+        const writerReady = await writer.waitFor('ready', TEN_MIN);
+        expect(writerReady).toBeTruthy();
+        const writerKeyHex = (writerReady as { keyHex: string }).keyHex;
 
         // ── Connected reader (slot 1): joins BEFORE the load → replicates THROUGH the compaction. ──
         const reader = spawnPeerChild(
@@ -105,6 +113,27 @@ describe('substrate compaction under live replication — $0 local parity (multi
         // snapshot + tail (a buggy snapshot-fold would drop the pre-snapshot keys and
         // never converge). This is the new-joiner replay-bound the compaction buys.
         expect(await joiner.waitFor('caught-up', TEN_MIN)).toBeTruthy();
+
+        // PROOF 3 (the load-bearing P-008 claim): the fresh joiner SPARSE-FETCHED — it
+        // downloaded only the post-snapshot TAIL of the writer's log, SKIPPING the
+        // pre-snapshot prefix, while the from-start reader has the whole log.
+        const joinerResult = await joiner.stopAndCollect();
+        const readerResult = await reader.stopAndCollect();
+        expect(joinerResult).toBeTruthy();
+        expect(readerResult).toBeTruthy();
+        const joinerW = joinerResult!.admittedStats?.find((s) => s.keyHex === writerKeyHex);
+        const readerW = readerResult!.admittedStats?.find((s) => s.keyHex === writerKeyHex);
+        expect(joinerW, 'joiner should have admitted the writer log').toBeTruthy();
+        expect(readerW, 'reader should have admitted the writer log').toBeTruthy();
+        // The joiner converged (has the tail) but never downloaded block 0 (pre-snapshot) —
+        // the byte-skip: contiguousLength (the downloaded prefix from 0) is 0.
+        expect(joinerW!.hasLast).toBe(true);
+        expect(joinerW!.has0).toBe(false);
+        expect(joinerW!.contiguousLength).toBe(0);
+        // Control: the from-start reader downloaded the full log (block 0 present), so it
+        // paid the O(history) replay the snapshot lets a fresh joiner skip.
+        expect(readerW!.has0).toBe(true);
+        expect(readerW!.contiguousLength).toBeGreaterThan(joinerW!.contiguousLength);
       } finally {
         for (const h of handles) {
           try {

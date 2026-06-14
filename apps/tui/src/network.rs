@@ -675,6 +675,37 @@ mod tests {
     }
 
     #[test]
+    fn focused_hive_pane_renders_the_present_roster() {
+        // B5 (P-005): the hive-pane grows a "who's present" roster from the
+        // federated presence rows keyed to this hive — who is here + what they
+        // are doing (the per-row gh id doubles as "whose work is whose").
+        let mut app = App::new();
+        app.network_rows = vec![t3()]; // tier-3 federated peer, key "pk-peer-1"
+        app.network_focus = Some("pk-peer-1".into());
+        app.hives = vec![crate::models::PresenceRow {
+            owner_id: "fed:alice@tower".into(),
+            owner_label: "gh:alice · tower".into(),
+            intent: "fixing the parser".into(),
+            host: "tower".into(),
+            user_id: Some("alice".into()),
+            stale: false,
+            federated: true,
+            device_pubkey: Some("pk-peer-1".into()),
+            harness_slug: Some("papercup".into()),
+            current_view: None,
+            heartbeat_at: Some("2026-06-14T00:00:00Z".into()),
+        }];
+        let text = render(&app, 120, 24);
+        assert!(text.contains("present"), "{text}");
+        assert!(text.contains("gh:alice"), "{text}");
+        assert!(text.contains("fixing the parser"), "{text}");
+        // Nobody present → no roster section (the C-3 absent-data rule).
+        app.hives.clear();
+        let text = render(&app, 120, 24);
+        assert!(!text.contains("◆ present"), "{text}");
+    }
+
+    #[test]
     fn reducer_stores_rows_and_clamps_selection() {
         let mut app = App::new();
         app.network_rows = vec![t1(), t3(), t4()];

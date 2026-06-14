@@ -87,11 +87,16 @@ export default defineTool({
         isError: true,
       };
     }
-    await writePresence(identity, {
-      intent: args.intent,
-      currentPlanSlug: args.current_plan_slug ?? null,
-      currentFiles: args.current_files ?? [],
-    });
+    await writePresence(
+      identity,
+      {
+        intent: args.intent,
+        currentPlanSlug: args.current_plan_slug ?? null,
+        currentFiles: args.current_files ?? [],
+      },
+      // harness the work is in → resolves the agent's home hive_slug (D-004).
+      args.harness ?? null,
+    );
 
     // Reconcile the declared lane → claims (claim-discipline). Per-item
     // conflicts are reported, never thrown: declaring intent must succeed even

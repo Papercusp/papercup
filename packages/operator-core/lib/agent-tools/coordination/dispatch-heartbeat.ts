@@ -31,7 +31,7 @@
  * does not apply.
  */
 import { resolveAgentIdentity, type ResolveIdentityCtx } from './identity';
-import { touchHeartbeat } from './presence';
+import { touchActivity } from './presence';
 
 /** Minimum gap between beats for one owner. Presence staleness windows are
  *  60s (roster LIVE_MS) and 10min (claims sweep) — 45s keeps both fresh
@@ -55,14 +55,14 @@ export function __resetDispatchHeartbeatThrottle(): void {
  * callers are skipped — identity resolution failures are EXPECTED here (the
  * public catch-all, malformed contexts) and must not become errors.
  *
- * Injectable `beat` (default touchHeartbeat) + `now` keep the unit tests
+ * Injectable `beat` (default touchActivity) + `now` keep the unit tests
  * pure — no PG, no fake timers fighting the fire-and-forget promise.
  */
 export function maybeBeatPresenceOnDispatch(
   ctx: unknown,
   opts: { beat?: (ownerId: string) => Promise<void>; now?: () => number } = {},
 ): void {
-  const beat = opts.beat ?? touchHeartbeat;
+  const beat = opts.beat ?? touchActivity;
   const nowFn = opts.now ?? Date.now;
 
   let ownerId: string | null;

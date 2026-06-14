@@ -77,6 +77,13 @@ export function mapSharedPresenceRow(
     pid: null,
     startedAt: iso,
     heartbeatAt: iso,
+    // A federated peer reports only last_seen (heartbeat-equivalent) — we don't
+    // get its activity/keepalive split or role, so these are null at the
+    // federation boundary. Phase 2's hive-scoped read sources federated hive_slug
+    // from shared_presence (it's hive-keyed) when it wires the unified read.
+    lastActiveAt: null,
+    agentRole: null,
+    hiveSlug: null,
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
     userId: String(row.github_user_id),
     revoked: false,

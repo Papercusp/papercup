@@ -425,6 +425,15 @@ export const FLAGS = {
   // handle+initials when no github identity is bound (hive_members empty) and the
   // per-item badge stays dark until real per-op author pubkeys federate.
   PLAN_ATTRIBUTION_BADGES: "papercusp-plan-attribution-badges",
+  // shared-hive-collaboration-2026-06-14 B11 / P-014 (D-011): role/permission
+  // tiers (owner/collaborator/read-only) derived from the GitHub collaborator
+  // graph, gating owner-actions on a SHARED hive (dissolve/leave/teardown). A
+  // read-only member can't do owner actions; the local owner's tier is
+  // re-derived LIVE from GitHub for these high-stakes actions (never federated
+  // state). DEFAULT-ON (owner-directed) — enforces immediately; this key is the
+  // kill-switch. OFF = today's behavior (existing root-only/source/confirm gates
+  // only); SOLO/unbound hives are never gated (the owner keeps owner tier).
+  HIVE_ROLE_TIERS: "papercusp-hive-role-tiers",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -438,6 +447,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF — unverified cutover (needs the 2-machine merge proof, P-008). Off = plans federate as today.
   [FLAGS.PLAN_PART_FEDERATION]: false,
   [FLAGS.PLAN_ATTRIBUTION_BADGES]: true,
+  // DEFAULT-ON (owner-directed): the hive role-tier owner-action gate enforces
+  // immediately. Kill-switch — OFF reverts to the prior root-only/source gates.
+  [FLAGS.HIVE_ROLE_TIERS]: true,
   // OFF by default — the self-improvement loop captures + triages with this off;
   // auto-implementation only begins once an owner flips it (see the flag note above).
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,

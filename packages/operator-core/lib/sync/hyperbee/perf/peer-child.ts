@@ -109,6 +109,14 @@ export interface PeerChildResult {
   loopLag: { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number };
   cpu: { userMs: number; systemMs: number };
   rssPeakBytes: number;
+  /**
+   * P-008 sparse-fetch observability: per ADMITTED REMOTE log (own excluded), whether
+   * block 0 / the last block are downloaded locally + the contiguous-downloaded-prefix
+   * length. A snapshot-seeded FRESH joiner shows `has0=false` + `contiguousLength=0` for
+   * a writer's log it compacted (it skipped the pre-snapshot prefix — the byte-skip the
+   * compaction buys); a from-start reader shows `has0=true` + `contiguousLength=length`.
+   */
+  admittedStats?: Array<{ keyHex: string; length: number; has0: boolean; hasLast: boolean; contiguousLength: number }>;
 }
 
 function out(obj: unknown): void {
@@ -331,12 +339,29 @@ async function main(): Promise<void> {
         aborts: statsAtEnd.relaying.aborts - statsAtBoot.relaying.aborts,
       },
     };
+    // P-008: snapshot the download state of every admitted REMOTE log (own excluded) so the
+    // parent can prove a snapshot-seeded joiner skipped the pre-snapshot prefix (sparse fetch).
+    const admittedStats = [...handle.admitted.entries()]
+      .filter(([k]) => k !== handle.ownLog.keyHex)
+      .map(([keyHex, log]) => {
+        const d = log as { length: number; has?(i: number): boolean; contiguousLength?: number };
+        const len = d.length;
+        return {
+          keyHex,
+          length: len,
+          has0: len > 0 ? !!d.has?.(0) : false,
+          hasLast: len > 0 ? !!d.has?.(len - 1) : false,
+          contiguousLength: d.contiguousLength ?? 0,
+        };
+      });
+
     const result: PeerChildResult = {
       evt: 'result',
       role: cfg.role,
       peerIndex: cfg.peerIndex,
       keyHex: handle.ownLog.keyHex,
       net,
+      admittedStats,
       appliedKeys: appliedKeys.size,
       appliedOps,
       loopLag: artifact.loopLag!,
