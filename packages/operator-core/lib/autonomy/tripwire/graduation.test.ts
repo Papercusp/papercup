@@ -56,6 +56,19 @@ function cleanRows(category: AutonomyCategory, findingClass: string, n: number):
   );
 }
 
+/** A tripped (recurred) tripwire — real negative evidence (resolves earlier than cleanRows so it leads). */
+function trippedRow(category: AutonomyCategory, findingClass: string, armedAtMs = 500): TripwireRow {
+  return row({
+    id: `tw-${category}-trip-${armedAtMs}`,
+    category,
+    findingClass,
+    action: findingClass,
+    status: 'tripped',
+    tripReason: 'gym-regression',
+    armedAtMs,
+  });
+}
+
 describe('gradKey / parseGradKey', () => {
   it('round-trips a composite (category, class) key', () => {
     const k = gradKey('implementation', 'work_items:create');
@@ -147,16 +160,37 @@ describe('computeCategoryGraduationTargets', () => {
     expect(t!.reason).toMatch(/pinned/);
   });
 
-  it('reconciles DOWN when the current level exceeds the earned level', () => {
-    // Only 10 clean passes (earns 'trivial'), but the stored graduated_level is 'low'.
-    const standings = computeAutonomyStandings(cleanRows('implementation', 'c', 10), POLICY, 1e15);
+  it('reconciles DOWN after a TRIP shrank the streak below the stored level', () => {
+    // A trip (real negative evidence), then 10 clean passes (trailing streak earns
+    // 'trivial') — the stored graduated_level is 'low'. Because there WAS a trip,
+    // reconcile DOWN to the evidence-consistent level (demote stays alive).
+    const standings = computeAutonomyStandings(
+      [trippedRow('implementation', 'c'), ...cleanRows('implementation', 'c', 10)],
+      POLICY,
+      1e15,
+    );
     const policies = new Map([
       ['implementation', policy({ category: 'implementation', ceiling: 'high', graduatedLevel: 'low' })],
     ]);
     const [t] = computeCategoryGraduationTargets(standings, policies as never, POLICY);
     expect(t!.targetGraduatedLevel).toBe('trivial');
     expect(t!.shouldWrite).toBe(true);
-    expect(t!.reason).toMatch(/reconcile|shrank/);
+    expect(t!.reason).toMatch(/reconcile|shrank|trip/);
+  });
+
+  it('EI-513 grace: HOLDS the owner level (no demote) when target<current with NO trip (cold start)', () => {
+    // 10 clean passes earn 'trivial'; the owner armed graduated_level='low'; there
+    // has been NO trip — the streak is short only because the category is freshly
+    // armed + still accruing. Reconciling DOWN here is the cold-start DEADLOCK
+    // (it would reset the owner grant toward never-auto before the Queen can earn
+    // it). Must HOLD 'low' and write nothing.
+    const standings = computeAutonomyStandings(cleanRows('implementation', 'c', 10), POLICY, 1e15);
+    const policies = new Map([
+      ['implementation', policy({ category: 'implementation', ceiling: 'high', graduatedLevel: 'low' })],
+    ]);
+    const [t] = computeCategoryGraduationTargets(standings, policies as never, POLICY);
+    expect(t!.shouldWrite).toBe(false);
+    expect(t!.reason).toMatch(/grace|hold|freshly armed/i);
   });
 });
 

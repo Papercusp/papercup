@@ -179,11 +179,29 @@ export function computeCategoryGraduationTargets(
       shouldWrite = false;
       reason = `already at earned level ${current} — no change`;
     } else if (ceilingRank(target) < ceilingRank(current)) {
-      // The streak shrank (a trip reset a class) — recompute DOWN to the
-      // evidence-consistent level (the trip's immediate one-step demotion may
-      // have over- or under-shot; this reconciles to the truth).
-      shouldWrite = true;
-      reason = `streak shrank → reconcile ${current} → ${target}`;
+      // target < current — the earned level is BELOW the stored graduated_level.
+      // Two very different causes, and only one warrants a demote (EI-513):
+      //   (a) a TRIP reset a class's clean streak → reconcile DOWN to the
+      //       evidence-consistent level (the trip's immediate one-step demote in
+      //       the scan may have over/under-shot; this reconciles to the truth).
+      //   (b) the category was freshly ARMED/raised and simply hasn't ACCRUED the
+      //       streak yet — a COLD START with NO trip. Reconciling down here is the
+      //       deadlock: it resets the owner-granted level toward never-auto BEFORE
+      //       the Queen can auto-act + earn it (and an in-window tripwire reads as
+      //       cleanStreak=0, so every fresh auto-action would reset it). So HOLD
+      //       the owner level — the GRACE — until a real trip occurs. The owner
+      //       grant is the FLOOR; only a trip lowers it (D-003). Once clean
+      //       evidence accrues, target rises to meet current and this stops firing.
+      // The immediate demote-on-trip (scan.ts demoteGraduatedLevel) is a SEPARATE
+      // path and is unaffected, so a genuine trip still steps the level down.
+      const hasTrip = classStandings.some((s) => s.totalRecurred > 0);
+      if (hasTrip) {
+        shouldWrite = true;
+        reason = `streak shrank after a trip → reconcile ${current} → ${target}`;
+      } else {
+        shouldWrite = false;
+        reason = `freshly armed / no trip yet → hold owner level ${current} while evidence accrues (EI-513 grace)`;
+      }
     }
 
     targets.push({
