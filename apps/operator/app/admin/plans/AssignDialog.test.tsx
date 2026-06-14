@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 
-const assignToUser = vi.fn(async () => ({ ok: true, wake: { woken: 1 } }));
+const assignToUser = vi.fn(async (_args: unknown) => ({ ok: true, wake: { woken: 1 } }));
 const useCoordRoster = vi.fn();
 
 vi.mock('./plans-api', async (importOriginal) => {

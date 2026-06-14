@@ -7,7 +7,7 @@
  * paid on every session that loads the catalog, every turn it stays in
  * context. This lint is the growth ratchet:
  *
- *   - BUDGET (1,200 chars, description + all guidance fields): every tool
+ *   - BUDGET (1,500 chars, description + all guidance fields): every tool
  *     must fit unless grandfathered in ALLOW_OVER_BUDGET below.
  *   - HARD CAP (1,600 chars): nothing may exceed it, grandfathered or not
  *     (the worst offender today is 1,560).
@@ -21,19 +21,21 @@ import { describe, it, expect } from 'vitest';
 import '../agent-tools/index'; // side-effect: register the full real tool catalog
 import { listAllProjectedTools } from '@papercusp/tooldef';
 
-const BUDGET = 1200;
+// Raised 1200 → 1500 by owner decision (2026-06-14). Rationale: a uniform budget is
+// blunt — a load-bearing, multi-mode coordination primitive (coord:send's
+// required/optimistic wake semantics) legitimately earns more guidance than a trivial
+// tool. HARD_CAP unchanged, so the soft-ratchet / hard-cap two-tier is preserved; this
+// raises the soft ceiling, it does not remove the bound. (token-usage-reduction P-011.)
+const BUDGET = 1500;
 const HARD_CAP = 1600;
 
-/** Grandfathered over-budget tools (state of 2026-06-10, sizes 1,206–1,560).
- *  Shrink-only: an entry here still must stay ≤ HARD_CAP and may be removed
- *  the moment the tool fits the budget. */
+/** Grandfathered over-budget tools. Shrink-only: an entry here still must stay
+ *  ≤ HARD_CAP and may be removed the moment the tool fits the budget. After the
+ *  2026-06-14 raise to 1,500, only locks:acquire remains over — the other five
+ *  (watch:create, plans:promote, substrate:revoke_contributor, improvements:capture,
+ *  events:await) now fit and were removed. */
 const ALLOW_OVER_BUDGET = new Set<string>([
   'locks:acquire', // multi-mode lock semantics (wake_on_grant/wait/ttl corners)
-  'watch:create',
-  'plans:promote',
-  'substrate:revoke_contributor',
-  'improvements:capture',
-  'events:await',
 ]);
 
 interface GuidanceShape {
