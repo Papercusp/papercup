@@ -84,3 +84,39 @@ export async function loopbackFetch(
   }
   throw lastErr; // unreachable (loop returns or throws)
 }
+
+/**
+ * Parse a Response body as JSON with an ATTRIBUTABLE error (EI-20).
+ *
+ * A bare `await res.json()` on an empty or truncated body rejects with a
+ * frame-less `SyntaxError: Unexpected end of JSON input` whose stack is only
+ * `at parse (<anonymous>)` + `processTicksAndRejections` — ZERO user frames.
+ * On the fleet-shared :3070 host the (deliberate, fail-fast) unhandledRejection
+ * guard in bin/hono-host.ts then exits the WHOLE process on an unattributable
+ * crash — the same two-frame stack recurs unfixably (EI-20: :3070 died at
+ * 03:46:57 under the agent-briefs wave, a loopback self-fetch rejecting on an
+ * empty body during a host restart). This reads the body as text FIRST and, on
+ * a parse failure, rethrows an Error naming the URL, HTTP status, and body
+ * length so the crash is traceable to a route. The empty-body case is the
+ * common one: a 200 with a zero-byte body (host restarting mid-stream) still
+ * passes a `res.ok` check, so guarding on status alone does not prevent it.
+ */
+export async function readJsonBody<T = unknown>(
+  res: Response,
+  context?: string,
+): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    const where = context || res.url || '<unknown url>';
+    const detail = (err as Error)?.message ?? String(err);
+    const body = text.length
+      ? `; body starts: ${JSON.stringify(text.length > 200 ? `${text.slice(0, 200)}…` : text)}`
+      : ' (empty body)';
+    throw new Error(
+      `JSON parse failed for ${where} (HTTP ${res.status}, ${text.length} byte body): ${detail}${body}`,
+      { cause: err },
+    );
+  }
+}

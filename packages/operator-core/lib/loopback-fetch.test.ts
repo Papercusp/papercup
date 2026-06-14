@@ -3,7 +3,7 @@
  * calls to the :3070 host (rides over the no-hot-reload restart window and network hiccups).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loopbackFetch, isConnRefused, isTransientNetworkError, describeFetchError } from './loopback-fetch';
+import { loopbackFetch, isConnRefused, isTransientNetworkError, describeFetchError, readJsonBody } from './loopback-fetch';
 
 const FAST = { backoffsMs: [1, 1, 1] };
 const refused = () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
@@ -158,5 +158,43 @@ describe('describeFetchError (EI-390: self-diagnosing persisted failures)', () =
   });
   it('handles a non-Error value', () => {
     expect(describeFetchError('weird')).toBe('weird');
+  });
+});
+
+describe('readJsonBody (EI-20: attributable JSON parse, no frame-less fatal exit)', () => {
+  it('parses a well-formed JSON body', async () => {
+    const res = new Response(JSON.stringify({ projects: [{ slug: 'a' }] }), { status: 200 });
+    await expect(readJsonBody(res)).resolves.toEqual({ projects: [{ slug: 'a' }] });
+  });
+
+  it('rethrows an ATTRIBUTABLE error on an EMPTY body (the EI-20 crash shape)', async () => {
+    // A 200 with a zero-byte body — host restarting mid-stream. A bare
+    // `res.json()` here rejects with frame-less `Unexpected end of JSON input`.
+    const res = new Response('', { status: 200 });
+    await expect(readJsonBody(res, 'http://127.0.0.1:3070/api/harness/projects')).rejects.toThrow(
+      /JSON parse failed for http:\/\/127\.0\.0\.1:3070\/api\/harness\/projects.*0 byte body.*empty body/,
+    );
+  });
+
+  it('names the URL + status + byte length on a TRUNCATED body', async () => {
+    const res = new Response('{"projects":[{"slug', { status: 200 });
+    let caught: Error | undefined;
+    try {
+      await readJsonBody(res, 'http://127.0.0.1:3070/api/harness/projects');
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.message).toMatch(/http:\/\/127\.0\.0\.1:3070\/api\/harness\/projects/);
+    expect(caught!.message).toMatch(/HTTP 200/);
+    expect(caught!.message).toMatch(/19 byte body/);
+    // The original SyntaxError is preserved as the cause for any downstream classifier.
+    expect((caught!.cause as Error) instanceof SyntaxError).toBe(true);
+  });
+
+  it('falls back to res.url when no explicit context is given', async () => {
+    const res = new Response('', { status: 502 });
+    Object.defineProperty(res, 'url', { value: 'http://127.0.0.1:3070/api/agents', configurable: true });
+    await expect(readJsonBody(res)).rejects.toThrow(/http:\/\/127\.0\.0\.1:3070\/api\/agents/);
   });
 });

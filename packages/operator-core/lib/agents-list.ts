@@ -8,7 +8,7 @@
  * schema changes without re-implementing them here.
  */
 
-import { loopbackFetch } from './loopback-fetch';
+import { loopbackFetch, readJsonBody } from './loopback-fetch';
 
 interface AgentRow {
   slug: string;
@@ -68,7 +68,10 @@ async function fetchOneSlug(slug: string, base: string): Promise<AgentRow[]> {
 async function computeAllAgents(base: string): Promise<AgentRow[]> {
   const projR = await loopbackFetch(`${base}/api/harness/projects`);
   if (!projR.ok) return [];
-  const projData = (await projR.json()) as { projects?: Array<{ slug: string }> };
+  // readJsonBody (not bare .json()) so an empty/truncated body during a host
+  // restart rethrows an ATTRIBUTABLE error naming this URL — not the frame-less
+  // `SyntaxError: Unexpected end of JSON input` that fatal-exited :3070 (EI-20).
+  const projData = await readJsonBody<{ projects?: Array<{ slug: string }> }>(projR);
   const slugs = (projData.projects ?? []).map((p) => p.slug);
   // Parallelize: was a serial for-loop doing 70 round-trips back-to-back.
   const perSlug = await Promise.all(slugs.map((s) => fetchOneSlug(s, base)));
