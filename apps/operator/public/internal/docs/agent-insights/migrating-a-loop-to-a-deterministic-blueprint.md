@@ -101,6 +101,11 @@ Two program shapes, discriminated by the gate (no schema field):
   this actually happened (calibration/deferral/neologism) and had to be reverted (all rows
   restored to `papercup`). **Correct sequence: (1) let arming settle; (2) RETIRE the bespoke
   seeds FIRST so arming can only target the `@singleton` row; (3) then run the cutover.**
+  **DONE (D-026):** the full cutover of all 13 loops then completed cleanly by following exactly
+  this sequence — seeds deleted first → no re-creation path → no collision. 5 dark loops via the
+  dark CLI, 8 active loops via `--active-cutover` (the byte-identical copy: active+payload+timing
+  preserved). NEW ARMING PATH (seeds gone): `UPDATE harness_shared.routines SET active=true WHERE
+  install_slug='@singleton' AND name='bp-singleton-<loop>-0'`; re-materialize is active-preserving.
 - **Two hardenings the collision forced, now in the capability (D-024):** (a) singleton
   materialize is RE-RUN-SAFE — `upsertSingletonRoutine` seeds dark + `concurrency:'skip'` on
   first creation, but on conflict PRESERVES `active`/`next_fire_at`/`concurrency` and MERGES

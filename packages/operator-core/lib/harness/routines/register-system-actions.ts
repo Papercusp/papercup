@@ -9,6 +9,17 @@
  * Registered handlers:
  *   - `system:git-sync` — git-sync-auto-commit P-005/P-009/P-010/P-012.
  *   - `system:blueprint-run` — harness-blueprint-orchestration P-021 / D-018.
+ *
+ * NOTE (deterministic-blueprints-migration P-144 / D-026): the 13 migrated learning loops
+ * below (negative-space, neologism, fleet-ekg, calibration, deferral-interest, graduation,
+ * red-queen, regret, transfer, prompt-ablation, change-ledger, scout, iq-battery) NO LONGER
+ * fire a bespoke `system:<loop>` action and are NO LONGER seeded by a `seed-*-routine.ts`
+ * script (all retired). Each now fires `system:blueprint-run` from a single workspace-singleton
+ * routine `@singleton/bp-singleton-<id>-0` (the blueprint declares `singleton: true`; the
+ * always-on ones — change-ledger/scout/iq-battery — declare `singletonActive: true`).
+ * Materialize/seed them via `blueprint/seed-learning-singletons.ts`; arm a dark one by setting
+ * its `@singleton` row `active=true`. The per-loop "(seed-*-routine.ts)" mentions below are
+ * historical.
  *   - `system:green-checkpoint` + `system:release-trigger` —
  *     release-gate-ready-branch-2026-06-04 (Phase 1 + D-010). Seeded INACTIVE.
  *   - `system:improvement-watchdog` + `system:improvement-implement` —

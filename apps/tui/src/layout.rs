@@ -27,6 +27,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::hives::HiveGroup;
+
 /// The workbench layout in zellij KDL: a stacked work area beside the fixed `pui`
 /// HUD, plus four swap presets (see the module doc). The base arrangement
 /// matches the `stacked` preset so the session opens docked-and-stacked.
@@ -525,6 +527,40 @@ pub fn hive_tab_kdl(spec: &HiveTabSpec) -> String {
     )
 }
 
+/// The PERSISTENT per-hive tab axis (B4 / shared-hive-collaboration P-004): which
+/// hives earn a STANDING dock tab, as opposed to the on-demand ⌕ drill-in (P-008,
+/// transient/close-on-exit). Owner decision (2026-06-14): member hives + LIVE
+/// federated peers. So a quiet/stale hive drops OFF the axis (the sync diff in
+/// `main.rs` retires its tab), and self-reported gossip never earns one (it stays
+/// browseable on the Network board until a join admits it).
+///
+/// One [`HiveTabSpec`] per LIVE federated peer device (C-3 tier 3, substrate-
+/// verified — the only multi-hive source the TUI roster carries today). The LOCAL
+/// hive is the dock's own `this hive` tab (tier 1, always first) and is
+/// intentionally NOT re-emitted here. Pure (no I/O) — `main.rs` diffs this against
+/// the open tab set (`hive_tabs_to_create`, mirroring the frame-tab reactive-open)
+/// and opens each missing one with the persistent KDL; B5 (P-005) renders the
+/// presence roster inside the tab.
+pub fn desired_hive_tabs(groups: &[HiveGroup]) -> Vec<HiveTabSpec> {
+    groups
+        .iter()
+        .filter(|g| !g.stale) // the axis tracks who is ACTUALLY here — a quiet hive's tab is retired
+        .map(|g| {
+            let key = if g.device_pubkey.is_empty() {
+                g.machine.clone()
+            } else {
+                g.device_pubkey.clone()
+            };
+            let title = if g.machine.is_empty() {
+                key.clone()
+            } else {
+                g.machine.clone()
+            };
+            HiveTabSpec { tier: 3, key, title }
+        })
+        .collect()
+}
+
 /// The chat dock's brain-pane command (native-terminal-desktop D-013): the
 /// canonical brain — `psu --brain` resumes THE pinned brain session exactly
 /// (no picker; psu launches + pins a fresh one when no pin exists or it no
@@ -992,6 +1028,44 @@ mod tests {
     }
 
     // ── P-008 per-hive drill-in tabs ─────────────────────────────────────────
+
+    #[test]
+    fn desired_hive_tabs_emits_one_persistent_tab_per_live_federated_peer() {
+        use crate::hives::HiveGroup;
+        let live = HiveGroup {
+            machine: "mbp".into(),
+            device_pubkey: "key-a".into(),
+            stale: false,
+            ..Default::default()
+        };
+        let stale = HiveGroup {
+            machine: "tower".into(),
+            device_pubkey: "key-b".into(),
+            stale: true,
+            ..Default::default()
+        };
+        let specs = desired_hive_tabs(&[live, stale]);
+        // Only the LIVE peer earns a standing tab; the stale hive drops off the axis.
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].tier, 3); // federated, substrate-verified
+        assert_eq!(specs[0].key, "key-a");
+        assert_eq!(specs[0].title, "mbp");
+    }
+
+    #[test]
+    fn desired_hive_tabs_keys_by_machine_when_pubkey_is_empty() {
+        use crate::hives::HiveGroup;
+        let g = HiveGroup {
+            machine: "tower".into(),
+            device_pubkey: String::new(),
+            stale: false,
+            ..Default::default()
+        };
+        let specs = desired_hive_tabs(&[g]);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].key, "tower"); // falls back to the machine label as the key
+        assert_eq!(specs[0].title, "tower");
+    }
 
     fn hive_spec(tier: u8, key: &str, title: &str) -> HiveTabSpec {
         HiveTabSpec {
