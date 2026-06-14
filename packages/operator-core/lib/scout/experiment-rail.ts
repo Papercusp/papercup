@@ -11,6 +11,7 @@
  * LLM-polished candidate-overlay / case generation — turning prose into a sharp
  * overlay + a real resumable case — is the owner-reviewable follow-on.
  */
+import { BASELINE_ID } from '@papercusp/eval-battery';
 import type { Proposal } from './types';
 import type { RoutingDecision } from './router';
 import {
@@ -19,6 +20,7 @@ import {
   type RunExperimentInput,
   type RunExperimentOutcome,
 } from '../experiment/run-core';
+import type { ExperimentLedgerRow } from '../experiment/ledger';
 
 const OVERLAY_CAP = 4000;
 
@@ -44,21 +46,64 @@ export interface ExperimentDispatchPort {
   (request: RunExperimentInput): Promise<RunExperimentOutcome>;
 }
 
+/** Build a `proposed` ledger row from a dry-run plan (no scores yet) — what the
+ *  scoreboard shows for a Scout-proposed experiment awaiting a run. When the owner
+ *  later runs it (same batteryId) the row upserts with real scores. Pure. */
+export function proposedLedgerRow(
+  workspaceId: string,
+  batteryId: string,
+  plan: NonNullable<RunExperimentOutcome['plan']>,
+): ExperimentLedgerRow {
+  return {
+    workspaceId,
+    batteryId,
+    testId: plan.testId,
+    tier: plan.tier,
+    arms: plan.arms.map((a) => ({ id: a.id, label: a.label, meanScore: null, cells: 0, scored: 0, costUsd: 0 })),
+    baselineId: BASELINE_ID,
+    winner: null,
+    comparison: null,
+    totalCostUsd: 0,
+    budgetExhausted: false,
+  };
+}
+
 /**
- * The default dispatch: DRY-RUN-validate the request through run-core (no spend, no
- * ledger) and acknowledge. Forces `dryRun:true` so it can never spend regardless of
- * input. The deps below exist only to satisfy the type — `dryRun` returns before any
- * is used. Mirrors the `echoInstanceCandidates` acknowledge-only precedent; the live
- * executor is wired when the owner arms it.
+ * The default dispatch: DRY-RUN-validate the request through run-core (no spend, no run)
+ * and RECORD the proposed spec to the experiment_runs ledger so it's VISIBLE on the
+ * Learning-tab scoreboard (Scout proposed it; decision='proposed', no scores yet). Forces
+ * `dryRun:true` so it can never spend. The recording + scoreboard push are best-effort —
+ * a ledger/PG failure never fails the rail. The stub deps satisfy the type only; `dryRun`
+ * returns before any is used.
  */
-export function buildExperimentDispatchPort(): ExperimentDispatchPort {
+export function buildExperimentDispatchPort(
+  recordProposed?: (row: ExperimentLedgerRow) => Promise<void>,
+): ExperimentDispatchPort {
+  const record =
+    recordProposed ??
+    (async (row: ExperimentLedgerRow) => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { PgExperimentLedger } = await import('../experiment/ledger');
+      await new PgExperimentLedger(getOrgPg().sql).record(row);
+      const { notifySyncInvalidate } = await import('../sync-sse');
+      notifySyncInvalidate('learning.experiments');
+    });
   return async (request) => {
     const { activeWorkspaceId } = await import('../workspace-registry');
-    return runExperiment({ ...request, dryRun: true }, { workspaceId: activeWorkspaceId() }, {
+    const workspaceId = activeWorkspaceId();
+    const outcome = await runExperiment({ ...request, dryRun: true }, { workspaceId }, {
       runGovernedReplay: (async () => ({ verdict: { allow: false, remainingUsd: null }, result: null })) as RunExperimentDeps['runGovernedReplay'],
       replayRunner: (async () => ({ outputText: '', costUsd: 0, inputTokens: 0, outputTokens: 0, replayed: false })) as RunExperimentDeps['replayRunner'],
       judge: (async () => ({ text: '', costUsd: 0, inputTokens: 0, outputTokens: 0 })) as RunExperimentDeps['judge'],
     });
+    if (outcome.ok && outcome.plan) {
+      try {
+        await record(proposedLedgerRow(workspaceId, request.batteryId, outcome.plan));
+      } catch {
+        // Best-effort: recording/visualizing the proposed spec must never fail the rail.
+      }
+    }
+    return outcome;
   };
 }
 

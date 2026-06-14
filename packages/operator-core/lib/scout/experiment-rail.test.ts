@@ -3,8 +3,10 @@ import {
   buildExperimentDispatchPort,
   forkTestableToExperiments,
   proposalToExperimentRequest,
+  proposedLedgerRow,
   type ExperimentDispatchPort,
 } from './experiment-rail';
+import type { ExperimentLedgerRow } from '../experiment/ledger';
 import type { Proposal } from './types';
 import type { RoutingDecision } from './router';
 
@@ -66,11 +68,36 @@ describe('forkTestableToExperiments', () => {
   });
 });
 
-describe('buildExperimentDispatchPort (default = dry-run only, no spend)', () => {
-  it('dry-run-validates a request and never invokes the substrate', async () => {
-    const out = await buildExperimentDispatchPort()(proposalToExperimentRequest(proposal()));
+describe('buildExperimentDispatchPort (dry-run only + records the proposed spec)', () => {
+  it('dry-run-validates (no spend) and records the proposed row via the injected recorder', async () => {
+    const recorded: ExperimentLedgerRow[] = [];
+    const out = await buildExperimentDispatchPort(async (row) => void recorded.push(row))(
+      proposalToExperimentRequest(proposal()),
+    );
     expect(out.ok).toBe(true);
     expect(out.plan?.testId).toBe('replay');
     expect(out.result).toBeUndefined(); // dryRun → plan only, no run/result/spend
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.batteryId).toBe('scout:p1');
+    expect(recorded[0]!.winner).toBeNull();
+  });
+});
+
+describe('proposedLedgerRow', () => {
+  it('builds a no-scores proposed row from a dry-run plan', () => {
+    const row = proposedLedgerRow('ws', 'scout:p1', {
+      testId: 'replay',
+      tier: 'offline',
+      arms: [
+        { id: 'baseline', label: 'b', model: null },
+        { id: 'candidate', label: 'c', model: null },
+      ],
+      caseCount: 1,
+      repeats: 1,
+      totalCells: 2,
+    });
+    expect(row).toMatchObject({ workspaceId: 'ws', batteryId: 'scout:p1', testId: 'replay', winner: null, totalCostUsd: 0 });
+    expect(row.arms.map((a) => a.id)).toEqual(['baseline', 'candidate']);
+    expect(row.arms.every((a) => a.meanScore === null)).toBe(true);
   });
 });
