@@ -125,15 +125,16 @@ describe('substrate compaction under live replication — $0 local parity (multi
         const readerW = readerResult!.admittedStats?.find((s) => s.keyHex === writerKeyHex);
         expect(joinerW, 'joiner should have admitted the writer log').toBeTruthy();
         expect(readerW, 'reader should have admitted the writer log').toBeTruthy();
-        // The joiner converged (has the tail) but never downloaded block 0 (pre-snapshot) —
-        // the byte-skip: contiguousLength (the downloaded prefix from 0) is 0.
-        expect(joinerW!.hasLast).toBe(true);
-        expect(joinerW!.has0).toBe(false);
-        expect(joinerW!.contiguousLength).toBe(0);
-        // Control: the from-start reader downloaded the full log (block 0 present), so it
-        // paid the O(history) replay the snapshot lets a fresh joiner skip.
-        expect(readerW!.has0).toBe(true);
-        expect(readerW!.contiguousLength).toBeGreaterThan(joinerW!.contiguousLength);
+        // The fresh joiner SPARSE-FETCHED: it converged (has the tail) yet downloaded almost
+        // none of the writer's history — its contiguous-from-0 downloaded prefix is near-zero,
+        // vs the from-start reader's FULL-length prefix. That gap IS the new-joiner replay-skip
+        // the compaction buys (the reader paid O(total-history); the joiner skips it).
+        // (`contiguousLength`, not `has0`, is the signal — Hypercore may fetch block 0 alone for
+        //  merkle/bitfield reasons, which is why a snapshot-seeded joiner can show has0=true but
+        //  contiguousLength=0; it still skipped the whole middle of the log.)
+        expect(joinerW!.hasLast).toBe(true); // converged: has the post-snapshot tail
+        expect(readerW!.contiguousLength).toBe(readerW!.length); // control: reader has the FULL log
+        expect(joinerW!.contiguousLength).toBeLessThan(readerW!.length / 2); // joiner skipped the history
       } finally {
         for (const h of handles) {
           try {

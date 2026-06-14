@@ -17,6 +17,10 @@ let clearWakeCalls: string[];
 let deregCalls: string[];
 let dropSchemaCalls: string[];
 let bees: Array<{ holderAlive: boolean; agentId: string | null; harnessSlug: string | null }>;
+// B11 / P-014: the owner-action tier gate is mocked here (it has its own
+// dedicated integration test, member-tier-gate.integration.test.ts). Default
+// allow; a test flips this to prove the dissolve chokepoint honors a denial.
+let gateResult: { ok: boolean; tier?: string; reason?: string; message?: string };
 
 beforeEach(() => {
   vi.resetModules();
@@ -24,6 +28,7 @@ beforeEach(() => {
   clearWakeCalls = [];
   deregCalls = [];
   dropSchemaCalls = [];
+  gateResult = { ok: true, tier: 'owner', reason: 'solo-unbound' };
   bees = [
     { holderAlive: true, agentId: 's-bee-a', harnessSlug: 'h' },
     { holderAlive: true, agentId: 's-bee-b', harnessSlug: 'h' },
@@ -67,6 +72,9 @@ beforeEach(() => {
     ...(await importOriginal<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql: {} }),
   }));
+  vi.doMock('../../hive/member-tier-gate', () => ({
+    requireHiveTier: async () => gateResult,
+  }));
 });
 
 afterEach(() => {
@@ -79,6 +87,7 @@ afterEach(() => {
     '../../harness-membership',
     '../../fleet/operator-spawn',
     '@papercusp/db-org',
+    '../../hive/member-tier-gate',
   ]) {
     vi.doUnmock(m);
   }
@@ -113,5 +122,19 @@ describe('hive:dissolve', () => {
     expect(res.ok).toBe(true);
     expect(res.schemaDropped).toBe(true);
     expect(dropSchemaCalls).toEqual(['h']); // sanitized name handled inside dropHarnessSchema
+  });
+
+  it('B11: a sub-owner tier is REFUSED — none of the destructive steps run', async () => {
+    gateResult = { ok: false, tier: 'read-only', reason: 'github', message: 'access is read-only' };
+    const tool = (await import('./dissolve')).default as unknown as Tool;
+    const res = parse(await tool.handler({ slug: 'h', confirm: true, workspace: 'default' }, ROOT_CTX));
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('insufficient_tier');
+    expect(res.tier).toBe('read-only');
+    // The gate runs AFTER confirm but BEFORE any teardown — nothing destructive fired.
+    expect(clearWakeCalls).toEqual([]);
+    expect(cancelCalls).toEqual([]);
+    expect(deregCalls).toEqual([]);
+    expect(dropSchemaCalls).toEqual([]);
   });
 });
