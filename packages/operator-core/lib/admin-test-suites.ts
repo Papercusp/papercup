@@ -251,9 +251,44 @@ function getSuiteChecks(ctx: SuiteContext): Array<{
       return packagedReadinessChecks(ctx);
     case 'memory-core':
       return memoryCoreChecks(ctx);
+    case 'shared-hive-core':
+      return sharedHiveCoreChecks(ctx);
     case 'ai-explore-prompts':
       return aiExplorePromptChecks(ctx);
   }
+}
+
+function sharedHiveCoreChecks(_ctx: SuiteContext) {
+  const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return [
+    {
+      id: 'shared-hive-suite',
+      label: 'Shared Hive federation end-to-end',
+      run: async () => {
+        const { buildSharedHiveCoreChecks } = await import('./shared-hive/suite/checks');
+        const checks = buildSharedHiveCoreChecks(runId);
+        const counts: Record<AdminTestStatus, number> = { pass: 0, warn: 0, fail: 0, skip: 0 };
+        const failures: string[] = [];
+        for (const c of checks) {
+          try {
+            const r = await c.run();
+            counts[r.status] += 1;
+            if (r.status === 'fail') failures.push(`${c.id}: ${r.actual}`);
+          } catch (error) {
+            counts.fail += 1;
+            failures.push(`${c.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        const status: AdminTestStatus = counts.fail > 0 ? 'fail' : counts.warn > 0 ? 'warn' : 'pass';
+        return {
+          status,
+          expected: 'All Shared Hive federation sub-checks pass.',
+          actual: `${counts.pass} pass · ${counts.warn} warn · ${counts.fail} fail · ${counts.skip} skip · ${checks.length} total`,
+          details: failures.length > 0 ? failures.slice(0, 8) : undefined,
+        };
+      },
+    },
+  ];
 }
 
 function memoryCoreChecks(_ctx: SuiteContext) {

@@ -5,6 +5,7 @@ export type AdminTestSuiteId =
   | 'desktop-performance'
   | 'packaged-readiness'
   | 'memory-core'
+  | 'shared-hive-core'
   | 'ai-explore-prompts';
 
 export type AdminTestStatus = 'pass' | 'warn' | 'fail' | 'skip';
@@ -129,6 +130,16 @@ export const ADMIN_TEST_SUITES: AdminTestSuiteSpec[] = [
     estimatedSeconds: 30,
     safeDefault: false,
     tags: ['memory', 'mem0', 'pgvector'],
+  },
+  {
+    id: 'shared-hive-core',
+    label: 'Shared Hive federation',
+    hint: 'topic, authority, locks, admission',
+    description: 'End-to-end check of the Shared Hive federation core: the Hive-pubkey topic re-key, Ed25519 hive identity, the per-Hive lock-authority election + file-claim routing (P-009), the instant lock-handover event fold (P-015), the work-item claim/replica seams, and the real shared_presence election + per-Hive admission union (P-006) against Postgres. Composes the shipped federation modules — a regression turns a check red. Writes are confined to a synthetic, run-scoped workspace and swept after.',
+    runner: 'host',
+    estimatedSeconds: 10,
+    safeDefault: false,
+    tags: ['shared-hive', 'federation', 'authority', 'locks', 'admission'],
   },
   {
     id: 'ai-explore-prompts',

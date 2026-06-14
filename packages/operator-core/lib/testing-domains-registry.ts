@@ -1183,6 +1183,13 @@ defineTestDomain({
       ],
     },
     {
+      id: 'tab-suite',
+      label: 'Tests-tab federation suite (shared-hive-core)',
+      description:
+        'The shared-hive-core Tests-tab suite (buildSharedHiveCoreChecks) + its CI guard: the live end-to-end federation check composing the shipped modules — the Hive-pubkey topic re-key, Ed25519 hive identity, the per-Hive lock-authority election + file-claim routing (P-009), the instant lock-handover event fold (P-015), the work-item claim/replica seams, and the real shared_presence election + per-Hive admission union (P-006) against a throwaway Postgres. The one automated gate behind the live Tests-tab suite (mirrors memory-core).',
+      globs: ['packages/operator-core/lib/shared-hive/**/*.test.ts'],
+    },
+    {
       id: 'authority',
       label: 'Lock authority (election, failover, fencing, RPC, caller-auth)',
       description:

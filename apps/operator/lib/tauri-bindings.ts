@@ -35,7 +35,7 @@ export const commands = {
 	/**
 	 *  Raise a native OS notification (planning-attention-importance D-007).
 	 *  Invoked from the webview's DesktopAttentionNotifier on `attention.notify`
-	 *  SSE events (escalation / smoke-fail / needs-human≥high).
+	 *  SSE events (escalation / smoke-fail / plan-review / needs-human≥high).
 	 *  The webview already shows an in-app toast, so a failure here is non-fatal
 	 *  — it's returned as a string and the caller swallows it.
 	 */
