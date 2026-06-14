@@ -24,6 +24,14 @@ the user turn, 0 tokens. The route did its job (it emitted `event: error`) — t
 client overwrote the error state one microtask later, and a reload showed a
 silent gap because nothing was persisted.
 
+There is a **third variant** with the same symptom but a different cause: the
+stream closes with **neither a `done` nor an `error`** event — the operator
+process recycled / OOM'd / the connection dropped mid-turn. The route never
+reached its persist-or-emit code, so there's no marker to reload and no error to
+show. The client must detect "closed without a terminal event" and surface it
+itself (an *incomplete* notice if partial deltas arrived, a *connection closed /
+restarted* notice if nothing did) rather than falling through to the idle reset.
+
 This bit `apps/operator/app/harness/ChatPanel.tsx`: the read loop set
 `setSendState({kind:'error'})` on an `error` event, then the post-loop code ran
 `setSendState({kind:'idle'}); loadChat()` regardless — clobbering the banner
@@ -46,9 +54,18 @@ expected terminal event the UI must show, not a crash.
   }
   // …after the loop:
   if (streamError) return;            // banner stays; do NOT reset to idle
-  setSendState({ kind: 'idle' });     // success only
+  if (!sawDone) {                     // closed with no terminal event = dropped
+    setSendState({ kind: 'error', message: assistantText
+      ? 'Connection dropped mid-response — the reply may be incomplete. Try again.'
+      : 'No response: the connection closed before the agent replied (the operator may have restarted). Try again.' });
+    return;
+  }
+  setSendState({ kind: 'idle' });     // success only (saw `done`)
   void loadChat({ forceRest: true });
   ```
+
+  Track `sawDone` by handling the terminal `event: done` in the read loop — a
+  clean close alone is indistinguishable from a drop without it.
 
 - **Server** (`endpoint-route/routes/agent-chats/index.ts`) — persist a
   **failure-marker** assistant turn (`error: true`, `content = message`, 0
