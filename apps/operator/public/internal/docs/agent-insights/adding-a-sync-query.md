@@ -185,6 +185,42 @@ Some reads don't fit the registry shape:
   dispatcher contract. The client unwraps `rows[0]`. Don't try to
   return a non-array — the SSE adapter expects `unknown[]`.
 
+## Gotcha: invalidation args must match the subscription's args (or be name-only)
+
+The single most common reason a write "saves but the UI doesn't update":
+**`notifySyncInvalidate(name, args)` with an `args` object does an
+EXACT-key invalidation on the client**, and it only matches a subscription
+whose `args` are structurally equal.
+
+In the SSE client (`SSEAdapter.tsx`):
+
+* `notifySyncInvalidate('q')` — **name-only** → `invalidateQueries({ predicate })`
+  invalidates **every** cached entry under `q` (all arg variants). Refetches.
+* `notifySyncInvalidate('q', { workspaceId })` — **args-scoped** →
+  `invalidateQueries({ queryKey: ['sync','q',{ workspaceId }] })`. This matches
+  **only** a subscription whose key is exactly `['sync','q',{ workspaceId }]`.
+
+A component that calls `useSyncQuery({ queryName: 'q' })` (no args) has the
+react-query key `['sync','q',{}]`. An args-scoped invalidate for
+`{ workspaceId }` will **never** match `{}` → no refetch → the write lands in
+PG but the surface looks frozen until the 180s drift-repair poll.
+
+**Rule of thumb:** the invalidate `args` must equal the consumer's
+`useSyncQuery` args.
+
+* Resolver reads `activeWorkspaceId()` internally and the client subscribes
+  with **no args** (workspace-singleton: `autonomy.policy`, `plans.list`,
+  `decision.ledger`) → emit **name-only** `notifySyncInvalidate('q')`. Do NOT
+  pass `{ workspaceId }` — it's not part of the key and silently breaks the match.
+* Client subscribes WITH args (`voiceLease.current` → `{ workspaceId }`,
+  `planItems.byPlan` → `{ planSlug }`) → pass those **same** args.
+
+This bit the Queen-autonomy settings page: the ceiling slider wrote to PG but
+the dot never moved because the route/tool emitted `{ workspaceId }` against a
+no-arg subscription. Fixed by switching those emits to name-only. (Belt-and-
+suspenders on the consumer side: an optimistic local overlay reconciled against
+the refetch makes a control move on click regardless of invalidation latency.)
+
 ## Related
 
 * `packages/operator-core/lib/sync-resolver/index.ts` — the dispatcher

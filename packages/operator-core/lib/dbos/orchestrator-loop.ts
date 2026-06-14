@@ -75,6 +75,7 @@ import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
 import { listAllHarnesses } from '../dev-data';
+import { listStartedHives } from '../hive/started';
 import { resolveProject } from '../harness-core';
 import { convertOpenIssuesToFeatures } from '../promote-issue';
 import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
@@ -332,16 +333,37 @@ export function shouldScheduleOrchestrator(envRaw: string | undefined): boolean 
 
 /**
  * The concrete harness slugs to sweep this tick. In all-mode (`'*'`) enumerate
- * every harness in the active workspace; otherwise use the explicit allowlist.
+ * every harness in the active workspace; otherwise use the explicit allowlist —
+ * then GATE the result on the Start-Hive bit so a STOPPED / never-started hive's
+ * backlog (and non-hive legacy harnesses) is never placed. The Start-Hive KV
+ * (`hive/started.ts`) is the one lever that governs waking AND placement — before
+ * this, placement sept every harness regardless of started-state (the gap the
+ * owner flagged: "the Queen shouldn't be able to pick up a stopped hive's work").
+ * Fail-safe: an unreadable started-set places nothing. Exported for tests.
  */
-async function resolveTickHarnesses(workspaceId: string): Promise<string[]> {
+export async function resolveTickHarnesses(workspaceId: string): Promise<string[]> {
   const envRaw = orchestratorHarnessesEnv();
+  let candidates: string[];
   if ((envRaw ?? '').trim() !== '*') {
-    return resolveOrchestratorHarnesses(envRaw, []);
+    candidates = resolveOrchestratorHarnesses(envRaw, []);
+  } else {
+    try {
+      const { harnesses } = await listAllHarnesses([workspaceId]);
+      candidates = harnesses.map((h) => h.slug);
+    } catch {
+      return [];
+    }
   }
+  // Only STARTED hives get their work placed. A stopped hive, or a harness that
+  // was never started, is filtered out — placement now means the same thing
+  // start/stop does. Fail-safe on an unreadable started-set (place nothing).
   try {
-    const { harnesses } = await listAllHarnesses([workspaceId]);
-    return harnesses.map((h) => h.slug);
+    const started = new Set(
+      (await listStartedHives())
+        .filter((h) => h.workspaceId === workspaceId)
+        .map((h) => h.installSlug),
+    );
+    return candidates.filter((slug) => started.has(slug));
   } catch {
     return [];
   }

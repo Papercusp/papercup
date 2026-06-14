@@ -546,8 +546,23 @@ export async function spawnAgentInHarness(
       return fail(`spawn rejected: harness registry unreadable: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  const project = await resolveProject(slug, input.workspaceId)
+  let project = await resolveProject(slug, input.workspaceId)
     ?? await resolveProject(slug); // cross-workspace safety net (matches harness routes)
+  if (!project) {
+    // EI-429: the Queen sometimes passes its SU MCP server slug ("<project>-su",
+    // or the legacy "papercusp-su") as a spawn target instead of the project.
+    // Remap a KNOWN -su MCP slug to its project — strip the "-su" suffix, aliasing
+    // the legacy "papercusp-su" to the dogfood project "papercup". Deterministic
+    // remap of the known MCP slugs ONLY, never a silent normalize of arbitrary slugs.
+    const suBase = slug === 'papercusp-su' ? 'papercup' : /^(.+)-su$/.exec(slug)?.[1];
+    if (suBase && suBase !== slug) {
+      const remapped = (await resolveProject(suBase, input.workspaceId)) ?? (await resolveProject(suBase));
+      if (remapped) {
+        project = remapped;
+        slug = remapped.slug;
+      }
+    }
+  }
   if (!project) {
     let registered = '';
     try {
