@@ -11,6 +11,7 @@ function rows(...rs: Array<Partial<Record<string, number | string | null>>>) {
     cache_read_tokens: r.cache_read_tokens ?? 0,
     cache_creation_tokens: r.cache_creation_tokens ?? 0,
     cost_usd: r.cost_usd ?? null,
+    turn_count: r.turn_count ?? null,
   }));
 }
 
@@ -47,6 +48,29 @@ test('queenWakeEfficiency — cachedWakes counts wakes with non-zero cache_read 
   });
   assert.equal(out.wakes, 3);
   assert.equal(out.cachedWakes, 2);
+});
+
+test('queenWakeEfficiency — avgTurns averages over wakes that reported a turn count (P-010 Win-2)', async () => {
+  const out = await queenWakeEfficiency('ws', {
+    deps: {
+      fetchSamples: async () =>
+        rows(
+          { run_id: 'w1', turn_count: 3, cache_read_tokens: 100 },
+          { run_id: 'w2', turn_count: 5, cache_read_tokens: 100 },
+          { run_id: 'w3', turn_count: null, cache_read_tokens: 100 }, // not reported — excluded from avg
+        ),
+    },
+  });
+  assert.equal(out.samples[0].turns, 3);
+  assert.equal(out.samples[2].turns, null);
+  assert.equal(out.avgTurns, 4); // (3+5)/2, the null wake excluded
+});
+
+test('queenWakeEfficiency — avgTurns is null when no wake reported a turn count', async () => {
+  const out = await queenWakeEfficiency('ws', {
+    deps: { fetchSamples: async () => rows({ run_id: 'w1', cache_read_tokens: 100 }) },
+  });
+  assert.equal(out.avgTurns, null);
 });
 
 test('queenWakeEfficiency — empty window is zeros, ratio 0 (never NaN)', async () => {

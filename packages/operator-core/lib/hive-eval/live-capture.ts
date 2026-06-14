@@ -106,7 +106,19 @@ export interface SpawnRunRow {
 export type BehaviorEkgFields = Partial<
   Pick<
     RunBehavior,
-    'coordMessages' | 'collisions' | 'rework' | 'lockContentionMs' | 'totalTokens' | 'costUsd' | 'idleWhileReadyMs'
+    | 'coordMessages'
+    | 'collisions'
+    | 'rework'
+    | 'lockContentionMs'
+    | 'totalTokens'
+    | 'costUsd'
+    | 'idleWhileReadyMs'
+    // Per-wake Queen cache efficiency (P-011), sourced from queenWakeEfficiency() over
+    // agent_usage_samples role='queen' — wired at the first live run like the other EKG fields.
+    | 'queenCacheReadTokens'
+    | 'queenCacheCreationTokens'
+    | 'queenInputTokens'
+    | 'queenWakes'
   >
 >;
 
@@ -165,6 +177,10 @@ export function behaviorFromSpawnRows(rows: readonly SpawnRunRow[], input: Behav
     lockContentionMs: ekg.lockContentionMs ?? 0,
     totalTokens: ekg.totalTokens ?? 0,
     costUsd: ekg.costUsd ?? 0,
+    queenCacheReadTokens: ekg.queenCacheReadTokens ?? 0,
+    queenCacheCreationTokens: ekg.queenCacheCreationTokens ?? 0,
+    queenInputTokens: ekg.queenInputTokens ?? 0,
+    queenWakes: ekg.queenWakes ?? 0,
   };
 }
 

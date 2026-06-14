@@ -40,6 +40,17 @@ export interface RunBehavior {
   totalTokens: number;
   /** Real USD spent on the run. */
   costUsd: number;
+  // ── Per-wake Queen cache efficiency (queen-brief-cache P-011 / D-014) ──
+  // The frozen-prefix cache (Win-1). Raw token totals across the run's Queen wakes, from
+  // queenWakeEfficiency() (hive/queen-wake-efficiency.ts) over agent_usage_samples role='queen'.
+  /** Tokens served from the prompt cache across the run's Queen wakes. */
+  queenCacheReadTokens: number;
+  /** Tokens written INTO the cache (the frozen-prefix creation cost). */
+  queenCacheCreationTokens: number;
+  /** Uncached prompt input tokens across the Queen wakes. */
+  queenInputTokens: number;
+  /** Number of Queen wakes (runs) in the window. */
+  queenWakes: number;
 }
 
 /** One D-003 pairing: an efficiency metric and the failure-mode that must stay low to credit it. */
@@ -67,10 +78,17 @@ export interface EfficiencyMetrics {
   costPerItemUsd: number;
   /** Tokens per completed item. */
   tokensPerItem: number;
+  /** Share of Queen prompt tokens served from cache (Win-1): cacheRead ÷ (cacheRead +
+   *  cacheCreation + input). Higher = the frozen-prefix cache is paying off — but ONLY good
+   *  if reworkRate stays low (a high ratio from reusing STALE state is the gaming mode, D-003). */
+  cacheHitRatio: number;
+  /** Total Queen prompt tokens ÷ wakes — per-wake prompt cost. */
+  tokensPerWake: number;
   /** The D-003 couplings made explicit — HE-06 credits each win only if its pair stays low. */
   pairings: {
     lowCommunication: MetricPairing;
     highParallelism: MetricPairing;
+    cacheEfficiency: MetricPairing;
   };
 }
 
@@ -87,6 +105,10 @@ export function computeEfficiencyMetrics(b: RunBehavior): EfficiencyMetrics {
   const collisionRate = b.collisions / denom;
   const uselessBeeRate = b.beesSpawned > 0 ? b.uselessBees / b.beesSpawned : 0;
   const reworkRate = b.rework / denom;
+  // Queen cache efficiency (P-011). Prompt-token share served from the frozen-prefix cache.
+  const queenPromptTokens = b.queenCacheReadTokens + b.queenCacheCreationTokens + b.queenInputTokens;
+  const cacheHitRatio = queenPromptTokens > 0 ? b.queenCacheReadTokens / queenPromptTokens : 0;
+  const tokensPerWake = b.queenWakes > 0 ? queenPromptTokens / b.queenWakes : 0;
   return {
     parallelismUtilization,
     idleWhileReadyMs: b.idleWhileReadyMs,
@@ -97,9 +119,14 @@ export function computeEfficiencyMetrics(b: RunBehavior): EfficiencyMetrics {
     lockContentionMs: b.lockContentionMs,
     costPerItemUsd: b.costUsd / denom,
     tokensPerItem: b.totalTokens / denom,
+    cacheHitRatio,
+    tokensPerWake,
     pairings: {
       lowCommunication: { metric: communicationOverhead, pairedFailure: collisionRate, pairName: 'collisionRate' },
       highParallelism: { metric: parallelismUtilization, pairedFailure: uselessBeeRate, pairName: 'uselessBeeRate' },
+      // High cache reuse is only credited if rework stays low — a high ratio achieved by reusing
+      // STALE state (not re-deriving current frontier) surfaces as re-placements/bounces (D-003).
+      cacheEfficiency: { metric: cacheHitRatio, pairedFailure: reworkRate, pairName: 'reworkRate' },
     },
   };
 }

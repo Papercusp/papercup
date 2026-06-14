@@ -28,6 +28,8 @@ export interface QueenWakeSample {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   costUsd: number | null;
+  /** Assistant turns in the wake (claude num_turns) — the round-trip metric. null when not captured. */
+  turns: number | null;
 }
 
 export interface QueenWakeEfficiency {
@@ -46,6 +48,9 @@ export interface QueenWakeEfficiency {
    * tokens were seen. Higher = the frozen prefix is paying off (Win-1).
    */
   cacheHitRatio: number;
+  /** Mean assistant turns per wake across wakes that reported a turn count (Win-2:
+   *  the precomputed brief should pull this DOWN over time). null when none reported. */
+  avgTurns: number | null;
   /** The per-wake samples, newest-first. */
   samples: QueenWakeSample[];
 }
@@ -61,6 +66,7 @@ export interface QueenWakeEfficiencyDeps {
       cache_read_tokens: number | string | null;
       cache_creation_tokens: number | string | null;
       cost_usd: number | string | null;
+      turn_count: number | string | null;
     }[]
   >;
 }
@@ -75,7 +81,7 @@ function defaultDeps(): QueenWakeEfficiencyDeps {
     fetchSamples: async ({ workspaceId, harnessSlug, limit }) => {
       const { sql } = getOrgPg();
       return sql`
-        SELECT run_id, ts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+        SELECT run_id, ts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, turn_count
           FROM harness_shared.agent_usage_samples
          WHERE workspace_id = ${workspaceId}
            AND role = 'queen'
@@ -105,6 +111,7 @@ export async function queenWakeEfficiency(
     cacheReadTokens: num(r.cache_read_tokens),
     cacheCreationTokens: num(r.cache_creation_tokens),
     costUsd: r.cost_usd == null ? null : num(r.cost_usd),
+    turns: r.turn_count == null ? null : num(r.turn_count),
   }));
 
   let totalInputTokens = 0;
@@ -113,6 +120,8 @@ export async function queenWakeEfficiency(
   let totalOutputTokens = 0;
   let totalCostUsd = 0;
   let cachedWakes = 0;
+  let totalTurns = 0;
+  let turnsReportedWakes = 0;
   for (const s of samples) {
     totalInputTokens += s.inputTokens;
     totalCacheReadTokens += s.cacheReadTokens;
@@ -120,9 +129,14 @@ export async function queenWakeEfficiency(
     totalOutputTokens += s.outputTokens;
     totalCostUsd += s.costUsd ?? 0;
     if (s.cacheReadTokens > 0) cachedWakes += 1;
+    if (s.turns != null) {
+      totalTurns += s.turns;
+      turnsReportedWakes += 1;
+    }
   }
   const promptTokens = totalCacheReadTokens + totalCacheCreationTokens + totalInputTokens;
   const cacheHitRatio = promptTokens > 0 ? totalCacheReadTokens / promptTokens : 0;
+  const avgTurns = turnsReportedWakes > 0 ? totalTurns / turnsReportedWakes : null;
 
   return {
     wakes: samples.length,
@@ -133,6 +147,7 @@ export async function queenWakeEfficiency(
     totalOutputTokens,
     totalCostUsd,
     cacheHitRatio,
+    avgTurns,
     samples,
   };
 }

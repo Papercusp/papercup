@@ -60,6 +60,10 @@ describe('computeEfficiencyMetrics — each metric paired with its failure-mode 
     lockContentionMs: 300,
     totalTokens: 60_000,
     costUsd: 3,
+    queenCacheReadTokens: 80_000,
+    queenCacheCreationTokens: 10_000,
+    queenInputTokens: 10_000,
+    queenWakes: 5,
   };
 
   it('computes parallelism utilization as mean-busy ÷ cap', () => {
@@ -97,5 +101,31 @@ describe('computeEfficiencyMetrics — each metric paired with its failure-mode 
     const m = computeEfficiencyMetrics({ ...base, completedItems: 0 });
     expect(Number.isFinite(m.communicationOverhead)).toBe(true);
     expect(Number.isFinite(m.costPerItemUsd)).toBe(true);
+  });
+
+  // ── Queen cache efficiency (P-011 — queen-brief-cache cross-lane) ──
+  it('computes the Queen cache-hit ratio + per-wake prompt cost', () => {
+    const m = computeEfficiencyMetrics(base);
+    expect(m.cacheHitRatio).toBeCloseTo(0.8, 5); // 80000 / (80000+10000+10000)
+    expect(m.tokensPerWake).toBeCloseTo(20_000, 5); // 100000 / 5
+  });
+
+  it('pairs cache efficiency with rework rate (high cache only good if rework low, D-003)', () => {
+    const m = computeEfficiencyMetrics(base);
+    expect(m.pairings.cacheEfficiency).toEqual({ metric: m.cacheHitRatio, pairedFailure: m.reworkRate, pairName: 'reworkRate' });
+  });
+
+  it('catches the gaming move: a high cache ratio earned by reusing STALE state shows high rework', () => {
+    const gamed = { ...base, queenCacheReadTokens: 95_000, queenCacheCreationTokens: 5_000, queenInputTokens: 0, rework: 12 };
+    const m = computeEfficiencyMetrics(gamed);
+    expect(m.cacheHitRatio).toBeCloseTo(0.95, 5); // looks "efficient"
+    expect(m.pairings.cacheEfficiency.pairedFailure).toBe(m.reworkRate);
+    expect(m.reworkRate).toBeGreaterThan(1); // ...but rework exposes the staleness (12/6)
+  });
+
+  it('cache-hit ratio is 0 (not NaN) when there were no Queen prompt tokens', () => {
+    const m = computeEfficiencyMetrics({ ...base, queenCacheReadTokens: 0, queenCacheCreationTokens: 0, queenInputTokens: 0, queenWakes: 0 });
+    expect(m.cacheHitRatio).toBe(0);
+    expect(m.tokensPerWake).toBe(0);
   });
 });

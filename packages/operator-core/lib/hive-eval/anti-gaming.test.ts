@@ -63,6 +63,10 @@ function goodBehavior(over: Partial<RunBehavior> = {}): RunBehavior {
     lockContentionMs: 0,
     totalTokens: 1000 * N,
     costUsd: 0.5 * N, // $0.50 / item — well under the $5 ceiling
+    queenCacheReadTokens: 9000, // cacheHitRatio 0.9 — the frozen-prefix cache paying off
+    queenCacheCreationTokens: 1000,
+    queenInputTokens: 0,
+    queenWakes: N,
     ...over,
   };
 }

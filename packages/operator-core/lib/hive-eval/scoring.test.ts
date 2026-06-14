@@ -38,9 +38,12 @@ function eff(over: Partial<EfficiencyMetrics> = {}): EfficiencyMetrics {
     lockContentionMs: 0,
     costPerItemUsd: 1,
     tokensPerItem: 10_000,
+    cacheHitRatio: 0.8,
+    tokensPerWake: 20_000,
     pairings: {
       lowCommunication: { metric: 2, pairedFailure: 0, pairName: 'collisionRate' },
       highParallelism: { metric: 0.9, pairedFailure: 0, pairName: 'uselessBeeRate' },
+      cacheEfficiency: { metric: 0.8, pairedFailure: 0, pairName: 'reworkRate' },
     },
   };
   return { ...base, ...over };

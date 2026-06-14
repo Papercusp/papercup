@@ -20,6 +20,8 @@ import { getHiveCarryNote } from './wake';
 import { summarizeOpenPlacements } from './placement-watchdog';
 import { gatherFleetSignals } from '../curation/fleet-signals';
 import { buildFleetReaders } from '../curation/deps';
+import { gatherCompletions } from '../curation/change-feed';
+import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { renderQueenBrief, floorFromSurvey, type BriefEscalation } from './queen-brief';
 
 /** Fleet signals (escalations/blockers/decisions) → the floor's escalation digest.
@@ -28,6 +30,17 @@ async function gatherEscalations(): Promise<BriefEscalation[]> {
   try {
     const signals = await gatherFleetSignals(buildFleetReaders());
     return signals.map((s) => ({ id: s.id, severity: s.severity, summary: s.title }));
+  } catch {
+    return [];
+  }
+}
+
+/** Recent change-feed (what the fleet just shipped) → the floor's steering digest.
+ *  Newest-first, capped to keep the tail small; fail-soft like the others. */
+async function gatherRecentChanges(limit = 10): Promise<string[]> {
+  try {
+    const entries = await gatherCompletions(buildChangeFeedReaders());
+    return entries.slice(0, limit).map((e) => `${e.kind}: ${e.title}`);
   } catch {
     return [];
   }
@@ -45,17 +58,19 @@ export async function computeQueenWakeBrief(
     //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
     //    internally fail-soft (returns empty);
     //  - carryNote / escalations — wrapped here.
-    const [survey, carryNote, openPlacements, escalations] = await Promise.all([
+    const [survey, carryNote, openPlacements, escalations, changeFeed] = await Promise.all([
       surveyHive(workspaceId, installSlug),
       getHiveCarryNote(workspaceId).catch(() => null),
       summarizeOpenPlacements(workspaceId, installSlug),
       gatherEscalations(),
+      gatherRecentChanges(),
     ]);
     const wokeBy = opts.wokeBy?.trim();
     const floor = floorFromSurvey(survey, {
       ...(wokeBy ? { wokeBy } : {}),
       openPlacements,
       ...(escalations.length > 0 ? { escalations } : {}),
+      ...(changeFeed.length > 0 ? { changeFeed } : {}),
     });
     return renderQueenBrief({ floor, carryNote });
   } catch (err) {
