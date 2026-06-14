@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781432216198-a84ef37b",
+  "feature_id": "F-FIX-017",
+  "field": "__created",
+  "id": 930,
+  "new_value": "{\"id\":\"F-FIX-017\",\"title\":\"Test failing repeatedly: packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-poststream-leak.test.ts\",\"sourceIssueId\":\"EI-542\"}",
+  "old_value": "null",
+  "ts": 1781432488709
+}

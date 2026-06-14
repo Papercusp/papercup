@@ -48,6 +48,7 @@ import { EkgPanel } from './EkgPanel';
 import { RedQueenPanel } from './RedQueenPanel';
 import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';
 import { DemandPanel } from './DemandPanel';
+import { ExperimentsPanel } from './ExperimentsPanel';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
 import HumanQueueDrain from './HumanQueueDrain';
@@ -785,6 +786,8 @@ function ApiaryView() {
       <EkgPanel />
 
       <RedQueenPanel />
+
+      <ExperimentsPanel />
 
       <div className="pc-learning__sectionhead">
         <h2>Benchmark generations</h2>

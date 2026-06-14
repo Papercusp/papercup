@@ -35,8 +35,8 @@ type ExperimentDescriptor = TestDescriptor<ExperimentRequest, ExperimentRunResul
 // replay (offline, fully wired) — varies the resumed agent's policy/system prompt
 // --------------------------------------------------------------------------
 
-/** Replay can vary only the agent's system prompt/policy (its sole lever). */
-const REPLAY_KNOB_SLICE = ['overlay.systemOverlay', 'overlay.systemReplace'] as const;
+/** Replay can vary the agent's system prompt/policy + the continuation MODEL (P-063). */
+const REPLAY_KNOB_SLICE = ['overlay.systemOverlay', 'overlay.systemReplace', 'model'] as const;
 
 interface ReplayPayload {
   cases: ReplayCase[];
@@ -47,10 +47,13 @@ interface ReplayPayload {
  *  through the governed replay substrate. */
 export function armToReplayVariant(arm: KnobArm): ReplayVariant {
   if (Object.keys(arm.knobs).length === 0) return REPLAY_BASELINE_VARIANT;
-  const { overlay } = partitionArm(arm);
+  const { overlay, models } = partitionArm(arm);
   const policy: ReplayVariant['policy'] = {};
   if (typeof overlay.systemReplace === 'string') policy.systemReplace = overlay.systemReplace;
   if (typeof overlay.systemOverlay === 'string') policy.systemOverlay = overlay.systemOverlay;
+  // Replay has one agent, so the first model.<role> knob sets the continuation model.
+  const model = Object.values(models)[0];
+  if (typeof model === 'string') policy.model = model;
   return { variantId: arm.id, label: arm.label ?? arm.id, policy };
 }
 
@@ -80,7 +83,7 @@ export function replayDescriptor(deps: ExperimentDescriptorDeps = defaultDeps): 
   return {
     id: 'replay',
     summary:
-      'Counterfactual replay — re-run a historical/synthetic transcript point under a varied agent policy and score the divergence vs what actually happened. ~$0, deterministic baseline; the default offline tier (D-004).',
+      'Counterfactual replay — re-run a historical/synthetic transcript point under a varied agent policy or model and score the divergence vs what actually happened. ~$0, deterministic baseline; the default offline tier (D-004).',
     kind: 'replay',
     fidelityTier: 'offline',
     costClass: 'free',

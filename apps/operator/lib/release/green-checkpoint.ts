@@ -104,7 +104,9 @@ export const HOST_ENV_STRIP = ['AGENT_MODELS'];
  * - `GREEN_CHECKPOINT=1` — a marker so genuinely load-/live-network-sensitive tests
  *   that CANNOT be hermetic (real Hyperswarm/DHT, ports) self-exclude via
  *   `describe.skipIf(process.env.GREEN_CHECKPOINT === '1')`; they still run in CI/local.
- * - `AFFECTED_BASE=<base>` (when given) so test:affected runs exactly the candidate's delta.
+ * - `AFFECTED_BASE=<base>` (when given) so test:affected runs exactly the candidate's delta;
+ *   any host-leaked AFFECTED_BASE is dropped — the `base` arg is the ONLY source, so a
+ *   base-null full run is never silently narrowed by an inherited value.
  * - `VITEST_MAX_FORKS/THREADS` default to 8 (respecting a pre-set value): the checkpoint
  *   shares the box with the live fleet; uncapped workers under that load produce timeout
  *   FLAKES that read as "not green" (a 1-of-8881 load-flake held `main` back 2026-06-06).
@@ -120,6 +122,12 @@ export function buildGreenCheckpointEnv(
     if (k.startsWith('PAPERCUSP_') || HOST_ENV_STRIP.includes(k)) delete env[k];
   }
   env.GREEN_CHECKPOINT = '1';
+  // AFFECTED_BASE comes ONLY from the `base` argument — never a host-leaked value.
+  // The gate runs the suite with AFFECTED_BASE set, so a child runGreen(tree, null)
+  // would otherwise inherit that base and silently NARROW a "full" affected run —
+  // the host's env defining what green measures, the very leak this builder exists
+  // to prevent (held `main` red on the candidate-base sha, 2026-06-14).
+  delete env.AFFECTED_BASE;
   if (base) env.AFFECTED_BASE = base;
   env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? '8';
   env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? '8';

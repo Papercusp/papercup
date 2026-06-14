@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781432216198-a84ef37b",
+  "feature_id": "F-FIX-019",
+  "field": "__created",
+  "id": 932,
+  "new_value": "{\"id\":\"F-FIX-019\",\"title\":\"Test failing repeatedly: packages/operator-core/lib/shared-hive-loop/composition-happy-path.integration.test.ts\",\"sourceIssueId\":\"EI-532\"}",
+  "old_value": "null",
+  "ts": 1781432492972
+}

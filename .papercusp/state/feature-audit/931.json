@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781432216198-a84ef37b",
+  "feature_id": "F-FIX-018",
+  "field": "__created",
+  "id": 931,
+  "new_value": "{\"id\":\"F-FIX-018\",\"title\":\"Test failing repeatedly: packages/operator-core/lib/agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts\",\"sourceIssueId\":\"EI-539\"}",
+  "old_value": "null",
+  "ts": 1781432490825
+}

@@ -57,7 +57,7 @@ describe('descriptor metadata + catalog', () => {
     expect(entries.map((e) => e.id)).toEqual(['gym', 'hive', 'instance', 'replay']);
     const replay = entries.find((e) => e.id === 'replay')!;
     expect(replay).toMatchObject({ kind: 'replay', fidelityTier: 'offline', costClass: 'free' });
-    expect(replay.knobSlice).toEqual(['overlay.systemOverlay', 'overlay.systemReplace']);
+    expect(replay.knobSlice).toEqual(['overlay.systemOverlay', 'overlay.systemReplace', 'model']);
     expect(listTests().find((e) => e.id === 'instance')!.knobSlice).toEqual(['genome', 'model']);
   });
 
@@ -97,6 +97,22 @@ describe('replay descriptor.run', () => {
     expect(out.winner).toBe('cand');
     expect(out.arms.map((a) => a.meanScore)).toEqual([5, 7]);
     expect(out.totalCostUsd).toBe(0.01);
+  });
+
+  it('maps a model knob to the variant policy.model (model-per-arm, P-063)', async () => {
+    const runReplayBattery = vi.fn(async (_c: ReplayBatteryConfig) => cannedResult());
+    const desc = replayDescriptor({ runReplayBattery });
+    await desc.run(
+      {
+        batteryId: 'b1',
+        arms: [{ id: 'opus', knobs: { 'model.agent': 'claude-opus-4-8' } }],
+        repeats: 1,
+        payload: { cases: [historicalCase] },
+      },
+      fakeCtx(),
+    );
+    const cfg = runReplayBattery.mock.calls[0]![0];
+    expect(cfg.variants.find((v) => v.variantId === 'opus')?.policy.model).toBe('claude-opus-4-8');
   });
 
   it('rejects an arm whose knob is outside the replay slice', async () => {

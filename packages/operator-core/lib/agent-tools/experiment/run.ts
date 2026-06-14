@@ -78,6 +78,11 @@ export default defineTool({
         ledger: new PgExperimentLedger(getOrgPg().sql),
       },
     );
+    if (outcome.ok) {
+      // Push the new run to the Learning-tab scoreboard (P-051).
+      const { notifySyncInvalidate } = await import('../../sync-sse');
+      notifySyncInvalidate('learning.experiments');
+    }
     return { content: [{ type: 'text' as const, text: JSON.stringify(outcome) }] };
   },
 });

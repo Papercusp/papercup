@@ -67,6 +67,10 @@ export interface ReplayPolicy {
   systemOverlay?: string;
   /** Replaces the base replay system prompt wholesale (ablations). */
   systemReplace?: string;
+  /** Model override for the replayed continuation — the experiment model-per-arm knob
+   *  (experiment-registry-invocation-api P-063). Falls back to the runner's default when
+   *  unset; regret/transfer never set it, so this is additive + behavior-neutral for them. */
+  model?: string;
   /** Human note (what this delta hypothesizes) — recorded, not executed. */
   note?: string;
 }

@@ -1800,6 +1800,33 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.experiments — the experiment_runs scoreboard (experiment-registry-
+  // invocation-api P-051). Returns recent runs (flat array), RLS-scoped via
+  // routeWithWorkspace; degrades to [] before the migration applies (42P01).
+  'learning.experiments': {
+    argsSchema: z.object({
+      testId: z.string().optional(),
+      limit: z.number().int().positive().max(200).optional(),
+    }),
+    resolve: async (args) => {
+      const a = (args ?? {}) as { testId?: string; limit?: number };
+      try {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const { routeWithWorkspace } = await import('../route-workspace');
+        const { PgExperimentLedger } = await import('../experiment/ledger');
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) =>
+          new PgExperimentLedger(tx).listRecent(ws, { testId: a.testId, limit: a.limit ?? 20 }),
+        );
+      } catch (err) {
+        if ((err as { code?: string }).code !== '42P01') {
+          console.warn('[learning.experiments] read failed:', err instanceof Error ? err.message : err);
+        }
+        return [];
+      }
+    },
+  },
+
   // ── learning.hiveThroughput — Queen-loop throughput metrics (B-11 / P-050) ──
   //
   // Per-hive throughput ticks (migration 261): latest metric cards + a recent

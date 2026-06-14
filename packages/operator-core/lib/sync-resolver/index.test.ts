@@ -324,6 +324,12 @@ describe('sync-resolver v2 registry', () => {
 
 /* ── P-029: plansDrafts.bySlug resolver ────────────────────────────── */
 
+describe('resolveNamedQueryV2 — learning.experiments (experiment-registry-invocation-api P-051)', () => {
+  it('is registered in knownQueryNamesV2', () => {
+    expect(knownQueryNamesV2()).toContain('learning.experiments');
+  });
+});
+
 describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cache B-06 / P-010)', () => {
   beforeEach(() => {
     vi.resetModules();

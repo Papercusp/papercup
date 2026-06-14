@@ -8,10 +8,11 @@ import type { ReplayBatteryDeps } from '../replay/battery';
 import type { ReplayRunner } from '../replay/types';
 
 /** One LLM call continuing from the cut — the replayed continuation under test. */
-export function experimentReplayRunner(model = 'claude-sonnet-4-6', maxTokens = 1500): ReplayRunner {
-  return async ({ systemPrompt, contextText }) => {
+export function experimentReplayRunner(defaultModel = 'claude-sonnet-4-6', maxTokens = 1500): ReplayRunner {
+  return async ({ systemPrompt, contextText, variant }) => {
     const { llmCall } = await import('../llm-testing/llm-client');
-    const r = await llmCall({ model, system: systemPrompt, messages: [{ role: 'user', content: contextText }], maxTokens });
+    // The arm's `model` knob (variant.policy.model) overrides the default — model-per-arm (P-063).
+    const r = await llmCall({ model: variant.policy.model ?? defaultModel, system: systemPrompt, messages: [{ role: 'user', content: contextText }], maxTokens });
     return {
       outputText: r.text,
       costUsd: r.costUsd,
