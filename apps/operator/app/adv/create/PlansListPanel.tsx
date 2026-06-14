@@ -15,7 +15,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
-import { ClipboardList, Inbox, Plus, Terminal } from 'lucide-react';
+import { ClipboardList, Eye, Inbox, Plus, Terminal } from 'lucide-react';
 import { toast } from 'sonner';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
@@ -141,6 +141,15 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
         >
           <Terminal size={14} aria-hidden />
           <span className="pc-plans__queue-btn-label">Sessions</span>
+        </button>
+        <button
+          type="button"
+          className={`pc-plans__sessions-btn${view === 'observations' ? ' is-active' : ''}`}
+          onClick={() => void setView('observations')}
+          title="Observations — pre-idea sensor readings agents record at end of turn (browse only; never enters the work queue)."
+        >
+          <Eye size={14} aria-hidden />
+          <span className="pc-plans__queue-btn-label">Observations</span>
         </button>
       </div>
 

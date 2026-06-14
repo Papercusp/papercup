@@ -1391,6 +1391,48 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.observations — the Observations pane's browse feed ──
+  //
+  // (turn-end-reflection-observations-2026-06-14 P-044 / D-005). PRE-IDEA sensor
+  // readings from the turn-end reflection step, filed in the SEPARATE
+  // OBSERVATION_TOPIC lane — they NEVER enter the work/triage queue (that is the
+  // whole point: this is browse-only, no ranking/triage/dispatch). Newest first.
+  // NOT table-backed (engineer_issues has no emit_change_notify) — refreshes on
+  // mount + manual invalidate + the server-side notifySyncInvalidate
+  // captureImprovement fires on a lane:observation file.
+  'learning.observations': {
+    argsSchema: z
+      .object({
+        state: z.enum(['open', 'resolved', 'closed']).optional(),
+        limit: z.number().int().positive().max(500).optional(),
+      })
+      .optional(),
+    resolve: async (args) => {
+      const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
+      const { listIssues } = await import('../issues-engineer');
+      const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
+      const issues = await listIssues({ topic: OBSERVATION_TOPIC, state: a.state, limit: a.limit ?? 200 });
+      return issues
+        .map((i) => {
+          const p = i.payload && typeof i.payload === 'object' ? (i.payload as Record<string, unknown>) : {};
+          const obs = p.observation && typeof p.observation === 'object' ? (p.observation as Record<string, unknown>) : {};
+          const refs = Array.isArray(obs.refs) ? obs.refs.filter((r): r is string => typeof r === 'string') : [];
+          return {
+            id: i.id,
+            title: i.title,
+            body: i.body ?? null,
+            kind: typeof obs.kind === 'string' ? obs.kind : null,
+            scope: typeof obs.scope === 'string' ? obs.scope : i.scope ?? null,
+            confidence: typeof obs.confidence === 'string' ? obs.confidence : null,
+            refs,
+            sourceRole: typeof p.sourceRole === 'string' ? p.sourceRole : null,
+            createdAt: i.createdAt,
+          };
+        })
+        .sort((x, y) => (x.createdAt < y.createdAt ? 1 : x.createdAt > y.createdAt ? -1 : 0));
+    },
+  },
+
   // ── learning.health — the composite learning-infra status chip ──
   //
   // (self-improvement-consume-edges-2026-06-12 P-003 / D-002). ONE

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { issueToCandidate, readImprovementItems, IMPROVEMENT_TOPIC } from './read-items';
+import { issueToCandidate, readImprovementItems, readObservationItems, IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { EngineerIssue } from '../../issues-engineer';
 
 function issue(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
@@ -161,6 +161,23 @@ describe('readImprovementItems', () => {
     const barItems = await readImprovementItems({ harnessSlug: 'bar' }, { listIssues: fakeList });
     expect(barItems.length).toBe(1);
     expect(barItems[0]?.id).toBe('EI-3');
+  });
+});
+
+describe('readObservationItems (turn-end-reflection-observations-2026-06-14 D-005)', () => {
+  it('queries the SEPARATE observation topic — NEVER the improvement topic (keeps observations out of the work pipeline)', async () => {
+    let seen: any;
+    await readObservationItems({}, { listIssues: async (f) => ((seen = f), []) });
+    expect(seen).toMatchObject({ topic: OBSERVATION_TOPIC });
+    expect(seen.topic).not.toBe(IMPROVEMENT_TOPIC);
+  });
+
+  it('maps observation rows to candidates', async () => {
+    const items = await readObservationItems(
+      {},
+      { listIssues: async () => [issue({ id: 'EI-OBS-1', title: 'docs were stale', kind: 'change' })] },
+    );
+    expect(items.map((i) => i.id)).toEqual(['EI-OBS-1']);
   });
 });
 

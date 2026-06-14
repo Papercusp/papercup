@@ -409,8 +409,8 @@ export function useItemPlanFilter() {
 
 /* ── Active view (the create:filter buttons set it; create:main renders it) ── */
 
-export type CreateView = 'plans' | 'queue' | 'sessions';
-export const CREATE_VIEWS: CreateView[] = ['plans', 'queue', 'sessions'];
+export type CreateView = 'plans' | 'queue' | 'sessions' | 'observations';
+export const CREATE_VIEWS: CreateView[] = ['plans', 'queue', 'sessions', 'observations'];
 
 /** Shared `?view` selector for the Create dock (Plans = single pane;
  *  Queue/Sessions = split). Defaults to Plans, matching the old Plans tab. */

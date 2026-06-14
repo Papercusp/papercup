@@ -30,6 +30,7 @@ import {
   renderReflectStep,
 } from './friction-markers';
 import { captureImprovement, type CaptureDeps } from './capture-core';
+import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import { runWatchdogTick } from './watchdog';
 import { dedupSignature, titleSimilarity, signatureRecurrence } from './digest';
 import { classifyIdeaType, triageIdea } from './triage';
@@ -138,6 +139,41 @@ describe('P-060.1 — reflection: boundary + friction markers, never a per-turn 
 
   it('a clean completion instructs capture-NOTHING (sparseness is the quality filter)', () => {
     expect(renderReflectStep().toLowerCase()).toContain('capture nothing');
+  });
+});
+
+// ── 1b. observations (D-005) are isolated from the work/triage lane ──────────
+
+describe('P-060.7 — D-005: observations never enter the work/triage lane', () => {
+  function obsDeps() {
+    const created: Array<{ topics?: string[]; kind?: string }> = [];
+    const d: CaptureDeps = {
+      // a same-title existing row — observations must STILL re-file (no dedup decline)
+      searchIssues: async () => [issue({ id: 'EI-DUP', title: 'a recurring observation' })],
+      createIssue: async (input) => {
+        created.push({ topics: input.topics, kind: input.kind });
+        return issue({ id: 'EI-OBS', title: input.title, kind: (input.kind as 'bug' | 'change') ?? 'change' });
+      },
+    };
+    return { created, d };
+  }
+
+  it('the observation topic is DISTINCT from the improvement topic', () => {
+    expect(OBSERVATION_TOPIC).not.toBe(IMPROVEMENT_TOPIC);
+  });
+
+  it('a lane:observation capture files the observation topic + a non-bug — no topic:improvement reader or the auto-implement lane ever sees it', async () => {
+    const { created, d } = obsDeps();
+    await captureImprovement({ title: 'a recurring observation', kind: 'bug', lane: 'observation' }, d);
+    expect(created[0].topics).toContain(OBSERVATION_TOPIC);
+    expect(created[0].topics).not.toContain(IMPROVEMENT_TOPIC); // invisible to readImprovementItems
+    expect(created[0].kind).toBe('change'); // kind=bug ignored → splitCandidates (needs kind=bug) can never auto-implement it
+  });
+
+  it('observations skip dedup — a RECURRING one re-files (recurrence IS the signal Scout clusters)', async () => {
+    const { d } = obsDeps();
+    const res = await captureImprovement({ title: 'a recurring observation', kind: 'change', lane: 'observation' }, d);
+    expect(res.created).toBe(true);
   });
 });
 

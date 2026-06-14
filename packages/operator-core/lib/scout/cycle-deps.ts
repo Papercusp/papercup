@@ -212,10 +212,15 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
         const { FLAGS } = await import('@papercusp/flags');
         if (await getFlag(FLAGS.SCOUT_EXPERIMENT_RAIL, 'scout-experiment-rail')) {
           const { forkTestableToExperiments, buildExperimentDispatchPort } = await import('./experiment-rail');
+          const { generateExperimentRequest } = await import('./experiment-generate');
+          // Armed: LLM-generate a sharp candidate overlay + case per proposal (spends ~1
+          // small LLM call each, bounded by the ≤maxGroups testable proposals/cycle),
+          // falling back to the mechanical mapping on any failure. The dry-run after is $0.
           await forkTestableToExperiments(
             result.decisions,
             proposals,
             opts.experimentDispatch ?? buildExperimentDispatchPort(),
+            (p) => generateExperimentRequest(p, opts.llmCall),
           );
         }
       } catch (err) {

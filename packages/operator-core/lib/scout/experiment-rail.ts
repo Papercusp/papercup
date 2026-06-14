@@ -116,6 +116,7 @@ export async function forkTestableToExperiments(
   decisions: readonly RoutingDecision[],
   proposals: readonly Proposal[],
   dispatch: ExperimentDispatchPort,
+  buildRequest: (p: Proposal) => Promise<RunExperimentInput> = async (p) => proposalToExperimentRequest(p),
 ): Promise<{ dispatched: number; failed: number }> {
   const byId = new Map(proposals.map((p) => [p.id, p]));
   let dispatched = 0;
@@ -125,7 +126,7 @@ export async function forkTestableToExperiments(
     const p = byId.get(d.proposalId);
     if (!p) continue;
     try {
-      await dispatch(proposalToExperimentRequest(p));
+      await dispatch(await buildRequest(p));
       dispatched += 1;
     } catch {
       failed += 1;

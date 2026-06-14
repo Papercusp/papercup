@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { captureImprovement, storageKindOf, type CaptureDeps } from './capture-core';
-import { IMPROVEMENT_TOPIC } from './read-items';
+import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
 
 function existing(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
@@ -45,6 +45,62 @@ describe('storageKindOf — the native column mapping (close-loop D-002)', () =>
     expect(storageKindOf('bug')).toBe('bug');
     expect(storageKindOf('change')).toBe('change');
     expect(storageKindOf('feature')).toBe('change');
+  });
+});
+
+describe('captureImprovement — observation lane (turn-end-reflection-observations-2026-06-14 D-005)', () => {
+  it('files the OBSERVATION topic, NOT the improvement topic (invisible to the work pipeline)', async () => {
+    const d = deps();
+    const res = await captureImprovement(
+      { title: 'docs:search returned stale results', kind: 'change', lane: 'observation' },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(d.created[0].topics).toContain(OBSERVATION_TOPIC);
+    expect(d.created[0].topics).not.toContain(IMPROVEMENT_TOPIC);
+  });
+
+  it('always stores as a non-bug nit + marks payload.lane (never auto-implement-eligible)', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'x', kind: 'bug', lane: 'observation' }, d); // kind=bug is IGNORED for observations
+    expect(d.created[0].kind).toBe('change');
+    expect(d.created[0].severity).toBe('nit');
+    expect(d.created[0].payload).toMatchObject({ lane: 'observation' });
+  });
+
+  it('carries NO auto-implement lifecycle / paths (it is never dispatchable)', async () => {
+    const d = deps();
+    await captureImprovement({ title: 'x', kind: 'change', lane: 'observation', paths: ['libs/x/y.ts'] }, d);
+    const payload = d.created[0].payload as Record<string, unknown> | undefined;
+    expect(payload?.ideaLifecycle).toBeUndefined();
+    expect(payload?.paths).toBeUndefined();
+  });
+
+  it('SKIPS dedup — a recurring observation re-files even when a similar one exists (recurrence IS the signal)', async () => {
+    const d = deps({ found: [existing({ id: 'EI-9', title: 'docs:search returned stale results' })] });
+    const res = await captureImprovement(
+      { title: 'docs:search returned stale results', kind: 'change', lane: 'observation' },
+      d,
+    );
+    expect(res.created).toBe(true); // NOT declined as a likely-duplicate
+    expect(d.created).toHaveLength(1);
+  });
+
+  it('merges the structured observation record via payloadExtra', async () => {
+    const d = deps();
+    await captureImprovement(
+      {
+        title: 'validator loop is confusing',
+        kind: 'change',
+        lane: 'observation',
+        payloadExtra: { observation: { kind: 'friction', scope: 'role', confidence: 'med' } },
+      },
+      d,
+    );
+    expect(d.created[0].payload).toMatchObject({
+      lane: 'observation',
+      observation: { kind: 'friction', scope: 'role', confidence: 'med' },
+    });
   });
 });
 
