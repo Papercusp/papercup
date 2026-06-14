@@ -30,6 +30,7 @@ import { Route as AdvIndexRouteImport } from './routes/adv/index'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as UsersLoginRouteImport } from './routes/users/$login'
 import { Route as SettingsVoiceRouteImport } from './routes/settings/voice'
+import { Route as SettingsTrustRouteImport } from './routes/settings/trust'
 import { Route as SettingsShortcutsRouteImport } from './routes/settings/shortcuts'
 import { Route as SettingsSetupWizardRouteImport } from './routes/settings/setup-wizard'
 import { Route as SettingsPublishingRouteImport } from './routes/settings/publishing'
@@ -190,6 +191,11 @@ const UsersLoginRoute = UsersLoginRouteImport.update({
 const SettingsVoiceRoute = SettingsVoiceRouteImport.update({
   id: '/voice',
   path: '/voice',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsTrustRoute = SettingsTrustRouteImport.update({
+  id: '/trust',
+  path: '/trust',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsShortcutsRoute = SettingsShortcutsRouteImport.update({
@@ -533,6 +539,7 @@ export interface FileRoutesByFullPath {
   '/settings/publishing': typeof SettingsPublishingRoute
   '/settings/setup-wizard': typeof SettingsSetupWizardRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
+  '/settings/trust': typeof SettingsTrustRoute
   '/settings/voice': typeof SettingsVoiceRoute
   '/users/$login': typeof UsersLoginRoute
   '/admin/': typeof AdminIndexRoute
@@ -611,6 +618,7 @@ export interface FileRoutesByTo {
   '/settings/publishing': typeof SettingsPublishingRoute
   '/settings/setup-wizard': typeof SettingsSetupWizardRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
+  '/settings/trust': typeof SettingsTrustRoute
   '/settings/voice': typeof SettingsVoiceRoute
   '/users/$login': typeof UsersLoginRoute
   '/admin': typeof AdminIndexRoute
@@ -691,6 +699,7 @@ export interface FileRoutesById {
   '/settings/publishing': typeof SettingsPublishingRoute
   '/settings/setup-wizard': typeof SettingsSetupWizardRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
+  '/settings/trust': typeof SettingsTrustRoute
   '/settings/voice': typeof SettingsVoiceRoute
   '/users/$login': typeof UsersLoginRoute
   '/admin/': typeof AdminIndexRoute
@@ -772,6 +781,7 @@ export interface FileRouteTypes {
     | '/settings/publishing'
     | '/settings/setup-wizard'
     | '/settings/shortcuts'
+    | '/settings/trust'
     | '/settings/voice'
     | '/users/$login'
     | '/admin/'
@@ -850,6 +860,7 @@ export interface FileRouteTypes {
     | '/settings/publishing'
     | '/settings/setup-wizard'
     | '/settings/shortcuts'
+    | '/settings/trust'
     | '/settings/voice'
     | '/users/$login'
     | '/admin'
@@ -929,6 +940,7 @@ export interface FileRouteTypes {
     | '/settings/publishing'
     | '/settings/setup-wizard'
     | '/settings/shortcuts'
+    | '/settings/trust'
     | '/settings/voice'
     | '/users/$login'
     | '/admin/'
@@ -1149,6 +1161,13 @@ declare module '@tanstack/react-router' {
       path: '/voice'
       fullPath: '/settings/voice'
       preLoaderRoute: typeof SettingsVoiceRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/trust': {
+      id: '/settings/trust'
+      path: '/trust'
+      fullPath: '/settings/trust'
+      preLoaderRoute: typeof SettingsTrustRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/shortcuts': {
@@ -1583,6 +1602,7 @@ interface SettingsRouteChildren {
   SettingsPublishingRoute: typeof SettingsPublishingRoute
   SettingsSetupWizardRoute: typeof SettingsSetupWizardRoute
   SettingsShortcutsRoute: typeof SettingsShortcutsRoute
+  SettingsTrustRoute: typeof SettingsTrustRoute
   SettingsVoiceRoute: typeof SettingsVoiceRoute
   SettingsPluginsToolsRoute: typeof SettingsPluginsToolsRoute
   SettingsUserMemoryRoute: typeof SettingsUserMemoryRoute
@@ -1610,6 +1630,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsPublishingRoute: SettingsPublishingRoute,
   SettingsSetupWizardRoute: SettingsSetupWizardRoute,
   SettingsShortcutsRoute: SettingsShortcutsRoute,
+  SettingsTrustRoute: SettingsTrustRoute,
   SettingsVoiceRoute: SettingsVoiceRoute,
   SettingsPluginsToolsRoute: SettingsPluginsToolsRoute,
   SettingsUserMemoryRoute: SettingsUserMemoryRoute,

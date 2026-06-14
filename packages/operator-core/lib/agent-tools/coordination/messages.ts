@@ -22,6 +22,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { coordLog } from './log';
 import { hasAudienceSelector, expandAudience } from './audience';
 import { hostAudienceResolvers, audienceMode } from './audience-host';
+import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
+import { parkSlotMessage } from './slot-parked-store';
 import type { AgentIdentity } from './identity';
 
 export type { InboxOptions };

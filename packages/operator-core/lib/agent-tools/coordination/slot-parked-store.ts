@@ -48,7 +48,7 @@ export async function parkSlotMessage(
     VALUES (
       ${input.envelope.msg_id}, ${ws}, ${input.slot.kind}, ${input.slot.ref},
       ${input.harnessSlug ?? null}, ${input.envelope.from},
-      ${sql.json(input.envelope as unknown as Record<string, unknown>)},
+      ${sql.json(input.envelope as unknown as Parameters<typeof sql.json>[0])},
       ${input.nowMs}, ${input.ttlMs ?? null}
     )
     ON CONFLICT (workspace_id, id) DO NOTHING
