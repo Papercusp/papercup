@@ -66,6 +66,19 @@ impl FleetMode {
     }
 }
 
+/// Which panel of the comms sub-view holds keyboard focus (owner ask
+/// 2026-06-14). Spatial nav: `h`/`l` (or ←/→) cross the Roster ↔ mail columns;
+/// `j`/`k` walk the row cursor, falling through Inbox → Outbox → Conversations
+/// at the list edges so the three stacked right-column panels stay reachable
+/// with only the four keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommsFocus {
+    Roster,
+    Inbox,
+    Outbox,
+    Conversations,
+}
+
 /// Fleet-tab state: the live activity ring, the fleet work-items, per-agent todo
 /// snapshots, the view mode, and the agent-selection cursor.
 pub struct FleetState {
@@ -83,6 +96,13 @@ pub struct FleetState {
     /// roster + dossier + plan-progress (default); true = roster + inbox/outbox
     /// (selected agent) over conversations (whole-fleet broadcasts + threads).
     pub show_comms: bool,
+    /// Comms sub-view focus + per-panel row cursors (owner ask 2026-06-14):
+    /// which of the four comms panels takes keys, and the cursor into the
+    /// SELECTED bee's inbox/outbox (rendered newest-first, so index 0 = newest).
+    /// The conversations panel reuses `App::conversation_sel`.
+    pub comms_focus: CommsFocus,
+    pub comms_inbox_sel: usize,
+    pub comms_outbox_sel: usize,
     /// Whole-fleet assignments (every bee's ranked work-list), for the DEFAULT
     /// dossier when no agent is selected (#2: "show all tasks from the fleet").
     /// Refreshed on Fleet entry + periodically. A selection narrows to one bee's
@@ -99,6 +119,9 @@ impl Default for FleetState {
             agent_todos: HashMap::new(),
             agent_sel: 0,
             show_comms: false,
+            comms_focus: CommsFocus::Roster,
+            comms_inbox_sel: 0,
+            comms_outbox_sel: 0,
             all_assignments: Vec::new(),
         }
     }
@@ -310,11 +333,14 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
 /// group → conversations, structured coord events → the dossier/swarm activity)
 /// is how ALL fleet communication is captured.
 fn draw_comms_view(f: &mut Frame, app: &App, area: Rect) {
+    // The focused panel takes an active border + a highlighted row cursor; the
+    // other three render quiet (owner ask 2026-06-14, `h`/`l`/`j`/`k` nav).
+    let focus = app.fleet.comms_focus;
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
         .split(area);
-    draw_agents(f, app, cols[0]);
+    draw_agents(f, app, cols[0], focus == CommsFocus::Roster);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
@@ -325,14 +351,17 @@ fn draw_comms_view(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(right[0]);
-    crate::bee::draw_inbox(f, app, mail[0]);
-    crate::bee::draw_outbox(f, app, mail[1]);
-    draw_conversations_compact(f, app, right[1]);
+    let inbox_sel = (focus == CommsFocus::Inbox).then_some(app.fleet.comms_inbox_sel);
+    let outbox_sel = (focus == CommsFocus::Outbox).then_some(app.fleet.comms_outbox_sel);
+    let conv_sel = (focus == CommsFocus::Conversations).then_some(app.conversation_sel);
+    crate::bee::draw_inbox(f, app, mail[0], inbox_sel);
+    crate::bee::draw_outbox(f, app, mail[1], outbox_sel);
+    draw_conversations_compact(f, app, right[1], conv_sel);
 }
 
 /// Whole-fleet conversations (broadcasts + multi-party threads) — the all-hands
 /// channel. A compact list reusing the Conversations-tab data (`visible_conversations`).
-fn draw_conversations_compact(f: &mut Frame, app: &App, area: Rect) {
+fn draw_conversations_compact(f: &mut Frame, app: &App, area: Rect, sel: Option<usize>) {
     let convs = app.visible_conversations();
     let items: Vec<ListItem> = if convs.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
@@ -342,19 +371,25 @@ fn draw_conversations_compact(f: &mut Frame, app: &App, area: Rect) {
     } else {
         convs
             .iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(idx, c)| {
                 let k = match c.kind.as_str() {
                     "question" => "Q",
                     "discussion" => "D",
                     _ => "·",
                 };
                 let title = c.title.clone().unwrap_or_else(|| c.id.clone());
-                ListItem::new(Line::from(format!(
+                let item = ListItem::new(Line::from(format!(
                     "{} {:<9} {}",
                     k,
                     trunc(&c.state, 9),
                     trunc(&title, 40)
-                )))
+                )));
+                if sel == Some(idx) {
+                    item.style(Theme::selected())
+                } else {
+                    item
+                }
             })
             .collect()
     };
@@ -363,7 +398,7 @@ fn draw_conversations_compact(f: &mut Frame, app: &App, area: Rect) {
         area,
         Theme::block(
             Line::from(format!(" {} conversations (fleet) ", glyph::nav::FLEET)),
-            false,
+            sel.is_some(),
         ),
         " all-hands — broadcasts + threads",
     );
@@ -519,7 +554,7 @@ fn wake_badge_text(pending: i64) -> String {
 
 /// The agent list — roster joined to each agent's latest activity summary + todo
 /// progress. The navigable spine of the Fleet tab (j/k).
-fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
+fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     let latest = app.fleet.latest_by_owner();
     // The plans-filtered roster (D-009) — `fleet.agent_sel` indexes THIS list.
     let roster = app.visible_roster();
@@ -662,7 +697,7 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     let body_area = crate::ui::block_with_header_rows(
         f,
         area,
-        Theme::block(Line::from(title), true),
+        Theme::block(Line::from(title), focused),
         header_rows,
     );
     let list = List::new(body)
