@@ -18,7 +18,6 @@ import {
   type CoordKind,
   type InboxOptions,
 } from '@papercusp/coordination/core';
-import { getOrgPg } from '@papercusp/db-org';
 import { coordLog, coordWorkspaceId, coordSql } from './log';
 import { hasAudienceSelector, expandAudience } from './audience';
 import { hostAudienceResolvers, audienceMode } from './audience-host';
@@ -105,10 +104,15 @@ export async function sendMessage(
   // Park the envelope durably for each addressed slot (./slot-parked-store) —
   // drained into the spawnee's handoff when an agent spawns into the slot (P-023).
   if (slots.length) {
-    const sql = getOrgPg().sql;
+    // Use the coord seam's handle + workspace (NOT getOrgPg()+'default') so the
+    // parked rows live on the SAME DB/workspace as the coord messages this
+    // sendMessage writes — a swapped seam (tests, non-default workspace) would
+    // otherwise split them. Mirrors readAckedMsgIds.
+    const sql = coordSql();
+    const ws = coordWorkspaceId();
     const nowMs = Date.now();
     for (const slot of slots) {
-      await parkSlotMessage(sql, { slot, harnessSlug: opts.harnessSlug ?? null, envelope: env, nowMs });
+      await parkSlotMessage(sql, { slot, harnessSlug: opts.harnessSlug ?? null, envelope: env, nowMs, workspaceId: ws });
     }
   }
   // Deliver to the live inbox when there's a live audience — or when there were

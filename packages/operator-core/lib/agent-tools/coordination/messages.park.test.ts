@@ -9,7 +9,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 vi.mock('./slot-parked-store', () => ({ parkSlotMessage: vi.fn(async () => ({ id: 'x' })) }));
-vi.mock('./log', () => ({ coordLog: { appendLine: vi.fn(async () => undefined) } }));
+vi.mock('./log', () => ({
+  coordLog: { appendLine: vi.fn(async () => undefined) },
+  coordSql: () => ({}),
+  coordWorkspaceId: () => 'default',
+}));
 
 import { sendMessage } from './messages';
 import { parkSlotMessage } from './slot-parked-store';

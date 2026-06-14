@@ -181,6 +181,11 @@ beforeAll(async () => {
   await rootSql.unsafe(readMigration('128-harness-plans-normalize.sql')).simple();
   // The initiative grouping column (284) — plans:start's source-derive reads/writes it.
   await rootSql.unsafe(readMigration('284-harness-plans-initiative.sql')).simple();
+  // The decision-ledger sink (260) — recordDecisionLedger writes here from the
+  // dispatch postInvoke seam; without it every governed dispatch console.warns
+  // ("relation harness_shared.decision_ledger does not exist") and
+  // vitest-fail-on-console reddens the whole file (EI-496).
+  await rootSql.unsafe(readMigration('260-decision-ledger.sql')).simple();
   // The declare-wake frontier guard (wake-frontier-guard.ts) reads this table.
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = rootSql;

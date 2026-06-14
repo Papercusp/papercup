@@ -439,6 +439,13 @@ export const FLAGS = {
   // of the subprocess chunk loop. DEFAULT OFF — the staged hot-path rollout's gate
   // (dark → ramp → retire); OFF = today's subprocess path, unchanged.
   WORKER_CHUNK_LOOP_BLUEPRINT: "papercusp-worker-chunk-loop-blueprint",
+  // generic-column-filters-2026-06-14 (Phase 2): gates the generic per-column
+  // FILTER BAR on the /adv dock panels (RichGrid + non-grid) — the +Add-filter
+  // Select → per-type Popover editor → removable chip row built on
+  // @papercusp/grid-core's pure filter engine. When OFF, <ColumnFilterBar/>
+  // renders nothing (the panels still list unfiltered rows). DEFAULT ON (alpha
+  // flags-default-on policy): the bar is additive surfacing over a tested engine.
+  GRID_COLUMN_FILTERS: "papercusp-grid-column-filters",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -692,6 +699,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // ramp → retire (worker-chunk-loop-operator-hosted-2026-06-14). OFF = the subprocess
   // chunk loop, unchanged. Flip per-cohort only as the parity metrics confirm at each step.
   [FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT]: false,
+  // ON by default (alpha flags-default-on policy) — generic-column-filters Phase 2:
+  // the filter bar is additive surfacing over the tested @papercusp/grid-core engine
+  // (Phase 1). OFF = the bar renders nothing; panels list unfiltered rows.
+  [FLAGS.GRID_COLUMN_FILTERS]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);
