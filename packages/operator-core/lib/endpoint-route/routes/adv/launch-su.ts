@@ -22,6 +22,7 @@ import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
 import { recordAdvSession } from '../../../adv-sessions';
+import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
@@ -168,6 +169,14 @@ const launchSu = defineTool({
       if (advSessionId == null) {
         return json({ status: 'error', error: 'failed to record session' }, 500);
       }
+      // Wake the pui dock-driver NOW so it reactively panes this pending
+      // workbench launch deterministically, instead of waiting for the general
+      // invalidation firehose or the 60s roster safety-net (the gap that left a
+      // New-plan click un-paned for hours after an operator restart). The pui
+      // refetches /api/adv/roster on ANY `invalidate` frame; 'roster' names it
+      // explicitly. Best-effort: the row is already committed, so a notify
+      // hiccup must not fail the launch (the safety-net still backs it up).
+      void notifySyncInvalidate('roster').catch(() => {});
       return json({ status: 'ok', deferred: true, advSessionId, agent, harnessSlug: harness, planSlug: plan });
     }
 

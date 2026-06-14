@@ -64,6 +64,21 @@ Because the fix is at the transport, **every** consumer (all three loops + the
 per-spawn `from_discovery()` callers) recovers automatically. Regression guard:
 `ipc::tests::reconnects_after_connection_drop`.
 
+### Complementary fix: a `roster` invalidation on the New-plan record
+
+Reconnect keeps the client *alive*; it doesn't make a new pending launch refetch
+*promptly*. Recording a deferred workbench launch
+(`POST /api/adv/sessions/launch-su` with `defer_spawn`) now also fires
+`notifySyncInvalidate('roster')` after the row commits. The pui's SSE loop
+(`main.rs`) signals a refetch on **any** `invalidate` frame, so the dock-driver
+refetches `/api/adv/roster` and panes the launch within a tick — instead of
+waiting for the general invalidation firehose or the 60 s safety-net. Best-effort
+(the row is already committed, so a notify hiccup can't fail the launch; the
+safety-net still backs it up). Guard:
+`launch-su.test.ts` ("defer_spawn records a pending workbench launch…"). The live
+(non-deferred) spawn path stays quiet — the *active* roster tier is
+presence-primary and refreshes via its own `coord_presence` invalidation.
+
 ## Gotchas for the next agent
 
 - **The pui is a separately-built Rust binary** (`~/.cargo/bin/pui`), not part of

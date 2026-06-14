@@ -18,7 +18,20 @@
 import { surveyHive } from './survey';
 import { getHiveCarryNote } from './wake';
 import { summarizeOpenPlacements } from './placement-watchdog';
-import { renderQueenBrief, floorFromSurvey } from './queen-brief';
+import { gatherFleetSignals } from '../curation/fleet-signals';
+import { buildFleetReaders } from '../curation/deps';
+import { renderQueenBrief, floorFromSurvey, type BriefEscalation } from './queen-brief';
+
+/** Fleet signals (escalations/blockers/decisions) → the floor's escalation digest.
+ *  Fail-soft: a flaky read degrades to no-escalations, never kills the brief. */
+async function gatherEscalations(): Promise<BriefEscalation[]> {
+  try {
+    const signals = await gatherFleetSignals(buildFleetReaders());
+    return signals.map((s) => ({ id: s.id, severity: s.severity, summary: s.title }));
+  } catch {
+    return [];
+  }
+}
 
 export async function computeQueenWakeBrief(
   workspaceId: string,
@@ -26,16 +39,24 @@ export async function computeQueenWakeBrief(
   opts: { wokeBy?: string } = {},
 ): Promise<string | null> {
   try {
-    // The watchdog's placement state (recovering/cursed/stranded — the completion
-    // mandate) is read alongside the survey; summarizeOpenPlacements is fail-soft
-    // (returns empty on error) so it never blocks the brief (D-004 / D-014).
-    const [survey, carryNote, openPlacements] = await Promise.all([
+    // surveyHive is the CORE — if it throws, the whole brief is null and she falls
+    // back to the survey tools. The other reads are individually fail-soft so one
+    // flaky read degrades that section, never the whole brief (D-004 / D-014):
+    //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
+    //    internally fail-soft (returns empty);
+    //  - carryNote / escalations — wrapped here.
+    const [survey, carryNote, openPlacements, escalations] = await Promise.all([
       surveyHive(workspaceId, installSlug),
-      getHiveCarryNote(workspaceId),
+      getHiveCarryNote(workspaceId).catch(() => null),
       summarizeOpenPlacements(workspaceId, installSlug),
+      gatherEscalations(),
     ]);
     const wokeBy = opts.wokeBy?.trim();
-    const floor = floorFromSurvey(survey, { ...(wokeBy ? { wokeBy } : {}), openPlacements });
+    const floor = floorFromSurvey(survey, {
+      ...(wokeBy ? { wokeBy } : {}),
+      openPlacements,
+      ...(escalations.length > 0 ? { escalations } : {}),
+    });
     return renderQueenBrief({ floor, carryNote });
   } catch (err) {
     console.warn(

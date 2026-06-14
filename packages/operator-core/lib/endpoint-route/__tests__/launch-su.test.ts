@@ -32,6 +32,16 @@ vi.mock('../../adv-sessions', () => ({
   recordAdvSession: recordAdvSessionMock,
 }));
 
+// A deferred (workbench) record fires a `roster` sync-invalidation so the pui
+// dock-driver refetches /api/adv/roster and panes the launch immediately — mock
+// sync-sse (it opens a real PG LISTEN connection otherwise) to spy on the emit.
+const { notifySyncInvalidateMock } = vi.hoisted(() => ({
+  notifySyncInvalidateMock: vi.fn(async (_name: string) => {}),
+}));
+vi.mock('../../sync-sse', () => ({
+  notifySyncInvalidate: notifySyncInvalidateMock,
+}));
+
 // The agent-less branch resolves the CONFIGURED backend (owner ask
 // 2026-06-07) via a dynamic import of agent-config — mock it so the test
 // pins the config instead of reading the dev box's real file/PG.
@@ -129,6 +139,17 @@ describe('launch-su', () => {
     expect(opts.launchArgv).toEqual(
       expect.arrayContaining(['--no-picker', '--agent=claude', '--harness=papercup', '--plan=my-plan']),
     );
+    // …and it wakes the pui dock-driver with a roster invalidation so the pane
+    // opens deterministically (not on the firehose / 60s safety-net).
+    expect(notifySyncInvalidateMock).toHaveBeenCalledWith('roster');
+  });
+
+  it('the live (non-deferred) spawn path does NOT fire a roster invalidation', async () => {
+    // The active roster tier is presence-primary; a live spawn refreshes it via
+    // its own coord_presence invalidation, so the launch route stays quiet here.
+    await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(notifySyncInvalidateMock).not.toHaveBeenCalled();
   });
 
   it('agent-less launch resolves the CONFIGURED backend (claude-code → claude)', async () => {
@@ -193,5 +214,7 @@ describe('launch-su', () => {
     expect(res.status).toBe(429);
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
+    // No row recorded → nothing to pane → no roster wake.
+    expect(notifySyncInvalidateMock).not.toHaveBeenCalled();
   });
 });
