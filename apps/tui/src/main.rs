@@ -284,6 +284,13 @@ async fn run<B: Backend>(
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
+    // Attention pops (transient toast + OS desktop notification) are MUTED by
+    // default (owner ask 2026-06-14); `PUI_NOTIFY=1` (or true/on/yes) re-enables
+    // them. The Inbox badge + `N` history overlay stay live regardless.
+    app.notify_enabled = matches!(
+        std::env::var("PUI_NOTIFY").ok().as_deref(),
+        Some("1" | "true" | "on" | "yes")
+    );
     // Pinned single-tab dock pane (P-013 / D-011): render JUST that tab's body —
     // the renderer short-circuits to it, and the run loop re-pins on each event
     // (below) so a stray nav key can't switch to an unrendered tab.
@@ -506,11 +513,15 @@ async fn run<B: Backend>(
             let _ = save_tx.send(app.capture_view_state());
         }
 
-        // Best-effort OS notification on each new attention event (P8).
+        // Best-effort OS notification on each new attention event (P8). Gated on
+        // notify_enabled (muted by default, owner ask 2026-06-14) — the badge +
+        // history surfaces still update via the reducer regardless.
         if app.notif_seq != last_notif_seq {
             last_notif_seq = app.notif_seq;
-            if let Some(t) = app.toast.clone() {
-                notify::os_notify("Papercusp", &t.message);
+            if app.notify_enabled {
+                if let Some(t) = app.toast.clone() {
+                    notify::os_notify("Papercusp", &t.message);
+                }
             }
         }
 

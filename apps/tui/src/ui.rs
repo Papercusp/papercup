@@ -29,8 +29,10 @@ pub fn draw(f: &mut Frame, app: &App) {
             draw_notifs(f, app);
         } else if app.show_help {
             draw_help(f);
-        } else if let Some(t) = &app.toast {
-            draw_toast(f, t);
+        } else if app.notify_enabled {
+            if let Some(t) = &app.toast {
+                draw_toast(f, t);
+            }
         }
         return;
     }
@@ -114,7 +116,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     // A transient toast for the latest notification sits above the body but
     // below the modal overlays (it shouldn't fight the help/palette/tutorial).
     if let Some(t) = &app.toast {
-        if !app.show_tutorial
+        if app.notify_enabled
+            && !app.show_tutorial
             && !app.show_help
             && !app.palette_open
             && !app.show_notifs
@@ -2426,8 +2429,8 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
         (
             "Staying in the loop",
             "Presence:      p   toggles the who's‑online sidebar (right)\n\
-             Notifications: a toast pops when something needs you; Esc dismisses,\n\
-             \x20              N opens the history.\n\
+             Notifications: muted by default — the Inbox badge + N history\n\
+             \x20              keep you posted (PUI_NOTIFY=1 re-enables pops).\n\
              Command bar:   :        Full keymap:  ?        Quit:  q\n\n\
              You can re‑open this guide any time with  F1 .\n\n\
              That's it — press any key to start.",
@@ -3488,12 +3491,25 @@ mod tests {
     #[test]
     fn inbox_badge_and_toast_render() {
         let mut app = App::new();
+        app.notify_enabled = true; // the transient toast only pops when enabled
         app.unseen_notifs = 2;
         app.toast = Some(ui_notif("high", "Decide P-002", None));
         let text = render(&app, 90, 12);
         assert!(text.contains("Inbox (2)")); // badge on the tab strip
         assert!(text.contains("🔔")); // toast box title
         assert!(text.contains("Decide P-002")); // toast message
+    }
+
+    #[test]
+    fn muted_by_default_suppresses_toast_but_keeps_badge() {
+        // notify_enabled defaults to false (owner ask 2026-06-14): the transient
+        // toast must not render, but the Inbox badge — a separate surface — stays.
+        let mut app = App::new();
+        app.unseen_notifs = 2;
+        app.toast = Some(ui_notif("high", "Decide P-002", None));
+        let text = render(&app, 90, 12);
+        assert!(text.contains("Inbox (2)")); // badge unaffected by the mute
+        assert!(!text.contains("Decide P-002")); // toast suppressed
     }
 
     #[test]
@@ -3528,6 +3544,7 @@ mod tests {
     #[test]
     fn toast_title_advertises_the_history_key() {
         let mut app = App::new();
+        app.notify_enabled = true; // the transient toast only pops when enabled
         app.pinned = Some(crate::app::Tab::Wake);
         app.tab = crate::app::Tab::Wake;
         app.toast = Some(ui_notif("high", "Decide P-009", None));

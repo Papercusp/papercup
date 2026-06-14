@@ -57,12 +57,15 @@ export function extractCitedPaths(raw: string): string[] {
     if (!REPO_PATH_RE.test(token)) continue;
     // Class 1 (EI-510): skip a path whose own line carries a removal/move marker —
     // it's a historical "this file was moved/removed" reference, not a live citation,
-    // so flagging it "no longer exists" is a perpetual false positive.
+    // so flagging it "no longer exists" is a perpetual false positive. Test the PROSE
+    // only (strip backticked spans first) so a path whose own filename contains a
+    // marker word (e.g. `removed.ts`, `old-home.ts`) isn't self-skipped.
     const idx = m.index ?? 0;
     const lineStart = raw.lastIndexOf('\n', idx) + 1;
     const lineEndRaw = raw.indexOf('\n', idx);
     const line = raw.slice(lineStart, lineEndRaw === -1 ? raw.length : lineEndRaw);
-    if (REMOVAL_MARKER_RE.test(line)) continue;
+    const prose = line.replace(/`[^`]*`/g, ' ');
+    if (REMOVAL_MARKER_RE.test(prose)) continue;
     out.add(token);
   }
   return [...out];

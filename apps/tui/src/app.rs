@@ -1244,6 +1244,12 @@ pub struct App {
     pub show_notifs: bool,
     pub unseen_notifs: usize,
     pub notif_seq: u64,
+    /// Whether the attention surfaces that "pop" are enabled: the transient
+    /// toast overlay (`draw_toast`) and the OS desktop notification. MUTED by
+    /// default (owner ask 2026-06-14) — set `PUI_NOTIFY=1` to re-enable. The
+    /// Inbox badge (`unseen_notifs`) + the `N` history overlay (`notifs`) are
+    /// independent of this and always stay live, so no message is ever lost.
+    pub notify_enabled: bool,
     /// Fleet "no reachable session" action menu (pui-workbench-usability D-002).
     /// `Some` while Enter on an unreachable agent has surfaced the `[r]/[n]/[f]`
     /// choices; the next `r`/`n`/`f`/Esc closes it. Captures keys while open.
@@ -1544,6 +1550,7 @@ impl App {
             show_notifs: false,
             unseen_notifs: 0,
             notif_seq: 0,
+            notify_enabled: false,
             fleet_action_menu: None,
             wake_review: None,
             wake_board: WakeBoard {

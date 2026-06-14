@@ -625,6 +625,44 @@ This actually happened: P-048 Contributors and P-073 Insights were registered in
 
 If you add an `/adv` panel and “it doesn’t show up in Add panel,” you skipped step 2. Verify with the e2e spec above (it asserts both Contributors and Insights appear in the catalog) or by opening the catalog in the prebuilt bundle — **not** the HMR dev server on `:3055`, which currently has a `'/@vite/client' … createHotContext` mismatch that renders `/adv` blank in a fresh browser (the desktop is unaffected — it loads the prebuilt bundle).
 
+# Agent-mcp routes slow but /health fast = main-event-loop saturation (not a leak/pool/DB issue)
+
+> When :3070 agent-mcp routes degrade to many seconds and MCP clients time out while /api/health stays fast, the cause is sustained main-thread CPU saturating the event loop — every await hop pays the loop delay, so hop-heavy routes degrade ~Nx while health (~2 hops) barely moves. Read the event-loop-lag gauge first, not the PG pool.
+
+## The signature
+
+[Section titled “The signature”](#the-signature)
+
+`:3070` agent-mcp routes (psu / fleet MCP, `/api/agent-mcp/*`, `/api/harness/*`) degrade to **12–30s/req and MCP clients time out**, but `/api/health` stays **\~sub-second**. It may worsen over \~1h after boot and “recur after restart”. Memory may spike separately — don’t be misled into chasing a leak.
+
+This is **main-event-loop saturation**, not what it looks like. The discriminator chain (EI-79, a multi-day forensic slog precisely because nothing reported it):
+
+* **Not a leak / fd / conn exhaustion** — fd and conn counts are normal.
+* **Not the PG pool** — PG is healthy (sub-second queries, no blockers); N parallel requests finishing *together* at \~the same long time = no pool staircase, they’re all waiting on the same shared resource (the loop).
+* **Not CPU priority** — changing CPUWeight does nothing.
+* **The tell**: trivial agent-mcp routes (one settings read) are as slow as heavy ones, while `/health` is fine. Hop-heavy routes (auth→identity→roles→telemetry→PG) pay the per-await **loop delay** dozens of times; `/health` (\~2 hops) pays it \~twice. Sustained host CPU (`node` \~165%+ steady) is the burden; every `await` hop is where it’s felt.
+
+## Diagnose it in one read
+
+[Section titled “Diagnose it in one read”](#diagnose-it-in-one-read)
+
+A standing **event-loop-lag gauge** exists for exactly this — read it before touching the PG pool:
+
+* `packages/operator-core/lib/event-loop-lag-monitor.ts` — `perf_hooks` `monitorEventLoopDelay()`, wired at boot in `apps/operator/bin/hono-host.ts`.
+* It logs `[event-loop-lag] high loop delay — host is CPU-bound on the main thread` (with p50/p95/p99/max) **only** when p95 over a 10s window ≥100ms; silent on a healthy host. Grep the `papercup-dev-api.service` journal for it.
+
+To name the on-loop consumer: a 60s CPU profile of the live host (`node --cpu-prof` / inspector). EI-79’s was the hyperbee P2P read-merge driver (`sync/hyperbee/boot.ts` `mergeNow`, 1Hz poll) re-decoding **every op from index 0 in every admitted peer log every second** — O(total-history) per tick. Fix was an incremental merge cursor reading only `[cursor,length)` + a steady-state change-detection skip + PG-level `fed_ts` ts-guarded LWW writers (mig 181).
+
+## On a busy box: separate loop work from scheduler preemption
+
+[Section titled “On a busy box: separate loop work from scheduler preemption”](#on-a-busy-box-separate-loop-work-from-scheduler-preemption)
+
+Caution
+
+`monitorEventLoopDelay()` measures wall-clock delay between timer fires, which **includes time the OS descheduled the process**. On an oversubscribed box (high load average), the gauge can sit at p95 \~100–150ms from **scheduler preemption alone**, not host on-loop work.
+
+Discriminator: time a **hop-heavy** agent-mcp route. If the loop genuinely carried \~Xms of on-loop work *per hop*, a dozens-of-hops route would be multi-second. If hop-heavy routes are **sub-second** while the gauge reads \~100ms, the floor is mostly scheduler noise (external box load) — a real but *different* problem from a host on-loop regression. Latency on the actual routes is the ground truth; the gauge p95 is the alarm, not the verdict.
+
 # Injecting precomputed state into an agent's prompt (the wake-brief pattern)
 
 > Five load-bearing rules for handing an agent a precomputed state snapshot in its prompt instead of making it gather state via tools — tail-not-prefix (cache), strip the framing delimiter (breakout), only-tell-it-to-skip-reads-actually-in-the-brief (blindness), fresh-per-wake makes a stateless digest safe, and fail-soft to tools. Generalized from the Queen wake-brief.
@@ -2292,6 +2330,55 @@ Run the two builds **sequentially** to separate `--outDir`s — concurrent `vite
 [Section titled “Where this came from”](#where-this-came-from)
 
 The dev admin rail (`apps/operator-vite/src/components/dev-admin-rail/`, plan `dev-admin-sidebar-2026-06-05`). Its plan named `import.meta.env.DEV`; that would have made the rail invisible in the very desktop it’s meant for. The mount in `apps/operator-vite/src/routes/__root.tsx` carries the corrected gate + rationale.
+
+# Hermetic dispatch tests must seed EVERY postInvoke-seam table (tool_invocations + decision_ledger)
+
+> A hive integration test that dispatches a governed tool through the real dispatch path runs the postInvoke seam, which writes to BOTH harness_shared.tool_invocations (recordInvocation) AND harness_shared.decision_ledger (recordDecisionLedger, migration 260). A beforeAll that hand-curates a migration subset and seeds only some of those tables reddens the WHOLE file via vitest-fail-on-console. Symptom: 'Expected test not to call console.warn()' wrapping 'relation harness_shared.X does not exist'.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+A hive integration test (`packages/operator-core/lib/hive/*-e2e.integration.test.ts`, `shared-hive-loop/*.integration.test.ts`) goes red with:
+
+```plaintext
+vitest-fail-on-console > Expected test not to call console.warn().
+[decision-ledger] insert failed: relation "harness_shared.decision_ledger" does not exist
+    at recordDecisionLedgerImpl (.../lib/decision-ledger/emit.ts:190)
+```
+
+The assertion the test *wrote* passes; the file fails anyway because **any `console.warn` reddens the whole file** under `vitest-fail-on-console`. The warn comes from a side-effect you didn’t write — the dispatch postInvoke seam.
+
+This bit EI-496 + EI-497 (`declared-event-wake-e2e`, `start-hive-e2e`) on 2026-06-14. The same file already carried the identical comment one table earlier for `tool_invocations` — so this is the **second** postInvoke-seam table to draw blood. Expect a third when a new seam table lands.
+
+## Why
+
+[Section titled “Why”](#why)
+
+These hermetic tests don’t run the migration runner — their `beforeAll` hand-curates a *subset* of `libs/papercusp/libs/db/sql/*.sql` (plus a couple of inline `CREATE TABLE`s). But every governed tool dispatch runs the shared endpoint **postInvoke seam**, which writes to:
+
+* `harness_shared.tool_invocations` — `recordInvocation` (projected-tool-deps), on EVERY dispatch incl. reads.
+* `harness_shared.decision_ledger` — `recordDecisionLedger` (`lib/decision-ledger/emit.ts`), migration **260**, on governed (non-read) non-SU actions.
+
+Miss either table and the seam `console.warn`s rather than throwing (it’s best-effort by design — the ledger must never break a real dispatch), so the test *runs* but the file goes red.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+Seed BOTH tables in `beforeAll`. `260-decision-ledger.sql` is self-contained (`CREATE TABLE IF NOT EXISTS` depending only on the `harness_shared` schema + the `harness_app`/`harness_zero` roles, both created earlier in these hooks), so just apply it like the other migrations:
+
+```ts
+await rootSql.unsafe(readMigration('260-decision-ledger.sql')).simple();
+```
+
+`tool_invocations` is created inline in these files (see the existing block). When you add a new hermetic dispatch test, copy a *current* sibling’s `beforeAll` rather than an old one — the seam’s table set only grows.
+
+## Rule of thumb
+
+[Section titled “Rule of thumb”](#rule-of-thumb)
+
+If a test dispatches a governed tool through the real path, its `beforeAll` must provide every table the postInvoke seam touches — not just the tables your assertions read. When a new seam side-effect adds a table, every hand-curated hermetic dispatch test inherits the gap at once; the watchdog will file it as a “test failing repeatedly” EI per file.
 
 # How the papercusp-workspace + papercup-self-registration boot path works
 
@@ -8449,6 +8536,59 @@ To **retire** a federated table: remove it from all six (delete the projection f
 To **add** one: do the same six in reverse, and pick #6 deliberately — a PG-first table uses a CDC trigger; a log-first table appends directly. A table must have **exactly one** producer (a CDC + log-first double-capture is the EI-117 echo-storm shape and `checkCaptureCoverage` rejects it).
 
 Run the affected suites together: `npx vitest run` over `harness/hyperbee-key-types.test.ts`, `sync/hyperbee/__tests__/capture-coverage.test.ts`, `harness-state/projection-engine.test.ts`, `harness-state/table-registry.test.ts`, `sync/hyperbee/projections/__tests__/register-all.test.ts`.
+
+# Retiring an fs-watcher mirror — re-audit the consumer first; most "mirrors" are dead orphans, not producer-migrations
+
+> The fs-watcher-retirement plan framed each remaining mirror as needing a supervised "producer-time POST migration." In practice 3 of 4 (summary, branch_actions, phases) had NO live consumer and a REST route that recomputes on demand — dead orphans, retired mechanically like git_log. Only pending-reviews was a real migration (already shipped, P-077). The decisive consumer test + the full wiring map, learned retiring 4 mirrors in one session.
+
+## What
+
+[Section titled “What”](#what)
+
+`packages/operator-core/lib/harness-fs-watcher.ts` mirrors a handful of `.papercusp/*` files into `harness_shared.*` tables so panels can read them over the sync push. The `fs-watcher-retirement-2026-05-10` plan framed each remaining mirror as a **supervised producer-migration** (“build a producer-time POST endpoint, migrate the producer, live-verify the panel, then remove the mirror leg”).
+
+That premise was **wrong for 3 of 4**. Re-auditing code truth before touching anything (the `git_log` step-1 pattern) showed:
+
+| Mirror            | Reality                                                                                                                                     | Retirement                 |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `summary`         | no producer writes the file; no consumer reads the table (UI summary comes from `harness_text_artifacts`, mig 035)                          | **dead orphan** → drop     |
+| `branch_actions`  | marked “KEPT mirror” but the `/branch/:branch/actions` REST route recomputes on demand; no sync subscriber                                  | **dead orphan** → drop     |
+| `phases`          | only consumer (HealthBadge) read `alive`, which the watcher **hardcoded `false`** — an always-dark dot; the `/phases` REST route recomputes | repoint consumer → drop    |
+| `pending-reviews` | the watcher leg was REDUNDANT — `promote.ts`/`resolveReview` already write PG directly (audit P-077)                                        | remove leg, **keep table** |
+
+Only `pending-reviews` was a “migration” — and it had **already happened**; the watcher leg was leftover dead weight (its orphan-delete sweep was even a latent hazard to the PG-only rows).
+
+## The decisive test (do this before assuming a producer-migration)
+
+[Section titled “The decisive test (do this before assuming a producer-migration)”](#the-decisive-test-do-this-before-assuming-a-producer-migration)
+
+For each mirror table, answer two questions:
+
+1. **Does anything READ it?** Grep the camelCase queryName across real source (`apps/**`, `libs/**` — exclude `node_modules`, `src-tauri/target`, `_retired`, `public/`, `libs/zero-harness`). Also check for a direct REST read and an MCP tool. Check the live DB row count — a stale/empty table is a tell.
+2. **Is there a REST route that recomputes the same data on demand?** (git\_log → `/git/log`; branch\_actions → `/branch/:branch/actions`; phases → `/phases`.) These shell out / scan fs every call with a short TTL cache.
+
+**No reader + a recomputing REST route ⇒ dead orphan.** Retire it mechanically — there is no producer to migrate and no panel to live-verify. If there IS a live consumer, repoint it to a live, non-watcher source first (phases → `harnessLanes.byHarness`, the PID-swept lane tracker), *then* drop.
+
+## The full wiring map (every surface a mirror touches)
+
+[Section titled “The full wiring map (every surface a mirror touches)”](#the-full-wiring-map-every-surface-a-mirror-touches)
+
+1. **Watcher** (`harness-fs-watcher.ts`): the `upsert*`/`delete*` fn, the `watchedPaths()` entry, the dispatch block in `classifyAndDispatch`, the reconcile/bootstrap sweep, and the `const x = generated.*InHarnessShared` import (drop it once unused).
+2. **Sync resolver** (`sync-resolver/index.ts`): the `'name.byHarness'` entry.
+3. **Table→query map** (`sync-resolver/table-to-query-names.ts`): the `'harness_shared.<table>': [...]` line (this + the PG `emit_change_notify` trigger are what make a KEPT table still push live — leave them if you keep the table).
+4. **Resolver test** (`sync-resolver/index.test.ts`): the batch `toContain` list (the `≥ floor` count assertion absorbs the drop).
+5. **If git-synced** (`harness_phases` was): remove from `table-registry.ts` `GIT_DOCS`, `git-export/serialize.ts` `PROSE_TABLES` (prose tables only), and `git-export/ensure-git-outbox.ts` `GIT_KEY_COLS`. `detachStaleGitCaptureTriggers` drops the capture trigger on next boot; the boot-hydrate skips the table once it leaves `GIT_TABLES` (no crash). Committed `.papercusp/state/<table>/*.json` files go **inert** — harmless dead-debt, not auto-deleted.
+6. **Drop migration** + schema codegen: remove the table block from `generated.ts` **and** `schema.ts` only (the git\_log precedent leaves `generated.reference.sql` / `zero-reference.json` — they’re not consumed by the live drizzle schema). Do **not** run a full `pull-schema` — it sweeps in unrelated peer drift; hand-remove the one block.
+
+## Gotchas that cost real time
+
+[Section titled “Gotchas that cost real time”](#gotchas-that-cost-real-time)
+
+* **Reserve the migration number via `db:next-migration`, never hand-pick.** I hand-picked 280/281 and collided with **three** concurrent peer migrations; renumbering + backfilling `migration_reservations` was avoidable churn. `≥215` on disk without a reservation row reds `lint:migrations`.
+* **A “consumer” can be reading a dead field.** `harness_phases.alive` was hardcoded `false` by the only writer, so HealthBadge’s liveness dot was always dark — the repoint to `harness_lanes` was a *fix*, not a swap.
+* **Verify against code truth, not the plan.** This is the load-bearing meta- lesson: in a busy fleet, documented “remaining work” goes stale fast. The same session, the entire `EI-444` brief (adopt-event-rules `MatchMap` convergence) was **already shipped** — the plan was status=`shipped` (D-010) and the `custom:` hatch already retired. Re-audit the source before executing any plan step / brief / issue.
+
+See `fs-watcher-retirement-2026-05-10` for the per-mirror record and [retire-or-add-a-federated-table](/internal/docs/agent-insights/retire-or-add-a-federated-table) for the *peer-log federated* (not fs-watcher mirror) variant.
 
 # Extend a multi-entry route with a body-discriminator + a helper-per-entry + a shared error vocabulary
 

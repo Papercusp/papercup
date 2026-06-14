@@ -558,17 +558,9 @@ export async function mergeAdmittedLogsIncremental(
       const env = toEnvelope(op, log.keyHex);
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = cursor.winners.get(groupKey);
-      if (typeof env.hbKey === 'string' && env.hbKey.startsWith('F-3')) {
-        // eslint-disable-next-line no-console
-        console.error(`[MERGE] log=${log.keyHex.slice(0, 6)} pos=${pos} key=${env.hbKey} hlc=${env.hlc} src=${(env.sourceLogKeyHex ?? '').slice(0, 6)} prevHlc=${prev?.hlc} beats=${prev ? beatsStored(env, prev) : 'no-prev'}`);
-      }
       if (prev && !beatsStored(env, prev)) continue; // ts-guard: stale op, never applied
       cursor.winners.set(groupKey, toMeta(env));
       if (await apply(env)) applied++;
-    }
-    if (upper > from) {
-      // eslint-disable-next-line no-console
-      console.error(`[MERGE-LOG] log=${log.keyHex.slice(0, 6)} from=${from} upper=${upper} len=${log.length}`);
     }
     cursor.positions.set(log.keyHex, pos);
     if (pos < log.length) {
