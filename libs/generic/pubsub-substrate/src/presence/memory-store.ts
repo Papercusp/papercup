@@ -19,6 +19,8 @@ interface StoredRow {
   input: PresenceInput;
   startedAt: number;
   heartbeatAt: number;
+  /** Last genuine-activity time (ms); null until first activity (D-003). */
+  lastActiveAt: number | null;
 }
 
 export interface InMemoryPresenceStoreOptions {
@@ -37,17 +39,34 @@ export class InMemoryPresenceStore implements PresenceStore {
   async write(identity: PresenceIdentity, input: PresenceInput = {}): Promise<void> {
     const t = this.now();
     const existing = this.rows.get(identity.ownerId);
+    // populate-once-then-keep for role/hive — mirror the PG COALESCE.
+    const merged: PresenceInput = {
+      ...input,
+      agentRole: input.agentRole ?? existing?.input.agentRole ?? null,
+      hiveSlug: input.hiveSlug ?? existing?.input.hiveSlug ?? null,
+    };
     this.rows.set(identity.ownerId, {
       identity,
-      input,
+      input: merged,
       startedAt: existing?.startedAt ?? t,
       heartbeatAt: t,
+      lastActiveAt: t, // a write IS activity
     });
   }
 
   async touchHeartbeat(ownerId: string): Promise<void> {
+    // KEEPALIVE only — never lastActiveAt (D-003).
     const row = this.rows.get(ownerId);
     if (row) row.heartbeatAt = this.now();
+  }
+
+  async touchActivity(ownerId: string): Promise<void> {
+    // ACTIVITY — bump both (D-003).
+    const row = this.rows.get(ownerId);
+    if (row) {
+      row.heartbeatAt = this.now();
+      row.lastActiveAt = row.heartbeatAt;
+    }
   }
 
   async heartbeat(identity: PresenceIdentity): Promise<void> {
@@ -55,9 +74,16 @@ export class InMemoryPresenceStore implements PresenceStore {
     const existing = this.rows.get(identity.ownerId);
     if (existing) {
       existing.heartbeatAt = t;
+      existing.lastActiveAt = t; // a coord:inbox read IS activity (D-003)
       existing.identity = identity; // refresh label/source/ws; KEEP input (intent/files)
     } else {
-      this.rows.set(identity.ownerId, { identity, input: {}, startedAt: t, heartbeatAt: t });
+      this.rows.set(identity.ownerId, {
+        identity,
+        input: {},
+        startedAt: t,
+        heartbeatAt: t,
+        lastActiveAt: t,
+      });
     }
   }
 
@@ -104,6 +130,9 @@ export class InMemoryPresenceStore implements PresenceStore {
       pid: r.input.pid ?? null,
       startedAt: new Date(r.startedAt).toISOString(),
       heartbeatAt: new Date(r.heartbeatAt).toISOString(),
+      lastActiveAt: r.lastActiveAt != null ? new Date(r.lastActiveAt).toISOString() : null,
+      agentRole: r.input.agentRole ?? null,
+      hiveSlug: r.input.hiveSlug ?? null,
       stale: now - r.heartbeatAt > PRESENCE_STALE_MS,
       userId: r.identity.userId ?? null,
       revoked: false,

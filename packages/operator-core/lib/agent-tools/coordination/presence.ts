@@ -19,7 +19,7 @@ import {
   type PresenceInput,
   type PresenceRecord,
 } from '@papercusp/coordination/presence';
-import type { AgentIdentity } from './identity';
+import { deriveAgentRole, type AgentIdentity } from './identity';
 
 export { PRESENCE_STALE_MS };
 export type { PresenceInput, PresenceRecord };
@@ -32,19 +32,39 @@ const store = new PgPresenceStore({
 
 /**
  * Upsert the caller's presence row — "set my presence to exactly this".
- * Always bumps heartbeat_at. Omitted optional fields reset to defaults.
+ * Always bumps heartbeat_at AND last_active_at (a declared write is genuine
+ * activity, D-003). Resolves the populate-once scalars agentRole (D-004, from
+ * the identity) + hiveSlug (from `harnessSlug` via hiveHomeSlugForHarness) when
+ * the caller hasn't already set them. Omitted optional fields reset to defaults.
  */
 export async function writePresence(
   identity: AgentIdentity,
   input: PresenceInput = {},
+  harnessSlug?: string | null,
 ): Promise<void> {
-  await store.write(identity, input);
+  const agentRole = input.agentRole ?? deriveAgentRole(identity);
+  let hiveSlug = input.hiveSlug ?? null;
+  if (hiveSlug == null && harnessSlug) {
+    try {
+      const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+      hiveSlug = await hiveHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
+    } catch {
+      hiveSlug = null; // best-effort: presence must write even if hive lookup fails
+    }
+  }
+  await store.write(identity, { ...input, agentRole, hiveSlug });
 }
 
-/** Bump heartbeat_at only — the lightweight turn_start path. No-op if
- *  the row does not exist yet. */
+/** Bump heartbeat_at ONLY — the keepalive path (the 60s supervisor beat). No-op
+ *  if the row does not exist. NEVER bumps last_active_at (D-003). */
 export async function touchHeartbeat(ownerId: string): Promise<void> {
   await store.touchHeartbeat(ownerId);
+}
+
+/** Bump last_active_at AND heartbeat_at — the ACTIVITY path (tool dispatch via
+ *  dispatch-heartbeat). No-op if the row does not exist (D-003). */
+export async function touchActivity(ownerId: string): Promise<void> {
+  await store.touchActivity(ownerId);
 }
 
 /** Ensure a presence row + bump heartbeat WITHOUT clobbering a declared

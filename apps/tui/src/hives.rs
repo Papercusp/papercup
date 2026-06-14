@@ -221,6 +221,35 @@ pub fn group_hives(rows: &[PresenceRow]) -> Vec<HiveGroup> {
     groups
 }
 
+/// The present members of ONE hive (B5 / shared-hive-collaboration P-005): the
+/// federated presence rows whose hive key (device pubkey, or the host when a row
+/// carries no pubkey — the SAME keying `group_hives` uses) matches `key`. That is
+/// "who is in THIS shared hive". Live rows sort first, then by user then harness,
+/// so the roster reads newest-collaborators-first and is stable. Pure — the roster
+/// pane (`network::draw_hive_roster`) renders these inside the per-hive axis tab
+/// (B4), and the per-row author identity doubles as the "whose work is whose"
+/// attribution shared with Phase-1 #1.
+pub fn present_in_hive<'a>(rows: &'a [PresenceRow], key: &str) -> Vec<&'a PresenceRow> {
+    let mut members: Vec<&PresenceRow> = rows
+        .iter()
+        .filter(|r| {
+            let k = r
+                .device_pubkey
+                .as_deref()
+                .filter(|k| !k.is_empty())
+                .unwrap_or(r.host.as_str());
+            k == key
+        })
+        .collect();
+    members.sort_by(|a, b| {
+        a.stale
+            .cmp(&b.stale)
+            .then_with(|| a.user_id.cmp(&b.user_id))
+            .then_with(|| a.harness_slug.cmp(&b.harness_slug))
+    });
+    members
+}
+
 /// A bordered-section title carrying the C-3 trust badge + tier + provenance, so
 /// a federated section and a gossip section are never mistaken for one another.
 /// `tail` is the section-specific count phrase (e.g. " 3 live " / " 5 to join ").
@@ -464,6 +493,34 @@ mod tests {
         let groups = group_hives(&rows);
         assert_eq!(groups.len(), 1);
         assert!(!groups[0].stale);
+    }
+
+    #[test]
+    fn present_in_hive_filters_to_the_key_with_live_members_first() {
+        let rows = vec![
+            row("mbp", "key-a", "111", "papercup", "2026-06-07T01:00:00Z", false),
+            row("mbp", "key-a", "222", "restart", "2026-06-07T02:00:00Z", true),
+            row("tower", "key-b", "111", "papercup", "2026-06-07T01:00:00Z", false),
+        ];
+        // Only this hive's members; the other device (key-b) is excluded.
+        let members = present_in_hive(&rows, "key-a");
+        assert_eq!(members.len(), 2);
+        // Live member sorts before the stale one.
+        assert!(!members[0].stale);
+        assert_eq!(members[0].user_id.as_deref(), Some("111"));
+        assert!(members[1].stale);
+        // A key with nobody present → an empty roster (honest, not an error).
+        assert!(present_in_hive(&rows, "nobody").is_empty());
+    }
+
+    #[test]
+    fn present_in_hive_keys_by_host_when_a_row_has_no_pubkey() {
+        let mut r = row("solo-box", "", "111", "papercup", "2026-06-07T01:00:00Z", false);
+        r.device_pubkey = None;
+        let rows = vec![r];
+        // Falls back to host as the key (mirrors group_hives' keying).
+        assert_eq!(present_in_hive(&rows, "solo-box").len(), 1);
+        assert!(present_in_hive(&rows, "key-x").is_empty());
     }
 
     #[test]

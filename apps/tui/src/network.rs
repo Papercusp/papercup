@@ -197,14 +197,21 @@ pub fn draw_network(f: &mut Frame, app: &App, area: Rect) {
 fn draw_focused_hive(f: &mut Frame, app: &App, area: Rect, key: &str) {
     match app.network_rows.iter().find(|r| r.key == key) {
         Some(row) => {
+            // B5 (P-005): who's present in this hive — the roster sits directly
+            // under the detail header (the most relevant cross-user info), above
+            // the optional beacon/ask dossier sections.
+            let roster = !crate::hives::present_in_hive(&app.hives, key).is_empty();
             let beacons = !app.hive_beacons.is_empty();
             let asks = !app.hive_asks.is_empty();
-            if !beacons && !asks {
+            if !roster && !beacons && !asks {
                 draw_detail(f, area, row, true);
                 return;
             }
-            // Detail header on top; the populated dossier sections share the rest.
+            // Detail header on top; the populated sections share the rest.
             let mut constraints = vec![Constraint::Min(8)];
+            if roster {
+                constraints.push(Constraint::Percentage(34));
+            }
             if beacons {
                 constraints.push(Constraint::Percentage(30));
             }
@@ -217,6 +224,10 @@ fn draw_focused_hive(f: &mut Frame, app: &App, area: Rect, key: &str) {
                 .split(area);
             draw_detail(f, split[0], row, true);
             let mut next = 1;
+            if roster {
+                draw_hive_roster(f, app, split[next], key);
+                next += 1;
+            }
             if beacons {
                 draw_beacon_history(f, app, split[next]);
                 next += 1;
@@ -240,6 +251,58 @@ fn draw_focused_hive(f: &mut Frame, app: &App, area: Rect, key: &str) {
             );
         }
     }
+}
+
+/// B5 (P-005): the "who's present" roster for ONE hive — the federated presence
+/// members keyed to this hive (`crate::hives::present_in_hive`), rendered inside
+/// the per-hive axis tab's hive-pane. Each row: liveness · gh user · what they're
+/// doing · harness. The per-row gh identity doubles as "whose work is whose" (the
+/// Phase-1 #1 attribution). Pure over (&App, key) — unit-tested.
+fn draw_hive_roster(f: &mut Frame, app: &App, area: Rect, key: &str) {
+    let members = crate::hives::present_in_hive(&app.hives, key);
+    let live = members.iter().filter(|m| !m.stale).count();
+    let items: Vec<ListItem> = members
+        .iter()
+        .map(|m| {
+            let dot = Theme::liveness_marker(m.stale, if m.stale { "stale" } else { "live" });
+            let who = m
+                .user_id
+                .clone()
+                .filter(|u| !u.is_empty())
+                .map(|u| format!("gh:{u}"))
+                .unwrap_or_else(|| "—".into());
+            let doing = m
+                .current_view
+                .clone()
+                .filter(|v| !v.is_empty())
+                .or_else(|| Some(m.intent.clone()).filter(|i| !i.is_empty()))
+                .unwrap_or_default();
+            let harness = m
+                .harness_slug
+                .clone()
+                .filter(|h| !h.is_empty())
+                .map(|h| format!("[{h}]"))
+                .unwrap_or_default();
+            ListItem::new(Line::from(vec![
+                dot,
+                Span::raw(format!(" {:<14}", trunc(&who, 14))),
+                Span::raw(format!("{:<34}", trunc(&doing, 34))),
+                Span::styled(trunc(&harness, 18), Theme::info()),
+            ]))
+        })
+        .collect();
+    let title = Line::from(vec![
+        Span::styled(" ◆ present ", Theme::title_active()),
+        Span::styled(format!("{live} live / {} ", members.len()), Theme::dim()),
+    ]);
+    let body = crate::ui::block_with_header(
+        f,
+        area,
+        Theme::block(title, false),
+        &format!("  {:<15}{:<34}{}", "who", "doing", "harness"),
+    );
+    let list = List::new(items).style(Theme::panel());
+    f.render_widget(list, body);
 }
 
 /// One row's dossier: identity always; every other C-3 section ONLY when

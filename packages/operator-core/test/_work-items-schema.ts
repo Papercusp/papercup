@@ -86,6 +86,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     audit_verdict text,
     audit_reasons text,
     audited_at timestamptz,
+    verified_author_github_user_id bigint,
     item_kind text NOT NULL DEFAULT 'feature',
     payload jsonb,
     assignee_rank integer,

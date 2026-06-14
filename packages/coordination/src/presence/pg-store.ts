@@ -82,6 +82,9 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
     pid: r.pid,
     startedAt: r.started_at,
     heartbeatAt: r.heartbeat_at,
+    lastActiveAt: r.last_active_at,
+    agentRole: r.agent_role,
+    hiveSlug: r.hive_slug,
     stale: now - new Date(r.heartbeat_at).getTime() > PRESENCE_STALE_MS,
     userId: r.user_id,
     revoked: r.revoked_at != null,
@@ -94,16 +97,22 @@ export class PgPresenceStore implements PresenceStore {
   async write(identity: PresenceIdentity, input: PresenceInput = {}): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
+    // A declared write IS genuine activity, so bump last_active_at + heartbeat.
+    // agent_role / hive_slug are populate-once-then-keep: COALESCE(EXCLUDED, existing)
+    // so a write that omits them (passes null) never WIPES a previously-resolved
+    // value (D-004).
     await sql`
       INSERT INTO harness_shared.coord_presence
         (owner_id, owner_label, workspace_id, source, intent,
-         current_plan_slug, current_files, host, pid, heartbeat_at)
+         current_plan_slug, current_files, host, pid,
+         agent_role, hive_slug, heartbeat_at, last_active_at)
       VALUES (
         ${identity.ownerId}, ${identity.ownerLabel},
         ${identity.workspaceId ?? 'default'}, ${identity.source},
         ${input.intent ?? ''}, ${input.currentPlanSlug ?? null},
         ${JSON.stringify(input.currentFiles ?? [])}::text::jsonb,
-        ${input.host ?? ''}, ${input.pid ?? null}, now()
+        ${input.host ?? ''}, ${input.pid ?? null},
+        ${input.agentRole ?? null}, ${input.hiveSlug ?? null}, now(), now()
       )
       ON CONFLICT (owner_id) DO UPDATE SET
         owner_label       = EXCLUDED.owner_label,
@@ -114,16 +123,33 @@ export class PgPresenceStore implements PresenceStore {
         current_files     = EXCLUDED.current_files,
         host              = EXCLUDED.host,
         pid               = EXCLUDED.pid,
-        heartbeat_at      = now()
+        agent_role        = COALESCE(EXCLUDED.agent_role, harness_shared.coord_presence.agent_role),
+        hive_slug         = COALESCE(EXCLUDED.hive_slug, harness_shared.coord_presence.hive_slug),
+        heartbeat_at      = now(),
+        last_active_at    = now()
     `;
   }
 
   async touchHeartbeat(ownerId: string): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
+    // KEEPALIVE only — never bumps last_active_at (D-003): the 60s supervisor
+    // beat keeps the process "alive" without implying activity.
     await sql`
       UPDATE harness_shared.coord_presence
          SET heartbeat_at = now()
+       WHERE owner_id = ${ownerId}
+    `;
+  }
+
+  async touchActivity(ownerId: string): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // ACTIVITY path (e.g. tool dispatch) — bumps last_active_at AND heartbeat
+    // (D-003). No-op when no row exists, like touchHeartbeat.
+    await sql`
+      UPDATE harness_shared.coord_presence
+         SET heartbeat_at = now(), last_active_at = now()
        WHERE owner_id = ${ownerId}
     `;
   }
@@ -132,20 +158,23 @@ export class PgPresenceStore implements PresenceStore {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // Create-if-absent (intent/files/plan default empty) + bump heartbeat.
-    // On conflict, refresh only identity columns + heartbeat — declared
-    // intent/current_files/current_plan_slug/host/pid are PRESERVED.
+    // A coord:inbox read IS genuine activity (D-003), so this ALSO bumps
+    // last_active_at. On conflict, refresh only identity columns + the two
+    // timestamps — declared intent/current_files/current_plan_slug/host/pid
+    // (and agent_role/hive_slug) are PRESERVED.
     await sql`
       INSERT INTO harness_shared.coord_presence
-        (owner_id, owner_label, workspace_id, source, heartbeat_at)
+        (owner_id, owner_label, workspace_id, source, heartbeat_at, last_active_at)
       VALUES (
         ${identity.ownerId}, ${identity.ownerLabel},
-        ${identity.workspaceId ?? 'default'}, ${identity.source}, now()
+        ${identity.workspaceId ?? 'default'}, ${identity.source}, now(), now()
       )
       ON CONFLICT (owner_id) DO UPDATE SET
-        owner_label  = EXCLUDED.owner_label,
-        workspace_id = EXCLUDED.workspace_id,
-        source       = EXCLUDED.source,
-        heartbeat_at = now()
+        owner_label    = EXCLUDED.owner_label,
+        workspace_id   = EXCLUDED.workspace_id,
+        source         = EXCLUDED.source,
+        heartbeat_at   = now(),
+        last_active_at = now()
     `;
   }
 
@@ -165,6 +194,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
+             cp.last_active_at, cp.agent_role, cp.hive_slug,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
         LEFT JOIN harness_shared.power_user_sessions pus
@@ -183,6 +213,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
+             cp.last_active_at, cp.agent_role, cp.hive_slug,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
         LEFT JOIN harness_shared.power_user_sessions pus

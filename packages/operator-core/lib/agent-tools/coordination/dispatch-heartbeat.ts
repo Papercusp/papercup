@@ -10,9 +10,13 @@
  * ANY authenticated projected dispatch, throttled per owner, so the lock
  * traffic of an actively-editing agent is itself the heartbeat.
  *
- * D-003 (the plan): `touchHeartbeat` (no-op when no presence row exists) —
- * NOT `heartbeatPresence` (ensure-row) — so one-shot HTTP callers never mint
- * roster rows; agents that matter declare intent at session start.
+ * Beat method: `touchActivity` — a projected tool dispatch IS genuine activity,
+ * so it bumps `last_active_at` (AND heartbeat_at), distinct from the 60s
+ * keepalive which bumps heartbeat_at only (presence-v2 D-003). Like
+ * `touchHeartbeat` it is a no-op when no presence row exists (NOT
+ * `heartbeatPresence`/ensure-row) — so one-shot HTTP callers never mint roster
+ * rows (agent-liveness-heartbeat-hardening D-003); agents that matter declare
+ * intent at session start.
  *
  * Placement: called from `recordInvocationImpl` (projected-tool-deps.ts),
  * which the dispatcher's telemetry finally-block invokes on every settled

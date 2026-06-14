@@ -76,14 +76,16 @@ const ROSTER: WorkingAgent[] = [
   agent({ agentId: 'fed:279242982@laptop-x', label: 'gh:279242982 · laptop-x', name: 'Remote One', load: 1, agentPaneKind: 'queen', claims: [{ id: 'F-1', type: 'feature', detail: '' }], doing: { id: 'F-1', title: 'review the PR', rank: null } }),
 ];
 
-const api = { setTitle: vi.fn() } as unknown as React.ComponentProps<typeof MemberWorkPanel>['api'];
+const api = { setParams: vi.fn(), setTitle: vi.fn(), close: vi.fn() } as unknown as React.ComponentProps<typeof MemberWorkPanel>['api'];
+// PanelComponentProps requires panelId + panelType; MemberWorkPanel ignores them (reads params/api).
+const PANEL = { panelId: 'test-panel', panelType: 'adv:member-work' } as const;
 
 function renderPanel(searchParams = '', roster: WorkingAgent[] | undefined = ROSTER) {
   if (roster) syncResults['fleetAssignments.byHarness'] = roster;
   return render(
     <TooltipProvider>
       <NuqsTestingAdapter searchParams={searchParams}>
-        <MemberWorkPanel params={{ harnessSlug: 'demo-hive' }} api={api} />
+        <MemberWorkPanel {...PANEL} params={{ harnessSlug: 'demo-hive' }} api={api} />
       </NuqsTestingAdapter>
     </TooltipProvider>,
   );
@@ -137,7 +139,7 @@ describe('MemberWorkPanel (adv:member-work)', () => {
   it('disables the query when there is no harness slug', async () => {
     render(
       <NuqsTestingAdapter searchParams="">
-        <MemberWorkPanel params={{}} api={api} />
+        <MemberWorkPanel {...PANEL} params={{}} api={api} />
       </NuqsTestingAdapter>,
     );
     await waitFor(() => screen.getByText(/No harness slug/i));

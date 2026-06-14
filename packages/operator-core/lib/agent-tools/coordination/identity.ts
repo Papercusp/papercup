@@ -96,6 +96,33 @@ export interface AgentIdentity {
 }
 
 /**
+ * Derive the agent's durable ROLE for presence-v2 (D-004). Role isn't stored on
+ * the identity today — it's surrogated by `source`. The explicit
+ * `PAPERCUSP_AGENT_ROLE` env wins when a spawn sets the FINE role (e.g.
+ * scoper/worker/validator); otherwise map `source` to a COARSE role. This is the
+ * "resolveAgentIdentity.role / env" source named in presence-v2 P-002.
+ */
+export function deriveAgentRole(identity: AgentIdentity): string | null {
+  const env =
+    typeof process !== 'undefined' ? (process.env?.PAPERCUSP_AGENT_ROLE ?? '').trim() : '';
+  if (env) return env;
+  switch (identity.source) {
+    case 'power-user-token':
+      return 'human';
+    case 'omp-hook-session':
+    case 'static-client':
+      return 'su';
+    case 'fleet-spawn':
+    case 'signed-spawn':
+      return 'bee';
+    case 'principal':
+      return 'principal';
+    default:
+      return identity.source || null;
+  }
+}
+
+/**
  * Default coordination domain for callers without a workspace. The
  * coordination *domain* (the L2 lock partition) is per-machine, not
  * per-workspace — see the v2 plan §5 / OMP-bundle brief §7 — but a
