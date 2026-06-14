@@ -57,6 +57,16 @@ export interface HiveWakeState {
   lastWakeAt?: number;
   /** ms epoch of the last declare-wake call (observability). */
   declaredAt?: number;
+  /**
+   * The Queen's self-authored CARRY-NOTE for her NEXT wake
+   * (queen-brief-cache-assembly-2026-06-13 P-015 / B-04). Replace-semantics
+   * (set fresh each declare-wake, any length / no fixed cap, omitted ⇒ cleared);
+   * injected into the next wake's brief tail as the additive second half of the
+   * brief (the deterministic floor is the first half — `renderQueenBrief`).
+   * Her subjective in-flight intention, NOT objective world-state. Empty/absent
+   * ⇒ the next wake re-derives from the floor alone (graceful degradation).
+   */
+  carryNote?: string;
 }
 
 const EMPTY_STATE: HiveWakeState = { subscriptions: [] };
@@ -205,6 +215,39 @@ export async function setHiveEventSubscriptions(
     declaredAt: Date.now(),
   }));
   return syncHiveWakeRules(workspaceId, subs);
+}
+
+/**
+ * Set (or clear) the Queen's self-authored carry-note for her next wake
+ * (P-015 / B-04). REPLACE-semantics, like the wake declaration itself: a
+ * non-empty string replaces the stored note; `null`/`undefined`/blank clears it
+ * (she chose not to carry anything — the next wake re-derives from the floor).
+ * Stored in the same `hive_wake` operator-state row, so it rides the existing
+ * PG-backed store (no migration). Returns the stored note (trimmed) or null.
+ */
+export async function setHiveCarryNote(
+  workspaceId: string,
+  note: string | null | undefined,
+): Promise<string | null> {
+  const trimmed = (note ?? '').trim();
+  const carryNote = trimmed.length > 0 ? trimmed : undefined;
+  await updateOperatorState<HiveWakeState>('hive_wake', EMPTY_STATE, (cur) => ({
+    ...cur,
+    carryNote,
+  }), workspaceId);
+  return carryNote ?? null;
+}
+
+/**
+ * Read the Queen's carry-note stored for the current wake (P-015 / B-04) — the
+ * additive second half of her brief. Null when she carried nothing. The brief
+ * builder (B-05 / the wake-invocation seam) passes this to
+ * `renderQueenBrief({ carryNote })`.
+ */
+export async function getHiveCarryNote(workspaceId?: string): Promise<string | null> {
+  const state = await readHiveWakeState(workspaceId);
+  const note = (state.carryNote ?? '').trim();
+  return note.length > 0 ? note : null;
 }
 
 /**

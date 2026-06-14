@@ -127,7 +127,18 @@ export async function readDecisionLedger(
     SELECT id, ts, layer, harness_slug, action, capability, tier, category,
            risk_tier, reversibility, authority, posture, outcome, outcome_code,
            disposition, revisit_at, revert_handle, why, links,
-           actor_role, actor_spawn_id, actor_principal, transport, duration_ms, metadata
+           actor_role, actor_spawn_id, actor_principal, transport, duration_ms, metadata,
+           -- B-16 undo seam: the still-armed tripwire correlated to this decision, if
+           -- any. Correlated subselect (not a JOIN) keeps every existing column
+           -- reference unqualified + guarantees one row; the partial index
+           -- autonomy_tripwires_decision_id_idx (workspace_id, decision_id) serves it.
+           -- Gated to status='armed' so the feed's Undo shows only when it can act.
+           (SELECT t.id
+              FROM harness_shared.autonomy_tripwires t
+             WHERE t.decision_id = decision_ledger.id::text
+               AND t.workspace_id = decision_ledger.workspace_id
+               AND t.status = 'armed'
+             LIMIT 1) AS tripwire_id
       FROM harness_shared.decision_ledger
      WHERE workspace_id = ${workspaceId}
        ${filters.layer ? sql`AND layer = ${filters.layer}` : sql``}
@@ -155,6 +166,7 @@ export async function readDecisionLedger(
     disposition: r.disposition,
     revisitAt: r.revisit_at != null ? iso(r.revisit_at) : null,
     revertHandle: r.revert_handle,
+    tripwireId: r.tripwire_id ?? null,
     why: r.why,
     links: asObject(r.links),
     actorRole: r.actor_role,

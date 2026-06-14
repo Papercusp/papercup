@@ -201,6 +201,49 @@ export function resumeCommandFor(handle: {
   return null;
 }
 
+/**
+ * Fresh-per-wake fire for the Hive Queen (queen-brief-cache-assembly B-01 / P-012).
+ * The Queen NEVER resumes a prior conversation — she re-derives her working state
+ * from durable world-state every wake (D-009). Her own declared/event/watchdog
+ * wakes already spawn fresh (`--session-id <new uuid>` via the hive launch
+ * blueprint); this routes the ONE remaining resume path (a `coord:send {wake:true}`
+ * inbox-wake, or an events:await she registered) through the SAME fresh hive-launch
+ * path, with the wake text as the kickoff. Mirrors the `hive:wake` tool's core
+ * (floor-debounce + record) so a burst of bee-wakes collapses to one fresh launch.
+ * Lazy imports keep the await engine free of the blueprint graph (module header).
+ * Returns true when the wake is handled (fired OR floor-skipped — a recent fresh
+ * wake already covers it); false on failure so the caller parks rather than resumes.
+ */
+async function defaultFireHiveWake(input: { installSlug: string; kickoff: string }): Promise<boolean> {
+  try {
+    const { activeWorkspaceId } = await import('../../workspace-registry');
+    const { fireLaunchBlueprint } = await import('../../blueprint/launch-blueprint');
+    const { HIVE_BLUEPRINT_ID, readHiveWakeState, recordHiveWake, withinWakeFloor } = await import(
+      '../../hive/wake'
+    );
+    const workspaceId = activeWorkspaceId();
+    const state = await readHiveWakeState(workspaceId);
+    // A fresh wake within the floor window already covers this delivery — the
+    // just-launched (or about-to-survey) Queen will see the same durable state.
+    if (withinWakeFloor(state)) return true;
+    await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug: input.installSlug, workspaceId, kickoff: input.kickoff });
+    await recordHiveWake(workspaceId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Parse the install slug out of a hive-operator adv_sessions label
+ *  (`hive · <slug>/<role>`, set at spawn.ts on the bpkind=hive invoke). null when
+ *  the row is not a hive operator. */
+export function hiveInstallSlugFromLabel(label: string | null | undefined): string | null {
+  const l = (label ?? '').trim();
+  if (!l.startsWith('hive · ')) return null;
+  const slug = l.slice('hive · '.length).split('/')[0]?.trim();
+  return slug || null;
+}
+
 /** How long an omp resume gets before we inject the prompt into its pty. */
 const PTY_PROMPT_DELAY_MS = 2_500;
 
@@ -227,6 +270,10 @@ export interface ExecuteWakeDeps {
    *  via findPty — the pty lives in the psu process (D-006). */
   findPsuHost?: typeof findLiveHost;
   injectPsuHost?: typeof injectIntoHost;
+  /** queen-brief-cache-assembly B-01/P-012: fire a FRESH hive launch instead of
+   *  resuming a hive-operator session. Injected for tests; default fires the
+   *  hive blueprint with the wake text as kickoff. */
+  fireHiveWake?: (input: { installSlug: string; kickoff: string }) => Promise<boolean>;
 }
 
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
@@ -239,6 +286,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const alive = deps.alive ?? pidAlive;
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
+  const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
 
   try {
     const handle = d.wakeHandle;
@@ -333,6 +381,21 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // No pid recorded but presence is fresh — the session is (very likely)
       // still open somewhere we can't see. Never concurrent-resume it; park.
       return { kind: 'park', reason: 'no recorded pid but presence is fresh — parking to avoid a concurrent resume of a live session' };
+    }
+
+    // Fresh-per-wake cutover for the Hive Queen (queen-brief-cache-assembly
+    // B-01 / P-012): a hive-operator session is NEVER resumed. Its ended-session
+    // wake (an inbox-wake `coord:send {wake:true}`, or an events:await it
+    // registered) routes through the SAME fresh hive-launch path its scheduled
+    // wakes use, carrying the wake text as the kickoff — so the Queen opens fresh
+    // and re-derives from durable world-state (D-009) instead of carrying a stale
+    // transcript. On a fire failure we PARK (never resume): the always-armed
+    // time/watchdog wake re-surveys, so the no-resume invariant holds absolutely.
+    const hiveInstallSlug = hiveInstallSlugFromLabel(fresh?.label ?? null);
+    if (hiveInstallSlug) {
+      const fired = await fireHiveWake({ installSlug: hiveInstallSlug, kickoff: text }).catch(() => false);
+      if (fired) return { kind: 'delivered', channel: 'hive-fresh-wake' };
+      return { kind: 'park', reason: 'hive operator: fresh-wake fire failed; next time/watchdog wake will re-survey (never resumed)' };
     }
 
     // Channel 2: process gone → resume.

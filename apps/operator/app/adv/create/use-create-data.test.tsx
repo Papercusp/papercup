@@ -12,9 +12,9 @@
  *  - `useResolvedHarnessSlug`: `?slug` wins; localStorage fallback otherwise;
  *  - `usePlanListMaps`: sorted unique harnessOptions, `?h` row filter,
  *    bucket/title maps built with the REAL bucketOf;
- *  - `useInboxData`: the three status queries tagged + deduped (first tag
+ *  - `useQueueData`: the three status queries tagged + deduped (first tag
  *    wins), istatus × pBuckets filtering, itemStatusCounts incl. attention
- *    ("Other") kinds, inboxTotal, the showOther/showPlanItems facet split,
+ *    ("Other") kinds, queueTotal, the showOther/showPlanItems facet split,
  *    and refresh() fanning out to all four sources.
  *
  * plans-api's fetch hooks are mocked (fixtures); bucketOf stays REAL. nuqs
@@ -76,7 +76,7 @@ import {
   useCreateScope,
   useResolvedHarnessSlug,
   usePlanListMaps,
-  useInboxData,
+  useQueueData,
   type CreateScope,
   type ItemStatusFilter,
 } from './use-create-data';
@@ -258,7 +258,7 @@ describe('usePlanListMaps', () => {
   });
 });
 
-// ── useInboxData ────────────────────────────────────────────────────────────
+// ── useQueueData ────────────────────────────────────────────────────────────
 
 const ITEM = (plan: string, id: string): PlanItemRow =>
   ({ plan, harness: 'sheets', item: { id, text: id, storedStatus: 'todo' } }) as unknown as PlanItemRow;
@@ -277,18 +277,18 @@ function inboxArgs(over: {
   };
 }
 
-describe('useInboxData', () => {
+describe('useQueueData', () => {
   it('tags + dedups the three status queries (first tag wins)', () => {
     hookFixtures.needsHuman = { items: [ITEM('plan-a', 'P-001')] };
     hookFixtures.actionable = { items: [ITEM('plan-a', 'P-001'), ITEM('plan-a', 'P-002')] };
     hookFixtures.blocked = { items: [ITEM('plan-b', 'P-001')] };
-    const { result } = renderHook(() => useInboxData(inboxArgs({})), wrap(''));
+    const { result } = renderHook(() => useQueueData(inboxArgs({})), wrap(''));
     // P-001@plan-a deduped (needs-human wins); P-001@plan-b is a distinct key
     expect(result.current.filteredItems).toHaveLength(3);
     expect(result.current.itemStatusCounts['needs-human']).toBe(1);
     expect(result.current.itemStatusCounts.todo).toBe(1);
     expect(result.current.itemStatusCounts.blocked).toBe(1);
-    expect(result.current.inboxTotal).toBe(3);
+    expect(result.current.queueTotal).toBe(3);
   });
 
   it('filters by istatus and by plan bucket', () => {
@@ -296,7 +296,7 @@ describe('useInboxData', () => {
     hookFixtures.actionable = { items: [ITEM('plan-b', 'P-002')] };
     const { result } = renderHook(
       () =>
-        useInboxData(
+        useQueueData(
           inboxArgs({
             istatus: ['todo'],
             pBuckets: ['running'],
@@ -327,7 +327,7 @@ describe('useInboxData', () => {
         },
       ],
     };
-    const all = renderHook(() => useInboxData(inboxArgs({})), wrap(''));
+    const all = renderHook(() => useQueueData(inboxArgs({})), wrap(''));
     expect(all.result.current.otherItems.map((i) => (i as { kind: string }).kind)).toEqual([
       'coord-escalation',
       'smoke-fail',
@@ -339,20 +339,20 @@ describe('useInboxData', () => {
     expect(all.result.current.showPlanItems).toBe(true);
 
     const otherOnly = renderHook(
-      () => useInboxData(inboxArgs({ istatus: ['coord-escalation'] })),
+      () => useQueueData(inboxArgs({ istatus: ['coord-escalation'] })),
       wrap(''),
     );
     expect(otherOnly.result.current.showOther).toBe(true);
     expect(otherOnly.result.current.showPlanItems).toBe(false);
     expect(otherOnly.result.current.otherFacets).toEqual(['coord-escalation']);
 
-    const planOnly = renderHook(() => useInboxData(inboxArgs({ istatus: ['todo'] })), wrap(''));
+    const planOnly = renderHook(() => useQueueData(inboxArgs({ istatus: ['todo'] })), wrap(''));
     expect(planOnly.result.current.showOther).toBe(false);
     expect(planOnly.result.current.showPlanItems).toBe(true);
   });
 
   it('refresh() fans out to all four sources', () => {
-    const { result } = renderHook(() => useInboxData(inboxArgs({})), wrap(''));
+    const { result } = renderHook(() => useQueueData(inboxArgs({})), wrap(''));
     result.current.refresh();
     expect(refreshSpies.needsHuman).toHaveBeenCalledTimes(1);
     expect(refreshSpies.actionable).toHaveBeenCalledTimes(1);

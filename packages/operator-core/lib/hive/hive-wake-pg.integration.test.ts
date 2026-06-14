@@ -53,6 +53,8 @@ const {
   getHiveTimeWake,
   readHiveWakeState,
   setHiveEventSubscriptions,
+  setHiveCarryNote,
+  getHiveCarryNote,
   recordHiveWake,
   HIVE_WAKE_ROUTINE_NAME,
 } = await import('./wake');
@@ -238,5 +240,34 @@ describe('hive_wake state (migration 158)', () => {
 
     await setHiveEventSubscriptions(WS, []);
     expect((await readHiveWakeState(WS)).subscriptions).toEqual([]);
+  });
+
+  it('carry-note (P-015 / B-04) round-trips with replace-semantics, coexists with subscriptions', async () => {
+    // Fresh: no carry-note.
+    expect(await getHiveCarryNote(WS)).toBeNull();
+
+    // Set one — round-trips via getHiveCarryNote and the raw state field.
+    const stored = await setHiveCarryNote(WS, '  Mid-wave on plan-x; revisit when wi-101 lands.  ');
+    expect(stored).toBe('Mid-wave on plan-x; revisit when wi-101 lands.'); // trimmed
+    expect(await getHiveCarryNote(WS)).toBe('Mid-wave on plan-x; revisit when wi-101 lands.');
+    expect((await readHiveWakeState(WS)).carryNote).toBe('Mid-wave on plan-x; revisit when wi-101 lands.');
+
+    // Coexists with subscriptions — neither clobbers the other (merge).
+    await setHiveEventSubscriptions(WS, [{ on: 'coord:escalate', note: 'x' }]);
+    expect(await getHiveCarryNote(WS)).toBe('Mid-wave on plan-x; revisit when wi-101 lands.');
+    expect((await readHiveWakeState(WS)).subscriptions).toHaveLength(1);
+
+    // Replace-semantics: a new note replaces the old.
+    await setHiveCarryNote(WS, 'New intention.');
+    expect(await getHiveCarryNote(WS)).toBe('New intention.');
+
+    // Empty / whitespace / undefined clears it (she carried nothing this wake).
+    expect(await setHiveCarryNote(WS, '   ')).toBeNull();
+    expect(await getHiveCarryNote(WS)).toBeNull();
+    await setHiveCarryNote(WS, 'again');
+    expect(await setHiveCarryNote(WS, undefined)).toBeNull();
+    expect(await getHiveCarryNote(WS)).toBeNull();
+    // Subscriptions survived all the carry-note churn.
+    expect((await readHiveWakeState(WS)).subscriptions).toHaveLength(1);
   });
 });

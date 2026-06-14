@@ -250,7 +250,7 @@ export function usePlanListMaps(scope: CreateScope): PlanListMaps {
 
 /* ── Inbox items (the 3 status queries unioned + the attention feed) ──── */
 
-export interface InboxData {
+export interface QueueData {
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -259,7 +259,7 @@ export interface InboxData {
   otherGroups: AttentionGroup[];
   attentionRaw: ReturnType<typeof usePlanAttention>;
   itemStatusCounts: Record<ItemStatusFilter, number>;
-  inboxTotal: number;
+  queueTotal: number;
   showOther: boolean;
   showPlanItems: boolean;
   otherFacets: OtherKind[];
@@ -267,12 +267,12 @@ export interface InboxData {
 
 /** Lifted from PlansClient: the additive item-status × plan-bucket filter
  *  over the three item-status queries + the attention ("Other") feed. */
-export function useInboxData(opts: {
+export function useQueueData(opts: {
   istatus: ItemStatusFilter[];
   pBuckets: PlanBucket[];
   planBucketBySlug: Map<string, PlanBucket>;
   scope: CreateScope;
-}): InboxData {
+}): QueueData {
   const { istatus, pBuckets, planBucketBySlug, scope } = opts;
 
   const itemsNeedsHuman = usePlanItems({ needsHuman: true });
@@ -364,7 +364,7 @@ export function useInboxData(opts: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taggedItems, pBucketsKey, planBucketBySlug, otherItems]);
 
-  const inboxTotal = useMemo(
+  const queueTotal = useMemo(
     () => Object.values(itemStatusCounts).reduce((a, b) => a + b, 0),
     [itemStatusCounts],
   );
@@ -378,7 +378,7 @@ export function useInboxData(opts: {
     otherGroups: attention.data?.groups ?? [],
     attentionRaw: attention,
     itemStatusCounts,
-    inboxTotal,
+    queueTotal,
     showOther,
     showPlanItems,
     otherFacets,

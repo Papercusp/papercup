@@ -109,9 +109,17 @@ export interface QueenBriefInput {
   caps?: Partial<QueenBriefCaps>;
 }
 
-/** First non-empty reason line for a ranked candidate, trimmed — the "why". */
+/**
+ * The most-salient "why" for a ranked candidate — the reason line from the
+ * feature that contributed most to its score (deterministic: highest
+ * contribution first, stable sort for ties). Empty when no feature gave a reason.
+ */
 function whyOf(r: Ranked<PlacementCandidate>): string {
-  const reason = r.rank.reasons?.find((s) => s && s.trim());
+  const withReasons = r.rank.features
+    .filter((fc) => fc.reasons && fc.reasons.length > 0)
+    .slice()
+    .sort((a, b) => b.contribution - a.contribution);
+  const reason = withReasons[0]?.reasons.find((s) => s && s.trim());
   return reason ? ` · ${reason.trim()}` : '';
 }
 
@@ -122,7 +130,7 @@ function importanceTag(c: PlacementCandidate): string {
 function renderCandidateLine(r: Ranked<PlacementCandidate>, i: number): string {
   const c = r as unknown as PlacementCandidate; // Ranked<T> = T & { rank }
   const title = c.title || c.id;
-  return `${i + 1}. ${c.id} — ${title}${importanceTag(c)} [${c.harness}] (rank ${r.rank.overall.toFixed(2)})${whyOf(r)}`;
+  return `${i + 1}. ${c.id} — ${title}${importanceTag(c)} [${c.harness}] (rank ${r.rank.score.toFixed(2)})${whyOf(r)}`;
 }
 
 /** Append a capped list section; emits a "+N more" overflow line when truncated. */

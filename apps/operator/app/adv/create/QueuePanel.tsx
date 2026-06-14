@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * create:inbox dock panel — the cross-plan item inbox.
+ * create:queue dock panel — the cross-plan item Queue.
  *
- * Mirrors PlansClient's "inbox" view: the item-status filter chips, the
+ * Mirrors PlansClient's "Queue" view: the item-status filter chips, the
  * "Other" attention list (PlanOtherList) and the grouped plan-item list
  * (PlanItemsList). Selection (?item / ?other) is owned by those list
  * components via nuqs; the create:preview panel renders the selection. Data
@@ -17,7 +17,7 @@ import PlanOtherList from '@/app/admin/plans/PlanOtherList';
 import {
   useCreateScope,
   usePlanListMaps,
-  useInboxData,
+  useQueueData,
   useItemStatusFilter,
   usePlanBucketFilter,
   useItemPlanFilter,
@@ -25,14 +25,14 @@ import {
   ITEM_FILTER_LABEL,
 } from './use-create-data';
 
-export default function InboxPanel(_props?: Partial<PanelComponentProps>) {
+export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
   const scope = useCreateScope();
   const maps = usePlanListMaps(scope);
   const [istatus, setIstatus] = useItemStatusFilter();
   const [pBuckets] = usePlanBucketFilter();
   const [itemPlans] = useItemPlanFilter();
 
-  const inbox = useInboxData({
+  const queue = useQueueData({
     istatus,
     pBuckets,
     planBucketBySlug: maps.planBucketBySlug,
@@ -47,45 +47,45 @@ export default function InboxPanel(_props?: Partial<PanelComponentProps>) {
     : 'All items';
 
   return (
-    <div className="pc-inbox__list" style={{ height: '100%', overflow: 'auto' }}>
-      <nav className="pc-inbox__filters" aria-label="Queue item filters">
+    <div className="pc-queue__list" style={{ height: '100%', overflow: 'auto' }}>
+      <nav className="pc-queue__filters" aria-label="Queue item filters">
         {ITEM_FILTERS.map((f) => {
           const active = istatus.includes(f.id);
           return (
             <button
               key={f.id}
               type="button"
-              className={`pc-inbox__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
+              className={`pc-queue__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
               aria-pressed={active}
               onClick={() => toggleItemStatus(f.id)}
               title={f.hint}
             >
-              <span className="pc-inbox__filter-label">{f.label}</span>
-              <span className="pc-inbox__filter-count">
-                {inbox.loading ? '…' : inbox.itemStatusCounts[f.id]}
+              <span className="pc-queue__filter-label">{f.label}</span>
+              <span className="pc-queue__filter-count">
+                {queue.loading ? '…' : queue.itemStatusCounts[f.id]}
               </span>
             </button>
           );
         })}
       </nav>
       <div className="pc-items__listpane">
-        {inbox.showOther ? (
+        {queue.showOther ? (
           <PlanOtherList
-            groups={inbox.otherGroups}
-            loading={inbox.attentionRaw.loading}
-            error={inbox.attentionRaw.error}
-            refresh={inbox.attentionRaw.refresh}
+            groups={queue.otherGroups}
+            loading={queue.attentionRaw.loading}
+            error={queue.attentionRaw.error}
+            refresh={queue.attentionRaw.refresh}
             title="Other"
-            kinds={inbox.otherFacets}
+            kinds={queue.otherFacets}
             planFilters={itemPlans}
           />
         ) : null}
-        {inbox.showPlanItems ? (
+        {queue.showPlanItems ? (
           <PlanItemsList
-            items={inbox.filteredItems}
-            loading={inbox.loading}
-            error={inbox.error}
-            refresh={inbox.refresh}
+            items={queue.filteredItems}
+            loading={queue.loading}
+            error={queue.error}
+            refresh={queue.refresh}
             harnessByPlan={maps.harnessByPlan}
             planMeta={maps.planMetaBySlug}
             planFilters={itemPlans}

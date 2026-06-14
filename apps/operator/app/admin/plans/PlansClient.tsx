@@ -419,7 +419,7 @@ export default function PlansClient() {
   }, [taggedItems, pBucketsKey, planBucketBySlug, otherItems]);
 
   // Total across every facet — the Inbox button's badge.
-  const inboxTotal = useMemo(
+  const queueTotal = useMemo(
     () => Object.values(itemStatusCounts).reduce((a, b) => a + b, 0),
     [itemStatusCounts],
   );
@@ -681,13 +681,13 @@ export default function PlansClient() {
           </button>
           <button
             type="button"
-            className={`pc-plans__inbox-btn${view === 'queue' ? ' is-active' : ''}`}
+            className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
             onClick={goInbox}
             title="Open the Queue — every decision & action surface across plans the Queen did not auto-handle, with item filters cleared (plan filters stay)."
           >
             <Inbox size={14} aria-hidden />
-            <span className="pc-plans__inbox-btn-label">Queue</span>
-            {inboxTotal > 0 ? <span className="pc-plans__inbox-btn-count">{inboxTotal}</span> : null}
+            <span className="pc-plans__queue-btn-label">Queue</span>
+            {queueTotal > 0 ? <span className="pc-plans__queue-btn-count">{queueTotal}</span> : null}
           </button>
           <button
             type="button"
@@ -696,7 +696,7 @@ export default function PlansClient() {
             title="Live agent roster — who's active across plans, what they're doing, which files. The plan selection filters the plan-grouped section."
           >
             <Terminal size={14} aria-hidden />
-            <span className="pc-plans__inbox-btn-label">Sessions</span>
+            <span className="pc-plans__queue-btn-label">Sessions</span>
           </button>
         </div>
 
@@ -808,11 +808,11 @@ export default function PlansClient() {
                     onToggleStale={() => void setSStale(!sStale)}
                   />
                 ) : view === 'queue' ? (
-                  <div className="pc-inbox__list">
+                  <div className="pc-queue__list">
                     {/* Tier bar (D-006): Decisions ▸ Handled ▸ Alerts ▸ Activity.
                         Only Decisions demands the user; the rest declutter into
                         their own tiers. */}
-                    <nav className="pc-inbox__tiers" aria-label="Queue tiers">
+                    <nav className="pc-queue__tiers" aria-label="Queue tiers">
                       {INBOX_TIER_FILTERS.map((t) => {
                         const active = inboxTier === t;
                         const label = t === 'all' ? 'All' : TIER_LABEL[t];
@@ -824,7 +824,7 @@ export default function PlansClient() {
                           <button
                             key={t}
                             type="button"
-                            className={`pc-inbox__tier pc-inbox__tier--${t}${active ? ' is-active' : ''}`}
+                            className={`pc-queue__tier pc-queue__tier--${t}${active ? ' is-active' : ''}`}
                             aria-pressed={active}
                             onClick={() => void setInboxTier(active && t !== 'all' ? 'all' : t)}
                             title={
@@ -835,27 +835,27 @@ export default function PlansClient() {
                                   : label
                             }
                           >
-                            <span className="pc-inbox__tier-label">{label}</span>
-                            <span className="pc-inbox__tier-count">{itemsLoading ? '…' : count}</span>
+                            <span className="pc-queue__tier-label">{label}</span>
+                            <span className="pc-queue__tier-count">{itemsLoading ? '…' : count}</span>
                           </button>
                         );
                       })}
                     </nav>
                     {/* Item filters, sticky atop the inbox list column. */}
-                    <nav className="pc-inbox__filters" aria-label="Queue item filters">
+                    <nav className="pc-queue__filters" aria-label="Queue item filters">
                       {ITEM_FILTERS.map((f) => {
                         const active = istatus.includes(f.id);
                         return (
                           <button
                             key={f.id}
                             type="button"
-                            className={`pc-inbox__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
+                            className={`pc-queue__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
                             aria-pressed={active}
                             onClick={() => toggleItemStatus(f.id)}
                             title={f.hint}
                           >
-                            <span className="pc-inbox__filter-label">{f.label}</span>
-                            <span className="pc-inbox__filter-count">
+                            <span className="pc-queue__filter-label">{f.label}</span>
+                            <span className="pc-queue__filter-count">
                               {itemsLoading ? '…' : itemStatusCounts[f.id]}
                             </span>
                           </button>

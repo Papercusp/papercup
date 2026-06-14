@@ -24,6 +24,7 @@ import {
   declareHiveTimeWake,
   hiveWakeFloorSec,
   resolveHiveHomeSlug,
+  setHiveCarryNote,
   setHiveEventSubscriptions,
   type HiveEventSubscription,
 } from '../../hive/wake';
@@ -65,6 +66,12 @@ export default defineTool({
       mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual hive:wake."),
       harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
       kickoff: z.string().max(2000).optional().describe('Kickoff text the woken operator reads (why this wake exists).'),
+      remember: z
+        .string()
+        .optional()
+        .describe(
+          "Your CARRY-NOTE for next wake — what future-you needs to continue (in-flight intention, a tentative conclusion, a revisit-trigger). REPLACE-semantics: omit to carry nothing (next wake re-derives from the floor). Do NOT restate the deterministic floor (frontier/bees/inbox — that's recomputed) or dump the transcript; longer notes cost uncached tail tokens every wake, so carry only what matters.",
+        ),
       force: z
         .boolean()
         .optional()
@@ -131,6 +138,10 @@ export default defineTool({
     }));
     const eventRules = await setHiveEventSubscriptions(workspaceId, subs);
 
+    // Carry-note (P-015 / B-04): REPLACE-semantics — store the note for the next
+    // wake's brief tail, or clear it when omitted (re-derive from the floor).
+    const carryNote = await setHiveCarryNote(workspaceId, args.remember);
+
     return {
       content: [
         {
@@ -140,6 +151,7 @@ export default defineTool({
             harness: installSlug,
             time,
             eventRules,
+            carryNote: carryNote ? { set: true, chars: carryNote.length } : { set: false },
             floorSec: hiveWakeFloorSec(),
             mode: time && eventRules > 0 ? 'time+event' : time ? 'time' : eventRules > 0 ? 'event' : 'none',
           }),

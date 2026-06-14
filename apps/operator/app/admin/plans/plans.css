@@ -98,7 +98,7 @@
 
 /* Inbox — entry to the items view (right of Plans); same size as New plan.
    Red accent. */
-.pc-plans__inbox-btn {
+.pc-plans__queue-btn {
   flex: 1;
   display: inline-flex;
   align-items: center;
@@ -116,7 +116,7 @@
   position: relative;
   transition: background-color 120ms ease, border-color 120ms ease;
 }
-.pc-plans__inbox-btn:hover {
+.pc-plans__queue-btn:hover {
   background: color-mix(in oklab, #f87171, transparent 74%);
   border-color: color-mix(in oklab, #f87171, transparent 44%);
 }
@@ -145,7 +145,7 @@
   background: color-mix(in oklab, #f472b6, transparent 74%);
   border-color: color-mix(in oklab, #f472b6, transparent 44%);
 }
-.pc-plans__inbox-btn-count {
+.pc-plans__queue-btn-count {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 999px;
@@ -158,13 +158,13 @@
 
 /* Inbox page (main pane) — the item filters moved off the rail into a
    horizontal chip bar above the item lists. */
-.pc-inbox {
+.pc-queue {
   display: flex;
   flex-direction: column;
   min-height: 0;
   height: 100%;
 }
-.pc-inbox__filters {
+.pc-queue__filters {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -180,7 +180,7 @@
 /* Same accent treatment as the Draft/Ready/Running/… bucket tabs (driven
    by --pc-view-accent from the chip's pc-plans__view--<id> class), but kept
    as an oval pill rather than the bucket cards. */
-.pc-inbox__filter {
+.pc-queue__filter {
   --pc-view-accent: var(--pc-plans-accent, #38bdf8);
   display: inline-flex;
   align-items: center;
@@ -197,12 +197,12 @@
   cursor: pointer;
   transition: background-color 120ms, border-color 120ms, color 120ms;
 }
-.pc-inbox__filter:hover {
+.pc-queue__filter:hover {
   background: color-mix(in oklab, var(--pc-view-accent), transparent 80%);
   border-color: color-mix(in oklab, var(--pc-view-accent), transparent 30%);
   color: var(--fg, #e7f7ff);
 }
-.pc-inbox__filter.is-active {
+.pc-queue__filter.is-active {
   background: color-mix(in oklab, var(--pc-view-accent), transparent 46%);
   border-color: var(--pc-view-accent);
   color: var(--fg, #e7f7ff);
@@ -212,7 +212,7 @@
      shared .is-active::after rule below.) */
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--pc-view-accent), transparent 55%);
 }
-.pc-inbox__filter-count {
+.pc-queue__filter-count {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 999px;
@@ -225,13 +225,13 @@
 /* ── Inbox tier bar (inbox-tiering-and-message-agent D-006): Decisions ▸
    Handled ▸ Alerts ▸ Activity. Mirrors the facet pills, one accent per tier;
    only Decisions reads "loud". ── */
-.pc-inbox__tiers {
+.pc-queue__tiers {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   padding: 10px 14px 4px;
 }
-.pc-inbox__tier {
+.pc-queue__tier {
   --pc-view-accent: #38bdf8;
   display: inline-flex;
   align-items: center;
@@ -246,24 +246,24 @@
   cursor: pointer;
   transition: background-color 120ms, border-color 120ms, color 120ms;
 }
-.pc-inbox__tier--decision { --pc-view-accent: #f87171; }
-.pc-inbox__tier--handled  { --pc-view-accent: #34d399; }
-.pc-inbox__tier--alert    { --pc-view-accent: #fbbf24; }
-.pc-inbox__tier--activity { --pc-view-accent: #64748b; }
-.pc-inbox__tier--all      { --pc-view-accent: #38bdf8; }
-.pc-inbox__tier:hover {
+.pc-queue__tier--decision { --pc-view-accent: #f87171; }
+.pc-queue__tier--handled  { --pc-view-accent: #34d399; }
+.pc-queue__tier--alert    { --pc-view-accent: #fbbf24; }
+.pc-queue__tier--activity { --pc-view-accent: #64748b; }
+.pc-queue__tier--all      { --pc-view-accent: #38bdf8; }
+.pc-queue__tier:hover {
   background: color-mix(in oklab, var(--pc-view-accent), transparent 80%);
   border-color: color-mix(in oklab, var(--pc-view-accent), transparent 30%);
   color: var(--fg, #e7f7ff);
 }
-.pc-inbox__tier.is-active {
+.pc-queue__tier.is-active {
   background: color-mix(in oklab, var(--pc-view-accent), transparent 46%);
   border-color: var(--pc-view-accent);
   color: var(--fg, #e7f7ff);
   font-weight: 800;
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--pc-view-accent), transparent 55%);
 }
-.pc-inbox__tier-count {
+.pc-queue__tier-count {
   min-width: 17px;
   padding: 0 5px;
   border-radius: 999px;
@@ -355,7 +355,7 @@
   border-color: #22c55e;
   box-shadow: 0 0 0 2px color-mix(in oklab, #22c55e, transparent 58%);
 }
-.pc-plans__inbox-btn.is-active {
+.pc-plans__queue-btn.is-active {
   background: color-mix(in oklab, #f87171, transparent 52%);
   border-color: #f87171;
   box-shadow: 0 0 0 2px color-mix(in oklab, #f87171, transparent 58%);
@@ -372,11 +372,11 @@
    Inbox switch. A near-white chip with a bold dark ✓ pops on any accent fill.
    (Bucket tabs are narrow column cards, so they use the corner variant
    below.) */
-.pc-inbox__filter.is-active::after,
+.pc-queue__filter.is-active::after,
 .pc-filter-chip.is-on::after,
 .pc-filter-toggle.is-on::after,
 .pc-plans__plans-btn.is-active::after,
-.pc-plans__inbox-btn.is-active::after,
+.pc-plans__queue-btn.is-active::after,
 .pc-plans__sessions-btn.is-active::after {
   content: "✓";
   margin-left: auto;
@@ -1671,7 +1671,7 @@
 }
 
 /* Inbox/Plans left-column wrapper inside the shared shell. */
-.pc-inbox__list {
+.pc-queue__list {
   display: flex;
   flex-direction: column;
   min-width: 0;

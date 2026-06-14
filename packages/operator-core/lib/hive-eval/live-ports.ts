@@ -152,8 +152,20 @@ export interface LiveHiveOps {
   countInFlightPlacements(input: { hiveHome: string; workspaceId: string }): Promise<number>;
   /** The run's measured cost + completion counts (spawned_agents + the member's work-items). */
   readRunStats(input: { member: string; workspaceId: string }): Promise<LiveRunStats>;
-  /** The distilled trace + ref for the judge (HE-06) — read from spawn/work-item rows. */
-  readRunTrace(input: { member: string; workspaceId: string; maxChars: number }): Promise<{ distilledTrace: string; traceRef: string; extra?: Record<string, unknown> }>;
+  /**
+   * The run's distilled trace + ref for the judge (HE-06) AND the full {@link LiveRunCapture} (in
+   * `extra.capture`) — the live binding runs the acceptance command in `repoPath`, collects the
+   * ground truth, and extracts the spawn behavior/timings HERE, before teardown removes the clone +
+   * member schema (run-harness.ts tears down right after collectRunData). `scenario` + `repoPath` are
+   * threaded so this single pre-teardown read captures everything the (post-teardown) extractor replays.
+   */
+  readRunTrace(input: {
+    member: string;
+    repoPath: string;
+    scenario: HiveScenario;
+    workspaceId: string;
+    maxChars: number;
+  }): Promise<{ distilledTrace: string; traceRef: string; extra?: Record<string, unknown> }>;
   /** Drop the member harness schema + its rows. */
   dropMember(input: { member: string; workspaceId: string }): Promise<void>;
   /** Dissolve the Queen-seat hive home. */
@@ -262,9 +274,11 @@ export function makeLiveHivePorts(ops: LiveHiveOps, opts: LiveHivePortsOpts): Hi
       };
     },
 
-    async collectRunData({ boot, maxChars }) {
+    async collectRunData({ scenario, boot, maxChars }) {
       const { member } = boot.handle as LiveBootHandle;
-      return ops.readRunTrace({ member, workspaceId: ws, maxChars });
+      // Capture EVERYTHING live here (acceptance over the clone + ground-truth rows + spawn
+      // behavior/timing) — teardown runs immediately after, so the extractor replays from `extra`.
+      return ops.readRunTrace({ member, repoPath: boot.repoPath, scenario, workspaceId: ws, maxChars });
     },
 
     async teardown({ boot }): Promise<void> {

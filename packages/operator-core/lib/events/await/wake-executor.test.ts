@@ -10,6 +10,7 @@ import {
   codexHomeForAdvSession,
   executeWake,
   findCodexRolloutSessionId,
+  hiveInstallSlugFromLabel,
   resumeCommandFor,
   wakeTurnText,
   type ExecuteWakeDeps,
@@ -120,6 +121,9 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // Hermetic by default: no live psu-pty host (don't read the real ~/.papercusp).
     findPsuHost: vi.fn(() => null) as never,
     injectPsuHost: vi.fn(async () => true) as never,
+    // Hermetic by default: the hive-fresh-wake fire is stubbed so a hive-labelled
+    // session never reaches the real default (which lazy-imports + touches PG).
+    fireHiveWake: vi.fn(async () => true) as never,
     ...over,
   };
 }
@@ -490,6 +494,87 @@ describe('executeWake — the liveness ladder', () => {
       }),
     );
     expect(out).toMatchObject({ kind: 'error' });
+  });
+});
+
+describe('hive Queen fresh-per-wake cutover (queen-brief-cache-assembly B-01 / P-012)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const hiveSession = (over: Record<string, unknown> = {}) =>
+    session({ label: 'hive · papercup/queen', ...over });
+
+  it('exited hive operator → FRESH hive launch (never claude --resume), carrying the wake text as kickoff', async () => {
+    const fireHiveWake = vi.fn(async () => true);
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        getSession: vi.fn(async () => hiveSession()) as never,
+        alive: vi.fn(() => false), // turn ended → would otherwise resume
+        fireHiveWake,
+        spawnDetached,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'hive-fresh-wake' });
+    // The Queen is fresh-launched, NEVER resumed.
+    expect(spawnDetached).not.toHaveBeenCalled();
+    const arg = (fireHiveWake.mock.calls[0] as unknown as [{ installSlug: string; kickoff: string }])[0];
+    expect(arg.installSlug).toBe('papercup');
+    expect(arg.kickoff).toContain('lock:grant:t-1'); // the wake turn text
+  });
+
+  it('hive operator + fresh-wake fire FAILS → park, NEVER a --resume fallback (the no-resume invariant is absolute)', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        getSession: vi.fn(async () => hiveSession()) as never,
+        alive: vi.fn(() => false),
+        fireHiveWake: vi.fn(async () => false) as never, // fire failed
+        spawnDetached,
+      }),
+    );
+    expect(out).toMatchObject({ kind: 'park' });
+    expect((out as { reason: string }).reason).toContain('never resumed');
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('LIVE hive operator (mid-turn, not an injectable pty) → park, no concurrent fresh launch', async () => {
+    // Reached BEFORE the resume/fresh-wake branch (the isAlive guard), so a live
+    // Queen is never double-launched.
+    const fireHiveWake = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({ getSession: vi.fn(async () => hiveSession()) as never, alive: vi.fn(() => true), fireHiveWake }),
+    );
+    expect(out).toMatchObject({ kind: 'park' });
+    expect(fireHiveWake).not.toHaveBeenCalled();
+  });
+
+  it('a NON-hive ended session (no hive label) still resumes — the cutover is scoped to hive operators only', async () => {
+    const fireHiveWake = vi.fn(async () => true);
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({ alive: vi.fn(() => false), fireHiveWake, spawnDetached }), // session() label is null
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(fireHiveWake).not.toHaveBeenCalled();
+    expect(spawnDetached).toHaveBeenCalled();
+  });
+});
+
+describe('hiveInstallSlugFromLabel', () => {
+  it('parses the install slug from a hive-operator adv_sessions label', () => {
+    expect(hiveInstallSlugFromLabel('hive · papercup/queen')).toBe('papercup');
+    expect(hiveInstallSlugFromLabel('hive · my-hive/operator')).toBe('my-hive');
+  });
+  it('returns null for a non-hive label (so non-hive sessions resume as before)', () => {
+    expect(hiveInstallSlugFromLabel(null)).toBeNull();
+    expect(hiveInstallSlugFromLabel('')).toBeNull();
+    expect(hiveInstallSlugFromLabel('bee · papercup/worker')).toBeNull();
+    expect(hiveInstallSlugFromLabel('hive · ')).toBeNull(); // no slug
   });
 });
 

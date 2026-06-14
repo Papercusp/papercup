@@ -79,6 +79,9 @@ export type WakeChannel =
   | 'psu-socket-inject'
   | 'resume'
   | 'resume-headless'
+  // The Hive Queen is never resumed — her ended-session wake fires a FRESH hive
+  // launch (queen-brief-cache-assembly B-01 / P-012). Burns a turn like a resume.
+  | 'hive-fresh-wake'
   | 'plan-run-resume'
   | 'inbox'
   | 'coalesced';
@@ -90,6 +93,7 @@ export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'psu-socket-inject',
   'resume',
   'resume-headless',
+  'hive-fresh-wake',
   'plan-run-resume',
 ];
 

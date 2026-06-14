@@ -141,3 +141,58 @@ describe('decision ledger — disposition round-trip (migrations 260 + 265)', ()
     expect(await readDecisionLedger('other-ws')).toHaveLength(0);
   });
 });
+
+// B-16 ↔ B-13 ↔ B-15 undo seam (migration 269): the read surface LEFT-correlates
+// an ARMED autonomy_tripwire to its decision via `autonomy_tripwires.decision_id =
+// decision_ledger.id`, exposing `tripwireId` so the settings one-click UNDO (P-031)
+// renders exactly when an undo is possible. Isolated in its own workspace so the
+// shared 'default' counts above stay exact. Empty-until-armed by construction.
+describe('decision ledger — tripwire undo seam (B-16, migration 269)', () => {
+  const TW = 'tw-ws';
+  let armedLedgerId: number;
+  let revertedLedgerId: number;
+  let bareLedgerId: number;
+
+  beforeAll(async () => {
+    const insLedger = async (action: string): Promise<number> => {
+      const [r] = await db.adminSql<{ id: number | string }[]>`
+        INSERT INTO harness_shared.decision_ledger
+          (workspace_id, harness_slug, layer, action, category, tier, posture, outcome)
+        VALUES (${TW}, 'papercup', 'action', ${action}, 'agent-lifecycle', 'medium', 'auto', 'ok')
+        RETURNING id`;
+      return Number(r!.id);
+    };
+    armedLedgerId = await insLedger('fleet:spawn');
+    revertedLedgerId = await insLedger('work_items:set_priority');
+    bareLedgerId = await insLedger('flags:set');
+
+    const arm = async (id: string, decisionId: number, status: string) => {
+      await db.adminSql`
+        INSERT INTO harness_shared.autonomy_tripwires
+          (id, workspace_id, category, revert_handle, window_until, decision_id, status)
+        VALUES (${id}, ${TW}, 'agent-lifecycle',
+                ${JSON.stringify({ kind: 'work-item-state' })}::jsonb,
+                now() + ${'1 hour'}::interval, ${String(decisionId)}, ${status})`;
+    };
+    await arm('tw-armed-1', armedLedgerId, 'armed');
+    await arm('tw-reverted-1', revertedLedgerId, 'reverted');
+  }, 180_000);
+
+  it('exposes tripwireId for an ARMED tripwire correlated by decision_id', async () => {
+    const rows = await readDecisionLedger(TW);
+    const armed = rows.find((r) => r.id === armedLedgerId);
+    expect(armed?.tripwireId).toBe('tw-armed-1');
+  });
+
+  it('is null when the correlated tripwire is no longer armed (reverted)', async () => {
+    const rows = await readDecisionLedger(TW);
+    const reverted = rows.find((r) => r.id === revertedLedgerId);
+    expect(reverted?.tripwireId).toBeNull();
+  });
+
+  it('is null for a decision with no correlated tripwire (empty-until-armed)', async () => {
+    const rows = await readDecisionLedger(TW);
+    const bare = rows.find((r) => r.id === bareLedgerId);
+    expect(bare?.tripwireId).toBeNull();
+  });
+});

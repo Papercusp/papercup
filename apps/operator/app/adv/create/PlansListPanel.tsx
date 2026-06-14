@@ -126,12 +126,12 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
         </button>
         <button
           type="button"
-          className={`pc-plans__inbox-btn${view === 'queue' ? ' is-active' : ''}`}
+          className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
           onClick={() => void setView('queue')}
           title="Queue — every decision & action surface across plans the Queen did not auto-handle (list + detail)."
         >
           <Inbox size={14} aria-hidden />
-          <span className="pc-plans__inbox-btn-label">Queue</span>
+          <span className="pc-plans__queue-btn-label">Queue</span>
         </button>
         <button
           type="button"
@@ -140,7 +140,7 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
           title="Sessions — live agent roster (list + detail)."
         >
           <Terminal size={14} aria-hidden />
-          <span className="pc-plans__inbox-btn-label">Sessions</span>
+          <span className="pc-plans__queue-btn-label">Sessions</span>
         </button>
       </div>
 
