@@ -309,11 +309,13 @@ describe('sync-resolver v2 registry', () => {
             // undefined", release-fixer 2026-06-14). Draining every dispatch
             // keeps the registry clean for the mock-based blocks below. A truly
             // hanging resolver still trips this test's own timeout — a real
-            // signal, not a silent leak. The bound is generous (30s) headroom
-            // over the legitimate ~10s drain: every null-accepting resolver does
-            // a real PG round-trip here (~54 × ~180ms), so a 10s bound sat right
-            // on the edge and tipped over under green-checkpoint load — a flake.
-            // 30s still catches a genuine never-resolving hang.
+            // signal, not a silent leak. The bound is generous headroom over the
+            // legitimate ~10s drain: every null-accepting resolver does a real PG
+            // round-trip here (~54 × ~180ms). 10s sat on the edge; 30s then tipped
+            // over too as fleet/green-checkpoint contention grew (it froze main
+            // ~8h on 2026-06-14 — passes in ~10s isolated but blew past 30s under
+            // full-suite parallel load). Bumped to 120s: ~12x the isolated drain,
+            // still finite enough to catch a genuine never-resolving hang.
             await r(name, null);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -329,7 +331,7 @@ describe('sync-resolver v2 registry', () => {
         errorSpy.mockRestore();
       }
       expect(typeErrors).toEqual([]);
-    }, 30_000);
+    }, 120_000);
   });
 });
 
