@@ -16,6 +16,7 @@ vi.mock('./plans-api', () => ({
   triageAttentionItem: vi.fn(async () => ({ ok: true })),
   decideStandingApproval: vi.fn(async () => ({ ok: true })),
   resolveConversationAnswer: vi.fn(async () => ({ ok: true, state: 'resolved' })),
+  dismissImprovement: vi.fn(async () => ({ ok: true, closed: true })),
 }));
 
 import {
@@ -31,6 +32,7 @@ import {
   triageAttentionItem,
   decideStandingApproval,
   resolveConversationAnswer,
+  dismissImprovement,
 } from './plans-api';
 import type { AttentionItem } from './plans-api';
 
@@ -140,6 +142,14 @@ const conversation = item({
   actions: [{ id: 'answer', label: 'Answer', primary: true }, { id: 'message-owner', label: 'Message owner' }],
   ref: { kind: 'conversation', conversationId: 'CONV-7' },
 });
+const improvement = item({
+  kind: 'improvement',
+  status: 'needs-triage',
+  tier: 'decision',
+  needsHuman: true,
+  actions: [{ id: 'open', label: 'Triage', primary: true }, { id: 'dismiss', label: 'Dismiss' }],
+  ref: { kind: 'improvement', issueId: 'EI-42' },
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -224,6 +234,12 @@ describe('attentionItemToCardSpec (P-010)', () => {
     expect(byId(spec, 'answer').terminal).toBe(false); // navigate — InputCard owns it
     expect(byId(spec, 'message-owner').terminal).toBe(false);
   });
+
+  it('improvement: Triage is navigate (full surface), Dismiss is terminal (reject) — D-027 follow-on (1)', () => {
+    const spec = attentionItemToCardSpec(improvement);
+    expect(byId(spec, 'open').terminal).toBe(false); // navigate — Triage surface owns place/gate/gym
+    expect(byId(spec, 'dismiss').terminal).toBeUndefined(); // terminal (renderer default)
+  });
 });
 
 describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
@@ -299,6 +315,15 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
     const r = await resolveAttentionAction(conversation, 'answer');
     expect(r.resolved).toBe(false);
     expect(resolveConversationAnswer).not.toHaveBeenCalled();
+  });
+
+  it('improvement Dismiss → dismissImprovement(issueId) (triage reject); Triage stays navigate', async () => {
+    const r = await resolveAttentionAction(improvement, 'dismiss');
+    expect(dismissImprovement).toHaveBeenCalledWith('EI-42');
+    expect(r.resolved).toBe(true);
+    // The navigate `open` (Triage) is NOT dispatched here — the full surface owns it.
+    const nav = await resolveAttentionAction(improvement, 'open');
+    expect(nav.resolved).toBe(false);
   });
 });
 

@@ -46,6 +46,16 @@ export interface DecisionLedgerEntry {
   disposition: string | null;
   revisitAt: string | null;
   revertHandle: string | null;
+  /**
+   * The id of the still-ARMED tripwire correlated to this decision (B-16, via
+   * `autonomy_tripwires.decision_id = decision_ledger.id`), or null. Non-null only
+   * while an undo is actually possible (status='armed'), so the settings feed's
+   * one-click UNDO (B-15 / P-031) renders exactly when it can act. Empty-until-armed:
+   * the execution layer mints + threads the shared decisionId onto both rows only
+   * when the Queen auto-takes a reversible action, so this is null until autonomy is
+   * armed AND a reversible ceiling is lowered.
+   */
+  tripwireId: string | null;
   why: string | null;
   links: Record<string, unknown> | null;
   actorRole: string | null;
@@ -103,6 +113,7 @@ export async function readDecisionLedger(
       disposition: string | null;
       revisit_at: Date | string | null;
       revert_handle: string | null;
+      tripwire_id: string | null;
       why: string | null;
       links: Record<string, unknown> | null;
       actor_role: string | null;

@@ -17,7 +17,7 @@
  *     `InboxItemActions.handleAnswer`); for a conversation (D-027 follow-on (1)),
  *     resolve the question with the owner's text as the accepted answer.
  *   - `resolveAttentionAction` also dispatches the standing-approval terminal
- *     grant/dismiss (D-027 follow-on (1)).
+ *     grant/dismiss and the improvement Dismiss (reject) (D-027 follow-on (1)).
  *
  * These deliberately reproduce today's `OtherDetail` / `InboxItemActions`
  * behavior — see attention-card.test.ts for the parity assertions (P-013).
@@ -36,6 +36,7 @@ import {
   triageAttentionItem,
   decideStandingApproval,
   resolveConversationAnswer,
+  dismissImprovement,
 } from './plans-api';
 import type { AskChoiceArgs, AskChoiceOption } from '@/app/_components/chat/AskChoiceCard';
 
@@ -179,6 +180,14 @@ export async function resolveAttentionAction(
       // …Drop deliberately does NOT (won't-do; preserve today's distinction).
       return { resolved: true };
     }
+  }
+
+  if (ref.kind === 'improvement' && optionId === 'dismiss') {
+    // D-027 follow-on (1): inline Dismiss → improvements:triage reject (closes the
+    // idea, recall-remembers). Accepting/routing stays the navigate `open` (Triage).
+    const res = await dismissImprovement(refField(item, 'issueId'));
+    if (res?.error) throw new Error(res.error);
+    return { resolved: true };
   }
 
   if (ref.kind === 'standing-approval' && (optionId === 'grant' || optionId === 'dismiss')) {

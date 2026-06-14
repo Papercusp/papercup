@@ -36,7 +36,7 @@ setAgentConfigBootstrap(async () => applyToProcessEnv(await readAgentConfig()));
 async function* fakeRunAgentChat(
   opts: RunAgentChatOptions,
 ): AsyncGenerator<ChatEvent, void, void> {
-  const tail = (opts.userMessage || '').slice(-32) || 'fake-llm';
+  const tail = (opts.promptText || '').slice(-32) || 'fake-llm';
   const deltas = [
     `[fake-llm] received "${tail}". `,
     'Generating deterministic output for tests. ',

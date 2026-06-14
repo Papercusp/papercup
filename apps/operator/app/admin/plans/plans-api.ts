@@ -518,6 +518,19 @@ export function resolveConversationAnswer(args: { conversation_id: string; accep
   });
 }
 
+/** Dismiss a routed improvement from the Queue (D-027 follow-on (1)): triage-one
+ *  reject — closes the idea and records the decision so the recall matcher surfaces
+ *  "already decided" on the next same-signature capture. Accepting/routing
+ *  (place/gate/gym) stays on the full Triage surface (the navigate `open`). */
+export function dismissImprovement(issueId: string) {
+  return postCoordination<{ ok?: boolean; closed?: boolean; error?: string }>('improvements', 'triage', {
+    mode: 'triage-one',
+    ideaId: issueId,
+    decision: 'reject',
+    reason: 'Dismissed from the Queue by the owner',
+  });
+}
+
 /** Grant or dismiss a standing-approval candidate from the Queue (D-027 follow-on
  *  (1)). Mirrors the settings/operator page's decideCandidate — the same POST half
  *  of operator:standing_approvals_decide; Grant writes the [STANDING-APPROVE]

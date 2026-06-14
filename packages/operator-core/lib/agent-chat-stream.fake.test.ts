@@ -19,7 +19,7 @@ describe('agent-chat-stream fake-LLM seam', () => {
     const { runAgentChat } = await import('./agent-chat-stream');
     const events: unknown[] = [];
     for await (const ev of runAgentChat({
-      userMessage: 'hello fake',
+      promptText: 'hello fake',
       role: 'architect',
     } as Parameters<typeof runAgentChat>[0])) {
       events.push(ev);
@@ -36,7 +36,7 @@ describe('agent-chat-stream fake-LLM seam', () => {
     const msg = 'unique-marker-XYZ123';
     const events: { type: string; text?: string }[] = [];
     for await (const ev of runAgentChat({
-      userMessage: msg,
+      promptText: msg,
       role: 'architect',
     } as Parameters<typeof runAgentChat>[0])) {
       events.push(ev as { type: string; text?: string });
@@ -50,7 +50,7 @@ describe('agent-chat-stream fake-LLM seam', () => {
     const { runAgentChat } = await import('./agent-chat-stream');
     const events: { type: string; costUsd?: number }[] = [];
     for await (const ev of runAgentChat({
-      userMessage: 'cost check',
+      promptText: 'cost check',
       role: 'oracle',
     } as Parameters<typeof runAgentChat>[0])) {
       events.push(ev as { type: string; costUsd?: number });

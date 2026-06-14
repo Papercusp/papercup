@@ -40,6 +40,9 @@ const ALLOWED: Record<string, ReadonlySet<string>> = {
   topics: new Set(['list', 'feed', 'create', 'subscribe', 'unsubscribe', 'merge', 'tag']),
   conversations: new Set(['list', 'get', 'post', 'answer', 'resolve', 'join', 'promote']),
   coord: new Set(['ask']),
+  // D-027 follow-on (1): the Queue's inline improvement Dismiss → improvements:triage
+  // (triage-one reject). Only triage is exposed — capture/resolve are agent-loop verbs.
+  improvements: new Set(['triage']),
 };
 
 function unwrap(toolResult: { status: number; body: unknown }): Response {

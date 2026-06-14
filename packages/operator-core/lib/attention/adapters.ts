@@ -393,7 +393,15 @@ export function improvementToAttention(i: ImprovementInput): AttentionItem {
     ownerAgentId: null,
     ownerLabel: null,
     ...untriaged(),
-    actions: [{ id: 'open', label: 'Triage', primary: true }],
+    // D-027 follow-on (1): inline Dismiss (improvements:triage reject — closes the
+    // idea, and the recall matcher surfaces "already decided" on the next
+    // same-signature capture). Triage stays a navigate to the full surface: ACCEPTING
+    // an improvement is a routing decision (place/gate/gym), not a one-click — a bare
+    // inline "accept" would record an un-targeted decision, so it lives on the source.
+    actions: [
+      { id: 'open', label: 'Triage', primary: true },
+      { id: 'dismiss', label: 'Dismiss' },
+    ],
     ref: { kind: 'improvement', issueId: i.issueId },
   };
 }

@@ -261,7 +261,8 @@ describe('P-100 — folded disposition channels (B-14 / D-011)', () => {
     expect(a.importance).toBe('high'); // major → high
     expect(a.id).toBe('improvement:EI-42');
     expect(a.ref).toEqual({ kind: 'improvement', issueId: 'EI-42' });
-    expect(a.actions.map((x) => x.id)).toEqual(['open']);
+    // D-027 follow-on (1): Triage navigate (full place/gate/gym surface) + inline Dismiss (reject).
+    expect(a.actions.map((x) => x.id)).toEqual(['open', 'dismiss']);
   });
 
   it('standing-approval is a Decision in the PROTECTED system-control category (never-auto)', () => {
