@@ -907,6 +907,23 @@ mod tests {
     }
 
     #[test]
+    fn chat_dock_plans_tab_hosts_the_plans_board_pane() {
+        // pui-plans-status-board-2026-06-14: the third dock tab "plans" hosts
+        // the pinned `pui plans-pane` board. It is the LAST tab (after network)
+        // so it never displaces tab-1 "this hive" (tier-1 GoToTab(1)).
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        assert!(kdl.contains("tab name=\"plans\""), "missing plans tab: {kdl}");
+        assert!(kdl.contains("args \"plans-pane\""), "plans tab must run `pui plans-pane`: {kdl}");
+        // The plans tab is last (this hive < network < plans).
+        let pl = kdl.find("tab name=\"plans\"").unwrap();
+        assert!(kdl.find("tab name=\"this hive\"").unwrap() < pl);
+        assert!(kdl.find("tab name=\"network\"").unwrap() < pl);
+        // The board pane runs from inside the plans tab, lexicon-independent
+        // (the args are internal identifiers — never renamed by the lexicon).
+        assert!(kdl.find("args \"plans-pane\"").unwrap() > pl);
+    }
+
+    #[test]
     fn chat_dock_pane_names_route_through_the_hive_lexicon() {
         // With the-hive active: operator→sentinel, brain→queen (lowercased,
         // kdl-safe, P-010 glyph-prefixed). The fixed "chat" stays verbatim.

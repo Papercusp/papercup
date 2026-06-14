@@ -74,7 +74,7 @@ const DATE = '2026-06-07';
 const SEED = childSeedSlug(CHILD_SLUG, DATE);
 
 /** harness_plans — the columns withPlanLock writes + the op_* start columns
- *  (mirrors migration 122 + 125/128 normalize; PK identical). */
+ *  (mirrors migration 122 + 125/128 normalize + 284 initiative; PK identical). */
 const HARNESS_PLANS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
     workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
@@ -87,6 +87,7 @@ const HARNESS_PLANS_DDL = `
     archived boolean DEFAULT false NOT NULL, is_legacy boolean DEFAULT false NOT NULL,
     items jsonb DEFAULT '[]'::jsonb NOT NULL, decisions jsonb DEFAULT '[]'::jsonb NOT NULL,
     now_state text, now_next text, origin text DEFAULT 'local' NOT NULL,
+    initiative text,
     created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug))`;
 
