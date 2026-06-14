@@ -1227,6 +1227,10 @@ pub struct App {
     pub plan_filter: BTreeSet<String>,
     pub plan_filter_open: bool,
     pub plan_filter_sel: usize,
+    /// Comms-overlay detail popup (owner ask 2026-06-14): true while a mail/
+    /// conversation detail is open over the Fleet comms view. Modal — Esc/`q`
+    /// close, `j`/`k` step to the next/prev item. Transient; not persisted.
+    pub comms_detail_open: bool,
     /// First-run tutorial overlay (P9). `show_tutorial` is set true at startup
     /// when the device hasn't completed it (and re-openable via F1);
     /// `tutorial_step` is the current 0-based step. Default hidden so tests and
@@ -1543,6 +1547,7 @@ impl App {
             plan_filter: BTreeSet::new(),
             plan_filter_open: false,
             plan_filter_sel: 0,
+            comms_detail_open: false,
             show_tutorial: false,
             tutorial_step: 0,
             notifs: Vec::new(),
@@ -4258,6 +4263,21 @@ impl App {
             self.show_notifs = false;
             return Action::Render;
         }
+        // Comms detail popup (owner ask 2026-06-14): modal while open. Esc/`q`
+        // close; `j`/`k` (↓/↑) step to the next/prev item WITHIN the focused
+        // panel (clamped — no fall-through here, the popup stays on one list);
+        // every other key is swallowed so it can't drive the dock underneath.
+        if self.comms_detail_open {
+            return match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                    self.comms_detail_open = false;
+                    Action::Render
+                }
+                KeyCode::Char('j') | KeyCode::Down => self.comms_detail_step(1),
+                KeyCode::Char('k') | KeyCode::Up => self.comms_detail_step(-1),
+                _ => Action::Render,
+            };
+        }
         // Staged-wake review overlay (P-009): modal while open — j/k select,
         // r release · e edit & release · s skip · Esc close/cancel-edit.
         if self.wake_review.is_some() {
@@ -5082,7 +5102,16 @@ impl App {
             // (pui-workbench-usability D-001): local pane focus / external-window
             // focus / resume an ended session / the [r]/[n]/[f] menu — never the
             // old silent focus-empty-pane no-op.
-            KeyCode::Enter if self.tab == Tab::Fleet => self.fleet_enter(),
+            // Enter on the Fleet tab: in the comms view it opens the focused
+            // panel's detail popup (or reaches the roster agent when the roster
+            // holds focus); otherwise the plain roster-reach (owner ask 2026-06-14).
+            KeyCode::Enter if self.tab == Tab::Fleet => {
+                if self.fleet.show_comms {
+                    self.comms_enter()
+                } else {
+                    self.fleet_enter()
+                }
+            }
             // Launch a native agent pane from the Fleet tab (the old Sessions
             // launcher, folded in — D-002b).
             KeyCode::Char('n') if self.tab == Tab::Fleet => Action::Launch(self.launch_spec()),
@@ -5093,6 +5122,10 @@ impl App {
             // the contextual-handlers-win-first rule of the keymap arm below.
             KeyCode::Char('c') if self.tab == Tab::Fleet => {
                 self.fleet.show_comms = !self.fleet.show_comms;
+                // Reset to the roster on every toggle so the view opens in a
+                // known place, and drop any stale detail popup (owner ask 2026-06-14).
+                self.fleet.comms_focus = crate::fleet::CommsFocus::Roster;
+                self.comms_detail_open = false;
                 // The conversations half reuses the Conversations-tab data —
                 // lazy-load it the first time the comms view opens.
                 if self.fleet.show_comms
@@ -5101,6 +5134,45 @@ impl App {
                 {
                     return self.refetch_conversations();
                 }
+                Action::Render
+            }
+            // Comms overlay spatial nav (owner ask 2026-06-14): h/l (or ←/→) cross
+            // the Roster ↔ mail columns. Guarded to the open comms view so `h`
+            // otherwise still falls through to the Overview tab-switch below.
+            KeyCode::Char('h') | KeyCode::Left
+                if self.tab == Tab::Fleet && self.fleet.show_comms =>
+            {
+                self.fleet.comms_focus = crate::fleet::CommsFocus::Roster;
+                Action::Render
+            }
+            KeyCode::Char('l') | KeyCode::Right
+                if self.tab == Tab::Fleet && self.fleet.show_comms =>
+            {
+                // Roster → the mail column (lands on Inbox); from a mail panel,
+                // already at the rightmost column, so a no-op.
+                if self.fleet.comms_focus == crate::fleet::CommsFocus::Roster {
+                    self.fleet.comms_focus = crate::fleet::CommsFocus::Inbox;
+                }
+                Action::Render
+            }
+            // j/k inside a focused mail/conversation panel move the row cursor
+            // (falling through Inbox→Outbox→Conversations at the edges). When the
+            // roster holds focus these don't match and the generic arms below run
+            // the roster move + bee-selection publish.
+            KeyCode::Char('j') | KeyCode::Down
+                if self.tab == Tab::Fleet
+                    && self.fleet.show_comms
+                    && self.fleet.comms_focus != crate::fleet::CommsFocus::Roster =>
+            {
+                self.comms_move(1);
+                Action::Render
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if self.tab == Tab::Fleet
+                    && self.fleet.show_comms
+                    && self.fleet.comms_focus != crate::fleet::CommsFocus::Roster =>
+            {
+                self.comms_move(-1);
                 Action::Render
             }
             // Hives tab (p2p-hive-directory P-006): 'J' JOINS a discovered hive —
@@ -5268,8 +5340,11 @@ impl App {
                 }
                 self.testing_domain_changed(prev_domain);
                 // Swarm pane: a roster cursor move publishes the new bee selection
-                // to the bee-dossier relay (pui-bee-dossier-pane-2026-06-06).
+                // to the bee-dossier relay (pui-bee-dossier-pane-2026-06-06). A new
+                // agent means new mail, so the comms cursors reset to the top.
                 if self.tab == Tab::Fleet {
+                    self.fleet.comms_inbox_sel = 0;
+                    self.fleet.comms_outbox_sel = 0;
                     return self.publish_swarm_selection();
                 }
                 Action::Render
@@ -5287,6 +5362,8 @@ impl App {
                 }
                 self.testing_domain_changed(prev_domain);
                 if self.tab == Tab::Fleet {
+                    self.fleet.comms_inbox_sel = 0;
+                    self.fleet.comms_outbox_sel = 0;
                     return self.publish_swarm_selection();
                 }
                 Action::Render
@@ -5473,6 +5550,154 @@ impl App {
         match self.selected_conversation() {
             Some(c) => Action::FetchConversationDetail { id: c.id.clone() },
             None => Action::None,
+        }
+    }
+
+    // ── Fleet comms-overlay navigation (owner ask 2026-06-14) ──────────────────
+
+    /// Entry counts for the SELECTED bee's mail sides (rendered newest-first).
+    fn comms_inbox_len(&self) -> usize {
+        self.bee
+            .mail
+            .as_ref()
+            .map(|m| m.inbox.entries.len())
+            .unwrap_or(0)
+    }
+    fn comms_outbox_len(&self) -> usize {
+        self.bee
+            .mail
+            .as_ref()
+            .map(|m| m.outbox.entries.len())
+            .unwrap_or(0)
+    }
+
+    /// The mail entry under the comms cursor when an Inbox/Outbox panel holds
+    /// focus (rendered newest-first, so cursor 0 = the last entry). `None` when
+    /// the roster/conversations panel is focused or the side is empty.
+    pub fn selected_comms_mail(&self) -> Option<&crate::models::BeeMailEntry> {
+        use crate::fleet::CommsFocus::*;
+        let (side, sel) = match self.fleet.comms_focus {
+            Inbox => (&self.bee.mail.as_ref()?.inbox, self.fleet.comms_inbox_sel),
+            Outbox => (&self.bee.mail.as_ref()?.outbox, self.fleet.comms_outbox_sel),
+            _ => return None,
+        };
+        let n = side.entries.len();
+        if n == 0 {
+            return None;
+        }
+        side.entries.get(n - 1 - sel.min(n - 1))
+    }
+
+    /// `j`/`k` inside the comms mail/conversation column: move the row cursor,
+    /// falling through Inbox → Outbox → Conversations at the list edges so the
+    /// three stacked panels are reachable with just the two keys.
+    fn comms_move(&mut self, delta: isize) {
+        use crate::fleet::CommsFocus::*;
+        let inbox_len = self.comms_inbox_len();
+        let outbox_len = self.comms_outbox_len();
+        let conv_len = self.visible_conversations().len();
+        match self.fleet.comms_focus {
+            Roster => {}
+            Inbox => {
+                if delta > 0 {
+                    if self.fleet.comms_inbox_sel + 1 < inbox_len {
+                        self.fleet.comms_inbox_sel += 1;
+                    } else {
+                        // Past the last inbox row → fall through to the outbox.
+                        self.fleet.comms_focus = Outbox;
+                        self.fleet.comms_outbox_sel = 0;
+                    }
+                } else {
+                    // `k` at the top of the inbox clamps (it is the top panel).
+                    self.fleet.comms_inbox_sel = self.fleet.comms_inbox_sel.saturating_sub(1);
+                }
+            }
+            Outbox => {
+                if delta > 0 {
+                    if self.fleet.comms_outbox_sel + 1 < outbox_len {
+                        self.fleet.comms_outbox_sel += 1;
+                    } else {
+                        self.fleet.comms_focus = Conversations;
+                        self.conversation_sel = 0;
+                    }
+                } else if self.fleet.comms_outbox_sel > 0 {
+                    self.fleet.comms_outbox_sel -= 1;
+                } else {
+                    // Above the first outbox row → back up to the inbox's last row.
+                    self.fleet.comms_focus = Inbox;
+                    self.fleet.comms_inbox_sel = inbox_len.saturating_sub(1);
+                }
+            }
+            Conversations => {
+                if delta > 0 {
+                    if self.conversation_sel + 1 < conv_len {
+                        self.conversation_sel += 1;
+                    }
+                } else if self.conversation_sel > 0 {
+                    self.conversation_sel -= 1;
+                } else {
+                    // Above the first conversation → back up to the outbox.
+                    self.fleet.comms_focus = Outbox;
+                    self.fleet.comms_outbox_sel = outbox_len.saturating_sub(1);
+                }
+            }
+        }
+    }
+
+    /// Enter in the comms view: the roster reaches its agent; a mail/conversation
+    /// panel opens the detail popup (conversations also fetch the full thread).
+    fn comms_enter(&mut self) -> Action {
+        use crate::fleet::CommsFocus::*;
+        match self.fleet.comms_focus {
+            Roster => self.fleet_enter(),
+            Inbox | Outbox => {
+                if self.selected_comms_mail().is_some() {
+                    self.comms_detail_open = true;
+                }
+                Action::Render
+            }
+            Conversations => {
+                if self.selected_conversation().is_some() {
+                    self.comms_detail_open = true;
+                    return self.conv_open_detail();
+                }
+                Action::Render
+            }
+        }
+    }
+
+    /// `j`/`k` while the comms detail popup is open: step WITHIN the focused panel
+    /// (clamped — no fall-through, the popup stays on one list); conversations
+    /// refetch the newly-selected thread.
+    fn comms_detail_step(&mut self, delta: isize) -> Action {
+        use crate::fleet::CommsFocus::*;
+        let step = |cur: usize, delta: isize, len: usize| -> usize {
+            if len == 0 {
+                return 0;
+            }
+            if delta > 0 {
+                (cur + 1).min(len - 1)
+            } else {
+                cur.saturating_sub(1)
+            }
+        };
+        match self.fleet.comms_focus {
+            Inbox => {
+                self.fleet.comms_inbox_sel =
+                    step(self.fleet.comms_inbox_sel, delta, self.comms_inbox_len());
+                Action::Render
+            }
+            Outbox => {
+                self.fleet.comms_outbox_sel =
+                    step(self.fleet.comms_outbox_sel, delta, self.comms_outbox_len());
+                Action::Render
+            }
+            Conversations => {
+                let len = self.visible_conversations().len();
+                self.conversation_sel = step(self.conversation_sel, delta, len);
+                self.conv_open_detail()
+            }
+            Roster => Action::Render,
         }
     }
 

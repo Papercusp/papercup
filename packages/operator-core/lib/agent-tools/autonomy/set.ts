@@ -73,7 +73,11 @@ export default defineTool({
         actor,
       );
       const { notifySyncInvalidate } = await import('../../sync-sse');
-      await notifySyncInvalidate('autonomy.policy', { workspaceId: ws }).catch(() => {});
+      // Name-only (no args): the settings page subscribes to autonomy.policy with
+      // no args, so an args-scoped invalidate never matches its react-query key and
+      // the surface wouldn't refetch. See the autonomy-policy-set route for the full
+      // note. Matches this file's own doc-comment ("fires notifySyncInvalidate('autonomy.policy')").
+      await notifySyncInvalidate('autonomy.policy').catch(() => {});
       return {
         content: [
           {

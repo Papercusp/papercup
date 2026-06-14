@@ -42,6 +42,23 @@ describe('extractCitedPaths — conservative repo-file extraction', () => {
     // a removal marker on a DIFFERENT line does not suppress a clean-line citation
     expect(extractCitedPaths('An old file was removed.\nSee `packages/x/live.ts`.')).toEqual(['packages/x/live.ts']);
   });
+
+  it('drops ellipsis path placeholders (EI-510): `.../` is an elision, not a real file', () => {
+    expect(extractCitedPaths('Each route under `apps/operator/app/.../page.tsx` is retired.')).toEqual([]);
+    expect(extractCitedPaths('See `packages/operator-core/lib/../oops.ts`.')).toEqual([]);
+  });
+
+  it('drops node_modules dependency paths (EI-510): not repo source', () => {
+    expect(extractCitedPaths('Patched `apps/operator/node_modules/vditor/dist/types/index.d.ts`.')).toEqual([]);
+  });
+
+  it('Class 1 per-PATH (EI-510): a path acknowledged removed ANYWHERE is dropped even if also cited on a clean line', () => {
+    const raw = 'Example (`apps/x/gone.ts`):\nNote: `apps/x/gone.ts` was removed in the migration.';
+    expect(extractCitedPaths(raw)).toEqual([]);
+    // a different, never-acknowledged path on a clean line is still kept
+    const mixed = 'Use `apps/x/live.ts`.\nThe old `apps/x/gone.ts` was removed.';
+    expect(extractCitedPaths(mixed)).toEqual(['apps/x/live.ts']);
+  });
 });
 
 describe('scanInsightStaleness', () => {

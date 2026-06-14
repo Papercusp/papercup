@@ -34,6 +34,11 @@ pub fn draw(f: &mut Frame, app: &App) {
                 draw_toast(f, t);
             }
         }
+        // The comms detail popup is modal — render it on top of everything else
+        // in the pinned dock pane (the dock-driver is where the comms view lives).
+        if app.comms_detail_open {
+            draw_comms_detail(f, app);
+        }
         return;
     }
 
@@ -144,6 +149,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_fleet_menu(f, menu);
     } else if let Some(rev) = &app.wake_review {
         draw_wake_review(f, rev);
+    }
+    // The Fleet comms detail popup floats above the body + the other overlays.
+    if app.comms_detail_open {
+        draw_comms_detail(f, app);
     }
 }
 
@@ -2698,6 +2707,127 @@ pub(crate) fn block_with_header_rows(
         .split(inner);
     f.render_widget(Paragraph::new(rows_above), rows[0]);
     rows[1]
+}
+
+/// The Fleet comms detail popup (owner ask 2026-06-14): the full mail message or
+/// conversation thread under the comms cursor, centered over the dock. Modal —
+/// the key handler closes it on Esc/`q`/Enter and steps the item with `j`/`k`.
+fn draw_comms_detail(f: &mut Frame, app: &App) {
+    use crate::fleet::CommsFocus;
+    let area = centered_rect(70, 70, f.area());
+    f.render_widget(Clear, area);
+    let (title, lines): (&str, Vec<Line<'static>>) = match app.fleet.comms_focus {
+        CommsFocus::Inbox | CommsFocus::Outbox => {
+            let is_inbox = app.fleet.comms_focus == CommsFocus::Inbox;
+            let title = if is_inbox {
+                " inbox · message  (Esc close · j/k next) "
+            } else {
+                " outbox · message  (Esc close · j/k next) "
+            };
+            let lines = match app.selected_comms_mail() {
+                Some(e) => mail_detail_lines(e, is_inbox),
+                None => vec![Line::from(Span::styled("(no message selected)", Theme::dim()))],
+            };
+            (title, lines)
+        }
+        CommsFocus::Conversations => (
+            " conversation  (Esc close · j/k next) ",
+            conv_detail_lines(app),
+        ),
+        CommsFocus::Roster => (" detail ", Vec::new()),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Theme::panel_active());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+/// The header + full body of one coord-mail entry (the list truncates the body;
+/// the popup shows all of it).
+fn mail_detail_lines(e: &crate::models::BeeMailEntry, is_inbox: bool) -> Vec<Line<'static>> {
+    let (peer_label, peer) = if is_inbox {
+        ("from", e.from.clone().unwrap_or_else(|| "?".into()))
+    } else if e.to.iter().any(|t| t == "*") {
+        ("to", "* (broadcast)".to_string())
+    } else {
+        ("to", e.to.join(", "))
+    };
+    let body = e
+        .body
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| e.summary.clone())
+        .unwrap_or_else(|| "(no body)".to_string());
+    let mut out = vec![
+        Line::from(vec![
+            Span::styled(format!("{peer_label:<5} "), Theme::dim()),
+            Span::raw(peer),
+        ]),
+        Line::from(vec![
+            Span::styled("time  ", Theme::dim()),
+            Span::raw(e.ts.clone()),
+            Span::styled("   kind  ", Theme::dim()),
+            Span::raw(e.kind.clone()),
+        ]),
+        Line::from(Span::styled("─".repeat(40), Theme::dim())),
+    ];
+    for l in body.lines() {
+        out.push(Line::from(l.to_string()));
+    }
+    out
+}
+
+/// The loaded conversation thread (header + body + accepted answer + posts), or a
+/// loading placeholder while the fetch is in flight.
+fn conv_detail_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(d) = app.conversation_detail.as_ref() else {
+        return vec![Line::from(Span::styled("loading…", Theme::dim()))];
+    };
+    let mut out = Vec::new();
+    if let Some(c) = &d.conversation {
+        out.push(Line::from(Span::styled(
+            c.title.clone().unwrap_or_else(|| c.id.clone()),
+            Theme::title_active(),
+        )));
+        out.push(Line::from(vec![
+            Span::styled("state ", Theme::dim()),
+            Span::raw(c.state.clone()),
+            Span::styled("   asker ", Theme::dim()),
+            Span::raw(c.asker_id.clone()),
+        ]));
+        if !c.body.is_empty() {
+            out.push(Line::from(""));
+            for l in c.body.lines() {
+                out.push(Line::from(l.to_string()));
+            }
+        }
+        if let Some(ans) = &c.accepted_answer {
+            out.push(Line::from(""));
+            out.push(Line::from(Span::styled("✓ accepted answer", Theme::info())));
+            for l in ans.lines() {
+                out.push(Line::from(l.to_string()));
+            }
+        }
+    }
+    if !d.posts.is_empty() {
+        out.push(Line::from(""));
+        out.push(Line::from(Span::styled(
+            format!("─ {} posts ─", d.posts.len()),
+            Theme::dim(),
+        )));
+        for p in &d.posts {
+            let who = p.author_id.clone().unwrap_or_else(|| "?".into());
+            let first = p.body.lines().next().unwrap_or("").to_string();
+            out.push(Line::from(vec![
+                Span::styled(format!("{} ", trunc(&who, 12)), Theme::dim()),
+                Span::raw(first),
+            ]));
+        }
+    }
+    out
 }
 
 /// A centered rect `pct_w` × `pct_h` percent of `area`.

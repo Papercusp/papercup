@@ -97,9 +97,14 @@ export default defineTool({
     // The feed (decision.ledger), the policy table's graduated chip (autonomy.policy),
     // and the graduation surface (autonomy.graduation) all reflect a demotion.
     const { notifySyncInvalidate } = await import('../../../sync-sse');
-    await notifySyncInvalidate('decision.ledger', { workspaceId: ws }).catch(() => {});
-    await notifySyncInvalidate('autonomy.policy', { workspaceId: ws }).catch(() => {});
-    await notifySyncInvalidate('autonomy.graduation', { workspaceId: ws }).catch(() => {});
+    // Name-only (no args): these resolvers/subscriptions aren't keyed on workspaceId
+    // (the settings feeds subscribe with no workspaceId arg — decision.ledger uses
+    // {layer,limit}), so an args-scoped invalidate would do an exact-key match that
+    // never fires and the feed/table wouldn't refetch. See the autonomy-policy-set
+    // route for the full note.
+    await notifySyncInvalidate('decision.ledger').catch(() => {});
+    await notifySyncInvalidate('autonomy.policy').catch(() => {});
+    await notifySyncInvalidate('autonomy.graduation').catch(() => {});
 
     return Response.json({
       ok: true,

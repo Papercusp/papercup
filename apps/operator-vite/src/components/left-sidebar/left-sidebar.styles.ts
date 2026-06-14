@@ -380,6 +380,47 @@ body.has-left-sidebar .pc-header {
   color: var(--fg-dim, #b9d4e8);
 }
 
+/* Per-hive start/stop control — mirrors the in-page AdvNowRunning "Start hive"
+   / "Stop hive" actions (pc-advshell__action--start/stop): a bordered,
+   uppercase, color-coded pill (green start, red stop) with a hover lift, sized
+   for the compact sidebar row. Replaces the flat .pclsb-pill badge so the
+   sidebar toggle reads as the same control as the one inside a hive page. */
+.pclsb-hivebtn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.pclsb-hivebtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.pclsb-hivebtn--start {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.38);
+}
+.pclsb-hivebtn--start:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.26);
+}
+.pclsb-hivebtn--stop {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.34);
+}
+.pclsb-hivebtn--stop:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.22);
+}
+
 /* Section headers inside a tab (task list / plan progress / comms). */
 .pclsb-sec {
   margin-top: 9px;

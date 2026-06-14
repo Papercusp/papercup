@@ -80,10 +80,19 @@ export default defineTool({
         'owner',
       );
       const { notifySyncInvalidate } = await import('../../../sync-sse');
-      await notifySyncInvalidate('autonomy.policy', { workspaceId: ws }).catch(() => {});
+      // NAME-ONLY invalidation (no args). The `autonomy.policy` / `autonomy.graduation`
+      // resolvers take no args (they read activeWorkspaceId() internally) and the
+      // settings page subscribes with no args, so its react-query key is
+      // ['sync','autonomy.policy',{}]. An args-scoped invalidation
+      // (`{ workspaceId }`) makes the SSE client do an EXACT-key invalidate of
+      // ['sync','autonomy.policy',{workspaceId}], which never matches the {} key —
+      // so the ceiling write saved but the table never refetched (looked like it
+      // "wasn't saving"). Name-only takes the predicate branch that invalidates
+      // every entry under the name. (See SSEAdapter.tsx invalidate handling.)
+      await notifySyncInvalidate('autonomy.policy').catch(() => {});
       // A graduatedLevel ratify (P-032) changes a category's graduation target, so
       // refresh the graduation surface too (cheap; derives from the same policy).
-      await notifySyncInvalidate('autonomy.graduation', { workspaceId: ws }).catch(() => {});
+      await notifySyncInvalidate('autonomy.graduation').catch(() => {});
       return Response.json({ ok: true, workspaceId: ws, policy: decoratePolicyForView(policy) });
     } catch (err) {
       // setAutonomyPolicy throws on unknown category / invalid level — a 400, not a 500.

@@ -68,14 +68,14 @@ export default function LocalHivesControl() {
           </div>
           <button
             type="button"
-            className="pclsb-pill"
+            className={`pclsb-hivebtn pclsb-hivebtn--${h.started ? 'stop' : 'start'}`}
             data-testid={`local-hive-toggle-${h.slug}`}
             aria-label={h.started ? `Stop hive ${h.slug}` : `Start hive ${h.slug}`}
             disabled={busy === h.slug}
             onClick={() => void toggle(h)}
           >
-            {h.started ? <Square size={10} aria-hidden /> : <Play size={10} aria-hidden />}
-            {busy === h.slug ? '…' : h.started ? ' Stop' : ' Start'}
+            {h.started ? <Square size={11} aria-hidden /> : <Play size={11} aria-hidden />}
+            {busy === h.slug ? '…' : h.started ? 'Stop' : 'Start'}
           </button>
         </div>
       ))}

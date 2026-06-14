@@ -50,25 +50,38 @@ const REMOVAL_MARKER_RE =
   /\b(?:used to|moved (?:off|from|to|onto)|moved the|no longer|removed|deleted|retired|replaced|superseded|since deleted|migrated (?:off|from|onto)|formerly|previously|was (?:at|in)|lived (?:at|in)|old(?:er)? (?:path|location)|deprecated)\b/i;
 
 export function extractCitedPaths(raw: string): string[] {
-  const out = new Set<string>();
+  const clean = new Set<string>();
+  const acknowledgedRemoved = new Set<string>();
   for (const m of raw.matchAll(/`([^`\n]+)`/g)) {
     const token = m[1].trim();
-    if (token.includes('*') || token.includes('<') || token.includes(' ')) continue;
+    // Exclude globs (`*`), placeholders (`<x>`), spaces, and ELLIPSIS placeholders
+    // (`apps/operator/app/.../page.tsx` — an author's "some path under here", EI-510):
+    // any run of ≥2 dots is a path elision, never a real filename component.
+    if (token.includes('*') || token.includes('<') || token.includes(' ') || token.includes('..'))
+      continue;
+    // node_modules is an installed dependency tree, not repo source: gitignored,
+    // pnpm/npm-hoist-variable, and never a runbook citation that meaningfully "goes
+    // stale" — citing a dep's .d.ts shouldn't perpetually flag the insight (EI-510).
+    if (token.includes('/node_modules/')) continue;
     if (!REPO_PATH_RE.test(token)) continue;
-    // Class 1 (EI-510): skip a path whose own line carries a removal/move marker —
-    // it's a historical "this file was moved/removed" reference, not a live citation,
-    // so flagging it "no longer exists" is a perpetual false positive. Test the PROSE
-    // only (strip backticked spans first) so a path whose own filename contains a
-    // marker word (e.g. `removed.ts`, `old-home.ts`) isn't self-skipped.
+    // Class 1 (EI-510): a path the insight ACKNOWLEDGES as removed/moved is a
+    // historical reference, not a live dependency. Detect a removal/move marker on
+    // the path's own line (PROSE only — strip backticked spans first, so a filename
+    // that itself contains a marker word like `removed.ts` isn't self-skipped).
     const idx = m.index ?? 0;
     const lineStart = raw.lastIndexOf('\n', idx) + 1;
     const lineEndRaw = raw.indexOf('\n', idx);
     const line = raw.slice(lineStart, lineEndRaw === -1 ? raw.length : lineEndRaw);
     const prose = line.replace(/`[^`]*`/g, ' ');
-    if (REMOVAL_MARKER_RE.test(prose)) continue;
-    out.add(token);
+    if (REMOVAL_MARKER_RE.test(prose)) acknowledgedRemoved.add(token);
+    else clean.add(token);
   }
-  return [...out];
+  // Per-PATH (not per-occurrence): a path the insight marks as removed/moved ANYWHERE
+  // is dropped even when it also appears on a clean line — e.g. a runbook that both
+  // documents "`x.ts` was removed" AND shows the removed file in an example. Otherwise
+  // the clean occurrence keeps re-flagging an insight that already acknowledges the
+  // removal (the live-pg-regression-sentinel false positive). EI-510.
+  return [...clean].filter((p) => !acknowledgedRemoved.has(p));
 }
 
 /**
@@ -280,11 +293,16 @@ export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]
   // files so a dropped-prefix shorthand isn't a false "stale". Fall back to an exact
   // existsSync at REPO_ROOT when git is unavailable (packaged build).
   const tracked = await listTrackedFiles(REPO_ROOT);
-  const existsFn = tracked
-    ? makeRepoPathResolver(tracked)
-    : (p: string) => fs.existsSync(path.join(REPO_ROOT, p));
+  const trackedResolver = tracked ? makeRepoPathResolver(tracked) : null;
+  // A cited path resolves if it's tracked (exact/suffix shorthand) OR present on disk.
+  // The on-disk fallback (EI-510) catches gitignored-but-present files that `git ls-files`
+  // omits — e.g. `apps/operator/.env.local`, a file-based plan doc under docs/plans/ —
+  // which would otherwise read as a perpetual false "stale". "Missing" now means
+  // not-tracked AND not-on-disk = genuinely gone.
+  const existsFn = (p: string) =>
+    (trackedResolver ? trackedResolver(p) : false) || fs.existsSync(path.join(REPO_ROOT, p));
   // Class-2 apoptosis guard (EI-510): only available with the tracked-file list; the
-  // packaged-build existsSync fallback can't enumerate basenames, so apoptosis stays strict.
+  // packaged-build fallback can't enumerate basenames, so apoptosis stays strict there.
   const basenameExistsFn = tracked ? makeRepoBasenameResolver(tracked) : undefined;
   return scanInsightStaleness(insights, existsFn, { basenameExistsFn });
 }

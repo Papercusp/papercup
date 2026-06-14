@@ -151,58 +151,79 @@ export default function RecentAutoDecisions() {
 
       {rows.map((row) => {
         const p = POSTURE_STYLE[row.posture] ?? { fg: 'var(--fg-mute)', bg: 'var(--bg-2)', label: row.posture };
+        // Single-line row: fixed-width identity chips on the left, the (truncated)
+        // action/why as the one flexible middle, and time + Undo pinned right. The
+        // middle ellipsis-truncates so the whole card stays one line on any width;
+        // the full text is on the `title` (hover) and the row's tooltip.
+        const detail = [row.action, row.why].filter(Boolean).join(' — ');
         return (
           <div
             key={row.id}
             style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
               border: '1px solid var(--border)',
               borderRadius: 8,
-              padding: '10px 12px',
-              marginBottom: 8,
+              padding: '6px 12px',
+              marginBottom: 6,
               background: 'var(--bg)',
+              minWidth: 0,
             }}
           >
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-              <span style={{ fontWeight: 600, color: 'var(--fg)', fontSize: 13 }}>
-                {DISPOSITION_LABEL[row.disposition ?? ''] ?? row.disposition ?? '—'}
+            <span style={{ flex: '0 0 auto', fontWeight: 600, color: 'var(--fg)', fontSize: 13, whiteSpace: 'nowrap' }}>
+              {DISPOSITION_LABEL[row.disposition ?? ''] ?? row.disposition ?? '—'}
+            </span>
+            {row.category && (
+              <span style={{ ...chip({ color: 'var(--fg)', background: 'var(--bg-2)' }), flex: '0 0 auto', whiteSpace: 'nowrap' }}>
+                {row.category}
               </span>
-              {row.category && (
-                <span style={chip({ color: 'var(--fg)', background: 'var(--bg-2)' })}>{row.category}</span>
-              )}
-              <span style={chip({ color: p.fg, background: p.bg })}>{p.label}</span>
-              {row.riskTier && (
-                <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>risk: {row.riskTier}</span>
-              )}
-              <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-mute)' }} title={row.ts}>
-                {relativeTime(row.ts)}
-              </span>
-              {row.tripwireId ? (
-                <button
-                  type="button"
-                  onClick={() => void onUndo(row)}
-                  disabled={reverting === row.tripwireId}
-                  style={{
-                    fontSize: 11,
-                    padding: '2px 8px',
-                    borderRadius: 6,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-2)',
-                    color: 'var(--fg)',
-                    cursor: reverting === row.tripwireId ? 'default' : 'pointer',
-                  }}
-                  title="Undo: reject this auto-decision (owner thumbs-down) and demote the category one step. The literal action-revert lands with the queen execution layer."
-                >
-                  {reverting === row.tripwireId ? 'Undoing…' : 'Undo'}
-                </button>
-              ) : null}
-            </div>
-            {(row.why || row.action) && (
-              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--fg-mute)' }}>
-                {row.action && <code style={{ fontSize: 11 }}>{row.action}</code>}
-                {row.action && row.why ? ' — ' : ''}
-                {row.why}
-              </div>
             )}
+            <span style={{ ...chip({ color: p.fg, background: p.bg }), flex: '0 0 auto', whiteSpace: 'nowrap' }}>{p.label}</span>
+            {row.riskTier && (
+              <span style={{ flex: '0 0 auto', fontSize: 11, color: 'var(--fg-mute)', whiteSpace: 'nowrap' }}>
+                risk: {row.riskTier}
+              </span>
+            )}
+            <span
+              style={{
+                flex: '1 1 auto',
+                minWidth: 0,
+                fontSize: 12,
+                color: 'var(--fg-mute)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              title={detail || undefined}
+            >
+              {row.action && <code style={{ fontSize: 11 }}>{row.action}</code>}
+              {row.action && row.why ? ' — ' : ''}
+              {row.why}
+            </span>
+            <span style={{ flex: '0 0 auto', marginLeft: 'auto', fontSize: 11, color: 'var(--fg-mute)', whiteSpace: 'nowrap' }} title={row.ts}>
+              {relativeTime(row.ts)}
+            </span>
+            {row.tripwireId ? (
+              <button
+                type="button"
+                onClick={() => void onUndo(row)}
+                disabled={reverting === row.tripwireId}
+                style={{
+                  flex: '0 0 auto',
+                  fontSize: 11,
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-2)',
+                  color: 'var(--fg)',
+                  cursor: reverting === row.tripwireId ? 'default' : 'pointer',
+                }}
+                title="Undo: reject this auto-decision (owner thumbs-down) and demote the category one step. The literal action-revert lands with the queen execution layer."
+              >
+                {reverting === row.tripwireId ? 'Undoing…' : 'Undo'}
+              </button>
+            ) : null}
           </div>
         );
       })}

@@ -445,7 +445,9 @@ fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
         .split(area);
 
-    draw_agents(f, app, cols[0]);
+    // The roster is the sole interactive list in the curated view, so it always
+    // wears the active border here.
+    draw_agents(f, app, cols[0], true);
 
     let right = Layout::default()
         .direction(Direction::Vertical)

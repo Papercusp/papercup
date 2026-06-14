@@ -184,7 +184,9 @@ pub(crate) fn task_row(idx: usize, w: &BeeWorkItem) -> ListItem<'static> {
 }
 
 /// Bottom-upper region: the bee's coord INBOX (messages addressed TO it).
-pub(crate) fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
+/// `sel` is the focused-row cursor (rendered newest-first, so 0 = newest) when
+/// this panel holds comms focus, else `None` (quiet — no highlight/active border).
+pub(crate) fn draw_inbox(f: &mut Frame, app: &App, area: Rect, sel: Option<usize>) {
     let side = app.bee.mail.as_ref().map(|m| &m.inbox);
     let entries: &[BeeMailEntry] = side.map(|s| s.entries.as_slice()).unwrap_or(&[]);
     let total = side.map(|s| s.total).unwrap_or(0);
@@ -195,11 +197,12 @@ pub(crate) fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
         entries,
         app.bee.mail.is_some(),
         true,
+        sel,
     );
 }
 
 /// Bottom-lower region: the bee's coord OUTBOX (messages FROM it).
-pub(crate) fn draw_outbox(f: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_outbox(f: &mut Frame, app: &App, area: Rect, sel: Option<usize>) {
     let side = app.bee.mail.as_ref().map(|m| &m.outbox);
     let entries: &[BeeMailEntry] = side.map(|s| s.entries.as_slice()).unwrap_or(&[]);
     let total = side.map(|s| s.total).unwrap_or(0);
@@ -210,6 +213,7 @@ pub(crate) fn draw_outbox(f: &mut Frame, app: &App, area: Rect) {
         entries,
         app.bee.mail.is_some(),
         false,
+        sel,
     );
 }
 
@@ -223,11 +227,13 @@ fn draw_mail(
     entries: &[BeeMailEntry],
     loaded: bool,
     is_inbox: bool,
+    sel: Option<usize>,
 ) {
     let items: Vec<ListItem> = entries
         .iter()
         .rev() // newest-first for the pane
-        .map(|e| {
+        .enumerate()
+        .map(|(idx, e)| {
             let peer = if is_inbox {
                 e.from.clone().unwrap_or_else(|| "?".into())
             } else {
@@ -249,11 +255,16 @@ fn draw_mail(
             } else {
                 Theme::dim()
             };
-            ListItem::new(Line::from(vec![
+            let item = ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<7} ", trunc(&hms(&e.ts), 7)), Theme::dim()),
                 Span::styled(format!("{:<8} ", trunc(&peer, 8)), kind_style),
                 Span::raw(trunc(&text, 34)),
-            ]))
+            ]));
+            if sel == Some(idx) {
+                item.style(Theme::selected())
+            } else {
+                item
+            }
         })
         .collect();
     let body = if items.is_empty() {
@@ -262,10 +273,11 @@ fn draw_mail(
     } else {
         items
     };
+    // Active border when this panel holds comms focus (`sel.is_some()`).
     f.render_widget(
         List::new(body)
             .style(Theme::panel())
-            .block(Theme::block(Line::from(title.to_string()), !entries.is_empty())),
+            .block(Theme::block(Line::from(title.to_string()), sel.is_some())),
         area,
     );
 }
@@ -330,8 +342,8 @@ mod tests {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(rows[1]);
-            draw_inbox(f, app, bottom[0]);
-            draw_outbox(f, app, bottom[1]);
+            draw_inbox(f, app, bottom[0], None);
+            draw_outbox(f, app, bottom[1], None);
         })
         .unwrap();
         term.backend()
