@@ -68,7 +68,6 @@ describe('sync-resolver v2 registry', () => {
     it('includes batch 6 migrated names', () => {
       const names = knownQueryNamesV2();
       for (const expected of [
-        'summary.byHarness',
         'harnessPhases.byHarness',
         'harnessSmokeTest.byHarness',
         'harnessBrainstorm.byHarness',
@@ -378,6 +377,45 @@ describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cach
     expect(rows).toHaveLength(1);
     expect(rows[0].wakes).toBe(0);
     vi.doUnmock('../hive/queen-wake-efficiency');
+    vi.doUnmock('../workspace-registry');
+  });
+});
+
+describe('resolveNamedQueryV2 — trust.list (shared-hive-trust-admission Phase 4 / P-011, Trust A4)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('is registered in knownQueryNamesV2', () => {
+    expect(knownQueryNamesV2()).toContain('trust.list');
+  });
+
+  it('returns the workspace trusted-user list flat (client reads data as the array)', async () => {
+    const list = [
+      { githubUserId: 583231, note: 'core maintainer', createdTs: 1000 },
+      { githubUserId: 42, note: null, createdTs: 900 },
+    ];
+    vi.doMock('../trust/user-trust-list', () => ({ listTrustedUsers: vi.fn(async () => list) }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('trust.list', {})) as Array<{ githubUserId: number }>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].githubUserId).toBe(583231);
+    vi.doUnmock('../trust/user-trust-list');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  it('degrades to [] when the read throws (pre-migration / no PG) — never a 500', async () => {
+    vi.doMock('../trust/user-trust-list', () => ({
+      listTrustedUsers: vi.fn(async () => {
+        throw Object.assign(new Error('relation "user_trust_list" does not exist'), { code: '42P01' });
+      }),
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('trust.list', {})) as unknown[];
+    expect(rows).toEqual([]);
+    vi.doUnmock('../trust/user-trust-list');
     vi.doUnmock('../workspace-registry');
   });
 });

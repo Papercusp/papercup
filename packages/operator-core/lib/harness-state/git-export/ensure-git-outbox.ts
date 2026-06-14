@@ -21,7 +21,7 @@ import { GIT_TABLES } from '../table-registry';
  */
 export const GIT_KEY_COLS: Record<string, string[]> = {
   harness_decisions: ['line_hash'],
-  harness_summaries: ['phase'],
+  // harness_summaries removed — fs-watcher-retirement step 2 (migration 280).
   harness_escalations: ['phase'],
   harness_design_artifacts: ['id'],
   harness_text_artifacts: ['rel_path'],

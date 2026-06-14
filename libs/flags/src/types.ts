@@ -529,12 +529,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // byte-identical to pre-P-016. Listed in KNOWN_DARK_FLAGS; flip gated on the
   // two-machine eviction proof.
   [FLAGS.AUTHORITY_EVICTION_PROBE]: false,
-  // DEFAULT OFF (dark): the peer-log compaction mechanism + fold-from-snapshot
-  // correctness are proven single-box, but the real-wire replay-cost saving +
-  // cross-machine convergence are real-hardware-unverified (P-008, D-003 gate).
-  // OFF = no snapshot ops produced + cursor seeds at 0, byte-identical to today.
-  // Listed in KNOWN_DARK_FLAGS; flip gated on the two-machine proof.
-  [FLAGS.SUBSTRATE_LOG_SNAPSHOT]: false,
+  // DEFAULT ON (alpha flags-default-on): the peer-log compaction mechanism +
+  // fold-from-snapshot correctness are proven single-box AND the real-wire
+  // replay-cost saving (Hypercore sparse-fetch) + cross-machine convergence are
+  // now proven on real 2-machine Hetzner frames (substrate-peer-log-compaction
+  // -2026-06-13 D-008: a fresh joiner converged with contiguousLength=0 vs the
+  // from-start reader's full 4602 over real NAT/WAN/holepunch). P-008 gate cleared.
+  [FLAGS.SUBSTRATE_LOG_SNAPSHOT]: true,
   // ON by default (alpha flags-default-on policy + EI-316 correctness fix): the
   // guard fires only on a title that embeds an id resolving to a live OPEN
   // work-item — a near-zero-false-positive signal — and force:true is the

@@ -21,7 +21,8 @@
 
 /** Tables whose body column holds human-authored markdown → `.md` + frontmatter. */
 const PROSE_TABLES = new Set([
-  'harness_decisions', 'harness_summaries', 'harness_escalations',
+  // `harness_summaries` removed — fs-watcher-retirement step 2 (migration 280).
+  'harness_decisions', 'harness_escalations',
   'harness_design_artifacts', 'harness_text_artifacts', 'harness_feature_notes',
   'harness_feature_debug_notes', 'harness_skills', 'goals',
   'harness_tests', 'harness_proposals_shared', 'directive_summaries',

@@ -55,7 +55,12 @@ export const DEFAULT_SPEC: TableSpec = { key: 'slug-shared', sync: 'none' };
  * key=slug-shared; PG hydrates from / exports to `.papercusp/state/<…>`.
  */
 const GIT_DOCS = [
-  'harness_decisions', 'harness_summaries', 'harness_escalations',
+  // NB: `harness_summaries` was here but is REMOVED (fs-watcher-retirement step 2,
+  // migration 280). It mirrored the top-level `.papercusp/summary.md`, a dead
+  // legacy path: nothing wrote the file and nothing read the table (the live
+  // summary UI is served from harness_text_artifacts, migration 035). The table
+  // is dropped; detachStaleGitCaptureTriggers cleans up its capture trigger on boot.
+  'harness_decisions', 'harness_escalations',
   'harness_design_artifacts', 'harness_text_artifacts', 'harness_chunk_plans',
   'harness_feature_notes', 'harness_feature_debug_notes', 'feature_audit_consolidated',
   'harness_tests',

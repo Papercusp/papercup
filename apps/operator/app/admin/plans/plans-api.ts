@@ -510,11 +510,14 @@ export interface AssignResult {
   ok?: boolean;
   msg_id?: string;
   error?: string;
-  wake?: { woken?: number; warning?: string };
+  wake?: { mode?: string; woken?: number; recipient_absent?: boolean };
 }
 
-/** Assign a plan or plan-item to a hive member: a coord:send (wake:true) that
- *  lands in their inbox AND re-invokes them now (shared-hive-collaboration P-008). */
+/** Assign a plan or plan-item to a hive member: a coord:send (wake:'optimistic')
+ *  that lands durably in their inbox AND best-effort re-invokes them now.
+ *  Optimistic (not 'required') because the assignee may be asleep and the
+ *  assignment still lands + the Queen survey re-dispatches — a miss is silent,
+ *  not a loud recipient_absent (directed-wake-honesty D-002; shared-hive-collab P-008). */
 export function assignToUser(args: AssignArgs): Promise<AssignResult> {
   const target = args.itemRef
     ? `item ${args.itemRef} (plan ${args.planSlug})`
@@ -527,7 +530,8 @@ export function assignToUser(args: AssignArgs): Promise<AssignResult> {
     to: args.to,
     summary,
     body,
-    wake: args.wake ?? true,
+    // default 'optimistic' (durable backstop = the Queen survey); explicit wake:false ⇒ no wake.
+    wake: args.wake === false ? undefined : 'optimistic',
     plan_slug: args.planSlug,
   });
 }

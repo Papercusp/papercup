@@ -67,14 +67,17 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // proof). OFF = staleness-only authority selection, byte-identical to pre-P-016
   // + fail-open (D-004); the flip is gated on the two-machine eviction proof.
   FLAGS.AUTHORITY_EVICTION_PROBE,
-  // substrate-peer-log-compaction-2026-06-13 (design A, D-005 / P-008): peer-log
-  // snapshot compaction + fresh-joiner cursor-seeding is wired + the fold-from-
-  // snapshot correctness is proven single-box, but the real-wire replay-cost
-  // saving (Hypercore sparse-fetch) + cross-machine convergence are
-  // real-hardware-unverified (P-008, the same D-003 gate as the sibling
-  // AUTHORITY_RPC_PROTOMUX). OFF = no snapshot ops produced + cursor seeds at 0,
-  // byte-identical to today; the flip is gated on the two-machine proof.
-  FLAGS.SUBSTRATE_LOG_SNAPSHOT,
+  // (FLAGS.SUBSTRATE_LOG_SNAPSHOT graduated to default-ON 2026-06-14:
+  // substrate-peer-log-compaction-2026-06-13 D-008 — the real-wire 2-machine
+  // Hetzner proof landed green (fresh joiner converged with contiguousLength=0
+  // vs the from-start reader's full 4602 over real NAT/WAN/holepunch), clearing
+  // the P-008 gate. No longer dark.)
+  // worker-chunk-loop-operator-hosted-2026-06-14 (P-142 / D-003): the operator-
+  // hosted worker:chunk-loop is the coding HOT PATH and ships dark, then
+  // dark-launch → 25/50/100 cohort ramp → retire. OFF = the subprocess chunk
+  // loop, unchanged. Genuinely incomplete-until-ramped per the FLAG_DEFAULTS
+  // comment; flipped per-cohort as parity metrics confirm each step.
+  FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT,
   // self-learning-frontier D-001 (owner-ratified dark-ship rule): every
   // frontier LEARNING LOOP ships built + tested + DARK, arming only when the
   // plan's P-001 gate closes (consume-edges P-013 live proof + owner

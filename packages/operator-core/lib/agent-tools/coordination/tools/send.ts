@@ -17,10 +17,10 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send a message to other coordination agents. `to` is a list of ownerIds; use ["*"] to broadcast, ["human"] to surface to the user. By default the message is INJECTED (lands in the recipient\'s inbox, seen on their next natural turn — cheap, no token cost). Pass `wake:true` to ALSO re-invoke a SLEEPING recipient now (deliver-and-wake) — targeted to exactly the addressees, never a broadcast. Returns the assigned msg_id.',
+    'Send a message to other coordination agents. `to` is a list of ownerIds; use ["*"] to broadcast, ["human"] to surface to the user. By default the message is INJECTED (lands in the recipient\'s inbox, seen on their next natural turn — cheap, no token cost). Pass `wake:\'required\'` to ALSO re-invoke a SLEEPING recipient now (deliver-and-wake) — if it lands nowhere the result carries recipient_absent:true (a loud miss to handle); `wake:\'optimistic\'` is a silent best-effort wake over a durable backstop. Targeted to the addressees only, never a broadcast. Returns the assigned msg_id.',
   guidance: {
-    when: 'Sharing context with another agent — "I just finished X, the next step is Y", or asking a question, or handing off a piece of work. Use wake:true ONLY when the recipient is idle/asleep and must act now (a Queen placing work onto a sleeping bee); a running recipient already sees the inject mid-turn, so wake is wasted on it.',
-    notWhen: 'For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don\'t set wake:true for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in).',
+    when: 'Sharing context with another agent — "I just finished X, the next step is Y", or asking a question, or handing off a piece of work. Use wake:\'required\' ONLY when the recipient is idle/asleep and MUST act now (a Queen placing work onto a sleeping bee) — if it reaches nobody you get recipient_absent (a real miss to handle). Use wake:\'optimistic\' when a durable backstop will catch a miss (e.g. the Queen survey re-dispatches anyway). A running recipient already sees the inject mid-turn, so a wake is wasted on it.',
+    notWhen: 'For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don\'t set a wake for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in).',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -33,14 +33,20 @@ export default defineTool({
     plan_slug: z.string().optional(),
     related_msg_id: z.string().optional(),
     wake: z
-      .boolean()
+      .union([z.boolean(), z.enum(['required', 'optimistic'])])
       .optional()
       .describe(
-        'Default false (cheap inject). true = ALSO fire each addressee\'s inbox-wake key so a SLEEPING recipient is re-invoked now. Targeted to the addressees only — never a broadcast wake (\'*\'/\'human\' are skipped).',
+        "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort over a durable backstop (wake if present, shrug if not — e.g. the Queen survey re-dispatches anyway); a miss is silent. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
       ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // Wake INTENT (directed-wake-honesty D-002): 'required' = the wake must land
+    // (a clean miss → recipient_absent); 'optimistic' = best-effort over a durable
+    // backstop (silent miss). Legacy boolean coerces: true → 'required' (the safe
+    // loud default), false/omit → no wake.
+    const wakeMode: 'required' | 'optimistic' | null =
+      args.wake === true ? 'required' : args.wake === false || args.wake == null ? null : args.wake;
     // Record the sender's harness when it's a real, harness-scoped agent
     // (pipeline roles carry ctx.harnessSlug). '*'/empty = operator/SU/oracle
     // wildcard ⇒ workspace-level (broadcast); leave harness unset there.
@@ -59,7 +65,7 @@ export default defineTool({
       // recipient homed on a REMOTE instance is woken by the coord-message
       // projection's fan when the row arrives there (the local fan below only
       // covers THIS instance's await store).
-      ...(args.wake ? { extra: { wake: true } } : {}),
+      ...(wakeMode ? { extra: { wake: true } } : {}),
     });
 
     // Deliver-and-wake (P-040): the message already persisted to the inbox above
@@ -68,20 +74,33 @@ export default defineTool({
     // targeted emit per ownerId, NEVER a broadcast key (P-042). We wake the
     // POST-expansion recipients (`env.to` — audience selectors already resolved),
     // so a `@plan:`/`@topic:` send wakes exactly the resolved set, not '*'.
-    let wake: { targets: string[]; woken: number; warning?: string } | undefined;
-    if (args.wake) {
+    let wake:
+      | {
+          mode: 'required' | 'optimistic';
+          targets: string[];
+          woken: number;
+          staged?: number;
+          recipient_absent?: boolean;
+          note?: string;
+        }
+      | undefined;
+    if (wakeMode) {
       const fan = await wakeRecipients(env.to, {
         summary: args.summary,
         source: identity.ownerId,
       });
-      wake = { targets: fan.targets, woken: fan.woken };
-      // turn-lifecycle-control P-007 / D-010: a wake:true that fired with zero
-      // live awaits re-invoked NO ONE — it degraded to a plain inbox inject.
-      // Surface that instead of a silent ok (the gap that made su-d96e6 look
-      // fine when nothing was listening).
-      if (fan.targets.length > 0 && fan.woken === 0) {
-        wake.warning =
-          'wake fired but no live wake-watch was registered for the addressee(s) — the message was injected to their inbox (seen on their next natural turn) but no session was re-invoked now.';
+      wake = { mode: wakeMode, targets: fan.targets, woken: fan.woken };
+      if (fan.staged > 0) wake.staged = fan.staged;
+      // P-002/P-005: a REQUIRED directed wake that reached wakeable addressees
+      // (`targets` already excludes '*'/'human') yet woke nobody AND deferred
+      // nobody (Pause/manual staging) is a loud miss — recipient_absent, replacing
+      // the old silent woken:0 warning. OPTIMISTIC misses stay silent (P-004: the
+      // inbox row persisted regardless; a durable backstop picks it up).
+      if (wakeMode === 'required' && fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0) {
+        wake.recipient_absent = true;
+        wake.note =
+          `required wake reached no awake/watching session for: ${fan.targets.join(', ')} — ` +
+          'the message was injected to their inbox (seen on their next natural turn), but no session was re-invoked now.';
       }
     }
 

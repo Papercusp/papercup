@@ -1,8 +1,7 @@
 /**
- * Per-process singleton that mirrors three FS data sources to PG so that
+ * Per-process singleton that mirrors two FS data sources to PG so that
  * panels can read via Zero's WS push instead of polling REST:
  *
- *   .papercusp/summary.md             → harness_shared.harness_summaries
  *   .papercusp/pending-reviews/*.json → harness_shared.pending_reviews
  *   .papercusp/proposals/*.md         → harness_shared.harness_proposals_shared
  *
@@ -62,7 +61,6 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 
-const hsum = generated.harnessSummariesInHarnessShared;
 const prev = generated.pendingReviewsInHarnessShared;
 const hps = generated.harnessProposalsSharedInHarnessShared;
 const hph = generated.harnessPhasesInHarnessShared;
@@ -82,7 +80,7 @@ const DEBOUNCE_MS = 200;
 /**
  * Paths chokidar must never walk or poll.
  *
- * The dispatch only needs *structured* files — summary.md, `*.json` reviews,
+ * The dispatch only needs *structured* files — `*.json` reviews,
  * `*.md` proposals, the per-branch action metadata. It does NOT need the
  * high-volume append-only run logs under `action-runs/<branch>/…`: those grow
  * continuously, so chokidar's `awaitWriteFinish` (50 ms poll) would `lstat`
@@ -169,9 +167,12 @@ export function watchedPaths(p: ProjectEntry): string[] {
   for (const { harnessDir } of harnessDirsForProject(p)) {
     if (!existsSync(harnessDir)) continue; // anchor missing — reconcile adds it later
     out.push(
-      join(harnessDir, 'summary.md'),
       join(harnessDir, 'pending-reviews'),
       join(harnessDir, 'proposals'),
+      // summary.md: chokidar dispatch retired (fs-watcher-retirement step 2).
+      // The harness_summaries mirror was a dead legacy path — nothing wrote
+      // the top-level .papercusp/summary.md and nothing read the table (the
+      // live summary UI is served from harness_text_artifacts, migration 035).
       // pending-issues.jsonl: chokidar dispatch retired; producer-time
       // PG writes from operator endpoints replaced the mirror.
       // config.json, tests/, escalation.md, supervisor-notes.md,
@@ -231,44 +232,6 @@ function phaseForPath(state: WatcherState, p: string): PhasedMatch | null {
     }
   }
   return null;
-}
-
-async function upsertSummary(slug: string, phase: Phase, path: string): Promise<void> {
-  const { db } = getOrgPg();
-  let content = '';
-  let mtimeMs = 0;
-  try {
-    const buf = await fs.readFile(path);
-    content = buf.toString('utf8');
-    mtimeMs = statSync(path).mtimeMs;
-  } catch {
-    return; // file vanished mid-debounce
-  }
-  const ws = activeWorkspaceId();
-  await db
-    .insert(hsum)
-    .values({
-      harnessSlug: slug,
-      phase,
-      content,
-      mtimeMs: Math.floor(mtimeMs),
-      updatedAt: Date.now(),
-      workspaceId: ws,
-    })
-    .onConflictDoUpdate({
-      target: [hsum.harnessSlug, hsum.phase],
-      set: {
-        content: dsql`EXCLUDED.content`,
-        mtimeMs: dsql`EXCLUDED.mtime_ms`,
-        updatedAt: dsql`EXCLUDED.updated_at`,
-        workspaceId: dsql`EXCLUDED.workspace_id`,
-      },
-    });
-}
-
-async function deleteSummary(slug: string, phase: Phase): Promise<void> {
-  const { db } = getOrgPg();
-  await db.delete(hsum).where(and(eq(hsum.harnessSlug, slug), eq(hsum.phase, phase)));
 }
 
 interface ReviewPayload {
@@ -676,14 +639,6 @@ function classifyAndDispatch(
   const { project, phase, harnessDir: hd } = match;
   const slug = project.slug;
 
-  if (path === join(hd, 'summary.md')) {
-    debounce(state, `summary:${slug}:${phase}`, async () => {
-      if (kind === 'unlink') await deleteSummary(slug, phase);
-      else await upsertSummary(slug, phase, path);
-    });
-    return;
-  }
-
   // Pending reviews: top-level *.json only. Skip nested archive subdirs.
   const reviewsDir = join(hd, 'pending-reviews');
   if (
@@ -901,21 +856,6 @@ async function reconcileAll(state: WatcherState): Promise<void> {
 
         // Smoke test: written at producer time by bin/service-smoke-test.sh
         // → /api/internal/smoke-test-event. No reconcile sweep needed.
-      }
-
-      const summaryPath = join(hd, 'summary.md');
-      if (existsSync(summaryPath)) {
-        try {
-          const fsMtime = Math.floor(statSync(summaryPath).mtimeMs);
-          const { db } = getOrgPg();
-          const rows = await db
-            .select({ mtime_ms: hsum.mtimeMs })
-            .from(hsum)
-            .where(and(eq(hsum.harnessSlug, proj.slug), eq(hsum.phase, phase)));
-          if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
-            await upsertSummary(proj.slug, phase, summaryPath);
-          }
-        } catch {}
       }
 
       for (const sub of ['pending-reviews', 'proposals'] as const) {

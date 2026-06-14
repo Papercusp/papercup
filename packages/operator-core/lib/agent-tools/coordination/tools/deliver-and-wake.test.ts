@@ -184,11 +184,36 @@ describe('coord:send', () => {
     expect(await log.readLines('messages')).toHaveLength(1);
   });
 
-  it('wake:true to a live target that wakes NO ONE returns the woken:0 warning (P-007/D-010)', async () => {
+  it("wake:'required' to a live target that wakes NO ONE returns recipient_absent — the loud miss (directed-wake-honesty P-002)", async () => {
     // The addressee is a concrete agent (a real target), but nothing is
-    // listening on its inbox-wake key — emitAwaitedEvent fires and resolves
-    // woken:0. This is the exact su-d96e6 gap: the wake degraded to a plain
-    // inbox inject and used to return a silent ok:true. P-007 surfaces it.
+    // listening on its inbox-wake key — emitAwaitedEvent resolves woken:0. The
+    // old behavior was a silent woken:0 warning; D-002 makes a REQUIRED wake that
+    // lands nowhere a loud recipient_absent the caller can react to.
+    emitAwaitedEvent.mockResolvedValueOnce({
+      ok: true as const,
+      key: inboxWakeKey('su-bee-1'),
+      woken: 0,
+      notified: [] as string[],
+      msgId: null,
+    });
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: 'required' }),
+      ctx,
+    );
+    const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
+    expect(keys).toEqual([inboxWakeKey('su-bee-1')]);
+    const { wake } = out(res);
+    expect(wake.mode).toBe('required');
+    expect(wake.targets).toEqual(['su-bee-1']);
+    expect(wake.woken).toBe(0);
+    expect(wake.recipient_absent).toBe(true);
+    expect(typeof wake.note).toBe('string');
+    // P-004: durability is unchanged — recipient_absent alters only the signal,
+    // never delivery; the message is still in the durable inbox.
+    expect(await log.readLines('messages')).toHaveLength(1);
+  });
+
+  it("legacy wake:true coerces to 'required' — a clean miss is still recipient_absent (P-003 transition)", async () => {
     emitAwaitedEvent.mockResolvedValueOnce({
       ok: true as const,
       key: inboxWakeKey('su-bee-1'),
@@ -200,28 +225,50 @@ describe('coord:send', () => {
       parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: true }),
       ctx,
     );
-    // the wake was attempted on the right key…
-    const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
-    expect(keys).toEqual([inboxWakeKey('su-bee-1')]);
     const { wake } = out(res);
-    // …but woke no one, so the result is a target with woken:0 AND a warning.
-    expect(wake.targets).toEqual(['su-bee-1']);
-    expect(wake.woken).toBe(0);
-    expect(typeof wake.warning).toBe('string');
-    expect(wake.warning).toMatch(/no live wake-watch|no session was re-invoked/i);
-    // the message is still durably in the inbox (the wake is the only no-op).
-    expect(await log.readLines('messages')).toHaveLength(1);
+    expect(wake.mode).toBe('required');
+    expect(wake.recipient_absent).toBe(true);
   });
 
-  it('wake:true that DOES wake an await returns NO warning (woken>0 control, P-007/D-010)', async () => {
-    // default mock returns woken:1 per emit → two targets ⇒ woken:2, no warning.
+  it("wake:'optimistic' that wakes NO ONE is SILENT — best-effort over a durable backstop (P-002)", async () => {
+    emitAwaitedEvent.mockResolvedValueOnce({
+      ok: true as const,
+      key: inboxWakeKey('su-bee-1'),
+      woken: 0,
+      notified: [] as string[],
+      msgId: null,
+    });
     const res = await coordSend.handler(
-      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', wake: true }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', wake: 'optimistic' }),
       ctx,
     );
     const { wake } = out(res);
-    expect(wake).toMatchObject({ targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
-    expect(wake.warning).toBeUndefined();
+    expect(wake.mode).toBe('optimistic');
+    expect(wake.woken).toBe(0);
+    expect(wake.recipient_absent).toBeUndefined(); // a miss over a backstop is not loud
+    expect(await log.readLines('messages')).toHaveLength(1);
+  });
+
+  it("wake:'required' that DOES wake returns NO recipient_absent (woken>0 control)", async () => {
+    // default mock returns woken:1 per emit → two targets ⇒ woken:2.
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', wake: 'required' }),
+      ctx,
+    );
+    const { wake } = out(res);
+    expect(wake).toMatchObject({ mode: 'required', targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
+    expect(wake.recipient_absent).toBeUndefined();
+  });
+
+  it("broadcast-only with wake:'required' is EXEMPT from recipient_absent (P-005 — '*' was never wakeable)", async () => {
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['*'], summary: 'b', wake: 'required' }),
+      ctx,
+    );
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    const { wake } = out(res);
+    expect(wake.targets).toEqual([]);
+    expect(wake.recipient_absent).toBeUndefined();
   });
 });
 

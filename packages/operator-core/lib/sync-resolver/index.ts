@@ -522,41 +522,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── Batch 6: summary / phases / smoke-test / brainstorm ─
-
-  // summary.byHarness — single summary row per (harness, workspace, phase).
-  //   zql.harnessSummaries.where(harnessSlug).where(workspaceId).where(phase).limit(1)
-  // ZQL comment explains why .limit(1) instead of .one() — replication
-  // returns undefined from useQuery; array works around the empty-state bug.
-  'summary.byHarness': {
-    argsSchema: z.object({
-      harnessSlug: z.string(),
-      workspaceId: z.string(),
-      phase: z.string().default('staging'),
-    }),
-    resolve: async (args) => {
-      const { harnessSlug, workspaceId, phase } = args as {
-        harnessSlug: string;
-        workspaceId: string;
-        phase: string;
-      };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { and, eq } = await import('drizzle-orm');
-      const t = generated.harnessSummariesInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(
-          and(
-            eq(t.harnessSlug, harnessSlug),
-            eq(t.workspaceId, workspaceId),
-            eq(t.phase, phase),
-          ),
-        )
-        .limit(1)) as unknown[];
-    },
-  },
+  // ── Batch 6: phases / smoke-test / brainstorm ─
+  // (summary.byHarness retired — fs-watcher-retirement step 2; the
+  //  harness_summaries mirror was a dead legacy path, dropped in migration 280.
+  //  The live summary UI reads harness_text_artifacts, migration 035.)
 
   // harnessPhases.byHarness — phases ordered by phase column asc.
   //   zql.harnessPhases.where(harnessSlug).orderBy('phase', 'asc')
@@ -1787,6 +1756,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           console.warn('[learning.queenWakeEfficiency] read failed:', msg);
         }
         return [EMPTY_QUEEN_WAKE_EFFICIENCY];
+      }
+    },
+  },
+
+  // ── trust.list — the owner's LOCAL trusted-GitHub-user list ──
+  //
+  // The trust list (listTrustedUsers, ws-scoped D-004) the /settings/trust owner surface renders +
+  // the admission gate (work-items-admission.ts) consults so a VERIFIED trusted author's remote work
+  // auto-runs (shared-hive-trust-admission-2026-06-14 Phase 4 / P-011, Trust A4). Returns the flat
+  // TrustedUser[] (client reads `data` as the array). NOT table-backed — the trust-set write route
+  // fires notifySyncInvalidate('trust.list'). A not-yet-applied migration (276) degrades to [] — the
+  // page renders its empty state, never a 500.
+  'trust.list': {
+    resolve: async () => {
+      const { listTrustedUsers } = await import('../trust/user-trust-list');
+      try {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        return await listTrustedUsers(activeWorkspaceId());
+      } catch (err) {
+        const code = (err as { code?: string })?.code;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
+          console.warn('[trust.list] read failed:', msg);
+        }
+        return [];
       }
     },
   },
