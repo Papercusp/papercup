@@ -58,6 +58,34 @@ export async function capturePlanParts(
 }
 
 /**
+ * Seed a DETERMINISTIC baseline for a plan's parts when the store has none yet
+ * (plan-federation-regrain P-010). Decomposes `content` and upserts each part at
+ * fed_ts=0, origin='remote' — so the capture trigger does NOT federate the baseline
+ * (every peer self-seeds the SAME baseline from the same pre-cutover content, so
+ * there's nothing to send). fed_ts=0 means a real edit (fed_ts=now) always wins the
+ * LWW, and two peers' UNCHANGED parts TIE (identical body + fed_ts) instead of
+ * racing. Idempotent + best-effort: a no-op once any part exists, so it never
+ * clobbers real federated state. Returns true iff it seeded.
+ *
+ * Used on BOTH sides of the cutover so no operator restart / boot-backfill is
+ * needed: the send side (with-plan-lock) baselines from the pre-edit content
+ * before capturing the edit; the receive side (the projection) baselines from the
+ * local harness_plans.content before applying the first incoming part for a plan,
+ * so a lone part op never recomposes a broken `join({one part})`.
+ */
+export async function ensurePlanPartsBaseline(
+  store: PlanPartsStore,
+  planSlug: string,
+  content: string,
+): Promise<boolean> {
+  const existing = await store.getParts(planSlug);
+  if (existing.size > 0) return false; // already have parts — never reseed (idempotent)
+  const parts = splitPlanIntoParts(content);
+  for (const p of parts) await store.upsertPart(planSlug, { ...p, fedTs: 0 }, 'remote');
+  return parts.length > 0;
+}
+
+/**
  * Apply remote per-part ops (LWW-merged by the store) and recompose the plan
  * content from the merged live parts. Returns the new content for the caller to
  * upsert into `harness_plans.content`. Order-independent (commutative).

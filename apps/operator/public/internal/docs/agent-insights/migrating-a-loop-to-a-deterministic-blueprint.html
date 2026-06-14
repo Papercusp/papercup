@@ -151,13 +151,36 @@ workflow, a different context), not a gap. Don’t re-migrate the already-integr
 <code dir="auto">node:child_process</code> (only <code dir="auto">spawn</code>) made <code dir="auto">execFile</code> undefined → <code dir="auto">promisify(undefined)</code>
 threw AT IMPORT, poisoning every test whose graph includes the module. Promisify /
 resolve lazily INSIDE the function.</li>
-<li><strong>Workspace-singleton cadence ≠ blueprint <code dir="auto">triggers.schedule</code> materialization.</strong>
-The migrated loops are workspace SINGLETONS (one routine per workspace), but
-<code dir="auto">materializeBlueprintTriggers</code> creates one routine PER INSTALL (keyed
-<code dir="auto">(install_slug, name)</code>) seeded ACTIVE. So the loops keep their bespoke singleton
-SEED scripts (which also do governor registration); the blueprint’s <code dir="auto">triggers.schedule</code>
-is DOCUMENTATION of the cadence, not the live materializer (D-010 / D-012). Making
-it the live mechanism needs a per-workspace host-slug convention — an open design call.</li>
+<li><strong>Workspace-singleton cadence: there is now a first-class trigger for it (D-018).</strong>
+A migrated loop is a workspace SINGLETON (one routine per workspace), but the default
+<code dir="auto">materializeBlueprintTriggers</code> mints one routine PER INSTALL (keyed <code dir="auto">(install_slug, name)</code>) seeded ACTIVE — so naively declaring <code dir="auto">triggers.schedule</code> would N-duplicate into
+N ACTIVE pulses (the D-010/D-012(b) objection that kept the bespoke SEED scripts as the
+live materializer). A schedule entry can now declare <strong><code dir="auto">singleton: true</code></strong>: materialize
+upserts EXACTLY ONE routine per workspace, seeded INACTIVE/dark, under the reserved
+synthetic host-slug <code dir="auto">SINGLETON_TRIGGER_HOST_SLUG</code> (<code dir="auto">@singleton</code>), named
+<code dir="auto">bp-singleton-&#x3C;blueprintId>-&#x3C;i></code> (blueprint-unique under the shared slug). This is the
+CAPABILITY only (<code dir="auto">packages/operator-core/lib/blueprint/materialize-triggers.ts</code>);
+rewiring the ~13 loops onto it — retiring each bespoke seed + folding its
+<code dir="auto">registerLearningLoop</code> governor registration — is the per-loop follow-on (D-018 step 2,
+reverses D-012(b) one loop at a time under the arming gates), NOT the capability. Until a
+loop is rewired, its bespoke seed stays the live materializer.</li>
+<li><strong>worker-chunk-loop → operator-hosted op (P-142/D-017, Option A) is NOT a thin op-wrap —
+it needs a NEW operator-side worker-spawn primitive.</strong> <code dir="auto">runChunkLoopCore</code> is cleanly
+extracted (stage a) and takes injected <code dir="auto">ChunkLoopDeps</code>, so an op CALLING it is easy. The
+hard part is the deps: <code dir="auto">planChunks</code> needs the worker’s RAW LLM output, <code dir="auto">implementChunk</code>
+needs a worker run against a SCRATCH dir reporting its TOUCHED files, and the loop
+commits per chunk. The existing <code dir="auto">ctx.caps.spawnRoles</code> (the <code dir="auto">orchestrator:spawn-roles</code> op)
+is a CONVERSATION fan-out — it spawns role agents that post into a thread and exit; it
+has no cwd/scratch, no raw-output capture, no touched-files report. So an operator-hosted
+<code dir="auto">worker:chunk-loop</code> op must build a new “run a worker against a scratch checkout, capture
+output + touched files” spawn primitive (plus repo checkout operator-side). That is the
+operator↔subprocess topology re-architecture D-015 flags as the coding HOT PATH — staged
+<ul>
+<li>owner-watched + monitored over weeks (dark-launch → 25→50→100% ramp → retire), NOT an
+overnight cutover. Don’t write a mock-only op shell and call P-142 “built”: its substance
+IS the spawn primitive.</li>
+</ul>
+</li>
 <li><code dir="auto">validateBlueprint</code> is called WITHOUT <code dir="auto">knownOps</code> at every current call site, so a
 program op that doesn’t exist is caught at RUN time (<code dir="auto">requireCoordOp</code> throws), not
 load time. Register your op (import the family index) wherever the program runs.</li>
@@ -195,4 +218,4 @@ target isn’t a still-registered action is suspect.)</li>
 <li>Shared orchestration: <code dir="auto">packages/operator-core/lib/negative-space/mine.ts</code></li>
 <li>Blueprint: <code dir="auto">libs/papercusp/packages/harness/blueprints/negative-space/blueprint.yaml</code></li>
 <li>Tests: <code dir="auto">packages/operator-core/lib/blueprint-steps/negative-space-blueprint.test.ts</code></li>
-</ul> </div> <footer class="sl-flex astro-a4xayftd"> <div class="meta sl-flex astro-a4xayftd">  <p>Last updated: <time datetime="2026-06-13T21:31:01.000Z">Jun 13, 2026</time></p> </div> <div class="pagination-links print:hidden astro-7owt327e" dir="ltr"> <a href="/internal/docs/agent-insights/gym-as-blueprint.html" rel="prev" class="astro-7owt327e"> <svg aria-hidden="true" class="astro-7owt327e astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-7owt327e"> Previous <br class="astro-7owt327e"> <span class="link-title astro-7owt327e">The gym is a blueprint (gym-as-blueprint port)</span> </span> </a> <a href="/internal/docs/agent-insights/substrate-diagnostic-stack.html" rel="next" class="astro-7owt327e"> <svg aria-hidden="true" class="astro-7owt327e astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-7owt327e"> Next <br class="astro-7owt327e"> <span class="link-title astro-7owt327e">Substrate diagnostic stack — what to use when the Hyperbee flag flips</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+</ul> </div> <footer class="sl-flex astro-a4xayftd"> <div class="meta sl-flex astro-a4xayftd">  <p>Last updated: <time datetime="2026-06-14T01:10:39.000Z">Jun 14, 2026</time></p> </div> <div class="pagination-links print:hidden astro-7owt327e" dir="ltr"> <a href="/internal/docs/agent-insights/gym-as-blueprint.html" rel="prev" class="astro-7owt327e"> <svg aria-hidden="true" class="astro-7owt327e astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-7owt327e"> Previous <br class="astro-7owt327e"> <span class="link-title astro-7owt327e">The gym is a blueprint (gym-as-blueprint port)</span> </span> </a> <a href="/internal/docs/agent-insights/substrate-diagnostic-stack.html" rel="next" class="astro-7owt327e"> <svg aria-hidden="true" class="astro-7owt327e astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-7owt327e"> Next <br class="astro-7owt327e"> <span class="link-title astro-7owt327e">Substrate diagnostic stack — what to use when the Hyperbee flag flips</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

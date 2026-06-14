@@ -19,6 +19,7 @@ import { joinFederatedParts, hashPlanContent, parsePlan, type FederatedPart, typ
 import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store';
+import { ensurePlanPartsBaseline } from '../../../plan-parts/federation';
 
 /** The federated subset of a harness_plan_parts row (the wire shape). */
 export interface PlanPartWireRow {
@@ -56,6 +57,11 @@ export interface HarnessPlanPartsProjectionOpts {
   recomposeSink?: (planSlug: string, content: string, contentHash: string, provenance?: ProvenanceContext) => Promise<void>;
   /** Test seam — the local flag gate (default: getFlag(PLAN_PART_FEDERATION,'system')). */
   isFlagOn?: () => Promise<boolean>;
+  /** Test seam — read the local harness_plans.content for a plan (default: the SQL
+   *  below). Used by the P-010 receive-side baseline: before applying the FIRST
+   *  incoming part for a plan, seed the full baseline from this content so the
+   *  recompose merges into the whole plan instead of a broken join({one part}). */
+  readLocalContent?: (planSlug: string) => Promise<string | null>;
 }
 
 function composeKey(row: PlanPartWireRow): string {
