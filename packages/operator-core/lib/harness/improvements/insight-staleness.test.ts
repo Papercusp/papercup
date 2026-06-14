@@ -116,7 +116,7 @@ describe('scanInsightStaleness', () => {
     // Both citations missing by the strict suffix check, but their basenames exist
     // elsewhere → path-prefix drift, NOT a vanished evidence base → repoint, not supersede.
     const [downgraded] = scanInsightStaleness(
-      [insight('prefix-drift', 'Edit `core/a.ts` and `core/b.ts`.')],
+      [insight('prefix-drift', 'Edit `packages/old/a.ts` and `packages/old/b.ts`.')],
       exists([]),
       { basenameExistsFn },
     );
@@ -125,7 +125,7 @@ describe('scanInsightStaleness', () => {
 
     // Without the guard, the same all-missing input stays apoptotic (legacy behavior).
     const [legacy] = scanInsightStaleness(
-      [insight('prefix-drift', 'Edit `core/a.ts` and `core/b.ts`.')],
+      [insight('prefix-drift', 'Edit `packages/old/a.ts` and `packages/old/b.ts`.')],
       exists([]),
     );
     expect(legacy.title).toMatch(/obsolete .* all cited files are gone/i);
