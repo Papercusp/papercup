@@ -7,6 +7,7 @@ import {
   extractCitedPaths,
   scanInsightStaleness,
   makeRepoPathResolver,
+  makeRepoBasenameResolver,
   collectInsightStalenessSignals,
   DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS,
 } from './insight-staleness';
@@ -29,6 +30,17 @@ describe('extractCitedPaths — conservative repo-file extraction', () => {
 
   it('dedups repeated citations', () => {
     expect(extractCitedPaths('`libs/flags/src/types.ts` then `libs/flags/src/types.ts`')).toHaveLength(1);
+  });
+
+  it('Class 1 (EI-510): skips a path whose own line carries a removal/move marker', () => {
+    expect(extractCitedPaths('The routes moved off `apps/operator/app/api/_hono/mobile.ts` onto device/*.')).toEqual([]);
+    expect(extractCitedPaths('This used to live at `packages/x/old-home.ts`.')).toEqual([]);
+    expect(extractCitedPaths('`packages/x/gone.ts` was removed in the migration.')).toEqual([]);
+    expect(extractCitedPaths('Formerly `libs/old/thing.ts`, now elsewhere.')).toEqual([]);
+    // a live citation on a clean line is still kept
+    expect(extractCitedPaths('See `packages/x/live.ts` for the impl.')).toEqual(['packages/x/live.ts']);
+    // a removal marker on a DIFFERENT line does not suppress a clean-line citation
+    expect(extractCitedPaths('An old file was removed.\nSee `packages/x/live.ts`.')).toEqual(['packages/x/live.ts']);
   });
 });
 
@@ -88,6 +100,45 @@ describe('scanInsightStaleness', () => {
     expect(partial.title).not.toMatch(/obsolete/i);
   });
 
+  it('does not flag an insight whose only citation is a historical removal-marker reference (EI-510 Class 1)', () => {
+    const signals = scanInsightStaleness(
+      [insight('migration-note', 'The handler moved off `packages/x/old-home.ts` to the new module.')],
+      exists([]),
+    );
+    expect(signals).toEqual([]);
+  });
+
+  it('Class-2 guard (EI-510): downgrades apoptotic supersede→repoint when a missing path basename exists elsewhere', () => {
+    const basenameExistsFn = makeRepoBasenameResolver([
+      'packages/operator-core/lib/a.ts',
+      'packages/operator-core/lib/b.ts',
+    ]);
+    // Both citations missing by the strict suffix check, but their basenames exist
+    // elsewhere → path-prefix drift, NOT a vanished evidence base → repoint, not supersede.
+    const [downgraded] = scanInsightStaleness(
+      [insight('prefix-drift', 'Edit `core/a.ts` and `core/b.ts`.')],
+      exists([]),
+      { basenameExistsFn },
+    );
+    expect(downgraded.title).toMatch(/cites files that no longer exist/i);
+    expect(downgraded.title).not.toMatch(/obsolete/i);
+
+    // Without the guard, the same all-missing input stays apoptotic (legacy behavior).
+    const [legacy] = scanInsightStaleness(
+      [insight('prefix-drift', 'Edit `core/a.ts` and `core/b.ts`.')],
+      exists([]),
+    );
+    expect(legacy.title).toMatch(/obsolete .* all cited files are gone/i);
+
+    // A genuinely-vanished basename stays apoptotic even with the guard present.
+    const [vanished] = scanInsightStaleness(
+      [insight('all-gone', 'Only `packages/x/really-vanished.ts` here.')],
+      exists([]),
+      { basenameExistsFn },
+    );
+    expect(vanished.title).toMatch(/obsolete .* all cited files are gone/i);
+  });
+
   it('stamps a resolution cooldown on every signal — default + override (EI-427 deploy-lag suppressor)', () => {
     const [def] = scanInsightStaleness([insight('s', 'See `packages/x/gone.ts`.')], exists([]));
     expect(def.resolutionCooldownMs).toBe(DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS);
@@ -125,6 +176,20 @@ describe('makeRepoPathResolver — suffix-aware existence (EI-510 dropped-prefix
   it('a basename match that is not a whole-component suffix does not over-resolve', () => {
     // real path ends `/lib/loopback-fetch.ts`, NOT `/core/loopback-fetch.ts`.
     expect(makeRepoPathResolver(tracked)('core/loopback-fetch.ts')).toBe(false);
+  });
+});
+
+describe('makeRepoBasenameResolver — basename-only existence (EI-510 Class-2 apoptosis guard)', () => {
+  const tracked = ['packages/operator-core/lib/loopback-fetch.ts', 'libs/flags/src/types.ts'];
+
+  it('matches on basename regardless of prefix (looser than the suffix resolver)', () => {
+    const r = makeRepoBasenameResolver(tracked);
+    expect(r('core/loopback-fetch.ts')).toBe(true); // suffix resolver says false; basename says true
+    expect(r('anything/at/all/types.ts')).toBe(true);
+  });
+
+  it('returns false for a basename present nowhere in the tree', () => {
+    expect(makeRepoBasenameResolver(tracked)('packages/x/really-gone.ts')).toBe(false);
   });
 });
 

@@ -74,8 +74,8 @@ interface DraftMeta {
 }
 
 type ChunkValue =
-  | { ok: true; op: ChunkOp; slug: string; draftId: string; bytes: number; chunks: number; contentHash?: string; filePath?: string; revision?: { seq: number } | null }
-  | { ok: false; code: 'missing_draft_id' | 'missing_chunk' | 'draft_not_found' | 'draft_mismatch' | 'not_found' | 'stale' | 'suspicious_shrink' | 'would_orphan_frontmatter' | 'lint_failed'; slug: string; draftId?: string; currentHash?: string; currentLength?: number; proposedLength?: number; errors?: unknown[] };
+  | { ok: true; op: ChunkOp; slug: string; draftId: string; bytes: number; chunks: number; contentHash?: string; warning?: string; filePath?: string; revision?: { seq: number } | null }
+  | { ok: false; code: 'missing_draft_id' | 'missing_chunk' | 'draft_not_found' | 'draft_mismatch' | 'not_found' | 'stale' | 'suspicious_shrink' | 'would_orphan_frontmatter' | 'lint_failed'; slug: string; draftId?: string; currentHash?: string; reason?: 'bytes' | 'structure'; currentLength?: number; proposedLength?: number; priorItems?: number; priorDecisions?: number; droppedItems?: number; droppedDecisions?: number; errors?: unknown[] };
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -239,8 +239,17 @@ function domainFailurePayload(v: SetContentValue, slug: string, draftId: string)
       code: 'suspicious_shrink',
       slug,
       draftId,
+      reason: v.reason,
       currentLength: v.currentLength,
       proposedLength: v.proposedLength,
+      ...(v.reason === 'structure'
+        ? {
+            priorItems: v.priorItems,
+            priorDecisions: v.priorDecisions,
+            droppedItems: v.droppedItems,
+            droppedDecisions: v.droppedDecisions,
+          }
+        : {}),
     };
   }
   return { ok: false, code: v.code, slug, draftId };
@@ -390,6 +399,9 @@ export default defineTool({
           bytes: draft.meta.bytes,
           chunks: draft.meta.chunks,
           contentHash: result.value.ok ? result.value.contentHash : undefined,
+          // Surfacing (EI-83 fix #2): present only when the commit removed
+          // items/decisions, even an allowed shrink.
+          ...(result.value.ok && result.value.warning ? { warning: result.value.warning } : {}),
           filePath: result.filePath,
           revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
         }),

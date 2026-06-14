@@ -37,7 +37,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
-import { parsePlan } from './parser';
+import { parsePlan, type ParsedPlan } from './parser';
 import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -78,10 +78,23 @@ const argsSchema = z.object({
 });
 
 export type SetContentValue =
-  | { ok: true; slug: string; contentHash: string }
+  | { ok: true; slug: string; contentHash: string; warning?: string }
   | { ok: false; code: 'not_found' }
   | { ok: false; code: 'stale'; currentContent: string; currentHash: string; currentVersion?: number }
-  | { ok: false; code: 'suspicious_shrink'; currentLength: number; proposedLength: number }
+  | {
+      ok: false;
+      code: 'suspicious_shrink';
+      /** What tripped the guard — a wholesale byte shrink, or a structural
+       *  drop of items/decisions that byte size missed (EI-83). */
+      reason: 'bytes' | 'structure';
+      currentLength: number;
+      proposedLength: number;
+      /** Structural deltas (populated for `reason: 'structure'`). */
+      priorItems?: number;
+      priorDecisions?: number;
+      droppedItems?: number;
+      droppedDecisions?: number;
+    }
   | { ok: false; code: 'would_orphan_frontmatter' }
   | { ok: false; code: 'lint_failed'; errors: LintFinding[] };
 
@@ -90,6 +103,76 @@ export type SetContentValue =
  *  hallucinating a fresh doc) and rejected unless the caller passes
  *  `allowShrink: true` (EI-83 / audit P-040). */
 export const SUSPICIOUS_SHRINK_RATIO = 0.2;
+
+/** Once a plan carries at least this many items+decisions, wiping most of
+ *  them is a red flag rather than ordinary churn. Below it the byte-ratio
+ *  guard is the only shrink check — a tiny plan legitimately rewrites its
+ *  handful of items, and a structural ratio on small counts is all noise. */
+export const STRUCTURAL_GUARD_MIN_PRIOR = 5;
+/** A write that drops MORE than this fraction of the prior plan's combined
+ *  items+decisions is treated as a probable truncation and rejected without
+ *  `allowShrink`. The EI-83 forensic dropped 100% (15 items + 9 decisions)
+ *  while keeping enough prose that the byte-ratio guard alone would not have
+ *  caught a prose-heavy variant — the structural count is the real signal. */
+export const STRUCTURAL_DROP_RATIO = 0.5;
+
+/**
+ * The mass-deletion guard: a byte-ratio shrink OR a structural drop of
+ * items/decisions (EI-83). Byte ratio catches a wholesale truncated paste;
+ * the structural check catches the case byte size misses — a prose-heavy plan
+ * whose items + decisions are wiped while a long `## Background` keeps the
+ * byte count above the ratio. Returns the rejection value, or null to pass.
+ */
+function detectSuspiciousShrink(
+  current: string,
+  content: string,
+  currentParsed: ParsedPlan,
+  proposed: ParsedPlan,
+): Extract<SetContentValue, { code: 'suspicious_shrink' }> | null {
+  // 1. Wholesale byte shrink — a truncated paste / wrong-plan write.
+  if (content.length < current.length * SUSPICIOUS_SHRINK_RATIO) {
+    return {
+      ok: false,
+      code: 'suspicious_shrink',
+      reason: 'bytes',
+      currentLength: current.length,
+      proposedLength: content.length,
+    };
+  }
+  // 2. Structural drop — items/decisions destroyed even though bytes survived.
+  const priorStructural = currentParsed.items.length + currentParsed.decisions.length;
+  const proposedStructural = proposed.items.length + proposed.decisions.length;
+  if (
+    priorStructural >= STRUCTURAL_GUARD_MIN_PRIOR &&
+    proposedStructural < priorStructural * (1 - STRUCTURAL_DROP_RATIO)
+  ) {
+    return {
+      ok: false,
+      code: 'suspicious_shrink',
+      reason: 'structure',
+      currentLength: current.length,
+      proposedLength: content.length,
+      priorItems: currentParsed.items.length,
+      priorDecisions: currentParsed.decisions.length,
+      droppedItems: currentParsed.items.length - proposed.items.length,
+      droppedDecisions: currentParsed.decisions.length - proposed.decisions.length,
+    };
+  }
+  return null;
+}
+
+/** Surfacing (EI-83 fix #2): a one-line "this write removed N items" note
+ *  attached to a SUCCESSFUL write whenever it drops items/decisions — so even
+ *  an allowed shrink is visible in the response instead of silent. */
+function shrinkWarning(currentParsed: ParsedPlan, proposed: ParsedPlan): string | undefined {
+  const droppedItems = currentParsed.items.length - proposed.items.length;
+  const droppedDecisions = currentParsed.decisions.length - proposed.decisions.length;
+  if (droppedItems <= 0 && droppedDecisions <= 0) return undefined;
+  const parts: string[] = [];
+  if (droppedItems > 0) parts.push(`${droppedItems} item${droppedItems === 1 ? '' : 's'}`);
+  if (droppedDecisions > 0) parts.push(`${droppedDecisions} decision${droppedDecisions === 1 ? '' : 's'}`);
+  return `This write removed ${parts.join(' and ')}.`;
+}
 
 /**
  * The pure CAS + legacy-boundary + lint decision for a set-content
@@ -132,32 +215,22 @@ export async function evaluateSetContent(
     };
   }
 
-  // 1b. Mass-deletion guard (EI-83 / audit P-040) — a body that shrinks the
-  //     plan past SUSPICIOUS_SHRINK_RATIO is far more often a truncated
-  //     paste or a wrong-plan write than an intentional rewrite. Require
-  //     the caller to say so explicitly.
-  if (
-    !opts.allowShrink &&
-    content.length < current.length * SUSPICIOUS_SHRINK_RATIO
-  ) {
-    return {
-      newBody: null,
-      value: {
-        ok: false,
-        code: 'suspicious_shrink',
-        currentLength: current.length,
-        proposedLength: content.length,
-      },
-    };
-  }
-
   const filePath = `${slug}.md`;
-  const wasLegacy = parsePlan(current, { filePath }).isLegacy;
+  const currentParsed = parsePlan(current, { filePath });
   const proposed = parsePlan(content, { filePath });
+
+  // 1b. Mass-deletion guard (EI-83 / audit P-040) — a body that shrinks the
+  //     plan past the byte ratio OR drops most of its items/decisions is far
+  //     more often a truncated paste or a wrong-plan write than an intentional
+  //     rewrite. Require the caller to say so explicitly via allowShrink.
+  if (!opts.allowShrink) {
+    const shrink = detectSuspiciousShrink(current, content, currentParsed, proposed);
+    if (shrink) return { newBody: null, value: shrink };
+  }
 
   // 2. Legacy-boundary guard — a real plan must not be silently
   //    degraded to a (lint-exempt) legacy plan.
-  if (!wasLegacy && proposed.isLegacy) {
+  if (!currentParsed.isLegacy && proposed.isLegacy) {
     return { newBody: null, value: { ok: false, code: 'would_orphan_frontmatter' } };
   }
 
@@ -169,9 +242,10 @@ export async function evaluateSetContent(
     return { newBody: null, value: { ok: false, code: 'lint_failed', errors: report.errors } };
   }
 
+  const warning = shrinkWarning(currentParsed, proposed);
   return {
     newBody: content,
-    value: { ok: true, slug, contentHash: hashPlanContent(content) },
+    value: { ok: true, slug, contentHash: hashPlanContent(content), ...(warning ? { warning } : {}) },
   };
 }
 
@@ -250,10 +324,19 @@ export default defineTool({
       } else if (v.code === 'lint_failed') {
         payload.errors = v.errors;
       } else if (v.code === 'suspicious_shrink') {
+        payload.reason = v.reason;
         payload.currentLength = v.currentLength;
         payload.proposedLength = v.proposedLength;
-        payload.hint =
-          'The proposed body is under 20% of the live plan — looks like a mass deletion. If intentional, retry with allowShrink: true.';
+        if (v.reason === 'structure') {
+          payload.priorItems = v.priorItems;
+          payload.priorDecisions = v.priorDecisions;
+          payload.droppedItems = v.droppedItems;
+          payload.droppedDecisions = v.droppedDecisions;
+          payload.hint = `This write drops ${v.droppedItems} of ${v.priorItems} items and ${v.droppedDecisions} of ${v.priorDecisions} decisions — looks like a truncation. If intentional, retry with allowShrink: true.`;
+        } else {
+          payload.hint =
+            'The proposed body is under 20% of the live plan — looks like a mass deletion. If intentional, retry with allowShrink: true.';
+        }
       }
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -281,6 +364,9 @@ export default defineTool({
             ok: true,
             slug: v.slug,
             contentHash: v.contentHash,
+            // Surfacing (EI-83 fix #2): present only when the write removed
+            // items/decisions — so even an allowed shrink is visible.
+            ...(v.warning ? { warning: v.warning } : {}),
             version: result.version,
             filePath: result.filePath,
             // The revision row appended for this write (D-003). `null`

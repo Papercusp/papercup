@@ -37,12 +37,33 @@ export interface InsightFileForScan {
  */
 const REPO_PATH_RE = /^(?:apps|packages|libs|scripts|bin)\/[\w@./-]+\.[a-z]{1,5}$/;
 
+/**
+ * Words that mark a backticked path as a HISTORICAL reference — the insight is
+ * narrating a file it MOVED OFF / that was removed/replaced, not asserting a live
+ * dependency. A path in such context must not be flagged "stale": that's the
+ * dominant false positive for migration/retirement runbooks (EI-510 Class 1; the
+ * "code insights bind knowledge to code paths" complaint EI-449). Line-scoped +
+ * conservative, consistent with the module's stated posture (a missed citation is
+ * fine; a false "stale" capture is noise).
+ */
+const REMOVAL_MARKER_RE =
+  /\b(?:used to|moved (?:off|from|to|onto)|moved the|no longer|removed|deleted|retired|replaced|superseded|since deleted|migrated (?:off|from|onto)|formerly|previously|was (?:at|in)|lived (?:at|in)|old(?:er)? (?:path|location)|deprecated)\b/i;
+
 export function extractCitedPaths(raw: string): string[] {
   const out = new Set<string>();
   for (const m of raw.matchAll(/`([^`\n]+)`/g)) {
     const token = m[1].trim();
     if (token.includes('*') || token.includes('<') || token.includes(' ')) continue;
-    if (REPO_PATH_RE.test(token)) out.add(token);
+    if (!REPO_PATH_RE.test(token)) continue;
+    // Class 1 (EI-510): skip a path whose own line carries a removal/move marker —
+    // it's a historical "this file was moved/removed" reference, not a live citation,
+    // so flagging it "no longer exists" is a perpetual false positive.
+    const idx = m.index ?? 0;
+    const lineStart = raw.lastIndexOf('\n', idx) + 1;
+    const lineEndRaw = raw.indexOf('\n', idx);
+    const line = raw.slice(lineStart, lineEndRaw === -1 ? raw.length : lineEndRaw);
+    if (REMOVAL_MARKER_RE.test(line)) continue;
+    out.add(token);
   }
   return [...out];
 }
@@ -80,6 +101,23 @@ export function makeRepoPathResolver(
 }
 
 /**
+ * Basename-only existence: does a file with this path's basename exist ANYWHERE in
+ * the repo? Looser than makeRepoPathResolver's `/`-anchored suffix match — used ONLY
+ * as a guard against a WRONGFUL apoptotic "supersede" (EI-510 Class 2). When every
+ * cited path is "missing" by the strict suffix check but their basenames exist
+ * elsewhere, the insight almost certainly has path-prefix drift (e.g. `core/x.ts`
+ * for the real `.../lib/x.ts`), not a vanished evidence base — so the verdict should
+ * be "repoint", never "retire a current, valid runbook".
+ */
+export function makeRepoBasenameResolver(
+  trackedFiles: readonly string[],
+): (repoRelPath: string) => boolean {
+  const basenames = new Set<string>();
+  for (const f of trackedFiles) basenames.add(f.slice(f.lastIndexOf('/') + 1));
+  return (p) => basenames.has(p.slice(p.lastIndexOf('/') + 1));
+}
+
+/**
  * Resolution cooldown for insight-staleness signals (EI-441 / EI-427). After an
  * insight-staleness item is resolved, the fix lands on the source-of-truth tree
  * (staging) but the live operator scans the release/green checkout, which lags
@@ -105,6 +143,14 @@ export interface ScanOpts {
    * cooldown. Default DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS (EI-510 / P-011).
    */
   recencyGuardMs?: number;
+  /**
+   * Basename-only existence guard for the apoptotic verdict (EI-510 Class 2). When
+   * EVERY cited path is missing by the strict suffix check but a basename match exists
+   * elsewhere in the repo, the insight has path-prefix drift — so DOWNGRADE the
+   * "supersede" verdict to "repoint" rather than wrongly retire a valid runbook. Omit
+   * to keep the legacy strict apoptotic verdict (every-citation-missing ⇒ supersede).
+   */
+  basenameExistsFn?: (repoRelPath: string) => boolean;
 }
 
 /**
@@ -140,7 +186,14 @@ export function scanInsightStaleness(
     // base has evaporated, so the guidance is almost certainly obsolete. Surface
     // it as a clean "supersede" (not "repoint") so the resolver retires it rather
     // than hunting for moved files. Partial loss stays a repoint-or-supersede review.
-    const apoptotic = missing.length === cited.length;
+    //
+    // Class-2 guard (EI-510): never declare apoptosis when a missing path's BASENAME
+    // exists elsewhere in the repo — that's path-prefix drift, not a vanished evidence
+    // base. Downgrade to a "repoint" review so a valid runbook is never wrongly retired
+    // over a moved file the strict suffix check didn't catch.
+    const apoptotic =
+      missing.length === cited.length &&
+      !(opts.basenameExistsFn !== undefined && missing.some((p) => opts.basenameExistsFn!(p)));
     signals.push({
       source: 'insight-staleness',
       key: insight.slug,
@@ -227,5 +280,8 @@ export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]
   const existsFn = tracked
     ? makeRepoPathResolver(tracked)
     : (p: string) => fs.existsSync(path.join(REPO_ROOT, p));
-  return scanInsightStaleness(insights, existsFn);
+  // Class-2 apoptosis guard (EI-510): only available with the tracked-file list; the
+  // packaged-build existsSync fallback can't enumerate basenames, so apoptosis stays strict.
+  const basenameExistsFn = tracked ? makeRepoBasenameResolver(tracked) : undefined;
+  return scanInsightStaleness(insights, existsFn, { basenameExistsFn });
 }
