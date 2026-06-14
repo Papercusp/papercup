@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781430723554-95ff51b9",
+  "feature_id": "F-FIX-015",
+  "field": "__created",
+  "id": 928,
+  "new_value": "{\"id\":\"F-FIX-015\",\"title\":\"coord:send tool guidance over 1200-char budget (1379 chars) — breaks green-checkpoint\",\"sourceIssueId\":\"EI-545\"}",
+  "old_value": "null",
+  "ts": 1781430917985
+}
