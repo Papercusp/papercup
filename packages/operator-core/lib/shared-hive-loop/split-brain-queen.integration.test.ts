@@ -84,10 +84,6 @@ describe('P-005 — split-brain Queen: probe the unguarded behavior, then the D-
         new Map((await rig!.readBacklog(cell)).map((r) => [r.feature_id, r.feature_order]));
       const onA = await orderOf(a);
       const onB = await orderOf(b);
-      // eslint-disable-next-line no-console
-      console.error('[DBG A]', JSON.stringify(await a.sql`SELECT feature_id, feature_order, fed_ts FROM harness_shared.harness_features_consolidated WHERE feature_id IN ('F-303','F-304') ORDER BY feature_id`));
-      // eslint-disable-next-line no-console
-      console.error('[DBG B]', JSON.stringify(await b.sql`SELECT feature_id, feature_order, fed_ts FROM harness_shared.harness_features_consolidated WHERE feature_id IN ('F-303','F-304') ORDER BY feature_id`));
       for (const s of STEER_B) {
         expect(onA.get(s.id), `cell a: ${s.id} should carry the LAST steer (B's)`).toBe(s.priority);
         expect(onB.get(s.id), `cell b: ${s.id} should carry the LAST steer (B's)`).toBe(s.priority);

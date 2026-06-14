@@ -167,6 +167,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // (this dev box's unprivileged userns is AppArmor-restricted — bwrap can't map uids).
   // The owner arms after that validation. OFF = today's raw operator-side spawn.
   FLAGS.CAPABILITY_EXEC_SANDBOX,
+  // experiment-registry-invocation-api-2026-06-14 (#2): the dark Scout→experiment rail.
+  // ON forks testable Scout proposals into DRY-RUN experiment specs (no spend, no change
+  // to gym routing); the owner flips it after reviewing the mechanical proposal→arms
+  // mapping (the LLM-polished candidate-overlay generation is the follow-on).
+  FLAGS.SCOUT_EXPERIMENT_RAIL,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

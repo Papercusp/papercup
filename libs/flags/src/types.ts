@@ -227,6 +227,12 @@ export const FLAGS = {
   // spend. Double-gated — the loop also ships unregistered/unbudgeted on the
   // learning governor until the P-001 arming act.
   REPLAY_HARNESS: "papercusp-replay-harness",
+  // experiment-registry-invocation-api-2026-06-14 (#2, "close the loop"): the dark
+  // Scout→experiment rail. ON ⇒ each testable (gym-rail) Scout proposal is ADDITIVELY
+  // expressed as a DRY-RUN experiment spec (no spend, no change to gym routing); OFF ⇒
+  // Scout unchanged. D-001 dark-ship rule; double-gated — experiment:run also rides
+  // papercusp-replay-harness + the governor before anything could spend.
+  SCOUT_EXPERIMENT_RAIL: "papercusp-scout-experiment-rail",
   // self-learning-frontier-2026-06-12 (P-021 / FB-07): regret mining —
   // `system:regret-mine` selects bad historical sessions (token-burn
   // percentile, validator bounces, rescue markers), locates the divergence
@@ -614,6 +620,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // seeded-inactive routine are the P-001 arming acts. Shadow-only either
   // way: this lane never mutates live prompts.
   [FLAGS.PROMPT_ABLATION]: false,
+  // OFF by default — D-001 dark-ship: the Scout→experiment rail forks testable
+  // proposals into DRY-RUN experiment specs only (no spend, no change to gym routing)
+  // until the owner flips it (experiment-registry-invocation-api #2). Double-gated by
+  // papercusp-replay-harness + the governor.
+  [FLAGS.SCOUT_EXPERIMENT_RAIL]: false,
   // OFF by default — same D-001 dark-ship rule as the loops above: the
   // deferral-interest refit is a frontier learning loop (SQL-only, zero LLM
   // spend); the flag flip + an owner-set per-cycle governor budget on loop

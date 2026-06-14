@@ -43,6 +43,7 @@ import { getScoutLensWeights } from './routed-ledger';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
 import type { CorpusEntry } from './critique-core';
 import type { ScoutCycleDeps, ScoutCycleLimits } from './cycle';
+import type { ExperimentDispatchPort } from './experiment-rail';
 
 export interface BuildScoutCycleDepsOptions {
   /** Harness this cycle runs for — scopes the concrete-rail improvement capture. */
@@ -76,6 +77,9 @@ export interface BuildScoutCycleDepsOptions {
    * (tests). Default: prod `readRoutedIdeas` (B-02's reader), harness-scoped.
    */
   graderFeedbackReader?: () => Promise<GradedIdeaView[]>;
+  /** Override the dark experiment-rail dispatch port (tests). Default: the dry-run-only
+   *  buildExperimentDispatchPort. Only consulted when SCOUT_EXPERIMENT_RAIL is ON. */
+  experimentDispatch?: ExperimentDispatchPort;
 }
 
 /**
@@ -197,7 +201,30 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     // The whole-system override realizes the P-005 split: a testable WHOLE-SYSTEM proposal
     // (genome's interacting wholes) routes to the InstanceSubject; a component idea stays on
     // the gym (HarnessSubject). plan/improvement/unhinted ideas are untouched.
-    route: async (proposals) =>
-      (await routeProposals(proposals, routerPorts, { override: wholeSystemInstanceOverride })).decisions,
+    route: async (proposals) => {
+      const result = await routeProposals(proposals, routerPorts, { override: wholeSystemInstanceOverride });
+      // Dark Scout→experiment rail (SCOUT_EXPERIMENT_RAIL, default OFF — #2 "close the
+      // loop"): ADDITIVELY express each testable (gym-rail) proposal as a DRY-RUN
+      // experiment spec — proves the Scout→experiment:run loop with NO spend + NO change
+      // to gym routing. Best-effort: a failure never disturbs the cycle's routing.
+      try {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        if (await getFlag(FLAGS.SCOUT_EXPERIMENT_RAIL, 'scout-experiment-rail')) {
+          const { forkTestableToExperiments, buildExperimentDispatchPort } = await import('./experiment-rail');
+          await forkTestableToExperiments(
+            result.decisions,
+            proposals,
+            opts.experimentDispatch ?? buildExperimentDispatchPort(),
+          );
+        }
+      } catch (err) {
+        console.warn(
+          '[scout/cycle-deps] experiment-rail fork failed (cycle unaffected):',
+          err instanceof Error ? err.message : err,
+        );
+      }
+      return result.decisions;
+    },
   };
 }

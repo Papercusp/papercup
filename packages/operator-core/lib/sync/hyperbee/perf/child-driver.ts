@@ -173,7 +173,12 @@ export async function spawnProcMesh(opts: {
   roots?: { writer: string; readers: string[] };
   /** Per-peer spawn prefix (Tier-2: ['ip','netns','exec',`p${i}`]). Index 0 = writer. */
   execPrefixFor?: (peerIndex: number) => string[] | undefined;
+  /** Test seam: factory for each peer child (default `spawnPeerChild`). Lets a
+   *  unit test drive mesh-formation OUTCOMES — and assert the typed
+   *  `MeshFormationError` (EI-115) — without spawning real OS processes. */
+  spawnChild?: typeof spawnPeerChild;
 }): Promise<ProcMesh> {
+  const mkChild = opts.spawnChild ?? spawnPeerChild;
   let ownedTestnet: { destroy(): Promise<void> } | null = null;
   let bootstrap = opts.bootstrap;
   if (!bootstrap) {
@@ -197,7 +202,7 @@ export async function spawnProcMesh(opts: {
     readers: Array.from({ length: opts.readers }, (_, i) => mkRoot(`p2p-perf-r${i}-`)),
   };
 
-  const writer = spawnPeerChild(
+  const writer = mkChild(
     {
       role: 'writer',
       workspaceId,
@@ -219,7 +224,7 @@ export async function spawnProcMesh(opts: {
   }
 
   const readers = Array.from({ length: opts.readers }, (_, i) =>
-    spawnPeerChild(
+    mkChild(
       {
         role: 'reader',
         workspaceId,
