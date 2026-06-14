@@ -4340,3 +4340,160 @@
   font-weight: 500;
   overflow-wrap: anywhere;
 }
+
+/* ── Cross-user assign / @-mention (shared-hive-collaboration P-008) ───────── */
+.pc-assign__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--pc-plans-fg-muted);
+  background: color-mix(in oklab, var(--bg), transparent 8%);
+  border: 1px solid var(--pc-plans-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pc-assign__trigger:hover {
+  color: var(--fg, #e7f7ff);
+  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 40%);
+}
+.pc-assign__trigger.is-compact {
+  padding: 2px;
+  border-color: transparent;
+  background: transparent;
+}
+/* Per-item assign sits at the row's right edge, revealed on hover/focus. */
+.pc-items__row-wrap {
+  position: relative;
+}
+.pc-items__row-actions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.pc-items__row-wrap:hover .pc-items__row-actions,
+.pc-items__row-wrap:focus-within .pc-items__row-actions {
+  opacity: 1;
+}
+
+.pc-assign__panel {
+  width: 320px;
+  max-width: 80vw;
+  padding: 10px;
+  background: var(--pc-plans-surface-strong);
+  border: 1px solid var(--pc-plans-border);
+  border-radius: 10px;
+}
+.pc-assign {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pc-assign__head {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--pc-plans-fg-strong);
+}
+.pc-assign__filter,
+.pc-assign__note {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--fg, #e7f7ff);
+  background: color-mix(in oklab, var(--bg), transparent 6%);
+  border: 1px solid var(--pc-plans-border);
+  border-radius: 6px;
+}
+.pc-assign__note {
+  resize: vertical;
+  min-height: 38px;
+}
+.pc-assign__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pc-assign__empty {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--pc-plans-fg-muted);
+  text-align: center;
+}
+.pc-assign__member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 13px;
+  color: var(--pc-plans-fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.pc-assign__member:hover {
+  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
+}
+.pc-assign__member.is-selected {
+  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 40%);
+}
+.pc-assign__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.pc-assign__label {
+  flex: 0 0 auto;
+  font-weight: 550;
+}
+.pc-assign__intent {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pc-plans-fg-muted);
+  font-size: 11px;
+}
+.pc-assign__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.pc-assign__cancel,
+.pc-assign__confirm {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pc-assign__cancel {
+  color: var(--pc-plans-fg-muted);
+  background: transparent;
+  border: 1px solid var(--pc-plans-border);
+}
+.pc-assign__confirm {
+  color: var(--bg-deeper, #06121a);
+  background: var(--accent, #38bdf8);
+  border: 1px solid transparent;
+}
+.pc-assign__confirm:disabled,
+.pc-assign__cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

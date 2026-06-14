@@ -31,6 +31,7 @@ import PlanJumpToItem from './PlanJumpToItem';
 import LockBanner from './LockBanner';
 import LintBanner from './LintBanner';
 import PlanActions from './PlanActions';
+import AssignDialog from './AssignDialog';
 import RevisionsPanel from './RevisionsPanel';
 import RevisionDiffModal from './RevisionDiffModal';
 import RevisionConversationModal from './RevisionConversationModal';
@@ -321,13 +322,17 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
       }
       headerExtra={
         data.legacy ? null : (
-          <EditToggle
-            editing={editing}
-            dirty={dirty}
-            locked={locked}
-            onEnter={enterEdit}
-            onExit={exitEdit}
-          />
+          <>
+            {/* P-008: assign the whole plan to an @user (cross-user handoff). */}
+            <AssignDialog planSlug={data.slug} />
+            <EditToggle
+              editing={editing}
+              dirty={dirty}
+              locked={locked}
+              onEnter={enterEdit}
+              onExit={exitEdit}
+            />
+          </>
         )
       }
     >

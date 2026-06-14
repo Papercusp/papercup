@@ -481,8 +481,40 @@ pub fn hive_tab_name(spec: &HiveTabSpec) -> String {
 /// and tears itself down when its panes exit (no EXITED husk). The detail pane
 /// invokes `pui hive-pane <key>`, rendered tier-aware by B-09. Pure — unit-tested.
 pub fn hive_tab_kdl(spec: &HiveTabSpec) -> String {
+    // The transient drill-in (P-008): ⌕-named, close-on-exit so it tears down.
+    hive_tab_kdl_named(spec, &hive_tab_name(spec), true)
+}
+
+/// The zellij tab name for a PERSISTENT per-hive AXIS tab (B4 / P-004). The ◆
+/// prefix marks it a STANDING hive tab — distinct from the ⌕ transient drill-in
+/// (P-008), the ☁ frame tabs, and the plain "this hive"/"network" dock tabs — so
+/// the axis reads as a coherent group and a persistent tab never collides with a
+/// transient drill-in of the same hive. Pure.
+pub fn hive_axis_tab_name(spec: &HiveTabSpec) -> String {
+    let label = if spec.title.trim().is_empty() {
+        spec.key.as_str()
+    } else {
+        spec.title.as_str()
+    };
+    format!("◆ {label}")
+}
+
+/// One PERSISTENT per-hive AXIS tab (B4 / P-004): the same tier-aware pane
+/// composition as the transient drill-in [`hive_tab_kdl`], but ◆-named and NOT
+/// close-on-exit — it stays for as long as the hive is on the axis (the sync diff
+/// in `main.rs` opens it when the hive appears and lets it ride until the hive
+/// goes quiet). B5 (P-005) adds the presence-roster pane inside it. Pure.
+pub fn hive_axis_tab_kdl(spec: &HiveTabSpec) -> String {
+    hive_tab_kdl_named(spec, &hive_axis_tab_name(spec), false)
+}
+
+/// Shared generator for the per-hive tab KDL — the transient drill-in
+/// ([`hive_tab_kdl`], close-on-exit) and the persistent axis tab
+/// ([`hive_axis_tab_kdl`]) differ only in their tab NAME and whether the panes
+/// close on exit, so they share this body (no duplicated KDL). Pure.
+fn hive_tab_kdl_named(spec: &HiveTabSpec, tab_name: &str, close_on_exit: bool) -> String {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-    let tab = esc(&hive_tab_name(spec));
+    let tab = esc(tab_name);
     let key = esc(&spec.key);
     let detail_label = esc(if spec.title.trim().is_empty() {
         spec.key.as_str()
@@ -501,12 +533,15 @@ pub fn hive_tab_kdl(spec: &HiveTabSpec) -> String {
     } else {
         "focus=true"
     };
+    // A persistent axis tab omits close_on_exit so it rides the hive's lifetime;
+    // the transient drill-in keeps it so it leaves no EXITED husk.
+    let coe = if close_on_exit { " close_on_exit=true" } else { "" };
     let mut panes = format!(
-        "\n            pane name=\"{detail_label}\" {detail_attrs} close_on_exit=true {{\n                command \"pui\"\n                args \"hive-pane\" \"{key}\"\n            }}",
+        "\n            pane name=\"{detail_label}\" {detail_attrs}{coe} {{\n                command \"pui\"\n                args \"hive-pane\" \"{key}\"\n            }}",
     );
     if wake_pane {
         panes.push_str(&format!(
-            "\n            pane name=\"⏸ wakes\" close_on_exit=true {{\n                command \"pui\"\n                args \"wake-pane\" \"--hive\" \"{key}\"\n            }}",
+            "\n            pane name=\"⏸ wakes\"{coe} {{\n                command \"pui\"\n                args \"wake-pane\" \"--hive\" \"{key}\"\n            }}",
         ));
     }
     let stacked_attr = if stacked { " stacked=true" } else { "" };
@@ -1065,6 +1100,33 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].key, "tower"); // falls back to the machine label as the key
         assert_eq!(specs[0].title, "tower");
+    }
+
+    #[test]
+    fn hive_axis_tab_kdl_is_persistent_and_distinctly_named() {
+        let spec = HiveTabSpec { tier: 3, key: "key-a".into(), title: "mbp".into() };
+        let axis = hive_axis_tab_kdl(&spec);
+        let drill = hive_tab_kdl(&spec);
+        // ◆ marks the standing axis tab; ⌕ marks the transient drill-in.
+        assert!(axis.contains("tab name=\"◆ mbp\""));
+        assert!(drill.contains("tab name=\"⌕ mbp\""));
+        // The axis tab rides the hive's lifetime (no close_on_exit); the drill-in tears down.
+        assert!(!axis.contains("close_on_exit"));
+        assert!(drill.contains("close_on_exit=true"));
+        // Both still open the tier-aware hive-pane detail for the key.
+        assert!(axis.contains("args \"hive-pane\" \"key-a\""));
+    }
+
+    #[test]
+    fn hive_axis_tab_name_falls_back_to_key_when_title_blank() {
+        assert_eq!(
+            hive_axis_tab_name(&HiveTabSpec { tier: 3, key: "k".into(), title: "mbp".into() }),
+            "◆ mbp"
+        );
+        assert_eq!(
+            hive_axis_tab_name(&HiveTabSpec { tier: 3, key: "k".into(), title: String::new() }),
+            "◆ k"
+        );
     }
 
     fn hive_spec(tier: u8, key: &str, title: &str) -> HiveTabSpec {

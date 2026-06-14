@@ -252,6 +252,31 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF');
   });
+
+  // EI-506: QUEEN_BRIEF is the Queen→BEE situational overlay. For the QUEEN's own
+  // wake the kickoff is a terse wake-reason that would render as a misleading
+  // self-addressed overlay — and her wake reason is already in the wake brief's
+  // "Woke by:" line. So when she HAS a wake brief, QUEEN_BRIEF is suppressed.
+  it('EI-506: suppresses QUEEN_BRIEF for a queen wake that carries a wake brief', async () => {
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=queen',
+      post({ kickoff: 'timer', queenBrief: '## Your wake brief\n**Woke by:** timer\n### Frontier — ready' }),
+    );
+    expect(res.status).toBe(200);
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF');
+    expect(arg?.extraEnv).toMatchObject({ QUEEN_WAKE_BRIEF: expect.stringContaining('Woke by') });
+  });
+
+  // EI-506 fallback: if the wake brief is absent (best-effort compute failed), the
+  // kickoff is still threaded as QUEEN_BRIEF so the queen isn't left with no idea
+  // why she woke (preserves the P-071 "why you woke" signal).
+  it('EI-506: keeps QUEEN_BRIEF for a queen wake with NO wake brief (degraded fallback)', async () => {
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({ kickoff: 'timer' }));
+    expect(res.status).toBe(200);
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv).toMatchObject({ QUEEN_BRIEF: 'timer' });
+  });
 });
 
 // P-071 smoke regression: both hive wakes were SIGTERM'd at ~91s because the

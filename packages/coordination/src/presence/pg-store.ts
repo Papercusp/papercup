@@ -40,6 +40,9 @@ interface CoordPresenceDbRow {
   pid: number | null;
   started_at: string;
   heartbeat_at: string;
+  last_active_at: string | null;
+  agent_role: string | null;
+  hive_slug: string | null;
   user_id: string | null;
   revoked_at: string | null;
 }

@@ -222,6 +222,12 @@ import './autonomy/tripwire_list';
 import './autonomy/tripwire_revert';
 import './autonomy/graduation_status';
 
+// The owner's LOCAL trusted-GitHub-user list (shared-hive-trust-admission P-009):
+// manage who may auto-run verified remote work.
+import './trust/list';
+import './trust/add';
+import './trust/remove';
+
 import './saved_prompts/list';
 
 import './backup/snapshot_create';

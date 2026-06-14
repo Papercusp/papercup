@@ -307,7 +307,6 @@ const invoke = defineTool({
       env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
       env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
     }
-    if (kickoff) env.QUEEN_BRIEF = kickoff;
     // queen-brief-cache-assembly B-03 (P-006): the Queen's precomputed wake brief
     // (ranked survey floor + carry-note), assembled by fireLaunchBlueprint when it
     // resolves role='queen'. invoke.ts hands it to buildPrompt({ queenBrief }), which
@@ -315,6 +314,14 @@ const invoke = defineTool({
     // QUEEN_BRIEF (the kickoff / Queen→bee overlay).
     const queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
     if (queenWakeBrief.trim()) env.QUEEN_WAKE_BRIEF = queenWakeBrief;
+    // EI-506: QUEEN_BRIEF is the Queen→BEE situational overlay (invoke.ts → the
+    // "## Queen brief" section). For the QUEEN's OWN wake the kickoff is a terse
+    // wake-reason ('timer', 'coord:escalate'), which would render as a self-addressed
+    // bee-overlay — misleading. Her wake reason is already carried in the wake brief's
+    // "Woke by:" line, so set QUEEN_BRIEF from the kickoff for the queen ONLY when she
+    // has no wake brief (degraded fallback — preserves the P-071 "why you woke" signal
+    // the kickoff threading was added for). Non-queen roles always get the real overlay.
+    if (kickoff && (role !== 'queen' || !queenWakeBrief.trim())) env.QUEEN_BRIEF = kickoff;
     const spawnStartMs = Date.now();
     const r = await spawnInvokeOnce(
       project.path,

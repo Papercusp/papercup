@@ -242,6 +242,10 @@ pub enum Action {
     /// P-013: create one zellij tab per (tab_name, kdl) pair via the companion's
     /// NewTab (`new_tabs_with_layout`) — the per-frame tabs.
     CreateFrameTabs { tabs: Vec<(String, String)> },
+    /// Open the persistent per-hive AXIS tabs (B4 / P-004) — one standing zellij
+    /// tab per live federated peer, via the companion's NewTab (same path as the
+    /// per-frame tabs). The reducer's diff (`hive_tabs_to_create`) is roster-gated.
+    CreateHiveTabs { tabs: Vec<(String, String)> },
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
     FetchConversationDetail {
@@ -1242,6 +1246,9 @@ pub struct App {
     /// covers the window between the NewTab command and the next topology
     /// snapshot (which then carries the tab as ground truth).
     pub created_frame_tabs: std::collections::HashSet<String>,
+    /// B4 (P-004): tab names already CREATED for the persistent per-hive axis —
+    /// covers the NewTab→next-topology window so a hive isn't double-tabbed.
+    pub created_hive_tabs: std::collections::HashSet<String>,
     /// Live workbench topology from the companion zellij plugin (P-004 / D-008):
     /// which agent is in which pane + tab. `None` until the companion links;
     /// replaced wholesale on each snapshot (idempotent — no diff bookkeeping).
@@ -1524,6 +1531,7 @@ impl App {
             last_regroup: None,
             frames: Vec::new(),
             created_frame_tabs: std::collections::HashSet::new(),
+            created_hive_tabs: std::collections::HashSet::new(),
             topology: None,
             hud_pane_id: None,
             companion_version: None,
@@ -2623,6 +2631,37 @@ impl App {
             // tab; the zellij tab just navigates (no per-agent panes).
             let kdl = crate::layout::frame_tab_kdl(&name);
             self.created_frame_tabs.insert(name.clone());
+            out.push((name, kdl));
+        }
+        out
+    }
+
+    /// B4 (P-004): the persistent per-hive AXIS tabs to create THIS roster
+    /// refresh — one standing zellij tab per LIVE federated peer not yet present.
+    /// The LOCAL hive is the dock's own "this hive" tab (never duplicated), and a
+    /// quiet/stale hive is simply absent from `desired_hive_tabs` so it gets no
+    /// tab. Topology is ground truth for "present"; `created_hive_tabs` covers the
+    /// command→snapshot window. Gated to the flag-on dock driver (same
+    /// precondition as the frame tabs). Pure over (hives, topology) — unit-tested.
+    pub fn hive_tabs_to_create(&mut self) -> Vec<(String, String)> {
+        if !(self.hive_agent_tabs && self.dock_agent_panes) {
+            return Vec::new();
+        }
+        // No companion topology yet → no tab surface to create into.
+        let Some(topo) = &self.topology else {
+            return Vec::new();
+        };
+        let existing: std::collections::HashSet<&str> =
+            topo.tabs.iter().map(|t| t.name.as_str()).collect();
+        let groups = crate::hives::group_hives(&self.hives);
+        let mut out = Vec::new();
+        for spec in crate::layout::desired_hive_tabs(&groups) {
+            let name = crate::layout::hive_axis_tab_name(&spec);
+            if existing.contains(name.as_str()) || self.created_hive_tabs.contains(&name) {
+                continue;
+            }
+            let kdl = crate::layout::hive_axis_tab_kdl(&spec);
+            self.created_hive_tabs.insert(name.clone());
             out.push((name, kdl));
         }
         out
@@ -3810,7 +3849,15 @@ impl App {
                 // The federated p2p roster landed (the Hives tab). Raw rows;
                 // per-device grouping happens at render (hives::group_hives).
                 self.hives = rows;
-                Action::Render
+                // B4 (P-004): sync the persistent per-hive tab axis — a standing
+                // tab opens for any live federated peer not already present (pure
+                // diff; flag-on dock driver only). Mirrors Frames→frame-tabs.
+                let tabs = self.hive_tabs_to_create();
+                if tabs.is_empty() {
+                    Action::Render
+                } else {
+                    Action::CreateHiveTabs { tabs }
+                }
             }
             Event::HiveDirectory(rows) => {
                 // The P2P hive directory landed (p2p-hive-directory P-006).
@@ -5723,6 +5770,87 @@ mod tests {
             a.update(Event::Frames(vec![frame("papercup-cloud", "cloud-1")])),
             Action::Render
         );
+    }
+
+    fn fed_peer(host: &str, key: &str, stale: bool) -> crate::models::PresenceRow {
+        crate::models::PresenceRow {
+            owner_id: format!("fed:1@{host}"),
+            owner_label: format!("gh:1 · {host}"),
+            intent: "working".into(),
+            host: host.into(),
+            user_id: Some("1".into()),
+            stale,
+            federated: true,
+            device_pubkey: Some(key.into()),
+            harness_slug: Some("papercup".into()),
+            current_view: None,
+            heartbeat_at: Some("2026-06-14T00:00:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn hives_event_opens_a_persistent_tab_per_live_federated_peer() {
+        let mut a = App::new();
+        a.hive_agent_tabs = true;
+        a.dock_agent_panes = true;
+        // Topology present (companion linked) — only the local dock tab exists.
+        a.topology = Some(pui_companion_proto::Topology {
+            tabs: vec![pui_companion_proto::TabNode {
+                pos: 0,
+                name: "Tab #1".into(),
+                active: true,
+                swap_layout: None,
+                swap_dirty: false,
+            }],
+            panes: vec![],
+        });
+        // One LIVE federated peer + one STALE → only the live one earns a tab.
+        match a.update(Event::Hives(vec![
+            fed_peer("mbp", "key-a", false),
+            fed_peer("tower", "key-b", true),
+        ])) {
+            Action::CreateHiveTabs { tabs } => {
+                assert_eq!(tabs.len(), 1);
+                let (name, kdl) = &tabs[0];
+                assert_eq!(name, "◆ mbp");
+                assert!(kdl.contains("tab name=\"◆ mbp\""), "{kdl}");
+                // Persistent — rides the hive's lifetime, no close_on_exit husk.
+                assert!(!kdl.contains("close_on_exit"), "{kdl}");
+                assert!(kdl.contains("args \"hive-pane\" \"key-a\""), "{kdl}");
+            }
+            other => panic!("expected CreateHiveTabs, got {other:?}"),
+        }
+        // Same roster again → already created (dedup window) → no re-create.
+        assert_eq!(
+            a.update(Event::Hives(vec![fed_peer("mbp", "key-a", false)])),
+            Action::Render
+        );
+        // A tab already in topology never re-creates either.
+        a.created_hive_tabs.clear();
+        a.topology.as_mut().unwrap().tabs.push(pui_companion_proto::TabNode {
+            pos: 1,
+            name: "◆ mbp".into(),
+            active: false,
+            swap_layout: None,
+            swap_dirty: false,
+        });
+        assert_eq!(
+            a.update(Event::Hives(vec![fed_peer("mbp", "key-a", false)])),
+            Action::Render
+        );
+    }
+
+    #[test]
+    fn hive_tabs_gated_to_the_flag_on_dock_driver_with_topology() {
+        let mut a = App::new();
+        a.hives = vec![fed_peer("mbp", "key-a", false)];
+        // dock-agent-panes on but hive-agent-tabs off → never.
+        a.dock_agent_panes = true;
+        assert!(a.hive_tabs_to_create().is_empty());
+        // Both flags on but NO topology (no companion) → no tab surface yet.
+        a.hive_agent_tabs = true;
+        a.topology = None;
+        assert!(a.hive_tabs_to_create().is_empty());
     }
 
     #[test]

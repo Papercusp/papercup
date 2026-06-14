@@ -34,6 +34,12 @@ export interface PresenceInput {
   currentFiles?: string[];
   host?: string;
   pid?: number | null;
+  /** Durable role (human/su/bee/principal/…), resolved host-side. Preserved on
+   *  a later write that omits it (so it's a populate-once-then-keep field). */
+  agentRole?: string | null;
+  /** The agent's home Hive slug, resolved host-side (null = standalone). Also
+   *  preserved across writes that omit it. */
+  hiveSlug?: string | null;
 }
 
 export interface PresenceRecord {
@@ -48,6 +54,14 @@ export interface PresenceRecord {
   pid: number | null;
   startedAt: string;
   heartbeatAt: string;
+  /** Last GENUINE-activity timestamp (tool dispatch / declare-intent / inbox) —
+   *  distinct from heartbeatAt, which the 60s keepalive bumps (D-003). null
+   *  until the row's first activity write (pre-existing rows). */
+  lastActiveAt: string | null;
+  /** Durable agent role (human/su/bee/principal/…). null when unresolved. */
+  agentRole: string | null;
+  /** The agent's home Hive slug (null = standalone / no hive). */
+  hiveSlug: string | null;
   /** heartbeat older than PRESENCE_STALE_MS — the session is dead. */
   stale: boolean;
   /** Durable roster field — null for a non-roster (superuser) agent. */
@@ -57,10 +71,17 @@ export interface PresenceRecord {
 }
 
 export interface PresenceStore {
-  /** Upsert the caller's presence row to exactly this state; bumps heartbeat. */
+  /** Upsert the caller's presence row to exactly this state; bumps heartbeat
+   *  AND last_active_at (a write is genuine activity). */
   write(identity: PresenceIdentity, input?: PresenceInput): Promise<void>;
-  /** Bump heartbeat only (no-op if the row does not exist). */
+  /** Bump heartbeat ONLY (no-op if the row does not exist) — the keepalive
+   *  path. last_active_at is deliberately NOT touched (D-003): the 60s
+   *  supervisor beat means "process alive", not "active". */
   touchHeartbeat(ownerId: string): Promise<void>;
+  /** Bump last_active_at AND heartbeat (no-op if the row does not exist) — the
+   *  ACTIVITY path (e.g. tool dispatch). The genuine-activity counterpart of
+   *  touchHeartbeat (D-003). */
+  touchActivity(ownerId: string): Promise<void>;
   /** Ensure a row exists + bump heartbeat WITHOUT clobbering a declared
    *  intent/files/plan (unlike write). The read-driven liveness signal —
    *  every coord:inbox read is evidence the agent is alive, so it keeps a

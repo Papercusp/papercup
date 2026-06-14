@@ -227,6 +227,26 @@ async function staleClaimSweepTick(): Promise<void> {
       }
     }
   }, { name: 'stale-claim-sweep' });
+
+  // …and the PLAN-ITEM analog (EI-179): plan_item_claims lapse lazily — a dead
+  // holder's leased row lingers as 'orphaned' (the expired-lease watchdog's
+  // "abandoned work piling up") until some other agent happens to re-claim that
+  // exact item. This is the missing GC: delete claims whose lease lapsed past
+  // grace AND whose holder is gone (same alias-aware liveness rule). The durable
+  // ASSIGNMENT (mig 140) is untouched, so the item returns to its assignee/pool.
+  await DBOS.runStep(async () => {
+    const { reclaimExpiredPlanItemClaims } = await import('../plan-items/stale-claims');
+    const r = await reclaimExpiredPlanItemClaims(getOrgPg().sql);
+    if (r.released.length > 0) {
+      console.warn(
+        `[stale-claims] released ${r.released.length} EXPIRED plan-item claim(s) from dead holders ` +
+          `(lease lapsed past grace, no live presence): ` +
+          r.released
+            .map((c) => `${c.harness_slug}/${c.plan_slug}#${c.item_id}<-${c.former_owner}`)
+            .join(', '),
+      );
+    }
+  }, { name: 'stale-plan-item-claim-sweep' });
 }
 const staleClaimSweepWorkflow = DBOS.registerWorkflow(staleClaimSweepTick, {
   name: 'staleClaimSweep', maxRecoveryAttempts: 5,

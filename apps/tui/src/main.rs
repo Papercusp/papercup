@@ -585,6 +585,20 @@ async fn run<B: Backend>(
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::CreateHiveTabs { tabs } => {
+                // B4 (P-004): one persistent zellij tab per live federated peer,
+                // created via the companion's NewTab — same path + linked-companion
+                // gating as the per-frame tabs (the reducer's diff is roster-gated).
+                if let Some(c) = &companion {
+                    for (name, layout) in tabs {
+                        c.send(pui_companion_proto::Command::NewTab {
+                            name: Some(name),
+                            layout: Some(layout),
+                        });
+                    }
+                }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::FetchHives => {
                 // The federated p2p roster for the Hives tab — fetched off the
                 // UI thread → Event::Hives (pui-hives-tab-2026-06-07). Also kick

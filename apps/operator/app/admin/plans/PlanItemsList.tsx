@@ -21,6 +21,7 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
 import { type PlanItemRow, type PlanBucket } from './plans-api';
 import { AuthorBadge } from '../../_components/AuthorBadge';
+import AssignDialog from './AssignDialog';
 
 interface Props {
   items: PlanItemRow[];
@@ -186,6 +187,11 @@ export default function PlanItemsList({
                 ) : null}
               </span>
             </button>
+            {/* P-008: per-item cross-user assign — sibling of the row button
+                (can't nest a button). Compact, hover-revealed via CSS. */}
+            <span className="pc-items__row-actions">
+              <AssignDialog planSlug={planSlug} itemRef={r.item.id} compact />
+            </span>
           </li>
         );
       })}
