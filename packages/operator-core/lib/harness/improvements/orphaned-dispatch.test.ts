@@ -15,6 +15,7 @@ import {
   buildOrphanedDispatchSignals,
   collectOrphanedDispatchSignals,
   isHostRestartVictim,
+  isLaneBreakageOrphan,
   ORPHAN_EVIDENCE_WINDOW_MS,
 } from './orphaned-dispatch';
 import { readRecentDispatches, markDispatchOrphaned, type ImprovementDispatchRow } from './dispatch-ledger';
@@ -122,6 +123,53 @@ describe('buildOrphanedDispatchSignals — one signal per item, stable identity'
     );
     const signals = buildOrphanedDispatchSignals(evidence, { nowMs: NOW, maxSignals: 2 });
     expect(signals.map((s) => s.key)).toEqual(['EI-1', 'EI-2']); // EI-1 newest (1h), EI-3 dropped
+  });
+});
+
+describe('isLaneBreakageOrphan — env-failure + host-restart orphans do NOT false-alarm (EI-536 noise loop)', () => {
+  it('a host-restart-recovered orphan is NOT lane breakage (infra, already recovered)', () => {
+    const r = row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'host-restart-recovery' });
+    expect(isLaneBreakageOrphan(r)).toBe(false);
+    expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toEqual([]);
+  });
+
+  it('an env-failure orphan (rate-limit/auth, resolved_by …-env) is NOT lane breakage (transient, self-resolving)', () => {
+    const r = row({ id: 'd2', itemId: 'EI-2', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge-env' });
+    expect(isLaneBreakageOrphan(r)).toBe(false);
+    expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toEqual([]);
+  });
+
+  it('a LEGACY env orphan (pre-distinct resolved_by, but detail carries [env-failure]) is still excluded', () => {
+    const r = row({
+      id: 'd3', itemId: 'EI-3', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge',
+      fireError: 'worker exit 1 after 0s [env-failure: env signature /rate.?limit/i; attempt 2 not charged]: rate-limit pause',
+    });
+    expect(isLaneBreakageOrphan(r)).toBe(false);
+    expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toEqual([]);
+  });
+
+  it('a GENUINE non-env worker death (attempt charged) DOES signal — the lane may be broken', () => {
+    const r = row({
+      id: 'd4', itemId: 'EI-4', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge',
+      fireError: 'worker exit 1 after 600s [no resolve recorded; attempt charged]: tests still red',
+    });
+    expect(isLaneBreakageOrphan(r)).toBe(true);
+    expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toHaveLength(1);
+  });
+
+  it('the 2h collector catch-all (resolved_by orphaned-dispatch-collector) still signals', () => {
+    const r = row({ id: 'd5', itemId: 'EI-5', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'orphaned-dispatch-collector' });
+    expect(isLaneBreakageOrphan(r)).toBe(true);
+    expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toHaveLength(1);
+  });
+
+  it('a MIX of env + host-restart + genuine surfaces ONLY the genuine item', () => {
+    const evidence = [
+      row({ id: 'a', itemId: 'EI-ENV', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge-env' }),
+      row({ id: 'b', itemId: 'EI-HR', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'host-restart-recovery' }),
+      row({ id: 'c', itemId: 'EI-REAL', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'orphaned-dispatch-collector' }),
+    ];
+    expect(buildOrphanedDispatchSignals(evidence, { nowMs: NOW }).map((s) => s.key)).toEqual(['EI-REAL']);
   });
 });
 

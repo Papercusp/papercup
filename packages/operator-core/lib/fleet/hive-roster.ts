@@ -157,6 +157,43 @@ export function foldHiveRoster(
   );
 }
 
+/** A lean per-agent snapshot line — the dossier / volatile-tail shape
+ *  (directed-wake-honesty-and-spawn-handoff P-021 seam: su-7b271's
+ *  assembleSpawnHydration consumes this per-spawn). Drops the heavy arrays
+ *  (queued / claims / full work items) for a one-line-per-agent glance, keeping
+ *  the coordination-relevant scalars. Pure + bounded by hive size (D-002), so it
+ *  is cheap to render on the volatile tail. */
+export interface RosterSnapshotLine {
+  ownerId: string;
+  label: string | null;
+  agentRole: string | null;
+  alive: boolean;
+  /** Seconds since GENUINE activity (last_active_at, D-003) — NOT keepalive heartbeat. */
+  lastActiveSecAgo: number | null;
+  /** Head-of-line work-item id (doing.id), or null when idle. */
+  doing: string | null;
+  load: number;
+  claimedItems: string[];
+  awaitingEvent: boolean;
+  federated: boolean;
+}
+
+/** Pure: project the full hive roster down to the lean dossier snapshot lines. */
+export function toRosterSnapshot(entries: HiveRosterEntry[]): RosterSnapshotLine[] {
+  return entries.map((e) => ({
+    ownerId: e.agentId,
+    label: e.ownerLabel ?? e.label,
+    agentRole: e.agentRole,
+    alive: e.alive,
+    lastActiveSecAgo: e.lastActiveSecAgo,
+    doing: e.doing?.id ?? null,
+    load: e.load,
+    claimedItems: e.claimedItems,
+    awaitingEvent: e.awaitingEvent,
+    federated: e.federated,
+  }));
+}
+
 export interface ListHiveRosterOpts {
   hiveSlug: string;
   workspaceId?: string | null;
@@ -188,4 +225,11 @@ export async function listHiveRoster(opts: ListHiveRosterOpts): Promise<HiveRost
   ]);
   const assignments = groupByAgent(rows).filter((a) => inHive.has(a.agentId));
   return foldHiveRoster(presence, assignments, tier1, Date.now());
+}
+
+/** Convenience: the lean dossier snapshot in one call (listHiveRoster +
+ *  toRosterSnapshot) — the per-spawn roster-snapshot input for the directed-wake
+ *  P-021 hydration seam. Hive-scoped, so bounded; ~6 small reads per call. */
+export async function listHiveRosterSnapshot(opts: ListHiveRosterOpts): Promise<RosterSnapshotLine[]> {
+  return toRosterSnapshot(await listHiveRoster(opts));
 }

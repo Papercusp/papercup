@@ -118,10 +118,35 @@ export interface OrphanSignalOpts {
 }
 
 /**
+ * Which 'orphaned' rows indicate POSSIBLE LANE BREAKAGE worth a human signal, vs a
+ * correctly-handled transient/infra death that needs no alarm. A worker death is NOT
+ * lane breakage when it is:
+ *   - a HOST-RESTART victim (resolved_by 'host-restart-recovery') — a deploy/restart
+ *     killed it mid-dispatch; already recovered (claim released + attempt rolled back,
+ *     EI-403 Option B). Infra, not the lane's fault.
+ *   - an ENV-FAILURE death (resolved_by 'worker-exit-backedge-env', or a legacy
+ *     'worker-exit-backedge' whose detail still carries '[env-failure') — rate-limit /
+ *     auth / connectivity (EI-406); attempt rolled back, self-resolving (e.g. a
+ *     weekly-limit reset). Filing a major "lane broken" EI for it is a FALSE ALARM —
+ *     and since that EI is itself auto-implement-eligible, it would DOA on the SAME
+ *     outage and file ANOTHER orphan EI: a self-amplifying backlog-noise loop (EI-536/
+ *     523/512/509). The dispatch-stats rollup still counts it; the human signal does not.
+ * INCLUDED (genuine breakage): the 2h orphan collector's catch-all + a genuine non-env
+ * worker crash — a worker that actually died/hung for a reason that IS about the lane.
+ */
+export function isLaneBreakageOrphan(r: ImprovementDispatchRow): boolean {
+  if (r.resolvedBy === 'host-restart-recovery' || r.resolvedBy === 'worker-exit-backedge-env') return false;
+  if ((r.fireError ?? '').includes('[env-failure')) return false; // legacy rows (pre-distinct resolved_by)
+  return true;
+}
+
+/**
  * Pure: one signal per ITEM with orphaned-dispatch evidence inside the window.
  * `evidence` is rows with outcome 'orphaned' (just-marked rows included, with
- * their fresh resolvedAt). Titles are STABLE (no counts) — the cross-tick
- * search-first dedup matches on them; detail lives in the body.
+ * their fresh resolvedAt) — EXCLUDING correctly-handled env-failure + host-restart
+ * deaths ({@link isLaneBreakageOrphan}), which are transient/infra, not lane
+ * breakage. Titles are STABLE (no counts) — the cross-tick search-first dedup
+ * matches on them; detail lives in the body.
  */
 export function buildOrphanedDispatchSignals(
   evidence: ImprovementDispatchRow[],
@@ -131,7 +156,7 @@ export function buildOrphanedDispatchSignals(
   const maxSignals = opts.maxSignals ?? ORPHAN_MAX_SIGNALS;
 
   const inWindow = evidence.filter((r) => {
-    if (r.outcome !== 'orphaned') return false;
+    if (r.outcome !== 'orphaned' || !isLaneBreakageOrphan(r)) return false;
     const ts = r.resolvedAt ? Date.parse(r.resolvedAt) : NaN;
     return !Number.isNaN(ts) && opts.nowMs - ts <= windowMs;
   });

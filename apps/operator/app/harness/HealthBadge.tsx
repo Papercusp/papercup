@@ -25,7 +25,7 @@ interface Props { slug: string }
 
 // Row shapes for queries used here. Loosely typed because the fields we
 // pluck are stable.
-type Phase = { alive: boolean; phase: string };
+type Lane = { phase: string };
 type Escalation = { escalation?: string | null };
 type Decision = { isGhost: boolean };
 type Checkpoint = { granted: boolean };
@@ -36,10 +36,14 @@ type AgentRun = { harnessSlug?: string; ts: number };
 function HealthBadgeInner({ slug }: Props) {
   const workspaceId = useWorkspaceId();
 
-  // Process liveness via the existing harness_phases mirror (staging row).
-  const phasesQ = useSyncQuery<Phase>({
-    queryName: 'harnessPhases.byHarness',
-    args: { harnessSlug: slug, workspaceId },
+  // Process liveness via harness_lanes (the PID-swept live lane tracker) — a
+  // staging lane row means an agent process is live in staging. Replaces the
+  // retired harness_phases mirror (fs-watcher-retirement step 5). NB: this is
+  // "an agent is actively running in staging" (vs the old "driver process
+  // exists") — equivalent for the health dot; the lane sweep drops dead PIDs.
+  const lanesQ = useSyncQuery<Lane>({
+    queryName: 'harnessLanes.byHarness',
+    args: { harnessSlug: slug, workspaceId, phase: 'staging' },
   });
 
   // Escalation: harnessEscalations.byHarness (staging) — escalation column
@@ -93,10 +97,11 @@ function HealthBadgeInner({ slug }: Props) {
   const data = useMemo<DerivedHealth | null>(() => {
     // Wait for the small queries to land before producing a verdict.
     // (featuresOrg/agentRunsOrg can be empty without blocking the badge.)
-    if (phasesQ.loading) return null;
+    if (lanesQ.loading) return null;
 
-    const stagingPhase = (phasesQ.data ?? []).find((p) => p.phase === 'staging');
-    const alive = !!stagingPhase?.alive;
+    // alive = an agent process is live in staging (harness_lanes is PID-swept,
+    // so a present row implies a live pid).
+    const alive = (lanesQ.data ?? []).length > 0;
     const escalation = escalationsQ.data?.[0]?.escalation;
     const escalated = typeof escalation === 'string' && escalation.length > 0;
 
@@ -138,7 +143,7 @@ function HealthBadgeInner({ slug }: Props) {
       checks,
     };
   }, [
-    phasesQ.data, phasesQ.loading,
+    lanesQ.data, lanesQ.loading,
     escalationsQ.data,
     decisionsQ.data,
     checkpointsQ.data,

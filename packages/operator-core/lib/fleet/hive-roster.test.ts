@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   filterPresenceToHive,
   foldHiveRoster,
+  toRosterSnapshot,
   type FoldPresence,
 } from './hive-roster';
 import type { AgentAssignment, WorkListItem } from './assignments';
@@ -179,5 +180,37 @@ describe('foldHiveRoster', () => {
     );
     // live first; among stale, orphan-holder (stale-old) before non-orphan (stale-new)
     expect(out.map((e) => e.agentId)).toEqual(['live', 'stale-old', 'stale-new']);
+  });
+});
+
+describe('toRosterSnapshot (the lean dossier shape — directed-wake P-021 seam)', () => {
+  it('projects to one-line-per-agent scalars, dropping the heavy arrays', () => {
+    const entries = foldHiveRoster(
+      [pres({ ownerId: 'su-x', ownerLabel: 'su · su-x', agentRole: 'su', hiveSlug: 'papercup', lastActiveAt: '2026-06-14T03:59:00Z' })],
+      [asg({ agentId: 'su-x', alive: true, doing: WI('WI-1', 0), queued: [WI('WI-1', 0), WI('WI-2', 1)], load: 2 })],
+      tier1({ 'su-x': { claimedItems: ['P-006'], awaitingEvent: true } }),
+      NOW,
+    );
+    const [line] = toRosterSnapshot(entries);
+    expect(line).toEqual({
+      ownerId: 'su-x',
+      label: 'su · su-x',
+      agentRole: 'su',
+      alive: true,
+      lastActiveSecAgo: 60,
+      doing: 'WI-1', // doing.id only, not the full WorkListItem
+      load: 2,
+      claimedItems: ['P-006'],
+      awaitingEvent: true,
+      federated: false,
+    });
+    // the heavy arrays are NOT in the lean line
+    expect('queued' in line).toBe(false);
+    expect('claims' in line).toBe(false);
+  });
+
+  it('renders an idle agent as doing:null', () => {
+    const entries = foldHiveRoster([pres({ ownerId: 'su-idle' })], [], tier1({}), NOW);
+    expect(toRosterSnapshot(entries)[0].doing).toBeNull();
   });
 });

@@ -103,6 +103,8 @@ describe('recordImplementWorkerExit (EI-404 back-edge + EI-406 rollback)', () =>
     expect(res.envReason).toBeTruthy();
     expect(calls.mergePayload).toEqual([['EI-75', { implementAttempts: 1 }]]);
     expect(calls.markOrphaned[0][2]).toMatch(/env-failure/);
+    // Tagged distinctly so the orphaned-dispatch watchdog excludes it from the "lane broken" signal.
+    expect(calls.markOrphaned[0][1]).toBe('worker-exit-backedge-env');
   });
 
   it('a credential outage on attempt 1 rolls back to 0 (never negative)', async () => {

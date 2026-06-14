@@ -345,62 +345,12 @@ async function deleteProposal(slug: string, phase: Phase, path: string): Promise
 // time by operator endpoints (/:slug/issues/pending, /:slug/issues/triage,
 // /:slug/issues/clear). Validator role POSTs each finding directly.
 
-// ── Mirror 5: harness_phases (config.json + worktree existence) ────────
-//
-// Triggered by config.json changes OR by the 60s reconcile sweep. Encodes a
-// subset of /api/harness/<slug>/phases (the parts the dashboard actually
-// reads). Runtime fields (alive, iteration, passed/total/cost) are best-
-// effort: they reflect the snapshot at write time, not live process state.
-
-async function upsertPhases(project: ProjectEntry): Promise<void> {
-  const { db } = getOrgPg();
-  const ws = activeWorkspaceId();
-  for (const { phase, harnessDir } of harnessDirsForProject(project)) {
-    const phasePathStr = phasePath(project, phase);
-    const exists = existsSync(harnessDir);
-    let mtimeMs = 0;
-    try { mtimeMs = statSync(harnessDir).mtimeMs; } catch {}
-    // Best-effort per-phase fields from the workspace-PG instance config
-    // (ProjectEntry.phases), not config.json (deprecate-harness-config-json-2026-06-06).
-    // branch is derived (null for staging ⇒ read live from git HEAD by the
-    // /phases route; the phase label otherwise), matching the phases route.
-    const phaseInst = project.phases?.[phase];
-    const branch: string | null = phase === 'staging' ? null : phase;
-    const port: number | null = typeof phaseInst?.port === 'number' ? (phaseInst.port as number) : null;
-    const publicUrl: string | null = typeof phaseInst?.publicUrl === 'string' ? (phaseInst.publicUrl as string) : null;
-    await db
-      .insert(hph)
-      .values({
-        harnessSlug: project.slug,
-        phase,
-        phasePath: phasePathStr,
-        branch,
-        port,
-        publicUrl: publicUrl,
-        existsOnDisk: exists,
-        alive: false,
-        passedCount: 0,
-        totalCount: 0,
-        costUsd: 0,
-        iteration: 0,
-        promotionInFlight: false,
-        mtimeMs: Math.floor(mtimeMs),
-        workspaceId: ws,
-      })
-      .onConflictDoUpdate({
-        target: [hph.harnessSlug, hph.phase],
-        set: {
-          phasePath: dsql`EXCLUDED.phase_path`,
-          branch: dsql`EXCLUDED.branch`,
-          port: dsql`EXCLUDED.port`,
-          publicUrl: dsql`EXCLUDED.public_url`,
-          existsOnDisk: dsql`EXCLUDED.exists_on_disk`,
-          mtimeMs: dsql`EXCLUDED.mtime_ms`,
-          workspaceId: dsql`EXCLUDED.workspace_id`,
-        },
-      });
-  }
-}
+// ── Mirror 5 (harness_phases) RETIRED — fs-watcher-retirement step 5.
+// It mirrored config.json + worktree existence, but its `alive` was hardcoded
+// false (never live process state) and its only consumer (HealthBadge) was
+// repointed to harness_lanes (the PID-swept live lane tracker). The
+// /api/harness/:slug/phases REST route recomputes the full phase state on
+// demand. Table dropped in migration 285.
 
 // ── Mirror 6 retired: harness_tests is now written at producer time
 // by bash run.sh's NEXT_TESTER block → /api/internal/test-snapshot.
@@ -495,13 +445,9 @@ function classifyAndDispatch(
   // /:slug/issues/pending and /:slug/issues/triage endpoints.
   // Validator role POSTs each finding directly. Watcher mirror retired.
 
-  // Phases: chokidar dispatch retired. config.json is updated by
-  // operator endpoints (promotion, port assignment) and by bash
-  // worktree creation; producer-time PG writes from those sites are
-  // tracked separately. The reconcileAll() sweep below still calls
-  // upsertPhases(proj) at 60s cadence as a safety net for structural
-  // changes (worktree dirs created/destroyed) without a clean
-  // producer hook.
+  // Phases: mirror fully retired (fs-watcher-retirement step 5). The
+  // /api/harness/:slug/phases REST route recomputes phase state on demand;
+  // HealthBadge reads liveness from harness_lanes. harness_phases dropped (mig 285).
 
   // Tests: written at producer time by bash run.sh's NEXT_TESTER block
   // → /api/internal/test-snapshot. Watcher mirror retired.
@@ -582,10 +528,8 @@ async function reconcileAll(state: WatcherState): Promise<void> {
   state.topWatchedPathSet = newTopPaths;
   state.projects = newProjects;
 
-  // Phases: re-mirror once per project (covers all 3 phases internally).
-  for (const proj of newProjects) {
-    try { await upsertPhases(proj); } catch {}
-  }
+  // (Phases re-mirror removed — fs-watcher-retirement step 5; harness_phases
+  //  dropped, the /phases REST route recomputes on demand.)
 
   // Enabled-plugins reconcile: walk ~/.papercusp/harnesses/<slug>/ and
   // re-mirror each enabled-plugins.json into PG. Catches direct CLI

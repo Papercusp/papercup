@@ -149,7 +149,12 @@ export async function recordImplementWorkerExit(
     (env.env ? ` [env-failure: ${env.reason}; attempt ${input.attempt} not charged]` : ' [no resolve recorded; attempt charged]') +
     (tail ? `: ${tail}` : '');
 
-  const marked = await deps.markOrphaned(input.dispatchId, 'worker-exit-backedge', detail);
+  // Tag an ENV-failure death distinctly in resolved_by so the orphaned-dispatch
+  // watchdog can EXCLUDE it from the "lane is broken" signal (a rate-limit/auth
+  // outage is transient + self-resolving — NOT lane breakage; signaling it files a
+  // major EI that itself DOAs on the same outage → a self-amplifying noise loop).
+  const by = env.env ? 'worker-exit-backedge-env' : 'worker-exit-backedge';
+  const marked = await deps.markOrphaned(input.dispatchId, by, detail);
   if (!marked) {
     // Already terminal — the worker called improvements:resolve. Nothing to undo.
     return { marked: false, charged: true };

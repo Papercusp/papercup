@@ -66,6 +66,13 @@ from waiter-table truth each 30s sweep.
   `release:green`, `release:deployed` / `release:deploy-failed`,
   `escalation:resolved:<msgId>`, `handoff:accepted:<msgId>`,
   `rate-limit:paused/reset:gym-judge|gym-ab`, `lock:grant:<ticket>`.
+- **Directed-wake honesty (`coord:send`):** a `coord:send { wake:'required', to:[agent] }`
+  that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** —
+  a loud miss to act on (they're not running: spawn fresh or pick another addressee), not
+  a silent `woken:0`. Use `wake:'optimistic'` when a durable backstop (the Queen survey,
+  the inbox itself) catches a miss — then a miss is silent by design. Legacy `wake:true`
+  coerces to `'required'`; broadcast (`*`/`human`) is exempt (never wakeable).
+  (directed-wake-honesty-2026-06-14)
 - **Wake-at-reset for a rate limit:** you hold a `retryAfterMs` →
   `events:await { event: 'rate-limit:reset:<scope>', timeout_sec: ceil(ms/1000), on_timeout: 'wake' }`
   — the deadline IS the reset wake; an earlier reset emit just arrives sooner.
