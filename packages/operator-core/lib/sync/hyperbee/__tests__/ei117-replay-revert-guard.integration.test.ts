@@ -118,6 +118,7 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
         created       TEXT,
         updated       TEXT,
         owner         TEXT,
+        initiative    TEXT,
         supersedes    TEXT[] NOT NULL DEFAULT '{}',
         superseded_by TEXT,
         content       TEXT NOT NULL DEFAULT '',

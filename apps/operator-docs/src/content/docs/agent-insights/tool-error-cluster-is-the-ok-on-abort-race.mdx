@@ -1,6 +1,7 @@
 ---
 title: A "tool X erroring/timing-out repeatedly" watchdog cluster is usually ONE dispatch race, not N tool bugs
-description: When the improvement-watchdog files a cluster of "Tool X erroring/timing-out repeatedly" EIs that all share the sample "exceeded timeout of 60s (handler returned but signal had aborted)", the root cause is the dispatch ok-on-abort race discarding completed-but-slow IDEMPOTENT READS under load — fix it once at the dispatch (tier-aware), not per tool. Plus two traps: tier in the dispatch comes from tierFor(capabilities) not ProjectedTool.tier, and a read capability missing from the tier table silently defaults to 'medium'.
+description: >-
+  When the improvement-watchdog files a cluster of "Tool X erroring/timing-out repeatedly" EIs that all share the sample "exceeded timeout of 60s (handler returned but signal had aborted)", the root cause is the dispatch ok-on-abort race discarding completed-but-slow IDEMPOTENT READS under load — fix it once at the dispatch (tier-aware), not per tool. Plus two traps: tier in the dispatch comes from tierFor(capabilities) not ProjectedTool.tier, and a read capability missing from the tier table silently defaults to 'medium'.
 discovered: 2026-06-14
 tags: [dispatch, tooldef, timeout, abort, watchdog, improvements, capability-tier, plans-list, coord-inbox, fleet-health, performance]
 status: active

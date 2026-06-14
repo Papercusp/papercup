@@ -14,6 +14,7 @@
  * passed/meanComposite) stays caller-side.
  */
 export * from './subject';
+export * from './registry';
 export * from './battery';
 export * from './judge';
 export * from './scoring';

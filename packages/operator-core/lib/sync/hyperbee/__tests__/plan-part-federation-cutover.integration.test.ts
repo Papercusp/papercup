@@ -133,6 +133,7 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       created       TEXT,
       updated       TEXT,
       owner         TEXT,
+      initiative    TEXT,
       supersedes    TEXT[] NOT NULL DEFAULT '{}',
       superseded_by TEXT,
       content       TEXT NOT NULL DEFAULT '',

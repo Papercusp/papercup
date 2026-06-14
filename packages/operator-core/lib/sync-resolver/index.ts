@@ -524,7 +524,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // ── Batch 6: phases / smoke-test / brainstorm ─
   // (summary.byHarness retired — fs-watcher-retirement step 2; the
-  //  harness_summaries mirror was a dead legacy path, dropped in migration 280.
+  //  harness_summaries mirror was a dead legacy path, dropped in migration 282.
   //  The live summary UI reads harness_text_artifacts, migration 035.)
 
   // harnessPhases.byHarness — phases ordered by phase column asc.
@@ -664,7 +664,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // harnessBranchActions.byHarnessAndBranch retired — fs-watcher-retirement
   // step 4; the harness_branch_actions mirror was unconsumed (the
   // /branch/:branch/actions REST route recomputes on demand). Table dropped
-  // in migration 281.
+  // in migration 283.
 
   // agentChats.byHarness — chats ordered by updatedAt desc, capped.
   //   zql.agentChatsConsolidated.where(harnessSlug).orderBy('updatedAt', 'desc').limit(limit)

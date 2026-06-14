@@ -452,7 +452,7 @@ async function upsertPhases(project: ProjectEntry): Promise<void> {
 // Mirror 7k (harness_branch_actions) RETIRED — fs-watcher-retirement step 4.
 // It was an unconsumed mirror: the /api/harness/<slug>/branch/<branch>/actions
 // REST route recomputes the same payload on demand (1s cache) and nothing read
-// the table (no UI sync subscriber). The table is dropped in migration 281.
+// the table (no UI sync subscriber). The table is dropped in migration 283.
 
 function classifyAndDispatch(
   state: WatcherState,
@@ -548,7 +548,7 @@ function classifyAndDispatch(
   // Branch actions: chokidar dispatch retired (fs-watcher-retirement step 4).
   // harness_branch_actions was an unconsumed mirror — the /branch/:branch/actions
   // REST route recomputes the same fan-in on demand (1s cache); nothing read the
-  // table. Table dropped in migration 281.
+  // table. Table dropped in migration 283.
 
   // Hook logs: written at producer time by bash run.sh's run_hook
   // → /api/internal/hook-log-event. Watcher mirror retired.
