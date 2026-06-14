@@ -82,6 +82,10 @@ export interface PlanListRow {
    *  (May arrive undefined from a server predating the field.) */
   created: string | null;
   owner: string | null;
+  /** P-015: free-text initiative grouping label, or null. Plans sharing a label
+   *  group together via the plans-list initiative filter facet (shared-hive-
+   *  collaboration). Undefined from a server predating P-015. */
+  initiative?: string | null;
   /** B1 (P-001): resolved owner identity (handle/avatar) for the ownership badge —
    *  derived from `owner` server-side. Undefined from a server predating B1 or
    *  when the attribution flag is off. */

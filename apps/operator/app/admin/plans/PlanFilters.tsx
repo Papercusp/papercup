@@ -66,6 +66,7 @@ export default function PlanFilters({
     parseAsStringEnum<DateWindow>(['today', '7d', '30d']),
   );
   const [owner, setOwner] = useQueryState('pOwner', parseAsString);
+  const [initiative, setInitiative] = useQueryState('pInitiative', parseAsString);
   const [view, setView] = useQueryState(
     'pView',
     parseAsStringEnum<OwnerView>([...OWNER_VIEWS]).withDefault('all'),
@@ -107,10 +108,20 @@ export default function PlanFilters({
     return [...set].sort();
   }, [list.data]);
 
+  // P-015: distinct initiative labels across all plans, for the initiative facet.
+  const initiatives = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of list.data?.plans ?? []) {
+      if (p.initiative) set.add(p.initiative);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [list.data]);
+
   const activeCount =
     (dateWindow ? 1 : 0) +
     (view !== 'all' ? 1 : 0) +
     (owner ? 1 : 0) +
+    (initiative ? 1 : 0) +
     (archivedOnly ? 1 : 0) +
     (legacyOnly ? 1 : 0) +
     (inbox ? 1 : 0) +
@@ -123,6 +134,7 @@ export default function PlanFilters({
     dateWindow ? { key: 'date', label: `updated: ${dateWindowLabel(dateWindow)}`, clear: () => setDateWindow(null) } : null,
     view !== 'all' ? { key: 'view', label: `view: ${OWNER_VIEW_LABELS[view]}`, clear: () => setView(null) } : null,
     owner ? { key: 'owner', label: `owner: ${owner}`, clear: () => setOwner(null) } : null,
+    initiative ? { key: 'initiative', label: `initiative: ${initiative}`, clear: () => setInitiative(null) } : null,
     inbox ? { key: 'needs-human', label: 'has needs-human', clear: () => setInbox(false) } : null,
     actionable ? { key: 'actionable', label: 'has actionable', clear: () => setActionable(false) } : null,
     scout ? { key: 'scout', label: 'scout-created', clear: () => setScout(false) } : null,
@@ -134,6 +146,7 @@ export default function PlanFilters({
     setDateWindow(null);
     setView(null);
     setOwner(null);
+    setInitiative(null);
     setArchivedOnly(false);
     setLegacyOnly(false);
     setInbox(false);
@@ -182,6 +195,19 @@ export default function PlanFilters({
               ...owners.map((o) => ({ value: o, label: o })),
             ]}
             ariaLabel="Plan owner filter"
+            triggerClassName="pc-filters__select"
+          />
+        ) : null}
+
+        {initiatives.length > 0 ? (
+          <Select
+            value={initiative ?? '_all'}
+            onChange={(v) => setInitiative(v === '_all' ? null : v)}
+            options={[
+              { value: '_all', label: 'Initiative' },
+              ...initiatives.map((i) => ({ value: i, label: i })),
+            ]}
+            ariaLabel="Plan initiative filter"
             triggerClassName="pc-filters__select"
           />
         ) : null}

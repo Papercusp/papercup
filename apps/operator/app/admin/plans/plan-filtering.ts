@@ -26,6 +26,9 @@ export interface PlanFilterState {
   /** The viewer's plan-owner email (git config user.email), or null when
    *  unresolvable — then 'mine'/'others' degrade to no-op (show all). */
   viewerEmail: string | null;
+  /** P-015 initiative grouping facet: when set, only plans whose `initiative`
+   *  label matches (case-insensitive). null ⇒ no initiative filter. */
+  initiative: string | null;
   archived: boolean;
   legacy: boolean;
   inbox: boolean;
@@ -55,6 +58,10 @@ export function applyPlanFilters(
     else if (f.view === 'others') working = working.filter((p) => !!p.owner && p.owner.toLowerCase() !== me);
   }
   if (f.owner) working = working.filter((p) => p.owner === f.owner);
+  if (f.initiative) {
+    const init = f.initiative.toLowerCase();
+    working = working.filter((p) => (p.initiative ?? '').toLowerCase() === init);
+  }
   if (f.date) working = working.filter((p) => withinDateWindow(p.updated, f.date));
   working = working.filter((p) => (f.archived ? p.archived : !p.archived));
   if (f.legacy) working = working.filter((p) => p.isLegacy);

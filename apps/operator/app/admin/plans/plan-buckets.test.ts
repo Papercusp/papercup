@@ -37,6 +37,7 @@ const NO_FILTERS: PlanFilterState = {
   owner: null,
   view: 'all',
   viewerEmail: null,
+  initiative: null,
   archived: false,
   legacy: false,
   inbox: false,
@@ -153,5 +154,46 @@ describe('applyPlanFilters', () => {
       'a',
       'b',
     ]);
+  });
+
+  it('initiative facet (P-015): matches the exact label, case-insensitive; null label never matches', () => {
+    const plans = [
+      row({ slug: 'a', initiative: 'shared-hive' }),
+      row({ slug: 'b', initiative: 'Shared-Hive' }), // case-insensitive match
+      row({ slug: 'c', initiative: 'release-gate' }),
+      row({ slug: 'd', initiative: null }),
+      row({ slug: 'e' }), // no initiative field at all (undefined)
+    ];
+    expect(
+      applyPlanFilters(plans, { ...NO_FILTERS, initiative: 'shared-hive' }, '').map((p) => p.slug),
+    ).toEqual(['a', 'b']);
+    expect(
+      applyPlanFilters(plans, { ...NO_FILTERS, initiative: 'release-gate' }, '').map((p) => p.slug),
+    ).toEqual(['c']);
+    // null facet ⇒ no-op (every plan passes).
+    expect(applyPlanFilters(plans, { ...NO_FILTERS, initiative: null }, '').map((p) => p.slug)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+    ]);
+    // a non-matching label hides everything (no plan carries it).
+    expect(applyPlanFilters(plans, { ...NO_FILTERS, initiative: 'nope' }, '')).toEqual([]);
+  });
+
+  it('initiative composes with the owner saved-view (both predicates AND together)', () => {
+    const plans = [
+      row({ slug: 'mine-hive', owner: 'me@x.com', initiative: 'hive' }),
+      row({ slug: 'mine-other', owner: 'me@x.com', initiative: 'other' }),
+      row({ slug: 'theirs-hive', owner: 'you@x.com', initiative: 'hive' }),
+    ];
+    expect(
+      applyPlanFilters(
+        plans,
+        { ...NO_FILTERS, view: 'mine', viewerEmail: 'me@x.com', initiative: 'hive' },
+        '',
+      ).map((p) => p.slug),
+    ).toEqual(['mine-hive']);
   });
 });

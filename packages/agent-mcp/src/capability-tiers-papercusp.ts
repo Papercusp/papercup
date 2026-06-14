@@ -88,6 +88,10 @@ const EXACT: Record<string, CapabilityTier> = {
   // read-only file read. The capability-envelope (B-06) keys on these strings.
   'capability:bash': 'high',
   'capability:fs-read': 'low',
+  // capability:inspect (EI-524 / P-035) — read-only verification (typecheck/test)
+  // via FIXED commands, no free-form exec. Low: it's the read-only sibling of
+  // capability:bash that the bee envelope opens for verify-before-diagnose.
+  'capability:code-inspect': 'low',
   'capability:fs-write': 'high',
   'capability:git': 'high',
   'capability:net': 'high',

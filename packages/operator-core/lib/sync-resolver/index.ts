@@ -661,23 +661,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // harnessBranchActions.byHarnessAndBranch — single row per (harness, branch).
-  //   zql.harnessBranchActions.where(harnessSlug).where(branch).limit(1)
-  'harnessBranchActions.byHarnessAndBranch': {
-    argsSchema: z.object({ harnessSlug: z.string(), branch: z.string() }),
-    resolve: async (args) => {
-      const { harnessSlug, branch } = args as { harnessSlug: string; branch: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { and, eq } = await import('drizzle-orm');
-      const t = generated.harnessBranchActionsInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.branch, branch)))
-        .limit(1)) as unknown[];
-    },
-  },
+  // harnessBranchActions.byHarnessAndBranch retired — fs-watcher-retirement
+  // step 4; the harness_branch_actions mirror was unconsumed (the
+  // /branch/:branch/actions REST route recomputes on demand). Table dropped
+  // in migration 281.
 
   // agentChats.byHarness — chats ordered by updatedAt desc, capped.
   //   zql.agentChatsConsolidated.where(harnessSlug).orderBy('updatedAt', 'desc').limit(limit)
@@ -976,6 +963,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         });
         return { ...a, agentPaneKind: pane.kind, driveMode: pane.driveMode } as unknown;
       });
+    },
+  },
+
+  // hiveRoster.byHive — presence-v2 Phase 3 fold (presence-v2-2026-06-14 P-006):
+  // the unified per-agent live-state surface for ONE Hive. Folds coord:presence
+  // (identity + the mig-277 last_active_at/agent_role/hive_slug scalars + the
+  // P-003 Tier-1 enrichment) with the fleet:assignments work-detail
+  // ({doing,queued,load,orphaned,claims}) — one read for "who's in this hive +
+  // what is each one doing". Preserves the fleet work-shape (D-009#2 / P-015) so
+  // the B10 member dashboard (P-007) repoints with a query swap. Invalidated via
+  // the coord_presence / feature_claims / claim_audit / spawned_agents table
+  // bridge (same tables as fleetAssignments.byHarness).
+  'hiveRoster.byHive': {
+    argsSchema: z.object({ hiveSlug: z.string(), workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const { hiveSlug, workspaceId } = args as { hiveSlug: string; workspaceId?: string };
+      const { listHiveRoster } = await import('../fleet/hive-roster');
+      return (await listHiveRoster({ hiveSlug, workspaceId: workspaceId ?? null })) as unknown[];
     },
   },
 

@@ -14,6 +14,7 @@ import './write';
 import './edit';
 import './git';
 import './fetch';
+import './inspect';
 
 const EXPECTED: Array<{ name: string; capability: string }> = [
   { name: 'capability:bash', capability: 'capability:bash' },
@@ -24,6 +25,8 @@ const EXPECTED: Array<{ name: string; capability: string }> = [
   { name: 'capability:edit', capability: 'capability:fs-write' },
   { name: 'capability:git', capability: 'capability:git' },
   { name: 'capability:fetch', capability: 'capability:net' },
+  // EI-524 / P-035: read-only verification exec (capability:code-inspect, low tier).
+  { name: 'capability:inspect', capability: 'capability:code-inspect' },
 ];
 
 describe('capability tool registration', () => {

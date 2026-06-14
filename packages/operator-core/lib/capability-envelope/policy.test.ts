@@ -71,6 +71,53 @@ describe('evaluateCapabilityEnvelope — fleet roles', () => {
   });
 });
 
+describe('evaluateCapabilityEnvelope — bee read-only confinement (EI-524 / P-035)', () => {
+  const bee = (capabilities: readonly string[], toolName = 't') =>
+    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'bee' } });
+
+  it('denies capability:fs-write for the bee (write/edit gated)', () => {
+    const d = bee(['capability:fs-write'], 'capability:write');
+    expect(d.applied).toBe(true);
+    expect(d.withinEnvelope).toBe(false);
+    expect(d.reason).toContain('bee');
+  });
+
+  it('denies capability:bash for the bee (arbitrary exec gated)', () => {
+    expect(bee(['capability:bash'], 'capability:bash').withinEnvelope).toBe(false);
+  });
+
+  it('allows capability:fs-read for the bee (read opens)', () => {
+    const d = bee(['capability:fs-read'], 'capability:read');
+    expect(d.applied).toBe(true);
+    expect(d.withinEnvelope).toBe(true);
+  });
+
+  it('allows capability:code-inspect for the bee (read-only verification opens)', () => {
+    expect(bee(['capability:code-inspect'], 'capability:inspect').withinEnvelope).toBe(true);
+  });
+
+  it('leaves the coordination plane open (the bee must report + escalate)', () => {
+    for (const cap of ['coord:write', 'work_items:write', 'plans:write', 'messages:write']) {
+      expect(bee([cap]).withinEnvelope, `${cap} should stay within the bee envelope`).toBe(true);
+    }
+  });
+
+  it('still denies the universal protected set for the bee (secrets / processes:kill)', () => {
+    expect(bee(['secrets:read:x']).withinEnvelope).toBe(false);
+    expect(bee(['processes:kill']).withinEnvelope).toBe(false);
+  });
+
+  it('does NOT restrict the pipeline worker role — it must write (scoped to bee only)', () => {
+    const d = evaluateCapabilityEnvelope({
+      toolName: 'capability:write',
+      capabilities: ['capability:fs-write'],
+      ctx: { role: 'worker' },
+    });
+    expect(d.applied).toBe(true);
+    expect(d.withinEnvelope).toBe(true);
+  });
+});
+
 describe('envelope constants', () => {
   it('FLEET_ENVELOPE_ROLES excludes the chat roles but includes the autonomous fleet', () => {
     expect(FLEET_ENVELOPE_ROLES.has('operator')).toBe(false);

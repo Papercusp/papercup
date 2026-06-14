@@ -75,6 +75,8 @@ export interface PlanRow {
   created: string | null;
   updated: string | null;
   owner: string | null;
+  /** P-015 free-text initiative grouping label (frontmatter-derived). */
+  initiative: string | null;
   supersedes: string[];
   supersededBy: string | null;
   opStatus: 'started' | 'paused' | 'done' | null;
@@ -104,6 +106,7 @@ interface PlanDbRow {
   created: string | null;
   updated: string | null;
   owner: string | null;
+  initiative: string | null;
   supersedes: string[] | null;
   superseded_by: string | null;
   op_status: string | null;
@@ -133,6 +136,7 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     created: r.created,
     updated: r.updated,
     owner: r.owner,
+    initiative: r.initiative,
     supersedes: r.supersedes ?? [],
     supersededBy: r.superseded_by,
     opStatus: (r.op_status as PlanRow['opStatus']) ?? null,
@@ -348,7 +352,7 @@ export async function getPlanRow(
   const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<PlanDbRow[]>`
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
-             title, status, created, updated, owner, supersedes, superseded_by,
+             title, status, created, updated, owner, initiative, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
              archived, is_legacy, updated_at, items, decisions, now_state, now_next
         FROM harness_shared.harness_plans
@@ -369,7 +373,7 @@ export async function listPlanRows(
     const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
     return tx<PlanDbRow[]>`
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
-             title, status, created, updated, owner, supersedes, superseded_by,
+             title, status, created, updated, owner, initiative, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
              archived, is_legacy, updated_at, items, decisions, now_state, now_next
         FROM harness_shared.harness_plans
@@ -402,7 +406,7 @@ export async function listPlanIndexRows(
     const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
     return tx<Array<Omit<PlanDbRow, 'content'>>>`
       SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
-             title, status, created, updated, owner, supersedes, superseded_by,
+             title, status, created, updated, owner, initiative, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
              archived, is_legacy, updated_at, items, decisions, now_state, now_next
         FROM harness_shared.harness_plans
@@ -467,7 +471,7 @@ export async function listPlanRowsMatchingAnyToken(
     const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
     return tx<PlanDbRow[]>`
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
-             title, status, created, updated, owner, supersedes, superseded_by,
+             title, status, created, updated, owner, initiative, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
              archived, is_legacy, updated_at, items, decisions, now_state, now_next
         FROM harness_shared.harness_plans
@@ -544,6 +548,7 @@ export interface PlanIndex {
   created: string | null;
   updated: string | null;
   owner: string | null;
+  initiative: string | null;
   supersedes: string[];
   supersededBy: string | null;
   isLegacy: boolean;
@@ -564,6 +569,7 @@ export function deriveIndexFromContent(content: string): PlanIndex {
     created: fm.created ?? null,
     updated: fm.updated ?? null,
     owner: fm.owner ?? null,
+    initiative: fm.initiative ?? null,
     supersedes: fm.supersedes ?? [],
     supersededBy: fm.supersededBy ?? null,
     isLegacy: p.isLegacy,

@@ -82,6 +82,8 @@ type ListRow = {
   updated: string | null;
   created: string | null;
   owner: string | null;
+  /** P-015 free-text initiative grouping label (frontmatter-derived), or null. */
+  initiative: string | null;
   archived: boolean;
   isLegacy: boolean;
   itemCounts: Partial<Record<(typeof ITEM_STATUSES)[number] | 'unknown', number>> | null;
@@ -277,6 +279,7 @@ export default defineTool({
           updated: isoOrNull(row.updatedAt) ?? row.updated ?? null,
           created: row.created,
           owner: row.owner,
+          initiative: row.initiative,
           archived: row.archived,
           isLegacy: row.isLegacy,
           itemCounts,

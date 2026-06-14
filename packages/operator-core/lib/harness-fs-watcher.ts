@@ -67,7 +67,6 @@ import { and, eq, sql as dsql } from 'drizzle-orm';
 
 const hps = generated.harnessProposalsSharedInHarnessShared;
 const hph = generated.harnessPhasesInHarnessShared;
-const hba = generated.harnessBranchActionsInHarnessShared;
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { activeWorkspaceId } from './workspace-registry';
 import { ALL_PHASES, phasePath, type Phase } from './harness-phases';
@@ -83,18 +82,13 @@ const DEBOUNCE_MS = 200;
 /**
  * Paths chokidar must never walk or poll.
  *
- * The dispatch only needs *structured* files — `*.md` proposals, the
- * per-branch action metadata. It does NOT need the
- * high-volume append-only run logs under `action-runs/<branch>/…`: those grow
- * continuously, so chokidar's `awaitWriteFinish` (50 ms poll) would `lstat`
- * every one of them forever and they never stabilise. Across a busy fleet ×
- * 15–19 harnesses that pegged the operator host's event loop at ~100% — every
- * `/api/*` route then starved past the 30 s route watchdog (the
- * `psu: route exceeded 30s` outage, 2026-06-05). The branch-actions mirror
- * recomputes from `listActions` (the structured files), so dropping log-only
- * events loses no signal. `node_modules` / `.git` / `embedded-pg-data*` are
- * defensive guards so a broad watched root can never trigger a recursive walk
- * into a huge tree.
+ * The dispatch only needs *structured* files — `*.md` proposals. The
+ * `.log` / `.swp` extension guards keep chokidar from `lstat`-ing
+ * high-volume append-only logs forever (that pegged the operator event loop
+ * at ~100% and starved `/api/*` past the 30 s watchdog — the
+ * `psu: route exceeded 30s` outage, 2026-06-05). `node_modules` / `.git` /
+ * `embedded-pg-data*` are defensive guards so a broad watched root can never
+ * trigger a recursive walk into a huge tree.
  */
 const WATCHER_IGNORED_RE =
   /(?:^|\/)(?:node_modules|\.git|embedded-pg-data[^/]*)(?:\/|$)|\.(?:swp|swo|tmp|log)$/;
@@ -187,9 +181,10 @@ export function watchedPaths(p: ProjectEntry): string[] {
       // debug/, logs/hooks, screenshots, run.log: chokidar
       // dispatch retired across this arc — producer-time PG writes via
       // their respective endpoints.
-      // Per-branch action scripts and run logs — feed harness_branch_actions.
-      join(harnessDir, 'actions'),
-      join(harnessDir, 'action-runs'),
+      // actions/, action-runs/: chokidar dispatch retired (fs-watcher-retirement
+      // step 4). harness_branch_actions was an unconsumed mirror — the
+      // /branch/:branch/actions REST route recomputes on demand (1s cache) and
+      // nothing read the table; it was dropped.
     );
   }
   // Git-log: chokidar dispatch retired. Refresh now happens at 60s
@@ -454,117 +449,10 @@ async function upsertPhases(project: ProjectEntry): Promise<void> {
 // harness_shared.harness_git_log table is dropped in migration 258.
 // (fs-watcher-retirement-2026-05-10 step 1.)
 
-// ── Mirror 7k: harness_branch_actions (per-branch enriched action list) ─
-//
-// Mirrors the existing /api/harness/<slug>/branch/<branch>/actions
-// payload shape, keyed on (slug, branch). Watcher inputs that trigger
-// recompute via the dispatcher: action scripts (.sh) and action-run logs
-// (.json). Other inputs (plugin enables/configs, global plugin manifests)
-// pick up via the 60s reconcile pass — they change rarely.
-
-const BRANCH_ACTION_BRANCHES = ['staging', 'testing', 'production'] as const;
-
-async function replaceBranchActions(
-  slug: string,
-  branch: string,
-  projectPath: string,
-): Promise<void> {
-  // Lazy-imported to keep harness-fs-watcher lightweight at module load
-  // (these helpers pull plugin-config + manifest resolution).
-  const [{ listActions, listRuns }, { resolveEnv }, { papercuspPath }] = await Promise.all([
-    import('./branch-actions'),
-    import('./branch-action-manifest'),
-    import('./papercusp-root'),
-  ]);
-  const harnessConfigsDir = papercuspPath('harnesses', slug);
-  const globalPluginsDir = papercuspPath('global-plugins');
-
-  let payload: { branch: string; actions: unknown[] };
-  try {
-    const actions = await listActions(
-      projectPath,
-      branch as 'staging' | 'testing' | 'production',
-      { harnessConfigsDir, globalPluginsDir },
-    );
-    const envReadCache = new Map<string, Promise<unknown>>();
-    const enriched = await Promise.all(
-      actions.map(async (a) => {
-        const runs = await listRuns(
-          projectPath,
-          branch as 'staging' | 'testing' | 'production',
-          a.name,
-        );
-        const envResolution = a.manifest?.env
-          ? await resolveEnv(a.manifest, {
-              harnessConfigsDir,
-              contributingPlugin: a.pluginSlug,
-              readCache: envReadCache,
-            })
-          : { env: {}, missing: [] };
-        return {
-          name: a.name,
-          source: a.source,
-          pluginSlug: a.pluginSlug,
-          displayName: a.manifest?.displayName ?? a.name,
-          description: a.manifest?.description,
-          scriptPath: a.scriptPath,
-          env: a.manifest?.env ?? null,
-          envStatus: {
-            ok: envResolution.missing.length === 0,
-            resolved: Object.keys(envResolution.env),
-            missing: envResolution.missing,
-          },
-          lastRun: runs[0] ?? null,
-        };
-      }),
-    );
-    payload = { branch, actions: enriched };
-  } catch (e) {
-    // Compute failure (e.g. plugin manifest parse error) — skip the
-    // upsert rather than wiping the row with a bad payload.
-    console.warn(`[harness-fs-watcher] branch-actions compute failed for ${slug}:${branch}:`, (e as Error)?.message);
-    return;
-  }
-  const { db, sql } = getOrgPg();
-  const ws = activeWorkspaceId();
-  const payloadJson = JSON.stringify(payload);
-  // Diff check uses PG's `IS DISTINCT FROM` (semantic jsonb comparison).
-  // Kept as raw sql since drizzle's eq() does string-equal, not the
-  // jsonb-aware variant we need.
-  const diff = await sql<{ changed: boolean }[]>`
-    SELECT (
-      NOT EXISTS (
-        SELECT 1 FROM harness_shared.harness_branch_actions
-         WHERE harness_slug = ${slug} AND branch = ${branch}
-      )
-      OR EXISTS (
-        SELECT 1 FROM harness_shared.harness_branch_actions
-         WHERE harness_slug = ${slug} AND branch = ${branch}
-           AND payload IS DISTINCT FROM ${payloadJson}::text::jsonb
-      )
-    ) AS changed
-  `;
-  await db
-    .insert(hba)
-    .values({
-      harnessSlug: slug,
-      branch,
-      payload: payload as any,
-      lastCheckMs: Date.now(),
-      workspaceId: ws,
-    })
-    .onConflictDoUpdate({
-      target: [hba.harnessSlug, hba.branch],
-      set: {
-        payload: dsql`EXCLUDED.payload`,
-        lastCheckMs: dsql`EXCLUDED.last_check_ms`,
-        workspaceId: dsql`EXCLUDED.workspace_id`,
-      },
-    });
-  if (diff[0]?.changed) {
-    await notifySyncInvalidate('harnessBranchActions.byHarnessAndBranch', { harnessSlug: slug, branch });
-  }
-}
+// Mirror 7k (harness_branch_actions) RETIRED — fs-watcher-retirement step 4.
+// It was an unconsumed mirror: the /api/harness/<slug>/branch/<branch>/actions
+// REST route recomputes the same payload on demand (1s cache) and nothing read
+// the table (no UI sync subscriber). The table is dropped in migration 281.
 
 function classifyAndDispatch(
   state: WatcherState,
@@ -657,26 +545,10 @@ function classifyAndDispatch(
   // validation-contract.md presence is now refreshed by the 60s
   // reconcile sweep; chokidar dispatch retired (see SPEC.md note above).
 
-  // Branch actions: KEPT mirror — this is a derived-view cache where the
-  // input data is genuinely scattered across many sources (harness-shipped
-  // .sh scripts, every enabled plugin's manifest, per-run audit JSON, env
-  // resolution from plugin-configs + env.json). No single producer-time
-  // hook can rebuild the cache without re-doing the same fan-in work the
-  // mirror does on each chokidar event. Watching the two source dirs for
-  // change events is the right primitive here.
-  for (const dir of ['actions', 'action-runs'] as const) {
-    const root = join(hd, dir);
-    if (path.startsWith(root + '/')) {
-      const rest = path.slice(root.length + 1);
-      const branch = rest.split('/')[0];
-      if ((BRANCH_ACTION_BRANCHES as readonly string[]).includes(branch)) {
-        debounce(state, `branchActions:${slug}:${branch}`, async () => {
-          await replaceBranchActions(slug, branch, project.path);
-        });
-        return;
-      }
-    }
-  }
+  // Branch actions: chokidar dispatch retired (fs-watcher-retirement step 4).
+  // harness_branch_actions was an unconsumed mirror — the /branch/:branch/actions
+  // REST route recomputes the same fan-in on demand (1s cache); nothing read the
+  // table. Table dropped in migration 281.
 
   // Hook logs: written at producer time by bash run.sh's run_hook
   // → /api/internal/hook-log-event. Watcher mirror retired.
@@ -735,15 +607,8 @@ async function reconcileAll(state: WatcherState): Promise<void> {
     console.warn('[harness-fs-watcher] enabled-plugins reconcile failed:', (e as Error)?.message ?? e);
   }
 
-  // Per-project sweeps (not phase-scoped).
-  for (const proj of newProjects) {
-    // Branch actions: recompute all 3 branches per project. This is the
-    // catch-all for plugin-config / global-manifest changes that aren't
-    // wired into chokidar — those land at 60s reconcile cadence.
-    for (const branch of BRANCH_ACTION_BRANCHES) {
-      try { await replaceBranchActions(proj.slug, branch, proj.path); } catch {}
-    }
-  }
+  // (Per-project branch-actions reconcile removed — fs-watcher-retirement
+  //  step 4; harness_branch_actions mirror retired, table dropped mig 281.)
 
   // Walk each (project, phase) and replay anything with diverged mtime.
   for (const proj of newProjects) {

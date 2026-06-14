@@ -82,7 +82,6 @@ describe('sync-resolver v2 registry', () => {
         'pendingReviews.byHarness',
         'harnessPendingIssues.byHarness',
         'harnessScreenshots.byHarness',
-        'harnessBranchActions.byHarnessAndBranch',
         'agentChats.byHarness',
       ]) {
         expect(names).toContain(expected);

@@ -226,11 +226,11 @@ export async function withPlanLock<T>(
       await tx`
         INSERT INTO harness_shared.harness_plans (
           workspace_id, harness_slug, plan_slug, content, content_hash, version,
-          title, status, created, updated, owner, supersedes, superseded_by,
+          title, status, created, updated, owner, initiative, supersedes, superseded_by,
           is_legacy, items, decisions, now_state, now_next, origin
         ) VALUES (
           ${workspaceId}, ${harnessSlug}, ${slug}, ${newBody}, ${hash}, ${newVersion},
-          ${idx.title}, ${idx.status}, ${idx.created}, ${idx.updated}, ${idx.owner},
+          ${idx.title}, ${idx.status}, ${idx.created}, ${idx.updated}, ${idx.owner}, ${idx.initiative},
           ${idx.supersedes}, ${idx.supersededBy}, ${idx.isLegacy},
           ${itemsJson}::text::jsonb, ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext}, 'local'
         )
@@ -243,6 +243,7 @@ export async function withPlanLock<T>(
           created       = EXCLUDED.created,
           updated       = EXCLUDED.updated,
           owner         = EXCLUDED.owner,
+          initiative    = EXCLUDED.initiative,
           supersedes    = EXCLUDED.supersedes,
           superseded_by = EXCLUDED.superseded_by,
           is_legacy     = EXCLUDED.is_legacy,

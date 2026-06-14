@@ -280,6 +280,9 @@ import './capability/write';
 import './capability/edit';
 import './capability/git';
 import './capability/fetch';
+// Read-only verification exec (EI-524 / P-035): typecheck/test via fixed commands,
+// the sanctioned inspect path for confined bees (capability:bash is envelope-gated).
+import './capability/inspect';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
 import './dev/service_health';
@@ -507,6 +510,8 @@ import './plans/edit';
 import './plans/set-frontmatter';
 // shared-hive-collaboration-2026-06-14 P-003 — first-class ownership transfer + co-owners.
 import './plans/transfer-owner';
+// shared-hive-collaboration-2026-06-14 P-015 — initiative grouping label.
+import './plans/set-initiative';
 // plan-level lifecycle flip (draft→ready approve / demote / ship / reject).
 import './plans/set-plan-status';
 // Plan history/audit is the PG plan_revisions spine (plans:revisions /

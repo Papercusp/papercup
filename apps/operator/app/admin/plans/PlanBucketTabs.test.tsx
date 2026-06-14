@@ -74,6 +74,7 @@ const DEFAULT_FILTERS: PlanFilterState = {
   owner: null,
   view: 'all',
   viewerEmail: null,
+  initiative: null,
   archived: false,
   legacy: false,
   inbox: false,

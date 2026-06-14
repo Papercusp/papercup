@@ -49,6 +49,7 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
   // Same filter keys PlanRail reads — so the badges track the live view.
   const [date] = useQueryState('pDate', parseAsStringEnum<DateWindow>(['today', '7d', '30d']));
   const [owner] = useQueryState('pOwner', parseAsString);
+  const [initiative] = useQueryState('pInitiative', parseAsString);
   const [view] = useQueryState('pView', parseAsStringEnum<OwnerView>([...OWNER_VIEWS]).withDefault('all'));
   const viewerEmail = usePlanViewerEmail();
   const [archived] = useQueryState('pArchived', parseAsBoolean.withDefault(false));
@@ -60,7 +61,7 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
   const counts = useMemo<Record<PlanBucket, number>>(() => {
     const filtered = applyPlanFilters(
       plans,
-      { date, owner, view, viewerEmail, archived, legacy, inbox, actionable, scout },
+      { date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout },
       query,
       searchHitSlugs,
     );
@@ -73,7 +74,7 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
     };
     for (const p of filtered) acc[bucketOf(p)] += 1;
     return acc;
-  }, [plans, date, owner, view, viewerEmail, archived, legacy, inbox, actionable, scout, query, searchHitSlugs]);
+  }, [plans, date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, query, searchHitSlugs]);
 
   const toggle = (id: PlanBucket) => {
     const has = buckets.includes(id);

@@ -83,7 +83,7 @@ async function flagOn(opts: HarnessPlanPartsProjectionOpts): Promise<boolean> {
  *  whole-blob projection is bootstrap-only — INSERT … DO NOTHING), so it writes
  *  BOTH the document (content/content_hash) AND the scalar columns the whole-blob
  *  path used to federate — re-derived from the recomposed frontmatter (title /
- *  status / created / updated / owner / supersedes / superseded_by / is_legacy).
+ *  status / created / updated / owner / initiative / supersedes / superseded_by / is_legacy).
  *  origin='remote' + a moved fed_ts make mig-214 return the row verbatim (no
  *  re-stamp) and mig-125 skip re-capture (the echo guard), so the single fed_ts
  *  stays ONE LWW stream. The `content_hash IS DISTINCT FROM` guard skips a no-op
@@ -106,6 +106,7 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
              created       = ${fm.created ?? null},
              updated       = ${fm.updated ?? null},
              owner         = ${fm.owner ?? null},
+             initiative    = ${fm.initiative ?? null},
              supersedes    = ${fm.supersedes ?? []},
              superseded_by = ${fm.supersededBy ?? null},
              is_legacy     = ${isLegacy},

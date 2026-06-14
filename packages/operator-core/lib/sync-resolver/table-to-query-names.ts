@@ -72,7 +72,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   'harness_shared.pending_reviews': ['pendingReviews.byHarness'],
   'harness_shared.harness_pending_issues': ['harnessPendingIssues.byHarness'],
   'harness_shared.harness_screenshots': ['harnessScreenshots.byHarness'],
-  'harness_shared.harness_branch_actions': ['harnessBranchActions.byHarnessAndBranch'],
   'harness_shared.agent_chats_consolidated': ['agentChats.byHarness'],
   'harness_shared.harness_feature_notes': ['featureNotes.byHarness'],
   'harness_shared.harness_feature_debug_notes': ['featureDebugNotes.byHarness'],
@@ -119,6 +118,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
     'agentRunsConsolidated.recent',
     'workItems.byHarness',
     'fleetAssignments.byHarness',
+    // hiveRoster.byHive (presence-v2 P-006 fold) reads spawned_agents for the
+    // Tier-1 model tier; an outcome/model flip re-fires it too.
+    'hiveRoster.byHive',
   ],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the
   // fleet_assignment view = presence + plan-item claims + work-item claims.
@@ -137,9 +139,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
     'fleetAssignments.byHarness',
     'network.board',
     'dev.coordPresence',
+    // hiveRoster.byHive (presence-v2 P-006) folds coord_presence + the fleet
+    // work-detail; a presence/intent/claim/last_active write refreshes it too.
+    'hiveRoster.byHive',
   ],
-  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board'],
-  'harness_shared.claim_audit': ['fleetAssignments.byHarness'],
+  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board', 'hiveRoster.byHive'],
+  'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'hiveRoster.byHive'],
   // dev.coordFeed is the live coordination firehose (the PresenceRail Activity
   // tab + the /adv Conversations Feed). The emit_change_notify trigger on
   // coord_event_log is filtered to ORIGINAL rows (body->>'notify_kind' IS NULL)

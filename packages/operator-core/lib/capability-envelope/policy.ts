@@ -12,14 +12,13 @@
  * non-fleet / roleless callers are EXEMPT — supervised human sessions keep native-tool
  * ergonomics; the policy is the safety net precisely where there is no human.
  *
- * STATUS — this is the INITIAL policy cut. Enforcement ships default-OFF (observe-only,
- * the `papercusp-capability-envelope` flag); the real per-role POSITIVE allowlist and the
- * path/domain dimensions are tuned during the B-18 fleet cutover, once B-05's capability
- * defineTools (bash / file / git / net — which carry the path/domain args this evaluator
- * will then match) exist. Today the only ACTIVE constraint is the universal
- * never-auto protected-capability deny (the queen-autonomy D-005 protected set expressed
- * at the capability layer). Default-allow everywhere else keeps observe-mode signal
- * high-precision (a fleet agent reaching for a protected capability) rather than flooding.
+ * STATUS — enforcement is ARMED (`papercusp-capability-envelope` ON; its flip is the
+ * kill-switch). Two active constraints: (1) the universal never-auto protected-capability
+ * deny (the queen-autonomy D-005 protected set at the capability layer — applies to every
+ * fleet role); (2) the per-role `ROLE_ENVELOPES` tuning — currently the `bee` read-only
+ * confinement (EI-524 / P-035): deny capability:fs-write + capability:bash so the generic
+ * fleet worker verifies before diagnosing. Roles without an entry stay default-allow
+ * (only the protected deny constrains them). Path/domain dimensions remain forward-designed.
  */
 
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -60,11 +59,27 @@ export interface RoleEnvelope {
 }
 
 /**
- * Per-role envelopes. EMPTY at B-06 — every fleet role is default-allow (only the
- * universal protected deny constrains it). B-18 fills the positive per-role allowlists +
- * path/domain dimensions here as it cuts the fleet over to `dontAsk` + a tight allowlist.
+ * Per-role envelopes. Most fleet roles are default-allow (only the universal
+ * protected deny constrains them); per-role tuning is layered in here.
+ *
+ * `bee` (EI-524 / P-035): the generic autonomous fleet worker is confined to
+ * READ-ONLY code inspection. It may READ (capability:fs-read + the native
+ * Read/Glob/Grep the cutover keeps), VERIFY via `capability:inspect`
+ * (capability:code-inspect — fixed typecheck/test, no free-form exec), and use
+ * the coordination plane (coord / work_items / plans / messages) to report and
+ * escalate a VERIFIED diagnosis. MUTATION stays gated: `capability:fs-write`
+ * (write/edit) and `capability:bash` (arbitrary exec) are denied — so a bee
+ * cannot act on a hallucinated root cause; it verifies first (the EI-524 fix for
+ * phantom F-FIX escalations). Deliberately a DENY-list, not a positive
+ * allowCapabilities: an allowlist would also deny coord/work_items/plans writes
+ * and brick the bee's ability to report at all. Scoped to `bee` only — the
+ * pipeline coding roles (worker/architect/…) must write, so they stay
+ * default-allow. Live behind the `papercusp-capability-envelope` flag (its flip
+ * is the kill-switch).
  */
-export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {};
+export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
+  bee: { denyCapabilities: ['capability:fs-write', 'capability:bash'] },
+};
 
 export interface EnvelopeDecision {
   /** false ⇒ beyond the envelope (a protected / denied capability). */
