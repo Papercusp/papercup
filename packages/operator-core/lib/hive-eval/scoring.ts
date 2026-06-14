@@ -42,12 +42,17 @@ export interface AxisWeights {
   speed: number;
 }
 
-/** Relative weights of the efficiency sub-metrics. */
+/** Relative weights of the efficiency sub-metrics. The two `queen*` weights apply only when the run
+ *  carried Queen-wake samples (B-06); a run without them is scored on the first four alone. */
 export interface EfficiencyWeights {
   parallelism: number;
   communication: number;
   rework: number;
   cost: number;
+  /** Queen frozen-prefix cache-hit ratio (Win-1). Lower weight — a narrower, prompt-assembly signal. */
+  queenCache: number;
+  /** Queen turns-per-wake (Win-2 round-trips). Lower weight — a narrower, prompt-assembly signal. */
+  queenRoundTrip: number;
 }
 
 /** Relative weights of the speed sub-metrics (criticalPath is primary). */
@@ -73,6 +78,10 @@ export interface HiveScoreThresholds {
   reworkRateCeiling: number;
   /** USD-per-completed-item considered maximally expensive → cost sub-score 0. */
   costPerItemUsdCeiling: number;
+  /** Queen turns-per-wake at which the round-trip sub-score is 0 (0 turns ⇒ 10). The precomputed
+   *  brief (B-03) should keep the Queen's turns/wake well under this; a wake that re-fetches the
+   *  whole survey family by hand burns many round-trips. */
+  queenTurnsPerWakeCeiling: number;
   /** Critical-path ratio at which the speed sub-score is 0 (1.0 ⇒ 10; the D-004 discriminator). */
   criticalPathRatioCeiling: number;
   /** Time-to-first-placement (ms) considered maximally slow-to-start → 0. */
@@ -103,9 +112,12 @@ export interface HiveScoreRubric {
  * outcome is the GATE, then efficiency and speed weigh equally above it.
  */
 export const DEFAULT_HIVE_SCORE_RUBRIC_V1: Readonly<HiveScoreRubric> = Object.freeze({
-  version: 'hive-score-v1',
+  // v2 (2026-06-14): B-06 added the two queen per-wake efficiency sub-metrics (queenCache,
+  // queenRoundTrip). The constant name is kept (its many importers) — the version string is the
+  // human-legible cache-basis key; the rubric hash changes regardless, so old scores never mix.
+  version: 'hive-score-v2',
   axisWeights: { efficiency: 1, speed: 1 },
-  efficiencyWeights: { parallelism: 1, communication: 1, rework: 1, cost: 1 },
+  efficiencyWeights: { parallelism: 1, communication: 1, rework: 1, cost: 1, queenCache: 0.5, queenRoundTrip: 0.5 },
   speedWeights: { criticalPath: 3, firstPlacement: 1, stuck: 1 },
   thresholds: {
     communicationOverheadCeiling: 12, // ≥12 coord msgs per completed item ⇒ no comms credit
@@ -113,6 +125,7 @@ export const DEFAULT_HIVE_SCORE_RUBRIC_V1: Readonly<HiveScoreRubric> = Object.fr
     uselessBeeRateCeiling: 0.5, // ≥half the bees did no work ⇒ parallelism earns no credit
     reworkRateCeiling: 2, // ≥2 rework events/item ⇒ no rework credit
     costPerItemUsdCeiling: 5, // ≥$5/item ⇒ no cost credit
+    queenTurnsPerWakeCeiling: 12, // ≥12 turns/wake ⇒ no round-trip credit (survey re-fetched by hand)
     criticalPathRatioCeiling: 3, // ≥3× the ideal makespan ⇒ no speed credit (badly serialized)
     timeToFirstPlacementMsCeiling: 120_000, // ≥2 min to first placement ⇒ no start-latency credit
     maxStuckMsCeiling: 300_000, // ≥5 min stuck-while-ready ⇒ no stuck credit
@@ -206,6 +219,8 @@ export function hiveScoreRubricHash(r: HiveScoreRubric): string {
       communication: r.efficiencyWeights.communication,
       rework: r.efficiencyWeights.rework,
       cost: r.efficiencyWeights.cost,
+      queenCache: r.efficiencyWeights.queenCache,
+      queenRoundTrip: r.efficiencyWeights.queenRoundTrip,
     },
     speedWeights: {
       criticalPath: r.speedWeights.criticalPath,
@@ -218,6 +233,7 @@ export function hiveScoreRubricHash(r: HiveScoreRubric): string {
       uselessBeeRateCeiling: t.uselessBeeRateCeiling,
       reworkRateCeiling: t.reworkRateCeiling,
       costPerItemUsdCeiling: t.costPerItemUsdCeiling,
+      queenTurnsPerWakeCeiling: t.queenTurnsPerWakeCeiling,
       criticalPathRatioCeiling: t.criticalPathRatioCeiling,
       timeToFirstPlacementMsCeiling: t.timeToFirstPlacementMsCeiling,
       maxStuckMsCeiling: t.maxStuckMsCeiling,
@@ -325,6 +341,33 @@ function scoreEfficiency(eff: EfficiencyMetrics, r: HiveScoreRubric): HiveAxisSc
     r.efficiencyWeights.rework,
     r.efficiencyWeights.cost,
   ];
+
+  // Queen per-wake efficiency (B-06) — scored ONLY when the run carried Queen-wake samples, so a run
+  // without them keeps the original four-component axis (no false 0 for a cache ratio never earned).
+  // Both queen wins are D-003-paired with rework: a cache/round-trip "win" bought by reusing STALE
+  // state (not re-deriving the current frontier) surfaces as re-placements/bounces, which zeros it.
+  if (eff.queenWakes > 0) {
+    const reworkCredit = pairCredit(eff.reworkRate, t.reworkRateCeiling);
+    // Win-1: frozen-prefix cache-hit ratio (higher = better), discounted by rework.
+    components.push({
+      name: 'queenCache',
+      raw: eff.cacheHitRatio,
+      score: scoreHigher01(eff.cacheHitRatio) * reworkCredit,
+      note: `×${reworkCredit.toFixed(2)} rework credit (Queen cache-hit ratio, Win-1)`,
+    });
+    weights.push(r.efficiencyWeights.queenCache);
+    // Win-2: turns/wake (lower = better) — only when a wake reported a turn count.
+    if (eff.avgQueenTurns != null) {
+      components.push({
+        name: 'queenRoundTrip',
+        raw: eff.avgQueenTurns,
+        score: scoreLowerBetter(eff.avgQueenTurns, t.queenTurnsPerWakeCeiling) * reworkCredit,
+        note: `×${reworkCredit.toFixed(2)} rework credit (Queen turns/wake, Win-2 round-trips)`,
+      });
+      weights.push(r.efficiencyWeights.queenRoundTrip);
+    }
+  }
+
   return {
     axis: 'efficiency',
     score: weightedAggregate(components, weights),

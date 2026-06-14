@@ -64,6 +64,8 @@ describe('computeEfficiencyMetrics — each metric paired with its failure-mode 
     queenCacheCreationTokens: 10_000,
     queenInputTokens: 10_000,
     queenWakes: 5,
+    queenTurns: 12, // 4 wakes reported turns: 12 total ⇒ avg 3
+    queenWakesWithTurns: 4,
   };
 
   it('computes parallelism utilization as mean-busy ÷ cap', () => {
@@ -127,5 +129,28 @@ describe('computeEfficiencyMetrics — each metric paired with its failure-mode 
     const m = computeEfficiencyMetrics({ ...base, queenCacheReadTokens: 0, queenCacheCreationTokens: 0, queenInputTokens: 0, queenWakes: 0 });
     expect(m.cacheHitRatio).toBe(0);
     expect(m.tokensPerWake).toBe(0);
+  });
+
+  // ── Queen round-trip efficiency (P-010 Win-2 — token/TURN, B-06) ──
+  it('computes avgQueenTurns over wakes that reported a turn count (the Win-2 round-trip metric)', () => {
+    const m = computeEfficiencyMetrics(base);
+    expect(m.avgQueenTurns).toBeCloseTo(3, 5); // 12 turns / 4 reporting wakes
+    expect(m.queenWakes).toBe(5);
+  });
+
+  it('avgQueenTurns is null (not 0) when no wake reported a turn count — "no signal" ≠ "ideal"', () => {
+    const m = computeEfficiencyMetrics({ ...base, queenTurns: 0, queenWakesWithTurns: 0 });
+    expect(m.avgQueenTurns).toBeNull();
+  });
+
+  it('pairs the round-trip win with rework rate (fewer turns only good if rework low, D-003)', () => {
+    const m = computeEfficiencyMetrics(base);
+    expect(m.pairings.roundTrip).toEqual({ metric: m.avgQueenTurns, pairedFailure: m.reworkRate, pairName: 'reworkRate' });
+  });
+
+  it('the round-trip pairing metric is 0 when turns were never reported (no data ≠ a real 0)', () => {
+    const m = computeEfficiencyMetrics({ ...base, queenTurns: 0, queenWakesWithTurns: 0 });
+    expect(m.pairings.roundTrip.metric).toBe(0);
+    expect(m.pairings.roundTrip.pairedFailure).toBe(m.reworkRate);
   });
 });

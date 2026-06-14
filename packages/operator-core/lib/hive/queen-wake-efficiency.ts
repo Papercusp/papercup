@@ -12,11 +12,13 @@
  * Pure aggregation over an injectable row source (`deps.fetchSamples`) so it
  * unit-tests with no DB; the default reads PG via getOrgPg.
  *
- * NOT YET CAPTURED: per-wake TURN COUNT (the round-trip-elimination metric, Win-2).
- * RunUsage/agent_usage_samples has no turn-count column; adding it needs a schema
- * migration (deferred — see the plan's remaining-work decision). The cache-ratio
- * here measures Win-1 (the frozen-prefix cache); turn-count will measure Win-2.
+ * BOTH wins are now captured: the cache-ratio measures Win-1 (the frozen-prefix
+ * cache); `avgTurns` (claude `num_turns` per wake, migration 272's `turn_count`)
+ * measures Win-2 (round-trip elimination — the precomputed brief should pull it
+ * down). The hive-eval efficiency class scores both via queenEkgFromEfficiency →
+ * RunBehavior (B-06 / P-011); see hive-eval/efficiency-metrics.ts + scoring.ts.
  */
+import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 
 /** One Queen wake's token + cache sample (one agent_usage_samples row). */
@@ -51,24 +53,29 @@ export interface QueenWakeEfficiency {
   /** Mean assistant turns per wake across wakes that reported a turn count (Win-2:
    *  the precomputed brief should pull this DOWN over time). null when none reported. */
   avgTurns: number | null;
+  /** Sum of assistant turns across wakes that reported a turn count (avgTurns numerator). */
+  totalTurns: number;
+  /** Wakes that reported a turn count (avgTurns denominator; ≤ wakes). */
+  turnsReportedWakes: number;
   /** The per-wake samples, newest-first. */
   samples: QueenWakeSample[];
 }
 
+/** One raw `agent_usage_samples` row (PG numerics may arrive as strings — coerced by {@link num}). */
+export interface QueenWakeSampleRow {
+  run_id: string | null;
+  ts: number | string;
+  input_tokens: number | string | null;
+  output_tokens: number | string | null;
+  cache_read_tokens: number | string | null;
+  cache_creation_tokens: number | string | null;
+  cost_usd: number | string | null;
+  turn_count: number | string | null;
+}
+
 export interface QueenWakeEfficiencyDeps {
   /** Fetch the raw Queen usage rows (newest-first, capped). Injected for tests. */
-  fetchSamples: (input: { workspaceId: string; harnessSlug?: string; limit: number }) => Promise<
-    {
-      run_id: string | null;
-      ts: number | string;
-      input_tokens: number | string | null;
-      output_tokens: number | string | null;
-      cache_read_tokens: number | string | null;
-      cache_creation_tokens: number | string | null;
-      cost_usd: number | string | null;
-      turn_count: number | string | null;
-    }[]
-  >;
+  fetchSamples: (input: { workspaceId: string; harnessSlug?: string; limit: number }) => Promise<QueenWakeSampleRow[]>;
 }
 
 function num(v: number | string | null | undefined): number {
@@ -76,19 +83,29 @@ function num(v: number | string | null | undefined): number {
   return typeof n === 'number' && Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * The canonical Queen-wake usage SELECT over an explicit `sql` client — the single source of the
+ * column list so both the default PG deps AND the hive-eval live capture (which runs over the same
+ * throwaway-hive `sql`, scoped by `harnessSlug = hiveHome`) read identical rows. Exported so
+ * `live-ops.readQueenEkg` reuses it instead of re-deriving the query (B-06 / P-011).
+ */
+export function queenWakeSampleRows(
+  sql: postgres.Sql,
+  input: { workspaceId: string; harnessSlug?: string; limit: number },
+): Promise<QueenWakeSampleRow[]> {
+  return sql<QueenWakeSampleRow[]>`
+    SELECT run_id, ts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, turn_count
+      FROM harness_shared.agent_usage_samples
+     WHERE workspace_id = ${input.workspaceId}
+       AND role = 'queen'
+       ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
+     ORDER BY ts DESC
+     LIMIT ${input.limit}`;
+}
+
 function defaultDeps(): QueenWakeEfficiencyDeps {
   return {
-    fetchSamples: async ({ workspaceId, harnessSlug, limit }) => {
-      const { sql } = getOrgPg();
-      return sql`
-        SELECT run_id, ts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, turn_count
-          FROM harness_shared.agent_usage_samples
-         WHERE workspace_id = ${workspaceId}
-           AND role = 'queen'
-           ${harnessSlug ? sql`AND harness_slug = ${harnessSlug}` : sql``}
-         ORDER BY ts DESC
-         LIMIT ${limit}`;
-    },
+    fetchSamples: async (input) => queenWakeSampleRows(getOrgPg().sql, input),
   };
 }
 
@@ -148,6 +165,8 @@ export async function queenWakeEfficiency(
     totalCostUsd,
     cacheHitRatio,
     avgTurns,
+    totalTurns,
+    turnsReportedWakes,
     samples,
   };
 }

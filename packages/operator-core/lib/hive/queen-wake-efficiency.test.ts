@@ -64,13 +64,17 @@ test('queenWakeEfficiency — avgTurns averages over wakes that reported a turn 
   assert.equal(out.samples[0].turns, 3);
   assert.equal(out.samples[2].turns, null);
   assert.equal(out.avgTurns, 4); // (3+5)/2, the null wake excluded
+  assert.equal(out.totalTurns, 8); // 3+5 (numerator)
+  assert.equal(out.turnsReportedWakes, 2); // the two wakes that reported (denominator)
 });
 
-test('queenWakeEfficiency — avgTurns is null when no wake reported a turn count', async () => {
+test('queenWakeEfficiency — avgTurns is null + totalTurns 0 when no wake reported a turn count', async () => {
   const out = await queenWakeEfficiency('ws', {
     deps: { fetchSamples: async () => rows({ run_id: 'w1', cache_read_tokens: 100 }) },
   });
   assert.equal(out.avgTurns, null);
+  assert.equal(out.totalTurns, 0);
+  assert.equal(out.turnsReportedWakes, 0);
 });
 
 test('queenWakeEfficiency — empty window is zeros, ratio 0 (never NaN)', async () => {

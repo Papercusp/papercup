@@ -51,6 +51,12 @@ export interface RunBehavior {
   queenInputTokens: number;
   /** Number of Queen wakes (runs) in the window. */
   queenWakes: number;
+  /** Sum of the Queen's assistant turns across wakes that reported a turn count (Win-2 round-trips —
+   *  the precomputed brief, B-03, should cut the deterministic survey round-trips per wake). */
+  queenTurns: number;
+  /** Wakes that REPORTED a turn count (the avg-turns denominator). The subprocess wake path captures
+   *  claude `num_turns`; an in-process stateless call reports none — so this can be < queenWakes. */
+  queenWakesWithTurns: number;
 }
 
 /** One D-003 pairing: an efficiency metric and the failure-mode that must stay low to credit it. */
@@ -84,11 +90,22 @@ export interface EfficiencyMetrics {
   cacheHitRatio: number;
   /** Total Queen prompt tokens ÷ wakes — per-wake prompt cost. */
   tokensPerWake: number;
+  /** Mean assistant turns per Queen wake (Win-2: the precomputed brief should pull this DOWN over
+   *  time — fewer deterministic survey round-trips). LOWER is better. null when no wake reported a
+   *  turn count — the round-trip sub-score is then SKIPPED, not scored 0. ONLY good if reworkRate
+   *  stays low (fewer turns by SKIPPING work, not by being briefed, surfaces as rework, D-003). */
+  avgQueenTurns: number | null;
+  /** Queen wakes observed in the window. 0 ⇒ no queen-efficiency data, so the queen sub-scores are
+   *  SKIPPED (a run with no Queen samples is not penalized for a 0 cache ratio it never earned). */
+  queenWakes: number;
   /** The D-003 couplings made explicit — HE-06 credits each win only if its pair stays low. */
   pairings: {
     lowCommunication: MetricPairing;
     highParallelism: MetricPairing;
     cacheEfficiency: MetricPairing;
+    /** Win-2 round-trips: low turns/wake is only credited if rework stays low (same staleness
+     *  failure mode as cacheEfficiency). `metric` is 0 when no wake reported a turn count. */
+    roundTrip: MetricPairing;
   };
 }
 
@@ -109,6 +126,9 @@ export function computeEfficiencyMetrics(b: RunBehavior): EfficiencyMetrics {
   const queenPromptTokens = b.queenCacheReadTokens + b.queenCacheCreationTokens + b.queenInputTokens;
   const cacheHitRatio = queenPromptTokens > 0 ? b.queenCacheReadTokens / queenPromptTokens : 0;
   const tokensPerWake = b.queenWakes > 0 ? queenPromptTokens / b.queenWakes : 0;
+  // Queen round-trip efficiency (P-010 Win-2). Mean turns over wakes that REPORTED a turn count;
+  // null (not 0) when none did, so a window with no turn data is scored as "no signal", not "ideal".
+  const avgQueenTurns = b.queenWakesWithTurns > 0 ? b.queenTurns / b.queenWakesWithTurns : null;
   return {
     parallelismUtilization,
     idleWhileReadyMs: b.idleWhileReadyMs,
@@ -121,12 +141,17 @@ export function computeEfficiencyMetrics(b: RunBehavior): EfficiencyMetrics {
     tokensPerItem: b.totalTokens / denom,
     cacheHitRatio,
     tokensPerWake,
+    avgQueenTurns,
+    queenWakes: b.queenWakes,
     pairings: {
       lowCommunication: { metric: communicationOverhead, pairedFailure: collisionRate, pairName: 'collisionRate' },
       highParallelism: { metric: parallelismUtilization, pairedFailure: uselessBeeRate, pairName: 'uselessBeeRate' },
       // High cache reuse is only credited if rework stays low — a high ratio achieved by reusing
       // STALE state (not re-deriving current frontier) surfaces as re-placements/bounces (D-003).
       cacheEfficiency: { metric: cacheHitRatio, pairedFailure: reworkRate, pairName: 'reworkRate' },
+      // Same staleness failure mode for the round-trip win: fewer turns by SKIPPING work, not by
+      // being briefed, shows up as rework. `metric` 0 when no wake reported a turn count.
+      roundTrip: { metric: avgQueenTurns ?? 0, pairedFailure: reworkRate, pairName: 'reworkRate' },
     },
   };
 }

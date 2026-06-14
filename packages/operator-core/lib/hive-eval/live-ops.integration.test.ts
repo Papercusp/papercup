@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
-import { readMemberSpawnRows, readMemberRunStats, countHivePlacementsInFlight } from './live-ops';
+import { readMemberSpawnRows, readMemberRunStats, countHivePlacementsInFlight, readQueenEkg } from './live-ops';
 
 describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
   let sql: postgres.Sql;
@@ -57,6 +57,19 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
         work_item_id text NOT NULL,
         status text NOT NULL,
         PRIMARY KEY (workspace_id, install_slug, work_item_id)
+      );
+      CREATE TABLE harness_shared.agent_usage_samples (
+        workspace_id text NOT NULL,
+        ts bigint NOT NULL,
+        role text,
+        harness_slug text,
+        run_id text,
+        input_tokens bigint,
+        output_tokens bigint,
+        cache_read_tokens bigint,
+        cache_creation_tokens bigint,
+        cost_usd numeric,
+        turn_count integer
       );
     `);
   }, 60_000);
@@ -107,5 +120,35 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
     expect(await readMemberRunStats(sql, 'nope', ws)).toEqual({ costUsd: 0, workItemsTotal: 0, workItemsCompleted: 0 });
     expect(await readMemberSpawnRows(sql, 'nope', ws)).toEqual([]);
     expect(await countHivePlacementsInFlight(sql, 'nope', ws)).toBe(0);
+  });
+
+  it('readQueenEkg: aggregates role=queen usage scoped to the home slug (B-06 per-wake efficiency)', async () => {
+    const home = 'heval-qeff1';
+    await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, ts, role, harness_slug, run_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, turn_count) VALUES
+      (${ws}, 200, 'queen', ${home}, 'w1', 1000, 500, 8000, 1000, 0.12, 3),
+      (${ws}, 100, 'queen', ${home}, 'w2', 2000, 300, 0, 5000, 0.20, NULL),
+      (${ws}, 150, 'worker', ${home}, 'b1', 9999, 9999, 9999, 9999, 9.99, 9),
+      (${ws}, 150, 'queen', 'other-home', 'x1', 7777, 7777, 7777, 7777, 7.77, 7)`;
+    const ekg = await readQueenEkg(sql, { workspaceId: ws, hiveHome: home });
+    // only the two role=queen rows under THIS home — worker + other-home excluded.
+    expect(ekg.queenWakes).toBe(2);
+    expect(ekg.queenCacheReadTokens).toBe(8000);
+    expect(ekg.queenCacheCreationTokens).toBe(6000); // 1000 + 5000
+    expect(ekg.queenInputTokens).toBe(3000); // 1000 + 2000
+    expect(ekg.queenTurns).toBe(3); // only w1 reported a turn count
+    expect(ekg.queenWakesWithTurns).toBe(1);
+  });
+
+  it('readQueenEkg: a home with no Queen wakes reads all-zero (conservative floor)', async () => {
+    const ekg = await readQueenEkg(sql, { workspaceId: ws, hiveHome: 'heval-noqueen' });
+    expect(ekg).toEqual({
+      queenCacheReadTokens: 0,
+      queenCacheCreationTokens: 0,
+      queenInputTokens: 0,
+      queenWakes: 0,
+      queenTurns: 0,
+      queenWakesWithTurns: 0,
+    });
   });
 });

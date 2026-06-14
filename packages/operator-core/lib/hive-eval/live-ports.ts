@@ -161,6 +161,9 @@ export interface LiveHiveOps {
    */
   readRunTrace(input: {
     member: string;
+    /** The Queen-seat hive home slug — the per-wake Queen usage samples (role='queen') are tagged
+     *  with it, and it is unique per run, so it scopes queenWakeEfficiency to THIS run's wakes (B-06). */
+    hiveHome: string;
     repoPath: string;
     scenario: HiveScenario;
     workspaceId: string;
@@ -275,10 +278,11 @@ export function makeLiveHivePorts(ops: LiveHiveOps, opts: LiveHivePortsOpts): Hi
     },
 
     async collectRunData({ scenario, boot, maxChars }) {
-      const { member } = boot.handle as LiveBootHandle;
+      const { member, home } = boot.handle as LiveBootHandle;
       // Capture EVERYTHING live here (acceptance over the clone + ground-truth rows + spawn
-      // behavior/timing) — teardown runs immediately after, so the extractor replays from `extra`.
-      return ops.readRunTrace({ member, repoPath: boot.repoPath, scenario, workspaceId: ws, maxChars });
+      // behavior/timing + the Queen per-wake efficiency scoped to the home) — teardown runs
+      // immediately after, so the extractor replays from `extra`.
+      return ops.readRunTrace({ member, hiveHome: home, repoPath: boot.repoPath, scenario, workspaceId: ws, maxChars });
     },
 
     async teardown({ boot }): Promise<void> {

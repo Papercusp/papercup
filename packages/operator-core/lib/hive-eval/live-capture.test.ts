@@ -115,18 +115,35 @@ describe('behaviorFromSpawnRows (pure)', () => {
     const withEkg = behaviorFromSpawnRows(rows, {
       beeCap: 2,
       completedFeatureIds: new Set(['w1']),
-      ekg: { coordMessages: 12, collisions: 3, costUsd: 1.5, totalTokens: 4000 },
+      ekg: {
+        coordMessages: 12,
+        collisions: 3,
+        costUsd: 1.5,
+        totalTokens: 4000,
+        queenCacheReadTokens: 9000,
+        queenWakes: 4,
+        queenTurns: 8,
+        queenWakesWithTurns: 4,
+      },
     });
     expect(withEkg.coordMessages).toBe(12);
     expect(withEkg.collisions).toBe(3);
     expect(withEkg.costUsd).toBe(1.5);
     expect(withEkg.totalTokens).toBe(4000);
+    expect(withEkg.queenCacheReadTokens).toBe(9000);
+    expect(withEkg.queenWakes).toBe(4);
+    expect(withEkg.queenTurns).toBe(8);
+    expect(withEkg.queenWakesWithTurns).toBe(4);
 
     const noEkg = behaviorFromSpawnRows(rows, { beeCap: 2, completedFeatureIds: new Set(['w1']) });
     expect(noEkg.coordMessages).toBe(0);
     expect(noEkg.collisions).toBe(0);
     expect(noEkg.costUsd).toBe(0);
     expect(noEkg.lockContentionMs).toBe(0);
+    expect(noEkg.queenCacheReadTokens).toBe(0);
+    expect(noEkg.queenWakes).toBe(0);
+    expect(noEkg.queenTurns).toBe(0);
+    expect(noEkg.queenWakesWithTurns).toBe(0);
   });
 });
 

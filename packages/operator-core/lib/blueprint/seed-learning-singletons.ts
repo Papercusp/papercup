@@ -75,6 +75,12 @@ export interface CutoverResult {
   /** Set when `execute` and the blueprint declares a singleton — the upserted rows. */
   materialized?: MaterializedRoutine[];
   legacy: LegacyRowState;
+  /** Why this loop was skipped (no @singleton row materialized), if it was:
+   *  - `not-declared`: the blueprint hasn't added `singleton: true` yet.
+   *  - `legacy-active`: the legacy `papercup` row is ACTIVE — this dark CLI must NOT create a
+   *    duplicate beside a firing loop (D-023 collision guard); it needs the owner-watched
+   *    atomic active cutover instead. */
+  skipped?: 'not-declared' | 'legacy-active';
 }
 
 /** The legacy `papercup`-slug row a migrated loop seeded — read its current active state. */
@@ -126,7 +132,18 @@ export async function materializeLearningSingletons(
 
     if (!declaresSingleton) {
       log(`SKIP ${t.blueprintId}: blueprint does not declare singleton:true yet (not migrated)`);
-      out.push({ blueprintId: t.blueprintId, declaresSingleton: false, plannedNames, legacy });
+      out.push({ blueprintId: t.blueprintId, declaresSingleton: false, plannedNames, legacy, skipped: 'not-declared' });
+      continue;
+    }
+
+    // COLLISION GUARD (D-023): if the legacy papercup row is ACTIVE, this loop is being actively
+    // used — the frontier-arming campaign re-creates + arms papercup rows via `seed --active`.
+    // Materializing a dark @singleton row beside it is exactly the double-state the revert cleaned
+    // up. An active loop must go through the owner-watched ATOMIC active cutover (copy active +
+    // payload → @singleton, delete papercup, in one step), NOT this dark CLI. Skip it untouched.
+    if (legacy.found && legacy.active === true) {
+      log(`SKIP ${t.blueprintId}: legacy papercup/${t.legacyRoutine} is ACTIVE — needs the owner-watched active cutover, not the dark CLI (collision guard, D-023)`);
+      out.push({ blueprintId: t.blueprintId, declaresSingleton, plannedNames, legacy: { ...legacy, keptActive: true }, skipped: 'legacy-active' });
       continue;
     }
 

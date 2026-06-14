@@ -28,6 +28,9 @@ function outcome(over: Partial<OutcomeMetrics> = {}): OutcomeMetrics {
 }
 
 function eff(over: Partial<EfficiencyMetrics> = {}): EfficiencyMetrics {
+  // Base has NO queen-wake data (queenWakes 0, avgQueenTurns null) so the two queen sub-scores are
+  // SKIPPED and the axis is the original four components — existing assertions are unchanged. The
+  // queen-scoring tests below opt in via eff({ queenWakes, cacheHitRatio, avgQueenTurns }).
   const base: EfficiencyMetrics = {
     parallelismUtilization: 0.9,
     idleWhileReadyMs: 0,
@@ -38,12 +41,15 @@ function eff(over: Partial<EfficiencyMetrics> = {}): EfficiencyMetrics {
     lockContentionMs: 0,
     costPerItemUsd: 1,
     tokensPerItem: 10_000,
-    cacheHitRatio: 0.8,
-    tokensPerWake: 20_000,
+    cacheHitRatio: 0,
+    tokensPerWake: 0,
+    avgQueenTurns: null,
+    queenWakes: 0,
     pairings: {
       lowCommunication: { metric: 2, pairedFailure: 0, pairName: 'collisionRate' },
       highParallelism: { metric: 0.9, pairedFailure: 0, pairName: 'uselessBeeRate' },
-      cacheEfficiency: { metric: 0.8, pairedFailure: 0, pairName: 'reworkRate' },
+      cacheEfficiency: { metric: 0, pairedFailure: 0, pairName: 'reworkRate' },
+      roundTrip: { metric: 0, pairedFailure: 0, pairName: 'reworkRate' },
     },
   };
   return { ...base, ...over };
@@ -120,6 +126,55 @@ describe('computeHiveScore — D-003 pairings (a win is discounted by its paired
   });
 });
 
+describe('computeHiveScore — Queen per-wake efficiency is a scored metric (B-06 / P-011)', () => {
+  it('SKIPS the queen sub-scores when the run has no Queen-wake data (queenWakes 0)', () => {
+    const s = computeHiveScore(outcome(), eff(), speed()); // base = no queen data
+    expect(s.efficiency.components.map((c) => c.name)).toEqual(['parallelism', 'communication', 'rework', 'cost']);
+  });
+
+  it('adds queenCache + queenRoundTrip components when the run carried Queen wakes', () => {
+    const s = computeHiveScore(outcome(), eff({ queenWakes: 6, cacheHitRatio: 0.9, avgQueenTurns: 2 }), speed());
+    expect(s.efficiency.components.map((c) => c.name)).toContain('queenCache');
+    expect(s.efficiency.components.map((c) => c.name)).toContain('queenRoundTrip');
+    expect(comp(s.efficiency, 'queenCache').score).toBeGreaterThan(8); // 0.9 → ~9, rework 0 → full credit
+    expect(comp(s.efficiency, 'queenRoundTrip').score).toBeGreaterThan(8); // 2 turns/wake, ceiling 12
+  });
+
+  it('a low cache ratio scores low on queenCache (higher = better)', () => {
+    const s = computeHiveScore(outcome(), eff({ queenWakes: 6, cacheHitRatio: 0.1, avgQueenTurns: 2 }), speed());
+    expect(comp(s.efficiency, 'queenCache').score).toBeLessThan(2); // 0.1 → 1
+  });
+
+  it('many turns/wake scores low on queenRoundTrip (lower = better) — the no-brief baseline', () => {
+    const briefed = computeHiveScore(outcome(), eff({ queenWakes: 6, cacheHitRatio: 0.9, avgQueenTurns: 2 }), speed());
+    const unbriefed = computeHiveScore(outcome(), eff({ queenWakes: 6, cacheHitRatio: 0.9, avgQueenTurns: 12 }), speed());
+    expect(comp(unbriefed.efficiency, 'queenRoundTrip').score).toBe(0); // at the ceiling → no credit
+    expect(comp(briefed.efficiency, 'queenRoundTrip').score).toBeGreaterThan(
+      comp(unbriefed.efficiency, 'queenRoundTrip').score,
+    );
+  });
+
+  it('D-003: a high cache ratio earned by reusing STALE state (high rework) earns no queen-cache credit', () => {
+    const clean = computeHiveScore(outcome(), eff({ queenWakes: 6, cacheHitRatio: 0.95, avgQueenTurns: 2, reworkRate: 0 }), speed());
+    const stale = computeHiveScore(outcome(), eff({ queenWakes: 6, cacheHitRatio: 0.95, avgQueenTurns: 2, reworkRate: 2 }), speed());
+    expect(comp(clean.efficiency, 'queenCache').score).toBeGreaterThan(8);
+    expect(comp(stale.efficiency, 'queenCache').score).toBe(0); // rework at ceiling → credit ×0
+    expect(comp(stale.efficiency, 'queenRoundTrip').score).toBe(0); // the round-trip win is also zeroed
+  });
+
+  it('scores queenCache but SKIPS queenRoundTrip when turns were never reported (avgQueenTurns null)', () => {
+    const s = computeHiveScore(outcome(), eff({ queenWakes: 6, cacheHitRatio: 0.9, avgQueenTurns: null }), speed());
+    const names = s.efficiency.components.map((c) => c.name);
+    expect(names).toContain('queenCache');
+    expect(names).not.toContain('queenRoundTrip');
+  });
+
+  it('the outcome gate still governs: queen efficiency earns nothing if the run failed acceptance', () => {
+    const s = computeHiveScore(outcome({ acceptancePass: false }), eff({ queenWakes: 6, cacheHitRatio: 0.95, avgQueenTurns: 1 }), speed());
+    expect(s.composite).toBe(0);
+  });
+});
+
 describe('computeHiveScore — the critical-path ratio is the speed discriminator (D-004)', () => {
   it('a well-parallelized run (ratio ≈ 1) scores near 10 on criticalPath', () => {
     const s = computeHiveScore(outcome(), eff(), speed({ criticalPathRatio: 1 }));
@@ -187,7 +242,7 @@ describe('hiveScoreRubricHash — idempotent rubric-hash (cache key)', () => {
   it('the score carries the rubric hash + version (the score-store PK component)', () => {
     const s = computeHiveScore(outcome(), eff(), speed());
     expect(s.rubricHash).toBe(hiveScoreRubricHash(DEFAULT_HIVE_SCORE_RUBRIC_V1));
-    expect(s.rubricVersion).toBe('hive-score-v1');
+    expect(s.rubricVersion).toBe('hive-score-v2');
   });
 });
 

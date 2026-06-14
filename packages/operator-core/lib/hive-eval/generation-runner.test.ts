@@ -54,6 +54,8 @@ function fakeExtractor(outcomeFor: () => OutcomeMetrics): HiveEvalScoreExtractor
           queenCacheCreationTokens: 1000,
           queenInputTokens: 0,
           queenWakes: n,
+          queenTurns: 2 * n,
+          queenWakesWithTurns: n,
         }),
         speed: computeSpeedMetrics(scenario, {
           wallClockMs: ideal, // ratio ~1.0 — optimally parallel

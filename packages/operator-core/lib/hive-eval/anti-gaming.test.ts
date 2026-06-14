@@ -67,6 +67,8 @@ function goodBehavior(over: Partial<RunBehavior> = {}): RunBehavior {
     queenCacheCreationTokens: 1000,
     queenInputTokens: 0,
     queenWakes: N,
+    queenTurns: 2 * N, // ~2 turns/wake — the precomputed brief eliminated the survey round-trips
+    queenWakesWithTurns: N,
     ...over,
   };
 }
@@ -138,6 +140,25 @@ describe('hive-eval anti-gaming invariants (P-060)', () => {
     const parallelism = s.efficiency.components.find((c) => c.name === 'parallelism')!;
     expect(parallelism.raw).toBeCloseTo(1, 5);
     expect(parallelism.score).toBe(0); // …but the useless-bee rate zeros the credit
+  });
+
+  it('stale-cache-reuse → the D-003 queen cache↔rework PAIRING zeroes the queen-cache credit (B-06)', () => {
+    // Strategy: pump the Queen's cache-hit ratio by NOT re-deriving the current frontier each wake —
+    // reusing a stale prefix/state. The realized cost is acting on stale intentions → re-placements
+    // and validator bounces, i.e. rework. The cache "win" bought with rework earns no credit.
+    const behavior = goodBehavior({
+      queenCacheReadTokens: 99_000,
+      queenCacheCreationTokens: 1_000,
+      queenInputTokens: 0, // cacheHitRatio 0.99 — looks maximally efficient…
+      rework: 2 * N, // …but reworkRate ≥ the ceiling exposes the staleness
+    });
+    const eff = computeEfficiencyMetrics(behavior);
+    expect(eff.cacheHitRatio).toBeCloseTo(0.99, 5);
+    expect(eff.reworkRate).toBeGreaterThanOrEqual(RUBRIC.thresholds.reworkRateCeiling);
+    const s = computeHiveScore(goodOutcome(), eff, speedAtRatio(1));
+    const queenCache = s.efficiency.components.find((c) => c.name === 'queenCache')!;
+    expect(queenCache.raw).toBeCloseTo(0.99, 5); // the raw ratio looks perfect…
+    expect(queenCache.score).toBe(0); // …but the paired rework zeros its credit
   });
 
   it('fabricated DONE → fabricationDetected (computed from ground truth) fails the gate ⇒ composite 0', () => {

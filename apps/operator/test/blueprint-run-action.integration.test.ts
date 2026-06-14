@@ -294,14 +294,38 @@ describe('materializeBlueprintTriggers — workspace-singleton triggers (D-018)'
     expect(rows[0].hostSlug).toBe(SINGLETON_TRIGGER_HOST_SLUG);
 
     const db = await sql<
-      { name: string; active: boolean; target_role: string; trigger_config: { cron: string }; payload_template: { blueprintId?: string } | null }[]
-    >`SELECT name, active, target_role, trigger_config, payload_template
+      { name: string; active: boolean; target_role: string; concurrency: string; trigger_config: { cron: string }; payload_template: { blueprintId?: string } | null }[]
+    >`SELECT name, active, target_role, concurrency, trigger_config, payload_template
         FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
     expect(db).toHaveLength(1);
     expect(db[0].active).toBe(false); // dark — armed by the owner, not on materialize
     expect(db[0].target_role).toBe('system:blueprint-run');
     expect(db[0].trigger_config.cron).toBe('0 5 4 * * *'); // byte-identical cadence to the seed
     expect(db[0].payload_template?.blueprintId).toBe('graduation');
+    expect(db[0].concurrency).toBe('skip'); // matches the bespoke seeds (a slow tick must not pile up)
+  });
+
+  it('re-run safe (D-023): re-materializing an ARMED singleton preserves active + owner tuning', async () => {
+    const bp = {
+      id: 'regret',
+      triggers: { schedule: [{ cron: '0 35 */6 * * *', action: 'system:blueprint-run', singleton: true }] },
+    };
+    // First materialize (dark), then simulate the owner arming it + adding a tuning payload.
+    await materializeBlueprintTriggers('regret', bp, { workspaceId: WS });
+    await sql`
+      UPDATE harness_shared.routines
+         SET active = true,
+             payload_template = payload_template || ${JSON.stringify({ payload: { budgetUsd: 5 } })}::text::jsonb
+       WHERE install_slug = ${SINGLETON_TRIGGER_HOST_SLUG} AND name = 'bp-singleton-regret-0'`;
+    // Re-materialize (a re-install / deploy re-seed) — must NOT clobber the armed state.
+    await materializeBlueprintTriggers('regret', bp, { workspaceId: WS });
+    const rows = await sql<{ active: boolean; bp: string | null; tuning: string | null }[]>`
+      SELECT active, payload_template->>'blueprintId' AS bp, payload_template->'payload'->>'budgetUsd' AS tuning
+        FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG} AND name='bp-singleton-regret-0'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].active).toBe(true); // NOT darkened by the re-run
+    expect(rows[0].bp).toBe('regret'); // blueprintId still present
+    expect(rows[0].tuning).toBe('5'); // owner tuning preserved (merged, not overwritten)
   });
 });
 
@@ -331,15 +355,19 @@ describe('materializeLearningSingletons — the seed-replacement cutover (P-144)
     expect(legacy).toHaveLength(0); // legacy retired
   });
 
-  it('active-loop guard: NEVER deletes an ACTIVE legacy row — keeps it, still materializes', async () => {
-    await seedLegacyGraduation(true); // an ACTIVE legacy row (the change-ledger/scout/iq-battery class)
+  it('collision guard (D-023): SKIPS a loop whose legacy papercup row is ACTIVE — no dark @singleton dup', async () => {
+    await seedLegacyGraduation(true); // an ACTIVE legacy row (an armed loop — the collision case)
     const res = await materializeLearningSingletons(sql, WS, { only: 'graduation', execute: true, retireLegacy: true });
-    expect(res[0].legacy.keptActive).toBe(true);
+    expect(res[0].skipped).toBe('legacy-active');
+    expect(res[0].materialized).toBeUndefined(); // did NOT materialize a duplicate
     expect(res[0].legacy.deleted).toBe(false);
+    // legacy untouched (still firing); NO @singleton row created beside it
     const legacy = await sql<{ active: boolean }[]>`
       SELECT active FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
-    expect(legacy).toHaveLength(1); // NOT deleted
+    expect(legacy).toHaveLength(1);
     expect(legacy[0].active).toBe(true);
+    const sing = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
+    expect(sing).toHaveLength(0); // the dark CLI created no duplicate beside the armed loop
   });
 
   it('dry-run writes nothing', async () => {

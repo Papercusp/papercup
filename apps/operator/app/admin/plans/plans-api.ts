@@ -265,6 +265,10 @@ export interface PlanGetResult {
   version?: number;
   filename?: string;
   error?: string;
+  /** B1 (P-001): resolved plan owner + last-editor identities for the detail
+   *  ownership badges. Undefined when the attribution flag is off. */
+  ownerIdentity?: AuthorIdentity | null;
+  lastEditor?: AuthorIdentity | null;
   /** P-006: Map of plan-item-id → { featureId, status }. Present when the
    *  plan has features promoted from it; absent for legacy / no-features plans. */
   linkedFeatures?: Record<string, { featureId: string; status: string }>;

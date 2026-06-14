@@ -36,9 +36,10 @@ import { liveAcceptancePorts } from './outcome-metrics';
 import { collectGroundTruth, runBaselineSuite, type GroundTruthCtx } from './ground-truth';
 import { liveGroundTruthPortsFromSql } from './ground-truth-live';
 import { SEED_APP_DIR } from './scenarios';
+import { queenWakeEfficiency, queenWakeSampleRows, type QueenWakeEfficiency } from '../hive/queen-wake-efficiency';
 import type { HiveScenario } from './scenario';
 import type { LiveHiveOps, LiveRunStats } from './live-ports';
-import { packLiveRunCapture, type LiveRunCapture, type SpawnRunRow } from './live-capture';
+import { packLiveRunCapture, type BehaviorEkgFields, type LiveRunCapture, type SpawnRunRow } from './live-capture';
 
 const execFileP = promisify(execFile);
 
@@ -91,8 +92,43 @@ export async function countHivePlacementsInFlight(sql: postgres.Sql, hiveHome: s
   return rows[0]?.n ?? 0;
 }
 
+/** The queen subset of {@link BehaviorEkgFields} — the eval RunBehavior's per-wake Queen fields. */
+type QueenEkg = Pick<
+  BehaviorEkgFields,
+  'queenCacheReadTokens' | 'queenCacheCreationTokens' | 'queenInputTokens' | 'queenWakes' | 'queenTurns' | 'queenWakesWithTurns'
+>;
+
+/** Map a {@link QueenWakeEfficiency} aggregate onto the eval's queen EKG fields. Pure. */
+export function queenEkgFromEfficiency(eff: QueenWakeEfficiency): QueenEkg {
+  return {
+    queenCacheReadTokens: eff.totalCacheReadTokens,
+    queenCacheCreationTokens: eff.totalCacheCreationTokens,
+    queenInputTokens: eff.totalInputTokens,
+    queenWakes: eff.wakes,
+    queenTurns: eff.totalTurns,
+    queenWakesWithTurns: eff.turnsReportedWakes,
+  };
+}
+
+/**
+ * Read the Queen per-wake efficiency for a throwaway hive home (B-06 / P-010-P-011): the
+ * `role='queen'` agent_usage_samples scoped to `hiveHome` — unique per run, so this is exact
+ * attribution, no time window — aggregated by {@link queenWakeEfficiency} (over the passed `sql`)
+ * and mapped to the eval's queen EKG fields. Exported so the integration test exercises the real SQL.
+ */
+export async function readQueenEkg(sql: postgres.Sql, input: { workspaceId: string; hiveHome: string }): Promise<QueenEkg> {
+  const eff = await queenWakeEfficiency(input.workspaceId, {
+    harnessSlug: input.hiveHome,
+    limit: 500, // a whole run's Queen wakes — well above the default 50 so attribution isn't truncated
+    deps: { fetchSamples: (q) => queenWakeSampleRows(sql, q) },
+  });
+  return queenEkgFromEfficiency(eff);
+}
+
 export interface CaptureRunDataInput {
   member: string;
+  /** The Queen-seat hive home slug — scopes the per-wake Queen efficiency read (unique per run). */
+  hiveHome: string;
   repoPath: string;
   scenario: HiveScenario;
   workspaceId: string;
@@ -111,7 +147,7 @@ export async function captureRunData(
   sql: postgres.Sql,
   input: CaptureRunDataInput,
 ): Promise<{ distilledTrace: string; traceRef: string; extra: Record<string, unknown> }> {
-  const { member, repoPath, scenario, workspaceId, maxChars } = input;
+  const { member, hiveHome, repoPath, scenario, workspaceId, maxChars } = input;
   const ctx: GroundTruthCtx = { scenario, repoPath, hiveSlug: member, workspaceId };
 
   const acceptance = await liveAcceptancePorts().runAcceptance({ repoPath, acceptance: scenario.acceptance });
@@ -124,7 +160,12 @@ export async function captureRunData(
 
   const spawnRows = await readMemberSpawnRows(sql, member, workspaceId);
 
-  const capture: LiveRunCapture = { acceptance, groundTruth, spawnRows };
+  // Per-wake Queen efficiency for THIS run (B-06): role='queen' usage samples scoped to the unique
+  // home slug. A non-LLM read of already-persisted rows; fail-soft (a read error leaves ekg absent →
+  // the eval's queen fields default to 0, the same conservative floor as the other EKG fields).
+  const ekg: BehaviorEkgFields | undefined = await readQueenEkg(sql, { workspaceId, hiveHome }).catch(() => undefined);
+
+  const capture: LiveRunCapture = { acceptance, groundTruth, spawnRows, ...(ekg ? { ekg } : {}) };
 
   // A compact human-readable trace for the (optional, advisory) HE-06 judge — capped at maxChars.
   const claimed = groundTruth.workItems.filter((w) => w.claimedDone).length;

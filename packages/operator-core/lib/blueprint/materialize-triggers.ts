@@ -123,16 +123,60 @@ export function triggerRoutineSpecs(blueprint: BlueprintTriggerInput): TriggerRo
 }
 
 /**
+ * Upsert a workspace-singleton routine — RE-RUN-SAFE (deterministic-blueprints-migration D-023).
+ *
+ * On FIRST creation it seeds the row DARK (`active = false`) with concurrency `skip` (matching
+ * the bespoke `seed-*-routine` scripts it replaces — a slow learning tick must not pile up).
+ * On CONFLICT (a re-materialize / re-install) it PRESERVES the existing `active` (NEVER darkens
+ * an armed loop), `next_fire_at` (never resets the cadence), and `concurrency`, and MERGES the
+ * payload (ensures `blueprintId`, keeps any owner tuning the row accumulated). This is exactly
+ * the ON CONFLICT discipline the bespoke seeds use; the generic `upsertRoutine` overwrites those
+ * fields (which is why a naive re-run would darken an armed loop), so singletons get this upsert.
+ * A singleton row has NO harness to resolve the blueprint from, so it carries the blueprint in
+ * `payload_template.blueprintId` — `system:blueprint-run` reads that and runs the program inline.
+ */
+async function upsertSingletonRoutine(
+  sql: Sql,
+  input: { workspaceId: string; name: string; cron: string; targetRole: string; blueprintId: string },
+): Promise<{ id: string }> {
+  const installSlug = SINGLETON_TRIGGER_HOST_SLUG;
+  const id = `rt_${installSlug}_${input.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+  const nextFireAt = computeNextFireAt(input.cron, new Date());
+  const triggerConfig = JSON.stringify({ cron: input.cron });
+  const payload = JSON.stringify({ blueprintId: input.blueprintId });
+  const rows = await sql<{ id: string }[]>`
+    INSERT INTO harness_shared.routines
+      (id, install_slug, name, trigger_kind, trigger_config, target_role,
+       payload_template, concurrency, catchup, active, next_fire_at, workspace_id)
+    VALUES (
+      ${id}, ${installSlug}, ${input.name}, 'cron',
+      ${triggerConfig}::text::jsonb, ${input.targetRole},
+      ${payload}::text::jsonb, 'skip', 'skip-old', false,
+      ${nextFireAt ? nextFireAt.toISOString() : null}::timestamptz, ${input.workspaceId}
+    )
+    ON CONFLICT (install_slug, name) DO UPDATE SET
+      trigger_kind     = EXCLUDED.trigger_kind,
+      trigger_config   = EXCLUDED.trigger_config,
+      target_role      = EXCLUDED.target_role,
+      payload_template = ${payload}::text::jsonb
+        || COALESCE(harness_shared.routines.payload_template - 'blueprintId', '{}'::jsonb),
+      catchup          = EXCLUDED.catchup,
+      updated_at       = now()
+    RETURNING id
+  `;
+  return { id: rows[0].id };
+}
+
+/**
  * Upsert a blueprint's schedule triggers as `harness_shared.routines` rows.
  * Returns the materialized routines ([] when the blueprint declares no schedule).
  *
  * Per-install triggers are written under `installSlug` and seeded ACTIVE — the blueprint
  * author explicitly declared the schedule. Workspace-singleton triggers (`singleton: true`,
- * D-018) are written under `SINGLETON_TRIGGER_HOST_SLUG` and seeded INACTIVE/dark — a
- * workspace-global loop must be explicitly armed (the same discipline the bespoke
- * `seed-*-routine` scripts use), and re-installing the blueprint upserts the one shared row.
- * Either way the routines engine itself is opt-in (`PAPERCUSP_DBOS_ROUTINES`), so nothing
- * fires until the operator enables it. `opts.sql` / `opts.workspaceId` are test seams;
+ * D-018) are written under `SINGLETON_TRIGGER_HOST_SLUG` via the re-run-safe `upsertSingletonRoutine`
+ * (seeded INACTIVE/dark on first creation; a re-run preserves an armed loop's active state +
+ * tuning — D-023). Either way the routines engine itself is opt-in (`PAPERCUSP_DBOS_ROUTINES`),
+ * so nothing fires until the operator enables it. `opts.sql` / `opts.workspaceId` are test seams;
  * production resolves the admin pool + active workspace.
  */
 export async function materializeBlueprintTriggers(
@@ -147,30 +191,33 @@ export async function materializeBlueprintTriggers(
 
   const out: MaterializedRoutine[] = [];
   for (const spec of specs) {
-    // Singleton → reserved host-slug + seeded dark; per-install → real slug + seeded active.
-    const hostSlug = spec.singleton ? SINGLETON_TRIGGER_HOST_SLUG : installSlug;
-    const active = !spec.singleton;
-    // A singleton row has NO harness to resolve the blueprint from, so it must name the
-    // blueprint in its payload — `system:blueprint-run` reads `payload_template.blueprintId`
-    // and runs THAT program inline (else it falls back to the harness's effective blueprint,
-    // which for the `@singleton` slug is the coding fallback). Per-install rows leave it null
-    // and resolve from the harness (unchanged). Mirrors the bespoke seeds' `{ blueprintId }`.
-    const payloadTemplate = spec.singleton ? { blueprintId: blueprint.id } : undefined;
+    if (spec.singleton) {
+      // blueprint.id is guaranteed here (triggerRoutineSpecs throws for a singleton without it).
+      const row = await upsertSingletonRoutine(sql, {
+        workspaceId,
+        name: spec.name,
+        cron: spec.cron,
+        targetRole: spec.targetRole,
+        blueprintId: blueprint.id as string,
+      });
+      out.push({ ...spec, id: row.id, hostSlug: SINGLETON_TRIGGER_HOST_SLUG });
+      continue;
+    }
+    // Per-install: real install slug, seeded ACTIVE, resolves the blueprint from its harness.
     const row = await upsertRoutine(
       sql,
       {
         workspaceId,
-        installSlug: hostSlug,
+        installSlug,
         name: spec.name,
         triggerKind: 'cron',
         triggerConfig: { cron: spec.cron },
         targetRole: spec.targetRole,
-        payloadTemplate,
-        active,
+        active: true,
       },
       computeNextFireAt,
     );
-    out.push({ ...spec, id: row.id, hostSlug });
+    out.push({ ...spec, id: row.id, hostSlug: installSlug });
   }
   return out;
 }

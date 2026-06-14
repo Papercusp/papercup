@@ -44,6 +44,7 @@ import PlanStatusPopover, {
 import { usePlanRevisions } from './plans-api';
 import type { PlanStatus, PlanStartStatus, PlanItem } from './plans-api';
 import PlanKanbanView from './PlanKanbanView';
+import { AuthorBadge } from '../../_components/AuthorBadge';
 
 interface Props {
   slug: string;
@@ -429,6 +430,17 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
       ) : null}
       {/* Frontmatter + Now/Next sit directly under the in-plan jump/search
           (relocated from the top of the detail pane). */}
+      {/* B1 (shared-hive-collaboration P-001): owner + last-editor badges. */}
+      {data.ownerIdentity || data.lastEditor ? (
+        <div
+          className="pc-plan-detail__authors"
+          style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', margin: '2px 0 6px' }}
+          data-testid="plan-detail-authors"
+        >
+          {data.ownerIdentity ? <AuthorBadge identity={data.ownerIdentity} prefix="owner" /> : null}
+          {data.lastEditor ? <AuthorBadge identity={data.lastEditor} prefix="edited by" /> : null}
+        </div>
+      ) : null}
       {!data.legacy && data.frontmatter ? (
         <FrontmatterCard slug={data.slug} frontmatter={data.frontmatter} />
       ) : null}

@@ -113,12 +113,15 @@ export type BehaviorEkgFields = Partial<
     | 'totalTokens'
     | 'costUsd'
     | 'idleWhileReadyMs'
-    // Per-wake Queen cache efficiency (P-011), sourced from queenWakeEfficiency() over
-    // agent_usage_samples role='queen' — wired at the first live run like the other EKG fields.
+    // Per-wake Queen cache + round-trip efficiency (B-06 / P-010-P-011), sourced from
+    // queenWakeEfficiency() over agent_usage_samples role='queen' scoped to the throwaway hive home
+    // (live-ops.readQueenEkg). The hive home slug is unique per run, so harness_slug scoping is exact.
     | 'queenCacheReadTokens'
     | 'queenCacheCreationTokens'
     | 'queenInputTokens'
     | 'queenWakes'
+    | 'queenTurns'
+    | 'queenWakesWithTurns'
   >
 >;
 
@@ -181,6 +184,8 @@ export function behaviorFromSpawnRows(rows: readonly SpawnRunRow[], input: Behav
     queenCacheCreationTokens: ekg.queenCacheCreationTokens ?? 0,
     queenInputTokens: ekg.queenInputTokens ?? 0,
     queenWakes: ekg.queenWakes ?? 0,
+    queenTurns: ekg.queenTurns ?? 0,
+    queenWakesWithTurns: ekg.queenWakesWithTurns ?? 0,
   };
 }
 
