@@ -56,6 +56,10 @@ export default defineTool({
     maxDistillChars: z.number().int().positive().optional(),
     replayModel: z.string().optional().describe('Model for the replayed continuation (default claude-sonnet-4-6).'),
     maxOutputTokens: z.number().int().positive().max(8000).optional(),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe('Validate + expand the battery and return the plan WITHOUT spending — author/check an experiment before arming spend.'),
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
@@ -69,6 +73,7 @@ export default defineTool({
         repeats: args.repeats,
         budgetUsd: args.budgetUsd,
         maxDistillChars: args.maxDistillChars,
+        dryRun: args.dryRun,
       },
       { workspaceId },
       {
@@ -78,8 +83,9 @@ export default defineTool({
         ledger: new PgExperimentLedger(getOrgPg().sql),
       },
     );
-    if (outcome.ok) {
-      // Push the new run to the Learning-tab scoreboard (P-051).
+    if (outcome.ok && outcome.result) {
+      // Push the new run to the Learning-tab scoreboard (P-051). A dryRun has no
+      // result/ledger row, so it never invalidates.
       const { notifySyncInvalidate } = await import('../../sync-sse');
       notifySyncInvalidate('learning.experiments');
     }

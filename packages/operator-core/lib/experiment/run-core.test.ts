@@ -126,3 +126,46 @@ describe('runExperiment ledger write (P-050)', () => {
     expect(out.result?.winner).toBe('cand');
   });
 });
+
+describe('runExperiment dryRun (P-064)', () => {
+  beforeEach(() => {
+    resetTestRegistry();
+    _resetExperimentRegistration();
+  });
+
+  it('returns the battery plan without calling the substrate (no spend)', async () => {
+    const d = deps();
+    const out = await runExperiment(
+      input({
+        dryRun: true,
+        arms: [{ id: 'opus', knobs: { 'model.agent': 'claude-opus-4-8' } }],
+        cases: [
+          { caseId: 'c1', context: 'x', intent: 'y' },
+          { caseId: 'c2', context: 'x', intent: 'y' },
+        ],
+        repeats: 3,
+      }),
+      { workspaceId: 'ws' },
+      d,
+    );
+    expect(out.ok).toBe(true);
+    expect(d.runGovernedReplay).not.toHaveBeenCalled();
+    expect(out.result).toBeUndefined();
+    // baseline auto-prepended → 2 variants × 2 cases × 3 repeats = 12 cells.
+    expect(out.plan?.totalCells).toBe(12);
+    expect(out.plan?.arms.map((a) => a.id)).toEqual([BASELINE_ID, 'opus']);
+    expect(out.plan?.arms.find((a) => a.id === 'opus')?.model).toBe('claude-opus-4-8');
+  });
+
+  it('still rejects an out-of-slice arm on a dryRun (validation before expansion)', async () => {
+    const d = deps();
+    const out = await runExperiment(
+      input({ dryRun: true, arms: [{ id: 'bad', knobs: { 'genome.config.wake.x': 1 } }] }),
+      { workspaceId: 'ws' },
+      d,
+    );
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/outside the "replay" slice/);
+    expect(d.runGovernedReplay).not.toHaveBeenCalled();
+  });
+});

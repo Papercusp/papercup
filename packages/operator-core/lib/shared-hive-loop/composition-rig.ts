@@ -603,13 +603,14 @@ export class CompositionRig {
       swarmOverride: mkSwarm(),
       verifyBindingOverride: async (_pk, _login, userId) => (userId === idA.userId ? 'verified' : 'fail'),
       applyOverride: (op) => {
-        applyB ??= buildCellApply(dbB.sql, handleB!.ownLog.keyHex, schemaOpts, this.extraProjections);
+        applyB ??= buildCellApply(dbB.sql, handleB!.ownLog.keyHex, schemaOpts, this.extraProjections, hlcB);
         return applyB(op);
       },
       mergePollMs: 0,
       pendingRetryMs: 0,
       loadRevokedOverride: async () => new Set(),
       announceIdentityOverride: idB.override,
+      hlcClock: hlcB,
     });
     this.cleanups.push(async () => {
       await handleB?.close();

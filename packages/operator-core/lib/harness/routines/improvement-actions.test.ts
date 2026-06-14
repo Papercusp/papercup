@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { implementKickoff, implementTimeoutMs, intFromEnv } from './improvement-actions';
 import { listSystemActions } from './system-actions';
 import { DEFAULT_STALE_CLAIM_MS } from '../improvements/plan-implement';
+import { dispatchOverdueAfterMs } from '../improvements/dispatch-ledger';
 
 describe('improvement-actions registration', () => {
   it('registers system:improvement-watchdog and system:improvement-implement', () => {
@@ -35,8 +36,10 @@ describe('implementKickoff — the dispatch carries the resolve contract (close-
 
 describe('implementTimeoutMs — the dispatch worker lifetime (learning-system-audit D-010)', () => {
   const VAR = 'PAPERCUSP_IMPROVEMENT_IMPLEMENT_TIMEOUT_MS';
+  const OVERDUE_VAR = 'PAPERCUSP_IMPROVEMENT_DISPATCH_OVERDUE_MS';
   afterEach(() => {
     delete process.env[VAR];
+    delete process.env[OVERDUE_VAR];
   });
 
   it('defaults to 45 min — 280s SIGTERM-killed 51/58 workers mid-fix', () => {
@@ -45,6 +48,15 @@ describe('implementTimeoutMs — the dispatch worker lifetime (learning-system-a
 
   it('stays under the stale-claim window so a timed-out worker is dead before its claim re-dispatches', () => {
     expect(implementTimeoutMs()).toBeLessThan(DEFAULT_STALE_CLAIM_MS);
+  });
+
+  it('stays under the orphan threshold so a worker still within its timeout is never false-orphaned (relight P-031)', () => {
+    // The orphan collector marks an open dispatch dead past dispatchOverdueAfterMs().
+    // If the worker's own timeout reached that threshold, a worker still legitimately
+    // running (under its timeout) would be orphaned out from under itself — the
+    // false-orphan / dead-lock class the wedge-triad insight warns about. Invariant:
+    // worker lifetime < orphan threshold (which is aligned with the stale-claim window).
+    expect(implementTimeoutMs()).toBeLessThan(dispatchOverdueAfterMs());
   });
 
   it('honors the env override, clamped to ≥60s', () => {

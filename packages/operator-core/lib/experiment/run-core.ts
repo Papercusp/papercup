@@ -45,6 +45,9 @@ export interface RunExperimentInput {
   repeats: number;
   budgetUsd?: number;
   maxDistillChars?: number;
+  /** Validate + expand the battery and return the plan WITHOUT spending (no substrate
+   *  call, no ledger write). Lets you author + check an experiment before arming spend. */
+  dryRun?: boolean;
 }
 
 export interface RunExperimentDeps {
@@ -61,6 +64,17 @@ export interface RunExperimentDeps {
   ledger?: ExperimentLedger;
 }
 
+/** The expansion a dry-run returns — what WOULD run, with no spend. */
+export interface RunExperimentPlan {
+  testId: string;
+  tier: string;
+  arms: { id: string; label: string; model: string | null }[];
+  caseCount: number;
+  repeats: number;
+  /** variants × cases × repeats — the battery cell count. */
+  totalCells: number;
+}
+
 export interface RunExperimentOutcome {
   ok: boolean;
   /** Set when the governed substrate refused (flag off / governor unbudgeted /
@@ -68,6 +82,8 @@ export interface RunExperimentOutcome {
   refused?: { reason?: string };
   error?: string;
   result?: ExperimentRunResult;
+  /** Set on a dryRun: the validated battery plan, no spend. */
+  plan?: RunExperimentPlan;
 }
 
 export async function runExperiment(
@@ -114,6 +130,22 @@ export async function runExperiment(
     intent: c.intent,
     ...(c.projectContext !== undefined ? { projectContext: c.projectContext } : {}),
   }));
+
+  // Dry-run: everything above (descriptor resolution, tier check, arm validation,
+  // battery expansion) has run — return the plan with NO substrate call, NO spend.
+  if (input.dryRun) {
+    return {
+      ok: true,
+      plan: {
+        testId: input.testId,
+        tier: descriptor.fidelityTier,
+        arms: variants.map((v) => ({ id: v.variantId, label: v.label, model: v.policy.model ?? null })),
+        caseCount: cases.length,
+        repeats: input.repeats,
+        totalCells: variants.length * cases.length * input.repeats,
+      },
+    };
+  }
 
   const { verdict, result } = await deps.runGovernedReplay(
     {
