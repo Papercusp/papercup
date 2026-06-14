@@ -134,6 +134,27 @@ export class PgCoordLog implements CoordEventLog {
     this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   }
 
+  /**
+   * The coordination workspace every row of this instance reads/writes. Exposed
+   * so a caller issuing its OWN targeted `coord_event_log` query (rather than
+   * going through readLines) can scope it to the SAME workspace this seam uses —
+   * keeping such reads consistent with appendLine/readLines instead of assuming
+   * `'default'`. (operator-core readAckedMsgIds relies on this.)
+   */
+  get workspaceId(): string {
+    return this.ws;
+  }
+
+  /**
+   * The postgres handle this seam reads/writes. Exposed alongside `workspaceId`
+   * so a targeted-query caller hits the SAME database — in production this is
+   * `getOrgPg().sql`, but a swapped seam (tests, a non-default backend) points
+   * elsewhere, so a caller must NOT reach for `getOrgPg()` independently.
+   */
+  getSql(): Sql {
+    return this.opts.getSql();
+  }
+
   async appendLine(surface: LineSurface, writerKey: string, line: CoordEnvelope): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();

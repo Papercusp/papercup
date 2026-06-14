@@ -26,6 +26,13 @@ const ROW_STYLE: CSSProperties = {
   gap: 2,
 };
 
+/** Compact track: dots only (names live in the column header + per-dot title). */
+const COMPACT_ROW_STYLE: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 3,
+};
+
 function stopStyle(disabled: boolean): CSSProperties {
   return {
     display: 'inline-flex',
@@ -36,6 +43,19 @@ function stopStyle(disabled: boolean): CSSProperties {
     background: 'transparent',
     border: 'none',
     padding: '2px 0',
+    cursor: disabled ? 'default' : 'pointer',
+    font: 'inherit',
+  };
+}
+
+function compactStopStyle(disabled: boolean): CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'transparent',
+    border: 'none',
+    padding: '3px 3px',
     cursor: disabled ? 'default' : 'pointer',
     font: 'inherit',
   };
@@ -82,11 +102,14 @@ export function CeilingSlider({
   onChange,
   disabled = false,
   ariaLabel,
+  compact = false,
 }: {
   value: Ceiling;
   onChange: (next: Ceiling) => void;
   disabled?: boolean;
   ariaLabel?: string;
+  /** Dots-only track — for the single-line settings table (B-15 compact pass). */
+  compact?: boolean;
 }) {
   const idx = Math.max(0, CEILING_LEVELS.indexOf(value));
 
@@ -102,7 +125,7 @@ export function CeilingSlider({
       role="radiogroup"
       aria-label={ariaLabel ?? 'Risk ceiling'}
       aria-disabled={disabled || undefined}
-      style={{ ...ROW_STYLE, opacity: disabled ? 0.5 : 1 }}
+      style={{ ...(compact ? COMPACT_ROW_STYLE : ROW_STYLE), opacity: disabled ? 0.5 : 1 }}
       onKeyDown={(e) => {
         if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
           e.preventDefault();
@@ -126,13 +149,14 @@ export function CeilingSlider({
             disabled={disabled}
             tabIndex={active ? 0 : -1}
             data-level={lvl}
-            style={stopStyle(disabled)}
+            title={compact ? CEILING_SHORT_LABEL[lvl] : undefined}
+            style={compact ? compactStopStyle(disabled) : stopStyle(disabled)}
             onClick={() => {
               if (!disabled && lvl !== value) onChange(lvl);
             }}
           >
             <span aria-hidden="true" style={dotStyle(filled, active)} />
-            <span style={labelStyle(active)}>{CEILING_SHORT_LABEL[lvl]}</span>
+            {!compact && <span style={labelStyle(active)}>{CEILING_SHORT_LABEL[lvl]}</span>}
           </button>
         );
       })}

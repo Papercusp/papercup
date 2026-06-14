@@ -16,6 +16,9 @@ import {
   collectOrphanedDispatchSignals,
   isHostRestartVictim,
   isLaneBreakageOrphan,
+  isEnvFailureDeath,
+  laneInEnvOutage,
+  isCauseUnknownOrphan,
   ORPHAN_EVIDENCE_WINDOW_MS,
 } from './orphaned-dispatch';
 import { readRecentDispatches, markDispatchOrphaned, type ImprovementDispatchRow } from './dispatch-ledger';
@@ -173,6 +176,68 @@ describe('isLaneBreakageOrphan — env-failure + host-restart orphans do NOT fal
   });
 });
 
+describe('env-outage suppression — cause-unknown orphans during a credential outage are not lane breakage (D-004)', () => {
+  it('isEnvFailureDeath recognises both the distinct resolved_by and the legacy [env-failure] detail', () => {
+    expect(isEnvFailureDeath(row({ id: 'a', itemId: 'EI-1', resolvedBy: 'worker-exit-backedge-env' }))).toBe(true);
+    expect(
+      isEnvFailureDeath(
+        row({ id: 'b', itemId: 'EI-2', resolvedBy: 'worker-exit-backedge', fireError: 'worker exit 1 [env-failure: /rate.?limit/i]' }),
+      ),
+    ).toBe(true);
+    expect(isEnvFailureDeath(row({ id: 'c', itemId: 'EI-3', resolvedBy: 'orphaned-dispatch-collector' }))).toBe(false);
+  });
+
+  it('laneInEnvOutage: ≥2 env-failure deaths inside the window ⇒ outage', () => {
+    const rows = [
+      row({ id: 'a', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge-env' }),
+      row({
+        id: 'b', itemId: 'EI-2', outcome: 'orphaned', resolvedAt: hoursAgo(2), resolvedBy: 'worker-exit-backedge',
+        fireError: 'worker exit 1 after 0s [env-failure: env signature /rate.?limit/i]',
+      }),
+    ];
+    expect(laneInEnvOutage(rows, { nowMs: NOW })).toBe(true);
+  });
+
+  it('laneInEnvOutage: a single env death is not an outage; deaths older than the 6h window age out', () => {
+    expect(
+      laneInEnvOutage(
+        [row({ id: 'a', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge-env' })],
+        { nowMs: NOW },
+      ),
+    ).toBe(false);
+    const old = [
+      row({ id: 'a', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(7), resolvedBy: 'worker-exit-backedge-env' }),
+      row({ id: 'b', itemId: 'EI-2', outcome: 'orphaned', resolvedAt: hoursAgo(8), resolvedBy: 'worker-exit-backedge-env' }),
+    ];
+    expect(laneInEnvOutage(old, { nowMs: NOW })).toBe(false);
+  });
+
+  it('isCauseUnknownOrphan: a 2h-collector orphan with no death cause is cause-unknown; one with a real fireError is not', () => {
+    expect(isCauseUnknownOrphan(row({ id: 'a', itemId: 'EI-1', outcome: 'orphaned', resolvedBy: 'orphaned-dispatch-collector' }))).toBe(true);
+    expect(
+      isCauseUnknownOrphan(
+        row({
+          id: 'b', itemId: 'EI-2', outcome: 'orphaned', resolvedBy: 'orphaned-dispatch-collector',
+          fireError: 'worker exit 1 after 600s [no resolve recorded; attempt charged]: tests still red',
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('during an outage a cause-unknown orphan is suppressed, but a genuine (real-error) orphan still signals', () => {
+    const evidence = [
+      row({ id: 'unk', itemId: 'EI-UNK', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'orphaned-dispatch-collector' }),
+      row({
+        id: 'real', itemId: 'EI-REAL', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'orphaned-dispatch-collector',
+        fireError: 'worker exit 1 after 600s [no resolve recorded; attempt charged]: tests still red',
+      }),
+    ];
+    expect(buildOrphanedDispatchSignals(evidence, { nowMs: NOW, envOutage: true }).map((s) => s.key)).toEqual(['EI-REAL']);
+    // healthy lane (envOutage false, the default): BOTH signal
+    expect(buildOrphanedDispatchSignals(evidence, { nowMs: NOW, envOutage: false }).map((s) => s.key).sort()).toEqual(['EI-REAL', 'EI-UNK']);
+  });
+});
+
 describe('collectOrphanedDispatchSignals — the PG glue', () => {
   // The glue reads the real clock — pin it to the fixtures' NOW.
   beforeEach(() => {
@@ -251,5 +316,30 @@ describe('collectOrphanedDispatchSignals — the PG glue', () => {
   it('any other PG failure propagates — the collector status must record it', async () => {
     vi.mocked(readRecentDispatches).mockRejectedValue(new Error('connection refused'));
     await expect(collectOrphanedDispatchSignals('ws-1', { bootMs: 0 })).rejects.toThrow(/connection refused/);
+  });
+
+  it('suppresses cause-unknown orphans + notes it when the lane is in an env outage (EI-536 loop guard)', async () => {
+    vi.mocked(readRecentDispatches).mockResolvedValue([
+      // two env-failure deaths in-window ⇒ outage
+      row({ id: 'e1', itemId: 'EI-ENV1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge-env' }),
+      row({
+        id: 'e2', itemId: 'EI-ENV2', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge',
+        fireError: 'worker exit 1 after 0s [env-failure: env signature /rate.?limit/i]',
+      }),
+      // a cause-unknown 2h-collector orphan — an outage casualty, must be suppressed
+      row({ id: 'u1', itemId: 'EI-UNK', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'orphaned-dispatch-collector' }),
+    ]);
+    const result = await collectOrphanedDispatchSignals('ws-1', { bootMs: 0 });
+    expect(result.signals).toEqual([]); // env deaths filtered + cause-unknown suppressed
+    expect(result.note).toMatch(/env-outage detected/);
+  });
+
+  it('a HEALTHY lane (no env deaths) still signals a cause-unknown orphan', async () => {
+    vi.mocked(readRecentDispatches).mockResolvedValue([
+      row({ id: 'u1', itemId: 'EI-UNK', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'orphaned-dispatch-collector' }),
+    ]);
+    const result = await collectOrphanedDispatchSignals('ws-1', { bootMs: 0 });
+    expect(result.signals.map((s) => s.key)).toEqual(['EI-UNK']);
+    expect(result.note ?? '').not.toMatch(/env-outage/);
   });
 });

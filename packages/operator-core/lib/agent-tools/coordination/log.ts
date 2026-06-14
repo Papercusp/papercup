@@ -13,7 +13,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { PgCoordLog } from '@papercusp/coordination/event-log';
+import { PgCoordLog, DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { CoordEventLog } from '@papercusp/coordination/event-log';
 
 function makeDefaultLog(): CoordEventLog {
@@ -53,3 +53,15 @@ export const coordLog: CoordEventLog = {
   readEvents: (surface) => impl.readEvents(surface),
   getEvent: (surface, msgId) => impl.getEvent(surface, msgId),
 };
+
+/**
+ * The coordination workspace the currently-configured backend reads/writes.
+ * A caller running its OWN targeted `coord_event_log` query (e.g.
+ * readAckedMsgIds' fast path) scopes it to THIS workspace so it stays
+ * consistent with `coordLog.readLines` / `appendLine` — never assuming
+ * `'default'`. PG backends expose `workspaceId`; the in-memory double and any
+ * other generic backend don't, so fall back to the default scope.
+ */
+export function coordWorkspaceId(): string {
+  return (impl as Partial<{ workspaceId: string }>).workspaceId ?? DEFAULT_COORD_WORKSPACE;
+}

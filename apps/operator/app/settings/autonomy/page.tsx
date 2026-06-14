@@ -106,6 +106,18 @@ function levelChipStyle(level: Ceiling): CSSProperties {
   };
 }
 
+/* Shared column template so the header row and every category row line up as a
+ * single-line table (B-15 compact pass): Category | Ceiling | Graduated |
+ * Effective | Never-auto. box-sizing keeps the header (no border) aligned with
+ * the bordered rows. */
+const GRID_COLUMNS = 'minmax(150px, 1fr) auto 64px 64px 64px';
+const ROW_GRID: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: GRID_COLUMNS,
+  columnGap: 14,
+  alignItems: 'center',
+};
+
 export default function AutonomySettingsPage() {
   const { data, loading, error } = useSyncQuery<PolicyRow>({ queryName: 'autonomy.policy' });
   const rows = useMemo<PolicyRow[]>(() => data ?? [], [data]);

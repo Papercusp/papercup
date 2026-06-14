@@ -19,7 +19,7 @@ import {
   type InboxOptions,
 } from '@papercusp/coordination/core';
 import { getOrgPg } from '@papercusp/db-org';
-import { coordLog } from './log';
+import { coordLog, coordWorkspaceId } from './log';
 import { hasAudienceSelector, expandAudience } from './audience';
 import { hostAudienceResolvers, audienceMode } from './audience-host';
 import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
@@ -169,10 +169,13 @@ export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>
   if (!ackerOwnerId) return acked;
   try {
     const { sql } = getOrgPg();
+    // Scope to the SAME workspace the coordLog seam reads/writes (NOT a
+    // hardcoded 'default') so this fast path matches readInbox in non-default
+    // workspaces — otherwise an ack written to workspace W is invisible here.
     const rows = await sql<{ related_msg_id: string | null }[]>`
       SELECT body->>'related_msg_id' AS related_msg_id
         FROM harness_shared.coord_event_log
-       WHERE workspace_id = 'default'
+       WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
          AND body->>'kind' = 'ack'
          AND body->>'from' = ${ackerOwnerId}
