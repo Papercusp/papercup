@@ -2,8 +2,14 @@
 
 // adv:logs — recent structured log events from run.log.jsonl (+ rotated
 // peers) via /log/history. Ports the legacy RealLogsPanel: terminal-style
-// time/level/source/message rows, level filter chips + source text filter.
-// One-shot read + manual Refresh (no 3s auto-poll, per the /adv ethos).
+// time/level/source/message rows. One-shot read + manual Refresh (no 3s
+// auto-poll, per the /adv ethos).
+//
+// Filtering rides the generic column-filter system
+// (generic-column-filters-2026-06-14 Phase 3): columns tag a `filter:` spec
+// (Lvl/Source → enum, Message/Time → text) and the shared <ColumnFilterBar>
+// drives a single nuqs param (`lgf`) — replacing the legacy bespoke level
+// chips + source text input.
 //
 // Rendered on @papercusp/grid-core RichGrid in LEGACY (non-virtual) mode: the
 // feed is bounded (≤300 events from useHarnessLogs) and the message column
@@ -11,15 +17,12 @@
 // a fixed-height virtualized window.
 
 import { useMemo } from 'react';
-import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { Tooltip } from '../../harness/Tooltip';
+import { ColumnFilterBar, useColumnFilters } from '../../harness/filters';
 import { useHarnessLogs, type HarnessLogEvent } from './useHarnessData';
-
-const LEVEL_FILTERS = ['all', 'error', 'warn', 'info'] as const;
-type LevelFilter = (typeof LEVEL_FILTERS)[number];
 
 // Per-level accent — token-first with hex fallbacks. Log levels are a
 // distinct axis from feature/issue status; these map to the shared semantic
@@ -34,6 +37,13 @@ const LEVEL_ACCENT: Record<string, string> = {
 
 function levelOf(e: HarnessLogEvent): string {
   return String(e.level ?? 'info').toLowerCase();
+}
+
+// Localized clock string ('' for an unparseable ts) — shared by the Time cell
+// render and its text-filter accessor so they match exactly.
+function timeText(e: HarnessLogEvent): string {
+  const t = new Date(e.ts);
+  return isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
 }
 
 // The writer's schema is loose — read the message under whichever key it
@@ -56,24 +66,14 @@ type LogRow = { id: string; ev: HarnessLogEvent };
 export default function AdvLogsPanel({ params }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const { events, loading, error, refresh } = useHarnessLogs(slug);
-  const [filter, setFilter] = useQueryState(
-    'logLevel',
-    parseAsStringEnum<LevelFilter>([...LEVEL_FILTERS]).withDefault('all'),
-  );
-  const [sourceFilter, setSourceFilter] = useQueryState('logSource', parseAsString.withDefault(''));
   // Dragged widths survive panel remounts (localStorage — render-only pref).
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:logs');
 
+  // Unfiltered rows — the generic column-filter system does the filtering.
   const rows = useMemo<LogRow[]>(() => {
     if (!events) return [];
-    let xs = events;
-    if (filter !== 'all') xs = xs.filter((e) => levelOf(e) === filter);
-    if (sourceFilter) {
-      const q = sourceFilter.toLowerCase();
-      xs = xs.filter((e) => String(e.source ?? '').toLowerCase().includes(q));
-    }
-    return xs.map((ev, i) => ({ id: `${i}:${ev.ts ?? ''}`, ev }));
-  }, [events, filter, sourceFilter]);
+    return events.map((ev, i) => ({ id: `${i}:${ev.ts ?? ''}`, ev }));
+  }, [events]);
 
   const columns = useMemo<ColumnDef<LogRow>[]>(() => [
     {
@@ -81,20 +81,16 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
       header: 'Time',
       headerText: 'Time',
       width: '76px',
-      toCopyText: (r) => {
-        const t = new Date(r.ev.ts);
-        return isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
-      },
-      render: ({ row }) => {
-        const t = new Date(row.ev.ts);
-        return <span className="pc-adv-logs__time">{isNaN(t.getTime()) ? '' : t.toLocaleTimeString()}</span>;
-      },
+      filter: { type: 'text', accessor: (r: LogRow) => timeText(r.ev) },
+      toCopyText: (r) => timeText(r.ev),
+      render: ({ row }) => <span className="pc-adv-logs__time">{timeText(row.ev)}</span>,
     },
     {
       key: 'level',
       header: 'Lvl',
       headerText: 'Level',
       width: '52px',
+      filter: { type: 'enum', accessor: (r: LogRow) => levelOf(r.ev) },
       toCopyText: (r) => levelOf(r.ev),
       render: ({ row }) => {
         const lvl = levelOf(row.ev);
@@ -106,6 +102,7 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
       header: 'Source',
       headerText: 'Source',
       width: '150px',
+      filter: { type: 'enum', accessor: (r: LogRow) => (r.ev.source ? String(r.ev.source) : null) },
       toCopyText: (r) => String(r.ev.source ?? ''),
       // Native title=, not <Tooltip>: per-row truncation hint in a grid cell —
       // a Radix portal per row is the documented perf anti-pattern.
@@ -121,10 +118,13 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
       header: 'Message',
       headerText: 'Message',
       width: 1,
+      filter: { type: 'text', accessor: (r: LogRow) => messageOf(r.ev) },
       toCopyText: (r) => messageOf(r.ev),
       render: ({ row }) => <span className="pc-adv-logs__msg">{messageOf(row.ev)}</span>,
     },
   ], []);
+
+  const cf = useColumnFilters(columns, rows, { ns: 'lg' });
 
   if (!slug) {
     return <div className="pc-advpanel__empty">No harness slug in params.</div>;
@@ -133,25 +133,11 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
   return (
     <div className="pc-advpanel pc-adv-logs">
       <div className="pc-advpanel__bar">
-        {LEVEL_FILTERS.map((key) => (
-          <button
-            key={key}
-            type="button"
-            className="pc-advpanel__chip"
-            aria-pressed={filter === key}
-            onClick={() => void setFilter(key)}
-            style={key !== 'all' ? { color: LEVEL_ACCENT[key] } : undefined}
-          >
-            {key}
-          </button>
-        ))}
-        <input
-          type="text"
-          className="pc-advpanel__input"
-          value={sourceFilter}
-          onChange={(e) => void setSourceFilter(e.target.value)}
-          placeholder="source filter"
-          aria-label="Filter log events by source"
+        <ColumnFilterBar
+          controller={cf.controller}
+          activeChips={cf.activeChips}
+          hasActive={cf.hasActive}
+          clearAll={cf.clearAll}
         />
         <Tooltip label="Refresh log">
           <button
@@ -174,7 +160,7 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
         ) : (
           <RichGrid<LogRow>
             inline
-            rows={rows}
+            rows={cf.rows}
             columns={columns}
             resizableColumns
             columnWidths={colWidths}

@@ -42,6 +42,11 @@ pub enum Action {
     /// standard refetch loop already feeds plans + roster push-driven; this
     /// forces an immediate refresh (pui-plans-status-board-2026-06-14).
     FetchPlansBoard,
+    /// Fetch the per-item assignment/claim/liveness for one plan
+    /// (pui-plans-status-board-2026-06-14 P-008) so the plans board's right-side
+    /// work-items detail updates the instant the selection moves — the active-
+    /// plan poller is the freshness backstop.
+    FetchPlanItemStates { harness: String, plan: String },
     /// Refetch the cross-Hive network board now (the network-pane's manual `g`
     /// — the refetch loop covers the push-driven cadence, B-09).
     FetchNetworkBoard,
@@ -2513,6 +2518,25 @@ impl App {
         self.visible_plans().get(self.plan_sel).copied()
     }
 
+    /// The (harness, slug) of the plan the plans BOARD has highlighted
+    /// (`plans_board_sel` indexes the sorted `plans_board::board_rows`). Drives
+    /// the board's right-side detail + the active-plan publish for the poller
+    /// (pui-plans-status-board-2026-06-14 P-008). Resolves the harness the same
+    /// way `publish_active_plan` does (the plan's own, else the session's).
+    pub fn selected_board_plan(&self) -> Option<(String, String)> {
+        let rows = crate::plans_board::board_rows(self);
+        rows.get(self.plans_board_sel.min(rows.len().saturating_sub(1)))
+            .map(|r| {
+                let h = r
+                    .plan
+                    .harness
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| self.harness.clone());
+                (h, r.plan.slug.clone())
+            })
+    }
+
     /// The swarm pane's currently-selected bee (ownerId, agent-name) — the row
     /// `fleet.agent_sel` lands on in the visible roster. None when the roster is
     /// empty. Used to PUBLISH the selection to the bee-dossier relay (Feature 1).
@@ -2755,6 +2779,12 @@ impl App {
                         .unwrap_or_else(|| self.harness.clone());
                     (h, p.slug.clone())
                 })
+            } else if self.tab == Tab::PlansBoard {
+                // The pinned plans board's right-side work-items detail needs
+                // the SELECTED board plan's item states; the poller keeps it
+                // fresh between the immediate FetchPlanItemStates fetches on j/k
+                // (pui-plans-status-board-2026-06-14 P-008).
+                self.selected_board_plan()
             } else {
                 None
             };
@@ -3406,14 +3436,24 @@ impl App {
                 if self.plans_board_sel + 1 < count {
                     self.plans_board_sel += 1;
                 }
-                Action::Render
+                self.fetch_selected_board_item_states()
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.plans_board_sel = self.plans_board_sel.saturating_sub(1);
-                Action::Render
+                self.fetch_selected_board_item_states()
             }
             KeyCode::Char('g') => Action::FetchPlansBoard,
             _ => Action::None,
+        }
+    }
+
+    /// Kick an immediate plan-item-states fetch for the board's now-selected
+    /// plan so the right-side work-items detail updates promptly on j/k; a
+    /// no-selection board just redraws (pui-plans-status-board-2026-06-14 P-008).
+    fn fetch_selected_board_item_states(&self) -> Action {
+        match self.selected_board_plan() {
+            Some((harness, plan)) => Action::FetchPlanItemStates { harness, plan },
+            None => Action::Render,
         }
     }
 

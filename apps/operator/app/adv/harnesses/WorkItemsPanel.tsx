@@ -5,7 +5,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
-import { Select } from '../../harness/Select';
+import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { IssueStatusPill, KindPill, SeverityPill, StatusPill } from '../../harness/primitives';
 import { TrustBadge, trustBadgeState } from '../../harness/TrustBadge';
@@ -60,15 +60,11 @@ const CELL_TRUNCATE: CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-// Radix Select reserves '' for "no selection" — translate at the boundary
-// (the documented sentinel pattern from design/gotchas).
-const ALL_KINDS = '_all';
-
 export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
-  // user-meaningful filters → URL (nuqs); `w`-prefixed so they don't collide with
-  // the Features (fview/fq) / Issues (iview/iq) panels.
-  const [kind, setKind] = useQueryState('wkind', parseAsString.withDefault(''));
+  // The per-column filters (kind/state/severity/priority/…) live in ONE nuqs param
+  // (`wif`) owned by useColumnFilters below. The global quick-search is a separate
+  // affordance — `wq`, applied as a substring match ON TOP of the column filters.
   const [search, setSearch] = useQueryState('wq', parseAsString.withDefault(''));
   // Row selection drives the global `?sel` the Detail pane reads — F-* resolves
   // to the feature view, WI-* to the work-item view (same contract the retired
@@ -103,27 +99,13 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     if (items) api.setTitle(`Work items · ${slug} (${items.length})`);
   }, [items, slug, api]);
 
-  const kinds = useMemo(() => {
-    const set = new Set<string>();
-    for (const i of items ?? []) set.add(i.kind);
-    return Array.from(set).sort();
-  }, [items]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (items ?? []).filter((i) => {
-      if (kind && i.kind !== kind) return false;
-      if (q && !(`${i.id} ${i.title} ${i.state} ${i.assignee ?? ''}`.toLowerCase().includes(q))) return false;
-      return true;
-    });
-  }, [items, kind, search]);
-
   const columns: ColumnDef<WorkItemRow>[] = [
     {
       key: 'id',
       header: 'ID',
       width: 1.4,
       toCopyText: (r) => r.id,
+      filter: { type: 'text', accessor: (r) => r.id },
       render: ({ row }) => (
         <code style={CELL_TRUNCATE} title={row.id}>{row.id}</code>
       ),
@@ -133,6 +115,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Kind',
       width: 1.2,
       toCopyText: (r) => r.kind,
+      filter: { type: 'enum', accessor: (r) => r.kind },
       // Canonical kind chip (WORK_ITEM_KIND table) — same chip recipe as the
       // Sev column so the table's pill columns read as one visual language.
       render: ({ row }) => <KindPill kind={row.kind} size="xs" />,
@@ -142,6 +125,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Title',
       width: 4,
       toCopyText: (r) => r.title,
+      filter: { type: 'text', accessor: (r) => r.title },
       render: ({ row }) => (
         <span style={CELL_TRUNCATE} title={row.title}>{row.title}</span>
       ),
@@ -151,6 +135,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'State',
       width: 1.2,
       toCopyText: (r) => r.state,
+      filter: { type: 'enum', accessor: (r) => r.state },
       // Canonical status pills (app/harness/theme.ts tables — the same coloring
       // FeatureList/IssuesList use). Family picks the table; unknown states fall
       // back to the tables' neutral meta, so plain text never regresses to bare.
@@ -188,6 +173,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Stage',
       width: 1.7,
       toCopyText: (r) => (r.spineRole ? `${r.spineRole}${r.spineStatus ? ` (${r.spineStatus})` : ''}` : ''),
+      filter: { type: 'enum', accessor: (r) => r.spineRole },
       render: ({ row }) =>
         row.spineRole ? (
           <span
@@ -206,6 +192,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Assignee',
       width: 1.8,
       toCopyText: (r) => r.assignee ?? '',
+      filter: { type: 'enum', accessor: (r) => r.assignee },
       render: ({ row }) => (
         <span
           style={CELL_TRUNCATE}
@@ -225,6 +212,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Sev',
       width: 0.9,
       toCopyText: (r) => r.severity ?? '',
+      filter: { type: 'enum', accessor: (r) => r.severity },
       render: ({ row }) =>
         row.severity ? <SeverityPill severity={row.severity} size="xs" /> : <>—</>,
     },
@@ -233,6 +221,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Prio',
       width: 0.8,
       toCopyText: (r) => (r.priority == null ? '' : String(r.priority)),
+      filter: { type: 'number', accessor: (r) => r.priority },
       render: ({ row }) => <>{row.priority ?? '—'}</>,
     },
     {
@@ -240,6 +229,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Rank',
       width: 0.8,
       toCopyText: (r) => (r.rank == null ? '' : String(r.rank)),
+      filter: { type: 'number', accessor: (r) => r.rank },
       render: ({ row }) => <>{row.rank ?? '—'}</>,
     },
     {
@@ -247,6 +237,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Plan',
       width: 1.8,
       toCopyText: (r) => r.planSlug ?? '',
+      filter: { type: 'text', accessor: (r) => r.planSlug },
       render: ({ row }) =>
         row.planSlug ? (
           <code style={{ ...CELL_TRUNCATE, fontSize: 11 }} title={row.planSlug}>{row.planSlug}</code>
@@ -255,6 +246,21 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
         ),
     },
   ];
+
+  // Per-column filters (kind/state/severity/priority/…) → ONE `wif` nuqs param.
+  // The hook re-derives enum options from the live rows and AND-s every active
+  // filter; `cf.rows` is the input ref when nothing is active (cheap fast-path).
+  const cf = useColumnFilters(columns, items ?? [], { ns: 'wi' });
+
+  // Global quick-search (`wq`) is a separate affordance — apply it as a substring
+  // match ON TOP of the column-filtered rows (id/title/state/assignee).
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return cf.rows;
+    return cf.rows.filter((i) =>
+      `${i.id} ${i.title} ${i.state} ${i.assignee ?? ''}`.toLowerCase().includes(q),
+    );
+  }, [cf.rows, search]);
 
   if (!slug) return <div className="pc-advpanel__empty">Pick a harness to view its work items.</div>;
 
@@ -269,15 +275,11 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           placeholder="Filter work items…"
           aria-label="Filter work items"
         />
-        <Select
-          value={kind || ALL_KINDS}
-          onChange={(v) => void setKind(v === ALL_KINDS ? '' : v)}
-          ariaLabel="Filter by kind"
-          triggerClassName="pc-advpanel__select"
-          options={[
-            { value: ALL_KINDS, label: 'all kinds' },
-            ...kinds.map((k) => ({ value: k, label: k })),
-          ]}
+        <ColumnFilterBar
+          controller={cf.controller}
+          activeChips={cf.activeChips}
+          hasActive={cf.hasActive}
+          clearAll={cf.clearAll}
         />
         <Tooltip label="Refresh work items">
           <button

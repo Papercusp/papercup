@@ -32,6 +32,7 @@ import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
 import { AgentKindPill, AGENT_KIND_GLYPH } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
+import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
 
 // Compact legend for the kind pills (owner ask 2026-06-11) — same order as
@@ -206,26 +207,13 @@ function WorkingView({
     return Array.from(set).sort();
   }, [agents]);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const xs = (agents ?? []).filter((a) => {
-      if (kind && a.agentPaneKind !== kind) return false;
-      if (q) {
-        const hay = `${a.agentId} ${a.name ?? ''} ${a.label ?? ''} ${a.intent} ${a.doing?.id ?? ''} ${a.doing?.title ?? ''}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-    // Live agents first, loaded first within liveness.
-    return xs.sort((a, b) => Number(b.alive) - Number(a.alive) || b.load - a.load);
-  }, [agents, kind, search]);
-
   const columns: ColumnDef<WorkingAgent>[] = [
     {
       key: 'kind',
       header: 'Kind',
       width: 1.2,
       toCopyText: (r) => r.agentPaneKind,
+      filter: { type: 'enum', accessor: (r) => r.agentPaneKind },
       // Canonical agent-kind chip (AGENT_KIND table) — same chip recipe as the
       // Work-items Kind column so the dock's pill columns read as one visual
       // language. Native title=, not <Tooltip>: per-row hints in grid cells —
@@ -245,6 +233,9 @@ function WorkingView({
       header: 'Agent',
       width: 1.8,
       toCopyText: (r) => r.agentId,
+      // Text-match the displayed identity (name/label/id) — the same string the
+      // cell shows and the legacy quick-search keys off.
+      filter: { type: 'text', accessor: (r) => r.name ?? r.label ?? r.agentId },
       render: ({ row }) => (
         <span style={CELL_TRUNCATE} title={row.intent || row.agentId}>
           {row.name ?? row.label ?? row.agentId}
@@ -256,6 +247,7 @@ function WorkingView({
       header: 'Item',
       width: 1.4,
       toCopyText: (r) => r.doing?.id ?? '',
+      filter: { type: 'text', accessor: (r) => r.doing?.id ?? null },
       render: ({ row }) =>
         row.doing ? (
           <code style={CELL_TRUNCATE} title={row.doing.id}>{row.doing.id}</code>
@@ -268,6 +260,9 @@ function WorkingView({
       header: 'Doing',
       width: 4,
       toCopyText: (r) => r.doing?.title ?? r.intent,
+      // Match what the cell renders: the work-item title when claimed, else the
+      // declared intent.
+      filter: { type: 'text', accessor: (r) => r.doing?.title ?? r.intent },
       render: ({ row }) =>
         row.doing ? (
           <span style={CELL_TRUNCATE} title={row.doing.title}>{row.doing.title}</span>
@@ -283,6 +278,7 @@ function WorkingView({
       width: '52px',
       align: 'right',
       toCopyText: (r) => String(r.load),
+      filter: { type: 'number', accessor: (r) => r.load },
       render: ({ row }) => (
         <span className="pc-adv-agents__num">
           {row.load > 0 ? `⇄${row.load}` : row.claims.length > 0 ? `▣${row.claims.length}` : '—'}
@@ -295,6 +291,7 @@ function WorkingView({
       headerText: 'Live',
       width: '40px',
       align: 'right',
+      filter: { type: 'boolean', accessor: (r) => r.alive },
       render: ({ row }) => {
         // The 3-state dot (live/idle/stale — see LIVENESS_LEGEND) derived from
         // the row's own heartbeat, same scale as the sessions roster. A row
@@ -312,6 +309,27 @@ function WorkingView({
     },
   ];
 
+  // Generic per-column filters (kind/agent/item/doing/load/live) → ONE nuqs param
+  // `faf`. The bar self-gates on the flag; `cf.rows` is the input ref when nothing
+  // is active (cheap fast-path).
+  const cf = useColumnFilters(columns, agents ?? [], { ns: 'fa' });
+
+  // The legacy kind Select (`akind`) + quick-search (`aq`) apply ON TOP of the
+  // column-filtered rows, then the same liveness-first sort as before.
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const xs = cf.rows.filter((a) => {
+      if (kind && a.agentPaneKind !== kind) return false;
+      if (q) {
+        const hay = `${a.agentId} ${a.name ?? ''} ${a.label ?? ''} ${a.intent} ${a.doing?.id ?? ''} ${a.doing?.title ?? ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    // Live agents first, loaded first within liveness.
+    return [...xs].sort((a, b) => Number(b.alive) - Number(a.alive) || b.load - a.load);
+  }, [cf.rows, kind, search]);
+
   return (
     <>
       <div className="pc-advpanel__bar">
@@ -323,6 +341,12 @@ function WorkingView({
           onChange={(e) => void setSearch(e.target.value)}
           placeholder="Filter agents…"
           aria-label="Filter agents"
+        />
+        <ColumnFilterBar
+          controller={cf.controller}
+          activeChips={cf.activeChips}
+          hasActive={cf.hasActive}
+          clearAll={cf.clearAll}
         />
         <Select
           value={kind || ALL_KINDS}

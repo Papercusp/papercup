@@ -19,7 +19,9 @@ import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { groupByMember } from '@papercusp/operator-core/lib/fleet/member-grouping';
 import type { Liveness } from '@papercusp/operator-core/lib/liveness';
+import type { FilterableColumn } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { AgentKindPill } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
@@ -27,6 +29,35 @@ import type { WorkingAgent } from './AdvAgentsPanel';
 
 // The selected-row tint — the same recipe AdvAgentsPanel / WorkItemsPanel use.
 const SELECTED_BG = 'color-mix(in oklab, var(--accent), transparent 80%)';
+
+// Generic column-filter fields for THIS panel's roster (the odd-one-out: a custom
+// member LIST, not a RichGrid, so we hand the grid-agnostic hook the minimal
+// {key,header,filter} spec shape instead of full ColumnDefs). Filters apply to the
+// flat WorkingAgent roster, BEFORE groupByMember, so empty members drop out and the
+// header counts reflect exactly what's shown — same as the free-text quick-search.
+// Module-level so the array is referentially stable across renders (the hook closes
+// over it for the nuqs parser). Fields: kind (enum), status/liveness (enum), load
+// (number range) — all real WorkingAgent fields. ns 'mw' → URL param 'mwf'.
+const FILTER_COLUMNS: readonly FilterableColumn<WorkingAgent>[] = [
+  {
+    key: 'kind',
+    header: 'Kind',
+    filter: { type: 'enum', accessor: (a: WorkingAgent) => a.agentPaneKind },
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    filter: {
+      type: 'enum',
+      accessor: (a: WorkingAgent) => livenessFromHeartbeat(a.heartbeatAt ?? ''),
+    },
+  },
+  {
+    key: 'load',
+    header: 'Load',
+    filter: { type: 'number', accessor: (a: WorkingAgent) => a.load },
+  },
+];
 
 const LIVENESS_LEGEND: Array<{ liveness: Liveness; label: string }> = [
   { liveness: 'live', label: 'live' },
@@ -60,18 +91,26 @@ export default function MemberWorkPanel({ params, api }: PanelComponentProps) {
   const loading = query.fetching;
   const error = query.error ? query.error.message : null;
 
-  // Filter the flat roster, then bucket by member so empty members drop out and
-  // the header counts reflect exactly what's shown.
-  const members = useMemo(() => {
+  // The free-text quick-search runs first (cross-field substring), then the
+  // structured column-filter bar narrows further — same layering the reference
+  // WorkItemsPanel adoption keeps (plan P-010/P-013: keep the global quick-search
+  // alongside the bar). Enum option counts then reflect the search-narrowed set.
+  const searchFiltered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const filtered = (agents ?? []).filter((a) => {
-      if (!q) return true;
+    const rows = agents ?? [];
+    if (!q) return rows;
+    return rows.filter((a) => {
       const hay =
         `${a.agentId} ${a.name ?? ''} ${a.label ?? ''} ${a.intent} ${a.doing?.id ?? ''} ${a.doing?.title ?? ''}`.toLowerCase();
       return hay.includes(q);
     });
-    return groupByMember(filtered);
   }, [agents, search]);
+
+  // Generic column filters (nuqs-backed via the hook, ns 'mw'); apply to the flat
+  // roster BEFORE groupByMember so empty members drop and the counts stay honest.
+  const cf = useColumnFilters(FILTER_COLUMNS, searchFiltered, { ns: 'mw' });
+
+  const members = useMemo(() => groupByMember(cf.rows), [cf.rows]);
 
   useEffect(() => {
     if (agents) api.setTitle(`Members · ${slug} (${groupByMember(agents).length})`);
@@ -106,6 +145,13 @@ export default function MemberWorkPanel({ params, api }: PanelComponentProps) {
           </button>
         </Tooltip>
       </div>
+
+      <ColumnFilterBar
+        controller={cf.controller}
+        activeChips={cf.activeChips}
+        hasActive={cf.hasActive}
+        clearAll={cf.clearAll}
+      />
 
       {error ? (
         <div className="pc-advpanel__empty pc-advpanel__empty--err">Failed: {error}</div>

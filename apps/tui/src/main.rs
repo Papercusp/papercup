@@ -404,7 +404,18 @@ async fn run<B: Backend>(
                 voice_stream::VoiceEvent::Disconnected
             ))
         );
+        // Plans-board initial/refresh detail load (pui-plans-status-board P-008):
+        // when the plans list (re)arrives while the board is pinned, deterministically
+        // fetch the selected plan's item states for the right-side work-items
+        // detail — the active-plan poller is racy for the FIRST load (the cell is
+        // published by THIS event, after refetch_all already read it).
+        let plans_arrived = matches!(&ev, Event::Plans(_));
         let action = app.update(ev);
+        if plans_arrived && app.pinned == Some(app::Tab::PlansBoard) {
+            if let Some((harness, plan)) = app.selected_board_plan() {
+                tokio::spawn(fetch_plan_item_states(harness, plan, tx.clone()));
+            }
+        }
 
         // Pinned dock pane (P-013 / D-011): never leave the pinned tab — re-pin
         // so a stray nav key can't switch to an unrendered tab (which on the
@@ -619,6 +630,13 @@ async fn run<B: Backend>(
                 // push-driven (SSE + 60s safety net); this forces an immediate
                 // re-pull so the board updates the instant the owner asks.
                 tokio::spawn(fetch_plans_board(tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchPlanItemStates { harness, plan } => {
+                // pui-plans-status-board P-008: the plans board's selection
+                // moved — fetch the selected plan's per-item states for the
+                // right-side work-items detail. → Event::PlanItemStates.
+                tokio::spawn(fetch_plan_item_states(harness, plan, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchNetworkBoard => {
@@ -2689,6 +2707,20 @@ async fn fetch_plans_board(tx: UnboundedSender<Event>) {
         Err(e) => {
             let _ = tx.send(Event::Error(format!("roster: {e}")));
         }
+    }
+}
+
+/// Fetch one plan's per-item assignment/claim/liveness (pui-plans-status-board
+/// P-008) → `Event::PlanItemStates`, for the plans board's right-side work-items
+/// detail. The reducer guards the render on `plan == selected`, so a stale fetch
+/// from a prior selection never paints the wrong plan. Errors are swallowed (the
+/// detail just keeps its last state / shows its loading hint).
+async fn fetch_plan_item_states(harness: String, plan: String, tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    if let Ok(s) = client.plan_item_states(&harness, &plan).await {
+        let _ = tx.send(Event::PlanItemStates(s));
     }
 }
 

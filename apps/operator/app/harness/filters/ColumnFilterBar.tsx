@@ -22,8 +22,10 @@
  */
 
 import { useState, type CSSProperties } from 'react';
-import { ListFilter, Plus, X } from 'lucide-react';
+import { ListFilter, X } from 'lucide-react';
+import { FLAGS } from '@papercusp/flags';
 import type { ColumnFilterValue, FilterableColumn, NumberFilterValue } from '@papercusp/grid-core';
+import { useFlag } from '@/lib/flag-hooks';
 import { Select } from '../Select';
 import { Popover } from '../Popover';
 import { Checkbox } from '../Checkbox';
@@ -244,9 +246,15 @@ export function ColumnFilterBar<TRow>({
   hasActive: boolean;
   clearAll: () => void;
 }) {
+  // Gate the WHOLE bar behind the flag — when off, render nothing (the panel
+  // still lists unfiltered rows). Hook order is stable: useFlag + useState run
+  // unconditionally, the early return is below them.
+  const enabled = useFlag(FLAGS.GRID_COLUMN_FILTERS);
   // Which column's editor popover is open. Transient render-only UI state — the
   // filter VALUES live in nuqs (via the controller); this is just the open flag.
   const [editingKey, setEditingKey] = useState<string | null>(null);
+
+  if (!enabled) return null;
 
   const activeKeys = new Set(activeChips.map((c) => c.colKey));
   const addable = controller.filterableColumns.filter((c) => !activeKeys.has(c.key));
