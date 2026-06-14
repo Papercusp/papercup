@@ -29,7 +29,12 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 import { activeWorkspaceId } from '../workspace-registry';
-import { materializeBlueprintTriggers, triggerRoutineSpecs, type MaterializedRoutine } from './materialize-triggers';
+import {
+  materializeBlueprintTriggers,
+  triggerRoutineSpecs,
+  SINGLETON_TRIGGER_HOST_SLUG,
+  type MaterializedRoutine,
+} from './materialize-triggers';
 
 /** A migrated learning loop: its blueprint id + the legacy `papercup`-slug routine name its
  *  bespoke seed used to create (the row this cutover retires once the loop declares

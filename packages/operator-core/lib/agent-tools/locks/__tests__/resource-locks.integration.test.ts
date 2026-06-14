@@ -231,6 +231,80 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(q.holders.some((h) => h.owner === 'A')).toBe(false);
   });
 
+  it.skipIf(!live)('releaseAllResourcesForOwner (all_mine) on a long domain (>54 chars) does not raise "channel name too long" and still flips a draining waiter to held (EI-39)', async () => {
+    // Regression for EI-39: `locks:release { all_mine: true }` sweeps named-resource
+    // locks via releaseAllResourcesForOwner, which fires resource_grant_cascade →
+    // pg_notify(<channel>, …). With the raw `ch_coord_<domain>` naming, any domain
+    // whose realpath pushes `ch_coord_<domain>` past PG's 63-byte channel cap (the
+    // live release checkout, ~56 chars) made that pg_notify RAISE "channel name too
+    // long", aborting the WHOLE release txn — so all_mine released NOTHING and the
+    // PreToolUse-acquired lock survived to its 20-min TTL, wedging peers editing the
+    // same file. The fix bounds the channel to ch_coord_<md5(domain)> on both the SQL
+    // cascade (sql/013-bounded-notify-channel.sql) and the TS LISTEN side
+    // (coordNotifyChannel). The existing su-locks-wait test covers the FILE-lock
+    // cascade; this asserts the exact RESOURCE path the bug reported: a draining
+    // exclusive must still flip to held through the all_mine cascade on an
+    // over-long domain.
+    await ensureBootstrap();
+    const ws = `res-test-long-${Date.now()}-${'x'.repeat(64)}`;
+    expect(`ch_coord_${ws}`.length).toBeGreaterThan(63); // the failing precondition
+
+    // A holds shared; X requests exclusive → draining (writer-priority, A still in).
+    const a = await acq(ws, 'A', 'dev-server', 'shared');
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    expect(x.ok).toBe(true);
+    if (!x.ok) return;
+    expect(x.status).toBe('draining');
+
+    // A's session-end all_mine sweep drains the last shared holder; the cascade's
+    // pg_notify must succeed (md5 channel) and flip X draining → held. Pre-fix this
+    // threw "channel name too long" and rolled back, leaving A's lock + X draining.
+    const r = await inWorkspaceTxn(ws, 'A', (tx) =>
+      releaseAllResourcesForOwner(tx, ws, 'A'),
+    );
+    expect(r.released).toBe(1);
+    expect((await status(x.lock_id)).status).toBe('held');
+
+    const q2 = await readResourceQueue(getTxPool(), { coordinationDomain: ws });
+    expect(q2.holders.some((h) => h.owner === 'A')).toBe(false);
+  });
+
+  it.skipIf(!live)('all_mine resource release survives a >63-byte NOTIFY channel domain (EI-39 regression)', async () => {
+    await ensureBootstrap();
+    // EI-39: `locks:release {all_mine:true}` failed with "channel name too
+    // long" and released NOTHING, wedging locks to their TTL. The all_mine
+    // sweep runs releaseAllResourcesForOwner → resource_grant_cascade, whose
+    // pg_notify built `ch_coord_<domain>` from the repo realpath. For any
+    // checkout deeper than 54 chars (e.g. the GREEN release checkout) that name
+    // crosses PostgreSQL's 63-byte channel cap and pg_notify RAISES, rolling
+    // back the whole release. sql/013 bounds the channel to ch_coord_<md5> (41
+    // bytes); this pins the RESOURCE-cascade path (the §9 HTTP-MCP test covers
+    // the file-lock grant_cascade — a long domain there, but not this leg).
+    const ws = `/home/marsh-office/papercupai-workspace/papercup-release/res-${Date.now()}-${wsSeq++}`;
+    expect(`ch_coord_${ws}`.length).toBeGreaterThan(63); // the failing precondition
+
+    // A holds shared; B's exclusive parks in `draining` behind it. The NOTIFY
+    // that used to overflow fires only when the cascade flips a draining
+    // exclusive to held — exactly what A's session-end sweep triggers.
+    const a = await acq(ws, 'A', 'dev-server', 'shared');
+    const b = await acq(ws, 'B', 'dev-server', 'exclusive');
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(b.status).toBe('draining');
+
+    // Session-end all_mine sweep for A → resource_grant_cascade → B flips to
+    // held → pg_notify on the bounded channel. Must NOT throw, and must
+    // actually release A's lock (the bug released nothing).
+    const r = await inWorkspaceTxn(ws, 'A', (tx) =>
+      releaseAllResourcesForOwner(tx, ws, 'A'),
+    );
+    expect(r.released).toBe(1);
+    // The drain completed atomically with the (previously-overflowing) NOTIFY.
+    expect((await status(b.lock_id)).status).toBe('held');
+  });
+
   it.skipIf(!live)('seeds the dev-server and db-schema resources with their enforcement levels', async () => {
     await ensureBootstrap();
     const all = await listResources(getTxPool());

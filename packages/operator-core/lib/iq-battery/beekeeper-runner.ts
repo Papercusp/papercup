@@ -17,12 +17,13 @@
  * - Unit tests mock all deps; integration tests stub them for e2e validation.
  */
 
-import { judgeGymRun, type GymScore, type JudgeLlmCall } from '../gym/judge';
+import { type GymScore, type JudgeLlmCall } from '../gym/judge';
 import { rubricHash, type GymJudgeRubric } from '../gym/judge-scoring';
 import type { CorpusCase } from './corpus';
 import type { IQBatteryMetrics, MetricCollectorInput } from './collectors';
 import type { InstanceBootSpec, InstanceRunHandle } from './instance-manifest';
-import { runWithRatePause, type RatePauseDeps } from '../gym/rate-pause';
+import { runBattery, type BatteryCell, type Subject } from '@papercusp/eval-battery';
+import type { RatePauseDeps } from '../gym/rate-pause';
 
 export interface BeekeeperConfig {
   instanceSpec: InstanceBootSpec;
@@ -112,118 +113,120 @@ export interface BeekeeperResult {
 
 export async function runBeekeeperBattery(config: BeekeeperConfig, deps: BeekeeperDeps): Promise<BeekeeperResult> {
   const rh = rubricHash(config.rubric);
-  const outcomes: BeekeeperRunOutcome[] = [];
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
-  // Register the instance and corpus cases.
+  // Register the instance and corpus cases (setup — stays caller-side, per battery.ts).
   await deps.store.upsertInstance(config.instanceSpec.manifest);
   for (const c of config.corpus) await deps.store.upsertCorpusCase(c);
 
   const instanceId = config.instanceSpec.manifest.instanceId;
 
-  // One row per (case × repeat). Sequential by design: bounded spend + rate limit on judge.
-  // Each run wrapped so a single failure (rate-limited judge, instance error) is recorded
-  // and the battery continues — never aborting remaining runs.
+  // The Apiary/gen-0 IS the eval-battery's InstanceSubject (reconciliation D-001 / P-002):
+  // run a config-varied whole instance for the cell's case, distill its trace + real metric
+  // signals, and supply the judge's intent (the case prompt; projectContext = ''). The shared
+  // engine (`runBattery`) now owns the per-cell run → distill → [metrics] → judge → record
+  // loop + the never-abort + rate-pause discipline this runner used to implement inline —
+  // the SAME loop the gym's HarnessSubject rides (gym/ab-runner.ts). One engine, two subjects.
+  const subject: Subject<BeekeeperRunInput, InstanceRunHandle, Partial<MetricCollectorInput>> = {
+    run: (cell) => deps.runInstance(cell),
+    collectAndDistill: ({ handle, cell, maxChars }) =>
+      deps.collectAndDistill({ handle, case: cell.case, maxChars }),
+    judgeInput: (cell) => ({ intent: cell.case.prompt, projectContext: '' }),
+  };
+
+  // One cell per (case × repeat). Sequential by design (engine-enforced): bounded spend +
+  // the shared LLM rate limit on the judge.
+  const cells: BatteryCell<BeekeeperRunInput>[] = [];
   for (const caseItem of config.corpus) {
     for (let repeat = 0; repeat < config.repeats; repeat++) {
-      const runId = deps.newRunId(caseItem.id, repeat);
-      let handle: InstanceRunHandle | undefined;
-      try {
-        handle = await deps.runInstance({
-          case: caseItem,
-          repeat,
-          instanceSpec: config.instanceSpec,
-        });
-
-        const startTime = Date.now();
-        await deps.store.startRun({
-          runId,
-          instanceId,
-          caseId: caseItem.id,
-          caseVariant: caseItem.variant,
-          caseTitle: caseItem.title,
-        });
-
-        const { distilledTrace, traceRef, rawSignals, signals } = await deps.collectAndDistill({
-          handle,
-          case: caseItem,
-          maxChars: config.maxDistillChars,
-        });
-
-        const elapsedMs = Date.now() - startTime;
-        await deps.store.finishRun(runId, {
-          terminalState: 'completed',
-          deterministicSignals: rawSignals,
-          traceRef,
-          elapsedMs,
-        });
-
-        // Collect metrics from the run's REAL signals (apiary-generation-0-battery
-        // D-004): collectAndDistill extracts status/tokens/times/escalation/sources
-        // from the actual instance run and returns them as `signals`; thread them
-        // into the seven collectors. A dep that omits `signals` (e.g. a test stub)
-        // falls back to the {runId,caseId,variant}-only call as before.
-        const metrics = await deps.collectMetrics({
-          ...(signals ?? {}),
-          runId,
-          caseId: caseItem.id,
-          variant: caseItem.variant,
-        });
-
-        // Judge the run.
-        const score = await runWithRatePause(
-          () =>
-            judgeGymRun(
-              {
-                intent: caseItem.prompt,
-                projectContext: '',
-                distilledTrace,
-                rubric: config.rubric,
-              },
-              { llmCall: deps.llmCall }
-            ),
-          { now: deps.now, sleep, ...(deps.ratePauseHooks ?? {}) }
-        );
-
-        await deps.store.recordScore(runId, score, metrics);
-
-        outcomes.push({
-          caseId: caseItem.id,
-          caseVariant: caseItem.variant,
-          repeat,
-          runId,
-          instanceId,
-          outcome: 'completed',
-          d1: score.d1,
-          d2: score.d2,
-          d3: score.d3,
-          composite: score.composite,
-          costUsd: handle.costUsd,
-          judgeUsd: score.costUsd,
-          status: 'scored',
-        });
-      } catch (err) {
-        const status: 'rate_limited' | 'errored' = isRateLimitError(err) ? 'rate_limited' : 'errored';
-        const message = err instanceof Error ? err.message : String(err);
-        outcomes.push({
-          caseId: caseItem.id,
-          caseVariant: caseItem.variant,
-          repeat,
-          runId,
-          instanceId,
-          outcome: handle?.targetSlug ?? '',
-          d1: 0,
-          d2: 0,
-          d3: 0,
-          composite: 0,
-          costUsd: handle?.costUsd ?? 0,
-          judgeUsd: 0,
-          status,
-          error: message,
-        });
-      }
+      cells.push({
+        runId: deps.newRunId(caseItem.id, repeat),
+        cell: { case: caseItem, repeat, instanceSpec: config.instanceSpec },
+      });
     }
   }
+
+  const results = await runBattery<BeekeeperRunInput, InstanceRunHandle, Partial<MetricCollectorInput>, IQBatteryMetrics>(
+    { cells, rubric: config.rubric, maxDistillChars: config.maxDistillChars },
+    {
+      subject,
+      llmCall: deps.llmCall,
+      now: deps.now,
+      // Preserve the beekeeper's existing string-match rate-limit classifier (vs the engine's
+      // default typed `rateLimitInfo`) so a rate-limited judge is classified identically.
+      classifyRateLimited: isRateLimitError,
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      ...(deps.ratePauseHooks ? { ratePauseHooks: deps.ratePauseHooks } : {}),
+      hooks: {
+        onStart: ({ runId, cell }) =>
+          deps.store.startRun({
+            runId,
+            instanceId,
+            caseId: cell.case.id,
+            caseVariant: cell.case.variant,
+            caseTitle: cell.case.title,
+          }),
+        onFinish: ({ runId, distilled, elapsedMs }) =>
+          deps.store.finishRun(runId, {
+            terminalState: 'completed',
+            deterministicSignals: distilled.rawSignals,
+            traceRef: distilled.traceRef,
+            elapsedMs,
+          }),
+        // Collect metrics from the run's REAL signals (apiary-generation-0-battery D-004):
+        // collectAndDistill extracts status/tokens/times/escalation/sources from the actual
+        // instance run and returns them as `signals`; thread them into the seven collectors.
+        // A dep that omits `signals` (e.g. a test stub) falls back to the
+        // {runId,caseId,variant}-only call as before.
+        collectMetrics: ({ runId, cell, distilled }) =>
+          deps.collectMetrics({
+            ...(distilled.signals ?? {}),
+            runId,
+            caseId: cell.case.id,
+            variant: cell.case.variant,
+          }),
+        // collectMetrics is always provided here, so `metrics` is always defined at onScore.
+        onScore: ({ runId, score, metrics }) =>
+          deps.store.recordScore(runId, score, metrics as IQBatteryMetrics),
+      },
+    },
+  );
+
+  // Map the engine's per-cell results → the beekeeper's outcome shape. A non-'scored' cell
+  // (rate_limited / errored) carries no real composite (zeros) + its error.
+  const outcomes: BeekeeperRunOutcome[] = results.map((r) => {
+    const base = {
+      caseId: r.cell.case.id,
+      caseVariant: r.cell.case.variant,
+      repeat: r.cell.repeat,
+      runId: r.runId,
+      instanceId,
+    };
+    if (r.status === 'scored' && r.score) {
+      return {
+        ...base,
+        outcome: 'completed',
+        d1: r.score.d1,
+        d2: r.score.d2,
+        d3: r.score.d3,
+        composite: r.score.composite,
+        costUsd: r.handle!.costUsd,
+        judgeUsd: r.score.costUsd,
+        status: 'scored' as const,
+      };
+    }
+    return {
+      ...base,
+      outcome: r.handle?.targetSlug ?? '',
+      d1: 0,
+      d2: 0,
+      d3: 0,
+      composite: 0,
+      costUsd: r.handle?.costUsd ?? 0,
+      judgeUsd: 0,
+      status: r.status,
+      error: r.error,
+    };
+  });
 
   const scored = outcomes.filter((o) => o.status === 'scored');
   const passedCases = scored.length;

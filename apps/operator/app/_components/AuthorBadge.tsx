@@ -16,6 +16,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import { ownerColor } from './owner-color';
 
 /** Client-side mirror of lib/identity ResolvedAuthor (kept local so the SPA
  *  bundle never pulls the server-side resolver module). */
@@ -81,15 +82,22 @@ export function AuthorBadge(props: AuthorBadgeProps): ReactNode {
   const { handle, avatarUrl, kind, verified } = identity;
   const isAgent = kind === 'agent';
 
+  // P-003 per-user color: a stable per-identity hue makes a busy shared plan
+  // list visually parseable at a glance. Applied to HUMANS only (agents are
+  // machines → the muted ⚙ chip); keyed on the resolved identity id so the same
+  // owner reads as the same color everywhere.
+  const tintBorder = isAgent ? undefined : ownerColor(identity.id, { saturation: 55, lightness: 60 });
+  const tintBg = isAgent ? undefined : ownerColor(identity.id, { saturation: 55, lightness: 32, alpha: 0.35 });
+
   // Agents are machines — a muted, monospace, glyph-led chip; humans get an
-  // avatar (github when verified, else initials).
+  // avatar (github when verified, else initials) ringed in their identity color.
   const avatar = avatarUrl ? (
     <img
       src={avatarUrl}
       alt=""
       width={AVATAR_SIZE}
       height={AVATAR_SIZE}
-      style={{ ...AVATAR_BASE, objectFit: 'cover' }}
+      style={{ ...AVATAR_BASE, objectFit: 'cover', ...(tintBorder ? { borderColor: tintBorder } : {}) }}
       referrerPolicy="no-referrer"
     />
   ) : (
@@ -97,9 +105,10 @@ export function AuthorBadge(props: AuthorBadgeProps): ReactNode {
       aria-hidden="true"
       style={{
         ...AVATAR_BASE,
-        background: isAgent ? 'var(--bg-1, transparent)' : 'var(--bg-2)',
+        background: isAgent ? 'var(--bg-1, transparent)' : (tintBg ?? 'var(--bg-2)'),
         color: 'var(--fg-dim)',
         fontFamily: isAgent ? 'var(--font-mono, monospace)' : undefined,
+        ...(tintBorder ? { borderColor: tintBorder } : {}),
       }}
     >
       {isAgent ? '⚙' : initialOf(handle)}

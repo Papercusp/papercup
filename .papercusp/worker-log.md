@@ -1,35 +1,59 @@
-# Worker log — EI-188 "Service web is down"
+# Worker log — EI-39 `locks:release {all_mine:true}` "channel name too long"
 
 ## Diagnosis
-The improvement watchdog's `service-down` collector probes `HEALTH_ENDPOINTS`
-(`packages/operator-core/lib/service-health.ts`). That list included
-`{ name: 'web', url: 'http://127.0.0.1:3001/' }` — the **retired** "old Restart
-web app" (confirmed by `docker-compose.papercup.prod.yml` ("the old Restart web
-app, which doesn't exist in this container") and `_retired/papercup`). There is
-no `apps/web` in the live tree; the standalone web app never runs in this
-deployment. So every probe found `web` DOWN, and the watchdog re-captured a
-phantom "Service web is down" improvement each cycle (EI-188).
+EI-39 (filed 2026-06-05): `locks:release { all_mine: true }` returned
+`handler_error: channel name too long` and released nothing, leaving PreToolUse
+locks wedged to their 20-min TTL.
 
-## Fix (self/inline-sized, non-protected surface)
-Removed the retired `web` (:3001) endpoint from `HEALTH_ENDPOINTS` and added a
-comment warning not to re-add a retired surface. No behavior change for live
-services. The dev `service_health` tool reads the same list, so it also stops
-reporting the phantom.
+Root cause: PG channel names cap at NAMEDATALEN-1 = 63 bytes. The coordination
+domain is the repo realpath; `'ch_coord_' || domain` crosses 63 bytes for the
+live checkout. `pg_notify()` (text arg) RAISES on an over-long name (while LISTEN
+silently truncates), so any grant cascade that fired a NOTIFY aborted the whole
+release transaction. The `all_mine` path is doubly exposed: it runs BOTH the
+file-lock `grant_cascade` (via `tryRelease`) AND the resource `resource_grant_cascade`
+(via `releaseAllResourcesForOwner` in `libs/papercusp/packages/locks/src/resource-lock-store.ts:422`).
 
-Scope note: `service-down:shop` (:4321) is a *separate* open watchdog item with
-the same root cause (no `apps/shop` in the tree) — intentionally left for its
-own runner per the one-item-per-run boundary, NOT fixed here.
+The issue speculated about a resource-keyed or owner-keyed channel; that was
+unfounded — the ONLY variable-length channel is domain-keyed.
 
-## Files changed
-- `packages/operator-core/lib/service-health.ts` — drop `web` from `HEALTH_ENDPOINTS` + comment.
-- `packages/operator-core/lib/service-health.test.ts` — regression test: `HEALTH_ENDPOINTS` must not monitor `web`/`:3001`.
+## Already-shipped fix (NOT mine)
+The channel-overflow root cause was fixed AFTER EI-39 was filed, by the 2026-06-09
+"channel name too long" incident work:
+- `libs/papercusp/packages/locks/src/sql/013-bounded-notify-channel.sql` — adds
+  `coord_notify_channel(domain) = 'ch_coord_' || md5(domain)` (41 bytes, always
+  valid) + a legacy bridge channel, and rewrites BOTH `grant_cascade` and
+  `resource_grant_cascade` to use it.
+- `sql/014-grant-cascade-expired-steal.sql` — re-creates `grant_cascade` keeping
+  the bounded channel.
+- `libs/papercusp/packages/locks/src/workspace-listener.ts` `coordNotifyChannel`
+  mirrors the md5 on the TS LISTEN side.
+
+So the bug no longer reproduces. Per the implement contract ("evidence says it no
+longer exists → that IS a verified fix"), this resolves `fixed`.
+
+## My change (test-only, non-protected surface)
+The existing regression test (`su-locks-wait.integration.test.ts`) covered only
+the FILE-lock cascade on a long domain. EI-39's exact repro is the RESOURCE
+sweep on `all_mine:true`, which had no dedicated coverage. Added one:
+- `packages/operator-core/lib/agent-tools/locks/__tests__/resource-locks.integration.test.ts`
+  — new `it`: `releaseAllResourcesForOwner` on a >63-byte raw-channel domain must
+  not raise "channel name too long" and must still flip a draining exclusive →
+  held through the cascade's `pg_notify`. Mirrors the existing drain test's
+  draining→held assertion.
+
+No production/authority/migration code touched.
 
 ## Verification
-- `npx vitest run lib/service-health.test.ts` → 7 passed (was 6). New test
-  confirmed RED before the fix (stash-tested), GREEN after.
-- `npx vitest run lib/harness/improvements/watchdog.test.ts` → 87 passed (nothing
-  depended on `web` being probed).
+- `npx vitest run --config vitest.integration.config.ts lib/agent-tools/locks/__tests__/resource-locks.integration.test.ts`
+  → 12 passed (was 11; my new EI-39 test green). DB live, not skipped.
+- `npx vitest run --config vitest.integration.config.ts lib/agent-tools/locks/__tests__/su-locks-wait.integration.test.ts`
+  → 6 passed (companion file-lock channel regression still green).
 
 ## For the validator to re-verify
-- The retired `web`/:3001 endpoint stays out of `HEALTH_ENDPOINTS`.
-- Consider a follow-up for the sibling `service-down:shop` phantom (:4321).
+- The new test genuinely exercises a `pg_notify` on a >63-byte raw channel (the
+  draining→held flip fires `resource_grant_cascade`; migration 013 shows its
+  pg_notify on exactly that transition). Could not prove RED by reverting the
+  migration (out of scope — STOP condition on migrations); confidence rests on
+  the parallel su-locks-wait test proven against the original incident.
+- The lands-via-release-gate path: no migration/authority edits, so deploy is a
+  no-op beyond shipping the new test.

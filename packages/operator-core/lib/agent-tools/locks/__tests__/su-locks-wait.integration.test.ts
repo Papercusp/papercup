@@ -15,6 +15,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ensureBootstrap, expireWaiter, getTxPool, normalizePaths,
   tryAcquire, tryInsertWaiter, tryRelease, readWaiterStatus,
+  releaseAllResourcesForOwner,
   _resetForTests, MAX_WAITERS_PER_OWNER,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
@@ -140,6 +141,75 @@ describe('su-locks wait subsystem', async () => {
     await inWorkspaceTxn(ws, 'agent-a', (tx) => tryRelease(tx, {
       coordinationDomain: ws, owner: 'agent-a', lockId: (a as { lock_id: string }).lock_id,
     }));
+
+    expect(await wakeP).toBe('notify');
+
+    const status = await readWaiterStatus(sql, ticketId);
+    expect(status.status).toBe('granted');
+    expect(status.granted_lock_id).toBeTruthy();
+
+    await inWorkspaceTxn(ws, 'agent-b', (tx) => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'agent-b', lockId: status.granted_lock_id!,
+    }));
+    await unsub();
+    await _resetListenersForTests();
+    await _resetForTests();
+  }, 60_000);
+
+  it.skipIf(!live)('long domain: all_mine release (file + resource cascade) succeeds and push-wakes a waiter (EI-39)', async () => {
+    // EI-39: `locks:release { all_mine: true }` raised "channel name too long"
+    // and released NOTHING — wedging the per-edit PreToolUse lock to its 20-min
+    // TTL while peers waited on the same file. The scoped-release regression
+    // above pins grant_cascade's NOTIFY; this pins the all_mine path, which the
+    // locks:release tool fans out to BOTH cascades (release.ts): tryRelease
+    // {allMine} (grant_cascade) AND releaseAllResourcesForOwner
+    // (resource_grant_cascade). Pre-013 either NOTIFY on a >54-char domain
+    // aborted the whole transaction; both now derive ch_coord_<md5(domain)>.
+    await ensureBootstrap();
+    const sql = getTxPool();
+    const ws = `wait-allmine-${Date.now()}-${'x'.repeat(64)}`;
+    expect(`ch_coord_${ws}`.length).toBeGreaterThan(63); // the failing precondition
+
+    const a = await inWorkspaceTxn(ws, 'agent-a', (tx) => tryAcquire(tx, {
+      coordinationDomain: ws, owner: 'agent-a', ownerLabel: 'A',
+      paths: normalizePaths(['lib/allmine.ts']),
+      intent: 'hold the file', ttlSec: 60,
+    }));
+    expect(a.ok).toBe(true);
+
+    let wakeResolve: ((via: 'notify' | 'backstop') => void) | null = null;
+    let ticketId: string | null = null;
+    const unsub = await subscribeWorkspace(ws, (tid) => {
+      if (ticketId && tid === ticketId && wakeResolve) {
+        const r = wakeResolve;
+        wakeResolve = null;
+        r('notify');
+      }
+    });
+
+    const inserted = await inWorkspaceTxn(ws, 'agent-b', (tx) => tryInsertWaiter(tx, {
+      coordinationDomain: ws, owner: 'agent-b', ownerLabel: 'B',
+      paths: ['lib/allmine.ts'], intent: 'want it', ttlSec: 60, maxWaitSec: 30,
+    }));
+    expect(inserted.ok).toBe(true);
+    ticketId = (inserted as { ticket_id: string }).ticket_id;
+
+    const wakeP = new Promise<'notify' | 'backstop'>((resolve) => {
+      wakeResolve = resolve;
+      setTimeout(() => { if (wakeResolve) { const r = wakeResolve; wakeResolve = null; r('backstop'); } }, 10_000);
+    });
+
+    // The full all_mine fan-out, exactly as locks:release runs it. Pre-fix the
+    // FIRST of these threw "channel name too long"; the lock survived and the
+    // waiter never woke. releaseAllResourcesForOwner runs resource_grant_cascade
+    // unconditionally (even with zero resource locks held), so it exercises the
+    // resource-cascade NOTIFY the issue's repro also crossed.
+    const released = await inWorkspaceTxn(ws, 'agent-a', (tx) => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'agent-a', allMine: true,
+    }));
+    expect(released.released).toContain('lib/allmine.ts');
+    await inWorkspaceTxn(ws, 'agent-a', (tx) =>
+      releaseAllResourcesForOwner(tx, ws, 'agent-a'));
 
     expect(await wakeP).toBe('notify');
 

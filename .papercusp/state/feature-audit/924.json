@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781408888140-a2021082",
+  "feature_id": "F-FIX-011",
+  "field": "__created",
+  "id": 924,
+  "new_value": "{\"id\":\"F-FIX-011\",\"title\":\"Post-deploy MCP health probe omits the Accept header → 406 on the (spec-strict) MCP endpoint → every deploy auto-rolls-back\",\"sourceIssueId\":\"EI-459\"}",
+  "old_value": "null",
+  "ts": 1781409134672
+}
