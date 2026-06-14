@@ -11,6 +11,7 @@ const summarizeOpenPlacements = vi.fn(
 );
 const gatherFleetSignals = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const gatherCompletions = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
+const gatherLiveBees = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 vi.mock('./survey', () => ({ surveyHive: (...a: unknown[]) => surveyHive(...a) }));
 vi.mock('./wake', () => ({ getHiveCarryNote: (...a: unknown[]) => getHiveCarryNote(...a) }));
 vi.mock('./placement-watchdog', () => ({ summarizeOpenPlacements: (...a: unknown[]) => summarizeOpenPlacements(...a) }));
@@ -18,6 +19,7 @@ vi.mock('../curation/fleet-signals', () => ({ gatherFleetSignals: (...a: unknown
 vi.mock('../curation/deps', () => ({ buildFleetReaders: () => ({}) }));
 vi.mock('../curation/change-feed', () => ({ gatherCompletions: (...a: unknown[]) => gatherCompletions(...a) }));
 vi.mock('../curation/change-feed-deps', () => ({ buildChangeFeedReaders: () => ({}) }));
+vi.mock('../fleet/placement-gather', () => ({ gatherLiveBees: (...a: unknown[]) => gatherLiveBees(...a) }));
 
 const { computeQueenWakeBrief } = await import('./queen-brief-launch');
 
@@ -74,6 +76,25 @@ test('computeQueenWakeBrief — change-feed (steering digest) flows into the flo
   const out2 = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(out2, 'the brief survives a failed change-feed read');
   assert.doesNotMatch(out2!, /### Change feed/);
+});
+
+test('computeQueenWakeBrief — live bees (load + liveness) flow into the floor (P-007); fail-soft', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getHiveCarryNote.mockResolvedValue(null);
+  gatherLiveBees.mockResolvedValue([
+    { ownerId: 's-1', label: 'bee-alpha', intent: 'on plan-x', load: 2, alive: true },
+    { ownerId: 's-2', label: null, currentPlanSlug: 'plan-y', load: 0, alive: false },
+  ]);
+  const out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out);
+  assert.match(out!, /### Bees — load \+ liveness/);
+  assert.match(out!, /bee-alpha: load 2, doing on plan-x \[alive\]/);
+  assert.match(out!, /s-2: load 0, doing plan-y \[DEAD/);
+
+  gatherLiveBees.mockRejectedValueOnce(new Error('nursery pg down'));
+  const out2 = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out2, 'the brief survives a failed bee read');
+  assert.doesNotMatch(out2!, /### Bees — load \+ liveness/);
 });
 
 test('computeQueenWakeBrief — empty floor + no carry-note still renders (skip-the-survey signal)', async () => {

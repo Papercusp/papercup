@@ -22,7 +22,24 @@ import { gatherFleetSignals } from '../curation/fleet-signals';
 import { buildFleetReaders } from '../curation/deps';
 import { gatherCompletions } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
-import { renderQueenBrief, floorFromSurvey, type BriefEscalation } from './queen-brief';
+import { gatherLiveBees } from '../fleet/placement-gather';
+import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee } from './queen-brief';
+
+/** Live hive bees → the floor's bee load + liveness (warm-inject-vs-spawn signal).
+ *  gatherLiveBees already excludes non-bees + joins load/liveness; fail-soft. */
+async function gatherBees(workspaceId: string): Promise<BriefBee[]> {
+  try {
+    const bees = await gatherLiveBees(workspaceId);
+    return bees.map((b) => ({
+      id: b.label || b.ownerId,
+      doing: b.intent || b.currentPlanSlug || b.doingHarness || null,
+      load: b.load,
+      alive: b.alive,
+    }));
+  } catch {
+    return [];
+  }
+}
 
 /** Fleet signals (escalations/blockers/decisions) → the floor's escalation digest.
  *  Fail-soft: a flaky read degrades to no-escalations, never kills the brief. */
@@ -58,12 +75,13 @@ export async function computeQueenWakeBrief(
     //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
     //    internally fail-soft (returns empty);
     //  - carryNote / escalations — wrapped here.
-    const [survey, carryNote, openPlacements, escalations, changeFeed] = await Promise.all([
+    const [survey, carryNote, openPlacements, escalations, changeFeed, bees] = await Promise.all([
       surveyHive(workspaceId, installSlug),
       getHiveCarryNote(workspaceId).catch(() => null),
       summarizeOpenPlacements(workspaceId, installSlug),
       gatherEscalations(),
       gatherRecentChanges(),
+      gatherBees(workspaceId),
     ]);
     const wokeBy = opts.wokeBy?.trim();
     const floor = floorFromSurvey(survey, {
@@ -71,6 +89,7 @@ export async function computeQueenWakeBrief(
       openPlacements,
       ...(escalations.length > 0 ? { escalations } : {}),
       ...(changeFeed.length > 0 ? { changeFeed } : {}),
+      ...(bees.length > 0 ? { bees } : {}),
     });
     return renderQueenBrief({ floor, carryNote });
   } catch (err) {
