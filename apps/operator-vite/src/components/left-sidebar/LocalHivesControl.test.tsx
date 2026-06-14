@@ -3,8 +3,9 @@
 // LocalHivesControl render + control coverage (hive-control-surface). Mounts the
 // central local-hive start/stop list against a mocked hive.controlState query +
 // a stubbed run-tool dispatch (the pinned AdvNowRunning sibling pattern). Asserts:
-// a row per hive with STARTED/STOPPED, the running tally, Start → hive:start (no
-// drain), Stop → confirm → hive:pause{drainBees}, and a declined confirm aborts.
+// a row per hive with state shown via the Start/Stop toggle label, the running
+// tally, Start → hive:start (no drain), Stop → confirm → hive:pause{drainBees},
+// and a declined confirm aborts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -68,8 +69,10 @@ describe('LocalHivesControl', () => {
     render(<LocalHivesControl />);
     expect(screen.getByText('local hives · 1/2 running')).toBeTruthy();
     expect(screen.getByTestId('local-hive-papercup-hive')).toBeTruthy();
-    expect(screen.getByTestId('local-hive-state-papercup-hive').textContent).toContain('STARTED');
-    expect(screen.getByTestId('local-hive-state-sb-devboard-hive').textContent).toContain('STOPPED');
+    // State is conveyed by the Start/Stop toggle label (no separate STARTED/
+    // STOPPED text): a started hive offers Stop, a stopped hive offers Start.
+    expect(screen.getByTestId('local-hive-toggle-papercup-hive').textContent).toContain('Stop');
+    expect(screen.getByTestId('local-hive-toggle-sb-devboard-hive').textContent).toContain('Start');
   });
 
   it('honest empty state when no local hives are registered', () => {

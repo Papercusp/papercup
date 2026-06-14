@@ -217,6 +217,12 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
       let pendingEvent: string | null = null;
       let assistantText = '';
       let streamError: string | null = null;
+      // The server emits a terminal `event: done` on success and `event: error`
+      // on a handled failure. A reader that closes with NEITHER means the
+      // connection dropped mid-turn (operator recycle / OOM / network blip) —
+      // no failure-marker turn was persisted, so we must surface it ourselves
+      // rather than silently reset to idle (the same vanish symptom as EI-577).
+      let sawDone = false;
 
       // Read the SSE stream. Format:
       //   event: delta
@@ -252,6 +258,8 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
               } else if (pendingEvent === 'error') {
                 streamError = data.message ?? 'stream error';
                 setSendState({ kind: 'error', message: streamError });
+              } else if (pendingEvent === 'done') {
+                sawDone = true;
               }
             } catch { /* malformed — ignore */ }
           }
@@ -265,6 +273,21 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
         // thinking cursor → nothing). Skip the refetch: the server persists a
         // failure-marker turn that surfaces on the next load, so in-session the
         // banner is the signal and we avoid stacking banner + freshly-loaded marker.
+        return;
+      }
+      if (!sawDone) {
+        // Stream closed without a terminal `done` or `error` — the operator
+        // dropped the connection mid-turn (process recycle, OOM, network blip).
+        // The server never reached its persist/emit code, so a refetch would
+        // show only the user turn: the exact silent gap we are killing. Surface
+        // it inline; the live agent_chats subscription still backfills a turn if
+        // one was persisted before the drop.
+        setSendState({
+          kind: 'error',
+          message: assistantText
+            ? 'Connection dropped mid-response — the reply may be incomplete. Try again.'
+            : 'No response: the connection closed before the agent replied (the operator may have restarted). Try again.',
+        });
         return;
       }
       // Success — refetch to get the persisted assistant turn + counters.

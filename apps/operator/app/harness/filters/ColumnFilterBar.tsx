@@ -301,7 +301,15 @@ export function ColumnFilterBar<TRow>({
         <Select
           value={ADD_FILTER}
           onChange={(key) => {
-            if (key !== ADD_FILTER) setEditingKey(key);
+            if (key === ADD_FILTER) return;
+            // Open the editor on the NEXT frame, not synchronously inside the
+            // Select's onValueChange. Opening the editor Popover in the same
+            // click gesture lets the Select's closing pointer event land on the
+            // freshly-mounted Popover's dismissable layer as an "outside"
+            // interaction, which dismisses it instantly — the "clicking + Add
+            // filter does nothing" bug. Deferring one frame lets the Select fully
+            // close + settle focus first, so the editor Popover stays open.
+            requestAnimationFrame(() => setEditingKey(key));
           }}
           ariaLabel="Add a column filter"
           triggerClassName="pc-advpanel__chip"

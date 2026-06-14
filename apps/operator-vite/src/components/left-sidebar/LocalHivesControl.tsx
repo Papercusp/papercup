@@ -61,10 +61,13 @@ export default function LocalHivesControl() {
           <span className={`pclsb-dot ${h.started ? 'is-up' : 'is-down'}`} aria-hidden="true" />
           <div className="pclsb-row__main">
             <div className="pclsb-row__title">{h.slug}</div>
-            <div className="pclsb-row__sub" data-testid={`local-hive-state-${h.slug}`}>
-              {h.started ? 'STARTED' : 'STOPPED'}
-              {h.watchdogFires24h ? `  ·  ⚠ ${h.watchdogFires24h} watchdog/24h` : ''}
-            </div>
+            {/* State (started/stopped) is conveyed by the dot + the Start/Stop
+                button now — only the watchdog warning needs its own sub-line. */}
+            {h.watchdogFires24h ? (
+              <div className="pclsb-row__sub" data-testid={`local-hive-watchdog-${h.slug}`}>
+                ⚠ {h.watchdogFires24h} watchdog/24h
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
