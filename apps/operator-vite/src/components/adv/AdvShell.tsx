@@ -25,6 +25,7 @@ import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
 import AdvNowRunning from './AdvNowRunning';
+import HivesRunningPill from './HivesRunningPill';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 import { useLexicon } from '@/lib/useLexicon';
@@ -376,6 +377,10 @@ export default function AdvShell({
               </span>
             )}
           </div>
+          {/* Always-visible central hive control (hive-control-surface): the
+              "N running" pill + click-to-expand per-hive start/stop, so hive
+              state is visible/flippable from the header, not just inside a hive. */}
+          <HivesRunningPill />
           {/* Inline status: dot + label + pills + start/stop */}
           <AdvNowRunning slug={singleSlug} />
           <DiscordBadge slug={singleSlug} />

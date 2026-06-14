@@ -842,11 +842,11 @@ export class CompositionRig {
       await cell.sql`
         INSERT INTO harness_shared.harness_features_consolidated
           (workspace_id, harness_slug, feature_id, title, summary, status, attempts,
-           item_kind, needs_human_review, ts, created_ts, updated_ts, redundancy)
+           item_kind, needs_human_review, ts, created_ts, updated_ts)
         VALUES
           (${this.workspaceId}, ${this.harnessSlug}, ${it.id},
            ${it.title ?? `Item ${it.id}`}, ${'seeded by the composition rig'}, 'todo', 0,
-           ${it.kind ?? 'feature'}, FALSE, ${t}, ${t}, ${t}, ${it.redundancy ?? null})
+           ${it.kind ?? 'feature'}, FALSE, ${t}, ${t}, ${t})
         ON CONFLICT (harness_slug, feature_id) DO NOTHING`;
     }
   }

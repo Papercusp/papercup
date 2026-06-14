@@ -282,4 +282,14 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       ADD COLUMN IF NOT EXISTS agent_role     text,
       ADD COLUMN IF NOT EXISTS hive_slug      text
   `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS harness_shared.power_user_sessions (
+      auth_session_id TEXT        NOT NULL PRIMARY KEY,
+      workspace_id    TEXT        NOT NULL,
+      user_id         TEXT        NOT NULL,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      revoked_at      TIMESTAMPTZ
+    )
+  `;
 }

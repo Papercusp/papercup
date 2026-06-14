@@ -7,6 +7,9 @@
  */
 import { useMemo } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { useFlag } from '@papercusp/flags/client';
+import { FLAGS } from '@papercusp/flags';
+import LocalHivesControl from './LocalHivesControl';
 
 interface FederatedRow {
   ownerId: string;
@@ -66,6 +69,7 @@ export function groupHives(rows: FederatedRow[]): HiveGroup[] {
 }
 
 export default function HivesTab({ active }: { active: boolean }) {
+  const hiveControlOn = useFlag(FLAGS.HIVE_CONTROL);
   const hives = useSyncQuery<FederatedRow>({
     queryName: 'sidebar.hives',
     enabled: active,
@@ -77,6 +81,7 @@ export default function HivesTab({ active }: { active: boolean }) {
 
   return (
     <div className="pclsb-panel" data-testid="left-sidebar-hives">
+      {hiveControlOn && <LocalHivesControl />}
       <div className="pclsb-panel__bar">
         <span className="pclsb-panel__bar-label">
           p2p swarm · {groups.length} joined · {live} live
