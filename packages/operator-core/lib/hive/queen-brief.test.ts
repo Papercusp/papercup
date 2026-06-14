@@ -58,12 +58,12 @@ test('renderQueenBrief — two-part: FLOOR digest + CARRY-NOTE both render (P-00
 
   // FLOOR — the P-007 instruction to NOT re-run the survey reads.
   assert.match(out, /do NOT re-run `hive:survey`/);
-  // coord:inbox is NOT folded into the floor (Queen-identity-scoped, D-014), so the
-  // intro must NOT tell her to skip it — otherwise she'd go blind to non-escalation
-  // inbox items (handoffs/acks/plan-events). It must flag the inbox as her own read.
+  // coord:inbox IS now folded into the floor (D-020), so the skip-list MUST include
+  // it — she has the recent inbox digest in the brief and shouldn't re-fetch it just
+  // to see it. The old "triage it yourself" carve-out (D-017) is gone.
   const skipClause = out.slice(out.indexOf('do NOT re-run'), out.indexOf('act on it'));
-  assert.ok(!skipClause.includes('coord:inbox'), 'coord:inbox must not be in the do-not-re-run skip list');
-  assert.match(out, /`coord:inbox` is NOT in this brief — triage it yourself/);
+  assert.ok(skipClause.includes('`coord:inbox`'), 'coord:inbox must be in the do-not-re-run skip list (folded into the floor)');
+  assert.doesNotMatch(out, /is NOT in this brief — triage it yourself/);
   assert.match(out, /Woke by:.*coord:escalate/);
   assert.match(out, /Spawn headroom:.*3 free \(5\/8 running\)/);
   // Frontier ranked, with id + title + importance + harness + rank + why.

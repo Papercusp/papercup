@@ -470,6 +470,68 @@ export function messageOwner(args: MessageOwnerArgs) {
   });
 }
 
+/* ── Cross-user handoff / @-mention assign (shared-hive-collaboration P-008) ──
+ *  The "assign this plan/item to @user" surface. Roster = the live coord
+ *  presence roster (reused — already a sync query); the assign action is
+ *  coord:send wake:true (deliver-and-wake the assignee) via the /api/admin/coord
+ *  proxy, sender = the admin UI owner. */
+
+export interface CoordRosterMember {
+  ownerId: string;
+  ownerLabel: string | null;
+  intent: string | null;
+  currentPlanSlug: string | null;
+  /** A cross-machine peer (a real person) vs a local session. */
+  federated?: boolean;
+  /** GitHub user id when the entry is an identified person (federated peers). */
+  userId?: string | null;
+  source?: string | null;
+}
+
+/** The live coordination roster — the @-able people/agents for an assignment.
+ *  Reuses the dev.coordPresence sync query (already SSE-pushed, non-stale). */
+export function useCoordRoster(): AsyncResult<CoordRosterMember[]> {
+  return useSyncRows<CoordRosterMember>('dev.coordPresence', EMPTY_ARGS);
+}
+
+export interface AssignArgs {
+  /** Coord owner-id(s) of the assignee (from the roster). */
+  to: string[];
+  planSlug: string;
+  /** Plan-item id (e.g. 'P-005') when assigning a single item; omit for the whole plan. */
+  itemRef?: string | null;
+  /** Optional free-text note from the assigner. */
+  note?: string | null;
+  /** Deliver-and-wake (default true) — fires the assignee's inbox-wake. */
+  wake?: boolean;
+}
+
+export interface AssignResult {
+  ok?: boolean;
+  msg_id?: string;
+  error?: string;
+  wake?: { woken?: number; warning?: string };
+}
+
+/** Assign a plan or plan-item to a hive member: a coord:send (wake:true) that
+ *  lands in their inbox AND re-invokes them now (shared-hive-collaboration P-008). */
+export function assignToUser(args: AssignArgs): Promise<AssignResult> {
+  const target = args.itemRef
+    ? `item ${args.itemRef} (plan ${args.planSlug})`
+    : `plan ${args.planSlug}`;
+  const summary = `📋 Assigned to you: ${target}`;
+  const body =
+    `You've been assigned ${target} via the plans UI.` +
+    (args.note ? `\n\nNote: ${args.note}` : '');
+  return postCoord<AssignResult>('send', {
+    to: args.to,
+    summary,
+    body,
+    wake: args.wake ?? true,
+    plan_slug: args.planSlug,
+  });
+}
+
 async function postCoordination<T>(group: string, verb: string, body: Record<string, unknown>): Promise<T> {
   const r = await fetch(`/api/admin/coordination/${group}/${verb}`, {
     method: 'POST',

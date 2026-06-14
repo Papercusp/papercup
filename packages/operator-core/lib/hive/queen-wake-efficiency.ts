@@ -61,6 +61,24 @@ export interface QueenWakeEfficiency {
   samples: QueenWakeSample[];
 }
 
+/** The zeroed aggregate — the fallback when the read fails (e.g. a not-yet-applied migration), so a
+ *  consumer (the `learning.queenWakeEfficiency` sync resolver / its panel) renders a no-wakes state,
+ *  never a 500. Identical to what {@link queenWakeEfficiency} returns over an empty window. */
+export const EMPTY_QUEEN_WAKE_EFFICIENCY: QueenWakeEfficiency = {
+  wakes: 0,
+  cachedWakes: 0,
+  totalInputTokens: 0,
+  totalCacheReadTokens: 0,
+  totalCacheCreationTokens: 0,
+  totalOutputTokens: 0,
+  totalCostUsd: 0,
+  cacheHitRatio: 0,
+  avgTurns: null,
+  totalTurns: 0,
+  turnsReportedWakes: 0,
+  samples: [],
+};
+
 /** One raw `agent_usage_samples` row (PG numerics may arrive as strings — coerced by {@link num}). */
 export interface QueenWakeSampleRow {
   run_id: string | null;

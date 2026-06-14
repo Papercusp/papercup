@@ -12,14 +12,22 @@ const summarizeOpenPlacements = vi.fn(
 const gatherFleetSignals = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const gatherCompletions = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const gatherLiveBees = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
+const resolveQueenOwner = vi.fn(async (..._a: unknown[]) => 's-queen-1' as string | null);
+const readInbox = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 vi.mock('./survey', () => ({ surveyHive: (...a: unknown[]) => surveyHive(...a) }));
 vi.mock('./wake', () => ({ getHiveCarryNote: (...a: unknown[]) => getHiveCarryNote(...a) }));
-vi.mock('./placement-watchdog', () => ({ summarizeOpenPlacements: (...a: unknown[]) => summarizeOpenPlacements(...a) }));
+vi.mock('./placement-watchdog', () => ({
+  summarizeOpenPlacements: (...a: unknown[]) => summarizeOpenPlacements(...a),
+  resolveQueenOwner: (...a: unknown[]) => resolveQueenOwner(...a),
+}));
 vi.mock('../curation/fleet-signals', () => ({ gatherFleetSignals: (...a: unknown[]) => gatherFleetSignals(...a) }));
 vi.mock('../curation/deps', () => ({ buildFleetReaders: () => ({}) }));
 vi.mock('../curation/change-feed', () => ({ gatherCompletions: (...a: unknown[]) => gatherCompletions(...a) }));
 vi.mock('../curation/change-feed-deps', () => ({ buildChangeFeedReaders: () => ({}) }));
 vi.mock('../fleet/placement-gather', () => ({ gatherLiveBees: (...a: unknown[]) => gatherLiveBees(...a) }));
+vi.mock('../agent-tools/coordination/messages', () => ({ readInbox: (...a: unknown[]) => readInbox(...a) }));
+vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 
 const { computeQueenWakeBrief } = await import('./queen-brief-launch');
 
@@ -95,6 +103,40 @@ test('computeQueenWakeBrief — live bees (load + liveness) flow into the floor 
   const out2 = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(out2, 'the brief survives a failed bee read');
   assert.doesNotMatch(out2!, /### Bees — load \+ liveness/);
+});
+
+test('computeQueenWakeBrief — coord:inbox recent digest flows into the floor (D-020); ambient dropped; fail-soft', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getHiveCarryNote.mockResolvedValue(null);
+  resolveQueenOwner.mockResolvedValue('s-queen-1');
+  // readInbox already excludes own + notify; we additionally drop ambient (category).
+  readInbox.mockResolvedValue([
+    { kind: 'handoff', from: 'bee-alpha', summary: 'taking wi-101, need the schema', ts: '2026-06-14T00:00:01Z' },
+    { kind: 'message', from: 'sys', summary: 'service health blip', category: 'service-health', ts: '2026-06-14T00:00:02Z' },
+    { kind: 'message', from: 'bee-beta', body: 'paused on plan-y, blocked', ts: '2026-06-14T00:00:03Z' },
+  ]);
+  const out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out);
+  assert.match(out!, /### Inbox — recent \(addressed to you\)/);
+  assert.match(out!, /\[handoff\] bee-alpha: taking wi-101/);
+  assert.match(out!, /\[message\] bee-beta: paused on plan-y/); // body used when summary absent
+  assert.doesNotMatch(out!, /service health blip/); // ambient dropped
+  // The skip-list now includes coord:inbox (it's folded into the floor — D-020).
+  assert.match(out!, /do NOT re-run[\s\S]*coord:inbox/);
+  // Read against the Queen's resolved durable owner id.
+  assert.equal(readInbox.mock.calls[0]?.[0], 's-queen-1');
+
+  // Fail-soft: no resolvable owner → no inbox section, brief survives.
+  resolveQueenOwner.mockResolvedValueOnce(null);
+  const outNoOwner = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(outNoOwner);
+  assert.doesNotMatch(outNoOwner!, /### Inbox — recent/);
+
+  // Fail-soft: a throwing inbox read degrades that section, not the whole brief.
+  readInbox.mockRejectedValueOnce(new Error('coord pg down'));
+  const outErr = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(outErr, 'the brief survives a failed inbox read');
+  assert.doesNotMatch(outErr!, /### Inbox — recent/);
 });
 
 test('computeQueenWakeBrief — empty floor + no carry-note still renders (skip-the-survey signal)', async () => {

@@ -1762,6 +1762,35 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.queenWakeEfficiency — the Benchmark view's Queen per-wake efficiency ──
+  //
+  // The live Queen's per-wake prompt efficiency (queen-brief-cache-assembly-2026-06-13 B-06 /
+  // P-010, D-016/D-018) over harness_shared.agent_usage_samples role='queen' (queenWakeEfficiency):
+  // cache-hit ratio (Win-1 frozen-prefix cache), avg turns/wake (Win-2 round-trip elimination),
+  // cachedWakes (the "cache is real" signal, P-003), and token/cost totals. Workspace-wide (all
+  // Queen wakes). PG failure OR a not-yet-applied migration (272 turn_count) degrades to the empty
+  // aggregate — the panel renders its no-wakes state, never a 500. Returns a 1-element array (client
+  // reads data[0]). NOT table-backed — refreshes on mount + the panel's manual invalidate() (the
+  // metric is sparse, mirroring learning.ekg / learning.redQueen).
+  'learning.queenWakeEfficiency': {
+    resolve: async () => {
+      const { queenWakeEfficiency, EMPTY_QUEEN_WAKE_EFFICIENCY } = await import('../hive/queen-wake-efficiency');
+      try {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        return [await queenWakeEfficiency(activeWorkspaceId(), { limit: 50 })];
+      } catch (err) {
+        // 42P01 (undefined table) / 42703 ("column does not exist", pre-mig-272 turn_count) are the
+        // expected pre-boot-apply states, not worth a warn — degrade silently to the empty aggregate.
+        const code = (err as { code?: string })?.code;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
+          console.warn('[learning.queenWakeEfficiency] read failed:', msg);
+        }
+        return [EMPTY_QUEEN_WAKE_EFFICIENCY];
+      }
+    },
+  },
+
   // ── learning.scout — the Learning tab's Scout view (learning-system-audit P-042) ──
   //
   // Routed-ideas-by-rail over scout_routed_ideas (migration 194) + the newest

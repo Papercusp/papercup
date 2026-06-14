@@ -83,6 +83,10 @@ beforeAll(async () => {
   db = await createFreshPgDb('wi-swarm-affinity');
   h.sql = db.sql;
   await db.sql.unsafe(HFC_DDL);
+  // G2 trust leg (P-010): autoPickableWhereSql(sql, ws) consults this table.
+  await db.sql.unsafe(
+    `CREATE TABLE IF NOT EXISTS harness_shared.user_trust_list (workspace_id text NOT NULL, trusted_github_user_id bigint NOT NULL, note text, created_ts bigint NOT NULL, PRIMARY KEY (workspace_id, trusted_github_user_id))`,
+  );
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();

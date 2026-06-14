@@ -104,24 +104,32 @@ export async function resolveVerifiedAuthorGithubId(
 ): Promise<number | null> {
   const pubkey = (opts.authorPubkey ?? '').trim();
   if (!pubkey || !opts.workspaceId) return null;
-  const hiveFilter = opts.hiveHomeSlug ? sql`AND hive_home_slug = ${opts.hiveHomeSlug}` : sql``;
-  const rows = await sql<{ github_user_id: string | number }[]>`
-    SELECT github_user_id
-      FROM harness_shared.hive_members
-     WHERE workspace_id = ${opts.workspaceId}
-       ${hiveFilter}
-       AND binding_status = 'verified'
-       AND NOT (${pubkey} = ANY(COALESCE(revoked_pubkeys, ARRAY[]::text[])))
-       AND EXISTS (
-         SELECT 1
-           FROM jsonb_array_elements(COALESCE(device_attestations, '[]'::jsonb)) a
-          WHERE a->>'device_pubkey' = ${pubkey}
-       )
-     LIMIT 1`;
-  if (!rows[0]) return null;
-  const raw = rows[0].github_user_id;
-  const id = typeof raw === 'string' ? Number(raw) : raw;
-  return Number.isFinite(id) ? id : null;
+  try {
+    const hiveFilter = opts.hiveHomeSlug ? sql`AND hive_home_slug = ${opts.hiveHomeSlug}` : sql``;
+    const rows = await sql<{ github_user_id: string | number }[]>`
+      SELECT github_user_id
+        FROM harness_shared.hive_members
+       WHERE workspace_id = ${opts.workspaceId}
+         ${hiveFilter}
+         AND binding_status = 'verified'
+         AND NOT (${pubkey} = ANY(COALESCE(revoked_pubkeys, ARRAY[]::text[])))
+         AND EXISTS (
+           SELECT 1
+             FROM jsonb_array_elements(COALESCE(device_attestations, '[]'::jsonb)) a
+            WHERE a->>'device_pubkey' = ${pubkey}
+         )
+       LIMIT 1`;
+    if (!rows[0]) return null;
+    const raw = rows[0].github_user_id;
+    const id = typeof raw === 'string' ? Number(raw) : raw;
+    return Number.isFinite(id) ? id : null;
+  } catch {
+    // Best-effort + FAIL-SAFE: an unreadable/absent hive_members (e.g. a transient
+    // error, or a projection running against a partial schema) yields NULL → the
+    // trust fast-path simply doesn't fire (the gate conservatively refuses), and
+    // the federated-ingest projection loop is never crashed by the optional stamp.
+    return null;
+  }
 }
 
 /**

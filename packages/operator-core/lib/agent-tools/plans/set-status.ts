@@ -30,7 +30,13 @@ const argsSchema = z.object({
   slug: z.string().min(1),
   itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   status: z.enum([...ITEM_STATUSES] as [string, ...string[]]),
-  note: z.string().max(400).optional().describe('Optional trailing comment appended to the item line.'),
+  note: z
+    .string()
+    .max(1000)
+    .optional()
+    .describe(
+      'Optional SHORT comment appended inline to the item line (<=1000 chars). For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
+    ),
   rationale: z
     .string()
     .optional()

@@ -222,7 +222,7 @@ function num(v: unknown): number | null {
 
 /** Resolve the hive's Queen coord-owner from its most-recent hive session — the
  *  recipient of recovery wakes, and the key bee spawns carry as parent_spawn_id. */
-async function resolveQueenOwner(sql: Sql, workspaceId: string, installSlug: string): Promise<string | null> {
+export async function resolveQueenOwner(sql: Sql, workspaceId: string, installSlug: string): Promise<string | null> {
   const rows = await sql<{ coord_owner_id: string }[]>`
     SELECT coord_owner_id
       FROM harness_shared.adv_sessions

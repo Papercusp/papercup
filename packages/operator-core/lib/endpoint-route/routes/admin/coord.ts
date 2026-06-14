@@ -19,6 +19,10 @@
  *   with the owning agent (inbox-tiering-and-message-agent-2026-06-05, D-004).
  *   The inline thread is then read/posted via /api/admin/coordination/
  *   conversations/{get,post} (admin/coordination.ts allowlist).
+ * POST /api/admin/coord/send { to[], summary, body?, wake?, plan_slug? }  → coord:send
+ *   The cross-user HANDOFF/assign action (shared-hive-collaboration P-008):
+ *   "assign this plan/item to @user" — deliver-and-wake the assignee
+ *   (wake:true fires their inbox-wake). Sender is the admin UI owner.
  */
 
 import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/agent-mcp';
@@ -33,7 +37,7 @@ import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity
 // "Acknowledge" actually dismisses: the human acks AS this owner here, and the
 // reader drops messages acked BY this owner.
 const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
-const WRITE_VERBS = new Set(['resolve', 'ack', 'message-agent']);
+const WRITE_VERBS = new Set(['resolve', 'ack', 'message-agent', 'send']);
 
 const HOST_EXTRAS: HttpToolHostExtras = {
   deps: PROJECTED_DEPS,

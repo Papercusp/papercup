@@ -46,6 +46,7 @@ import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/
 import { BenchmarkTrend, type BenchmarkTrendInstance } from './BenchmarkTrend';
 import { EkgPanel } from './EkgPanel';
 import { RedQueenPanel } from './RedQueenPanel';
+import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';
 import { DemandPanel } from './DemandPanel';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
@@ -778,6 +779,8 @@ function ApiaryView() {
       <BenchmarkTrend instances={instances} />
 
       <HiveEvalTrendView />
+
+      <QueenWakeEfficiencyPanel />
 
       <EkgPanel />
 

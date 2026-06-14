@@ -171,10 +171,9 @@ export function renderQueenBrief(input: QueenBriefInput): string {
   out.push(
     'This is the deterministic floor the watchdog already computed for this wake. ' +
       'It replaces your every-wake survey reads — do NOT re-run `hive:survey`, ' +
-      '`fleet:assignments`, `coord:presence`, or `curation:change-feed` ' +
-      'just to gather this; act on it. (Your `coord:inbox` is NOT in this brief — ' +
-      'triage it yourself as usual.) ' +
-      'Drill into a specific bee/plan/thread with a tool only when you need detail this digest omits.',
+      '`fleet:assignments`, `coord:presence`, `coord:inbox`, or `curation:change-feed` ' +
+      'just to gather this; act on it. Drill into detail this digest omits with a tool ' +
+      'only when you need it (page deeper in your inbox, a specific bee/plan/thread).',
   );
 
   if (f.wokeBy && f.wokeBy.trim()) {
@@ -239,10 +238,10 @@ export function renderQueenBrief(input: QueenBriefInput): string {
 
   section(
     out,
-    'Inbox — new since last wake',
+    'Inbox — recent (addressed to you)',
     (f.inbox ?? []).map((m) => `- [${m.kind}]${m.from ? ` ${m.from}:` : ''} ${m.summary}`),
     caps.inbox,
-    'coord:inbox to drill down',
+    'coord:inbox to page deeper',
   );
 
   section(out, 'Change feed — recent', (f.changeFeed ?? []).map((l) => `- ${l}`), caps.changeFeed, 'curation:change-feed to drill down');

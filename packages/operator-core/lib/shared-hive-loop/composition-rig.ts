@@ -220,6 +220,15 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       rank_updated_at     TIMESTAMPTZ,
       PRIMARY KEY (harness_slug, feature_id)
     );
+    -- G2 trust leg (P-010): the claim/place paths' autoPickableWhereSql(sql, ws)
+    -- consult this table; the real claimNextWorkItem the rig drives needs it.
+    CREATE TABLE harness_shared.user_trust_list (
+      workspace_id text NOT NULL,
+      trusted_github_user_id bigint NOT NULL,
+      note text,
+      created_ts bigint NOT NULL,
+      PRIMARY KEY (workspace_id, trusted_github_user_id)
+    );
     CREATE TABLE harness_shared.harness_issues_consolidated (
       harness_slug      TEXT NOT NULL,
       issue_id          TEXT NOT NULL,

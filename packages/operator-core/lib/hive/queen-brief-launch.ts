@@ -17,13 +17,16 @@
  */
 import { surveyHive } from './survey';
 import { getHiveCarryNote } from './wake';
-import { summarizeOpenPlacements } from './placement-watchdog';
+import { summarizeOpenPlacements, resolveQueenOwner } from './placement-watchdog';
 import { gatherFleetSignals } from '../curation/fleet-signals';
 import { buildFleetReaders } from '../curation/deps';
 import { gatherCompletions } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { gatherLiveBees } from '../fleet/placement-gather';
-import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee } from './queen-brief';
+import { readInbox } from '../agent-tools/coordination/messages';
+import { runWithWorkspace } from '../workspace-als';
+import { getOrgPg } from '@papercusp/db-org';
+import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee, type BriefInboxItem } from './queen-brief';
 
 /** Live hive bees → the floor's bee load + liveness (warm-inject-vs-spawn signal).
  *  gatherLiveBees already excludes non-bees + joins load/liveness; fail-soft. */
@@ -63,6 +66,38 @@ async function gatherRecentChanges(limit = 10): Promise<string[]> {
   }
 }
 
+/**
+ * The Queen's coord inbox → the floor's recent-messages digest (D-020, the last
+ * every-wake read folded in). Resolve her DURABLE owner id (stable across her
+ * fresh-per-wake spawns — `resolveQueenOwner`) and read the items addressed to
+ * it. Because she is fresh-per-wake + stateless, this read-only digest is
+ * EQUIVALENT to the `coord:inbox` call she'd otherwise make (both are stateless
+ * "recent addressed items", no per-wake unread tracking) — it just saves the
+ * round-trip; there is no delta/watermark to consume. `readInbox` already
+ * excludes her own outbox + the `notify` firehose; we additionally drop ambient
+ * rows (service-health / governor) to mirror `coord:inbox`'s default. Newest-
+ * first, capped to keep the tail small. Fail-soft like the other gathers: any
+ * error (or no resolvable owner) degrades to no-inbox, never kills the brief.
+ *
+ * Read inside the Queen's workspace ALS so `coordLog` resolves the right event
+ * log (the inbox is workspace-keyed; resolveQueenOwner is explicitly scoped).
+ */
+async function gatherInbox(workspaceId: string, installSlug: string, limit = 10): Promise<BriefInboxItem[]> {
+  try {
+    const { sql } = getOrgPg();
+    const queenOwner = await resolveQueenOwner(sql, workspaceId, installSlug);
+    if (!queenOwner) return [];
+    const all = await runWithWorkspace(workspaceId, () => readInbox(queenOwner, {}));
+    return all
+      .filter((e) => !e.category) // drop ambient (service-health / governor) like coord:inbox default
+      .slice(-limit)
+      .reverse() // newest-first
+      .map((e) => ({ kind: e.kind, from: e.from, summary: (e.summary ?? e.body ?? '').slice(0, 200) }));
+  } catch {
+    return [];
+  }
+}
+
 export async function computeQueenWakeBrief(
   workspaceId: string,
   installSlug: string,
@@ -75,13 +110,14 @@ export async function computeQueenWakeBrief(
     //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
     //    internally fail-soft (returns empty);
     //  - carryNote / escalations — wrapped here.
-    const [survey, carryNote, openPlacements, escalations, changeFeed, bees] = await Promise.all([
+    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox] = await Promise.all([
       surveyHive(workspaceId, installSlug),
       getHiveCarryNote(workspaceId).catch(() => null),
       summarizeOpenPlacements(workspaceId, installSlug),
       gatherEscalations(),
       gatherRecentChanges(),
       gatherBees(workspaceId),
+      gatherInbox(workspaceId, installSlug),
     ]);
     const wokeBy = opts.wokeBy?.trim();
     const floor = floorFromSurvey(survey, {
@@ -90,6 +126,7 @@ export async function computeQueenWakeBrief(
       ...(escalations.length > 0 ? { escalations } : {}),
       ...(changeFeed.length > 0 ? { changeFeed } : {}),
       ...(bees.length > 0 ? { bees } : {}),
+      ...(inbox.length > 0 ? { inbox } : {}),
     });
     return renderQueenBrief({ floor, carryNote });
   } catch (err) {

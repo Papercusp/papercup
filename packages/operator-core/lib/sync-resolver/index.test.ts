@@ -327,6 +327,61 @@ describe('sync-resolver v2 registry', () => {
 
 /* ── P-029: plansDrafts.bySlug resolver ────────────────────────────── */
 
+describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cache B-06 / P-010)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('is registered in knownQueryNamesV2', () => {
+    expect(knownQueryNamesV2()).toContain('learning.queenWakeEfficiency');
+  });
+
+  it('passes the queenWakeEfficiency aggregate through as data[0]', async () => {
+    const agg = {
+      wakes: 3,
+      cachedWakes: 2,
+      cacheHitRatio: 0.8,
+      avgTurns: 4,
+      totalInputTokens: 1,
+      totalCacheReadTokens: 1,
+      totalCacheCreationTokens: 1,
+      totalOutputTokens: 1,
+      totalCostUsd: 0.5,
+      totalTurns: 8,
+      turnsReportedWakes: 2,
+      samples: [],
+    };
+    vi.doMock('../hive/queen-wake-efficiency', () => ({
+      queenWakeEfficiency: vi.fn(async () => agg),
+      EMPTY_QUEEN_WAKE_EFFICIENCY: { wakes: 0 },
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('learning.queenWakeEfficiency', {})) as Array<{ wakes: number; cacheHitRatio: number }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].wakes).toBe(3);
+    expect(rows[0].cacheHitRatio).toBe(0.8);
+    vi.doUnmock('../hive/queen-wake-efficiency');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  it('degrades to the empty aggregate when the read throws (pre-migration / no PG) — never a 500', async () => {
+    vi.doMock('../hive/queen-wake-efficiency', () => ({
+      queenWakeEfficiency: vi.fn(async () => {
+        throw Object.assign(new Error('relation "agent_usage_samples" does not exist'), { code: '42P01' });
+      }),
+      EMPTY_QUEEN_WAKE_EFFICIENCY: { wakes: 0, cacheHitRatio: 0, avgTurns: null, samples: [] },
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('learning.queenWakeEfficiency', {})) as Array<{ wakes: number }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].wakes).toBe(0);
+    vi.doUnmock('../hive/queen-wake-efficiency');
+    vi.doUnmock('../workspace-registry');
+  });
+});
+
 describe('resolveNamedQueryV2 — plansDrafts.bySlug (P-029)', () => {
   beforeEach(() => {
     vi.resetModules();
