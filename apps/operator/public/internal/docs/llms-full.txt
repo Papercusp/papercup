@@ -4842,6 +4842,59 @@ It **composes** existing primitives (`pot:*`, `fleet:*`, `harness:create` intern
 
 `agent-tools/hive/{_resolve,_create,dissolve,guard}.test.ts` (15 tests): descriptor shaping, `harness_kind` stamping, create rollback-on-failure, dissolve unwind, and the root-only refusal — all PG-free (deps mocked). The live create→wake→dissolve path (a real Queen spawn on shared infra) is a manual smoke, not auto-run.
 
+# HLC merge order must match the PG fed_ts LWW guard (or cells diverge)
+
+> Why two federated cells can "converge" to DIFFERENT values — the merge winners-fold orders by HLC (P-010) but the projection PG LWW guard orders by fed_ts, and HLC stamped at DRAIN disagrees with fed_ts stamped at WRITE. Fix - seed the HLC from the op's own write-time `ts`.
+
+## What
+
+[Section titled “What”](#what)
+
+A federated write goes through **two** ordering decisions, and they must agree:
+
+1. **The merge winners-fold** (`read-merge.ts` `mergeAdmittedLogsIncremental` → `lwwPick`/`beatsStored`) — since P-010 this orders by the op’s **HLC** when both ops carry one, else falls back to wall-clock `ts`.
+2. **The PG projection LWW guard** (`harness-features.ts` etc.) — the `INSERT … ON CONFLICT … WHERE stored.fed_ts IS NULL OR EXCLUDED.fed_ts >= stored.fed_ts` clause — orders by **`fed_ts`**.
+
+If these two disagree under same-key contention, the system **silently diverges**: the merge picks op X as the winner and hands it to `apply`, but the PG guard rejects X (its `fed_ts` lost) → no write → the cell keeps its own value. Each cell keeps its own → the two cells “converge” (no more ops to drain, `fixedPoint=true`) to **different** values. The tripwire was `split-brain-queen.integration.test.ts` (both Queens steer opposite orders; cell A ended with a mix, cell B with all-its-own).
+
+## Why they disagreed
+
+[Section titled “Why they disagreed”](#why-they-disagreed)
+
+* **`fed_ts`** is stamped at the **local write** (migration 214 `stamp_local_federated_write`, `clock_timestamp()`).
+* **HLC** was stamped at **DRAIN** (`stampOpHlc` in `hlc-stamp.ts` called from `boot.ts`’s `handle.append`, using a bare `clock.now()` = wall-clock-at-drain).
+
+Drain happens later than — and in a different order than — the writes (the CDC outbox drains in batches, concurrently across cells), so the HLC ordered ops by **drain-interleave** while `fed_ts` ordered them by **write time**. An op could win the HLC fold but lose the `fed_ts` guard.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+Seed the HLC’s physical component from the op’s **own recorded write-time `ts`** (the outbox row’s capture `ts`, ≈ `fed_ts`), not the wall clock at stamp time:
+
+hlc-stamp.ts
+
+```ts
+export function stampOpHlc(op, clock = processHlc()) {
+  if (op.hlc) return op;
+  return { ...op, hlc: encodeHlc(clock.now(op.ts)) }; // was clock.now()
+}
+```
+
+`HlcClock.send(physicalNow)` is built for exactly this (“seed from an event’s own recorded ms”) and stays monotone via `bumpCount` when `ts` is in the past, so causality (the RECV-seam `observeRemoteHlc` advance) is preserved. Now the merge’s HLC order matches the PG guard’s `fed_ts` order → no silent rejection.
+
+## Gotchas when reproducing in a rig
+
+[Section titled “Gotchas when reproducing in a rig”](#gotchas-when-reproducing-in-a-rig)
+
+`composition-rig.ts` simulates **two swarms in ONE process**. Real swarms are separate processes with **independent** HLC clocks, but the rig shared the process-global `processHlc()` singleton — so the two cells’ concurrent drains raced the same counter and decided cross-swarm LWW by drain-interleave. Give each cell its **own** `HlcClock` (gated `hlcClock` seams on `boot.ts` `BootHarnessOpts`, `projection.ts` `ApplyOpOpts`, `hlc-stamp.ts`; default `processHlc()` so production is unchanged). See \[\[substrate-hlc-and-capture-coverage]] and \[\[two-federation-paths-cannot-share-one-fed-ts]].
+
+## Smell test
+
+[Section titled “Smell test”](#smell-test)
+
+If two federated cells end a converge() with DIFFERENT values for the same key (and `fixedPoint=true`), suspect an ordering-key mismatch between the merge fold and a projection’s PG LWW guard — they must use the SAME key.
+
 # N≥3 substrate peers — announce admission is per-connection; distribute swarm keys and joinPeer for a full mesh
 
 > Signed announces ride per-connection channels (no gossip), so admitting a peer's log REQUIRES a direct hyperswarm connection to it. Concurrent topic joins race the DHT announce and stall pairwise connections for minutes. Fix — collect each peer's swarm noise key at ready and have every peer joinPeer() the others explicitly.
@@ -6830,7 +6883,7 @@ The `:3070` operator host (`papercup-dev-api`, `bin/hono-host.ts`) “recycled e
 
 * The `memory-watchdog.ts` docstring blames the *symptom* it observed (“spawned-agent MCP mounts raced and failed”, “handshakes succeeded-then-dropped”) — those are the GC-stall *consequences* of the leak, which reads as MCP being the victim, not the cause.
 * “No explicit close” only leaks because the per-request server graph is retained (transport/Protocol internals) past the handler; absent a retaining root it would just GC. Verify by counting, not by reasoning about GC.
-* The host env was later reconfigured (`--max-old-space-size=131072` + Node-native PSI-GC via `MEMORY_PRESSURE_WATCH`) but the in-process watchdog’s threshold was left stale at **3.2 GB** — and once the leak was patched the steady boot baseline (\~3.8 GB; see *Related* below) settled just ABOVE it, so the watchdog **false-tripped on every boot** and crash-looped `:3070` (\~one recycle / 2 min, 47 restarts) until the cap was bumped (3.2 GB → 24 GB, 2026-06-14; `operator-memory-and-psu-resilience-2026-06-14` recommends retuning to \~8 GB). Lesson stands: fix the cause, don’t just raise the threshold (V8 GC pauses still bite a multi-GB single-thread heap, and a bigger cap only hides the next regression).
+* The host env was later reconfigured (`--max-old-space-size=131072` + Node-native PSI-GC via `MEMORY_PRESSURE_WATCH`) but the in-process watchdog’s threshold was left stale at **3.2 GB** — and once the leak was patched the steady boot baseline (\~3.8 GB; see *Related* below) settled just ABOVE it, so the watchdog **false-tripped on every boot** and crash-looped `:3070` (\~one recycle / 2 min, 47 restarts) until the cap was bumped (3.2 GB → 24 GB, 2026-06-14; `operator-memory-and-psu-resilience-2026-06-14` P-005 then retuned it → 12 GB once the fix was verified flat — not lower, since the \~3.8 GB baseline grows O(harness count) and a tight cap would re-trip). Lesson stands: fix the cause, don’t just raise the threshold (V8 GC pauses still bite a multi-GB single-thread heap, and a bigger cap only hides the next regression).
 
 ## Fix
 

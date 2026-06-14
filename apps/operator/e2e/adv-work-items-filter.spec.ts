@@ -10,8 +10,11 @@
  * mounts the editor <Popover> in the SAME click gesture. The Select's closing
  * pointer event then lands on the freshly-mounted Popover's dismissable layer
  * as an "outside" interaction and dismisses it instantly. The fix defers the
- * open one frame (`requestAnimationFrame(() => setEditingKey(key))`) so the
- * Select fully closes + settles focus before the Popover mounts.
+ * open to a MACROTASK (`setTimeout(() => setEditingKey(key), 0)`) so the Select
+ * fully closes + the gesture drains before the Popover mounts. requestAnimation-
+ * Frame is NOT enough (it runs before paint, still in the Select's task tail);
+ * only setTimeout escapes the race. The same `openEditor` defer also guards
+ * clicking an existing chip to re-edit it.
  *
  * Why an e2e (not a jsdom render test): the dismiss is a REAL Radix
  * dismissable-layer pointer-event race — jsdom fires no layout/pointer events
@@ -239,5 +242,77 @@ test.describe('/adv Work items panel — column filter bar', () => {
     await bar.getByRole('button', { name: 'Clear all' }).click();
     await expect(bar.locator('.pc-advpanel__chip', { hasText: 'State: open' })).toHaveCount(0);
     await expect.poll(() => wifParam(page), { timeout: 10_000 }).toBeNull();
+  });
+
+  test('text filter: typing + Enter saves the filter and closes the editor', async ({ page }) => {
+    await stubApis(page);
+    const mounted = await dockMounts(page);
+    test.skip(!mounted, SKIP_MSG);
+    const bar = await openWorkItemsPanel(page);
+
+    await bar.getByRole('combobox', { name: 'Add a column filter' }).click();
+    await page.getByRole('option', { name: 'Title', exact: true }).click();
+
+    const editor = page.getByRole('dialog', { name: 'Edit Title filter' });
+    await expect(editor).toBeVisible({ timeout: 5_000 });
+
+    const input = editor.getByRole('textbox', { name: 'Filter Title' });
+    await input.fill('First');
+    // The chip reflects the live value as you type (value saves per keystroke).
+    await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Title: First' })).toBeVisible();
+
+    // ENTER saves + closes the box — the user-requested behaviour.
+    await input.press('Enter');
+    await expect(editor).toBeHidden({ timeout: 5_000 });
+
+    // Value persisted: chip remains + the wif URL param carries the text filter.
+    await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Title: First' })).toBeVisible();
+    await expect.poll(() => wifParam(page), { timeout: 10_000 }).toContain('title:');
+  });
+
+  test('number filter: typing a bound + Enter saves and closes', async ({ page }) => {
+    await stubApis(page);
+    const mounted = await dockMounts(page);
+    test.skip(!mounted, SKIP_MSG);
+    const bar = await openWorkItemsPanel(page);
+
+    await bar.getByRole('combobox', { name: 'Add a column filter' }).click();
+    await page.getByRole('option', { name: 'Prio', exact: true }).click();
+
+    const editor = page.getByRole('dialog', { name: 'Edit Prio filter' });
+    await expect(editor).toBeVisible({ timeout: 5_000 });
+
+    const min = editor.getByRole('spinbutton', { name: 'Prio minimum' });
+    await min.fill('2');
+    await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Prio: ≥2' })).toBeVisible();
+
+    await min.press('Enter');
+    await expect(editor).toBeHidden({ timeout: 5_000 });
+    await expect(bar.locator('.pc-advpanel__chip', { hasText: 'Prio: ≥2' })).toBeVisible();
+    await expect.poll(() => wifParam(page), { timeout: 10_000 }).toContain('priority:');
+  });
+
+  test('clicking an existing chip reopens its editor (chip-edit dismiss-race fix)', async ({ page }) => {
+    await stubApis(page);
+    const mounted = await dockMounts(page);
+    test.skip(!mounted, SKIP_MSG);
+    const bar = await openWorkItemsPanel(page);
+
+    // Create a State filter (chip), then close the editor.
+    await bar.getByRole('combobox', { name: 'Add a column filter' }).click();
+    await page.getByRole('option', { name: 'State', exact: true }).click();
+    const editor = page.getByRole('dialog', { name: 'Edit State filter' });
+    await expect(editor).toBeVisible({ timeout: 5_000 });
+    await editor.getByRole('checkbox', { name: 'open' }).click();
+    const chip = bar.locator('.pc-advpanel__chip', { hasText: 'State: open' });
+    await expect(chip).toBeVisible();
+    await editor.getByRole('button', { name: 'Close filter editor' }).click();
+    await expect(editor).toBeHidden({ timeout: 5_000 });
+
+    // Click the chip body → the editor must REOPEN. This path set editingKey
+    // synchronously and hit the same dismiss race; the openEditor setTimeout(0)
+    // defer fixes it (sync → this assertion fails; the defer makes it pass).
+    await chip.click();
+    await expect(page.getByRole('dialog', { name: 'Edit State filter' })).toBeVisible({ timeout: 5_000 });
   });
 });

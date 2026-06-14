@@ -70,6 +70,9 @@ export interface ExperimentRunCtx {
   replayRunner?: ReplayRunner;
   /** Optional per-Subject persistence. */
   store?: { replay?: ReplayStore };
+  /** Live gym AbDeps (createGymRunnerPorts) — present only when the gym tier is armed.
+   *  Absent ⇒ the gym descriptor stays staged (run refuses). */
+  gym?: { abDeps?: import('../gym/ab-runner').AbDeps };
   /** Injected for the rate-pause wait (defaults to real setTimeout in the runner). */
   sleep?(ms: number): Promise<void>;
 }

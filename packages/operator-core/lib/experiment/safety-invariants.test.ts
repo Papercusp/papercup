@@ -58,7 +58,9 @@ describe('the live tiers never execute in v1 (staged, not stubbed-on)', () => {
     const ctx = { workspaceId: 'ws' } as never;
     const req = { batteryId: 'b', arms: [], repeats: 1, payload: {} } as never;
     for (const d of [gymDescriptor(), instanceDescriptor(), hiveDescriptor()]) {
-      await expect(d.run(req, ctx), d.id).rejects.toThrow(/not yet executable/);
+      // gym is mapped+wired but refuses without live abDeps; instance/hive are staged
+      // metadata. Either way: no live execution / no spend in v1.
+      await expect(d.run(req, ctx), d.id).rejects.toThrow(/not yet executable|STAGED until the owner arms it/);
     }
   });
 });

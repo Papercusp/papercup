@@ -5,6 +5,8 @@ import type { ReplayCase, ReplayRunner } from '../replay/types';
 import {
   _resetExperimentRegistration,
   gymDescriptor,
+  hiveDescriptor,
+  instanceDescriptor,
   registerExperimentDescriptors,
   replayDescriptor,
 } from './descriptors';
@@ -139,8 +141,14 @@ describe('replay descriptor.run', () => {
 });
 
 describe('staged live-tier descriptors', () => {
-  it('refuse to run in v1 with a clear staged message', async () => {
+  it('gym is mapped + wired but STAGED without live abDeps (no spend)', async () => {
+    const request: ExperimentRequest = { batteryId: 'b1', arms: [], repeats: 1, payload: { tasks: [], deriveOpts: {} } };
+    await expect(gymDescriptor().run(request, fakeCtx())).rejects.toThrow(/STAGED until the owner arms it/);
+  });
+
+  it('instance + hive remain staged-metadata in v1', async () => {
     const request: ExperimentRequest = { batteryId: 'b1', arms: [], repeats: 1, payload: {} };
-    await expect(gymDescriptor().run(request, fakeCtx())).rejects.toThrow(/not yet executable in v1/);
+    await expect(instanceDescriptor().run(request, fakeCtx())).rejects.toThrow(/not yet executable in v1/);
+    await expect(hiveDescriptor().run(request, fakeCtx())).rejects.toThrow(/not yet executable in v1/);
   });
 });

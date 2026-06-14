@@ -20,6 +20,7 @@ import {
 } from '../replay/battery';
 import type { ReplayCase, ReplayVariant } from '../replay/types';
 import { partitionArm, validateArm, type KnobArm } from './knob-space';
+import type { GymExperimentPayload } from './gym-run-core';
 import type { ExperimentRequest, ExperimentRunCtx, ExperimentRunResult } from './types';
 
 /** Injectable seam — the runners the descriptors delegate to (real by default; a
@@ -146,16 +147,37 @@ function stagedLiveDescriptor(
 }
 
 export function gymDescriptor(): ExperimentDescriptor {
-  return stagedLiveDescriptor({
+  const knobSlice = ['overlay', 'model'];
+  return {
     id: 'gym',
     summary:
-      'Component eval — run the real coding pipeline inside a fixed harness under a per-role prompt/tool-guidance overlay (the gym HarnessSubject) and judge the diff. Live agent spend.',
+      'Component eval — run the real coding pipeline inside a fixed harness under a per-role prompt overlay (`overlay.<role>`) / model swap (`model.<role>`) and judge the diff (the gym HarnessSubject). Live agent spend; mapped + wired but STAGED until the owner arms the gym AbDeps (P-063).',
     kind: 'component',
     fidelityTier: 'live',
     costClass: 'high',
-    knobSlice: ['overlay', 'model'],
+    knobSlice,
     metrics: { signals: ['regressionsFromTests', 'plantedBugCaught', 'cost'], rubricDimensions: ['d1', 'd2', 'd3'] },
-  });
+    async run(request, ctx) {
+      for (const arm of request.arms) {
+        const v = validateArm(arm, knobSlice);
+        if (!v.ok) {
+          const bad = [...v.outOfSlice, ...v.excluded.map((e) => `${e} (safety-excluded)`)].join(', ');
+          throw new Error(`gym arm "${arm.id}" has knobs outside its slice: ${bad}`);
+        }
+      }
+      const { gymRunCore } = await import('./gym-run-core');
+      return gymRunCore(
+        {
+          batteryId: request.batteryId,
+          arms: request.arms,
+          payload: request.payload as GymExperimentPayload,
+          repeats: request.repeats,
+          ...(request.maxDistillChars !== undefined ? { maxDistillChars: request.maxDistillChars } : {}),
+        },
+        { workspaceId: ctx.workspaceId, ...(ctx.gym?.abDeps ? { abDeps: ctx.gym.abDeps } : {}) },
+      );
+    },
+  };
 }
 
 export function instanceDescriptor(): ExperimentDescriptor {

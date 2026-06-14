@@ -191,9 +191,10 @@ export function describePresenceConformance(
       expect(await store.get(id.ownerId)).toBeNull();
     });
 
-    it('list returns rows newest-heartbeat-first', async () => {
+    it('list returns rows in deterministic ownerId order', async () => {
       if (skip) return;
       const store = makeStore();
+      // Written youngest-heartbeat-last to prove order is NOT heartbeat-driven.
       const a = ident(store, 'a');
       await store.write(a);
       await delay(8);
@@ -204,7 +205,12 @@ export function describePresenceConformance(
       await store.write(c);
       const ids = [a.ownerId, b.ownerId, c.ownerId];
       const mine = (await store.list()).filter((r) => ids.includes(r.ownerId));
-      expect(mine.map((r) => r.ownerId)).toEqual([c.ownerId, b.ownerId, a.ownerId]);
+      // presence-v2 P-005 / D-006: list() is ordered by ownerId (cache- and
+      // diff-stable), NOT heartbeat. Compute the expected order with the same
+      // comparison the stores use so it holds regardless of how many owners
+      // prior cases minted (the shared counter).
+      const expected = [...ids].sort((x, y) => x.localeCompare(y));
+      expect(mine.map((r) => r.ownerId)).toEqual(expected);
     });
 
     it('list filters by workspace', async () => {
