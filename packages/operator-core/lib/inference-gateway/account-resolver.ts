@@ -41,6 +41,35 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
   return { accountId: 'local', credentialRef: `file:${localBundle}`, source: 'local-fallback' };
 }
 
+/**
+ * Resolve the FULL ordered account pool the gateway fails over across (EI-535) — the multi-account
+ * generalization of resolveBoundAccount. `PAPERCUSP_ACCOUNT_ID` (if set + valid) is the PRIMARY
+ * (index 0) and the remaining pool accounts follow as failover targets; with no pin, all pool
+ * accounts in pool order; with an empty pool, the box's local login bundle as a single account.
+ * Unlike resolveBoundAccount, a >1-account pool with no pin is NOT ambiguous here — the whole point
+ * is to use them all, primary = pool order.
+ */
+export async function resolveAccountPool(ws?: string): Promise<ResolvedAccount[]> {
+  const pool = await loadAccountPool(ws).catch(() => ({ accounts: [] as never[] }));
+  const all: ResolvedAccount[] = pool.accounts.map((a) => ({
+    accountId: a.id,
+    credentialRef: a.credentialRef,
+    source: 'sole-pool-account' as const,
+  }));
+  if (all.length === 0) {
+    const localBundle = join(homedir(), '.claude', '.credentials.json');
+    return [{ accountId: 'local', credentialRef: `file:${localBundle}`, source: 'local-fallback' }];
+  }
+  const wanted = process.env.PAPERCUSP_ACCOUNT_ID?.trim();
+  if (wanted) {
+    const idx = all.findIndex((a) => a.id === wanted);
+    if (idx < 0) throw new Error(`inference-gateway: PAPERCUSP_ACCOUNT_ID='${wanted}' not in the account pool`);
+    const [primary] = all.splice(idx, 1);
+    return [{ ...primary, source: 'env' }, ...all];
+  }
+  return all;
+}
+
 /** The reverse lookup the pool-projection bridge uses to attribute a pause to an account id. */
 export function poolAccountIdForRef(
   pool: { accounts: { id: string; credentialRef: string }[] },

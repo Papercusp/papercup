@@ -81,6 +81,15 @@ export const FLAGS = {
   // passes during a budget-available window. Off = unchanged (bees use their symlinked
   // ~/.claude credential directly).
   INFERENCE_GATEWAY: "papercusp-inference-gateway",
+  // inference-gateway-multi-credential-routing-2026-06-14 (P-009): when ON, the
+  // inference gateway routes each request to one of N registered credentials by the
+  // `x-papercusp-account` header (billed-API multi-credential — rate-limit-pool
+  // isolation / cost attribution / failover), and the spawn chokepoint assigns a
+  // cache-affinity credential per bee. DEFAULT OFF — DELIBERATE (not the alpha
+  // default-on policy): it changes credential routing/egress and needs billed API
+  // keys registered + a real multi-key run before the flip (D-001). OFF = the
+  // single bound-credential gateway, byte-identical to today. Listed in KNOWN_DARK_FLAGS.
+  INFERENCE_GATEWAY_MULTI_ACCOUNT: "papercusp-inference-gateway-multi-account",
   // agent-liveness-heartbeat-hardening-2026-06-12 P-010 (owner decision D-006):
   // auto-reap WEDGED bees — alive + supervisor-heartbeating but stream-silent
   // past WEDGE_REAP_SILENT_MS (30min; bees stream thinking deltas + tool events,
@@ -521,6 +530,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the service is deployed would break the whole fleet's auth. Owner flips it ON after
   // deploy + the P-015 load test passes. Surfaced loudly in the plan's Now + completion report.
   [FLAGS.INFERENCE_GATEWAY]: false,
+  // OFF by default — DELIBERATE (inference-gateway-multi-credential-routing P-009):
+  // multi-credential routing changes egress/credential selection; the flip is gated
+  // on billed API keys registered + a real multi-key run (D-001). OFF = the single
+  // bound-credential gateway, byte-identical to today.
+  [FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT]: false,
   // ON by default — owner decision D-006 (2026-06-11): wedge auto-reap ships live.
   [FLAGS.WEDGE_AUTO_REAP]: true,
   // ON by default (alpha flags-default-on policy): the credential reconciler is

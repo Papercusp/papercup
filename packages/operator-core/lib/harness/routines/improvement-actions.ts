@@ -43,7 +43,12 @@ import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
 import { routeExhaustedImprovementToHuman } from '../improvements/resolve-core';
 import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
 import { runDecaySweep } from '../improvements/decay';
-import { runHygieneSweep } from '../improvements/hygiene';
+import {
+  runHygieneSweep,
+  runObservationRetention,
+  DEFAULT_OBSERVATION_WINDOW_DAYS,
+  DEFAULT_OBSERVATION_HARD_CAP,
+} from '../improvements/hygiene';
 import { runRecurrenceEscalation } from '../improvements/recurrence-escalation';
 import { buildDigest, type ScoredItem } from '../improvements/digest';
 import { triageIdea } from '../improvements/triage';
@@ -118,6 +123,27 @@ registerSystemAction('improvement-watchdog', async (ctx: SystemActionCtx) => {
     }
   } catch (e) {
     console.warn('[improvement-watchdog] decay sweep failed:', e instanceof Error ? e.message : e);
+  }
+
+  // Observation-lane retention rides the same cadence (turn-end-reflection-
+  // observations-2026-06-14 P-045): the observation lane SKIPS capture-time dedup
+  // (recurrence is the signal Scout clusters), so it grows unbounded once the fleet
+  // reflects at turn-end at volume. Prune the surplus — older than the rolling
+  // window AND beyond the hard cap — hard-deleting the disposable rows. ONLY the
+  // observation topic; never the improvement lane. Best-effort — a prune failure
+  // must never fail the capture tick (mirrors the decay sweep above).
+  try {
+    const windowDays = intFromEnv('PAPERCUSP_OBSERVATION_RETENTION_WINDOW_DAYS', DEFAULT_OBSERVATION_WINDOW_DAYS, { min: 1 });
+    const hardCap = intFromEnv('PAPERCUSP_OBSERVATION_RETENTION_HARD_CAP', DEFAULT_OBSERVATION_HARD_CAP, { min: 0 });
+    const retention = await runObservationRetention({ windowDays, hardCap });
+    if (retention.pruned > 0) {
+      console.log(
+        `[improvement-watchdog] observation retention: pruned ${retention.pruned} of ${retention.scanned} ` +
+          `(window ${windowDays}d, cap ${hardCap})`,
+      );
+    }
+  } catch (e) {
+    console.warn('[improvement-watchdog] observation retention failed:', e instanceof Error ? e.message : e);
   }
 });
 

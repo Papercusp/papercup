@@ -39,13 +39,37 @@ const ANTHROPIC_VERSION = '2023-06-01';
 const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
 
-export interface GatewayDeps {
-  /** A fresh bearer for the bound account (the credential resolver's `current`). */
+/** The account the gateway currently egresses through — its id + a fresh-token getter. */
+export interface ActiveAccount {
+  accountId: string;
   token(): Promise<string>;
+  invalidateToken?(): void;
+}
+
+/**
+ * A pool of accounts the gateway can fail over between (EI-535). `active()` is the account requests
+ * egress through right now; `onExhausted` fires when the active account hits its 5h unified budget
+ * (an upstream 429 with the unified window rejected) so the pool rotates to another account that
+ * still has budget — returning the new active, or null when none is left (the gateway then degrades
+ * to pausing until the reset, the pre-failover behavior).
+ */
+export interface AccountPool {
+  active(): ActiveAccount;
+  onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null;
+}
+
+export interface GatewayDeps {
+  /** Single-account fallback: a fresh bearer for the bound account (the resolver's `current`).
+   *  Superseded by `pool` when present. */
+  token?(): Promise<string>;
   /** Drop the cached token (called on an upstream 401). */
   invalidateToken?(): void;
-  /** Bound account id — scopes the governor bucket + pool attribution. */
-  accountId: string;
+  /** Single-account fallback: bound account id — scopes the governor bucket + pool attribution.
+   *  Superseded by `pool` when present. */
+  accountId?: string;
+  /** Multi-account failover pool (EI-535). When present, supersedes accountId/token/invalidateToken:
+   *  the gateway reads the active account per request + fails over on 5h exhaustion. */
+  pool?: AccountPool;
   /** Upstream base URL. Default `https://api.anthropic.com`; a fake in tests. */
   upstreamBase?: string;
   /** `fetch` impl (injected in tests). Default global fetch. */
@@ -73,6 +97,8 @@ export interface GatewayStats {
   admission: AdmissionSnapshot;
   upstream429: number;
   queued429: number;
+  /** Count of 5h-exhaustion failovers between pool accounts (EI-535). */
+  failovers: number;
   upstreamErrors: number;
   /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
   unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
@@ -134,12 +160,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   const log = deps.log ?? (() => {});
   const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs });
-  const rawGovernorFor = deps.governorFor ?? ((model: string) => governorForBackend('claude-code', model, undefined, deps.accountId));
-  // The QUEUE is the concurrency authority, so make the governor's own concurrency cap
-  // non-binding (raise it to the queue cap) and let the governor enforce only rate/pause/pace.
-  // Safe: the gateway runs in its own process with its own governor registry.
-  const governorFor = (model: string): RateLimitGovernor => {
-    const g = rawGovernorFor(model);
+
+  // A single-account deps set synthesizes a one-entry, no-failover pool; a real `pool` supersedes it.
+  const pool: AccountPool =
+    deps.pool ??
+    (() => {
+      const accountId = deps.accountId;
+      const token = deps.token;
+      if (!accountId || !token) throw new Error('inference-gateway: createInferenceGateway needs a `pool` or accountId+token');
+      const single: ActiveAccount = { accountId, token, invalidateToken: deps.invalidateToken };
+      return { active: () => single, onExhausted: () => null };
+    })();
+
+  // Governor is per (model, account). Reading the active account at call time means a failover
+  // transparently moves pacing onto the new account's fresh bucket. The QUEUE is the concurrency
+  // authority, so make the governor's own concurrency cap non-binding (raise it to the queue cap)
+  // and let the governor enforce only rate/pause/pace — safe in the gateway's own process.
+  const governorForAccount = (model: string, accountId: string): RateLimitGovernor => {
+    const g = deps.governorFor ? deps.governorFor(model) : governorForBackend('claude-code', model, undefined, accountId);
     if (g.state.limits.maxConcurrent < concurrency) g.state.limits.maxConcurrent = concurrency;
     return g;
   };
@@ -148,14 +186,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let upstream429 = 0;
   let queued429 = 0;
   let upstreamErrors = 0;
+  let failovers = 0;
 
   function stats(): GatewayStats {
-    // Reflect the opus bucket (the fleet's class) for the headline unified window.
-    const gov = governorFor('claude-opus-4');
+    // Reflect the active account's opus bucket (the fleet's class) for the headline unified window.
+    const active = pool.active();
+    const gov = governorForAccount('claude-opus-4', active.accountId);
     const snap = gov.snapshot();
     const admission = queue.snapshot();
     return {
-      accountId: deps.accountId,
+      accountId: active.accountId,
       upstreamBase,
       totalRequests,
       inFlight: admission.running,
@@ -163,6 +203,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       admission,
       upstream429,
       queued429,
+      failovers,
       upstreamErrors,
       unified: snap.unified,
       pausedUntil: snap.pausedUntil,
@@ -187,25 +228,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
         /* non-JSON body (e.g. a count_tokens variant) — keep defaults */
       }
     }
-    const gov = governorFor(model);
+    const active = pool.active();
+    const gov = governorForAccount(model, active.accountId);
 
     totalRequests++;
     const release = await gov.acquire(est, { maxWaitMs: maxQueueWaitMs });
     if (!release) {
       queued429++;
       const retryAfterSec = Math.max(1, Math.ceil((gov.state.pausedUntil - Date.now()) / 1000));
-      log('warn', `admission timed out for ${model}; 429 retry-after ${retryAfterSec}s (account ${deps.accountId})`);
+      log('warn', `admission timed out for ${model}; 429 retry-after ${retryAfterSec}s (account ${active.accountId})`);
       sendJson(
         res,
         429,
-        { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: account '${deps.accountId}' paced/paused; retry after ${retryAfterSec}s` }, gateway: true },
+        { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: account '${active.accountId}' paced/paused; retry after ${retryAfterSec}s` }, gateway: true },
         { 'retry-after': String(retryAfterSec) },
       );
       return;
     }
 
     try {
-      const token = await deps.token();
+      const token = await active.token();
       const headers: Record<string, string> = {};
       for (const [k, v] of Object.entries(req.headers)) {
         if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
@@ -233,9 +275,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
       deps.onResponse?.(hobj, up.status, model);
       if (up.status === 429 || up.status === 529) {
         upstream429++;
-        gov.penalize(parseRateReset(hobj));
+        const reset = parseRateReset(hobj);
+        gov.penalize(reset);
+        // 5h-budget exhaustion (the unified window rejected, not a transient pace) → fail over to
+        // another account that still has budget, so the whole fleet doesn't stall until the reset.
+        if (gov.snapshot().unified?.rejected) {
+          const next = pool.onExhausted(active.accountId, reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000);
+          if (next && next.accountId !== active.accountId) failovers++;
+        }
       } else if (up.status === 401) {
-        deps.invalidateToken?.();
+        active.invalidateToken?.();
       }
 
       const outHeaders: Record<string, string> = {};
@@ -295,7 +344,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         server.listen(port, '127.0.0.1', () => {
           const addr = server.address();
           const p = typeof addr === 'object' && addr ? addr.port : port;
-          log('info', `inference-gateway listening on 127.0.0.1:${p} → ${upstreamBase} (account ${deps.accountId})`);
+          log('info', `inference-gateway listening on 127.0.0.1:${p} → ${upstreamBase} (account ${pool.active().accountId})`);
           resolve(p);
         });
       });

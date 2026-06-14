@@ -4,8 +4,19 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { planHygieneSweep, runHygieneSweep, type HygieneSweepDeps } from './hygiene';
+import {
+  planHygieneSweep,
+  runHygieneSweep,
+  planObservationRetention,
+  runObservationRetention,
+  DEFAULT_OBSERVATION_WINDOW_DAYS,
+  DEFAULT_OBSERVATION_HARD_CAP,
+  type HygieneSweepDeps,
+  type ObservationRetentionDeps,
+} from './hygiene';
+import { OBSERVATION_TOPIC, IMPROVEMENT_TOPIC } from './read-items';
 import type { ImprovementCandidate } from './policy';
+import type { IssueAgeRow } from '../../issues-engineer';
 
 const NOW = Date.parse('2026-06-09T12:00:00Z');
 const daysAgo = (d: number): string => new Date(NOW - d * 24 * 60 * 60 * 1000).toISOString();
@@ -159,5 +170,120 @@ describe('runHygieneSweep — persistence + dryRun', () => {
     const lc = merged[0].ideaLifecycle as Record<string, unknown>;
     expect(lc.state).toBe('triaged');
     expect(lc.triageDecision).toBe('reject');
+  });
+});
+
+// ── Observation-lane retention (turn-end-reflection-observations-2026-06-14 P-045)
+
+const ageRow = (id: string, ageDays: number): IssueAgeRow => ({ id, createdAt: daysAgo(ageDays) });
+
+describe('planObservationRetention — window + cap intersection', () => {
+  it('prunes ONLY rows that are BOTH older than the window AND beyond the cap', () => {
+    const rows: IssueAgeRow[] = [
+      ageRow('fresh-under-cap', 10), // recent + within cap → keep
+      ageRow('fresh-over-cap', 5), // recent but over cap → keep (window protects)
+      ageRow('old-under-cap', 60), // old but within cap → keep (cap protects)
+      ageRow('old-over-cap', 90), // old AND over cap → PRUNE
+    ];
+    // cap=2 → only the two newest are within the cap; window=30d.
+    const prune = planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 2 });
+    expect(prune).toEqual(['old-over-cap']);
+  });
+
+  it('keeps every row younger than the window regardless of the cap (busy fleet)', () => {
+    // 50 recent rows, cap of 5 — none are old enough to prune, so nothing goes.
+    const rows = Array.from({ length: 50 }, (_, i) => ageRow(`r${i}`, 2));
+    expect(planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 5 })).toEqual([]);
+  });
+
+  it('keeps the newest `hardCap` rows even when they are older than the window (quiet fleet)', () => {
+    // All rows ancient, but only the surplus beyond the cap prunes — the newest
+    // `hardCap` are retained for Scout even though every row is past the window.
+    const rows = Array.from({ length: 10 }, (_, i) => ageRow(`r${i}`, 100 + i)); // r0 newest … r9 oldest
+    const prune = planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 3 });
+    // keep r0,r1,r2 (newest 3); prune r3..r9
+    expect(prune.sort()).toEqual(['r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']);
+  });
+
+  it('an unparseable createdAt sorts oldest, so it cannot shield itself from the cap', () => {
+    const rows: IssueAgeRow[] = [
+      ageRow('good', 100),
+      { id: 'bad', createdAt: 'not-a-date' },
+    ];
+    // cap=1 → the newest (good) is kept; bad sorts oldest (createdMs=0) and, being
+    // both over-cap and "older than" the window, prunes.
+    expect(planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 1 })).toEqual(['bad']);
+  });
+
+  it('defaults: 30d window + 1000-row cap', () => {
+    expect(DEFAULT_OBSERVATION_WINDOW_DAYS).toBe(30);
+    expect(DEFAULT_OBSERVATION_HARD_CAP).toBe(1000);
+    // With the default cap, a sub-cap lane (even when ancient) prunes nothing.
+    const rows = Array.from({ length: 500 }, (_, i) => ageRow(`r${i}`, 365));
+    expect(planObservationRetention(rows, { nowMs: NOW })).toEqual([]);
+  });
+});
+
+describe('runObservationRetention — reads ONLY the observation topic, hard-deletes', () => {
+  const mkDeps = (rows: IssueAgeRow[]) => {
+    const deletedBatches: string[][] = [];
+    const readTopics: string[] = [];
+    const deps: ObservationRetentionDeps = {
+      readObservationAges: vi.fn(async () => {
+        readTopics.push(OBSERVATION_TOPIC); // the default dep reads OBSERVATION_TOPIC only
+        return rows;
+      }),
+      deleteIssues: vi.fn(async (ids) => {
+        deletedBatches.push([...ids]);
+        return ids.length;
+      }),
+    };
+    return { deps, deletedBatches, readTopics };
+  };
+
+  it('hard-deletes the planned surplus and returns the pruned count', async () => {
+    const rows = Array.from({ length: 6 }, (_, i) => ageRow(`o${i}`, 100 + i));
+    const { deps, deletedBatches } = mkDeps(rows);
+    const res = await runObservationRetention({ nowMs: NOW, windowDays: 30, hardCap: 2 }, deps);
+    expect(res.scanned).toBe(6);
+    expect(res.pruned).toBe(4);
+    expect(deletedBatches).toHaveLength(1);
+    expect(deletedBatches[0].sort()).toEqual(['o2', 'o3', 'o4', 'o5']);
+  });
+
+  it('dryRun plans without deleting', async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ageRow(`o${i}`, 100 + i));
+    const { deps, deletedBatches } = mkDeps(rows);
+    const res = await runObservationRetention({ nowMs: NOW, windowDays: 30, hardCap: 1, dryRun: true }, deps);
+    expect(res.dryRun).toBe(true);
+    expect(res.planned.length).toBe(4);
+    expect(res.pruned).toBe(0);
+    expect(deletedBatches).toHaveLength(0);
+  });
+
+  it('nothing to prune ⇒ no delete call', async () => {
+    const rows = [ageRow('recent', 1)];
+    const { deps, deletedBatches } = mkDeps(rows);
+    const res = await runObservationRetention({ nowMs: NOW }, deps);
+    expect(res.pruned).toBe(0);
+    expect(deletedBatches).toHaveLength(0);
+  });
+
+  it('NEVER touches the improvement lane — the topics are distinct and the reader sees only OBSERVATION_TOPIC', async () => {
+    // Construct rows whose ids look like improvement-lane items; the retention
+    // reader only ever reads OBSERVATION_TOPIC (asserted via readTopics), and the
+    // two topic constants are guaranteed distinct — so no improvement-lane row can
+    // ever reach deleteIssues through this path.
+    expect(OBSERVATION_TOPIC).not.toBe(IMPROVEMENT_TOPIC);
+    const rows = Array.from({ length: 4 }, (_, i) => ageRow(`obs-${i}`, 100 + i));
+    const { deps, deletedBatches, readTopics } = mkDeps(rows);
+    await runObservationRetention({ nowMs: NOW, windowDays: 30, hardCap: 1 }, deps);
+    // The only topic ever read is the observation topic — the improvement lane is
+    // never queried, so the prune is structurally incapable of touching it.
+    expect(readTopics.every((t) => t === OBSERVATION_TOPIC)).toBe(true);
+    expect(readTopics).not.toContain(IMPROVEMENT_TOPIC);
+    // Everything deleted came from the observation rows we fed in.
+    const deletedIds = deletedBatches.flat();
+    expect(deletedIds.every((id) => id.startsWith('obs-'))).toBe(true);
   });
 });

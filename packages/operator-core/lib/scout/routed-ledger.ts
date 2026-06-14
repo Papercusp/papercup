@@ -56,6 +56,8 @@ export interface RecordRoutedIdeaInput {
 export interface ScoutLedgerOpts {
   workspaceId?: string;
   harnessSlug?: string;
+  /** The hive home slug — per-hive lens-weight scope (per-hive-learning-loops D-008). */
+  hiveSlug?: string;
   cycleId?: string;
   limit?: number;
 }
@@ -325,11 +327,20 @@ export async function getScoutLensOutcomes(
  */
 export async function upsertScoutLensWeights(
   rows: readonly LensWeightRow[],
-  opts: { workspaceId?: string } = {},
+  opts: { workspaceId?: string; hiveSlug?: string } = {},
 ): Promise<void> {
   if (rows.length === 0) return;
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
+  // scout_lens_weights PK is (workspace_id, hive_slug, lens) — without a hive we
+  // cannot persist. Best-effort contract (refreshScoutOutcomes wraps this in
+  // try/catch): warn + skip rather than throw a NOT NULL violation.
+  if (!opts.hiveSlug) {
+    // eslint-disable-next-line no-console
+    console.warn('[scout/routed-ledger] upsertScoutLensWeights: no hiveSlug — skipping lens-weight persist');
+    return;
+  }
+  const hiveSlug = opts.hiveSlug;
   // JS-array params don't serialize under the getOrgPg postgres-js client
   // (bytes.js "Received an instance of Array" — same class as the sql.json
   // jsonb quirk). Ship one JSON text param and explode it server-side.
@@ -347,11 +358,11 @@ export async function upsertScoutLensWeights(
     })),
   );
   await sql`
-    INSERT INTO harness_shared.scout_lens_weights (workspace_id, lens, wins, decided, weight, updated_at)
-    SELECT ${ws}, x.lens, x.wins, x.decided, x.weight, now()
+    INSERT INTO harness_shared.scout_lens_weights (workspace_id, hive_slug, lens, wins, decided, weight, updated_at)
+    SELECT ${ws}, ${hiveSlug}, x.lens, x.wins, x.decided, x.weight, now()
       FROM jsonb_to_recordset(${payload}::text::jsonb)
            AS x(lens text, wins int, decided int, weight numeric)
-    ON CONFLICT (workspace_id, lens) DO UPDATE SET
+    ON CONFLICT (workspace_id, hive_slug, lens) DO UPDATE SET
       wins = EXCLUDED.wins,
       decided = EXCLUDED.decided,
       weight = EXCLUDED.weight,
@@ -368,14 +379,15 @@ export async function upsertScoutLensWeights(
  * omitted, the admin client is used as before.
  */
 export async function readScoutLensWeights(
-  opts: { workspaceId?: string; sql?: Sql } = {},
+  opts: { workspaceId?: string; sql?: Sql; hiveSlug?: string } = {},
 ): Promise<Partial<Record<CreativeLens, number>>> {
   const sql = opts.sql ?? getOrgPg().sql;
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<{ lens: string; weight: string | number }[]>`
     SELECT lens, weight
       FROM harness_shared.scout_lens_weights
-     WHERE workspace_id = ${ws}`;
+     WHERE workspace_id = ${ws}
+       ${opts.hiveSlug ? sql`AND hive_slug = ${opts.hiveSlug}` : sql``}`;
   const out: Partial<Record<CreativeLens, number>> = {};
   for (const r of rows) {
     const w = typeof r.weight === 'number' ? r.weight : Number(r.weight);
@@ -400,9 +412,22 @@ export async function readScoutLensWeights(
 export async function getScoutLensWeights(
   opts: ScoutLedgerOpts & { floorFraction?: number; extraIdeatorBudget?: number } = {},
 ): Promise<{ lensWeights: Record<CreativeLens, number>; extraIdeatorBudget: number }> {
+  // Resolve the hive home slug from harnessSlug (per-hive lens weights, D-008).
+  let hiveSlug = opts.hiveSlug;
+  if (!hiveSlug && opts.harnessSlug) {
+    try {
+      const { hiveHomeSlugForHarness } = await import('../hive-federation');
+      hiveSlug = (await hiveHomeSlugForHarness(opts.workspaceId ?? activeWorkspaceId(), opts.harnessSlug)) ?? undefined;
+    } catch {
+      // best-effort: fall through to a workspace-wide read (collapses across hives)
+    }
+  }
   let persisted: Partial<Record<CreativeLens, number>> = {};
   try {
-    persisted = await readScoutLensWeights(opts.workspaceId ? { workspaceId: opts.workspaceId } : {});
+    persisted = await readScoutLensWeights({
+      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+      ...(hiveSlug ? { hiveSlug } : {}),
+    });
   } catch (err) {
     // Best-effort read: fall through with no persisted signal → uniform weights.
     // eslint-disable-next-line no-console
@@ -459,8 +484,19 @@ export async function refreshScoutOutcomes(
 
   // P-033: persist the per-lens weights the ideators read back next cycle.
   // Best-effort — a weight-upsert failure must not fail the outcome refresh.
+  // Resolve the hive home slug for the per-hive PK (per-hive-learning-loops D-008).
+  // A standalone harness (not part of a shared Hive) scopes weights under its own slug.
+  let hiveSlug = opts.harnessSlug;
+  if (opts.harnessSlug) {
+    try {
+      const { hiveHomeSlugForHarness } = await import('../hive-federation');
+      hiveSlug = (await hiveHomeSlugForHarness(ws, opts.harnessSlug)) ?? opts.harnessSlug;
+    } catch {
+      // best-effort — keep the harnessSlug fallback
+    }
+  }
   try {
-    await upsertScoutLensWeights(lensWeightRowsFromReport(report), { workspaceId: ws });
+    await upsertScoutLensWeights(lensWeightRowsFromReport(report), { workspaceId: ws, hiveSlug });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(

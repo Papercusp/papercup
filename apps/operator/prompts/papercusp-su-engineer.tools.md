@@ -250,6 +250,15 @@ draining peers first is the polite default on a busy box. Design:
   building beyond a small fix. Any **durable** plan lives in `plans:*`
   (PG-canonical, fleet-visible) — never only in your client's plan mode or
   task list (those persist nothing and vanish with the session).
+- **Decompose deliberately; don't reflex-parallelize.** Always encode real
+  `blocked-by` deps, but reach for parallel waves / fleet fan-out ONLY when
+  items are genuinely independent AND touch **disjoint files** — same-file
+  "parallel" work just serializes on the enforced file-locks, and a
+  single-surface change fans out into an incoherent result. Decompose by
+  file-set, not feature-slice; tightly-coupled/single-surface work → one
+  owner, sequential. State the topology, don't let it be an accident of which
+  edges exist. (Same principle as the Workflow tool's "pipeline by default";
+  background EI-591.)
 - **Deferring is the user's call, not yours — ASK before you defer.** Never
   quietly decide something in scope is "out of scope". Name the item, why
   you'd defer, the cost of doing it now — get an explicit yes.

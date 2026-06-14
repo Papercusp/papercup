@@ -417,6 +417,83 @@ export async function setIssueState(id: string, state: IssueState, by?: string):
 }
 
 /**
+ * HARD-delete issues by id, with the coupled coordination edges (tags/links,
+ * thread + posts, subscriptions) so no orphaned coord_* rows are left to grow.
+ * No FK references engineer_issues (migration 131), and the coord_* tables key
+ * the issue only by its string ObjectRef (`issue:<id>`), so a plain row delete is
+ * clean — this helper just sweeps those by-ref edges in the same pass.
+ *
+ * This is a TRUE deletion, NOT the lifecycle close (`setIssueState(...'closed')`)
+ * — it is for DISPOSABLE rows whose recall value has expired (the observation-lane
+ * retention sweep, turn-end-reflection-observations-2026-06-14 P-045). Do NOT use
+ * it on improvement-lane items: those close through the reject route so the
+ * recurrence matcher can recall "already decided" on a re-capture.
+ *
+ * Returns the count of engineer_issues rows actually removed. No fan-out — a
+ * deleted disposable signal has no subscribers to notify.
+ */
+export async function deleteIssues(ids: readonly string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const { sql } = getOrgPg();
+  const idList = ids as string[];
+  const refs = idList.map((id) => `${ISSUE_KIND}:${id}`);
+  // Sweep the coordination edges first (they reference the issue only by string
+  // ref, so the order is cosmetic — but deleting edges before the row keeps a
+  // reader from seeing a dangling row mid-sweep). thread_ids are deterministic
+  // (`issue-thread-<id>`), so posts + threads delete by id without a join.
+  const threadIds = idList.map((id) => threadId(id));
+  await sql`
+    DELETE FROM harness_shared.coord_links
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND ((src_kind = ${ISSUE_KIND} AND src_ref = ANY(${idList}))
+         OR (dst_kind = ${ISSUE_KIND} AND dst_ref = ANY(${idList})))`;
+  await sql`
+    DELETE FROM harness_shared.coord_thread_posts
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND thread_id = ANY(${threadIds})`;
+  await sql`
+    DELETE FROM harness_shared.coord_threads
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND thread_id = ANY(${threadIds})`;
+  await sql`
+    DELETE FROM harness_shared.coord_entity_subscriptions
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND target_kind = 'object' AND target_ref = ANY(${refs})`;
+  const deleted = await sql`
+    DELETE FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ANY(${idList})`;
+  return deleted.count ?? 0;
+}
+
+/** A row's id + age — the minimal shape a retention/cap sweep needs (no body). */
+export interface IssueAgeRow {
+  id: string;
+  createdAt: string;
+}
+
+/**
+ * List EVERY issue tagged `topic` (all states + all origins), newest-first, as a
+ * minimal id+createdAt projection — UNCAPPED, unlike `listIssues` (which clamps to
+ * 500 for the interactive surfaces). A retention/row-cap sweep must see the whole
+ * lane to decide what is beyond a hard cap, so it reads here, not through
+ * `listIssues`. Loads no body/payload — id + created_at only, joined to the topic
+ * tag edge (coord_links, rel='tagged'). (P-045.)
+ */
+export async function listIssueAgesByTopic(topic: string): Promise<IssueAgeRow[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ issue_id: string; created_at: unknown }[]>`
+    SELECT ei.issue_id, ei.created_at
+      FROM harness_shared.engineer_issues ei
+      JOIN harness_shared.coord_links cl
+        ON cl.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND cl.rel = 'tagged'
+       AND cl.src_kind = ${ISSUE_KIND}
+       AND cl.src_ref = ei.issue_id
+       AND cl.dst_kind = 'topic'
+       AND cl.dst_ref = ${topic}
+     WHERE ei.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     ORDER BY ei.created_at DESC`;
+  return rows.map((r) => ({ id: r.issue_id, createdAt: tsIso(r.created_at) }));
+}
+
+/**
  * Shallow-merge keys into the issue's kind-specific `payload` jsonb (NULL payload
  * treated as `{}`). Silent — no fan-out (payload is loop bookkeeping, e.g. the
  * self-improvement `implementAttempts` / `needsHuman` / `paths` keys, not a

@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781478357367-d0397d9a",
+  "feature_id": "F-FIX-023",
+  "field": "__created",
+  "id": 936,
+  "new_value": "{\"id\":\"F-FIX-023\",\"title\":\"Test failing repeatedly: packages/operator-core/lib/sync-resolver/index.test.ts\",\"sourceIssueId\":\"EI-559\"}",
+  "old_value": "null",
+  "ts": 1781478877025
+}

@@ -52,12 +52,15 @@ function expandHome(p: string): string {
   return p.startsWith('~') ? p.replace(/^~/, process.env.HOME ?? '~') : p;
 }
 
-/** Parse a credentialRef into its channel + filesystem path (mirrors `resolveCredential`). */
-export function parseCredentialRef(ref: string): { kind: 'token' | 'file'; path: string } {
+/** Parse a credentialRef into its channel + path (mirrors `resolveCredential`).
+ *  `key:` is the billed-API key channel (static `x-api-key`; no OAuth refresh/beta):
+ *  `key:env:NAME` reads `process.env.NAME`, `key:<path>` reads the key from a file. */
+export function parseCredentialRef(ref: string): { kind: 'token' | 'file' | 'key'; path: string } {
   if (ref.startsWith('token:')) return { kind: 'token', path: expandHome(ref.slice(6)) };
   if (ref.startsWith('file:')) return { kind: 'file', path: expandHome(ref.slice(5)) };
+  if (ref.startsWith('key:')) return { kind: 'key', path: expandHome(ref.slice(4)) };
   if (ref.startsWith('/') || ref.startsWith('~')) return { kind: 'file', path: expandHome(ref) };
-  throw new Error(`inference-gateway: unsupported credentialRef '${ref}' (expected token:/file:/path)`);
+  throw new Error(`inference-gateway: unsupported credentialRef '${ref}' (expected token:/file:/key:/path)`);
 }
 
 /**
@@ -99,8 +102,9 @@ export interface CredentialResolver {
   current(): Promise<string>;
   /** Force the next `current()` to re-read/refresh (call after an upstream 401). */
   invalidate(): void;
-  /** The credential channel — `token` never refreshes, `file` does. */
-  readonly kind: 'token' | 'file';
+  /** The credential channel — `token`/`key` never refresh, `file` does.
+   *  `key` is a billed-API key: the gateway sends it as `x-api-key` with NO OAuth beta. */
+  readonly kind: 'token' | 'file' | 'key';
 }
 
 /**
@@ -129,6 +133,22 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
         if (cachedToken) return cachedToken;
         cachedToken = (await fs.readFile(path, 'utf8')).trim();
         if (!cachedToken) throw new Error(`inference-gateway: empty setup-token at ${path}`);
+        return cachedToken;
+      }
+      if (kind === 'key') {
+        // Billed-API key — no expiry, no refresh. `key:env:NAME` reads the env var
+        // (handy for CI / secrets-manager injection); else read the key from a file.
+        if (cachedToken) return cachedToken;
+        let raw: string | undefined;
+        if (path.startsWith('env:')) {
+          const name = path.slice(4);
+          raw = process.env[name]?.trim();
+          if (!raw) throw new Error(`inference-gateway: env var '${name}' for key: credential is empty/unset`);
+        } else {
+          raw = (await fs.readFile(path, 'utf8')).trim();
+          if (!raw) throw new Error(`inference-gateway: empty API key at ${path}`);
+        }
+        cachedToken = raw;
         return cachedToken;
       }
       // file: bundle — serve the cache until near expiry, else refresh-on-read via getOAuthToken.

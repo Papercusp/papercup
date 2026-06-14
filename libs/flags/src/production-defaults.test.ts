@@ -50,6 +50,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // every bee's inference auth through a gateway service that must be
   // deployed first; flipping early would break the whole fleet's auth.
   FLAGS.INFERENCE_GATEWAY,
+  // inference-gateway-multi-credential-routing-2026-06-14 P-009: DELIBERATE dark
+  // ship — multi-credential per-request routing changes egress/credential
+  // selection. The flip is gated on billed API keys registered in the account
+  // pool + a real multi-key run (D-001). OFF = the single bound-credential
+  // gateway, byte-identical to today. Pending flip surfaced in the plan's ## Now.
+  FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT,
   // auth-tier rollout (OWNER rows): SECURITY gate, not unfinished work —
   // /auth/signup is internet-reachable via the cloudflared tunnel; open
   // signup on a single-owner box mints real accounts. The zero-users

@@ -10,8 +10,9 @@
  *
  * Deps are injectable so the composition is hermetically testable without PG / `~/.claude`.
  */
-import { resolveBoundAccount, type ResolvedAccount } from './account-resolver';
+import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { makeCredentialResolver, type CredentialResolver } from './credential-store';
+import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type InferenceGateway } from './gateway';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
@@ -26,7 +27,11 @@ export interface GatewayServiceOptions {
   refreshIntervalMs?: number;
   log?: (level: 'info' | 'warn' | 'error', msg: string) => void;
   // ── injectable for tests ──
+  /** Resolve a SINGLE bound account (back-compat). When set, takes precedence over resolveAccounts
+   *  and yields a one-account, no-failover pool. */
   resolveAccount?: (ws?: string) => Promise<ResolvedAccount>;
+  /** Resolve the full failover pool (EI-535). Default: resolveAccountPool. */
+  resolveAccounts?: (ws?: string) => Promise<ResolvedAccount[]>;
   makeResolver?: (credentialRef: string, accountId: string) => CredentialResolver;
   /** Subscribe the account-pool projection feed; returns an unsubscribe. Default: initAccountScaleObserver (record-only). */
   observePool?: (accountId: string, ws: string | undefined, log: GatewayServiceOptions['log']) => () => void;
@@ -60,19 +65,35 @@ function defaultObservePool(_accountId: string, ws: string | undefined, log: Gat
 
 export async function startGatewayService(opts: GatewayServiceOptions = {}): Promise<RunningGatewayService> {
   const log = opts.log ?? ((lvl, m) => console.log(`[inference-gateway:${lvl}] ${m}`));
-  const resolveAccount = opts.resolveAccount ?? resolveBoundAccount;
   const makeResolver = opts.makeResolver ?? makeCredentialResolver;
   const observePool = opts.observePool ?? defaultObservePool;
 
-  const account = await resolveAccount(opts.workspace);
-  log('info', `bound account '${account.accountId}' via ${account.source} (channel ${account.credentialRef.split(':')[0]})`);
-  const resolver = makeResolver(account.credentialRef, account.accountId);
-  const unobserve = observePool(account.accountId, opts.workspace, log);
+  // Resolve the account pool. A legacy single `resolveAccount` injection → a one-account pool
+  // (back-compat, no failover); otherwise the full pool (EI-535 failover across all accounts).
+  const accounts: ResolvedAccount[] = opts.resolveAccount
+    ? [await opts.resolveAccount(opts.workspace)]
+    : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace);
+  if (accounts.length === 0) throw new Error('inference-gateway: no account resolved');
+
+  const resolvers = accounts.map((a) => ({ account: a, resolver: makeResolver(a.credentialRef, a.accountId) }));
+  const primary = accounts[0];
+  log(
+    'info',
+    `account pool [${accounts.map((a) => a.accountId).join(', ')}]; primary '${primary.accountId}' via ${primary.source} (channel ${primary.credentialRef.split(':')[0]})`,
+  );
+
+  const pool = createFailoverPool(
+    resolvers.map(({ account, resolver }) => ({
+      accountId: account.accountId,
+      token: () => resolver.current(),
+      invalidateToken: () => resolver.invalidate(),
+    })),
+    { log },
+  );
+  const unobserve = observePool(primary.accountId, opts.workspace, log);
 
   const gateway = createInferenceGateway({
-    accountId: account.accountId,
-    token: () => resolver.current(),
-    invalidateToken: () => resolver.invalidate(),
+    pool,
     upstreamBase: opts.upstreamBase,
     concurrency: opts.concurrency,
     fetchImpl: opts.fetchImpl,
@@ -81,15 +102,19 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
 
   const port = await gateway.listen(opts.port ?? DEFAULT_GATEWAY_PORT);
 
-  // Own token refresh: warm it now (fail fast on a bad credential) + a proactive timer so an idle
-  // gateway never serves the first post-idle request with an expired token.
-  await resolver.current().catch((e) => log('warn', `initial token resolve failed: ${(e as Error).message}`));
+  // Warm the primary's token now (fail fast on a bad primary credential) + a proactive refresh timer
+  // for every file-kind resolver, so an idle gateway never serves the first post-idle request — on
+  // ANY pool account (failover targets stay hot) — with an expired token.
+  await resolvers[0].resolver.current().catch((e) => log('warn', `initial token resolve failed: ${(e as Error).message}`));
   const refreshMs = opts.refreshIntervalMs ?? 45 * 60 * 1000;
   let timer: ReturnType<typeof setInterval> | undefined;
-  if (refreshMs > 0 && resolver.kind === 'file') {
+  const fileResolvers = resolvers.filter(({ resolver }) => resolver.kind === 'file');
+  if (refreshMs > 0 && fileResolvers.length > 0) {
     timer = setInterval(() => {
-      resolver.invalidate();
-      void resolver.current().catch((e) => log('warn', `proactive refresh failed: ${(e as Error).message}`));
+      for (const { resolver } of fileResolvers) {
+        resolver.invalidate();
+        void resolver.current().catch((e) => log('warn', `proactive refresh failed: ${(e as Error).message}`));
+      }
     }, refreshMs);
     timer.unref?.();
   }
@@ -97,7 +122,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   return {
     gateway,
     port,
-    account,
+    account: primary,
     async stop() {
       if (timer) clearInterval(timer);
       unobserve();

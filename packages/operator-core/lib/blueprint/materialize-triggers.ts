@@ -71,6 +71,12 @@ export interface BlueprintTriggerInput {
  */
 export const SINGLETON_TRIGGER_HOST_SLUG = '@singleton';
 
+// per-hive-learning-loops P-014 / D-008: `@singleton` is ONLY for workspace-global
+// loops (the Class-C frontier/measurement loops). A PER-HIVE learning loop (gym/scout —
+// Class B) is owned by its Hive and materializes under that Hive's REAL install_slug,
+// never `@singleton`. No routines-schema change is needed: the existing
+// (install_slug, name) key already namespaces a per-hive loop by the hive's own slug.
+
 export interface TriggerRoutineSpec {
   /** Stable routine name = the upsert key (with the resolved host slug). Per-install:
    *  `bp-schedule-<i>`. Singleton: `bp-singleton-<blueprintId>-<i>` (blueprint-unique under

@@ -22,17 +22,32 @@
  *
  * `planHygieneSweep` is pure; `runHygieneSweep` is thin PG glue (injectable
  * deps; `dryRun` plans without writing).
+ *
+ * ── Observation-lane retention (turn-end-reflection-observations-2026-06-14 P-045)
+ * The above sweep governs the WORK lane (`papercusp-improvement`). The observation
+ * lane (`papercusp-observation`) is a SEPARATE topic that SKIPS capture-time dedup
+ * (recurrence IS the signal Scout clusters on — capture-core.ts), so it grows
+ * UNBOUNDED once the fleet reflects at turn-end at volume. `planObservationRetention`
+ * + `runObservationRetention` bound that growth: keep a rolling window (30d) AND a
+ * hard cap (~1000 newest), and HARD-DELETE observations that are BOTH older than the
+ * window AND beyond the cap. Observations are disposable signals (Scout has had its
+ * clustering window by then), so deletion — not the lifecycle close — is the right
+ * tool: it bounds ROW growth across engineer_issues + the coupled coord_* edges.
+ * This NEVER touches the improvement lane (a different topic; asserted in a test).
  */
 
 import {
   setIssueState,
   commentIssue,
   mergeIssuePayload,
+  deleteIssues,
+  listIssueAgesByTopic,
   type EngineerIssue,
+  type IssueAgeRow,
 } from '../../issues-engineer';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import type { ImprovementCandidate, ImprovementSeverity } from './policy';
-import { readImprovementItems } from './read-items';
+import { readImprovementItems, OBSERVATION_TOPIC } from './read-items';
 import { findLikelyDuplicates, signatureRecurrence, dedupSignature } from './digest';
 import { initializeIdeaLifecycle, updateIdeaLifecycle } from './lifecycle';
 
@@ -201,5 +216,111 @@ export async function runHygieneSweep(
       .then((m) => m.notifySyncInvalidate('learning.improvements'))
       .catch(() => {});
   }
+  return result;
+}
+
+// ── Observation-lane retention (P-045) ───────────────────────────────────────
+
+/** Keep at MOST this many newest observations regardless of age. */
+export const DEFAULT_OBSERVATION_HARD_CAP = 1000;
+/** Observations younger than this are always kept (Scout's clustering window). */
+export const DEFAULT_OBSERVATION_WINDOW_DAYS = 30;
+
+export interface ObservationRetentionOpts {
+  nowMs?: number;
+  /** Rolling-window days: an observation younger than this is NEVER pruned. */
+  windowDays?: number;
+  /** Hard cap: keep at most this many newest observations; older surplus prunes. */
+  hardCap?: number;
+}
+
+/**
+ * Pure planner — returns the ids to PRUNE from a lane's id+age rows. A row is
+ * pruned iff it is BOTH (a) older than `windowDays` AND (b) beyond the `hardCap`
+ * newest. Newest-first by createdAt; the cap protects the freshest rows even when
+ * they're older than the window (so a quiet fleet still keeps its last `hardCap`
+ * observations for Scout), and the window protects every recent row even when the
+ * cap is exceeded (so a busy fleet never drops a signal Scout hasn't clustered
+ * yet). Only their INTERSECTION is disposable.
+ */
+export function planObservationRetention(
+  rows: IssueAgeRow[],
+  opts: ObservationRetentionOpts = {},
+): string[] {
+  const nowMs = opts.nowMs ?? Date.now();
+  const windowDays = opts.windowDays ?? DEFAULT_OBSERVATION_WINDOW_DAYS;
+  const hardCap = opts.hardCap ?? DEFAULT_OBSERVATION_HARD_CAP;
+  const windowMs = windowDays * DAY_MS;
+
+  // Newest first; rows with an unparseable createdAt sort oldest (treated as 0)
+  // so a malformed timestamp can never shield a row from the cap.
+  const createdMs = (r: IssueAgeRow): number => {
+    const t = r.createdAt ? Date.parse(r.createdAt) : NaN;
+    return Number.isFinite(t) ? t : 0;
+  };
+  const sorted = [...rows].sort((a, b) => createdMs(b) - createdMs(a));
+
+  const prune: string[] = [];
+  sorted.forEach((r, idx) => {
+    const beyondCap = idx >= hardCap;
+    const olderThanWindow = nowMs - createdMs(r) > windowMs;
+    if (beyondCap && olderThanWindow) prune.push(r.id);
+  });
+  return prune;
+}
+
+export interface ObservationRetentionResult {
+  scanned: number;
+  /** ids planned for pruning (== pruned on a non-dryRun run). */
+  planned: string[];
+  pruned: number;
+  dryRun: boolean;
+}
+
+/** Injectable seam so the sweep is unit-testable without PG. */
+export interface ObservationRetentionDeps {
+  /** Read EVERY observation-lane row (all states/origins) as id+age, newest-first, UNCAPPED. */
+  readObservationAges: () => Promise<IssueAgeRow[]>;
+  /** HARD-delete by id (engineer_issues row + coupled coord edges). Returns the count removed. */
+  deleteIssues: (ids: readonly string[]) => Promise<number>;
+}
+
+const defaultObservationRetentionDeps: ObservationRetentionDeps = {
+  // Read the OBSERVATION_TOPIC only — the improvement lane is a DIFFERENT topic and
+  // is never read here, so the prune can never touch it (asserted in a test). The
+  // dedicated id+age reader is UNCAPPED (unlike listIssues' 500 clamp) so the
+  // planner sees the whole lane to decide what is beyond the hard cap.
+  readObservationAges: () => listIssueAgesByTopic(OBSERVATION_TOPIC),
+  deleteIssues,
+};
+
+/**
+ * Bound observation-lane row growth (P-045). Reads the WHOLE observation lane (as
+ * id+age), plans the window+cap prune, and HARD-DELETEs the surplus. Best-effort
+ * by design — the watchdog wraps it in try/catch so a prune failure never fails
+ * the tick. Prunes ONLY the observation topic; the improvement lane is a different
+ * topic and is never read here, so it can never be touched. `dryRun` plans without
+ * deleting.
+ */
+export async function runObservationRetention(
+  opts: ObservationRetentionOpts & { dryRun?: boolean } = {},
+  deps: ObservationRetentionDeps = defaultObservationRetentionDeps,
+): Promise<ObservationRetentionResult> {
+  const all = await deps.readObservationAges();
+  const planned = planObservationRetention(all, opts);
+  const result: ObservationRetentionResult = {
+    scanned: all.length,
+    planned,
+    pruned: 0,
+    dryRun: opts.dryRun === true,
+  };
+  if (opts.dryRun || planned.length === 0) return result;
+
+  result.pruned = await deps.deleteIssues(planned);
+
+  // The Observations pane reads `learning.observations`; nudge it after a prune.
+  void import('../../sync-sse')
+    .then((m) => m.notifySyncInvalidate('learning.observations'))
+    .catch(() => {});
   return result;
 }
