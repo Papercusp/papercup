@@ -30,8 +30,47 @@ export interface ExperimentLedger {
   record(row: ExperimentLedgerRow): Promise<void>;
 }
 
+/** A read-back row of the ledger (the experiment:results / scoreboard shape). */
+export interface ExperimentRunSummary {
+  batteryId: string;
+  testId: string;
+  tier: string;
+  winner: string | null;
+  arms: ExperimentArmResult[];
+  totalCostUsd: number;
+  budgetExhausted: boolean;
+  decision: string;
+  createdAt: string;
+}
+
 export class PgExperimentLedger implements ExperimentLedger {
   constructor(private readonly sql: Sql) {}
+
+  /** Recent experiment runs for a workspace, newest-first, optionally one test. The
+   *  read-back the API + the scoreboard render (closes the run→record→read loop). */
+  async listRecent(workspaceId: string, opts: { testId?: string; limit?: number } = {}): Promise<ExperimentRunSummary[]> {
+    const limit = Math.min(Math.max(opts.limit ?? 20, 1), 200);
+    const rows = opts.testId
+      ? await this.sql`
+          SELECT * FROM harness_shared.experiment_runs
+          WHERE workspace_id = ${workspaceId} AND test_id = ${opts.testId}
+          ORDER BY created_at DESC LIMIT ${limit}`
+      : await this.sql`
+          SELECT * FROM harness_shared.experiment_runs
+          WHERE workspace_id = ${workspaceId}
+          ORDER BY created_at DESC LIMIT ${limit}`;
+    return rows.map((r) => ({
+      batteryId: r.battery_id as string,
+      testId: r.test_id as string,
+      tier: r.tier as string,
+      winner: (r.winner ?? null) as string | null,
+      arms: (r.arms ?? []) as ExperimentArmResult[],
+      totalCostUsd: Number(r.total_cost_usd),
+      budgetExhausted: Boolean(r.budget_exhausted),
+      decision: r.decision as string,
+      createdAt: (r.created_at as Date).toISOString(),
+    }));
+  }
 
   async record(row: ExperimentLedgerRow): Promise<void> {
     await this.sql`

@@ -26,6 +26,8 @@ export interface InsightFileForScan {
   slug: string;
   status: string;
   raw: string;
+  /** Frontmatter `discovered:` date (YYYY-MM-DD), if present — drives the recency guard. */
+  discovered?: string;
 }
 
 /**
@@ -46,6 +48,38 @@ export function extractCitedPaths(raw: string): string[] {
 }
 
 /**
+ * Build a suffix-aware existence check from the repo's tracked-file list. A cited
+ * path resolves when it exists EXACTLY or is a path-suffix of a real file — the
+ * DROPPED-PREFIX shorthand authors use (`bin/hono-host.ts` for the real
+ * `apps/operator/bin/hono-host.ts`), the dominant insight-staleness false positive
+ * (EI-510 "stale path prefixes"; relight-self-learning-edges P-011). A genuinely
+ * deleted/moved file has no suffix match and is still flagged. Strongly biased
+ * toward NOT flagging — the module's stated posture ("a false 'stale' capture is
+ * noise"). Matching is on whole path components (the `/`-anchored suffix), so
+ * `core/loopback-fetch.ts` does NOT match `.../lib/loopback-fetch.ts`.
+ */
+export function makeRepoPathResolver(
+  trackedFiles: readonly string[],
+): (repoRelPath: string) => boolean {
+  const exact = new Set(trackedFiles);
+  const byBasename = new Map<string, string[]>();
+  for (const f of trackedFiles) {
+    const base = f.slice(f.lastIndexOf('/') + 1);
+    const list = byBasename.get(base);
+    if (list) list.push(f);
+    else byBasename.set(base, [f]);
+  }
+  return (p) => {
+    if (exact.has(p)) return true;
+    const base = p.slice(p.lastIndexOf('/') + 1);
+    const candidates = byBasename.get(base);
+    if (!candidates) return false;
+    const suffix = `/${p}`;
+    return candidates.some((f) => f.endsWith(suffix));
+  };
+}
+
+/**
  * Resolution cooldown for insight-staleness signals (EI-441 / EI-427). After an
  * insight-staleness item is resolved, the fix lands on the source-of-truth tree
  * (staging) but the live operator scans the release/green checkout, which lags
@@ -62,6 +96,15 @@ export interface ScanOpts {
   maxSignals?: number;
   /** Cooldown (ms) stamped on each signal. Default DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS. */
   resolutionCooldownMs?: number;
+  /** "Now" for the recency guard. Default Date.now(). */
+  nowMs?: number;
+  /**
+   * Skip insights discovered within this window — a freshly-written insight may
+   * cite files that exist on the source tree (staging) but not yet on the scanned
+   * green/release tree (deploy lag), the new-insight analog of the post-resolution
+   * cooldown. Default DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS (EI-510 / P-011).
+   */
+  recencyGuardMs?: number;
 }
 
 /**
@@ -75,11 +118,20 @@ export function scanInsightStaleness(
 ): WatchdogSignal[] {
   const maxSignals = opts.maxSignals ?? 5;
   const resolutionCooldownMs = opts.resolutionCooldownMs ?? DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS;
+  const nowMs = opts.nowMs ?? Date.now();
+  const recencyGuardMs = opts.recencyGuardMs ?? DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS;
   const signals: WatchdogSignal[] = [];
   for (const insight of insights) {
     if (signals.length >= maxSignals) break;
     const status = (insight.status || 'active').toLowerCase();
     if (status === 'retired' || status === 'superseded') continue;
+    // Recency guard (EI-510 / P-011): a newly-written insight's citations may not
+    // have deployed to the scanned (green/release) tree yet — the new-insight
+    // analog of the post-resolution deploy-lag cooldown. Skip until the window passes.
+    if (insight.discovered) {
+      const d = Date.parse(insight.discovered);
+      if (!Number.isNaN(d) && nowMs - d < recencyGuardMs) continue;
+    }
     const cited = extractCitedPaths(insight.raw);
     if (cited.length === 0) continue;
     const missing = cited.filter((p) => !existsFn(p));
@@ -121,7 +173,27 @@ export function scanInsightStaleness(
   return signals;
 }
 
-/** Thin fs glue — reads the agent-insights dir + checks cited paths at REPO_ROOT. */
+/**
+ * Tracked files at `root` incl. submodules, via `git ls-files` (cheap — git's
+ * index is cached — and it excludes node_modules/.gitignore). Returns null when
+ * git is unavailable (a packaged build) so the caller falls back to exact existsSync.
+ */
+async function listTrackedFiles(root: string): Promise<string[] | null> {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const { stdout } = await run('git', ['-C', root, 'ls-files', '--recurse-submodules'], {
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const files = stdout.split('\n').filter(Boolean);
+    return files.length ? files : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Thin fs glue — reads the agent-insights dir + checks cited paths against the repo tree. */
 export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]> {
   // Lazy-import so the pure scan stays import-cheap for tests.
   const { DOCS_CONTENT_ROOT, REPO_ROOT } = await import('../../agent-tools/docs/_repo-paths');
@@ -137,14 +209,23 @@ export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]
     try {
       const raw = await fs.promises.readFile(path.join(dir, name), 'utf8');
       const statusMatch = raw.match(/^status:\s*["']?([\w-]+)["']?\s*$/m);
+      const discoveredMatch = raw.match(/^discovered:\s*["']?([\d-]+)["']?\s*$/m);
       insights.push({
         slug: name.replace(/\.mdx?$/, ''),
         status: statusMatch?.[1] ?? 'active',
+        discovered: discoveredMatch?.[1],
         raw,
       });
     } catch {
       /* unreadable file → skip */
     }
   }
-  return scanInsightStaleness(insights, (p) => fs.existsSync(path.join(REPO_ROOT, p)));
+  // Suffix-aware existence (EI-510): resolve a cited path against the repo's tracked
+  // files so a dropped-prefix shorthand isn't a false "stale". Fall back to an exact
+  // existsSync at REPO_ROOT when git is unavailable (packaged build).
+  const tracked = await listTrackedFiles(REPO_ROOT);
+  const existsFn = tracked
+    ? makeRepoPathResolver(tracked)
+    : (p: string) => fs.existsSync(path.join(REPO_ROOT, p));
+  return scanInsightStaleness(insights, existsFn);
 }

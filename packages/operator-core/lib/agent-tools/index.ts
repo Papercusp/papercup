@@ -570,6 +570,7 @@ import './gym/signals';
 // riding frontier:replay-harness). experiment:status is the P-032 sibling.
 import './experiment/catalog';
 import './experiment/run';
+import './experiment/results';
 
 // scout-idea-grading-2026-06-12 B-03 (C-3) — grade a routed Scout idea 1–5
 // (+ optional critique) over the C-2 ledger seam; owner grades are sovereign.

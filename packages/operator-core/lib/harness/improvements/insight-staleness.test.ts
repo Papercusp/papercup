@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   extractCitedPaths,
   scanInsightStaleness,
+  makeRepoPathResolver,
   collectInsightStalenessSignals,
   DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS,
 } from './insight-staleness';
@@ -97,6 +98,55 @@ describe('scanInsightStaleness', () => {
       { resolutionCooldownMs: 1000 },
     );
     expect(overridden.resolutionCooldownMs).toBe(1000);
+  });
+});
+
+describe('makeRepoPathResolver — suffix-aware existence (EI-510 dropped-prefix shorthand)', () => {
+  const tracked = [
+    'apps/operator/bin/hono-host.ts',
+    'packages/operator-core/lib/loopback-fetch.ts',
+    'libs/flags/src/types.ts',
+  ];
+
+  it('resolves an exact tracked path', () => {
+    expect(makeRepoPathResolver(tracked)('libs/flags/src/types.ts')).toBe(true);
+  });
+
+  it('resolves a dropped-prefix shorthand as a path-suffix of a real file', () => {
+    // `bin/hono-host.ts` is shorthand for `apps/operator/bin/hono-host.ts`.
+    expect(makeRepoPathResolver(tracked)('bin/hono-host.ts')).toBe(true);
+    expect(makeRepoPathResolver(tracked)('operator-core/lib/loopback-fetch.ts')).toBe(true);
+  });
+
+  it('does NOT resolve a genuinely-absent file (no exact, no suffix)', () => {
+    expect(makeRepoPathResolver(tracked)('packages/x/really-gone.ts')).toBe(false);
+  });
+
+  it('a basename match that is not a whole-component suffix does not over-resolve', () => {
+    // real path ends `/lib/loopback-fetch.ts`, NOT `/core/loopback-fetch.ts`.
+    expect(makeRepoPathResolver(tracked)('core/loopback-fetch.ts')).toBe(false);
+  });
+});
+
+describe('scanInsightStaleness — suffix + recency guard (P-011)', () => {
+  it('does NOT flag an insight whose only citation is a dropped-prefix shorthand', () => {
+    const resolver = makeRepoPathResolver(['apps/operator/bin/hono-host.ts']);
+    expect(scanInsightStaleness([insight('shorthand', 'The host is `bin/hono-host.ts`.')], resolver)).toEqual([]);
+  });
+
+  it('skips a recently-discovered insight (deploy-lag for new insights); flags an old one', () => {
+    const nowMs = Date.parse('2026-06-14T00:00:00Z');
+    const recent = { slug: 'fresh', status: 'active', discovered: '2026-06-13', raw: 'See `packages/x/gone.ts`.' };
+    const old = { slug: 'aged', status: 'active', discovered: '2026-01-01', raw: 'See `packages/x/gone.ts`.' };
+    expect(scanInsightStaleness([recent], () => false, { nowMs }).map((s) => s.key)).toEqual([]);
+    expect(scanInsightStaleness([old], () => false, { nowMs }).map((s) => s.key)).toEqual(['aged']);
+  });
+
+  it('an insight with no discovered date is not recency-guarded (still flagged)', () => {
+    const nowMs = Date.parse('2026-06-14T00:00:00Z');
+    expect(
+      scanInsightStaleness([insight('no-date', 'See `packages/x/gone.ts`.')], () => false, { nowMs }).map((s) => s.key),
+    ).toEqual(['no-date']);
   });
 });
 
