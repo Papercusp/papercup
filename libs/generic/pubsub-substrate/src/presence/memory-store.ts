@@ -97,7 +97,9 @@ export class InMemoryPresenceStore implements PresenceStore {
     return [...this.rows.values()]
       .map((r) => this.toRecord(r, now))
       .filter((r) => ws == null || r.workspaceId === ws)
-      .sort((a, b) => b.heartbeatAt.localeCompare(a.heartbeatAt));
+      // Deterministic ownerId order (presence-v2 P-005 / D-006) — cache- and
+      // diff-stable, unlike the old heartbeat-DESC which reorders every read.
+      .sort((a, b) => a.ownerId.localeCompare(b.ownerId));
   }
 
   async get(ownerId: string): Promise<PresenceRecord | null> {

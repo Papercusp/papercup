@@ -45,10 +45,19 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
 // every transient slow window into a hard `psu` failure. 45s rides through the
 // blip; a truly wedged host still fails (just later) with the same guidance.
 const REQUEST_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_TIMEOUT_MS) || 45_000;
-// One automatic retry on a transient failure (timeout OR connection-refused —
-// the latter is a restart blip) before surfacing the error, so a single slow
-// tick or an in-flight host restart self-heals instead of failing the launch.
-const API_RETRIES = Number(process.env.PAPERCUSP_PSU_RETRIES) || 1;
+// A TIMEOUT means the host accepted but didn't answer within REQUEST_TIMEOUT_MS
+// (wedged, not restarting) — a retry just burns another full timeout, so keep
+// these few. Tunable via PAPERCUSP_PSU_RETRIES (kept for back-compat).
+const TIMEOUT_RETRIES = Number(process.env.PAPERCUSP_PSU_RETRIES) || 1;
+// A CONNECTION failure (refused/reset — undici's "fetch failed") almost always
+// means the operator is mid-recycle: the memory-watchdog drains + exits and
+// systemd restarts a fresh process (~10-15s unreachable per cycle), which on a
+// busy box recurs. These fail in milliseconds, so rather than one fixed retry we
+// keep retrying on a short backoff until this wall-clock budget elapses — riding
+// THROUGH the restart window instead of failing the launch on the first dead
+// tick. A genuine outage still fails once the budget is spent. 0 disables.
+const _connectRetryRaw = Number(process.env.PAPERCUSP_PSU_CONNECT_RETRY_MS);
+const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetryRaw : 30_000;
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
@@ -510,13 +519,15 @@ function readToken() {
 
 async function api(path, opts = {}) {
   const token = readToken();
+  // A caller-supplied AbortSignal owns the request lifetime — never retry it.
+  const retryable = !opts.signal;
+  // Wall-clock deadline for retrying CONNECTION failures (host mid-recycle).
+  const connectDeadline = Date.now() + CONNECT_RETRY_BUDGET_MS;
+  let timeoutRetriesLeft = TIMEOUT_RETRIES;
+  let announcedConnRetry = false;
   let res;
-  // Retry a transient failure (timeout / connection-refused) once before giving
-  // up — a single slow tick or an in-flight host restart shouldn't fail psu.
-  // A caller-supplied AbortSignal disables retry (the caller owns the lifetime).
-  const maxAttempts = opts.signal ? 1 : API_RETRIES + 1;
   let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (;;) {
     try {
       res = await fetch(OPERATOR_URL + path, {
         ...opts,
@@ -532,24 +543,45 @@ async function api(path, opts = {}) {
       break;
     } catch (e) {
       lastErr = e;
-      if (attempt < maxAttempts) {
-        process.stderr.write(`psu: ${path} did not respond (attempt ${attempt}/${maxAttempts}) — retrying…\n`);
+      if (!retryable) break;
+      const isTimeout = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+      if (isTimeout) {
+        // Reachable but slow (wedged, not restarting) — a retry costs another
+        // full timeout, so only a small fixed number of them.
+        if (timeoutRetriesLeft <= 0) break;
+        timeoutRetriesLeft -= 1;
+        process.stderr.write(`psu: ${path} timed out after ${REQUEST_TIMEOUT_MS}ms — retrying…\n`);
         await new Promise((r) => setTimeout(r, 1_500));
         continue;
       }
+      // Connection refused/reset ("fetch failed") — the operator is almost
+      // certainly mid-recycle or a deploy swap, unreachable for ~10-15s. Retry
+      // on a short backoff until the budget elapses so the launch rides through,
+      // instead of failing on the first dead window (the single 1.5s retry this
+      // replaced couldn't span a recycle).
+      const remaining = connectDeadline - Date.now();
+      if (remaining <= 0) break;
+      if (!announcedConnRetry) {
+        process.stderr.write(
+          `psu: operator at ${OPERATOR_URL} unreachable (${path}) — it may be restarting; ` +
+            `retrying for up to ${Math.ceil(CONNECT_RETRY_BUDGET_MS / 1000)}s…\n`,
+        );
+        announcedConnRetry = true;
+      }
+      await new Promise((r) => setTimeout(r, Math.min(2_000, remaining)));
     }
   }
   if (lastErr) {
     const e = lastErr;
     if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
       throw new Error(
-        `the operator at ${OPERATOR_URL} did not respond within ${REQUEST_TIMEOUT_MS}ms (${path}, ${maxAttempts} attempts). ` +
+        `the operator at ${OPERATOR_URL} did not respond within ${REQUEST_TIMEOUT_MS}ms (${path}). ` +
           `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), ` +
           `or raise the cap with PAPERCUSP_PSU_TIMEOUT_MS.`,
       );
     }
     throw new Error(
-      `could not reach the operator at ${OPERATOR_URL} (${e?.message || e}). ` +
+      `could not reach the operator at ${OPERATOR_URL} after ${Math.ceil(CONNECT_RETRY_BUDGET_MS / 1000)}s (${e?.message || e}). ` +
         `Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL.`,
     );
   }

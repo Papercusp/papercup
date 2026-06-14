@@ -52,7 +52,10 @@ describe('autonomy:policy_set tool', () => {
       expect.objectContaining({ category: 'docs-publish', ceiling: 'low', reason: 'owner lowered ceiling' }),
       'owner-sue',
     );
-    expect(mockInvalidate).toHaveBeenCalledWith('autonomy.policy', { workspaceId: 'ws-prin' });
+    // Name-only invalidation: the settings page subscribes to autonomy.policy with
+    // no args, so an args-scoped invalidate ({workspaceId}) would never match its
+    // react-query key (the ceiling write saved but the table never refetched).
+    expect(mockInvalidate).toHaveBeenCalledWith('autonomy.policy');
   });
 
   it('defaults the actor to "agent" when no principal slug', async () => {

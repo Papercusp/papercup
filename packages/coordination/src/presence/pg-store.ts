@@ -200,7 +200,7 @@ export class PgPresenceStore implements PresenceStore {
         LEFT JOIN harness_shared.power_user_sessions pus
           ON pus.auth_session_id = cp.owner_id
        WHERE ${ws == null ? sql`TRUE` : sql`cp.workspace_id = ${ws}`}
-       ORDER BY cp.heartbeat_at DESC
+       ORDER BY cp.owner_id
     `;
     const now = Date.now();
     return rows.map((r) => toRecord(r, now));

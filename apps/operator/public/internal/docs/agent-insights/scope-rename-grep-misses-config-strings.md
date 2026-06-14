@@ -41,8 +41,8 @@ docs). That single pattern catches imports, deps, tsconfig maps, and config
 strings uniformly. Make it **targeted** when some names in the old scope are
 legitimate (Restart still owns `@restart/{db,ui,shop-sdk,com,...}`): guard only
 the migrated basenames, allow the rest. See `scripts/check-no-restart-imports.mjs`
-(papercup) and `scripts/check-no-restart-scope.mjs` (Restart) — both wired as
-gating CI steps.
+(papercup), wired as a gating CI step. (The Restart-side equivalent
+`scripts/check-no-restart-scope.mjs` was since removed.)
 
 ## Bonus gotcha: `grep -v <substring>` self-exclusion
 

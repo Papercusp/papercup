@@ -90,7 +90,8 @@ export interface PresenceStore {
   heartbeat(identity: PresenceIdentity): Promise<void>;
   /** Remove the caller's presence row. */
   clear(ownerId: string): Promise<void>;
-  /** List presence, newest heartbeat first, optionally scoped to a workspace. */
+  /** List presence in deterministic ownerId order (presence-v2 P-005 / D-006 —
+   *  cache- and diff-stable), optionally scoped to a workspace. */
   list(opts?: { workspaceId?: string | null }): Promise<PresenceRecord[]>;
   /** Read one presence record by owner id, or null. */
   get(ownerId: string): Promise<PresenceRecord | null>;

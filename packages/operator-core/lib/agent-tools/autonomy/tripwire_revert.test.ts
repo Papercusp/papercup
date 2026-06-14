@@ -106,7 +106,9 @@ describe('autonomy:tripwire_revert tool', () => {
       expect.objectContaining({ category: 'docs-publish', graduatedLevel: 'low', reason: 'too aggressive' }),
       'owner-sue',
     );
-    expect(mockInvalidate).toHaveBeenCalledWith('autonomy.policy', { workspaceId: 'ws-prin' });
+    // Name-only invalidation (no args) so the settings table's no-arg subscription
+    // actually refetches — an args-scoped invalidate never matches its query key.
+    expect(mockInvalidate).toHaveBeenCalledWith('autonomy.policy');
     const body = JSON.parse(res.content[0].text);
     expect(body).toMatchObject({ ok: true, tripped: true, demoted: true, demotion: { from: 'medium', to: 'low' }, reverted: false });
     // executor not wired → no markReverted yet

@@ -94,7 +94,10 @@ export default defineTool({
     if (reverted) await markTripwireReverted(sql, ws, row.id, nowMs);
 
     const { notifySyncInvalidate } = await import('../../sync-sse');
-    await notifySyncInvalidate('autonomy.policy', { workspaceId: ws }).catch(() => {});
+    // Name-only (no args): the settings table subscribes to autonomy.policy with no
+    // args, so an args-scoped invalidate never matches its react-query key and the
+    // surface wouldn't refetch. See the autonomy-policy-set route for the full note.
+    await notifySyncInvalidate('autonomy.policy').catch(() => {});
 
     return {
       content: [

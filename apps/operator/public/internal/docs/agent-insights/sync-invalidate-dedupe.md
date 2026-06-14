@@ -15,8 +15,8 @@ The dedupe now lives in the **generic** invalidation bus
 not in the operator's `sync-sse.ts`. `packages/operator-core/lib/sync-sse.ts`
 is now a thin wrapper that injects the operator's PG transport into
 `createInvalidationBus()` and re-exports `notifySyncInvalidate` (=
-`bus.notifyInvalidate`) unchanged — the path moved (`apps/operator/lib/sync-sse.ts`
-→ `packages/operator-core/lib/sync-sse.ts`) and the mechanism was
+`bus.notifyInvalidate`) unchanged — the path moved from `apps/operator/lib/sync-sse.ts`
+→ `packages/operator-core/lib/sync-sse.ts` and the mechanism was
 generalized, but the contract is identical.
 
 The constant:

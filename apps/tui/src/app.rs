@@ -10015,4 +10015,186 @@ mod tests {
         assert_eq!(act, Action::Render);
         assert!(a.tracked_panes.is_empty());
     }
+
+    // --- Fleet comms-overlay navigation (owner ask 2026-06-14) ---
+
+    fn comms_mail(kind: &str, from: &str, summary: &str) -> crate::models::BeeMailEntry {
+        crate::models::BeeMailEntry {
+            ts: "2026-06-14T04:00:00Z".into(),
+            msg_id: "m".into(),
+            kind: kind.into(),
+            from: Some(from.into()),
+            to: vec!["bee-1".into()],
+            summary: Some(summary.into()),
+            body: Some(format!("full body of {summary}")),
+        }
+    }
+
+    fn comms_conv(id: &str) -> crate::models::ConvSummary {
+        crate::models::ConvSummary {
+            id: id.into(),
+            kind: "question".into(),
+            state: "open".into(),
+            scope: "fleet".into(),
+            harness_slug: None,
+            title: Some(format!("conv {id}")),
+            asker_id: "asker".into(),
+            topics: vec![],
+            promoted_issue_id: None,
+            created_ts: "2026-06-14".into(),
+        }
+    }
+
+    /// A Fleet tab with the comms overlay open + a selected bee carrying two
+    /// inbox / one outbox entries and two fleet conversations.
+    fn comms_app() -> App {
+        let mut a = App::new();
+        a.tab = Tab::Fleet;
+        a.fleet.show_comms = true;
+        a.bee.mail = Some(crate::models::BeeMailPayload {
+            owner_id: "bee-1".into(),
+            inbox: crate::models::BeeMailSide {
+                total: 2,
+                entries: vec![comms_mail("message", "a", "i0"), comms_mail("escalation", "b", "i1")],
+            },
+            outbox: crate::models::BeeMailSide {
+                total: 1,
+                entries: vec![comms_mail("message", "bee-1", "o0")],
+            },
+        });
+        a.conversations = vec![comms_conv("c0"), comms_conv("c1")];
+        a
+    }
+
+    #[test]
+    fn comms_hl_crosses_roster_mail_columns() {
+        use crate::fleet::CommsFocus;
+        let mut a = comms_app();
+        assert_eq!(a.fleet.comms_focus, CommsFocus::Roster);
+        // l (and →) cross from the roster into the mail column (lands on Inbox).
+        a.update(ev(KeyCode::Char('l')));
+        assert_eq!(a.fleet.comms_focus, CommsFocus::Inbox);
+        // l again is a no-op — Inbox is already in the rightmost column.
+        a.update(ev(KeyCode::Right));
+        assert_eq!(a.fleet.comms_focus, CommsFocus::Inbox);
+        // h (and ←) return to the roster from any mail panel.
+        a.update(ev(KeyCode::Char('h')));
+        assert_eq!(a.fleet.comms_focus, CommsFocus::Roster);
+        a.fleet.comms_focus = CommsFocus::Conversations;
+        a.update(ev(KeyCode::Left));
+        assert_eq!(a.fleet.comms_focus, CommsFocus::Roster);
+    }
+
+    #[test]
+    fn comms_jk_fall_through_stacked_panels_and_clamp() {
+        use crate::fleet::CommsFocus;
+        let mut a = comms_app();
+        a.update(ev(KeyCode::Char('l'))); // → Inbox, row 0
+        a.update(ev(KeyCode::Char('j'))); // Inbox row 1
+        assert_eq!((a.fleet.comms_focus, a.fleet.comms_inbox_sel), (CommsFocus::Inbox, 1));
+        a.update(ev(KeyCode::Char('j'))); // past inbox → Outbox row 0
+        assert_eq!((a.fleet.comms_focus, a.fleet.comms_outbox_sel), (CommsFocus::Outbox, 0));
+        a.update(ev(KeyCode::Char('j'))); // past outbox → Conversations row 0
+        assert_eq!((a.fleet.comms_focus, a.conversation_sel), (CommsFocus::Conversations, 0));
+        a.update(ev(KeyCode::Char('j'))); // Conversations row 1
+        assert_eq!(a.conversation_sel, 1);
+        a.update(ev(KeyCode::Char('j'))); // clamp at the bottom
+        assert_eq!((a.fleet.comms_focus, a.conversation_sel), (CommsFocus::Conversations, 1));
+        // Walk back up through the same boundaries.
+        a.update(ev(KeyCode::Char('k'))); // Conversations row 0
+        assert_eq!(a.conversation_sel, 0);
+        a.update(ev(KeyCode::Char('k'))); // back up → Outbox last row (0)
+        assert_eq!((a.fleet.comms_focus, a.fleet.comms_outbox_sel), (CommsFocus::Outbox, 0));
+        a.update(ev(KeyCode::Char('k'))); // back up → Inbox last row (1)
+        assert_eq!((a.fleet.comms_focus, a.fleet.comms_inbox_sel), (CommsFocus::Inbox, 1));
+        a.update(ev(KeyCode::Char('k'))); // Inbox row 0
+        a.update(ev(KeyCode::Char('k'))); // clamp at the top
+        assert_eq!((a.fleet.comms_focus, a.fleet.comms_inbox_sel), (CommsFocus::Inbox, 0));
+    }
+
+    #[test]
+    fn comms_roster_move_resets_mail_cursor() {
+        use crate::fleet::CommsFocus;
+        let mut a = comms_app();
+        a.set_roster(vec![fleet_bee("bee-1", "claude"), fleet_bee("bee-2", "claude")]);
+        a.fleet.comms_inbox_sel = 1;
+        a.fleet.comms_outbox_sel = 1;
+        // Roster holds focus → j moves the roster cursor and resets the mail cursors
+        // (a new agent has new mail).
+        assert_eq!(a.fleet.comms_focus, CommsFocus::Roster);
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.fleet.comms_inbox_sel, 0);
+        assert_eq!(a.fleet.comms_outbox_sel, 0);
+    }
+
+    #[test]
+    fn comms_enter_opens_detail_and_esc_closes() {
+        let mut a = comms_app();
+        a.update(ev(KeyCode::Char('l'))); // focus Inbox
+        assert!(!a.comms_detail_open);
+        a.update(ev(KeyCode::Enter));
+        assert!(a.comms_detail_open);
+        assert!(a.selected_comms_mail().is_some());
+        // Modal: a non-navigation key is swallowed, popup stays open.
+        a.update(ev(KeyCode::Char('x')));
+        assert!(a.comms_detail_open);
+        // Esc closes it.
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.comms_detail_open);
+    }
+
+    #[test]
+    fn comms_enter_on_conversation_fetches_and_opens() {
+        use crate::fleet::CommsFocus;
+        let mut a = comms_app();
+        a.fleet.comms_focus = CommsFocus::Conversations;
+        let act = a.update(ev(KeyCode::Enter));
+        assert!(a.comms_detail_open);
+        assert!(matches!(act, Action::FetchConversationDetail { .. }));
+    }
+
+    #[test]
+    fn comms_detail_step_stays_within_focused_panel() {
+        use crate::fleet::CommsFocus;
+        let mut a = comms_app();
+        a.update(ev(KeyCode::Char('l'))); // Inbox
+        a.update(ev(KeyCode::Enter)); // open popup
+        // j/k inside the popup step within the inbox only — no fall-through.
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!((a.fleet.comms_focus, a.fleet.comms_inbox_sel), (CommsFocus::Inbox, 1));
+        a.update(ev(KeyCode::Char('j'))); // clamp (inbox has 2)
+        assert_eq!((a.fleet.comms_focus, a.fleet.comms_inbox_sel), (CommsFocus::Inbox, 1));
+        a.update(ev(KeyCode::Char('k')));
+        assert_eq!(a.fleet.comms_inbox_sel, 0);
+        assert!(a.comms_detail_open);
+    }
+
+    #[test]
+    fn comms_toggle_resets_focus_to_roster() {
+        use crate::fleet::CommsFocus;
+        let mut a = comms_app();
+        a.fleet.comms_focus = CommsFocus::Inbox;
+        a.update(ev(KeyCode::Char('c'))); // toggle comms OFF
+        assert!(!a.fleet.show_comms);
+        assert_eq!(a.fleet.comms_focus, CommsFocus::Roster);
+        assert!(!a.comms_detail_open);
+        // Toggling back ON also lands on the roster (a known starting place).
+        a.update(ev(KeyCode::Char('c')));
+        assert!(a.fleet.show_comms);
+        assert_eq!(a.fleet.comms_focus, CommsFocus::Roster);
+    }
+
+    #[test]
+    fn comms_detail_popup_is_modal_swallows_other_keys() {
+        // While the detail popup is open, unrelated keys (e.g. `c`/`n`) are
+        // swallowed so they can't drive the dock underneath — Esc closes first.
+        let mut a = comms_app();
+        a.update(ev(KeyCode::Char('l')));
+        a.update(ev(KeyCode::Enter)); // open the popup
+        assert!(a.comms_detail_open);
+        let show_before = a.fleet.show_comms;
+        a.update(ev(KeyCode::Char('c'))); // swallowed — does NOT toggle comms
+        assert!(a.comms_detail_open);
+        assert_eq!(a.fleet.show_comms, show_before);
+    }
 }

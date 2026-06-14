@@ -43,7 +43,7 @@ Copy the relevant task rows from the master plan's `## Phases` section verbatim 
 
 **Sub-acceptances (P-NNNa/b/c)** — for tasks with platform-matrix or multi-condition dimensions. Example: Phase 0 P-001 (bundle Holepunch primitives) splits into P-001a (Linux), P-001b (macOS arm64), P-001c (macOS x64), P-001d (Windows), P-001e (Tauri bundle). Each sub-acceptance is independently testable and passes/fails on its own.
 
-**Files** — the concrete paths the implementer will touch (existing files to edit, new files to create). Use the real repo layout. Don't say "the harness UI"; say `apps/operator/app/harness/FeaturesTab.tsx`.
+**Files** — the concrete paths the implementer will touch (existing files to edit, new files to create). Use the real repo layout. Don't say "the harness UI"; say `apps/operator-vite/src/components/adv/LearningTab.tsx`.
 
 **Decision rule** — one sentence stating how to interpret partial-pass. Example: *"PASS when P-001a + P-001d + P-001e all pass. If P-001b fails but P-001c passes (or vice versa), acceptable — pick the side with prebuilds and document the other arch needs Xcode CLT. If both fail, hard fail."* The decision rule prevents "we did 4 of 5 — is that good enough?" debates.
 

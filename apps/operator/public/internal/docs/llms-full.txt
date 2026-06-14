@@ -5867,6 +5867,80 @@ Once the GUI is unlocked, the productive way to drive + verify the running deskt
 * VM inventory, ports, disk discipline: [build-system/vms](/internal/docs/build-system/vms)
 * `diskutil apfs resizeContainer disk1s2 0` fails with “must be different size” after a host-side qcow2 grow until you first run `sudo diskutil repairDisk disk1` (the GPT still carries the old size). That sequence took the VM from 7 GiB free to 60 GiB on 2026-06-11.
 
+# mcp-handler's detached write pump crashes the host on client disconnect (ERR_INVALID_STATE)
+
+> When an MCP/SSE client disconnects mid-stream, cancelling mcp-handler's response stream closes its adapter controller and the library's detached write pump then enqueues onto it → TypeError[ERR_INVALID_STATE] → unhandledRejection → the whole operator host crash-loops. Fix is to DRAIN, never cancel, the inner stream in primeSseResponse.
+
+## The signature
+
+[Section titled “The signature”](#the-signature)
+
+`:3070` (or any operator host) **crash-loops under MCP load**, with a fatal:
+
+```plaintext
+TypeError [ERR_INVALID_STATE]: Invalid state: Controller is already closed
+    at ReadableStreamDefaultController.enqueue (node:internal/...)
+    ... processTicksAndRejections
+[hono-host] fatal unhandledRejection — exiting
+```
+
+It correlates with **clients disconnecting mid-stream** — exactly the `chat:ask_choice` / blocking-tool shape, or any agent that drops a streaming `tools/call` while the SSE body is still open. One dropped client takes the **whole fleet** down (Node ≥15 terminates on unhandledRejection).
+
+## Why it happens
+
+[Section titled “Why it happens”](#why-it-happens)
+
+`mcp-handler@1.1.0`’s streamable-HTTP POST path uses `createServerResponseAdapter` (`node_modules/mcp-handler/dist/index.js`): it exposes the response body as a `ReadableStream` and **writes to that stream’s controller from a detached promise** — `void fn(fakeServerResponse)` (≈L822). The write pump is:
+
+```js
+while (true) { const { done, value } = await reader.read(); if (done) break; res.write(value); }
+// res.write → controller.enqueue(data)   (≈L781)
+```
+
+`ReadableStreamDefaultController.enqueue` **throws synchronously** if the controller is already closed. Because the pump runs inside a `void`-ed promise, that throw is an **unhandledRejection** with nothing to catch it.
+
+The controller gets closed early on **client disconnect**. For event-stream responses our wrapper `primeSseResponse` (`packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts`) is the *only* consumer of mcp-handler’s adapter stream, and its old `cancel` handler did `return reader.cancel(reason)` — which **force-closes mcp-handler’s adapter controller while its pump is still writing**. Next `res.write` → throw.
+
+The trap that makes this non-obvious
+
+mcp-handler’s adapter stream has **no `cancel` handler** (dist ≈L826). So `reader.cancel()` never actually *propagated* the disconnect to the tool — it only closed the controller (the crash). Disconnect reaches the tool/transport through a **different** channel: `request.signal` → mcp-handler’s `"close"` event → `transport.onclose`. So the old cancel was a propagation **no-op** and a crash **trigger** at the same time. Removing it loses nothing.
+
+## The fix — drain, don’t cancel
+
+[Section titled “The fix — drain, don’t cancel”](#the-fix--drain-dont-cancel)
+
+In `primeSseResponse`, on client disconnect **drain the inner stream to completion in the background** instead of cancelling it. mcp-handler’s own `res.end()` then stays the **only** thing that closes its controller, so an enqueue-after-close can never occur:
+
+```ts
+cancel() {
+  cancelled = true;
+  void (async () => {
+    try {
+      await lastRead;                 // serialize: never read concurrent with an in-flight pull
+      for (;;) { const { done } = await reader.read(); if (done) break; }
+    } catch { /* inner torn down */ }
+  })();
+}
+```
+
+Also guard the forwarding enqueue (`if (cancelled) return; try { controller.enqueue(value) } catch {}`) and track the in-flight pull read (`lastRead`) so the drain never issues a read concurrent with a pending `pull` read (that throws *“read while another read is in progress”*).
+
+Disconnect still reaches blocking tools via `request.signal` (unchanged). The process-level backstop in `apps/operator/bin/hono-host.ts` (swallows *only* the `ERR_INVALID_STATE` / “Controller is already closed” class, fail-fast on everything else) stays as defense-in-depth for the rare non-streaming residual.
+
+## Don’ts
+
+[Section titled “Don’ts”](#donts)
+
+* **Don’t** propagate a client disconnect by cancelling a `ReadableStream` whose producer is a library you don’t control and that writes from a detached promise — you’ll convert a benign disconnect into an unhandledRejection. Drain it, or stop the producer through its own abort/close channel (`request.signal`), not by closing its controller out from under it.
+* **Don’t** rely on `reader.cancel()` to “tell the tool to stop” unless the inner stream actually has a `cancel` handler wired to that effect.
+* **Don’t** call `reader.read()` from a `cancel` handler without first awaiting any in-flight `pull` read.
+
+## Reproduce / pin
+
+[Section titled “Reproduce / pin”](#reproduce--pin)
+
+`packages/operator-core/lib/endpoint-route/routes/transport/__tests__/sse-prime.test.ts` — the EI-12 case captures the inner controller, writes one frame *after* the outer reader is cancelled, and asserts no throw. It fails on the old `reader.cancel()` behavior (post-cancel `enqueue` throws `ERR_INVALID_STATE`) and passes on the drain fix.
+
 # The MCP tool surface dominates prompt-cache cost via Meridian
 
 > Every Anthropic call through Meridian inlines all connected MCP tool schemas (~62k tokens, mostly papercusp-su). That base is re-created on any cache miss — the dominant token cost. Defer tools and pin the tools/list manifest.
@@ -7266,7 +7340,7 @@ Copy the relevant task rows from the master plan’s `## Phases` section verbati
 
 **Sub-acceptances (P-NNNa/b/c)** — for tasks with platform-matrix or multi-condition dimensions. Example: Phase 0 P-001 (bundle Holepunch primitives) splits into P-001a (Linux), P-001b (macOS arm64), P-001c (macOS x64), P-001d (Windows), P-001e (Tauri bundle). Each sub-acceptance is independently testable and passes/fails on its own.
 
-**Files** — the concrete paths the implementer will touch (existing files to edit, new files to create). Use the real repo layout. Don’t say “the harness UI”; say `apps/operator/app/harness/FeaturesTab.tsx`.
+**Files** — the concrete paths the implementer will touch (existing files to edit, new files to create). Use the real repo layout. Don’t say “the harness UI”; say `apps/operator-vite/src/components/adv/LearningTab.tsx`.
 
 **Decision rule** — one sentence stating how to interpret partial-pass. Example: *“PASS when P-001a + P-001d + P-001e all pass. If P-001b fails but P-001c passes (or vice versa), acceptable — pick the side with prebuilds and document the other arch needs Xcode CLT. If both fail, hard fail.”* The decision rule prevents “we did 4 of 5 — is that good enough?” debates.
 
@@ -8837,7 +8911,7 @@ The dev server cached the old config at boot, so hitting routes that use the ren
 
 [Section titled “The fix: guard on the package pattern, not import syntax”](#the-fix-guard-on-the-package-pattern-not-import-syntax)
 
-Replace the import-syntax matcher with one that flags **any** `@restart/<pkg>` occurrence, scanning every line of every code + json file (excluding `node_modules`, `dist`, the auto-generated `package-lock.json`, and historical docs). That single pattern catches imports, deps, tsconfig maps, and config strings uniformly. Make it **targeted** when some names in the old scope are legitimate (Restart still owns `@restart/{db,ui,shop-sdk,com,...}`): guard only the migrated basenames, allow the rest. See `scripts/check-no-restart-imports.mjs` (papercup) and `scripts/check-no-restart-scope.mjs` (Restart) — both wired as gating CI steps.
+Replace the import-syntax matcher with one that flags **any** `@restart/<pkg>` occurrence, scanning every line of every code + json file (excluding `node_modules`, `dist`, the auto-generated `package-lock.json`, and historical docs). That single pattern catches imports, deps, tsconfig maps, and config strings uniformly. Make it **targeted** when some names in the old scope are legitimate (Restart still owns `@restart/{db,ui,shop-sdk,com,...}`): guard only the migrated basenames, allow the rest. See `scripts/check-no-restart-imports.mjs` (papercup), wired as a gating CI step. (The Restart-side equivalent `scripts/check-no-restart-scope.mjs` was since removed.)
 
 ## Bonus gotcha: `grep -v <substring>` self-exclusion
 
@@ -9023,6 +9097,71 @@ expect(MANAGED_MARKER.includes(SLASH_TOOL_MARKER)).toBe(false);
 ```
 
 * Also pin the cross-prune behavior: run writer A’s prune with an empty keep-set over a dir populated by writer B, and assert B’s files survive (see `slash-tool-prompts-codex.test.ts` “marker independence”).
+
+# A shared git submodule has multiple checkouts — an agent can edit the WRONG clone
+
+> papergrid is one submodule (github.com/Papercusp/papergrid.git) vendored by BOTH papercup (libs/generic/papergrid) and the Restart project (libs/papergrid). A workflow/agent whose cwd or git root resolves to the Restart clone will "find" grid-core there and edit it — silently overriding an absolute papercup path in its prompt, so the papercup-side build never sees the change. Guard by asserting `git rev-parse --show-toplevel` before editing a shared-submodule file.
+
+## The signature
+
+[Section titled “The signature”](#the-signature)
+
+A subagent reports a file edit as **done and green** — its own tests even pass — yet the *consuming* build still can’t resolve the new symbols. Reading the agent’s notes closely, the files it touched are under a **different repo** than the one you intended:
+
+```plaintext
+filesTouched: [
+  "/home/marsh-office/Restart/libs/papergrid/grid-core/src/column-filter.ts",
+  ...
+]
+// …but you asked it to edit
+//   /home/marsh-office/papercupai-workspace/papercup/libs/generic/papergrid/grid-core
+```
+
+Downstream consumers in the *intended* repo then fail to typecheck with “`@papercusp/grid-core` has no exported member …” even though the engine “exists” — because it exists in the **other clone**.
+
+## Why it happens
+
+[Section titled “Why it happens”](#why-it-happens)
+
+`papergrid` is a **single git submodule** (`github.com/Papercusp/papergrid.git`) **vendored by two different superprojects on this box**:
+
+| Superproject                                   | Submodule path           | Branch/commit     |
+| ---------------------------------------------- | ------------------------ | ----------------- |
+| `papercup` (`~/papercupai-workspace/papercup`) | `libs/generic/papergrid` | its own pin       |
+| `Restart` (`~/Restart`)                        | `libs/papergrid`         | a *different* pin |
+
+They are two working-tree checkouts of the **same upstream repo**, at different commits. So `grid-core/src/RichGrid.tsx` exists at **two absolute paths**, with slightly different contents.
+
+When a workflow or agent’s **working directory** (or the value of `git rev-parse --show-toplevel`) resolves to the `Restart` checkout, an agent that is told to “edit `grid-core`” will discover it under *its own* cwd’s clone and edit there — **overriding the absolute path you gave it in the prompt**. An absolute path in the prompt is a hint, not a guarantee; the agent’s cwd wins.
+
+An absolute path in the prompt is not enough
+
+The Phase-1 agent of plan `generic-column-filters-2026-06-14` was given the absolute `…/papercup/libs/generic/papergrid/grid-core` path and still wrote the new `column-filter.ts` engine into `…/Restart/libs/papergrid/grid-core`, because the workflow’s cwd git-root was `~/Restart`. Phase 2/3 (correctly in papercup) then could not resolve `@papercusp/grid-core`’s new exports. The fix was a manual verbatim port of the two new files + re-applying the additive `RichGrid.tsx` / `index.ts` edits into the papercup clone. (Plan decision **D-007**.)
+
+## The guard
+
+[Section titled “The guard”](#the-guard)
+
+Before editing **any** file that lives in a shared submodule, make the agent **assert the repo root**, not just trust an absolute path:
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercup
+test "$(git rev-parse --show-toplevel)" = "/home/marsh-office/papercupai-workspace/papercup" \
+  || { echo "WRONG REPO ROOT — refusing to edit"; exit 1; }
+```
+
+In an agent/workflow prompt that targets a shared-submodule file, spell this out:
+
+> Before ANY edit run `git rev-parse --show-toplevel` and CONFIRM it equals `<intended repo>`. Every file you edit MUST be under that path. NEVER edit under the other clone. If a target resolves elsewhere, STOP and report.
+
+When the same code legitimately needs to land in both clones, treat the **shared upstream** as the source of truth: edit one clone, let it reach the submodule’s origin, and bump the other superproject’s submodule pointer — don’t hand-edit two divergent working trees in parallel (they will conflict on push).
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* Plan `generic-column-filters-2026-06-14` (D-007) — the incident + the port.
+* The repo-conventions note on the shared dev tree and branch discipline.
 
 # Sleep-mode shared-checkout discipline
 
@@ -10295,7 +10434,7 @@ The creds live where the federation harness’s do — see [`hetzner-cross-machi
 
 `notifySyncInvalidate(name, args?, data?)` has a **90-second source-side dedupe window**. Two notifies with identical `(name, args, data)` fired within that window: the second one is silently dropped before `pg_notify` runs.
 
-The dedupe now lives in the **generic** invalidation bus (`libs/generic/sync/src/server/invalidation-bus.ts`, `@papercusp/sync/server`), not in the operator’s `sync-sse.ts`. `packages/operator-core/lib/sync-sse.ts` is now a thin wrapper that injects the operator’s PG transport into `createInvalidationBus()` and re-exports `notifySyncInvalidate` (= `bus.notifyInvalidate`) unchanged — the path moved (`apps/operator/lib/sync-sse.ts` → `packages/operator-core/lib/sync-sse.ts`) and the mechanism was generalized, but the contract is identical.
+The dedupe now lives in the **generic** invalidation bus (`libs/generic/sync/src/server/invalidation-bus.ts`, `@papercusp/sync/server`), not in the operator’s `sync-sse.ts`. `packages/operator-core/lib/sync-sse.ts` is now a thin wrapper that injects the operator’s PG transport into `createInvalidationBus()` and re-exports `notifySyncInvalidate` (= `bus.notifyInvalidate`) unchanged — the path moved from `apps/operator/lib/sync-sse.ts` → `packages/operator-core/lib/sync-sse.ts` and the mechanism was generalized, but the contract is identical.
 
 The constant:
 
