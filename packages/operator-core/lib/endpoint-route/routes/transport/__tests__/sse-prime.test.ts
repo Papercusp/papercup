@@ -64,18 +64,70 @@ describe('primeSseResponse', () => {
     expect(primeSseResponse(res)).toBe(res);
   });
 
-  it('propagates cancel to the inner stream so blocking tools observe the abort', async () => {
-    let cancelled: unknown = null;
+  // EI-12 regression. mcp-handler's createServerResponseAdapter exposes the
+  // response body as a ReadableStream whose controller the library writes to
+  // from a DETACHED pump (`res.write` → `controller.enqueue`). If the wrapper
+  // force-cancels that stream on client disconnect, its controller closes and
+  // the library's next write throws TypeError[ERR_INVALID_STATE] "Controller
+  // is already closed" from a void-ed promise → unhandledRejection → the whole
+  // operator host crash-loops under MCP load. The wrapper must therefore DRAIN
+  // the inner stream on disconnect, never force-close it — mcp-handler's own
+  // res.end() is the only safe closer of that controller.
+  it('EI-12: a producer write AFTER client disconnect does not throw (no enqueue-after-close crash)', async () => {
+    const enc = new TextEncoder();
+    let innerController!: ReadableStreamDefaultController<Uint8Array>;
     const inner = new ReadableStream<Uint8Array>({
-      start() {/* never enqueues */},
-      cancel(reason) {
-        cancelled = reason ?? 'cancelled';
+      start(c) {
+        innerController = c;
+        c.enqueue(enc.encode('data: 1\n\n'));
       },
     });
     const primed = primeSseResponse(sseResponse(inner));
     const reader = primed.body!.getReader();
-    await reader.read(); // consume the priming comment
+    await reader.read(); // priming comment
+    await reader.read(); // first data frame
+    await reader.cancel('client-gone'); // client disconnects mid-stream
+
+    // mcp-handler's pump writes one more frame after the disconnect. Pre-fix
+    // (the wrapper propagated reader.cancel) this enqueue throws; the fix
+    // drains instead, leaving the controller open so the producer is safe.
+    let threw = false;
+    try {
+      innerController.enqueue(enc.encode('data: 2\n\n'));
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+    // mcp-handler eventually calls res.end() → the inner controller closes
+    // cleanly (the only safe closer); the wrapper's drain ends with it.
+    innerController.close();
+  });
+
+  it('drains the inner stream after client disconnect until the producer ends it', async () => {
+    const enc = new TextEncoder();
+    let innerController!: ReadableStreamDefaultController<Uint8Array>;
+    let pulls = 0;
+    const inner = new ReadableStream<Uint8Array>({
+      start(c) {
+        innerController = c;
+      },
+      pull() {
+        pulls += 1;
+      },
+    });
+    const primed = primeSseResponse(sseResponse(inner));
+    const reader = primed.body!.getReader();
+    await reader.read(); // priming comment
     await reader.cancel('client-gone');
-    expect(cancelled).toBe('client-gone');
+
+    // After disconnect the wrapper keeps reading the inner stream so the
+    // producer never backs up against an unread (or closed) controller.
+    innerController.enqueue(enc.encode('data: a\n\n'));
+    innerController.enqueue(enc.encode('data: b\n\n'));
+    // Closing from the producer side (mcp-handler's res.end()) must not throw
+    // and must let the background drain complete.
+    expect(() => innerController.close()).not.toThrow();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(pulls).toBeGreaterThan(0); // the drain actually consumed the stream
   });
 });

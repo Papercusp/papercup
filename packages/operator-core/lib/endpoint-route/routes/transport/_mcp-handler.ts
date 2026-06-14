@@ -1195,19 +1195,60 @@ export function primeSseResponse(res: Response): Response {
   const ctype = res.headers.get('content-type') ?? '';
   if (!res.body || !ctype.includes('text/event-stream')) return res;
   const reader = res.body.getReader();
+  let cancelled = false;
+  // Tracks the latest in-flight inner read so the disconnect-drain (cancel)
+  // never issues a `reader.read()` concurrent with a pending pull read — that
+  // throws "read while another read is in progress".
+  let lastRead: Promise<unknown> = Promise.resolve();
   const primed = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(SSE_PRIME);
     },
-    async pull(controller) {
-      const { done, value } = await reader.read();
-      if (done) controller.close();
-      else controller.enqueue(value);
+    pull(controller) {
+      const p = (async () => {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        // Outer consumer already gone (cancel ran): stop forwarding. The
+        // background drain below consumes the rest of the inner stream.
+        if (cancelled) return;
+        try {
+          controller.enqueue(value);
+        } catch {
+          /* outer controller already closed — client raced us; ignore */
+        }
+      })();
+      lastRead = p.catch(() => {});
+      return p;
     },
-    // Propagate client disconnects to the inner stream so blocking tools
-    // (ctx.askUser) observe the abort and resolve {action:'cancel'}.
-    cancel(reason) {
-      return reader.cancel(reason);
+    // Client disconnect. Do NOT cancel the inner reader: cancelling it closes
+    // mcp-handler's ServerResponse-adapter controller, and that library's
+    // detached write pump (createServerResponseAdapter → res.write →
+    // controller.enqueue, node_modules/mcp-handler) then throws
+    // TypeError[ERR_INVALID_STATE] "Controller is already closed" on the next
+    // frame it writes after the client left. That throw is voided (an
+    // unhandledRejection) and, under MCP load, crash-loops the whole operator
+    // host (EI-12). Instead DRAIN the inner stream to completion in the
+    // background — mcp-handler's OWN res.end() then stays the only thing that
+    // closes its controller, so no enqueue-after-close ever happens. The
+    // disconnect still reaches the tool + transport via the request
+    // AbortSignal (mcp-handler wires request.signal → "close" →
+    // transport.onclose), which is what makes the inner stream end.
+    cancel() {
+      cancelled = true;
+      void (async () => {
+        try {
+          await lastRead; // let any in-flight pull read settle first
+          for (;;) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+        } catch {
+          /* inner stream torn down — nothing left to drain */
+        }
+      })();
     },
   });
   return new Response(primed, res);
