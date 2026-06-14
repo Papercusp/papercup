@@ -56,7 +56,7 @@ import { FanoutCapError, type ResolveFanoutCtx } from '@papercusp/fanout-resolve
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions } from '../../plans/val-assertions';
-import { loopbackFetch } from '../../../loopback-fetch';
+import { loopbackFetch, readJsonBody } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
 import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
 
@@ -333,7 +333,15 @@ async function postFeaturesImport(
     const text = await r.text().catch(() => '');
     throw new Error(`features_import_failed:${r.status}:${text.slice(0, 200)}`);
   }
-  const j = (await r.json()) as FeaturesImportResponse;
+  // readJsonBody (not bare .json()) so a 200 with an empty/truncated body during
+  // a host restart rethrows an ATTRIBUTABLE error naming this URL — not the
+  // frame-less `SyntaxError: Unexpected end of JSON input` that fatal-exited the
+  // shared :3070 host (EI-20). `if (!r.ok)` above does NOT catch this: a zero-byte
+  // 200 (host restarting mid-stream) passes the status check.
+  const j = await readJsonBody<FeaturesImportResponse>(
+    r,
+    `${operatorBase()}/api/harness/${harnessSlug}/features/import`,
+  );
   return {
     ids: j.ids ?? [],
     inserted: j.inserted ?? 0,
