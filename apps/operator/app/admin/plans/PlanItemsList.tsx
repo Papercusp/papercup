@@ -20,6 +20,7 @@ import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
 import { type PlanItemRow, type PlanBucket } from './plans-api';
+import { AuthorBadge } from '../../_components/AuthorBadge';
 
 interface Props {
   items: PlanItemRow[];
@@ -177,6 +178,11 @@ export default function PlanItemsList({
                   >
                     {r.item.importance}
                   </span>
+                ) : null}
+                {/* B1 (P-001): per-item author — renders only when a real per-op
+                    author pubkey has federated (dark on a single box). */}
+                {r.item.lastEditedBy ? (
+                  <AuthorBadge identity={r.item.lastEditedBy} variant="compact" prefix="by" />
                 ) : null}
               </span>
             </button>

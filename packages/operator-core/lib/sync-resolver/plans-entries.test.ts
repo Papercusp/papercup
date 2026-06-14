@@ -12,6 +12,13 @@ vi.mock('../agent-tools/plans/read-dispatch', () => ({
   callPlansReadRaw: vi.fn(),
 }));
 
+// This is the verb-dispatch + envelope-unwrap contract test. The B1 plan
+// ownership/attribution enrichment (ownerIdentity/lastEditor/per-item author)
+// is a SEPARATE concern behind the papercusp-plan-attribution-badges flag and
+// has its own test (plan-attribution.test.ts) — keep it OFF here so plans.list /
+// plans.get assert the pure unwrapped shape.
+vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => false }));
+
 import { resolveNamedQueryV2 } from '.';
 
 beforeEach(() => callPlansRead.mockReset());

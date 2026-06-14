@@ -497,6 +497,8 @@ import './plans/set-content-chunk';
 // Targeted in-place edit (old_string → new_string), the surgical complement.
 import './plans/edit';
 import './plans/set-frontmatter';
+// shared-hive-collaboration-2026-06-14 P-003 — first-class ownership transfer + co-owners.
+import './plans/transfer-owner';
 // plan-level lifecycle flip (draft→ready approve / demote / ship / reject).
 import './plans/set-plan-status';
 // Plan history/audit is the PG plan_revisions spine (plans:revisions /

@@ -12,7 +12,7 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**403 MCP tools** across **78 groups**.
+**409 MCP tools** across **79 groups**.
 
 ## Groups
 
@@ -29,7 +29,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `artifacts` | 4 | `append` `delete` `load` `save` | `artifacts:read` `artifacts:write` |
 | `audit` | 1 | `list` | `audit:read` |
 | `autoloop` | 2 | `control` `status` | `autoloop:read` `autoloop:write` |
-| `autonomy` | 3 | `decide` `policy_get` `policy_set` | `audit:write` `intel:read` |
+| `autonomy` | 7 | `decide` `graduation_status` `policy_get` `policy_set` `record_disposition` `tripwire_list` `tripwire_revert` | `audit:write` `coord:write` `intel:read` |
 | `backup` | 8 | `diff` `promote` `restore` `rollback` `settings_get` `settings_set` `snapshot_create` `snapshot_list` | `backup:read` `backup:write` |
 | `blueprint` | 4 | `catalog` `create` `extend` `validate` | `harness:read` `harness:write` |
 | `brainstorm` | 1 | `chat` | `harness:write` |
@@ -42,6 +42,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `cross_harness` | 10 | `docs_get` `docs_outline` `docs_search` `inbox` `outbox` `plans_get` `plans_list` `plans_search` `recent_activity` `supervisor_notes` | `cross_harness:read` `harness:read` `plans:read` |
 | `curation` | 3 | `change-feed` `feed` `state-of-hive` | `curation:read` |
 | `db` | 3 | `check_drift` `migrate` `next-migration` | `locks:read` `locks:write` |
+| `decision_ledger` | 2 | `list` `summary` | `intel:read` |
 | `deploy` | 5 | `harness` `hive` `status` `teardown` `teardown_hive` | `harness:read` `harness:write` |
 | `dev` | 20 | `activity` `audit` `build_status` `coord_categorize` `dogfood_substrate_status` `event_emitter` `harnesses` `ipc_echo` `omp_session` `pg_active_queries` `pg_health` `pg_table_sizes` `processes` `rate_governor_status` `restart` `service_health` `session_detail` `sessions` `state_counter` `telemetry` | `audit:read` `harness:read` `intel:read` `locks:write` `tasks:read` |
 | `discovery` | 2 | `hives` `set_hive` | `discovery:read` `discovery:write` |

@@ -17,6 +17,7 @@
 import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { forwardRef, useImperativeHandle, useMemo, useCallback, useState, useRef } from 'react';
 import { Play, Pause, Clock } from 'lucide-react';
+import { AuthorBadge } from '../../_components/AuthorBadge';
 import {
   bucketOf,
   startPlan,
@@ -294,7 +295,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     // search box, the rest are the PlanFilters keys.
     const q = query.trim();
     const filtersActive =
-      fBuckets.length > 0 || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable || fScout;
+      fBuckets.length > 0 || !!fOwner || fView !== 'all' || !!fDate || fArchived || fLegacy || fInbox || fActionable || fScout;
     const msg = q
       ? `No plans match “${q}”.`
       : filtersActive
@@ -467,6 +468,12 @@ function PlanRow({
             </span>
           ) : null}
         </div>
+        {plan.ownerIdentity || plan.lastEditor ? (
+          <div className="pc-plan-row__meta-line" style={{ gap: 10 }} data-testid="plan-row-authors">
+            {plan.ownerIdentity ? <AuthorBadge identity={plan.ownerIdentity} prefix="owner" /> : null}
+            {plan.lastEditor ? <AuthorBadge identity={plan.lastEditor} prefix="edited by" /> : null}
+          </div>
+        ) : null}
         {plan.itemCounts ? <PlanProgressBar counts={plan.itemCounts} /> : null}
         {plan.itemCounts ? <ItemCounts counts={plan.itemCounts} /> : null}
         {plan.nextAction ? (

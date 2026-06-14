@@ -1262,7 +1262,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const r = (await callPlansRead('list', (args ?? {}) as Record<string, unknown>)) as {
         plans?: unknown[];
       };
-      return Array.isArray(r?.plans) ? r.plans : [];
+      const plans = Array.isArray(r?.plans) ? r.plans : [];
+      if (plans.length === 0) return plans;
+      // B1 (shared-hive-collaboration P-001): enrich rows with resolved owner +
+      // last-editor identity for the ownership badges. Additive + best-effort.
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return plans;
+      const { enrichPlanListRows } = await import('./plan-attribution');
+      return enrichPlanListRows(plans);
     },
   },
   // plans.viewer — the current viewer's plan-OWNER identity (their git email),
@@ -1281,7 +1289,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const r = (await callPlansRead('items', (args ?? {}) as Record<string, unknown>)) as {
         items?: unknown[];
       };
-      return Array.isArray(r?.items) ? r.items : [];
+      const items = Array.isArray(r?.items) ? r.items : [];
+      if (items.length === 0) return items;
+      // B1 (shared-hive-collaboration P-001): per-item author attribution.
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return items;
+      const { enrichPlanItemsRows } = await import('./plan-attribution');
+      return enrichPlanItemsRows(items);
     },
   },
   'plans.attention': {
@@ -1306,9 +1321,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
       const r = await callPlansRead('get', (args ?? {}) as Record<string, unknown>);
-      return r ? [r] : [];
+      if (!r) return [];
+      // B1 (shared-hive-collaboration P-001): enrich plan-level owner/last-editor
+      // + per-item author for the badges. Additive + best-effort.
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      if (!(await getFlag(FLAGS.PLAN_ATTRIBUTION_BADGES, 'system'))) return [r];
+      const a = (args ?? {}) as Record<string, unknown>;
+      const harnessSlug =
+        typeof a.harness === 'string' && a.harness && a.harness !== 'all' ? a.harness : 'papercup';
+      const { enrichPlanDetail } = await import('./plan-attribution');
+      return [await enrichPlanDetail(r, { harnessSlug })];
     },
   },
+
   'plans.revisions': {
     resolve: async (args) => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');

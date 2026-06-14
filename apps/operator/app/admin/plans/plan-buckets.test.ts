@@ -35,10 +35,13 @@ function row(overrides: Partial<PlanListRow> = {}): PlanListRow {
 const NO_FILTERS: PlanFilterState = {
   date: null,
   owner: null,
+  view: 'all',
+  viewerEmail: null,
   archived: false,
   legacy: false,
   inbox: false,
   actionable: false,
+  scout: false,
 };
 
 describe('bucketOf', () => {
@@ -115,6 +118,40 @@ describe('applyPlanFilters', () => {
     expect(applyPlanFilters(plans, { ...NO_FILTERS, owner: 'a@x.com' }, '').map((p) => p.slug)).toEqual([
       'has-human',
       'empty',
+    ]);
+  });
+
+  it('owner saved-view: mine / others keyed on the viewer email (P-002), case-insensitive', () => {
+    const plans = [
+      row({ slug: 'mine-1', owner: 'me@x.com' }),
+      row({ slug: 'mine-2', owner: 'ME@X.COM' }), // case-insensitive match
+      row({ slug: 'theirs', owner: 'you@x.com' }),
+      row({ slug: 'ownerless', owner: null }),
+    ];
+    const me = 'me@x.com';
+    expect(applyPlanFilters(plans, { ...NO_FILTERS, view: 'mine', viewerEmail: me }, '').map((p) => p.slug)).toEqual([
+      'mine-1',
+      'mine-2',
+    ]);
+    // 'others' excludes mine AND ownerless plans (only plans owned by someone else)
+    expect(applyPlanFilters(plans, { ...NO_FILTERS, view: 'others', viewerEmail: me }, '').map((p) => p.slug)).toEqual([
+      'theirs',
+    ]);
+    // 'all' is a no-op
+    expect(applyPlanFilters(plans, { ...NO_FILTERS, view: 'all', viewerEmail: me }, '').map((p) => p.slug)).toEqual([
+      'mine-1',
+      'mine-2',
+      'theirs',
+      'ownerless',
+    ]);
+  });
+
+  it('owner saved-view degrades to no-op when the viewer email is unknown', () => {
+    const plans = [row({ slug: 'a', owner: 'me@x.com' }), row({ slug: 'b', owner: 'you@x.com' })];
+    // viewerEmail null ⇒ mine/others must NOT blindly hide everything.
+    expect(applyPlanFilters(plans, { ...NO_FILTERS, view: 'mine', viewerEmail: null }, '').map((p) => p.slug)).toEqual([
+      'a',
+      'b',
     ]);
   });
 });

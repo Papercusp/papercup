@@ -15,6 +15,9 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import type { ReportBlock } from '@papercusp/chat-protocol';
+import type { AuthorIdentity } from '../../_components/AuthorBadge';
+
+export type { AuthorIdentity };
 
 /* ── Wire types — mirror lib/agent-tools/plans/* return shapes ─────── */
 
@@ -79,6 +82,12 @@ export interface PlanListRow {
    *  (May arrive undefined from a server predating the field.) */
   created: string | null;
   owner: string | null;
+  /** B1 (P-001): resolved owner identity (handle/avatar) for the ownership badge —
+   *  derived from `owner` server-side. Undefined from a server predating B1 or
+   *  when the attribution flag is off. */
+  ownerIdentity?: AuthorIdentity | null;
+  /** B1 (P-001): resolved last-editor identity (latest plan revision author). */
+  lastEditor?: AuthorIdentity | null;
   archived: boolean;
   isLegacy: boolean;
   itemCounts: Partial<Record<ItemStatus | 'unknown', number>> | null;
@@ -114,6 +123,10 @@ export interface PlanItem {
   decisionRefs?: string[];
   phase?: string | null;
   lineNumber?: number;
+  /** B1 (P-001): per-item author (the harness_plan_parts.author pubkey resolved
+   *  to an identity). Null/undefined when no real per-op author has federated
+   *  (single-box origin sentinels are dropped server-side). */
+  lastEditedBy?: AuthorIdentity | null;
 }
 
 /**

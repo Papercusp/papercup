@@ -419,6 +419,12 @@ export const FLAGS = {
   // harness_plans.content blob, mig 125) and the per-part capture/projection are
   // inert — the live path is byte-identical. The owner flips this ON at cutover.
   PLAN_PART_FEDERATION: "papercusp-plan-part-federation",
+  // Plan ownership/attribution badges: owner + last-editor on plan list rows +
+  // detail, and per-item author (shared-hive-collaboration-2026-06-14 P-001, B1).
+  // DEFAULT-ON: additive surfacing over data that already exists; degrades to
+  // handle+initials when no github identity is bound (hive_members empty) and the
+  // per-item badge stays dark until real per-op author pubkeys federate.
+  PLAN_ATTRIBUTION_BADGES: "papercusp-plan-attribution-badges",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -431,6 +437,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.INBOX_DURABLE_ESCALATIONS]: false,
   // DEFAULT OFF — unverified cutover (needs the 2-machine merge proof, P-008). Off = plans federate as today.
   [FLAGS.PLAN_PART_FEDERATION]: false,
+  [FLAGS.PLAN_ATTRIBUTION_BADGES]: true,
   // OFF by default — the self-improvement loop captures + triages with this off;
   // auto-implementation only begins once an owner flips it (see the flag note above).
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,

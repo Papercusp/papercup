@@ -72,6 +72,8 @@ const PLANS: PlanListRow[] = [
 const DEFAULT_FILTERS: PlanFilterState = {
   date: null,
   owner: null,
+  view: 'all',
+  viewerEmail: null,
   archived: false,
   legacy: false,
   inbox: false,
