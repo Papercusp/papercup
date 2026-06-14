@@ -105,6 +105,17 @@ vi.mock('../../brain-pin', () => ({
   setBrainSession: (...a: unknown[]) => setBrainSessionMock(...(a as [string])),
   getBrainSession: () => getBrainSessionMock(),
 }));
+// queen-interactive-brain-fresh-context P-003: GET /brain (and the POST brief
+// append) consult FLAGS.QUEEN_BRAIN_FRESH BEFORE the pin — ON ⇒ report no pin so
+// `psu --brain` always mints fresh. The flag defaults ENABLED, so without this
+// mock GET /brain short-circuits to null and the D-013 resume-the-pin path is
+// never exercised. Mock it OFF by default (resume path); the ON branch has its
+// own test. importActual keeps the rest of flags/server real.
+const getFlagMock = vi.fn(async (_key: string, _scope: string): Promise<boolean> => false);
+vi.mock('@papercusp/flags/server', async (importActual) => ({
+  ...(await importActual<typeof import('@papercusp/flags/server')>()),
+  getFlag: (...a: unknown[]) => getFlagMock(...(a as [string, string])),
+}));
 vi.mock('../../device-harnesses', () => ({
   listHarnessesFor: vi.fn(async () => [
     { slug: 'papercup', path: '/repo', harness_kind: null, has_state: true, status: 'active', iteration: 1, last_active_ts: null },
@@ -341,6 +352,16 @@ describe('bootstrap-su', () => {
     getBrainSessionMock.mockResolvedValueOnce('11111111-2222-3333-4444-555555555555');
     const pinned = await (await callBrainGet()).json();
     expect(pinned).toEqual({ brainSessionId: '11111111-2222-3333-4444-555555555555' });
+  });
+
+  it('D-013/P-003: GET /brain reports no pin when fresh-context is ON (psu --brain mints fresh)', async () => {
+    // Even with a pin set, fresh-context ON forces null so `psu --brain` takes
+    // its fresh mint-launch path — the pin is never consulted.
+    getFlagMock.mockResolvedValueOnce(true);
+    getBrainSessionMock.mockResolvedValueOnce('11111111-2222-3333-4444-555555555555');
+    const res = await (await callBrainGet()).json();
+    expect(res).toEqual({ brainSessionId: null });
+    expect(getBrainSessionMock).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown agent kind', async () => {

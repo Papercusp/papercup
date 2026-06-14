@@ -79,9 +79,10 @@ export async function clearPresence(ownerId: string): Promise<void> {
   await store.clear(ownerId);
 }
 
-/** List presence records, newest heartbeat first, optionally scoped. */
+/** List presence records in deterministic ownerId order (P-005), optionally
+ *  scoped to a workspace and/or a Hive (hiveSlug — the P-004 hive-scoped read). */
 export async function listPresence(
-  opts: { workspaceId?: string | null } = {},
+  opts: { workspaceId?: string | null; hiveSlug?: string | null } = {},
 ): Promise<PresenceRecord[]> {
   return store.list(opts);
 }

@@ -76,6 +76,10 @@ export default defineTool({
         {
           type: 'text' as const,
           text: JSON.stringify({
+            // ONE roster-level read-time stamp (P-005 / D-006) — rows are ordered
+            // by ownerId and carry no churning per-read timestamp, so the cached
+            // payload stays byte-stable; `as_of` is the single freshness marker.
+            as_of: new Date(now).toISOString(),
             summary: { active: active.length, stale: stale.length, federated: federated.length },
             active: activeEnriched,
             // Stale rows are almost always dead sessions; returning all of them

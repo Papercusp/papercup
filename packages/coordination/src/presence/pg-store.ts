@@ -186,10 +186,13 @@ export class PgPresenceStore implements PresenceStore {
     `;
   }
 
-  async list(opts: { workspaceId?: string | null } = {}): Promise<PresenceRecord[]> {
+  async list(
+    opts: { workspaceId?: string | null; hiveSlug?: string | null } = {},
+  ): Promise<PresenceRecord[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const ws = opts.workspaceId ?? null;
+    const hive = opts.hiveSlug ?? null;
     const rows = await sql<CoordPresenceDbRow[]>`
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
@@ -200,6 +203,7 @@ export class PgPresenceStore implements PresenceStore {
         LEFT JOIN harness_shared.power_user_sessions pus
           ON pus.auth_session_id = cp.owner_id
        WHERE ${ws == null ? sql`TRUE` : sql`cp.workspace_id = ${ws}`}
+         AND ${hive == null ? sql`TRUE` : sql`cp.hive_slug = ${hive}`}
        ORDER BY cp.owner_id
     `;
     const now = Date.now();

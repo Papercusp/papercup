@@ -91,8 +91,9 @@ export interface PresenceStore {
   /** Remove the caller's presence row. */
   clear(ownerId: string): Promise<void>;
   /** List presence in deterministic ownerId order (presence-v2 P-005 / D-006 —
-   *  cache- and diff-stable), optionally scoped to a workspace. */
-  list(opts?: { workspaceId?: string | null }): Promise<PresenceRecord[]>;
+   *  cache- and diff-stable), optionally scoped to a workspace and/or a Hive
+   *  (hiveSlug — the P-004 hive-scoped read; null/omitted = no hive filter). */
+  list(opts?: { workspaceId?: string | null; hiveSlug?: string | null }): Promise<PresenceRecord[]>;
   /** Read one presence record by owner id, or null. */
   get(ownerId: string): Promise<PresenceRecord | null>;
   /** Delete presence rows whose heartbeat is older than maxAgeMs — true dead

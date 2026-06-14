@@ -37,6 +37,7 @@ export interface UnifiedPresenceRecord extends PresenceRecord {
 interface SharedPresenceDbRow {
   workspace_id: string;
   harness_slug: string;
+  hive_slug: string | null;
   github_user_id: number;
   machine_label: string;
   device_pubkey: string;
@@ -49,6 +50,9 @@ export interface FederatedPresenceOpts {
   workspaceId?: string | null;
   /** Restrict to one harness (shared_presence is per-harness). */
   harnessSlug?: string | null;
+  /** Restrict to one Hive (shared_presence is hive-keyed, mig 187) — the P-004
+   *  hive-scoped read's federated leg. */
+  hiveSlug?: string | null;
   /** Staleness window — a peer not seen within it is `stale`. Default = PRESENCE_STALE_MS. */
   staleMs?: number;
   /** Injectable clock (tests). */
@@ -78,12 +82,12 @@ export function mapSharedPresenceRow(
     startedAt: iso,
     heartbeatAt: iso,
     // A federated peer reports only last_seen (heartbeat-equivalent) — we don't
-    // get its activity/keepalive split or role, so these are null at the
-    // federation boundary. Phase 2's hive-scoped read sources federated hive_slug
-    // from shared_presence (it's hive-keyed) when it wires the unified read.
+    // get its activity/keepalive split or role, so those stay null at the
+    // federation boundary. hive_slug IS available (shared_presence is hive-keyed,
+    // mig 187) — it's the federated leg of the P-004 hive-scoped read.
     lastActiveAt: null,
     agentRole: null,
-    hiveSlug: null,
+    hiveSlug: row.hive_slug,
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
     userId: String(row.github_user_id),
     revoked: false,
@@ -103,7 +107,7 @@ export async function queryFederatedPresenceRows(
   opts: { workspaceId?: string | null; harnessSlug?: string | null } = {},
 ): Promise<SharedPresenceDbRow[]> {
   const rows = (await sql`
-    SELECT workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
+    SELECT workspace_id, harness_slug, hive_slug, github_user_id, machine_label, device_pubkey,
            intent, current_view,
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
@@ -113,6 +117,7 @@ export async function queryFederatedPresenceRows(
     .map((r) => ({
       workspace_id: String(r.workspace_id ?? ''),
       harness_slug: String(r.harness_slug ?? ''),
+      hive_slug: r.hive_slug == null ? null : String(r.hive_slug),
       github_user_id: Number(r.github_user_id),
       machine_label: String(r.machine_label ?? ''),
       device_pubkey: String(r.device_pubkey ?? ''),
@@ -121,7 +126,8 @@ export async function queryFederatedPresenceRows(
       last_seen_ms: Number(r.last_seen_ms),
     }))
     .filter((r) => (opts.workspaceId ? r.workspace_id === opts.workspaceId : true))
-    .filter((r) => (opts.harnessSlug ? r.harness_slug === opts.harnessSlug : true));
+    .filter((r) => (opts.harnessSlug ? r.harness_slug === opts.harnessSlug : true))
+    .filter((r) => (opts.hiveSlug ? r.hive_slug === opts.hiveSlug : true));
 }
 
 /**

@@ -91,12 +91,15 @@ export class InMemoryPresenceStore implements PresenceStore {
     this.rows.delete(ownerId);
   }
 
-  async list(opts: { workspaceId?: string | null } = {}): Promise<PresenceRecord[]> {
+  async list(
+    opts: { workspaceId?: string | null; hiveSlug?: string | null } = {},
+  ): Promise<PresenceRecord[]> {
     const ws = opts.workspaceId ?? null;
+    const hive = opts.hiveSlug ?? null;
     const now = this.now();
     return [...this.rows.values()]
       .map((r) => this.toRecord(r, now))
-      .filter((r) => ws == null || r.workspaceId === ws)
+      .filter((r) => (ws == null || r.workspaceId === ws) && (hive == null || r.hiveSlug === hive))
       // Deterministic ownerId order (presence-v2 P-005 / D-006) — cache- and
       // diff-stable, unlike the old heartbeat-DESC which reorders every read.
       .sort((a, b) => a.ownerId.localeCompare(b.ownerId));

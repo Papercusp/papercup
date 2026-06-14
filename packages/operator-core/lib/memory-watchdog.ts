@@ -35,16 +35,6 @@ export interface MemoryWatchdogOpts {
   /** Structured log sink. Default console.warn. */
   log?: (line: string, detail: Record<string, number>) => void;
   /**
-   * Force-GC hook to tell a TRANSIENT spike from a RETAINED leak before
-   * recycling. Default `globalThis.gc` (present under --expose-gc). On crossing
-   * the limit the watchdog calls it, re-measures RSS, and only treats the sample
-   * as over-limit if RSS is STILL over AFTER gc — so collectable garbage (which a
-   * large --max-old-space-size lets V8 leave un-collected) never trips a recycle.
-   * This is what turned a transient boot-time spike into a ~90s crash loop
-   * (EI-579). Injectable for tests; set to a no-op or pass `gc:()=>{}` to disable.
-   */
-  gc?: () => void;
-  /**
    * What to do when the high-water mark trips. Default: log loudly then
    * `process.exit(0)` after a short flush delay (systemd Restart=always
    * recycles). A real host should inject `gracefulHostRecycle` (host-recycle.ts)

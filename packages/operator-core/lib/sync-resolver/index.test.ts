@@ -308,8 +308,12 @@ describe('sync-resolver v2 registry', () => {
             // (plansDrafts.bySlug saw a stale mock → "Cannot read properties of
             // undefined", release-fixer 2026-06-14). Draining every dispatch
             // keeps the registry clean for the mock-based blocks below. A truly
-            // hanging resolver now trips this test's own 10s timeout — a real
-            // signal, not a silent leak.
+            // hanging resolver still trips this test's own timeout — a real
+            // signal, not a silent leak. The bound is generous (30s) headroom
+            // over the legitimate ~10s drain: every null-accepting resolver does
+            // a real PG round-trip here (~54 × ~180ms), so a 10s bound sat right
+            // on the edge and tipped over under green-checkpoint load — a flake.
+            // 30s still catches a genuine never-resolving hang.
             await r(name, null);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -325,7 +329,7 @@ describe('sync-resolver v2 registry', () => {
         errorSpy.mockRestore();
       }
       expect(typeErrors).toEqual([]);
-    }, 10_000);
+    }, 30_000);
   });
 });
 

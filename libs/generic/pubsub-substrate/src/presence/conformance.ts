@@ -226,7 +226,31 @@ export function describePresenceConformance(
       const c = ident(store, 'c', ws);
       await store.write(c);
       const inWs = await store.list({ workspaceId: ws });
-      expect(inWs.map((r) => r.ownerId)).toEqual([c.ownerId, a.ownerId]);
+      // ownerId order (P-005), not heartbeat — robust to the shared counter.
+      const expected = [a.ownerId, c.ownerId].sort((x, y) => x.localeCompare(y));
+      expect(inWs.map((r) => r.ownerId)).toEqual(expected);
+    });
+
+    it('list filters by hiveSlug (P-004 hive-scoped read)', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const ws = `${runPrefix}-hws`;
+      const hiveA = `${runPrefix}-hiveA`;
+      const inHive = ident(store, 'inhive', ws);
+      await store.write(inHive, { hiveSlug: hiveA });
+      const otherHive = ident(store, 'otherhive', ws);
+      await store.write(otherHive, { hiveSlug: `${runPrefix}-hiveB` });
+      const noHive = ident(store, 'nohive', ws);
+      await store.write(noHive, {}); // hive_slug null — excluded by a hive filter
+
+      // hive filter → only the matching-hive row.
+      const inHiveRows = await store.list({ workspaceId: ws, hiveSlug: hiveA });
+      expect(inHiveRows.map((r) => r.ownerId)).toEqual([inHive.ownerId]);
+      // no hive filter → all three in the workspace (hive_slug ignored).
+      const allRows = await store.list({ workspaceId: ws });
+      expect(allRows.map((r) => r.ownerId).sort((x, y) => x.localeCompare(y))).toEqual(
+        [inHive.ownerId, otherHive.ownerId, noHive.ownerId].sort((x, y) => x.localeCompare(y)),
+      );
     });
   });
 }
