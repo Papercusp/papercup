@@ -33,9 +33,11 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resolve } from 'node:path';
 import createTestnet from 'hyperdht/testnet.js';
 import { spawnPeerChild, type PeerChildHandle } from './perf/child-driver';
-import type { PeerChildConfig } from './perf/peer-child';
+import type { PeerChildConfig, PeerChildResult } from './perf/peer-child';
+import type { SshSlotSpec } from '../../deployment/p2p-perf-tier3/remote-peer';
 
 const FLAG_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_SUBSTRATE_LOG_SNAPSHOT';
 const TEN_MIN = 10 * 60_000;
@@ -80,7 +82,7 @@ describe('substrate compaction under live replication — $0 local parity (multi
         handles.push(writer);
         const writerReady = await writer.waitFor('ready', TEN_MIN);
         expect(writerReady).toBeTruthy();
-        const writerKeyHex = (writerReady as { keyHex: string }).keyHex;
+        const writerKeyHex = (writerReady as unknown as { keyHex: string }).keyHex;
 
         // ── Connected reader (slot 1): joins BEFORE the load → replicates THROUGH the compaction. ──
         const reader = spawnPeerChild(
@@ -165,3 +167,104 @@ describe('substrate compaction under live replication — $0 local parity (multi
     TEN_MIN,
   );
 });
+
+// ── CRED-GATED: real ≥2-machine Hetzner compaction-under-replication (the literal P-008 deliverable) ──
+const NINETY_MIN = 90 * 60_000;
+const hetznerSshKeyId = process.env.HETZNER_SSH_KEY_ID;
+const hetznerIdentity = process.env.HETZNER_SSH_IDENTITY_FILE;
+const haveHetzner =
+  !!(process.env.HCLOUD_TOKEN || process.env.HETZNER_API_TOKEN) && !!hetznerSshKeyId && !!hetznerIdentity;
+
+describe.skipIf(!haveHetzner)(
+  'substrate compaction under live replication — REAL Hetzner frames (needs HCLOUD_TOKEN + HETZNER_SSH_KEY_ID + HETZNER_SSH_IDENTITY_FILE)',
+  () => {
+    it(
+      'writer compacts mid-stream over the real wire → connected reader converges + a FRESH joiner SPARSE-FETCHES (skips the history); DESTROYS always',
+      async () => {
+        const { provisionBenchFleet } = await import('../../deployment/p2p-perf-tier3/bench-frames');
+        const { sshPeerLauncher } = await import('../../deployment/p2p-perf-tier3/remote-peer');
+        const { HetznerDriver } = await import('../../deployment/hetzner/hetzner-driver');
+        const repoRoot = process.cwd().includes('packages/operator-core')
+          ? resolve(process.cwd(), '..', '..')
+          : process.cwd();
+        const size = process.env.HETZNER_E2E_SERVER_TYPE ?? 'cpx31';
+        const locations = (process.env.P2P_PERF_HETZNER_LOCATIONS ?? 'ash,ash').split(',').map((s) => s.trim());
+        const sshKeyId = Number(hetznerSshKeyId) || hetznerSshKeyId!;
+        // 2 distinct VMs: the WRITER alone on frame 0; the connected READER + the fresh JOINER on
+        // frame 1 — so the joiner sparse-fetches the writer's log ACROSS a real machine boundary.
+        const needsIndexSuffix = new Set(locations.slice(0, 2)).size < 2;
+
+        const fleet = await provisionBenchFleet({
+          driver: HetznerDriver,
+          repoRoot,
+          sshIdentityFile: hetznerIdentity!,
+          providerDefaults: { sshKeys: [sshKeyId], sshIdentityFile: hetznerIdentity! },
+          specs: Array.from({ length: 2 }, (_, i) => ({
+            label: locations[i % locations.length] + (needsIndexSuffix ? `-${i}` : ''),
+            region: locations[i % locations.length],
+            size,
+            kind: 'vm' as const,
+            firewall: false, // direct WAN — the byte-skip just needs real cross-machine replication
+          })),
+          log: (lvl, m) => console.log(`[compact-xm ${lvl}] ${m}`),
+        });
+
+        try {
+          const slug = `sub-compact-xm-${Date.now()}`;
+          const flagEnv = { [FLAG_ENV]: '1' };
+          // 3 logical peers over the 2 frames: writer→frame0, reader+joiner→frame1.
+          const slotSpecs: SshSlotSpec[] = [
+            { label: `${fleet.frames[0].spec.label}-writer`, target: fleet.frames[0].target, extraEnv: flagEnv },
+            { label: `${fleet.frames[1].spec.label}-reader`, target: fleet.frames[1].target, extraEnv: flagEnv },
+            { label: `${fleet.frames[1].spec.label}-joiner`, target: fleet.frames[1].target, extraEnv: flagEnv },
+          ];
+          const launcher = sshPeerLauncher({ frames: slotSpecs, log: (l) => console.log(`[compact-xm] ${l}`) });
+          const [wSlot, rSlot, jSlot] = launcher.slots;
+          const base = (over: Partial<PeerChildConfig> & Pick<PeerChildConfig, 'role' | 'peerIndex'>): PeerChildConfig => ({
+            workspaceId: 'p2p-compact',
+            harnessSlug: slug,
+            root: '', // sshPeerLauncher sets the remote /tmp root
+            corpusAuthor: 'a'.repeat(64),
+            ...over,
+          });
+
+          // Writer compacts mid-stream (COUNT > SNAPSHOT_SCAN_LOOKBACK so the joiner can skip the prefix).
+          const writer = wSlot.launch(base({ role: 'writer', peerIndex: 0, rate: 0, count: COUNT, seed: 7 }));
+          const writerReady = await writer.waitFor('ready', NINETY_MIN);
+          expect(writerReady).toBeTruthy();
+          const writerKeyHex = (writerReady as unknown as { keyHex: string }).keyHex;
+
+          const reader = rSlot.launch(base({ role: 'reader', peerIndex: 1, expectedWinners: COUNT, mergePollMs: 1000, catchUpTimeoutMs: NINETY_MIN }));
+          expect(await reader.waitFor('ready', NINETY_MIN)).toBeTruthy();
+          expect(await reader.waitFor('admitted', NINETY_MIN)).toBeTruthy();
+
+          writer.send('go');
+          expect(await writer.waitFor('writer-done', NINETY_MIN)).toBeTruthy();
+          expect(await reader.waitFor('caught-up', NINETY_MIN)).toBeTruthy(); // converged THROUGH the compaction
+
+          // Fresh joiner — across the machine boundary from the writer — folds from the snapshot.
+          const joiner = jSlot.launch(base({ role: 'reader', peerIndex: 2, expectedWinners: COUNT, mergePollMs: 1000, catchUpTimeoutMs: NINETY_MIN }));
+          expect(await joiner.waitFor('ready', NINETY_MIN)).toBeTruthy();
+          expect(await joiner.waitFor('admitted', NINETY_MIN)).toBeTruthy();
+          expect(await joiner.waitFor('caught-up', NINETY_MIN)).toBeTruthy();
+
+          const joinerResult: PeerChildResult | null = await joiner.stopAndCollect();
+          const readerResult: PeerChildResult | null = await reader.stopAndCollect();
+          const joinerW = joinerResult?.admittedStats?.find((s) => s.keyHex === writerKeyHex);
+          const readerW = readerResult?.admittedStats?.find((s) => s.keyHex === writerKeyHex);
+          console.log('[compact-xm byte-skip]', JSON.stringify({ joiner: joinerW, reader: readerW }));
+          expect(joinerW).toBeTruthy();
+          expect(readerW).toBeTruthy();
+          // THE P-008 PROOF over a real wire: the fresh joiner sparse-fetched — it converged (tail
+          // present) but downloaded almost none of the writer's history vs the from-start reader.
+          expect(joinerW!.hasLast).toBe(true);
+          expect(readerW!.contiguousLength).toBe(readerW!.length);
+          expect(joinerW!.contiguousLength).toBeLessThan(readerW!.length / 2);
+        } finally {
+          await fleet.teardownAll();
+        }
+      },
+      NINETY_MIN,
+    );
+  },
+);

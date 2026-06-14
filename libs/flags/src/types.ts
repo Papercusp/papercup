@@ -434,6 +434,11 @@ export const FLAGS = {
   // kill-switch. OFF = today's behavior (existing root-only/source/confirm gates
   // only); SOLO/unbound hives are never gated (the owner keeps owner tier).
   HIVE_ROLE_TIERS: "papercusp-hive-role-tiers",
+  // worker-chunk-loop-operator-hosted-2026-06-14 (P-142 / P-004): route the coding
+  // director's worker dispatch to the operator-hosted `worker:chunk-loop` op instead
+  // of the subprocess chunk loop. DEFAULT OFF — the staged hot-path rollout's gate
+  // (dark → ramp → retire); OFF = today's subprocess path, unchanged.
+  WORKER_CHUNK_LOOP_BLUEPRINT: "papercusp-worker-chunk-loop-blueprint",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -681,6 +686,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // it ON (getFlag falls back to this default), so the safety stays on when PostHog is
   // unreachable — the opposite of a closed gate.
   [FLAGS.GIT_SYNC_CONTENT_GUARD]: true,
+  // DEFAULT OFF (P-142 / D-003) — genuinely incomplete-until-ramped: the operator-hosted
+  // worker:chunk-loop is the coding HOT PATH and ships dark, then dark-launch → 25/50/100
+  // ramp → retire (worker-chunk-loop-operator-hosted-2026-06-14). OFF = the subprocess
+  // chunk loop, unchanged. Flip per-cohort only as the parity metrics confirm at each step.
+  [FLAGS.WORKER_CHUNK_LOOP_BLUEPRINT]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

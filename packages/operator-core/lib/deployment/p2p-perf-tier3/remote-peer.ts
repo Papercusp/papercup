@@ -88,6 +88,10 @@ export interface SshSlotSpec {
   target: SshTarget;
   /** Install root on the frame (default `/opt/papercusp`). */
   installRoot?: string;
+  /** Extra env vars to set on the remote peer-child process. SSH does not forward arbitrary
+   *  env, so these are inlined into the remote command (e.g. a `PAPERCUSP_FLAG_*` override to
+   *  enable a flag-gated path like substrate-log-snapshot on the frame). */
+  extraEnv?: Record<string, string>;
 }
 
 /**
@@ -104,7 +108,7 @@ export interface SshSlotSpec {
  */
 export function buildRemotePeerCommand(
   cfg: PeerChildConfig,
-  spec: Pick<SshSlotSpec, 'label' | 'installRoot'>,
+  spec: Pick<SshSlotSpec, 'label' | 'installRoot' | 'extraEnv'>,
 ): { remoteCommand: string; childCfg: PeerChildConfig } {
   // Public DHT on real frames: never pass a local-testnet bootstrap.
   const { bootstrap: _drop, ...rest } = cfg;
@@ -113,9 +117,13 @@ export function buildRemotePeerCommand(
   const childCfg: PeerChildConfig = { ...rest, root: remoteRoot };
   const peerChild = remotePeerChildPath(spec.installRoot);
   const runtimeDir = benchRuntimeDir(spec.installRoot);
+  // SSH doesn't forward arbitrary env — inline any extras before the child invocation.
+  const extraEnv = Object.entries(spec.extraEnv ?? {})
+    .map(([k, v]) => `${k}=${shq(v)} `)
+    .join('');
   const remoteCommand =
     `mkdir -p ${shq(remoteRoot)} && cd ${shq(runtimeDir)} && ` +
-    `P2P_PERF_CHILD=${shq(JSON.stringify(childCfg))} NODE_ENV=test ` +
+    `${extraEnv}P2P_PERF_CHILD=${shq(JSON.stringify(childCfg))} NODE_ENV=test ` +
     `exec node --import tsx ${shq(peerChild)}`;
   return { remoteCommand, childCfg };
 }

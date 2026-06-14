@@ -341,8 +341,8 @@ async function main(): Promise<void> {
     };
     // P-008: snapshot the download state of every admitted REMOTE log (own excluded) so the
     // parent can prove a snapshot-seeded joiner skipped the pre-snapshot prefix (sparse fetch).
-    const admittedStats = [...handle.admitted.entries()]
-      .filter(([k]) => k !== handle.ownLog.keyHex)
+    const admittedStats = [...handle!.admitted.entries()]
+      .filter(([k]) => k !== handle!.ownLog.keyHex)
       .map(([keyHex, log]) => {
         const d = log as { length: number; has?(i: number): boolean; contiguousLength?: number };
         const len = d.length;
