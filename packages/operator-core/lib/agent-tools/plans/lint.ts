@@ -185,6 +185,43 @@ export async function lintParsed(
     }
   }
 
+  // EI-205: the completion reflex never flips plan status. A 2026-06-09 audit
+  // found ~45 plans whose status (draft/ready/active) contradicted their own
+  // reality — e.g. a `## Now` saying "PLAN COMPLETE / nothing outstanding" still
+  // at status=draft, or every item closed out while status stayed 'ready'.
+  // Agents faithfully update the Now block + item statuses at completion but
+  // never call plans:set-plan-status, so a finished plan reads as live work.
+  // Fire when a non-terminal plan looks DONE — either ALL its items are closed
+  // (storedStatus done/dropped, ≥1 item) OR its `## Now` state uses strong
+  // whole-plan completion language. WARNING, never error (lints advise — CLAUDE.md).
+  // Low-FP: the structural "all items closed" signal is exact; the prose signal
+  // is scoped to the self-referential Now state with strong multi-word phrases
+  // (a bare "done"/"complete" — common in Next/State prose — does NOT fire).
+  if (status === 'draft' || status === 'ready' || status === 'active') {
+    const closedItems = parsed.items.filter(
+      (i) => i.storedStatus === 'done' || i.storedStatus === 'dropped',
+    );
+    const allItemsClosed = parsed.items.length > 0 && closedItems.length === parsed.items.length;
+    const nowStateForDone = (parsed.now?.state ?? '').replace(/[*_`]/g, '');
+    const strongCompletionProse =
+      /\b(?:plan\s+(?:is\s+)?(?:fully\s+)?complete|fully\s+complete|fully\s+done|nothing\s+(?:outstanding|left|remaining)|all\s+(?:items?\s+)?(?:done|complete|shipped))\b/i.test(
+        nowStateForDone,
+      );
+    if (allItemsClosed || strongCompletionProse) {
+      const why = allItemsClosed
+        ? `all ${parsed.items.length} of its items are closed (done/dropped)`
+        : 'its `## Now` state reads as complete';
+      report.warnings.push({
+        level: 'warning',
+        code: 'completion_status_mismatch',
+        message:
+          `This plan looks complete (${why}) but its status is '${status}'. ` +
+          `If it is finished, flip it with plans:set-plan-status status=shipped; otherwise record what is still ` +
+          `outstanding in the \`## Now\` block. A finished plan left '${status}' keeps reading as live work (EI-205).`,
+      });
+    }
+  }
+
   // EI-44: owner-gated asks written as `## Now` PROSE ("Owner: decide D-002",
   // "human greenlights a phase", "Owner: provide FCM/APNS creds") are invisible
   // to every inbox surface — only a `needs-human` ITEM is queryable by
@@ -318,6 +355,32 @@ export async function lintParsed(
         code: 'unknown_importance',
         message: `Item ${it.id} has importance: ${impRaw[1]} which isn't one of ${IMPORTANCE_LEVELS.join('/')} — treated as normal.`,
         itemId: it.id,
+      });
+    }
+  }
+
+  // EI-101: a decision recording landed/shipped work whose referenced items are
+  // still `todo`. Repro: archive-legacy-orchestrator-deadcode — D-007 recorded a
+  // thorough completion (itemRefs P-001..P-013) but the items kept storedStatus=
+  // todo, so the brief-index generator (plans:items effectiveStatus=todo)
+  // re-dispatched the whole plan as fresh work, burning an agent slot re-verifying
+  // landed work. Fire when a decision body reads as completed AND ≥1 of its
+  // itemRefs is still `todo`: flip the items (or note why they remain open) so the
+  // completed work isn't re-briefed. WARNING, never error (lints advise — CLAUDE.md).
+  // Low-FP: needs BOTH a completion verb in the body AND a referenced item at todo.
+  const DECISION_DONE_RE =
+    /\b(?:landed|shipped|executed|merged|deployed|implemented|completed|all\s+done|fully\s+done)\b/i;
+  for (const d of parsed.decisions) {
+    if (!DECISION_DONE_RE.test(d.body ?? '')) continue;
+    const todoRefs = (d.itemRefs ?? []).filter((ref) => itemById.get(ref)?.storedStatus === 'todo');
+    if (todoRefs.length > 0) {
+      report.warnings.push({
+        level: 'warning',
+        code: 'decision_done_items_todo',
+        message:
+          `Decision ${d.id} reads as completed but its referenced item(s) ${todoRefs.join(', ')} are still 'todo'. ` +
+          `Flip them with plans:set-status (or note why they remain open) — items left 'todo' under a "done" decision ` +
+          `get re-dispatched as fresh work by the brief/work-list generators (EI-101).`,
       });
     }
   }

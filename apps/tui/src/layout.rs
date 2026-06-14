@@ -205,8 +205,9 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 
 /// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011;
 /// consolidated pui-dock-consolidation-2026-06-07): the surface the
-/// desktop-docked native terminal runs. A **two-tab** zellij session
-/// (hive-network-surface-2026-06-11 P-007 / B-10):
+/// desktop-docked native terminal runs. A **three-tab** zellij session
+/// (hive-network-surface-2026-06-11 P-007 / B-10; plans tab added
+/// pui-plans-status-board-2026-06-14):
 ///   * tab **"this hive"** (focus) — the live-TUI dock VERBATIM: the queen
 ///     split (`psu --brain` + her data boards) over the agent stack
 ///     (operator/sentinel chat, the reactive dock-driver, the fleet wake board).
@@ -214,9 +215,13 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 ///   * tab **"network"** — `pui network-pane`, the cross-hive capability-ladder
 ///     board (own hives, shared-Hive peer Swarms, foreign directory hives);
 ///     selecting a row drills into an on-demand per-hive tab (`hive_tab_kdl`).
-/// The tab-bar + status-bar move into a `default_tab_template` shared by both
+///   * tab **"plans"** — `pui plans-pane`, the plans status board: every plan's
+///     status, whether it is being worked on, its agent count, and item
+///     progress (done / wip / todo + blocked + needs-human).
+/// The tab-bar + status-bar move into a `default_tab_template` shared by all
 /// tabs; "this hive" is the FIRST tab + focus=true so the dock opens where it
-/// always did. The workbench swap presets are untouched.
+/// always did (and tier-1 `GoToTab(1)` lands on it). The workbench swap presets
+/// are untouched.
 ///
 /// Pane DISPLAY names route through the active Hive lexicon (`lex`): the
 /// operator pane is the `operator` term (Queen). The pinned-pane ARGS
@@ -348,14 +353,16 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
 // active agents. Pane display names route through the lexicon. (The
 // hive-agent-tabs flag is RETIRED — this shape is the only shape.)
 //
-// Dock tabs (hive-network-surface-2026-06-11 P-007 / B-10): the dock is a
-// TWO-TAB zellij session. Tab 1 "this hive" holds the whole dock above VERBATIM
-// (the queen split / agent stack — nothing about it changed); tab 2 "network"
-// hosts `pui network-pane`, the cross-hive capability-ladder board. The tab-bar
-// + status-bar move into a `default_tab_template` so BOTH tabs carry them;
-// "this hive" is the first tab + focus=true so the dock opens exactly where it
-// always did. Selecting a row in the network board opens an on-demand per-hive
-// drill-in tab (see `hive_tab_kdl`). The workbench swap presets are untouched.
+// Dock tabs (hive-network-surface-2026-06-11 P-007 / B-10; plans tab added
+// pui-plans-status-board-2026-06-14): the dock is a THREE-TAB zellij session.
+// Tab 1 "this hive" holds the whole dock above VERBATIM (the queen split /
+// agent stack — nothing about it changed); tab 2 "network" hosts `pui
+// network-pane`, the cross-hive capability-ladder board; tab 3 "plans" hosts
+// `pui plans-pane`, the plans status board. The tab-bar + status-bar move into
+// a `default_tab_template` so ALL tabs carry them; "this hive" is the first tab
+// + focus=true so the dock opens exactly where it always did. Selecting a row
+// in the network board opens an on-demand per-hive drill-in tab (see
+// `hive_tab_kdl`). The workbench swap presets are untouched.
 //
 // Tab → fullscreen the focused pane (owner ask 2026-06-11): focus an agent
 // chat and press Tab to zoom it full (hiding its wakes pane + the rest); Tab
@@ -387,6 +394,12 @@ layout {{
         pane name="network" {{
             command "pui"
             args "network-pane"
+        }}
+    }}
+    tab name="plans" {{
+        pane name="plans" {{
+            command "pui"
+            args "plans-pane"
         }}
     }}
 }}
@@ -843,11 +856,12 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_is_a_two_tab_session_this_hive_then_network() {
-        // P-007 (hive-network-surface B-10): the dock is a TWO-tab zellij
-        // session. Tab 1 "this hive" holds the dock VERBATIM; tab 2 "network"
-        // hosts `pui network-pane`. The bars live in a `default_tab_template`
-        // shared by both tabs. The workbench swap presets never appear here.
+    fn chat_dock_is_a_three_tab_session_this_hive_network_plans() {
+        // P-007 (hive-network-surface B-10) + pui-plans-status-board: the dock
+        // is a THREE-tab zellij session. Tab 1 "this hive" holds the dock
+        // VERBATIM; tab 2 "network" hosts `pui network-pane`; tab 3 "plans"
+        // hosts `pui plans-pane`. The bars live in a `default_tab_template`
+        // shared by all tabs. The workbench swap presets never appear here.
         let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
         // A shared tab template carries the bars exactly once.
         assert!(kdl.contains("default_tab_template {"), "no default_tab_template");
@@ -862,28 +876,32 @@ mod tests {
             1,
             "status-bar declared once in the template"
         );
-        // Both tabs, in order: "this hive" (focus) THEN "network" (C-5 names).
+        // All three tabs, in order: "this hive" (focus) → "network" → "plans".
         assert!(
             kdl.contains("tab name=\"this hive\" focus=true"),
             "missing focused this-hive tab"
         );
         assert!(kdl.contains("tab name=\"network\""), "missing network tab");
+        assert!(kdl.contains("tab name=\"plans\""), "missing plans tab");
         let th = kdl.find("tab name=\"this hive\"").unwrap();
         let nw = kdl.find("tab name=\"network\"").unwrap();
+        let pl = kdl.find("tab name=\"plans\"").unwrap();
         assert!(
-            th < nw,
+            th < nw && nw < pl,
             "this hive must be the FIRST tab so tier-1 GoToTab(1) lands on it"
         );
         // The dock body moved VERBATIM inside the this-hive tab (the chat
-        // stack sits between the two tab headers).
+        // stack sits between the first two tab headers).
         let chat = kdl.find("name=\"chat\"").unwrap();
         assert!(
             th < chat && chat < nw,
             "the dock body must live inside the this-hive tab"
         );
-        // The network tab hosts the C-5-named `pui network-pane`.
+        // The network + plans tabs host their respective pinned pui boards.
         let net_pane = kdl.find("args \"network-pane\"").unwrap();
-        assert!(net_pane > nw, "network-pane must be inside the network tab");
+        assert!(net_pane > nw && net_pane < pl, "network-pane must be inside the network tab");
+        let plans_pane = kdl.find("args \"plans-pane\"").unwrap();
+        assert!(plans_pane > pl, "plans-pane must be inside the plans tab");
         // The dock is never the workbench.
         assert!(!kdl.contains("swap_tiled_layout"), "no swap presets in the dock");
     }
@@ -944,9 +962,10 @@ mod tests {
         assert!(on.contains("args \"wake-pane\"\n")); // the fleet-wide pane (bare wake-pane)
         assert!(on.contains("name=\"⏸ wakes\""));
         // queen prompt/wakes/mail/work + driver + fleet-wakes + the network tab's
-        // network-pane (P-007 dock tabs) = 7.
-        assert_eq!(on.matches("command \"pui\"").count(), 7);
+        // network-pane + the plans tab's plans-pane (P-007 + plans board) = 8.
+        assert_eq!(on.matches("command \"pui\"").count(), 8);
         assert!(on.contains("args \"network-pane\""));
+        assert!(on.contains("args \"plans-pane\""));
         // Order: brain precedes her side column; the queen container precedes
         // the agent `chat` stack; the driver is inside the stack.
         let queen_at = on.find("name=\"♛ queen\"").expect("queen container");

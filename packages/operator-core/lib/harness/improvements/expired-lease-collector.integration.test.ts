@@ -11,7 +11,8 @@
  * Mirrors stale-claims.integration.test.ts's fixture (real PG, mig 141 + the two
  * liveness-table stubs).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +26,15 @@ const readMigration = (f: string) =>
     .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
     .join('\n');
 
+// acquireClaimLocal writes via getOrgPg().sql — point it at our fresh test DB so
+// the claims it creates are the ones collectExpiredLeaseSignals (called with the
+// same sql) reads. (Same seam as stale-claims.integration.test.ts.)
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+
 const { collectExpiredLeaseSignals } = await import('./watchdog');
 const claims = await import('../../plan-items/claims');
 
@@ -36,6 +46,7 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('expired-lease-collector');
+  h.sql = db.sql;
   await db.sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
   await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (

@@ -205,6 +205,93 @@ describe('plans:lint — superseded_status_mismatch (EI-154)', () => {
   });
 });
 
+describe('plans:lint — completion_status_mismatch (EI-205)', () => {
+  const planDoc = (opts: {
+    status: string;
+    items: Array<[string, string]>;
+    nowState?: string;
+  }) => {
+    const items = opts.items.map(([id, st]) => `- **${id}** \`${st}\` do ${id}`).join('\n');
+    return (
+      `---\ntitle: T\nslug: completion-lint-test\nstatus: ${opts.status}\ncreated: 2026-06-05\n---\n\n` +
+      `# T\n\n## Now\n\n**State:** ${opts.nowState ?? 'building'}\n\n**Next:** y\n\n` +
+      `## Phase 1\n\n${items}\n\n## Decisions\n\n### D-001 — a decision\nBody.\n`
+    );
+  };
+  const lintDoc = async (raw: string) => lintParsed(parsePlan(raw), 'completion-lint-test', false);
+  const has = (r: { warnings: { code: string }[] }) =>
+    codes(r.warnings).includes('completion_status_mismatch');
+
+  it('warns when ALL items are closed but status is ready (structural signal)', async () => {
+    const r = await lintDoc(planDoc({ status: 'ready', items: [['P-001', 'done'], ['P-002', 'dropped']] }));
+    expect(has(r)).toBe(true);
+    expect(codes(r.errors)).not.toContain('completion_status_mismatch'); // warning, never error
+    expect(r.warnings.find((f) => f.code === 'completion_status_mismatch')!.message).toMatch(/'ready'/);
+  });
+
+  it('warns when the Now state reads "PLAN COMPLETE — nothing outstanding" but status is draft', async () => {
+    const r = await lintDoc(
+      planDoc({ status: 'draft', items: [['P-001', 'todo']], nowState: 'PLAN COMPLETE — nothing outstanding.' }),
+    );
+    expect(has(r)).toBe(true);
+  });
+
+  it('does NOT warn when status is shipped (terminal — correctly closed out)', async () => {
+    const r = await lintDoc(planDoc({ status: 'shipped', items: [['P-001', 'done']], nowState: 'all done' }));
+    expect(has(r)).toBe(false);
+  });
+
+  it('does NOT warn when items remain open and the Now state is ordinary', async () => {
+    const r = await lintDoc(planDoc({ status: 'ready', items: [['P-001', 'done'], ['P-002', 'todo']], nowState: 'building' }));
+    expect(has(r)).toBe(false);
+  });
+
+  it('does NOT warn on a bare "complete" in prose without a whole-plan completion phrase (FP guard)', async () => {
+    const r = await lintDoc(
+      planDoc({ status: 'active', items: [['P-001', 'todo']], nowState: 'next we complete the migration' }),
+    );
+    expect(has(r)).toBe(false);
+  });
+
+  it('does NOT warn on a plan with zero items and an ordinary Now', async () => {
+    const raw =
+      `---\ntitle: T\nslug: completion-lint-test\nstatus: draft\ncreated: 2026-06-05\n---\n\n` +
+      `# T\n\n## Now\n\n**State:** scoping\n\n**Next:** y\n\n## Decisions\n\n### D-001 — d\nBody.\n`;
+    const r = await lintDoc(raw);
+    expect(has(r)).toBe(false);
+  });
+});
+
+describe('plans:lint — decision_done_items_todo (EI-101)', () => {
+  const planDoc = (opts: { itemStatus: string; decisionBody: string }) =>
+    `---\ntitle: T\nslug: dec-done-lint-test\nstatus: active\ncreated: 2026-06-05\n---\n\n` +
+    `# T\n\n## Now\n\n**State:** building\n\n**Next:** y\n\n` +
+    `## Phase 1\n\n- **P-001** \`${opts.itemStatus}\` do P-001\n- **P-002** \`${opts.itemStatus}\` do P-002\n\n` +
+    `## Decisions\n\n### D-007 — completion\n${opts.decisionBody}\n`;
+  const lintDoc = async (raw: string) => lintParsed(parsePlan(raw), 'dec-done-lint-test', false);
+  const has = (r: { warnings: { code: string }[] }) =>
+    codes(r.warnings).includes('decision_done_items_todo');
+
+  it('warns when a decision reads "Executed P-001/P-002" but the items are still todo', async () => {
+    const r = await lintDoc(planDoc({ itemStatus: 'todo', decisionBody: 'Executed P-001 and P-002 fully.' }));
+    expect(has(r)).toBe(true);
+    expect(codes(r.errors)).not.toContain('decision_done_items_todo'); // warning, never error
+    const w = r.warnings.find((f) => f.code === 'decision_done_items_todo')!;
+    expect(w.message).toMatch(/P-001/);
+    expect(w.message).toMatch(/D-007/);
+  });
+
+  it('does NOT warn when the referenced items are already done', async () => {
+    const r = await lintDoc(planDoc({ itemStatus: 'done', decisionBody: 'Shipped P-001 and P-002.' }));
+    expect(has(r)).toBe(false);
+  });
+
+  it('does NOT warn when the decision body carries no completion verb', async () => {
+    const r = await lintDoc(planDoc({ itemStatus: 'todo', decisionBody: 'We will scope P-001 and P-002 next.' }));
+    expect(has(r)).toBe(false);
+  });
+});
+
 /**
  * EI-251: checkbox-style item lines (`- [ ] P-NNN — text`) parse as ZERO
  * items, so plans:set-status fails item_not_found and the items are invisible

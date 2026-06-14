@@ -3,6 +3,7 @@ import { BASELINE_ID, resetTestRegistry } from '@papercusp/eval-battery';
 import type { ReplayBatteryResult } from '../replay/battery';
 import { _resetExperimentRegistration } from './descriptors';
 import { runExperiment, type RunExperimentDeps, type RunExperimentInput } from './run-core';
+import type { ExperimentLedger, ExperimentLedgerRow } from './ledger';
 
 function canned(): ReplayBatteryResult {
   return {
@@ -99,5 +100,29 @@ describe('runExperiment', () => {
     const out = await runExperiment(input({ testId: 'nope' }), { workspaceId: 'ws' }, deps());
     expect(out.ok).toBe(false);
     expect(out.error).toMatch(/unknown test descriptor: nope/);
+  });
+});
+
+describe('runExperiment ledger write (P-050)', () => {
+  beforeEach(() => {
+    resetTestRegistry();
+    _resetExperimentRegistration();
+  });
+
+  it('records the run-level summary row on success', async () => {
+    const rows: ExperimentLedgerRow[] = [];
+    const ledger: ExperimentLedger = { record: async (r) => void rows.push(r) };
+    const out = await runExperiment(input(), { workspaceId: 'ws' }, deps({ ledger }));
+    expect(out.ok).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ workspaceId: 'ws', batteryId: 'b1', testId: 'replay', tier: 'offline', winner: 'cand' });
+    expect(rows[0]!.arms.map((a) => a.id)).toEqual([BASELINE_ID, 'cand']);
+  });
+
+  it('a ledger write failure never fails the run (best-effort)', async () => {
+    const ledger: ExperimentLedger = { record: async () => { throw new Error('pg down'); } };
+    const out = await runExperiment(input(), { workspaceId: 'ws' }, deps({ ledger }));
+    expect(out.ok).toBe(true);
+    expect(out.result?.winner).toBe('cand');
   });
 });

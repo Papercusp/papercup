@@ -40,8 +40,8 @@ export class PgExperimentLedger implements ExperimentLedger {
          total_cost_usd, budget_exhausted)
       VALUES (
         ${row.workspaceId}, ${row.batteryId}, ${row.testId}, ${row.tier},
-        ${this.sql.json(row.arms as unknown as object)}, ${row.baselineId}, ${row.winner},
-        ${row.comparison === null || row.comparison === undefined ? null : this.sql.json(row.comparison as object)},
+        ${this.sql.json(row.arms as never)}, ${row.baselineId}, ${row.winner},
+        ${row.comparison === null || row.comparison === undefined ? null : this.sql.json(row.comparison as never)},
         ${row.totalCostUsd}, ${row.budgetExhausted}
       )
       ON CONFLICT (workspace_id, battery_id) DO UPDATE SET

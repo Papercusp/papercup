@@ -29,6 +29,7 @@ mod mux;
 mod network;
 mod notify;
 mod operator_voice_bus;
+mod plans_board;
 mod reap;
 mod session_panes;
 mod sse;
@@ -102,9 +103,11 @@ async fn main() -> Result<()> {
         // network-pane / hive-pane (hive-network-surface-2026-06-11 B-09): the
         // dock `network` tab's cross-Hive board, and the per-hive drill-in
         // tab's dossier pane (B-10's generated tabs run `pui hive-pane <key>`).
+        // plans-pane (pui-plans-status-board-2026-06-14): the dock's plans
+        // status board — a pinned data board, the network-pane convention.
         Some("dock-driver") | Some("wake-pane")
         | Some("prompt-pane") | Some("mail-pane") | Some("work-pane")
-        | Some("network-pane") | Some("hive-pane") => {}
+        | Some("network-pane") | Some("hive-pane") | Some("plans-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -120,6 +123,8 @@ async fn main() -> Result<()> {
         // network-pane: the cross-Hive board; hive-pane: one row's dossier
         // (same tab — `network_focus` below selects the mode).
         Some("network-pane") | Some("hive-pane") => Some(app::Tab::Network),
+        // plans-pane: the dock's plans status board (pui-plans-status-board).
+        Some("plans-pane") => Some(app::Tab::PlansBoard),
         _ => None,
     };
     let agent_ctx_mode = match subcommand.as_deref() {
@@ -606,6 +611,14 @@ async fn run<B: Backend>(
                 // the tab populates both the live roster + the browseable hives.
                 tokio::spawn(fetch_hives(tx.clone()));
                 tokio::spawn(fetch_hive_directory(tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchPlansBoard => {
+                // pui-plans-status-board: the plans-pane's manual `g` refresh.
+                // The standard refetch loop already feeds plans + roster
+                // push-driven (SSE + 60s safety net); this forces an immediate
+                // re-pull so the board updates the instant the owner asks.
+                tokio::spawn(fetch_plans_board(tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchNetworkBoard => {
@@ -2648,6 +2661,33 @@ async fn fetch_network_board(tx: UnboundedSender<Event>) {
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("network board: {e}")));
+        }
+    }
+}
+
+/// Fetch the plans status board's two inputs — the plans list + the live roster
+/// (pui-plans-status-board-2026-06-14) — off the UI thread and emit
+/// `Event::Plans` + `Event::Roster`, the same events the standard refetch loop
+/// feeds. The plans-pane's manual `g` refresh: errors surface in the status bar
+/// (the user asked, so a failure is an answer).
+async fn fetch_plans_board(tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    match client.plans_typed().await {
+        Ok(p) => {
+            let _ = tx.send(Event::Plans(p));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("plans: {e}")));
+        }
+    }
+    match client.roster_typed().await {
+        Ok((active, pending)) => {
+            let _ = tx.send(Event::Roster { active, pending });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("roster: {e}")));
         }
     }
 }

@@ -59,6 +59,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const { getOrgPg } = await import('@papercusp/db-org');
     const outcome = await runExperiment(
       {
         testId: args.testId,
@@ -74,6 +75,7 @@ export default defineTool({
         runGovernedReplay,
         replayRunner: experimentReplayRunner(args.replayModel, args.maxOutputTokens),
         judge: await experimentJudge(),
+        ledger: new PgExperimentLedger(getOrgPg().sql),
       },
     );
     return { content: [{ type: 'text' as const, text: JSON.stringify(outcome) }] };

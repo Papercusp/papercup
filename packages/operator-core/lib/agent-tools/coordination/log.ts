@@ -12,6 +12,7 @@
  * handle (`getSql`) and the flag-gated table bootstrap (`ensureSchema`).
  */
 
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { PgCoordLog, DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { CoordEventLog } from '@papercusp/coordination/event-log';
@@ -64,4 +65,18 @@ export const coordLog: CoordEventLog = {
  */
 export function coordWorkspaceId(): string {
   return (impl as Partial<{ workspaceId: string }>).workspaceId ?? DEFAULT_COORD_WORKSPACE;
+}
+
+/**
+ * The postgres handle the currently-configured backend reads/writes. A targeted
+ * `coord_event_log` query (e.g. readAckedMsgIds' fast path) must run on THIS
+ * handle — in production it's `getOrgPg().sql`, but a swapped seam (tests, a
+ * non-default backend) points at a different DB, so reaching for `getOrgPg()`
+ * independently would query the wrong database. Backends without a PG handle
+ * (the in-memory double) fall back to `getOrgPg().sql` — those tests don't drive
+ * the PG fast path.
+ */
+export function coordSql(): Sql {
+  const maybe = impl as Partial<{ getSql: () => Sql }>;
+  return typeof maybe.getSql === 'function' ? maybe.getSql() : getOrgPg().sql;
 }

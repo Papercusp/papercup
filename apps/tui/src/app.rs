@@ -38,6 +38,10 @@ pub const CONV_KINDS: [&str; 3] = ["all", "question", "discussion"];
 #[derive(Debug, PartialEq)]
 pub enum Action {
     None,
+    /// Refetch the plans status board now (the plans-pane's manual `g`). The
+    /// standard refetch loop already feeds plans + roster push-driven; this
+    /// forces an immediate refresh (pui-plans-status-board-2026-06-14).
+    FetchPlansBoard,
     /// Refetch the cross-Hive network board now (the network-pane's manual `g`
     /// — the refetch loop covers the push-driven cadence, B-09).
     FetchNetworkBoard,
@@ -858,6 +862,14 @@ pub enum Tab {
     /// inside B-10's per-hive drill-in tabs). The user-facing name is
     /// "Network" — NEVER "Apiary" (C-5: reserved by the instance gym).
     Network,
+    /// Plans status board (pui-plans-status-board-2026-06-14): a read-only
+    /// summary of every plan — status, whether it is being worked on, the agent
+    /// count (roster rows whose `current_plan_slug` matches), and item progress
+    /// (done/total, plus wip/blocked/needs-human). PANE-ONLY like Wake/Network:
+    /// not in `ALL` (no tab-strip slot, no switch key) — it renders solely as
+    /// the dock `plans` tab's pinned `pui plans-pane`. A DATA board (owner
+    /// directive: dock data boards are pui-rendered, chats are live TUIs).
+    PlansBoard,
 }
 
 impl Tab {
@@ -905,6 +917,7 @@ impl Tab {
             Tab::Wake => "Wakes",
             Tab::AgentCtx => "Agent",
             Tab::Network => "Network",
+            Tab::PlansBoard => "PlansBoard",
         }
     }
     /// The DISPLAY label for this tab through the active Hive lexicon
@@ -954,6 +967,7 @@ impl Tab {
             Tab::Wake => 'W',
             Tab::AgentCtx => 'X',
             Tab::Network => 'N',
+            Tab::PlansBoard => 'B',
         }
     }
     pub fn index(self) -> usize {
@@ -1020,6 +1034,9 @@ pub struct App {
     pub pinned: Option<Tab>,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
+    /// Highlight cursor for the pinned plans status board (`pui plans-pane`,
+    /// pui-plans-status-board-2026-06-14). Indexes `plans_board::board_rows`.
+    pub plans_board_sel: usize,
     /// Merged plan-item assignment/claim/liveness for the SELECTED plan (P-005a),
     /// or None until fetched. Rendered in the Plans detail pane; the draw guards on
     /// `plan == selected_plan().slug` so a stale fetch never paints the wrong plan.
@@ -1427,6 +1444,7 @@ impl App {
             pinned: None,
             plans: Vec::new(),
             plan_sel: 0,
+            plans_board_sel: 0,
             plan_item_states: None,
             roster: Vec::new(),
             tracked_panes: crate::session_panes::TrackedPanes::new(),
@@ -3375,7 +3393,29 @@ impl App {
         }
     }
 
-
+    /// Keymap for the pinned plans status board (`pui plans-pane`,
+    /// pui-plans-status-board-2026-06-14): j/k move the highlight over the
+    /// board rows, g forces an immediate plans+roster refetch. Everything else
+    /// is swallowed (a pinned dock pane has no tab strip to navigate).
+    fn plans_board_key(&mut self, code: KeyCode) -> Action {
+        // Row count for clamping — computed before the borrow ends so the
+        // mutations below don't overlap the immutable borrow of `self`.
+        let count = crate::plans_board::board_rows(self).len();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.plans_board_sel + 1 < count {
+                    self.plans_board_sel += 1;
+                }
+                Action::Render
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.plans_board_sel = self.plans_board_sel.saturating_sub(1);
+                Action::Render
+            }
+            KeyCode::Char('g') => Action::FetchPlansBoard,
+            _ => Action::None,
+        }
+    }
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
     /// first (`hud_pane_id`, read from `$ZELLIJ_PANE_ID`), then the command
@@ -4185,6 +4225,12 @@ impl App {
         // the board owns the whole keymap, the wake-pane convention.
         if self.tab == Tab::Network {
             return self.network_key(code);
+        }
+        // The pinned plans-pane (pui-plans-status-board-2026-06-14): the board
+        // owns the whole keymap — j/k move the highlight, g refreshes; there is
+        // no tab strip to navigate in a pinned dock pane.
+        if self.tab == Tab::PlansBoard {
+            return self.plans_board_key(code);
         }
         // The pinned agent-context panes (dock 4-pane split): j/k scroll,
         // N opens the notifications history, everything else is swallowed
@@ -5461,7 +5507,7 @@ impl App {
             // and the Wake board / agent-context / network panes own their own
             // j/k (pinned dock panes own their whole keymap).
             Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx
-            | Tab::Network => return,
+            | Tab::Network | Tab::PlansBoard => return,
         };
         if len == 0 {
             return;
@@ -5490,7 +5536,7 @@ impl App {
             Tab::Conversations => &mut self.conversation_sel,
             Tab::Hives => &mut self.hive_sel,
             Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx
-            | Tab::Network => return,
+            | Tab::Network | Tab::PlansBoard => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
