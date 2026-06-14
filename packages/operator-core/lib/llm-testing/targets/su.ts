@@ -37,6 +37,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveAnthropicBaseUrl } from '@papercusp/papercup-shared/agent';
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type {
   ChatSession,
@@ -182,7 +183,10 @@ function resolveTransport(): Transport | { error: string } {
   )?.claudeAiOauth?.accessToken;
   if (claudeTok) {
     return {
-      baseURL: process.env.PAPERCUSP_ANTHROPIC_URL ?? 'https://api.anthropic.com',
+      // Gateway-aware (EI-456) — OAuth path routes through the inference gateway
+      // when it exports ANTHROPIC_BASE_URL. (The ANTHROPIC_API_KEY branch above
+      // stays direct: the gateway re-auths to the pool, which would shadow a BYO key.)
+      baseURL: resolveAnthropicBaseUrl(),
       authToken: claudeTok,
       headers: { 'anthropic-beta': 'oauth-2025-04-20' },
     };

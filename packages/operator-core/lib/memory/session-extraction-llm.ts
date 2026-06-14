@@ -36,6 +36,7 @@
 import {
   readClaudeOauthToken,
   invalidateClaudeTokenCache,
+  resolveAnthropicBaseUrl,
 } from '@papercusp/papercup-shared/agent';
 import {
   ExtractionAuthError,
@@ -420,7 +421,10 @@ async function sessionTokenUsable(
   if (cached !== undefined) return cached;
   let usable = true;
   try {
-    const base = process.env.PAPERCUSP_ANTHROPIC_URL ?? 'https://api.anthropic.com';
+    // Gateway-aware (EI-456): when the inference gateway is up it exports
+    // ANTHROPIC_BASE_URL, so this usability probe takes the SAME egress path the
+    // real extraction call (runAgentChat anthropic-direct) will use.
+    const base = resolveAnthropicBaseUrl();
     const r = await fetchImpl(`${base}/v1/models?limit=1`, {
       headers: {
         authorization: `Bearer ${token}`,
