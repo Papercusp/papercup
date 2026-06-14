@@ -119,6 +119,14 @@ export interface WorkItem {
   origin: string | null;
   auditVerdict: string | null;
   /**
+   * P-008 (shared-hive-trust-admission): the github_user_id resolved from this
+   * remote item's author_pubkey via a VERIFIED, non-revoked hive_members device
+   * attestation — null for local/unverified/revoked rows (never a self-claimed
+   * id). Surfaced so the placement-gather JS leg can apply the trust fast-path
+   * (isAutoPickable) against the owner's local trust list.
+   */
+  verifiedAuthorGithubUserId: number | null;
+  /**
    * Position within this item's ASSIGNEE's ordered work-list (local-hive P-020/D-004).
    * Lower = nearer head-of-line; null = unranked. Only meaningful relative to the other
    * items the SAME assignee holds — two bees' lists are independent. The Queen places
@@ -201,6 +209,7 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     // dispatch) — report 'local' so isAutoPickable treats them as pickable (unchanged).
     origin: 'local',
     auditVerdict: null,
+    verifiedAuthorGithubUserId: null, // local-origin ⇒ never verified-stamped (P-008)
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
   };
@@ -224,6 +233,7 @@ interface FeatureRowDb {
   updated_ts: unknown;
   origin: string | null;
   audit_verdict: string | null;
+  verified_author_github_user_id: number | string | null;
 }
 function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
   return {
@@ -245,14 +255,23 @@ function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     priority: r.feature_order,
     origin: r.origin ?? 'local',
     auditVerdict: r.audit_verdict,
+    verifiedAuthorGithubUserId: coerceGithubUserId(r.verified_author_github_user_id),
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
   };
 }
 
+/** Coerce a bigint-projected github_user_id (postgres-js may hand back a string)
+ *  to a finite number, or null. P-008. */
+function coerceGithubUserId(raw: number | string | null | undefined): number | null {
+  if (raw == null) return null;
+  const n = typeof raw === 'string' ? Number(raw) : raw;
+  return Number.isFinite(n) ? n : null;
+}
+
 const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
-  origin, audit_verdict`;
+  origin, audit_verdict, verified_author_github_user_id`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
@@ -539,6 +558,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     priority: null, // freshly created → unprioritized until the Queen sets feature_order
     origin: 'local', // created here ⇒ local-authored; no auditor screening needed
     auditVerdict: null,
+    verifiedAuthorGithubUserId: null, // created here ⇒ local-authored, never verified-stamped (P-008)
     createdAt: tsIso(now),
     updatedAt: tsIso(now),
   };

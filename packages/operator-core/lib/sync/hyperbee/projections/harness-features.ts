@@ -15,6 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { resolveVerifiedAuthorGithubId } from '../../../work-items-admission';
 import { normalizeJsonbInput } from './_jsonb-input';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
@@ -137,13 +138,23 @@ async function writeToPg(
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
+  // P-008 (shared-hive-trust-admission): stamp the VERIFIED author identity on
+  // REMOTE rows only — resolve author_pubkey → github_user_id via a verified,
+  // non-revoked hive_members device attestation (NEVER a self-claimed id). NULL
+  // when unverified/revoked/local, so the trust gate (autoPickableWhereSql /
+  // isAutoPickable) conservatively refuses the fast-path. This is the PRODUCER
+  // for the column the gate consumes (the consumer was landed in P-010).
+  const verifiedAuthorGithubUserId =
+    origin === 'remote' && authorPubkey
+      ? await resolveVerifiedAuthorGithubId(sql, { workspaceId: opts.workspaceId, authorPubkey })
+      : null;
   await sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, title, summary, status, attempts, claims, notes,
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
        ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at,
        item_kind, feature_order, swarm_affinity, redundancy, payload,
-       author_pubkey, origin, fed_ts)
+       author_pubkey, origin, fed_ts, verified_author_github_user_id)
     VALUES
       (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
        -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under getOrgPg (agent-insights/postgres-js-jsonb-binding)
@@ -158,7 +169,7 @@ async function writeToPg(
        -- op that doesn't carry it (pre-2026-06-10 history) inserts the default.
        ${row.item_kind ?? 'feature'}, ${row.feature_order ?? null}, ${row.swarm_affinity ?? null}, ${row.redundancy ?? null},
        ${row.payload == null ? null : JSON.stringify(normalizeJsonbInput(row.payload))}::text::jsonb,
-       ${authorPubkey}, ${origin}, ${fedTs})
+       ${authorPubkey}, ${origin}, ${fedTs}, ${verifiedAuthorGithubUserId})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
       summary = EXCLUDED.summary,
@@ -191,7 +202,8 @@ async function writeToPg(
       payload = EXCLUDED.payload,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
-      fed_ts = EXCLUDED.fed_ts
+      fed_ts = EXCLUDED.fed_ts,
+      verified_author_github_user_id = EXCLUDED.verified_author_github_user_id
     -- EI-79 step 2: PG-level LWW guard. Drop a strictly-older op so the
     -- incremental merge cursor is correct even when an out-of-order / backfilled
     -- op arrives after a newer row already landed. A NULL STORED fed_ts applies

@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781412672729-431a4b76",
+  "feature_id": "F-FIX-014",
+  "field": "__created",
+  "id": 927,
+  "new_value": "{\"id\":\"F-FIX-014\",\"title\":\"Test failing repeatedly: packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.test.ts\",\"sourceIssueId\":\"EI-500\"}",
+  "old_value": "null",
+  "ts": 1781413361363
+}

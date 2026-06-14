@@ -81,6 +81,76 @@ export function autoPickableWhereSql(sql: OrgSql, workspaceId?: string) {
 }
 
 /**
+ * P-008 (Phase 2) — the PRODUCER side of the trust gate: resolve a federated
+ * feature's `author_pubkey` to a github_user_id ONLY via a VERIFIED, non-revoked
+ * device attestation in `hive_members` — never a self-claimed id. Returns NULL
+ * when the pubkey has no such attestation (the caller stores NULL → the gate
+ * conservatively refuses the trust fast-path). The trust DECISION stays at the
+ * consumer (isAutoPickable / autoPickableWhereSql, ws-scoped per D-004); this
+ * only establishes "who, provably, authored it".
+ *
+ * Security invariants (contributor-row-types.ts DeviceAttestationEntry +
+ * revoked_pubkeys "a verifier MUST refuse any attestation whose pubkey is here"):
+ *   - binding_status = 'verified'  (BINDING_STATUSES: verified|pending|unverified)
+ *   - author_pubkey ∈ device_attestations (an attested binding exists)
+ *   - author_pubkey ∉ revoked_pubkeys (the device wasn't revoked)
+ *   - workspace-scoped (hive_members is owner/workspace-keyed); hive_home_slug
+ *     narrows further when known. The COALESCE guards keep a member with a NULL
+ *     revoked_pubkeys / device_attestations from being wrongly excluded/erroring.
+ */
+export async function resolveVerifiedAuthorGithubId(
+  sql: OrgSql,
+  opts: { workspaceId: string; authorPubkey: string | null | undefined; hiveHomeSlug?: string },
+): Promise<number | null> {
+  const pubkey = (opts.authorPubkey ?? '').trim();
+  if (!pubkey || !opts.workspaceId) return null;
+  const hiveFilter = opts.hiveHomeSlug ? sql`AND hive_home_slug = ${opts.hiveHomeSlug}` : sql``;
+  const rows = await sql<{ github_user_id: string | number }[]>`
+    SELECT github_user_id
+      FROM harness_shared.hive_members
+     WHERE workspace_id = ${opts.workspaceId}
+       ${hiveFilter}
+       AND binding_status = 'verified'
+       AND NOT (${pubkey} = ANY(COALESCE(revoked_pubkeys, ARRAY[]::text[])))
+       AND EXISTS (
+         SELECT 1
+           FROM jsonb_array_elements(COALESCE(device_attestations, '[]'::jsonb)) a
+          WHERE a->>'device_pubkey' = ${pubkey}
+       )
+     LIMIT 1`;
+  if (!rows[0]) return null;
+  const raw = rows[0].github_user_id;
+  const id = typeof raw === 'string' ? Number(raw) : raw;
+  return Number.isFinite(id) ? id : null;
+}
+
+/**
+ * Load the owner's LOCAL trust list for a workspace as a Set<github_user_id> —
+ * the JS-gate (isAutoPickable) counterpart of the SQL trust subquery. WORKSPACE-
+ * SCOPED (D-004: the list is owner/workspace-keyed; a remote item must only be
+ * trust-admitted against its OWN workspace's list, never cross-workspace). Empty
+ * set on any read failure (fail-safe: no trust fast-path rather than over-broad).
+ */
+export async function loadTrustedGithubUserIds(workspaceId: string): Promise<Set<number>> {
+  const out = new Set<number>();
+  if (!workspaceId) return out;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ trusted_github_user_id: string | number }[]>`
+      SELECT trusted_github_user_id FROM harness_shared.user_trust_list
+       WHERE workspace_id = ${workspaceId}`;
+    for (const r of rows) {
+      const raw = r.trusted_github_user_id;
+      const id = typeof raw === 'string' ? Number(raw) : raw;
+      if (Number.isFinite(id)) out.add(id);
+    }
+  } catch {
+    /* fail-safe — empty set ⇒ trust fast-path simply doesn't fire */
+  }
+  return out;
+}
+
+/**
  * Per-id admission read for paths that don't already SELECT the item's provenance —
  * the replica lane reads `work_item_replicas`, not the consolidated feature row. Reads
  * origin + audit_verdict and applies {@link isAutoPickable}. A missing row returns
