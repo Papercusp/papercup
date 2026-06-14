@@ -115,8 +115,21 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     Number.isFinite(throttleMin) && throttleMin > 0 ? throttleMin * 60_000 : DEFAULT_THROTTLE_MS;
 
   // Read LIVE presence (not the fleet_assignment view which may lag presence updates).
+  // Re-read presence to ensure we don't have cached/stale data from a prior run.
   const presenceRows = await listPresence();
-  const declaredAgents = selectDeclaredPresence(presenceRows);
+  const declaredAgents = selectDeclaredPresence(presenceRows).filter((agent) => {
+    // EI-483: verify the declared plan is current by checking the presence row
+    // was recently heartbeaten (within 2 minutes). A stale currentPlanSlug after
+    // an agent cleared its intent would show as a recent heartbeat but with null
+    // currentPlanSlug, filtering it out at selectDeclaredPresence level.
+    // This extra check handles the race where presence was read before the agent
+    // wrote an updated row.
+    const row = presenceRows.find((p) => p.ownerId === agent.agentId);
+    if (!row || !row.heartbeatAt) return false;
+    const now = Date.now();
+    const heartbeatMs = new Date(row.heartbeatAt).getTime();
+    return now - heartbeatMs < 2 * 60 * 1000; // Within 2 minutes
+  });
 
   // Read which agents have claimed on which plans (to identify declaredUnclaimed).
   const assignmentRows = await listFleetAssignments({ workspaceId: null });
