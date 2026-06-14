@@ -21,6 +21,10 @@ const declareHiveTimeWake = vi.fn(async (_sql: unknown, opts: { at: Date; clampe
 }));
 const clearHiveTimeWake = vi.fn(async () => {});
 const setHiveEventSubscriptions = vi.fn(async (_ws: string, subs: unknown[]) => subs.length);
+const setHiveCarryNote = vi.fn(async (_ws: string, note: string | null | undefined) => {
+  const t = (note ?? '').trim();
+  return t.length > 0 ? t : null;
+});
 const readHiveWakeState = vi.fn<() => Promise<Record<string, unknown>>>();
 const recordHiveWake = vi.fn(async () => {});
 const getHiveTimeWake =
@@ -35,6 +39,7 @@ vi.mock('../../hive/wake', async (importOriginal) => {
     declareHiveTimeWake: (...a: unknown[]) => declareHiveTimeWake(...(a as [unknown, { at: Date }])),
     clearHiveTimeWake: (...a: unknown[]) => clearHiveTimeWake(...(a as [])),
     setHiveEventSubscriptions: (...a: unknown[]) => setHiveEventSubscriptions(...(a as [string, unknown[]])),
+    setHiveCarryNote: (...a: unknown[]) => setHiveCarryNote(...(a as [string, string | null | undefined])),
     readHiveWakeState: (...a: unknown[]) => readHiveWakeState(...(a as [])),
     recordHiveWake: (...a: unknown[]) => recordHiveWake(...(a as [])),
     getHiveTimeWake: (...a: unknown[]) => getHiveTimeWake(...(a as [])),

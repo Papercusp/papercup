@@ -9,12 +9,12 @@
  * generation already exists at the current (workspace, SHA) — the durable-replay / double-spend
  * guard — else run + score ONE generation of the seeded scenario corpus.
  *
- * ⚠ THE LIVE RUNNER IS OWNER-GATED P-051. The default `runBattery` REFUSES until the live whole-Hive
- * ports + score extractor are bound (D-011 — the live `HiveRunPorts` boot + the ground-truth /
- * behavior / timing extraction are the one remaining unbuilt leaf). Inject a bound `runBattery`
- * (the live `runHiveEvalGeneration` over those ports) once `live-ports.ts` lands; arming is then the
- * owner's budget + routine-active. The cadence MECHANISM (schedule / budget-gate / SHA-dedupe /
- * refuse-safely) is complete and armable today.
+ * THE LIVE RUNNER IS BOUND (P-063 / D-011): the default `runBattery` is now the live whole-Hive
+ * generation — `makeLiveHivePorts(liveHiveOps)` + the replay score extractor → `runHiveEvalGeneration`.
+ * P-051 is a BUDGET-FLIP, not a build: the cadence MECHANISM (schedule / budget-gate / SHA-dedupe /
+ * refuse-safely) plus the live ports are complete; arming is the owner's budget + routine-active
+ * (`tsx lib/hive-eval/seed-hive-eval-routine.ts --active --budget=<usd>`). Binding the live runner is
+ * SAFE because the budget gate still refuses every unattended tick until the owner sets a budget.
  *
  * Deps are injectable PARAMETERS (the op's test seam passes fakes — no PG/git/LLM).
  */
@@ -24,23 +24,79 @@ import {
   type HiveEvalCadenceDeps,
   type HiveEvalCadenceOutcome,
   type HiveEvalRunFn,
+  type HiveEvalRunRequest,
 } from './cadence-tick';
 
+/** Fixed base seed for the live generation (per-run seed = seed + repeat — reproducible, P-022). */
+const LIVE_HIVE_EVAL_SEED = 1;
+
 /**
- * The default runner REFUSES: a real Hive-eval generation needs the owner-gated live whole-Hive
- * ports + score extractor (P-051 / D-011), not yet bound. Throwing surfaces as a clean `failed` tick
- * outcome (the tick never re-throws → no durable-step replay / double spend); the cadence's other
- * gates (budget, SHA-dedupe) still do their job. Bind the live runner via the `runBattery` dep.
+ * The LIVE Hive-eval generation runner, bound over the owner-gated whole-Hive ports (P-063 / D-011):
+ * `makeLiveHivePorts(liveHiveOps)` + the replay extractor → `runHiveEvalGeneration`. Lazy-imports the
+ * hive/score graph so the routines boot path never loads it (mirrors the IQ-battery sibling). The
+ * cadence's budget gate still REFUSES every tick without an owner-set budgetUsd — so binding this
+ * spends nothing until P-051.
  */
-const defaultRunBattery: HiveEvalRunFn = async () => {
-  throw new Error(
-    'hive-eval live generation not bound: the owner-gated live whole-Hive ports + score extractor ' +
-      '(P-051 / D-011) are not yet wired. Inject a bound runBattery (live runHiveEvalGeneration) once live-ports.ts lands.',
-  );
-};
+function makeLiveRunBattery(workspaceId: string): HiveEvalRunFn {
+  return async (req: HiveEvalRunRequest) => {
+    const [
+      { makeLiveHivePorts },
+      { liveHiveOps },
+      { makeReplayExtractor },
+      { runHiveEvalGeneration },
+      { createPgHiveEvalStore },
+      { HIVE_EVAL_SCENARIOS },
+      { buildManifest },
+    ] = await Promise.all([
+      import('./live-ports'),
+      import('./live-ops'),
+      import('./live-capture'),
+      import('./generation-runner'),
+      import('./store-pg'),
+      import('./scenarios'),
+      import('../iq-battery/beekeeper-gen0-runner'),
+    ]);
+
+    // Identity: the SAME codeSha the cadence dedupes on (buildManifest's short SHA) so the stamped
+    // instance and the dedupe query agree byte-for-byte; a hive-eval-scoped instanceId + slice.
+    const { manifest } = buildManifest(workspaceId);
+    const ids = req.scenarioIds ?? [];
+    const scenarios = ids.length > 0 ? HIVE_EVAL_SCENARIOS.filter((s) => ids.includes(s.id)) : HIVE_EVAL_SCENARIOS;
+    const numRuns = Math.max(1, scenarios.length * req.repeats);
+
+    const { sql } = getOrgPg();
+    // The owner budget is the TOTAL ceiling; record it per-run. The REAL spend bound on the live
+    // drive is the per-run timeout + beeCap + always-pause-on-timeout (first-live-run validates the
+    // actual spend, P-051) — `budgetUsdCap` is the recorded determinism control, not a hard meter.
+    await runHiveEvalGeneration(
+      {
+        instance: {
+          instanceId: `hive-eval-${manifest.codeSha}-${workspaceId}`,
+          workspaceId,
+          codeSha: manifest.codeSha,
+          genomeId: undefined,
+          batterySliceId: 'hive-eval',
+          createdAt: manifest.createdAt,
+        },
+        scenarios,
+        repeats: req.repeats,
+        seed: LIVE_HIVE_EVAL_SEED,
+        budgetUsdCap: req.capUsd / numRuns,
+        beeCap: req.beeCap,
+      },
+      {
+        store: createPgHiveEvalStore(sql),
+        ports: makeLiveHivePorts(liveHiveOps({ workspaceId }), { workspaceId }),
+        // The score is judge-free by default (the deterministic floor + gate IS the score, D-015);
+        // `req.dryRun` is already the effective mode since no LLM judge is wired here.
+        extractor: makeReplayExtractor(),
+      },
+    );
+  };
+}
 
 export interface HiveEvalGenDeps {
-  /** Generation runner (default: the gated live runner — refuses until P-051 ports are bound). */
+  /** Generation runner (default: the bound live runner — makeLiveHivePorts + replay extractor). */
   runBattery?: HiveEvalRunFn;
   /** Short code SHA (default: buildManifest's exact form — keeps dedupe byte-identical). */
   currentCodeSha?: () => string;
@@ -74,7 +130,7 @@ export async function runHiveEvalGen(
   const cadenceDeps: HiveEvalCadenceDeps = {
     currentCodeSha,
     generationExists,
-    runBattery: deps.runBattery ?? defaultRunBattery,
+    runBattery: deps.runBattery ?? makeLiveRunBattery(input.workspaceId),
     log: deps.log ?? ((m) => console.log(m)),
   };
   return runHiveEvalCadenceTick(cadenceDeps, { installSlug: input.installSlug, payload: input.payload ?? null });

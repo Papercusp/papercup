@@ -33,6 +33,18 @@ import {
 } from '../../autonomy/arm-reversible-action';
 import type { AutonomyDecision } from '../../autonomy/decider';
 import type { RevertHandle } from '../../autonomy/tripwire/core';
+import type { RiskTier, Authority } from '@papercusp/plan-parser';
+
+/**
+ * The decision-context an autonomous agent declares when it auto-takes a reversible
+ * work-item action — the per-item risk the gate's risk half needs (the verb itself
+ * has no item risk; emit.ts keeps action risk NULL by design). Same shape as
+ * `chat:ask_choice`'s `decision` arg. Absent ⇒ fail-safe `critical` (conservative).
+ */
+export interface DeclaredDecisionContext {
+  riskTier?: RiskTier;
+  authority?: Authority;
+}
 
 /** Which reversible facet of a work-item the action changed (→ the revert-handle kind). */
 export type ReversibleWorkItemFacet = 'state' | 'priority';
@@ -95,6 +107,7 @@ export async function planWorkItemArm(
   facet: ReversibleWorkItemFacet,
   workItemId: string,
   harness: string | undefined,
+  declared?: DeclaredDecisionContext,
   io: WorkItemArmIo = liveIo(),
 ): Promise<WorkItemArmPlan | null> {
   // Autonomous-only: a human/SU/operator's deliberate steering is not auto-watched.
@@ -110,8 +123,19 @@ export async function planWorkItemArm(
   if (!workspaceId) return null;
 
   const sql = io.resolveSql();
-  // Gate FIRST (cheap on the disarmed path) — null unless posture is `auto`.
-  const decision = await planReversibleArm(sql, workspaceId, { action }, io.arm);
+  // Gate FIRST (cheap on the disarmed path) — null unless posture is `auto`. The
+  // declared per-item risk/authority is what makes the verdict faithful to the
+  // upstream decision (the verb has no inherent item risk).
+  const decision = await planReversibleArm(
+    sql,
+    workspaceId,
+    {
+      action,
+      ...(declared?.riskTier != null ? { riskTier: declared.riskTier } : {}),
+      ...(declared?.authority != null ? { authority: declared.authority } : {}),
+    },
+    io.arm,
+  );
   if (!decision) return null;
 
   // Now (and only now) capture the PRIOR state for a faithful revert-handle.

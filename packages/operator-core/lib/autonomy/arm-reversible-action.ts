@@ -40,7 +40,7 @@
  */
 
 import type { Sql } from 'postgres';
-import type { RiskTier } from '@papercusp/plan-parser';
+import type { RiskTier, Authority } from '@papercusp/plan-parser';
 import {
   resolveAutonomyDecision,
   defaultDeciderDeps,
@@ -62,8 +62,15 @@ export interface ReversibleArmProvenance {
 export interface PlanReversibleArmInput {
   /** The MCP verb (`group:verb`) — keys the autonomy category (B-04) + the gate. */
   action: string;
-  /** The action's graded risk if known; the decider fail-safes to `critical` otherwise. */
+  /**
+   * The acting agent's declared per-ITEM risk (the gate's risk half is per-item, not
+   * per-verb — emit.ts keeps action risk NULL by design). Absent ⇒ the decider
+   * fail-safes to `critical`, so an undeclared action arms only at a maximally-open
+   * ceiling (conservative — never over-arms).
+   */
   riskTier?: RiskTier | null;
+  /** Declared authority (`owner` always gates). Default `system`. */
+  authority?: Authority | null;
 }
 
 export interface CommitReversibleArmInput {
@@ -119,6 +126,7 @@ export async function planReversibleArm(
       action: input.action,
       reversibility: 'reversible',
       ...(input.riskTier != null ? { riskTier: input.riskTier } : {}),
+      ...(input.authority != null ? { authority: input.authority } : {}),
     },
     d.decider,
   );

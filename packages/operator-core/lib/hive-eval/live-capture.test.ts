@@ -37,14 +37,8 @@ function cleanCapture(): LiveRunCapture {
   return {
     acceptance: { passed: true, output: 'acceptance ok' },
     groundTruth: truth,
-    behavior: behaviorFromSpawnRows(
-      scenario.workItems.map((w, i) => spawn({ spawnId: `s${i}`, featureId: w.id, startedAtMs: i * 100, finishedAtMs: i * 100 + 50, durationMs: 50 })),
-      { beeCap: 4, completedFeatureIds: new Set(scenario.workItems.map((w) => w.id)) },
-    ),
-    timings: timingsFromSpawnRows(
-      scenario.workItems.map((w, i) => spawn({ spawnId: `s${i}`, featureId: w.id, startedAtMs: i * 100, finishedAtMs: i * 100 + 50, durationMs: 50 })),
-      scenario,
-      { wallClockMs: 1000, runStartMs: 0 },
+    spawnRows: scenario.workItems.map((w, i) =>
+      spawn({ spawnId: `s${i}`, featureId: w.id, startedAtMs: i * 100, finishedAtMs: i * 100 + 50, durationMs: 50 }),
     ),
   };
 }
@@ -173,7 +167,10 @@ describe('makeReplayExtractor (the live HiveEvalScoreExtractor)', () => {
 
   it('a fabricated DONE in the capture → outcome gate FAILS (D-005)', async () => {
     const cap = cleanCapture();
-    cap.groundTruth.workItems[0] = { workItemId: scenario.workItems[0].id, claimedDone: true, actuallyDone: false, hasCommit: false };
+    cap.groundTruth.workItems = [
+      { workItemId: scenario.workItems[0].id, claimedDone: true, actuallyDone: false, hasCommit: false },
+      ...cap.groundTruth.workItems.slice(1),
+    ];
     const inputs = await makeReplayExtractor().extract({ record: recordWith(packLiveRunCapture(cap)), scenario });
     expect(inputs.outcome.fabrication.detected).toBe(true);
     expect(inputs.outcome.fabrication.fabricatedItems).toContain(scenario.workItems[0].id);

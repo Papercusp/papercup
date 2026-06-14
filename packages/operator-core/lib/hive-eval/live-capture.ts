@@ -53,8 +53,6 @@ export interface LiveRunCapture {
   groundTruth: RunGroundTruth;
   /** The run's confirmed `spawned_agents` rows — behavior + timings are derived from these. */
   spawnRows: SpawnRunRow[];
-  /** The run's bee cap (parallelism-utilization denominator). */
-  beeCap: number;
   /** EKG/cost-ledger fields not on `spawned_agents` (first-live-run wiring); absent ⇒ 0. */
   ekg?: BehaviorEkgFields;
   /** Longest ready-but-unplaced interval (ms) — EKG/frontier-sourced (first-live-run); absent ⇒ 0. */
@@ -74,10 +72,7 @@ function isLiveRunCapture(v: unknown): v is LiveRunCapture {
     c.acceptance != null &&
     typeof c.groundTruth === 'object' &&
     c.groundTruth != null &&
-    typeof c.behavior === 'object' &&
-    c.behavior != null &&
-    typeof c.timings === 'object' &&
-    c.timings != null
+    Array.isArray(c.spawnRows)
   );
 }
 
@@ -230,8 +225,11 @@ export interface ReplayExtractorOpts {
 /**
  * The LIVE {@link HiveEvalScoreExtractor}: replay the {@link LiveRunCapture} the live `collectRunData`
  * serialized into the record, and run the SAME pure HE-04/05/06 compute the fake extractor exercises.
- * Throws a descriptive error if the record carries no capture (a non-live record routed to the live
- * extractor) — surfaced by the cadence as a clean `failed` tick, never a silent zero score.
+ * Behavior + timings are DERIVED here (not in the capture) so the record supplies the authoritative
+ * measured wall-clock (`observations.wallClockMs`) + run-start (`startedAt`) + cost — the single source
+ * of timing truth. Throws a descriptive error if the record carries no capture (a non-live record
+ * routed to the live extractor) — surfaced by the cadence as a clean `failed` tick, never a silent
+ * zero score.
  */
 export function makeReplayExtractor(opts: ReplayExtractorOpts = {}): HiveEvalScoreExtractor {
   return {
@@ -243,12 +241,27 @@ export function makeReplayExtractor(opts: ReplayExtractorOpts = {}): HiveEvalSco
             'the live collectRunData (owner-gated P-051) must serialize it before teardown. A fake/non-live record cannot be live-scored.',
         );
       }
+      // Completed = items GROUND TRUTH says were genuinely worked (never the Hive's own claim, D-005).
+      const completedFeatureIds = new Set(
+        capture.groundTruth.workItems.filter((w) => w.actuallyDone).map((w) => w.workItemId),
+      );
+      const behavior = behaviorFromSpawnRows(capture.spawnRows, {
+        beeCap: record.beeCap,
+        completedFeatureIds,
+        // The record's costUsd (readRunStats) is the authoritative spend; layer it over the capture's EKG.
+        ekg: { ...capture.ekg, costUsd: capture.ekg?.costUsd ?? record.observations.costUsd },
+      });
+      const timings = timingsFromSpawnRows(capture.spawnRows, scenario, {
+        wallClockMs: record.observations.wallClockMs,
+        runStartMs: record.startedAt.getTime(),
+        ...(capture.maxStuckMs != null ? { maxStuckMs: capture.maxStuckMs } : {}),
+      });
       const outcome = await computeOutcomeMetrics(record, scenario, capture.groundTruth, {
         acceptance: replayAcceptancePorts(capture.acceptance),
         ...(opts.judge ? { judge: opts.judge } : {}),
       });
-      const efficiency = computeEfficiencyMetrics(capture.behavior);
-      const speed = computeSpeedMetrics(scenario, capture.timings);
+      const efficiency = computeEfficiencyMetrics(behavior);
+      const speed = computeSpeedMetrics(scenario, timings);
       return { outcome, efficiency, speed };
     },
   };

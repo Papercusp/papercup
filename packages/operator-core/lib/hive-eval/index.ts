@@ -142,6 +142,39 @@ export {
   type ScoredScenarioDistribution,
 } from './generation-runner';
 
+// P-063 / D-011 — the LIVE whole-Hive ports + the capture→replay score extractor (the binding that
+// makes the benchmark runnable; the real run is owner-gated P-051).
+export {
+  makeLiveHivePorts,
+  seedRepoMaterializeCommands,
+  seedRepoCloneCommands,
+  scenarioSeedPlan,
+  isHiveDrained,
+  type LiveHiveOps,
+  type LiveHivePortsOpts,
+  type LiveRunStats,
+} from './live-ports';
+export {
+  liveHiveOps,
+  captureRunData,
+  type LiveHiveOpsDeps,
+  type CaptureRunDataInput,
+} from './live-ops';
+export {
+  makeReplayExtractor,
+  packLiveRunCapture,
+  readLiveRunCapture,
+  behaviorFromSpawnRows,
+  timingsFromSpawnRows,
+  beesBusySamplesFromIntervals,
+  replayAcceptancePorts,
+  LIVE_CAPTURE_KEY,
+  type LiveRunCapture,
+  type SpawnRunRow,
+  type BehaviorEkgFields,
+  type ReplayExtractorOpts,
+} from './live-capture';
+
 // HE-07 — the cadence orchestration (P-050; the `hive-eval:gen` blueprint op wraps this).
 export { runHiveEvalGen, type HiveEvalGenDeps } from './gen-loop';
 export {
