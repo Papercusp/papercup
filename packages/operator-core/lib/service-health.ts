@@ -18,19 +18,24 @@ export interface EndpointSpec {
 }
 
 /**
- * The dev services worth watching (audit themes: stale-:4321, :3070, etc.).
+ * The dev services worth watching (operator/vite/scout/code-server; the Tauri
+ * desktop is probed separately in `probeAll`).
  *
- * NB: the standalone web app on :3001 (the retired "old Restart web app" — see
- * `_retired/papercup`, and the docker-compose note that it "doesn't exist in
- * this container") is deliberately NOT monitored. It never runs in this
- * deployment, so probing it produced a perpetual phantom "web is DOWN" signal
- * that the improvement watchdog re-captured every cycle (EI-188). Don't re-add
- * a retired surface here.
+ * NB: two RETIRED surfaces are deliberately NOT monitored. Neither runs in this
+ * deployment, so probing them produced a perpetual phantom "DOWN" signal that
+ * the improvement watchdog re-captured every cycle AND re-broadcast on every
+ * operator restart/deploy — a chronic false-alarm that trains agents/owner to
+ * ignore service-health reds:
+ *   - the standalone web app on :3001 (the retired "old Restart web app" — see
+ *     `_retired/papercup`, "doesn't exist in this container") — removed per EI-188.
+ *   - the Restart shop storefront on :4321 — not part of the running stack;
+ *     removed per EI-276 (it fed the EI-187 CRITICAL "shop is down", re-announced
+ *     on every boot). Verified down-because-absent, not a regression.
+ * Don't re-add a retired surface here.
  */
 export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   { name: 'operator', url: 'http://127.0.0.1:3070/api/desktop/version' }, // 200 + build-info SHA (P-011)
   { name: 'vite', url: 'http://127.0.0.1:3055/' },
-  { name: 'shop', url: 'http://127.0.0.1:4321/' },
   { name: 'scout', url: 'http://127.0.0.1:3350/' },
   { name: 'code-server', url: 'http://127.0.0.1:8082/' },
 ];

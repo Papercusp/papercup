@@ -100,7 +100,7 @@ const coordNotifyGcWorkflow = DBOS.registerWorkflow(coordNotifyGcTick, {
 });
 DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });
 
-// Every minute: probe the dev endpoints (:3070/:3055/:4321/:4848/…) and
+// Every minute: probe the dev endpoints (:3070/:3055/:3350/…) and
 // broadcast a coord message on each up/down TRANSITION (fleet-coordination-
 // painpoints Phase 3b). External liveness has no event source, so this is the
 // one irreducible poll (D-006); transition-only, never a per-tick firehose.

@@ -68,7 +68,6 @@ describe('sync-resolver v2 registry', () => {
     it('includes batch 6 migrated names', () => {
       const names = knownQueryNamesV2();
       for (const expected of [
-        'harnessPhases.byHarness',
         'harnessSmokeTest.byHarness',
         'harnessBrainstorm.byHarness',
       ]) {

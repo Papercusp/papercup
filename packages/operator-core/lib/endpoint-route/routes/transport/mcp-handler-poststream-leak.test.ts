@@ -76,15 +76,10 @@ describe('mcp-handler POST path — per-request server lifecycle (EI-127)', () =
       // (and, once patched, closes) the server, so swallow per-request rejects.
       try {
         const res = await (handler as (r: Request) => Promise<Response>)(req);
-        if (i === 0) {
-          // eslint-disable-next-line no-console
-          console.log('DIAG res.status=', res?.status, 'created=', created, 'closed=', closed, 'url=', req.url);
-        }
-      } catch (e) {
-        if (i === 0) {
-          // eslint-disable-next-line no-console
-          console.log('DIAG THREW', (e as Error)?.message, 'created=', created);
-        }
+        // Drain the (finite, 406) body so the per-request response fully settles.
+        await res.text().catch(() => {});
+      } catch {
+        /* request-handling errors are irrelevant — we assert the lifecycle */
       }
     }
 

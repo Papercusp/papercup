@@ -66,7 +66,6 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 
 const hps = generated.harnessProposalsSharedInHarnessShared;
-const hph = generated.harnessPhasesInHarnessShared;
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { activeWorkspaceId } from './workspace-registry';
 import { ALL_PHASES, phasePath, type Phase } from './harness-phases';

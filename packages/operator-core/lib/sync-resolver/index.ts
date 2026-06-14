@@ -527,23 +527,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //  harness_summaries mirror was a dead legacy path, dropped in migration 282.
   //  The live summary UI reads harness_text_artifacts, migration 035.)
 
-  // harnessPhases.byHarness — phases ordered by phase column asc.
-  //   zql.harnessPhases.where(harnessSlug).orderBy('phase', 'asc')
-  'harnessPhases.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
-    resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { asc, eq } = await import('drizzle-orm');
-      const t = generated.harnessPhasesInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
-        .orderBy(asc(t.phase))) as unknown[];
-    },
-  },
+  // harnessPhases.byHarness retired — fs-watcher-retirement step 5; the
+  // harness_phases mirror was dropped (migration 285). HealthBadge reads
+  // liveness from harnessLanes.byHarness; the /phases REST route recomputes
+  // the rest on demand.
 
   // harnessSmokeTest.byHarness — single smoke-test row per harness.
   //   zql.harnessSmokeTest.where(harnessSlug).limit(1)

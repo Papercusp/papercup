@@ -1,4 +1,4 @@
-import { describe, test, beforeEach } from 'vitest';
+import { describe, test, beforeEach, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   publish,
@@ -106,5 +106,22 @@ describe('run-chunk-bus', () => {
     sub1.unsubscribe();
     sub2.unsubscribe();
     sub3.unsubscribe();
+  });
+
+  test('closeChannel prunes the bus-level closed marker after GC (no per-run leak)', () => {
+    // The closed set marked one entry per run and never pruned it — a slow but
+    // strictly-unbounded leak under fleet load (EI-127). It must drop once the
+    // underlying channel has been GC'd.
+    vi.useFakeTimers();
+    try {
+      closeChannel('rprune');
+      const set = (globalThis as { __runChunkBusClosed__?: Set<string> }).__runChunkBusClosed__!;
+      assert.equal(set.has('run-chunk:rprune'), true, 'marked closed immediately');
+      // Past CLOSED_CHANNEL_GC_MS (5min) + the 1s prune delay.
+      vi.advanceTimersByTime(5 * 60_000 + 2_000);
+      assert.equal(set.has('run-chunk:rprune'), false, 'closed marker pruned after GC window');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,0 +1,130 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { BASELINE_ID, listTests, resetTestRegistry, type JudgeLlmCall } from '@papercusp/eval-battery';
+import type { ReplayBatteryConfig, ReplayBatteryResult } from '../replay/battery';
+import type { ReplayCase, ReplayRunner } from '../replay/types';
+import {
+  _resetExperimentRegistration,
+  gymDescriptor,
+  registerExperimentDescriptors,
+  replayDescriptor,
+} from './descriptors';
+import type { ExperimentRequest, ExperimentRunCtx } from './types';
+
+const historicalCase: ReplayCase = {
+  kind: 'synthetic',
+  caseId: 'c1',
+  context: 'conversation so far …',
+  intent: 'do the task',
+};
+
+function cannedResult(): ReplayBatteryResult {
+  return {
+    batteryId: 'b1',
+    outcomes: [],
+    perVariant: [
+      { variantId: BASELINE_ID, label: 'historical baseline', cells: 1, scored: 1, meanComposite: 5, meanTokenJaccard: null, costUsd: 0 },
+      { variantId: 'cand', label: 'terser policy', cells: 1, scored: 1, meanComposite: 7, meanTokenJaccard: 0.4, costUsd: 0.01 },
+    ],
+    comparison: {
+      primaryScorer: 'composite',
+      baseline: { variantId: BASELINE_ID, metrics: { composite: 5 } },
+      candidates: [],
+      selected: 'cand',
+      selectionReason: 'composite +2.0 ≥ minDelta',
+    },
+    totalCostUsd: 0.01,
+    rubricHash: 'rh',
+    budgetExhausted: false,
+  };
+}
+
+const fakeCtx = (): ExperimentRunCtx => ({
+  workspaceId: 'ws',
+  now: () => 0,
+  llmCall: (async () => ({ text: '', costUsd: 0, inputTokens: 0, outputTokens: 0 })) as unknown as JudgeLlmCall,
+  replayRunner: (async () => ({ outputText: '', costUsd: 0, inputTokens: 0, outputTokens: 0, replayed: true })) as unknown as ReplayRunner,
+});
+
+describe('descriptor metadata + catalog', () => {
+  beforeEach(() => {
+    resetTestRegistry();
+    _resetExperimentRegistration();
+  });
+
+  it('registers the four Subjects with complete catalog metadata in id order', () => {
+    registerExperimentDescriptors();
+    const entries = listTests();
+    expect(entries.map((e) => e.id)).toEqual(['gym', 'hive', 'instance', 'replay']);
+    const replay = entries.find((e) => e.id === 'replay')!;
+    expect(replay).toMatchObject({ kind: 'replay', fidelityTier: 'offline', costClass: 'free' });
+    expect(replay.knobSlice).toEqual(['overlay.systemOverlay', 'overlay.systemReplace']);
+    expect(listTests().find((e) => e.id === 'instance')!.knobSlice).toEqual(['genome', 'model']);
+  });
+
+  it('registerExperimentDescriptors is idempotent (no duplicate-id throw)', () => {
+    registerExperimentDescriptors();
+    expect(() => registerExperimentDescriptors()).not.toThrow();
+    expect(listTests()).toHaveLength(4);
+  });
+});
+
+describe('replay descriptor.run', () => {
+  it('maps arms→variants (empty arm = baseline), delegates, and normalizes the result', async () => {
+    const runReplayBattery = vi.fn(async (_c: ReplayBatteryConfig) => cannedResult());
+    const desc = replayDescriptor({ runReplayBattery });
+    const request: ExperimentRequest = {
+      batteryId: 'b1',
+      arms: [
+        { id: BASELINE_ID, knobs: {} },
+        { id: 'cand', label: 'terser policy', knobs: { 'overlay.systemOverlay': 'Be terse.' } },
+      ],
+      repeats: 1,
+      payload: { cases: [historicalCase] },
+    };
+
+    const out = await desc.run(request, fakeCtx());
+
+    // delegated config: the baseline arm became the historical-baseline variant, the
+    // candidate carried its overlay into policy.systemOverlay.
+    const cfg = runReplayBattery.mock.calls[0]![0];
+    expect(cfg.variants[0]!.variantId).toBe(BASELINE_ID);
+    expect(cfg.variants[1]).toMatchObject({ variantId: 'cand', policy: { systemOverlay: 'Be terse.' } });
+    expect(cfg.cases).toHaveLength(1);
+
+    // normalized result
+    expect(out.testId).toBe('replay');
+    expect(out.tier).toBe('offline');
+    expect(out.winner).toBe('cand');
+    expect(out.arms.map((a) => a.meanScore)).toEqual([5, 7]);
+    expect(out.totalCostUsd).toBe(0.01);
+  });
+
+  it('rejects an arm whose knob is outside the replay slice', async () => {
+    const desc = replayDescriptor({ runReplayBattery: vi.fn(async () => cannedResult()) });
+    const request: ExperimentRequest = {
+      batteryId: 'b1',
+      arms: [{ id: 'bad', knobs: { 'genome.config.wake.minSleepSec': 30 } }],
+      repeats: 1,
+      payload: { cases: [historicalCase] },
+    };
+    await expect(desc.run(request, fakeCtx())).rejects.toThrow(/outside its slice: genome.config.wake.minSleepSec/);
+  });
+
+  it('rejects a safety-excluded knob even within a payload', async () => {
+    const desc = replayDescriptor({ runReplayBattery: vi.fn(async () => cannedResult()) });
+    const request: ExperimentRequest = {
+      batteryId: 'b1',
+      arms: [{ id: 'evil', knobs: { 'budget.cap': 0 } }],
+      repeats: 1,
+      payload: { cases: [historicalCase] },
+    };
+    await expect(desc.run(request, fakeCtx())).rejects.toThrow(/safety-excluded/);
+  });
+});
+
+describe('staged live-tier descriptors', () => {
+  it('refuse to run in v1 with a clear staged message', async () => {
+    const request: ExperimentRequest = { batteryId: 'b1', arms: [], repeats: 1, payload: {} };
+    await expect(gymDescriptor().run(request, fakeCtx())).rejects.toThrow(/not yet executable in v1/);
+  });
+});

@@ -71,4 +71,20 @@ describe('HEALTH_ENDPOINTS', () => {
     expect(HEALTH_ENDPOINTS.some((e) => e.name === 'web')).toBe(false);
     expect(HEALTH_ENDPOINTS.some((e) => e.url.includes(':3001'))).toBe(false);
   });
+
+  // EI-276: the Restart shop storefront (:4321) is not part of the running stack;
+  // probing it re-broadcast a phantom "shop is DOWN" on every restart/deploy and
+  // fed the EI-187 CRITICAL. Must NOT be monitored.
+  it('does not monitor the retired shop storefront (:4321)', () => {
+    expect(HEALTH_ENDPOINTS.some((e) => e.name === 'shop')).toBe(false);
+    expect(HEALTH_ENDPOINTS.some((e) => e.url.includes(':4321'))).toBe(false);
+  });
+
+  // The live set we DO watch — a guard so a retired surface can't quietly creep
+  // back in (any new entry here is a deliberate edit + a failing test to update).
+  it('watches exactly the live dev services', () => {
+    expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
+      ['code-server', 'operator', 'scout', 'vite'].sort(),
+    );
+  });
 });

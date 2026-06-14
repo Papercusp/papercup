@@ -30,7 +30,7 @@ export const GIT_KEY_COLS: Record<string, string[]> = {
   harness_feature_debug_notes: ['feature_id'],
   feature_audit_consolidated: ['id'],
   harness_tests: ['phase', 'test_id'],
-  harness_phases: ['phase'],
+  // harness_phases removed — fs-watcher-retirement step 5 (migration 285).
   harness_promotions: ['promotion_id'],
   harness_checkpoints: ['name'],
   harness_snapshots: ['snapshot_id'],

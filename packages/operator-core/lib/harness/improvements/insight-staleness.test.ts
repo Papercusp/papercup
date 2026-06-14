@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   extractCitedPaths,
   scanInsightStaleness,
+  collectInsightStalenessSignals,
   DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS,
 } from './insight-staleness';
 
@@ -96,5 +97,26 @@ describe('scanInsightStaleness', () => {
       { resolutionCooldownMs: 1000 },
     );
     expect(overridden.resolutionCooldownMs).toBe(1000);
+  });
+});
+
+// The fs glue: readdir(agent-insights) → frontmatter status parse → existsSync
+// delegation to the (separately-tested) pure scan. Smoke against the REAL docs
+// tree — count-free so it can't drift as insights are added/retired; it pins the
+// wiring (no throw, well-formed signals, the deterministic .mdx path shape).
+describe('collectInsightStalenessSignals — fs glue over the real docs tree', () => {
+  it('resolves to an array of well-formed insight-staleness signals', async () => {
+    const signals = await collectInsightStalenessSignals();
+    expect(Array.isArray(signals)).toBe(true);
+    for (const s of signals) {
+      expect(s.source).toBe('insight-staleness');
+      expect(typeof s.key).toBe('string');
+      expect(s.key.length).toBeGreaterThan(0);
+      expect(s.kind).toBe('change');
+      // paths[0] is the deterministic mdx location derived from the slug/key.
+      expect(s.paths?.[0]).toBe(
+        `apps/operator-docs/src/content/docs/agent-insights/${s.key}.mdx`,
+      );
+    }
   });
 });

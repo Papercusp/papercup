@@ -72,7 +72,9 @@ const GIT_DOCS = [
   // llm-test run couldn't persist). They are operator runtime state → sync:'none'
   // (PG store-of-record, no git sync authority). Re-add only behind a workspace/
   // global git-export path that doesn't require harness_slug.
-  'harness_phases', 'harness_promotions', 'harness_checkpoints',
+  // harness_phases removed — fs-watcher-retirement step 5 (migration 285): a
+  // local fs-watcher mirror with hardcoded alive=false; not a git document.
+  'harness_promotions', 'harness_checkpoints',
   'harness_snapshots',
   'harness_skills', 'goals', 'harness_proposals_shared', 'snapshot_features',
   'project_spec_revisions',

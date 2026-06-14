@@ -35,7 +35,7 @@ describe('improvements:capture tool envelope', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIdentity.mockReturnValue(identity('omp-hook-session'));
-    mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as Awaited<
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
   });
@@ -94,7 +94,7 @@ describe('improvements:capture tool envelope', () => {
   });
 
   it('returns the core result verbatim in the tool envelope', async () => {
-    mockCapture.mockResolvedValue({ ok: true, id: 'EI-42', created: true, duplicateOf: null } as Awaited<
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-42', created: true, duplicateOf: null } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
     const res = await callTool({ title: 'x', kind: 'bug' });

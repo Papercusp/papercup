@@ -69,9 +69,20 @@ export function publish(runId: string, seq: number, data: string): void {
 /** Mark the run as complete. Subscribers' whenDone resolves; 5min GC clock starts. */
 export function closeChannel(runId: string): void {
   if (isClosed(runId)) return;
-  closedSet().add(closedKey(runId));
+  const k = closedKey(runId);
+  closedSet().add(k);
   const ch = getRunChannel(runId);
   ch.done();
+  // Prune the bus-level closed marker once the underlying channel has been GC'd
+  // (CLOSED_CHANNEL_GC_MS after done()). Without this the closed set grows one
+  // entry per run for the life of the process — a slow but strictly-unbounded
+  // leak under fleet load (EI-127, cluster #5). After GC the channel is gone, so
+  // nothing is left for the marker to keep "sticky"; a (very rare) publish that
+  // late just creates a fresh channel the idle reaper collects.
+  const prune = setTimeout(() => closedSet().delete(k), CLOSED_CHANNEL_GC_MS + 1_000);
+  if (typeof (prune as { unref?: () => void }).unref === 'function') {
+    (prune as { unref: () => void }).unref();
+  }
 }
 
 /** Subscribe to a run's chunk stream. */
