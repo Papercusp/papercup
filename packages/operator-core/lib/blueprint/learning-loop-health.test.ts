@@ -44,6 +44,34 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     expect(cal.daysSinceFire).toBe(5);
   });
 
+  it('an active loop NEVER fired but with its first fire still ahead is "pending" (just armed, not a wedge)', () => {
+    const [cal] = computeLearningLoopHealth(
+      [LOOPS[0]],
+      [sRow('calibration', { lastFiredAt: null, nextFireAt: daysAgo(-1) })], // next fire 1d in the FUTURE
+      { nowMs: NOW },
+    );
+    expect(cal.status).toBe('pending');
+    expect(cal.daysSinceFire).toBeNull();
+  });
+
+  it('an active loop NEVER fired whose first fire is already overdue is "stale" (a stuck fire path)', () => {
+    const [cal] = computeLearningLoopHealth(
+      [LOOPS[0]],
+      [sRow('calibration', { lastFiredAt: null, nextFireAt: daysAgo(1) })], // next fire 1d in the PAST
+      { nowMs: NOW },
+    );
+    expect(cal.status).toBe('stale');
+  });
+
+  it('an active loop NEVER fired with no next-fire time is "stale" (cannot vouch for it)', () => {
+    const [cal] = computeLearningLoopHealth(
+      [LOOPS[0]],
+      [sRow('calibration', { lastFiredAt: null, nextFireAt: null })],
+      { nowMs: NOW },
+    );
+    expect(cal.status).toBe('stale');
+  });
+
   it('an inactive FRONTIER loop is "dark-by-design"', () => {
     const [cal] = computeLearningLoopHealth([LOOPS[0]], [sRow('calibration', { active: false, lastFiredAt: null })], { nowMs: NOW });
     expect(cal.status).toBe('dark-by-design');

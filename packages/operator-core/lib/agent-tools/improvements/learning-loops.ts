@@ -69,7 +69,7 @@ export default defineTool({
       ]),
     ];
     const rows = (await sql`
-      SELECT install_slug, name, active, last_fired_at
+      SELECT install_slug, name, active, last_fired_at, next_fire_at
         FROM harness_shared.routines
        WHERE workspace_id = ${workspaceId}
          AND install_slug IN ${sql([SINGLETON_HOST_SLUG, 'papercup'])}
@@ -78,6 +78,7 @@ export default defineTool({
       name: string;
       active: boolean;
       last_fired_at: Date | string | null;
+      next_fire_at: Date | string | null;
     }[];
 
     const routines: LearningRoutineRow[] = rows.map((r) => ({
@@ -85,6 +86,7 @@ export default defineTool({
       name: r.name,
       active: !!r.active,
       lastFiredAt: r.last_fired_at == null ? null : new Date(r.last_fired_at).toISOString(),
+      nextFireAt: r.next_fire_at == null ? null : new Date(r.next_fire_at).toISOString(),
     }));
 
     const loops = computeLearningLoopHealth(LEARNING_SINGLETONS, routines, {

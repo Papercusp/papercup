@@ -38,6 +38,9 @@ export interface LearningRoutineRow {
   active: boolean;
   /** ISO timestamp of the last fire, or null if it never fired. */
   lastFiredAt: string | null;
+  /** ISO timestamp of the NEXT scheduled fire, or null if unknown — distinguishes a
+   *  just-activated loop awaiting its first fire (`pending`) from a stuck one (`stale`). */
+  nextFireAt?: string | null;
 }
 
 /** A learning loop's identity: its blueprint id + the legacy `papercup`-slug routine name. */
@@ -48,6 +51,7 @@ export interface LearningLoopSpec {
 
 export type LearningLoopStatus =
   | 'firing' // active + fired within the stale window
+  | 'pending' // active + never fired but its first fire is still ahead (just armed)
   | 'stale' // active but has not fired in > the stale window (a wedge — investigate)
   | 'dark-by-design' // a frontier loop, inactive (expected until the owner arms it)
   | 'should-be-on-but-dark' // an ALWAYS-ON loop that is inactive (a real gap)
@@ -107,7 +111,13 @@ export function computeLearningLoopHealth(
     let status: LearningLoopStatus;
     if (!row) status = 'absent';
     else if (!active) status = alwaysOn ? 'should-be-on-but-dark' : 'dark-by-design';
-    else if (Number.isNaN(firedMs) || opts.nowMs - firedMs > staleMs) status = 'stale';
+    else if (Number.isNaN(firedMs)) {
+      // Active but NEVER fired: `pending` if its first fire is still ahead (just
+      // activated — e.g. prompt-ablation right after the frontier arming), `stale`
+      // if that first fire is already overdue or unknown (a genuinely stuck fire path).
+      const nextMs = row.nextFireAt ? Date.parse(row.nextFireAt) : NaN;
+      status = !Number.isNaN(nextMs) && nextMs > opts.nowMs ? 'pending' : 'stale';
+    } else if (opts.nowMs - firedMs > staleMs) status = 'stale';
     else status = 'firing';
 
     return {
@@ -128,6 +138,7 @@ export function computeLearningLoopHealth(
 export interface LearningLoopHealthSummary {
   total: number;
   firing: number;
+  pending: number;
   stale: number;
   darkByDesign: number;
   shouldBeOnButDark: number;
@@ -150,6 +161,7 @@ export function summarizeLearningLoopHealth(rows: readonly LearningLoopHealth[])
   return {
     total: rows.length,
     firing: rows.filter((r) => r.status === 'firing').length,
+    pending: rows.filter((r) => r.status === 'pending').length,
     stale: rows.filter((r) => r.status === 'stale').length,
     darkByDesign: rows.filter((r) => r.status === 'dark-by-design').length,
     shouldBeOnButDark: rows.filter((r) => r.status === 'should-be-on-but-dark').length,
