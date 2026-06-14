@@ -43,11 +43,50 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg, upsertRoutine } from '@papercusp/db-org';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../workspace-registry';
 import { computeNextFireAt } from '../harness/routines/cron';
 
 /** The action a schedule entry dispatches when it declares none (the schema default). */
 export const DEFAULT_SCHEDULE_ACTION = 'system:blueprint-run';
+
+// ── P-070 deployment-mode gate (per-hive-learning-loops / D-001) ───────────────
+// The LAYER-3 platform-improvement loops are the workspace-SINGLETON Class-C
+// frontier/measurement loops. When the `PLATFORM_IMPROVEMENT_LOOPS` knob is OFF
+// (a public release before the user opts into platform mode) a Class-C singleton
+// is NOT materialized. gym/scout (per-hive Class-B, layers 1-2) are NEVER gated:
+// `gym` declares no singleton schedule (its cadence is the workspace gym pulse),
+// and `scout` declares `singleton: true` BUT is the per-hive exception below.
+
+/** Singleton blueprint ids that are per-hive (Class-B) and so EXEMPT from the
+ *  platform-mode gate even though they materialize as singleton rows. `scout`
+ *  carries `singleton: true` in its blueprint but is a per-hive ideation loop. */
+const NON_PLATFORM_SINGLETON_IDS: ReadonlySet<string> = new Set(['scout']);
+
+/**
+ * Is this blueprint a LAYER-3 platform-improvement (Class-C) loop the
+ * `PLATFORM_IMPROVEMENT_LOOPS` knob gates? Only ever consulted for SINGLETON
+ * triggers (per-install gym lives on its own per-hive slug, never here). True for
+ * every singleton blueprint except the per-hive Class-B exceptions (`scout`).
+ * Pure — exported for the registration gate + its tests.
+ */
+export function isPlatformImprovementLoop(blueprintId: string | undefined): boolean {
+  return blueprintId !== undefined && !NON_PLATFORM_SINGLETON_IDS.has(blueprintId);
+}
+
+/**
+ * Resolve the P-070 deployment-mode gate: are the layer-3 platform-improvement
+ * loops enabled? Reads the `PLATFORM_IMPROVEMENT_LOOPS` flag (default ON in
+ * dev/self-host; a public release exports PAPERCUSP_PLATFORM_MODE=off). Injectable
+ * via `opts.flag` for tests.
+ */
+export async function platformImprovementLoopsEnabled(
+  opts: { flag?: (key: typeof FLAGS.PLATFORM_IMPROVEMENT_LOOPS) => Promise<boolean> } = {},
+): Promise<boolean> {
+  const flag = opts.flag ?? ((key) => getFlag(key, 'platform-improvement-loops'));
+  return flag(FLAGS.PLATFORM_IMPROVEMENT_LOOPS);
+}
 
 /**
  * The blueprint-ish input the spec-deriver accepts. A parsed `Blueprint` is assignable (its
@@ -192,16 +231,37 @@ async function upsertSingletonRoutine(
 export async function materializeBlueprintTriggers(
   installSlug: string,
   blueprint: BlueprintTriggerInput,
-  opts: { sql?: Sql; workspaceId?: string } = {},
+  opts: {
+    sql?: Sql;
+    workspaceId?: string;
+    /** Inject the P-070 platform-mode flag resolver; defaults to the real getFlag. */
+    flag?: (key: typeof FLAGS.PLATFORM_IMPROVEMENT_LOOPS) => Promise<boolean>;
+  } = {},
 ): Promise<MaterializedRoutine[]> {
   const specs = triggerRoutineSpecs(blueprint);
   if (specs.length === 0) return [];
   const sql = opts.sql ?? getOrgPg().sql;
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
 
+  // P-070 deployment-mode gate: only resolve the flag if this blueprint HAS a
+  // gateable Class-C singleton trigger (a flag read otherwise wasted on the
+  // hot per-install gym/coding/hive create path). gym/scout are exempt.
+  const hasGateableSingleton = specs.some(
+    (s) => s.singleton && isPlatformImprovementLoop(blueprint.id),
+  );
+  const platformLoopsOn = hasGateableSingleton
+    ? await platformImprovementLoopsEnabled({ flag: opts.flag })
+    : true;
+
   const out: MaterializedRoutine[] = [];
   for (const spec of specs) {
     if (spec.singleton) {
+      // DEPLOYMENT-MODE GATE (P-070): skip a Class-C platform-improvement singleton when
+      // platform mode is OFF — no @singleton row is written, so it ships dark on a public
+      // release until the user opts in. scout (per-hive Class-B) is exempt (isPlatformImprovementLoop).
+      if (!platformLoopsOn && isPlatformImprovementLoop(blueprint.id)) {
+        continue;
+      }
       // blueprint.id is guaranteed here (triggerRoutineSpecs throws for a singleton without it).
       const row = await upsertSingletonRoutine(sql, {
         workspaceId,

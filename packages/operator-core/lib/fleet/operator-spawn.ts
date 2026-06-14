@@ -32,6 +32,7 @@ import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { gatewaySpawnEnv } from '../inference-gateway/spawn-env';
+import { selectSpawnAccount } from '../deployment/account-pool-store';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
 import { recordSpawn, finishSpawn } from './spawn-tree';
@@ -742,7 +743,16 @@ export async function spawnAgentInHarness(
   // instead of bursting blind. The bee keeps its ~/.claude credential symlink (the gateway
   // strips + reinjects auth), so flag-OFF instantly reverts to direct egress. Fails CLOSED:
   // if the gateway service is down the bee's request is refused rather than bursting direct.
-  Object.assign(extraEnv, gatewaySpawnEnv(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')));
+  // P-004 (multi-credential routing): when INFERENCE_GATEWAY_MULTI_ACCOUNT is ALSO on, pin this bee
+  // to a cache-affinity pool account (sticky → harness-pin → headroom) via ANTHROPIC_CUSTOM_HEADERS,
+  // so its per-credential conversation cache survives. Fail-soft: any error → no header → the gateway
+  // routes to its active() account (today's single-credential behavior).
+  const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
+  let routeAccountId: string | undefined;
+  if (gwOn && (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system'))) {
+    routeAccountId = await selectSpawnAccount(input.workspaceId, slug).catch(() => undefined);
+  }
+  Object.assign(extraEnv, gatewaySpawnEnv(gwOn, { accountId: routeAccountId }));
 
   // Register an abort handle so fleet:cancel can stop the child (EI-40).
   const abort = new AbortController();

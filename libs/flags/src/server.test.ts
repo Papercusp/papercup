@@ -53,6 +53,47 @@ describe('flag backend in offline-only mode', () => {
     }
   });
 
+  it('PAPERCUSP_PLATFORM_MODE=off forces the platform-improvement flag OFF (P-070 release lever)', async () => {
+    // Default is ON (dev/self-host). A release build sets PAPERCUSP_PLATFORM_MODE=off.
+    expect(FLAG_DEFAULTS[FLAGS.PLATFORM_IMPROVEMENT_LOOPS]).toBe(true);
+    process.env.PAPERCUSP_PLATFORM_MODE = 'off';
+    try {
+      expect(await getFlag(FLAGS.PLATFORM_IMPROVEMENT_LOOPS, 'x')).toBe(false);
+      const payload = await getAllFlags('any-distinct');
+      expect(payload.flags[FLAGS.PLATFORM_IMPROVEMENT_LOOPS]).toBe(false);
+      // It is COARSE — only the platform-improvement flag is affected, nothing else.
+      expect(payload.flags[FLAGS.VIDEO_CHANNELS]).toBe(FLAG_DEFAULTS[FLAGS.VIDEO_CHANNELS]);
+    } finally {
+      delete process.env.PAPERCUSP_PLATFORM_MODE;
+    }
+  });
+
+  it('PAPERCUSP_PLATFORM_MODE=on (or unset) leaves the platform-improvement flag at its default ON', async () => {
+    process.env.PAPERCUSP_PLATFORM_MODE = 'on';
+    try {
+      expect(await getFlag(FLAGS.PLATFORM_IMPROVEMENT_LOOPS, 'x')).toBe(true);
+    } finally {
+      delete process.env.PAPERCUSP_PLATFORM_MODE;
+    }
+    // Unset ⇒ default.
+    expect(await getFlag(FLAGS.PLATFORM_IMPROVEMENT_LOOPS, 'x')).toBe(
+      FLAG_DEFAULTS[FLAGS.PLATFORM_IMPROVEMENT_LOOPS],
+    );
+  });
+
+  it('the per-flag PAPERCUSP_FLAG_* override beats PAPERCUSP_PLATFORM_MODE=off (explicit owner opt-in)', async () => {
+    process.env.PAPERCUSP_PLATFORM_MODE = 'off';
+    process.env.PAPERCUSP_FLAG_PAPERCUSP_PLATFORM_IMPROVEMENT_LOOPS = '1';
+    try {
+      // Owner opting INTO platform mode on a release build wins over the build-wide off.
+      expect(await getFlag(FLAGS.PLATFORM_IMPROVEMENT_LOOPS, 'x')).toBe(true);
+      expect((await getAllFlags('x')).flags[FLAGS.PLATFORM_IMPROVEMENT_LOOPS]).toBe(true);
+    } finally {
+      delete process.env.PAPERCUSP_PLATFORM_MODE;
+      delete process.env.PAPERCUSP_FLAG_PAPERCUSP_PLATFORM_IMPROVEMENT_LOOPS;
+    }
+  });
+
   it('FLAG_DEFAULTS contains every FLAGS key (no drift)', () => {
     for (const key of Object.values(FLAGS)) {
       expect(FLAG_DEFAULTS).toHaveProperty(key);

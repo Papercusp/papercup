@@ -187,6 +187,16 @@ export const FLAGS = {
   // management; the hive:<slug> memory scope itself stays live (recall of an
   // unseeded pool is harmless).
   LEARNING_PACKS: "papercusp-learning-packs",
+  // per-hive-learning-loops-2026-06-14 (P-020, D-003/D-008): provisioning a
+  // per-HIVE learning loop at hive:create — a DARK gym_autoloop_config row
+  // (enabled:false, budget:null) + an INACTIVE scout routine under the hive's
+  // own install_slug (NOT @singleton). Both ship inert: the gym tick doubly
+  // refuses a disabled+unbudgeted row, and an inactive routine never fires —
+  // the owner arms each via the gym/routines UI. Flag-gated + best-effort: a
+  // provision failure warns and reports, never fails the create. OFF skips
+  // provisioning (a hive still works; it just has no per-hive loop until armed
+  // by hand). The matching hive:dissolve teardown is P-021.
+  PER_HIVE_LEARNING_LOOPS: "papercusp-per-hive-learning-loops",
   // slash-exposure-tool-catalog-2026-06-12 (P-007): gates the DYNAMIC slash
   // projection — every MCP-exposed tool a session can see surfaces as a
   // `tool:*` MCP prompt (slash command) on prompts/list, with prompts/get
@@ -365,6 +375,14 @@ export const FLAGS = {
   // same Phase-0-foundation call as CHANGE_LEDGER (rows must accumulate before queen-autonomy
   // B-13's surface + the autonomy gate consume them). OFF is the kill-switch (the emit no-ops).
   DECISION_LEDGER: "papercusp-decision-ledger",
+  // queue-authorization-redesign-2026-06-14 (P-004/P-006): the Queue UI redesign —
+  // group the pending queue by AUTHORIZER ("Needs your call" vs "Automatable — for
+  // now") instead of urgency tiers, surface the per-card why-it's-here line +
+  // category badge, and add the "Queen's log" segmented tab. ON by default (alpha
+  // flags-default-on): pure presentation over the already-computed whyGated/authorizer
+  // fields + the existing decision.ledger read; no new writes. OFF = the prior
+  // tier-grouped queue (safe rollback).
+  QUEUE_AUTHORIZATION_VIEW: "papercusp-queue-authorization-view",
   // queen-autonomous-execution-2026-06-13 B-09 (P-020/P-021/P-022): the placement
   // completion watchdog for the Queen hive loop. When ON, the 30s routinesTick
   // reconciles each Queen-placed unit (hive_placements, mig 263) against live bee
@@ -475,6 +493,24 @@ export const FLAGS = {
   // pinned brain (which grows → Claude compacts → the resume picker). Reverses
   // native-terminal-desktop D-013; OFF = the persistent-resume brain (today's).
   QUEEN_BRAIN_FRESH: "papercusp-queen-brain-fresh",
+  // per-hive-learning-loops-2026-06-14 P-070 (D-006/D-007): the deployment-mode
+  // knob for the LAYER-3 PLATFORM-IMPROVEMENT loops — the workspace-SINGLETON
+  // Class-C frontier/measurement/watchdog set (negative-space, neologism,
+  // fleet-ekg, calibration, deferral-interest, graduation, red-queen, regret,
+  // transfer, prompt-ablation, change-ledger, iq-battery +
+  // improvement-watchdog/triage/implement). When ON the Class-C loops register /
+  // materialize at seed time; when OFF they are SKIPPED / seeded-inactive. This
+  // gates REGISTRATION ONLY — no loop's logic changes, and the frontier loops
+  // each keep their own arming gate on top (the individual dark flags + governor
+  // budgets). gym/scout (per-hive Class-B, layers 1-2) are NEVER gated by this.
+  // DEFAULT ON: dev / self-host run the full platform loop (this dev workspace
+  // is exactly "Papercusp inside Papercusp"). A public RELEASE build keeps it
+  // OFF until the user opts into platform mode (D-006) — but the repo has NO
+  // dev-vs-release runtime signal yet, so release-off is achieved by the build
+  // setting PAPERCUSP_PLATFORM_MODE=off (resolved in @papercusp/flags/server),
+  // an OWNER design point flagged in P-070's report (do not invent
+  // release-detection infra). OFF = the Class-C loops ship dark.
+  PLATFORM_IMPROVEMENT_LOOPS: "papercusp-platform-improvement-loops",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -600,6 +636,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // new hives seed the selected learning pack; OFF skips seeding + hides the
   // pack-management surfaces.
   [FLAGS.LEARNING_PACKS]: true,
+  // ON by default (alpha flags-default-on policy): the work is finished, and what
+  // it provisions ships DARK — a disabled+unbudgeted gym row + an inactive scout
+  // routine, both inert until the owner arms them (D-003). So this is NOT under
+  // the frontier D-001 dark-ship rule (that gates loops that would SPEND on flip);
+  // flipping THIS flip only governs whether the inert rows get laid down at
+  // create. OFF skips per-hive provisioning entirely.
+  [FLAGS.PER_HIVE_LEARNING_LOOPS]: true,
   // ON by default — Phase 0 foundation record-keeping (self-learning-frontier
   // P-004/FB-02): append-only attribution rows, no LLM spend, no queue filing.
   // Deliberately NOT under the plan's D-001 dark-ship rule (that covers the
@@ -699,6 +742,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // routable owner-Queue escalation + bounded timeout). Interactive human/operator
   // callers are untouched. OFF = the legacy un-intercepted ctx.askUser path.
   [FLAGS.QUEEN_CARD_INTERCEPTION]: true,
+  // ON by default (alpha flags-default-on) — queue-authorization-redesign P-004/P-006:
+  // pure presentation over the whyGated/authorizer fields + the decision.ledger read;
+  // no new writes. OFF = the prior tier-grouped queue (safe rollback).
+  [FLAGS.QUEUE_AUTHORIZATION_VIEW]: true,
   // OFF by default — DELIBERATE (capability-confinement B-06 / P-012): envelope ENFORCEMENT
   // would deny fleet tool calls before the B-18 cutover + B-05 capability tools exist. OFF =
   // observe-only/shadow (evaluate + annotate, never block). The B-18 flip is the arming act.
@@ -746,6 +793,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the filter bar is additive surfacing over the tested @papercusp/grid-core engine
   // (Phase 1). OFF = the bar renders nothing; panels list unfiltered rows.
   [FLAGS.GRID_COLUMN_FILTERS]: true,
+  // DEFAULT ON (per-hive-learning-loops P-070) — dev / self-host run the full
+  // layer-3 platform-improvement loop (this workspace IS "Papercusp inside
+  // Papercusp"). NOT a dark ship: the gate is registration-only and each frontier
+  // loop keeps its own arming gate. A public RELEASE build flips it off via
+  // PAPERCUSP_PLATFORM_MODE=off (no dev-vs-release runtime signal exists yet —
+  // OWNER design point, see P-070). Default-ON ⇒ not in KNOWN_DARK_FLAGS.
+  [FLAGS.PLATFORM_IMPROVEMENT_LOOPS]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

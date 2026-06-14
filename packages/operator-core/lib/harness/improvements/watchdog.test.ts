@@ -253,12 +253,16 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals[0].key).toBe('stuck-plan:papercup:some-plan');
     expect(signals[0].body).toContain('51h');
     expect(signals[0].kind).toBe('bug');
+    // P-032: a stuck plan is attributable to its harness → harness-scoped origin.
+    expect(signals[0].scope).toBe('harness:papercup');
   });
 
   it('unresolved-escalation: one signal per unaddressed escalation', () => {
     const signals = escalationSignalsFromRows([{ harness_slug: 'sheets', phase: 'production' }]);
     expect(signals[0].key).toBe('escalation:sheets:production');
     expect(signals[0].source).toBe('unresolved-escalation');
+    // P-032: harness-attributable origin scope.
+    expect(signals[0].scope).toBe('harness:sheets');
   });
 
   it('fire-circuit-open: one signal per backed-off (slug, role) fire path', () => {
@@ -270,6 +274,8 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals[0].severity).toBe('major');
     expect(signals[0].body).toContain('7 consecutive');
     expect(signals[0].body).toContain('error: timeout');
+    // P-032: harness-attributable origin scope.
+    expect(signals[0].scope).toBe('harness:papercup-org');
   });
 });
 
@@ -293,6 +299,9 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     expect(alpha.body).toContain('2 dispatchable feature(s)');
     expect(alpha.body).toContain('F-1');
     expect(alpha.body).toContain('~30h');
+    // P-032: one aggregate signal PER harness → harness-scoped origin (not blanket operator).
+    expect(alpha.scope).toBe('harness:alpha');
+    expect(signals.find((s) => s.key === 'stalled:beta')!.scope).toBe('harness:beta');
   });
 
   it('stalled-feature: no rows → no signal', () => {
@@ -312,6 +321,9 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     expect(signals[0].key).toBe('orphaned-running-rows');
     expect(signals[0].body).toContain('2 spawned_agents row(s)');
     expect(signals[0].body).toContain('s-dead-1');
+    // P-032: reclaim-non-execution is a WORKSPACE-global aggregate (it collapses
+    // rows from many harnesses into one signal) → no harness scope; defaults to operator.
+    expect(signals[0].scope).toBeUndefined();
     expect(orphanedSpawnSignalsFromRows([])).toEqual([]);
   });
 
@@ -329,6 +341,9 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     expect(signals[0].body).toContain('3 escalation(s)');
     expect(signals[0].body).toContain('alpha×2');
     expect(signals[0].body).toContain('beta×1');
+    // P-032: a RATE spike ACROSS the hive spans multiple harnesses (alpha + beta
+    // here) — genuinely workspace-global → no harness scope; defaults to operator.
+    expect(signals[0].scope).toBeUndefined();
   });
 });
 
@@ -1143,6 +1158,8 @@ describe('smokeFailSignalsFromRows — recency gate via mtime_ms (audit P-007)',
     expect(out).toHaveLength(1);
     expect(out[0].key).toBe('papercup');
     expect(out[0].latestAt).toBe(new Date(hoursAgoMs(2)).toISOString());
+    // P-032: a smoke fail is attributable to ONE harness → harness-scoped origin.
+    expect(out[0].scope).toBe('harness:papercup');
   });
 
   it('a weeks-old failing smoke does NOT fire (no more monthly re-files forever)', () => {
@@ -1162,6 +1179,67 @@ describe('smokeFailSignalsFromRows — recency gate via mtime_ms (audit P-007)',
   it('boundary: exactly at the gate fires; one ms past it does not', () => {
     expect(smokeFailSignalsFromRows([{ harness_slug: 'p', failure_content: null, mtime_ms: hoursAgoMs(48) }], { recentHours: 48, nowMs: now })).toHaveLength(1);
     expect(smokeFailSignalsFromRows([{ harness_slug: 'p', failure_content: null, mtime_ms: hoursAgoMs(48) - 1 }], { recentHours: 48, nowMs: now })).toEqual([]);
+  });
+});
+
+describe('per-signal ORIGIN scope tagging (per-hive-learning-loops P-032)', () => {
+  // The per-hive improvement LENS (P-040) keys off each captured improvement's
+  // origin scope, read back through readImprovementItems({ harnessSlug }) which
+  // matches scope === `harness:<slug>`. So a harness-attributable signal MUST
+  // carry its harness scope, and a genuinely workspace-global signal MUST stay
+  // unscoped (→ 'operator' at the capture site) — NOT blanket-tagged.
+
+  it('harness-attributable signals carry scope=harness:<slug>', () => {
+    expect(
+      smokeFailSignalsFromRows([{ harness_slug: 'sheets', failure_content: 'x', mtime_ms: Date.now() }])[0].scope,
+    ).toBe('harness:sheets');
+    expect(
+      stuckPlanSignalsFromRows([{ harness_slug: 'docs', plan_slug: 'p', status: 'started', stale_hours: 30 }])[0].scope,
+    ).toBe('harness:docs');
+    expect(
+      escalationSignalsFromRows([{ harness_slug: 'mail', phase: null }])[0].scope,
+    ).toBe('harness:mail');
+    expect(
+      circuitOpenSignalsFromRows([{ harness_slug: 'calendar', role: 'director', consecutive_errors: 6, last_status: null }])[0].scope,
+    ).toBe('harness:calendar');
+    expect(
+      stalledFeatureSignalsFromRows([{ harness_slug: 'forms', feature_id: 'F-1', updated_ts: Date.now() - 30 * 3_600_000 }])[0].scope,
+    ).toBe('harness:forms');
+  });
+
+  it('genuinely workspace-global signals stay UNSCOPED (→ operator at capture), not blanket-tagged', () => {
+    // service-down: a workspace-wide dev endpoint.
+    expect(
+      collectServiceDownSignals([{ name: 'sidecar', up: false } as ProbeResult])[0].scope,
+    ).toBeUndefined();
+    // routine-failure: a system background routine, not one harness.
+    expect(
+      routineFailureSignalsFromRows([{ name: 'git-sync', last_error: 'push rejected' }])[0].scope,
+    ).toBeUndefined();
+    // failed-spawn: a workspace aggregate keyed by dominant cause class.
+    const spawnRows = Array.from({ length: 6 }, () => ({ error_message: 'timed out', started_at: new Date() }));
+    expect(failedSpawnSignalsFromRows(spawnRows, { minCount: 5 })[0].scope).toBeUndefined();
+    // red-test: box-global (test_runs has no workspace/harness column).
+    expect(
+      redTestSignalsFromRows([{ file_path: 'packages/x/a.test.ts', framework: 'vitest', fails: 5, sample: null }], 6)[0].scope,
+    ).toBeUndefined();
+  });
+
+  it('the capture site resolves a harness signal to its scope and an unscoped one to operator', async () => {
+    const calls: unknown[] = [];
+    const capture = (async (input: unknown): Promise<CaptureImprovementResult> => {
+      calls.push(input);
+      return { ok: true, created: true, issue: { id: `EI-${calls.length}` }, possibleDuplicates: [] } as CaptureImprovementResult;
+    }) as typeof import('./capture-core').captureImprovement;
+    const harnessSig = smokeFailSignalsFromRows([{ harness_slug: 'sheets', failure_content: 'x', mtime_ms: Date.now() }]);
+    const globalSig = collectServiceDownSignals([{ name: 'sidecar', up: false } as ProbeResult]);
+    await runWatchdogTick('ws', { maxPerTick: 5 }, {
+      readKeyDups: noKeyDups, pruneTicks: noPrune,
+      collect: async () => [...harnessSig, ...globalSig],
+      capture, recordTick: async () => {},
+    });
+    const scopes = calls.map((c) => (c as { scope?: string }).scope).sort();
+    expect(scopes).toEqual(['harness:sheets', 'operator']);
   });
 });
 

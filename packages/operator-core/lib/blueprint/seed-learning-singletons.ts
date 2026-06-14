@@ -28,10 +28,13 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
+import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
   materializeBlueprintTriggers,
   triggerRoutineSpecs,
+  isPlatformImprovementLoop,
+  platformImprovementLoopsEnabled,
   SINGLETON_TRIGGER_HOST_SLUG,
   type MaterializedRoutine,
 } from './materialize-triggers';
@@ -92,8 +95,11 @@ export interface CutoverResult {
    *  - `not-declared`: the blueprint hasn't added `singleton: true` yet.
    *  - `legacy-active`: the legacy `papercup` row is ACTIVE — this dark CLI must NOT create a
    *    duplicate beside a firing loop (D-023 collision guard); it needs the owner-watched
-   *    atomic active cutover instead. */
-  skipped?: 'not-declared' | 'legacy-active';
+   *    atomic active cutover instead.
+   *  - `platform-mode-off`: a Class-C platform-improvement loop while the
+   *    `PLATFORM_IMPROVEMENT_LOOPS` deployment-mode knob is OFF (P-070 — a public
+   *    release before the user opts into platform mode). gym/scout are exempt. */
+  skipped?: 'not-declared' | 'legacy-active' | 'platform-mode-off';
 }
 
 /** The legacy `papercup`-slug row a migrated loop seeded — read its current active state. */
@@ -112,11 +118,24 @@ async function readLegacyRow(
 /**
  * Materialize the singleton routines for the migrated learning blueprints and (opt-in) retire
  * their dark legacy rows. Pure-ish: all DB access goes through `sql`; injectable for tests.
+ *
+ * DEPLOYMENT-MODE GATE (P-070 / D-001): the LAYER-3 platform-improvement loops (every Class-C
+ * singleton — `isPlatformImprovementLoop`) are SKIPPED when the `PLATFORM_IMPROVEMENT_LOOPS`
+ * knob is OFF (a public release before the user opts into platform mode). gym/scout (Class-B)
+ * are never gated. The flag is resolved ONCE up front (default ON in dev/self-host) and is
+ * injectable via `opts.flag` for tests. Registration-only — no loop's logic changes.
  */
 export async function materializeLearningSingletons(
   sql: Sql,
   workspaceId: string,
-  opts: { only?: string; execute: boolean; retireLegacy: boolean; log?: (m: string) => void },
+  opts: {
+    only?: string;
+    execute: boolean;
+    retireLegacy: boolean;
+    log?: (m: string) => void;
+    /** Inject the platform-mode flag resolver (P-070); defaults to the real getFlag. */
+    flag?: (key: typeof FLAGS.PLATFORM_IMPROVEMENT_LOOPS) => Promise<boolean>;
+  },
 ): Promise<CutoverResult[]> {
   const log = opts.log ?? (() => {});
   const targets = opts.only
@@ -125,6 +144,9 @@ export async function materializeLearningSingletons(
   if (opts.only && targets.length === 0) {
     throw new Error(`seed-learning-singletons: unknown blueprint '${opts.only}' (not in LEARNING_SINGLETONS)`);
   }
+
+  // P-070 deployment-mode gate — resolved once (a flag read), reused for every Class-C loop.
+  const platformLoopsOn = await platformImprovementLoopsEnabled({ flag: opts.flag });
 
   const out: CutoverResult[] = [];
   for (const t of targets) {
@@ -149,6 +171,15 @@ export async function materializeLearningSingletons(
       continue;
     }
 
+    // DEPLOYMENT-MODE GATE (P-070): skip a Class-C platform-improvement loop when platform mode
+    // is OFF — it is not materialized at all (no @singleton row), so it ships dark on a public
+    // release until the user opts in. gym/scout (Class-B) are exempt via isPlatformImprovementLoop.
+    if (!platformLoopsOn && isPlatformImprovementLoop(t.blueprintId)) {
+      log(`SKIP ${t.blueprintId}: platform-improvement loops are OFF (PLATFORM_IMPROVEMENT_LOOPS) — release/non-platform mode (P-070)`);
+      out.push({ blueprintId: t.blueprintId, declaresSingleton, plannedNames, legacy, skipped: 'platform-mode-off' });
+      continue;
+    }
+
     // COLLISION GUARD (D-023): if the legacy papercup row is ACTIVE, this loop is being actively
     // used — the frontier-arming campaign re-creates + arms papercup rows via `seed --active`.
     // Materializing a dark @singleton row beside it is exactly the double-state the revert cleaned
@@ -162,7 +193,7 @@ export async function materializeLearningSingletons(
 
     let materialized: MaterializedRoutine[] | undefined;
     if (opts.execute) {
-      materialized = await materializeBlueprintTriggers(t.blueprintId, blueprint, { sql, workspaceId });
+      materialized = await materializeBlueprintTriggers(t.blueprintId, blueprint, { sql, workspaceId, flag: opts.flag });
       log(`MATERIALIZED ${t.blueprintId}: ${materialized.map((r) => `${r.hostSlug}/${r.name} (active=${!r.singleton ? 'true' : 'false'})`).join(', ')}`);
     } else {
       log(`DRY-RUN ${t.blueprintId}: would upsert @singleton/${plannedNames.join(', ')} (dark) + payload.blueprintId=${t.blueprintId}`);

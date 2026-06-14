@@ -45,3 +45,17 @@ test('gatewayLlmEnv — enabled patches BOTH the CLI and the anthropic-direct SD
   // distinct env vars so the in-process judge (SDK) and spawned agents (CLI) both route through it
   assert.notEqual(GATEWAY_BASE_URL_ENV, GATEWAY_SDK_URL_ENV);
 });
+
+test('gatewaySpawnEnv — with an accountId emits the x-papercusp-account routing header (P-004)', () => {
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  assert.deepEqual(gatewaySpawnEnv(true, { accountId: 'acct-x' }), {
+    [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:8788',
+    ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-account: acct-x',
+  });
+});
+
+test('gatewaySpawnEnv — no accountId sets no routing header; disabled ignores the accountId (P-004)', () => {
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  assert.equal(gatewaySpawnEnv(true).ANTHROPIC_CUSTOM_HEADERS, undefined);
+  assert.deepEqual(gatewaySpawnEnv(false, { accountId: 'acct-x' }), {});
+});

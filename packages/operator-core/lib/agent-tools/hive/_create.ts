@@ -51,12 +51,29 @@ export interface CreateHiveOpts {
   projectShapes?: import('../../learning-packs/pack-format').AppliesTo[];
   /** metadata.created_by on seeded rows. Default 'system'. */
   createdBy?: string;
+  /**
+   * Provision the per-HIVE learning loop (gym + scout) at create
+   * (per-hive-learning-loops P-020, D-003/D-008). `false` ⇒ skip; omit ⇒
+   * provision when the PER_HIVE_LEARNING_LOOPS flag is on. Flag-gated +
+   * best-effort — a provision failure warns and reports, never fails the create.
+   */
+  provisionLearningLoop?: boolean;
 }
 
 export interface SeededLearningsSummary {
   packId: string;
   packVersion?: string;
   count?: number;
+  error?: string;
+}
+
+export interface ProvisionedLoopSummary {
+  /** The dark gym_autoloop_config row was laid down (enabled:false, budget:null). */
+  gymAutoloop?: boolean;
+  /** The inactive scout routine was laid down under the hive's install_slug. */
+  scoutRoutine?: boolean;
+  /** Per-cycle scout budget the routine carries (USD). */
+  scoutMaxCostUsd?: number;
   error?: string;
 }
 
@@ -67,6 +84,8 @@ export interface CreateHiveResult {
   waked?: boolean;
   /** Present when seeding was attempted (learning-packs P-005). */
   seededLearnings?: SeededLearningsSummary;
+  /** Present when per-hive learning-loop provisioning was attempted (P-020). */
+  provisionedLoop?: ProvisionedLoopSummary;
   error?: string;
   message?: string;
 }
@@ -246,6 +265,42 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       }
     }
 
+    // 6c. Provision this hive's OWN per-hive learning loop (per-hive-learning-loops
+    //     P-020, D-003/D-008): a DARK gym_autoloop_config row + an INACTIVE scout
+    //     routine, BOTH keyed to the hive's own install_slug (NOT @singleton —
+    //     that's reserved for the workspace-singleton frontier loops, D-008). Both
+    //     ship inert (the gym tick doubly refuses a disabled+unbudgeted row; an
+    //     inactive routine never fires) — the owner arms each via the gym/routines
+    //     UI. Same contract as the learning-pack seed above: flag-gated +
+    //     best-effort (a failure warns and reports, NEVER fails the create), and a
+    //     LATER step failure rolls the rows back (the undo joins the stack). The
+    //     matching teardown at hive:dissolve is P-021.
+    let provisionedLoop: ProvisionedLoopSummary | undefined;
+    if (opts.provisionLearningLoop !== false) {
+      try {
+        const [{ getFlag }, { FLAGS }] = await Promise.all([
+          import('@papercusp/flags/server'),
+          import('@papercusp/flags'),
+        ]);
+        if (await getFlag(FLAGS.PER_HIVE_LEARNING_LOOPS, 'system')) {
+          const { provisionHiveLearningLoop } = await import('../../hive/provision-learning-loop');
+          const { sql } = getOrgPg();
+          const res = await provisionHiveLearningLoop({ sql, workspaceId: ws, hiveSlug: opts.slug });
+          undo.push(res.undo);
+          provisionedLoop = {
+            gymAutoloop: res.gymAutoloop,
+            scoutRoutine: res.scoutRoutine,
+            ...(res.scoutMaxCostUsd != null ? { scoutMaxCostUsd: res.scoutMaxCostUsd } : {}),
+            ...(res.error ? { error: res.error } : {}),
+          };
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[hive:create] per-hive learning-loop provision failed (${opts.slug}): ${msg}`);
+        provisionedLoop = { error: msg.slice(0, 200) };
+      }
+    }
+
     // 7. Initial wake (optional): fire the Queen now, or declare a time wake.
     //    ROOT launch (no `parent`) — the no-nest guard passes for a parentless hive.
     let waked = false;
@@ -272,7 +327,14 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       waked = true;
     }
 
-    return { ok: true, slug: opts.slug, path, waked, ...(seededLearnings ? { seededLearnings } : {}) };
+    return {
+      ok: true,
+      slug: opts.slug,
+      path,
+      waked,
+      ...(seededLearnings ? { seededLearnings } : {}),
+      ...(provisionedLoop ? { provisionedLoop } : {}),
+    };
   } catch (e) {
     await rollback();
     return { ok: false, error: 'create_failed', message: (e instanceof Error ? e.message : String(e)).slice(0, 400) };

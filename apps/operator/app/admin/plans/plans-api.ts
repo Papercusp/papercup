@@ -225,6 +225,9 @@ export interface AttentionItem {
    *  ReportBlock the detail pane renders natively via ReportBlockCard.
    *  report-cards-inbox-reconciliation-2026-06-05 D-001/D-003. */
   report?: ReportBlock;
+  /** The autonomy category this item's disposition belongs to (or null for an
+   *  ungoverned signal). Drives the category badge. */
+  category?: string | null;
   /** A1 authorizer-split (queue-authorization-redesign P-002): WHO must sign off
    *  on this Decision + WHY it's gated. Set for `needsHuman` items only. */
   authorizer?: 'you' | 'queen-eligible' | null;

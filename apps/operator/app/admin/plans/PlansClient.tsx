@@ -29,6 +29,8 @@ import PlanDetail from './PlanDetail';
 import PlanItemsList from './PlanItemsList';
 import PlanOtherList, { OtherDetail } from './PlanOtherList';
 import PlanItemPreview from './PlanItemPreview';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 import { Plus, ClipboardList, Inbox, Terminal } from 'lucide-react';
 import {
   SessionsRosterList,
@@ -201,6 +203,9 @@ export default function PlansClient() {
     'view',
     parseAsStringEnum<'plans' | 'queue' | 'sessions'>(['plans', 'queue', 'sessions']).withDefault('plans'),
   );
+  // queue-authorization-redesign (P-004): the A1 authorizer-split Queue view
+  // (group pending items by who must sign off). Default-ON; OFF = legacy tier grouping.
+  const queueAuthzView = useFlag(FLAGS.QUEUE_AUTHORIZATION_VIEW);
   // Inbox tier filter (D-006) — Decisions ▸ Handled ▸ Alerts ▸ Activity (or all).
   // Only the Decisions tier demands the user; this lets them focus on it.
   // The local is queueTier, but the URL key stays 'inboxTier' — it's a cross-app
@@ -876,6 +881,7 @@ export default function PlansClient() {
                           kinds={otherFacets}
                           planFilters={itemPlans}
                           tierFilter={queueTier}
+                          groupByAuthorizer={queueAuthzView}
                         />
                       ) : null}
                       {showPlanItems ? (

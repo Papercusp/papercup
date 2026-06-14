@@ -1,22 +1,28 @@
 'use client';
 
 /**
- * PlanOtherList — the "Other" attention surfaces in the Planning tab
+ * PlanOtherList — the "Other" attention surfaces in the Queue tab
  * (planning-attention-importance-2026-05-31, P-013 Other filter + P-015
  * detail pane).
  *
  * Renders the non-plan-item AttentionItem kinds from plans:attention —
- * coord escalations, coord messages-to-human, smoke-test failures, plans
- * awaiting review — grouped (per the reader's plan / "Alerts" buckets),
- * importance-sorted, master-detail like PlanItemsList: pick a row, the
- * selected item shows in the right pane as the shared chat card.
+ * coord escalations, coord messages-to-human, smoke-test failures,
+ * improvements, conversations, standing-approvals — master-detail like
+ * PlanItemsList: pick a row, the selected item shows in the right pane as
+ * the shared chat card.
  *
- * The detail pane is now the unified card (inbox-cards-unification P-020):
+ * queue-authorization-redesign-2026-06-14 (P-004/P-005): when
+ * `groupByAuthorizer` is set (the new Queue view, flag-gated), the items are
+ * grouped by AUTHORIZER — "Needs your call" (you) vs "Automatable — for now"
+ * (the Queen could take it once armed) vs "Alerts & activity" (ungoverned
+ * signals) — instead of by plan/harness; each card carries a "why it's here"
+ * line + an autonomy-category badge, and the queen-eligible bucket links to
+ * /settings/autonomy. When the flag is off the prior plan/harness grouping is
+ * rendered byte-for-byte.
+ *
+ * The detail pane is the unified card (inbox-cards-unification P-020):
  * `attentionItemToCardSpec(item)` feeds `AskChoiceCard`; terminal picks
- * dispatch through `resolveAttentionAction` (coord:resolve / coord:ack via
- * the /api/admin/coord proxy, D-007) and refresh on success; the "💬 Chat"
- * navigate option expands an inline `PlanChat` beneath the card (D-006);
- * View-log / Open point at the source harness view.
+ * dispatch through `resolveAttentionAction`.
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -45,6 +51,82 @@ const KIND_LABEL: Record<AttentionKind, string> = {
   'scout-grade': 'grade',
 };
 
+/* ── A1 authorizer split (queue-authorization-redesign P-004/P-005) ───────── */
+
+/** Human reason for each whyGated value — the tail of the per-card why-line. */
+const WHYGATED_REASON: Record<string, string> = {
+  protected: 'protected category — your call by right',
+  'owner-only': 'your ratification',
+  unarmed: 'the Queen isn’t armed yet',
+  'above-ceiling': 'above the Queen’s autonomy ceiling',
+};
+
+/** The "why it's here" line: who must sign off + why. Null for non-decisions. */
+function whyLine(it: AttentionItem): string | null {
+  if (!it.authorizer) return null;
+  const who = it.authorizer === 'you' ? 'needs you' : 'the Queen could take this';
+  const reason = it.whyGated ? WHYGATED_REASON[it.whyGated] : null;
+  return reason ? `${who} · ${reason}` : who;
+}
+
+/** A rendered section of the Other list — either an authorizer bucket or, in the
+ *  legacy view, one plan/harness AttentionGroup. */
+interface DisplaySection {
+  key: string;
+  title: string;
+  /** Authorizer-bucket explainer (new view). */
+  hint?: string;
+  /** Source harness pill (legacy plan/harness grouping). */
+  harnessSlug?: string | null;
+  /** Render the "Let the Queen handle these →" link (queen-eligible bucket). */
+  queenLink?: boolean;
+  items: AttentionItem[];
+}
+
+const AUTH_BUCKETS: {
+  key: string;
+  match: 'you' | 'queen-eligible' | 'other';
+  title: string;
+  hint: string;
+  queenLink?: boolean;
+}[] = [
+  {
+    key: 'auth:you',
+    match: 'you',
+    title: 'Needs your call',
+    hint: 'Only you can decide these — protected actions and your ratifications.',
+  },
+  {
+    key: 'auth:queen',
+    match: 'queen-eligible',
+    title: 'Automatable — for now',
+    hint: 'The Queen could handle these once her autonomy is widened.',
+    queenLink: true,
+  },
+  {
+    key: 'auth:other',
+    match: 'other',
+    title: 'Alerts & activity',
+    hint: 'Signals and FYI — not a decision waiting on anyone.',
+  },
+];
+
+/** Partition flat items into the three authorizer buckets, dropping empties. */
+function byAuthorizer(items: AttentionItem[]): DisplaySection[] {
+  return AUTH_BUCKETS.map((b) => ({
+    key: b.key,
+    title: b.title,
+    hint: b.hint,
+    queenLink: b.queenLink,
+    items: items.filter((i) => (b.match === 'other' ? !i.authorizer : i.authorizer === b.match)),
+  })).filter((s) => s.items.length > 0);
+}
+
+/** Legacy: one section per plan/harness AttentionGroup. */
+function planSections(groups: AttentionGroup[]): DisplaySection[] {
+  return groups.map((g) => ({ key: g.key, title: g.title, harnessSlug: g.harnessSlug, items: g.items }));
+}
+
 interface Props {
   groups: AttentionGroup[];
   loading: boolean;
@@ -59,6 +141,9 @@ interface Props {
   planFilters?: string[];
   /** Inbox tier filter (D-006). 'all' (or undefined) shows every tier. */
   tierFilter?: AttentionTier | 'all';
+  /** A1 (P-004): group by authorizer + show why-line/category badge. Flag-gated;
+   *  when false the prior plan/harness grouping renders unchanged. */
+  groupByAuthorizer?: boolean;
 }
 
 /** Keep only the non-plan-item kinds (optionally narrowed to `allow`), and —
@@ -86,7 +171,17 @@ function otherOnly(
     .filter((g) => g.items.length > 0);
 }
 
-export default function PlanOtherList({ groups, loading, error, refresh, title, kinds, planFilters, tierFilter }: Props) {
+export default function PlanOtherList({
+  groups,
+  loading,
+  error,
+  refresh,
+  title,
+  kinds,
+  planFilters,
+  tierFilter,
+  groupByAuthorizer,
+}: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
   // Inbox shares one preview pane across the Other + item lists; selecting an
   // Other item clears any plan-item selection so the shared pane shows it.
@@ -95,8 +190,7 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
     void setSelected(id);
     void setItemSel(null);
   };
-  // Collapsible plan groups — same `?expand=` model as the Plans tab's
-  // PlanItemsList, so a plan's expand state stays consistent across both views.
+  // Collapsible groups — same `?expand=` model as the Plans tab's PlanItemsList.
   const [expandedGroups, setExpandedGroups] = useQueryState(
     'expand',
     parseAsArrayOf(parseAsString).withDefault([]),
@@ -105,12 +199,14 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
   const planList = planFilters ?? [];
   const otherGroups = otherOnly(groups, kinds ?? [], planList, tierFilter ?? 'all');
   const allItems = otherGroups.flatMap((g) => g.items);
+  // A1: authorizer buckets in the new Queue view, else the legacy plan/harness groups.
+  const sections = groupByAuthorizer ? byAuthorizer(allItems) : planSections(otherGroups);
 
-  // Auto-expand the selected item's group (mirrors the Plans tab). The ref
-  // token stops us reopening a group the user just collapsed while the
+  // Auto-expand the selected item's section (mirrors the Plans tab). The ref
+  // token stops us reopening a section the user just collapsed while the
   // selection stays put.
   const selectedGroupKey = selected
-    ? otherGroups.find((g) => g.items.some((i) => i.id === selected))?.key ?? null
+    ? sections.find((s) => s.items.some((i) => i.id === selected))?.key ?? null
     : null;
   const autoExpandRef = useRef<string | null>(null);
   useEffect(() => {
@@ -133,6 +229,12 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
   const wrap = (inner: ReactNode) => (
     <section className="pc-items__section">
       <h3 className="pc-items__section-label">{title}</h3>
+      {groupByAuthorizer && allItems.length ? (
+        <p className="pc-queue__intro">
+          Things an agent paused on because acting needed sign-off. Clear the ones only you can
+          decide; let the Queen take the rest by widening her autonomy.
+        </p>
+      ) : null}
       {inner}
     </section>
   );
@@ -163,69 +265,101 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
 
   const groupsEl = (
     <ul className="pc-items__groups" role="list">
-      {otherGroups.map((g) => {
-              const isExpanded = expandedGroups.includes(g.key);
-              return (
-                <li key={g.key} className="pc-items__group">
-                  <Collapsible.Root
-                    open={isExpanded}
-                    onOpenChange={(open) =>
-                      void setExpandedGroups(
-                        open
-                          ? Array.from(new Set([...expandedGroups, g.key]))
-                          : expandedGroups.filter((k) => k !== g.key),
-                      )
-                    }
-                  >
-                    <Collapsible.Trigger asChild>
-                      <button type="button" className="pc-items__plan-head" title={g.title}>
-                        <ChevronRight className="pc-items__group-chevron" size={13} aria-hidden />
-                        <span className="pc-items__plan-copy">
-                          <span className="pc-items__plan-name">{g.title}</span>
-                          {g.harnessSlug ? (
-                            <span className="pc-items__plan-meta">
-                              <span className="pc-pill pc-pill--harness">{g.harnessSlug}</span>
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="pc-items__plan-count">{g.items.length}</span>
-                      </button>
-                    </Collapsible.Trigger>
-                    <Collapsible.Content className="pc-items__group-content">
-                      <ul className="pc-items__rows" role="list">
-                        {g.items.map((it) => {
-                          const isSel = selected === it.id;
-                          return (
-                            <li key={it.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
-                              <button
-                                type="button"
-                                className="pc-items__row"
-                                aria-current={isSel ? 'true' : undefined}
-                                title={it.title}
-                                onClick={() => selectOther(it.id)}
+      {sections.map((s) => {
+        const isExpanded = expandedGroups.includes(s.key);
+        const head = (
+          <button type="button" className="pc-items__plan-head" title={s.title}>
+            <ChevronRight className="pc-items__group-chevron" size={13} aria-hidden />
+            <span className="pc-items__plan-copy">
+              <span className="pc-items__plan-name">{s.title}</span>
+              {s.hint ? (
+                <span className="pc-items__plan-meta">
+                  <span className="pc-queue__section-hint">{s.hint}</span>
+                </span>
+              ) : s.harnessSlug ? (
+                <span className="pc-items__plan-meta">
+                  <span className="pc-pill pc-pill--harness">{s.harnessSlug}</span>
+                </span>
+              ) : null}
+            </span>
+            <span className="pc-items__plan-count">{s.items.length}</span>
+          </button>
+        );
+        return (
+          <li key={s.key} className="pc-items__group">
+            <Collapsible.Root
+              open={isExpanded}
+              onOpenChange={(open) =>
+                void setExpandedGroups(
+                  open
+                    ? Array.from(new Set([...expandedGroups, s.key]))
+                    : expandedGroups.filter((k) => k !== s.key),
+                )
+              }
+            >
+              {/* The queen-eligible bucket carries a deep-link to the autonomy
+                  policy — rendered as a sibling of the trigger (can't nest an
+                  anchor inside the trigger button). Other sections render the
+                  bare trigger so the legacy markup is unchanged. */}
+              {s.queenLink ? (
+                <div className="pc-queue__section-head">
+                  <Collapsible.Trigger asChild>{head}</Collapsible.Trigger>
+                  <a className="pc-queue__queen-link" href="/settings/autonomy">
+                    Let the Queen handle these →
+                  </a>
+                </div>
+              ) : (
+                <Collapsible.Trigger asChild>{head}</Collapsible.Trigger>
+              )}
+              <Collapsible.Content className="pc-items__group-content">
+                <ul className="pc-items__rows" role="list">
+                  {s.items.map((it) => {
+                    const isSel = selected === it.id;
+                    const why = groupByAuthorizer ? whyLine(it) : null;
+                    return (
+                      <li key={it.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
+                        <button
+                          type="button"
+                          className="pc-items__row"
+                          aria-current={isSel ? 'true' : undefined}
+                          title={it.title}
+                          onClick={() => selectOther(it.id)}
+                        >
+                          {/* Free-form text first (leftmost); the why-line stacks
+                              under it in the authorizer view. */}
+                          <span className={`pc-items__text${why ? ' pc-items__text--stacked' : ''}`}>
+                            <span className="pc-queue__title">{it.title}</span>
+                            {why ? <span className="pc-queue__why">{why}</span> : null}
+                          </span>
+                          <span className="pc-items__rowmeta">
+                            {it.tier !== 'activity' ? (
+                              <span className={`pc-tier pc-tier--${it.tier}`} title={TIER_LABEL[it.tier]}>
+                                {it.tier === 'handled' ? '✓ handled' : it.tier}
+                              </span>
+                            ) : null}
+                            {groupByAuthorizer && it.category ? (
+                              <span
+                                className={`pc-category${it.whyGated === 'protected' ? ' pc-category--protected' : ''}`}
+                                title={`autonomy category: ${it.category}`}
                               >
-                                {/* Free-form text first (leftmost); kind + importance
-                                    pills follow on the right. */}
-                                <span className="pc-items__text">{it.title}</span>
-                                <span className="pc-items__rowmeta">
-                                  {it.tier !== 'activity' ? (
-                                    <span className={`pc-tier pc-tier--${it.tier}`} title={TIER_LABEL[it.tier]}>
-                                      {it.tier === 'handled' ? '✓ handled' : it.tier}
-                                    </span>
-                                  ) : null}
-                                  <span className={`pc-kind pc-kind--${it.kind}`}>{KIND_LABEL[it.kind]}</span>
-                                  {it.importance !== 'normal' ? (
-                                    <span className={`pc-imp pc-imp--${it.importance}`}>{it.importance}</span>
-                                  ) : null}
-                                </span>
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </Collapsible.Content>
-                  </Collapsible.Root>
-                </li>
+                                {it.whyGated === 'protected' ? '🔒 ' : ''}
+                                {it.category}
+                              </span>
+                            ) : (
+                              <span className={`pc-kind pc-kind--${it.kind}`}>{KIND_LABEL[it.kind]}</span>
+                            )}
+                            {it.importance !== 'normal' ? (
+                              <span className={`pc-imp pc-imp--${it.importance}`}>{it.importance}</span>
+                            ) : null}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </Collapsible.Content>
+            </Collapsible.Root>
+          </li>
         );
       })}
     </ul>
@@ -256,6 +390,8 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
   const chatLabel = item.planSlug
     ? `${item.planSlug} · ${kindLabel}`
     : `${item.harnessSlug ?? 'harness'} · ${kindLabel}`;
+  // A1 (P-005): who must sign off + why, surfaced in the detail pane too.
+  const why = whyLine(item);
 
   // The shared card surfaces this item's options; terminal picks dispatch to
   // the durable backend, navigate picks open a sub-surface (inline chat / the
@@ -326,6 +462,15 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
       <div className="pc-items__detail-toolbar">
         <span className={`pc-tier pc-tier--${item.tier}`} title={TIER_LABEL[item.tier]}>{TIER_LABEL[item.tier]}</span>
         <span className={`pc-kind pc-kind--${item.kind}`}>{kindLabel}</span>
+        {item.category ? (
+          <span
+            className={`pc-category${item.whyGated === 'protected' ? ' pc-category--protected' : ''}`}
+            title={`autonomy category: ${item.category}`}
+          >
+            {item.whyGated === 'protected' ? '🔒 ' : ''}
+            {item.category}
+          </span>
+        ) : null}
         <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
         {item.importance !== 'normal' ? (
           <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
@@ -339,6 +484,21 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
           onResponse={(r) => void onResponse(r)}
         />
       </div>
+      {/* A1 (P-005): the "why it's here" line — who must sign off + why, with the
+          autonomy-policy deep-link for queen-eligible items. */}
+      {why ? (
+        <div className="pc-items__why-line pc-queue__intro" style={{ margin: '4px 14px 0' }}>
+          {why}
+          {item.authorizer === 'queen-eligible' ? (
+            <>
+              {' · '}
+              <a className="pc-queue__queen-link" href="/settings/autonomy">
+                Let the Queen handle these →
+              </a>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       {/* Operator-triage audit (D-006): a downgraded/handled item shows what the
           operator did + why — never a silent vanish. */}
       {item.tier === 'handled' || item.triageState !== 'untriaged' ? (
@@ -369,4 +529,3 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
     </aside>
   );
 }
-

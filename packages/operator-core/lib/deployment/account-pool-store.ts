@@ -47,6 +47,22 @@ export async function saveAccountPool(pool: AccountPool, ws?: string): Promise<v
 }
 
 /**
+ * Resolve the pool account a spawning bee should egress through (P-004/P-005). Loads the pool
+ * (fail-soft → undefined on any IO error) and applies the cache-affinity selection. Returns
+ * undefined when there are ≤1 accounts (no routing needed — the gateway's active() account serves)
+ * or nothing is available, so the caller sets no routing header.
+ */
+export async function selectSpawnAccount(
+  ws: string | undefined,
+  harness: string | undefined,
+  priorAccountId?: string,
+): Promise<string | undefined> {
+  const pool = await loadAccountPool(ws).catch(() => null);
+  if (!pool || pool.accounts.length <= 1) return undefined;
+  return selectAccountForSpawn(pool, Date.now(), { harness, priorAccountId });
+}
+
+/**
  * Read-modify-write the pool. Not a single PG transaction (the pool is a low-churn
  * PROJECTION — the governor is the rate-state source of truth — so a lost racing
  * penalty write self-heals on the next pause); deploy-time binds are single-caller.

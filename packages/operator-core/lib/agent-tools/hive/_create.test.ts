@@ -18,6 +18,7 @@ let scaffoldImpl: () => Promise<void>;
 let tmpParent: string;
 let ensureCalls: Array<[string, string]>;
 let deleteHiveCalls: Array<[string, string]>;
+let provisionCalls: Array<{ workspaceId: string; hiveSlug: string }>;
 
 beforeEach(() => {
   vi.resetModules();
@@ -26,6 +27,7 @@ beforeEach(() => {
   tmpParent = mkdtempSync(join(tmpdir(), 'hive-create-test-'));
   ensureCalls = [];
   deleteHiveCalls = [];
+  provisionCalls = [];
 
   vi.doMock('../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: registry.projects.map((p) => ({ ...p })) }),
@@ -85,6 +87,17 @@ beforeEach(() => {
       undo: async () => {},
     }),
   }));
+  // P-020: the per-hive learning-loop provision step is mocked (its own behavior is
+  // pinned in lib/hive/provision-learning-loop.test.ts). It ignores the sql it's
+  // handed, so the real getOrgPg flows through untouched (the wake-defaults step
+  // shares that pool). The flag gate resolves ON via the @papercusp/flags/server
+  // mock above.
+  vi.doMock('../../hive/provision-learning-loop', () => ({
+    provisionHiveLearningLoop: async (input: { workspaceId: string; hiveSlug: string }) => {
+      provisionCalls.push({ workspaceId: input.workspaceId, hiveSlug: input.hiveSlug });
+      return { ok: true, hiveSlug: input.hiveSlug, gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5, undo: async () => {} };
+    },
+  }));
 });
 
 afterEach(() => {
@@ -97,6 +110,7 @@ afterEach(() => {
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('../../learning-packs/load-packs');
   vi.doUnmock('../../learning-packs/seed');
+  vi.doUnmock('../../hive/provision-learning-loop');
   try {
     rmSync(tmpParent, { recursive: true, force: true });
   } catch {
@@ -119,6 +133,23 @@ describe('createHiveHarness', () => {
     expect(ensureCalls).toEqual([['default', 'test-hive']]);
     // learning-packs P-005: the default pack seeded into the new hive's pool.
     expect(res.seededLearnings).toEqual({ packId: 'papercusp-default', packVersion: '1.0.0', count: 1 });
+    // per-hive-learning-loops P-020: the per-hive loop is provisioned, keyed to the
+    // hive's OWN slug, and reported in the result.
+    expect(provisionCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'test-hive' }]);
+    expect(res.provisionedLoop).toEqual({ gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5 });
+  });
+
+  it('provisionLearningLoop:false skips the per-hive loop entirely', async () => {
+    const { createHiveHarness } = await import('./_create');
+    const res = await createHiveHarness({
+      slug: 'no-loop-hive',
+      workspaceId: 'default',
+      parentDir: tmpParent,
+      provisionLearningLoop: false,
+    });
+    expect(res.ok).toBe(true);
+    expect(provisionCalls).toEqual([]);
+    expect(res.provisionedLoop).toBeUndefined();
   });
 
   it('learningPack: null skips seeding entirely', async () => {

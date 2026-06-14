@@ -549,6 +549,8 @@ export function smokeFailSignalsFromRows(
       title: `Smoke test failing in harness ${r.harness_slug}`,
       body: `Watchdog signal (smoke-fail): the ${r.harness_slug} smoke test is RED.\n\n${(r.failure_content ?? '').slice(0, 2000) || '(no failure content recorded)'}`,
       severity: 'major' as const,
+      // Origin scope (P-032): a smoke fail is attributable to ONE harness.
+      scope: `harness:${r.harness_slug}`,
       latestAt: new Date(mtime).toISOString(),
     });
   }
@@ -885,6 +887,8 @@ export function stuckPlanSignalsFromRows(rows: StuckPlanRow[]): WatchdogSignal[]
       `no status update for ~${Math.round(r.stale_hours)}h — its run may be hung.`,
     severity: 'major' as const,
     kind: 'bug' as const,
+    // Origin scope (P-032): a stuck plan belongs to ONE harness.
+    scope: `harness:${r.harness_slug}`,
   }));
 }
 /** stuck-plan: a plan 'started'/'paused' with no update for > staleHours (default 24h). */
@@ -1073,6 +1077,8 @@ export function escalationSignalsFromRows(rows: EscalationRow[]): WatchdogSignal
       ` has a recorded escalation with no supervisor resolution yet.`,
     severity: 'major' as const,
     kind: 'bug' as const,
+    // Origin scope (P-032): an escalation is attributable to ONE harness.
+    scope: `harness:${r.harness_slug}`,
   }));
 }
 /** unresolved-escalation: a harness escalation with no supervisor_notes (unaddressed). */
@@ -1101,6 +1107,8 @@ export function circuitOpenSignalsFromRows(rows: CircuitOpenRow[]): WatchdogSign
       `\n\nLast status: ${(r.last_status ?? '').slice(0, 400) || '(none recorded)'}`,
     severity: 'major' as const,
     kind: 'bug' as const,
+    // Origin scope (P-032): a stuck role fire-path belongs to ONE harness.
+    scope: `harness:${r.harness_slug}`,
   }));
 }
 /**
@@ -1164,6 +1172,8 @@ export function stalledFeatureSignalsFromRows(
       `autoloop:status, the harness's bp-schedule routine, and the orchestrator scope env.`,
     severity: 'major' as const,
     kind: 'bug' as const,
+    // Origin scope (P-032): one aggregate signal per harness — attributable to it.
+    scope: `harness:${slug}`,
   }));
 }
 /**

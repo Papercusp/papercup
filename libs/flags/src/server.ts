@@ -10,6 +10,7 @@ import { resolveTestOverrides } from "./test";
 import {
   ALL_FLAG_KEYS,
   FLAG_DEFAULTS,
+  FLAGS,
   type FlagKey,
   type FlagPayload,
   type FlagValues,
@@ -129,12 +130,41 @@ function resolveEnvOverride(key: FlagKey): boolean | undefined {
   return raw === "1" || raw.toLowerCase() === "true";
 }
 
+/**
+ * Deployment-mode override for the LAYER-3 platform-improvement loops
+ * (per-hive-learning-loops P-070 / D-006). The repo has NO dev-vs-release runtime
+ * signal yet, so the flag defaults ON (dev / self-host run the full platform loop)
+ * and a public RELEASE build switches it off by exporting `PAPERCUSP_PLATFORM_MODE=off`.
+ * This is intentionally COARSER than the per-flag `PAPERCUSP_FLAG_*` override (which
+ * still wins — an owner opting INTO platform mode on a release build sets
+ * `PAPERCUSP_FLAG_PAPERCUSP_PLATFORM_IMPROVEMENT_LOOPS=1`): the build sets ONE var,
+ * not a flag-specific one. Returns a forced value only for the platform-improvement
+ * flag; `undefined` for every other flag and when the var is unset/`on`.
+ *
+ * OWNER design point (surfaced in P-070's report): when a real release-build
+ * constant lands, gate the default on it instead of this env var.
+ */
+function resolvePlatformModeOverride(key: FlagKey): boolean | undefined {
+  if (key !== FLAGS.PLATFORM_IMPROVEMENT_LOOPS) return undefined;
+  const raw = process.env.PAPERCUSP_PLATFORM_MODE;
+  if (raw === undefined) return undefined;
+  const v = raw.trim().toLowerCase();
+  if (v === "off" || v === "0" || v === "false") return false;
+  if (v === "on" || v === "1" || v === "true") return true;
+  return undefined;
+}
+
 export async function getFlag(
   key: FlagKey,
   distinctId: string,
 ): Promise<boolean> {
   const envOverride = resolveEnvOverride(key);
   if (envOverride !== undefined) return envOverride;
+  // Coarse deployment-mode lever (P-070): PAPERCUSP_PLATFORM_MODE=off forces the
+  // platform-improvement flag off on a release build. The per-flag PAPERCUSP_FLAG_*
+  // override above still wins (explicit owner opt-in beats the build-wide var).
+  const platformMode = resolvePlatformModeOverride(key);
+  if (platformMode !== undefined) return platformMode;
   const overrides = resolveTestOverrides();
   if (overrides) return overrides[key];
   const stored = await loadStoredOverrides();
@@ -149,16 +179,18 @@ export async function getFlag(
 }
 
 /**
- * Overlay `PAPERCUSP_FLAG_<KEY>` env overrides onto a full flag map — the
+ * Overlay `PAPERCUSP_FLAG_<KEY>` env overrides (and the coarse P-070
+ * `PAPERCUSP_PLATFORM_MODE` deployment-mode lever) onto a full flag map — the
  * all-flags counterpart of the env check in getFlag, with the same precedence
- * (env beats test overrides / PostHog / defaults). Without this, the documented
- * dev override flipped server-side single-flag checks but was invisible to the
- * client bootstrap payload (`useFlag`), so UI gates never saw it.
+ * (env beats test overrides / PostHog / defaults; the per-flag PAPERCUSP_FLAG_*
+ * beats the coarse platform-mode var). Without this, the documented dev override
+ * flipped server-side single-flag checks but was invisible to the client
+ * bootstrap payload (`useFlag`), so UI gates never saw it.
  */
 function applyEnvOverrides(flags: FlagValues): FlagValues {
   let out = flags;
   for (const key of ALL_FLAG_KEYS) {
-    const v = resolveEnvOverride(key);
+    const v = resolveEnvOverride(key) ?? resolvePlatformModeOverride(key);
     if (v !== undefined) {
       if (out === flags) out = { ...flags };
       out[key] = v;
