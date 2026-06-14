@@ -83,11 +83,11 @@ describe('PgExperimentLedger', () => {
       batteryId: 'b2',
       testId: 'replay',
       tier: 'offline',
-      arms: [],
+      arms: [] as never[],
       baselineId: 'baseline',
       comparison: null,
       budgetExhausted: false,
-    } as const;
+    };
     await ledger.record({ ...base, winner: null, totalCostUsd: 0.01 });
     await ledger.record({ ...base, winner: 'cand', totalCostUsd: 0.02 });
 

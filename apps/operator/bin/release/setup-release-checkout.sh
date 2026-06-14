@@ -157,6 +157,25 @@ else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"
 fi
 
+# 3b. Dependency patches (patch-package) -------------------------------------
+# patch-package patches apply at INSTALL time, but this tree never `npm install`s
+# — it hardlink-copies node_modules from the integration tree (step 3). That copy
+# carries the integration tree's already-patched files WHEN it runs, but the
+# `auto` heuristic skips the copy on a patches-only change (a new patch alters no
+# lockfile / workspace-package set), and an integration file edited in place gets
+# a NEW inode the pre-existing hardlink never tracked — so this tree's node_modules
+# can be left UNPATCHED. Re-apply committed patches here (idempotent; the same
+# patch-package the repo's postinstall uses). Without it a committed dependency
+# patch (e.g. the EI-127 mcp-handler per-request-server leak fix) silently reaches
+# NEITHER the deployed operator NOR the green-checkpoint tree — which then reds on
+# the patch's own regression test, blocking every deploy. Non-fatal by design: a
+# patch hiccup must never wedge the deploy.
+if [ -d "$RELEASE_ROOT/patches" ] && [ -x "$RELEASE_ROOT/node_modules/.bin/patch-package" ]; then
+  log "applying committed dependency patches (patch-package)"
+  (cd "$RELEASE_ROOT" && ./node_modules/.bin/patch-package 1>/dev/null 2>&1) \
+    || log "WARN patch-package reported issues (continuing)"
+fi
+
 # 4. SPA dist (deploys only) -------------------------------------------------
 # operator-vite/dist is UNTRACKED, so a fresh swap serves whatever dist was
 # last built in this tree — found 25h STALE on 2026-06-06 (the /admin/git tab

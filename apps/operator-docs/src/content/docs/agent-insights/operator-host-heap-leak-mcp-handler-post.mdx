@@ -59,6 +59,23 @@ tool catalog + the SDK Protocol's response/progress/abort Maps + the transport).
    prunes its bus-level `__runChunkBusClosed__` Set after the GC window (it grew
    one entry per run).
 
+## Gotcha: a patch-package patch does NOT reach :3070 or green-checkpoint on its own
+
+This bit immediately and is fleet-wide, so read it before adding ANY `patches/*.patch`:
+patch-package applies at **`npm install`** (postinstall) time, but the checkpoint
+and release trees **never `npm install`** — `apps/operator/bin/release/setup-release-checkout.sh`
+**hardlink-copies** node_modules from the integration tree (step 3) and, in `auto`
+mode, **skips even that copy** when only `patches/` changed (a new patch alters no
+lockfile / workspace-package set). Net effect before the fix below: a committed
+patch reached neither `papercup-checkpoint` nor `papercup-release` — so
+green-checkpoint ran UNPATCHED and redded the patch's own regression test (a
+self-inflicted deadlock: the red gate blocks the deploy that would apply the patch),
+and `:3070` never got the fix. The setup script now runs `patch-package` after the
+node_modules step every checkpoint/deploy (idempotent, guarded, non-fatal). If you
+add a dep patch, **verify it's actually applied post-deploy** —
+`grep <your-marker> <tree>/node_modules/<pkg>/...`; don't assume the committed
+`.patch` is live.
+
 ## Verify / where it lands
 
 `npx vitest run lib/endpoint-route/routes/transport/mcp-handler-poststream-leak.test.ts`

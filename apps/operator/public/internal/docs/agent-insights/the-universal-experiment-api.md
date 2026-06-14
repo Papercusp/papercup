@@ -1,0 +1,77 @@
+# The universal experiment API — run + add tests over eval-battery
+URL: /internal/docs/agent-insights/the-universal-experiment-api
+
+How the self-learning system A/B-tests a change: experiment:catalog (discover) → experiment:run (execute, offline replay) → experiment:results (read back). The TestDescriptor registry, the unified knob space, and how to register a new test kind without touching the engine.
+
+## What
+
+The **universal experiment API** lets the self-learning loop make a change and test how
+it performs through one surface over the `@papercusp/eval-battery` engine — instead of
+each Subject (gym / replay / iq-battery / hive) owning a bespoke loop. Three verbs:
+
+* **`experiment:catalog`** — discover registered tests: each entry's `kind`, `fidelityTier`
+  (`offline` ≈ \~$0 replay, the default screen; `shadow`; `live`), the `knobSlice` it can
+  vary, its `metrics`, and `costClass`.
+* **`experiment:run`** — A/B a knob change against a battery; returns per-arm judge scores +
+  the `compareArms` verdict (`winner`). v1 executes the **offline replay** tier.
+* **`experiment:results`** — read the `experiment_runs` ledger (how past runs performed).
+
+Plan of record: `experiment-registry-invocation-api-2026-06-14`. Code: the registry in
+`libs/generic/eval-battery/src/registry.ts`; everything else in
+`packages/operator-core/lib/experiment/`.
+
+## Running an experiment
+
+```text
+experiment:run {
+  testId: 'replay',
+  batteryId: 'try-terser-worker',
+  arms: [{ id: 'terser', knobs: { 'overlay.systemOverlay': 'Be terse; no preamble.' } }],
+  cases: [{ caseId: 'c1', context: '<mid-task context>', intent: 'finish the feature' }],
+  repeats: 3, budgetUsd: 0.50
+}
+→ { ok:true, result:{ arms:[{id:'baseline',meanScore:6.1},{id:'terser',meanScore:7.4}], winner:'terser', … } }
+```
+
+An arm with **empty `knobs` is the baseline** (the `compareArms` anchor) — run-core prepends
+one if you give only candidates. Every knob address must be inside the test's `knobSlice`
+(`experiment:catalog`), or the run is rejected **before any spend**.
+
+## The two non-obvious load-bearing facts
+
+1. **Even "offline" replay SPENDS** — it calls the LLM for the replayed continuation + the
+   judge. `experiment:run` rides `frontier:replay-harness` (via `runGovernedReplay`): the
+   `papercusp-replay-harness` flag + its learning-governor budget gate it. Unarmed/unbudgeted ⇒
+   it **refuses with `ok:false, refused:{reason}` and zero spend** — that's the design, not a bug.
+2. **A winner is a PROPOSAL.** `experiment:run` only scores + records (`decision='proposed'`).
+   Applying a winner to live prompts/policy rides commit→reproject + the change ledger + trust
+   graduation (D-006) — never the run verb.
+
+## The unified knob space (what an arm may vary)
+
+Addresses span three axes (`lib/experiment/knob-space.ts`): `genome.*` (the ratified 5-dim
+system genome), `overlay.*` (component prompt/tool-guidance/weights), `model.<role>` (per-role
+model). The never-auto **safety set** (`budget`, `deploy`, `auth`, `credentials`, `governor`,
+`change-ledger`, `graduation`, …) is **structurally un-addressable** — `validateArm` rejects it
+and `partitionArm` throws; pinned by `safety-invariants.test.ts`. So you cannot author an
+experiment that varies budgets or the learning rails themselves.
+
+## Adding a new test kind
+
+A test is a **`TestDescriptor`**: declarative metadata + an opaque `run(request, ctx)` that
+**delegates to an existing battery runner** (never reconstruct a Subject). Register it with
+`registerTest(...)` (the host calls `registerExperimentDescriptors()` at boot). Pattern in
+`lib/experiment/descriptors.ts` — declare `kind`, `fidelityTier`, `knobSlice`, `metrics`, and a
+`run` that maps the request to the runner's config. The replay descriptor is the worked example
+(wired to `runReplayBattery`); gym/instance/hive are registered with full metadata but a
+**staged** `run` that refuses until their live runners are bound (the P-063 follow-on) — so they
+are discoverable before executable. Keep the safety set out of any `knobSlice`.
+
+## Files
+
+* `libs/generic/eval-battery/src/registry.ts` — `TestDescriptor` + the registry + `knobInSlice`.
+* `lib/experiment/knob-space.ts` — the knob algebra + the safety exclusion.
+* `lib/experiment/descriptors.ts` — the 4 descriptors + `registerExperimentDescriptors`.
+* `lib/experiment/run-core.ts` — the pure run logic (governed, offline-first, ledgered).
+* `lib/experiment/ledger.ts` — `experiment_runs` (migration 287) read/write.
+* `lib/agent-tools/experiment/{catalog,run,results}.ts` — the three verbs.

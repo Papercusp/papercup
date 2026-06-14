@@ -229,6 +229,23 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       created_ts bigint NOT NULL,
       PRIMARY KEY (workspace_id, trusted_github_user_id)
     );
+    -- P-008 producer side: the harness-features projection resolves a REMOTE
+    -- row's author_pubkey → verified_author_github_user_id via a verified,
+    -- non-revoked hive_members device attestation (resolveVerifiedAuthorGithubId).
+    -- Only the columns that resolver reads (the real table has more); seedTrust()
+    -- attests each peer cell so cross-swarm federated work is trust-admissible.
+    CREATE TABLE harness_shared.hive_members (
+      workspace_id        text NOT NULL,
+      hive_home_slug      text,
+      github_user_id      bigint,
+      binding_status      text,
+      device_attestations jsonb,
+      revoked_pubkeys     text[],
+      author_pubkey       text,
+      origin              text NOT NULL DEFAULT 'local',
+      fed_ts              bigint,
+      PRIMARY KEY (workspace_id, github_user_id)
+    );
     CREATE TABLE harness_shared.harness_issues_consolidated (
       harness_slug      TEXT NOT NULL,
       issue_id          TEXT NOT NULL,
@@ -725,6 +742,35 @@ export class CompositionRig {
         pipelineRuns: new Map(),
       },
     };
+    // P-008/P-010 trust precondition (the gate landed in 674bd0fcd): each cell
+    // ADMITS its peer Hive members' federated work. A remote row's author_pubkey
+    // is the SENDING cell's own-log identity (`handle.ownLog.keyHex` — exactly
+    // what log-snapshot stamps as op provenance, a hex log key, NOT the base64
+    // announce device pubkey); the harness-features projection resolves it →
+    // verified_author_github_user_id via a verified, non-revoked hive_members
+    // device attestation, and the claim's trust leg (autoPickableWhereSql) then
+    // admits it because that github id is in the local trust list. WITHOUT this,
+    // autoPickableWhereSql CORRECTLY refuses cross-swarm work (remote +
+    // un-admitted) and a peer's claim_next returns nothing — modeling a
+    // legitimately-trusted shared Hive is the happy path's precondition.
+    const allCells = [this.cells.a, this.cells.b];
+    for (const self of allCells) {
+      for (const peer of allCells) {
+        if (peer === self) continue;
+        const peerProvenancePubkey = peer.handle.ownLog.keyHex;
+        await self.sql`
+          INSERT INTO harness_shared.hive_members
+            (workspace_id, github_user_id, binding_status, device_attestations, revoked_pubkeys)
+          VALUES (${this.workspaceId}, ${peer.githubUserId}, 'verified',
+                  ${JSON.stringify([{ device_pubkey: peerProvenancePubkey }])}::text::jsonb,
+                  ARRAY[]::text[])
+          ON CONFLICT (workspace_id, github_user_id) DO NOTHING`;
+        await self.sql`
+          INSERT INTO harness_shared.user_trust_list (workspace_id, trusted_github_user_id, created_ts)
+          VALUES (${this.workspaceId}, ${peer.githubUserId}, ${this.now()})
+          ON CONFLICT (workspace_id, trusted_github_user_id) DO NOTHING`;
+      }
+    }
     this.log(`rig up — topic ${handleA.swarm.topicHex.slice(0, 12)}…, authority ${this.serverUrl}`);
     return this;
   }
