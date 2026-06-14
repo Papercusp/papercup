@@ -56,6 +56,16 @@ describe('buildGymOperatorBootSpec', () => {
     expect(env.PAPERCUSP_UTILITY_HOST).toBe('1');
   });
 
+  it('seals backgroundWorkers ON + blanks VITEST so DBOS launches (readiness gate) regardless of inherited env', () => {
+    // The readiness gate is `dbosEnabled ? dbosLaunched : true`; backgroundWorkersEnabled()
+    // (which bundles the DBOS launch) defaults OFF under VITEST or an inherited
+    // PAPERCUSP_BACKGROUND_WORKERS=0. Without sealing these the gym operator binds HTTP but
+    // /api/health/ready stays 503 → the 120s readiness timeout. The spec must pin them.
+    const { env } = buildGymOperatorBootSpec(base);
+    expect(env.PAPERCUSP_BACKGROUND_WORKERS).toBe('1');
+    expect(env.VITEST).toBe('');
+  });
+
   it('defaults the autoloop to manual (none) so runs are started explicitly', () => {
     expect(buildGymOperatorBootSpec(base).env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES).toBe('none');
     expect(buildGymOperatorBootSpec({ ...base, autoloopScope: 'gym-x,gym-y' }).env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES)

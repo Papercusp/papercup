@@ -90,6 +90,20 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // mid-DBOS-migration → half-migrated dbos schema → "column was_forked_from
     // does not exist" on the first pipeline call).
     PAPERCUSP_UTILITY_HOST: '1',
+    // The gym REQUIRES DBOS launched: its readiness gate (/api/health/ready) is
+    // `dbosEnabled ? dbosLaunched : true`, and it runs feature pipelines through
+    // DBOS. backgroundWorkersEnabled() — which bundles the DBOS launch — defaults
+    // OFF under VITEST and under an inherited PAPERCUSP_BACKGROUND_WORKERS=0 (the
+    // dev-box .env.local / the :3170 staging operator set it request-only). Either
+    // leak leaves PAPERCUSP_DBOS_ENABLE=1 waiting on a launch that never happens →
+    // /api/health/ready stuck at 503 → the runner's 120s readiness timeout (the
+    // gym cycle then fails before it starts). Seal both, matching this spec's
+    // hermeticity contract: force backgroundWorkers ON (the gym runs against its
+    // OWN isolated DB, so no EI-126 two-host conflict; PAPERCUSP_UTILITY_HOST still
+    // strips the dogfood/voice/embedder legs) and blank an inherited VITEST so a
+    // test/CI-spawned gym boots as a real operator, not a suppressed vitest worker.
+    PAPERCUSP_BACKGROUND_WORKERS: '1',
+    VITEST: '',
   };
 
   if (cfg.agentCmd) env.AGENT_CMD = cfg.agentCmd;
