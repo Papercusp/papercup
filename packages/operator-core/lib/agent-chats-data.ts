@@ -39,6 +39,13 @@ export interface TranscriptTurn {
    * no schema migration needed since transcript was already jsonb.
    */
   tools?: TranscriptToolCall[];
+  /**
+   * Marks an assistant turn that FAILED (rate-limit, backend error, dispatch
+   * error) instead of producing a reply. `content` holds the failure message.
+   * Persisted so a reload / second viewer sees the failure instead of a silent
+   * gap (the live sender also gets the inline error banner). jsonb — no migration.
+   */
+  error?: boolean;
 }
 
 export interface ChatRow {

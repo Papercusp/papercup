@@ -405,13 +405,28 @@ const messagesRoute = defineTool({
           }
         }
 
-        if (toolError) {
-          sink.event('error', { message: toolError.message });
-          sink.close();
-          return;
-        }
-        if (lastErrorMessage) {
-          sink.event('error', { message: lastErrorMessage, stderr: lastErrorStderr });
+        // A turn that failed (rate-limit, backend/dispatch error) persists a
+        // failure-marker assistant turn — otherwise the transcript keeps only the
+        // user turn and a reload / second viewer sees a silent gap. The live
+        // sender ALSO gets the inline error event below. Best-effort: a persist
+        // failure must not swallow the error signal itself.
+        const failureMessage = toolError?.message ?? lastErrorMessage;
+        if (failureMessage) {
+          const failureTurn: TranscriptTurn = {
+            role: 'assistant',
+            content: failureMessage,
+            ts: new Date().toISOString(),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_cents: 0,
+            error: true,
+          };
+          try {
+            const db = dbForSlug(slug);
+            await db.prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
+              .run(JSON.stringify([...baseTranscript, failureTurn]), Date.now(), chatId);
+          } catch { /* best-effort — still emit the error event */ }
+          sink.event('error', { message: failureMessage, ...(lastErrorStderr ? { stderr: lastErrorStderr } : {}) });
           sink.close();
           return;
         }
