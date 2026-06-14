@@ -200,6 +200,11 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       expires_at          TIMESTAMPTZ,
       author_pubkey       TEXT,
       origin              TEXT NOT NULL DEFAULT 'local',
+      -- G2 admission gate columns the claim/place paths reference via
+      -- autoPickableWhereSql (audit_verdict: P-005; verified_author_github_user_id:
+      -- the P-008/P-010 trust leg, read whenever a workspaceId is passed).
+      audit_verdict       TEXT,
+      verified_author_github_user_id BIGINT,
       fed_ts              BIGINT,
       -- migration 136: the work-item family discriminator claim_next filters on
       item_kind           TEXT NOT NULL DEFAULT 'feature',

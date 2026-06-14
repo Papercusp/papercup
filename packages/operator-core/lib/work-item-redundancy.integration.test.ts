@@ -72,7 +72,7 @@ const HFC_DDL = `
     assignee_rank integer, rank_writer text, rank_updated_at timestamptz,
     swarm_affinity text, feature_order integer,
     redundancy integer,
-    origin text NOT NULL DEFAULT 'local', audit_verdict text,
+    origin text NOT NULL DEFAULT 'local', audit_verdict text, verified_author_github_user_id bigint,
     created_ts bigint, updated_ts bigint,
     PRIMARY KEY (harness_slug, feature_id))`;
 

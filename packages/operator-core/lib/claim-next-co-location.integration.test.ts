@@ -34,7 +34,7 @@ const HFC_DDL = `
     taken_by text, taken_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
     swarm_affinity text, feature_order integer, assignee_rank integer, rank_writer text,
     rank_updated_at timestamptz, ts bigint, created_ts bigint, updated_ts bigint,
-    origin text NOT NULL DEFAULT 'local', audit_verdict text,
+    origin text NOT NULL DEFAULT 'local', audit_verdict text, verified_author_github_user_id bigint,
     PRIMARY KEY (harness_slug, feature_id))`;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
