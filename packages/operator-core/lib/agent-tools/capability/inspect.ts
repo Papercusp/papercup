@@ -1,18 +1,20 @@
 /**
  * capability:inspect — READ-ONLY code verification (typecheck / test), the
- * sanctioned exec path for confined fleet agents (EI-524, P-035 of
+ * sanctioned FOCUSED verify for fleet agents (EI-524, P-035 of
  * `agent-capability-confinement-2026-06-13`).
  *
- * A confined bee (the `papercusp-fleet-capability-only` cutover) loses native
- * Bash, and its capability envelope denies `capability:bash`
- * (`ROLE_ENVELOPES['bee']`), so it has no way to TYPECHECK or run TESTS to VERIFY
- * a code claim before diagnosing — the gap behind EI-524's phantom F-FIX
- * escalations (a bee hallucinates a root cause it can't check). This tool reopens
- * ONLY the read-only verification leg: it runs a FIXED set of verification
- * commands (`npx tsc --noEmit`, `npm run test:affected`, `npx vitest run <path>`),
- * never a free-form command, so it cannot mutate the tree the way capability:bash
- * can. It carries a SEPARATE capability string (`capability:code-inspect`, tier
- * low) so the envelope can open verification without re-opening write/exec (D-003).
+ * HISTORY + why it still exists: under the original `bee` read-only confinement
+ * (`papercusp-fleet-capability-only` cutover) a bee was envelope-denied
+ * `capability:bash`, so this was its ONLY way to TYPECHECK or run TESTS before
+ * diagnosing — the fix for EI-524's phantom F-FIX escalations (a bee
+ * hallucinating a root cause it can't check). The `bee` confinement was LIFTED on
+ * 2026-06-14 (bees now have `capability:fs-write` + `capability:bash`), but this
+ * tool REMAINS the sanctioned focused verify: it runs a FIXED set of commands
+ * (`npx tsc --noEmit`, `npm run test:affected`, `npx vitest run <path>`), never a
+ * free-form command — the cheaper, injection-free path for the common "confirm a
+ * claim before I report it" case (the verify-before-diagnose DISCIPLINE that
+ * survives the capability change). It carries a SEPARATE capability string
+ * (`capability:code-inspect`, tier low) distinct from write/exec (D-003).
  *
  * Security: the agent never supplies a command string — it picks a `check` (enum)
  * plus an optional `package` / `path`, both validated against a strict charset
