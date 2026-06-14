@@ -29,6 +29,8 @@ interface TranscriptTurn {
   tokens_in?: number;
   tokens_out?: number;
   cost_cents?: number;
+  /** Assistant turn that FAILED (rate-limit / backend error); content is the message. */
+  error?: boolean;
 }
 
 interface FeatureLock {
@@ -214,6 +216,7 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
       let lineBuf = '';
       let pendingEvent: string | null = null;
       let assistantText = '';
+      let streamError: string | null = null;
 
       // Read the SSE stream. Format:
       //   event: delta
@@ -247,14 +250,24 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
                 assistantText += data.text;
                 setSendState({ kind: 'streaming', partial: assistantText });
               } else if (pendingEvent === 'error') {
-                setSendState({ kind: 'error', message: data.message ?? 'stream error' });
+                streamError = data.message ?? 'stream error';
+                setSendState({ kind: 'error', message: streamError });
               }
             } catch { /* malformed — ignore */ }
           }
         }
       }
 
-      // Stream finished — refetch to get persisted assistant turn + counters.
+      // Stream finished.
+      if (streamError) {
+        // Keep the inline error banner visible — do NOT reset to idle, or it gets
+        // clobbered and the failed turn vanishes silently (the bug this fixes:
+        // thinking cursor → nothing). Skip the refetch: the server persists a
+        // failure-marker turn that surfaces on the next load, so in-session the
+        // banner is the signal and we avoid stacking banner + freshly-loaded marker.
+        return;
+      }
+      // Success — refetch to get the persisted assistant turn + counters.
       // forceRest: the cached subscription row may not have invalidated yet
       // and would reset the transcript to its pre-send state.
       setSendState({ kind: 'idle' });
@@ -333,8 +346,10 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
           </div>
         )}
         {chat.transcript.map((t, i) => (
-          <div key={i} className={`chat-turn chat-turn--${t.role}`}>
-            <div className="chat-turn__role">{t.role}</div>
+          <div key={i} className={`chat-turn chat-turn--${t.role}${t.error ? ' chat-turn--error' : ''}`}>
+            <div className="chat-turn__role">
+              {t.error && <AlertTriangle size={11} />}{t.role}{t.error ? ' · failed' : ''}
+            </div>
             <div className="chat-turn__body">{t.content}</div>
           </div>
         ))}

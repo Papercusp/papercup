@@ -36,7 +36,10 @@ const ADD_FILTER = '_add_filter_';
 /** Plain-text header for a column (the editor heading + the Add-filter option). */
 function headerText(col: FilterableColumn<unknown>): string {
   const h = col.header;
-  return typeof h === 'string' || typeof h === 'number' ? String(h) : col.key;
+  if (typeof h === 'string' && h.length > 0) return h;
+  if (typeof h === 'number') return String(h);
+  if (typeof col.headerText === 'string' && col.headerText.length > 0) return col.headerText;
+  return col.key;
 }
 
 const EDITOR_STYLE: CSSProperties = {

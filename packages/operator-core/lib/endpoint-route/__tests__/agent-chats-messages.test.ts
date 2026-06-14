@@ -104,8 +104,13 @@ function ctxFor(chatId: string): RouteContext {
 async function agentChatsMessagesHandler(
   chatEvents: Array<Record<string, unknown>>,
   chatRow: Record<string, unknown> | null,
-): Promise<{ handler: (req: Request, chatId: string) => Promise<Response>; updates: string[] }> {
+): Promise<{
+  handler: (req: Request, chatId: string) => Promise<Response>;
+  updates: string[];
+  updateArgs: unknown[][];
+}> {
   const updates: string[] = [];
+  const updateArgs: unknown[][] = [];
   vi.doMock('../../agent-chat-stream', () => ({ runAgentChat: () => gen(chatEvents) }));
   vi.doMock('../../agent-tools', () => ({}));
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
@@ -141,7 +146,7 @@ async function agentChatsMessagesHandler(
       getLegacyClient: () => ({
         prepare: (sql: string) => ({
           get: async () => (/^SELECT \* FROM agent_chats/.test(sql.trim()) ? chatRow : { total: 0 }),
-          run: async () => { updates.push(sql.trim()); },
+          run: async (...args: unknown[]) => { updates.push(sql.trim()); updateArgs.push(args); },
         }),
       }),
     };
@@ -156,6 +161,7 @@ async function agentChatsMessagesHandler(
   return {
     handler: (req: Request, chatId: string) => Promise.resolve(messages.handler(req, ctxFor(chatId))),
     updates,
+    updateArgs,
   };
 }
 
@@ -182,6 +188,32 @@ describe('POST /harness/:slug/agent-chats/:chatId/messages — route handler', (
     expect(text).toContain('event: done');
     // Both the user-turn and assistant-turn UPDATEs must have persisted.
     expect(updates.length).toBe(2);
+  }, 45_000);
+
+  it('on a failed turn (rate-limit/backend error): emits SSE error, closes, AND persists a failure-marker turn', async () => {
+    // The runner yields a terminal `error` event (e.g. the rate-limited path)
+    // instead of a delta/result. The route must surface it AND persist a marker
+    // turn so a reload / second viewer sees the failure, not a silent gap.
+    const msg = 'anthropic-direct: rate-limited — paused until 2026-06-14T08:50:00.000Z';
+    const { handler, updates, updateArgs } = await agentChatsMessagesHandler(
+      [{ type: 'error', message: msg }],
+      { ...baseRow },
+    );
+    const res = await handler(postReq({ content: 'what happened?' }), CHAT);
+    expect(res.status).toBe(200);
+    const { text, closed } = await drainSse(res.body, 20_000);
+    expect(closed, 'SSE stream must close after a failed turn').toBe(true);
+    expect(text).toContain('event: error');
+    expect(text).toContain(msg);
+    expect(text).not.toContain('event: done');
+
+    // Two UPDATEs: the user turn, then the failure-marker assistant turn.
+    expect(updates.length).toBe(2);
+    const markerTranscript = JSON.parse(updateArgs[1][0] as string) as Array<{
+      role: string; content: string; error?: boolean;
+    }>;
+    const last = markerTranscript[markerTranscript.length - 1];
+    expect(last).toMatchObject({ role: 'assistant', content: msg, error: true });
   }, 45_000);
 
   it('404s when the chat row does not exist', async () => {
