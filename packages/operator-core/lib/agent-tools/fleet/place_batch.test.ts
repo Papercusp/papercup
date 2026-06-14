@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mergeBrief, executeBatch, type ExecuteBatchDeps } from './place_batch';
+import placeBatchTool, { mergeBrief, executeBatch, type ExecuteBatchDeps } from './place_batch';
 import type { PlacementDecision, BatchPlacementPlan } from '../../fleet/batch-placement';
 import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { AgentIdentity } from '../coordination/identity';
@@ -180,5 +180,35 @@ describe('executeBatch — placement execution', () => {
     expect(fns.spawnAgentInHarness).not.toHaveBeenCalled();
     expect(fns.claimWorkItem).not.toHaveBeenCalled();
     expect(r.summary.unplaced).toBe(1);
+  });
+});
+
+describe('fleet:place_batch args — FAIL-LOUD on unknown keys (EI-72)', () => {
+  // The batch placement path fans out spawns + warm-injects with a `brief`, the
+  // same hazard as fleet:spawn: a field newer than a stale host's schema gets
+  // silently stripped, scattering task-less placements. `.strict()` makes the
+  // projection validator reject an unrecognized key with invalid_args.
+  const args = (placeBatchTool as any).args;
+
+  it('rejects an unrecognized key instead of silently stripping it', () => {
+    const res = args.safeParse({ harness: 'papercup', futureField: 'x' });
+    expect(res.success).toBe(false);
+    expect(JSON.stringify(res.error.issues)).toContain('futureField');
+  });
+
+  it('still accepts the full known key set, including brief', () => {
+    const res = args.safeParse({
+      tasks: ['WI-1', 'WI-2'],
+      harness: 'papercup',
+      max: 8,
+      brief: 'situational overlay',
+      tier: 'standard',
+      inject_load_threshold: 3,
+      min_inject_affinity: 1,
+      max_inject_per_bee: 2,
+      dry_run: true,
+      workspace: 'ws-1',
+    });
+    expect(res.success).toBe(true);
   });
 });

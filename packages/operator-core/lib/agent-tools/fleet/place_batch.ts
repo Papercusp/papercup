@@ -111,7 +111,11 @@ export default defineTool({
     max_inject_per_bee: z.number().int().min(1).max(10).optional().describe('Max items to warm-inject onto one bee in this batch (default 2).'),
     dry_run: z.boolean().optional().describe('Return the placement PLAN (decisions + counts) WITHOUT spawning/injecting — preview the batch.'),
     workspace: z.string().max(120).optional(),
-  }),
+  // EI-72: FAIL LOUD on unknown arg keys (same placement-path hazard as
+  // fleet:spawn — a new field sent to a stale host's schema gets silently
+  // stripped, fanning out task-less placements). .strict() aligns the runtime
+  // to the already-advertised additionalProperties:false contract.
+  }).strict(),
   async handler(args, ctx) {
     const actor = resolveAgentIdentity(ctx);
     const actorWs = actor.workspaceId && actor.workspaceId !== '*' ? actor.workspaceId : null;

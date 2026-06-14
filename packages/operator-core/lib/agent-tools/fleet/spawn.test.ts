@@ -89,3 +89,65 @@ describe("fleet:spawn tool — workspace resolution never records the '*' wildca
     expect(h.spawnAgentInHarness.mock.calls[0][0].workspaceId).toBe('ws-x');
   });
 });
+
+describe('fleet:spawn tool — fail-loud on unknown args (EI-72)', () => {
+  // EI-72 incident (2026-06-06): the Queen spawned 5 bees passing the NEW `brief`
+  // field at a serving host still running pre-brief code. The plain `z.object`
+  // strip-default SILENTLY DROPPED the unknown key → bees booted task-less and
+  // each exited status='done'. A `.strict()` schema turns that silent no-op into a
+  // loud `invalid_args` so a newer-field caller learns the serving host is stale
+  // instead of mutating the fleet. (This hardens the spawn path named in the bug;
+  // a global defineTool-wide strict is a breaking system-wide policy decision,
+  // deliberately left human-gated.)
+  const args = (spawnTool as any).args as { safeParse: (v: unknown) => { success: boolean } };
+
+  it('accepts the declared fields (incl. brief)', () => {
+    expect(args.safeParse({ role: 'bee', harness: 'papercup', brief: 'cross-bee context' }).success).toBe(true);
+  });
+
+  it('REJECTS an unknown top-level key instead of silently stripping it', () => {
+    // Pre-fix: z.object strips `breif` (a typo'd brief) and validation succeeds —
+    // the exact failure mode of the incident. Post-fix: strict → success === false.
+    expect(args.safeParse({ role: 'bee', harness: 'papercup', breif: 'typo' }).success).toBe(false);
+  });
+});
+
+describe('fleet:spawn args — FAIL-LOUD on unknown keys (EI-72)', () => {
+  // The args schema is the contract the projection layer (standardValidate in
+  // define-tool.ts) enforces BEFORE the handler runs — the layer where the
+  // incident's silent strip happened. zod's default z.object() strips unknown
+  // keys; `.strict()` rejects them. These lock that contract: a newer-field
+  // caller against an older host must get invalid_args, never a no-op'd fleet.
+  const args = (spawnTool as any).args;
+
+  it('rejects an unrecognized key instead of silently stripping it', () => {
+    // The exact incident shape: a key the serving host's schema does not know
+    // (here `brief` stood for any field newer than the running code).
+    const res = args.safeParse({ role: 'bee', harness: 'papercup', futureField: 'x' });
+    expect(res.success).toBe(false);
+    // The error names the offending key so the caller can tell what was wrong.
+    expect(JSON.stringify(res.error.issues)).toContain('futureField');
+  });
+
+  it('rejects a typo of a real key rather than dropping it (the silent no-op trap)', () => {
+    // `breif` (typo of `brief`) must fail loud, not be quietly discarded.
+    const res = args.safeParse({ role: 'bee', breif: 'context' });
+    expect(res.success).toBe(false);
+  });
+
+  it('still accepts the full known key set, including brief', () => {
+    const res = args.safeParse({
+      harness: 'papercup',
+      role: 'bee',
+      feature: 'F-1',
+      chunk: 'C-1',
+      brief: 'situational overlay',
+      tier: 'standard',
+      model: 'opus:high',
+      extras: ['K=v'],
+      workspace: 'ws-1',
+      idempotency_key: 'k-1',
+    });
+    expect(res.success).toBe(true);
+  });
+});

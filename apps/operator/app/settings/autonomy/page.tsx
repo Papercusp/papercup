@@ -110,7 +110,10 @@ function levelChipStyle(level: Ceiling): CSSProperties {
  * single-line table (B-15 compact pass): Category | Ceiling | Graduated |
  * Effective | Never-auto. box-sizing keeps the header (no border) aligned with
  * the bordered rows. */
-const GRID_COLUMNS = 'minmax(150px, 1fr) auto 64px 64px 64px';
+const GRID_COLUMNS = 'minmax(140px, 1fr) 210px 62px 62px 56px';
+/** Floor so the row stays a single line on narrow panes (the section scrolls
+ *  horizontally instead of wrapping — the whole point of the compact pass). */
+const ROW_MIN_WIDTH = 620;
 const ROW_GRID: CSSProperties = {
   display: 'grid',
   gridTemplateColumns: GRID_COLUMNS,
@@ -226,7 +229,30 @@ export default function AutonomySettingsPage() {
         })}
       </div>
 
-      <section className="pc-settings-section" aria-label="Autonomy categories">
+      <section className="pc-settings-section" aria-label="Autonomy categories" style={{ overflowX: 'auto' }}>
+        {visible.length > 0 && (
+          <div
+            aria-hidden="true"
+            style={{
+              ...ROW_GRID,
+              boxSizing: 'border-box',
+              minWidth: ROW_MIN_WIDTH,
+              padding: '0 13px 6px',
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: '0.05em',
+              textTransform: 'uppercase',
+              color: 'var(--fg-mute)',
+            }}
+          >
+            <span>Category</span>
+            <span>Ceiling</span>
+            <span style={{ textAlign: 'center' }}>Graduated</span>
+            <span style={{ textAlign: 'center' }}>Effective</span>
+            <span style={{ textAlign: 'center' }}>Never-auto</span>
+          </div>
+        )}
+
         {visible.map((row) => {
           const isSelected = selected === row.category;
           const saving = savingCat === row.category;
@@ -236,21 +262,25 @@ export default function AutonomySettingsPage() {
               style={{
                 border: '1px solid var(--border)',
                 borderRadius: 8,
-                padding: '12px 14px',
-                marginBottom: 8,
+                padding: '6px 12px',
+                marginBottom: 6,
                 background: 'var(--bg)',
                 opacity: saving ? 0.7 : 1,
+                boxSizing: 'border-box',
+                minWidth: ROW_MIN_WIDTH,
               }}
             >
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
-                {/* Category identity */}
+              <div style={ROW_GRID}>
+                {/* Category identity — label + (protected badge | posture) on one line */}
                 <button
                   type="button"
                   onClick={() => void setSelected(isSelected ? null : row.category)}
                   aria-expanded={isSelected}
                   style={{
-                    flex: '1 1 200px',
-                    minWidth: 180,
+                    minWidth: 0,
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 8,
                     textAlign: 'left',
                     background: 'transparent',
                     border: 'none',
@@ -259,12 +289,23 @@ export default function AutonomySettingsPage() {
                     font: 'inherit',
                   }}
                 >
-                  <span style={{ fontWeight: 600, color: 'var(--fg)' }}>{row.label}</span>
-                  {row.protected && (
+                  <span
+                    style={{
+                      minWidth: 0,
+                      fontWeight: 600,
+                      color: 'var(--fg)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {row.label}
+                  </span>
+                  {row.protected ? (
                     <span
                       style={{
-                        marginLeft: 8,
-                        fontSize: 11,
+                        flex: '0 0 auto',
+                        fontSize: 10,
                         fontWeight: 600,
                         color: 'var(--warn)',
                         border: '1px solid var(--warn)',
@@ -274,58 +315,55 @@ export default function AutonomySettingsPage() {
                     >
                       Protected
                     </span>
-                  )}
-                  {!row.protected && (
-                    <span style={{ display: 'block', fontSize: 11, color: 'var(--fg-mute)', marginTop: 2 }}>
+                  ) : (
+                    <span style={{ flex: '0 0 auto', fontSize: 11, color: 'var(--fg-mute)', whiteSpace: 'nowrap' }}>
                       {POSTURE_LABEL[row.suggestedPosture] ?? row.suggestedPosture}
                     </span>
                   )}
                 </button>
 
-                {/* Ceiling slider */}
-                <div style={{ flex: '0 0 auto' }}>
-                  <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 2 }}>Ceiling</div>
+                {/* Ceiling — compact dots + current level name */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <CeilingSlider
+                    compact
                     value={row.ceiling}
                     disabled={saving}
                     ariaLabel={`${row.label} risk ceiling`}
                     onChange={(next) => void onCeiling(row, next)}
                   />
+                  <span style={{ fontSize: 12, color: 'var(--fg-dim)', minWidth: 56, whiteSpace: 'nowrap' }}>
+                    {CEILING_SHORT_LABEL[row.ceiling]}
+                  </span>
                 </div>
 
                 {/* Graduated (read-only) */}
-                <div style={{ flex: '0 0 auto', minWidth: 78 }}>
-                  <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 4 }}>Graduated</div>
+                <div style={{ textAlign: 'center' }}>
                   <span style={levelChipStyle(row.graduatedLevel)} title="Earned level — read-only (rises via graduation, B-16)">
                     {CEILING_SHORT_LABEL[row.graduatedLevel]}
                   </span>
                 </div>
 
                 {/* Effective */}
-                <div style={{ flex: '0 0 auto', minWidth: 78 }}>
-                  <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 4 }}>Effective</div>
+                <div style={{ textAlign: 'center' }}>
                   <span style={levelChipStyle(row.effectiveCeiling)} title={effectiveSummary(row)}>
                     {row.effectiveCeiling === 'never-auto' ? 'None' : CEILING_SHORT_LABEL[row.effectiveCeiling]}
                   </span>
                 </div>
 
                 {/* Lock toggle */}
-                <label
-                  style={{ flex: '0 0 auto', display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12 }}
-                >
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
                   <Checkbox
                     checked={row.locked}
                     disabled={saving}
                     ariaLabel={`Lock ${row.label} (never auto)`}
                     onChange={(checked) => onLock(row, checked)}
                   />
-                  <span style={{ color: 'var(--fg-mute)' }}>Never-auto</span>
-                </label>
+                </div>
               </div>
 
               {/* Selected-row detail */}
               {isSelected && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--border)', fontSize: 12, color: 'var(--fg-mute)' }}>
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed var(--border)', fontSize: 12, color: 'var(--fg-mute)' }}>
                   <div style={{ marginBottom: 4 }}>
                     <span style={{ color: 'var(--fg)' }}>Covers: </span>
                     {row.covers || '—'}

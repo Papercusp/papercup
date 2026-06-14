@@ -62,7 +62,15 @@ export default defineTool({
     workspace: z.string().max(120).optional(),
     idempotency_key: z.string().min(1).max(200).optional()
       .describe('Dedupe key for retries (EI-73): pass the SAME key when retrying a spawn that may have already landed (e.g. after a timeout) — a match returns the original spawn_id with deduped:true instead of launching a second agent.'),
-  }),
+  // FAIL-LOUD on unknown arg keys (EI-72). zod's default z.object() STRIPS keys it
+  // doesn't recognize: when the Queen sent the (then-new) `brief` to a host still
+  // running pre-brief code, the unknown key was silently dropped and 5 task-less
+  // bees booted and exited 'done'. `.strict()` makes the projection-layer validator
+  // (standardValidate in define-tool.ts) reject any unrecognized key with
+  // `invalid_args` — so a newer-field caller against an older serving host gets a
+  // loud error instead of a silently no-op'd fleet. Placement is the highest-stakes
+  // surface to fail loud on; keep this schema closed as new fields are added.
+  }).strict(),
   async handler(args, ctx) {
     const actor = resolveAgentIdentity(ctx);
     // An unscoped (superuser) identity carries workspaceId='*' — never record a
