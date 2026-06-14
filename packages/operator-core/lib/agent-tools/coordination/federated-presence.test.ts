@@ -11,6 +11,7 @@ const NOW = 1_700_000_000_000;
 const row = {
   workspace_id: 'ws-1',
   harness_slug: 'papercup',
+  hive_slug: 'papercup-hive',
   github_user_id: 4242,
   machine_label: 'thinkpad',
   device_pubkey: 'pubAAA',
@@ -31,6 +32,7 @@ describe('mapSharedPresenceRow', () => {
     expect(r.userId).toBe('4242');
     expect(r.devicePubkey).toBe('pubAAA');
     expect(r.harnessSlug).toBe('papercup');
+    expect(r.hiveSlug).toBe('papercup-hive'); // P-004: federated rows are hive-keyed
     expect(r.currentView).toBe('harness/papercup');
     expect(r.stale).toBe(false);
     // synthetic ownerId is distinct from any local su-<uuid> → never collides on merge

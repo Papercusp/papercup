@@ -104,7 +104,7 @@ export function mapSharedPresenceRow(
  */
 export async function queryFederatedPresenceRows(
   sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
-  opts: { workspaceId?: string | null; harnessSlug?: string | null } = {},
+  opts: { workspaceId?: string | null; harnessSlug?: string | null; hiveSlug?: string | null } = {},
 ): Promise<SharedPresenceDbRow[]> {
   const rows = (await sql`
     SELECT workspace_id, harness_slug, hive_slug, github_user_id, machine_label, device_pubkey,
