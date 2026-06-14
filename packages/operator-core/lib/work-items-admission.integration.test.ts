@@ -45,8 +45,18 @@ const HFC_DDL = `
     redundancy integer,
     origin text NOT NULL DEFAULT 'local',
     audit_verdict text,
+    verified_author_github_user_id bigint,
     created_ts bigint, updated_ts bigint,
     PRIMARY KEY (harness_slug, feature_id))`;
+
+// Phase 3 / P-009: the owner-keyed LOCAL trust list the admission predicate consults.
+const USER_TRUST_LIST_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.user_trust_list (
+    workspace_id text NOT NULL,
+    trusted_github_user_id bigint NOT NULL,
+    note text,
+    created_ts bigint NOT NULL,
+    PRIMARY KEY (workspace_id, trusted_github_user_id))`;
 
 const REPLICAS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_replicas (
@@ -102,6 +112,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(REPLICAS_DDL);
   await db.sql.unsafe(ISSUES_DDL);
+  await db.sql.unsafe(USER_TRUST_LIST_DDL);
 }, 60_000);
 
 afterAll(async () => {
@@ -111,7 +122,23 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.harness_features_consolidated`;
   await db.sql`DELETE FROM harness_shared.work_item_replicas`;
+  await db.sql`DELETE FROM harness_shared.user_trust_list`;
 });
+
+/** Seed a feature with a VERIFIED author id (what P-008 stamps) — for the trust-leg cases. */
+function insVerified(fid: string, origin: string, verdict: string | null, ts: number, verifiedAuthorId: number | null) {
+  return h.sql`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, audit_verdict, verified_author_github_user_id, created_ts, updated_ts)
+    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'todo', 'feature', ${origin}, ${verdict}, ${verifiedAuthorId}, ${ts}, ${ts})`;
+}
+
+/** Add a trusted github id to a workspace's local trust list (defaults to the test WS). */
+function trust(githubId: number, ws: string = WS) {
+  return h.sql`
+    INSERT INTO harness_shared.user_trust_list (workspace_id, trusted_github_user_id, created_ts)
+    VALUES (${ws}, ${githubId}, 1)`;
+}
 
 describe('G2 admission gate — every claim path (real PG)', () => {
   it('claim_next (self-selection) never grabs a remote, un-admitted item', async () => {
@@ -167,5 +194,50 @@ describe('G2 admission gate — every claim path (real PG)', () => {
     expect(items.map((i) => i.id).sort()).toEqual(['F-PENDING', 'F-REJECTED']);
     // ...yet neither is claimable.
     expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
+  });
+});
+
+describe('G2 trust leg — owner-keyed LOCAL trust list (Phase 3 / P-010, real PG)', () => {
+  it('claim_next: a remote+un-admitted item whose VERIFIED author is trusted IS claimable', async () => {
+    await insVerified('F-TRUSTED', 'remote', null, 1, 42);
+    await trust(42);
+    const wi = await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' });
+    expect(wi?.id).toBe('F-TRUSTED');
+  });
+
+  it('claim_next: a remote+un-admitted item whose verified author is NOT trusted stays unclaimable', async () => {
+    await insVerified('F-UNTRUSTED', 'remote', null, 1, 99);
+    await trust(42); // a different id is trusted, not 99
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
+  });
+
+  it('explicit claim: trusted verified author succeeds; untrusted fails', async () => {
+    await insVerified('F-TRUSTED', 'remote', null, 1, 42);
+    await insVerified('F-UNTRUSTED', 'remote', null, 2, 99);
+    await trust(42);
+    expect(await claimWorkItem('F-UNTRUSTED', 'bee', { harness: HARNESS })).toBeNull();
+    expect(await claimWorkItem('F-TRUSTED', 'bee', { harness: HARNESS })).not.toBeNull();
+  });
+
+  it('SECURITY: an UNVERIFIED remote item (NULL verified author — unverified/revoked binding) is never trust-admitted', async () => {
+    await insVerified('F-UNVERIFIED', 'remote', null, 1, null);
+    await trust(42); // ids are trusted, but the item has no verified author
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
+    expect(await claimWorkItem('F-UNVERIFIED', 'bee', { harness: HARNESS })).toBeNull();
+  });
+
+  it('SECURITY (D-004): trust does NOT leak across workspaces — an author trusted in ANOTHER workspace is refused here', async () => {
+    await insVerified('F-OTHERWS', 'remote', null, 1, 42); // feature lives in WS 'default'
+    await trust(42, 'other-workspace'); // 42 trusted ONLY in a different workspace
+    expect(await claimNextWorkItem({ harness: HARNESS, assignee: 'bee' })).toBeNull();
+    expect(await claimWorkItem('F-OTHERWS', 'bee', { harness: HARNESS })).toBeNull();
+  });
+
+  it('replica fan-out: a trusted verified author is admitted', async () => {
+    await insVerified('F-TRUSTED', 'remote', null, 1, 42);
+    await h.sql`UPDATE harness_shared.harness_features_consolidated SET redundancy = 3 WHERE harness_slug = ${HARNESS} AND feature_id = 'F-TRUSTED'`;
+    await trust(42);
+    const ok = await claimReplicaSlot({ harnessSlug: HARNESS, workItemId: 'F-TRUSTED', owner: 'bee' });
+    expect(ok.ok).toBe(true);
   });
 });

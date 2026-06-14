@@ -71,6 +71,8 @@ import './discovery/set_hive';
 import './hive/declare_wake';
 import './hive/wake';
 import './hive/status';
+// queen-brief-cache B-06 / P-010 — the Queen's per-wake efficiency read surface:
+import './hive/queen_efficiency';
 // queen-autonomous-execution B-08 — the Queen's plan-aware placement survey:
 import './hive/survey';
 import './hive/start';

@@ -31,6 +31,7 @@ const getHiveTimeWake =
   vi.fn<() => Promise<{ active: boolean; nextFireAt: Date | null; lastFiredAt: Date | null } | null>>();
 const fireLaunchBlueprint = vi.fn(async () => ({ role: 'operator', kind: 'role' as const }));
 const listReactionRules = vi.fn<() => Array<{ id: string }>>(() => []);
+const queenWakeEfficiency = vi.fn<() => Promise<Record<string, unknown>>>();
 
 vi.mock('../../hive/wake', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../hive/wake')>();
@@ -77,11 +78,18 @@ vi.mock('../../hive/watchdog', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   recentWatchdogFires: (...a: unknown[]) => recentWatchdogFires(...(a as [])),
 }));
+// B-06 / P-010: hive:queen_efficiency projects queenWakeEfficiency — mock the aggregator at its seam
+// (its PG read + aggregation are covered in ../../hive/queen-wake-efficiency.test.ts).
+vi.mock('../../hive/queen-wake-efficiency', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  queenWakeEfficiency: (...a: unknown[]) => queenWakeEfficiency(...(a as [])),
+}));
 
 // SUTs imported AFTER the seams are wired (each self-registers via defineTool).
 import declareWakeTool from './declare_wake';
 import wakeTool from './wake';
 import statusTool from './status';
+import queenEfficiencyTool from './queen_efficiency';
 
 type Tool = {
   args: { safeParse: (x: unknown) => { success: boolean } };
@@ -347,5 +355,75 @@ describe('hive:status', () => {
     expect(getHiveTimeWake).not.toHaveBeenCalled();
     expect(res.subscriptions).toEqual([]);
     expect(res.floorSec).toBe(60);
+  });
+});
+
+describe('hive:queen_efficiency (B-06 / P-010 queryable surface)', () => {
+  const tool = queenEfficiencyTool as unknown as Tool;
+  const sample = (over: Record<string, unknown> = {}) => ({
+    runId: 'w',
+    tsMs: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    costUsd: null,
+    turns: null,
+    ...over,
+  });
+  const effResult = (over: Record<string, unknown> = {}) => ({
+    wakes: 2,
+    cachedWakes: 1,
+    totalInputTokens: 3000,
+    totalCacheReadTokens: 8000,
+    totalCacheCreationTokens: 6000,
+    totalOutputTokens: 800,
+    totalCostUsd: 0.32,
+    cacheHitRatio: 8000 / 17000,
+    avgTurns: 4,
+    totalTurns: 8,
+    turnsReportedWakes: 2,
+    samples: [],
+    ...over,
+  });
+
+  it('scopes to the given harness + limit and projects the headline metrics', async () => {
+    queenWakeEfficiency.mockResolvedValue(effResult());
+    const res = parse(await tool.handler({ harness: 'papercup', limit: 100 }, ctx()));
+    expect(res.ok).toBe(true);
+    expect(res.harness).toBe('papercup');
+    expect(res.wakes).toBe(2);
+    expect(res.cachedWakes).toBe(1); // the "cache is real" signal (P-003)
+    expect(res.avgTurns).toBe(4); // Win-2 round-trips
+    expect(res.cacheHitRatio).toBeCloseTo(8000 / 17000, 9); // Win-1 cache
+    expect(queenWakeEfficiency).toHaveBeenCalledWith('ws-test', { harnessSlug: 'papercup', limit: 100 });
+  });
+
+  it('no harness (+ no env) → workspace-wide (harnessSlug undefined), harness:null, default limit 50', async () => {
+    queenWakeEfficiency.mockResolvedValue(effResult({ wakes: 5 }));
+    const res = parse(await tool.handler({}, ctx()));
+    expect(res.harness).toBeNull();
+    expect(res.wakes).toBe(5);
+    expect(queenWakeEfficiency).toHaveBeenCalledWith('ws-test', { harnessSlug: undefined, limit: 50 });
+  });
+
+  it('caps the recentSamples preview at 10 even when more wakes were aggregated', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => sample({ runId: `w${i}`, turns: i }));
+    queenWakeEfficiency.mockResolvedValue(effResult({ samples: many }));
+    const res = parse(await tool.handler({ harness: 'papercup' }, ctx())) as { recentSamples: unknown[] };
+    expect(res.recentSamples).toHaveLength(10);
+  });
+
+  describe('arg-schema', () => {
+    it('accepts an empty call, a harness, and a bounded limit', () => {
+      expect(tool.args.safeParse({}).success).toBe(true);
+      expect(tool.args.safeParse({ harness: 'papercup' }).success).toBe(true);
+      expect(tool.args.safeParse({ limit: 200 }).success).toBe(true);
+    });
+    it('rejects an out-of-range / non-integer limit', () => {
+      expect(tool.args.safeParse({ limit: 0 }).success).toBe(false);
+      expect(tool.args.safeParse({ limit: 501 }).success).toBe(false);
+      expect(tool.args.safeParse({ limit: 1.5 }).success).toBe(false);
+    });
   });
 });

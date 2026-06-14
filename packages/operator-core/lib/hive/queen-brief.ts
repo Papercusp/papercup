@@ -171,8 +171,10 @@ export function renderQueenBrief(input: QueenBriefInput): string {
   out.push(
     'This is the deterministic floor the watchdog already computed for this wake. ' +
       'It replaces your every-wake survey reads — do NOT re-run `hive:survey`, ' +
-      '`fleet:assignments`, `coord:presence`, `coord:inbox`, or `curation:change-feed` ' +
-      'just to gather this; act on it. Drill into a specific bee/plan/thread with a tool only when you need detail this digest omits.',
+      '`fleet:assignments`, `coord:presence`, or `curation:change-feed` ' +
+      'just to gather this; act on it. (Your `coord:inbox` is NOT in this brief — ' +
+      'triage it yourself as usual.) ' +
+      'Drill into a specific bee/plan/thread with a tool only when you need detail this digest omits.',
   );
 
   if (f.wokeBy && f.wokeBy.trim()) {

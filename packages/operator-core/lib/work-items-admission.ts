@@ -34,11 +34,26 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 export function isAutoPickable(
   origin: string | null | undefined,
   auditVerdict: string | null | undefined,
+  verifiedAuthorGithubUserId?: number | null,
+  trustedGithubUserIds?: ReadonlySet<number>,
 ): boolean {
   // Local features always bypass the auditor — origin NULL = local (pre-G1 back-compat).
   if (origin == null || origin === 'local') return true;
-  // Remote features are pickable only when the auditor has admitted them.
-  return auditVerdict === 'admit';
+  // Remote features are pickable when the auditor has admitted them…
+  if (auditVerdict === 'admit') return true;
+  // …OR the TRUST fast-path (Phase 3 / P-010): a remote+un-admitted item whose
+  // VERIFIED author (P-008, never a self-claimed id) is in the owner's LOCAL trust
+  // list. The verified id must be present AND in the trusted set — a NULL verified
+  // id (unverified / revoked binding / local row) never satisfies it. The caller
+  // supplies the workspace's trusted set (it is owner/workspace-scoped — D-004).
+  if (
+    verifiedAuthorGithubUserId != null &&
+    trustedGithubUserIds != null &&
+    trustedGithubUserIds.has(verifiedAuthorGithubUserId)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -49,8 +64,20 @@ export function isAutoPickable(
  *
  *   ...WHERE ... AND ${autoPickableWhereSql(sql)}
  */
-export function autoPickableWhereSql(sql: OrgSql) {
-  return sql`(origin = 'local' OR origin IS NULL OR audit_verdict = 'admit')`;
+export function autoPickableWhereSql(sql: OrgSql, workspaceId?: string) {
+  // TRUST fast-path (Phase 3 / P-010). The subquery MUST be explicitly scoped to
+  // `workspaceId` — NOT left to user_trust_list's RLS — because the admin db
+  // handle BYPASSES RLS at some claim chokepoints, so an unscoped subquery would
+  // trust-admit a workspace-A feature whose verified author is trusted in
+  // workspace B (a cross-workspace trust leak, D-004). `workspaceId` omitted ⇒ the
+  // trust leg is dropped entirely (fail-safe: the gate only ever UNDER-admits when
+  // the caller can't scope it — never over-admits). verified_author_github_user_id
+  // (P-008) is NULL for local / unverified / revoked-binding rows, so only a
+  // genuinely-verified trusted author satisfies it.
+  const trustLeg = workspaceId
+    ? sql` OR (verified_author_github_user_id IS NOT NULL AND verified_author_github_user_id IN (SELECT trusted_github_user_id FROM harness_shared.user_trust_list WHERE workspace_id = ${workspaceId}))`
+    : sql``;
+  return sql`(origin = 'local' OR origin IS NULL OR audit_verdict = 'admit'${trustLeg})`;
 }
 
 /**
@@ -66,13 +93,24 @@ export async function isWorkItemAutoPickable(
 ): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ origin: string | null; audit_verdict: string | null }[]>`
-    SELECT origin, audit_verdict
+  const rows = await sql<{ origin: string | null; audit_verdict: string | null; verified_author_github_user_id: number | string | null }[]>`
+    SELECT origin, audit_verdict, verified_author_github_user_id
       FROM harness_shared.harness_features_consolidated
      WHERE harness_slug = ${opts.harness}
        AND workspace_id = ${ws}
        AND feature_id = ${workItemId}
      LIMIT 1`;
   if (!rows[0]) return false;
-  return isAutoPickable(rows[0].origin, rows[0].audit_verdict);
+  // Local / auditor-admitted fast path (no trust-list read needed).
+  if (isAutoPickable(rows[0].origin, rows[0].audit_verdict)) return true;
+  // TRUST fast-path: a remote+un-admitted item whose VERIFIED author is in this
+  // workspace's local trust list (explicitly ws-scoped — D-004). NULL verified id
+  // (unverified / revoked / local) never qualifies.
+  const raw = rows[0].verified_author_github_user_id;
+  const verifiedId = raw == null ? null : typeof raw === 'string' ? Number(raw) : raw;
+  if (verifiedId == null || !Number.isFinite(verifiedId)) return false;
+  const trusted = await sql`
+    SELECT 1 FROM harness_shared.user_trust_list
+     WHERE workspace_id = ${ws} AND trusted_github_user_id = ${verifiedId} LIMIT 1`;
+  return trusted.length > 0;
 }

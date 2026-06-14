@@ -154,6 +154,8 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__hive:declare-wake',
   'mcp__agentmcp__hive:wake',
   'mcp__agentmcp__hive:status',
+  // B-06 / P-010: the Queen's per-wake efficiency read (cache-hit ratio + turns/wake). Read-only.
+  'mcp__agentmcp__hive:queen_efficiency',
 
   // The Hive's superpower surface (autoloop-pot-operator-rebuild-2026-06-05
   // P-004): discover the blueprint shapes (catalog), inspect/author one

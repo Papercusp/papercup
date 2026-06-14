@@ -664,14 +664,18 @@ export async function claimWorkItem(id: string, assignee: string, opts: { harnes
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {
     const { sql } = getOrgPg();
+    // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
+    // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
+    const ws = activeWorkspaceId();
     const rows = await sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET taken_by = ${assignee}, taken_at = now(), updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
          AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee})
          -- G2 admission (shared-hive-trust-admission P-003): an explicit named claim
-         -- can't bypass the auditor either — remote, un-admitted stays unclaimable.
-         AND ${autoPickableWhereSql(sql)}
+         -- can't bypass the auditor either — remote, un-admitted stays unclaimable
+         -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).
+         AND ${autoPickableWhereSql(sql, ws)}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
@@ -739,8 +743,9 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           AND workspace_id = ${ws}
           AND item_kind IN ('feature', 'research-task', 'chunk')
           -- G2 admission (shared-hive-trust-admission P-002): never self-select a
-          -- remote, un-admitted item — the same gate the feature frontier enforces.
-          AND ${autoPickableWhereSql(sql)}
+          -- remote, un-admitted item — the same gate the feature frontier enforces
+          -- (with the P-010 trust leg, ws-scoped via the same ws this query filters on).
+          AND ${autoPickableWhereSql(sql, ws)}
           AND ${filter.kind ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
           AND (taken_by IS NULL OR taken_by = '')
           AND status = ANY(${states}::text[])

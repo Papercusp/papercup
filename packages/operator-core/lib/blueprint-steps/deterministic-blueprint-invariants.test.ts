@@ -250,15 +250,13 @@ describe('P-140.4 — behavior-neutral migration: same core, same flag/governor 
     expect(r).toMatchObject({ ran: true, scanned: 0 });
   });
 
-  it('the cadence is behavior-neutral: the seed routine fires the blueprint at the same cron, NOT the retired bespoke action', () => {
-    const seed = readFileSync(
-      new URL('../negative-space/seed-negative-space-routine.ts', import.meta.url),
-      'utf8',
-    );
-    expect(seed).toContain("target: 'system:blueprint-run'"); // the generic program runner
-    expect(seed).toContain("blueprintId: 'negative-space'"); // … fires the migrated blueprint
-    expect(seed).toContain("cron: '0 25 */6 * * *'"); // … at the unchanged 6h cadence
-    // and never the retired bespoke action as a TARGET (two-execution-model regression)
-    expect(seed).not.toMatch(/target:\s*'system:negative-space-mine'/);
+  it('the cadence is behavior-neutral + singleton: the blueprint declares its 6h cron as a workspace-singleton trigger (P-144), not a per-install dup', () => {
+    // The bespoke seed-negative-space-routine.ts is RETIRED (P-144) — the blueprint itself now
+    // declares the cadence as a `singleton: true` trigger; the @singleton row materialization +
+    // firing are covered by apps/operator/test/blueprint-run-action.integration.test.ts.
+    const sched = loadBuiltinBlueprint('negative-space').blueprint.triggers?.schedule?.[0];
+    expect(sched?.action).toBe('system:blueprint-run'); // the generic program runner, never a retired bespoke action
+    expect(sched?.cron).toBe('0 25 */6 * * *'); // … at the unchanged 6h cadence
+    expect((sched as { singleton?: boolean } | undefined)?.singleton).toBe(true); // … as ONE workspace-singleton routine (D-018)
   });
 });
