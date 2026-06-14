@@ -252,6 +252,42 @@ export function selectAccountByHeadroom(pool: AccountPool, now: number, opts: Se
   })[0];
 }
 
+export interface SpawnSelectOpts {
+  /** The bee's harness slug — pins to an account that has this harness bound (boundTo), so a
+   *  harness's bees co-locate on one credential and share the system/tools prefix cache. */
+  harness?: string;
+  /** The account this (logical) bee last egressed through — kept sticky so its per-credential
+   *  conversation cache survives across a re-spawn. */
+  priorAccountId?: string;
+}
+
+/**
+ * Pick the account a spawning bee should egress through (inference-gateway-multi-credential-routing
+ * P-005). Cache-affinity policy, first match wins:
+ *   1. STICKY — the bee's prior account, if still available (preserves its per-credential cache).
+ *   2. HARNESS-PIN — an available account with the bee's harness in `boundTo`, so a harness's bees
+ *      co-locate on one credential (shared system/tools prefix cache); ties broken by headroom.
+ *   3. HEADROOM — otherwise the least-loaded available account.
+ * Returns the chosen account id, or undefined when no account is available (the caller sets no
+ * header and the gateway falls back to its active account). NO quota-drain / deadline logic (D-001).
+ */
+export function selectAccountForSpawn(pool: AccountPool, now: number, opts: SpawnSelectOpts = {}): string | undefined {
+  // 1. Sticky to the prior account while it is still usable.
+  if (opts.priorAccountId) {
+    const prior = getAccount(pool, opts.priorAccountId);
+    if (prior && isAvailable(prior, now)) return prior.id;
+  }
+  // 2. Harness-pinned account (cache co-location), most headroom among the pinned ties.
+  if (opts.harness) {
+    const harness = opts.harness;
+    const pinned = pool.accounts.filter((a) => a.boundTo.includes(harness) && isAvailable(a, now));
+    const best = selectAccountByHeadroom({ accounts: pinned }, now);
+    if (best) return best.id;
+  }
+  // 3. Least-loaded available account.
+  return selectAccountByHeadroom(pool, now)?.id;
+}
+
 export type ScaleOutDecision =
   | { provision: true; account: ClaudeAccount }
   | { provision: false; reason: 'no-fresh-account' | 'not-sustained' };

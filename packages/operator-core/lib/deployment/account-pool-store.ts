@@ -31,6 +31,7 @@ import {
   isSustainedlyLimited,
   recordAccountPenalty,
   selectAccountByHeadroom,
+  selectAccountForSpawn,
   unbindAccount,
 } from './account-pool';
 
