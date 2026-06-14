@@ -13,12 +13,14 @@
  * ergonomics; the policy is the safety net precisely where there is no human.
  *
  * STATUS — enforcement is ARMED (`papercusp-capability-envelope` ON; its flip is the
- * kill-switch). Two active constraints: (1) the universal never-auto protected-capability
- * deny (the queen-autonomy D-005 protected set at the capability layer — applies to every
- * fleet role); (2) the per-role `ROLE_ENVELOPES` tuning — currently the `bee` read-only
- * confinement (EI-524 / P-035): deny capability:fs-write + capability:bash so the generic
- * fleet worker verifies before diagnosing. Roles without an entry stay default-allow
- * (only the protected deny constrains them). Path/domain dimensions remain forward-designed.
+ * kill-switch). The one active constraint is the universal never-auto protected-capability
+ * deny (the queen-autonomy D-005 protected set at the capability layer — `secrets:*` +
+ * `processes:kill`, applies to every fleet role). The per-role `ROLE_ENVELOPES` tuning is
+ * currently EMPTY: the `bee` read-only confinement (EI-524 / P-035) was LIFTED on
+ * 2026-06-14 (owner-directed full fleet autonomy — a bee must be able to LAND code-fix
+ * work, not just diagnose it), so every fleet role is default-allow under the protected
+ * floor. Path/domain dimensions remain forward-designed; `ROLE_ENVELOPES` stays as the
+ * B-18 per-role tuning seam.
  */
 
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -59,27 +61,24 @@ export interface RoleEnvelope {
 }
 
 /**
- * Per-role envelopes. Most fleet roles are default-allow (only the universal
- * protected deny constrains them); per-role tuning is layered in here.
+ * Per-role envelopes — the B-18 per-role tuning seam. Currently EMPTY: every
+ * fleet role is default-allow, constrained only by the universal protected set
+ * (`PROTECTED_CAPABILITY_GLOBS`).
  *
- * `bee` (EI-524 / P-035): the generic autonomous fleet worker is confined to
- * READ-ONLY code inspection. It may READ (capability:fs-read + the native
- * Read/Glob/Grep the cutover keeps), VERIFY via `capability:inspect`
- * (capability:code-inspect — fixed typecheck/test, no free-form exec), and use
- * the coordination plane (coord / work_items / plans / messages) to report and
- * escalate a VERIFIED diagnosis. MUTATION stays gated: `capability:fs-write`
- * (write/edit) and `capability:bash` (arbitrary exec) are denied — so a bee
- * cannot act on a hallucinated root cause; it verifies first (the EI-524 fix for
- * phantom F-FIX escalations). Deliberately a DENY-list, not a positive
- * allowCapabilities: an allowlist would also deny coord/work_items/plans writes
- * and brick the bee's ability to report at all. Scoped to `bee` only — the
- * pipeline coding roles (worker/architect/…) must write, so they stay
- * default-allow. Live behind the `papercusp-capability-envelope` flag (its flip
- * is the kill-switch).
+ * HISTORY — the `bee` read-only confinement (EI-524 / P-035) lived here as
+ * `denyCapabilities: ['capability:fs-write', 'capability:bash']`: it confined the
+ * generic fleet worker to read-only inspection (READ + `capability:inspect`
+ * verify + the coordination plane) so it could not act on a hallucinated root
+ * cause — the fix for phantom F-FIX escalations. That confinement was LIFTED on
+ * 2026-06-14 (owner-directed full fleet autonomy): a bee must be able to LAND a
+ * code fix, not merely diagnose one, so it now gets write (`capability:fs-write`)
+ * and exec (`capability:bash`, OS-sandboxed via P-022/D-008) like the pipeline
+ * coding roles. The anti-hallucination guard is now the verify-before-diagnose
+ * DISCIPLINE (`capability:inspect` remains the sanctioned focused verify) plus
+ * the validator/reviewer pipeline + tests — not a capability wall. Re-add a
+ * `bee` entry here to re-confine. Live behind `papercusp-capability-envelope`.
  */
-export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
-  bee: { denyCapabilities: ['capability:fs-write', 'capability:bash'] },
-};
+export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {};
 
 export interface EnvelopeDecision {
   /** false ⇒ beyond the envelope (a protected / denied capability). */

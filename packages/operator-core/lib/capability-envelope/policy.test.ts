@@ -71,28 +71,22 @@ describe('evaluateCapabilityEnvelope — fleet roles', () => {
   });
 });
 
-describe('evaluateCapabilityEnvelope — bee read-only confinement (EI-524 / P-035)', () => {
+describe('evaluateCapabilityEnvelope — bee write-capable (confinement LIFTED 2026-06-14)', () => {
   const bee = (capabilities: readonly string[], toolName = 't') =>
     evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'bee' } });
 
-  it('denies capability:fs-write for the bee (write/edit gated)', () => {
+  it('ALLOWS capability:fs-write for the bee (write/edit opened — owner-directed full autonomy)', () => {
     const d = bee(['capability:fs-write'], 'capability:write');
-    expect(d.applied).toBe(true);
-    expect(d.withinEnvelope).toBe(false);
-    expect(d.reason).toContain('bee');
-  });
-
-  it('denies capability:bash for the bee (arbitrary exec gated)', () => {
-    expect(bee(['capability:bash'], 'capability:bash').withinEnvelope).toBe(false);
-  });
-
-  it('allows capability:fs-read for the bee (read opens)', () => {
-    const d = bee(['capability:fs-read'], 'capability:read');
     expect(d.applied).toBe(true);
     expect(d.withinEnvelope).toBe(true);
   });
 
-  it('allows capability:code-inspect for the bee (read-only verification opens)', () => {
+  it('ALLOWS capability:bash for the bee (exec opened — it must land fixes, not just diagnose)', () => {
+    expect(bee(['capability:bash'], 'capability:bash').withinEnvelope).toBe(true);
+  });
+
+  it('still allows capability:fs-read + capability:code-inspect for the bee (read + verify stay open)', () => {
+    expect(bee(['capability:fs-read'], 'capability:read').withinEnvelope).toBe(true);
     expect(bee(['capability:code-inspect'], 'capability:inspect').withinEnvelope).toBe(true);
   });
 
@@ -102,12 +96,12 @@ describe('evaluateCapabilityEnvelope — bee read-only confinement (EI-524 / P-0
     }
   });
 
-  it('still denies the universal protected set for the bee (secrets / processes:kill)', () => {
+  it('STILL denies the universal protected set for the bee (secrets / processes:kill — the floor holds)', () => {
     expect(bee(['secrets:read:x']).withinEnvelope).toBe(false);
     expect(bee(['processes:kill']).withinEnvelope).toBe(false);
   });
 
-  it('does NOT restrict the pipeline worker role — it must write (scoped to bee only)', () => {
+  it('the pipeline worker role is likewise write-capable (unchanged)', () => {
     const d = evaluateCapabilityEnvelope({
       toolName: 'capability:write',
       capabilities: ['capability:fs-write'],
