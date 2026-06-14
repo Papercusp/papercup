@@ -291,19 +291,26 @@ describe('sync-resolver v2 registry', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const typeErrors: Array<{ name: string; msg: string }> = [];
-      const otherOk: string[] = [];
       try {
         for (const name of names) {
           try {
             // Pass null — zod argsSchema will throw "Expected object,
-            // received null" for entries with required schemas. Entries
-            // that accept null/undefined go on to call PG, which we
-            // immediately abort/ignore.
-            await Promise.race([
-              r(name, null).catch(() => undefined),
-              new Promise((res) => setTimeout(res, 50)),
-            ]);
-            otherOk.push(name);
+            // received null" for entries with required schemas. Entries that
+            // accept null/undefined go on to call PG (a fast connection-failure
+            // / empty read in the unit env).
+            //
+            // AWAIT to completion — do NOT abandon the in-flight promise. A
+            // prior version raced each call against a 50ms timeout and dropped
+            // the still-running promise; those dangling resolvers kept executing
+            // real dynamic imports into the shared module registry and (under
+            // gate load) raced the vi.resetModules()+vi.doMock blocks later in
+            // this file, intermittently reddening the green-checkpoint
+            // (plansDrafts.bySlug saw a stale mock → "Cannot read properties of
+            // undefined", release-fixer 2026-06-14). Draining every dispatch
+            // keeps the registry clean for the mock-based blocks below. A truly
+            // hanging resolver now trips this test's own 10s timeout — a real
+            // signal, not a silent leak.
+            await r(name, null);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             if (/is not a function|Cannot read properties|undefined is not/i.test(msg)) {
