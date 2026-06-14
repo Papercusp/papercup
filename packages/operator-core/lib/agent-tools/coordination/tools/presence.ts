@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listPresence, sweepStalePresence } from '../presence';
 import { listFederatedPresence } from '../federated-presence';
+import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from '../presence-tier1';
 import { COORD_ROLES } from '../roles';
 
 /** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
@@ -54,13 +55,29 @@ export default defineTool({
     const all = [...records, ...federated];
     const active = all.filter((r) => !r.stale);
     const stale = all.filter((r) => r.stale);
+    // P-003: enrich the LOCAL active rows with the Tier-1 scalars (lastActiveSecAgo
+    // + claimedItems/model/awaitingEvent/wakeMode). Best-effort: a join failure
+    // must never break the listing, and federated `fed:…` rows have no local
+    // join (they get lastActiveSecAgo only). agentRole/hiveSlug already ride the
+    // row (P-002).
+    const now = Date.now();
+    let joins = new Map<string, PresenceTier1Joins>();
+    try {
+      const localIds = active
+        .filter((r) => !(r as { federated?: boolean }).federated)
+        .map((r) => r.ownerId);
+      joins = await fetchPresenceTier1(localIds);
+    } catch {
+      /* best-effort enrichment — presence must list even if a join fails */
+    }
+    const activeEnriched = mergeTier1(active, joins, now);
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             summary: { active: active.length, stale: stale.length, federated: federated.length },
-            active,
+            active: activeEnriched,
             // Stale rows are almost always dead sessions; returning all of them
             // is what overflowed the token limit (233 rows). Summarise by default.
             ...(args.include_stale ? { stale } : {}),

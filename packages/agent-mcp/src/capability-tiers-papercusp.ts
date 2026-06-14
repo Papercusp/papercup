@@ -34,6 +34,8 @@ const EXACT: Record<string, CapabilityTier> = {
   'harness:read': 'low',
   'docs:read': 'low',
   'messages:read': 'low',
+  'activity:read': 'low', // activity:recent — a read; was unlisted → defaulted to 'medium' (mis-tiered as a write), inflating watchdog timeouts (EI-99)
+  'activity:report': 'low', // the activity-bridge sink — cheap fire-and-forget telemetry (one bounded INSERT), not a governed mutation; 'low' (cf. storage:plugin-private) de-noises the decision-ledger + lets the dispatch ok-on-abort read-path absorb load-induced slow completions (EI-111)
   // SU plan-tracking (agent-plan-tracking-2026-05-20.md)
   'plans:read': 'low',
   'plans:write': 'medium',

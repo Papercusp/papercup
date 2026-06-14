@@ -80,6 +80,7 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   { id: 'cat:operator-credentials', on: TRIGGER, when: { action: { matches: '^operator:credentials' } }, fire: 'credentials-auth', meta: { reason: 'credential status / management' } },
   { id: 'cat:hive-cross-grant', on: TRIGGER, when: { action: { matches: '^hive:cross_grant' } }, fire: 'credentials-auth', meta: { reason: 'grants cross-hive authorization' } },
   { id: 'cat:substrate-revoke', on: TRIGGER, when: { action: { matches: '^substrate:revoke' } }, fire: 'credentials-auth', meta: { reason: 'revokes a substrate contributor/device' } },
+  { id: 'cat:trust', on: TRIGGER, when: { action: { matches: '^trust:(add|remove)' } }, fire: 'credentials-auth', meta: { reason: 'grants/revokes owner trust — auto-run authorization for a verified GitHub author' } },
 
   // ── system-control (PROTECTED) ──
   { id: 'cat:autoloop', on: TRIGGER, when: { action: { matches: '^autoloop:' } }, fire: 'system-control', meta: { reason: 'arms / disarms the autoloop' } },

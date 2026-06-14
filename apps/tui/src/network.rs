@@ -237,18 +237,28 @@ fn draw_focused_hive(f: &mut Frame, app: &App, area: Rect, key: &str) {
             }
         }
         None => {
-            f.render_widget(
-                Paragraph::new(format!(
-                    "hive '{key}' is not on the network board (yet)\n\n\
-                     Waiting for the next board refresh — if it never appears,\n\
-                     the hive left the directory/swarm or the board endpoint\n\
-                     is unreachable.",
-                ))
-                .wrap(Wrap { trim: false })
-                .style(Theme::panel())
-                .block(Theme::block(Line::from(format!(" ⌕ {key} ")), false)),
-                area,
-            );
+            // B5 follow-up: presence tells us who's here even BEFORE the board
+            // lists the hive — show the roster above the honest waiting note, so
+            // a fresh per-hive tab isn't blank until the next board refetch.
+            let waiting = Paragraph::new(format!(
+                "hive '{key}' is not on the network board (yet)\n\n\
+                 Waiting for the next board refresh — if it never appears,\n\
+                 the hive left the directory/swarm or the board endpoint\n\
+                 is unreachable.",
+            ))
+            .wrap(Wrap { trim: false })
+            .style(Theme::panel())
+            .block(Theme::block(Line::from(format!(" ⌕ {key} ")), false));
+            if crate::hives::present_in_hive(&app.hives, key).is_empty() {
+                f.render_widget(waiting, area);
+            } else {
+                let split = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(55), Constraint::Min(5)])
+                    .split(area);
+                draw_hive_roster(f, app, split[0], key);
+                f.render_widget(waiting, split[1]);
+            }
         }
     }
 }
@@ -703,6 +713,33 @@ mod tests {
         app.hives.clear();
         let text = render(&app, 120, 24);
         assert!(!text.contains("◆ present"), "{text}");
+    }
+
+    #[test]
+    fn focused_hive_pane_shows_roster_even_before_the_board_lists_the_hive() {
+        // B5 follow-up: a fresh per-hive tab isn't blank — presence drives the
+        // roster even when the network board hasn't listed the hive yet.
+        let mut app = App::new();
+        app.network_rows = vec![]; // not on the board
+        app.network_focus = Some("pk-peer-1".into());
+        app.hives = vec![crate::models::PresenceRow {
+            owner_id: "fed:alice@tower".into(),
+            owner_label: "gh:alice".into(),
+            intent: "fixing the parser".into(),
+            host: "tower".into(),
+            user_id: Some("alice".into()),
+            stale: false,
+            federated: true,
+            device_pubkey: Some("pk-peer-1".into()),
+            harness_slug: Some("papercup".into()),
+            current_view: None,
+            heartbeat_at: Some("2026-06-14T00:00:00Z".into()),
+        }];
+        let text = render(&app, 120, 24);
+        // Both the honest waiting note AND the present-roster appear.
+        assert!(text.contains("not on the network board"), "{text}");
+        assert!(text.contains("present"), "{text}");
+        assert!(text.contains("gh:alice"), "{text}");
     }
 
     #[test]

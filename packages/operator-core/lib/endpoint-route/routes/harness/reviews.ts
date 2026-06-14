@@ -5,9 +5,12 @@
  *   GET  /api/harness/:slug/reviews/:id        — one review (PG canonical)
  *   POST /api/harness/:slug/reviews/:id/resolve — answer + unblock the feature
  *
- * Reviews are PG-canonical via `harness_shared.pending_reviews`; the
- * `.papercusp/pending-reviews/` FS mirror is kept for orchestrator
- * back-compat.
+ * Reviews are PG-canonical via `harness_shared.pending_reviews` (written at
+ * producer time — promote.ts on create, resolveReview on resolve). The
+ * fs-watcher FS→PG mirror was retired (fs-watcher-retirement step 3); the
+ * `.papercusp/pending-reviews/<id>.json` file is now only overwritten in
+ * place on resolve so the architect chat can still read it for review context
+ * (architect/prompts.ts) — nothing mirrors it back to PG.
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 22).
@@ -115,9 +118,10 @@ const resolveReview = defineTool({
     await appendTextArtifact(slug, 'supervisor-notes.md', block);
     try { await appendFile(notesPath, block, 'utf8'); } catch {}
 
-    // Mirror to FS for back-compat: overwrite in place with resolved:true
-    // rather than move+delete — the watcher's deleteReview is unconditional
-    // and would clear our just-updated PG row.
+    // Keep the FS copy in sync for the architect's review-context read
+    // (architect/prompts.ts) — overwrite in place with resolved:true if the
+    // file exists. PG is canonical; the fs-watcher mirror was retired (step 3),
+    // so this no longer races a watcher deleteReview.
     const path = join(reviewsDir(project), `${id}.json`);
     if (existsSync(path)) {
       await writeFile(path, JSON.stringify(review, null, 2), 'utf8');

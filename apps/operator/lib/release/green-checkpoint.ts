@@ -248,12 +248,23 @@ export async function runGreenCheckpoint(
 
 /** Real effect wiring. The heavy bit — runGreen — runs the configured suite in
  *  the isolated checkpoint tree with AFFECTED_BASE pinned to the last green. */
-export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
+/** The shell-exec seam realCheckpointDeps shells the heavy ops through. Defaults
+ *  to the module's spawn-backed runCmd; injected as a fake so the real-path
+ *  WIRING (env-strip, SPA-build-folds-into-green per P-005, the push guard, the
+ *  setup-script invocation) is unit-testable without running the suite / build /
+ *  a git push (hive-run-evaluation gap #10). */
+export type CheckpointExec = (
+  cmd: string,
+  args: string[],
+  opts?: { cwd?: string; env?: NodeJS.ProcessEnv; allowNonZero?: boolean },
+) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = runCmd): CheckpointDeps {
   const log = (s: string) => console.log(`[green-checkpoint] ${s}`);
   return {
     async setupTree(ref) {
       const script = path.join(cfg.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
-      await runCmd('bash', [script, '--ref', ref, '--integration', cfg.integrationRoot, '--release', cfg.checkpointRoot, '--node-modules', 'auto']);
+      await exec('bash', [script, '--ref', ref, '--integration', cfg.integrationRoot, '--release', cfg.checkpointRoot, '--node-modules', 'auto']);
     },
     async runGreen(treeDir, base) {
       const [cmd, ...args] = cfg.greenCmd.split(' ');
@@ -262,7 +273,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
       // last green, caps vitest parallelism + retries once to absorb load-flakes, and
       // marks GREEN_CHECKPOINT=1 (its doc records the incidents behind each rule).
       const env = buildGreenCheckpointEnv(base);
-      const r = await runCmd(cmd, args, { cwd: treeDir, env, allowNonZero: true });
+      const r = await exec(cmd, args, { cwd: treeDir, env, allowNonZero: true });
 
       // P-005: the SPA build is PART of "green". A build break (a bad import, a type
       // error in a bundled module) passes the Vitest suite, then fails at the deploy's
@@ -274,7 +285,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
       let buildOut = '';
       let buildOk = true;
       if (r.code === 0) {
-        const b = await runCmd('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
+        const b = await exec('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
           cwd: treeDir,
           env,
           allowNonZero: true,
@@ -314,7 +325,7 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
     // pushes to main are blocked by that hook.
     push: async (ref) => {
-      await runCmd('git', ['-C', cfg.integrationRoot, 'push', 'origin', `${ref}:${ref}`], {
+      await exec('git', ['-C', cfg.integrationRoot, 'push', 'origin', `${ref}:${ref}`], {
         env: { ...process.env, PAPERCUSP_MAIN_PUSH_OK: '1' },
       });
     },

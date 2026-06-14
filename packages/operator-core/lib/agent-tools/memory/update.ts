@@ -26,6 +26,14 @@ export default defineTool({
   // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
   // `requirePrincipal: true` marker was not a declared input property and made
   // every overload fail (memory-taxonomy-and-debt-followups P-004).
+  // The memory store is cross-workspace by design (shared tables scoped by
+  // user-id / harness-slug, not by workspace; the handler reads getMemoryBackend,
+  // never ctx.tx). crossWorkspace:true hands an UNSCOPED superuser session ('*')
+  // the admin handle + a synthesized principal, so this works from a psu / fleet
+  // session instead of failing `workspace_required` (EI-177/178/210 — the
+  // workspace-tx gate was wrongly applied to memory:update; search + remember
+  // already carry this).
+  crossWorkspace: true,
   // NOTE: agentRoles/rolesQuota are not accepted on principal-gated tools —
   // definePrincipalGatedTool drops them (never copied to the def, never
   // enforced); the all-roles lists + quotas formerly here were dead inputs

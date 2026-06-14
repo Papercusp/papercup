@@ -97,7 +97,7 @@ describe('memory:update — UUID validation', () => {
 
       // All invalid UUIDs should fail validation before reaching backend
       const content = (res as { content?: { text?: string }[] }).content?.[0]?.text;
-      expect(content).toBeDefined('Should return error for invalid UUID: ' + id);
+      expect(content, 'Should return error for invalid UUID: ' + id).toBeDefined();
       expect(b.update).not.toHaveBeenCalled();
     }
   });

@@ -1,9 +1,13 @@
 /**
- * Per-process singleton that mirrors two FS data sources to PG so that
+ * Per-process singleton that mirrors one FS data source to PG so that
  * panels can read via Zero's WS push instead of polling REST:
  *
- *   .papercusp/pending-reviews/*.json → harness_shared.pending_reviews
  *   .papercusp/proposals/*.md         → harness_shared.harness_proposals_shared
+ *
+ * (pending-reviews retired — fs-watcher-retirement step 3: pending_reviews is
+ *  PG-canonical at producer time (audit P-077); promote.ts writes PG directly
+ *  and resolveReview updates PG directly, so the FS→PG mirror was redundant —
+ *  and its orphan-delete sweep was a latent hazard to the PG-only rows.)
  *
  * Architecture:
  *   - chokidar watches every registered project's `.papercusp/` directory,
@@ -13,8 +17,8 @@
  *   - awaitWriteFinish stabilises events on partial writes.
  *   - A 60-second reconciliation sweep compares filesystem mtimes against
  *     PG `mtime_ms` and replays any divergence — catches dropped inotify
- *     events under memory pressure. Also deletes orphan rows whose file
- *     is gone from disk (so resolved reviews leave the inbox).
+ *     events under memory pressure. Also deletes orphan proposal rows whose
+ *     file is gone from disk.
  *   - Pinned to globalThis to survive Next.js dev module re-evaluation
  *     (anti-pattern A18 from /docs/performance).
  *
@@ -61,7 +65,6 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 
-const prev = generated.pendingReviewsInHarnessShared;
 const hps = generated.harnessProposalsSharedInHarnessShared;
 const hph = generated.harnessPhasesInHarnessShared;
 const hba = generated.harnessBranchActionsInHarnessShared;
@@ -80,8 +83,8 @@ const DEBOUNCE_MS = 200;
 /**
  * Paths chokidar must never walk or poll.
  *
- * The dispatch only needs *structured* files — `*.json` reviews,
- * `*.md` proposals, the per-branch action metadata. It does NOT need the
+ * The dispatch only needs *structured* files — `*.md` proposals, the
+ * per-branch action metadata. It does NOT need the
  * high-volume append-only run logs under `action-runs/<branch>/…`: those grow
  * continuously, so chokidar's `awaitWriteFinish` (50 ms poll) would `lstat`
  * every one of them forever and they never stabilise. Across a busy fleet ×
@@ -167,8 +170,9 @@ export function watchedPaths(p: ProjectEntry): string[] {
   for (const { harnessDir } of harnessDirsForProject(p)) {
     if (!existsSync(harnessDir)) continue; // anchor missing — reconcile adds it later
     out.push(
-      join(harnessDir, 'pending-reviews'),
       join(harnessDir, 'proposals'),
+      // pending-reviews: chokidar dispatch retired (fs-watcher-retirement step 3).
+      // pending_reviews is PG-canonical at producer time (audit P-077).
       // summary.md: chokidar dispatch retired (fs-watcher-retirement step 2).
       // The harness_summaries mirror was a dead legacy path — nothing wrote
       // the top-level .papercusp/summary.md and nothing read the table (the
@@ -232,68 +236,6 @@ function phaseForPath(state: WatcherState, p: string): PhasedMatch | null {
     }
   }
   return null;
-}
-
-interface ReviewPayload {
-  id?: string;
-  featureId?: string;
-  kind?: string;
-  ts?: number;
-  resolved?: boolean;
-  [k: string]: unknown;
-}
-
-async function upsertReview(slug: string, phase: Phase, path: string): Promise<void> {
-  const reviewId = path.split('/').pop()?.replace(/\.json$/, '') ?? '';
-  if (!reviewId) return;
-  let payload: ReviewPayload = {};
-  let mtimeMs = 0;
-  try {
-    const raw = await fs.readFile(path, 'utf8');
-    payload = JSON.parse(raw) as ReviewPayload;
-    mtimeMs = statSync(path).mtimeMs;
-  } catch {
-    return;
-  }
-  const { db } = getOrgPg();
-  const ws = activeWorkspaceId();
-  const featureId = typeof payload.featureId === 'string' ? payload.featureId : null;
-  const kind = typeof payload.kind === 'string' ? payload.kind : 'unknown';
-  await db
-    .insert(prev)
-    .values({
-      harnessSlug: slug,
-      phase,
-      reviewId: reviewId,
-      featureId: featureId,
-      kind,
-      payload: payload as any,
-      ts: Number.isFinite(payload.ts) ? Number(payload.ts) : Math.floor(mtimeMs),
-      resolved: !!payload.resolved,
-      mtimeMs: Math.floor(mtimeMs),
-      workspaceId: ws,
-    })
-    .onConflictDoUpdate({
-      target: [prev.harnessSlug, prev.phase, prev.reviewId],
-      set: {
-        featureId: dsql`EXCLUDED.feature_id`,
-        kind: dsql`EXCLUDED.kind`,
-        payload: dsql`EXCLUDED.payload`,
-        ts: dsql`EXCLUDED.ts`,
-        resolved: dsql`EXCLUDED.resolved`,
-        mtimeMs: dsql`EXCLUDED.mtime_ms`,
-        workspaceId: dsql`EXCLUDED.workspace_id`,
-      },
-    });
-}
-
-async function deleteReview(slug: string, phase: Phase, path: string): Promise<void> {
-  const reviewId = path.split('/').pop()?.replace(/\.json$/, '') ?? '';
-  if (!reviewId) return;
-  const { db } = getOrgPg();
-  await db
-    .delete(prev)
-    .where(and(eq(prev.harnessSlug, slug), eq(prev.phase, phase), eq(prev.reviewId, reviewId)));
 }
 
 // Proposals are markdown (.md), not JSON. The accept/reject endpoints
@@ -639,20 +581,6 @@ function classifyAndDispatch(
   const { project, phase, harnessDir: hd } = match;
   const slug = project.slug;
 
-  // Pending reviews: top-level *.json only. Skip nested archive subdirs.
-  const reviewsDir = join(hd, 'pending-reviews');
-  if (
-    path.startsWith(reviewsDir + '/') &&
-    path.endsWith('.json') &&
-    !path.slice(reviewsDir.length + 1).includes('/')
-  ) {
-    debounce(state, `review:${slug}:${phase}:${path}`, async () => {
-      if (kind === 'unlink') await deleteReview(slug, phase, path);
-      else await upsertReview(slug, phase, path);
-    });
-    return;
-  }
-
   // Proposals: top-level *.md only; .review.md siblings trigger an upsert
   // of the parent so review_verdict/review_summary refresh.
   const proposalsDir = join(hd, 'proposals');
@@ -858,8 +786,9 @@ async function reconcileAll(state: WatcherState): Promise<void> {
         // → /api/internal/smoke-test-event. No reconcile sweep needed.
       }
 
-      for (const sub of ['pending-reviews', 'proposals'] as const) {
-        const dir = join(hd, sub);
+      // Proposals reconcile (pending-reviews retired — step 3: PG-canonical).
+      {
+        const dir = join(hd, 'proposals');
         const fsIds = new Set<string>();
         if (existsSync(dir)) {
           try {
@@ -867,62 +796,35 @@ async function reconcileAll(state: WatcherState): Promise<void> {
             for (const ent of files) {
               if (!ent.isFile()) continue;
               const f = ent.name;
-              const isReview = sub === 'pending-reviews' && f.endsWith('.json');
-              const isProposal = sub === 'proposals' && f.endsWith('.md') && !f.endsWith('.review.md');
-              if (!isReview && !isProposal) continue;
+              if (!f.endsWith('.md') || f.endsWith('.review.md')) continue;
               const path = join(dir, f);
-              const id = isReview ? f.replace(/\.json$/, '') : f;
+              const id = f;
               fsIds.add(id);
               const fsMtime = Math.floor(statSync(path).mtimeMs);
-              if (sub === 'pending-reviews') {
-                const { db } = getOrgPg();
-                const rows = await db
-                  .select({ mtime_ms: prev.mtimeMs })
-                  .from(prev)
-                  .where(and(eq(prev.harnessSlug, proj.slug), eq(prev.phase, phase), eq(prev.reviewId, id)));
-                if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
-                  await upsertReview(proj.slug, phase, path);
-                }
-              } else {
-                const { db } = getOrgPg();
-                const rows = await db
-                  .select({ mtime_ms: hps.mtimeMs })
-                  .from(hps)
-                  .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.proposalId, id)));
-                if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
-                  await upsertProposal(proj.slug, phase, path);
-                }
+              const { db } = getOrgPg();
+              const rows = await db
+                .select({ mtime_ms: hps.mtimeMs })
+                .from(hps)
+                .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.proposalId, id)));
+              if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
+                await upsertProposal(proj.slug, phase, path);
               }
             }
           } catch {}
         }
 
-        // Orphan delete: rows in PG whose FS file is gone.
+        // Orphan delete: proposal rows in PG whose FS file is gone.
         try {
           const { db } = getOrgPg();
-          if (sub === 'pending-reviews') {
-            const pgIds = await db
-              .select({ id: prev.reviewId })
-              .from(prev)
-              .where(and(eq(prev.harnessSlug, proj.slug), eq(prev.phase, phase)));
-            for (const { id } of pgIds) {
-              if (!fsIds.has(id)) {
-                await db
-                  .delete(prev)
-                  .where(and(eq(prev.harnessSlug, proj.slug), eq(prev.phase, phase), eq(prev.reviewId, id)));
-              }
-            }
-          } else {
-            const pgIds = await db
-              .select({ id: hps.proposalId })
-              .from(hps)
-              .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase)));
-            for (const { id } of pgIds) {
-              if (!fsIds.has(id)) {
-                await db
-                  .delete(hps)
-                  .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.proposalId, id)));
-              }
+          const pgIds = await db
+            .select({ id: hps.proposalId })
+            .from(hps)
+            .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase)));
+          for (const { id } of pgIds) {
+            if (!fsIds.has(id)) {
+              await db
+                .delete(hps)
+                .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.proposalId, id)));
             }
           }
         } catch {}

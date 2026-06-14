@@ -483,6 +483,17 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     coverage: 'partial',
     notes: 'flags:set is one verb spanning system-control and credentials-auth; the category-map sends flags:set → system-control (also protected). Distinguishing auth-affecting flags would need per-flag metadata. Both targets are protected, so the gate is never-auto either way — recorded as partial, not a true gap.',
   },
+  {
+    id: 'credentials.trust-author',
+    label: 'Trust / un-trust a GitHub author for auto-run',
+    category: 'credentials-auth',
+    reversibility: 'reversible',
+    authority: 'owner',
+    queenVerbs: ['trust:add', 'trust:remove'],
+    humanSurface: 'Trust list (trust:list) — owner trust grants',
+    coverage: 'covered',
+    notes: 'PROTECTED. trust:add grants a VERIFIED remote author auto-run privilege (the admission gate trust leg, shared-hive-trust-admission P-010); trust:remove revokes it (reversible). Owner-authority security grant, off the Queen autonomous surface — mirrors policy_set (D-006). trust:list is read-only (not a governed action).',
+  },
 
   // ── knowledge-curation ────────────────────────────────────────────────────────────
   {

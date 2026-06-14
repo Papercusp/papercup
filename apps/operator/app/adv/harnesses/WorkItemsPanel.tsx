@@ -8,6 +8,7 @@ import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/g
 import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
 import { IssueStatusPill, KindPill, SeverityPill, StatusPill } from '../../harness/primitives';
+import { TrustBadge, trustBadgeState } from '../../harness/TrustBadge';
 import type { HarnessStatus } from '../../harness/theme';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
@@ -43,6 +44,11 @@ export interface WorkItemRow {
   spineRole: string | null;
   spineStatus: string | null;
   updatedAt: string;
+  // Provenance for the trust badge (Trust A4) — already in the workItems.byHarness
+  // payload (EnrichedWorkItem spreads the full WorkItem); local-origin ⇒ no badge.
+  origin: string | null;
+  auditVerdict: string | null;
+  verifiedAuthorGithubUserId: number | null;
 }
 
 // Grid-cell truncation (native title= is the approved pattern for dynamic
@@ -81,6 +87,17 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const items = query.loading ? null : query.data;
   const loading = query.fetching;
   const error = query.error ? query.error.message : null;
+
+  // The owner's trust list — to mark a verified remote author as "trusted" on the
+  // badge (Trust A4). Fail-soft: no data ⇒ empty set ⇒ verified authors read as
+  // "admitted"/"pending", never falsely "trusted".
+  const trustQuery = useSyncQuery<{ githubUserId: number }>({ queryName: 'trust.list' });
+  const trustedSet = useMemo(
+    () => new Set((trustQuery.data ?? []).map((t) => t.githubUserId)),
+    [trustQuery.data],
+  );
+  const isTrusted = (r: WorkItemRow): boolean =>
+    r.verifiedAuthorGithubUserId != null && trustedSet.has(r.verifiedAuthorGithubUserId);
 
   useEffect(() => {
     if (items) api.setTitle(`Work items · ${slug} (${items.length})`);
@@ -144,6 +161,27 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
         ) : (
           <StatusPill status={row.state as HarnessStatus} size="xs" variant="chip" />
         ),
+    },
+    {
+      // Trust A4: author trust-state for shared (federated) work — empty for local items.
+      key: 'trust',
+      header: 'Trust',
+      width: 1.3,
+      toCopyText: (r) =>
+        trustBadgeState({
+          origin: r.origin,
+          auditVerdict: r.auditVerdict,
+          verifiedAuthorGithubUserId: r.verifiedAuthorGithubUserId,
+          trusted: isTrusted(r),
+        })?.label ?? '',
+      render: ({ row }) => (
+        <TrustBadge
+          origin={row.origin}
+          auditVerdict={row.auditVerdict}
+          verifiedAuthorGithubUserId={row.verifiedAuthorGithubUserId}
+          trusted={isTrusted(row)}
+        />
+      ),
     },
     {
       key: 'stage',
