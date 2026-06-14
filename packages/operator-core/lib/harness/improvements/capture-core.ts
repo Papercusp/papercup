@@ -32,7 +32,7 @@ import {
   type IssueSource,
   type CreateIssueInput,
 } from '../../issues-engineer';
-import { IMPROVEMENT_TOPIC, issueToCandidate } from './read-items';
+import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-items';
 import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
@@ -113,6 +113,21 @@ export interface CaptureImprovementInput {
    * watchdog collectors) should always pass one; interactive captures may omit.
    */
   findingClass?: string;
+  /**
+   * Capture lane (turn-end-reflection-observations-2026-06-14 D-005). 'improvement'
+   * (default) files into the work/triage pipeline. 'observation' files a PRE-IDEA
+   * sensor reading into the OBSERVATION_TOPIC lane: it skips blocking dedup
+   * (recurrence IS the signal Scout clusters), always stores as a non-bug nit,
+   * carries no auto-implement lifecycle, and is read ONLY by Scout's corpus-digest
+   * + the Observations pane — it never enters the work queue.
+   */
+  lane?: 'improvement' | 'observation';
+  /**
+   * Extra fields merged onto engineer_issues.payload — e.g. an observation's
+   * structured { kind, scope, confidence, refs } record (D-005). Generic seam so
+   * capture-core stays agnostic to the observation shape.
+   */
+  payloadExtra?: Record<string, unknown>;
 }
 
 export interface PossibleDuplicate {
@@ -165,8 +180,14 @@ export async function captureImprovement(
   // Origin-scoped (frontier P-002/D-002): only candidates with the SAME effective
   // origin participate in dedup + decided-recall — a drill row deduping against an
   // organic capture (or vice versa) would let synthetic signals suppress real ones.
+  const isObservation = input.lane === 'observation';
   const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
-  const searched = await deps.searchIssues(input.title, 20).catch(() => [] as EngineerIssue[]);
+  // Observations skip search-first dedup entirely (D-005): recurrence IS the signal
+  // Scout clusters downstream, and the reflecting agent is told not to dedup — so a
+  // recurring observation re-files rather than being declined as a duplicate.
+  const searched = isObservation
+    ? ([] as EngineerIssue[])
+    : await deps.searchIssues(input.title, 20).catch(() => [] as EngineerIssue[]);
   const candidates = searched.filter((i) => effectiveOrigin(i.signalOrigin) === origin);
   const possibleDuplicates: PossibleDuplicate[] = candidates
     .map((i) => ({
@@ -253,8 +274,11 @@ export async function captureImprovement(
     };
   }
 
-  // Per-Hive topic lens (P-010): add sourceRole to topics when it differs from default
-  const topics = [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])];
+  // Per-Hive topic lens (P-010): add sourceRole to topics when it differs from default.
+  // Observations file the DISTINCT OBSERVATION_TOPIC lane (D-005) so they stay out of
+  // the work/triage pipeline by construction — no topic:IMPROVEMENT_TOPIC reader sees them.
+  const baseTopic = isObservation ? OBSERVATION_TOPIC : IMPROVEMENT_TOPIC;
+  const topics = [baseTopic, ...(input.subTopic ? [input.subTopic] : [])];
   const sourceRole = input.sourceRole ?? 'human';
   if (sourceRole !== 'human') {
     topics.push(`improvement-source:${sourceRole}`);
@@ -262,25 +286,33 @@ export async function captureImprovement(
 
   // Kind-specific payload: the 'feature' refinement + candidate paths (close-loop D-002) + sourceRole (P-010).
   const payload: Record<string, unknown> = {};
-  if (input.kind === 'feature') payload.improvementKind = 'feature';
-  if (input.paths?.length) payload.paths = input.paths;
-  // Stable signal identity (watchdog-audit P-004 / D-001): the indexed cross-tick
-  // dedup key the watchdog pre-filters against (findIssuesByWatchdogKeys).
-  if (input.watchdogKey) payload.watchdogKey = input.watchdogKey;
-  // Machine-readable finding class (frontier P-044/D-008) — the taxonomy slug
-  // the triage/graduation rails route and count by.
-  if (input.findingClass) payload.findingClass = input.findingClass;
-  // P-010 source-tag: track who filed this improvement for per-Hive analytics
+  if (isObservation) {
+    // A PRE-IDEA sensor reading (D-005): mark the lane; carry no auto-implement
+    // lifecycle / paths — it is never dispatchable. Structured fields ride payloadExtra.
+    payload.lane = 'observation';
+  } else {
+    if (input.kind === 'feature') payload.improvementKind = 'feature';
+    if (input.paths?.length) payload.paths = input.paths;
+    // Stable signal identity (watchdog-audit P-004 / D-001): the indexed cross-tick
+    // dedup key the watchdog pre-filters against (findIssuesByWatchdogKeys).
+    if (input.watchdogKey) payload.watchdogKey = input.watchdogKey;
+    // Machine-readable finding class (frontier P-044/D-008) — the taxonomy slug
+    // the triage/graduation rails route and count by.
+    if (input.findingClass) payload.findingClass = input.findingClass;
+    // Idea lifecycle starts at capture (self-learning P-031): open → triaged → applied
+    // → verified/recurred. triage-core / resolve-core / the decay sweep advance it.
+    payload.ideaLifecycle = initializeIdeaLifecycle();
+  }
+  // P-010 source-tag: track who filed this for per-Hive analytics
   if (sourceRole !== 'human') payload.sourceRole = sourceRole;
-  // Idea lifecycle starts at capture (self-learning P-031): open → triaged → applied
-  // → verified/recurred. triage-core / resolve-core / the decay sweep advance it.
-  payload.ideaLifecycle = initializeIdeaLifecycle();
+  // Structured-field seam (D-005): the observation's { kind, scope, confidence, refs }.
+  if (input.payloadExtra) Object.assign(payload, input.payloadExtra);
 
   const issue = await deps.createIssue({
     title: input.title,
-    kind: storageKindOf(input.kind),
+    kind: isObservation ? 'change' : storageKindOf(input.kind),
     body: input.body,
-    severity: input.severity ?? (input.kind === 'bug' ? 'major' : 'minor'),
+    severity: input.severity ?? (isObservation ? 'nit' : input.kind === 'bug' ? 'major' : 'minor'),
     scope: input.scope,
     topics,
     foundDuring: input.foundDuring,
@@ -289,12 +321,11 @@ export async function captureImprovement(
     signalOrigin: origin,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
   });
-  // Push the Learning tab's improvements feed (operator-learning-tab-2026-06-09 P-002).
-  // Fire-and-forget via a lazy import so the pure, PG-free capture core (+ its unit
-  // tests) never statically depend on the SSE layer; a missing/erroring SSE bus is a
-  // no-op (the panel still refreshes on mount + manual refresh + staleTime).
+  // Push the right Learning-tab feed (operator-learning-tab-2026-06-09 P-002 /
+  // observations P-044). Fire-and-forget via a lazy import so the pure, PG-free
+  // capture core (+ its unit tests) never statically depend on the SSE layer.
   void import('../../sync-sse')
-    .then((m) => m.notifySyncInvalidate('learning.improvements'))
+    .then((m) => m.notifySyncInvalidate(isObservation ? 'learning.observations' : 'learning.improvements'))
     .catch(() => {});
   // Calibration bet on flake-shaped signals (frontier P-041 / FB-13): filing a
   // flake IS the natural moment to bet on its recurrence. Same lazy

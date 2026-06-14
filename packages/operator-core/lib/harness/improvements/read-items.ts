@@ -25,6 +25,20 @@ import { isSignalOrigin, originAllowed, ORGANIC_ONLY, type SignalOrigin } from '
 /** The built-in capture/triage lens topic (D-003). */
 export const IMPROVEMENT_TOPIC = 'papercusp-improvement';
 
+/**
+ * The observation-lane topic (turn-end-reflection-observations-2026-06-14 D-005).
+ * Observations are PRE-IDEAS — a turn-end reflection's sensor reading. They reuse
+ * the engineer_issues store but are tagged THIS distinct topic, so they are
+ * invisible to every `topic: IMPROVEMENT_TOPIC` reader (the digest, triage, the
+ * auto-implement lane, the `/adv/create` improvement facet) BY CONSTRUCTION — no
+ * per-consumer exclusion filter to maintain. The ONLY consumers are Scout's
+ * corpus-digest (via `readObservationItems`, unioned into the friction lane) and
+ * the browse-only Observations pane. An observation reaches work solely by Scout
+ * clustering a RECURRING one and promoting it to a real `improvements:capture`
+ * idea — a one-off reflection can never enter the work queue.
+ */
+export const OBSERVATION_TOPIC = 'papercusp-observation';
+
 /** Typed view over the kind-specific payload the improvement loop writes. */
 interface ImprovementPayload {
   improvementKind?: string;
@@ -122,9 +136,32 @@ export async function readImprovementItems(
   opts: ReadImprovementOpts = {},
   deps: ReadImprovementDeps = defaultDeps,
 ): Promise<ImprovementCandidate[]> {
+  return readByTopic(IMPROVEMENT_TOPIC, opts, deps);
+}
+
+/**
+ * Read observation-lane records (turn-end-reflection-observations-2026-06-14
+ * D-005) as storage-agnostic candidates. Separate topic from
+ * `readImprovementItems` so observations NEVER enter the work/triage pipeline —
+ * the ONLY callers are Scout's corpus-digest (unioned into the friction lane,
+ * P-021) and the Observations pane's sync resolver (P-044).
+ */
+export async function readObservationItems(
+  opts: ReadImprovementOpts = {},
+  deps: ReadImprovementDeps = defaultDeps,
+): Promise<ImprovementCandidate[]> {
+  return readByTopic(OBSERVATION_TOPIC, opts, deps);
+}
+
+/** Shared body for the topic-scoped candidate readers (improvement + observation). */
+async function readByTopic(
+  topic: string,
+  opts: ReadImprovementOpts,
+  deps: ReadImprovementDeps,
+): Promise<ImprovementCandidate[]> {
   const origins = opts.origins ?? ORGANIC_ONLY;
   const issues = await deps.listIssues({
-    topic: IMPROVEMENT_TOPIC,
+    topic,
     state: opts.state,
     limit: opts.limit ?? 500,
     signalOrigins: origins,

@@ -22,7 +22,7 @@ export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
   description:
-    'Capture a papercusp improvement you discovered (a friction, a missing affordance, a bug in the tooling) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible later; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link to it instead) unless force. Pass `paths` when you know the files involved — it feeds the protected-path safety gate.',
+    'Capture a papercusp improvement you discovered (a friction, a missing affordance, a bug in the tooling) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible later; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link to it instead) unless force. Pass `paths` when you know the files involved — it feeds the protected-path safety gate. Pass lane:"observation" for a turn-end-reflection PRE-IDEA — it files into a separate lane that NEVER enters the work queue (Scout-digest + the Observations pane only).',
   guidance: {
     when: 'You hit a papercusp DX / tooling / code friction worth fixing but out of your current scope. File it here so it lands in the triage backlog instead of being lost. Use kind=bug for something broken, kind=change for a desired improvement, kind=feature for net-new (the last two stay human-gated). Include `paths` (repo-relative files involved) when known — the auto-implement risk gate reads them.',
     notWhen: 'A problem in a MANAGED harness/project (not papercusp itself) — that is issues:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.',
@@ -39,7 +39,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES, 'scanner'],
   args: z.object({
     title: z.string().min(1).max(180).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
-    kind: z.enum(['bug', 'change', 'feature']).describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated)'),
+    kind: z.enum(['bug', 'change', 'feature']).optional().describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated). Required for an improvement; ignored for lane:observation (always stored as a non-bug nit). Default change.'),
     body: z.string().max(8000).optional().describe('repro / context / the correct-state, especially for a bug'),
     severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
     subTopic: z.string().min(1).max(40).optional().describe('optional sub-area topic, e.g. coord-dx, db-tooling'),
@@ -49,13 +49,23 @@ export default defineTool({
     force: z.boolean().optional().describe('file even if a likely duplicate exists (default false → search-first declines)'),
     checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
     origin: z.enum(['organic', 'drill', 'replay', 'shadow']).optional().describe('signal provenance (frontier P-002) — default organic. ONLY a frontier loop passes non-organic (vaccination drill, replay counterfactual, shadow ablation); synthetic rows stay out of organic learners'),
+    lane: z.enum(['improvement', 'observation']).optional().describe("'observation' files a PRE-IDEA turn-end reflection into the SEPARATE observation lane (D-005) — it never enters the work queue/triage/auto-implement; only Scout's corpus-digest + the Observations pane read it. Default 'improvement'."),
+    observation: z
+      .object({
+        kind: z.enum(['friction', 'workaround', 'gap', 'surprise', 'reinforce']).optional(),
+        scope: z.enum(['self', 'role', 'harness', 'papercusp']).optional(),
+        confidence: z.enum(['low', 'med', 'high']).optional(),
+        refs: z.array(z.string().max(200)).max(12).optional().describe('attribution: tool:/file:/WI- refs grounding the observation'),
+      })
+      .optional()
+      .describe('structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body)'),
   }),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
     const source = id.source === 'omp-hook-session' || id.source === 'static-client' ? 'su' : 'engineer';
     const result = await captureImprovement({
       title: args.title,
-      kind: args.kind,
+      kind: args.kind ?? 'change',
       body: args.body,
       severity: args.severity as IssueSeverity | undefined,
       subTopic: args.subTopic,
@@ -65,6 +75,8 @@ export default defineTool({
       force: args.force,
       checkDuplicatesOnly: args.checkDuplicatesOnly,
       origin: args.origin,
+      lane: args.lane,
+      payloadExtra: args.observation ? { observation: args.observation } : undefined,
       createdBy: id.ownerId,
       source,
     });

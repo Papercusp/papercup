@@ -27,7 +27,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
-import { readImprovementItems } from '../harness/improvements/read-items';
+import { readImprovementItems, readObservationItems } from '../harness/improvements/read-items';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { revertWeight, type DeferralRecord, type RevertRecord, type SpendRecord, type StateOfHiveReaders } from './corpus-digest';
 
@@ -162,7 +162,15 @@ export function buildStateOfHiveReaders(): StateOfHiveReaders {
       return fetchReverts();
     },
     async friction(): Promise<ImprovementCandidate[]> {
-      return readImprovementItems();
+      // Observations (turn-end-reflection-observations-2026-06-14 D-005) are PRE-IDEA
+      // friction signals whose SOLE consumer is Scout. Union them into the friction
+      // lane so a RECURRING observation gets clustered into a meta-pattern and can be
+      // promoted to a real idea — the only path from observation → work.
+      const [improvements, observations] = await Promise.all([
+        readImprovementItems(),
+        readObservationItems(),
+      ]);
+      return [...improvements, ...observations];
     },
     async spend() {
       return fetchSpend();
