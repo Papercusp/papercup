@@ -35,7 +35,7 @@ describe('lazy env knobs (audit P-015 / EI-172)', () => {
     try {
       delete process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS;
       delete process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS;
-      expect(invokeTimeoutMs()).toBe(600_000);
+      expect(invokeTimeoutMs()).toBe(2_700_000);
       expect(governorMaxWaitMs()).toBe(1_800_000);
       // The module was imported long before these env writes — the values must
       // still be honored (the old module-init consts ignored them: EI-172).

@@ -29,19 +29,19 @@ import { HarnessRequiredError } from '@papercusp/agent-mcp';
 export const HARNESS_ALL = '*';
 
 /**
- * Reusable required `harness` arg for harness-scoped tools — keeps the
+ * Reusable `harness` arg for harness-scoped tools — keeps the
  * description identical everywhere it's spread into an args schema
  * (`args: z.object({ harness: harnessArg, … })`).
  *
- * REQUIRED at the schema level because tools must validate that a harness
- * is resolvable _before_ invoking handlers. A harness-scoped session will
- * pass the slug explicitly; operator-scoped calls must pass 'all' or a
- * concrete slug. This prevents structural errors (harness_required at
- * runtime) from being classified as transient failures.
+ * OPTIONAL at the schema level: harness-scoped sessions can omit it
+ * (it's in ctx); operator-scoped calls must pass 'all' or a concrete slug.
+ * The runtime check (harnessScopedCtx) enforces this and throws a proper
+ * error message when a harness cannot be resolved.
  */
 export const harnessArg = z
   .string()
   .min(1)
+  .optional()
   .describe(
     "Harness slug to operate on. Pass 'all' for operator / cross-harness scope " +
       "(e.g. Papercusp's own plans). Requires a concrete slug for that harness, or 'all' " +

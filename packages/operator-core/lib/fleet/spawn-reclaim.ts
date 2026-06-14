@@ -133,10 +133,16 @@ export function isPossiblyWedged(
   const staleMs = opts.staleMs ?? RECLAIM_STALE_MS;
   if (row.status !== 'running' && row.status !== 'restarting') return false;
   if (!row.heartbeatAt) return false;
-  const heartbeatMs = row.heartbeatAt instanceof Date ? row.heartbeatAt.getTime() : typeof row.heartbeatAt === 'string' ? new Date(row.heartbeatAt).getTime() : NaN;
+  const getMs = (v: unknown): number => {
+    if (v instanceof Date) return v.getTime();
+    if (typeof v === 'string') return new Date(v).getTime();
+    if (typeof v === 'number') return v;
+    return NaN;
+  };
+  const heartbeatMs = getMs(row.heartbeatAt);
   if (isNaN(heartbeatMs) || now - heartbeatMs > staleMs) return false; // not supervised-live → the reclaim path owns it
   if (!row.lastOutputAt) return false;
-  const lastOutputMs = row.lastOutputAt instanceof Date ? row.lastOutputAt.getTime() : typeof row.lastOutputAt === 'string' ? new Date(row.lastOutputAt).getTime() : NaN;
+  const lastOutputMs = getMs(row.lastOutputAt);
   return !isNaN(lastOutputMs) && now - lastOutputMs > silentMs;
 }
 
