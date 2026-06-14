@@ -22,8 +22,8 @@ describe('triggerRoutineSpecs (P-021 / D-018)', () => {
       },
     });
     expect(specs).toEqual([
-      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false },
-      { name: 'bp-schedule-1', cron: '*/30 * * * * *', targetRole: 'system:git-sync', singleton: false },
+      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false, singletonActive: false },
+      { name: 'bp-schedule-1', cron: '*/30 * * * * *', targetRole: 'system:git-sync', singleton: false, singletonActive: false },
     ]);
   });
 
@@ -74,8 +74,8 @@ describe('triggerRoutineSpecs — workspace-singleton triggers (D-018)', () => {
       },
     });
     expect(specs).toEqual([
-      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false },
-      { name: 'bp-singleton-regret-1', cron: '0 35 */6 * * *', targetRole: 'system:blueprint-run', singleton: true },
+      { name: 'bp-schedule-0', cron: '0 0 9 * * *', targetRole: 'system:blueprint-run', singleton: false, singletonActive: false },
+      { name: 'bp-singleton-regret-1', cron: '0 35 */6 * * *', targetRole: 'system:blueprint-run', singleton: true, singletonActive: false },
     ]);
   });
 

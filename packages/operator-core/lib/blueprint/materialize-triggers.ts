@@ -58,7 +58,7 @@ export const DEFAULT_SCHEDULE_ACTION = 'system:blueprint-run';
  */
 export interface BlueprintTriggerInput {
   id?: string;
-  triggers?: { schedule?: Array<{ cron: string; action?: string; singleton?: boolean }> };
+  triggers?: { schedule?: Array<{ cron: string; action?: string; singleton?: boolean; singletonActive?: boolean }> };
 }
 
 /**
@@ -83,6 +83,9 @@ export interface TriggerRoutineSpec {
   /** Workspace-singleton (D-018): one dark routine per workspace under the reserved host-slug,
    *  vs. a per-install ACTIVE routine keyed on the install slug. */
   singleton: boolean;
+  /** Seed the singleton ACTIVE on first creation (an always-on workspace loop) vs dark
+   *  (a frontier loop armed later). Re-materialize always preserves the live active state. */
+  singletonActive: boolean;
 }
 
 export interface MaterializedRoutine extends TriggerRoutineSpec {
@@ -118,6 +121,7 @@ export function triggerRoutineSpecs(blueprint: BlueprintTriggerInput): TriggerRo
       cron: entry.cron,
       targetRole: entry.action || DEFAULT_SCHEDULE_ACTION,
       singleton,
+      singletonActive: singleton ? (entry.singletonActive ?? false) : false,
     };
   });
 }
@@ -137,7 +141,7 @@ export function triggerRoutineSpecs(blueprint: BlueprintTriggerInput): TriggerRo
  */
 async function upsertSingletonRoutine(
   sql: Sql,
-  input: { workspaceId: string; name: string; cron: string; targetRole: string; blueprintId: string },
+  input: { workspaceId: string; name: string; cron: string; targetRole: string; blueprintId: string; seedActive: boolean },
 ): Promise<{ id: string }> {
   const installSlug = SINGLETON_TRIGGER_HOST_SLUG;
   const id = `rt_${installSlug}_${input.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
@@ -151,7 +155,7 @@ async function upsertSingletonRoutine(
     VALUES (
       ${id}, ${installSlug}, ${input.name}, 'cron',
       ${triggerConfig}::text::jsonb, ${input.targetRole},
-      ${payload}::text::jsonb, 'skip', 'skip-old', false,
+      ${payload}::text::jsonb, 'skip', 'skip-old', ${input.seedActive},
       ${nextFireAt ? nextFireAt.toISOString() : null}::timestamptz, ${input.workspaceId}
     )
     ON CONFLICT (install_slug, name) DO UPDATE SET
@@ -199,6 +203,7 @@ export async function materializeBlueprintTriggers(
         cron: spec.cron,
         targetRole: spec.targetRole,
         blueprintId: blueprint.id as string,
+        seedActive: spec.singletonActive,
       });
       out.push({ ...spec, id: row.id, hostSlug: SINGLETON_TRIGGER_HOST_SLUG });
       continue;

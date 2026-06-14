@@ -308,6 +308,18 @@ describe('materializeBlueprintTriggers — workspace-singleton triggers (D-018)'
     expect(db[0].concurrency).toBe('skip'); // matches the bespoke seeds (a slow tick must not pile up)
   });
 
+  it('singletonActive (D-024): an always-on singleton seeds ACTIVE on first creation', async () => {
+    const rows = await materializeBlueprintTriggers('change-ledger', {
+      id: 'change-ledger',
+      triggers: { schedule: [{ cron: '0 20 * * * *', action: 'system:blueprint-run', singleton: true, singletonActive: true }] },
+    }, { workspaceId: WS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('bp-singleton-change-ledger-0');
+    const db = await sql<{ active: boolean }[]>`
+      SELECT active FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG} AND name='bp-singleton-change-ledger-0'`;
+    expect(db[0].active).toBe(true); // always-on loop is live out-of-the-box, not dark
+  });
+
   it('re-run safe (D-023): re-materializing an ARMED singleton preserves active + owner tuning', async () => {
     const bp = {
       id: 'regret',

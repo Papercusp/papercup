@@ -45,13 +45,16 @@ export interface LearningSingleton {
 }
 
 /**
- * The migrated frontier learning loops (the dark, governed, workspace-singleton set — D-013).
- * A loop is only acted on once its blueprint actually declares `singleton: true`, so this list
- * can name loops whose blueprint isn't migrated yet (they're skipped until then). The 3 ACTIVE
- * loops (change-ledger/scout/iq-battery) and gym are deliberately ABSENT — they're not
- * behavior-neutral under dark-seeding and need their own decision (D-021).
+ * All 13 migrated workspace-singleton loops (D-018/D-024). A loop is only acted on once its
+ * blueprint actually declares `singleton: true`. The 10 FRONTIER learning loops are dark-by-design
+ * (armed at the P-001 gate); the 3 ALWAYS-ON loops (change-ledger/scout/iq-battery) declare
+ * `singletonActive: true` so a fresh workspace seeds them live. `gym` is NOT here — it fires
+ * `system:gym-cycle`, a workspace pulse, not a blueprint program (D-010). On THIS box, DARK loops
+ * are cut over by `materializeLearningSingletons` and ACTIVE loops (armed frontier + always-on)
+ * by `cutoverActiveLearningSingleton` (behavior-neutral copy).
  */
 export const LEARNING_SINGLETONS: LearningSingleton[] = [
+  // Frontier learning loops (dark-by-design):
   { blueprintId: 'graduation', legacyRoutine: 'graduation-scan' },
   { blueprintId: 'negative-space', legacyRoutine: 'negative-space-mine' },
   { blueprintId: 'neologism', legacyRoutine: 'neologism-mine' },
@@ -61,6 +64,11 @@ export const LEARNING_SINGLETONS: LearningSingleton[] = [
   { blueprintId: 'prompt-ablation', legacyRoutine: 'prompt-ablation' },
   { blueprintId: 'regret', legacyRoutine: 'regret-mine' },
   { blueprintId: 'transfer', legacyRoutine: 'transfer-distill' },
+  { blueprintId: 'red-queen', legacyRoutine: 'red-queen-drill' },
+  // Always-on workspace loops (singletonActive: true):
+  { blueprintId: 'change-ledger', legacyRoutine: 'change-ledger-scan' },
+  { blueprintId: 'scout', legacyRoutine: 'scout-cycle' },
+  { blueprintId: 'iq-battery', legacyRoutine: 'iq-battery-gen' },
 ];
 
 export interface LegacyRowState {
