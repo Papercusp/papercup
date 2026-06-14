@@ -19,6 +19,7 @@
 import type { OpEnvelope } from './op-envelope-types';
 import { observeMergedOp } from './clobber-events';
 import { observeRemoteHlc } from './hlc-stamp';
+import type { HlcClock } from '@papercusp/locks-core';
 
 /**
  * G1 Provenance context (P-002). Passed to `writeToPg` so each per-table writer
@@ -144,6 +145,14 @@ export interface ApplyOpOpts {
    * → `origin='local'`; any other source → `origin='remote'`.
    */
   ownLogKeyHex?: string;
+  /**
+   * Override the process-global HLC the RECV seam advances on a remote op.
+   * Defaults to `processHlc()`. A test harness simulating MULTIPLE peers in ONE
+   * process passes a PER-PEER clock so each simulated peer advances its OWN clock
+   * on receive (real peers are separate processes); paired with the same per-peer
+   * clock on `stampOpHlc` (boot's send seam).
+   */
+  hlcClock?: HlcClock;
 }
 
 /**
@@ -196,7 +205,7 @@ export async function applyOpVia(
     op.sourceLogKeyHex !== undefined &&
     op.sourceLogKeyHex !== applyOpts.ownLogKeyHex
   ) {
-    observeRemoteHlc(op.hlc);
+    observeRemoteHlc(op.hlc, applyOpts.hlcClock);
   }
   if (op.type === 'del') {
     if (!op.hbKey) return false;

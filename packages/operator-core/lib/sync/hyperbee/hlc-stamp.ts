@@ -25,26 +25,37 @@
  * no flag day.
  */
 
-import { encodeHlc, decodeHlc, processHlc } from '@papercusp/locks-core';
+import { encodeHlc, decodeHlc, processHlc, type HlcClock } from '@papercusp/locks-core';
 
 /**
  * SEND seam: stamp a federated write with a causal HLC order key. A pre-set
  * `hlc` is PRESERVED (not overwritten) — a caller replaying a captured HLC keeps
  * it; everything else gets a fresh, process-monotone stamp. Returns the same op
  * shape with `hlc` guaranteed set.
+ *
+ * `clock` overrides the process-global HLC for callers that must NOT share it —
+ * notably a test harness simulating MULTIPLE peers in ONE process: real peers
+ * are separate processes with independent clocks, so a shared global clock would
+ * interleave their stamps and break per-peer causal ordering (the two cells'
+ * concurrent drains would race the same counter). Defaults to `processHlc()`.
  */
-export function stampOpHlc<T extends { hlc?: string }>(op: T): T & { hlc: string } {
+export function stampOpHlc<T extends { hlc?: string }>(
+  op: T,
+  clock: HlcClock = processHlc(),
+): T & { hlc: string } {
   if (op.hlc) return op as T & { hlc: string };
-  return { ...op, hlc: encodeHlc(processHlc().now()) };
+  return { ...op, hlc: encodeHlc(clock.now()) };
 }
 
 /**
- * RECV seam: advance the process HLC past an observed remote op's HLC, so a
- * later local write causally follows it. No-op when the op carries no `hlc`
- * (pre-P-010 / claim-path ops) — back-compat. Never throws: `decodeHlc` returns
- * `HLC_ZERO` on a malformed string, and `recv` of zero is a no-op advance.
+ * RECV seam: advance the HLC past an observed remote op's HLC, so a later local
+ * write causally follows it. No-op when the op carries no `hlc` (pre-P-010 /
+ * claim-path ops) — back-compat. Never throws: `decodeHlc` returns `HLC_ZERO` on
+ * a malformed string, and `recv` of zero is a no-op advance. `clock` overrides
+ * the process-global HLC — same multi-peer-in-one-process rationale as
+ * `stampOpHlc` (each simulated peer advances ITS OWN clock on receive).
  */
-export function observeRemoteHlc(hlc: string | undefined | null): void {
+export function observeRemoteHlc(hlc: string | undefined | null, clock: HlcClock = processHlc()): void {
   if (!hlc) return;
-  processHlc().recv(decodeHlc(hlc));
+  clock.recv(decodeHlc(hlc));
 }
