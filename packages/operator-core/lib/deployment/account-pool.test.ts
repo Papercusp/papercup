@@ -306,15 +306,15 @@ describe('decideScaleOut (P-021)', () => {
 
   it('provisions a fresh account when sustained + a fresh one exists', () => {
     let p = poolOf('a', 'b');
-    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 31 * MIN }); // long pause = sustained
+    p = recordAccountWindow(p, 'a', { utilization: 1.01 }, T0); // genuinely over 5h budget = sustained
     const d = decideScaleOut(p, 'a', T0);
     expect(d).toEqual({ provision: true, account: expect.objectContaining({ id: 'b' }) });
   });
 
   it('no-fresh-account when sustained but every other account is paused too', () => {
     let p = poolOf('a', 'b');
-    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 31 * MIN });
-    p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 20 * MIN });
+    p = recordAccountWindow(p, 'a', { utilization: 1.01 }, T0); // a genuinely over budget
+    p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 20 * MIN }); // b paused → no fresh account
     const d = decideScaleOut(p, 'a', T0);
     expect(d).toEqual({ provision: false, reason: 'no-fresh-account' });
   });

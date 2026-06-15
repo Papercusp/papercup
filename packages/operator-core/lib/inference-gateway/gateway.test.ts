@@ -205,7 +205,9 @@ test('default governor is ACCOUNT-KEYED so a gateway 429 feeds the account-pool 
   });
   port = await gw.listen(0);
   await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  // The account-keyed bucket the observer watches is now paused by the gateway's penalize().
+  // The account-keyed bucket the observer watches is now paused by recordResponse's bounded
+  // re-probe pause on the unified rejection (D-003: a rolling-window rejection no longer penalizes
+  // to the full multi-hour reset — but it DOES still pause, so the observer still sees the account).
   const acctBucket = getGovernor('anthropic', 'opus', undefined, 'acct-keyed');
   assert.ok(acctBucket.state.pausedUntil > Date.now(), 'gateway 429 paused the per-account governor bucket');
   resetGovernorRegistry();
