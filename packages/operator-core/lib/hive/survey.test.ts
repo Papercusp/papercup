@@ -118,6 +118,20 @@ describe('planToCandidate (P-010)', () => {
     expect(planToCandidate(planRow({ opStatus: 'started', status: 'shipped' }), NOW)).toBeNull();
   });
 
+  it('SURFACES an unstarted eligible plan when includeUnstarted (needsStart); excludes terminal even then (P-B1)', () => {
+    // unstarted + active + eligible ⇒ surfaced, flagged needsStart (the self-feed)
+    const surfaced = planToCandidate(planRow({ opStatus: null, status: 'active' }), NOW, { includeUnstarted: true });
+    expect(surfaced).not.toBeNull();
+    expect(surfaced!.needsStart).toBe(true);
+    // a STARTED plan is never flagged needsStart, even with includeUnstarted
+    expect(planToCandidate(planRow({ opStatus: 'started' }), NOW, { includeUnstarted: true })!.needsStart).toBeUndefined();
+    // terminal (shipped/superseded) is excluded even when eligible
+    expect(planToCandidate(planRow({ opStatus: null, status: 'shipped' }), NOW, { includeUnstarted: true })).toBeNull();
+    expect(planToCandidate(planRow({ opStatus: null, status: 'superseded' }), NOW, { includeUnstarted: true })).toBeNull();
+    // without includeUnstarted, an unstarted plan stays invisible (default behaviour)
+    expect(planToCandidate(planRow({ opStatus: null, status: 'active' }), NOW)).toBeNull();
+  });
+
   it("defaults a started plan with no open items to 'normal' importance", () => {
     const c = planToCandidate(planRow({ items: [] }), NOW)!;
     expect(c.importance).toBe('normal');
@@ -321,6 +335,69 @@ describe('surveyHive (P-012 regression)', () => {
       }),
     });
     expect(survey.frontier.map((c) => c.id)).toContain('WI-1');
+  });
+
+  // ── self-feed: eligiblePlans SURFACES unstarted eligible plans (queen-autonomy-and-selffeed C-1 / P-B1) ──
+  it('eligiblePlans surfaces an active-but-UNSTARTED plan (self-feed, needsStart)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { eligiblePlans: ['unstarted-eligible'] },
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup'
+            ? [planRow({ planSlug: 'unstarted-eligible', harnessSlug: 'papercup', opStatus: null, status: 'active', items: [planItem('a')] })]
+            : [],
+        fetchFrontier: async () => [],
+      }),
+    });
+    const plan = survey.plans.find((c) => c.id === 'unstarted-eligible');
+    expect(plan).toBeDefined();
+    expect(plan!.needsStart).toBe(true);
+  });
+
+  it('an UN-STEERED survey does NOT surface an unstarted plan (invariant a — only started plans show)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup' ? [planRow({ planSlug: 'unstarted', harnessSlug: 'papercup', opStatus: null, status: 'active', items: [planItem('a')] })] : [],
+        fetchFrontier: async () => [],
+      }),
+    });
+    expect(survey.plans.map((c) => c.id)).not.toContain('unstarted');
+  });
+
+  it('a TERMINAL plan in eligiblePlans is NOT surfaced', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { eligiblePlans: ['shipped-plan'] },
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup' ? [planRow({ planSlug: 'shipped-plan', harnessSlug: 'papercup', opStatus: null, status: 'shipped', items: [planItem('a')] })] : [],
+        fetchFrontier: async () => [],
+      }),
+    });
+    expect(survey.plans.map((c) => c.id)).not.toContain('shipped-plan');
+  });
+
+  it('a STARTED plan NOT in eligiblePlans stays filtered out (invariant b)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { eligiblePlans: ['keep'] },
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup'
+            ? [
+                planRow({ planSlug: 'keep', harnessSlug: 'papercup', opStatus: 'started', items: [planItem('a')] }),
+                planRow({ planSlug: 'other-started', harnessSlug: 'papercup', opStatus: 'started', items: [planItem('b')] }),
+              ]
+            : [],
+        fetchFrontier: async () => [],
+      }),
+    });
+    const ids = survey.plans.map((c) => c.id);
+    expect(ids).toContain('keep');
+    expect(ids).not.toContain('other-started');
   });
 });
 

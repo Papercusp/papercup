@@ -72,6 +72,11 @@ export interface PlacementCandidate {
   /** Plan view: open (todo/wip) item count — frontier depth, surfaced as
    *  placement capacity metadata (not a scoring feature). */
   openItems?: number;
+  /** Plan view: surfaced as owner-eligible but NOT yet operationally started
+   *  (queen-autonomy-and-selffeed C-1) — the Queen must start + decompose it
+   *  before placing its work, vs an already-running plan. Metadata, not a
+   *  scoring feature. Absent/false ⇒ a normal (started) candidate. */
+  needsStart?: boolean;
 }
 
 /**

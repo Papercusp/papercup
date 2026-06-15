@@ -30,7 +30,7 @@ import { IMPORTANCE_LEVELS, type Importance } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from '../workspace-registry';
 import { loadHarnessRegistry } from '../harness-registry';
 import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/source';
-import { reconcileStartStatus } from '../agent-tools/plans/plan-start-state';
+import { reconcileStartStatus, isTerminalPlanStatus } from '../agent-tools/plans/plan-start-state';
 import { rankPlacements, type PlacementCandidate } from './placement-ranker';
 import type { Ranked } from '../queue-ranker';
 import { getFeatureBlockers } from '../dbos/feature-blockers-edges';
@@ -161,8 +161,22 @@ function planMaxImportance(row: PlanIndexRow): Importance {
  * `escalations` = open `needs-human` items (decisions waiting on a human);
  * `openItems` = todo+wip depth, surfaced as placement-capacity metadata.
  */
-export function planToCandidate(row: PlanIndexRow, now: number): PlacementCandidate | null {
-  if (reconcileStartStatus(row.opStatus, row.status) !== 'started') return null;
+export function planToCandidate(
+  row: PlanIndexRow,
+  now: number,
+  opts: { includeUnstarted?: boolean } = {},
+): PlacementCandidate | null {
+  const reconciled = reconcileStartStatus(row.opStatus, row.status);
+  const started = reconciled === 'started';
+  if (!started) {
+    // By default the Queen pours bees only into STARTED plans, so an unstarted plan is
+    // invisible — UNLESS it is owner-EXPLICITLY-eligible (includeUnstarted), in which
+    // case we SURFACE it so she can start + decompose it (queen-autonomy-and-selffeed
+    // C-1 / P-B1: eligible-plans is a self-FEED, not just a scope restriction). Never
+    // surface a TERMINAL plan (shipped/superseded, or a reconciled-done started plan).
+    if (!opts.includeUnstarted) return null;
+    if (reconciled === 'done' || isTerminalPlanStatus(row.status)) return null;
+  }
   let openItems = 0;
   let escalations = 0;
   for (const it of row.items) {
@@ -179,6 +193,9 @@ export function planToCandidate(row: PlanIndexRow, now: number): PlacementCandid
     opPriority: row.opPriority,
     escalations,
     openItems,
+    // Surfaced-but-not-started ⇒ the Queen must start+decompose it before placing its
+    // work (vs an already-running plan). She reads this to pick the right action.
+    ...(started ? {} : { needsStart: true }),
   };
 }
 
@@ -380,6 +397,7 @@ export async function surveyHive(
 ): Promise<HiveSurvey> {
   const deps: SurveyDeps = { ...defaultSurveyDeps(workspaceId), ...opts.deps };
   const now = deps.now();
+  const sf = opts.scopeFilter; // scope/pause filter (C-2) — used by both the plan loop + the frontier filter
   const membership = await resolveHiveMembership(workspaceId, hiveHomeSlug, deps.loadRegistry);
 
   // Which harnesses to read plans from: the survey slugs, or every project +
@@ -410,7 +428,14 @@ export async function surveyHive(
   const planCandidates: PlacementCandidate[] = [];
   for (const rows of planRowsPerHarness) {
     for (const row of rows) {
-      const c = planToCandidate(row, now);
+      // queen-autonomy-and-selffeed C-1 (P-B1): an owner-EXPLICITLY-eligible plan is
+      // surfaced even when unstarted (flagged needsStart) so the Queen can start +
+      // decompose it. Only for plans in a non-empty eligiblePlans list — an un-steered
+      // survey is unchanged (started plans only). The later inEligiblePlans filter then
+      // keeps the eligible set; a started-but-not-eligible plan still gets filtered out.
+      const includeUnstarted =
+        (sf?.eligiblePlans?.length ?? 0) > 0 && !!sf?.eligiblePlans?.includes(row.planSlug);
+      const c = planToCandidate(row, now, { includeUnstarted });
       if (c) planCandidates.push(c);
     }
   }
@@ -440,7 +465,6 @@ export async function surveyHive(
   // frontier so the Queen places no NEW work (and instead drives existing
   // placements to terminal, then idles); `allowedHarnesses` restricts the scope.
   // Started-plan momentum is intentionally NOT paused — pause gates only new work.
-  const sf = opts.scopeFilter;
   const paused = isNewWorkPaused(sf, now);
   const readyFrontierRows = paused
     ? []

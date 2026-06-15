@@ -162,7 +162,7 @@ function importanceTag(c: PlacementCandidate): string {
 function renderCandidateLine(r: Ranked<PlacementCandidate>, i: number): string {
   const c = r as unknown as PlacementCandidate; // Ranked<T> = T & { rank }
   const title = c.title || c.id;
-  return `${i + 1}. ${c.id} — ${title}${importanceTag(c)} [${c.harness}] (rank ${r.rank.score.toFixed(2)})${whyOf(r)}`;
+  return `${i + 1}. ${c.id} — ${title}${importanceTag(c)}${c.needsStart ? ' (needs start)' : ''} [${c.harness}] (rank ${r.rank.score.toFixed(2)})${whyOf(r)}`;
 }
 
 /** Append a capped list section; emits a "+N more" overflow line when truncated. */

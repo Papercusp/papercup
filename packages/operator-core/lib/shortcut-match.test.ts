@@ -3,8 +3,14 @@
  * KeyboardEvents are plain objects with the read fields. Runs in the bare node
  * env, so navigator is absent → isMac=false → `mod` resolves to Ctrl.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
-import { parseCombo, stepMatches, tryMatch, _resetSequenceState } from './shortcut-match';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  parseCombo,
+  stepMatches,
+  tryMatch,
+  _resetSequenceState,
+  isMacPlatform,
+} from './shortcut-match';
 
 const ev = (key: string, mods: Partial<KeyboardEvent> = {}): KeyboardEvent =>
   ({ key, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...mods }) as KeyboardEvent;
@@ -77,5 +83,58 @@ describe('tryMatch — single + sequence', () => {
     const combo = parseCombo('mod+p, mod+k');
     expect(tryMatch('alt', combo, ev('k', { ctrlKey: true }))).toBe(true);
     expect(tryMatch('alt', combo, ev('p', { ctrlKey: true }))).toBe(true);
+  });
+});
+
+describe('isMacPlatform — WebKit navigator.platform freeze regression', () => {
+  const stubNav = (nav: Partial<Navigator> & { userAgentData?: { platform?: string } }) =>
+    vi.stubGlobal('navigator', nav as unknown as Navigator);
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('is FALSE on Linux WebKitGTK even though navigator.platform is frozen to "MacIntel"', () => {
+    // The Tauri-desktop bug: WebKit freezes navigator.platform to "MacIntel" on
+    // EVERY OS, but the userAgent still says Linux. Trusting platform made `mod`
+    // demand Cmd → Ctrl+F (find-in-page) + every mod shortcut died on the Linux
+    // desktop. The UA OS token must win.
+    stubNav({
+      userAgent:
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Safari/605.1.15',
+      platform: 'MacIntel',
+    });
+    expect(isMacPlatform()).toBe(false);
+  });
+
+  it('is TRUE on real macOS Safari (UA says Macintosh)', () => {
+    stubNav({
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15',
+      platform: 'MacIntel',
+    });
+    expect(isMacPlatform()).toBe(true);
+  });
+
+  it('is FALSE on Chromium Linux and Windows', () => {
+    stubNav({
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+      platform: 'Linux x86_64',
+    });
+    expect(isMacPlatform()).toBe(false);
+    stubNav({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120',
+      platform: 'Win32',
+    });
+    expect(isMacPlatform()).toBe(false);
+  });
+
+  it('mod+f matches Ctrl+F (not Cmd+F) under the frozen-MacIntel WebKitGTK navigator', () => {
+    stubNav({
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 Version/26.4 Safari/605.1.15',
+      platform: 'MacIntel',
+    });
+    const combo = parseCombo('mod+f');
+    // The user's Ctrl+F now fires…
+    expect(tryMatch('find.open', combo, ev('f', { ctrlKey: true }))).toBe(true);
+    // …and Cmd is no longer (wrongly) required on a Linux desktop.
+    expect(tryMatch('find.open', combo, ev('f', { metaKey: true }))).toBe(false);
   });
 });

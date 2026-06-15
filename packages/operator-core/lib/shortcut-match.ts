@@ -13,7 +13,29 @@
  */
 
 const SEQUENCE_TIMEOUT_MS = 1000;
-const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+
+/**
+ * Whether the platform's `mod` accelerator is Cmd (Mac) rather than Ctrl.
+ *
+ * MUST NOT trust `navigator.platform` alone: WebKit FREEZES it to `"MacIntel"`
+ * in webviews regardless of the real OS, so on the Linux Tauri desktop
+ * (WebKitGTK) `isMac` came out `true`, `mod+*` shortcuts demanded Cmd, and every
+ * `mod` shortcut — most visibly Ctrl+F find-in-page — silently stopped firing
+ * (the keydown reached JS but never matched). Prefer the userAgent OS token
+ * (which WebKitGTK + every real browser report correctly), then Chromium's
+ * `userAgentData.platform`, and only fall back to the frozen `platform` string
+ * when the UA is uninformative. Cheap enough to call per keydown.
+ */
+export function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/Macintosh|Mac OS X/i.test(ua)) return true;
+  if (/Windows|Linux|Android|CrOS|X11|Ubuntu/i.test(ua)) return false;
+  const uaData = (navigator as Navigator & { userAgentData?: { platform?: string } })
+    .userAgentData;
+  if (uaData?.platform) return /mac/i.test(uaData.platform);
+  return /Mac|iPhone|iPad/i.test(navigator.platform || '');
+}
 
 export interface ParsedStep {
   key: string;
@@ -117,7 +139,7 @@ function keyEquals(a: string, b: string): boolean {
 
 export function stepMatches(step: ParsedStep, e: KeyboardEvent): boolean {
   if (step.mod) {
-    if (isMac ? !e.metaKey : !e.ctrlKey) return false;
+    if (isMacPlatform() ? !e.metaKey : !e.ctrlKey) return false;
   }
   if (step.ctrl && !e.ctrlKey) return false;
   if (step.meta && !e.metaKey) return false;

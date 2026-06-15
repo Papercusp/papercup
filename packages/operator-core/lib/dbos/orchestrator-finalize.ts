@@ -76,8 +76,8 @@ export interface FinalizationPlanInput {
   /** The blueprint's `gates.finalize` recipe; defaults to the coding recipe. */
   finalize?: FinalizeRecipe;
   /** The blueprint's `acceptance` model (hive-blueprint-generalization P-009) — decouples
-   *  "done" from "tests pass": `human-gate` blocks DONE until approved; `judge` inserts an
-   *  acceptance-judge step before the onDone recipe; `tests` (the coding default) relies on
+   *  "done" from "tests pass": `human-gate` blocks DONE until approved; `judge` inserts a
+   *  `judge`-role step before the onDone recipe; `tests` (the coding default) relies on
    *  the pipeline's validator/smoke gates; `none`/undefined ⇒ today's straight-through
    *  finalize, so existing harnesses are unchanged. */
   acceptanceKind?: 'tests' | 'judge' | 'human-gate' | 'none';
