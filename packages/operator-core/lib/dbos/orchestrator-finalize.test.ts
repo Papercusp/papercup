@@ -82,12 +82,12 @@ describe('planFinalization — DONE (porting legacy handleDone)', () => {
     expect(approved.steps[0]).toEqual({ kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] });
   });
 
-  test('acceptance judge inserts an acceptance-judge step before the onDone recipe (P-009)', () => {
+  test('acceptance judge inserts a judge step before the onDone recipe (P-009)', () => {
     const { blocked, steps } = planFinalization({ ...base, acceptanceKind: 'judge' });
     expect(blocked).toBe(false);
     expect(steps[0]).toEqual({
       kind: 'invoke',
-      role: 'acceptance-judge',
+      role: 'judge',
       extras: ['TRIGGER=done', 'FEATURE_ID=F-001'],
     });
     expect(steps[1]).toEqual({ kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] });
@@ -97,7 +97,7 @@ describe('planFinalization — DONE (porting legacy handleDone)', () => {
     for (const acceptanceKind of [undefined, 'tests', 'none'] as const) {
       const { blocked, steps } = planFinalization({ ...base, acceptanceKind });
       expect(blocked).toBe(false);
-      expect(steps.some((s) => s.kind === 'invoke' && s.role === 'acceptance-judge')).toBe(false);
+      expect(steps.some((s) => s.kind === 'invoke' && s.role === 'judge')).toBe(false);
       expect(steps[0]).toEqual({ kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] });
     }
   });

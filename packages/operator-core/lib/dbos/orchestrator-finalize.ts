@@ -170,13 +170,15 @@ export function planFinalization(input: FinalizationPlanInput): FinalizationPlan
   }
 
   const steps: FinalizationStep[] = [];
-  // A judge-acceptance hive runs an acceptance judge before the onDone recipe (P-009) —
-  // the generic-hive analogue of the coding pipeline's validator/tests gate.
+  // A judge-acceptance hive runs the rubric judge before the onDone recipe (P-009) — the
+  // generic-hive analogue of the coding pipeline's validator/tests gate. Reuses the
+  // registered `judge` role (the rubric-scorer, base/prompts/judge.md) rather than minting
+  // a new role; the acceptance rubric rides the work-item context.
   if (input.acceptanceKind === 'judge') {
     steps.push({
       kind: 'invoke',
-      role: 'acceptance-judge',
-      extras: finalizeRoleExtras('acceptance-judge', 'done', input.featureId, input.reason, input.outputKind),
+      role: 'judge',
+      extras: finalizeRoleExtras('judge', 'done', input.featureId, input.reason, input.outputKind),
     });
   }
   for (const entry of recipe.onDone) {
