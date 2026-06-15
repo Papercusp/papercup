@@ -50,6 +50,7 @@ import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-re
 import type { HiveThroughputSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read';
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 import { BenchmarkTrend, type BenchmarkTrendInstance } from './BenchmarkTrend';
+import type { BakeoffTrendRow } from '@papercusp/operator-core/lib/hive-eval/bakeoff-trend';
 import { EkgPanel } from './EkgPanel';
 import { RedQueenPanel } from './RedQueenPanel';
 import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';
@@ -849,6 +850,8 @@ function ApiaryView() {
 
       <HiveEvalTrendView />
 
+      <BakeoffTrendView />
+
       <QueenWakeEfficiencyPanel />
 
       <EkgPanel />
@@ -1010,6 +1013,107 @@ function HiveEvalTrendView() {
             />
           </div>
           <BenchmarkTrend instances={trendInstances} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Framework bake-off trend (plan-implementation-framework-2026-06-15 P-014) ──
+//
+// The A/B proof per bet: flip a flag OFF vs ON over the scored hive-eval corpus, diff the gated
+// composite + outcome-gate pass rate. The SIBLING of the apiary + hive-orchestration trends — its
+// own `learning.bakeoff` snapshot over hive_eval_bakeoff_deltas (migration 293). A regressed verdict
+// auto-reverts the flag (P-015). Owner-gated (a real bake-off spends budget + needs the operator
+// runtime) — graceful-empty until the first run lands.
+
+const BAKEOFF_VERDICT_META: Record<BakeoffTrendRow['verdict'], { label: string; tone: 'good' | 'bad' | 'flat'; color: string }> = {
+  improved: { label: 'improved', tone: 'good', color: '#34d399' },
+  regressed: { label: 'regressed', tone: 'bad', color: '#f87171' },
+  neutral: { label: 'neutral', tone: 'flat', color: '#94a3b8' },
+  inconclusive: { label: 'inconclusive', tone: 'flat', color: '#64748b' },
+};
+
+function BakeoffTrendView() {
+  const sync = useSyncQuery<{ rows: BakeoffTrendRow[] }>({
+    queryName: 'learning.bakeoff',
+    args: {},
+    staleTime: 30_000,
+  });
+  const rows = sync.data?.[0]?.rows ?? [];
+  // Each bet's CURRENT standing — rows arrive newest-first, so the first verdict per flag is latest
+  // (the same logic as the canonical latestVerdictByFlag formatter; inlined to keep the client bundle
+  // free of an operator-core value import).
+  const standings: Array<{ flag: string; verdict: BakeoffTrendRow['verdict'] }> = [];
+  const seenFlags = new Set<string>();
+  for (const r of rows) {
+    if (!seenFlags.has(r.flagKey)) {
+      seenFlags.add(r.flagKey);
+      standings.push({ flag: r.flagKey, verdict: r.verdict });
+    }
+  }
+
+  return (
+    <div className="pc-learning__hive-eval">
+      <div className="pc-learning__sectionhead">
+        <h2>Framework bake-off <em>does the bet help?</em></h2>
+        <button
+          type="button"
+          className="pc-learning__refresh"
+          aria-label="Reload the framework bake-off trend"
+          disabled={sync.fetching}
+          onClick={() => sync.invalidate()}
+        >
+          <RefreshCw size={13} aria-hidden />
+        </button>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <Gauge size={20} aria-hidden />
+          <strong>No bake-offs yet</strong>
+          <span>
+            A bake-off runs the whole Hive twice over the seeded scenarios — once with a bet flag OFF,
+            once ON — and diffs the gated composite + outcome-gate pass rate. It’s the un-gameable A/B
+            proof that a change (compiled briefs, conflict-free placement, …) actually beats baseline; a
+            drop in the gate auto-reverts the flag. Every run spends real budget and needs the operator
+            runtime, so it’s owner-gated. Once a bake-off lands, each bet’s standing + the delta history
+            appear here — newest first.
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="pc-learning__scoreboard" aria-label="Bet standings">
+            {standings.map(({ flag, verdict }) => (
+              <Stat
+                key={flag}
+                label={flag.replace(/^papercusp-/, '')}
+                value={BAKEOFF_VERDICT_META[verdict].label}
+                tone={verdict === 'improved' ? 'good' : verdict === 'regressed' ? 'human' : 'auto'}
+                hint={`Latest bake-off verdict for ${flag}: 'improved' = the flag-ON arm beat baseline; 'regressed' = it lost the outcome gate or dropped the composite (auto-reverted off); 'neutral' = no real change; 'inconclusive' = too few runs.`}
+              />
+            ))}
+          </div>
+          <ul className="pc-learning__list">
+            {rows.map((r, i) => {
+              const dc = deltaLabel(r.deltaMeanComposite);
+              const meta = BAKEOFF_VERDICT_META[r.verdict];
+              return (
+                <li key={`${r.flagKey}-${r.at}-${i}`} className="pc-learning__row pc-learning__row--bench" title={r.flagKey}>
+                  <span className="pc-learning__sev" style={{ background: meta.color }} aria-hidden />
+                  <span className="pc-learning__id" title={r.flagKey}>{r.flagKey.replace(/^papercusp-/, '')}</span>
+                  <span className="pc-learning__benchcell">
+                    <span className={`pc-learning__delta pc-learning__delta--${meta.tone}`} title="The bake-off verdict for this run">{meta.label}</span>
+                    <span className={`pc-learning__delta pc-learning__delta--${dc.tone}`} title="Change in mean gated composite (treatment − baseline)">Δcomp {dc.text}</span>
+                    <span className="pc-learning__benchmeta" title="Change in outcome-gate pass rate (treatment − baseline)">Δgate {r.deltaGatePassRate >= 0 ? '+' : ''}{r.deltaGatePassRate.toFixed(2)}</span>
+                  </span>
+                  <span className="pc-learning__meta">
+                    <span className="pc-learning__age">{whenLabel(r.at)}</span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
         </>
       )}
     </div>

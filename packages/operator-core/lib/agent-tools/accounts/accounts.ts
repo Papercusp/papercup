@@ -123,6 +123,34 @@ export const accountsStatusTool = defineTool({
   },
 });
 
+export const accountsResetRateTool = defineTool({
+  name: 'accounts:reset-rate',
+  description:
+    "Clear an account's rate-limit penalty state — its pause (pausedUntil), penalty count, and the rolling penalty window — back to fresh (accounts-pool-tab P-004; wraps the recordAccountReset projection reset). The owner's manual override for when an account's PROJECTED pause is stale (e.g. the 5h window actually reset, or a false-exhaustion). Does NOT touch live governor buckets (those self-expire) or the credential. Returns {ok, account}.",
+  guidance: {
+    when: "Clearing a pool account's projected pause/penalty after a confirmed reset — the Accounts tab's per-account Reset button, or unsticking an account the drain selector is avoiding on a stale projection.",
+    notWhen: 'Moving work off an exhausted account NOW — accounts:scale_out. Inspecting state — accounts:status.',
+  },
+  capability: 'harness:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({ id: z.string().min(1).describe('Account id to reset'), workspace: wsArg }),
+  async handler(args) {
+    const { loadAccountPool, saveAccountPool } = await import('../../deployment/account-pool-store');
+    const { recordAccountReset, getAccount } = await import('../../deployment/account-pool');
+    const ws = args.workspace ?? activeWorkspaceId();
+    const pool = await loadAccountPool(ws);
+    if (!getAccount(pool, args.id)) return fail({ error: 'unknown_account', id: args.id });
+    const next = recordAccountReset(pool, args.id);
+    await saveAccountPool(next, ws);
+    // Live UI reflection — the Accounts tab reads accounts.pool.
+    void import('../../sync-sse')
+      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {}))
+      .catch(() => {});
+    return ok({ account: getAccount(next, args.id) });
+  },
+});
+
 export const accountsScaleOutTool = defineTool({
   name: 'accounts:scale_out',
   description:
