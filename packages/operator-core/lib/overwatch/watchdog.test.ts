@@ -114,6 +114,14 @@ describe('armFallbackOverwatchWake (a default sleep, never an immediate re-invok
     expect(fires).toHaveLength(1);
     // recorded under an overwatch-* source so it never pollutes the hive's count.
     expect(String(fires[0]).includes('overwatch-turn-end') || JSON.stringify(fires[0]).includes('overwatch-turn-end')).toBe(true);
+    // REGRESSION (live B-12 bug): wake_at must bind as an ISO STRING, never a raw
+    // Date — the real PG client throws "Received an instance of Date" on a Date
+    // bind, which silently broke the fire-record on the live operator. The fake sql
+    // collects the template VALUES; wake_at is index 4 (ws, slug, source, reason,
+    // wake_at, demand).
+    const wakeAtBind = (fires[0] as unknown[])[4];
+    expect(typeof wakeAtBind).toBe('string');
+    expect(new Date(wakeAtBind as string).getTime()).toBe(NOW + overwatchWatchdogSleepSec() * 1_000);
   });
 });
 

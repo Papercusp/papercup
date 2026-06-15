@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 /**
- * OverwatchTab.test — B-08 pane (overwatch-role-2026-06-15).
+ * OverwatchTab.test (left sidebar) — the relocated, trimmed Overwatch panel
+ * (system-health-tab-2026-06-15 P-008; overwatch-role-2026-06-15 B-08).
  *
- * Renders the pane off mocked `overwatch.snapshot` + `overwatch.controlState`
- * sync queries and asserts: the control header reflects the started/flag state,
- * the anomaly list renders kind + action verb, the health panels render, the
- * severity filter is URL-backed (writes the `owsev` nuqs param), and the empty
- * state renders when no brief has arrived.
+ * Asserts the UNIQUE content survived the /adv→sidebar move: the control header
+ * reflects started/flag state, the anomaly→action list renders kind + verb
+ * (most-severe-first), the severity filter is URL-backed (`owsev`), and the
+ * empty/dark state renders. The duplicated health-panel grid is GONE (it lives
+ * on the Health tab) — so we also assert those panel labels no longer render.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -69,37 +70,37 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-describe('OverwatchTab', () => {
-  it('renders the running header, anomalies (kind + verb), and health panels', () => {
-    render(<OverwatchTab />);
-
-    expect(screen.getByText('Overwatch running')).toBeTruthy();
-    // anomalies, most-severe-first
+describe('OverwatchTab (sidebar)', () => {
+  it('renders the running header + anomaly→action list (kind + verb, most-severe-first)', () => {
+    render(<OverwatchTab active />);
+    expect(screen.getByText('Running')).toBeTruthy();
     expect(screen.getByText('queen-stalled')).toBeTruthy();
     expect(screen.getByText('token-paused')).toBeTruthy();
-    // the action verb + target off suggestedAction (D-001 nudge-not-replace)
     expect(screen.getByText('NUDGE queen')).toBeTruthy();
     expect(screen.getByText('OBSERVE')).toBeTruthy();
-    // a health panel renders
-    expect(screen.getByText('Work feed')).toBeTruthy();
-    expect(screen.getByText('Cross-monitor')).toBeTruthy();
   });
 
-  it('shows PRE-ARMED when started but the flag is off', () => {
+  it('does NOT render the duplicated health-panel grid (moved to the Health tab)', () => {
+    render(<OverwatchTab active />);
+    expect(screen.queryByText('Work feed')).toBeNull();
+    expect(screen.queryByText('Cross-monitor')).toBeNull();
+    expect(screen.queryByText('System health')).toBeNull();
+  });
+
+  it('shows Pre-armed when started but the flag is off', () => {
     H.controlResult = { data: [{ ...control, flagEnabled: false }], loading: false, error: null };
-    render(<OverwatchTab />);
-    expect(screen.getByText('Pre-armed — flag off')).toBeTruthy();
+    render(<OverwatchTab active />);
+    expect(screen.getByText('Pre-armed')).toBeTruthy();
   });
 
   it('writes the owsev nuqs param when a severity chip is clicked', () => {
-    render(<OverwatchTab />);
+    render(<OverwatchTab active />);
     fireEvent.click(screen.getByRole('button', { name: 'critical' }));
     expect(H.nuqsSetters['owsev']).toHaveBeenCalledWith('critical');
   });
 
-  it('renders the empty state when no brief has arrived', () => {
-    H.snapshotResult = { data: [], loading: false, error: null };
-    render(<OverwatchTab />);
-    expect(screen.getByText('Overwatch is disabled.')).toBeTruthy();
+  it('renders the dark/empty state when inactive or no brief has arrived', () => {
+    render(<OverwatchTab active={false} />);
+    expect(screen.getByText(/Health tab/)).toBeTruthy();
   });
 });

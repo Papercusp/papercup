@@ -221,11 +221,11 @@ describe('AdvShell — strip + header', () => {
     await renderShell();
     expect(screen.getByRole('heading', { name: 'Advanced' })).toBeTruthy();
     expect(screen.getByText('Advanced orchestration')).toBeTruthy();
-    // Every ADV tab EXCEPT 'overwatch' renders: overwatch is gated on the
-    // papercusp-overwatch flag, which defaults OFF (overwatch-role-2026-06-15
-    // B-08/D-009 — hidden until B-12 proves it). Health is also flag-gated but
-    // defaults ON, so it shows. The test uses the real useFlag → FLAG_DEFAULTS.
-    expect(screen.getAllByRole('tab')).toHaveLength(ADV_TABS.length - 1);
+    // The full ADV strip renders: Health is flag-gated but defaults ON (real
+    // useFlag → FLAG_DEFAULTS), so every ADV_TABS entry shows. Overwatch is NOT
+    // an /adv tab anymore — it moved to the left sidebar next to Queen
+    // (system-health-tab P-008, 2026-06-15), so the strip must never carry it.
+    expect(screen.getAllByRole('tab')).toHaveLength(ADV_TABS.length);
     expect(screen.queryByRole('tab', { name: 'overwatch' })).toBeNull();
     // Tab-strip overflow affordance (owner ask 2026-06-15 #1): the scroll
     // chevrons are wired into the strip (CSS reveals them only when clipped, so
@@ -252,16 +252,6 @@ describe('AdvShell — strip + header', () => {
   it('snaps a per-pot tab back to Overview when the scope is All', async () => {
     nuqsState.scope = 'all';
     nuqsState.tab = 'docs';
-    await renderShell();
-    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('overview'));
-  });
-
-  it('snaps away from a direct ?tab=overwatch deep-link when papercusp-overwatch is OFF', async () => {
-    // overwatch-role-2026-06-15 B-10/D-009: the tab strip hides the Overwatch
-    // button when the flag is off, but a direct deep-link / ui:dispatch must not
-    // render the (dark) pane either — snap to Overview so the role is FULLY dark.
-    // The flag defaults OFF (real useFlag → FLAG_DEFAULTS).
-    nuqsState.tab = 'overwatch';
     await renderShell();
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('overview'));
   });

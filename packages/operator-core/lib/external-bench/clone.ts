@@ -117,9 +117,22 @@ export function makeCloneTaskRepo(deps: CloneDeps = {}): CloneTaskRepo {
 }
 
 /**
+ * Harness scaffolding paths the coding spine writes into the clone that are NEVER part of a benchmark
+ * repo and must NOT leak into the predictions patch the grader applies. `createHarness`/the spine write
+ * `.papercusp/{blueprint.yaml,debug,logs,memory,config.json}` (the per-harness git-canonical state +
+ * debug notes + run log + agent memory) into the clone's worktree; a real run confirmed these landed in
+ * the diff (the ansible pilot: `.papercusp/blueprint.yaml`, `.papercusp/debug/*.md`, `.papercusp/logs/run.log`,
+ * `.papercusp/memory/*`). They are the HARNESS's private working state, not the arm's solution — including
+ * them pollutes the patch (and risks a `git apply` failure against the clean grader image). Excluded here
+ * so `extractDiff` returns ONLY the substantive base→worktree source delta (minus the grader's test files).
+ */
+const HARNESS_SCAFFOLD_EXCLUDES: readonly string[] = ['.papercusp/**'];
+
+/**
  * Port 1b: extract the final unified diff from a checkout the arm has edited — `git diff` of the whole
- * worktree (incl. new files) against the base commit, EXCLUDING the grader's test files. Returns "" when
- * the arm produced no change. Stages with `add -A` first so untracked files are captured.
+ * worktree (incl. new files) against the base commit, EXCLUDING the grader's test files AND the harness's
+ * own `.papercusp/` scaffolding. Returns "" when the arm produced no substantive change. Stages with
+ * `add -A` first so untracked files are captured.
  */
 export function makeExtractDiff(deps: CloneDeps = {}): ExtractDiff {
   const git = deps.git ?? defaultGitExec;
@@ -129,11 +142,11 @@ export function makeExtractDiff(deps: CloneDeps = {}): ExtractDiff {
     // Stage everything (incl. untracked) so `diff --cached <base>` is the full base→worktree delta.
     await git(['-C', dir, 'add', '-A']);
 
-    const excludes = graderTestFiles(task);
+    // Always exclude the harness's own `.papercusp/` scratch state; additionally exclude the grader's
+    // test files (the arm must not slip the hidden tests into its patch — the grader supplies them).
+    const excludes = [...HARNESS_SCAFFOLD_EXCLUDES, ...graderTestFiles(task)];
     const args = ['-C', dir, '-c', 'core.fileMode=false', 'diff', '--cached', '--no-color', baseCommit];
-    if (excludes.length > 0) {
-      args.push('--', '.', ...excludes.map((p) => `:(exclude)${p}`));
-    }
+    args.push('--', '.', ...excludes.map((p) => `:(exclude)${p}`));
     const diff = await git(args);
     return diff.trim().length > 0 ? diff : '';
   };

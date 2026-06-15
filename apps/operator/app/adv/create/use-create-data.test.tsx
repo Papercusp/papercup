@@ -289,6 +289,11 @@ describe('useQueueData', () => {
     expect(result.current.itemStatusCounts.todo).toBe(1);
     expect(result.current.itemStatusCounts.blocked).toBe(1);
     expect(result.current.queueTotal).toBe(3);
+    // tierCounts (B1 QueueSummary): needs-human→decision, blocked→alert, todo→activity
+    expect(result.current.tierCounts.decision).toBe(1);
+    expect(result.current.tierCounts.alert).toBe(1);
+    expect(result.current.tierCounts.activity).toBe(1);
+    expect(result.current.tierCounts.handled).toBe(0);
   });
 
   it('filters by istatus and by plan bucket', () => {
