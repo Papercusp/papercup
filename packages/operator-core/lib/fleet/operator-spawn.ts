@@ -755,6 +755,19 @@ export async function spawnAgentInHarness(
   const extras = [...(input.extras ?? [])];
   if (input.featureId) extras.push(`FEATURE_ID=${input.featureId}`);
   if (input.chunkId) extras.push(`CHUNK_ID=${input.chunkId}`);
+  // The `bee` role's prompt lives ONLY in the `hive` blueprint
+  // (blueprints/hive/prompts/bee.md) — there is no `bee.md` in base/coding/etc.
+  // invoke() resolves a role's prompt from the BLUEPRINT_ID extra (it does NOT
+  // read the member's .papercusp/blueprint.yaml for prompt resolution), so a bee
+  // placed onto a non-hive member (e.g. an external-bench benchmark clone, which
+  // `extends: coding`) resolved the bare [base] chain → `<harnessDir>/prompts/bee.md`
+  // → "no prompt file for role=bee" and the bee exited rc=1 / $0 / empty diff.
+  // A bee is intrinsically a hive worker, so default its prompt blueprint to `hive`
+  // unless the caller already pinned one. Arm-neutral (both hive + queen-ablated
+  // benchmark arms place identical bees), so it cannot bias the comparison.
+  if (role === 'bee' && !extras.some((e) => e.startsWith('BLUEPRINT_ID='))) {
+    extras.push('BLUEPRINT_ID=hive');
+  }
   const extraEnv = buildPipelineExtraEnv({
     harnessSlug: slug,
     idempotencyKey: runId,
