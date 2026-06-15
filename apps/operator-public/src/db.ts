@@ -42,6 +42,10 @@ export interface HarnessRow {
   id: string;
   /** Storefront kind (migration 004). Default 'harness' for pre-004 rows. */
   listing_kind: ListingKind;
+  /** For a listing_kind='blueprint' row: the blueprint.yaml `kind` — 'hive' (a hive
+   *  template) | 'harness' (a harness blueprint). NULL for every other kind + pre-009
+   *  rows (migration 009 / hive-blueprint-generalization P-018). Drives the Hives tab. */
+  blueprint_kind: string | null;
   /** Papercupai project remote id this listing belongs to (D-008). null = legacy/standalone. */
   project_ref: string | null;
   /** Within-project discriminator (blueprint stream / snapshot id / plugin slug). null for the canonical harness listing. */
@@ -131,6 +135,9 @@ export interface NewHarnessInput {
   hive_pubkey?: string | null;
   /** Denormalized Hive display title (directory announce stays authoritative). */
   hive_title?: string | null;
+  /** blueprint.yaml `kind` ('hive'|'harness') for a listing_kind='blueprint' publish;
+   *  null otherwise (migration 009 / P-018). */
+  blueprint_kind?: string | null;
   /** Pre-publication review (migration 008): policy kinds publish 'pending'. */
   review_status?: ReviewStatus;
   created_at: number;
@@ -146,11 +153,11 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
           provides_tools,
-          hive_pubkey, hive_title,
+          hive_pubkey, hive_title, blueprint_kind,
           review_status,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,

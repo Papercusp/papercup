@@ -175,7 +175,7 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
     // Several heartbeat intervals while the worker (fetch) is still running.
     await tick(45);
     expect(heartbeatSpawns).toHaveBeenCalled();
-    expect(heartbeatSpawns.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(vi.mocked(heartbeatSpawns).mock.calls.length).toBeGreaterThanOrEqual(2);
     for (const [sql, ids] of vi.mocked(heartbeatSpawns).mock.calls) {
       expect(sql).toBe(mockSql);
       expect(ids).toEqual([recordedSpawnId]);
@@ -184,11 +184,11 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
     // Worker finishes → the heartbeat stops and the row flips done.
     resolveFetch(new Response('', { status: 200 }));
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
-    const beatsAtFinish = heartbeatSpawns.mock.calls.length;
+    const beatsAtFinish = vi.mocked(heartbeatSpawns).mock.calls.length;
 
     // No further beats after the fetch settled (the interval was cleared).
     await tick(45);
-    expect(heartbeatSpawns.mock.calls.length).toBe(beatsAtFinish);
+    expect(vi.mocked(heartbeatSpawns).mock.calls.length).toBe(beatsAtFinish);
   });
 
   it('stops heartbeating when the fetch fails too (no leak)', async () => {
@@ -202,9 +202,9 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
 
     rejectFetch(new Error('loopback: ECONNREFUSED'));
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
-    const beatsAtFail = heartbeatSpawns.mock.calls.length;
+    const beatsAtFail = vi.mocked(heartbeatSpawns).mock.calls.length;
     await tick(45);
-    expect(heartbeatSpawns.mock.calls.length).toBe(beatsAtFail);
+    expect(vi.mocked(heartbeatSpawns).mock.calls.length).toBe(beatsAtFail);
     warn.mockRestore();
   });
 
