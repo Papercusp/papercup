@@ -19,6 +19,9 @@ import {
   useQueryState,
 } from 'nuqs';
 import { diffLines } from 'diff';
+// The compare table is lifted to a shared eval-viz component (P-021 / BRIEF 10),
+// reused on the Evaluation surface; the gym renders the same one here.
+import { Compare } from '../eval-viz';
 
 // Monaco DiffEditor (the gym-ui-handoff's named merge surface) — lazy so it never weighs on
 // first paint, and wrapped (below) in an error boundary that falls back to the robust jsdiff
@@ -415,18 +418,12 @@ function CompareTab({ slug }: { slug: string }) {
         <input placeholder="variant B" value={b} onChange={(e) => void setB(e.target.value)} data-testid="gym-compare-b" style={{ ...mono, background: '#0b0b0f', color: 'inherit', border: '1px solid #2a2a33', borderRadius: 6, padding: '3px 6px' }} />
       </div>
       {err && <div style={{ color: '#ff6b6b', ...mono }}>{err}</div>}
-      <table style={{ ...mono, width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr style={{ textAlign: 'left', opacity: 0.7 }}><th>task</th><th>A</th><th>B</th><th>Δ</th></tr></thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i} style={{ borderTop: '1px solid #2a2a33' }}>
-              <td>{r.taskId}</td><td>{fmt(r.aComposite)}</td><td>{fmt(r.bComposite)}</td>
-              <td style={{ color: (r.delta ?? 0) > 0 ? '#9ae6a4' : (r.delta ?? 0) < 0 ? '#ff9a8a' : 'inherit' }}>{r.delta != null ? (r.delta > 0 ? '▲ ' : r.delta < 0 ? '▼ ' : '') + fmt(r.delta) : '—'}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && <tr><td colSpan={4} style={{ opacity: 0.6, paddingTop: 8 }}>Enter two variant ids to compare.</td></tr>}
-        </tbody>
-      </table>
+      <Compare
+        baseline={a || 'A'}
+        treatment={b || 'B'}
+        perTask={rows.map((r) => ({ label: r.taskId, baseline: r.aComposite, treatment: r.bComposite }))}
+        emptyHint="Enter two variant ids to compare."
+      />
     </div>
   );
 }

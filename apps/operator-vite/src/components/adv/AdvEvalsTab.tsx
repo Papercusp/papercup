@@ -26,19 +26,29 @@
  * (selected benchmark suite) · `?evalRun=` (drill-in run id) — so deep links and
  * the agent `ui:dispatch` surface can drive it.
  *
- * Data: read-only via `@papercusp/sync` (`evals.suites` / `evals.runs` /
- * `evals.report`). The run-result schema + scoring lib are owned by P-010
- * (reproducibility / `run_result` table) + P-011 (`@papercusp/bench-metrics`
- * aggregation: pass@1 + Wilson CI, Pareto points, arm deltas). Until those land,
- * the resolvers graceful-degrade to `[]` and every subtab renders a clean empty
- * state. This is the scaffold (BRIEF 9); the data lights up automatically once
- * the schema is locked (`impartial-bench:run-result-schema:locked`).
+ * Data: read-only via `@papercusp/sync`. The resolver entries are owned by the
+ * schema co-owners, NOT this UI — `evals.suites` + `evals.runs` by P-010,
+ * `evals.report` by P-011 (`@papercusp/bench-metrics` `buildSuiteReport`). This
+ * tab is a pure CONSUMER. Schema locked v1 (`impartial-bench:run-result-schema:locked`):
+ * canonical row type `TaskRunResult` + scoring `buildSuiteReport` live in
+ * `@papercusp/bench-metrics`; PG is `benchmark_run_result` (migration 291).
+ *
+ * Sync-arg discipline (the invalidation-match gotcha): `emitRollout` fires
+ * `notifySyncInvalidate('evals.runs', { run_id })`, so the runs/report queries
+ * are keyed by `run_id` (NOT suite) or live invalidation silently won't refresh.
+ * The suite picker resolves suite → latest `run_id` via `evals.suites`.
+ *
+ * Until those resolvers register + the first run lands, every query resolves to
+ * `[]` and each subtab renders a clean empty state — this is the BRIEF 9 scaffold.
  */
 import { useMemo } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
+// Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
+// the @papercusp/sync read and feeds these props; the components read no data.
+import { Frontier, Compare, armLabel, type FrontierPoint, type ComparePerTaskRow } from '@/app/eval-viz';
 
 // ── Arm vocabulary (LOCKED by P-011, su-4ac61) ───────────────────────────────
 // These exact strings key the schema, the Pareto/delta math, and the viz series.
@@ -93,10 +103,57 @@ interface EvalReport {
   deltas?: Array<{ baseline: ArmId; deltaPassAt1: number; costRatio: number | null }>;
 }
 
+// One per-(task × arm × seed) row from `evals.runs`. camelCase mirror of the
+// `benchmark_run_result` PG row. TODO(P-011): replace with the canonical
+// `TaskRunResult` from `@papercusp/bench-metrics/schema` once it is importable.
+interface EvalRunRow {
+  taskId: string;
+  arm: ArmId | string;
+  seed: number;
+  /** null = infra error (excluded from accuracy), per the locked scoring rules. */
+  resolved: boolean | null;
+  costUsd?: number | null;
+  tokensTotal?: number | null;
+}
+
 const EVAL_VIEWS = ['external', 'internal', 'report'] as const;
 type EvalView = (typeof EVAL_VIEWS)[number];
 
 const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : `${Math.round(v * 100)}%`);
+
+// ── Mappers: sync data → viz props (presentation only; stats stay in P-011) ───
+
+/** Per-arm cost/accuracy points for the Frontier — one point per arm, from the
+ *  report's per-arm aggregate (pass@1 + derived cost). */
+function toFrontierPoints(report: EvalReport | undefined): FrontierPoint[] {
+  if (!report) return [];
+  return report.byArm
+    .filter((a) => a.costUsd != null)
+    .map((a) => ({ label: armLabel(a.arm), cost: a.costUsd as number, score: a.passAt1, arm: a.arm }));
+}
+
+/** Per-task pass@1 pivot for the A/B table: mean(resolved over seeds) per (task,
+ *  arm). Presentation-level grouping only — the cross-task pass@k statistics
+ *  stay in P-011's `buildSuiteReport`; this just lays raw rows side by side. */
+function toComparePerTask(rows: EvalRunRow[], baseline: string, treatment: string): ComparePerTaskRow[] {
+  const byTask = new Map<string, { b: number[]; t: number[] }>();
+  for (const r of rows) {
+    if (r.resolved == null) continue; // infra error — excluded from accuracy
+    const bucket = byTask.get(r.taskId) ?? { b: [], t: [] };
+    if (r.arm === baseline) bucket.b.push(r.resolved ? 1 : 0);
+    else if (r.arm === treatment) bucket.t.push(r.resolved ? 1 : 0);
+    byTask.set(r.taskId, bucket);
+  }
+  const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((a, c) => a + c, 0) / xs.length : null);
+  return [...byTask.entries()]
+    .map(([label, v]) => ({ label, baseline: mean(v.b), treatment: mean(v.t) }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** The three baselines, headline-first (B native is the headline, D-002). */
+const BASELINE_ARMS: ArmId[] = ['baseline-b-native', 'baseline-a-ablation', 'baseline-c-bestofn'];
+const fmtPct = (n: number | null | undefined): string => (n == null ? '—' : `${Math.round(n * 100)}%`);
+const fmtUsd = (n: number): string => `$${n >= 100 ? Math.round(n) : Math.round(n * 100) / 100}`;
 
 export default function AdvEvalsTab() {
   const [evalView, setEvalView] = useQueryState(
@@ -117,6 +174,10 @@ export default function AdvEvalsTab() {
   // Default-select the first suite once the list loads (a fresh tab lands on a
   // real suite without writing the URL until the user picks).
   const activeSuite = evalSuite || suites[0]?.suite || '';
+  const activeSummary = useMemo(() => suites.find((s) => s.suite === activeSuite), [suites, activeSuite]);
+  // The runs/report queries key on run_id (matches emitRollout's invalidate). A
+  // `?evalRun=` drill-in wins; else the suite's latest run.
+  const runId = evalRun || activeSummary?.runId || '';
 
   return (
     <div className="pc-evals">
@@ -204,13 +265,14 @@ export default function AdvEvalsTab() {
       </div>
 
       {view === 'internal' ? (
-        <InternalTrendsView suite={activeSuite} suitesLoading={suitesSync.loading && !suitesSync.data} />
+        <InternalTrendsView suite={activeSuite} suites={suites} suitesLoading={suitesSync.loading && !suitesSync.data} />
       ) : view === 'report' ? (
-        <ReportView suite={activeSuite} />
+        <ReportView suite={activeSuite} runId={runId} />
       ) : (
         <ExternalBenchmarksView
           suite={activeSuite}
-          run={evalRun}
+          runId={runId}
+          summary={activeSummary}
           suites={suites}
           suitesLoading={suitesSync.loading && !suitesSync.data}
         />
@@ -240,25 +302,27 @@ function ArmLegend() {
 
 function ExternalBenchmarksView({
   suite,
-  run,
+  runId,
+  summary,
   suites,
   suitesLoading,
 }: {
   suite: string;
-  run: string | null;
+  runId: string;
+  summary: EvalSuiteSummary | undefined;
   suites: EvalSuiteSummary[];
   suitesLoading: boolean;
 }) {
-  // Per-(task × arm × seed) rows for the selected suite (+ optional run drill-in).
-  // Feeds the cost/accuracy Pareto (P-021 Frontier) + the scoreboard.
+  // Per-(task × arm × seed) rows for the selected run. Keyed by run_id to match
+  // emitRollout's notifySyncInvalidate('evals.runs', { run_id }). Feeds the
+  // cost/accuracy Pareto (P-021 Frontier) + the scoreboard.
   const runsSync = useSyncQuery<unknown>({
     queryName: 'evals.runs',
-    args: run ? { suite, run } : { suite },
+    args: { run_id: runId },
     staleTime: 30_000,
-    enabled: !!suite,
+    enabled: !!runId,
   });
   const rows = runsSync.data ?? [];
-  const summary = useMemo(() => suites.find((s) => s.suite === suite), [suites, suite]);
 
   if (suitesLoading) {
     return <p className="pc-evals__empty">Loading benchmark suites…</p>;
@@ -304,7 +368,8 @@ function ExternalBenchmarksView({
         </button>
       </div>
       <div className="pc-evals__vizmount" data-eval-viz="pareto" role="img" aria-label="Cost vs accuracy Pareto (pending data)">
-        {/* P-021: <Frontier points={toFrontierPoints(rows)} /> */}
+        {/* P-021: import { Frontier } from '@/app/eval-viz/Frontier';
+            <Frontier points={toFrontierPoints(rows)} /> */}
         {runsSync.loading && !runsSync.data ? (
           <p className="pc-evals__empty">Loading runs…</p>
         ) : rows.length === 0 ? (
@@ -323,17 +388,22 @@ function ExternalBenchmarksView({
 
 // ── Internal trends view (longitudinal score over generations) ───────────────
 
-function InternalTrendsView({ suite, suitesLoading }: { suite: string; suitesLoading: boolean }) {
-  // The longitudinal trend for this suite (suite score per code generation).
-  // TODO(P-011): point at `evals.trend` once the trend aggregation lands; reuse
-  // the existing BenchmarkTrend surface (as the Learning tab does).
-  const trendSync = useSyncQuery<unknown>({
-    queryName: 'evals.runs',
-    args: { suite, trend: true },
-    staleTime: 30_000,
-    enabled: !!suite,
-  });
-  const points = trendSync.data ?? [];
+function InternalTrendsView({
+  suite,
+  suites,
+  suitesLoading,
+}: {
+  suite: string;
+  suites: EvalSuiteSummary[];
+  suitesLoading: boolean;
+}) {
+  // The longitudinal trend (suite score per code generation) is derived from the
+  // suite history. The parent already fetches `evals.suites` via sync, so this
+  // view consumes that rather than firing a second query. A dedicated longitudinal
+  // query (e.g. `evals.suites` carrying run history, or a future `evals.trend`)
+  // is a P-010/P-011 follow-on; once it carries ≥2 generations, reuse the existing
+  // BenchmarkTrend surface here (as the Learning tab does).
+  const generations = suites.filter((s) => s.suite === suite);
 
   if (suitesLoading) {
     return <p className="pc-evals__empty">Loading…</p>;
@@ -343,24 +413,15 @@ function InternalTrendsView({ suite, suitesLoading }: { suite: string; suitesLoa
     <section className="pc-evals__section">
       <div className="pc-evals__sectionhead">
         <h2>Score over time {suite ? <em>{suite}</em> : null}</h2>
-        <button
-          type="button"
-          className="pc-evals__refresh"
-          aria-label="Reload the trend"
-          disabled={trendSync.fetching}
-          onClick={() => trendSync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
       </div>
-      {points.length === 0 ? (
+      {generations.length < 2 ? (
         <EmptyCard
           icon={<TrendingUp size={20} aria-hidden />}
           title="No trend yet"
           body="Each time this suite is re-run against a new code generation, its per-arm pass@1 becomes one point on the trend — the proof that the harness (and the gym tuning it) is actually getting better over time. Two or more generations are needed before a line appears."
         />
       ) : (
-        <p className="pc-evals__empty">{points.length} generations — trend viz (BenchmarkTrend) wires in here.</p>
+        <p className="pc-evals__empty">{generations.length} generations — trend viz (BenchmarkTrend) wires in here.</p>
       )}
     </section>
   );
@@ -368,12 +429,15 @@ function InternalTrendsView({ suite, suitesLoading }: { suite: string; suitesLoa
 
 // ── Report view (headline pass@1 + CIs + system-delta vs each baseline) ───────
 
-function ReportView({ suite }: { suite: string }) {
+function ReportView({ suite, runId }: { suite: string; runId: string }) {
+  // The headline aggregate for this run — pass@1 + Wilson CI by arm + the
+  // system-delta vs each baseline (P-011 `buildSuiteReport`). Keyed by run_id to
+  // match emitRollout's invalidation.
   const reportSync = useSyncQuery<EvalReport>({
     queryName: 'evals.report',
-    args: { suite },
+    args: { run_id: runId },
     staleTime: 30_000,
-    enabled: !!suite,
+    enabled: !!runId,
   });
   const report = reportSync.data?.[0];
 
@@ -413,7 +477,8 @@ function ReportView({ suite }: { suite: string }) {
               />
             ))}
           </div>
-          {/* P-021: <Compare baseline="baseline-b-native" treatment="papercusp" perTask={...} /> */}
+          {/* P-021: import { Compare } from '@/app/eval-viz/Compare';
+              <Compare baseline="baseline-b-native" treatment="papercusp" perTask={...} /> */}
           <div className="pc-evals__vizmount" data-eval-viz="compare" role="img" aria-label="System-delta vs baselines (pending viz)">
             <p className="pc-evals__empty">System-delta viz (P-021 Compare) wires in here.</p>
           </div>

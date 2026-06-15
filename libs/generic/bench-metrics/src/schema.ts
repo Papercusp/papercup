@@ -91,8 +91,11 @@ export interface TaskRunResult {
   seed: number;
 
   // ── grader slice (P-001 §5; emitted by the OfficialGrader, identical per arm)
-  /** Headline pass/fail. M1: FAIL_TO_PASS ∧ PASS_TO_PASS; M2: verifier pass/fail. */
-  resolved: boolean;
+  /** Headline pass/fail. M1: FAIL_TO_PASS ∧ PASS_TO_PASS; M2: verifier pass/fail.
+   *  NULL when the row was never genuinely graded (generation or grader infra
+   *  error) — null ≠ false; null rows are excluded from accuracy, not counted as
+   *  fails (P-010 co-def + METR discipline). Scored rows carry a real boolean. */
+  resolved: boolean | null;
   graderStatus: GraderStatus;
   graderFamily: string;
   /** Pinned exactly for pre-registration (image tag / `terminal-bench@2.0`+harbor ver / clawbench commit). */

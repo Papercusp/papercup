@@ -233,7 +233,7 @@ describe('AdvShell — strip + header', () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.getAttribute('title'));
-    expect(tabs).toEqual(['Overview', 'Create', 'Working', 'Frames', 'Conversations', 'Learning']);
+    expect(tabs).toEqual(['Overview', 'Create', 'Working', 'Frames', 'Conversations', 'Learning', 'Evaluation']);
     expect(screen.queryByText('sub-harnesses')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');

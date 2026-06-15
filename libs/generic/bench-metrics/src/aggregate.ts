@@ -53,7 +53,7 @@ function perTaskCounts(rows: readonly TaskRunResult[]): Array<{ n: number; c: nu
     if (!isScored(r)) continue;
     const t = byTask.get(r.taskId) ?? { n: 0, c: 0 };
     t.n += 1;
-    if (r.resolved) t.c += 1;
+    if (r.resolved === true) t.c += 1;
     byTask.set(r.taskId, t);
   }
   return [...byTask.values()];

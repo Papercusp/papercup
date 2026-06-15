@@ -532,6 +532,17 @@ export const FLAGS = {
   // observes-not-ideas, no thrash, cross-monitors the Queen). The owner flips it ON
   // after that proof — surfaced loudly in the plan's ## Now + every lane report.
   OVERWATCH: "papercusp-overwatch",
+  // impartial-benchmark-suite-2026-06-15 (P-005/BRIEF 3): gates the EXTERNAL-BENCH
+  // grader adapter + the `external-bench:run` op — the runner that clones a public
+  // benchmark task, spins a throwaway coding harness, extracts the diff, and grades
+  // it with the benchmark's OFFICIAL external Docker grader (SWE-bench Pro, M1).
+  // DEFAULT OFF — DELIBERATE (NOT the alpha flags-default-on policy): the runner is
+  // genuinely incomplete (M2 in-container modality unbuilt; the SWE-bench-Pro grader
+  // needs a dedicated Docker host + GB-scale image pulls) and infra-heavy (it spins
+  // real harnesses + pulls per-instance images). It ships dark until the ~50-task
+  // pilot (P-009) proves the end-to-end path. The owner flips it ON after that — the
+  // pending flip is surfaced in the plan's ## Now + every lane report.
+  EXTERNAL_BENCH: "papercusp-external-bench",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -834,6 +845,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the role registration (B-01), the wake-loop/routine (B-04), and the UI pane
   // (B-08). Pending flip surfaced in the plan's ## Now + every lane report.
   [FLAGS.OVERWATCH]: false,
+  // DEFAULT OFF — DELIBERATE (see the flag note): the external-bench grader adapter
+  // is incomplete (M2 unbuilt) + infra-heavy (Docker/GB image pulls); ships dark
+  // until the P-009 pilot proves it. Owner flips ON after — pending flip surfaced.
+  [FLAGS.EXTERNAL_BENCH]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

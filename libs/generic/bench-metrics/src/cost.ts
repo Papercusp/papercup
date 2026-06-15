@@ -14,6 +14,31 @@
 import type { TaskRunResult, CostAccount, ArmId } from './schema';
 import { priceRun, type PriceTable, DEFAULT_PRICE_TABLE } from './pricing';
 
+/**
+ * The shared GENERATION iso-budget cap. Every arm must cap with the SAME logic
+ * so "iso-budget" is real, not per-runner-interpreted — so the four arm runners
+ * (Papercusp + Baselines A/B/C) import `budgetExceeded` and stop generation the
+ * moment it returns true. Cap on tokens, $, or both (first to trip wins). A null
+ * cap = uncapped (the native baseline elicited to its best).
+ */
+export interface IsoBudgetCap {
+  /** Stop when cumulative generation tokens reach this. */
+  tokens?: number | null;
+  /** Stop when cumulative generation cost reaches this. */
+  usd?: number | null;
+}
+
+/**
+ * True when a run at `spent` has reached/exceeded the cap and generation should
+ * stop. `spent.tokensTotal` is the SUMMED generation tokens so far (all roles /
+ * all candidates), matching how the run-result row counts them.
+ */
+export function budgetExceeded(spent: { tokensTotal: number; costUsd?: number }, cap: IsoBudgetCap): boolean {
+  if (cap.tokens != null && spent.tokensTotal >= cap.tokens) return true;
+  if (cap.usd != null && spent.costUsd != null && spent.costUsd >= cap.usd) return true;
+  return false;
+}
+
 /** A row counts toward accuracy only if neither generation nor grading hit an infra error. */
 export function isScored(row: TaskRunResult): boolean {
   const genInfra = row.generationStatus === 'error' || row.generationStatus === 'timeout';
@@ -58,7 +83,7 @@ export function accountTokens(
     );
   }
   const n = rows.length;
-  const resolved = opts.resolvedCount ?? rows.filter((r) => isScored(r) && r.resolved).length;
+  const resolved = opts.resolvedCount ?? rows.filter((r) => isScored(r) && r.resolved === true).length;
   return {
     tokensIn,
     tokensOut,
