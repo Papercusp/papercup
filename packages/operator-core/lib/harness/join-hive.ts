@@ -104,6 +104,12 @@ export interface JoinHiveDeps {
     pubkeyBase64: string;
     keychainId: string;
   }) => Promise<unknown>;
+  /** Reboot a joined member's substrate so it re-resolves its swarm binding
+   *  (default: boot-all's rebootHarness, lazily imported). EI-681 step 2c — the
+   *  per-member joins booted each substrate on the gh:<repo_id> topic BEFORE the
+   *  Hive identity/hive_slug existed; rebooting after materialization re-keys
+   *  them onto the OWNER's Hive-pubkey topic. Best-effort — never fails the join. */
+  rebootHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
 }
 
 /** Resolve a discovered Hive's HIVE-identity pubkey from the local directory's
@@ -292,6 +298,31 @@ export async function joinHiveAsView(
     }
   } catch {
     /* identity-view write is best-effort; never fail the join over it */
+  }
+
+  // 2c — EI-681: re-key the joined members onto the Hive-pubkey topic. The
+  //      per-member joins (step 1) booted each substrate BEFORE the hive_slug +
+  //      Hive identity existed (steps 2/2b), so resolveSwarmBinding resolved the
+  //      gh:<repo_id> topic and the member sat on a DIFFERENT topic than the
+  //      owner's Hive-pubkey topic → a write never federated. Now that the view +
+  //      identity are materialized, REBOOT each joined member so it re-resolves
+  //      onto the SAME Hive-pubkey topic the owner uses (the same primitive the
+  //      owner-publish path uses). Best-effort + fire-and-forget — a re-key
+  //      failure must NEVER fail an otherwise-successful join.
+  const rebootHarness =
+    deps.rebootHarness ??
+    (async (ws: string, slug: string) =>
+      (await import('../sync/hyperbee/boot-all')).rebootHarness(ws, slug));
+  for (const m of members) {
+    if (!m.ok || !m.slug) continue;
+    try {
+      const p = rebootHarness(opts.workspaceId, m.slug);
+      if (p && typeof (p as Promise<unknown>).catch === 'function') {
+        (p as Promise<unknown>).catch(() => {});
+      }
+    } catch {
+      /* a sync throw must never fail the join or skip a later member */
+    }
   }
 
   // 3 — best-effort git-sync seeding per joined member clone (git-sync-any-hive
