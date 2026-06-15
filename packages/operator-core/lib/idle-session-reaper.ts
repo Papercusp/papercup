@@ -1,0 +1,206 @@
+/**
+ * idle-session-reaper.ts — reap DEAD-process SU CLI sessions.
+ *
+ * Plan: operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007).
+ *
+ * D-007 (su-4b005/su-36a0c): the single :3070 operator event loop is the
+ * chokepoint — ~52 long-lived SU sessions each hold LISTEN conns + polling on
+ * top of the eager all-harness substrate, so new spawns crawl. Idle/done SU
+ * sessions persist for hours, never freeing their operator/LISTEN/MCP footprint.
+ *
+ * THIS MODULE (P-011 slice 1) is the SAFE foundation: a periodic sweep that
+ * marks an OPEN `adv_sessions` row (`ended_at IS NULL`) ENDED once its owning
+ * process is DEAD — i.e. its `coord_owner_id` has dropped out of the liveness
+ * set (no fresh `coord_presence` heartbeat, no running `spawned_agents` alias,
+ * no registered wake, holds no work-item claim) for longer than the grace
+ * window. A LIVE psu session heartbeats its presence row every 60s (the
+ * supervisor beat, psu-launcher.startSupervisorBeat) regardless of activity, so
+ * a present owner is ALWAYS protected — this can only ever reap a session whose
+ * process has already exited without stamping `ended_at` (the best-effort
+ * reportSessionEnded didn't run). Reaping such a ghost reclaims the live roster
+ * and unblocks `session-dir-gc` (which protects every `ended_at IS NULL` row).
+ *
+ * What this slice deliberately does NOT do: terminate a LIVE-but-idle session
+ * (the actual event-loop-saturation fix). That needs an activity-based idle
+ * signal + safe termination via the managed-pty control socket
+ * (turn-lifecycle-control) and is the follow-on slice — see the plan.
+ *
+ * Liveness rule is deliberately identical to work-items-stale-claims.ts /
+ * the mig-225 fleet_assignment view (EI-311) so the reapers can never disagree.
+ *
+ * The keep/reap decision is a PURE function (`planIdleSessionReap`, injected
+ * clock + protected set) so it unit-tests without PG; the sweep wraps it with
+ * the PG gather + the `markAdvSessionEnded` write. Flag-gated DEFAULT-OFF
+ * (FLAGS.IDLE_SESSION_REAPER) — off ⇒ a no-op. Server-only.
+ */
+
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
+import { getOrgPg } from '@papercusp/db-org';
+import { markAdvSessionEnded } from './adv-sessions';
+
+/** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
+ *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
+ *  (every 60s) refreshes presence well inside it, so a briefly-quiet but alive
+ *  session is never reaped. Also the floor on `started_at` so a just-launched
+ *  session (presence not yet written in its first seconds) is never reaped. */
+export const IDLE_SESSION_GRACE_MS = 10 * 60 * 1000;
+
+/** One open adv_session considered for reaping. */
+export interface ReapableSession {
+  id: number;
+  coordOwnerId: string | null;
+  startedAtMs: number;
+}
+
+export interface IdleSessionReapPlan {
+  /** Dead owner (not protected) AND older than the grace floor → reap. */
+  reap: ReapableSession[];
+  /** Owner is live/claim/wake-protected → keep. */
+  keptLive: ReapableSession[];
+  /** Within the grace floor (too new to judge) → keep. */
+  keptFresh: ReapableSession[];
+  /** No coord_owner_id → can't liveness-check → never reap (kept). */
+  keptNoOwner: ReapableSession[];
+}
+
+/**
+ * PURE keep/reap decision. A session is reaped ONLY when it has a
+ * coord_owner_id, that owner is NOT in the protected (live) set, AND it started
+ * longer ago than the grace floor. No I/O — `nowMs` + `protectedOwners`
+ * injected so the boundary is unit-tested deterministically.
+ */
+export function planIdleSessionReap(opts: {
+  sessions: ReapableSession[];
+  protectedOwners: Set<string>;
+  nowMs: number;
+  graceMs?: number;
+}): IdleSessionReapPlan {
+  const graceMs = opts.graceMs ?? IDLE_SESSION_GRACE_MS;
+  const plan: IdleSessionReapPlan = { reap: [], keptLive: [], keptFresh: [], keptNoOwner: [] };
+  for (const s of opts.sessions) {
+    if (!s.coordOwnerId) {
+      plan.keptNoOwner.push(s); // no liveness key → never reap (can't prove it's dead)
+    } else if (opts.protectedOwners.has(s.coordOwnerId)) {
+      plan.keptLive.push(s); // fresh presence / running bee / registered wake / open claim
+    } else if (opts.nowMs - s.startedAtMs < graceMs) {
+      plan.keptFresh.push(s); // too new — its first presence beat may not have landed yet
+    } else {
+      plan.reap.push(s); // dead owner, past grace → ghost row, end it
+    }
+  }
+  return plan;
+}
+
+/**
+ * The set of coord owner ids that are ALIVE / must never be reaped — the same
+ * alias-aware liveness as work-items-stale-claims (presence + running nursery
+ * aliases) UNION registered wakes (the wake-executor will resume them) UNION
+ * any work-item claim holder (never reap a session mid-claim). One read.
+ */
+export async function gatherProtectedSessionOwners(
+  sql: Awaited<ReturnType<typeof getOrgPg>>['sql'],
+  opts: { graceMs?: number } = {},
+): Promise<Set<string>> {
+  const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
+  const rows = await sql<Array<{ alias: string }>>`
+    WITH owners AS (
+      SELECT owner_id AS alias
+        FROM harness_shared.coord_presence
+       WHERE heartbeat_at IS NOT NULL
+         AND (now() - heartbeat_at) < make_interval(secs => ${graceSec})
+      UNION
+      SELECT a.alias
+        FROM harness_shared.spawned_agents n
+        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+       WHERE n.status IN ('running', 'restarting')
+         AND n.heartbeat_at IS NOT NULL
+         AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
+      UNION
+      SELECT subscriber_id AS alias
+        FROM harness_shared.event_awaits
+       WHERE fired_at IS NULL AND cancelled_at IS NULL
+      UNION
+      SELECT subscriber_id AS alias
+        FROM harness_shared.event_wake_deliveries
+       WHERE status IN ('pending', 'parked', 'delivering')
+      UNION
+      SELECT taken_by AS alias
+        FROM harness_shared.harness_features_consolidated
+       WHERE taken_by IS NOT NULL
+    )
+    SELECT DISTINCT alias FROM owners WHERE alias IS NOT NULL AND alias <> ''`;
+  return new Set(rows.map((r) => r.alias));
+}
+
+export interface IdleSessionReapResult {
+  /** False when the flag is off (a no-op). */
+  enabled: boolean;
+  /** Open adv_sessions considered. */
+  scanned: number;
+  /** Rows marked ended (or that WOULD be, when dryRun). */
+  reaped: number;
+  reapedIds: number[];
+  /** Owners kept because live/claim/wake-protected. */
+  keptLive: number;
+  dryRun: boolean;
+}
+
+/**
+ * The top-level sweep the `system:idle-session-reaper` routine fires. Gathers
+ * the protected set + the open sessions from PG, plans, then marks the reapable
+ * ghosts ended (unless dryRun). FLAG-GATED DEFAULT-OFF — a no-op when off.
+ * Best-effort: a PG failure returns a zero result rather than throwing (it must
+ * never wedge the routine engine).
+ */
+export async function runIdleSessionReap(
+  opts: { dryRun?: boolean; graceMs?: number } = {},
+): Promise<IdleSessionReapResult> {
+  const dryRun = !!opts.dryRun;
+  const empty: IdleSessionReapResult = {
+    enabled: false,
+    scanned: 0,
+    reaped: 0,
+    reapedIds: [],
+    keptLive: 0,
+    dryRun,
+  };
+  const enabled = await getFlag(FLAGS.IDLE_SESSION_REAPER, 'system').catch(() => false);
+  if (!enabled) return empty;
+
+  try {
+    const { sql } = getOrgPg();
+    const protectedOwners = await gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs });
+    const open = await sql<Array<{ id: number; coord_owner_id: string | null; started_at: string | Date }>>`
+      SELECT id, coord_owner_id, started_at
+        FROM harness_shared.adv_sessions
+       WHERE ended_at IS NULL`;
+    const sessions: ReapableSession[] = open.map((r) => ({
+      id: r.id,
+      coordOwnerId: r.coord_owner_id,
+      startedAtMs: new Date(r.started_at).getTime(),
+    }));
+    const plan = planIdleSessionReap({
+      sessions,
+      protectedOwners,
+      nowMs: Date.now(),
+      graceMs: opts.graceMs,
+    });
+    if (!dryRun) {
+      // markAdvSessionEnded re-checks `ended_at IS NULL`, so a row that ended
+      // (or was reaped by a racing sweep) between the read and here is left alone.
+      for (const s of plan.reap) await markAdvSessionEnded(s.id, null);
+    }
+    return {
+      enabled: true,
+      scanned: sessions.length,
+      reaped: plan.reap.length,
+      reapedIds: plan.reap.map((s) => s.id),
+      keptLive: plan.keptLive.length,
+      dryRun,
+    };
+  } catch (e) {
+    console.warn('[idle-session-reaper] sweep failed (non-fatal):', (e as Error)?.message ?? e);
+    return { ...empty, enabled: true };
+  }
+}

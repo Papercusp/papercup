@@ -812,6 +812,18 @@ The index is correct and applies clean empty→head; it must land **coupled with
 * `coord:await-inbox` (annotation) — `packages/operator-core/lib/agent-tools/coordination/tools/await-inbox.ts`
 * Migration — `libs/papercusp/libs/db/sql/183-event-awaits-inbox-wake-one-per-agent.sql`
 
+## Cross-owner discovery safety (EI-151)
+
+[Section titled “Cross-owner discovery safety (EI-151)”](#cross-owner-discovery-safety-ei-151)
+
+A wake / `turn:interrupt` resolves a peer’s LIVE interactive session via `findLiveHost(ownerId)`, which reads a discovery file at `~/.papercusp/psu-pty/<sanitizeKey(ownerId)>.json`. `sanitizeKey` is **lossy** (every char outside `[a-zA-Z0-9._-]` → `_`, truncated to 200), so two *distinct* coord owner ids can resolve to the **same** filename (a structured hive id vs a colliding one; a stale file left at a reused key during a `/loop` re-host). The filename alone is therefore NOT proof of ownership: `findLiveHost` also requires the file’s **recorded `ownerId`** to equal the one asked for, else it returns null (→ park/inbox, never the wrong session). Without that check, agent A’s inbox-wake (or a force-interrupt) would inject into agent B’s live session — the third member of the cross-agent-wake-misroute family (EI-152 / EI-153 / EI-151). The guard lives in the ONE shared discovery function so it covers both the wake-executor’s `psu-socket-inject` rung and `turn:interrupt`’s pty-force leg. Regression: `psu-pty-discovery.test.ts` “EI-151 … recorded ownerId differs from the requested key”.
+
+### The second rung: recycled-pid managed-pty inject (EI-151, Channel 1)
+
+[Section titled “The second rung: recycled-pid managed-pty inject (EI-151, Channel 1)”](#the-second-rung-recycled-pid-managed-pty-inject-ei-151-channel-1)
+
+The discovery-file check above guards the `psu-socket-inject` rung. The wake-executor has an EARLIER rung — Channel 1, `findPty(pid)` — for sessions that are one of OUR managed ptys (`/adv`-spawned). It matched on **pid alone**, but the OS **recycles a pid** to a *different* agent’s live managed pty after a session exits uncleanly (its `adv_sessions` row never marked ended). So the recorded pid for sleeping agent A could now belong to agent B’s live pty, and A’s wake turn would inject into B’s session — the same cross-agent misroute, one rung up. Fix: `PtyHandle` captures **`ownerSid`** from `PAPERCUSP_SID` at spawn, and `findPtyByPid(pid, ownerSid)` rejects a handle tagged with a foreign owner. An **untagged** pty (`ownerSid === null` — a shell pane / legacy spawn) still matches, so the guard is never *stricter* than the old pid-only behavior. The wake-executor passes `d.subscriberId` (which is also the `PAPERCUSP_SID` it stamps on resume), and parks on a cross-owner miss instead of injecting. Regression: `pty-bridge.test.ts` “findPtyByPid owner-scoping” + `wake-executor-matrix.test.ts` “EI-151 cross-owner pid-reuse”. **Lesson:** any pid→session routing must be owner-scoped — a pid is not a stable identity.
+
 ## The dual: turn-interrupt — ending a RUNNING peer’s turn
 
 [Section titled “The dual: turn-interrupt — ending a RUNNING peer’s turn”](#the-dual-turn-interrupt--ending-a-running-peers-turn)
@@ -7238,6 +7250,62 @@ grep skips corrupted/binary files
 
 A stray NUL byte in a `.tsx` (e.g. a literal control char used as a map-key delimiter) makes `rg`/`grep` treat the file as **binary and skip it** — so a “0 stragglers” import scan can be a lie. Force text with `grep -ra` / `grep --binary-files=text` when a build cites an import in a file your scan claims is clean.
 
+# Verifying an /adv tab change is live — grep the WATCH build's dist, not a one-off `vite build`
+
+> A one-off `npx vite build` code-splits /adv route CONTENT differently and races the watch process — its output FALSELY shows your tab missing. Grep apps/operator-vite/dist (the long-running watch build) instead.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+You add a new `/adv` tab (or any route-content component — a tab body under `components/adv/*` reached via `routes/adv/index.tsx`’s `renderAdvTab`), then try to confirm it bundled by running a clean build and grepping for your CSS class:
+
+```bash
+npx vite build --outDir /tmp/verify     # production mode
+grep -rl "pc-yourtab" /tmp/verify       # → MISSING (!?)
+```
+
+It reads as MISSING — and so do **stable, definitely-shipped** components (`pc-overview__topbar` from `AdvOverviewTab`, `pc-lihealth` from the learning chip, a peer’s just-landed tab). That makes it look like the whole adv route content failed to bundle. It did not. Two things conspire:
+
+1. **The live `dist/` is owned by a long-running watch build**, not your one-off. `apps/operator-vite` runs `vite build --watch --mode development` (the `dev:nohmr` script) that continuously rewrites `apps/operator-vite/dist/` — this is what the desktop/staging actually serves (see the `project_adv_live_in_operator_vite` memory). A one-off `npx vite build` writes the same `dist/` and **races** the watch process, which rebuilds over your output seconds later.
+2. **Production-mode code-splitting ≠ dev-mode.** A one-off production `vite build` splits the lazy `/adv` route’s content components into chunks differently from the `--mode development` watch build; a recursive grep of the production output can miss route-content class strings that the dev bundle inlines — even for components that unquestionably ship. So the production build’s dist is **not** a faithful oracle for “is my adv tab content bundled”.
+
+A fast build time is the tell: a real cold build of this \~550-chunk app is **not** 2–3 seconds. If `vite build` returns in \~3s, you’re seeing the rolldown cache / a partial build, not a fresh full one.
+
+## The fix — grep the watch build’s own dist
+
+[Section titled “The fix — grep the watch build’s own dist”](#the-fix--grep-the-watch-builds-own-dist)
+
+The authoritative bundle is `apps/operator-vite/dist/`, maintained by the watch process. After editing, confirm the watch rebuilt, then grep that dist:
+
+```bash
+# 1. find the watch build + confirm it just rebuilt
+ps aux | grep 'vite build --watch' | grep -v grep        # e.g. PID 2944703
+tail -c 1500 /proc/<pid>/fd/1 | tr -d '\0' | tail -3      # → "built in NNNms."
+
+
+# 2. grep the LIVE dist (recursive) for your marker
+grep -rl "pc-yourtab" apps/operator-vite/dist/ && echo LIVE || echo "not rebuilt yet"
+```
+
+A stable class like `pc-overview__topbar` is a good control: it MUST be present in the live dist. If your marker is present alongside it, your change is live.
+
+Identifiers (component/function names like `HealthTab`, `renderAdvTab`) are **minified** — don’t grep for those; grep for **string literals** that survive minification: a CSS class in a `<style>` template, a user-facing label, or the sync `queryName`.
+
+## Don’t
+
+[Section titled “Don’t”](#dont)
+
+* Don’t `rm -rf node_modules/.vite` to “force a clean build” — that cache is shared with the running dev servers + the watch build; clearing it forces a fleet-disrupting re-optimize for peers on the same box.
+* Don’t trust a `--outDir /tmp/...` production build’s absence of a class as proof your code is missing — cross-check the live dist first.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* `project_adv_live_in_operator_vite` (memory) — the live `/adv` UI is operator-vite; how to confirm a change is in the freshly-built bundle.
+* `adv-dock-panel-two-place-registration` — the other “did my /adv surface actually wire up” gotcha.
+
 # The orchestrator worker subprocess reads PAPERCUSP_DATABASE_URL — pin it or it hits the wrong DB
 
 > The orchestrator's pg-bootstrap.defaultDsn resolves PAPERCUSP_DATABASE_URL > ~/.papercusp/embedded-pg.json > hardcoded :5432/papercusp — it does NOT read DATABASE_URL/HARNESS_ADMIN_DATABASE_URL. A spawned invoke-once worker pointed at a non-:5432 DB (e.g. the harness gym) silently connects to the live dev DB → UPDATE harness_features 42P01. SHOW search_path is a false reassurance.
@@ -9793,6 +9861,14 @@ SET col = ${obj == null ? null : JSON.stringify(obj)}::jsonb
 ```
 
 This is semantically identical to `sql.json` for jsonb and works everywhere.
+
+## Read side — `${JSON.stringify(x)}::jsonb` reads back as a STRING on the test pools
+
+[Section titled “Read side — ${JSON.stringify(x)}::jsonb reads back as a STRING on the test pools”](#read-side--jsonstringifyxjsonb-reads-back-as-a-string-on-the-test-pools)
+
+A column written this way reads back as a **raw JSON string** under the testcontainer / org-test pools (and any client that doesn’t auto-decode jsonb), whereas the prod getOrgPg/CJS client **auto-parses it to an object/array**. So a reader that uses the value as an object/array must decode defensively, or it silently sees a string (e.g. `row.payload.routedRef` → `undefined`, no crash, wrong result). Decode at every jsonb read boundary with the shared `coerceJson<T>(v)` (`packages/operator-core/lib/pg-jsonb.ts`) — it returns an object/array untouched and `JSON.parse`s a string. (Mirrors `coerceJsonArray`, slot-parked-store `parseEnvelope`, pg-log `parseBody`.)
+
+**Trap:** switching a write off `sql.json` UNBLOCKS the write, which can newly EXPOSE a latent read bug whose column was previously never populated (the throwing write meant nothing was ever stored to read). Always fix the write and its reads together — a green write is only half the migration.
 
 ## Why tests don’t catch it
 
@@ -16509,9 +16585,9 @@ One row per `(run_id, suite, task_id, arm, seed)` — `UNIQUE` on that tuple, so
 
 Schema is canonical & locked — this doc tracks it
 
-The authoritative types live in `@papercusp/bench-metrics/schema` (`TaskRunResult`, `P-011`) and `packages/operator-core/lib/external-bench/reproducibility/` (the rollout
+The authoritative types live in `@papercusp/bench-metrics` (`TaskRunResult`, `P-011` — `libs/generic/bench-metrics/src/schema.ts`, re-exported from the package root) and `packages/operator-core/lib/external-bench/reproducibility/` (the rollout + prereg records + `emitRollout`, `P-010`), backed by migration `291-benchmark-reproducibility.sql`. The L2 hive layer adds `emitFleetRun` / `emitCoordEvents` (`reproducibility/fleet.ts`) and migration `292-benchmark-hive-layer.sql`. Sync reads: `evals.suites` + `evals.runs` + `evals.fleet`
 
-* prereg records + `emitRollout`, `P-010`), backed by migration `291-benchmark-reproducibility.sql`. Sync reads: `evals.suites` + `evals.runs` (`P-010`), `evals.report` = pass\@1 / CI / Pareto / delta (`P-011`). This table is the documented contract, kept in sync with that code.
+* `evals.coordTrace` (`P-010`), `evals.report` = pass\@1 / CI / Pareto / delta (`P-011`). This table is the documented contract, kept in sync with that code.
 
 # Branding
 

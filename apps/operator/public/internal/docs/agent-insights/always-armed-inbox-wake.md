@@ -92,6 +92,43 @@ release SQL dir. So "apply 183 to live PG" is a no-op-by-design that rides the d
 * `coord:await-inbox` (annotation) — `packages/operator-core/lib/agent-tools/coordination/tools/await-inbox.ts`
 * Migration — `libs/papercusp/libs/db/sql/183-event-awaits-inbox-wake-one-per-agent.sql`
 
+## Cross-owner discovery safety (EI-151)
+
+A wake / `turn:interrupt` resolves a peer's LIVE interactive session via
+`findLiveHost(ownerId)`, which reads a discovery file at
+`~/.papercusp/psu-pty/<sanitizeKey(ownerId)>.json`. `sanitizeKey` is **lossy**
+(every char outside `[a-zA-Z0-9._-]` → `_`, truncated to 200), so two *distinct*
+coord owner ids can resolve to the **same** filename (a structured hive id vs a
+colliding one; a stale file left at a reused key during a `/loop` re-host). The
+filename alone is therefore NOT proof of ownership: `findLiveHost` also requires
+the file's **recorded `ownerId`** to equal the one asked for, else it returns
+null (→ park/inbox, never the wrong session). Without that check, agent A's
+inbox-wake (or a force-interrupt) would inject into agent B's live session — the
+third member of the cross-agent-wake-misroute family (EI-152 / EI-153 / EI-151).
+The guard lives in the ONE shared discovery function so it covers both the
+wake-executor's `psu-socket-inject` rung and `turn:interrupt`'s pty-force leg.
+Regression: `psu-pty-discovery.test.ts` "EI-151 … recorded ownerId differs from
+the requested key".
+
+### The second rung: recycled-pid managed-pty inject (EI-151, Channel 1)
+
+The discovery-file check above guards the `psu-socket-inject` rung. The
+wake-executor has an EARLIER rung — Channel 1, `findPty(pid)` — for sessions that
+are one of OUR managed ptys (`/adv`-spawned). It matched on **pid alone**, but
+the OS **recycles a pid** to a *different* agent's live managed pty after a
+session exits uncleanly (its `adv_sessions` row never marked ended). So the
+recorded pid for sleeping agent A could now belong to agent B's live pty, and A's
+wake turn would inject into B's session — the same cross-agent misroute, one rung
+up. Fix: `PtyHandle` captures **`ownerSid`** from `PAPERCUSP_SID` at spawn, and
+`findPtyByPid(pid, ownerSid)` rejects a handle tagged with a foreign owner. An
+**untagged** pty (`ownerSid === null` — a shell pane / legacy spawn) still
+matches, so the guard is never *stricter* than the old pid-only behavior. The
+wake-executor passes `d.subscriberId` (which is also the `PAPERCUSP_SID` it
+stamps on resume), and parks on a cross-owner miss instead of injecting.
+Regression: `pty-bridge.test.ts` "findPtyByPid owner-scoping" +
+`wake-executor-matrix.test.ts` "EI-151 cross-owner pid-reuse". **Lesson:** any
+pid→session routing must be owner-scoped — a pid is not a stable identity.
+
 ## The dual: turn-interrupt — ending a RUNNING peer's turn
 
 Wake re-invokes a *sleeping* agent; **`turn:interrupt`** ends a *running* one's

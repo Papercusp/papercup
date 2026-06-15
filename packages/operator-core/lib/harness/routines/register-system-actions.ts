@@ -197,6 +197,10 @@ import './p2p-perf-actions';
 //  `scout` blueprint. register-scout-action no longer registers anything; the
 //  scout:cycle op lazy-imports productionScoutRunner from it directly.)
 import './session-dir-gc-action';
+// operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
+// reaper — marks dead-process open adv_sessions ended (reclaims roster +
+// unblocks session-dir-gc). Flag-gated DEFAULT-OFF + seeded INACTIVE.
+import './idle-session-reaper-action';
 import './claim-discipline-action';
 import './wake-brain-action';
 import './gym-actions';

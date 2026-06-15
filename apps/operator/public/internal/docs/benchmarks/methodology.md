@@ -442,10 +442,13 @@ the run-result row **and** the rollout card in one transaction, derives `cost_us
 | `model_id` / `harness_version`              | runner  | exact versions                                                                                    |
 | `arm_meta` (jsonb)                          | runner  | per-arm extras (best-of-N `{n, candidates, verifier_tokens}`; fleet/coordination events for MAST) |
 
-The authoritative types live in `@papercusp/bench-metrics/schema` (`TaskRunResult`,
-`P-011`) and `packages/operator-core/lib/external-bench/reproducibility/` (the rollout
+The authoritative types live in `@papercusp/bench-metrics` (`TaskRunResult`, `P-011` —
+`libs/generic/bench-metrics/src/schema.ts`, re-exported from the package root) and
+`packages/operator-core/lib/external-bench/reproducibility/` (the rollout + prereg
+records + `emitRollout`, `P-010`), backed by migration
+`291-benchmark-reproducibility.sql`. The L2 hive layer adds `emitFleetRun` /
+`emitCoordEvents` (`reproducibility/fleet.ts`) and migration
+`292-benchmark-hive-layer.sql`. Sync reads: `evals.suites` + `evals.runs` + `evals.fleet`
 
-* prereg records + `emitRollout`, `P-010`), backed by migration
-  `291-benchmark-reproducibility.sql`. Sync reads: `evals.suites` + `evals.runs`
-  (`P-010`), `evals.report` = pass\@1 / CI / Pareto / delta (`P-011`). This table is the
-  documented contract, kept in sync with that code.
+* `evals.coordTrace` (`P-010`), `evals.report` = pass\@1 / CI / Pareto / delta (`P-011`).
+  This table is the documented contract, kept in sync with that code.
