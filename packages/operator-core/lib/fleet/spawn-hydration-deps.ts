@@ -20,11 +20,12 @@ import type { SpawnHydrationDeps } from './spawn-hydration';
 export function productionSpawnHydrationDeps(): SpawnHydrationDeps {
   return {
     // Predecessor handoff (su-88991): to_feature_id messages + blocked_by
-    // completion summaries + the sliced plan Now/decisions, provenance-framed.
-    // Needs a feature to scope to; without one there is no handoff to gather.
-    getHandoff: ({ harness, featureId, planSlug, workspaceId }) =>
+    // completion summaries + the sliced plan Now/decisions, provenance-framed —
+    // PLUS B2 slot-drain (P-023): @feature/@role parked messages delivered on
+    // spawn. Needs a feature to scope to; without one there is no handoff to gather.
+    getHandoff: ({ harness, featureId, planSlug, workspaceId, role, deliverTo, nowMs }) =>
       featureId
-        ? getSpawnHandoffContext({ harness, featureId, planSlug, workspaceId })
+        ? getSpawnHandoffContext({ harness, featureId, planSlug, workspaceId, role, deliverTo, nowMs })
         : Promise.resolve(null),
     // Hive-roster snapshot (su-2ab53), rendered to the trusted `### Hive peers` body.
     getRoster: async ({ harness, workspaceId }) =>

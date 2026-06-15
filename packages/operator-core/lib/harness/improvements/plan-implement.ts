@@ -49,13 +49,17 @@ export interface ImplementRunInput {
   maxPerRun: number;
   /** Max dispatch attempts per item before it is human-only (close-loop D-001). */
   maxAttempts?: number;
+  /** P-032: the lane is in a fleet credential/env outage (recent workers dying on
+   *  rate-limit/auth) — PAUSE dispatching rather than burn dispatches on instantly-
+   *  dying workers. Computed by the action from the dispatch ledger (laneInEnvOutage). */
+  laneEnvOutage?: boolean;
   /** Claim freshness window for the in-flight skip (close-loop D-001). */
   staleClaimMs?: number;
   policy?: RiskTierPolicy;
   nowMs?: number;
 }
 
-export type ImplementAction = 'disabled' | 'noop' | 'no-runner' | 'dispatch';
+export type ImplementAction = 'disabled' | 'paused' | 'noop' | 'no-runner' | 'dispatch';
 
 export interface ImplementRunPlan {
   action: ImplementAction;
@@ -115,6 +119,24 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
       message:
         `auto-implement is OFF (default) — ${auto.length} auto-eligible bug(s) waiting. ` +
         `Flip the papercusp-improvement-auto-implement flag (and configure a runner harness) to enable.`,
+    };
+  }
+  // P-032: fleet credential/env outage — PAUSE the lane (don't dispatch workers that
+  // would die instantly on rate-limit/auth + generate orphan noise). The exhausted-flip
+  // still runs above (env deaths don't charge attempts, EI-406, so attemptsExhausted are
+  // genuine non-env exhaustions). The lane auto-resumes when env-failures age out of the
+  // detection window (the action probes recovery on the next clean tick).
+  if (input.laneEnvOutage) {
+    return {
+      action: 'paused',
+      candidates: [],
+      autoEligibleCount: auto.length,
+      inFlightCount,
+      attemptsExhaustedCount,
+      attemptsExhausted,
+      message:
+        `lane PAUSED — fleet credential/env outage (recent workers dying on rate-limit/auth); ` +
+        `holding ${dispatchable.length} dispatchable bug(s) until the env recovers (P-032)`,
     };
   }
   if (dispatchable.length === 0) {

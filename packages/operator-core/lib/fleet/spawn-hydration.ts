@@ -65,12 +65,20 @@ export interface SpawnHandoffContext {
 }
 
 export interface SpawnHydrationDeps {
-  /** Predecessor handoff (su-88991). Absent ⇒ no handoff section (degrades, never throws). */
+  /** Predecessor handoff (su-88991) + B2 slot-drain (P-023). Absent ⇒ no handoff
+   *  section (degrades, never throws). */
   getHandoff?: (q: {
     harness: string;
     featureId?: string;
     planSlug?: string;
     workspaceId?: string;
+    /** B2 (P-023): the spawnee's role, to drain @role:<role> slot messages. */
+    role?: string;
+    /** B2 (P-023): the spawnee ownerId — drains @feature/@role slot messages for
+     *  it (recorded delivered_to). Slot draining only fires when present. */
+    deliverTo?: string;
+    /** Injected clock for the slot-drain expiry cutoff. */
+    nowMs?: number;
   }) => Promise<SpawnHandoffContext | null>;
   /** A bounded hive-roster snapshot string (su-2ab53's listHiveRoster, rendered). */
   getRoster?: (q: { harness: string; ownerId?: string; workspaceId?: string }) => Promise<string | null>;
@@ -89,6 +97,10 @@ export interface SpawnHydrationInput {
   workItemId?: string;
   workspaceId?: string;
   ownerId?: string;
+  /** The spawnee's role — drains @role:<role> slot messages (B2, P-023). */
+  role?: string;
+  /** Injected clock for the slot-drain expiry cutoff (tests pass fixed). */
+  nowMs?: number;
   /** Total char budget for the assembled `## Handoff` block (P-013). Default 4000. */
   maxChars?: number;
   deps?: SpawnHydrationDeps;
@@ -121,7 +133,7 @@ function clampRaw(s: string, max: number): { text: string; truncated: boolean } 
  * gathered, so the caller can omit the section entirely (never an empty heading).
  */
 export async function assembleSpawnHydration(input: SpawnHydrationInput): Promise<SpawnHydrationResult> {
-  const { harness, featureId, planSlug, workItemId, workspaceId, ownerId } = input;
+  const { harness, featureId, planSlug, workItemId, workspaceId, ownerId, role, nowMs } = input;
   const maxChars = input.maxChars ?? DEFAULT_MAX_CHARS;
   const log = input.log ?? (() => {});
   const deps = input.deps ?? {};
@@ -138,7 +150,11 @@ export async function assembleSpawnHydration(input: SpawnHydrationInput): Promis
   };
 
   const [handoff, roster, checkpoint] = await Promise.all([
-    safe('handoff', deps.getHandoff && (() => deps.getHandoff!({ harness, featureId, planSlug, workspaceId }))),
+    safe(
+      'handoff',
+      deps.getHandoff &&
+        (() => deps.getHandoff!({ harness, featureId, planSlug, workspaceId, role, deliverTo: ownerId, nowMs })),
+    ),
     safe('roster', deps.getRoster && (() => deps.getRoster!({ harness, ownerId, workspaceId }))),
     safe(
       'checkpoint',

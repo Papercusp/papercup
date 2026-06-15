@@ -801,6 +801,10 @@ export async function spawnAgentInHarness(
         workItemId: input.featureId ?? input.itemId ?? undefined,
         workspaceId: input.workspaceId,
         ownerId: spawnId,
+        // B2 deliver-on-spawn (P-023): role drives @role:<role> slot draining;
+        // ownerId is the delivered_to. nowMs is the drain expiry cutoff.
+        role,
+        nowMs: Date.now(),
         deps: productionSpawnHydrationDeps(),
         log: (m) => console.log(`[operator-spawn] ${spawnId} ${m}`),
       });

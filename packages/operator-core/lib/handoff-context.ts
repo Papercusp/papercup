@@ -25,11 +25,14 @@
  * per source: a throwing source degrades to [] / null, never the whole seam.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { wrapUntrusted } from '@papercusp/orchestrator/prompt-build';
 import { getFeatureBlockers } from './dbos/feature-blockers-edges';
 import { getWorkItem } from './work-items';
 import { isAutoPickable, loadTrustedGithubUserIds } from './work-items-admission';
 import { getPlanContextBySlug } from './plan-context-for-feature';
+import { drainSlotMessages } from './agent-tools/coordination/slot-parked-store';
+import type { SlotSelector } from './agent-tools/coordination/slot-selector';
 import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
 // Contract types are owned by the P-021 seam (su-7b271, D-004) — import them as
 // the single source of truth so producer + consumer never drift. Re-exported
@@ -139,6 +142,14 @@ export async function getSpawnHandoffContext(opts: {
   featureId: string;
   planSlug?: string;
   workspaceId?: string;
+  /** B2 deliver-on-spawn (P-023): the spawnee's role, to drain @role:<role> slot
+   *  messages alongside @feature:<featureId>. */
+  role?: string;
+  /** B2 (P-023): the spawnee ownerId recorded as the parked rows' delivered_to.
+   *  Slot draining only happens when present (the autonomous spawn path). */
+  deliverTo?: string;
+  /** Injected clock for the slot-drain expiry cutoff (tests pass fixed). */
+  nowMs?: number;
 }): Promise<SpawnHandoffContext> {
   const { harness, featureId } = opts;
   const workspaceId = opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
@@ -208,6 +219,62 @@ export async function getSpawnHandoffContext(opts: {
     truncated = truncated || framed.truncated;
   } catch {
     messages = [];
+  }
+
+  // ── slot-parked messages: B2 deliver-on-spawn (P-023) ─────────────────────
+  //    A coord:send addressed to a SLOT this spawnee fills (@feature / @role)
+  //    that had no agent yet was PARKED (slot-parked-store, P-025); drain the
+  //    matching rows EXACTLY ONCE so they land in the SAME `## Handoff` block
+  //    (built into the seam, not a separate path). PROVENANCE (P-022): a
+  //    FEDERATED envelope (harness_slug set) may carry remote-authored content →
+  //    framed UNTRUSTED. This is a conservative over-approximation — a local
+  //    sender on a shared harness is also wrapped — but that is the SAFE
+  //    direction (a false-positive wrap is harmless; a false-negative raw-inject
+  //    of remote content is the injection hole). A non-federated local envelope
+  //    is trusted/raw. Drains only with a deliverTo (the recorded delivered_to)
+  //    — the autonomous spawn path; fail-soft so a drain failure never breaks the
+  //    gather. Unfilled slots are dropped VISIBLY by expireStaleSlotMessages (P-025).
+  if (opts.deliverTo) {
+    try {
+      const slots: SlotSelector[] = [];
+      if (featureId) slots.push({ kind: 'feature', ref: featureId });
+      if (opts.role) slots.push({ kind: 'role', ref: opts.role });
+      if (slots.length > 0) {
+        const { sql } = getOrgPg();
+        const nowMs = opts.nowMs ?? Date.now();
+        const raw: RawHandoffEntry[] = [];
+        for (const slot of slots) {
+          const drained: CoordEnvelope[] = await drainSlotMessages(sql, {
+            slot,
+            harnessSlug: harness,
+            toOwner: opts.deliverTo,
+            nowMs,
+          }).catch(() => []);
+          for (const env of drained) {
+            const subject = (env.summary ?? '').trim();
+            const ebody = (env.body ?? '').trim();
+            const text = `[@${slot.kind}:${slot.ref}] ${subject}${ebody ? `\n${ebody}` : ''}`;
+            raw.push({
+              kind: 'message',
+              ...(env.from ? { author: env.from } : {}),
+              // Conservative: federated ⇒ remote (wrapped); local-scope ⇒ raw.
+              origin: env.harness_slug ? 'remote' : 'local',
+              auditVerdict: null,
+              verifiedAuthorGithubUserId: null,
+              rawBody: text,
+              ts: toMs(env.ts),
+            });
+          }
+        }
+        if (raw.length > 0) {
+          const framed = frameHandoffEntries(raw, trustedSet);
+          messages = [...messages, ...framed.entries];
+          truncated = truncated || framed.truncated;
+        }
+      }
+    } catch {
+      /* fail-soft: slot drain never breaks the gather */
+    }
   }
 
   // ── planSlice: the source plan's Now + recent decisions (local/trusted) ───

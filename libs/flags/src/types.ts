@@ -169,6 +169,13 @@ export const FLAGS = {
   // as the sibling AUTHORITY_RPC_PROTOMUX). OFF = no snapshot ops produced, cursor
   // seeds at 0 — byte-identical to today. Listed in KNOWN_DARK_FLAGS.
   SUBSTRATE_LOG_SNAPSHOT: "papercusp-substrate-log-snapshot",
+  // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
+  // reaper. When ON, a periodic sweep marks DEAD-process open adv_sessions ended
+  // (owner stopped heartbeating past the liveness grace), reclaiming the live
+  // roster + unblocking session-dir-gc for them. DEFAULT OFF until proven on the
+  // fleet (it ends session rows). Slice 1 only touches already-dead sessions; it
+  // never terminates a live process (that's the follow-on slice).
+  IDLE_SESSION_REAPER: "papercusp-idle-session-reaper",
   // EI-316 (hive completion split-brain): when ON, work_items:create refuses a
   // title that embeds an existing OPEN work-item id (the "WI-118: …" mirror
   // signal) — the creator must work the given id, not fork a duplicate it then
@@ -661,6 +668,8 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // -2026-06-13 D-008: a fresh joiner converged with contiguousLength=0 vs the
   // from-start reader's full 4602 over real NAT/WAN/holepunch). P-008 gate cleared.
   [FLAGS.SUBSTRATE_LOG_SNAPSHOT]: true,
+  // DEFAULT OFF — P-011 idle-session reaper ends adv_session rows; off until proven on the fleet.
+  [FLAGS.IDLE_SESSION_REAPER]: false,
   // ON by default (alpha flags-default-on policy + EI-316 correctness fix): the
   // guard fires only on a title that embeds an id resolving to a live OPEN
   // work-item — a near-zero-false-positive signal — and force:true is the

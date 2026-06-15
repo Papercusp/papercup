@@ -50,6 +50,33 @@ describe('planImplementRun — safety gates', () => {
   });
 });
 
+describe('planImplementRun — lane env-outage pause (P-032)', () => {
+  it('flag ON + runner + dispatchable but laneEnvOutage → paused, dispatches nothing', () => {
+    const p = planImplementRun({ items: bugs, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 5, laneEnvOutage: true });
+    expect(p.action).toBe('paused');
+    expect(p.candidates).toEqual([]);
+    expect(p.message).toMatch(/env outage/i);
+    expect(p.autoEligibleCount).toBe(2); // still reports the held work
+  });
+
+  it('laneEnvOutage false (and the default) still dispatches normally', () => {
+    expect(planImplementRun({ items: bugs, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 5, laneEnvOutage: false }).action).toBe('dispatch');
+    expect(planImplementRun({ items: bugs, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 5 }).action).toBe('dispatch');
+  });
+
+  it('a DISARMED lane in an env-outage still reports disabled (the flag check wins)', () => {
+    const p = planImplementRun({ items: bugs, flagEnabled: false, runnerHarness: 'runner', maxPerRun: 5, laneEnvOutage: true });
+    expect(p.action).toBe('disabled');
+  });
+
+  it('paused still surfaces attemptsExhausted so the routine flips strays to human (EI-406: env deaths don\'t charge attempts)', () => {
+    const items = [cand({ id: 'B1' }), cand({ id: 'X1', attempts: 3 })]; // X1 genuinely exhausted (non-env)
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 5, laneEnvOutage: true });
+    expect(p.action).toBe('paused');
+    expect(p.attemptsExhausted.map((s) => s.id)).toEqual(['X1']);
+  });
+});
+
 describe('planImplementRun — close-loop anti-re-dispatch guards (close-loop D-001)', () => {
   const NOW = Date.parse('2026-06-05T12:00:00Z');
 

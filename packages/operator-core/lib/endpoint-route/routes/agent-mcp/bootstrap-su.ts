@@ -160,6 +160,48 @@ export async function resolveBrainHiveSlug(
   }
 }
 
+/**
+ * Append the precomputed Queen wake brief to a brain launch's prompt text
+ * (queen-interactive-brain-fresh-context P-002) so the interactive Queen opens
+ * already-briefed — the SAME computeQueenWakeBrief the autonomous wakes inject,
+ * reused not forked. Gated by FLAGS.QUEEN_BRAIN_FRESH; fail-soft on EVERY path
+ * (flag off / no started hive / no brief / any throw → the promptText unchanged,
+ * i.e. a fresh session with just the su launch-context — still better than a
+ * resumed transcript). Exported so the injection unit-tests without the POST handler.
+ */
+export async function maybeAppendBrainBrief(
+  promptText: string,
+  opts: { workspace: string; harnessSlug: string | null },
+): Promise<string> {
+  try {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    if (!(await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system'))) return promptText;
+    const hiveSlug = await resolveBrainHiveSlug(opts.workspace, opts.harnessSlug);
+    if (!hiveSlug) return promptText;
+    const { computeQueenWakeBrief } = await import('../../../hive/queen-brief-launch');
+    const brief = await computeQueenWakeBrief(opts.workspace, hiveSlug, { wokeBy: 'interactive-brain' });
+    return brief ? `${promptText}\n\n${brief}` : promptText;
+  } catch {
+    return promptText;
+  }
+}
+
+/**
+ * The brain pin `psu --brain` reads back (queen-interactive-brain-fresh-context
+ * P-003): under FLAGS.QUEEN_BRAIN_FRESH report NO pin (null) so every dock-open
+ * takes the fresh mint-launch path (the POST injects the Queen brief); flag OFF →
+ * the persistent D-013 pinned session. Exported so the flag branch unit-tests
+ * without the route's auth machinery.
+ */
+export async function resolveBrainPin(): Promise<string | null> {
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  if (await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system')) return null;
+  const { getBrainSession } = await import('../../../brain-pin');
+  return getBrainSession();
+}
+
 const brainGet = defineTool({
   method: 'GET',
   path: '/agent-mcp/console/bootstrap-su/brain',
@@ -168,16 +210,7 @@ const brainGet = defineTool({
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
     try {
-      // queen-interactive-brain-fresh-context P-003: when fresh-context is ON,
-      // report NO pin so `psu --brain` always takes its fresh mint-launch path
-      // (the POST injects the Queen brief). OFF → resume the pinned D-013 brain.
-      const { getFlag } = await import('@papercusp/flags/server');
-      const { FLAGS } = await import('@papercusp/flags');
-      if (await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system')) {
-        return jsonRes({ brainSessionId: null });
-      }
-      const { getBrainSession } = await import('../../../brain-pin');
-      return jsonRes({ brainSessionId: await getBrainSession() });
+      return jsonRes({ brainSessionId: await resolveBrainPin() });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: `brain pin read failed: ${e?.message ?? e}` }, 500);
     }

@@ -38,7 +38,8 @@ import { buildLaunchSpawnRequest } from '../../blueprint/launch-blueprint';
 import type { DurableSpawnFireInput } from '../../dbos/durable-spawn';
 import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
-import { recordDispatchFired, recordFireResult } from '../improvements/dispatch-ledger';
+import { readRecentDispatches, recordDispatchFired, recordFireResult } from '../improvements/dispatch-ledger';
+import { laneInEnvOutage } from '../improvements/orphaned-dispatch';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
 import { routeExhaustedImprovementToHuman } from '../improvements/resolve-core';
 import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
@@ -408,7 +409,23 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
       ? intFromEnv('PAPERCUSP_IMPROVEMENT_MAX_ATTEMPTS', 0, { min: 0 })
       : undefined;
 
-  const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts });
+  // P-032: PAUSE the lane during a fleet credential/env outage so it stops dispatching
+  // workers that die instantly on rate-limit/auth (and stops generating orphan noise —
+  // the capture side already suppresses it, P-010). Reuses laneInEnvOutage over the recent
+  // dispatch ledger, with a tighter window than the capture side so the lane probes recovery
+  // as soon as env deaths age out. Only when armed; a ledger-read failure ⇒ treat as no outage.
+  let laneEnvOutage = false;
+  if (flagEnabled) {
+    try {
+      const windowMs = intFromEnv('PAPERCUSP_IMPROVEMENT_ENV_PAUSE_WINDOW_MS', 90 * 60_000, { min: 60_000 });
+      const recent = await readRecentDispatches(ctx.workspaceId, { limit: 50 });
+      laneEnvOutage = laneInEnvOutage(recent, { nowMs: Date.now(), windowMs });
+    } catch (e) {
+      console.warn('[improvement-implement] env-outage pause check skipped (ledger read failed):', e instanceof Error ? e.message : e);
+    }
+  }
+
+  const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts, laneEnvOutage });
 
   // Exhausted-without-resolve ⇒ needs-human (consume-edges P-012): an item whose
   // dispatch attempts exhausted with no improvements:resolve ever recorded (silent
