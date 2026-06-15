@@ -60,6 +60,30 @@ export interface RawHandoffEntry {
   ts: number;
 }
 
+/**
+ * PURE map of a drained slot-parked envelope (B2, P-023) to the pre-classification
+ * RawHandoffEntry the framer consumes. PROVENANCE (P-022): a FEDERATED envelope
+ * (harness_slug set) may carry remote-authored content → classified `remote` so
+ * frameHandoffEntries wraps it in the untrusted frame; a non-federated local-scope
+ * envelope is `local` → raw. Conservative: a local sender on a shared harness is
+ * over-wrapped (the SAFE direction — a false-positive wrap is harmless, a
+ * raw-injected remote body is the injection hole). Unit-testable without PG.
+ */
+export function slotEnvelopeToRawEntry(env: CoordEnvelope, slot: SlotSelector): RawHandoffEntry {
+  const subject = (env.summary ?? '').trim();
+  const ebody = (env.body ?? '').trim();
+  const text = `[@${slot.kind}:${slot.ref}] ${subject}${ebody ? `\n${ebody}` : ''}`;
+  return {
+    kind: 'message',
+    ...(env.from ? { author: env.from } : {}),
+    origin: env.harness_slug ? 'remote' : 'local',
+    auditVerdict: null,
+    verifiedAuthorGithubUserId: null,
+    rawBody: text,
+    ts: toMs(env.ts),
+  };
+}
+
 function capBody(body: string, cap: number): { text: string; truncated: boolean } {
   const b = body ?? '';
   if (b.length <= cap) return { text: b, truncated: false };
@@ -250,21 +274,7 @@ export async function getSpawnHandoffContext(opts: {
             toOwner: opts.deliverTo,
             nowMs,
           }).catch(() => []);
-          for (const env of drained) {
-            const subject = (env.summary ?? '').trim();
-            const ebody = (env.body ?? '').trim();
-            const text = `[@${slot.kind}:${slot.ref}] ${subject}${ebody ? `\n${ebody}` : ''}`;
-            raw.push({
-              kind: 'message',
-              ...(env.from ? { author: env.from } : {}),
-              // Conservative: federated ⇒ remote (wrapped); local-scope ⇒ raw.
-              origin: env.harness_slug ? 'remote' : 'local',
-              auditVerdict: null,
-              verifiedAuthorGithubUserId: null,
-              rawBody: text,
-              ts: toMs(env.ts),
-            });
-          }
+          for (const env of drained) raw.push(slotEnvelopeToRawEntry(env, slot));
         }
         if (raw.length > 0) {
           const framed = frameHandoffEntries(raw, trustedSet);

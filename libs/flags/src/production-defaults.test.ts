@@ -46,6 +46,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // captured improvements only begins once the owner flips it (capture +
   // triage run regardless).
   FLAGS.IMPROVEMENT_AUTO_IMPLEMENT,
+  // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
+  // reaper ENDS adv_session rows — DARK until proven on the fleet. OFF ⇒ a no-op;
+  // the routine is also seeded INACTIVE. Bring-up: --active --dry-run, then flip.
+  FLAGS.IDLE_SESSION_REAPER,
   // hive-inference-gateway P-012: DELIBERATE dark ship — enabling reroutes
   // every bee's inference auth through a gateway service that must be
   // deployed first; flipping early would break the whole fleet's auth.

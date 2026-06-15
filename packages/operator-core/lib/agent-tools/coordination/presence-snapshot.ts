@@ -22,6 +22,7 @@ import { listFederatedPresence } from './federated-presence';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
 import { toStableRosterRow } from './presence-payload';
 import { writeWatermark } from './watermarks';
+import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
 import type { Watermark } from '@papercusp/coordination/core';
 
 /** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
@@ -102,7 +103,7 @@ export async function resolvePresenceScope(
  */
 export async function assemblePresenceSnapshot(
   resolved: ResolvedPresenceScope,
-  opts: { includeStale?: boolean; nowMs?: number } = {},
+  opts: { includeStale?: boolean; nowMs?: number; detail?: { coordinationDomain: string } } = {},
 ): Promise<PresenceSnapshot> {
   const { wsId, hiveId, scope, scopeNote } = resolved;
   const [records, federated] = await Promise.all([
@@ -114,25 +115,80 @@ export async function assemblePresenceSnapshot(
   const active = all.filter((r) => !r.stale);
   const stale = all.filter((r) => r.stale);
   const now = opts.nowMs ?? Date.now();
+  const localIds = active
+    .filter((r) => !(r as { federated?: boolean }).federated)
+    .map((r) => r.ownerId);
   let joins = new Map<string, PresenceTier1Joins>();
   try {
-    const localIds = active
-      .filter((r) => !(r as { federated?: boolean }).federated)
-      .map((r) => r.ownerId);
     joins = await fetchPresenceTier1(localIds);
   } catch {
     /* best-effort enrichment — presence must list even if a join fails */
   }
   const activeEnriched = mergeTier1(active, joins, now);
+  let activeRows = activeEnriched.map(toStableRosterRow);
+
+  // P-011 include_detail: the heavy Tier-2/3 field — held files — lives in the
+  // SEPARATE papercusp_su lock DB, so it is fetched ONLY when asked (opt-in,
+  // fail-soft) and merged onto the lean rows; never on the default read path
+  // (the lean default stays the org-PG-only Tier-1, P-003). Await/handoff/
+  // escalation detail keeps its dedicated tools (events:* / coord:inbox) rather
+  // than being duplicated into this org-PG read.
+  if (opts.detail) {
+    const held = await fetchPresenceHeldFiles(localIds, opts.detail.coordinationDomain);
+    activeRows = activeRows.map((r) => {
+      const files = held.get(r.ownerId as string);
+      return files && files.length ? { ...r, heldFiles: files } : r;
+    });
+  }
+
   return {
     as_of: new Date(now).toISOString(),
     scope,
     ...(hiveId ? { hive: hiveId } : {}),
     ...(scopeNote ? { scope_note: scopeNote } : {}),
     summary: { active: active.length, stale: stale.length, federated: federated.length },
-    active: activeEnriched.map(toStableRosterRow),
+    active: activeRows,
     ...(opts.includeStale ? { stale: stale.map(toStableRosterRow) } : {}),
   };
+}
+
+/**
+ * Pure: group granular (file) lock holders into per-owner held-file lists,
+ * restricted to the roster's ownerIds. Root-node ('') holds are skipped (they
+ * are tree-wide intents, not a file), and each list is sorted for byte-stability.
+ */
+export function groupHeldFilesByOwner(
+  holders: Array<{ owner: string; node: string }>,
+  ownerIds: Set<string>,
+): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const h of holders) {
+    if (!ownerIds.has(h.owner) || !h.node) continue;
+    const arr = out.get(h.owner) ?? [];
+    arr.push(h.node);
+    out.set(h.owner, arr);
+  }
+  for (const [k, v] of out) out.set(k, v.sort());
+  return out;
+}
+
+/**
+ * IO seam (P-011 / include_detail): read the live file-lock holders from the SU
+ * lock store (the SEPARATE papercusp_su DB) and group them per owner. Fail-soft
+ * → empty map: presence must render even if that store is unreachable, and this
+ * cross-DB query is OPT-IN (only under include_detail), never on the lean path.
+ */
+export async function fetchPresenceHeldFiles(
+  ownerIds: string[],
+  coordinationDomain: string,
+): Promise<Map<string, string[]>> {
+  if (ownerIds.length === 0) return new Map();
+  try {
+    const holders = await readGranularHolders(getTxPool(), coordinationDomain);
+    return groupHeldFilesByOwner(holders, new Set(ownerIds));
+  } catch {
+    return new Map();
+  }
 }
 
 /**

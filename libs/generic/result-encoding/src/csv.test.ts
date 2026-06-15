@@ -52,9 +52,9 @@ describe('quoteField (RFC 4180)', () => {
     expect(quoteField('a\tb', '\t')).toBe('"a\tb"');
   });
 
-  it('does NOT quote a foreign delimiter (a comma is harmless under TSV)', () => {
-    expect(quoteField('a,b', '\t')).toBe('a,b');
-    expect(quoteField('a\tb', ',')).toBe('"a\tb"'); // tab still triggers? no — only the active delimiter
+  it('does NOT quote a foreign delimiter (only the active delimiter matters)', () => {
+    expect(quoteField('a,b', '\t')).toBe('a,b'); // a comma is harmless under TSV
+    expect(quoteField('a\tb', ',')).toBe('a\tb'); // a tab is harmless under CSV
   });
 
   it('quotes and DOUBLES embedded double-quotes', () => {

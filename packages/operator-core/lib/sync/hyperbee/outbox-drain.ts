@@ -30,6 +30,17 @@
 import type postgres from 'postgres';
 import type { BootedHarnessHandle } from './boot';
 import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
+import { recordLocalWrite } from './clobber-events';
+
+/**
+ * The projection tableTag for federated plans (harness-plans.ts:199 — the value
+ * `outboxRowToLocalWriteOp` maps `harness_plans` to). The CDC drain records a
+ * LOCAL write for plan ops so a later REMOTE plan op for the same plan_slug can be
+ * detected as a clobber (shared-hive-collaboration P-007). Scoped to plans: the
+ * other CDC tables (features/issues) have no clobber surface, and `writerPubkey`
+ * threading would entangle author-provenance — out of P-007's scope.
+ */
+const PLAN_TABLE_TAG = 'plans-by-slug';
 
 /** Unmapped outbox table_names already logged (dedupe the forward-compat skip
  *  warning so an undrained unknown row doesn't spam the log every drain pass). */
@@ -186,6 +197,20 @@ export async function drainOutboxOnce(
     // AT-LEAST-ONCE: append FIRST. If this throws we stop here, leaving this
     // row + all later rows undrained for the next pass to re-attempt.
     await handle.append(op);
+
+    // P-007: record this LOCAL plan write so a racing REMOTE plan op for the same
+    // plan_slug is detected as a clobber (harness-plans.ts writeToPg fires
+    // observeMergedOp on remote apply). Keyed by the device's own log key — a
+    // remote op's receiver-stamped source key never equals it, so it never
+    // self-clobbers. Plans only (see PLAN_TABLE_TAG). Best-effort: an in-memory
+    // tracker write must never break federation.
+    if (op.table === PLAN_TABLE_TAG) {
+      try {
+        recordLocalWrite({ table: op.table, hbKey: op.hbKey, ts: op.ts, pubkey: handle.ownLog.keyHex });
+      } catch {
+        // tracker is pure in-process bookkeeping; ignore.
+      }
+    }
 
     // Local subscribe→inject fan-out on the SAME row (Phase 2). BEST-EFFORT and
     // federation-safe: a fan-out failure is logged but must NOT stall federation

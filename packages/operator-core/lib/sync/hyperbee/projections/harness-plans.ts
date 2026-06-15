@@ -21,6 +21,33 @@ import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { observeMergedOp } from '../clobber-events';
+
+/**
+ * P-007 — clobber detection for plans. A REMOTE plan apply (origin='remote')
+ * reports the merged op to the clobber tracker; if this device made a LOCAL write
+ * to the same plan_slug within the 60s window (recorded by the CDC drain,
+ * outbox-drain.ts), it fires a `clobber` event so the user is told "your edit
+ * raced X's" instead of losing it silently. The pubkey is the receiver-stamped,
+ * unforgeable source identity (provenance.authorPubkey = sourceLogKeyHex, D-004) —
+ * never the local own-log key, so a remote apply never self-clobbers. No-op for a
+ * local apply or a provenance-less (legacy) op. Pure tracker call; never throws
+ * into the projection loop.
+ */
+function flagPlanClobber(planSlug: string, provenance?: ProvenanceContext): void {
+  if (!provenance || provenance.origin !== 'remote' || !planSlug) return;
+  if (!provenance.authorPubkey || typeof provenance.ts !== 'number') return;
+  try {
+    observeMergedOp({
+      table: 'plans-by-slug',
+      hbKey: planSlug,
+      ts: provenance.ts,
+      pubkey: provenance.authorPubkey,
+    });
+  } catch {
+    // clobber detection is best-effort observability — never break federation.
+  }
+}
 
 /**
  * Wire-shape of a plan row in Hyperbee — the federated subset of harness_plans.
@@ -135,6 +162,7 @@ async function writeToPg(
          ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs})
       ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
     `;
+    flagPlanClobber(row.plan_slug, provenance);
     return;
   }
   // workspace_id is the LOCAL projection's bound workspace (not the sender's) —

@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
+import { readIdentity } from '../../locks/identity';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -47,6 +48,10 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Also return the full stale roster (default false — stale is summarised only; the live answer is `active`).'),
+    include_detail: z
+      .boolean()
+      .optional()
+      .describe('P-011 Tier-2/3 detail: add each agent\'s `heldFiles` (its live file-lock nodes, read from the separate papercusp_su lock DB — opt-in + fail-soft). Off by default; the lean roster already carries the Tier-1 scalars.'),
   }),
   async handler(args, ctx) {
     // P-004 hive-scoped read (D-002): resolve the effective scope from ctx + args
