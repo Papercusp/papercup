@@ -22,7 +22,11 @@ vi.mock('../operator-state-pg', () => ({
 import { matchReactions, _resetReactionsForTests } from '../events/registry';
 import type { ToolInvocationEvent } from '../events/types';
 import { readHiveWakeState, setHiveEventSubscriptions } from './wake';
-import { armDefaultHiveWakeSubscriptions, defaultHiveEventSubscriptions } from './wake-defaults';
+import {
+  armDefaultHiveWakeSubscriptions,
+  blueprintWakeSubscriptions,
+  defaultHiveEventSubscriptions,
+} from './wake-defaults';
 
 const WS = 'test-ws';
 
@@ -78,6 +82,38 @@ describe('armDefaultHiveWakeSubscriptions', () => {
     const { added, rules } = await armDefaultHiveWakeSubscriptions(WS, { mode: 'ensure' });
     expect(added).toBe(3);
     expect(rules).toBe(3);
+  });
+});
+
+describe('blueprintWakeSubscriptions (P-013 — blueprint-declared wakes override the defaults)', () => {
+  it('returns undefined when the blueprint declares no wake (→ caller uses the built-in three)', () => {
+    expect(blueprintWakeSubscriptions(undefined)).toBeUndefined();
+    expect(blueprintWakeSubscriptions({})).toBeUndefined();
+    expect(blueprintWakeSubscriptions({ subscriptions: [] })).toBeUndefined();
+  });
+
+  it('maps declared { on, note } subscriptions verbatim', () => {
+    expect(
+      blueprintWakeSubscriptions({ subscriptions: [{ on: 'release:green', note: 'ship wake' }, { on: 'plans:start' }] }),
+    ).toEqual([{ on: 'release:green', note: 'ship wake' }, { on: 'plans:start' }]);
+  });
+
+  it("'replace' with blueprint subscriptions arms THOSE, not the built-in three", async () => {
+    const subs = blueprintWakeSubscriptions({ subscriptions: [{ on: 'release:green', note: 'ship' }] });
+    const { rules, added } = await armDefaultHiveWakeSubscriptions(WS, { mode: 'replace', subscriptions: subs });
+    expect(rules).toBe(1);
+    expect(added).toBe(1);
+    expect((await readHiveWakeState(WS)).subscriptions.map((s) => s.on)).toEqual(['release:green']);
+  });
+
+  it("'replace' with no blueprint subscriptions falls back to the built-in three (coding hive unchanged)", async () => {
+    const { rules } = await armDefaultHiveWakeSubscriptions(WS, { mode: 'replace', subscriptions: undefined });
+    expect(rules).toBe(3);
+    expect((await readHiveWakeState(WS)).subscriptions.map((s) => s.on)).toEqual([
+      'plans:start',
+      'work_items:create',
+      'coord:escalate',
+    ]);
   });
 });
 

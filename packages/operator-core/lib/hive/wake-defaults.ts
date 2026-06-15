@@ -21,6 +21,25 @@ import {
   type HiveEventSubscription,
 } from './wake';
 
+/**
+ * Map a blueprint's declared `wake.subscriptions` ({ on, note }) into runtime
+ * HiveEventSubscriptions (hive-blueprint-generalization P-013). Returns `undefined`
+ * when the blueprint declares none, so the caller falls back to the built-in
+ * `defaultHiveEventSubscriptions()` — a hive that declares no `wake` (today's coding
+ * hive AND generic-hive) is therefore byte-identical to before. A future hive can
+ * declare its own demand wakes in its blueprint instead of the universal three.
+ * (The blueprint schema's subscription is coarser than the built-in — no `when`
+ * filter — so a declared sub wakes on every emit of `on`; the built-ins keep their
+ * result-gates.)
+ */
+export function blueprintWakeSubscriptions(
+  wake: { subscriptions?: Array<{ on: string; note?: string }> } | undefined,
+): HiveEventSubscription[] | undefined {
+  const subs = wake?.subscriptions ?? [];
+  if (subs.length === 0) return undefined;
+  return subs.map((s) => ({ on: s.on, ...(s.note ? { note: s.note } : {}) }));
+}
+
 /** The three default demand subscriptions (fresh array each call — callers may mutate). */
 export function defaultHiveEventSubscriptions(): HiveEventSubscription[] {
   return [
@@ -60,9 +79,15 @@ const onKeys = (on: string | string[]): string[] => (Array.isArray(on) ? on : [o
  */
 export async function armDefaultHiveWakeSubscriptions(
   workspaceId: string,
-  opts: { mode: 'replace' | 'ensure' },
+  opts: { mode: 'replace' | 'ensure'; subscriptions?: HiveEventSubscription[] },
 ): Promise<{ rules: number; added: number }> {
-  const defaults = defaultHiveEventSubscriptions();
+  // P-013: the blueprint's declared wake.subscriptions WIN over the built-in
+  // universal three; a hive that declares none (the coding hive + generic-hive
+  // today) falls back to the defaults, so behavior is unchanged.
+  const defaults =
+    opts.subscriptions && opts.subscriptions.length > 0
+      ? opts.subscriptions
+      : defaultHiveEventSubscriptions();
   if (opts.mode === 'replace') {
     const rules = await setHiveEventSubscriptions(workspaceId, defaults);
     return { rules, added: defaults.length };

@@ -219,8 +219,16 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     //    REPLACE — a fresh hive has no tuned policy to preserve. Best-effort:
     //    hive:start re-affirms (ENSURE) so a transient failure here self-heals.
     try {
-      const { armDefaultHiveWakeSubscriptions } = await import('../../hive/wake-defaults');
-      await armDefaultHiveWakeSubscriptions(ws, { mode: 'replace' });
+      const { armDefaultHiveWakeSubscriptions, blueprintWakeSubscriptions } = await import(
+        '../../hive/wake-defaults'
+      );
+      // P-013: a hive blueprint may declare its own `wake.subscriptions`; absent
+      // (today's coding hive + generic-hive) → the universal three defaults apply.
+      // REPLACE here is the behavior-determining arm; hive:start's ENSURE preserves it.
+      await armDefaultHiveWakeSubscriptions(ws, {
+        mode: 'replace',
+        subscriptions: blueprintWakeSubscriptions(validation.blueprint.wake),
+      });
     } catch (e) {
       console.warn(
         `[hive:create] default wake-subscription arm failed (${opts.slug}): ${e instanceof Error ? e.message : e}`,
