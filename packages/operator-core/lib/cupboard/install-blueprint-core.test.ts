@@ -189,6 +189,32 @@ describe('installBlueprintFromCupboardCore', () => {
     ).rejects.toThrow(/dependencies unmet: ghost-plugin/);
   });
 
+  it('resolves a spawned-blueprint dep against the built-in/installed tier (P-007)', async () => {
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\ndependencies: { blueprints: ["coding"] }');
+    const result = await installBlueprintFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/neat-bp' },
+      makeDeps({
+        resolveHostSets: async () => ({
+          availableTools: new Set<string>(),
+          installedPlugins: new Set<string>(),
+          cupboardPlugins: new Set<string>(),
+          availableBlueprints: new Set<string>(['coding']),
+          cupboardReachable: true,
+        }),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.dependencies.blueprints).toEqual(['coding']);
+    expect(result.depCheck?.missing.blueprints).toEqual([]);
+  });
+
+  it('hard-fails a spawned-blueprint dep absent from every tier when the Cupboard was reachable (P-007)', async () => {
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\ndependencies: { blueprints: ["ghost-bp"] }');
+    await expect(
+      installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps()),
+    ).rejects.toThrow(/dependencies unmet: ghost-bp/);
+  });
+
   it('does NOT fail missing plugins when the Cupboard was unreachable (transient outage)', async () => {
     await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\ndependencies: { plugins: ["ghost-plugin"] }');
     const res = await installBlueprintFromCupboardCore(

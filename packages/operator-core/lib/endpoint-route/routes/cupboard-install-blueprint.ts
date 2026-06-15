@@ -74,6 +74,43 @@ async function resolveBlueprintListing(
   return { githubUrl, listingRef };
 }
 
+/** Fetch the set of Cupboard blueprint listing refs — the dep-validator's
+ *  `cupboardBlueprints` host set + the spawned-blueprint install closure
+ *  (blueprint-role-bundling P-007). Empty set on any error (offline → conservative). */
+async function fetchCupboardBlueprintIds(): Promise<Set<string>> {
+  try {
+    const base = resolveCupboardBaseUrl();
+    const res = await fetch(`${base}/listings?kind=blueprint&limit=100`, {
+      headers: { 'User-Agent': 'papercusp-operator/1' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const data = (await res.json()) as { results?: Array<Record<string, unknown>> };
+    return new Set(
+      (data.results ?? []).map((l) => (typeof l.listing_ref === 'string' ? l.listing_ref : '')).filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/** Install-core deps (clone + dirs + resolver + host sets), shared by the
+ *  top-level install and the recursive spawned-blueprint closure install so both
+ *  resolve `dependencies.blueprints` against the same built-in/installed/Cupboard
+ *  tiers (blueprint-role-bundling P-007). */
+function makeInstallCoreDeps() {
+  return {
+    cloneRepo: gitCloneShallow,
+    installedBlueprintsDir: INSTALLED_BLUEPRINTS_DIR,
+    tmpDir: tmpdir,
+    resolveExtends: operatorResolveExtends(),
+    resolveHostSets: async () => {
+      const catalog = await derivePackCatalog({});
+      const cupboardBlueprints = await fetchCupboardBlueprintIds();
+      return { ...depHostSetsFromCatalog(catalog), cupboardBlueprints, cupboardReachable: catalog.cupboardReachable };
+    },
+  };
+}
+
 export default defineTool({
   method: 'POST',
   path: '/cupboard/install-blueprint',
@@ -108,21 +145,7 @@ export default defineTool({
     }
 
     try {
-      const result = await installBlueprintFromCupboardCore(
-        { githubUrl, listingRef },
-        {
-          cloneRepo: gitCloneShallow,
-          installedBlueprintsDir: INSTALLED_BLUEPRINTS_DIR,
-          tmpDir: tmpdir,
-          resolveExtends: operatorResolveExtends(),
-          // The pack-catalog host sets (tool-distribution D-002): built-ins +
-          // installed units + Cupboard listings, provider-aware for tools.
-          resolveHostSets: async () => {
-            const catalog = await derivePackCatalog({});
-            return { ...depHostSetsFromCatalog(catalog), cupboardReachable: catalog.cupboardReachable };
-          },
-        },
-      );
+      const result = await installBlueprintFromCupboardCore({ githubUrl, listingRef }, makeInstallCoreDeps());
 
       // D-001's consent-gated plugin fetch: with `installPlugins: true`, install
       // each declared plugin that's resolvable from the Cupboard (not yet
@@ -169,7 +192,39 @@ export default defineTool({
         }
       }
 
-      return Response.json({ ...result, pluginInstalls });
+      // Spawned-blueprint closure (blueprint-role-bundling P-007): a blueprint
+      // declaring `dependencies.blueprints` (e.g. a hive that spins up `coding`)
+      // pulls each declared work-blueprint resolvable from the Cupboard and not
+      // already present — built-ins resolve locally, so only genuinely third-party
+      // deps land here. Best-effort per blueprint — reported, not swallowed.
+      const blueprintInstalls: Array<{ blueprint: string; ok: boolean; error?: string }> = [];
+      const installableBps = result.depCheck?.installable.blueprints ?? [];
+      if (installableBps.length > 0) {
+        const base = resolveCupboardBaseUrl();
+        for (const spec of installableBps) {
+          const { name } = parseDepSpec(spec);
+          try {
+            const res = await fetch(`${base}/listings?kind=blueprint&limit=100`, {
+              headers: { 'User-Agent': 'papercusp-operator/1' },
+              signal: AbortSignal.timeout(10_000),
+            });
+            const data = (await res.json()) as { results?: Array<Record<string, unknown>> };
+            const listing = (data.results ?? []).find((l) => l.listing_ref === name);
+            const url = typeof listing?.github_url === 'string' ? listing.github_url : '';
+            if (!url) throw new Error('no blueprint listing with that ref');
+            await installBlueprintFromCupboardCore({ githubUrl: url, listingRef: name }, makeInstallCoreDeps());
+            blueprintInstalls.push({ blueprint: name, ok: true });
+          } catch (e) {
+            blueprintInstalls.push({
+              blueprint: name,
+              ok: false,
+              error: e instanceof Error ? e.message.slice(0, 200) : String(e),
+            });
+          }
+        }
+      }
+
+      return Response.json({ ...result, pluginInstalls, blueprintInstalls });
     } catch (e) {
       if (e instanceof InstallBlueprintError) {
         return Response.json({ ok: false, error: e.message }, { status: e.status });

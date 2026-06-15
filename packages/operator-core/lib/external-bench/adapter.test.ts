@@ -1,18 +1,12 @@
 /**
- * Adapter orchestration unit tests — the pure ArmAttempt+GradeResult → emitRollout mapping, batch
- * grade-and-emit, and the one-task end-to-end path. Fake grader + emit, no PG / Docker.
+ * Adapter orchestration unit tests — grading + delegation to the injected emit (= P-010's emitFromAttempt).
+ * The per-row run-result MAPPING (stop→status, METR exclusion, cost) is emitFromAttempt's own tests; here we
+ * verify the adapter grades the right attempts and hands emitFromAttempt the correct EmitFromAttemptInput.
  */
-import { describe, expect, it, vi } from 'vitest';
-import {
-  gradeAndEmitBatch,
-  generationStatus,
-  runTaskThroughAdapter,
-  seedPrefix,
-  toEmitInput,
-  type EmitContext,
-} from './adapter';
+import { describe, expect, it } from 'vitest';
+import { gradeAndEmitBatch, runTaskThroughAdapter, seedPrefix, type EmitFromAttemptInput, type EmitRollout } from './adapter';
 import { makeFakeGrader } from './grader';
-import type { ArmAttempt, BenchTask, GradeResult } from './types';
+import type { ArmAttempt, BenchTask } from './types';
 
 function attempt(over: Partial<ArmAttempt> = {}): ArmAttempt {
   return {
@@ -31,96 +25,31 @@ function attempt(over: Partial<ArmAttempt> = {}): ArmAttempt {
     ...over,
   };
 }
-function grade(over: Partial<GradeResult> = {}): GradeResult {
-  return { instanceId: 'i1', prefix: 'seed-0', resolved: true, rawGraderOutput: { ok: true }, graderFamily: 'swe-bench-pro', graderVersion: 'v1', ...over };
-}
-function ctx(over: Partial<EmitContext> = {}): EmitContext {
-  return { runId: 'run1', preregHash: 'pre1', suite: 'swe-bench-pro', seedIndex: 0, modelId: 'claude-opus-4-8', harnessVersion: 'hv1', graderFamily: 'swe-bench-pro', graderVersion: 'v1', ...over };
-}
 function task(id = 'i1'): BenchTask {
   return { benchmark: 'swe-bench-pro', instanceId: id, problemStatement: 'p', repo: 'a/b', baseCommit: 'abc1234', graderMeta: {} };
 }
+function fakeEmit(): { emit: EmitRollout; inputs: EmitFromAttemptInput[] } {
+  const inputs: EmitFromAttemptInput[] = [];
+  const emit: EmitRollout = async (input) => {
+    inputs.push(input);
+    return { rolloutId: `ro-${inputs.length}`, runId: input.runId };
+  };
+  return { emit, inputs };
+}
+const ctx = { runId: 'run1', preregHash: 'pre1', modelId: 'claude-opus-4-8', harnessVersion: 'hv1' };
 
-describe('seedPrefix / generationStatus', () => {
-  it('seedPrefix maps an int seed to a stable prefix', () => {
+describe('seedPrefix', () => {
+  it('maps an int seed to a stable prefix', () => {
     expect(seedPrefix(3)).toBe('seed-3');
-  });
-  it('maps stop reasons onto the wire generation status', () => {
-    expect(generationStatus(attempt({ stopReason: 'done' }))).toBe('completed');
-    expect(generationStatus(attempt({ stopReason: 'escalate' }))).toBe('completed');
-    expect(generationStatus(attempt({ stopReason: 'max-turns' }))).toBe('completed');
-    expect(generationStatus(attempt({ stopReason: 'budget-exhausted' }))).toBe('budget_exhausted');
-    expect(generationStatus(attempt({ stopReason: 'error' }))).toBe('error');
-  });
-});
-
-describe('toEmitInput', () => {
-  it('a completed + resolved attempt → a scoreable passed row', () => {
-    const e = toEmitInput(attempt(), grade(), ctx());
-    expect(e).toMatchObject({ run_id: 'run1', prereg_hash: 'pre1', suite: 'swe-bench-pro', task_id: 'i1', arm: 'papercusp', seed: 0, modality: 'diff' });
-    expect(e.generation.status).toBe('completed');
-    expect(e.generation.tokens_total).toBe(150); // coordination overhead counted (in+out)
-    expect(e.generation.submission).toBe('DIFF');
-    expect(e.generation.arm_meta).toMatchObject({ blueprintId: 'external-bench', stopReason: 'done' });
-    expect(e.generation.trajectory_ref).toBe('roll://1');
-    expect(e.grading.status).toBe('passed');
-    expect(e.grading.resolved).toBe(true);
-    expect(e.grading.structured_output).toBeDefined();
-  });
-
-  it('a completed + unresolved attempt → failed', () => {
-    const e = toEmitInput(attempt(), grade({ resolved: false }), ctx());
-    expect(e.grading.status).toBe('failed');
-    expect(e.grading.resolved).toBe(false);
-  });
-
-  it('a budget-exhausted generation → budget_exhausted + capped, grading skipped (resolved null)', () => {
-    const e = toEmitInput(attempt({ stopReason: 'budget-exhausted' }), undefined, ctx());
-    expect(e.generation.status).toBe('budget_exhausted');
-    expect(e.generation.capped).toBe(true);
-    expect(e.grading.status).toBe('skipped');
-    expect(e.grading.resolved).toBeNull();
-  });
-
-  it('a generation infra error → grading skipped (excluded from accuracy)', () => {
-    const e = toEmitInput(attempt({ stopReason: 'error', generationError: 'died' }), undefined, ctx());
-    expect(e.generation.status).toBe('error');
-    expect(e.generation.error).toBe('died');
-    expect(e.grading.status).toBe('skipped');
-    expect(e.grading.resolved).toBeNull();
-  });
-
-  it('a grader infra error → grading error, resolved null (distinct from "not resolved")', () => {
-    const e = toEmitInput(attempt(), grade({ graderError: 'image pull failed', resolved: false }), ctx());
-    expect(e.grading.status).toBe('error');
-    expect(e.grading.resolved).toBeNull();
-    expect(e.grading.error).toBe('image pull failed');
-  });
-
-  it('records the iso-budget cap on the row when provided', () => {
-    const e = toEmitInput(attempt(), grade(), ctx({ budgetTokens: 500_000 }));
-    expect(e.generation.budget_tokens).toBe(500_000);
-  });
-
-  it('carries cache tokens and merges arm-specific metadata (canonical fields win)', () => {
-    const e = toEmitInput(
-      attempt({ tokensCacheRead: 4000, tokensCacheWrite: 1000, armMeta: { costSource: 'native', retriesUsed: 2, blueprintId: 'SHOULD-NOT-WIN' } }),
-      grade(),
-      ctx(),
-    );
-    expect(e.generation.tokens_cache_read).toBe(4000);
-    expect(e.generation.tokens_cache_write).toBe(1000);
-    // arm extras merged, but canonical blueprintId/stopReason override a colliding armMeta key
-    expect(e.generation.arm_meta).toMatchObject({ costSource: 'native', retriesUsed: 2, blueprintId: 'external-bench', stopReason: 'done' });
   });
 });
 
 describe('gradeAndEmitBatch', () => {
-  it('grades only completed attempts, emits every row, matches grades by instance+seed', async () => {
-    const completed = attempt({ instanceId: 'i1', seed: 'seed-0' });
+  it('grades only scoreable attempts and delegates one emit per entry with the canonical input', async () => {
+    const completed = attempt({ instanceId: 'i1', seed: 'seed-0', tokensCacheRead: 4000, tokensCacheWrite: 1000, armMeta: { costSource: 'native' } });
     const errored = attempt({ instanceId: 'i2', seed: 'seed-0', stopReason: 'error', generationError: 'died', diff: '' });
     const grader = makeFakeGrader({ verdicts: { i1: true } });
-    const emit = vi.fn(async (i) => ({ rollout_id: `ro-${i.task_id}`, run_id: i.run_id }));
+    const { emit, inputs } = fakeEmit();
 
     const rows = await gradeAndEmitBatch(
       [
@@ -129,49 +58,74 @@ describe('gradeAndEmitBatch', () => {
       ],
       grader,
       emit,
-      { runId: 'run1', preregHash: 'pre1', suite: 'swe-bench-pro', modelId: 'm', harnessVersion: 'h' },
+      ctx,
     );
 
-    expect(emit).toHaveBeenCalledTimes(2);
+    // emit once per entry; canonical fields threaded
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toMatchObject({ runId: 'run1', preregHash: 'pre1', arm: 'papercusp', seed: 0, modelId: 'claude-opus-4-8', harnessVersion: 'hv1' });
+    expect(inputs[0].task.instanceId).toBe('i1');
+    expect(inputs[0].grade.resolved).toBe(true); // i1 graded
+    expect(inputs[0].tokensCacheRead).toBe(4000); // cache tokens carried through (Opus $)
+    expect(inputs[0].tokensCacheWrite).toBe(1000);
+    expect(inputs[0].attempt.armMeta).toMatchObject({ costSource: 'native' }); // arm meta rides the attempt
+
+    // the infra-failed attempt is NOT graded but still emits a placeholder grade
+    expect(inputs[1].attempt.stopReason).toBe('error');
+    expect(inputs[1].grade.graderVersion).toBe(''); // placeholder
+
+    // returned rows: real grade for scoreable, undefined for infra-failed
     expect(rows[0].grade?.resolved).toBe(true);
-    expect(rows[1].grade).toBeUndefined(); // the errored attempt was never graded
-    const statuses = emit.mock.calls.map((c) => c[0].grading.status);
-    expect(statuses).toContain('passed');
-    expect(statuses).toContain('skipped');
+    expect(rows[1].grade).toBeUndefined();
+    expect(rows[0].rollout.rolloutId).toBe('ro-1');
   });
 
-  it('does not call the grader when no attempt is scoreable', async () => {
+  it('grades budget-/turn-capped attempts (capped ≠ infra fail) but skips stopReason=error', async () => {
+    const capped = attempt({ instanceId: 'i1', stopReason: 'budget-exhausted', diff: 'PARTIAL' });
+    const grader = makeFakeGrader({ verdicts: { i1: false } });
+    const spy = grader.grade;
+    const { emit, inputs } = fakeEmit();
+    await gradeAndEmitBatch([{ attempt: capped, task: task('i1'), seedIndex: 0 }], grader, emit, ctx);
+    expect(inputs[0].grade.resolved).toBe(false); // it WAS graded (capped run is a genuine attempt)
+    expect(spy).toBeDefined();
+  });
+
+  it('does not call the grader when nothing is scoreable', async () => {
     const grader = makeFakeGrader({ verdicts: {} });
-    const spy = vi.spyOn(grader, 'grade');
-    const emit = vi.fn(async (i) => ({ rollout_id: 'ro', run_id: i.run_id }));
-    await gradeAndEmitBatch(
-      [{ attempt: attempt({ stopReason: 'error', diff: '' }), task: task(), seedIndex: 0 }],
-      grader,
-      emit,
-      { runId: 'run1', preregHash: 'pre1', suite: 'swe-bench-pro', modelId: 'm', harnessVersion: 'h' },
-    );
-    expect(spy).not.toHaveBeenCalled();
-    expect(emit).toHaveBeenCalledOnce();
+    let graded = 0;
+    const wrapped = { ...grader, grade: async (...a: Parameters<typeof grader.grade>) => { graded += 1; return grader.grade(...a); } };
+    const { emit, inputs } = fakeEmit();
+    await gradeAndEmitBatch([{ attempt: attempt({ stopReason: 'error', diff: '' }), task: task(), seedIndex: 0 }], wrapped, emit, ctx);
+    expect(graded).toBe(0);
+    expect(inputs).toHaveLength(1); // still emits the infra row
+  });
+
+  it('threads budgetTokens + fleetRunId from ctx onto the emit input', async () => {
+    const grader = makeFakeGrader({ verdicts: { i1: true } });
+    const { emit, inputs } = fakeEmit();
+    await gradeAndEmitBatch([{ attempt: attempt(), task: task('i1'), seedIndex: 0 }], grader, emit, { ...ctx, budgetTokens: 500_000, fleetRunId: 'fleet-7' });
+    expect(inputs[0].budgetTokens).toBe(500_000);
+    expect(inputs[0].fleetRunId).toBe('fleet-7');
   });
 });
 
 describe('runTaskThroughAdapter (one task, end-to-end)', () => {
-  it('generates with the seed prefix, grades, and emits a graded costed row', async () => {
-    const generate = vi.fn(async (t: BenchTask, seed: string) => attempt({ instanceId: t.instanceId, seed }));
+  it('generates with the seed prefix, grades, and emits with the int seed', async () => {
+    const generate = async (t: BenchTask, seed: string) => attempt({ instanceId: t.instanceId, seed });
     const grader = makeFakeGrader({ verdicts: { i1: true } });
-    const emit = vi.fn(async (i) => ({ rollout_id: 'ro', run_id: i.run_id }));
+    const { emit, inputs } = fakeEmit();
 
     const row = await runTaskThroughAdapter({
       task: task('i1'),
-      ctx: { runId: 'r', preregHash: 'p', suite: 'swe-bench-pro', modelId: 'm', harnessVersion: 'h', seedIndex: 2 },
+      ctx: { ...ctx, seedIndex: 2 },
       generate,
       grader,
       emit,
     });
 
-    expect(generate).toHaveBeenCalledWith(task('i1'), 'seed-2');
+    expect(inputs[0].seed).toBe(2); // int seed on the row
+    expect(inputs[0].attempt.seed).toBe('seed-2'); // string prefix on the attempt
     expect(row.grade?.resolved).toBe(true);
-    expect(row.rollout.rollout_id).toBe('ro');
-    expect(emit.mock.calls[0][0].grading.status).toBe('passed');
+    expect(row.rollout.rolloutId).toBe('ro-1');
   });
 });

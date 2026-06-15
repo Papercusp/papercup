@@ -29,33 +29,33 @@ describe('runValueCaptureTask', () => {
   it('stamps the task payout onto the emitted row (arm_meta.valueUsd)', async () => {
     const generate = vi.fn(async (t: BenchTask, seed: string) => attempt({ instanceId: t.instanceId, seed }));
     const grader = makeFakeGrader({ verdicts: { 'ic-1': true } });
-    const emit = vi.fn(async (i) => ({ rollout_id: 'ro', run_id: i.run_id }));
+    const emit = vi.fn(async (i) => ({ rolloutId: 'ro', runId: i.runId }));
 
     const row = await runValueCaptureTask({
       task: task({ valueUsd: 750 }),
-      ctx: { runId: 'r', preregHash: 'p', suite: 'swe-lancer', modelId: 'm', harnessVersion: 'h', seedIndex: 0 },
+      ctx: { runId: 'r', preregHash: 'p', modelId: 'm', harnessVersion: 'h', seedIndex: 0 },
       generate,
       grader,
       emit,
     });
 
     expect(row.grade?.resolved).toBe(true); // resolved → its $750 is captured
-    expect(emit.mock.calls[0][0].generation.arm_meta).toMatchObject({ valueUsd: 750 });
+    expect(emit.mock.calls[0][0].attempt.armMeta).toMatchObject({ valueUsd: 750 });
   });
 
   it('carries $0 when the task has no payout, and preserves any pre-existing armMeta', async () => {
     const generate = vi.fn(async (t: BenchTask, seed: string) => attempt({ instanceId: t.instanceId, seed, armMeta: { costSource: 'native' } }));
     const grader = makeFakeGrader({ verdicts: { 'ic-1': false } });
-    const emit = vi.fn(async (i) => ({ rollout_id: 'ro', run_id: i.run_id }));
+    const emit = vi.fn(async (i) => ({ rolloutId: 'ro', runId: i.runId }));
 
     await runValueCaptureTask({
       task: task(),
-      ctx: { runId: 'r', preregHash: 'p', suite: 'swe-lancer', modelId: 'm', harnessVersion: 'h', seedIndex: 0 },
+      ctx: { runId: 'r', preregHash: 'p', modelId: 'm', harnessVersion: 'h', seedIndex: 0 },
       generate,
       grader,
       emit,
     });
 
-    expect(emit.mock.calls[0][0].generation.arm_meta).toMatchObject({ valueUsd: 0, costSource: 'native' });
+    expect(emit.mock.calls[0][0].attempt.armMeta).toMatchObject({ valueUsd: 0, costSource: 'native' });
   });
 });

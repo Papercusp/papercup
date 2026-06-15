@@ -24,7 +24,7 @@ import {
 import type { HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
 import type { CoordEvent } from '@papercusp/bench-metrics';
 import type { ArmAttempt, BenchTask, GradeResult, OfficialGrader } from './types';
-import type { EmitRollout, EmitRolloutInput, BatchContext } from './adapter';
+import type { EmitRollout, EmitFromAttemptInput, BatchContext } from './adapter';
 
 /* --------------------------------- fakes ---------------------------------- */
 
@@ -108,11 +108,11 @@ const fakeGrader: OfficialGrader = {
   },
 };
 
-function fakeEmit(): { emit: EmitRollout; rows: EmitRolloutInput[] } {
-  const rows: EmitRolloutInput[] = [];
+function fakeEmit(): { emit: EmitRollout; rows: EmitFromAttemptInput[] } {
+  const rows: EmitFromAttemptInput[] = [];
   const emit: EmitRollout = async (input) => {
     rows.push(input);
-    return { rollout_id: `ro-${rows.length}`, run_id: input.run_id };
+    return { rolloutId: `ro-${rows.length}`, runId: input.runId };
   };
   return { emit, rows };
 }
@@ -120,7 +120,6 @@ function fakeEmit(): { emit: EmitRollout; rows: EmitRolloutInput[] } {
 const ctx: BatchContext & { seedIndex: number } = {
   runId: 'run-1',
   preregHash: 'hash-1',
-  suite: 'swe-bench-pro',
   modelId: 'claude-opus-4-8[1m]',
   harnessVersion: 'openhands@x+sha',
   seedIndex: 0,
@@ -202,9 +201,10 @@ describe('runAndGradeCompetitorBacklog — shared adapter + FleetRunSummary proj
 
     expect(res.rows).toHaveLength(2);
     expect(rows).toHaveLength(2);
-    expect(rows.every((r) => r.arm === 'openhands-async')).toBe(true);
-    expect(rows.every((r) => r.suite === 'swe-bench-pro')).toBe(true);
-    expect(rows.every((r) => r.grading.resolved === true)).toBe(true);
+    // competitor arm rides as text at rest; EmitFromAttemptInput.arm is typed ArmId (L1), hence the cast.
+    expect(rows.every((r) => (r.arm as string) === 'openhands-async')).toBe(true);
+    expect(rows.every((r) => r.task.benchmark === 'swe-bench-pro')).toBe(true);
+    expect(rows.every((r) => r.grade.resolved === true)).toBe(true);
 
     expect(res.fleet).not.toBeNull();
     expect(res.fleet?.arm).toBe('openhands-async');
