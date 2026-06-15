@@ -46,7 +46,7 @@ afterEach(() => vi.clearAllMocks());
 
 describe('hive:set-steering', () => {
   it('writes the provided fields, refreshes the panel, and WAKES the Queen', async () => {
-    const next: OwnerSteering = { directive: 'focus', eligiblePlans: ['p1'], pauseNewWork: false, pausedUntil: null };
+    const next: OwnerSteering = { directive: 'focus', eligiblePlans: ['p1'], eligibleHives: [], pauseNewWork: false, pausedUntil: null };
     setOwnerSteering.mockResolvedValueOnce(next);
     const res = parse(await setTool.handler({ hive: 'acme', directive: 'focus', eligiblePlans: ['p1'] }, ctx()));
 
@@ -66,6 +66,11 @@ describe('hive:set-steering', () => {
   it('clear:true forwards a clear patch', async () => {
     await setTool.handler({ hive: 'acme', clear: true }, ctx());
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { clear: true });
+  });
+
+  it('forwards eligibleHives (the placement scope, B-04 round-2)', async () => {
+    await setTool.handler({ hive: 'acme', eligibleHives: ['hive-a', 'hive-b'] }, ctx());
+    expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { eligibleHives: ['hive-a', 'hive-b'] });
   });
 
   it('honors an explicit workspace override', async () => {
@@ -90,7 +95,7 @@ describe('hive:set-steering', () => {
 
 describe('hive:get-steering', () => {
   it('reads the current steering for the hive', async () => {
-    const cur: OwnerSteering = { directive: 'd', eligiblePlans: ['p'], pauseNewWork: true, pausedUntil: null };
+    const cur: OwnerSteering = { directive: 'd', eligiblePlans: ['p'], eligibleHives: ['hive-a'], pauseNewWork: true, pausedUntil: null };
     getOwnerSteering.mockResolvedValueOnce(cur);
     const res = parse(await getTool.handler({ hive: 'acme' }, ctx()));
     expect(getOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme');

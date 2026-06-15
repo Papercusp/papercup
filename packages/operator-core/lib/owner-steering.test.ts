@@ -54,9 +54,15 @@ describe('getOwnerSteering — decode + defaults', () => {
     expect(await getOwnerSteering('ws', 'hive')).toEqual({
       directive: 'focus on the migration',
       eligiblePlans: ['plan-a', 'plan-b'],
+      eligibleHives: [],
       pauseNewWork: true,
       pausedUntil: 1_900_000_000_000,
     } satisfies OwnerSteering);
+  });
+
+  it('decodes eligibleHives (the placement scope, B-04 round-2)', async () => {
+    listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.eligibleHives]: ['hive-a', 'hive-b'] }));
+    expect((await getOwnerSteering('ws', 'hive')).eligibleHives).toEqual(['hive-a', 'hive-b']);
   });
 
   it('is fail-soft on junk values — each bad key falls back to its default', async () => {
@@ -106,6 +112,15 @@ describe('setOwnerSteering — write fan-out', () => {
     ]);
   });
 
+  it('writes eligibleHives (the placement scope) when provided (B-04 round-2)', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    await setOwnerSteering('ws', 'hive', { eligibleHives: ['hive-a', 'hive-b'] });
+    expect(setHiveSetting).toHaveBeenCalledWith(
+      { workspaceId: 'ws', hiveHomeSlug: 'hive', settingKey: OWNER_STEERING_KEYS.eligibleHives, value: ['hive-a', 'hive-b'] },
+      undefined,
+    );
+  });
+
   it('normalizes a blank directive + bad pausedUntil to the cleared value on write', async () => {
     listHiveSettings.mockResolvedValue([]);
     await setOwnerSteering('ws', 'hive', { directive: '  ', pausedUntil: Number.NaN });
@@ -116,7 +131,7 @@ describe('setOwnerSteering — write fan-out', () => {
 
   it('clear:true deletes ALL steering keys and returns the default', async () => {
     const out = await setOwnerSteering('ws', 'hive', { clear: true });
-    expect(deleteHiveSetting).toHaveBeenCalledTimes(4);
+    expect(deleteHiveSetting).toHaveBeenCalledTimes(Object.keys(OWNER_STEERING_KEYS).length);
     expect(deleteHiveSetting.mock.calls.map((c) => c[2])).toEqual(Object.values(OWNER_STEERING_KEYS));
     expect(setHiveSetting).not.toHaveBeenCalled();
     expect(out).toEqual(DEFAULT_OWNER_STEERING);

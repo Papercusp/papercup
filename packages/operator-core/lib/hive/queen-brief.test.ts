@@ -123,6 +123,7 @@ test('renderQueenBrief — owner steering renders an AUTHORITATIVE section BEFOR
       ownerSteering: {
         directive: 'Finish the in-flight backlog before anything new.',
         eligiblePlans: ['plan-x', 'plan-y'],
+        eligibleHives: [],
         pauseNewWork: false,
         pausedUntil: null,
       },
@@ -140,7 +141,7 @@ test('renderQueenBrief — owner steering renders an AUTHORITATIVE section BEFOR
 
 test('renderQueenBrief — pauseNewWork renders a HARD "PAUSED — start NO new work" line', () => {
   const out = renderQueenBrief({
-    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], pauseNewWork: true, pausedUntil: null } },
+    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: true, pausedUntil: null } },
   });
   assert.match(out, /\*\*PAUSED — start NO new work\.\*\*/);
   assert.match(out, /drive existing placements to terminal/i);
@@ -149,9 +150,17 @@ test('renderQueenBrief — pauseNewWork renders a HARD "PAUSED — start NO new 
 test('renderQueenBrief — a pausedUntil renders the deadline (deterministic from the floor value, not the clock)', () => {
   const until = Date.parse('2026-06-15T12:00:00.000Z');
   const out = renderQueenBrief({
-    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], pauseNewWork: false, pausedUntil: until } },
+    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: until } },
   });
   assert.match(out, /PAUSED until 2026-06-15T12:00:00\.000Z — start NO new work/);
+});
+
+test('renderQueenBrief — eligibleHives renders the placement-scope line (B-04 round-2)', () => {
+  const out = renderQueenBrief({
+    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], eligibleHives: ['hive-a', 'hive-b'], pauseNewWork: false, pausedUntil: null } },
+  });
+  assert.match(out, /### Owner steering directive/);
+  assert.match(out, /Eligible hives ONLY:.*hive-a, hive-b/);
 });
 
 test('renderQueenBrief — no ownerSteering ⇒ NO steering section (un-steered Hive is today\'s behaviour)', () => {

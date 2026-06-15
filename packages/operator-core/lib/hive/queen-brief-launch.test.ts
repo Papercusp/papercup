@@ -33,6 +33,7 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 const getOwnerSteering = vi.fn(async (..._a: unknown[]) => ({
   directive: null as string | null,
   eligiblePlans: [] as string[],
+  eligibleHives: [] as string[],
   pauseNewWork: false,
   pausedUntil: null as number | null,
 }));
@@ -64,7 +65,7 @@ test('computeQueenWakeBrief — renders the survey floor + carry-note (B-03/B-04
 
 test('computeQueenWakeBrief — owner steering directive flows into the brief (B-02 / P-002)', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getOwnerSteering.mockResolvedValueOnce({ directive: 'Only the in-flight backlog — start nothing new.', eligiblePlans: ['plan-x'], pauseNewWork: false, pausedUntil: null });
+  getOwnerSteering.mockResolvedValueOnce({ directive: 'Only the in-flight backlog — start nothing new.', eligiblePlans: ['plan-x'], eligibleHives: [], pauseNewWork: false, pausedUntil: null });
   const out = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(out);
   assert.match(out!, /### Owner steering directive/);
@@ -90,10 +91,22 @@ test('computeQueenWakeBrief — a flaky getOwnerSteering read is fail-soft (brie
 
 test('computeQueenWakeBrief — an EXPIRED pausedUntil is normalized away (no stale PAUSED line)', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], pauseNewWork: false, pausedUntil: 1 });
+  getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: 1 });
   const out = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.doesNotMatch(out!, /PAUSED/);
   assert.doesNotMatch(out!, /### Owner steering directive/);
+});
+
+test('computeQueenWakeBrief — eligibleHives scopes the survey via allowedHarnesses (B-04 round-2, C-2)', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], eligibleHives: ['hive-a', 'hive-b'], pauseNewWork: false, pausedUntil: null });
+  await computeQueenWakeBrief('ws-1', 'papercup');
+  // The eligibleHives scope reaches surveyHive as scopeFilter.allowedHarnesses.
+  assert.deepEqual(surveyHive.mock.calls[0], [
+    'ws-1',
+    'papercup',
+    { scopeFilter: { allowedHarnesses: ['hive-a', 'hive-b'] } },
+  ]);
 });
 
 test('computeQueenWakeBrief — fleet escalations flow into the floor (P-007); a flaky escalations read is fail-soft', async () => {

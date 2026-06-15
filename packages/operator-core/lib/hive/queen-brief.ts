@@ -251,6 +251,12 @@ export function renderQueenBrief(input: QueenBriefInput): string {
           'start nothing outside them.',
       );
     }
+    if (os.eligibleHives.length > 0) {
+      out.push(
+        `**Eligible hives ONLY:** ${os.eligibleHives.join(', ')} — place work only INTO these ` +
+          'hives/harnesses (the survey frontier is already scoped to them); leave others alone.',
+      );
+    }
     if (os.directive && os.directive.trim()) {
       out.push(os.directive.trim());
     }
