@@ -193,6 +193,19 @@ export interface RealQueenBacklogOpts {
   workspaceId: string;
   fleetTimeoutMs?: number;
   pollIntervalMs?: number;
+  /**
+   * DURABILITY hooks (P-033, the rate-limit-kill-resilience fix). The launcher writes per-task diffs +
+   * an enrollment manifest INCREMENTALLY through these so a process killed mid-run (the Anthropic API
+   * intermittently throttles + kills helpers) does NOT lose the bees' already-produced work — the
+   * surviving worktrees are recoverable from the manifest, and any diff collected before the kill is
+   * already on disk. Both optional + best-effort: a hook throw must NEVER abort the drive/collection.
+   *   - `onEnrolled`  fires right after each member is enrolled (worktree cloned @ base) → persist the
+   *     instanceId → clonePath → baseCommit → member mapping so a standalone recovery pass can re-extract.
+   *   - `onTaskCollected` fires per member as `collectAll` finishes it → persist that one task's diff +
+   *     row immediately, so a kill during the (serial) collect loop keeps every diff already gathered.
+   */
+  onEnrolled?: (enrolled: RealQueenEnrolled) => void | Promise<void>;
+  onTaskCollected?: (result: FleetTaskResult) => void | Promise<void>;
 }
 
 /**
@@ -238,6 +251,9 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
         for (const task of req.backlog) {
           const enrolled = await ops.enrollTask({ hiveHome, task, budget: req.budget, workspaceId: ws });
           members.push(enrolled);
+          // Persist the enrollment manifest entry immediately (durability — a mid-run kill keeps the
+          // worktree→task mapping the recovery pass needs). Best-effort: never abort enrollment.
+          if (opts.onEnrolled) await Promise.resolve(opts.onEnrolled(enrolled)).catch(() => {});
         }
 
         const deadline = startedAtMs + fleetTimeoutMs;
@@ -297,7 +313,7 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
       } catch (e) {
         if (hiveHome) await ops.pauseFleet({ hiveHome, workspaceId: ws }).catch(() => {});
         const runError = e instanceof Error ? e.message : String(e);
-        const partial = await collectAll(ops, members, req, ws).catch(() => [] as FleetTaskResult[]);
+        const partial = await collectAll(ops, members, req, ws, opts.onTaskCollected).catch(() => [] as FleetTaskResult[]);
         const finishedAtMs = ops.now();
         if (hiveHome) await ops.teardown({ hiveHome, members, workspaceId: ws }).catch(() => {});
         return { ...empty(runError), finishedAtMs, peakConcurrentBees, taskResults: partial };
@@ -305,7 +321,7 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
 
       // ── always pause (bound spend), collect diffs/cost + the REAL coord trace, then teardown ──
       await ops.pauseFleet({ hiveHome, workspaceId: ws }).catch(() => {});
-      const taskResults = await collectAll(ops, members, req, ws);
+      const taskResults = await collectAll(ops, members, req, ws, opts.onTaskCollected);
       const realCoord = await ops.collectCoordEvents({ hiveHome, members, arm: req.arm, workspaceId: ws }).catch(() => [] as CoordEvent[]);
       // Real-Queen arm: the hive_placements-derived trace IS the coordination signal. FIFO arm: keep the
       // synthetic per-placement events the loop pushed (no Queen ledger to read).
@@ -333,10 +349,15 @@ async function collectAll(
   members: RealQueenEnrolled[],
   req: HiveBacklogRunRequest,
   ws: string,
+  onTaskCollected?: (result: FleetTaskResult) => void | Promise<void>,
 ): Promise<FleetTaskResult[]> {
   const out: FleetTaskResult[] = [];
   for (const enrolled of members) {
-    out.push(await ops.collectTask({ enrolled, arm: req.arm, seed: String(req.seed), workspaceId: ws }));
+    const result = await ops.collectTask({ enrolled, arm: req.arm, seed: String(req.seed), workspaceId: ws });
+    out.push(result);
+    // Persist this one task's diff/row immediately (durability — a kill mid-collect keeps every diff
+    // already gathered). Best-effort: a hook throw must not abort the rest of the collect loop.
+    if (onTaskCollected) await Promise.resolve(onTaskCollected(result)).catch(() => {});
   }
   return out;
 }

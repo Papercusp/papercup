@@ -168,10 +168,41 @@ async function main() {
   // The FIFO arm needs its scripted planner registered; the real-Queen arm needs none (the Queen places).
   registerFleetPlanner(FIFO_NOQUEEN_ARM, planFifoPlacement);
 
+  // DURABILITY (the rate-limit-kill fix). The Anthropic API intermittently throttles + KILLS the run
+  // process; the prior launcher only wrote OUT_DIR after runHiveBacklog returned, so a mid-run kill lost
+  // ALL diffs even though every bee's worktree survived on disk. We now persist INCREMENTALLY through the
+  // driver's onEnrolled/onTaskCollected hooks: an enrollment manifest (instanceId→clonePath→base→member,
+  // so a standalone recovery pass — _xbench_recover.ts — can re-extract from the surviving worktrees) and
+  // each task's diff the moment it is collected. A kill now loses nothing recoverable.
+  const { writeFileSync: wf, mkdirSync: mkd } = await import('node:fs');
+  mkd(OUT_DIR, { recursive: true });
+  mkd(`${OUT_DIR}/diffs-${ARM}`, { recursive: true });
+  const manifestPath = `${OUT_DIR}/${ARM}.manifest.jsonl`;
+  wf(manifestPath, '', 'utf8'); // truncate any stale manifest for this arm
+
   bindRealQueenBacklogDriver({
     workspaceId: WORKSPACE_ID,
     fleetTimeoutMs: Number(process.env.XBENCH_FLEET_TIMEOUT_MS ?? 120 * 60 * 1000),
     pollIntervalMs: Number(process.env.XBENCH_POLL_MS ?? 20_000),
+    onEnrolled: (e) => {
+      const row = {
+        arm: ARM,
+        instanceId: e.task.instanceId,
+        member: e.member,
+        clonePath: e.clonePath,
+        baseCommit: e.checkout.baseCommit,
+        testFiles: (e.task.graderMeta?.['testFiles'] as string[] | undefined) ?? [],
+      };
+      const { appendFileSync } = require('node:fs');
+      appendFileSync(manifestPath, JSON.stringify(row) + '\n', 'utf8');
+      console.log(`[realqueen] enrolled ${e.task.instanceId} → ${e.clonePath} (base ${e.checkout.baseCommit.slice(0, 8)})`);
+    },
+    onTaskCollected: (tr) => {
+      const a = tr.attempt;
+      const diff = a.diff ?? '';
+      wf(`${OUT_DIR}/diffs-${ARM}/${a.instanceId}.diff`, diff, 'utf8');
+      console.log(`[realqueen] collected ${a.instanceId}: diffBytes=${Buffer.byteLength(diff, 'utf8')} cost=$${(a.costUsd || 0).toFixed(2)} stop=${a.stopReason}`);
+    },
   });
 
   const budget = { maxUsd: MAX_USD_PER_TASK, maxTokens: MAX_TOKENS_PER_TASK };

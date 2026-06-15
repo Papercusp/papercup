@@ -43,6 +43,7 @@ function fakes(over: Partial<PublishCreatedHiveDeps> = {}) {
     published: [] as Record<string, unknown>[],
     listings: [] as Record<string, unknown>[],
     localBindings: [] as Record<string, unknown>[],
+    rebooted: [] as Array<{ ws: string; slug: string }>,
   };
   const deps: PublishCreatedHiveDeps = {
     saveMeta: async (meta) => {
@@ -69,6 +70,9 @@ function fakes(over: Partial<PublishCreatedHiveDeps> = {}) {
     },
     createLocalBinding: async (input) => {
       calls.localBindings.push(input as unknown as Record<string, unknown>);
+    },
+    rebootHarness: async (ws, slug) => {
+      calls.rebooted.push({ ws, slug });
     },
     now: () => 1_700_000_000_000,
     randomSecret: () => INVITE_SECRET,
@@ -298,5 +302,90 @@ describe('publishCreatedHive (P-007)', () => {
       secret: INVITE_SECRET,
       title: 'acme/shop',
     });
+  });
+});
+
+// EI-681: the "go shared" reboot — publishing a hive must boot + swarm-join +
+// start the outbox drain for the just-bound local member harnesses, or an
+// owner's feature writes sit in substrate_outbox undrained and never federate.
+describe('hive publish — go-shared reboot of local member harnesses (EI-681)', () => {
+  it('reboots exactly the id-bearing local members (not the hive home, not id-less members)', async () => {
+    const { deps, calls } = fakes();
+    await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    // members(): shop (id=100) reboots; docs (no repo id) is skipped (step 6
+    // bound no row for it); shop-hive (the home, no github_remote) is not a member.
+    expect(calls.rebooted).toEqual([{ ws: 'ws', slug: 'shop' }]);
+  });
+
+  it('republishHiveAfterMemberAdd: reboots ONLY the new member (onlyRepoIds scope)', async () => {
+    const { deps, calls } = fakes({
+      getMeta: async () => ({
+        hiveId: 'shop-hive',
+        title: 'acme/shop',
+        description: '',
+        visibility: 'public' as const,
+        memberTopics: [],
+        createdAt: 1,
+      }),
+      loadRegistry: async () => ({
+        projects: [
+          ...members(),
+          {
+            slug: 'newrepo',
+            path: '/clones/newrepo',
+            hive_slug: 'shop-hive',
+            github_remote: 'https://github.com/acme/newrepo.git',
+            github_repository_id: 200,
+          },
+        ],
+      }),
+    });
+    const { republishHiveAfterMemberAdd } = await import('./hive-publish-from-repo');
+    await republishHiveAfterMemberAdd(
+      { workspaceId: 'ws', hiveSlug: 'shop-hive', onlyRepoIds: [200] },
+      deps,
+    );
+    expect(calls.rebooted).toEqual([{ ws: 'ws', slug: 'newrepo' }]);
+  });
+
+  it('a reboot failure (sync throw or async reject) NEVER fails the publish, and never skips a later member', async () => {
+    const rebooted: string[] = [];
+    const { deps } = fakes({
+      loadRegistry: async () => ({
+        projects: [
+          ...members(),
+          {
+            slug: 'extra',
+            path: '/clones/extra',
+            hive_slug: 'shop-hive',
+            github_remote: 'https://github.com/acme/extra.git',
+            github_repository_id: 300,
+          },
+        ],
+      }),
+      deriveMemberRepos: async () => ['acme/shop#100', 'acme/extra#300'],
+      // 'shop' throws SYNCHRONOUSLY (the harder case — a plain .catch can't
+      // swallow it); 'extra' must still be rebooted and the publish must succeed.
+      rebootHarness: (_ws: string, slug: string) => {
+        if (slug === 'shop') throw new Error('boom (sync)');
+        rebooted.push(slug);
+        return Promise.resolve();
+      },
+    });
+    const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    expect(out.announced).toBe(true); // publish unaffected by the reboot throw
+    expect(rebooted).toEqual(['extra']); // the throw on 'shop' did not skip 'extra'
+  });
+
+  it('async-rejecting reboot does not fail the publish', async () => {
+    const { deps } = fakes({ rebootHarness: async () => Promise.reject(new Error('reject')) });
+    const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    expect(out.announced).toBe(true);
+  });
+
+  it('no joinable topic (no hive pubkey) → no reboots', async () => {
+    const { deps, calls } = fakes({ loadPubkey: async () => null });
+    await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    expect(calls.rebooted).toEqual([]);
   });
 });

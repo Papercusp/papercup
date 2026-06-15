@@ -119,6 +119,19 @@ export interface PublishCreatedHiveDeps {
     harness_topic: string;
     harness_slug: string;
   }) => Promise<unknown>;
+  /**
+   * EI-681: after publish, boot + swarm-join + start the outbox-drain loop for
+   * the local member harnesses that just went shared (the "go shared" reboot).
+   * The hyperbee substrate only boots once at host-bootstrap, and nothing
+   * re-boots a harness that becomes federation-active at RUNTIME — so an owner's
+   * published harness never joins the swarm or drains its outbox until a restart,
+   * and its features never federate out (the join side already handles this via
+   * stepBootFederate → bootSingleHarness). `rebootHarness` re-resolves the
+   * now-present binding, joins the derived topic, and wires send-side. Defaults
+   * to the real `rebootHarness`, lazily imported so this publish module never
+   * pulls the swarm stack at load. Best-effort + fire-and-forget.
+   */
+  rebootHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
   /** Owned-meta read for republishHiveAfterMemberAdd. */
   getMeta?: (hiveId: string, workspaceId: string) => Promise<HiveDirectoryMeta | null>;
   now?: () => number;
@@ -421,6 +434,35 @@ async function publishListingForMeta(
       } catch (e) {
         if ((e as { code?: string }).code === 'BINDING_EXISTS') localBindings.existed += 1;
         else localBindings.failed += 1;
+      }
+    }
+  }
+
+  // 7 — EI-681: the "go shared" REBOOT. The local member harnesses just got a
+  //     binding (step 6) but their substrate was booted (if at all) before that
+  //     binding existed — so it joined no swarm topic and started no outbox
+  //     drain. Nothing else re-boots a runtime-shared harness (the substrate
+  //     boots once at host-bootstrap; the join side reboots via stepBootFederate,
+  //     but the OWNER/publish side had no equivalent). Without this, an owner's
+  //     published feature writes sit in `substrate_outbox` undrained and never
+  //     federate out until a restart. `rebootHarness` closes the stale handle,
+  //     re-resolves the now-present binding, joins the topic, and wires the
+  //     outbox drain. Reboot EXACTLY the harnesses step 6 just bound (same
+  //     `members` set + `onlyRepoIds` filter). Best-effort + fire-and-forget:
+  //     a reboot failure (or a sync throw) must NEVER fail or slow the publish.
+  if (hiveTopicHex) {
+    const rebootHarness =
+      deps.rebootHarness ??
+      (async (ws: string, slug: string) =>
+        (await import('./sync/hyperbee/boot-all')).rebootHarness(ws, slug));
+    for (const m of members) {
+      if (typeof m.github_repository_id !== 'number' || !m.github_remote) continue;
+      if (opts.onlyRepoIds && !opts.onlyRepoIds.includes(m.github_repository_id)) continue;
+      try {
+        const p = rebootHarness(opts.workspaceId, m.slug) as Promise<unknown> | undefined;
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch {
+        /* a sync throw from a reboot must never fail the publish or skip peers */
       }
     }
   }
