@@ -36,6 +36,10 @@ import { selectSpawnAccount } from '../deployment/account-pool-store';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
 import { recordSpawn, finishSpawn } from './spawn-tree';
+import { assembleSpawnHydration } from './spawn-hydration';
+import { listHiveRosterSnapshot, renderRosterSnapshot } from './hive-roster';
+import { getSpawnHandoffContext } from '../handoff-context';
+import { getWorkItemCheckpoint } from '../work-item-checkpoint';
 import type { Db } from './pg-stores';
 import {
   heartbeatSpawns,

@@ -826,6 +826,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (P-013), so default-on degrades to an empty section, never a broken spawn.
   // Default-ON ⇒ not in KNOWN_DARK_FLAGS.
   [FLAGS.SPAWN_HANDOFF_HYDRATION]: true,
+  // OFF by default — DELIBERATE (overwatch-role-2026-06-15 B-10 / D-002 / D-004):
+  // the OVERWATCH autonomous role ships dark. It is a brand-new, not-yet-proven
+  // autonomous supervisor that nudges the live fleet; a confused overwatch must not
+  // be able to thrash the system it protects, so it stays off until B-12's live
+  // staging run proves it. The owner flips it ON after that proof. The flag gates
+  // the role registration (B-01), the wake-loop/routine (B-04), and the UI pane
+  // (B-08). Pending flip surfaced in the plan's ## Now + every lane report.
+  [FLAGS.OVERWATCH]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

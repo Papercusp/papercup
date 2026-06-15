@@ -178,6 +178,16 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // to gym routing); the owner flips it after reviewing the mechanical proposal→arms
   // mapping (the LLM-polished candidate-overlay generation is the follow-on).
   FLAGS.SCOUT_EXPERIMENT_RAIL,
+  // overwatch-role-2026-06-15 B-10 (D-002 / D-004): the OVERWATCH autonomous
+  // system-health role. DELIBERATE dark ship (NOT the alpha default-on policy) —
+  // a brand-new, not-yet-proven autonomous role that nudges the live fleet; a
+  // confused overwatch must not be able to thrash the system it protects, so it
+  // ships dark until B-12's first live staging run proves it (coherent brief,
+  // nudges-not-replaces, observes-not-ideas, no thrash, cross-monitors the Queen).
+  // The owner flips it ON after that proof. Gates the role registration (B-01),
+  // the wake-loop/routine (B-04), and the UI pane (B-08). Pending flip surfaced in
+  // the plan's ## Now + every lane report.
+  FLAGS.OVERWATCH,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

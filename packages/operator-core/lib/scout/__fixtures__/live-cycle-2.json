@@ -1,6 +1,6 @@
 {
   "meta": {
-    "capturedAt": "2026-06-15T01:49:26.547Z",
+    "capturedAt": "2026-06-15T01:57:02.709Z",
     "cycleId": "scout-live-cycle-2",
     "harnessSlug": "papercup",
     "limits": {
@@ -20,13 +20,13 @@
     "stop": "no-ideas",
     "costUsd": 0,
     "digest": {
-      "generatedAt": "2026-06-15T01:45:59.688Z",
+      "generatedAt": "2026-06-15T01:53:40.037Z",
       "corpus": {
         "completions": 510,
         "reverts": 58,
         "frictionCaptured": 495,
         "deferrals": 292,
-        "spendUsd": 66330.14,
+        "spendUsd": 66331.41,
         "spendBuckets": 27
       },
       "recurringFriction": [
@@ -104,8 +104,8 @@
       "timeTokenSinks": [
         {
           "category": "time-token-sink",
-          "summary": "$65947.66 on (unattributed) · interactive",
-          "detail": "8609 run(s), 642,933,679 tokens",
+          "summary": "$65947.71 on (unattributed) · interactive",
+          "detail": "8610 run(s), 642,934,155 tokens",
           "ref": "usage:(unattributed)/interactive",
           "weight": 1
         },
@@ -139,8 +139,8 @@
         },
         {
           "category": "time-token-sink",
-          "summary": "$18.35 on papercup · release-fixer",
-          "detail": "19 run(s), 232,816 tokens",
+          "summary": "$19.57 on papercup · release-fixer",
+          "detail": "20 run(s), 245,107 tokens",
           "ref": "usage:papercup/release-fixer",
           "weight": 0
         },
@@ -379,7 +379,7 @@
           "weight": 0.18
         }
       ],
-      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66330.14), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 510 completions"
+      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66331.41), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 510 completions"
     },
     "ideas": [],
     "scored": [],
