@@ -60,6 +60,25 @@ import {
 const DEFAULT_FLEET_TIMEOUT_MS = 60 * 60 * 1000; // 1h — a bounded smoke is far under this.
 const DEFAULT_POLL_MS = 10_000;
 
+/**
+ * The Queen-brief a placed bench bee receives (extraEnv.QUEEN_BRIEF → the bee's `## Queen brief`). The
+ * scripted hive loop has no real Queen to assign+drive, so this is the standing directive that turns a
+ * placed bee from taskless-exit into a benchmark worker: its member holds exactly ONE seeded feature
+ * (the benchmark task's problem_statement); the bee claims + implements it to a real code diff in the
+ * repo, then completes it. Naming the lone assigned task is direction, NOT freelancing (bee.md's
+ * taskless rule forbids self-INVENTING work, not working an explicitly-placed feature).
+ */
+const BENCH_BEE_DIRECTIVE = [
+  'You are placed on a single-task benchmark harness. This member holds EXACTLY ONE feature work-item —',
+  'the benchmark problem to solve. Your job: claim it (`work_items:claim_next` for this harness, or',
+  '`fleet:assignments { agent: <your spawn id> }` then `work_items:get` for the detail), read its full',
+  'problem_statement, and IMPLEMENT the change directly in this repository as real code edits (a working',
+  'unified diff against the checked-out base). Write the actual source fix — do not just plan or describe.',
+  'When the implementation is complete and the repo builds, mark the work-item complete',
+  '(`work_items:complete`). You are NOT taskless — the assigned feature IS your task; do not exit FAILED',
+  'for "no work". There is no validator/reviewer downstream; you own the fix end to end.',
+].join(' ');
+
 /** One enrolled backlog task — its member harness + clone, threaded to collect. */
 export interface EnrolledTask {
   task: BenchTask;
@@ -457,15 +476,16 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
 
     async placeBatch({ plan, arm }) {
       // Execute the planner's decisions over the live fleet — spawn/warm-inject bees that run each
-      // placed member's external-bench spine. The Queen-seat home is the placing actor.
+      // placed member's external-bench feature. The Queen-seat home is the placing actor.
       // VERIFY-AT-FIRST-RUN: executeBatch's actor/role — the scripted loop has no real Queen agent, so
       // we synthesize an operator-tier AgentIdentity (ownerId = the hive home, role 'operator') as the
       // placer. `parentSpawnId` is null (not an `s-…` owner), so the bees parent to the operator, not a
       // bee — correct for a scripted placement. If executeBatch later requires a real `s-…` parent owner
       // for the spawn-tree, mint a placeholder Queen spawn row first (same seam, one extra insert).
-      const [{ executeBatch }, { getSpawnHeadroom }] = await Promise.all([
+      const [{ executeBatch }, { getSpawnHeadroom }, { claimWorkItem }] = await Promise.all([
         import('../agent-tools/fleet/place_batch'),
         import('../fleet/operator-spawn'),
+        import('../work-items'),
       ]);
       const actor: AgentIdentity = {
         ownerId: homePrefix,
@@ -478,7 +498,15 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
       const exec = await executeBatch({
         plan,
         headroom,
-        brief: null,
+        // The directive brief (confirmed at the first real run). WITHOUT a real Queen there is nothing to
+        // assign/drive a placed bee, and a fresh-spawned bee whose lane reads empty exits TASKLESS (bee.md
+        // "If you find NO work items: you are taskless … exit FAILED", confirmed: the bee booted, found no
+        // claimed work, exited rc=0 $0 empty-diff, and the drain loop re-placed it every poll forever). The
+        // bee is placed onto a member that holds EXACTLY ONE seeded feature whose problem_statement IS the
+        // benchmark task — so the brief names that explicitly and tells the bee to claim+implement it. This
+        // is direction (a named task), not freelancing. It rides extraEnv.QUEEN_BRIEF → the bee's
+        // `## Queen brief` (invoke.ts:8.11), read on boot before the lane check.
+        brief: BENCH_BEE_DIRECTIVE,
         tier: null,
         actor,
         role: 'operator',
@@ -498,7 +526,13 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
         if (p.action === 'spawned' || p.action === 'injected') {
           const disposition = p.action === 'spawned' ? ('spawn' as const) : ('warm-inject' as const);
           const beeId = p.spawn_id ?? p.bee ?? instanceId;
-          if (st) {
+          // CLAIM the feature to this bee's lane so `fleet:assignments { agent: <beeId> }` surfaces it as
+          // the bee's head-of-line work (warm-inject already claims; the fresh-spawn path does NOT, so the
+          // scripted loop must do it). taken_by=beeId also flips the feature out of the unassigned frontier
+          // so the next gatherFrontier stops re-placing it (the drain-loop terminator). Best-effort: a race
+          // where the bee self-claims first (off its FEATURE_ID + the directive) is fine — same end state.
+          if (st && (p.action === 'spawned' || p.action === 'injected')) {
+            await claimWorkItem(featureId, beeId, { harness: st.member }).catch(() => {});
             st.beeId = beeId;
             st.placedAtMs = placedAtMs;
             st.disposition = disposition;
@@ -509,9 +543,28 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
       return { placements };
     },
 
-    async countInFlight({ hiveHome }) {
-      const ops = await liveOps();
-      return ops.countInFlightPlacements({ hiveHome, workspaceId: ws });
+    async countInFlight() {
+      // "Still working" = a placed member whose latest bee spawn is still running. We do NOT use
+      // `hive_placements` (countInFlightPlacements) — confirmed at the first real run that the SCRIPTED
+      // executeBatch path writes NO hive_placements row (those come from the real Queen's placement flow),
+      // so that count was permanently 0 → the drain loop concluded "drained" the instant after placing and
+      // tore the bee down before it did any work ($0/0-turns/empty-diff). The driver owns the truth: count
+      // enrolled members that HAVE been placed (beeId set) AND whose bee `spawned_agents` row is still
+      // running/restarting. When every placed bee has exited (done/failed), the backlog is drained and we
+      // collect whatever each bee produced. A member never placed (beeId null) doesn't count as in-flight —
+      // it's still on the frontier and the place loop will pick it up.
+      const sql = await sqlClient();
+      const placedMembers = [...state.values()].filter((m) => m.beeId != null);
+      if (placedMembers.length === 0) return 0;
+      let inFlight = 0;
+      for (const m of placedMembers) {
+        const rows = await sql<{ n: string }[]>`
+          SELECT count(*)::text AS n FROM harness_shared.spawned_agents
+           WHERE workspace_id = ${ws} AND harness_slug = ${m.member}
+             AND child_role = 'bee' AND status IN ('running', 'restarting')`;
+        if ((Number(rows[0]?.n ?? 0) || 0) > 0) inFlight++;
+      }
+      return inFlight;
     },
 
     async pauseFleet({ hiveHome }) {
