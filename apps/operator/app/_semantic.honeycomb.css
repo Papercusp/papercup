@@ -4,31 +4,31 @@
 
 [data-theme="honeycomb"] {
   --bg-deepest: #030303; /** Near-black depth from the swarm identity demo */
-  --bg-deeper: #050505;
+  --bg-deeper: #050504;
   --bg-deep: #080806;
-  --bg: #050505; /** Ominous charcoal page base */
-  --bg-1: #0b0b07;
-  --bg-2: rgba(234, 179, 8, 0.07); /** Low honey glass tier */
-  --bg-3: rgba(234, 179, 8, 0.11);
-  --bg-4: rgba(234, 179, 8, 0.17);
-  --bg-popover: #10100b; /** Solid elevated comb surface */
-  --bg-raised: #17130a;
-  --bg-raised-high: #211a0a;
-  --fg: #fff7df;
-  --fg-dim: #d8c58e;
-  --fg-mute: #b9aa86;
-  --border: rgba(234, 179, 8, 0.2);
-  --border-strong: rgba(253, 230, 138, 0.42);
-  --accent: #eab308; /** Honey signal primary accent */
-  --accent-strong: #fde68a; /** Bright honey hover/focus accent */
-  --accent-cool: #fff7d1; /** Cream highlight for glows and linework */
-  --accent-soft: #facc15; /** Soft amber signal tint */
-  --accent-deep: #a16207; /** Burnt honey active tint */
-  --accent-deeper: #713f12; /** Deep amber shadow tint */
+  --bg: #070704; /** Charcoal page base with only a faint warm cast */
+  --bg-1: #0d0d08;
+  --bg-2: rgba(255, 255, 255, 0.045); /** Neutral low glass tier; avoids amber-washing every panel */
+  --bg-3: rgba(255, 255, 255, 0.07);
+  --bg-4: rgba(198, 142, 36, 0.12);
+  --bg-popover: #11100b; /** Solid elevated comb surface */
+  --bg-raised: #15130b;
+  --bg-raised-high: #1d190d;
+  --fg: #f4ebd4;
+  --fg-dim: #cdbc98;
+  --fg-mute: #9f9378;
+  --border: rgba(196, 143, 45, 0.16);
+  --border-strong: rgba(214, 166, 74, 0.34);
+  --accent: #c68e24; /** Muted honey primary accent */
+  --accent-strong: #d6a64a; /** Restrained honey hover/focus accent */
+  --accent-cool: #e8d9b5; /** Cream highlight for glows and linework */
+  --accent-soft: #e0c071; /** Soft honey signal tint */
+  --accent-deep: #8b5e16; /** Burnt honey active tint */
+  --accent-deeper: #5f3f12; /** Deep amber shadow tint */
   --accent-ink: #130d03; /** Text on honey fills */
-  --good: #4ade80;
-  --warn: #fde68a;
-  --bad: #f87171;
-  --warn-bg: rgba(234, 179, 8, 0.14);
-  --warn-border: rgba(253, 230, 138, 0.42);
+  --good: #68d391;
+  --warn: #d6a64a;
+  --bad: #e06f69;
+  --warn-bg: rgba(198, 142, 36, 0.11);
+  --warn-border: rgba(214, 166, 74, 0.34);
 }

@@ -23,11 +23,11 @@
  *
  * The pure pieces (parseGen0Args / makeSpend) are exported + unit-tested; the battery itself is live.
  */
-import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { isCliEntry } from '../util/cli-entry';
 import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps } from './beekeeper-runner';
 import { seedCorpus, type TaskVariant, type CorpusCase, type Rubric } from './corpus';
 import { createMetricsCollector } from './collectors';
@@ -446,8 +446,9 @@ async function main(): Promise<void> {
   await runGen0Battery(parseGen0Args(process.argv.slice(2)));
 }
 
-// ESM main-module guard: run only when invoked directly, NEVER on import (so tests don't spend).
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// ESM main-module guard: run only when invoked directly, NEVER on import (so tests
+// don't spend) and NEVER when bundled into the desktop sidecar (see isCliEntry / EI-650).
+if (isCliEntry(import.meta.url)) {
   main()
     .then(() => process.exit(0))
     .catch((err) => {

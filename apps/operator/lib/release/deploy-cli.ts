@@ -23,7 +23,7 @@
  * `import` of this module is side-effect-free.
  */
 
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { releaseConfig, type ReleaseConfig } from './release-config';
 import {
   gatherPlan as realGatherPlan,
@@ -179,12 +179,10 @@ async function recordRefusedDeploy(targetSha: string): Promise<void> {
   });
 }
 
-// Run as the CLI only — the ESM equivalent of `require.main === module`. An
-// `import` of this module (a test, the release-trigger plan-parse) is
-// side-effect-free.
-const invokedAsCli =
-  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (invokedAsCli) {
+// Run as the CLI only — the ESM equivalent of `require.main === module`,
+// bundle-safe (see isCliEntry / EI-650). An `import` of this module (a test,
+// the release-trigger plan-parse) is side-effect-free.
+if (isCliEntry(import.meta.url)) {
   main()
     .then((code) => process.exit(code))
     .catch((e) => {

@@ -30,6 +30,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../workspace-registry';
+import { isCliEntry } from '../util/cli-entry';
 import {
   materializeBlueprintTriggers,
   triggerRoutineSpecs,
@@ -348,8 +349,9 @@ async function main(): Promise<void> {
   }
 }
 
-// Only run as a CLI (not when imported by a test).
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only run as a CLI (not when imported by a test, and NEVER when bundled into
+// the desktop sidecar — see isCliEntry / EI-650).
+if (isCliEntry(import.meta.url)) {
   main()
     .then(() => process.exit(0))
     .catch((e) => {

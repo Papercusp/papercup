@@ -67,7 +67,9 @@ const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'plugin', 'to
 /** Per-kind icon for the card badge + action button. */
 function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
   switch (kind) {
-    case 'harness': return <Globe size={size} />;
+    // harness listings are hive-bound (view-hive) on the Comb — the project
+    // hexagon matches the "Hives" label + the view-hive action icon.
+    case 'harness': return <Hexagon size={size} />;
     case 'blueprint': return <Boxes size={size} />;
     case 'plugin': return <Plug size={size} />;
     case 'tool-pack': return <Box size={size} />;
