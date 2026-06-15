@@ -57,6 +57,13 @@ export function SetupWizard({ mode }: Props) {
   // Workspace path is recorded server-side regardless of wizard
   // interaction (default `~/.papercusp/projects/` always works), so it
   // isn't part of the gate.
+  //
+  // `minimumMet` only governs the PRIMARY "Finish" affordance; even when
+  // it's false a "Skip for now" escape always finishes the wizard. The
+  // wizard must never trap a machine that can't (yet) satisfy the gate —
+  // app/page.tsx hard-redirects `/` → `/setup` until `finished_at` is set,
+  // so a gated-with-no-escape footer is a dead end (a fresh box with no
+  // coding agent, or an older build that still gated sign-in).
   const minimumMet =
     statuses['embedded-pg'] === 'ok' && statuses['agents'] === 'ok';
 
@@ -257,9 +264,24 @@ export function SetupWizard({ mode }: Props) {
                         : 'Mark setup complete'}
                   </button>
                 ) : (
-                  <span className="pc-setup-wizard__finish-hint">
-                    Finish unlocks after the database and a coding agent are ready.
-                  </span>
+                  <>
+                    <span className="pc-setup-wizard__finish-hint">
+                      The database and a coding agent aren’t ready yet — set them up
+                      to finish properly, or skip and do it later.
+                    </span>
+                    <button
+                      type="button"
+                      className="pc-btn"
+                      onClick={() => void finishWizard()}
+                      disabled={finishing}
+                    >
+                      {finishing
+                        ? 'Skipping…'
+                        : mode === 'first-run'
+                          ? 'Skip for now'
+                          : 'Mark complete anyway'}
+                    </button>
+                  </>
                 )}
               </div>
             </footer>

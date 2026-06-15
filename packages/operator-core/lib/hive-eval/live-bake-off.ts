@@ -43,11 +43,17 @@ export function liveBakeoffDeps(cfg: LiveBakeoffConfig): BakeoffDeps {
       const r = await setFlagOverride(key as FlagKey, value);
       if (!r.ok) throw new Error(`setFlagOverride(${key}=${value}) failed: ${r.reason}`);
     },
-    runBattery: async ({ scenarioIds, repeats }): Promise<ArmScore[]> => {
+    runBattery: async ({ scenarioIds, repeats, arm }): Promise<ArmScore[]> => {
       const scenarios = scenarioIds
         ? cfg.battery.scenarios.filter((s) => scenarioIds.includes(s.id))
         : cfg.battery.scenarios;
-      const config = { ...cfg.battery, scenarios, ...(repeats != null ? { repeats } : {}) };
+      // Per-arm instanceId so the two arms' runs don't collide on the deterministic run_id
+      // (run_id = instance×scenario×repeat; a shared instance would let treatment RESET baseline's
+      // run rows via startRun's ON CONFLICT). Each arm gets its own persisted run history.
+      const instance = arm
+        ? { ...cfg.battery.instance, instanceId: `${cfg.battery.instance.instanceId}-${arm}` }
+        : cfg.battery.instance;
+      const config = { ...cfg.battery, instance, scenarios, ...(repeats != null ? { repeats } : {}) };
       const result = await runHiveEvalGeneration(config, cfg.deps);
       // The composite + gate are the CANONICAL un-gameable scores (computeHiveScore) — taken
       // verbatim from the pipeline, never recomputed.

@@ -3487,6 +3487,16 @@ impl App {
                 self.plans_board_sel = self.plans_board_sel.saturating_sub(1);
                 self.fetch_selected_board_item_states()
             }
+            // Enter opens the selected plan's detail popup (owner ask 2026-06-15
+            // #1) — the same rich popup as the Fleet plan-progress panel, reusing
+            // the fleet-detail modal. No-op on an empty board.
+            KeyCode::Enter => {
+                if count > 0 {
+                    self.fleet_detail_open = true;
+                    self.fleet_detail_scroll = 0;
+                }
+                Action::Render
+            }
             KeyCode::Char('g') => Action::FetchPlansBoard,
             _ => Action::None,
         }
@@ -5872,6 +5882,13 @@ impl App {
         if self.tab == Tab::Plans {
             let len = self.visible_plans().len();
             self.plan_sel = step(self.plan_sel, delta, len);
+            return Action::Render;
+        }
+        // The pinned plans-pane (Tab::PlansBoard) reuses it too — step its board
+        // cursor (owner ask 2026-06-15 #1; the dock's "plans" pane).
+        if self.tab == Tab::PlansBoard {
+            let len = crate::plans_board::board_rows(self).len();
+            self.plans_board_sel = step(self.plans_board_sel, delta, len);
             return Action::Render;
         }
         match self.fleet.fleet_focus {
@@ -10472,6 +10489,31 @@ mod tests {
         a.update(ev(KeyCode::Char('j')));
         assert_eq!(a.plan_sel, 1);
         assert_eq!(a.selected_plan().unwrap().slug, "plan-y");
+        a.update(ev(KeyCode::Char('x')));
+        assert!(a.fleet_detail_open);
+        // Esc closes it.
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.fleet_detail_open);
+    }
+
+    #[test]
+    fn plans_board_pane_enter_opens_plan_detail_popup_and_steps() {
+        // Owner ask 2026-06-15 #1: the dock's plans-pane (Tab::PlansBoard) — the
+        // "plans tab" the user actually sees — gains the Enter→detail popup,
+        // reusing the fleet-detail modal.
+        let mut a = App::new();
+        a.tab = Tab::PlansBoard;
+        let mut p1 = plan("board-a");
+        p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
+        a.set_plans(vec![p1, plan("board-b")]);
+        assert!(!a.fleet_detail_open);
+        // Enter (routed to plans_board_key) opens the popup.
+        a.update(ev(KeyCode::Enter));
+        assert!(a.fleet_detail_open);
+        // j steps the board selection WITHIN the popup (modal); other keys swallowed.
+        let before = a.plans_board_sel;
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.plans_board_sel, before + 1);
         a.update(ev(KeyCode::Char('x')));
         assert!(a.fleet_detail_open);
         // Esc closes it.

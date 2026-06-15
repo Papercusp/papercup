@@ -2760,6 +2760,16 @@ fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
         };
         return (" plan · Esc close · j/k plan · PgUp/Dn scroll ", lines);
     }
+    // The dock's plans-pane (the pinned plans status board) reuses this popup for
+    // the selected plan's full detail (owner ask 2026-06-15 #1).
+    if app.tab == crate::app::Tab::PlansBoard {
+        let rows = crate::plans_board::board_rows(app);
+        let lines = match rows.get(app.plans_board_sel.min(rows.len().saturating_sub(1))) {
+            Some(r) => crate::fleet::plan_detail_lines_for(r.plan),
+            None => vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))],
+        };
+        return (" plan · Esc close · j/k plan · PgUp/Dn scroll ", lines);
+    }
     match app.fleet.fleet_focus {
         FleetPanel::Inbox | FleetPanel::Outbox => {
             let is_inbox = app.fleet.fleet_focus == FleetPanel::Inbox;

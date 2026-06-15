@@ -60,8 +60,10 @@ export interface BakeoffThresholds {
 }
 
 export interface BakeoffDeps {
-  /** Run the scored scenario battery once, returning a per-scenario ArmScore. Injected. */
-  runBattery: (opts: { scenarioIds?: string[]; repeats?: number }) => Promise<ArmScore[]>;
+  /** Run the scored scenario battery once, returning a per-scenario ArmScore. Injected. `arm` lets
+   *  the live runner scope a per-arm instanceId so the two arms' runs never collide on the
+   *  deterministic run_id (instance×scenario×repeat). */
+  runBattery: (opts: { scenarioIds?: string[]; repeats?: number; arm?: 'baseline' | 'treatment' }) => Promise<ArmScore[]>;
   /** Read the current value of a flag (to restore it afterward). Injected. */
   getFlag: (key: string) => Promise<boolean>;
   /** Override a flag on/off for the duration of one arm. Injected. */
@@ -126,9 +128,9 @@ export async function runFrameworkBakeOff(input: BakeoffInput, deps: BakeoffDeps
   const original = await deps.getFlag(input.flagKey);
   try {
     await deps.setFlag(input.flagKey, false);
-    const baselineScores = await deps.runBattery({ scenarioIds: input.scenarioIds, repeats: input.repeats });
+    const baselineScores = await deps.runBattery({ scenarioIds: input.scenarioIds, repeats: input.repeats, arm: 'baseline' });
     await deps.setFlag(input.flagKey, true);
-    const treatmentScores = await deps.runBattery({ scenarioIds: input.scenarioIds, repeats: input.repeats });
+    const treatmentScores = await deps.runBattery({ scenarioIds: input.scenarioIds, repeats: input.repeats, arm: 'treatment' });
 
     const baseline = summarizeArm('baseline', false, baselineScores);
     const treatment = summarizeArm('treatment', true, treatmentScores);

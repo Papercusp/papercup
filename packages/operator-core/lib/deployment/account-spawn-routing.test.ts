@@ -11,9 +11,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DRAIN_UTIL_STALE_MS,
   bindAccount,
   emptyPool,
   recordAccountPenalty,
+  recordAccountWindow,
   registerAccount,
   type AccountPool,
 } from './account-pool';
@@ -87,5 +89,32 @@ describe('selectSpawnAccount — deterministic, Queen-independent egress-account
   it('respects sticky prior-account affinity when still available (per-credential cache reuse)', async () => {
     h.pool = poolOf('a', 'b', 'c');
     expect(await selectSpawnAccount('ws', 'harness-x', 'c')).toBe('c');
+  });
+});
+
+describe('selectSpawnAccount — accurate header-derived budget signal does not mis-route (P-004 / D-002, post-usage-accuracy-fix D-004)', () => {
+  // Validates the spawn entry point against su-df00939e's usage-accuracy fix: the budget signal read
+  // by selectAccountForSpawn → selectAccountByDrain is `rate.utilization` written by recordAccountWindow
+  // (from the unified-5h header), gated by DRAIN_UTIL_STALE_MS freshness. A STALE/false 99% must NOT
+  // push spawns off a budgeted account; a FRESH near-budget reading MUST be honored.
+  it('a STALE high-utilization reading is ignored — a false-99% does NOT avoid a budgeted account', async () => {
+    const now = Date.now();
+    let p = poolOf('a', 'b');
+    // 'a' got a 99% reading long ago (the false-exhaustion scenario) — now stale → treated as empty.
+    p = recordAccountWindow(p, 'a', { utilization: 0.99 }, now - DRAIN_UTIL_STALE_MS - 60_000);
+    // 'b' has a FRESH mid reading.
+    p = recordAccountWindow(p, 'b', { utilization: 0.4 }, now);
+    h.pool = p;
+    // stale 'a' → drainUtil 0 (most-available) → still selectable; the false-99% did not mis-route.
+    expect(await selectSpawnAccount('ws', undefined)).toBe('a');
+  });
+
+  it('a FRESH near-budget reading IS honored — the spawn avoids it for a budgeted account', async () => {
+    const now = Date.now();
+    let p = poolOf('a', 'b');
+    p = recordAccountWindow(p, 'a', { utilization: 0.99 }, now); // genuinely near budget (fresh)
+    p = recordAccountWindow(p, 'b', { utilization: 0.2 }, now); // budgeted
+    h.pool = p;
+    expect(await selectSpawnAccount('ws', undefined)).toBe('b');
   });
 });

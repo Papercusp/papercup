@@ -69,6 +69,20 @@ describe('liveBakeoffDeps', () => {
     const passedConfig = h.runGen.mock.calls[0][0];
     expect(passedConfig.scenarios.map((sc: { id: string }) => sc.id)).toEqual(['wide-fanout']);
   });
+
+  it('runBattery scopes the instanceId per arm so the two arms do not collide on run_id', async () => {
+    h.runGen.mockResolvedValue({ scores: [] });
+    const armed = { ...cfg, battery: { ...cfg.battery, instance: { instanceId: 'bakeoff-x' } } };
+    await liveBakeoffDeps(armed).runBattery({ arm: 'treatment' });
+    expect(h.runGen.mock.calls[0][0].instance.instanceId).toBe('bakeoff-x-treatment');
+  });
+
+  it('runBattery leaves the instanceId untouched when no arm is given', async () => {
+    h.runGen.mockResolvedValue({ scores: [] });
+    const armed = { ...cfg, battery: { ...cfg.battery, instance: { instanceId: 'bakeoff-x' } } };
+    await liveBakeoffDeps(armed).runBattery({});
+    expect(h.runGen.mock.calls[0][0].instance.instanceId).toBe('bakeoff-x');
+  });
 });
 
 describe('buildBakeoffBatteryConfig', () => {
