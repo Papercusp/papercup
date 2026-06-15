@@ -91,7 +91,14 @@ function scoreSlug(slug: string, queryTokens: string[]): number {
   if (!slug) return 0;
   const lower = slug.toLowerCase();
   let hits = 0;
-  for (const q of queryTokens) if (lower.includes(q)) hits += 1;
+  for (const q of queryTokens) {
+    // Skip bare-numeric tokens (`2026`, `06`): nearly every slug carries a date
+    // stamp, so a numeric token would slug-match almost all plans and flood the
+    // results. A hyphenated date like `2026-06-09` is ONE token (the tokenizer
+    // keeps hyphens) and stays — it's a meaningful slug fragment.
+    if (/^\d+$/.test(q)) continue;
+    if (lower.includes(q)) hits += 1;
+  }
   return hits;
 }
 

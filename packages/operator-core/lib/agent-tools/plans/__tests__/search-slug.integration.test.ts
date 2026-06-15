@@ -151,6 +151,14 @@ describe('plans:search slug scope (F-FIX-028/029)', () => {
     expect(hits.some((h) => h.plan === SLUG_A)).toBe(true);
   });
 
+  it('does NOT slug-match a bare-numeric token (date-stamp flood guard)', async () => {
+    // Every seeded slug carries `-2026-06-14`; a bare `2026` query must NOT
+    // surface them via the slug scope (none mention 2026 in a scored scope).
+    const hits = await runSearch('2026');
+    expect(hits.some((h) => h.plan === SLUG_A)).toBe(false);
+    expect(hits.some((h) => h.plan === SLUG_C)).toBe(false);
+  });
+
   it('regression: a content-only token still matches via prose', async () => {
     const hits = await runSearch('zarquon');
     expect(hits.some((h) => h.plan === SLUG_B)).toBe(true);

@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781487245963-2c76053d",
+  "feature_id": "F-FIX-030",
+  "field": "__created",
+  "id": 943,
+  "new_value": "{\"id\":\"F-FIX-030\",\"title\":\"getOrgPg pg client rejects sql.json(object) (\\\"Received an instance of Object\\\") — silently broke replay-harness persistence + 4 other write paths in prod\",\"sourceIssueId\":\"EI-607\"}",
+  "old_value": "null",
+  "ts": 1781487436390
+}

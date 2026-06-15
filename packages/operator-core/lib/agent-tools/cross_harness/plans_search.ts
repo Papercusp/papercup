@@ -60,7 +60,12 @@ function scoreSlug(slug: string, queryTokens: string[]): number {
   if (!slug) return 0;
   const lower = slug.toLowerCase();
   let hits = 0;
-  for (const q of queryTokens) if (lower.includes(q)) hits += 1;
+  for (const q of queryTokens) {
+    // Skip bare-numeric tokens (`2026`, `06`) — date stamps in slugs would flood
+    // the results; a hyphenated date stays (one token). See plans:search.
+    if (/^\d+$/.test(q)) continue;
+    if (lower.includes(q)) hits += 1;
+  }
   return hits;
 }
 
