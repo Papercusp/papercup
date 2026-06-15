@@ -162,22 +162,40 @@ describe('blueprint dependencies vs the static tool catalog', () => {
     expect(BLUEPRINT_IDS.length).toBeGreaterThanOrEqual(14);
   });
 
-  it('every built-in (except the abstract parents) declares a dependencies block', () => {
-    // The end-state guard for official-blueprints-cupboard-publish P-002: the
-    // concrete built-ins declare deps (`audit` may be explicit-empty); only the
-    // ABSTRACT parents (`base`, `single-agent` — extends-merge REPLACES arrays, so a
-    // parent block would be wiped by every child anyway) go without one. A NEW
-    // concrete built-in must ship with its dependencies declared.
+  it('every built-in (except the abstract parents) declares or inherits a dependencies block', () => {
+    // The end-state guard for official-blueprints-cupboard-publish P-002: every
+    // concrete built-in has a resolvable deps surface — either declared in its own
+    // `blueprint.yaml` (`audit` may be explicit-empty) OR inherited wholesale through
+    // `extends` from a parent that declares one. The ABSTRACT parents (`base`,
+    // `single-agent`) go without — extends-merge REPLACES arrays, so a parent block
+    // would be wiped by every child anyway. `external-bench` is the inherit case: it
+    // `extends: coding` and deliberately overrides NOTHING (impartial-benchmark-suite
+    // -2026-06-15 D-004 — the benchmark arm is `coding` byte-for-byte), so it inherits
+    // coding's full deps without re-declaring them. A NEW concrete built-in must still
+    // ship its dependencies — declared, or inherited via an extends chain that has them.
     const undeclared = BLUEPRINT_IDS.filter((id) => {
       if (ABSTRACT_PARENTS.has(id)) return false;
       const raw = parseYaml(readFileSync(join(BLUEPRINTS_ROOT, id, 'blueprint.yaml'), 'utf8')) as
         | Record<string, unknown>
         | null;
-      return raw?.dependencies === undefined;
+      if (raw?.dependencies !== undefined) return false; // declared directly
+      if (raw?.extends === undefined) return true; // no own block and no parent → genuinely missing
+      // No own block but it extends a parent — exempt iff the merge chain actually
+      // provides a non-empty deps block (extending an abstract, dep-less parent leaves
+      // it empty → still flagged). Mirrors the runtime extends-merge the loader runs.
+      try {
+        const merged = loadBuiltinBlueprint(id).blueprint.dependencies;
+        const inherited =
+          !!merged &&
+          [merged.tools, merged.packs, merged.plugins].some((a) => Array.isArray(a) && a.length > 0);
+        return !inherited;
+      } catch {
+        return true; // can't resolve the chain → surface it as missing
+      }
     });
     expect(
       undeclared,
-      `built-ins missing a dependencies block (declare one — explicit-empty is fine): ${undeclared.join(', ')}`,
+      `built-ins missing a dependencies block (declare one — explicit-empty is fine — or inherit via extends): ${undeclared.join(', ')}`,
     ).toEqual([]);
   });
 

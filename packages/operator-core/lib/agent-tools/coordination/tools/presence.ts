@@ -27,7 +27,9 @@ export default defineTool({
     "List ACTIVE coordination agents (fresh heartbeat) and what they're doing. Defaults to your HIVE (the agents you actually coordinate with); pass scope=workspace|all for the wider admin/Queen view. Stale sessions (heartbeat >10 min) are summarised unless you pass include_stale.",
   guidance: {
     when: '"Who else is working right now, and on what?" — before starting work that might overlap. Default scope is your Hive; use scope=workspace/all for the whole box.',
-    notWhen: 'Checking whether a specific file is free — use locks:queue for that.',
+    notWhen: 'Checking whether a specific file is free — use locks:queue for that. Re-reading the roster every turn to track peers — the [coord+N] lifecycle deltas already carry intent/claim/completion transitions; tail those instead (see chaining).',
+    chaining:
+      'Read-once + tail (presence-v2 P-008/D-006): this snapshot is byte-stable (P-009 — identity+state carry no churning timestamps, one roster as_of). Read it ONCE when you need the roster, then rely on the [coord+N] lifecycle deltas (intent/claim/completion) for peer transitions rather than re-reading. The liveness scalar (lastActiveSecAgo) is point-in-time at as_of. Re-read after a context compaction so you never coordinate off a stale baseline (P-010).',
   },
   capability: 'coord:read',
   requirePrincipal: false,

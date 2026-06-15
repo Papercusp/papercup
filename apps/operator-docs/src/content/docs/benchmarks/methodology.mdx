@@ -88,7 +88,11 @@ is locked** (`@papercusp/bench-metrics`); the fleet-layer arm strings land with
   single-worker primitive — it spawns the `claude` CLI's own agent loop). Under the
   reframe this is the **L1 / serial-backlog floor**, not the headline.
 - **`baseline-c-bestofn`** — a single agent sampled N times with a test-verifier at a
-  matched token budget; proves the per-task tokens are justified.
+  matched token budget; proves the per-task tokens are justified. The verifier is
+  **visible-only by construction**: it receives a `VisibleTask` with `graderMeta`
+  stripped, so it literally cannot read `FAIL_TO_PASS` / the test patch / the grader —
+  it gates on repo-native existing tests + a repro authored from the problem statement.
+  This keeps best-of-N from peeking at the held-out grader.
 
 ### Fleet-layer arms (provisional vocab — owned by `P-025`)
 
@@ -190,23 +194,69 @@ must never secretly mean *"we spent 7×."*
   `resolved = NULL`, are **excluded from accuracy**, and are reported as separate
   counts — METR says retry first, never score an infra failure as a genuine fail.
 
+## L2 throughput & L3 value-capture
+
+**L2 — throughput.** Hand the *whole* benchmark to the Hive as a backlog and measure
+wall-clock speedup, tasks/\$, backlog-drain time, and autonomy (% completed with zero
+human gate) against the Queen-ablated fleet and the native serial floor (`P-024`).
+There is **no public fleet-throughput benchmark**, so the **speedup is our own measured
+number** — impartiality comes from public tasks + the external grader + the
+Queen-ablation control + pre-registration, never from a borrowed throughput score. The
+closest published analog is **OpenHands async / CAID** (arXiv 2603.21489 — dependency-aware
+concurrent branch-and-merge, the nearest prior art to a Queen+fleet); cite it for the
+*architecture*, **not** as a speedup source — it (and the OpenHands async-SWE blog)
+report **accuracy** gains, not throughput multipliers (D-011 §4). It also notes returns
+diminish once agent count exceeds the number of parallelizable subtasks — a result our
+own throughput curve should expect to reproduce.
+
+**L3 — value-capture.** Under a **fixed budget**, measure the dollar value of completed
+work the Queen's placement captures versus the naive scheduler. The runnable instrument
+is **SWE-Lancer** (arXiv 2502.12115 — \$1M of real freelance SWE tasks, public,
+**automated end-to-end test grading**), which reuses the L1 M1 diff→grader path
+directly (`P-027`). **UpBench** (arXiv 2511.12306) is proprietary to Upwork and
+**human-graded per submission** — not programmatically re-runnable — so it is cited as
+economic-framing motivation only, never run (D-011 §1).
+
 ## L4 coordination-quality (the MAST taxonomy)
 
-The most differentiated and most impartial Hive claim. The **MAST failure taxonomy**
-(NeurIPS 2025, from 1,600+ traces) found multi-agent systems fail **41–86%** of the
-time in production, with **token-duplication at 53–86%** and **interagent-misalignment
-at 36.9%**. We compute *our* duplication / coordination-breakdown / misalignment rates
-from the rollout + coordination traces (`P-010` captures the fleet/coordination events;
-`P-026` scores them) and report them against:
+The most differentiated and most impartial Hive claim — because *someone else* defined
+what counts as a coordination failure. The **MAST failure taxonomy** (arXiv 2503.13657,
+NeurIPS 2025; built from 1,600+ annotated traces across 7 MAS frameworks) defines
+**14 failure modes in 3 categories**: (i) **system-design**, (ii) **inter-agent
+misalignment**, (iii) **task verification**. The paper's headline finding — multi-agent
+systems fail a large fraction of the time in production, with substantial
+token/role-duplication and inter-agent-misalignment rates — is the third-party baseline
+we report against.
+
+<Aside type="danger" title="Two MAST prerequisites (D-011 §2) — do not skip">
+1. **License — re-implement, don't run their code.** The MAST repo has **no declared
+   license**. Citing the published numbers + methodology is fair use; **running their
+   LLM-judge notebook or redistributing derived results is not clean.** So we
+   **re-implement the published 14-mode / 3-category rubric through our own LLM-judge**
+   — this sidesteps the license entirely *and* keeps the metric impartial (the taxonomy
+   is fully published).
+2. **Verify the figures verbatim.** The exact baseline percentages (MAS-failure rate,
+   duplication, misalignment) must be re-confirmed against arXiv 2503.13657v2 at
+   publication time — **never paraphrased loosely** in an impartiality doc.
+3. **Trace schema is a cross-brief dependency.** `P-010`'s rollout/coordination-event
+   capture must emit our fleet events (locks, `work_items` dedup / redundancy-judge,
+   durable hand-offs, misalignment) in a **MAST-convertible shape**; `P-026` scores
+   them.
+</Aside>
+
+We compute *our* per-category rates and report them against three references:
 
 1. **The published MAS baseline** (third-party numbers — impartial by construction).
 2. **The Queen-ablated fleet** (our own naive scheduler).
-3. **Other orchestrators** (P-028 — OpenHands-async / CrewAI / LangGraph).
+3. **Other orchestrators** (P-028 — OpenHands-async / CrewAI / LangGraph; with
+   MultiAgentBench/MARBLE, MIT-licensed, cited for its topology framing — the Queen as
+   a *learned* scheduler vs MARBLE's fixed star/chain/tree/graph topologies).
 
 The Papercusp substrate is built to suppress exactly these failure modes — `locks`
 (no duplicate edits), `work_items` dedup / redundancy-judge (no duplicate work),
 durable hand-offs (no dropped context) — so this layer measures the substrate's
-designed-for benefit directly.
+designed-for benefit directly. As a **judge-graded** metric it is a coordination-quality
+*diagnostic*, reported alongside the automated-graded headlines, never as one.
 
 ## Contamination handling
 

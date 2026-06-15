@@ -217,7 +217,7 @@ afterEach(() => {
 });
 
 describe('AdvShell — strip + header', () => {
-  it('renders the title, kicker, and the full 12-tab strip for a single pot', async () => {
+  it('renders the title, kicker, and the full tab strip for a single pot', async () => {
     await renderShell();
     expect(screen.getByRole('heading', { name: 'Advanced' })).toBeTruthy();
     expect(screen.getByText('Advanced orchestration')).toBeTruthy();
@@ -233,7 +233,7 @@ describe('AdvShell — strip + header', () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.getAttribute('title'));
-    expect(tabs).toEqual(['Overview', 'Create', 'Working', 'Frames', 'Conversations', 'Learning', 'Evaluation']);
+    expect(tabs).toEqual(['Overview', 'Create', 'Working', 'Health', 'Frames', 'Conversations', 'Learning', 'Evaluation']);
     expect(screen.queryByText('sub-harnesses')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');

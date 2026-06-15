@@ -182,6 +182,10 @@ export interface HiveArmInput {
   mastVerdicts?: MastVerdict[];
 }
 
+function deltaOrNull(a: number | null, b: number | null): number | null {
+  return a != null && b != null ? a - b : null;
+}
+
 /** The headline coordination-failure rate for a MAST report: the judge's overall
  *  rate if available, else the summed objective substrate rates as a floor. */
 export function mastHeadlineRate(report: MastReport | null): number | null {
@@ -221,7 +225,10 @@ export function buildHiveReport(arms: readonly HiveArmInput[], opts: HiveReportO
     arm: a.summary.arm,
     throughput: throughputMetrics(a.summary, serialMs),
     value: a.taskValues ? valueMetrics(a.taskValues, a.summary.arm, opts.budgetUsd) : null,
-    mast: a.coordEvents ? mastRates(a.coordEvents, a.summary.arm, a.summary.tasks) : null,
+    mast:
+      a.coordEvents || a.mastVerdicts
+        ? scoreMast({ arm: a.summary.arm, tasks: a.summary.tasks, verdicts: a.mastVerdicts, trace: a.coordEvents })
+        : null,
   }));
 
   const byArm = new Map(reports.map((r) => [r.arm, r]));
@@ -236,8 +243,7 @@ export function buildHiveReport(arms: readonly HiveArmInput[], opts: HiveReportO
         base.throughput.resolvedPerHour > 0 ? hive.throughput.resolvedPerHour / base.throughput.resolvedPerHour : null,
       costRatio: base.throughput.costUsd > 0 ? hive.throughput.costUsd / base.throughput.costUsd : null,
       valueCapturedDelta: hive.value && base.value ? hive.value.valueCaptured - base.value.valueCaptured : null,
-      coordFailureRateDelta:
-        hive.mast && base.mast ? hive.mast.failureRatePerTask - base.mast.failureRatePerTask : null,
+      coordFailureRateDelta: deltaOrNull(mastHeadlineRate(hive.mast), mastHeadlineRate(base.mast)),
     };
   }
 
