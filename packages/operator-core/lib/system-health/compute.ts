@@ -837,15 +837,21 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
 }
 
 /**
- * Read surface for the `health.snapshot` resolver: the cached snapshot when
- * fresh, else a live tick (the correctness floor — opening the tab always
- * computes). Returns null when the feature flag is off.
+ * Read surface for the `health.snapshot` resolver. Stale-while-revalidate: a
+ * present snapshot is served INSTANTLY (the Health tab opens with no spinner);
+ * when it's past `maxAgeMs` we ALSO kick a background refresh (the tick
+ * invalidates `health.snapshot`, so the open tab updates over SSE). Only a COLD
+ * cache blocks on a live tick — the one-time correctness floor. Returns null when
+ * the feature flag is off.
  */
 export async function getSystemHealth(maxAgeMs = 30_000, workspaceId?: string): Promise<SystemHealth | null> {
   if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return null;
   const ws = workspaceId ?? activeWorkspaceId();
   const cached = cache.get(ws);
-  if (cached && Date.now() - cached.evaluatedAt <= maxAgeMs) return cached;
+  if (cached) {
+    if (Date.now() - cached.evaluatedAt > maxAgeMs) void runSystemHealthTick(ws).catch(() => {});
+    return cached;
+  }
   return runSystemHealthTick(ws);
 }
 

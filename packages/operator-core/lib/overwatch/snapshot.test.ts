@@ -77,8 +77,23 @@ describe('getOverwatchSnapshot', () => {
     expect(out).toEqual({ mapped: true, anomalies: [] });
   });
 
-  it('recomputes (one tick) when the cache is STALE', async () => {
-    h.lastSystemHealth.mockReturnValue(healthFixture('hive-old', Date.now() - 10 * 60_000));
+  it('serves the STALE cache INSTANTLY + refreshes in the background (stale-while-revalidate)', async () => {
+    const stale = healthFixture('hive-old', Date.now() - 10 * 60_000);
+    h.lastSystemHealth.mockReturnValue(stale);
+    h.runSystemHealthTick.mockResolvedValue(healthFixture('hive-new', Date.now()));
+
+    const out = await getOverwatchSnapshot();
+
+    // A background refresh is kicked (fire-and-forget; the open pane updates over SSE)…
+    expect(h.runSystemHealthTick).toHaveBeenCalledTimes(1);
+    // …but the brief is mapped from the STALE cache and returned WITHOUT awaiting a
+    // re-aggregation — the pane opens instantly, no spinner.
+    expect(h.mapSystemHealthToBrief).toHaveBeenCalledWith(stale, 'hive-old');
+    expect(out).toEqual({ mapped: true, anomalies: [] });
+  });
+
+  it('blocks ONLY on a cold cache (first read after boot) — then maps the fresh tick', async () => {
+    h.lastSystemHealth.mockReturnValue(null);
     const fresh = healthFixture('hive-new', Date.now());
     h.runSystemHealthTick.mockResolvedValue(fresh);
 

@@ -61,8 +61,16 @@ export async function getOverwatchSnapshot(opts?: {
   // SYSTEM_HEALTH_TAB here (that gates the tab/getSystemHealth) — the overwatch
   // brief stays on its OWN flag, surfaced via the pane's flag gate + control state.
   let health = lastSystemHealth(ws);
-  if (!health || Date.now() - health.evaluatedAt > maxAgeMs) {
+  if (!health) {
+    // Cold cache (first read after boot) — compute once, blocking, so the pane
+    // has SOMETHING to map. This is the ONLY path that ever waits.
     health = await runSystemHealthTick(ws).catch(() => null);
+  } else if (Date.now() - health.evaluatedAt > maxAgeMs) {
+    // Stale-while-revalidate: serve the last-known snapshot INSTANTLY (the pane
+    // opens with no spinner) and refresh in the BACKGROUND. runSystemHealthTick
+    // invalidates `overwatch.snapshot` when the status changes, so an open pane
+    // updates over SSE — this read never blocks on a full re-aggregation.
+    void runSystemHealthTick(ws).catch(() => {});
   }
 
   const hiveSlug = opts?.hiveSlug ?? health?.panels.queen.data?.hiveSlug ?? resolveHiveHomeSlug() ?? ws;

@@ -424,6 +424,22 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
           workspaceId: ws,
         });
 
+        // PIN the feature's workspace_id to `ws` (confirmed at the first real run). `liveHiveOps.seedFeature`
+        // relies on the `fill_ws_features` trigger to derive workspace_id from the member's project row — and
+        // for a throwaway bench member that row resolves to `default`, NOT the run's `ws` (papercusp-workspace).
+        // The placed bee's `work_items:claim_next` filters `workspace_id = <PAPERCUSP_WORKSPACE_ID=ws>` (the ws
+        // the driver threads to the spawn), so a `default`-scoped feature is INVISIBLE → the bee claims nothing,
+        // lists nothing, and exits taskless ($0). The spine-drive's addFeature already writes workspace_id
+        // explicitly (and works); the hive path must match. One targeted UPDATE keeps the shared seedFeature op
+        // untouched. (Same workspace-identity class as WI-148 — the trigger's derived ws ≠ the caller's ws.)
+        {
+          const sql = await sqlClient();
+          await sql`
+            UPDATE harness_shared.harness_features_consolidated
+               SET workspace_id = ${ws}, updated_ts = ${Date.now()}
+             WHERE harness_slug = ${member} AND feature_id = ${featureId}`;
+        }
+
         const enrolled: LiveEnrolledState = {
           task,
           member,
@@ -544,25 +560,41 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
     },
 
     async countInFlight() {
-      // "Still working" = a placed member whose latest bee spawn is still running. We do NOT use
-      // `hive_placements` (countInFlightPlacements) — confirmed at the first real run that the SCRIPTED
-      // executeBatch path writes NO hive_placements row (those come from the real Queen's placement flow),
-      // so that count was permanently 0 → the drain loop concluded "drained" the instant after placing and
-      // tore the bee down before it did any work ($0/0-turns/empty-diff). The driver owns the truth: count
-      // enrolled members that HAVE been placed (beeId set) AND whose bee `spawned_agents` row is still
-      // running/restarting. When every placed bee has exited (done/failed), the backlog is drained and we
-      // collect whatever each bee produced. A member never placed (beeId null) doesn't count as in-flight —
-      // it's still on the frontier and the place loop will pick it up.
+      // "Still working" — the drain-loop terminator. We do NOT use `hive_placements`
+      // (countInFlightPlacements): confirmed at the first real run the SCRIPTED executeBatch path writes NO
+      // hive_placements row (those come from the real Queen's flow), so that count was permanently 0 → the
+      // loop drained the instant after placing. We also can't use ONLY "bee spawn row is running", because
+      // there's a STARTUP WINDOW between executeBatch returning and the bee's spawned_agents row flipping to
+      // 'running' — confirmed at the first full-driver run: countInFlight saw 0 in that window and drained
+      // before the bee did any work ($0). So a placed member counts as IN-FLIGHT when its feature is NOT yet
+      // terminal AND no bee spawn has REACHED a terminal state for it (covers both "bee still running" and
+      // "bee placed but not yet recorded"). Once the bee finishes — feature → passed/escalated/blocked OR
+      // the bee spawn row is done/failed (a bee that exited without finishing must not hang the loop) — the
+      // member drops out and, when all do, the backlog is drained and we collect. Members never placed
+      // (beeId null) stay on the frontier, not in-flight.
       const sql = await sqlClient();
       const placedMembers = [...state.values()].filter((m) => m.beeId != null);
       if (placedMembers.length === 0) return 0;
       let inFlight = 0;
       for (const m of placedMembers) {
-        const rows = await sql<{ n: string }[]>`
-          SELECT count(*)::text AS n FROM harness_shared.spawned_agents
-           WHERE workspace_id = ${ws} AND harness_slug = ${m.member}
-             AND child_role = 'bee' AND status IN ('running', 'restarting')`;
-        if ((Number(rows[0]?.n ?? 0) || 0) > 0) inFlight++;
+        const [featRows, beeRows] = await Promise.all([
+          sql<{ status: string }[]>`
+            SELECT status FROM harness_shared.harness_features_consolidated
+             WHERE workspace_id = ${ws} AND harness_slug = ${m.member} AND feature_id = ${m.workItemId}
+             LIMIT 1`,
+          sql<{ running: string; terminal: string }[]>`
+            SELECT count(*) FILTER (WHERE status IN ('running','restarting'))::text AS running,
+                   count(*) FILTER (WHERE status IN ('done','failed','cancelled'))::text AS terminal
+              FROM harness_shared.spawned_agents
+             WHERE workspace_id = ${ws} AND harness_slug = ${m.member} AND child_role = 'bee'`,
+        ]);
+        const featTerminal = DONE_FEATURE_STATUSES.has(featRows[0]?.status ?? '') ||
+          ESCALATE_FEATURE_STATUSES.has(featRows[0]?.status ?? '');
+        const running = Number(beeRows[0]?.running ?? 0) || 0;
+        const terminal = Number(beeRows[0]?.terminal ?? 0) || 0;
+        // In-flight while: feature not terminal AND (a bee is running OR no bee has terminated yet — the
+        // startup-window grace). A terminated bee with a non-terminal feature = the bee gave up; not in-flight.
+        if (!featTerminal && (running > 0 || terminal === 0)) inFlight++;
       }
       return inFlight;
     },

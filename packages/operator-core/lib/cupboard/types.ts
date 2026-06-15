@@ -102,7 +102,10 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
 /** Human label for a kind's action button. */
 export const LISTING_ACTION_LABEL: Record<ListingAction, string> = {
   'view-hive': 'View Hive',
-  fork: 'Fork',
+  // Blueprint action: the op is an INSTALL (clone → validate → place in the installed
+  // tier, usable by harness:create / blueprint:extend) — labeled "Install" to match the
+  // route + toast, not "Fork" (which read as instantiating a running instance + confused).
+  fork: 'Install',
   install: 'Install',
 };
 

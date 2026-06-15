@@ -32,7 +32,7 @@ import { useParams, useRouter } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
 import {
   ShieldCheck, ExternalLink, Users, Clock, GitBranch,
-  ArrowLeft, Loader2, AlertTriangle, GitFork, Plug, Globe, Hexagon,
+  ArrowLeft, Loader2, AlertTriangle, Plug, Globe, Hexagon,
 } from 'lucide-react';
 import type { HarnessListing, ListingAction } from '@papercusp/operator-core/lib/cupboard/types';
 import {
@@ -54,7 +54,9 @@ import { toast } from 'sonner';
 function ActionIcon({ action, size = 14 }: { action: ListingAction | null; size?: number }) {
   switch (action) {
     case 'view-hive': return <Hexagon size={size} />;
-    case 'fork': return <GitFork size={size} />;
+    // Blueprint action: install (clone → installed tier). Same plug icon as plugin/pack
+    // install — the op IS an install (renamed from "Fork", which read as instantiating).
+    case 'fork': return <Plug size={size} />;
     case 'install': return <Plug size={size} />;
     default: return <Globe size={size} />;
   }
@@ -483,7 +485,7 @@ export default function CupboardDetailPage() {
         {/* Trust note for code-pulling kinds (D-007/D-009). */}
         {(action === 'fork' || action === 'install') && (
           <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
-            {action === 'fork' ? 'Forking' : 'Installing'} pulls code from this listing. Plugin capabilities are gated by manifest + your install-time consent; review the source on GitHub first.
+            Installing pulls code from this listing. Plugin capabilities are gated by manifest + your install-time consent; review the source on GitHub first.
           </p>
         )}
 

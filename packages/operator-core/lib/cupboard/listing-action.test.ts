@@ -82,9 +82,10 @@ describe('listingActionFor (row → consumer verb, comb-retire D-001/D-003)', ()
     }
   });
 
-  it('the label map is action-complete (View Hive/Fork/Install)', () => {
+  it('the label map is action-complete (blueprint fork action now labeled "Install")', () => {
     expect(LISTING_ACTION_LABEL['view-hive']).toBe('View Hive');
-    expect(LISTING_ACTION_LABEL.fork).toBe('Fork');
+    // The blueprint action is internally 'fork' but the op IS an install — labeled "Install".
+    expect(LISTING_ACTION_LABEL.fork).toBe('Install');
     expect(LISTING_ACTION_LABEL.install).toBe('Install');
   });
 });
