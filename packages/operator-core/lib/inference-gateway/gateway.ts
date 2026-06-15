@@ -352,10 +352,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (up.status === 429 || up.status === 529) {
         upstream429++;
         const reset = parseRateReset(hobj);
-        gov.penalize(reset);
-        // 5h-budget exhaustion (the unified window rejected, not a transient pace) → fail over to
-        // another account that still has budget, so the whole fleet doesn't stall until the reset.
-        if (gov.snapshot().unified?.rejected) {
+        const unifiedRejected = gov.snapshot().unified?.rejected === true;
+        // Penalize ONLY a classic 429 carrying its own retry-after/reset. Skip it for:
+        //  • a 529 — transient SERVER overload, not rate-limit budget; it must NOT pause the account;
+        //  • a unified (rolling-window) rejection — recordResponse already set the BOUNDED re-probe
+        //    pause, and penalizing to the full multi-hour unified reset is exactly the stale-pause /
+        //    false-exhaustion bug (the rolling 5h window recovers continuously).
+        //  • a bare framing-429 (no rate headers) — reset is empty, so this is a no-op anyway.
+        if (up.status === 429 && !unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
+          gov.penalize(reset);
+        }
+        // 5h-budget exhaustion (the unified window rejected) → fail over to another account that still
+        // has budget so the fleet doesn't stall; the exhausted account rejoins the rotation at its
+        // REAL reset (a rolling window the failover pool tracks separately from the bucket pause).
+        if (unifiedRejected) {
           const next = pool.onExhausted(active.accountId, reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000);
           if (next && next.accountId !== active.accountId) failovers++;
         }

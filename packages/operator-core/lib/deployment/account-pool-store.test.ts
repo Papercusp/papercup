@@ -20,6 +20,7 @@ import {
   registerAccount,
   bindAccount,
   recordAccountPenalty,
+  recordAccountWindow,
   getAccount,
   type AccountPool,
 } from './account-pool';
@@ -82,7 +83,7 @@ describe('handleAccountExhausted (P-021)', () => {
 
   it('sustained + fresh account → redeploys bound members on the fresh account + rebinds', async () => {
     let pool = bindAccount(poolOf('a', 'b'), 'a', 'h1');
-    pool = recordAccountPenalty(pool, 'a', T0, { pausedUntil: T0 + 31 * MIN }); // long pause = sustained
+    pool = recordAccountWindow(pool, 'a', { utilization: 1.01 }, T0); // genuinely over 5h budget = sustained
     const redeployed: { slug: string; credentialRef?: string; accountId?: string }[] = [];
     const res = (await handleAccountExhausted('a', 'ws', {
       now: () => T0,
@@ -103,8 +104,8 @@ describe('handleAccountExhausted (P-021)', () => {
 
   it('no fresh account available → does not provision', async () => {
     let pool = bindAccount(poolOf('a', 'b'), 'a', 'h1');
-    pool = recordAccountPenalty(pool, 'a', T0, { pausedUntil: T0 + 31 * MIN });
-    pool = recordAccountPenalty(pool, 'b', T0, { pausedUntil: T0 + 20 * MIN }); // b also paused
+    pool = recordAccountWindow(pool, 'a', { utilization: 1.01 }, T0); // a genuinely over budget
+    pool = recordAccountPenalty(pool, 'b', T0, { pausedUntil: T0 + 20 * MIN }); // b paused → no fresh account
     const res = await handleAccountExhausted('a', 'ws', {
       now: () => T0,
       loadPool: async () => pool,
@@ -117,7 +118,7 @@ describe('handleAccountExhausted (P-021)', () => {
 
   it('a local-only member template is reported per-member, not provisioned', async () => {
     let pool = bindAccount(poolOf('a', 'b'), 'a', 'h-local');
-    pool = recordAccountPenalty(pool, 'a', T0, { pausedUntil: T0 + 31 * MIN });
+    pool = recordAccountWindow(pool, 'a', { utilization: 1.01 }, T0); // genuinely over budget = sustained
     const res = (await handleAccountExhausted('a', 'ws', {
       now: () => T0,
       loadPool: async () => pool,
@@ -151,12 +152,17 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
       emitExhausted: (id) => emitCalls.push(id),
       log: () => {},
     });
-    // A real account-keyed governor pause for acct-1, far enough out to be "sustained".
-    getGovernor('anthropic', 'opus', undefined, 'acct-1').penalize({ retryAfterMs: 31 * MIN });
+    // A SUSTAINED burst of real account-keyed governor pauses for acct-1 (threshold = 3 in-window).
+    // A single pause is no longer "sustained" (D-003: that was the false-exhaustion trigger); it
+    // takes a genuine repeated-429 pattern (each penalty extends the pause so onPause re-fires).
+    const g = getGovernor('anthropic', 'opus', undefined, 'acct-1');
+    g.penalize({ retryAfterMs: 5 * MIN });
+    g.penalize({ retryAfterMs: 10 * MIN });
+    g.penalize({ retryAfterMs: 15 * MIN });
     await flush();
     expect(emitCalls).toEqual(['acct-1']);
     expect(scaleCalls).toEqual(['acct-1']);
-    expect(getAccount(pool, 'acct-1')!.rate.penaltyCount).toBe(1);
+    expect(getAccount(pool, 'acct-1')!.rate.penaltyCount).toBe(3);
   });
 
   it('a short (non-sustained) account pause records but does NOT scale out', async () => {

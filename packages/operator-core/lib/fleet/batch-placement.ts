@@ -18,6 +18,7 @@
  */
 import {
   rankBeesForTask,
+  type AffinityKind,
   type AffinityScore,
   type AffinityWeights,
   type PlacementBee,
@@ -57,6 +58,11 @@ export interface BatchPlacementInput {
   /** Max items to warm-inject onto a SINGLE bee in one batch. Default 2. */
   maxInjectPerBee?: number;
   weights?: AffinityWeights;
+  /** The hive blueprint's `affinity.kind` (hive-blueprint-generalization P-011) — selects
+   *  the weight preset (file-overlap = coding default; topic/entity for a generic hive).
+   *  An explicit `weights` still wins. The fleet:place_batch tool reads it from the hive
+   *  blueprint config. */
+  affinityKind?: AffinityKind;
   /** Injected clock for the recency signal (epoch ms). */
   now?: number;
 }
@@ -111,7 +117,11 @@ export function planBatchPlacement(input: BatchPlacementInput): BatchPlacementPl
     }
 
     // 1. Best warm-inject candidate: highest affinity with headroom in its list.
-    const ranked = rankBeesForTask(task, input.bees, { weights: input.weights, now: input.now });
+    const ranked = rankBeesForTask(task, input.bees, {
+      weights: input.weights,
+      affinityKind: input.affinityKind,
+      now: input.now,
+    });
     const best = ranked.find((s) => {
       if (s.score < minInjectAffinity) return false;
       const load = projectedLoad[s.bee] ?? 0;

@@ -137,9 +137,23 @@ describe('isAvailable / isSustainedlyLimited', () => {
     expect(isAvailable(getAccount(p, 'a')!, T0 + 6 * MIN)).toBe(true);
   });
 
-  it('a long pause (≥ longPauseMs ahead) is sustained immediately', () => {
+  it('a single long pause alone is NOT sustained (D-003 false-exhaustion fix)', () => {
+    // On Claude Max a single 429 routinely pauses to the multi-hour 5h/7d reset even when the account
+    // is not actually over budget — that used to flip it straight to "exhausted" (false scale-out).
     const p = recordAccountPenalty(poolOf('a'), 'a', T0, { pausedUntil: T0 + 31 * MIN });
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0)).toBe(false);
+  });
+
+  it('fresh unified utilization at/over cap IS sustained, and self-heals as the window recovers', () => {
+    let p = recordAccountWindow(poolOf('a'), 'a', { utilization: 1.01 }, T0);
     expect(isSustainedlyLimited(getAccount(p, 'a')!, T0)).toBe(true);
+    p = recordAccountWindow(p, 'a', { utilization: 0.7 }, T0 + MIN); // recovered below cap
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + MIN)).toBe(false);
+  });
+
+  it('stale utilization at cap is NOT sustained (only a fresh budget reading counts)', () => {
+    const p = recordAccountWindow(poolOf('a'), 'a', { utilization: 1.2 }, T0);
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + DRAIN_UTIL_STALE_MS + MIN)).toBe(false);
   });
 
   it('threshold penalties within the window is sustained; below it is not', () => {

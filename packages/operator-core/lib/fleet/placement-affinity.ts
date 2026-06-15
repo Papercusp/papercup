@@ -93,6 +93,33 @@ export const DEFAULT_AFFINITY_WEIGHTS: AffinityWeights = {
   queueSimilarity: 1,
 };
 
+/** The blueprint's `affinity.kind` (hive-blueprint-generalization Phase 3 schema). */
+export type AffinityKind = 'file-overlap' | 'topic-overlap' | 'entity-overlap';
+
+/**
+ * Affinity-kind weight presets (hive-blueprint-generalization P-011) — a hive's
+ * `affinity.kind` selects which signal dominates, the de-coding of the Queen's "cut on
+ * file-scope" into "cut on <scope-seam>". All keep explicit-intent on top and stay
+ * lexicographic (a fired higher signal outranks the sum of the lower ones):
+ *   - file-overlap (coding default): explicit 8 > file 4 > recent 2 > queue 1 (unchanged).
+ *   - topic-overlap (generic/research): a bee shares a SUBJECT, not files — title/subsystem
+ *     similarity (queue-similarity) dominates file overlap, which a repo-less bee lacks.
+ *   - entity-overlap: same-harness/work-list (the entity scope) dominates file overlap.
+ */
+export const AFFINITY_WEIGHTS_BY_KIND: Record<AffinityKind, AffinityWeights> = {
+  'file-overlap': DEFAULT_AFFINITY_WEIGHTS,
+  'topic-overlap': { explicitIntent: 8, fileOverlap: 1, recentActivity: 2, queueSimilarity: 4 },
+  'entity-overlap': { explicitIntent: 8, fileOverlap: 1, recentActivity: 4, queueSimilarity: 2 },
+};
+
+/** Resolve placement weights: an explicit `weights` wins; else the `affinityKind`
+ *  preset; else the file-overlap default (so existing callers are unchanged). */
+export function weightsForAffinity(opts: { weights?: AffinityWeights; affinityKind?: AffinityKind }): AffinityWeights {
+  if (opts.weights) return opts.weights;
+  if (opts.affinityKind) return AFFINITY_WEIGHTS_BY_KIND[opts.affinityKind];
+  return DEFAULT_AFFINITY_WEIGHTS;
+}
+
 /** The recency window: activity newer than FRESH_MS scores 1.0, decaying linearly to 0 at STALE_MS. */
 const RECENCY_FRESH_MS = 2 * 60_000;
 const RECENCY_STALE_MS = 30 * 60_000;
@@ -211,9 +238,9 @@ export function scoreQueueSimilarity(task: PlacementTask, bee: PlacementBee): nu
 export function scoreAffinity(
   task: PlacementTask,
   bee: PlacementBee,
-  opts: { weights?: AffinityWeights; now?: number } = {},
+  opts: { weights?: AffinityWeights; now?: number; affinityKind?: AffinityKind } = {},
 ): AffinityScore {
-  const w = opts.weights ?? DEFAULT_AFFINITY_WEIGHTS;
+  const w = weightsForAffinity(opts);
   const now = opts.now ?? 0;
   const signals: AffinitySignals = {
     explicitIntent: scoreExplicitIntent(task, bee),
@@ -242,7 +269,7 @@ export function scoreAffinity(
 export function rankBeesForTask(
   task: PlacementTask,
   bees: PlacementBee[],
-  opts: { weights?: AffinityWeights; now?: number } = {},
+  opts: { weights?: AffinityWeights; now?: number; affinityKind?: AffinityKind } = {},
 ): AffinityScore[] {
   const loadByBee = new Map(bees.map((b) => [b.ownerId, b.load]));
   return bees

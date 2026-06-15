@@ -8,6 +8,7 @@ import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
 import HealthTab from '../../components/adv/HealthTab';
 import OverwatchTab from '../../components/adv/OverwatchTab';
+import AdvQueenTab from '../../components/adv/AdvQueenTab';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
@@ -40,6 +41,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'harnesses') return 'Working';
   if (tab === 'health') return 'Health';
   if (tab === 'overwatch') return 'Overwatch';
+  if (tab === 'queen') return 'Queen';
   if (tab === 'frames') return 'Frames';
   if (tab === 'evals') return 'Evaluation';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
@@ -65,6 +67,10 @@ function renderAdvTab(tab: AdvTabId) {
       // The Overwatch supervisor's actionable view — brief + anomalies + nudges
       // (overwatch-role-2026-06-15 B-08, D-006). Flag-gated (OVERWATCH).
       return <OverwatchTab />;
+    case 'queen':
+      // The owner's Queen steering panel — focus plans + directive + pause
+      // (queen-steering-panel-2026-06-15 B-04).
+      return <AdvQueenTab />;
     case 'frames':
       // Swarm live view — per-agent-display thumbnails from deployed frames
       // (hive-frame-desktops-live-view P-006).

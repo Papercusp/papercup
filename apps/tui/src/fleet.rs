@@ -133,14 +133,15 @@ pub struct FleetState {
     pub show_comms: bool,
     /// Fleet-pane panel focus + per-panel cursors/scroll (owner ask 2026-06-14):
     /// which panel takes keys, the cursor into the SELECTED bee's inbox/outbox
-    /// (rendered newest-first, so 0 = newest), and the scroll offsets for the
-    /// default-view dossier + plan-progress panels. The conversations panel
-    /// reuses `App::conversation_sel`.
+    /// (rendered newest-first, so 0 = newest), the scroll offset for the
+    /// default-view dossier panel, and the SELECTION cursor into the
+    /// plan-progress list (↑/↓ move it, Enter opens that plan's detail popup —
+    /// owner ask 2026-06-15). The conversations panel reuses `App::conversation_sel`.
     pub fleet_focus: FleetPanel,
     pub comms_inbox_sel: usize,
     pub comms_outbox_sel: usize,
     pub dossier_scroll: u16,
-    pub plan_progress_scroll: u16,
+    pub plan_progress_sel: usize,
     /// Whole-fleet assignments (every bee's ranked work-list), for the DEFAULT
     /// dossier when no agent is selected (#2: "show all tasks from the fleet").
     /// Refreshed on Fleet entry + periodically. A selection narrows to one bee's
@@ -161,7 +162,7 @@ impl Default for FleetState {
             comms_inbox_sel: 0,
             comms_outbox_sel: 0,
             dossier_scroll: 0,
-            plan_progress_scroll: 0,
+            plan_progress_sel: 0,
             all_assignments: Vec::new(),
         }
     }
@@ -797,17 +798,14 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     f.render_stateful_widget(list, body_area, &mut state);
 }
 
-/// Fleet-wide plan progress — one bar per live plan, ordered by priority desc
-/// then by remaining work desc (the plans that need attention float up). With an
-/// agent selected in the roster (#2), narrows to the plans that agent is linked
-/// to (declared plan + claim plan-slugs from `fleet:assignments`).
-fn draw_plan_progress(
-    f: &mut Frame,
-    app: &App,
-    agg: &FleetAggregate,
-    area: Rect,
-    focused: bool,
-) {
+/// The ordered plan list shown in the Plan Progress panel: live (non-archived)
+/// plans that have items, ordered priority desc then remaining-work desc (the
+/// plans that need attention float up). With an agent selected in the roster
+/// (#2), narrows to the plans that agent is linked to (declared plan + claim
+/// plan-slugs from `fleet:assignments`). Shared by the renderer and the
+/// Enter-to-open-detail selection so the highlighted row and the popup never
+/// describe different plans.
+pub(crate) fn plan_progress_list(app: &App) -> Vec<&crate::models::PlanSummary> {
     // The selected agent's plan-set (None = no selection → whole fleet). Prefer
     // the whole-fleet snapshot; fall back to the per-bee dossier fetch.
     let agent_plans: Option<std::collections::HashSet<&str>> =
@@ -838,6 +836,117 @@ fn draw_plan_progress(
             .cmp(&a.priority.unwrap_or(0))
             .then(b.item_counts.remaining().cmp(&a.item_counts.remaining()))
     });
+    plans
+}
+
+/// The detail-popup body for the plan under the plan-progress cursor (owner ask
+/// 2026-06-15): identity (slug/title/status/priority/owner/harness/updated), the
+/// full per-status item breakdown with a progress bar, and the plan's `## Now`
+/// next action. Reuses `plan_progress_list` + `fleet.plan_progress_sel` so the
+/// popup always describes the SAME plan the panel highlights. `(no plan
+/// selected)` when the list is empty.
+pub(crate) fn plan_detail_lines(app: &App) -> Vec<Line<'static>> {
+    let plans = plan_progress_list(app);
+    let Some(p) = plans.get(app.fleet.plan_progress_sel.min(plans.len().saturating_sub(1))) else {
+        return vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))];
+    };
+    let c = &p.item_counts;
+    let title = if p.title.is_empty() {
+        p.slug.clone()
+    } else {
+        p.title.clone()
+    };
+    let mut out = vec![
+        Line::from(Span::styled(title, Theme::title_active())),
+        Line::from(vec![
+            Span::styled("slug     ", Theme::dim()),
+            Span::raw(p.slug.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("status   ", Theme::dim()),
+            Span::raw(if p.status.is_empty() {
+                "—".to_string()
+            } else {
+                p.status.clone()
+            }),
+            Span::styled("    priority  ", Theme::dim()),
+            Span::raw(
+                p.priority
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "—".to_string()),
+            ),
+        ]),
+    ];
+    if let Some(owner) = p.owner.clone().filter(|s| !s.is_empty()) {
+        out.push(Line::from(vec![
+            Span::styled("owner    ", Theme::dim()),
+            Span::raw(owner),
+        ]));
+    }
+    if let Some(h) = p.harness.clone().filter(|s| !s.is_empty()) {
+        out.push(Line::from(vec![
+            Span::styled("harness  ", Theme::dim()),
+            Span::raw(h),
+        ]));
+    }
+    if !p.updated.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled("updated  ", Theme::dim()),
+            Span::raw(p.updated.clone()),
+        ]));
+    }
+    out.push(Line::from(Span::styled("─".repeat(44), Theme::dim())));
+    out.push(Line::from(vec![
+        Span::styled("progress ", Theme::dim()),
+        Span::styled(progress_bar(c.done, c.total(), 16), Theme::selected()),
+        Span::raw(format!(
+            " {}/{} done · {} remaining",
+            c.done,
+            c.total(),
+            c.remaining()
+        )),
+    ]));
+    // Per-status breakdown — only the buckets that have items, so the popup stays
+    // compact for a simple plan.
+    let buckets = [
+        ("todo", c.todo),
+        ("wip", c.wip),
+        ("blocked", c.blocked),
+        ("needs-human", c.needs_human),
+        ("done", c.done),
+        ("dropped", c.dropped),
+        ("unknown", c.unknown),
+    ];
+    for (label, n) in buckets.into_iter().filter(|(_, n)| *n > 0) {
+        out.push(Line::from(vec![
+            Span::styled(format!("  {label:<12}"), Theme::dim()),
+            Span::raw(n.to_string()),
+        ]));
+    }
+    if let Some(next) = p.next_action.clone().filter(|s| !s.is_empty()) {
+        out.push(Line::from(Span::styled("─".repeat(44), Theme::dim())));
+        out.push(Line::from(Span::styled("next", Theme::info())));
+        for l in next.lines() {
+            out.push(Line::from(l.to_string()));
+        }
+    }
+    out
+}
+
+/// Fleet-wide plan progress — one bar per live plan from `plan_progress_list`.
+/// A SELECTABLE list (owner ask 2026-06-15): the `fleet.plan_progress_sel` cursor
+/// highlights the plan Enter opens in a detail popup, and a `ListState` gives the
+/// highlight + auto-scroll (same idiom as the roster). With an agent selected in
+/// the roster (#2) the list narrows to that agent's plans; Esc clears.
+fn draw_plan_progress(
+    f: &mut Frame,
+    app: &App,
+    agg: &FleetAggregate,
+    area: Rect,
+    focused: bool,
+) {
+    let plans = plan_progress_list(app);
+    let agent_filtered = app.bee.owner_id.is_some();
 
     let items: Vec<ListItem> = plans
         .iter()
@@ -850,9 +959,10 @@ fn draw_plan_progress(
             ]))
         })
         .collect();
-    let body = if items.is_empty() {
+    let empty = items.is_empty();
+    let body = if empty {
         vec![ListItem::new(Line::from(Span::styled(
-            if agent_plans.is_some() {
+            if agent_filtered {
                 "(no plans for this agent — Esc for the whole fleet)"
             } else {
                 "(no plan items)"
@@ -863,7 +973,7 @@ fn draw_plan_progress(
         items
     };
     let title = match app.bee.name.as_deref().or(app.bee.owner_id.as_deref()) {
-        Some(who) if agent_plans.is_some() => {
+        Some(who) if agent_filtered => {
             format!(" Plan progress — {} (Esc clears) ", trunc(who, 24))
         }
         _ => format!(
@@ -871,14 +981,20 @@ fn draw_plan_progress(
             agg.plan_items_done, agg.plan_items_total
         ),
     };
-    // Inner height ≈ the bordered area minus the top + bottom border rows.
-    let shown = scroll_clamp(body, app.fleet.plan_progress_scroll, area.height.saturating_sub(2));
-    f.render_widget(
-        List::new(shown)
-            .style(Theme::panel())
-            .block(Theme::block(Line::from(title), focused)),
-        area,
-    );
+    // Clamp the cursor against a shrinking list (an agent selection can narrow
+    // it). No separate scroll offset — ListState auto-scrolls to the selection.
+    let mut state = ListState::default();
+    if !empty {
+        state.select(Some(
+            app.fleet.plan_progress_sel.min(plans.len().saturating_sub(1)),
+        ));
+    }
+    let list = List::new(body)
+        .style(Theme::panel())
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ")
+        .block(Theme::block(Line::from(title), focused));
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 /// Mirror mode: the raw fleet-wide activity firehose, newest-first.

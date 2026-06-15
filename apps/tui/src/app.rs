@@ -32,7 +32,7 @@ pub const CONV_STATES: [&str; 4] = ["open", "resolved", "closed", "all"];
 /// `conv_kind_idx` indexes this array. "all" sends no `kind` param.
 pub const CONV_KINDS: [&str; 3] = ["all", "question", "discussion"];
 /// Rows the comms detail popup scrolls per PageDown/PageUp (owner ask 2026-06-14).
-pub const COMMS_DETAIL_SCROLL_STEP: u16 = 6;
+pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 
 /// What the run-loop should do after handling one event.
 /// (No `Eq`: `VoiceChan(VoiceCmd)` carries a `serde_json::Value` for prefs
@@ -1229,13 +1229,14 @@ pub struct App {
     pub plan_filter: BTreeSet<String>,
     pub plan_filter_open: bool,
     pub plan_filter_sel: usize,
-    /// Comms-overlay detail popup (owner ask 2026-06-14): true while a mail/
-    /// conversation detail is open over the Fleet comms view. Modal — Esc/`q`
-    /// close, `j`/`k` step to the next/prev item, PageUp/PageDown scroll the
-    /// body. `comms_detail_scroll` is the body's row offset (reset on open + on
-    /// item change; clamped to the content at render). Transient; not persisted.
-    pub comms_detail_open: bool,
-    pub comms_detail_scroll: u16,
+    /// Fleet-panel detail popup (owner ask 2026-06-14): true while a detail view
+    /// is open over the Fleet pane — a mail/conversation (comms view) or a plan
+    /// (plan-progress panel). Modal — Esc/`q` close, `j`/`k` step to the next/prev
+    /// item, PageUp/PageDown scroll the body. `fleet_detail_scroll` is the body's
+    /// row offset (reset on open + on item change; clamped to the content at
+    /// render). Transient; not persisted.
+    pub fleet_detail_open: bool,
+    pub fleet_detail_scroll: u16,
     /// First-run tutorial overlay (P9). `show_tutorial` is set true at startup
     /// when the device hasn't completed it (and re-openable via F1);
     /// `tutorial_step` is the current 0-based step. Default hidden so tests and
@@ -1552,8 +1553,8 @@ impl App {
             plan_filter: BTreeSet::new(),
             plan_filter_open: false,
             plan_filter_sel: 0,
-            comms_detail_open: false,
-            comms_detail_scroll: 0,
+            fleet_detail_open: false,
+            fleet_detail_scroll: 0,
             show_tutorial: false,
             tutorial_step: 0,
             notifs: Vec::new(),
@@ -4290,24 +4291,24 @@ impl App {
         // close; `j`/`k` (↓/↑) step to the next/prev item WITHIN the focused
         // panel (clamped — no fall-through here, the popup stays on one list);
         // every other key is swallowed so it can't drive the dock underneath.
-        if self.comms_detail_open {
+        if self.fleet_detail_open {
             return match code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
-                    self.comms_detail_open = false;
+                    self.fleet_detail_open = false;
                     Action::Render
                 }
-                KeyCode::Char('j') | KeyCode::Down => self.comms_detail_step(1),
-                KeyCode::Char('k') | KeyCode::Up => self.comms_detail_step(-1),
+                KeyCode::Char('j') | KeyCode::Down => self.fleet_detail_step(1),
+                KeyCode::Char('k') | KeyCode::Up => self.fleet_detail_step(-1),
                 // PageDown/PageUp scroll a long body/thread; render clamps to the
                 // content so PageDown can't run off the end (owner ask 2026-06-14).
                 KeyCode::PageDown => {
-                    self.comms_detail_scroll =
-                        self.comms_detail_scroll.saturating_add(COMMS_DETAIL_SCROLL_STEP);
+                    self.fleet_detail_scroll =
+                        self.fleet_detail_scroll.saturating_add(FLEET_DETAIL_SCROLL_STEP);
                     Action::Render
                 }
                 KeyCode::PageUp => {
-                    self.comms_detail_scroll =
-                        self.comms_detail_scroll.saturating_sub(COMMS_DETAIL_SCROLL_STEP);
+                    self.fleet_detail_scroll =
+                        self.fleet_detail_scroll.saturating_sub(FLEET_DETAIL_SCROLL_STEP);
                     Action::Render
                 }
                 _ => Action::Render,
@@ -5154,7 +5155,7 @@ impl App {
                 // Reset to the roster on every toggle so the view opens in a
                 // known place, and drop any stale detail popup (owner ask 2026-06-14).
                 self.fleet.fleet_focus = crate::fleet::FleetPanel::Roster;
-                self.comms_detail_open = false;
+                self.fleet_detail_open = false;
                 // The conversations half reuses the Conversations-tab data —
                 // lazy-load it the first time the comms view opens.
                 if self.fleet.show_comms
@@ -5657,45 +5658,57 @@ impl App {
                 self.fleet.dossier_scroll = scroll_step(self.fleet.dossier_scroll, delta);
             }
             PlanProgress => {
-                self.fleet.plan_progress_scroll =
-                    scroll_step(self.fleet.plan_progress_scroll, delta);
+                let len = crate::fleet::plan_progress_list(self).len();
+                self.fleet.plan_progress_sel =
+                    sel_step(self.fleet.plan_progress_sel, delta, len);
             }
         }
     }
 
     /// Enter on the focused Fleet panel: roster → reach the agent;
     /// inbox/outbox/conversations → open the detail popup (conversations also
-    /// fetch the thread); the dossier / plan-progress panels have no detail yet.
+    /// fetch the thread); plan-progress → open the selected plan's detail popup
+    /// (owner ask 2026-06-15). The dossier (a multi-bee scrolled list) has no
+    /// per-row detail.
     fn fleet_enter_focused(&mut self) -> Action {
         use crate::fleet::FleetPanel::*;
         match self.fleet.fleet_focus {
             Roster => self.fleet_enter(),
             Inbox | Outbox => {
                 if self.selected_comms_mail().is_some() {
-                    self.comms_detail_open = true;
-                    self.comms_detail_scroll = 0;
+                    self.fleet_detail_open = true;
+                    self.fleet_detail_scroll = 0;
                 }
                 Action::Render
             }
             Conversations => {
                 if self.selected_conversation().is_some() {
-                    self.comms_detail_open = true;
-                    self.comms_detail_scroll = 0;
+                    self.fleet_detail_open = true;
+                    self.fleet_detail_scroll = 0;
                     return self.conv_open_detail();
                 }
                 Action::Render
             }
-            Dossier | PlanProgress => Action::Render,
+            PlanProgress => {
+                // Only open when there's a plan to describe — an empty panel's
+                // Enter is a no-op (matches the comms panels' guarded open).
+                if !crate::fleet::plan_progress_list(self).is_empty() {
+                    self.fleet_detail_open = true;
+                    self.fleet_detail_scroll = 0;
+                }
+                Action::Render
+            }
+            Dossier => Action::Render,
         }
     }
 
     /// `j`/`k` while the comms detail popup is open: step WITHIN the focused panel
     /// (clamped — no fall-through, the popup stays on one list); conversations
     /// refetch the newly-selected thread.
-    fn comms_detail_step(&mut self, delta: isize) -> Action {
+    fn fleet_detail_step(&mut self, delta: isize) -> Action {
         use crate::fleet::FleetPanel::*;
         // A new item starts at the top of the popup.
-        self.comms_detail_scroll = 0;
+        self.fleet_detail_scroll = 0;
         let step = |cur: usize, delta: isize, len: usize| -> usize {
             if len == 0 {
                 return 0;
@@ -5722,7 +5735,13 @@ impl App {
                 self.conversation_sel = step(self.conversation_sel, delta, len);
                 self.conv_open_detail()
             }
-            Roster | Dossier | PlanProgress => Action::Render,
+            PlanProgress => {
+                let len = crate::fleet::plan_progress_list(self).len();
+                self.fleet.plan_progress_sel =
+                    step(self.fleet.plan_progress_sel, delta, len);
+                Action::Render
+            }
+            Roster | Dossier => Action::Render,
         }
     }
 
@@ -10156,10 +10175,16 @@ mod tests {
     }
 
     #[test]
-    fn fleet_default_view_cycles_and_scrolls_dossier_and_plans() {
+    fn fleet_default_view_cycles_dossier_scroll_and_plan_select() {
         use crate::fleet::FleetPanel;
         let mut a = App::new();
         a.tab = Tab::Fleet; // comms OFF (default) → Roster → Dossier → PlanProgress
+        // Two live plans so the plan-progress list is non-empty + selectable.
+        let mut p1 = plan("plan-a");
+        p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
+        let mut p2 = plan("plan-b");
+        p2.item_counts = crate::models::ItemCounts { todo: 1, done: 1, ..Default::default() };
+        a.set_plans(vec![p1, p2]);
         assert!(!a.fleet.show_comms);
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
         a.update(ev(KeyCode::Char('l')));
@@ -10173,10 +10198,53 @@ mod tests {
         assert_eq!(a.fleet.dossier_scroll, 0);
         a.update(ev(KeyCode::Char('l'))); // → PlanProgress
         assert_eq!(a.fleet.fleet_focus, FleetPanel::PlanProgress);
+        // j/k now move a SELECTION cursor over the plan list (2 plans), clamped.
         a.update(ev(KeyCode::Char('j')));
-        assert_eq!(a.fleet.plan_progress_scroll, 1);
+        assert_eq!(a.fleet.plan_progress_sel, 1);
+        a.update(ev(KeyCode::Char('j'))); // clamp at the last plan
+        assert_eq!(a.fleet.plan_progress_sel, 1);
+        a.update(ev(KeyCode::Char('k')));
+        assert_eq!(a.fleet.plan_progress_sel, 0);
         a.update(ev(KeyCode::Char('l'))); // wrap → Roster
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
+    }
+
+    #[test]
+    fn plan_progress_enter_opens_detail_popup_and_steps_plans() {
+        use crate::fleet::FleetPanel;
+        let mut a = App::new();
+        a.tab = Tab::Fleet; // default (comms-off) view
+        let mut p1 = plan("plan-alpha");
+        p1.item_counts =
+            crate::models::ItemCounts { todo: 3, done: 2, ..Default::default() };
+        let mut p2 = plan("plan-beta");
+        p2.item_counts =
+            crate::models::ItemCounts { todo: 1, wip: 1, ..Default::default() };
+        a.set_plans(vec![p1, p2]);
+        // Cycle focus to the plan-progress panel (Roster → Dossier → PlanProgress).
+        a.update(ev(KeyCode::Char('l')));
+        a.update(ev(KeyCode::Char('l')));
+        assert_eq!(a.fleet.fleet_focus, FleetPanel::PlanProgress);
+        // Enter opens the detail popup for the highlighted plan.
+        assert!(!a.fleet_detail_open);
+        a.update(ev(KeyCode::Enter));
+        assert!(a.fleet_detail_open);
+        // The popup body describes the selected plan (sel 0 → most remaining first).
+        let body: String = crate::fleet::plan_detail_lines(&a)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(body.contains("plan-alpha"), "popup should name the selected plan: {body}");
+        // Modal: j steps to the next plan WITHIN the popup; an unrelated key is
+        // swallowed (can't drive the dock underneath).
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.fleet.plan_progress_sel, 1);
+        a.update(ev(KeyCode::Char('x')));
+        assert!(a.fleet_detail_open);
+        // Esc closes it.
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.fleet_detail_open);
     }
 
     #[test]
@@ -10198,16 +10266,16 @@ mod tests {
     fn comms_enter_opens_detail_and_esc_closes() {
         let mut a = comms_app();
         a.update(ev(KeyCode::Char('l'))); // focus Inbox
-        assert!(!a.comms_detail_open);
+        assert!(!a.fleet_detail_open);
         a.update(ev(KeyCode::Enter));
-        assert!(a.comms_detail_open);
+        assert!(a.fleet_detail_open);
         assert!(a.selected_comms_mail().is_some());
         // Modal: a non-navigation key is swallowed, popup stays open.
         a.update(ev(KeyCode::Char('x')));
-        assert!(a.comms_detail_open);
+        assert!(a.fleet_detail_open);
         // Esc closes it.
         a.update(ev(KeyCode::Esc));
-        assert!(!a.comms_detail_open);
+        assert!(!a.fleet_detail_open);
     }
 
     #[test]
@@ -10216,12 +10284,12 @@ mod tests {
         let mut a = comms_app();
         a.fleet.fleet_focus = FleetPanel::Conversations;
         let act = a.update(ev(KeyCode::Enter));
-        assert!(a.comms_detail_open);
+        assert!(a.fleet_detail_open);
         assert!(matches!(act, Action::FetchConversationDetail { .. }));
     }
 
     #[test]
-    fn comms_detail_step_stays_within_focused_panel() {
+    fn fleet_detail_step_stays_within_focused_panel() {
         use crate::fleet::FleetPanel;
         let mut a = comms_app();
         a.update(ev(KeyCode::Char('l'))); // Inbox
@@ -10233,7 +10301,7 @@ mod tests {
         assert_eq!((a.fleet.fleet_focus, a.fleet.comms_inbox_sel), (FleetPanel::Inbox, 1));
         a.update(ev(KeyCode::Char('k')));
         assert_eq!(a.fleet.comms_inbox_sel, 0);
-        assert!(a.comms_detail_open);
+        assert!(a.fleet_detail_open);
     }
 
     #[test]
@@ -10244,7 +10312,7 @@ mod tests {
         a.update(ev(KeyCode::Char('c'))); // toggle comms OFF
         assert!(!a.fleet.show_comms);
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
-        assert!(!a.comms_detail_open);
+        assert!(!a.fleet_detail_open);
         // Toggling back ON also lands on the roster (a known starting place).
         a.update(ev(KeyCode::Char('c')));
         assert!(a.fleet.show_comms);
@@ -10252,36 +10320,36 @@ mod tests {
     }
 
     #[test]
-    fn comms_detail_popup_is_modal_swallows_other_keys() {
+    fn fleet_detail_popup_is_modal_swallows_other_keys() {
         // While the detail popup is open, unrelated keys (e.g. `c`/`n`) are
         // swallowed so they can't drive the dock underneath — Esc closes first.
         let mut a = comms_app();
         a.update(ev(KeyCode::Char('l')));
         a.update(ev(KeyCode::Enter)); // open the popup
-        assert!(a.comms_detail_open);
+        assert!(a.fleet_detail_open);
         let show_before = a.fleet.show_comms;
         a.update(ev(KeyCode::Char('c'))); // swallowed — does NOT toggle comms
-        assert!(a.comms_detail_open);
+        assert!(a.fleet_detail_open);
         assert_eq!(a.fleet.show_comms, show_before);
     }
 
     #[test]
-    fn comms_detail_scroll_pages_and_resets_on_item_change() {
+    fn fleet_detail_scroll_pages_and_resets_on_item_change() {
         let mut a = comms_app();
         a.update(ev(KeyCode::Char('l'))); // Inbox
         a.update(ev(KeyCode::Enter)); // open popup
-        assert_eq!(a.comms_detail_scroll, 0);
+        assert_eq!(a.fleet_detail_scroll, 0);
         a.update(ev(KeyCode::PageDown));
-        assert_eq!(a.comms_detail_scroll, COMMS_DETAIL_SCROLL_STEP);
+        assert_eq!(a.fleet_detail_scroll, FLEET_DETAIL_SCROLL_STEP);
         a.update(ev(KeyCode::PageDown));
-        assert_eq!(a.comms_detail_scroll, 2 * COMMS_DETAIL_SCROLL_STEP);
+        assert_eq!(a.fleet_detail_scroll, 2 * FLEET_DETAIL_SCROLL_STEP);
         a.update(ev(KeyCode::PageUp));
-        assert_eq!(a.comms_detail_scroll, COMMS_DETAIL_SCROLL_STEP);
+        assert_eq!(a.fleet_detail_scroll, FLEET_DETAIL_SCROLL_STEP);
         // Stepping to another item resets the scroll to the top.
         a.update(ev(KeyCode::Char('j')));
-        assert_eq!(a.comms_detail_scroll, 0);
+        assert_eq!(a.fleet_detail_scroll, 0);
         // PageUp saturates at 0 (no underflow).
         a.update(ev(KeyCode::PageUp));
-        assert_eq!(a.comms_detail_scroll, 0);
+        assert_eq!(a.fleet_detail_scroll, 0);
     }
 }

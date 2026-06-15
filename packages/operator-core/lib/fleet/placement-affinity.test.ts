@@ -148,3 +148,25 @@ describe('rankBeesForTask', () => {
     expect(ranked[0].bee).toBe('s-free');
   });
 });
+
+describe('affinity.kind reweighting (hive-blueprint-generalization P-011)', () => {
+  it('topic-overlap flips a file-overlap winner to a same-harness (topic) winner', () => {
+    const t = task({ harness: 'papercup', files: ['src/a.ts'] });
+    const fileBee = bee({ ownerId: 's-files', currentFiles: ['src/a.ts'], doingHarness: 'other' }); // file overlap only
+    const topicBee = bee({ ownerId: 's-topic', doingHarness: 'papercup' }); // queue-similar, no files
+    // Default (file-overlap, the coding hive): file overlap (weight 4) beats queue-similarity (1).
+    expect(rankBeesForTask(t, [fileBee, topicBee], { now: NOW }).map((r) => r.bee)).toEqual(['s-files', 's-topic']);
+    // topic-overlap (generic/research hive): queue-similarity (4) outranks file overlap (1) → topic bee wins.
+    expect(
+      rankBeesForTask(t, [fileBee, topicBee], { now: NOW, affinityKind: 'topic-overlap' }).map((r) => r.bee),
+    ).toEqual(['s-topic', 's-files']);
+  });
+
+  it('file-overlap kind == the default weights (coding behavior unchanged)', () => {
+    const t = task({ harness: 'papercup', files: ['src/a.ts'] });
+    const b = bee({ ownerId: 's-x', currentFiles: ['src/a.ts'] });
+    expect(scoreAffinity(t, b, { now: NOW, affinityKind: 'file-overlap' }).score).toBe(
+      scoreAffinity(t, b, { now: NOW }).score,
+    );
+  });
+});

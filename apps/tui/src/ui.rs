@@ -36,8 +36,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         // The comms detail popup is modal — render it on top of everything else
         // in the pinned dock pane (the dock-driver is where the comms view lives).
-        if app.comms_detail_open {
-            draw_comms_detail(f, app);
+        if app.fleet_detail_open {
+            draw_fleet_detail(f, app);
         }
         return;
     }
@@ -151,8 +151,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_wake_review(f, rev);
     }
     // The Fleet comms detail popup floats above the body + the other overlays.
-    if app.comms_detail_open {
-        draw_comms_detail(f, app);
+    if app.fleet_detail_open {
+        draw_fleet_detail(f, app);
     }
 }
 
@@ -2712,7 +2712,7 @@ pub(crate) fn block_with_header_rows(
 /// The Fleet comms detail popup (owner ask 2026-06-14): the full mail message or
 /// conversation thread under the comms cursor, centered over the dock. Modal —
 /// the key handler closes it on Esc/`q`/Enter and steps the item with `j`/`k`.
-fn draw_comms_detail(f: &mut Frame, app: &App) {
+fn draw_fleet_detail(f: &mut Frame, app: &App) {
     use crate::fleet::FleetPanel;
     let area = centered_rect(70, 70, f.area());
     f.render_widget(Clear, area);
@@ -2734,9 +2734,11 @@ fn draw_comms_detail(f: &mut Frame, app: &App) {
             " conversation · Esc close · j/k item · PgUp/Dn scroll ",
             conv_detail_lines(app),
         ),
-        FleetPanel::Roster | FleetPanel::Dossier | FleetPanel::PlanProgress => {
-            (" detail ", Vec::new())
-        }
+        FleetPanel::PlanProgress => (
+            " plan · Esc close · j/k plan · PgUp/Dn scroll ",
+            crate::fleet::plan_detail_lines(app),
+        ),
+        FleetPanel::Roster | FleetPanel::Dossier => (" detail ", Vec::new()),
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2753,7 +2755,7 @@ fn draw_comms_detail(f: &mut Frame, app: &App) {
         .map(|l| (l.width() as u32).div_ceil(inner_w).max(1))
         .sum();
     let max_scroll = (total_rows.min(u32::from(u16::MAX)) as u16).saturating_sub(inner.height);
-    let scroll = app.comms_detail_scroll.min(max_scroll);
+    let scroll = app.fleet_detail_scroll.min(max_scroll);
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -2956,6 +2958,31 @@ mod tests {
             item_counts: Default::default(),
             priority: None,
         }
+    }
+
+    #[test]
+    fn fleet_plan_detail_popup_renders_selected_plan() {
+        // Owner ask 2026-06-15: the plan-progress panel's Enter opens a detail
+        // popup. Verify the popup chrome + plan_detail_lines render together via
+        // the real `draw` path (not just the pure line builder).
+        use crate::fleet::FleetPanel;
+        let mut app = App::new();
+        app.tab = Tab::Fleet;
+        let mut p = plan("plan-detail-demo", "active");
+        p.item_counts = crate::models::ItemCounts {
+            todo: 4,
+            wip: 1,
+            done: 3,
+            ..Default::default()
+        };
+        app.set_plans(vec![p]);
+        app.fleet.fleet_focus = FleetPanel::PlanProgress;
+        app.fleet_detail_open = true;
+        let text = render(&app, 120, 30);
+        assert!(text.contains("Esc close"), "popup title missing: {text}");
+        assert!(text.contains("plan-detail-demo"), "plan slug missing from popup");
+        assert!(text.contains("progress"), "progress row missing from popup");
+        assert!(text.contains("remaining"), "remaining count missing from popup");
     }
 
     // --- Overview dashboard (Brief 23, overview-dashboard-2026-06-05) ---

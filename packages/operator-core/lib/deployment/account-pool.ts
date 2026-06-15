@@ -95,18 +95,20 @@ export interface ScalePolicy {
   windowMs: number;
   /** ≥ this many penalties within the window ⇒ the account is sustainedly limited. */
   sustainedPenaltyThreshold: number;
-  /**
-   * OR a single pause reaching at least this far ahead (ms) ⇒ sustainedly limited.
-   * A usage-cap reset hours out means "park and scale", not "sit and wait".
-   */
-  longPauseMs: number;
 }
 
 export const DEFAULT_SCALE_POLICY: ScalePolicy = {
   windowMs: 15 * 60_000, // 15 min
-  sustainedPenaltyThreshold: 3, // 3 × 429 in 15 min = this account can't keep up
-  longPauseMs: 30 * 60_000, // a ≥30-min pause (a usage cap) ⇒ exhausted, scale out
+  sustainedPenaltyThreshold: 3, // 3 × 429 in 15 min = this account genuinely can't keep up
 };
+
+/**
+ * Utilization at/above which an account's unified-5h window is genuinely exhausted (1.0 = 100%).
+ * This is the SELF-HEALING exhaustion signal (D-003 false-exhaustion fix): a rolling-utilization
+ * window decays continuously, so reading the freshest observed utilization (not a stale far-future
+ * pause) means an account stops reading "exhausted" the moment its window recovers below the cap.
+ */
+export const EXHAUSTED_UTIL = 1.0;
 
 export class AccountPoolError extends Error {
   constructor(message: string) {
@@ -256,9 +258,16 @@ export function isAvailable(account: ClaudeAccount, now: number): boolean {
 }
 
 /**
- * Is the account *sustainedly* rate-limited — the P-021 scale-out trigger? True when
- * either a single pause reaches `longPauseMs` ahead (a usage cap), or the account
- * accrued `sustainedPenaltyThreshold` penalties inside the current window.
+ * Is the account *sustainedly* rate-limited — the P-021 scale-out trigger (provisions PAID
+ * machines, so a false positive costs money)? True when EITHER:
+ *   (a) the freshest observed unified-5h utilization is at/over cap (`EXHAUSTED_UTIL`) — the
+ *       genuine, SELF-HEALING budget signal (it decays back below cap as the rolling window
+ *       recovers, so the account stops reading exhausted on its own); OR
+ *   (b) the account accrued `sustainedPenaltyThreshold` real penalties inside the window (a
+ *       repeated-429 burst, not a one-off).
+ * A SINGLE far-future pause is deliberately NOT a trigger anymore (D-003 false-exhaustion fix): on
+ * Claude Max a single 429 routinely carries a pause to the multi-hour 5h/7d reset even when the
+ * account is not actually over budget, which used to flip it straight to "exhausted".
  */
 export function isSustainedlyLimited(
   account: ClaudeAccount,
@@ -266,7 +275,8 @@ export function isSustainedlyLimited(
   policy: ScalePolicy = DEFAULT_SCALE_POLICY,
 ): boolean {
   const r = account.rate;
-  if (r.pausedUntil - now >= policy.longPauseMs) return true;
+  const utilFresh = r.utilizationAt !== undefined && now - r.utilizationAt <= DRAIN_UTIL_STALE_MS;
+  if (utilFresh && r.utilization !== undefined && r.utilization >= EXHAUSTED_UTIL) return true;
   const inWindow = r.windowStartedAt > 0 && now - r.windowStartedAt < policy.windowMs;
   return inWindow && r.penaltyCount >= policy.sustainedPenaltyThreshold;
 }
