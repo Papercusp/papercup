@@ -28,6 +28,7 @@ import { runHarnessStatusSweepOnce } from '../harness-status-sweep';
 import { sweepOrphanSnapshots } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
 import { getOrgPg } from '@papercusp/db-org';
+import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
 // enforce retention. A transient PostHog failure already degrades to retry-next,
@@ -99,6 +100,20 @@ const coordNotifyGcWorkflow = DBOS.registerWorkflow(coordNotifyGcTick, {
   name: 'coordNotifyGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });
+
+// Every 6h: global substrate_outbox backstop GC — sweeps orphaned/old
+// federation-queue rows the per-harness inline GC never reaches. An un-booted or
+// mis-routed (workspace, harness) has no drain, so its captures accumulate
+// unbounded (the EI-126 102 GB class; observed 5.3 GB on 2026-06-15). The
+// conservative 48h-undrained / 24h-drained windows preserve every in-flight row.
+// P-012 / operator-memory-and-psu-resilience-2026-06-14 D-016.
+async function outboxBackstopGcTick(): Promise<void> {
+  await DBOS.runStep(() => runSubstrateOutboxBackstopGc(), { name: 'substrate-outbox-backstop-gc' });
+}
+const outboxBackstopGcWorkflow = DBOS.registerWorkflow(outboxBackstopGcTick, {
+  name: 'outboxBackstopGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', crontab: '0 0 */6 * * *' });
 
 // Every minute: probe the dev endpoints (:3070/:3055/:3350/…) and
 // broadcast a coord message on each up/down TRANSITION (fleet-coordination-
