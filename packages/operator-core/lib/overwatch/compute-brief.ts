@@ -25,7 +25,10 @@
  * a degraded panel (a flaky source greyed by the fail-soft aggregator) simply
  * doesn't trip its detector — it never throws the whole detection.
  */
+import { emptyOverwatchBrief } from './brief-types';
 import type { Anomaly, OverwatchBrief } from './brief-types';
+import { computeSystemHealth } from '../system-health';
+import type { SystemHealth } from '../system-health/types';
 
 /**
  * Detect the system-health drifts in a populated brief and attach a suggested
@@ -216,4 +219,171 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
  */
 export function withAnomalies(brief: OverwatchBrief): OverwatchBrief {
   return { ...brief, anomalies: detectAnomalies(brief) };
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE AGGREGATOR WRAPPER — `computeSystemHealth` → `OverwatchBrief` (D-006).
+ *
+ * The overwatch brief is the ACTIONABLE SUBSET of the shared `SystemHealth`
+ * model — we WRAP the single Health-tab aggregator and never build a second
+ * health-gatherer (D-006). `mapSystemHealthToBrief` is the pure structural bind
+ * (SystemHealth panels → the OverwatchBrief panels); `computeOverwatchBrief` is
+ * the thin async wrapper that gathers + maps + detects.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Format an ms-epoch as ISO-8601, or null. Pure given the input ms (no clock). */
+function msToIso(ms: number | null): string | null {
+  return ms == null ? null : new Date(ms).toISOString();
+}
+
+/**
+ * Map a `SystemHealth` snapshot (system-health-tab P-001/P-002) onto the
+ * actionable `OverwatchBrief` subset (C-1). Pure + deterministic — no I/O, no
+ * clock — so it unit-tests against fixtures with no DB.
+ *
+ * FAIL-SOFT BY CONSTRUCTION (the B-03 requirement): start from
+ * `emptyOverwatchBrief` (everything healthy + zeroed) and fill each section ONLY
+ * from a panel whose `data` is present. `computeSystemHealth` greys an unreadable
+ * source to `status:'unknown'` + `data:null`; such a panel keeps the neutral
+ * default here, so one flaky source degrades that field instead of fabricating an
+ * anomaly (mirrors the SystemHealth "unknown is never a fabricated outage" stance).
+ *
+ * Mapping notes where the shared model and the C-1 subset don't line up 1:1:
+ *  - `bees.churning`  ← `bees.stale` (running-but-presence-stale = the churn signal);
+ *    `bees.deadClaims` ← `bees.orphanedClaims` (active claim, dead holder).
+ *  - `workFeed.blockedStranded` ← `bees.placements.stranded` — su-3b017 sourced the
+ *    stranded-on-a-resolved-constraint count there in response to the B-03 co-shape
+ *    flag (it is NOT `workFeed.frontierBlocked`, which is blocked-on-UNsatisfied).
+ *  - `crossMonitor.queenAlive` is DERIVED here, NOT taken from
+ *    `SystemHealth.crossMonitor.queenAlive`: the shared value folds in `stalled`
+ *    (`started && !stalled`), which would make the detector's `queen-stalled` path
+ *    dead code (a stalled Queen would always pre-empt to `queen-dark`). The
+ *    overwatch needs the two as DISTINCT signals (dark = the loop is gone; stalled
+ *    = late but recoverable), so "dark" here = started, no next wake armed, AND
+ *    stale. A paused (not-started) Queen is intentional, never "dark". (Flagged to
+ *    su-3b017/su-04d22 to align the shared crossMonitor on a liveness-only value.)
+ *
+ * Known degraded-to-default fields until the shared model exposes them (each is
+ * renderer-context only OR fail-soft-quiet for its detector, never a wrong alarm):
+ *  - `tokens.pausedBuckets` is a COUNT in `TokensHealth`, not bucket NAMES; we
+ *    surface a count descriptor so the detector still trips (length>0) and reads
+ *    informatively. `tokens.gatewayFailovers` / `gw429s` aren't in the rate model
+ *    yet (default 0; no detector keys on them). (Names + gw telemetry flagged.)
+ *  - `bees.completed` (no per-window completed count in `BeesHealth`) and
+ *    `workFeed.autoEligibleStuck` (su-3b017 adds the attempts:0 count when wiring)
+ *    default to 0.
+ */
+export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): OverwatchBrief {
+  const brief = emptyOverwatchBrief(hiveSlug);
+  const panels = health.panels;
+
+  const queen = panels.queen.data;
+  if (queen) {
+    brief.queen = {
+      lastWakeAt: msToIso(queen.lastWakeAt),
+      stalled: queen.stalled,
+      cadenceOk: queen.cadenceOk,
+      workingTracked: queen.workingTracked,
+      nextFireAt: msToIso(queen.nextFireAt),
+    };
+  }
+
+  const bees = panels.bees.data;
+  if (bees) {
+    brief.bees = {
+      running: bees.running,
+      completed: 0, // no per-window completed count in BeesHealth — fail-soft default (renderer-only).
+      churning: bees.stale,
+      deadClaims: bees.orphanedClaims,
+    };
+  }
+
+  const workFeed = panels.workFeed.data;
+  // Surface each work-feed field from its own source (independent fail-soft): the
+  // frontier/dead-routine counts from the workFeed panel, the stranded count from
+  // the bees panel's placement dispositions (see mapping notes above).
+  brief.workFeed = {
+    frontier: workFeed?.frontier ?? 0,
+    autoEligibleStuck: 0, // attempts:0 count not in WorkFeedHealth yet — fail-soft default.
+    deadRoutines: workFeed?.deadRoutines ?? 0,
+    blockedStranded: bees?.placements.stranded ?? 0,
+  };
+
+  const tokens = panels.tokens.data;
+  if (tokens) {
+    brief.tokens = {
+      // TokensHealth exposes a COUNT, not names; surface a descriptor so the
+      // detector trips (length>0) and the nudge reads informatively until names land.
+      pausedBuckets:
+        tokens.pausedBuckets > 0 ? [`${tokens.pausedBuckets} of ${tokens.totalBuckets} bucket(s)`] : [],
+      gatewayFailovers: 0, // not in the rate model yet — fail-soft default (no detector keys on it).
+      gw429s: 0, // not in the rate model yet — fail-soft default.
+      accountsAvailable: tokens.accountsAvailable,
+    };
+  }
+
+  // Plans + escalations are two SystemHealth panels feeding the one C-1 plan panel.
+  const plans = panels.plans.data;
+  const escalations = panels.escalations.data;
+  brief.plans = {
+    active: plans?.active ?? 0,
+    stalledItems: plans?.stalledPlans ?? 0,
+    agingEscalations: escalations?.aging ?? 0,
+  };
+
+  const observations = panels.observations.data;
+  if (observations) {
+    brief.observations = {
+      laneCount: observations.laneCount,
+      recentByRole: { ...observations.recentByRole }, // copy — don't alias the source.
+    };
+  }
+
+  // Cross-monitor (D-004). queenAlive derived (see mapping notes): a paused Queen
+  // is intentional (alive); a started Queen is "dark" only when she has no next
+  // wake armed AND is stale (the loop is gone), else alive (stalled is handled by
+  // its own detector). overwatchAlive defaults true on its own brief (it is
+  // computing → alive); B-09 wires the real reverse leg into the shared model.
+  const queenAlive = !queen ? true : !queen.started ? true : queen.armed || !queen.stalled;
+  brief.crossMonitor = {
+    queenAlive,
+    overwatchAlive: health.crossMonitor.overwatchAlive ?? true,
+  };
+
+  return brief;
+}
+
+/**
+ * Compute the overwatch's wake brief for one hive: gather the shared
+ * `SystemHealth` (D-006), map it onto the actionable `OverwatchBrief` subset, and
+ * run the anomaly→action detector. The async entry point B-04's wake-launch calls
+ * (it then renders the result via `renderOverwatchBrief`).
+ *
+ * FAIL-SOFT: `computeSystemHealth` is itself per-panel fail-soft (a flaky source
+ * greys its card), so a partial snapshot already degrades gracefully through the
+ * mapper. The try/catch here covers the catastrophic case (the whole aggregator
+ * throws) — we return the neutral `emptyOverwatchBrief` (healthy + no anomalies)
+ * so the wake still fires with a coherent, non-alarming brief rather than failing
+ * the launch (mirrors `computeQueenWakeBrief`'s graceful degradation).
+ */
+export async function computeOverwatchBrief(
+  workspaceId: string,
+  hiveSlug: string,
+  opts: { wokeBy?: string } = {},
+): Promise<OverwatchBrief> {
+  const wokeBy = opts.wokeBy?.trim();
+  try {
+    const health = await computeSystemHealth(workspaceId);
+    const brief = mapSystemHealthToBrief(health, hiveSlug);
+    if (wokeBy) brief.wokeBy = wokeBy;
+    return withAnomalies(brief);
+  } catch (err) {
+    console.warn(
+      `[overwatch-brief] computeSystemHealth failed for hive '${hiveSlug}' — returning the neutral fail-soft brief:`,
+      err instanceof Error ? err.message : err,
+    );
+    const fallback = emptyOverwatchBrief(hiveSlug);
+    if (wokeBy) fallback.wokeBy = wokeBy;
+    return fallback;
+  }
 }

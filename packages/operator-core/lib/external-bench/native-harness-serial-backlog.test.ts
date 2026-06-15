@@ -10,9 +10,11 @@ import { BASELINE_B_ARM, NATIVE_BLUEPRINT_ID } from './native-harness-config';
 import type { NativeArmResult, NativeHarnessPorts } from './native-harness-runner';
 import {
   runNativeSerialBacklog,
+  runNativeSerialBacklogTerminalBench,
   type RunNativeTask,
   type SerialBacklogItem,
 } from './native-harness-serial-backlog';
+import type { RunHarbor } from './native-harness-terminal-bench';
 import type { ArmAttempt, BenchTask } from './types';
 
 function task(instanceId: string): BenchTask {
@@ -64,6 +66,7 @@ describe('runNativeSerialBacklog', () => {
 
     expect(order).toEqual(['a', 'b', 'c']); // strictly sequential, in backlog order
     expect(res.mode).toBe('serial-native');
+    expect(res.modality).toBe('diff');
     expect(res.concurrency).toBe(1);
     expect(res.arm).toBe('baseline-b-native');
     expect(res.tasksAttempted).toBe(3);
@@ -127,5 +130,58 @@ describe('runNativeSerialBacklog', () => {
     expect(res.attempts[0].attempt.seed).toBe('2');
     expect(res.totalCostUsd).toBeCloseTo(0.2, 6);
     expect(res.totalTokensIn).toBe(500);
+  });
+});
+
+describe('runNativeSerialBacklogTerminalBench — M2 (Harbor) serial floor', () => {
+  it('drains a TB backlog serially, grades inline, and reports tasksResolved + serial timing', async () => {
+    let clock = 0;
+    const now = () => clock;
+    const durations: Record<string, number> = { a: 100, b: 200, c: 50 };
+    const resolvedMap: Record<string, boolean> = { a: true, b: false, c: true };
+    const runHarbor: RunHarbor = vi.fn(async (spec) => {
+      clock += durations[spec.taskId];
+      return {
+        resolved: resolvedMap[spec.taskId],
+        tokensIn: 100,
+        tokensOut: 200,
+        costUsd: 0.1,
+        turns: 3,
+        wallClockMs: durations[spec.taskId],
+        harborVersion: 'terminal-bench@2.0',
+        raw: { passed: resolvedMap[spec.taskId] },
+      };
+    });
+
+    const res = await runNativeSerialBacklogTerminalBench(
+      [{ task: task('a'), seed: '0' }, { task: task('b'), seed: '0' }, { task: task('c'), seed: '0' }],
+      { maxWallClockMs: 60_000 },
+      { runHarbor, now },
+    );
+    expect(res.mode).toBe('serial-native');
+    expect(res.modality).toBe('in-container');
+    expect(res.concurrency).toBe(1);
+    expect(res.tasksAttempted).toBe(3);
+    expect(res.tasksResolved).toBe(2); // a + c resolved, b failed
+    expect(res.backlogDrainMs).toBe(350); // 100 + 200 + 50
+    expect(res.sumTaskWallClockMs).toBe(350);
+    expect(res.totalCostUsd).toBeCloseTo(0.3, 6);
+    expect(res.results.map((r) => r.attempt.instanceId)).toEqual(['a', 'b', 'c']);
+    expect(runHarbor).toHaveBeenCalledTimes(3);
+  });
+
+  it('excludes an in-sandbox infra failure (graderError) from tasksResolved', async () => {
+    const runHarbor: RunHarbor = async (spec) => {
+      if (spec.taskId === 'b') throw new Error('docker daemon down');
+      return { resolved: true, tokensIn: 10, tokensOut: 20, costUsd: 0.01, harborVersion: 'tb@2.0', raw: {} };
+    };
+    const res = await runNativeSerialBacklogTerminalBench(
+      [{ task: task('a'), seed: '0' }, { task: task('b'), seed: '0' }],
+      {},
+      { runHarbor, now: () => 0 },
+    );
+    expect(res.tasksAttempted).toBe(2);
+    expect(res.tasksResolved).toBe(1); // 'a' resolved; 'b' is an infra error, not a genuine fail
+    expect(res.results[1].grade.graderError).toContain('docker daemon down');
   });
 });

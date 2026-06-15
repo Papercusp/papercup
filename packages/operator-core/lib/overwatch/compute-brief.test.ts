@@ -1,7 +1,27 @@
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
-import { detectAnomalies, withAnomalies } from './compute-brief';
+import { computeSystemHealth } from '../system-health';
+import { detectAnomalies, withAnomalies, mapSystemHealthToBrief, computeOverwatchBrief } from './compute-brief';
 import { emptyOverwatchBrief, renderOverwatchBrief, type Anomaly, type OverwatchBrief } from './brief-types';
+import type {
+  SystemHealth,
+  HealthPanel,
+  PanelKey,
+  PanelStatus,
+  QueenHealth,
+  BeesHealth,
+  WorkFeedHealth,
+  TokensHealth,
+  PlansHealth,
+  EscalationsHealth,
+  ObservationsHealth,
+} from '../system-health/types';
+
+// Mock ONLY the runtime aggregator (the index's computeSystemHealth) — the mapper
+// tests are pure (no DB), and the wrapper tests drive this mock. The SystemHealth
+// TYPES come from '../system-health/types' (type-only, erased), so the real
+// compute.ts + its DB deps never load in this unit file.
+vi.mock('../system-health', () => ({ computeSystemHealth: vi.fn() }));
 
 /** A healthy brief we mutate one panel at a time to trip exactly one detector. */
 function base(): OverwatchBrief {
@@ -140,4 +160,238 @@ test('withAnomalies — populates the brief and renders most-severe-first end-to
   const esc = out.indexOf('escalation-aging');
   const bee = out.indexOf('bees-churning');
   assert.ok(q < esc && esc < bee, 'rendered order is critical < warning < info');
+});
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * The aggregator wrapper: mapSystemHealthToBrief (pure) + computeOverwatchBrief.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** A status-card wrapper. `data:null` ⇒ status 'unknown' (the greyed/unreadable case). */
+function hp<T>(key: PanelKey, data: T | null, status: PanelStatus = data == null ? 'unknown' : 'ok'): HealthPanel<T> {
+  return { key, label: key, status, summary: '', metrics: [], data };
+}
+
+const queenData = (o: Partial<QueenHealth> = {}): QueenHealth => ({
+  hiveSlug: 'papercup-hive',
+  started: true,
+  stalled: false,
+  midTurn: false,
+  armed: true,
+  lastWakeAt: 1,
+  staleForMs: 0,
+  nextFireAt: 2,
+  cadenceOk: true,
+  watchdogFires24h: 0,
+  demand: { todoItems: 0, startedPlans: 0 },
+  decisionsWindow: { total: 0, auto: 0, gated: 0 },
+  workingTracked: 0,
+  ...o,
+});
+
+const beesData = (o: Partial<BeesHealth> = {}): BeesHealth => ({
+  running: 0,
+  alive: 0,
+  stale: 0,
+  orphanedClaims: 0,
+  totalLoad: 0,
+  placements: { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0 },
+  ...o,
+});
+
+const workFeedData = (o: Partial<WorkFeedHealth> = {}): WorkFeedHealth => ({
+  frontier: 0,
+  frontierBlocked: 0,
+  startedPlans: 0,
+  deadRoutines: 0,
+  deadRoutineNames: [],
+  ...o,
+});
+
+const tokensData = (o: Partial<TokensHealth> = {}): TokensHealth => ({
+  gatewayEnabled: true,
+  gatewayReachable: true,
+  pausedBuckets: 0,
+  totalBuckets: 5,
+  fleetInFlight: 0,
+  fleetCap: 10,
+  spendUsd: 0,
+  windowMs: 0,
+  accountsTotal: 3,
+  accountsAvailable: 3,
+  accountsPaused: 0,
+  ...o,
+});
+
+const plansData = (o: Partial<PlansHealth> = {}): PlansHealth => ({
+  active: 0,
+  started: 0,
+  shipped: 0,
+  draft: 0,
+  itemsDone: 0,
+  itemsTotal: 0,
+  stalledPlans: 0,
+  ...o,
+});
+
+const escalationsData = (o: Partial<EscalationsHealth> = {}): EscalationsHealth => ({
+  open: 0,
+  oldestAgeMs: null,
+  bySeverity: {},
+  aging: 0,
+  ...o,
+});
+
+const observationsData = (o: Partial<ObservationsHealth> = {}): ObservationsHealth => ({
+  laneCount: 0,
+  recentByRole: {},
+  newestAt: null,
+  ...o,
+});
+
+/**
+ * A full SystemHealth fixture (all 14 panels — the type requires them). Pass a
+ * panel's data to fill it, `null` to simulate an unreadable (greyed) panel, or
+ * omit it for the healthy default. Panels the overwatch mapper ignores default to
+ * `null`. `'papercup-hive'` is the brief's hive in every case.
+ */
+function fakeHealth(
+  p: {
+    queen?: QueenHealth | null;
+    bees?: BeesHealth | null;
+    workFeed?: WorkFeedHealth | null;
+    tokens?: TokensHealth | null;
+    plans?: PlansHealth | null;
+    escalations?: EscalationsHealth | null;
+    observations?: ObservationsHealth | null;
+    overwatchAlive?: boolean | null;
+  } = {},
+): SystemHealth {
+  const pick = <T>(v: T | null | undefined, dflt: T): T | null => (v === undefined ? dflt : v);
+  return {
+    workspaceId: 'ws',
+    evaluatedAt: 0,
+    overall: 'ok',
+    crossMonitor: { queenAlive: true, overwatchAlive: p.overwatchAlive === undefined ? null : p.overwatchAlive },
+    panels: {
+      queen: hp('queen', pick(p.queen, queenData())),
+      bees: hp('bees', pick(p.bees, beesData())),
+      workItems: hp('workItems', null),
+      workFeed: hp('workFeed', pick(p.workFeed, workFeedData())),
+      tokens: hp('tokens', pick(p.tokens, tokensData())),
+      watchdog: hp('watchdog', null),
+      deploy: hp('deploy', null),
+      plans: hp('plans', pick(p.plans, plansData())),
+      escalations: hp('escalations', pick(p.escalations, escalationsData())),
+      autonomy: hp('autonomy', null),
+      observations: hp('observations', pick(p.observations, observationsData())),
+      improvements: hp('improvements', null),
+      infra: hp('infra', null),
+      suFleet: hp('suFleet', null),
+    },
+  };
+}
+
+test('mapSystemHealthToBrief — a healthy snapshot maps to a clean (no-anomaly) brief', () => {
+  const brief = withAnomalies(mapSystemHealthToBrief(fakeHealth(), 'papercup-hive'));
+  assert.equal(brief.hiveSlug, 'papercup-hive');
+  assert.deepEqual(brief.anomalies, []);
+  assert.equal(brief.queen.stalled, false);
+  assert.equal(brief.crossMonitor.queenAlive, true);
+  assert.equal(brief.crossMonitor.overwatchAlive, true); // null on its own brief ⇒ alive
+});
+
+test('mapSystemHealthToBrief — maps each panel onto the C-1 subset (counts + ms→ISO + cross-panel)', () => {
+  const h = fakeHealth({
+    queen: queenData({
+      lastWakeAt: Date.parse('2026-06-15T01:00:00.000Z'),
+      nextFireAt: Date.parse('2026-06-15T01:30:00.000Z'),
+      workingTracked: 3,
+    }),
+    bees: beesData({ running: 5, stale: 2, orphanedClaims: 1, placements: { recovering: 0, cursed: 0, stranded: 4, workingTracked: 3 } }),
+    workFeed: workFeedData({ frontier: 7, deadRoutines: 1 }),
+    tokens: tokensData({ pausedBuckets: 2, totalBuckets: 5, accountsAvailable: 3 }),
+    plans: plansData({ active: 9, stalledPlans: 2 }),
+    escalations: escalationsData({ aging: 4 }),
+    observations: observationsData({ laneCount: 6, recentByRole: { queen: 2, worker: 4 } }),
+  });
+  const b = mapSystemHealthToBrief(h, 'papercup-hive');
+  assert.equal(b.queen.lastWakeAt, '2026-06-15T01:00:00.000Z');
+  assert.equal(b.queen.nextFireAt, '2026-06-15T01:30:00.000Z');
+  assert.equal(b.queen.workingTracked, 3);
+  assert.equal(b.bees.running, 5);
+  assert.equal(b.bees.churning, 2); // ← bees.stale
+  assert.equal(b.bees.deadClaims, 1); // ← bees.orphanedClaims
+  assert.equal(b.workFeed.frontier, 7);
+  assert.equal(b.workFeed.deadRoutines, 1);
+  assert.equal(b.workFeed.blockedStranded, 4); // ← bees.placements.stranded (cross-panel, the co-shape)
+  assert.deepEqual(b.tokens.pausedBuckets, ['2 of 5 bucket(s)']); // count→descriptor until names land
+  assert.equal(b.tokens.accountsAvailable, 3);
+  assert.equal(b.plans.active, 9);
+  assert.equal(b.plans.agingEscalations, 4); // ← escalations panel
+  assert.equal(b.observations.laneCount, 6);
+  assert.deepEqual(b.observations.recentByRole, { queen: 2, worker: 4 });
+});
+
+test('mapSystemHealthToBrief — unreadable panels (data:null) degrade to neutral defaults, never an alarm', () => {
+  const h = fakeHealth({ queen: null, bees: null, workFeed: null, tokens: null, plans: null, escalations: null, observations: null });
+  const b = withAnomalies(mapSystemHealthToBrief(h, 'papercup-hive'));
+  assert.deepEqual(b, withAnomalies(emptyOverwatchBrief('papercup-hive'))); // identical to the neutral brief
+  assert.deepEqual(b.anomalies, []); // a greyed source never fabricates an anomaly
+});
+
+test('mapSystemHealthToBrief — token count→descriptor trips the detector + honors the starvation split', () => {
+  // Paused with accounts left → transient observe.
+  const transient = withAnomalies(mapSystemHealthToBrief(fakeHealth({ tokens: tokensData({ pausedBuckets: 1, accountsAvailable: 2 }) }), 'h'));
+  const t1 = only(transient.anomalies, 'token-paused');
+  assert.equal(t1.severity, 'warning');
+  assert.equal(t1.suggestedAction.type, 'observe');
+  // Paused with ZERO accounts → starvation escalate.
+  const starved = withAnomalies(mapSystemHealthToBrief(fakeHealth({ tokens: tokensData({ pausedBuckets: 2, accountsAvailable: 0 }) }), 'h'));
+  const t2 = only(starved.anomalies, 'token-paused');
+  assert.equal(t2.severity, 'critical');
+  assert.equal(t2.suggestedAction.type, 'escalate');
+});
+
+test('mapSystemHealthToBrief — queenAlive derivation keeps queen-dark and queen-stalled DISTINCT', () => {
+  // started, ARMED, stalled → ALIVE (the loop exists) → queen-stalled, NOT queen-dark.
+  const armedLate = withAnomalies(mapSystemHealthToBrief(fakeHealth({ queen: queenData({ stalled: true, cadenceOk: false, armed: true }) }), 'h'));
+  assert.equal(armedLate.crossMonitor.queenAlive, true);
+  assert.equal(armedLate.anomalies.filter((a) => a.kind === 'queen-stalled').length, 1);
+  assert.equal(armedLate.anomalies.filter((a) => a.kind === 'queen-dark').length, 0);
+
+  // started, NOT armed, stalled → DARK (no next wake AND stale = the loop is gone).
+  const dark = withAnomalies(mapSystemHealthToBrief(fakeHealth({ queen: queenData({ stalled: true, cadenceOk: false, armed: false }) }), 'h'));
+  assert.equal(dark.crossMonitor.queenAlive, false);
+  assert.equal(dark.anomalies.filter((a) => a.kind === 'queen-dark').length, 1);
+  assert.equal(dark.anomalies.filter((a) => a.kind === 'queen-stalled').length, 0); // suppressed by precedence
+
+  // paused (not started) → intentional, ALIVE, no queen anomaly (never a false dark alarm).
+  const paused = withAnomalies(mapSystemHealthToBrief(fakeHealth({ queen: queenData({ started: false, armed: false, cadenceOk: false }) }), 'h'));
+  assert.equal(paused.crossMonitor.queenAlive, true);
+  assert.equal(paused.anomalies.filter((a) => a.kind.startsWith('queen')).length, 0);
+});
+
+test('computeOverwatchBrief — wraps computeSystemHealth: maps the snapshot + attaches anomalies + wokeBy', async () => {
+  vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData({ stalled: true, cadenceOk: false, armed: true }) }));
+  const b = await computeOverwatchBrief('ws', 'papercup-hive', { wokeBy: 'timer' });
+  assert.equal(b.hiveSlug, 'papercup-hive');
+  assert.equal(b.wokeBy, 'timer');
+  assert.equal(b.anomalies.filter((a) => a.kind === 'queen-stalled').length, 1);
+});
+
+test('computeOverwatchBrief — a thrown aggregator degrades to the neutral fail-soft brief (wake still fires)', async () => {
+  vi.mocked(computeSystemHealth).mockRejectedValue(new Error('aggregator boom'));
+  // The degraded path logs a single warn (the catastrophic-failure breadcrumb) — assert it.
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const b = await computeOverwatchBrief('ws', 'papercup-hive', { wokeBy: 'backstop' });
+    assert.deepEqual(b.anomalies, []); // no fabricated anomalies on catastrophic failure
+    assert.equal(b.wokeBy, 'backstop'); // wokeBy preserved on the fallback
+    const { wokeBy: _w, ...rest } = b;
+    assert.deepEqual(rest, emptyOverwatchBrief('papercup-hive')); // otherwise the neutral brief
+    assert.equal(warnSpy.mock.calls.length, 1);
+    assert.match(String(warnSpy.mock.calls[0][0]), /computeSystemHealth failed/);
+  } finally {
+    warnSpy.mockRestore();
+  }
 });

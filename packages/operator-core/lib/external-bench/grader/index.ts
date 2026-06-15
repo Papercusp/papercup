@@ -16,10 +16,13 @@ import {
   type SweBenchProGraderConfig,
   type SweBenchProGraderDeps,
 } from './swe-bench-pro';
+import { makeSweLancerGrader, type SweLancerGraderConfig } from './swe-lancer';
 
 export { makeFakeGrader } from './fake';
 export { makeSweBenchProGrader, parseSweBenchProReport } from './swe-bench-pro';
+export { makeSweLancerGrader, parseSweLancerReport } from './swe-lancer';
 export type { ProcExec, GraderFs, SweBenchProGraderConfig, SweBenchProGraderDeps } from './swe-bench-pro';
+export type { SweLancerGraderConfig, SweLancerGraderDeps } from './swe-lancer';
 
 /** Live subprocess runner — `execFile` (no shell); resolves with streams + exit code, never rejects on exit≠0. */
 export const liveProcExec: ProcExec = (cmd, args, opts) =>
@@ -50,6 +53,7 @@ export const liveGraderFs: GraderFs = {
 
 export interface GraderRegistryConfig {
   sweBenchPro?: SweBenchProGraderConfig;
+  sweLancer?: SweLancerGraderConfig;
 }
 
 /**
@@ -65,6 +69,13 @@ export function getOfficialGrader(
     case 'swe-bench-pro': {
       if (!cfg.sweBenchPro) throw new Error('getOfficialGrader: swe-bench-pro requires a SweBenchProGraderConfig');
       return makeSweBenchProGrader(cfg.sweBenchPro, {
+        exec: deps?.exec ?? liveProcExec,
+        fs: deps?.fs ?? liveGraderFs,
+      });
+    }
+    case 'swe-lancer': {
+      if (!cfg.sweLancer) throw new Error('getOfficialGrader: swe-lancer requires a SweLancerGraderConfig');
+      return makeSweLancerGrader(cfg.sweLancer, {
         exec: deps?.exec ?? liveProcExec,
         fs: deps?.fs ?? liveGraderFs,
       });

@@ -6,6 +6,7 @@ import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
 import LearningTab from '../../components/adv/LearningTab';
 import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
+import HealthTab from '../../components/adv/HealthTab';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
@@ -36,6 +37,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'conversations') return 'Conversations';
   if (tab === 'learning') return 'Learning';
   if (tab === 'harnesses') return 'Working';
+  if (tab === 'health') return 'Health';
   if (tab === 'frames') return 'Frames';
   if (tab === 'evals') return 'Evaluation';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
@@ -54,6 +56,9 @@ function renderAdvTab(tab: AdvTabId) {
       return <LearningTab />;
     case 'harnesses':
       return <HarnessesWorkspace />;
+    case 'health':
+      // The read-only system Health dashboard (system-health-tab-2026-06-15).
+      return <HealthTab />;
     case 'frames':
       // Swarm live view — per-agent-display thumbnails from deployed frames
       // (hive-frame-desktops-live-view P-006).

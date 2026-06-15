@@ -99,6 +99,46 @@ Addendum (the L3 instrument I greenlit; the D-008 §2 analog for SWE-Lancer).
   format, and whether the E2E images need network access. The IC-SWE M1 shape is the
   load-bearing fact and is confirmed; these are parameters, not blockers.
 
+## 7. MAST 14 failure modes — the signal list (for P-010 capture + P-026 compute)
+
+The concrete taxonomy P-010 (66ad9) must make computable from fleet/coord traces and P-026
+(4ac61) scores. Source: arXiv 2503.13657 (NeurIPS 2025); overall MAS failure rate **41% →
+86.7%** across 7 SOTA systems. Since I recommend re-implementing the rubric (license, §2),
+these are the modes to encode — annotated with the Papercusp signal that already evidences
+each, so P-010 knows what to emit:
+
+**Category 1 — System/spec design (FC1)**
+- **FM-1.1 Disobey task specification** — output violates the work_item's stated constraints.
+- **FM-1.2 Disobey role specification** — an agent acts outside its role (spine role boundaries).
+- **FM-1.3 Step repetition** — redundant re-doing of completed steps (← `work_items` dedup /
+  redundancy-judge signal; the substrate's anti-duplication is the direct counter-claim).
+- **FM-1.4 Loss of conversation history** — context truncation drops recent interaction.
+- **FM-1.5 Unaware of termination conditions** — no recognition of when to stop.
+
+**Category 2 — Inter-agent misalignment (FC2)** *(the substrate's strongest story)*
+- **FM-2.1 Conversation reset** — unwarranted dialogue restart, context lost.
+- **FM-2.2 Fail to ask for clarification** — proceeds on unclear input instead of asking.
+- **FM-2.3 Task derailment** — drifts off the intended objective.
+- **FM-2.4 Information withholding** — fails to share data others need (← durable
+  `messages:send`/work_item-scoped hand-offs are the counter-mechanism).
+- **FM-2.5 Ignored other agent's input** — disregards peer input (← coord inbox injection /
+  ack discipline).
+- **FM-2.6 Reasoning-action mismatch** — does something other than what its reasoning says.
+
+**Category 3 — Task verification (FC3)**
+- **FM-3.1 Premature termination** — ends before objectives met.
+- **FM-3.2 No/incomplete verification** — skips checking outcomes (← validator/reviewer spine roles).
+- **FM-3.3 Incorrect verification** — validates but wrongly.
+
+**For P-010:** emit per-rollout coordination events that let a judge detect these — at minimum:
+role/agent id per action, hand-off edges (who→whom, what), work_item dedup/redundancy-judge
+hits (FM-1.3), lock contention/duplication, ack/ignore of injected coord messages (FM-2.5),
+and termination/verification events (FC3). **For P-026:** run the re-implemented 14-mode
+judge over those traces → per-mode + per-category rates → compare vs the 41–86.7% baseline +
+the P-028 competitor orchestrators. The headline L4 claim = our FC2 (misalignment) +
+FM-1.3 (duplication) rates are materially below the published baseline *because* of the
+substrate (locks, dedup, durable hand-offs).
+
 ## References
 arXiv 2502.12115 (SWE-Lancer), 2511.12306 (UpBench), 2503.13657 (MAST; repo
 multi-agent-systems-failure-taxonomy/MAST + HF mcemri/MAST-Data), 2503.01935

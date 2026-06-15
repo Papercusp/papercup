@@ -32,6 +32,8 @@ import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 import { useLexicon } from '@/lib/useLexicon';
 import { useShortcutAction } from '@/lib/hotkeys';
+import { useFlag } from '@papercusp/flags/client';
+import { FLAGS } from '@papercusp/flags';
 
 const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
@@ -59,6 +61,10 @@ export const ADV_TABS: ReadonlyArray<{
   // links, and the agent ui:dispatch surface; renaming the id would break all
   // of them.
   { id: 'harnesses', label: 'Working', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
+  // Health — the read-only at-a-glance system dashboard (system-health-tab-2026-06-15),
+  // beside Working. Workspace-scoped (it aggregates the whole running system, not one
+  // pot), so it also lives in WORKSPACE_TAB_IDS. Flag-gated (SYSTEM_HEALTH_TAB).
+  { id: 'health', label: 'Health', icon: HeartPulse, accent: '#f43f5e', accentRgb: '244, 63, 94' },
   { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: '#22d3ee', accentRgb: '34, 211, 238' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
@@ -84,6 +90,9 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'overview',
   'plans',
   'harnesses',
+  // Health aggregates the whole running system (Queen / bees / tokens / infra),
+  // not a single pot — so it stays visible under "All Pots" (system-health-tab).
+  'health',
   'conversations',
   // Learning aggregates the workspace-wide papercusp-improvement backlog, so it
   // stays visible under "All Pots" (operator-learning-tab-2026-06-09).
@@ -247,7 +256,10 @@ export default function AdvShell({
   // pick-a-pot placeholder (owner directive 2026-06-05). An earlier version
   // collapsed the all-mode strip to just TWO tabs, which read as "the strip
   // broke" — the workspace-level subset plus the snap-back below avoids that.
-  const visibleTabs = visibleAdvTabs(allMode);
+  // Health is flag-gated (SYSTEM_HEALTH_TAB, default ON): hide its strip entry
+  // when off (the kill-switch — the resolver/tick also no-op).
+  const healthOn = useFlag(FLAGS.SYSTEM_HEALTH_TAB);
+  const visibleTabs = visibleAdvTabs(allMode).filter((tab) => tab.id !== 'health' || healthOn);
   // If the active tab just went invisible (scope flipped to "All Pots", or a
   // per-pot deep link landed in all-mode), snap to Overview so the strip and
   // the content pane stay consistent.

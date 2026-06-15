@@ -2,173 +2,248 @@
  * MAST coordination-quality instrumentation (P-026 / D-010 L4 — the most
  * differentiated AND most impartial Hive claim). The MAST study (NeurIPS 2025,
  * 1,600+ multi-agent traces) found multi-agent systems FAIL 41–86% of the time
- * in production, with inter-agent token-duplication at 53–86% and
- * inter-agent-misalignment at 36.9%. The Hive's coordination substrate (locks,
- * work_items dedup + redundancy-judge, durable hand-offs, the Queen's placement)
- * exists to drive those failure rates DOWN — so we measure OUR rates against
- * that published baseline, and against the Queen-ablated fleet + competitor
- * orchestrators (P-028).
+ * in production. The Hive's substrate (locks, work_items dedup +
+ * redundancy-judge, durable hand-offs, the Queen's placement) exists to drive
+ * those failures DOWN — so we measure OUR rates against that published baseline
+ * and against the Queen-ablated fleet + competitor orchestrators (P-028).
  *
- * This module is the pure scorer: a classified coordination trace
- * (`CoordEvent[]`) → `MastRates`. The TRACE is emitted by P-010's
- * reproducibility layer (B8 extension — rollout records capture fleet/coord
- * events); the CLASSIFICATION of a raw substrate event into a failure category
- * is done by the emit layer or by `classifyCoordEvent` here. Pure, domain-free.
+ * LICENSE NOTE (P-029 / D-011): the MAST repo has NO declared license, so we do
+ * NOT run their judge code or publish derived results. We RE-IMPLEMENT their
+ * published 3-category / 14-mode taxonomy (factual, not copied code) and score
+ * it with OUR OWN LLM-judge — which keeps the claim impartial. Citing the
+ * 41–86% baseline + the methodology is fine.
+ *
+ * Two complementary measurements, both pure:
+ *  - `substrateSignalRates` — OBJECTIVE counts of mechanical coordination
+ *    failures the substrate itself surfaces (duplicate completions, orphaned
+ *    claims, claim conflicts). No judge, no subjectivity — the strongest floor.
+ *  - `scoreMast` over judge VERDICTS — the methodology-aligned per-category
+ *    rates that compare apples-to-apples with the published baseline. The
+ *    LLM-judge call lives OUTSIDE this pure lib (P-010/pilot); we score its
+ *    output here.
  */
 
 import type { FleetArmId } from './fleet';
 
-/**
- * The coordination-failure categories we score, each mapped to a MAST failure
- * mode and to the substrate mechanism meant to prevent it:
- *  - duplicate_work        — two agents executed the SAME task (MAST: information
- *    withholding / no dedup). Substrate guard: work_items claim + redundancy-judge.
- *  - coordination_breakdown — a stranded item, orphaned claim, or lost hand-off
- *    (MAST: step repetition / derailment). Guard: durable messages + stale-claim sweep.
- *  - misalignment          — an agent acted on superseded/conflicting state
- *    (MAST: inter-agent misalignment, the 36.9% mode). Guard: locks + CDC convergence.
- *  - redundant_work        — work redone unnecessarily though already done/claimed.
- *  - premature_termination — the arm stopped before the backlog was drained / verified
- *    (MAST FC3: premature termination).
- *  - incomplete_verification — a task claimed resolved that the grader then failed
- *    (MAST FC3: no/incorrect verification).
- */
-export type CoordFailureKind =
-  | 'duplicate_work'
-  | 'coordination_breakdown'
-  | 'misalignment'
-  | 'redundant_work'
-  | 'premature_termination'
-  | 'incomplete_verification';
+// ── The canonical MAST taxonomy (re-implemented from the published paper) ───
 
-export const COORD_FAILURE_KINDS: readonly CoordFailureKind[] = [
-  'duplicate_work',
-  'coordination_breakdown',
-  'misalignment',
-  'redundant_work',
-  'premature_termination',
-  'incomplete_verification',
+export type MastCategory =
+  | 'specification-system-design' // FC1
+  | 'inter-agent-misalignment' //   FC2
+  | 'task-verification'; //         FC3
+
+export const MAST_CATEGORIES: readonly MastCategory[] = [
+  'specification-system-design',
+  'inter-agent-misalignment',
+  'task-verification',
 ] as const;
 
-/**
- * One coordination event in an arm's trace. `kind: 'ok'` is a normal
- * coordination action (a clean hand-off / claim / completion) — it is NOT a
- * failure but counts toward `coordinationActions` so rates can be normalized by
- * total coordination volume as well as by task count.
- */
-export interface CoordEvent {
-  kind: CoordFailureKind | 'ok';
-  taskId?: string | null;
-  detail?: string;
+/** The 14 failure modes, each with its category + a short (our-words) definition for the judge rubric. */
+export interface MastMode {
+  id: string;
+  category: MastCategory;
+  label: string;
+  definition: string;
 }
+
+export const MAST_MODES: readonly MastMode[] = [
+  // FC1 — specification & system design
+  { id: '1.1', category: 'specification-system-design', label: 'disobey-task-spec', definition: 'An agent ignored or violated the stated task requirements.' },
+  { id: '1.2', category: 'specification-system-design', label: 'disobey-role-spec', definition: 'An agent acted outside its assigned role.' },
+  { id: '1.3', category: 'specification-system-design', label: 'step-repetition', definition: 'Work already completed was needlessly repeated.' },
+  { id: '1.4', category: 'specification-system-design', label: 'loss-of-history', definition: 'Relevant prior context was dropped or not propagated.' },
+  { id: '1.5', category: 'specification-system-design', label: 'unaware-termination', definition: 'Agents did not recognize when to stop.' },
+  // FC2 — inter-agent misalignment
+  { id: '2.1', category: 'inter-agent-misalignment', label: 'conversation-reset', definition: 'A coordination thread was reset, losing alignment.' },
+  { id: '2.2', category: 'inter-agent-misalignment', label: 'no-clarification', definition: 'An agent proceeded on an ambiguity instead of asking.' },
+  { id: '2.3', category: 'inter-agent-misalignment', label: 'task-derailment', definition: 'The effort drifted off the assigned task.' },
+  { id: '2.4', category: 'inter-agent-misalignment', label: 'information-withholding', definition: 'An agent failed to share information a peer needed (a dedup/coordination gap).' },
+  { id: '2.5', category: 'inter-agent-misalignment', label: 'ignored-input', definition: "An agent ignored a peer's relevant input." },
+  { id: '2.6', category: 'inter-agent-misalignment', label: 'reasoning-action-mismatch', definition: "An agent's action contradicted its stated reasoning." },
+  // FC3 — task verification & termination
+  { id: '3.1', category: 'task-verification', label: 'premature-termination', definition: 'The run stopped before the work/verification was complete.' },
+  { id: '3.2', category: 'task-verification', label: 'no-or-incomplete-verification', definition: 'Output was accepted without adequate checking.' },
+  { id: '3.3', category: 'task-verification', label: 'incorrect-verification', definition: 'Verification ran but reached the wrong conclusion.' },
+] as const;
+
+export type MastModeId = (typeof MAST_MODES)[number]['id'];
 
 /** Published MAST baselines (NeurIPS 2025) — context bands, never our own claim. */
 export const MAS_FAILURE_BASELINE_BAND: readonly [number, number] = [0.41, 0.86];
 export const TOKEN_DUPLICATION_BASELINE_BAND: readonly [number, number] = [0.53, 0.86];
 export const INTERAGENT_MISALIGNMENT_BASELINE = 0.369;
 
-export interface MastRates {
+// ── The coordination trace (raw fleet events) — the MAST-convertible input ──
+
+/**
+ * Raw fleet/coordination event kinds. The first group is normal actions the
+ * judge reads to reconstruct what happened; the second group is mechanical
+ * FAILURE SIGNALS the substrate surfaces directly (counted objectively by
+ * `substrateSignalRates`). Open union — P-010's emit + P-028's competitor
+ * drivers add kinds without a type change.
+ */
+export type CoordEventKind =
+  // normal actions (the judge's raw material; aligns with P-028's proposed vocab)
+  | 'spawn' | 'handoff' | 'handoff_accepted' | 'message' | 'claim' | 'edit'
+  | 'complete' | 'error' | 'placement' | 'lock_acquire' | 'redundancy_judged'
+  // mechanical failure signals (objective, counted by substrateSignalRates)
+  | 'duplicate_completion' | 'orphaned_claim' | 'stranded_item' | 'lost_handoff'
+  | 'claim_conflict' | 'superseded_work' | 'rework'
+  | (string & {});
+
+export interface CoordEvent {
+  /** ms epoch or relative — optional, ordering only. */
+  ts?: number;
+  kind: CoordEventKind;
+  /** acting agent/bee id. */
+  agent?: string;
+  taskId?: string | null;
+  detail?: string;
+}
+
+/** A whole backlog run's coordination trace — emitted by P-010, read by the judge + the objective counter. */
+export interface CoordTrace {
   arm: FleetArmId;
-  /** Tasks in the backlog (the normalization denominator for the headline rates). */
-  tasks: number;
-  /** Total coordination actions observed (failures + clean actions) — the volume denominator. */
-  coordinationActions: number;
-  /** Raw count per failure kind. */
-  counts: Record<CoordFailureKind, number>;
-  /** Total coordination failures across all kinds. */
-  totalFailures: number;
-  /** Failures per task — the headline rate compared to the 41–86% MAS baseline. */
-  failureRatePerTask: number;
-  /** Failures per coordination action — the duplication/misalignment-style normalization. */
-  failureRatePerAction: number;
-  // The four headline rates the L4 claim leads with (each / tasks):
+  agents?: string[];
+  events: CoordEvent[];
+}
+
+// ── Objective substrate-signal rates (no judge) ─────────────────────────────
+
+export interface SubstrateSignalRates {
+  /** Two agents executed the same task. */
   duplicationRate: number;
+  /** Stranded item / orphaned claim / lost hand-off. */
   coordinationBreakdownRate: number;
+  /** Acted on superseded/conflicting state. */
   misalignmentRate: number;
+  /** Work redone unnecessarily. */
   redundantWorkRate: number;
-  /** Published MAS-failure band carried alongside for the chart's reference line. */
+  /** Raw counts behind the rates. */
+  counts: { duplicate: number; breakdown: number; misalignment: number; redundant: number };
+  /** Total coordination events (the volume denominator). */
+  coordinationActions: number;
+}
+
+/** Count the mechanical failure signals in a trace and normalize per task. Pure, no judge. */
+export function substrateSignalRates(events: readonly CoordEvent[], tasks: number): SubstrateSignalRates {
+  let duplicate = 0;
+  let breakdown = 0;
+  let misalignment = 0;
+  let redundant = 0;
+  for (const e of events) {
+    switch (e.kind) {
+      case 'duplicate_completion':
+        duplicate++;
+        break;
+      case 'orphaned_claim':
+      case 'stranded_item':
+      case 'lost_handoff':
+        breakdown++;
+        break;
+      case 'claim_conflict':
+      case 'superseded_work':
+        misalignment++;
+        break;
+      case 'rework':
+        redundant++;
+        break;
+      default:
+        break;
+    }
+  }
+  const per = (n: number) => (tasks === 0 ? 0 : n / tasks);
+  return {
+    duplicationRate: per(duplicate),
+    coordinationBreakdownRate: per(breakdown),
+    misalignmentRate: per(misalignment),
+    redundantWorkRate: per(redundant),
+    counts: { duplicate, breakdown, misalignment, redundant },
+    coordinationActions: events.length,
+  };
+}
+
+// ── Judge-verdict scoring (methodology-aligned, our own judge) ──────────────
+
+/** One LLM-judge verdict: did failure `mode` occur (on `taskId`, if per-task)? */
+export interface MastVerdict {
+  mode: MastModeId;
+  failed: boolean;
+  taskId?: string | null;
+  rationale?: string;
+}
+
+export interface MastReport {
+  arm: FleetArmId;
+  tasks: number;
+  /** Judge-based: fraction of verdicts (per mode) marked failed, by category. Null if no verdicts. */
+  byCategory: Record<MastCategory, number> | null;
+  /** Judge-based: per-mode failure rate. Null if no verdicts. */
+  byMode: Record<string, number> | null;
+  /** Judge-based: overall fraction of modes that fired at least once (the headline vs the 41–86% band). Null if no verdicts. */
+  overallFailureRate: number | null;
+  /** Objective substrate-signal rates (no judge). Null if no trace given. */
+  substrate: SubstrateSignalRates | null;
+  /** The published MAS-failure band carried for the chart's reference line. */
   masBaselineBand: readonly [number, number];
 }
 
-function zeroCounts(): Record<CoordFailureKind, number> {
-  return {
-    duplicate_work: 0,
-    coordination_breakdown: 0,
-    misalignment: 0,
-    redundant_work: 0,
-    premature_termination: 0,
-    incomplete_verification: 0,
-  };
-}
+const MODE_BY_ID = new Map(MAST_MODES.map((m) => [m.id, m]));
 
 /**
- * Score a classified coordination trace into MAST rates for one arm. `tasks` is
- * the backlog size (rates are per-task). Events with `kind: 'ok'` only add to
- * the action volume; failure kinds add to both counts and volume.
+ * Score a coordination measurement into a MAST report for one arm. Provide
+ * `verdicts` (our LLM-judge's 14-mode output) for the methodology-aligned
+ * per-category rates, and/or `trace` for the objective substrate-signal rates.
+ * Both optional — pass whichever the pilot produced. Pure.
  */
-export function mastRates(events: readonly CoordEvent[], arm: FleetArmId, tasks: number): MastRates {
-  const counts = zeroCounts();
-  let coordinationActions = 0;
-  for (const e of events) {
-    coordinationActions++;
-    if (e.kind !== 'ok') counts[e.kind]++;
+export function scoreMast(input: {
+  arm: FleetArmId;
+  tasks: number;
+  verdicts?: readonly MastVerdict[];
+  trace?: readonly CoordEvent[];
+}): MastReport {
+  const { arm, tasks } = input;
+  let byCategory: Record<MastCategory, number> | null = null;
+  let byMode: Record<string, number> | null = null;
+  let overallFailureRate: number | null = null;
+
+  if (input.verdicts && input.verdicts.length > 0) {
+    // Per-mode failure rate = failed verdicts / total verdicts for that mode.
+    const modeFailed = new Map<string, number>();
+    const modeTotal = new Map<string, number>();
+    for (const v of input.verdicts) {
+      modeTotal.set(v.mode, (modeTotal.get(v.mode) ?? 0) + 1);
+      if (v.failed) modeFailed.set(v.mode, (modeFailed.get(v.mode) ?? 0) + 1);
+    }
+    byMode = {};
+    const catFail = { 'specification-system-design': 0, 'inter-agent-misalignment': 0, 'task-verification': 0 } as Record<MastCategory, number>;
+    const catTotal = { 'specification-system-design': 0, 'inter-agent-misalignment': 0, 'task-verification': 0 } as Record<MastCategory, number>;
+    for (const m of MAST_MODES) {
+      const total = modeTotal.get(m.id) ?? 0;
+      const failed = modeFailed.get(m.id) ?? 0;
+      byMode[m.id] = total === 0 ? 0 : failed / total;
+      catFail[m.category] += failed;
+      catTotal[m.category] += total;
+    }
+    byCategory = {
+      'specification-system-design': catTotal['specification-system-design'] === 0 ? 0 : catFail['specification-system-design'] / catTotal['specification-system-design'],
+      'inter-agent-misalignment': catTotal['inter-agent-misalignment'] === 0 ? 0 : catFail['inter-agent-misalignment'] / catTotal['inter-agent-misalignment'],
+      'task-verification': catTotal['task-verification'] === 0 ? 0 : catFail['task-verification'] / catTotal['task-verification'],
+    };
+    const totalVerdicts = input.verdicts.length;
+    const totalFailed = input.verdicts.filter((v) => v.failed).length;
+    overallFailureRate = totalVerdicts === 0 ? 0 : totalFailed / totalVerdicts;
+    // Warn (silently ignore) unknown mode ids — keep scoring robust.
+    void MODE_BY_ID;
   }
-  const totalFailures = COORD_FAILURE_KINDS.reduce((a, k) => a + counts[k], 0);
-  const perTask = (n: number) => (tasks === 0 ? 0 : n / tasks);
+
   return {
     arm,
     tasks,
-    coordinationActions,
-    counts,
-    totalFailures,
-    failureRatePerTask: perTask(totalFailures),
-    failureRatePerAction: coordinationActions === 0 ? 0 : totalFailures / coordinationActions,
-    duplicationRate: perTask(counts.duplicate_work),
-    coordinationBreakdownRate: perTask(counts.coordination_breakdown),
-    misalignmentRate: perTask(counts.misalignment),
-    redundantWorkRate: perTask(counts.redundant_work),
+    byCategory,
+    byMode,
+    overallFailureRate,
+    substrate: input.trace ? substrateSignalRates(input.trace, tasks) : null,
     masBaselineBand: MAS_FAILURE_BASELINE_BAND,
   };
-}
-
-/**
- * Map a raw substrate coordination-event kind (the `coord:*` / work_items /
- * locks vocabulary) to a MAST failure category, or 'ok' for a clean action, or
- * null to ignore it. This is the one place the substrate's own event names are
- * translated to the taxonomy — keep it in sync with P-010's emitted trace.
- */
-export function classifyCoordEvent(rawKind: string): CoordFailureKind | 'ok' | null {
-  switch (rawKind) {
-    case 'duplicate_completion':
-    case 'double_completion':
-      return 'duplicate_work';
-    case 'orphaned_claim':
-    case 'stranded_item':
-    case 'lost_handoff':
-    case 'dead_holder_freed':
-      return 'coordination_breakdown';
-    case 'claim_conflict':
-    case 'superseded_work':
-    case 'conflicting_edit':
-      return 'misalignment';
-    case 'redundant_execution':
-    case 'rework':
-      return 'redundant_work';
-    case 'premature_stop':
-    case 'backlog_abandoned':
-      return 'premature_termination';
-    case 'unverified_pass':
-    case 'false_positive_resolve':
-      return 'incomplete_verification';
-    // Clean coordination actions — count toward volume, not failures.
-    case 'handoff':
-    case 'handoff_accepted':
-    case 'claim':
-    case 'completion':
-    case 'placement':
-    case 'redundancy_judged':
-      return 'ok';
-    default:
-      return null; // not a coordination event we score
-  }
 }

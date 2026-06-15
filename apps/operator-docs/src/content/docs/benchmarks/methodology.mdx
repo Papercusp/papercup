@@ -55,8 +55,15 @@ vary the system) holds at L1; the Hive layers add the fleet dimension on top.
 L2–L4 are the differentiated claims; **L4 (coordination quality) is the most
 differentiated *and* most impartial** Hive claim — see [below](#l4-coordination-quality-the-mast-taxonomy).
 The exact metric names, MAST scoring rubric, and value-capture mechanics are owned by
-`P-025` (throughput), `P-026` (MAST), and `P-027` (value-capture), and the
-instrument feasibility (licenses, integration cost) by `P-029`.
+`P-025` (throughput), `P-026` (MAST), and `P-027` (value-capture); the instrument
+feasibility (licenses, grading, integration cost) is settled by `P-029` / **D-011**
+(`apps/operator/docs/hive-instrument-feasibility-2026-06-15.md`).
+
+**Grading-tier principle (D-011 §5):** *automated-graded sets carry the headline;
+judge/rubric-graded sets are diagnostics.* SWE-bench Pro / Terminal-Bench / SWE-Lancer
+(automated, external) carry L1/L3 headlines; the MAST LLM-judge (L4) and MARBLE
+milestone-KPIs are coordination-quality diagnostics, reported alongside but never *as*
+the headline pass/fail.
 
 ## The arms
 
@@ -125,7 +132,7 @@ the variable is the Queen.
 <Aside type="note" title="Why the Queen-ablation baseline carries the fairness load">
 There is **no off-the-shelf public fleet-throughput benchmark**. So impartiality at
 L2–L5 rests on four legs: public **tasks**, the benchmark's **external grader** (or
-SWE-Lancer/UpBench's built-in \$ grading), the **Queen-ablation baseline** (an
+SWE-Lancer's automated E2E \$ grading), the **Queen-ablation baseline** (an
 apples-to-apples control *inside our own system* — same fleet, same workers, same
 substrate, only the scheduler differs), and **pre-registration**. The Queen-ablation
 delta is the honest, un-spinnable measure of what the Queen adds.

@@ -26,6 +26,11 @@
  */
 import { BASELINE_B_ARM, type NativeHarnessConfig } from './native-harness-config';
 import { runNativeHarnessAttempt, type NativeArmResult, type NativeHarnessPorts } from './native-harness-runner';
+import {
+  runNativeHarnessTerminalBench,
+  type NativeTerminalBenchResult,
+  type RunHarbor,
+} from './native-harness-terminal-bench';
 import type { BenchTask, GenerationBudget } from './types';
 
 /** One backlog entry — a task and the reproducibility seed this serial pass runs it under. */
@@ -56,6 +61,8 @@ export interface SerialBacklogOpts {
 export interface SerialBacklogResult {
   /** The backlog run mode — distinguishes the serial floor from the fleet arms on the throughput record. */
   mode: 'serial-native';
+  /** Grader modality of the per-task unit — M1 diff-batch here ('in-container' = the Harbor variant below). */
+  modality: 'diff';
   /** Always 1 — the floor has no parallelism (the whole point of the comparison). */
   concurrency: 1;
   /** Arm id on the per-task rows (stays the locked 'baseline-b-native'). */
@@ -121,10 +128,84 @@ export async function runNativeSerialBacklog(
 
   return {
     mode: 'serial-native',
+    modality: 'diff',
     concurrency: 1,
     arm: BASELINE_B_ARM,
     attempts,
     tasksAttempted: attempts.length,
+    backlogDrainMs: endedAtMs - startedAtMs,
+    sumTaskWallClockMs,
+    totalTokensIn,
+    totalTokensOut,
+    totalCostUsd,
+    startedAtMs,
+    endedAtMs,
+  };
+}
+
+/**
+ * The M2 (in-container) serial floor — same shape as {@link SerialBacklogResult} but Harbor grades
+ * each task IN-SANDBOX as it finishes, so `tasksResolved` is known immediately (no post-hoc grading,
+ * unlike the M1 diff floor). `results` carry the per-task grade alongside the attempt.
+ */
+export interface TerminalBenchSerialResult {
+  mode: 'serial-native';
+  modality: 'in-container';
+  concurrency: 1;
+  arm: typeof BASELINE_B_ARM;
+  results: NativeTerminalBenchResult[];
+  tasksAttempted: number;
+  /** Tasks Harbor graded as resolved (excludes in-sandbox infra failures — `grade.graderError`). */
+  tasksResolved: number;
+  backlogDrainMs: number;
+  sumTaskWallClockMs: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  totalCostUsd: number;
+  startedAtMs: number;
+  endedAtMs: number;
+}
+
+/**
+ * Drain a Terminal-Bench backlog SEQUENTIALLY via Harbor's built-in `--agent claude-code` (D-008) —
+ * the in-container serial floor. Nearly free vs M1 (no custom agent), and Harbor returns the grade
+ * with the run, so this reports `tasksResolved` directly. The real `runHarbor` (a Docker/uv
+ * `harbor run` subprocess) is injected — deferred to the pilot M2 phase; tested here with a fake.
+ */
+export async function runNativeSerialBacklogTerminalBench(
+  backlog: readonly SerialBacklogItem[],
+  budget: GenerationBudget,
+  ports: { runHarbor: RunHarbor; harborVersion?: string; now?: () => number },
+): Promise<TerminalBenchSerialResult> {
+  const now = ports.now ?? Date.now;
+  const startedAtMs = now();
+  const results: NativeTerminalBenchResult[] = [];
+  for (const { task, seed } of backlog) {
+    results.push(await runNativeHarnessTerminalBench(task, seed, budget, ports));
+  }
+  const endedAtMs = now();
+
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
+  let totalCostUsd = 0;
+  let sumTaskWallClockMs = 0;
+  let tasksResolved = 0;
+  for (const r of results) {
+    totalTokensIn += r.attempt.tokensIn;
+    totalTokensOut += r.attempt.tokensOut;
+    totalCostUsd += r.attempt.costUsd;
+    sumTaskWallClockMs += r.attempt.wallClockMs;
+    if (r.grade.resolved && !r.grade.graderError) tasksResolved += 1;
+  }
+
+  return {
+    mode: 'serial-native',
+    modality: 'in-container',
+    concurrency: 1,
+    arm: BASELINE_B_ARM,
+    results,
+    tasksAttempted: results.length,
+    tasksResolved,
     backlogDrainMs: endedAtMs - startedAtMs,
     sumTaskWallClockMs,
     totalTokensIn,

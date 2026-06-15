@@ -13,8 +13,8 @@
  */
 
 import type { BenchSuite } from './schema';
-import type { CoordEvent, MastRates } from './mast';
-import { mastRates } from './mast';
+import type { CoordEvent, MastReport, MastVerdict } from './mast';
+import { scoreMast } from './mast';
 
 /**
  * Fleet arm vocabulary — LOCKED with P-030 (the UI keys on these exact strings).
@@ -105,7 +105,7 @@ export interface HiveArmReport {
   arm: FleetArmId;
   throughput: ThroughputMetrics;
   value: ValueMetrics | null;
-  mast: MastRates | null;
+  mast: MastReport | null;
 }
 
 /** hive − queen-ablated on the headline axes: the Queen's measured value. */

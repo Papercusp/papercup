@@ -28,7 +28,7 @@
 /* -------------------------------------------------------------------------- */
 
 /** Which benchmark family a task belongs to (open string — new families add a literal). */
-export type BenchmarkFamily = 'swe-bench-pro' | 'terminal-bench' | 'harness-bench' | (string & {});
+export type BenchmarkFamily = 'swe-bench-pro' | 'terminal-bench' | 'harness-bench' | 'swe-lancer' | (string & {});
 
 /**
  * One benchmark task, normalized across families. The arm only ever sees the
@@ -49,6 +49,13 @@ export interface BenchTask {
   baseCommit?: string;
   /** Multi-language families (Pro is polyglot): the task's primary language. */
   language?: string;
+
+  /**
+   * $-payout for value-weighted families (SWE-Lancer, the L3 value-capture layer): a RESOLVED task
+   * "captures" this value. The Hive's $-aware placement (P-022) reads it; the value-captured-under-budget
+   * metric (P-025) sums it over resolved rows under a fixed budget. Omitted by non-value benchmarks.
+   */
+  valueUsd?: number;
 
   /**
    * Opaque grader inputs threaded verbatim to the {@link OfficialGrader} backend — e.g. SWE-bench Pro's
