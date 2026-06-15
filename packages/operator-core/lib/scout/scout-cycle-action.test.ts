@@ -5,7 +5,7 @@
  * faked so the handler runs with no PG (the runScoutTick core is covered in
  * scheduler.test.ts).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   parseScoutCycleConfig,
   makeScoutCycleAction,
@@ -144,6 +144,72 @@ describe('makeScoutCycleAction', () => {
     );
     await handler(ctx); // would attempt the live admin pool if a default glue existed
     expect(calls.ran).toBe(1);
+  });
+
+  // P-051 (D-005): the WORKSPACE-WIDE scout spend ceiling preflight — consulted
+  // BEFORE the tick; when it refuses, the cycle is short-circuited as a no-op.
+  it('REFUSES the cycle when the workspace ceiling gate denies — no cycle runs (P-051)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const calls = { ran: 0, persisted: 0 };
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      fakeBuilder({ idleRatio: 1 }, calls), // cadence WOULD fire — but the ceiling overrides
+      undefined,
+      async () => ({
+        allow: false,
+        reason: 'workspace-ceiling-exceeded' as const,
+        totalScoutSpentUsd: 12,
+        ceilingUsd: 10,
+        remainingUsd: -2,
+        scoutLoopCount: 3,
+      }),
+    );
+    await handler(ctx);
+    expect(calls.ran).toBe(0); // the cycle never fanned out
+    expect(calls.persisted).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('workspace-wide scout spend ceiling'));
+    warn.mockRestore();
+  });
+
+  it('PROCEEDS normally when the workspace ceiling gate allows (P-051)', async () => {
+    const calls = { ran: 0, persisted: 0 };
+    const runCycle = async () => ({
+      provenance: [{ ideaId: 'i', lens: 'analogical' as const, rail: 'gym' as const, routedRef: 'gym:1' }],
+      costUsd: 0.1,
+    });
+    const handler = makeScoutCycleAction(
+      runCycle,
+      fakeBuilder({ idleRatio: 1 }, calls),
+      undefined,
+      async () => ({ allow: true, totalScoutSpentUsd: 3, ceilingUsd: 10, remainingUsd: 7, scoutLoopCount: 2 }),
+    );
+    await handler(ctx);
+    expect(calls.ran).toBe(1); // under the ceiling ⇒ the cycle fires
+    expect(calls.persisted).toBe(1);
+  });
+
+  it('a refused cycle still MIRRORS the per-cycle cap (fired:null) to the governor (P-051)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const calls = { ran: 0, persisted: 0 };
+    const gov: Array<{ harnessSlug: string; perCycleBudgetUsd: number; fired: unknown }> = [];
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      fakeBuilder({ idleRatio: 1 }, calls),
+      async (input) => (gov.push({ harnessSlug: input.harnessSlug, perCycleBudgetUsd: input.perCycleBudgetUsd, fired: input.fired }), { applied: true as const }),
+      async () => ({
+        allow: false,
+        reason: 'workspace-ceiling-exceeded' as const,
+        totalScoutSpentUsd: 99,
+        ceilingUsd: 10,
+        remainingUsd: -89,
+        scoutLoopCount: 5,
+      }),
+    );
+    await handler({ ...ctx, payloadTemplate: { budget: { maxCostUsd: 0.5 } } });
+    expect(calls.ran).toBe(0);
+    // The held cycle still keeps the governor sub-budget current (fired:null).
+    expect(gov).toEqual([{ harnessSlug: 'papercup', perCycleBudgetUsd: 0.5, fired: null }]);
+    warn.mockRestore();
   });
 });
 

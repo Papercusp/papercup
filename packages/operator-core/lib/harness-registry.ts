@@ -58,6 +58,19 @@ export interface ProjectEntry {
    *  clone's HEAD). Fork-PRs target this instead of assuming 'main'. */
   github_default_branch?: string;
   /**
+   * The user's OWN fork of the upstream repo, normalized HTTPS clone URL
+   * (per-hive-learning-loops-2026-06-14 P-072 / D-007b). The CONTRIBUTION seam:
+   * a platform self-hive (or any member without upstream write) git-syncs its
+   * local commits to THIS fork remote — never the canonical upstream — and
+   * improvements reach upstream only as human-reviewed PRs (open-fork-pr) or
+   * moderated Comb learning-pack listings. Absent ⇒ no fork configured (the
+   * default for every existing harness): git-sync stays commit-only / pushes the
+   * upstream only when the operator has write (decideGitSyncPush). This is a LOCAL
+   * config seam only — setting it performs NO outward git action (D-007: the live
+   * fork-push / PR-open is the gated platform:contribute path).
+   */
+  fork_remote?: string;
+  /**
    * Where this harness's execution plane runs (`cloud-deployment-layer-2026-06-06`
    * P-003). A sibling to the blueprint (D-001), supplied at instantiation and
    * persisted here in workspace PG. Absent ⇒ `{ target: 'local' }` (every existing

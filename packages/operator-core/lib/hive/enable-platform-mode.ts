@@ -1,0 +1,212 @@
+/**
+ * enablePlatformMode — the opt-in "Papercusp inside Papercusp" enable flow
+ * (per-hive-learning-loops-2026-06-14 P-071; D-006/D-007/D-008).
+ *
+ * When a user opts INTO platform mode, three things must happen — in order, each
+ * best-effort + individually reported so a partial enable is visible, never silent:
+ *
+ *   1. FLIP the `PLATFORM_IMPROVEMENT_LOOPS` knob ON for THIS install (P-070's
+ *      flag). The knob defaults ON in dev/self-host but OFF on a public release
+ *      (PAPERCUSP_PLATFORM_MODE=off); opting in flips the PG-backed override so the
+ *      Class-C layer-3 loops can materialize. This is the master switch — it must
+ *      flip FIRST so step 3's materialization sees platform mode ON.
+ *   2. STAND UP Papercusp's own repo as a self-managed SHARED Hive (kind:'hive',
+ *      D-008) via the EXISTING `hive:create_from_repo` machinery — FETCH-ON-ENABLE
+ *      from the public repo (D-007a: clone on toggle, do NOT bundle source). Because
+ *      hive:create_from_repo → createHiveHarness already runs the per-hive
+ *      learning-loop provisioning (P-020 step 6c), the self-hive inherits its OWN
+ *      gym + scout loop for free — this function does NOT re-provision it.
+ *   3. ARM the layer-3 platform-improvement loops: materialize the Class-C
+ *      workspace-singleton frontier/measurement loops (`materializeLearningSingletons`)
+ *      — now that the flag is ON they actually get written instead of skipped. The
+ *      improvement-watchdog/triage/implement set rides the same gate (seeded INACTIVE
+ *      by default; the watchdog is the safe capture-only cadence the owner arms).
+ *
+ * Idempotent + re-runnable: an existing self-hive returns a JOIN OFFER from the
+ * lookup (zero side effects), which we treat as "already standing" rather than an
+ * error. The flag flip + singleton materialization are both upserts.
+ *
+ * SAFETY (P-073 / D-007): standing up the self-hive does NOT change the confinement
+ * envelope. The platform loop on this install still respects the TCB / never-auto /
+ * protected-path guards (classifyImprovement) and the autonomy ceilings — its blast
+ * radius is THIS install; everything upstream is PR-/moderation-gated (P-072). This
+ * function arms loops; it never relaxes a guard.
+ */
+import type { Sql } from 'postgres';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverride } from '@papercusp/flags/server';
+import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../workspace-registry';
+import { createHiveFromRepo, type CreateHiveFromRepoResult } from '../agent-tools/hive/_create_from_repo';
+import { materializeLearningSingletons } from '../blueprint/seed-learning-singletons';
+
+/**
+ * The canonical public Papercusp repo (D-007a fetch-on-enable). This is the SAME
+ * URL the cloud frame-bootstrap clones; standing it up as a kind:'hive' shared Hive
+ * is exactly the "Papercusp inside Papercusp" relationship this dev workspace has.
+ */
+export const PAPERCUSP_CANONICAL_REPO_URL = 'https://github.com/Papercusp/papercup.git';
+
+/** Default base slug for the self-hive — member `papercusp-platform`, home `papercusp-platform-hive`. */
+export const PLATFORM_SELF_HIVE_SLUG = 'papercusp-platform';
+
+export interface EnablePlatformModeInput {
+  workspaceId?: string;
+  sql?: Sql;
+  /**
+   * Override the canonical repo URL (tests / a fork-from). Default: the public
+   * Papercusp repo. The self-hive is created with `visibility:'private'` so the
+   * enable flow performs ZERO external publish writes — the install dogfoods
+   * Papercusp locally; contribution is the separate, gated P-072 path.
+   */
+  repoUrl?: string;
+  /** Override the self-hive base slug. Default `papercusp-platform`. */
+  slug?: string;
+  /**
+   * Shallow-clone the (large) Papercusp repo. Default true — fetch-on-enable
+   * wants the small download; the platform loop reads HEAD, not deep history.
+   */
+  shallow?: boolean;
+  /**
+   * Run the canonical repo's test command at create. Default FALSE — the same
+   * hardening default hive:create_from_repo uses for a pasted URL (D-001): never
+   * auto-execute repo code on enable. The owner verifies later if they wish.
+   */
+  runTests?: boolean;
+  // ── injectable seams (real defaults below) — every external effect is a seam so
+  //    the whole flow is unit-testable with no real flag store / clone / PG ──
+  /** Flip the platform-improvement flag override. Default: setFlagOverride. */
+  setFlag?: (
+    key: typeof FLAGS.PLATFORM_IMPROVEMENT_LOOPS,
+    enabled: boolean,
+  ) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  /** Stand up the self-hive. Default: createHiveFromRepo. */
+  createSelfHive?: (
+    opts: Parameters<typeof createHiveFromRepo>[0],
+  ) => Promise<CreateHiveFromRepoResult>;
+  /** Arm the Class-C singletons. Default: materializeLearningSingletons. */
+  armSingletons?: typeof materializeLearningSingletons;
+}
+
+export interface EnablePlatformModeResult {
+  ok: boolean;
+  /** The platform-improvement flag was flipped ON (or already on). */
+  flagEnabled: { ok: boolean; reason?: string };
+  /** The self-hive stand-up outcome. */
+  selfHive:
+    | { ok: true; status: 'created'; hiveSlug: string; memberSlug: string }
+    | { ok: true; status: 'already_standing'; detail: string }
+    | { ok: false; status: 'failed'; error: string; message?: string };
+  /** The layer-3 loop arming outcome (counts only — the full per-loop trail is large). */
+  armedLoops:
+    | { ok: true; materialized: number; skipped: number; names: string[] }
+    | { ok: false; error: string };
+  /** A one-line human summary of the enable. */
+  summary: string;
+}
+
+/**
+ * Enable platform mode. ORDER MATTERS: flag first (so the singleton materialization
+ * sees it ON), then the self-hive, then the loop arming. Each step is best-effort and
+ * never throws — a partial enable is reported, not hidden, so the owner can re-run.
+ */
+export async function enablePlatformMode(
+  input: EnablePlatformModeInput = {},
+): Promise<EnablePlatformModeResult> {
+  const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  const sql = input.sql ?? getOrgPg().sql;
+  const repoUrl = input.repoUrl ?? PAPERCUSP_CANONICAL_REPO_URL;
+  const slug = input.slug ?? PLATFORM_SELF_HIVE_SLUG;
+  const setFlag = input.setFlag ?? setFlagOverride;
+  const createSelfHive = input.createSelfHive ?? createHiveFromRepo;
+  const armSingletons = input.armSingletons ?? materializeLearningSingletons;
+
+  // 1 — FLIP the master switch ON for this install (PG-backed override; works
+  //     without PostHog). MUST precede the materialization so step 3 sees it ON.
+  let flagEnabled: { ok: boolean; reason?: string };
+  try {
+    const r = await setFlag(FLAGS.PLATFORM_IMPROVEMENT_LOOPS, true);
+    flagEnabled = r.ok ? { ok: true } : { ok: false, reason: r.reason };
+  } catch (e) {
+    flagEnabled = { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+
+  // 2 — STAND UP the Papercusp self-hive (fetch-on-enable, D-007a). PRIVATE
+  //     visibility ⇒ zero external publish writes; the install dogfoods locally.
+  //     The self-hive inherits its per-hive gym+scout loop from createHiveHarness
+  //     (P-020 step 6c) — we do NOT re-provision it here.
+  let selfHive: EnablePlatformModeResult['selfHive'];
+  try {
+    const res = await createSelfHive({
+      githubUrl: repoUrl,
+      slug,
+      visibility: 'private',
+      shallow: input.shallow ?? true,
+      runTests: input.runTests ?? false,
+      workspaceId,
+    });
+    if (res.ok && 'created' in res) {
+      selfHive = {
+        ok: true,
+        status: 'created',
+        hiveSlug: res.created.hiveSlug,
+        memberSlug: res.created.memberSlug,
+      };
+    } else if (res.ok && 'existing' in res) {
+      // The repo's Hive already exists in this workspace — a join offer, zero
+      // side effects. For the enable flow that IS the success path: the self-hive
+      // is already standing. (D-007: re-enabling never double-creates.)
+      selfHive = {
+        ok: true,
+        status: 'already_standing',
+        detail: res.existing.kind,
+      };
+    } else {
+      selfHive = {
+        ok: false,
+        status: 'failed',
+        error: (res as { error: string }).error,
+        ...((res as { message?: string }).message ? { message: (res as { message?: string }).message } : {}),
+      };
+    }
+  } catch (e) {
+    selfHive = { ok: false, status: 'failed', error: 'exception', message: e instanceof Error ? e.message : String(e) };
+  }
+
+  // 3 — ARM the layer-3 Class-C singletons. Now that the flag is ON (step 1), the
+  //     materialization writes the @singleton rows instead of skipping them (the
+  //     P-070 gate). Frontier loops seed DARK (owner arms each); the always-on
+  //     loops seed active per their blueprint. Best-effort: a failure is reported.
+  let armedLoops: EnablePlatformModeResult['armedLoops'];
+  try {
+    // If the flag flip failed we still attempt with an explicit ON resolver so a
+    // missing PostHog backend (override-store-not-configured) does not block the
+    // local enable — the user opted in; honor it for the materialization.
+    const results = await armSingletons(sql, workspaceId, {
+      execute: true,
+      retireLegacy: false,
+      flag: async () => true,
+    });
+    const acted = results.filter((r) => r.declaresSingleton && !r.skipped);
+    const skipped = results.filter((r) => r.skipped).length;
+    armedLoops = {
+      ok: true,
+      materialized: acted.length,
+      skipped,
+      names: acted.flatMap((r) => r.plannedNames),
+    };
+  } catch (e) {
+    armedLoops = { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
+  const ok = flagEnabled.ok && selfHive.ok && armedLoops.ok;
+  const summary = ok
+    ? `Platform mode ENABLED: flag on, self-hive ${selfHive.ok && 'status' in selfHive ? selfHive.status : '?'}, ` +
+      `${armedLoops.ok ? armedLoops.materialized : 0} layer-3 loop(s) armed (dark — arm via the gym/routines UI).`
+    : `Platform mode PARTIALLY enabled — re-run: ` +
+      `flag=${flagEnabled.ok ? 'on' : `FAILED(${flagEnabled.reason})`}, ` +
+      `self-hive=${selfHive.ok ? 'ok' : `FAILED(${(selfHive as { error: string }).error})`}, ` +
+      `loops=${armedLoops.ok ? 'armed' : `FAILED(${armedLoops.error})`}.`;
+
+  return { ok, flagEnabled, selfHive, armedLoops, summary };
+}

@@ -37,6 +37,7 @@ import {
   dbosReactionsActive,
   dbosPlanRenderActive,
 } from './dbos-flags';
+import { utilityHostEnabled } from '../background-workers';
 
 const PINNED_APP_VERSION = process.env.DBOS__APPVERSION || 'papercusp-jobs-v1';
 
@@ -93,11 +94,20 @@ export async function startDbos(): Promise<void> {
   // an enablement surface nothing wrote. Scheduled decider fires are the routines
   // engine's job — blueprint `triggers.schedule` → `system:blueprint-run` — with
   // the consecutive_errors backoff gate in lib/autoloop.ts protecting the fires.
-  if (dbosTimersActive()) {
+  if (dbosTimersActive() && !utilityHostEnabled()) {
     // Phase 2 (default-on with the orchestrator): periodic timers (telemetry flush,
     // scratch GC, memory cleanup, completion-ref verify, embed backfill, backup
     // cadence) as scheduled workflows; their legacy setInterval workers stand down
     // (same condition). Disable with PAPERCUSP_DBOS_TIMERS=0.
+    //
+    // EI-596: a headless UTILITY host (the gym-operator) launches DBOS + the
+    // orchestrator/routines it needs for its pipelines (separate imports below), but
+    // must NOT run these shared-DB periodic drains — backup cadence + orphan-cleanup
+    // + GC sweeps are irrelevant to a short-lived dedicated instance and error against
+    // its throwaway gym DB (backupHost has no config there), spamming the boot log
+    // every cadence. utilityHostEnabled() is the existing seam for exactly this
+    // "needs DBOS, not the shared-DB drains" distinction. dbosTimersActive() itself is
+    // left untouched so the legacy-fallback stand-down semantics are unchanged.
     await import('./periodic-workflows');
   }
   if (dbosOrchestratorActive()) {
