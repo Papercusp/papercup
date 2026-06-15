@@ -28,6 +28,13 @@ vi.mock('../system-health', async () => {
   return { computeSystemHealth: vi.fn(), deriveQueenAlive: real.deriveQueenAlive };
 });
 
+// computeOverwatchBrief resolves the Queen's coord owner (the nudge address) via a
+// dynamic import of getOrgPg + resolveQueenOwner — mock both so the wrapper test
+// drives the owner without a DB.
+const owner = vi.hoisted(() => ({ resolveQueenOwner: vi.fn() }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('../hive/placement-watchdog', () => ({ resolveQueenOwner: owner.resolveQueenOwner }));
+
 /** A healthy brief we mutate one panel at a time to trip exactly one detector. */
 function base(): OverwatchBrief {
   return emptyOverwatchBrief('papercup-hive');
@@ -45,7 +52,7 @@ test('detectAnomalies — healthy brief trips nothing', () => {
 
 test('detectAnomalies — a stalled Queen → a critical queen-stalled NUDGE (B-11)', () => {
   const b = base();
-  b.queen = { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 2, nextFireAt: null };
+  b.queen = { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 2, nextFireAt: null, coordOwner: null };
   const a = only(detectAnomalies(b), 'queen-stalled');
   assert.equal(a.severity, 'critical');
   assert.equal(a.suggestedAction.type, 'nudge');
@@ -388,6 +395,25 @@ test('computeOverwatchBrief — wraps computeSystemHealth: maps the snapshot + a
   assert.equal(b.hiveSlug, 'papercup-hive');
   assert.equal(b.wokeBy, 'timer');
   assert.equal(b.anomalies.filter((a) => a.kind === 'queen-stalled').length, 1);
+});
+
+test('computeOverwatchBrief — resolves the Queen coord owner into the brief (the nudge address)', async () => {
+  vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData() }));
+  owner.resolveQueenOwner.mockResolvedValue('s-queen-1781-abc');
+  const b = await computeOverwatchBrief('ws', 'papercup-hive');
+  assert.equal(b.queen.coordOwner, 's-queen-1781-abc'); // the overwatch can now coord:send the Queen here
+});
+
+test('computeOverwatchBrief — Queen-owner resolution is fail-soft → coordOwner null (persona escalates instead)', async () => {
+  vi.mocked(computeSystemHealth).mockResolvedValue(fakeHealth({ queen: queenData() }));
+  owner.resolveQueenOwner.mockRejectedValue(new Error('no db'));
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const b = await computeOverwatchBrief('ws', 'papercup-hive');
+    assert.equal(b.queen.coordOwner, null); // a throw never kills the brief — nudges escalate
+  } finally {
+    warnSpy.mockRestore();
+  }
 });
 
 test('computeOverwatchBrief — a thrown aggregator degrades to the neutral fail-soft brief (wake still fires)', async () => {

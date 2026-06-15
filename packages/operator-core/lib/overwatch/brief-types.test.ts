@@ -12,7 +12,7 @@ function unhealthyBrief(): OverwatchBrief {
   return {
     hiveSlug: 'papercup-hive',
     wokeBy: 'timer',
-    queen: { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 3, nextFireAt: null },
+    queen: { lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, cadenceOk: false, workingTracked: 3, nextFireAt: null, coordOwner: 's-queen-1781000000-abc' },
     bees: { running: 4, completed: 11, churning: 2, deadClaims: 1 },
     workFeed: { frontier: 7, autoEligibleStuck: 5, deadRoutines: 1, blockedStranded: 2 },
     tokens: { pausedBuckets: ['opus', 'sonnet'], gatewayFailovers: 3, gw429s: 12, accountsAvailable: 1 },
@@ -61,6 +61,8 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
 
   // Health panels — one line each, every field surfaced.
   assert.match(out, /### Queen\n- last woke 2026-06-15T01:00:00Z \[STALLED\] · cadence OFF · driving 3 placement\(s\) · next unscheduled/);
+  // The Queen-nudge address: coord:send to her resolved coordOwner (lands in her wake brief).
+  assert.match(out, /nudge the Queen via `coord:send \{ to: \['s-queen-1781000000-abc'\]/);
   assert.match(out, /### Bees\n- running 4 · completed 11 · churning 2 · dead claims 1/);
   assert.match(out, /### Work feed\n- frontier 7 ready · 5 auto-eligible stuck · 1 dead routine\(s\) · 2 stranded/);
   assert.match(out, /### Tokens \/ gateway\n- paused buckets: opus, sonnet · 3 failover\(s\) · 12 429\(s\) · 1 account\(s\) available/);
@@ -87,6 +89,8 @@ test('renderOverwatchBrief — empty anomalies render an explicit healthy signal
   assert.match(out, /_no anomalies — system healthy\._/);
   // The panels still render with the neutral defaults.
   assert.match(out, /- last woke unknown · cadence ok · driving 0 placement\(s\) · next unscheduled/);
+  // No resolvable Queen coord owner (null default) ⇒ the render tells the overwatch to ESCALATE, not nudge.
+  assert.match(out, /no resolvable Queen coord owner right now — ESCALATE/);
   assert.match(out, /- queen alive · overwatch alive/);
   assert.match(out, /by role: none/);
   assert.match(out, /paused buckets: none/);
@@ -132,6 +136,7 @@ test('emptyOverwatchBrief — neutral fail-soft default: healthy, zeroed, no ano
   assert.equal(a.crossMonitor.queenAlive, true);
   assert.equal(a.queen.stalled, false);
   assert.equal(a.queen.cadenceOk, true);
+  assert.equal(a.queen.coordOwner, null); // resolved by the async wrapper; null until then
   // Distinct instances don't share nested objects/arrays (B-03 mutates the brief as reads land).
   const b = emptyOverwatchBrief('hive-b');
   a.tokens.pausedBuckets.push('opus');

@@ -207,8 +207,8 @@ export function NotificationCenter() {
   );
 }
 
-function formatRelative(ts: number): string {
-  const delta = Date.now() - ts;
+export function formatRelative(ts: number, now: number = Date.now()): string {
+  const delta = now - ts;
   const s = Math.round(delta / 1000);
   if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);

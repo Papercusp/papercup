@@ -37,7 +37,7 @@ const ACTION_COLUMNS: ColumnDef<Action>[] = [
   },
 ];
 
-const onText = (on: string | string[]): string => (Array.isArray(on) ? on.join(', ') : on);
+export const onText = (on: string | string[]): string => (Array.isArray(on) ? on.join(', ') : on);
 const REACTION_COLUMNS: ColumnDef<ReactionRule>[] = [
   { key: 'on', header: 'On', width: 2, toCopyText: (r) => onText(r.on), render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{onText(row.on)}</span> },
   { key: 'fire', header: 'Fires', width: 2, toCopyText: (r) => r.fire, render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.fire}</span> },

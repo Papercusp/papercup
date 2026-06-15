@@ -59,7 +59,7 @@ function readThemeTokens(seedId: string): Record<string, string> {
 
 /** Best-effort #rrggbb for the native color input (text input stays authoritative
  * so rgba()/named values are still editable). */
-function toHex(value: string): string {
+export function toHex(value: string): string {
   const s = (value || '').trim();
   if (/^#[0-9a-f]{6}$/i.test(s)) return s.toLowerCase();
   if (/^#[0-9a-f]{3}$/i.test(s)) return '#' + s.slice(1).split('').map((c) => c + c).join('').toLowerCase();

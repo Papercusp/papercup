@@ -11,8 +11,44 @@ import { useSyncQuery } from '@papercusp/sync';
 const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'] as const;
 type Status = (typeof VALID_STATUSES)[number];
 
-function safeParse(s: string): unknown {
+export function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return s; }
+}
+
+export interface FeatureAuditEntry { ts: number; field: string; old: unknown; new: unknown; actor: string }
+
+interface RawAuditRow {
+  featureId: string;
+  ts: number;
+  field: string;
+  oldValue?: string | null;
+  newValue?: string | null;
+  actor?: string | null;
+}
+
+/**
+ * Project the cross-harness audit subscription down to the edit-history rows
+ * for one feature: filter to this feature's id and JSON-parse the old/new
+ * column values (falling back to the raw string when they aren't JSON). Returns
+ * null in create mode or when the subscription hasn't hydrated. Extracted so
+ * the parse + filter is testable without mounting the editor.
+ */
+export function deriveFeatureHistory(
+  auditRows: unknown,
+  featureId: string | null | undefined,
+  isCreate: boolean,
+): FeatureAuditEntry[] | null {
+  if (isCreate || !featureId) return null;
+  if (!Array.isArray(auditRows)) return null;
+  return (auditRows as RawAuditRow[])
+    .filter((r) => r.featureId === featureId)
+    .map((r) => ({
+      ts: r.ts,
+      field: r.field,
+      old: r.oldValue ? safeParse(r.oldValue) : null,
+      new: r.newValue ? safeParse(r.newValue) : null,
+      actor: r.actor ?? '',
+    }));
 }
 
 interface Feature {
@@ -120,7 +156,6 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
 
   // Audit history — eager via the cross-harness audit subscription.
   // Replaces the lazy /audit fetch when the History section was expanded.
-  type AuditEntry = { ts: number; field: string; old: unknown; new: unknown; actor: string };
   const [historyOpen, setHistoryOpen] = useQueryState('history', parseAsBoolean.withDefault(false));
   const [historyError, _setHistoryError] = useState<string | null>(null);
   const { data: auditRows } = useSyncQuery<{
@@ -136,19 +171,10 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
     args: { harnessSlug: slug },
     enabled: !isCreate && !!slug,
   });
-  const historyRows: AuditEntry[] | null = useMemo(() => {
-    if (isCreate || !feature?.id) return null;
-    if (!Array.isArray(auditRows)) return null;
-    return auditRows
-      .filter((r) => r.featureId === feature.id)
-      .map((r) => ({
-        ts: r.ts,
-        field: r.field,
-        old: r.oldValue ? safeParse(r.oldValue) : null,
-        new: r.newValue ? safeParse(r.newValue) : null,
-        actor: r.actor ?? '',
-      }));
-  }, [auditRows, isCreate, feature?.id]);
+  const historyRows: FeatureAuditEntry[] | null = useMemo(
+    () => deriveFeatureHistory(auditRows, feature?.id, isCreate),
+    [auditRows, isCreate, feature?.id],
+  );
 
   // Cmd+S save
   useEffect(() => {

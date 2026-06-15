@@ -97,19 +97,19 @@ export const RAIL_CSS = `/*
   font-size: 10px;
   font-weight: 760;
   letter-spacing: 0.2em;
-  color: rgba(207, 238, 255, 0.86);
+  color: color-mix(in srgb, var(--fg), transparent 14%);
 }
 .pcdar__expand-chevron {
   width: 16px;
   height: 16px;
-  color: rgba(148, 224, 255, 0.86);
+  color: var(--accent-soft);
 }
 .pcdar__expand-rail:hover {
   background: color-mix(in srgb, var(--bg-1, #0a1422), transparent 2%);
 }
 .pcdar__expand-rail:hover .pcdar__expand-orb {
   border-color: color-mix(in srgb, var(--accent), transparent 50%);
-  color: #eff8ff;
+  color: var(--fg);
 }
 .pcdar__expand-rail:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 18%);
@@ -169,7 +169,7 @@ body.has-dev-rail .pc-header {
   font-weight: 760;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(203, 238, 255, 0.82);
+  color: color-mix(in srgb, var(--fg), transparent 18%);
 }
 .pcdar__title-badge {
   padding: 1px 6px;
@@ -191,14 +191,14 @@ body.has-dev-rail .pc-header {
   border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 84%);
   background: rgba(255, 255, 255, 0.03);
-  color: rgba(214, 236, 248, 0.78);
+  color: color-mix(in srgb, var(--fg), transparent 22%);
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
 .pcdar__iconbtn:hover {
   background: rgba(12, 24, 38, 0.96);
   border-color: color-mix(in srgb, var(--accent), transparent 60%);
-  color: #eff8ff;
+  color: var(--fg);
 }
 
 /* Accordion */
@@ -228,7 +228,7 @@ body.has-dev-rail .pc-header {
   padding: 9px 12px;
   border: none;
   background: transparent;
-  color: rgba(214, 236, 248, 0.74);
+  color: color-mix(in srgb, var(--fg), transparent 26%);
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.02em;
@@ -238,10 +238,10 @@ body.has-dev-rail .pc-header {
 }
 .pcdar__sec-head:hover {
   background: color-mix(in srgb, var(--bg-1, #0a1422), transparent 2%);
-  color: #eff8ff;
+  color: var(--fg);
 }
 .pcdar__sec.is-active > .pcdar__sec-head {
-  color: #f7fdff;
+  color: var(--fg);
   background: color-mix(in srgb, var(--bg-raised, #0e1c30), transparent 2%);
 }
 .pcdar__sec-icon {
@@ -256,7 +256,7 @@ body.has-dev-rail .pc-header {
   padding: 0 7px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.18);
-  color: rgba(214, 236, 248, 0.82);
+  color: color-mix(in srgb, var(--fg), transparent 18%);
   font-size: 10px;
   font-weight: 700;
 }
@@ -314,14 +314,14 @@ body.has-dev-rail .pc-header {
   border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 82%);
   background: rgba(255, 255, 255, 0.03);
-  color: rgba(214, 236, 248, 0.8);
+  color: color-mix(in srgb, var(--fg), transparent 20%);
   font-size: 11px;
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
 .pcdar-panel__refresh:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent), transparent 60%);
-  color: #eff8ff;
+  color: var(--fg);
 }
 .pcdar-panel__refresh:disabled {
   opacity: 0.55;
@@ -371,7 +371,7 @@ body.has-dev-rail .pc-header {
 .pcdar-row__title {
   font-size: 13px;
   font-weight: 600;
-  color: #eff8ff;
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -379,7 +379,7 @@ body.has-dev-rail .pc-header {
 .pcdar-row__sub {
   margin-top: 2px;
   font-size: 11px;
-  color: rgba(205, 226, 240, 0.7);
+  color: color-mix(in srgb, var(--fg), transparent 30%);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap;
   overflow: hidden;
@@ -411,7 +411,7 @@ body.has-dev-rail .pc-header {
   font-weight: 700;
   letter-spacing: 0.04em;
   background: rgba(148, 163, 184, 0.18);
-  color: rgba(214, 236, 248, 0.82);
+  color: color-mix(in srgb, var(--fg), transparent 18%);
 }
 .pcdar-pill.is-good {
   background: rgba(34, 197, 94, 0.18);
@@ -438,7 +438,7 @@ body.has-dev-rail .pc-header {
   color: rgba(148, 163, 184, 0.78);
 }
 .pcdar-kv__v {
-  color: #eff8ff;
+  color: var(--fg);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   text-align: right;
   white-space: nowrap;

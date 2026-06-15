@@ -20,7 +20,7 @@ import { Popover } from '../harness/Popover';
  * Pulls the active harness slug from the URL (`?slug=`, `?project=`,
  * or `/harness/<slug>` path) so it can render outside HarnessDashboard.
  */
-function readActiveSlug(): string | null {
+export function readActiveSlug(): string | null {
   if (typeof window === 'undefined') return null;
   const isValid = (s: string | null | undefined) =>
     !!s && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(s);

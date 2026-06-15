@@ -82,6 +82,61 @@ export type KanbanColumnProps = {
   name: string;
 } & Record<string, unknown>;
 
+/**
+ * The drag-over column flip, extracted pure. When the active card is dragged
+ * over a different column (or onto an empty column header), produce the new
+ * immutable data array with that card reassigned + reordered to the hovered
+ * card's index. Returns `null` when nothing should change (no target column, or
+ * the active card is already in the resolved column). Mirrors the deviations
+ * noted in the file header: immutable flip, never mutates the item in place.
+ */
+export function computeColumnFlip<T extends KanbanItemProps, C extends KanbanColumnProps>(
+  data: T[],
+  columns: C[],
+  activeId: string,
+  overId: string,
+): T[] | null {
+  const activeItem = data.find((item) => item.id === activeId);
+  if (!activeItem) return null;
+  const overItem = data.find((item) => item.id === overId);
+
+  const activeColumn = activeItem.column;
+  const overColumn =
+    overItem?.column ||
+    columns.find((col) => col.id === overId)?.id ||
+    columns[0]?.id;
+
+  if (!overColumn || activeColumn === overColumn) return null;
+
+  let newData = data.map((item) =>
+    item.id === activeId ? { ...item, column: overColumn } : item,
+  );
+  const activeIndex = newData.findIndex((item) => item.id === activeId);
+  const overIndex = newData.findIndex((item) => item.id === overId);
+  newData = arrayMove(newData, activeIndex, overIndex >= 0 ? overIndex : activeIndex);
+  return newData;
+}
+
+/** Same-list reorder on drag-end: move the active card to the over card's
+ *  index. Returns `null` when there's nothing to do (no target, or dropped on
+ *  itself). */
+export function computeReorder<T extends KanbanItemProps>(
+  data: T[],
+  activeId: string,
+  overId: string,
+): T[] | null {
+  if (activeId === overId) return null;
+  const oldIndex = data.findIndex((item) => item.id === activeId);
+  const newIndex = data.findIndex((item) => item.id === overId);
+  return arrayMove([...data], oldIndex, newIndex);
+}
+
+/** The cards belonging to one column, in data order — the filter behind
+ *  KanbanCards. Pure so the column partition is testable on its own. */
+export function cardsForColumn<T extends KanbanItemProps>(data: T[], columnId: string): T[] {
+  return data.filter((item) => item.column === columnId);
+}
+
 type KanbanContextProps<
   T extends KanbanItemProps = KanbanItemProps,
   C extends KanbanColumnProps = KanbanColumnProps,
@@ -158,7 +213,7 @@ export const KanbanCards = <T extends KanbanItemProps = KanbanItemProps>({
   ...props
 }: KanbanCardsProps<T>) => {
   const { data } = useContext(KanbanContext) as KanbanContextProps<T>;
-  const filteredData = data.filter((item) => item.column === props.id);
+  const filteredData = cardsForColumn(data, props.id);
   const items = filteredData.map((item) => item.id);
 
   return (
@@ -232,27 +287,8 @@ export const KanbanProvider = <
       return;
     }
 
-    const activeItem = data.find((item) => item.id === active.id);
-    const overItem = data.find((item) => item.id === over.id);
-    if (!activeItem) {
-      return;
-    }
-
-    const activeColumn = activeItem.column;
-    const overColumn =
-      overItem?.column ||
-      columns.find((col) => col.id === over.id)?.id ||
-      columns[0]?.id;
-
-    if (overColumn && activeColumn !== overColumn) {
-      let newData = data.map((item) =>
-        item.id === active.id ? { ...item, column: overColumn } : item,
-      );
-      const activeIndex = newData.findIndex((item) => item.id === active.id);
-      const overIndex = newData.findIndex((item) => item.id === over.id);
-      newData = arrayMove(newData, activeIndex, overIndex >= 0 ? overIndex : activeIndex);
-      onDataChange?.(newData);
-    }
+    const newData = computeColumnFlip(data, columns, active.id as string, over.id as string);
+    if (newData) onDataChange?.(newData);
 
     onDragOver?.(event);
   };
@@ -262,15 +298,12 @@ export const KanbanProvider = <
     onDragEnd?.(event);
 
     const { active, over } = event;
-    if (!over || active.id === over.id) {
+    if (!over) {
       return;
     }
 
-    let newData = [...data];
-    const oldIndex = newData.findIndex((item) => item.id === active.id);
-    const newIndex = newData.findIndex((item) => item.id === over.id);
-    newData = arrayMove(newData, oldIndex, newIndex);
-    onDataChange?.(newData);
+    const newData = computeReorder(data, active.id as string, over.id as string);
+    if (newData) onDataChange?.(newData);
   };
 
   const handleDragCancel: DndContextProps['onDragCancel'] = (event) => {

@@ -34,6 +34,26 @@ interface Candidate {
 
 const MAX_HITS = 8;
 
+/**
+ * Pure: rank candidates against a query — exact id, then id-prefix, then
+ * substring (of id or hint text), capped at MAX_HITS. Exported for tests.
+ */
+export function rankCandidates(candidates: Candidate[], query: string): Candidate[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const exact: Candidate[] = [];
+  const idPrefix: Candidate[] = [];
+  const sub: Candidate[] = [];
+  for (const c of candidates) {
+    const id = c.id.toLowerCase();
+    const hint = c.hint.toLowerCase();
+    if (id === q) exact.push(c);
+    else if (id.startsWith(q)) idPrefix.push(c);
+    else if (id.includes(q) || hint.includes(q)) sub.push(c);
+  }
+  return [...exact, ...idPrefix, ...sub].slice(0, MAX_HITS);
+}
+
 export default function PlanJumpToItem({ items, decisions, scopeRef }: Props) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -61,21 +81,7 @@ export default function PlanJumpToItem({ items, decisions, scopeRef }: Props) {
     return out;
   }, [items, decisions]);
 
-  const hits = useMemo<Candidate[]>(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
-    const exact: Candidate[] = [];
-    const idPrefix: Candidate[] = [];
-    const sub: Candidate[] = [];
-    for (const c of candidates) {
-      const id = c.id.toLowerCase();
-      const hint = c.hint.toLowerCase();
-      if (id === q) exact.push(c);
-      else if (id.startsWith(q)) idPrefix.push(c);
-      else if (id.includes(q) || hint.includes(q)) sub.push(c);
-    }
-    return [...exact, ...idPrefix, ...sub].slice(0, MAX_HITS);
-  }, [candidates, query]);
+  const hits = useMemo<Candidate[]>(() => rankCandidates(candidates, query), [candidates, query]);
 
   useEffect(() => {
     setActive(0);

@@ -255,7 +255,7 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
   );
 }
 
-function truncate(s: string, n: number): string {
+export function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
@@ -266,7 +266,7 @@ function truncate(s: string, n: number): string {
  *   - else slug verbatim
  * Capped at 32 chars with an ellipsis.
  */
-function labelForPlan(slug: string, title: string | null): string {
+export function labelForPlan(slug: string, title: string | null): string {
   if (title && title.trim()) return truncate(title.trim(), 32);
   const stripped = slug.replace(/-\d{4}-\d{2}-\d{2}$/, '');
   return truncate(stripped, 32);

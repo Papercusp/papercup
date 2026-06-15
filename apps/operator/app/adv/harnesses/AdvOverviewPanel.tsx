@@ -33,6 +33,21 @@ interface StatusResponse {
   missionOutputTokens: number;
 }
 
+/**
+ * Pure progress derivation for the overview's progress bar: total = sum of all
+ * status-bucket counts, passed = the `passed` bucket (0 when absent), pct =
+ * passed/total rounded (0 when total is 0). Returns null when there are no
+ * counts so callers can skip the bar entirely.
+ */
+export function computeStats(
+  counts: Record<string, number> | undefined | null,
+): { total: number; passed: number; pct: number } | null {
+  if (!counts) return null;
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const passed = counts.passed ?? 0;
+  return { total, passed, pct: total > 0 ? Math.round((passed / total) * 100) : 0 };
+}
+
 export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const phase = ((params.phase as Phase) ?? 'staging') as Phase;
@@ -89,12 +104,7 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
     };
   }, [slug, phase, tick, api]);
 
-  const stats = useMemo(() => {
-    if (!data?.counts) return null;
-    const total = Object.values(data.counts).reduce((a, b) => a + b, 0);
-    const passed = data.counts.passed ?? 0;
-    return { total, passed, pct: total > 0 ? Math.round((passed / total) * 100) : 0 };
-  }, [data]);
+  const stats = useMemo(() => computeStats(data?.counts), [data]);
 
   const switchPhase = (next: Phase) => {
     if (next === phase) return;

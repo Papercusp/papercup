@@ -32,6 +32,9 @@ import { useConfirmDialog } from './useConfirmDialog';
 import {
   PluginIcon,
   pluginSlugFromPath,
+  computePluginsMissing,
+  dedupeEnabledManifests,
+  pruneEmptyConfig,
   type InstalledPluginInfo,
   type EnabledPluginManifest,
 } from './plugin-utils';
@@ -138,47 +141,15 @@ export default function HarnessPluginsSection({ slug }: { slug: string }) {
     args: { harnessSlug: slug, workspaceId: ws },
     enabled: !!slug && !!ws,
   });
-  const pluginsMissing = useMemo<Record<string, string[]>>(() => {
-    const out: Record<string, string[]> = {};
-    if (!installedPlugins || enabledSlugs.length === 0) return out;
-    const cfgByDir = new Map<string, Record<string, unknown>>();
-    if (Array.isArray(pluginConfigRows)) {
-      for (const r of pluginConfigRows) cfgByDir.set(r.pluginSlug, (r.config ?? {}) as Record<string, unknown>);
-    }
-    for (const s of enabledSlugs) {
-      const m = installedPlugins.find(
-        (p) => p.name === s || (p.path ? pluginSlugFromPath(p.path, p.name) : null) === s,
-      );
-      if (!m) continue;
-      const required = (m as { configSchema?: { required?: string[] } }).configSchema?.required ?? [];
-      if (required.length === 0) continue;
-      const dirSlug = m.path ? pluginSlugFromPath(m.path, m.name) : m.name;
-      const cfg = cfgByDir.get(dirSlug) ?? {};
-      const missing = required.filter((f) => {
-        const v = cfg[f];
-        return v === undefined || v === null || (typeof v === 'string' && v.length === 0);
-      });
-      if (missing.length) out[m.name] = missing;
-    }
-    return out;
-  }, [installedPlugins, enabledSlugs, pluginConfigRows]);
+  const pluginsMissing = useMemo<Record<string, string[]>>(
+    () => computePluginsMissing(installedPlugins, enabledSlugs, pluginConfigRows),
+    [installedPlugins, enabledSlugs, pluginConfigRows],
+  );
 
-  const enabledManifests = useMemo(() => {
-    // Dedupe by `plugin.name` — enabled-plugins.json may legitimately list the
-    // same plugin under both its scoped and bare-dir names.
-    const seen = new Set<string>();
-    const out: EnabledPluginManifest[] = [];
-    for (const slugName of enabledSlugs) {
-      const m = installedPlugins?.find((p) => {
-        const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
-        return p.name === slugName || dirSlug === slugName;
-      });
-      if (!m || seen.has(m.name)) continue;
-      seen.add(m.name);
-      out.push(m as EnabledPluginManifest);
-    }
-    return out;
-  }, [installedPlugins, enabledSlugs]);
+  const enabledManifests = useMemo(
+    () => dedupeEnabledManifests(installedPlugins, enabledSlugs),
+    [installedPlugins, enabledSlugs],
+  );
 
   // Keep the active pane valid — fall back to the first enabled plugin.
   useEffect(() => {
@@ -531,16 +502,6 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
     setServerError(null);
   }
 
-  // Drop empty strings on save (treated as "no value, fall back to default").
-  function pruneEmpty(obj: Record<string, unknown>): Record<string, unknown> {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      if (typeof v === 'string' && v.length === 0) continue;
-      out[k] = v;
-    }
-    return out;
-  }
-
   async function persist(parsed: Record<string, unknown>) {
     setServerError(null);
     try {
@@ -583,7 +544,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
       await persist(parsed);
     } else {
       void handleSubmit(async (data) => {
-        await persist(pruneEmpty(data));
+        await persist(pruneEmptyConfig(data));
       })();
     }
   }

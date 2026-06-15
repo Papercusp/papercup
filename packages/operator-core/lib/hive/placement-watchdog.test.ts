@@ -12,6 +12,7 @@ import {
   isStuckBlockerState,
   placementConfig,
   reconcileHivePlacements,
+  resolveQueenOwners,
   type PlacementObservation,
   type PlacementConfig,
   type ReconcileSweepDeps,
@@ -160,6 +161,34 @@ describe('P-023 — reconcile "steer, don\'t dispatch" WITH the completion manda
     // Bee alive but unit not terminal ⇒ still working, NOT completed (no premature done).
     expect(evaluatePlacement(obs({ hasLiveHolder: true, unitTerminal: false }), CFG).kind).toBe('healthy');
     expect(evaluatePlacement(obs({ hasLiveHolder: true, unitTerminal: true }), CFG).kind).toBe('completed');
+  });
+});
+
+describe('resolveQueenOwners — bee discovery spans EVERY Queen-wake (orphan-placement fix)', () => {
+  // A fresh-per-wake / adaptive-re-woken Queen accrues several `hive · <slug>/queen`
+  // adv_sessions; bees carry whichever owner was current at spawn time as
+  // parent_spawn_id. The watchdog must match the WHOLE owner set (resolveQueenOwners),
+  // not just the newest (resolveQueenOwner) — else bees from an earlier wake are
+  // orphaned from the ledger (their placements never recorded → MAST 0/0).
+  // A tagged-template SQL stub: capture the query, return canned rows.
+  const sqlStub = (rows: { coord_owner_id: string; started_at?: number }[]) =>
+    (async () => rows) as unknown as Parameters<typeof resolveQueenOwners>[0];
+
+  it('returns ALL distinct owners (the discovery superset), not just the newest', async () => {
+    const owners = await resolveQueenOwners(
+      sqlStub([{ coord_owner_id: 'q-newest' }, { coord_owner_id: 'q-middle' }, { coord_owner_id: 'q-first' }]),
+      'ws',
+      'xbq-slug',
+    );
+    expect(owners).toEqual(['q-newest', 'q-middle', 'q-first']);
+    // The newest (owners[0]) is what reconcile attributes/wakes; the rest are still
+    // discovered so their bees reach the ledger.
+    expect(owners[0]).toBe('q-newest');
+    expect(owners).toContain('q-first');
+  });
+
+  it('no hive sessions → empty (reconcile early-returns, no false attribution)', async () => {
+    expect(await resolveQueenOwners(sqlStub([]), 'ws', 'xbq-slug')).toEqual([]);
   });
 });
 

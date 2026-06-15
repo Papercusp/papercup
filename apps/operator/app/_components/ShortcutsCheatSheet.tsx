@@ -37,7 +37,7 @@ const CATEGORY_ORDER: ShortcutCategory[] = [
  * Pretty-print a stored combo into a human-readable form. Splits on `,`
  * (alternates) and `>` (sequences); converts `mod` to platform glyph.
  */
-function prettyCombo(raw: string): string[] {
+export function prettyCombo(raw: string): string[] {
   if (!raw) return [];
   // `isMacPlatform()` (not navigator.platform, which WebKit freezes to "MacIntel"
   // on every OS) so the Linux desktop shows "Ctrl", matching the keys that fire.

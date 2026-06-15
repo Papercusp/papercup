@@ -72,3 +72,72 @@ export interface EnabledPluginManifest extends InstalledPluginInfo {
   routines?: Array<{ name?: string; trigger?: string }>;
   configSchema?: { properties?: Record<string, { default?: unknown; description?: string }> };
 }
+
+/**
+ * Per-plugin REQUIRED-but-missing config fields — drives the "needs setup" dots
+ * on the plugin tabs. For each enabled slug, resolve its manifest (by `name` or
+ * dir slug), then check every `configSchema.required` field against the stored
+ * config: a field is missing when its value is undefined, null, or the empty
+ * string. Keyed by manifest `name`; plugins with nothing missing are omitted.
+ */
+export function computePluginsMissing(
+  installedPlugins: InstalledPluginInfo[] | null,
+  enabledSlugs: string[],
+  pluginConfigRows: Array<{ pluginSlug: string; config: Record<string, unknown> | null }> | null | undefined,
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (!installedPlugins || enabledSlugs.length === 0) return out;
+  const cfgByDir = new Map<string, Record<string, unknown>>();
+  if (Array.isArray(pluginConfigRows)) {
+    for (const r of pluginConfigRows) cfgByDir.set(r.pluginSlug, (r.config ?? {}) as Record<string, unknown>);
+  }
+  for (const s of enabledSlugs) {
+    const m = installedPlugins.find(
+      (p) => p.name === s || (p.path ? pluginSlugFromPath(p.path, p.name) : null) === s,
+    );
+    if (!m) continue;
+    const required = (m as { configSchema?: { required?: string[] } }).configSchema?.required ?? [];
+    if (required.length === 0) continue;
+    const dirSlug = m.path ? pluginSlugFromPath(m.path, m.name) : m.name;
+    const cfg = cfgByDir.get(dirSlug) ?? {};
+    const missing = required.filter((f) => {
+      const v = cfg[f];
+      return v === undefined || v === null || (typeof v === 'string' && v.length === 0);
+    });
+    if (missing.length) out[m.name] = missing;
+  }
+  return out;
+}
+
+/**
+ * Resolve enabled slugs → their manifests, deduped by `name`. enabled-plugins
+ * may legitimately list the same plugin under both its scoped and bare-dir
+ * names; we keep the first match for each manifest.
+ */
+export function dedupeEnabledManifests(
+  installedPlugins: InstalledPluginInfo[] | null | undefined,
+  enabledSlugs: string[],
+): EnabledPluginManifest[] {
+  const seen = new Set<string>();
+  const out: EnabledPluginManifest[] = [];
+  for (const slugName of enabledSlugs) {
+    const m = installedPlugins?.find((p) => {
+      const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
+      return p.name === slugName || dirSlug === slugName;
+    });
+    if (!m || seen.has(m.name)) continue;
+    seen.add(m.name);
+    out.push(m as EnabledPluginManifest);
+  }
+  return out;
+}
+
+/** Drop empty-string values on config save (empty = "no value, use default"). */
+export function pruneEmptyConfig(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string' && v.length === 0) continue;
+    out[k] = v;
+  }
+  return out;
+}

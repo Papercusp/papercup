@@ -55,7 +55,7 @@ const NODE_H = 52;
 
 type LegacyMENode = { id: string; topic?: string; children?: LegacyMENode[] };
 
-function isReactFlowTree(v: unknown): v is Tree {
+export function isReactFlowTree(v: unknown): v is Tree {
   if (!v || typeof v !== 'object') return false;
   const t = v as any;
   return Array.isArray(t.nodes) && Array.isArray(t.edges)
@@ -63,14 +63,14 @@ function isReactFlowTree(v: unknown): v is Tree {
       && n.position && typeof n.position.x === 'number' && typeof n.position.y === 'number');
 }
 
-function isReaflowTree(v: unknown): v is { nodes: Array<{ id: string; text?: string }>; edges: Array<{ id?: string; from: string; to: string }> } {
+export function isReaflowTree(v: unknown): v is { nodes: Array<{ id: string; text?: string }>; edges: Array<{ id?: string; from: string; to: string }> } {
   if (!v || typeof v !== 'object') return false;
   const t = v as any;
   return Array.isArray(t.nodes) && Array.isArray(t.edges)
     && t.nodes.every((n: any) => n && typeof n.id === 'string' && (typeof n.text === 'string' || n.text === undefined));
 }
 
-function meToTree(legacy: { nodeData?: LegacyMENode } | LegacyMENode): { nodes: Array<{ id: string; text: string }>; edges: Array<{ id: string; source: string; target: string }> } {
+export function meToTree(legacy: { nodeData?: LegacyMENode } | LegacyMENode): { nodes: Array<{ id: string; text: string }>; edges: Array<{ id: string; source: string; target: string }> } {
   const root: LegacyMENode | undefined = (legacy as any).nodeData ?? (legacy as LegacyMENode);
   const nodes: Array<{ id: string; text: string }> = [];
   const edges: Array<{ id: string; source: string; target: string }> = [];
@@ -379,7 +379,7 @@ function MapInner({ slug }: Props) {
  *  orphan nodes (no incoming AND no outgoing edges, except the root).
  *  Shipped after the addChild side-effect-in-updater bug corrupted some
  *  brainstorms — those have edges pointing to non-existent nodes. */
-function repairTree(tree: Tree): Tree {
+export function repairTree(tree: Tree): Tree {
   const nodeIds = new Set(tree.nodes.map((n) => n.id));
   const edges = tree.edges.filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target));
   return { nodes: tree.nodes, edges };
@@ -387,7 +387,7 @@ function repairTree(tree: Tree): Tree {
 
 /** Migration entry point. Detects whatever shape we got and lifts it
  *  into the React Flow native shape, dagre-arranged if needed. */
-function normalize(raw: unknown): Tree {
+export function normalize(raw: unknown): Tree {
   if (raw == null) return seedTree();
   if (isReactFlowTree(raw)) {
     return repairTree({
@@ -418,14 +418,14 @@ function normalize(raw: unknown): Tree {
   return { nodes: arrangeWithDagre(repaired.nodes, repaired.edges), edges: repaired.edges };
 }
 
-function seedTree(): Tree {
+export function seedTree(): Tree {
   return {
     nodes: [{ id: 'root', type: 'mind', position: { x: 100, y: 200 }, data: { text: 'Brainstorm', kind: 'idea' } }],
     edges: [],
   };
 }
 
-function kindAccent(kind: NodeKind): string {
+export function kindAccent(kind: NodeKind): string {
   switch (kind) {
     case 'idea': return '#7aa2f7';
     case 'question': return '#e0af68';

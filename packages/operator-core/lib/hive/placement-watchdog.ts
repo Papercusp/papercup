@@ -234,6 +234,26 @@ export async function resolveQueenOwner(sql: Sql, workspaceId: string, installSl
   return rows[0]?.coord_owner_id ?? null;
 }
 
+/** ALL Queen coord-owners that have served this hive (newest first). The Queen is
+ *  fresh-per-wake (interactive brain) / adaptive-re-woken, so a single hive accrues
+ *  several `hive · <slug>/queen` adv_sessions over its life; bees carry whichever
+ *  owner was current at spawn time as `parent_spawn_id`. Attributing bees by ONLY
+ *  the newest owner ({@link resolveQueenOwner}) orphans every bee placed by an
+ *  earlier Queen-wake (their placements then never reach the ledger). The watchdog
+ *  must discover bees across the WHOLE owner set; wakes/attribution still target the
+ *  newest (the live Queen). */
+export async function resolveQueenOwners(sql: Sql, workspaceId: string, installSlug: string): Promise<string[]> {
+  const rows = await sql<{ coord_owner_id: string }[]>`
+    SELECT DISTINCT coord_owner_id, max(started_at) AS started_at
+      FROM harness_shared.adv_sessions
+     WHERE workspace_id = ${workspaceId}
+       AND label LIKE ${'hive · ' + installSlug + '/%'}
+       AND coord_owner_id IS NOT NULL
+     GROUP BY coord_owner_id
+     ORDER BY started_at DESC`;
+  return rows.map((r) => r.coord_owner_id);
+}
+
 /** Upsert one placement row (the per-unit completion ledger). */
 async function upsertPlacement(
   sql: Sql,
@@ -334,13 +354,17 @@ export async function reconcileOneHive(
   now: number,
 ): Promise<PlacementSweepResult[]> {
   const out: PlacementSweepResult[] = [];
-  const queenOwner = await resolveQueenOwner(sql, workspaceId, installSlug);
-  // Without a resolvable Queen owner we can neither attribute bees to this hive
-  // nor target a recovery wake — leave it to the next sweep (the hive may not
-  // have run yet). The liveness watchdog still keeps the Queen armed.
-  if (!queenOwner) return out;
+  // ALL Queen-owners that served this hive (a fresh-per-wake / re-woken Queen accrues
+  // several); bees are discovered across the whole set, but the NEWEST is the live
+  // Queen we attribute to + wake. Without any resolvable owner we can neither attribute
+  // bees to this hive nor target a recovery wake — leave it to the next sweep (the hive
+  // may not have run yet). The liveness watchdog still keeps the Queen armed.
+  const queenOwners = await resolveQueenOwners(sql, workspaceId, installSlug);
+  if (queenOwners.length === 0) return out;
+  const queenOwner = queenOwners[0]; // newest — wake target + attribution
 
-  // 1. This hive's bees (placement targets carry the Queen as parent).
+  // 1. This hive's bees (placement targets carry SOME Queen-owner as parent — match
+  //    the full owner set so an earlier-wake's bees aren't orphaned from the ledger).
   const beeRows = await sql<
     {
       spawn_id: string;
@@ -357,7 +381,7 @@ export async function reconcileOneHive(
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
        AND child_role = 'bee'
-       AND parent_spawn_id = ${queenOwner}`;
+       AND parent_spawn_id = ANY(${queenOwners})`;
 
   const beeByOwner = new Map<string, BeeLite>();
   for (const b of beeRows) {

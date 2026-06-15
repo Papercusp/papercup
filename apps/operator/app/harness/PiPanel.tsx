@@ -41,7 +41,7 @@ import './PiPanel.css';
  * a randomized Tauri-allocated port). When neither is set, we default to
  * the development port 3056 alongside the operator's :3055.
  */
-function ptyWsUrlForId(id: string): string | null {
+export function ptyWsUrlForId(id: string): string | null {
   if (typeof window === 'undefined') return null;
   type WindowWithPtyWs = Window & {
     __PAPERCUSP_PTY_WS__?: string | null;
@@ -95,7 +95,7 @@ export interface PiPanelProps {
 }
 
 /** sessionStorage key for the pty id this panel last successfully spawned. */
-function ptyResumeKey(slug: string, panelId: string | undefined, laneId: string | undefined): string {
+export function ptyResumeKey(slug: string, panelId: string | undefined, laneId: string | undefined): string {
   return `papercusp:pi-pty:${slug}:${panelId ?? 'default'}:${laneId ?? ''}`;
 }
 

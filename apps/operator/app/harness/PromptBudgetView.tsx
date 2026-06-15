@@ -33,6 +33,43 @@ function fmtWhen(ts_ms: number): string {
   });
 }
 
+export interface PromptBudgetSummary {
+  count: number;
+  total: number;
+  substrate: number;
+  history: number;
+  avgTotal: number;
+  maxTotal: number;
+  /** Percent of total chars that are substrate (0–100, rounded). */
+  substratePct: number;
+  /** Percent of total chars that are history (0–100, rounded). */
+  historyPct: number;
+}
+
+/**
+ * Aggregate the visible window of prompt-composition rows into the header
+ * summary stats (avg/max total, substrate/history share). Extracted so the
+ * "is cache discipline working" math is testable without a live fetch. Returns
+ * zeroed pcts for an empty window (the component renders the empty-state instead).
+ */
+export function aggregatePromptBudget(rows: Array<Pick<Row, 'total_chars' | 'substrate_chars' | 'history_chars'>>): PromptBudgetSummary {
+  const total = rows.reduce((a, r) => a + r.total_chars, 0);
+  const substrate = rows.reduce((a, r) => a + r.substrate_chars, 0);
+  const history = rows.reduce((a, r) => a + r.history_chars, 0);
+  const avgTotal = rows.length ? Math.round(total / rows.length) : 0;
+  const maxTotal = rows.reduce((a, r) => Math.max(a, r.total_chars), 0);
+  return {
+    count: rows.length,
+    total,
+    substrate,
+    history,
+    avgTotal,
+    maxTotal,
+    substratePct: total > 0 ? Math.round((substrate / total) * 100) : 0,
+    historyPct: total > 0 ? Math.round((history / total) * 100) : 0,
+  };
+}
+
 const SUBTLE = 'var(--fg-mute)';
 const BORDER = '1px solid var(--border)';
 
@@ -82,11 +119,7 @@ export function PromptBudgetView({
 
   // Aggregate stats across the visible window — quick "is cache discipline
   // working" signal without needing a chart library.
-  const total = rows.reduce((a, r) => a + r.total_chars, 0);
-  const substrate = rows.reduce((a, r) => a + r.substrate_chars, 0);
-  const history = rows.reduce((a, r) => a + r.history_chars, 0);
-  const avgTotal = Math.round(total / rows.length);
-  const maxTotal = rows.reduce((a, r) => Math.max(a, r.total_chars), 0);
+  const { avgTotal, maxTotal, substratePct, historyPct } = aggregatePromptBudget(rows);
 
   const columns: ColumnDef<Row>[] = [
     {
@@ -127,8 +160,8 @@ export function PromptBudgetView({
         <span><strong>{rows.length}</strong> invokes</span>
         <span>avg <strong>{avgTotal.toLocaleString()}</strong> chars (~{Math.round(avgTotal / 4).toLocaleString()} tok)</span>
         <span>max <strong>{maxTotal.toLocaleString()}</strong> chars</span>
-        <span>substrate <strong>{Math.round((substrate / total) * 100)}%</strong></span>
-        <span>history <strong>{Math.round((history / total) * 100)}%</strong></span>
+        <span>substrate <strong>{substratePct}%</strong></span>
+        <span>history <strong>{historyPct}%</strong></span>
         <button type="button" onClick={() => void reload()} style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 8px' }}>
           Refresh
         </button>

@@ -35,20 +35,20 @@ const LEVEL_ACCENT: Record<string, string> = {
   trace: 'color-mix(in oklab, var(--fg-mute), transparent 35%)',
 };
 
-function levelOf(e: HarnessLogEvent): string {
+export function levelOf(e: HarnessLogEvent): string {
   return String(e.level ?? 'info').toLowerCase();
 }
 
 // Localized clock string ('' for an unparseable ts) — shared by the Time cell
 // render and its text-filter accessor so they match exactly.
-function timeText(e: HarnessLogEvent): string {
+export function timeText(e: HarnessLogEvent): string {
   const t = new Date(e.ts);
   return isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
 }
 
 // The writer's schema is loose — read the message under whichever key it
 // used, falling back to a compact dump of the non-envelope fields.
-function messageOf(e: HarnessLogEvent): string {
+export function messageOf(e: HarnessLogEvent): string {
   if (typeof e.msg === 'string') return e.msg;
   if (typeof e.message === 'string') return e.message;
   const { ts: _ts, source: _source, level: _level, msg: _msg, message: _message, ...rest } = e;

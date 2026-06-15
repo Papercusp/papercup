@@ -639,7 +639,7 @@
 }
 
 .pc-plans__overview-main span {
-  color: rgba(214, 236, 248, 0.78);
+  color: color-mix(in srgb, var(--fg), transparent 22%);
   font-size: 11px;
   font-weight: 650;
 }
@@ -701,7 +701,7 @@
   font-weight: 800;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--pc-plans-fg-strong, #f4fbff);
+  color: var(--pc-plans-fg-strong, var(--fg));
   cursor: help;
 }
 
@@ -799,7 +799,7 @@
   border: 1px solid rgba(255, 255, 255, 0.055);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.07);
-  color: rgba(214, 236, 248, 0.94);
+  color: color-mix(in srgb, var(--fg), transparent 6%);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;
   font-weight: 780;
@@ -986,7 +986,7 @@
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
     color-mix(in srgb, var(--bg-deeper), transparent 66%);
-  color: rgba(214, 236, 248, 0.76);
+  color: color-mix(in srgb, var(--fg), transparent 24%);
   font-size: 10.5px;
   font-weight: 680;
   line-height: 1;
@@ -1016,7 +1016,7 @@
 
 .pc-filter-chip:hover,
 .pc-filter-toggle:hover {
-  color: #eff8ff;
+  color: var(--fg);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 64%);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
@@ -1074,12 +1074,12 @@
 }
 
 .pc-filters__token:hover {
-  color: #eff8ff;
+  color: var(--fg);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 56%);
 }
 
 .pc-filters__token strong {
-  color: rgba(214, 236, 248, 0.72);
+  color: color-mix(in srgb, var(--fg), transparent 28%);
   font-size: 13px;
   line-height: 1;
 }
@@ -1107,7 +1107,7 @@
   border-left-width: 4px;
   border-radius: 10px;
   background: color-mix(in srgb, var(--bg), transparent 48%);
-  color: rgba(214, 236, 248, 0.88);
+  color: color-mix(in srgb, var(--fg), transparent 12%);
   text-align: left;
   cursor: pointer;
   transition: background-color 100ms, border-color 100ms, transform 100ms;
@@ -1128,14 +1128,13 @@
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 42%);
 }
 .pc-plan-row.is-active .pc-plan-row__title {
-  color: #eaffff;
+  color: var(--fg);
 }
 /* Trailing checkmark (right of the title) marks the plan as an active filter,
-   matching the filter buttons. Bright cyan to read against the dark card +
-   accent ring. */
+   matching the filter buttons while staying on the active theme accent. */
 .pc-plan-row.is-active .pc-plan-row__title::after {
   content: " ✓";
-  color: #8ef0ff;
+  color: var(--accent-soft);
   font-weight: 900;
 }
 
@@ -1174,7 +1173,7 @@
   -webkit-user-select: none;
   touch-action: none;
 }
-.pc-plan-row__drag-handle:hover { color: rgba(214, 236, 248, 0.95); }
+.pc-plan-row__drag-handle:hover { color: color-mix(in srgb, var(--fg), transparent 5%); }
 .pc-plan-row__drag-handle:active { cursor: grabbing; }
 .pc-plan-row.has-drag-handle { padding-left: 24px; }
 /* While a drag is live, suppress text selection across the whole
@@ -1221,7 +1220,7 @@
   font-size: 13px;
   font-weight: 700;
   line-height: 1.28;
-  color: #f4fbff;
+  color: var(--fg);
   /* Full title, no cut-off — wrap instead of ellipsis (the pills moved
      to the meta line, so the title owns the first line). */
   white-space: normal;
@@ -1336,7 +1335,7 @@
   line-height: 16px;
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.04);
-  color: rgba(214, 236, 248, 0.72);
+  color: color-mix(in srgb, var(--fg), transparent 28%);
 }
 .pc-count--wip          { background: color-mix(in srgb, var(--accent), transparent 84%);  color: var(--accent-soft); }
 .pc-count--needs-human  { background: rgba(250, 204, 21, 0.18);  color: #fef3c7; }
@@ -1377,7 +1376,7 @@
   letter-spacing: 0.03em;
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.05);
-  color: rgba(214, 236, 248, 0.7);
+  color: color-mix(in srgb, var(--fg), transparent 30%);
 }
 .pc-kind--coord-escalation { background: rgba(250, 204, 21, 0.16); color: #fde68a; }
 .pc-kind--coord-message    { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 82%); color: var(--accent-soft); }
@@ -1407,11 +1406,11 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 76%);
   border-radius: 999px;
   background: transparent;
-  color: rgba(214, 236, 248, 0.85);
+  color: color-mix(in srgb, var(--fg), transparent 15%);
   font-size: 11px;
   cursor: pointer;
 }
-.pc-plans__retry:hover { color: #eff8ff; border-color: color-mix(in srgb, var(--accent-strong), transparent 60%); }
+.pc-plans__retry:hover { color: var(--fg); border-color: color-mix(in srgb, var(--accent-strong), transparent 60%); }
 
 /* ── Main ───────────────────────────────────────────────────────── */
 .pc-plans__main {
@@ -1469,7 +1468,7 @@
   font-weight: 760;
   line-height: 1.1;
   letter-spacing: -0.02em;
-  color: #f4fbff;
+  color: var(--fg);
 }
 
 /* PlanEditor host — fills the detail pane so the editor sizes itself. */
@@ -1543,13 +1542,13 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.03);
-  color: rgba(214, 236, 248, 0.84);
+  color: color-mix(in srgb, var(--fg), transparent 16%);
   font-size: 11.5px;
   cursor: pointer;
 }
 
 .pc-plans__back:hover {
-  color: #eff8ff;
+  color: var(--fg);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 68%);
   background: color-mix(in srgb, var(--bg-popover), transparent 18%);
 }
@@ -2147,7 +2146,7 @@
   font-size: 18px;
   font-weight: 760;
   letter-spacing: -0.01em;
-  color: #f4fbff;
+  color: var(--fg);
 }
 
 .pc-search__head p {
@@ -2194,7 +2193,7 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg), transparent 35%);
-  color: rgba(214, 236, 248, 0.86);
+  color: color-mix(in srgb, var(--fg), transparent 14%);
   text-align: left;
   cursor: pointer;
   transition: background-color 100ms, border-color 100ms;
@@ -2317,12 +2316,12 @@
   font-size: 24px;
   font-weight: 780;
   letter-spacing: -0.03em;
-  color: #f4fbff;
+  color: var(--fg);
 }
 
 .pc-plans__empty p {
   margin: 0;
-  color: rgba(214, 236, 248, 0.74);
+  color: color-mix(in srgb, var(--fg), transparent 26%);
   font-size: 14px;
   line-height: 1.65;
 }
@@ -2564,7 +2563,7 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 76%);
   border-radius: 999px;
   background: transparent;
-  color: rgba(214, 236, 248, 0.92);
+  color: color-mix(in srgb, var(--fg), transparent 8%);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -2599,7 +2598,7 @@
   font-size: 18px;
   font-weight: 760;
   letter-spacing: -0.01em;
-  color: #f4fbff;
+  color: var(--fg);
 }
 .pc-triage__head p {
   margin: 0;
@@ -2843,7 +2842,7 @@
   margin: 0;
   font-size: 16px;
   font-weight: 700;
-  color: #f4fbff;
+  color: var(--fg);
 }
 .pc-plan-dialog__head p {
   margin: 4px 0 0;
@@ -2941,7 +2940,7 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
   border-radius: 999px;
   background: transparent;
-  color: rgba(214, 236, 248, 0.92);
+  color: color-mix(in srgb, var(--fg), transparent 8%);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -2971,7 +2970,7 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg), transparent 40%);
-  color: rgba(214, 236, 248, 0.86);
+  color: color-mix(in srgb, var(--fg), transparent 14%);
   font-size: 11.5px;
 }
 .pc-revisions-panel--loading,
@@ -3018,13 +3017,13 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
   border-radius: 999px;
   background: transparent;
-  color: rgba(214, 236, 248, 0.85);
+  color: color-mix(in srgb, var(--fg), transparent 15%);
   font-size: 10.5px;
   cursor: pointer;
 }
 .pc-revisions-panel__toggle:hover,
 .pc-revisions-panel__retry:hover {
-  color: #eff8ff;
+  color: var(--fg);
   border-color: color-mix(in srgb, var(--accent), transparent 58%);
 }
 
@@ -3091,7 +3090,7 @@
 }
 
 .pc-revision-row__author {
-  color: rgba(214, 236, 248, 0.75);
+  color: color-mix(in srgb, var(--fg), transparent 25%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3124,7 +3123,7 @@
 
 .pc-revision-row__rationale {
   font-size: 11.5px;
-  color: rgba(214, 236, 248, 0.88);
+  color: color-mix(in srgb, var(--fg), transparent 12%);
   line-height: 1.45;
   /* keep dense — rationale is one or two sentences; wrap naturally. */
   white-space: normal;
@@ -3153,7 +3152,7 @@
 .pc-revision-row__convo-btn {
   background: none;
   border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 75%);
-  color: rgba(214, 236, 248, 0.85);
+  color: color-mix(in srgb, var(--fg), transparent 15%);
   padding: 1px 8px;
   border-radius: 999px;
   font: inherit;
@@ -3207,7 +3206,7 @@
 .pc-rev-convo__close {
   background: none;
   border: none;
-  color: rgba(214, 236, 248, 0.7);
+  color: color-mix(in srgb, var(--fg), transparent 30%);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
@@ -3233,7 +3232,7 @@
 .pc-rev-convo__loading {
   padding: 14px;
   font-size: 12px;
-  color: rgba(214, 236, 248, 0.7);
+  color: color-mix(in srgb, var(--fg), transparent 30%);
 }
 
 .pc-rev-convo__error {
@@ -3279,7 +3278,7 @@
   overflow-wrap: anywhere;
   font-size: 12px;
   line-height: 1.45;
-  color: rgba(214, 236, 248, 0.92);
+  color: color-mix(in srgb, var(--fg), transparent 8%);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
@@ -3703,7 +3702,7 @@
   gap: 10px;
   padding: 6px 10px;
   border-radius: 5px;
-  color: rgba(214, 236, 248, 0.86);
+  color: color-mix(in srgb, var(--fg), transparent 14%);
   font-size: 12px;
   cursor: pointer;
 }
@@ -3748,7 +3747,7 @@
   text-transform: uppercase;
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.05);
-  color: rgba(214, 236, 248, 0.8);
+  color: color-mix(in srgb, var(--fg), transparent 20%);
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   cursor: pointer;
 }
@@ -3824,7 +3823,7 @@
   border-radius: 8px;
   padding: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  color: #eff8ff;
+  color: var(--fg);
   font-size: 12px;
   animation: pc-popover-in 120ms ease-out;
 }
@@ -3990,7 +3989,7 @@
 .pc-agents-panel__empty {
   padding: 14px;
   font-size: 12px;
-  color: rgba(214, 236, 248, 0.7);
+  color: color-mix(in srgb, var(--fg), transparent 30%);
 }
 
 .pc-agents-panel__error {
@@ -4069,7 +4068,7 @@
 }
 
 .pc-agents-origin--empty {
-  color: rgba(214, 236, 248, 0.55);
+  color: color-mix(in srgb, var(--fg), transparent 45%);
   font-style: italic;
 }
 
@@ -4102,7 +4101,7 @@
   margin: 0;
   font-size: 12.5px;
   line-height: 1.45;
-  color: rgba(214, 236, 248, 0.92);
+  color: color-mix(in srgb, var(--fg), transparent 8%);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -4116,7 +4115,7 @@
 .pc-agents-origin__convo {
   background: none;
   border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 75%);
-  color: rgba(214, 236, 248, 0.85);
+  color: color-mix(in srgb, var(--fg), transparent 15%);
   padding: 1px 10px;
   border-radius: 999px;
   font: inherit;
@@ -4195,7 +4194,7 @@
 .pc-agent-row__note {
   margin: 4px 0 0;
   font-size: 11.5px;
-  color: rgba(214, 236, 248, 0.78);
+  color: color-mix(in srgb, var(--fg), transparent 22%);
   white-space: pre-wrap;
 }
 
@@ -4315,7 +4314,7 @@
 .pc-run-detail__back {
   background: none;
   border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 75%);
-  color: rgba(214, 236, 248, 0.85);
+  color: color-mix(in srgb, var(--fg), transparent 15%);
   padding: 2px 10px;
   border-radius: 999px;
   font: inherit;
@@ -4346,7 +4345,7 @@
 .pc-run-detail__run-id {
   font-weight: 400;
   font-size: 11px;
-  color: rgba(214, 236, 248, 0.6);
+  color: color-mix(in srgb, var(--fg), transparent 40%);
 }
 
 .pc-run-detail__console {
@@ -4378,7 +4377,7 @@
 .pc-run-detail__empty {
   padding: 10px;
   font-size: 11.5px;
-  color: rgba(214, 236, 248, 0.7);
+  color: color-mix(in srgb, var(--fg), transparent 30%);
 }
 
 .pc-run-detail__error {

@@ -488,68 +488,68 @@ function eventDetail(e: PipelineEvent): string {
 }
 
 const gitCss = `
-  .pc-git { color: #e7f3fb; padding: 14px 18px 28px; }
+  .pc-git { color: var(--fg); padding: 14px 18px 28px; }
   .pc-git__bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
   .pc-git__bar-l { display: flex; align-items: baseline; gap: 10px; }
   .pc-git__bar-l strong { font-size: 15px; letter-spacing: -0.01em; }
-  .pc-git__muted { color: rgba(186, 230, 253, 0.55); font-size: 12px; }
+  .pc-git__muted { color: color-mix(in srgb, var(--fg), transparent 45%); font-size: 12px; }
   .pc-git__bar-r { display: flex; align-items: center; gap: 8px; }
-  .pc-git__seg { display: inline-flex; border: 1px solid rgba(125, 211, 252, 0.18); border-radius: 8px; overflow: hidden; }
-  .pc-git__seg-btn { background: transparent; color: rgba(214, 236, 248, 0.7); border: 0; padding: 5px 12px; font-size: 12px; font-weight: 650; cursor: pointer; }
+  .pc-git__seg { display: inline-flex; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%); border-radius: 8px; overflow: hidden; }
+  .pc-git__seg-btn { background: transparent; color: color-mix(in srgb, var(--fg), transparent 30%); border: 0; padding: 5px 12px; font-size: 12px; font-weight: 650; cursor: pointer; }
   .pc-git__seg-btn.is-active { background: color-mix(in srgb, var(--accent), transparent 84%); color: var(--fg); }
-  .pc-git__refresh { background: rgba(255,255,255,0.03); border: 1px solid rgba(125, 211, 252, 0.18); color: #cfeefb; width: 30px; height: 28px; border-radius: 8px; cursor: pointer; }
+  .pc-git__refresh { background: rgba(255,255,255,0.03); border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%); color: var(--fg); width: 30px; height: 28px; border-radius: 8px; cursor: pointer; }
   .pc-git__refresh:disabled { opacity: 0.5; cursor: default; }
 
   .pc-git__body { display: grid; gap: 18px; }
   .pc-git__sec { display: grid; gap: 10px; }
-  .pc-git__h { margin: 0; font-size: 12px; font-weight: 740; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(186, 230, 253, 0.62); }
+  .pc-git__h { margin: 0; font-size: 12px; font-weight: 740; letter-spacing: 0.08em; text-transform: uppercase; color: color-mix(in srgb, var(--fg), transparent 38%); }
 
   .pc-git__banner { border: 1px solid rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.08); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: #fde68a; }
   .pc-git__banner-files { margin-top: 6px; font-size: 12px; color: rgba(253, 230, 138, 0.85); display: grid; gap: 2px; }
   .pc-git__banner code, .pc-git code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
   .pc-git__routines { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
-  .pc-git__routine { border: 1px solid rgba(125, 211, 252, 0.14); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,0.015); }
+  .pc-git__routine { border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,0.015); }
   .pc-git__routine-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   .pc-git__routine-name { font-weight: 680; font-size: 13px; flex: 1; }
 
   .pc-git__stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-  .pc-git__stat { border: 1px solid rgba(125, 211, 252, 0.14); border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.015); }
+  .pc-git__stat { border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%); border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.015); }
   .pc-git__stat.is-warn { border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.06); }
   .pc-git__stat.is-bad { border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.07); }
   .pc-git__stat.is-good { border-color: rgba(52, 211, 153, 0.32); }
   .pc-git__stat-v { font-size: 26px; font-weight: 760; line-height: 1; letter-spacing: -0.02em; }
-  .pc-git__stat-l { margin-top: 6px; font-size: 12px; color: rgba(214, 236, 248, 0.78); font-weight: 600; }
-  .pc-git__stat-s { margin-top: 2px; font-size: 11px; color: rgba(186, 230, 253, 0.5); }
+  .pc-git__stat-l { margin-top: 6px; font-size: 12px; color: color-mix(in srgb, var(--fg), transparent 22%); font-weight: 600; }
+  .pc-git__stat-s { margin-top: 2px; font-size: 11px; color: color-mix(in srgb, var(--fg), transparent 50%); }
 
   .pc-git__cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
-  .pc-git__card { border: 1px solid rgba(125, 211, 252, 0.14); border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.015); }
+  .pc-git__card { border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%); border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.015); }
   .pc-git__card-h { display: flex; align-items: center; gap: 8px; font-weight: 680; font-size: 13px; margin-bottom: 8px; }
 
   .pc-git__kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
-  .pc-git__k { color: rgba(186, 230, 253, 0.55); }
-  .pc-git__v { color: #e7f3fb; text-align: right; }
+  .pc-git__k { color: color-mix(in srgb, var(--fg), transparent 45%); }
+  .pc-git__v { color: var(--fg); text-align: right; }
   .pc-git__v.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
   .pc-git__dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .pc-git__dot.is-on { background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16); }
   .pc-git__dot.is-off { background: rgba(148, 163, 184, 0.5); }
 
-  .pc-git__pill { font-size: 11px; font-weight: 640; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(125, 211, 252, 0.2); color: rgba(214, 236, 248, 0.8); }
+  .pc-git__pill { font-size: 11px; font-weight: 640; padding: 2px 8px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%); color: color-mix(in srgb, var(--fg), transparent 20%); }
   .pc-git__pill.is-good { color: #6ee7b7; border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.1); }
   .pc-git__pill.is-warn { color: #fcd34d; border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.1); }
   .pc-git__pill.is-bad { color: #fca5a5; border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.1); }
 
   .pc-git__timeline { display: grid; gap: 4px; }
-  .pc-git__event { display: grid; grid-template-columns: 88px 90px 1fr auto; gap: 10px; align-items: center; padding: 6px 10px; border: 1px solid rgba(125, 211, 252, 0.1); border-radius: 8px; background: rgba(255,255,255,0.012); font-size: 12px; }
-  .pc-git__chip { font-size: 10px; font-weight: 700; letter-spacing: 0.03em; padding: 2px 6px; border-radius: 6px; text-align: center; background: rgba(125, 211, 252, 0.12); color: #bae6fd; }
+  .pc-git__event { display: grid; grid-template-columns: 88px 90px 1fr auto; gap: 10px; align-items: center; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%); border-radius: 8px; background: rgba(255,255,255,0.012); font-size: 12px; }
+  .pc-git__chip { font-size: 10px; font-weight: 700; letter-spacing: 0.03em; padding: 2px 6px; border-radius: 6px; text-align: center; background: color-mix(in srgb, var(--accent), transparent 88%); color: var(--accent-soft); }
   .pc-git__chip.is-good { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
   .pc-git__chip.is-warn { background: rgba(251, 191, 36, 0.14); color: #fcd34d; }
   .pc-git__chip.is-bad { background: rgba(248, 113, 113, 0.16); color: #fca5a5; }
   .pc-git__event-status { font-weight: 620; }
-  .pc-git__event-detail { color: rgba(186, 230, 253, 0.62); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-  .pc-git__event-time { color: rgba(186, 230, 253, 0.5); white-space: nowrap; }
+  .pc-git__event-detail { color: color-mix(in srgb, var(--fg), transparent 38%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .pc-git__event-time { color: color-mix(in srgb, var(--fg), transparent 50%); white-space: nowrap; }
 
-  .pc-git__empty { color: rgba(186, 230, 253, 0.55); font-size: 13px; padding: 12px 0; }
+  .pc-git__empty { color: color-mix(in srgb, var(--fg), transparent 45%); font-size: 13px; padding: 12px 0; }
   .pc-git__err { color: #fca5a5; font-size: 12px; border: 1px solid rgba(248, 113, 113, 0.35); border-radius: 8px; padding: 8px 10px; }
 `;

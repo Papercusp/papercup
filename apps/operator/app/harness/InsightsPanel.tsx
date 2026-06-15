@@ -14,6 +14,47 @@ interface Feature {
   title: string;
 }
 
+export interface InsightsStats {
+  byStatus: Record<HarnessStatus, number>;
+  totalAttempts: number;
+  stuckCount: number;
+  /** Histogram bins: [0, 1, 2, 3-4, 5+] attempts. */
+  attemptsHist: number[];
+  failRate: number;
+  avgAttemptsPerPassed: number;
+  costPerPassed: number;
+  passed: number;
+}
+
+/**
+ * Pure derivation behind the Insights panel: status tally, attempts histogram,
+ * stuck count (≥3 attempts), and the cost/attempt-per-passed ratios. Extracted
+ * so the math is unit-testable without mounting the panel.
+ */
+export function computeInsightsStats(features: Feature[], totalCostUsd: number): InsightsStats {
+  const byStatus: Record<HarnessStatus, number> = Object.fromEntries(
+    STATUS_ORDER.map((s) => [s, 0]),
+  ) as Record<HarnessStatus, number>;
+  let totalAttempts = 0;
+  let stuckCount = 0;
+  const attemptsHist = [0, 0, 0, 0, 0]; // 0, 1, 2, 3+, 5+
+  for (const f of features) {
+    byStatus[f.status]++;
+    totalAttempts += f.attempts;
+    if (f.attempts >= 3) stuckCount++;
+    if (f.attempts === 0) attemptsHist[0]++;
+    else if (f.attempts === 1) attemptsHist[1]++;
+    else if (f.attempts === 2) attemptsHist[2]++;
+    else if (f.attempts < 5) attemptsHist[3]++;
+    else attemptsHist[4]++;
+  }
+  const passed = byStatus.passed;
+  const failRate = features.length ? stuckCount / features.length : 0;
+  const avgAttemptsPerPassed = passed > 0 ? totalAttempts / passed : 0;
+  const costPerPassed = passed > 0 ? totalCostUsd / passed : 0;
+  return { byStatus, totalAttempts, stuckCount, attemptsHist, failRate, avgAttemptsPerPassed, costPerPassed, passed };
+}
+
 interface Props {
   features: Feature[];
   totalCostUsd: number;
@@ -29,29 +70,7 @@ interface Props {
 export default function InsightsPanel({
   features, totalCostUsd, totalInputTokens, totalOutputTokens, iteration, slug, onClose, inline = false,
 }: Props) {
-  const stats = useMemo(() => {
-    const byStatus: Record<HarnessStatus, number> = Object.fromEntries(
-      STATUS_ORDER.map((s) => [s, 0]),
-    ) as Record<HarnessStatus, number>;
-    let totalAttempts = 0;
-    let stuckCount = 0;
-    const attemptsHist = [0, 0, 0, 0, 0]; // 0, 1, 2, 3+, 5+
-    for (const f of features) {
-      byStatus[f.status]++;
-      totalAttempts += f.attempts;
-      if (f.attempts >= 3) stuckCount++;
-      if (f.attempts === 0) attemptsHist[0]++;
-      else if (f.attempts === 1) attemptsHist[1]++;
-      else if (f.attempts === 2) attemptsHist[2]++;
-      else if (f.attempts < 5) attemptsHist[3]++;
-      else attemptsHist[4]++;
-    }
-    const passed = byStatus.passed;
-    const failRate = features.length ? stuckCount / features.length : 0;
-    const avgAttemptsPerPassed = passed > 0 ? totalAttempts / passed : 0;
-    const costPerPassed = passed > 0 ? totalCostUsd / passed : 0;
-    return { byStatus, totalAttempts, stuckCount, attemptsHist, failRate, avgAttemptsPerPassed, costPerPassed, passed };
-  }, [features, totalCostUsd]);
+  const stats = useMemo(() => computeInsightsStats(features, totalCostUsd), [features, totalCostUsd]);
 
   const maxStatusCount = Math.max(1, ...Object.values(stats.byStatus));
   const maxAttemptsBin = Math.max(1, ...stats.attemptsHist);

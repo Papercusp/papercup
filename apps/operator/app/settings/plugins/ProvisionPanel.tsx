@@ -238,12 +238,12 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
   );
 }
 
-function shortJson(o: unknown): string {
+export function shortJson(o: unknown): string {
   const s = JSON.stringify(o);
   return s.length > 120 ? s.slice(0, 117) + '…' : s;
 }
 
-function kindColor(k: string): string {
+export function kindColor(k: string): string {
   if (k.endsWith('-failed')) return 'var(--bad)';
   if (k.endsWith('-succeeded')) return '#7fcf7f';
   if (k === 'consent-rejected') return 'var(--bad)';

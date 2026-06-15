@@ -38,20 +38,28 @@ const TIER_META: Record<Tier, { label: string; color: string; bg: string; border
   red:    { label: 'locked',   color: 'var(--bad)', bg: 'rgba(239,68,68,0.12)',  border: 'var(--bad)' },
 };
 
-function fmtSize(n: number): string {
+export function fmtSize(n: number): string {
   if (n === 0) return '—';
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}K`;
   return `${(n / (1024 * 1024)).toFixed(1)}M`;
 }
 
-function fmtAgo(ms: number): string {
+export function fmtAgo(ms: number, now: number = Date.now()): string {
   if (!ms) return '';
-  const diff = Date.now() - ms;
+  const diff = now - ms;
   if (diff < 60_000) return 'just now';
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
   return `${Math.floor(diff / 86_400_000)}d`;
+}
+
+/** Bucket memory files into their three safety tiers, preserving input order
+ *  within each tier. Pure projection behind the left-rail grouping. */
+export function groupByTier<T extends { tier: Tier }>(files: T[]): Record<Tier, T[]> {
+  const g: Record<Tier, T[]> = { green: [], yellow: [], red: [] };
+  for (const f of files) g[f.tier].push(f);
+  return g;
 }
 
 export default function MemoryBrowser({ slug, alive }: Props) {
@@ -156,11 +164,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
   // Ctrl/Cmd+S to save (works while focus is inside Monaco/vditor too).
   useShortcut('editor.save', () => { void save(); }, {}, [save]);
 
-  const grouped = useMemo(() => {
-    const g: Record<Tier, MemFile[]> = { green: [], yellow: [], red: [] };
-    for (const f of files) g[f.tier].push(f);
-    return g;
-  }, [files]);
+  const grouped = useMemo(() => groupByTier(files), [files]);
 
   return (
     <div style={{ display: 'flex', height: '100%', minHeight: 0, background: 'var(--bg)' }}>
