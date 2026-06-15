@@ -17,6 +17,8 @@ import { resolvePlanScope } from '../plans/source';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
 import { convertPlanItem, type ConvertPlanItemResult } from '../../plan-items/convert';
 import { WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 /** The flattened success payload the emits rules read off the event. */
 interface ConvertEventData {
@@ -121,6 +123,9 @@ export default defineTool({
     const id = resolveAgentIdentity(ctx);
     const { workspaceId, harnessSlug } = await resolvePlanScope({ harnessSlug: args.harness });
     const ownerName = await resolveAdoptedName(workspaceId, id.ownerId);
+    // P-003 compiled-briefs: when on, convert compiles payload.brief from plan
+    // context if the caller didn't supply one. Fail-safe to off (no compilation).
+    const compileBriefIfMissing = await getFlag(FLAGS.COMPILED_BRIEFS, 'system').catch(() => false);
     const result: ConvertPlanItemResult = await convertPlanItem({
       workspaceId,
       harnessSlug,
@@ -129,6 +134,7 @@ export default defineTool({
       kind: args.kind as WorkItemKind | undefined,
       title: args.title,
       brief: args.brief,
+      compileBriefIfMissing,
       owner: id.ownerId,
       ownerLabel: id.ownerLabel,
       ownerName,

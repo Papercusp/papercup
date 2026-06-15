@@ -49,7 +49,15 @@ const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
-  plans: new Map<string, { items: { id: string; status: string; text?: string }[] }>(),
+  plans: new Map<
+    string,
+    {
+      items: { id: string; status: string; text?: string; decisionRefs?: string[] }[];
+      now?: { state: string; next: string };
+      decisions?: { id: string; title: string; body: string }[];
+      title?: string;
+    }
+  >(),
 }));
 
 vi.mock('@papercusp/db-org', async () => {
@@ -74,7 +82,17 @@ vi.mock('../agent-tools/plans/source', () => ({
     if (!p) return null;
     return {
       archived: false,
-      parsed: { items: p.items.map((i) => ({ id: i.id, storedStatus: i.status, text: i.text ?? '' })) },
+      parsed: {
+        frontmatter: p.title ? { title: p.title } : {},
+        now: p.now ?? null,
+        decisions: p.decisions ?? [],
+        items: p.items.map((i) => ({
+          id: i.id,
+          storedStatus: i.status,
+          text: i.text ?? '',
+          decisionRefs: i.decisionRefs ?? [],
+        })),
+      },
       row: { items: p.items.map((i) => ({ id: i.id, status: i.status, text: i.text ?? '' })) },
     };
   },
@@ -197,6 +215,52 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
 
     // The reported plan-item snapshot (what the emits rules key the wip-flip on).
     expect(r.planItem).toMatchObject({ plan: PLAN, item: 'P-001', status: 'todo' });
+  });
+
+  it('P-003: compiles payload.brief from plan focus + bearing decisions when compileBriefIfMissing', async () => {
+    h.plans.set('cb-plan', {
+      title: 'CB Plan',
+      now: { state: 'Building the four bets', next: 'Start P-002' },
+      decisions: [
+        { id: 'D-002', title: 'Minimal layer', body: 'No new engine; the work_item queue is the coordination layer.' },
+      ],
+      items: [{ id: 'P-010', status: 'todo', text: 'Touch-set exclusion', decisionRefs: ['D-002'] }],
+    });
+    const r = await convert.convertPlanItem({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: 'cb-plan',
+      itemId: 'P-010',
+      ownerUser: 'user-x',
+      owner: 'sess-CB',
+      compileBriefIfMissing: true,
+    });
+    expect(r.status).toBe('converted');
+    if (r.status !== 'converted') return;
+    const brief = (r.workItem.payload as { brief?: string })?.brief ?? '';
+    expect(brief).toContain('## Plan focus');
+    expect(brief).toContain('Building the four bets');
+    expect(brief).toContain('D-002 — Minimal layer');
+    expect(brief).toContain('No new engine');
+  });
+
+  it('P-003: compiles NOTHING when the gated opt is off (behavior-neutral)', async () => {
+    h.plans.set('cb-plan2', {
+      now: { state: 'focus', next: 'next' },
+      items: [{ id: 'P-010', status: 'todo', text: 'item' }],
+    });
+    const r = await convert.convertPlanItem({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: 'cb-plan2',
+      itemId: 'P-010',
+      ownerUser: 'user-x',
+      owner: 'sess-CB2',
+      // compileBriefIfMissing omitted → no compilation
+    });
+    expect(r.status).toBe('converted');
+    if (r.status !== 'converted') return;
+    expect((r.workItem.payload as { brief?: string })?.brief).toBeUndefined();
   });
 
   it('P-021: stamps a per-lane brief onto payload.brief, alongside the plan_item stamp', async () => {

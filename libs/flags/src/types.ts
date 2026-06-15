@@ -566,6 +566,10 @@ export const FLAGS = {
   // unverified HOT-PATH change to live bee re-invocation; flip ON after P-006 live
   // verification (kill-switch: OFF ⇒ legacy `--resume`, behavior-neutral).
   BEE_FRESH_CONTEXT_WARM_INJECT: "papercusp-bee-fresh-context-warm-inject",
+  // plan-implementation-framework P-003 (compiled-briefs): when on, plan_items:convert
+  // COMPILES the work-item brief from the plan item + plan focus (## Now) + the decisions
+  // bearing on the item, instead of leaving payload.brief to a hand-authored overlay.
+  COMPILED_BRIEFS: "papercusp-compiled-briefs",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -575,6 +579,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // to live bee re-invocation (fresh session vs `--resume`). Flip ON after P-006
   // live verification. OFF ⇒ legacy `--resume`, behavior-neutral.
   [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]: false,
+  // DEFAULT OFF (exception to alpha flags-default-on): an unverified change to the
+  // convert-at-pickup brief path (plan-implementation-framework P-003 compiled-briefs).
+  // Flip ON via the framework bake-off once it beats the hand-authored baseline.
+  [FLAGS.COMPILED_BRIEFS]: false,
   // DEFAULT ON (alpha flags-default-on) — additive hive-control surfacing.
   [FLAGS.HIVE_CONTROL]: true,
   // DEFAULT ON (alpha flags-default-on) — additive read-only Health dashboard +

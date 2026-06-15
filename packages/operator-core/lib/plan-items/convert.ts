@@ -47,6 +47,7 @@ import {
 } from '../work-items';
 import { claimPlanItem } from './liveness';
 import type { LivenessMode, PlanItemClaim } from './claims';
+import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
 
 /** The link rel from a work_item to the plan item it executes. */
 export const IMPLEMENTS_REL = 'implements';
@@ -82,6 +83,11 @@ export interface ConvertPlanItemOpts {
    *  (promote-policy `BuiltFeature.brief`). Stamped at MINT only; a resume of
    *  an existing work-item keeps its as-placed brief. */
   brief?: string;
+  /** P-003 compiled-briefs (flag `papercusp-compiled-briefs`): when true and no
+   *  explicit `brief` is supplied, compile one at mint from the plan focus + the
+   *  decisions bearing on this item. The flag read lives at the caller (the tool
+   *  layer) so this core stays unit-testable without flag mocking. */
+  compileBriefIfMissing?: boolean;
   owner: string;
   ownerLabel?: string | null;
   ownerName?: string | null;
@@ -237,12 +243,29 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
 
   // ── 3. Mint the work_item (kind + claim + back-link) ──────────────────────
   const title = opts.title ?? (item.text ? planItemTitle(item.text) : `${opts.planSlug} ${opts.itemId}`);
+  // P-003 compiled-briefs: when enabled (flag read at the caller) and no explicit
+  // brief was supplied, derive one from the plan focus + the decisions bearing on
+  // this item. '' (no enrichment) collapses to undefined → no brief stamped, i.e.
+  // identical to the pre-P-003 path.
+  const effectiveBrief =
+    opts.brief ??
+    (opts.compileBriefIfMissing
+      ? compilePlanItemBrief({
+          itemId: opts.itemId,
+          itemText: item.text ?? '',
+          planTitle: read.parsed.frontmatter?.title ?? null,
+          planFocus: read.parsed.now
+            ? { state: read.parsed.now.state, next: read.parsed.now.next }
+            : null,
+          decisions: decisionsForItem(read.parsed, opts.itemId),
+        }) || undefined
+      : undefined);
   const created = await createWorkItem({
     kind,
     title,
     summary: item.text ?? undefined,
     harness: opts.harnessSlug,
-    payload: { plan_item: stamp, ...(opts.brief ? { brief: opts.brief } : {}) },
+    payload: { plan_item: stamp, ...(effectiveBrief ? { brief: effectiveBrief } : {}) },
     createdBy: opts.owner,
     // Issue-family kinds take the assignee at creation; feature-family is
     // claimed right after (no assignee column on insert).
