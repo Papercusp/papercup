@@ -1229,7 +1229,7 @@ describe('per-signal ORIGIN scope tagging (per-hive-learning-loops P-032)', () =
     const calls: unknown[] = [];
     const capture = (async (input: unknown): Promise<CaptureImprovementResult> => {
       calls.push(input);
-      return { ok: true, created: true, issue: { id: `EI-${calls.length}` }, possibleDuplicates: [] } as CaptureImprovementResult;
+      return { ok: true, created: true, issue: { id: `EI-${calls.length}` }, possibleDuplicates: [] } as unknown as CaptureImprovementResult;
     }) as typeof import('./capture-core').captureImprovement;
     const harnessSig = smokeFailSignalsFromRows([{ harness_slug: 'sheets', failure_content: 'x', mtime_ms: Date.now() }]);
     const globalSig = collectServiceDownSignals([{ name: 'sidecar', up: false } as ProbeResult]);

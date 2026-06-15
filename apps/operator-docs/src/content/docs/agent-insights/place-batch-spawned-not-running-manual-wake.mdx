@@ -3,8 +3,8 @@ title: A fleet placement's `spawned:N` does NOT mean the bees are running — ma
 description: >-
   fleet:place_batch / fleet:spawn return spawned:N and look successful, but if the GLOBAL wake-mode is
   'manual' (hive paused — e.g. set during a firefight and left), each spawned bee's boot-wake STAGES
-  (woken:0) and the bee never starts — a silent no-op. Read-only confinement (EI-524) is a second such
-  case (awake bees can't write). Verify placement with fleet:assignments + work_items state, NOT the
+  (woken:0) and the bee never starts — a silent no-op. (Read-only confinement, EI-524, was a second such
+  cause but was LIFTED 2026-06-14.) Verify placement with fleet:assignments + work_items state, NOT the
   placement result. place_batch now warns on the manual-wake case (EI-590).
 discovered: 2026-06-14
 tags: [fleet, wake, place_batch, spawn, hive-pause, silent-no-op, confinement]
@@ -25,8 +25,11 @@ Two independent causes, both invisible in the placement result:
    turn. The mode is durable — it survives restarts — so one `hive:pause` during a firefight silently
    strands every later spawn until someone restores `auto`. (This is exactly what happened fleet-wide on
    2026-06-14; it froze placements for hours.)
-2. **Write-confinement (EI-524).** Even an awake bee that's read-only can't do write work, so the
-   placement "succeeds" but the task can't progress.
+2. **Write-confinement (EI-524) — HISTORICAL, lifted 2026-06-14.** The `bee` read-only confinement once
+   meant an awake bee couldn't do write work, so a placement "succeeded" but the task couldn't progress.
+   It was lifted when the fleet went fully autonomous (`capability-envelope/policy.ts` — the envelope is
+   now empty under the protected floor). Kept here in case a future per-role confinement is re-armed via
+   `ROLE_ENVELOPES`; today, **manual wake-mode is the only live cause.**
 
 ## The diagnostic
 
@@ -44,8 +47,9 @@ If `spawned:N` but `fleet:assignments` shows no live agents, suspect wake-mode f
 
 - **Restore wakes:** `coord:wake-mode { mode: 'auto' }` (or `hive:start`, which re-affirms `auto`).
   The staged wakes already piled up don't auto-fire; live agents get fresh wakes under `auto`.
-- **Under write-confinement (EI-524):** drive write work via a **write-capable subagent** (your client's
-  Task/Agent tool), not fleet bees — bees are read-only while confined.
+- **If a per-role confinement is ever re-armed** (`ROLE_ENVELOPES` in `capability-envelope/policy.ts`):
+  drive write work via a **write-capable subagent** (your client's Task/Agent tool), not the confined
+  fleet role. (Not in effect today — the EI-524 bee confinement was lifted 2026-06-14.)
 - **The signal now exists for the wake-mode case:** `fleet:place_batch` surfaces a `warnings[]` when there
   were fresh spawns under `manual` wake-mode (EI-590 — `buildPlacementWarnings` in
   `packages/operator-core/lib/agent-tools/fleet/place_batch.ts`). Confinement is NOT yet surfaced there

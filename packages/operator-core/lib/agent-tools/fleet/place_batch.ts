@@ -194,9 +194,10 @@ export function mergeBrief(
  * wake-mode is 'manual' (the hive:pause state) — the bees are placed but never
  * start, a silent no-op the caller otherwise reads as `spawned: N` success.
  * Surface it as a warning so the operator knows the placement won't run until
- * wake-mode is restored to 'auto'. Pure so it unit-tests without PG. (Write-
- * confinement — EI-524 read-only bees — is a second such case; it has no cheap
- * signal at this layer yet and is left as a follow-up.)
+ * wake-mode is restored to 'auto'. Pure so it unit-tests without PG. (The other
+ * historical no-op cause — the EI-524 bee read-only confinement — was LIFTED
+ * 2026-06-14 when the fleet went fully autonomous, so manual wake-mode is now the
+ * sole placement-no-op signal at this layer.)
  */
 export function buildPlacementWarnings(opts: { spawned: number; wakeMode: WakeMode }): string[] {
   const warnings: string[] = [];
