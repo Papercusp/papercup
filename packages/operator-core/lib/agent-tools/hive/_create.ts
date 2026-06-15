@@ -244,7 +244,9 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           const { DEFAULT_LEARNING_PACK_ID } = await import('../../learning-packs/pack-format');
           const { loadLearningPack } = await import('../../learning-packs/load-packs');
           const { seedPackIntoHive } = await import('../../learning-packs/seed');
-          const packId = opts.learningPack ?? DEFAULT_LEARNING_PACK_ID;
+          // P-014: an explicit arg wins; else the blueprint's declared learning.pack
+          // (a generic-hive can seed a different pack); else the global default.
+          const packId = opts.learningPack ?? validation.blueprint.learning?.pack ?? DEFAULT_LEARNING_PACK_ID;
           const loaded = await loadLearningPack(packId);
           if (!loaded) {
             seededLearnings = { packId, error: 'pack_not_found' };

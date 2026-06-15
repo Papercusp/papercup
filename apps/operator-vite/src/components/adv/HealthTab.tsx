@@ -113,23 +113,25 @@ function HealthCard({ panel, onLink }: { panel: HealthPanel; onLink: (href: stri
             href={panel.link.href}
             onClick={onLink(panel.link.href)}
             title={`Open ${panel.link.label}`}
+            aria-label={`Open ${panel.link.label}`}
           >
-            {panel.link.label}
-            <ArrowUpRight size={11} aria-hidden />
+            <ArrowUpRight size={12} aria-hidden />
           </a>
         )}
       </div>
       <div className="pc-hcard__summary" title={panel.error ?? panel.summary}>
         {panel.summary}
       </div>
-      <div className="pc-hcard__metrics">
-        {panel.metrics.map((mt: HealthMetric, i: number) => (
-          <div key={i} className="pc-hcard__metric" data-tone={mt.tone ? TONE[mt.tone] : undefined}>
-            <span className="pc-hcard__metric-val">{mt.value}</span>
-            <span className="pc-hcard__metric-label">{mt.label}</span>
-          </div>
-        ))}
-      </div>
+      {panel.metrics.length > 0 && (
+        <div className="pc-hcard__metrics">
+          {panel.metrics.map((mt: HealthMetric, i: number) => (
+            <span key={i} className="pc-hcard__m" data-tone={mt.tone ? TONE[mt.tone] : undefined}>
+              <b>{mt.value}</b>
+              <span>{mt.label}</span>
+            </span>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

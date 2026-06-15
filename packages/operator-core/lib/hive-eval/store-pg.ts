@@ -54,12 +54,13 @@ export class HiveEvalStorePg implements HiveEvalStore {
   async startRun(r: HiveEvalRunRow): Promise<void> {
     // run_id is deterministic per (instance, scenario, repeat). A re-run RESETS the row to a
     // fresh attempt (clear the terminal fields finishRun repopulates) rather than colliding.
+    // NOTE: the org PG client rejects a raw JS Date param — bind timestamptz as an ISO string.
     await this.sql`
       INSERT INTO harness_shared.hive_eval_runs
         (run_id, instance_id, scenario_id, shape, repeat, seed, budget_usd_cap, bee_cap, started_at)
       VALUES
         (${r.runId}, ${r.instanceId}, ${r.scenarioId}, ${r.shape}, ${r.repeat}, ${r.seed},
-         ${r.budgetUsdCap}, ${r.beeCap}, ${r.startedAt})
+         ${r.budgetUsdCap}, ${r.beeCap}, ${r.startedAt.toISOString()})
       ON CONFLICT (run_id) DO UPDATE SET
         instance_id = EXCLUDED.instance_id,
         scenario_id = EXCLUDED.scenario_id,
@@ -86,7 +87,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
     await this.sql`
       UPDATE harness_shared.hive_eval_runs
       SET
-        finished_at = ${fields.finishedAt},
+        finished_at = ${fields.finishedAt.toISOString()},
         terminal_state = ${o.terminalState},
         wall_clock_ms = ${o.wallClockMs},
         frontier_drained = ${o.frontierDrained},

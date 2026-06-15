@@ -114,6 +114,12 @@ export default defineTool({
     inject_load_threshold: z.number().int().min(1).max(20).optional().describe('A bee whose projected load reaches this is no longer a warm-inject target (default 3).'),
     min_inject_affinity: z.number().min(0).max(100).optional().describe('Minimum affinity score to warm-inject vs fresh-spawn (default 1 ≈ one fully-fired low-tier signal).'),
     max_inject_per_bee: z.number().int().min(1).max(10).optional().describe('Max items to warm-inject onto one bee in this batch (default 2).'),
+    affinity_kind: z
+      .enum(['file-overlap', 'topic-overlap', 'entity-overlap'])
+      .optional()
+      .describe(
+        "Which affinity signal dominates placement — your hive's `affinity.kind`. Default file-overlap (the coding hive); topic-overlap for a generic/research hive (a bee shares a SUBJECT, not files); entity-overlap for same-harness/scope. The ranker reweights accordingly (hive-blueprint-generalization P-011).",
+      ),
     dry_run: z.boolean().optional().describe('Return the placement PLAN (decisions + counts) WITHOUT spawning/injecting — preview the batch.'),
     workspace: z.string().max(120).optional(),
   // EI-72: FAIL LOUD on unknown arg keys (same placement-path hazard as
@@ -163,6 +169,7 @@ export default defineTool({
       injectLoadThreshold: args.inject_load_threshold,
       minInjectAffinity: args.min_inject_affinity,
       maxInjectPerBee: args.max_inject_per_bee,
+      affinityKind: args.affinity_kind,
       now: Date.now(),
     });
 

@@ -108,6 +108,10 @@ const RULES: ReadonlyArray<{
       { method: 'GET',  path: '/admin/deploy-accounts', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/register', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/remove', auth: VTL },
+      // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the
+      // gateway rate/headroom stats view admits unverified-loopback (see the
+      // route's own auth declaration in admin/inference-gateway-stats.ts).
+      { method: 'GET',  path: '/admin/inference-gateway/stats', auth: VTL },
       // (admin/plans.ts is now committed + gated to VT, so its prior deferred
       // 'public' exception was removed.)
     ],
