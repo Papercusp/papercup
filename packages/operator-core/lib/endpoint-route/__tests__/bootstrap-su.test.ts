@@ -116,6 +116,16 @@ vi.mock('@papercusp/flags/server', async (importActual) => ({
   ...(await importActual<typeof import('@papercusp/flags/server')>()),
   getFlag: (...a: unknown[]) => getFlagMock(...(a as [string, string])),
 }));
+// queen-interactive-brain-fresh-context P-002: a fresh-context brain launch
+// appends the precomputed Queen wake brief to the launch-context prompt. Mock the
+// started-hive resolver + the brief computer so the POST path's brief-injection
+// branch runs without a live hive/DB. Defaults: one started hive, a brief string.
+const listStartedHivesMock = vi.fn(async () => [{ workspaceId: 'default', installSlug: 'papercup' }]);
+vi.mock('../../hive/started', () => ({ listStartedHives: (...a: unknown[]) => listStartedHivesMock(...(a as [])) }));
+const computeQueenWakeBriefMock = vi.fn(async (): Promise<string | null> => '## QUEEN WAKE BRIEF\n- frontier: wi-1');
+vi.mock('../../hive/queen-brief-launch', () => ({
+  computeQueenWakeBrief: (...a: unknown[]) => computeQueenWakeBriefMock(...(a as [])),
+}));
 vi.mock('../../device-harnesses', () => ({
   listHarnessesFor: vi.fn(async () => [
     { slug: 'papercup', path: '/repo', harness_kind: null, has_state: true, status: 'active', iteration: 1, last_active_ts: null },
@@ -177,6 +187,10 @@ async function callBrainGet(): Promise<Response> {
 beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(42);
+  // P-002 brain-brief defaults: one started hive + a brief string. Tests that
+  // exercise the no-brief / no-hive branches override per-call.
+  listStartedHivesMock.mockResolvedValue([{ workspaceId: 'default', installSlug: 'papercup' }]);
+  computeQueenWakeBriefMock.mockResolvedValue('## QUEEN WAKE BRIEF\n- frontier: wi-1');
 });
 
 describe('bootstrap-su', () => {
@@ -362,6 +376,69 @@ describe('bootstrap-su', () => {
     const res = await (await callBrainGet()).json();
     expect(res).toEqual({ brainSessionId: null });
     expect(getBrainSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('P-002: a fresh-context brain launch appends the computed Queen brief to the prompt file', async () => {
+    getFlagMock.mockResolvedValue(true); // QUEEN_BRAIN_FRESH ON
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    // The brief was computed for the resolved started hive (the launch harness).
+    expect(computeQueenWakeBriefMock).toHaveBeenCalledTimes(1);
+    // The launch-context prompt = playbook + the appended brief.
+    const prompt = readFileSync(json.promptFile, 'utf8');
+    expect(prompt).toContain('PLAYBOOK + CTX BODY');
+    expect(prompt).toContain('## QUEEN WAKE BRIEF');
+    expect(prompt).toContain('- frontier: wi-1');
+    // The brief is appended after the playbook, not spliced in.
+    expect(prompt.indexOf('PLAYBOOK')).toBeLessThan(prompt.indexOf('QUEEN WAKE BRIEF'));
+  });
+
+  it('P-002: flag OFF → a brain launch does NOT compute or append a brief', async () => {
+    getFlagMock.mockResolvedValue(false); // QUEEN_BRAIN_FRESH OFF (resume-the-pin world)
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(computeQueenWakeBriefMock).not.toHaveBeenCalled();
+    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
+  });
+
+  it('P-002: a non-brain launch never computes a brief even with the flag ON', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null });
+    expect(res.status).toBe(200);
+    expect(computeQueenWakeBriefMock).not.toHaveBeenCalled();
+  });
+
+  it('P-002: no brief computed (no hive woke / none ready) → playbook-only, fail-soft', async () => {
+    getFlagMock.mockResolvedValue(true);
+    computeQueenWakeBriefMock.mockResolvedValue(null); // no brief
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    // Still launches — just the su launch-context, no tail.
+    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
+  });
+
+  it('P-002: no started hive → no brief (resolveBrainHiveSlug null), launch still succeeds', async () => {
+    getFlagMock.mockResolvedValue(true);
+    listStartedHivesMock.mockResolvedValue([]); // nothing started
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(computeQueenWakeBriefMock).not.toHaveBeenCalled();
+    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
+  });
+
+  it('P-002: a brief computation that throws is fail-soft — the launch still succeeds with the playbook', async () => {
+    getFlagMock.mockResolvedValue(true);
+    computeQueenWakeBriefMock.mockRejectedValue(new Error('survey db down'));
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null, brain: true });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(readFileSync(json.promptFile, 'utf8')).toBe('PLAYBOOK + CTX BODY');
+    // The pin still landed — only the brief degraded.
+    expect(setBrainSessionMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an unknown agent kind', async () => {

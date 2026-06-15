@@ -55,6 +55,13 @@ export interface PtyHandle {
   command: string;
   args: readonly string[];
   cwd: string;
+  /**
+   * The coord owner (PAPERCUSP_SID) this pty was spawned for, captured from the
+   * spawn env. null when the spawn carried no SID (a shell/REPL pane, a legacy
+   * untagged spawn). The wake executor matches on it to prevent a recycled pid
+   * from routing one agent's wake turn into another agent's session (EI-151).
+   */
+  ownerSid: string | null;
   startedAtMs: number;
   /** Track activity so the idle reaper can drop ghost handles. */
   lastActivityMs: number;
@@ -213,6 +220,7 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
     command: opts.command,
     args: opts.args,
     cwd: opts.cwd,
+    ownerSid: opts.env?.PAPERCUSP_SID ?? null,
     startedAtMs: Date.now(),
     lastActivityMs: Date.now(),
     killed: false,
@@ -387,10 +395,21 @@ export function getPtyMeta(id: string): { id: string; command: string; args: rea
  * (events/await/wake-executor.ts) to pick the inject channel when the
  * sleeping agent's session is one of OUR managed ptys. Returns null when no
  * live handle matches — most sessions (detached terminal emulators) won't.
+ *
+ * Cross-agent misroute guard (EI-151): a recorded pid can be RECYCLED by the OS
+ * to a DIFFERENT agent's live managed pty after the original session exits
+ * uncleanly (its adv_sessions row never marked ended). Matching on pid alone
+ * would then route the original subscriber's wake turn into the unrelated
+ * agent's session. So when the caller names the owner it expects (`ownerSid`),
+ * a handle TAGGED with a different owner is NOT a match. An untagged handle
+ * (`ownerSid === null` — a shell pane / legacy spawn) still matches: it carries
+ * no contrary evidence, so this is never stricter than the pid-only behavior.
  */
-export function findPtyByPid(pid: number): PtyHandle | null {
+export function findPtyByPid(pid: number, ownerSid?: string | null): PtyHandle | null {
   for (const h of handles.values()) {
-    if (!h.killed && h.exitCode === null && h.pty.pid === pid) return h;
+    if (h.killed || h.exitCode !== null || h.pty.pid !== pid) continue;
+    if (ownerSid && h.ownerSid && h.ownerSid !== ownerSid) continue; // recycled-pid misroute
+    return h;
   }
   return null;
 }

@@ -81,6 +81,13 @@ import './hive/pause';
 // control surface (start/pause its loop), sibling to hive:start/pause:
 import './overwatch/start';
 import './overwatch/pause';
+// overwatch-role-2026-06-15 B-04 — the overwatch's declare-next-wake verb (its own
+// channel, gated coord:write so it can't touch the Queen's hive:declare-wake):
+import './overwatch/declare_wake';
+// overwatch-role-2026-06-15 B-04 — the wake-loop module: registers the
+// `system:overwatch-launch` action + the B-07 wake-bridge waker at boot (so an
+// `overwatch:start` in THIS process finds a wired waker, not the fail-soft no-op).
+import '../overwatch/loop';
 // hive-tool-namespace-2026-06-08 — local hive lifecycle (read + create/dissolve/update):
 import './hive/list';
 import './hive/get';

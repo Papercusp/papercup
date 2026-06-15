@@ -187,6 +187,31 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(out.kind).toBe('park'); // must NOT have pty-injected into the wrong pid
   });
 
+  it('EI-151 cross-owner pid-reuse: the live pty at this pid belongs to a PEER → executor scopes the lookup to the subscriber, gets null, parks (never injects A\'s wake into B)', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { pid: process.pid }),
+    });
+    let askedOwner: string | null | undefined = undefined;
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: process.pid, endedAt: null }) as never,
+        alive: () => true, // the recorded pid is alive — recycled to a peer's managed pty
+        // Owner-aware finder (mirrors the real findPtyByPid): a pty IS live at
+        // this pid, but it is tagged with a DIFFERENT owner, so the owner-scoped
+        // lookup yields null for THIS subscriber.
+        findPty: ((_pid: number, owner?: string | null) => {
+          askedOwner = owner;
+          return null;
+        }) as never,
+      }),
+    );
+    expect(out.kind).toBe('park'); // A's wake is never injected into the peer's session
+    expect(askedOwner).toBe(s.ownerId); // the executor scoped the pid lookup to the subscriber
+  });
+
   it('adv-session alive, NO recorded pid, no socket → park (avoid concurrent resume)', async () => {
     const s = tb.session('A');
     const d = makeDelivery({

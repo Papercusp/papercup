@@ -190,6 +190,38 @@ test('renderQueenBrief — no placement section when nothing is open', () => {
   assert.doesNotMatch(out, /### Placements/);
 });
 
+// queen-interactive-brain-fresh-context P-004 — the interactive `psu --brain`
+// dock pane runs the SU engineer playbook + this injected brief (it does NOT load
+// queen.md), so the fresh-per-launch teaching that queen.md gives the autonomous
+// Queen must ride the brief, gated on the interactive-brain wake.
+test('renderQueenBrief — interactive-brain wake injects the fresh-per-launch teaching', () => {
+  const out = renderQueenBrief({ floor: { wokeBy: 'interactive-brain', frontier: frontier3 } });
+  assert.match(out, /Fresh-per-launch \(the dock brain model\)/);
+  assert.match(out, /each time the brain pane opens you are a BRAND-NEW session/);
+  // The three durable continuity channels are named (brief + carry-note + substrate).
+  assert.match(out, /carry-note/);
+  assert.match(out, /`blocked_by`/);
+  assert.match(out, /decision ledger/);
+  // It re-derives, never carries a transcript.
+  assert.match(out, /re-derive your\s+working state/);
+  assert.match(out, /never a carried transcript/);
+});
+
+test('renderQueenBrief — a non-interactive wake does NOT inject the dock teaching (autonomous gets it from queen.md)', () => {
+  for (const wokeBy of ['timer', 'coord:escalate (a bee blocked)', 'backstop', undefined]) {
+    const out = renderQueenBrief({ floor: { wokeBy, frontier: frontier3 } });
+    assert.doesNotMatch(out, /Fresh-per-launch \(the dock brain model\)/);
+  }
+});
+
+test('renderQueenBrief — the interactive-brain teaching stays deterministic (no clock/random leakage)', () => {
+  const floor: QueenBriefFloor = { wokeBy: 'interactive-brain', frontier: frontier3 };
+  const a = renderQueenBrief({ floor, carryNote: 'note' });
+  const b = renderQueenBrief({ floor, carryNote: 'note' });
+  assert.equal(a, b, 'identical inputs must render identical bytes');
+  assert.doesNotMatch(a, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+});
+
 test('floorFromSurvey — maps survey frontier/plans/blocked and merges watchdog signals (P-005 reuse)', () => {
   const survey = { frontier: frontier3, plans: [], frontierBlocked: 4 };
   const bees: BriefBee[] = [{ id: 'b1', load: 1, alive: true }];

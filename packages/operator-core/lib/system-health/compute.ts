@@ -762,6 +762,11 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
   const health = await computeSystemHealth(ws);
   cache.set(ws, health);
   await notifySyncInvalidate('health.snapshot', undefined).catch(() => {});
+  // The Overwatch pane (B-08) reads the SAME SystemHealth as its brief snapshot
+  // (overwatch.snapshot, D-006 "one aggregation, two consumers"), so invalidate it
+  // on the same tick — the pane stays SSE-live without a second aggregation. Safe
+  // no-op when no overwatch pane is subscribed.
+  await notifySyncInvalidate('overwatch.snapshot', undefined).catch(() => {});
   return health;
 }
 

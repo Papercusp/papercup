@@ -12,6 +12,7 @@ import {
   getScreenSerialization,
   resizePty,
   writePty,
+  findPtyByPid,
 } from './pty-bridge';
 
 const liveIds: string[] = [];
@@ -95,5 +96,49 @@ describe('pty-bridge', () => {
     expect(writePty(handle.id, Buffer.from('TYPED\n'))).toBe(true);
     const out = await waitForOutput(handle.id, (s) => s.includes('GOT_TYPED'));
     expect(out).toContain('GOT_TYPED');
+  });
+
+  // EI-151: a recorded pid can be recycled by the OS to a DIFFERENT agent's
+  // live managed pty. findPtyByPid must never hand back a pty tagged with a
+  // foreign owner, or the wake executor would inject one agent's wake turn into
+  // another's session. Owner is captured from PAPERCUSP_SID at spawn.
+  describe('findPtyByPid owner-scoping (cross-agent misroute guard)', () => {
+    it('stamps ownerSid from the spawn env and never matches a foreign owner', async () => {
+      const handle = spawnPty({
+        command: 'bash',
+        args: ['-c', 'sleep 1'],
+        cwd: process.cwd(),
+        cols: 80,
+        rows: 24,
+        env: { PAPERCUSP_SID: 'su-owner-A' },
+      });
+      liveIds.push(handle.id);
+      const pid = handle.pty.pid;
+
+      expect(handle.ownerSid).toBe('su-owner-A');
+      // The genuine owner resolves the pty.
+      expect(findPtyByPid(pid, 'su-owner-A')?.id).toBe(handle.id);
+      // A peer whose stale row recorded this (recycled) pid must NOT match it —
+      // this is the EI-151 misroute that injected A's wake into B's session.
+      expect(findPtyByPid(pid, 'su-owner-B')).toBeNull();
+      // No owner requested (a non-wake caller) keeps the pid-only behavior.
+      expect(findPtyByPid(pid)?.id).toBe(handle.id);
+    });
+
+    it('an UNTAGGED pty (no SID, e.g. a shell pane) still matches any owner — never stricter than pid-only', async () => {
+      const handle = spawnPty({
+        command: 'bash',
+        args: ['-c', 'sleep 1'],
+        cwd: process.cwd(),
+        cols: 80,
+        rows: 24,
+      });
+      liveIds.push(handle.id);
+      const pid = handle.pty.pid;
+
+      expect(handle.ownerSid).toBeNull();
+      expect(findPtyByPid(pid, 'su-anyone')?.id).toBe(handle.id);
+      expect(findPtyByPid(pid)?.id).toBe(handle.id);
+    });
   });
 });

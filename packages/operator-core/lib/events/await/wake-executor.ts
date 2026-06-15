@@ -354,8 +354,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     if (isAlive && pidKnown) {
-      // Channel 1: one of our managed ptys? (pid match — /adv-spawned sessions)
-      const pty = findPty(pid);
+      // Channel 1: one of our managed ptys? (pid match — /adv-spawned sessions).
+      // Owner-scoped (EI-151): a recorded pid the OS recycled to a DIFFERENT
+      // agent's live managed pty must NOT match — injecting here would deliver
+      // THIS subscriber's wake turn into the unrelated agent's session. The
+      // finder rejects a pty tagged with a foreign owner; an untagged pty
+      // (shell pane / legacy) still matches.
+      const pty = findPty(pid, d.subscriberId);
       if (pty) {
         // Submit as TWO writes: the text, then the Enter (CR) as a SEPARATE
         // keystroke after a settle. A one-shot text+CR burst is swallowed by the
@@ -374,8 +379,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           return { kind: 'delivered', channel: 'pty-inject' };
         }
       }
-      // Channel 3: alive in a terminal we don't own — park (+ inbox nudge by pump).
-      return { kind: 'park', reason: `session pid ${pid} alive but not an injectable managed pty` };
+      // Channel 3: alive in a terminal we don't own, OR the live managed pty at
+      // this pid belongs to a different agent (recycled pid, EI-151) — either
+      // way not an injectable pty for THIS subscriber → park (+ inbox nudge).
+      return { kind: 'park', reason: `session pid ${pid} alive but not an injectable managed pty for this subscriber` };
     }
     if (isAlive) {
       // No pid recorded but presence is fresh — the session is (very likely)

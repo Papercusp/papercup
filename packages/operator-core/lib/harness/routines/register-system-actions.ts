@@ -184,6 +184,12 @@
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
+// overwatch-role-2026-06-15 B-04 (C-3): the `system:overwatch-launch` action the
+// one-shot `overwatch-wake` routine fires — computes the OverwatchBrief + launches
+// role=overwatch. Importing it here also registers the B-07 wake-bridge waker at
+// boot (the module body calls registerOverwatchWaker). Self-gated on FLAGS.OVERWATCH
+// + B-07's started bit; fully inert until the flag flips (B-12).
+import '../../overwatch/loop';
 import './release-actions';
 import './improvement-actions';
 import './p2p-perf-actions';

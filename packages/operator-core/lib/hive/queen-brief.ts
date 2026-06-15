@@ -188,6 +188,31 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     out.push('');
     out.push(`**Woke by:** ${f.wokeBy.trim()}`);
   }
+
+  // Interactive-brain teaching (queen-interactive-brain-fresh-context P-004):
+  // the interactive `psu --brain` dock pane runs the SU engineer playbook + this
+  // injected brief — it does NOT load queen.md, so it never sees queen.md's
+  // "Each wake is a FRESH session — re-derive, never remember" teaching. Mirror it
+  // HERE, gated on the interactive-brain wake, so the dock Queen trusts this
+  // freshly-computed brief instead of assuming a carried conversation. (The
+  // autonomous Queen already gets this from queen.md; the floor/digest sections
+  // below are identical for both.)
+  if (f.wokeBy?.trim() === 'interactive-brain') {
+    out.push('');
+    out.push(
+      '**Fresh-per-launch (the dock brain model):** each time the brain pane opens you ' +
+        'are a BRAND-NEW session — no transcript of any prior dock conversation carries ' +
+        'over (by design). Do NOT assume you remember earlier turns; re-derive your ' +
+        'working state from this brief and the durable substrate it summarizes. Continuity ' +
+        'rides three durable channels, never a carried transcript: (1) THIS precomputed ' +
+        'brief (your survey, already done); (2) your carry-note below (what you left your ' +
+        'next self via `hive:declare-wake { remember }`); (3) the steering substrate ' +
+        '(work-item claims / `blocked_by` edges / priorities / the decision ledger). ' +
+        'Anchor anything that must survive the next dock-open in one of those, not in the ' +
+        'conversation — it will be gone next launch; the artifacts will not.',
+    );
+  }
+
   if (f.headroom) {
     out.push(`**Spawn headroom:** ${f.headroom.headroom} free (${f.headroom.running}/${f.headroom.ceiling} running)`);
   }

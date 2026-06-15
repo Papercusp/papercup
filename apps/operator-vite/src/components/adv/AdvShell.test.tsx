@@ -221,7 +221,12 @@ describe('AdvShell — strip + header', () => {
     await renderShell();
     expect(screen.getByRole('heading', { name: 'Advanced' })).toBeTruthy();
     expect(screen.getByText('Advanced orchestration')).toBeTruthy();
-    expect(screen.getAllByRole('tab')).toHaveLength(ADV_TABS.length);
+    // Every ADV tab EXCEPT 'overwatch' renders: overwatch is gated on the
+    // papercusp-overwatch flag, which defaults OFF (overwatch-role-2026-06-15
+    // B-08/D-009 — hidden until B-12 proves it). Health is also flag-gated but
+    // defaults ON, so it shows. The test uses the real useFlag → FLAG_DEFAULTS.
+    expect(screen.getAllByRole('tab')).toHaveLength(ADV_TABS.length - 1);
+    expect(screen.queryByRole('tab', { name: 'overwatch' })).toBeNull();
     // labels render lowercased in the trigger span
     expect(screen.getByRole('tab', { name: 'working' })).toBeTruthy();
     expect(screen.getByText('sub-harnesses')).toBeTruthy();

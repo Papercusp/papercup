@@ -156,15 +156,15 @@ async function dispatchActionsBlockFromOutput(
 }
 
 /**
- * Per-launch child timeout. A kind:'hive' launch is a full Queen duty cycle
- * (survey → place → record), not a short single-role call — the old 90s
- * default SIGTERM'd every Queen wake ~mid-survey (local-hive P-071 smoke,
- * 2026-06-10: two consecutive wakes exited 143 at ~91s with the kickoff
- * unread). Hive launches default to the route's ceiling (2700s) to support
- * 45min implementTimeoutMs; an explicit `body.timeoutMs` still wins for both kinds.
+ * Per-launch child timeout. A tracked autonomous-loop launch (a kind:'hive' Queen
+ * duty cycle — survey → place → record — or an overwatch wake — survey → nudge →
+ * declare-wake) is not a short single-role call, so the old 90s default SIGTERM'd
+ * every Queen wake ~mid-survey (local-hive P-071 smoke, 2026-06-10: two consecutive
+ * wakes exited 143 at ~91s with the kickoff unread). Loop launches default to the
+ * route's ceiling (2700s); an explicit `body.timeoutMs` still wins for both kinds.
  */
-function resolveInvokeTimeoutMs(bodyTimeoutMs: unknown, isHiveLaunch: boolean): number {
-  const fallback = isHiveLaunch ? 2_700_000 : 90_000;
+function resolveInvokeTimeoutMs(bodyTimeoutMs: unknown, isLoopLaunch: boolean): number {
+  const fallback = isLoopLaunch ? 2_700_000 : 90_000;
   return Math.max(5_000, Math.min(2_700_000, Number(bodyTimeoutMs ?? fallback)));
 }
 
@@ -206,7 +206,12 @@ const invoke = defineTool({
     }
     const body = await req.json().catch(() => ({} as any));
     const isHiveLaunch = url.searchParams.get('bpkind') === 'hive';
-    const timeoutMs = resolveInvokeTimeoutMs((body as any)?.timeoutMs, isHiveLaunch);
+    // overwatch-role-2026-06-15 B-04 (C-3): an overwatch wake is also a tracked
+    // autonomous-loop launch — its own bpkind so it gets the longer timeout, a
+    // tracked/resumable session, the brief env, and the OVERWATCH turn-end check
+    // (B-09), never the Queen's hive ones.
+    const isOverwatchLaunch = url.searchParams.get('bpkind') === 'overwatch';
+    const timeoutMs = resolveInvokeTimeoutMs((body as any)?.timeoutMs, isHiveLaunch || isOverwatchLaunch);
     const extra: string[] = Array.isArray((body as any)?.extra)
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];
@@ -230,9 +235,12 @@ const invoke = defineTool({
     let nativeSessionId: string | null = null;
     let hiveSpawnId: string | null = null;
     let advSessionRowId: number | null = null;
-    if (isHiveLaunch) {
+    if (isHiveLaunch || isOverwatchLaunch) {
       nativeSessionId = randomUUID();
       hiveSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      // overwatch-role-2026-06-15 B-04: the overwatch is a tracked/resumable loop
+      // like the Queen, but on its OWN label prefix — `overwatch · <slug>/<role>`,
+      // which overwatchMidTurn (B-09 watchdog) matches to skip a mid-turn re-arm.
       advSessionRowId = await recordAdvSession({
         sessionId: nativeSessionId,
         coordOwnerId: hiveSpawnId,
@@ -240,7 +248,7 @@ const invoke = defineTool({
         role,
         cwd: project.path,
         mode: 'console',
-        label: `hive · ${project.slug}/${role}`,
+        label: `${isOverwatchLaunch ? 'overwatch' : 'hive'} · ${project.slug}/${role}`,
       });
     }
 
@@ -314,6 +322,13 @@ const invoke = defineTool({
     // QUEEN_BRIEF (the kickoff / Queen→bee overlay).
     const queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
     if (queenWakeBrief.trim()) env.QUEEN_WAKE_BRIEF = queenWakeBrief;
+    // overwatch-role-2026-06-15 B-04 (C-3): the overwatch's precomputed
+    // OverwatchBrief (assembled by the system:overwatch-launch action). invoke.ts
+    // hands it to buildPrompt({ overwatchBrief }), which renders it as a
+    // <system-reminder> tail block — the same mechanism as QUEEN_WAKE_BRIEF, a
+    // distinct env for a distinct role's brief.
+    const overwatchWakeBrief = typeof (body as any)?.overwatchBrief === 'string' ? ((body as any).overwatchBrief as string) : '';
+    if (overwatchWakeBrief.trim()) env.OVERWATCH_WAKE_BRIEF = overwatchWakeBrief;
     // EI-506: QUEEN_BRIEF is the Queen→BEE situational overlay (invoke.ts → the
     // "## Queen brief" section). For the QUEEN's OWN wake the kickoff is a terse
     // wake-reason ('timer', 'coord:escalate'), which would render as a self-addressed
@@ -321,7 +336,10 @@ const invoke = defineTool({
     // "Woke by:" line, so set QUEEN_BRIEF from the kickoff for the queen ONLY when she
     // has no wake brief (degraded fallback — preserves the P-071 "why you woke" signal
     // the kickoff threading was added for). Non-queen roles always get the real overlay.
-    if (kickoff && (role !== 'queen' || !queenWakeBrief.trim())) env.QUEEN_BRIEF = kickoff;
+    // overwatch (B-04): its wake reason rides the OverwatchBrief's `wokeBy`, so
+    // setting QUEEN_BRIEF would render a misleading "## Queen brief" overlay (the
+    // EI-506 reasoning, applied to the overwatch) — exclude it like the briefed Queen.
+    if (kickoff && role !== 'overwatch' && (role !== 'queen' || !queenWakeBrief.trim())) env.QUEEN_BRIEF = kickoff;
     const spawnStartMs = Date.now();
     const r = await spawnInvokeOnce(
       project.path,
@@ -381,6 +399,22 @@ const invoke = defineTool({
         .then((res) => {
           if (res.outcome === 'armed' || res.outcome === 'staged') {
             console.warn(`[invoke ${project.slug}] hive watchdog ${res.outcome} a fallback wake: ${res.reason}`);
+          }
+        })
+        .catch(() => {});
+    }
+    // overwatch-role-2026-06-15 B-04/B-09 (D-018): the overwatch's turn just ended —
+    // if it left no next wake armed, B-09's watchdog arms a fallback SLEEP (never an
+    // immediate re-invoke — a broken-prompt overwatch must fail toward "sleeps too
+    // long"). Fire-and-forget off the response path; the module is fail-soft.
+    if (isOverwatchLaunch) {
+      void import('../../../overwatch/watchdog')
+        .then(({ overwatchTurnEndCheck }) =>
+          overwatchTurnEndCheck({ workspaceId: activeWorkspaceId(), installSlug: project.slug }),
+        )
+        .then((res) => {
+          if (res.outcome === 'armed') {
+            console.warn(`[invoke ${project.slug}] overwatch watchdog armed a fallback wake: ${res.reason}`);
           }
         })
         .catch(() => {});
