@@ -335,7 +335,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 76%);
   background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.18), transparent 24%), color-mix(in srgb, var(--accent), transparent 88%);
-  color: var(--accent-strong, #7dd3fc);
+  color: var(--accent-strong, var(--accent-soft));
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px color-mix(in srgb, var(--bg-deeper), transparent 76%);
 }
 
@@ -402,7 +402,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%);
   background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.18), transparent 24%), color-mix(in srgb, var(--accent), transparent 90%);
-  color: var(--accent-strong, #7dd3fc);
+  color: var(--accent-strong, var(--accent-soft));
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px color-mix(in srgb, var(--bg-deeper), transparent 72%);
 }
 
@@ -803,7 +803,7 @@ body.has-op-chat .pc-header {
 .op-chat-sidebar .oracle-send-button:hover:not(:disabled) {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 58%);
-  background: linear-gradient(180deg, rgba(103, 232, 249, 0.26), color-mix(in srgb, var(--accent), transparent 84%));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 74%), color-mix(in srgb, var(--accent), transparent 84%));
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.08),
     0 10px 20px color-mix(in srgb, var(--bg-deeper), transparent 78%);
@@ -1295,7 +1295,7 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar .oracle-input-shell:focus-within {
-  border-color: rgba(103, 232, 249, 0.58) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 42%) !important;
   background: color-mix(in srgb, var(--bg-popover), transparent 1%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -1303,17 +1303,17 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar .oracle-input-shell input {
-  caret-color: #67e8f9;
+  caret-color: var(--accent-strong);
 }
 
 .op-chat-sidebar .oracle-send-button:not(:disabled) {
-  border-color: rgba(103, 232, 249, 0.48) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 52%) !important;
   background: color-mix(in srgb, var(--accent), transparent 76%) !important;
   color: #f8fdff !important;
 }
 
 .op-chat-sidebar .oracle-send-button:hover:not(:disabled) {
-  border-color: rgba(103, 232, 249, 0.66) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 34%) !important;
   background: color-mix(in srgb, var(--accent), transparent 70%) !important;
 }
 
@@ -1351,19 +1351,19 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar button.op-chat-empty-row:hover:not(:disabled) {
-  border-color: rgba(103, 232, 249, 0.36) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 64%) !important;
   background: color-mix(in srgb, var(--bg-raised), transparent 1%) !important;
 }
 
 .op-chat-sidebar button.op-chat-empty-row:hover:not(:disabled)::after,
 .op-chat-sidebar button.op-chat-empty-row:focus-visible::after {
-  border-color: rgba(103, 232, 249, 0.46);
+  border-color: color-mix(in srgb, var(--accent), transparent 54%);
   background: color-mix(in srgb, var(--accent), transparent 82%);
   color: #f7fdff;
 }
 
 .op-chat-sidebar button.op-chat-empty-row:focus-visible {
-  outline: 2px solid rgba(103, 232, 249, 0.62);
+  outline: 2px solid color-mix(in srgb, var(--accent), transparent 38%);
   outline-offset: 3px;
 }
 
@@ -1399,7 +1399,7 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar .oracle-tool-chip:focus-visible {
-  outline: 2px solid rgba(103, 232, 249, 0.62);
+  outline: 2px solid color-mix(in srgb, var(--accent), transparent 38%);
   outline-offset: 3px;
 }
 
@@ -1461,7 +1461,7 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar .oracle-msg-user .oracle-msg-content {
-  border-color: rgba(103, 232, 249, 0.62) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 38%) !important;
   background: linear-gradient(180deg, rgba(24, 78, 113, 0.99), color-mix(in srgb, var(--bg-raised-high), transparent 0.5%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.055),
@@ -1476,7 +1476,7 @@ body.has-op-chat .pc-header {
 
 .op-chat-sidebar .oracle-tool-chip {
   margin: 0 0 3px !important;
-  border-color: rgba(103, 232, 249, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 66%) !important;
   background: color-mix(in srgb, var(--accent), transparent 84%) !important;
   color: #ddf6ff !important;
   opacity: 1 !important;
@@ -1499,7 +1499,7 @@ body.has-op-chat .pc-header {
   flex-shrink: 0 !important;
   max-width: calc(100% - 38px) !important;
   margin: 4px 8px 12px 30px !important;
-  border-color: rgba(103, 232, 249, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 66%) !important;
   border-radius: 13px !important;
   background: color-mix(in srgb, var(--bg-1), transparent 2%) !important;
   color: #dff6ff !important;

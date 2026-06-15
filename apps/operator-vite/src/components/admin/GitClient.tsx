@@ -496,7 +496,7 @@ const gitCss = `
   .pc-git__bar-r { display: flex; align-items: center; gap: 8px; }
   .pc-git__seg { display: inline-flex; border: 1px solid rgba(125, 211, 252, 0.18); border-radius: 8px; overflow: hidden; }
   .pc-git__seg-btn { background: transparent; color: rgba(214, 236, 248, 0.7); border: 0; padding: 5px 12px; font-size: 12px; font-weight: 650; cursor: pointer; }
-  .pc-git__seg-btn.is-active { background: rgba(103, 232, 249, 0.16); color: #f4fbff; }
+  .pc-git__seg-btn.is-active { background: color-mix(in srgb, var(--accent), transparent 84%); color: var(--fg); }
   .pc-git__refresh { background: rgba(255,255,255,0.03); border: 1px solid rgba(125, 211, 252, 0.18); color: #cfeefb; width: 30px; height: 28px; border-radius: 8px; cursor: pointer; }
   .pc-git__refresh:disabled { opacity: 0.5; cursor: default; }
 

@@ -2289,7 +2289,10 @@ impl App {
     /// Restore a persisted view-state on startup (P12 / D-002). Selections are
     /// set directly and re-clamped when each tab's data arrives; the active
     /// harness is republished so the poller fetches the right harness's data.
-    pub fn apply_view_state(&mut self, vs: &ViewState) {
+    pub fn apply_view_state(&mut self, vs: &ViewState) -> Option<String> {
+        let previous_theme = crate::theme::Theme::active_name().to_string();
+        let mut restored_theme = None;
+
         if let Some(t) = vs.tab.as_deref().and_then(Tab::from_title) {
             self.tab = t;
         }
@@ -2334,8 +2337,14 @@ impl App {
         // unknown (renamed/removed theme) name keeps the default — never an
         // error at boot.
         if let Some(name) = vs.theme.as_deref() {
-            let _ = crate::theme::Theme::set_active(name);
+            if crate::theme::Theme::set_active(name)
+                && crate::theme::Theme::active_name() != previous_theme
+            {
+                restored_theme = Some(crate::theme::Theme::active_name().to_string());
+            }
         }
+
+        restored_theme
     }
 
     /// Apply an agent control intent (P12b / D-002 A6 — tui:dispatch). Returns the
@@ -4148,11 +4157,14 @@ impl App {
                 Action::Render
             }
             Event::ViewStateLoaded(vs) => {
-                self.apply_view_state(&vs);
+                let restored_theme = self.apply_view_state(&vs);
                 // Restore may land us on the Plans tab — publish so the poller fetches
                 // the selected plan's item-states on first paint (P-005a).
                 self.publish_active_plan();
-                Action::Render
+                match restored_theme {
+                    Some(name) => Action::Workbench(PaletteCommand::Theme { name: Some(name) }),
+                    None => Action::Render,
+                }
             }
             Event::TuiIntent { id, intent, args } => {
                 // `focus_pane` is a side-effecting intent: it drives the companion

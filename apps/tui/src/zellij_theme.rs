@@ -345,8 +345,8 @@ mod tests {
     #[test]
     fn kdl_emits_rgb_triplets_from_the_spec() {
         let kdl = theme_kdl(&HONEYCOMB);
-        // honeycomb ink = 255 247 223 (theme.rs) — the text base.
-        assert!(kdl.contains("base 255 247 223"));
+        // honeycomb ink = 244 235 212 (theme.rs) — the text base.
+        assert!(kdl.contains("base 244 235 212"));
         // Named-ANSI slots map through the standard palette (papercusp-dark's
         // on_accent is Color::Black → "0 0 0").
         let dark = theme_by_name("papercusp-dark").unwrap();

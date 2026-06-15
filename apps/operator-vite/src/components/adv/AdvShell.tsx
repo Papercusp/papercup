@@ -603,7 +603,7 @@ export default function AdvShell({
         }
         .pc-advshell__copy { display: grid; gap: 4px; min-width: 0; }
         .pc-advshell__kicker {
-          color: color-mix(in oklab, var(--accent-strong, #7dd3fc), transparent 26%);
+          color: color-mix(in oklab, var(--accent-strong, var(--accent-soft)), transparent 26%);
           font-size: 10px;
           font-weight: 760;
           letter-spacing: 0.11em;
@@ -717,12 +717,12 @@ export default function AdvShell({
           color: #e7f7ff;
         }
         .pc-advshell__action--share {
-          background: rgba(56, 189, 248, 0.14);
-          color: #7dd3fc;
-          border-color: rgba(56, 189, 248, 0.38);
+          background: color-mix(in srgb, var(--accent), transparent 86%);
+          color: var(--accent-soft);
+          border-color: color-mix(in srgb, var(--accent), transparent 62%);
         }
         .pc-advshell__action--share:hover {
-          background: rgba(56, 189, 248, 0.26);
+          background: color-mix(in srgb, var(--accent), transparent 74%);
           color: #e7f7ff;
         }
         /* Shared = a non-interactive status badge (green "done" tint) shown in

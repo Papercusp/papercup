@@ -88,7 +88,7 @@ export const RAIL_CSS = `/*
   background:
     radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.16), transparent 24%),
     color-mix(in srgb, var(--accent, #57d7ff), transparent 88%);
-  color: var(--accent-strong, #7dd3fc);
+  color: var(--accent-strong, var(--accent-soft));
 }
 .pcdar__expand-label {
   writing-mode: vertical-rl;
@@ -108,7 +108,7 @@ export const RAIL_CSS = `/*
   background: color-mix(in srgb, var(--bg-1, #0a1422), transparent 2%);
 }
 .pcdar__expand-rail:hover .pcdar__expand-orb {
-  border-color: rgba(103, 232, 249, 0.5);
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
   color: #eff8ff;
 }
 .pcdar__expand-rail:focus-visible {
@@ -174,8 +174,8 @@ body.has-dev-rail .pc-header {
 .pcdar__title-badge {
   padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(56, 189, 248, 0.16);
-  color: #7dd3fc;
+  background: color-mix(in srgb, var(--accent), transparent 84%);
+  color: var(--accent-soft);
   font-size: 9px;
   letter-spacing: 0.12em;
 }
@@ -197,7 +197,7 @@ body.has-dev-rail .pc-header {
 }
 .pcdar__iconbtn:hover {
   background: rgba(12, 24, 38, 0.96);
-  border-color: rgba(103, 232, 249, 0.4);
+  border-color: color-mix(in srgb, var(--accent), transparent 60%);
   color: #eff8ff;
 }
 
@@ -320,7 +320,7 @@ body.has-dev-rail .pc-header {
   transition: background 120ms, border-color 120ms, color 120ms;
 }
 .pcdar-panel__refresh:hover:not(:disabled) {
-  border-color: rgba(103, 232, 249, 0.4);
+  border-color: color-mix(in srgb, var(--accent), transparent 60%);
   color: #eff8ff;
 }
 .pcdar-panel__refresh:disabled {

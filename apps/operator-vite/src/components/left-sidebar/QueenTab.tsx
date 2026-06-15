@@ -438,7 +438,7 @@ function QueenStyles() {
       }
       .pc-queen__hint { font-size: 10px; color: var(--fg-mute, #7f9bb4); }
 
-      .pc-queen__scope { font-size: 10.5px; line-height: 1.35; color: var(--fg-dim, #b9d4e8); padding: 6px 8px; border-radius: 7px; background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.18); }
+      .pc-queen__scope { font-size: 10.5px; line-height: 1.35; color: var(--fg-dim, #b9d4e8); padding: 6px 8px; border-radius: 7px; background: color-mix(in srgb, var(--accent), transparent 94%); border: 1px solid color-mix(in srgb, var(--accent), transparent 82%); }
       .pc-queen__scope--restricted { color: #fcd34d; background: rgba(251, 191, 36, 0.08); border-color: rgba(251, 191, 36, 0.3); }
 
       .pc-queen__plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
@@ -455,7 +455,7 @@ function QueenStyles() {
         padding: 1px 6px; border-radius: 999px; color: var(--fg-mute, #7f9bb4); border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
       }
       .pc-queen__planstatus[data-status='started'] { color: #86efac; border-color: rgba(34, 197, 94, 0.4); }
-      .pc-queen__planstatus[data-status='active'] { color: #7dd3fc; border-color: rgba(56, 189, 248, 0.4); }
+      .pc-queen__planstatus[data-status='active'] { color: var(--accent-soft); border-color: color-mix(in srgb, var(--accent), transparent 60%); }
       .pc-queen__planstatus[data-status='stale'] { color: #fca5a5; border-color: rgba(244, 63, 94, 0.4); }
 
       .pc-queen__directive {

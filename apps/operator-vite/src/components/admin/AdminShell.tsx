@@ -66,7 +66,7 @@ export default function AdminShell({
           flex-direction: column;
           min-height: calc(100vh - 56px);
           background:
-            radial-gradient(circle at top left, rgba(56, 189, 248, 0.06), transparent 28%),
+            radial-gradient(circle at top left, color-mix(in srgb, var(--accent), transparent 94%), transparent 28%),
             linear-gradient(180deg, rgba(5, 12, 22, 0.99), rgba(4, 10, 18, 1));
         }
         .pc-adminshell__header {
@@ -98,7 +98,7 @@ export default function AdminShell({
           font-weight: 760;
           line-height: 1;
           letter-spacing: -0.02em;
-          color: #f4fbff;
+          color: var(--fg);
         }
         .pc-adminshell__tabs {
           align-self: stretch;
@@ -137,13 +137,13 @@ export default function AdminShell({
           color: #f7fdff;
           background:
             linear-gradient(180deg, rgba(17, 34, 53, 0.98), rgba(10, 20, 33, 0.99));
-          border-color: rgba(103, 232, 249, 0.38);
+          border-color: color-mix(in srgb, var(--accent), transparent 62%);
           border-bottom-color: rgba(7, 16, 29, 0.98);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
           transform: translateY(1px);
         }
         .pc-adminshell__tab:focus-visible {
-          outline: 2px solid rgba(103, 232, 249, 0.58);
+          outline: 2px solid color-mix(in srgb, var(--accent), transparent 42%);
           outline-offset: 2px;
         }
         .pc-adminshell__spacer { flex: 1; }
