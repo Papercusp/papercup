@@ -1,19 +1,21 @@
 /**
- * Orchestrator status/lane reporting + human-gated checkpoints:
+ * Orchestrator status reporting + human-gated checkpoints:
  *
  *   POST   /api/harness/:slug/orchestrator/status         — heartbeat status row
- *   POST   /api/harness/:slug/orchestrator/lane           — register a worker lane
- *   DELETE /api/harness/:slug/orchestrator/lanes          — clear all lanes for a phase
- *   POST   /api/harness/:slug/orchestrator/clear-running  — clear stale agent_runs.running
  *   POST   /api/harness/:slug/checkpoint/:name/request    — create a pending checkpoint
  *   POST   /api/harness/:slug/checkpoint/:name/grant      — grant a checkpoint
+ *
+ * The run.sh-era loopback lane WRITERS (POST /orchestrator/lane, DELETE
+ * /orchestrator/lanes, POST /orchestrator/clear-running) were removed —
+ * legacy-harness-cleanup Workstream E (dead: sourced only by the retired pg-status.sh;
+ * the TS orchestrator writes/sweeps harness_lanes + agent_runs directly, D-006).
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 19).
  */
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getOrgPg, getHarnessPg } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { resolveProject, harnessDir } from '../../../harness-core';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -86,83 +88,13 @@ const orchestratorStatus = defineTool({
   },
 });
 
-const orchestratorLane = defineTool({
-  method: 'POST',
-  path: '/harness/:slug/orchestrator/lane',
-  auth: 'loopback',
-  async handler(req, ctx) {
-    const project = await resolveProject(ctx.params.slug as string);
-    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    let body: { phase?: string; role?: string; featureId?: string | null; pid?: number | null };
-    try {
-      body = (await req.json()) as typeof body;
-    } catch {
-      return Response.json({ error: 'invalid JSON' }, { status: 400 });
-    }
-    const phase = body.phase === 'testing' || body.phase === 'production' ? body.phase : 'staging';
-    if (!body.role || typeof body.role !== 'string') {
-      return Response.json({ error: 'role required' }, { status: 400 });
-    }
-    const { db } = getOrgPg();
-    const { generated } = await import('@papercusp/db-org');
-    const { sql: dsql } = await import('drizzle-orm');
-    const hl = generated.harnessLanesInHarnessShared;
-    const ws = activeWorkspaceId();
-    await db
-      .insert(hl)
-      .values({
-        harnessSlug: project.slug,
-        phase,
-        role: body.role,
-        featureId: body.featureId ?? null,
-        pid: body.pid ?? null,
-        startedAt: Date.now(),
-        workspaceId: ws,
-      })
-      .onConflictDoUpdate({
-        target: [hl.harnessSlug, hl.phase, hl.role],
-        set: {
-          featureId: dsql`EXCLUDED.feature_id`,
-          pid: dsql`EXCLUDED.pid`,
-          startedAt: dsql`EXCLUDED.started_at`,
-          workspaceId: dsql`EXCLUDED.workspace_id`,
-        },
-      });
-    return Response.json({ ok: true });
-  },
-});
-
-const orchestratorLanesDelete = defineTool({
-  method: 'DELETE',
-  path: '/harness/:slug/orchestrator/lanes',
-  auth: 'loopback',
-  async handler(req, ctx) {
-    const project = await resolveProject(ctx.params.slug as string);
-    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const qPhase = new URL(req.url).searchParams.get('phase');
-    const phase = qPhase === 'testing' || qPhase === 'production' ? qPhase : 'staging';
-    const { db } = getOrgPg();
-    const { generated } = await import('@papercusp/db-org');
-    const { and, eq } = await import('drizzle-orm');
-    const hl = generated.harnessLanesInHarnessShared;
-    await db.delete(hl).where(and(eq(hl.harnessSlug, project.slug), eq(hl.phase, phase)));
-    return Response.json({ ok: true });
-  },
-});
-
-const orchestratorClearRunning = defineTool({
-  method: 'POST',
-  path: '/harness/:slug/orchestrator/clear-running',
-  auth: 'loopback',
-  async handler(_req, ctx) {
-    const project = await resolveProject(ctx.params.slug as string);
-    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    // agent_runs lives in the per-harness schema, not harness_shared.
-    const { sql } = getHarnessPg(project.slug);
-    await sql`UPDATE agent_runs SET running = false WHERE running = true`;
-    return Response.json({ ok: true });
-  },
-});
+// legacy-harness-cleanup-2026-06-15 Workstream E: the run.sh-era loopback WRITE
+// endpoints (POST /orchestrator/lane, DELETE /orchestrator/lanes, POST
+// /orchestrator/clear-running) were REMOVED — they were sourced only by the retired
+// run.sh helper `pg-status.sh` (itself deleted). The TS orchestrator now writes +
+// sweeps `harness_lanes` and the agent_runs running-flag directly (D-006), so these
+// HTTP writers were dead (verified: no live caller, no test). The GET
+// `/orchestrator/status` reader stays (the UI consumes it).
 
 const checkpointRequest = defineTool({
   method: 'POST',
@@ -262,6 +194,6 @@ const checkpointGrant = defineTool({
 });
 
 export default [
-  orchestratorStatus, orchestratorLane, orchestratorLanesDelete, orchestratorClearRunning,
+  orchestratorStatus,
   checkpointRequest, checkpointGrant,
 ];

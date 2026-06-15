@@ -15,6 +15,9 @@ vi.mock('@papercusp/papercup-shared', () => ({
   openFeatureChat: (...args: unknown[]) => openFeatureChat(...args),
 }));
 
+const toastError = vi.fn();
+vi.mock('sonner', () => ({ toast: { error: (...args: unknown[]) => toastError(...args) } }));
+
 let syncRows: Array<{ id: string; title: string; state: string }> = [];
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ data: syncRows, loading: false, fetching: false, error: null, invalidate: vi.fn() }),
@@ -23,8 +26,13 @@ vi.mock('@papercusp/sync', () => ({
 // The bound-slot path renders the real ChatPanel — stub it; this suite tests
 // the slot logic, not the chat UI.
 vi.mock('../../harness/ChatPanel', () => ({
-  default: ({ slug, chatId }: { slug: string; chatId: string }) => (
-    <div data-testid="chat-panel-stub">{`chat:${slug}:${chatId}`}</div>
+  default: ({ slug, chatId, onArchive }: { slug: string; chatId: string; onArchive?: () => void }) => (
+    <div data-testid="chat-panel-stub">
+      {`chat:${slug}:${chatId}`}
+      <button type="button" data-testid="chat-archive" onClick={onArchive}>
+        archive
+      </button>
+    </div>
   ),
 }));
 
@@ -34,14 +42,15 @@ import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 afterEach(() => {
   cleanup();
   openFeatureChat.mockReset();
+  toastError.mockReset();
   syncRows = [];
 });
 
-function makeProps(params: Record<string, unknown>): PanelComponentProps {
+function makeProps(params: Record<string, unknown>): PanelComponentProps & { api: { setParams: ReturnType<typeof vi.fn>; setTitle: ReturnType<typeof vi.fn> } } {
   return {
     params,
     api: { setParams: vi.fn(), setTitle: vi.fn() },
-  } as unknown as PanelComponentProps;
+  } as unknown as PanelComponentProps & { api: { setParams: ReturnType<typeof vi.fn>; setTitle: ReturnType<typeof vi.fn> } };
 }
 
 describe('AdvChatPanel free slot (WI-125)', () => {
@@ -84,5 +93,33 @@ describe('AdvChatPanel free slot (WI-125)', () => {
     render(<AdvChatPanel {...makeProps({ harnessSlug: 'papercup', chatId: 'c-9' })} />);
     expect(screen.getByText('chat:papercup:c-9')).toBeTruthy();
     expect(screen.queryByTestId('adv-chat-pick')).toBeNull();
+  });
+
+  it('surfaces an error toast when openFeatureChat returns an { error } envelope', async () => {
+    openFeatureChat.mockResolvedValue({ error: 'rate limited' });
+    syncRows = [{ id: 'WI-9', title: 'Steer me', state: 'open' }];
+    render(<AdvChatPanel {...makeProps({ harnessSlug: 'papercup' })} />);
+    fireEvent.change(screen.getByTestId('adv-chat-pick'), { target: { value: 'WI-9' } });
+    fireEvent.click(screen.getByTestId('adv-chat-start'));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastError).toHaveBeenCalledWith('Open chat failed', expect.objectContaining({ description: expect.stringContaining('rate limited') }));
+  });
+
+  it('surfaces an error toast when openFeatureChat throws', async () => {
+    openFeatureChat.mockRejectedValue(new Error('network down'));
+    syncRows = [{ id: 'WI-10', title: 'Steer me', state: 'open' }];
+    render(<AdvChatPanel {...makeProps({ harnessSlug: 'papercup' })} />);
+    fireEvent.change(screen.getByTestId('adv-chat-pick'), { target: { value: 'WI-10' } });
+    fireEvent.click(screen.getByTestId('adv-chat-start'));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastError).toHaveBeenCalledWith('Open chat failed', expect.objectContaining({ description: expect.stringContaining('network down') }));
+  });
+
+  it('onArchive clears the chatId param back to free-slot and resets the title', () => {
+    const props = makeProps({ harnessSlug: 'papercup', chatId: 'c-3' });
+    render(<AdvChatPanel {...props} />);
+    fireEvent.click(screen.getByTestId('chat-archive'));
+    expect(props.api.setParams).toHaveBeenCalledWith(expect.objectContaining({ chatId: null }));
+    expect(props.api.setTitle).toHaveBeenCalledWith('Chat');
   });
 });

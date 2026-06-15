@@ -1410,7 +1410,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { applyHumanQueueRanking } = await import('../queue-ranker/human-queue');
       const { computeImprovementFlow, readWatchdogFlowTicks } = await import('../harness/improvements/flow-metrics');
       const { activeWorkspaceId } = await import('../workspace-registry');
+      const { readOwnerFullAutonomyGrant } = await import('../harness/improvements/full-autonomy-grant');
       const nowMs = Date.now();
+      // The OWNER FULL-AUTONOMY grant (Phase 2): this resolver IS the owner's Learning-tab
+      // view of the queue — keep its auto/human split consistent with the live dispatch so
+      // a protected-surface kind=bug isn't shown as "needs your decision" while the loop
+      // auto-implements it once the grant is on.
+      const ownerFullAutonomy = await readOwnerFullAutonomyGrant(activeWorkspaceId());
       // P-040: resolve the Hive → its member-harness scope set (the Hive is the
       // tenancy unit) so the feed only shows that Hive's improvements. Best-effort:
       // a registry read failure degrades to the unfiltered (workspace) feed rather
@@ -1429,7 +1435,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // Human lane ordered by the ONE ranker (frontier P-040; feature #1 is
       // consume-edges P-022's blocking impact) — the owner's queue leads with
       // what blocks the most, each item carrying its per-feature breakdown.
-      const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs }), { candidates: items });
+      const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs, ownerFullAutonomy }), { candidates: items });
       // FB-15 (P-043): this resolver IS the owner's view of the queue (the
       // improvements:digest tool and the digest routine read elsewhere), so a
       // hit here = the queue was rendered to the owner. Record a throttled

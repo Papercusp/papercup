@@ -23,32 +23,36 @@ import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdo
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
 
-// Resilience guard: when an MCP/SSE client disconnects mid-stream, the
-// `mcp-handler` dependency's response adapter enqueues onto an already-closed
-// ReadableStream controller → `ERR_INVALID_STATE: Controller is already closed`,
-// surfacing as an unhandled rejection that (Node ≥15) terminates the WHOLE host —
-// so one agent dropping a connection crash-loops :3070 for the entire fleet. That
-// client is already gone; the only casualty should be its one request. Swallow
-// ONLY this known-benign stream-close class; preserve fail-fast (exit) for
-// everything else so real bugs still surface.
-function isBenignStreamClose(e: unknown): boolean {
-  const x = e as { code?: string; message?: string } | null;
-  return (
-    !!x &&
-    (x.code === 'ERR_INVALID_STATE' || /Controller is already closed/i.test(x.message ?? ''))
-  );
-}
+// Resilience guard: the multi-tenant host must never let ONE bad inbound frame
+// crash-loop :3070 for the entire fleet. Two known classes originate inside the
+// `mcp-handler` dependency's detached write/parse pump and reach us as unhandled
+// rejections we can't try/catch at the call site:
+//   • EI-12  — a client disconnects mid-stream → enqueue onto an already-closed
+//              ReadableStream controller (ERR_INVALID_STATE).
+//   • EI-714 — a malformed JSON-RPC body → a JSON.parse SyntaxError in the pump.
+// Both are client-caused + request-scoped (the only casualty should be that one
+// request), so SWALLOW them; preserve fail-fast (exit) for everything else so
+// real host bugs still surface. Classification lives in host-benign-errors.ts
+// (unit-tested) so the predicate set is auditable, not buried inline.
+import { isBenignHostError } from './host-benign-errors';
+
 process.on('unhandledRejection', (reason) => {
-  if (isBenignStreamClose(reason)) {
-    console.warn('[hono-host] ignored benign stream-close (client disconnected mid-MCP/SSE):', (reason as Error)?.message);
+  if (isBenignHostError(reason)) {
+    console.warn(
+      '[hono-host] ignored benign client-caused error (request-scoped, host kept alive):',
+      (reason as Error)?.message ?? reason,
+    );
     return;
   }
   console.error('[hono-host] fatal unhandledRejection — exiting:', reason);
   process.exit(1);
 });
 process.on('uncaughtException', (err) => {
-  if (isBenignStreamClose(err)) {
-    console.warn('[hono-host] ignored benign stream-close (uncaught):', err.message);
+  if (isBenignHostError(err)) {
+    console.warn(
+      '[hono-host] ignored benign client-caused error (uncaught, host kept alive):',
+      err.message,
+    );
     return;
   }
   console.error('[hono-host] fatal uncaughtException — exiting:', err);

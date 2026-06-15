@@ -2,12 +2,15 @@
 //
 // OracleClient — the Oracle system-prompt + memory editor. Real render logic:
 // the loading placeholder while /api/oracle/config is in flight, then the form
-// seeded from the fetched config (prompt/memory paths surfaced in the intro).
-// A render-smoke drives a mocked config fetch with the heavy markdown editor
-// stubbed to a textarea. Save POST round-trip is left to e2e.
+// seeded from the fetched config (prompt/memory paths surfaced in the intro),
+// then the Save round-trip: a PUT whose body carries the (edited) prompt+memory,
+// re-seeding the form on success (toast.success) and surfacing failures on a
+// non-ok response (toast.error) without losing the user's edits. The heavy
+// markdown editor is stubbed to a textarea so the form wiring stays intact.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { toast } from 'sonner';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -35,7 +38,11 @@ function stubConfig(body: Record<string, unknown>) {
   );
 }
 
-beforeEach(() => stubConfig(CONFIG));
+beforeEach(() => {
+  (toast.success as ReturnType<typeof vi.fn>).mockClear();
+  (toast.error as ReturnType<typeof vi.fn>).mockClear();
+  stubConfig(CONFIG);
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();

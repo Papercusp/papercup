@@ -8,7 +8,7 @@
 // smoke stays transport-free.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 // RichGrid pulls in heavy virtualization; the panel only uses it for the stuck
 // list. Stub to a marker so the smoke renders without measuring layout.
@@ -158,5 +158,56 @@ describe('<InsightsPanel />', () => {
       />,
     );
     expect(screen.getByTestId('prompt-budget')).toBeTruthy();
+  });
+
+  it('omits the stuck-features grid entirely when nothing is stuck (< 3 attempts)', () => {
+    render(
+      <InsightsPanel
+        features={[mk({ status: 'passed', attempts: 1 }), mk({ status: 'todo', attempts: 0 })]}
+        totalCostUsd={0}
+        totalInputTokens={0}
+        totalOutputTokens={0}
+        iteration={1}
+        inline
+        onClose={() => {}}
+      />,
+    );
+    // No feature has ≥3 attempts → the stuck section (and its grid) is not rendered.
+    expect(screen.queryByTestId('stuck-grid')).toBeNull();
+  });
+
+  it('non-inline renders inside a dialog and the close button fires onClose', () => {
+    const onClose = vi.fn();
+    render(
+      <InsightsPanel
+        features={FEATURES}
+        totalCostUsd={0}
+        totalInputTokens={0}
+        totalOutputTokens={0}
+        iteration={2}
+        onClose={onClose}
+      />,
+    );
+    // The non-inline branch wraps the panel in a Radix dialog.
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    // The close IconButton is only rendered in the non-inline branch.
+    fireEvent.click(screen.getByText('close'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('inline mode renders no close button (the embedding surface owns dismissal)', () => {
+    render(
+      <InsightsPanel
+        features={FEATURES}
+        totalCostUsd={0}
+        totalInputTokens={0}
+        totalOutputTokens={0}
+        iteration={2}
+        inline
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByText('close')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

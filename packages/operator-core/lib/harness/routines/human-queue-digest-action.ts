@@ -28,6 +28,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { readImprovementItems } from '../improvements/read-items';
 import { buildDigest } from '../improvements/digest';
+import { readOwnerFullAutonomyGrant } from '../improvements/full-autonomy-grant';
 import type { ImpactRankedItem } from '../improvements/blocking-impact';
 import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
 
@@ -85,7 +86,10 @@ registerSystemAction('improvement-human-digest', async (ctx: SystemActionCtx) =>
     Number.isFinite(Number(cfg.top_n)) && Number(cfg.top_n) > 0 ? Number(cfg.top_n) : DEFAULT_TOP_N;
 
   const items = await readImprovementItems({ state: 'open' });
-  const digest = await applyHumanQueueRanking(buildDigest(items), { candidates: items });
+  // The OWNER FULL-AUTONOMY grant (Phase 2): the weekly human-queue digest must not list a
+  // protected-surface kind=bug as "awaiting your decision" while the loop auto-implements it.
+  const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ctx.workspaceId);
+  const digest = await applyHumanQueueRanking(buildDigest(items, { ownerFullAutonomy }), { candidates: items });
   const composed = composeHumanQueueDigest(digest.humanQueue, { topN });
   if (!composed) {
     console.log('[human-queue-digest] human queue empty — nothing to send');

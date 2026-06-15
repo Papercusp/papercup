@@ -15,7 +15,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactNode } from 'react';
 
@@ -80,9 +80,11 @@ vi.mock('./use-create-data', async () => {
 import QueuePanel from './QueuePanel';
 
 function renderAt(search: string) {
+  const onUrlUpdate = vi.fn();
   const Wrapper = ({ children }: { children: ReactNode }) =>
-    withNuqsTestingAdapter({ searchParams: search })({ children });
-  return render(<QueuePanel />, { wrapper: Wrapper });
+    withNuqsTestingAdapter({ searchParams: search, onUrlUpdate })({ children });
+  const utils = render(<QueuePanel />, { wrapper: Wrapper });
+  return { ...utils, onUrlUpdate };
 }
 
 afterEach(() => {
@@ -117,5 +119,34 @@ describe('QueuePanel', () => {
     expect(log.getAttribute('data-layer')).toBe('disposition');
     // the pending list is not rendered on the Queen-log tab
     expect(screen.queryByTestId('other-list')).toBeNull();
+  });
+
+  it('clicking the Queen-log tab writes ?queueTab=queen-log (nuqs param)', async () => {
+    const { onUrlUpdate } = renderAt('');
+    fireEvent.click(screen.getByRole('button', { name: "Queen's log" }));
+    await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+    const last = onUrlUpdate.mock.calls.at(-1)![0];
+    expect(last.searchParams.get('queueTab')).toBe('queen-log');
+  });
+
+  it('the qlLayer toggle writes ?qlLayer=action and swaps the DecisionLog layer', async () => {
+    const { onUrlUpdate } = renderAt('queueTab=queen-log');
+    // disposition is the default → flip to the "All actions" (action) layer
+    fireEvent.click(screen.getByRole('button', { name: 'All actions' }));
+    await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+    const last = onUrlUpdate.mock.calls.at(-1)![0];
+    expect(last.searchParams.get('qlLayer')).toBe('action');
+  });
+
+  it('toggling an item-status filter writes ?istatus (flag OFF / pending list)', async () => {
+    flagOn = false;
+    const { onUrlUpdate } = renderAt('');
+    // the pending list shows the ITEM_FILTERS pressable chips
+    const filterBtns = screen.getAllByRole('button', { pressed: false });
+    expect(filterBtns.length).toBeGreaterThan(0);
+    fireEvent.click(filterBtns[0]);
+    await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+    const last = onUrlUpdate.mock.calls.at(-1)![0];
+    expect(last.searchParams.has('istatus')).toBe(true);
   });
 });

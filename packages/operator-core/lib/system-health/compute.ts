@@ -601,8 +601,12 @@ async function collectImprovements(ctx: HealthCtx): Promise<HealthPanel<Improvem
   return panelSafe<ImprovementsHealth>('improvements', async () => {
     const { readImprovementItems } = await import('../harness/improvements/read-items');
     const { buildDigest } = await import('../harness/improvements/digest');
+    const { readOwnerFullAutonomyGrant } = await import('../harness/improvements/full-autonomy-grant');
     const items = await readImprovementItems({ state: 'open', limit: 1000 });
-    const digest = buildDigest(items, { nowMs: ctx.now });
+    // The OWNER FULL-AUTONOMY grant (Phase 2): keep the auto/human rollup counts honest —
+    // when the grant is on, protected-surface bugs move into the auto lane.
+    const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ctx.ws);
+    const digest = buildDigest(items, { nowMs: ctx.now, ownerFullAutonomy });
     const data: ImprovementsHealth = {
       open: digest.open,
       autoEligible: digest.autoEligible.length,

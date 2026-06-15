@@ -7,15 +7,22 @@
 // MarkdownEditor / the save-shortcut are stubbed (out of scope, jsdom-hostile).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 // Monaco references browser layout APIs jsdom lacks; the editor isn't under
 // test, so a marker stand-in keeps the smoke clean.
+// Stubs forward `value`/`onChange` so tests can read the loaded draft and drive
+// edits (the dirty-gate behind revert/save). Monaco/vditor layout APIs are
+// jsdom-hostile, so we substitute plain controlled inputs.
 vi.mock('@monaco-editor/react', () => ({
-  default: () => <div data-testid="monaco" />,
+  default: ({ value, onChange }: { value?: string; onChange?: (v: string | undefined) => void }) => (
+    <textarea data-testid="monaco" value={value ?? ''} onChange={(e) => onChange?.(e.target.value)} />
+  ),
 }));
 vi.mock('../_components/MarkdownEditor', () => ({
-  MarkdownEditor: () => <div data-testid="md-editor" />,
+  MarkdownEditor: ({ value, onChange }: { value?: string; onChange?: (v: string) => void }) => (
+    <textarea data-testid="md-editor" value={value ?? ''} onChange={(e) => onChange?.(e.target.value)} />
+  ),
 }));
 vi.mock('../../lib/hotkeys', () => ({ useShortcut: () => {} }));
 
@@ -122,5 +129,98 @@ describe('<MemoryBrowser />', () => {
     mockMemoryFetch([]);
     render(<MemoryBrowser slug="h" alive />);
     await waitFor(() => expect(screen.getByText(/harness running/)).toBeTruthy());
+  });
+
+  function mdFile(over: Record<string, unknown> = {}) {
+    return {
+      path: 'memory/notes.md', tier: 'green', purpose: 'safe notes', language: 'markdown',
+      exists: true, size: 100, mtimeMs: 0, writtenBy: ['orchestrator'], readBy: ['reviewer'],
+      editable: true, locked: false, ...over,
+    };
+  }
+
+  it('clicking a file row selects it and loads its content from the text-artifacts sync map (no extra fetch)', async () => {
+    artifactRows.push({ harnessSlug: 'h', relPath: 'memory/notes.md', content: 'hello world', updatedAt: 1 });
+    mockMemoryFetch([mdFile()]);
+    render(<MemoryBrowser slug="h" alive={false} />);
+    // Auto-selected first existing file → its content surfaces in the (stubbed) editor.
+    await waitFor(() => expect((screen.getByTestId('md-editor') as HTMLTextAreaElement).value).toBe('hello world'));
+    // The editor header echoes the active path + the written-by / read-by props strip.
+    expect(screen.getAllByText('memory/notes.md').length).toBeGreaterThan(0);
+    expect(screen.getByText('orchestrator')).toBeTruthy();
+    expect(screen.getByText('reviewer')).toBeTruthy();
+  });
+
+  it('editing makes the doc dirty (enables save), and revert restores the original', async () => {
+    artifactRows.push({ harnessSlug: 'h', relPath: 'memory/notes.md', content: 'orig', updatedAt: 1 });
+    mockMemoryFetch([mdFile()]);
+    render(<MemoryBrowser slug="h" alive={false} />);
+    const editor = await screen.findByTestId('md-editor') as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toBe('orig'));
+    const saveBtn = screen.getByText('save') as HTMLButtonElement;
+    const revertBtn = screen.getByText('revert') as HTMLButtonElement;
+    // Clean state: both disabled.
+    expect(saveBtn.disabled).toBe(true);
+    expect(revertBtn.disabled).toBe(true);
+    // Edit → dirty → both enabled.
+    fireEvent.change(editor, { target: { value: 'changed' } });
+    await waitFor(() => expect(saveBtn.disabled).toBe(false));
+    expect(revertBtn.disabled).toBe(false);
+    // Revert restores the original and re-disables.
+    fireEvent.click(revertBtn);
+    await waitFor(() => expect((screen.getByTestId('md-editor') as HTMLTextAreaElement).value).toBe('orig'));
+    expect((screen.getByText('save') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('save PUTs the active path + draft and shows the "saved" toast on success', async () => {
+    artifactRows.push({ harnessSlug: 'h', relPath: 'memory/notes.md', content: 'orig', updatedAt: 1 });
+    const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url.includes('/memory-file') && init?.method === 'PUT') {
+        return { ok: true, json: async () => ({}) } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({ files: [mdFile()] }) } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    render(<MemoryBrowser slug="h" alive={false} />);
+    const editor = await screen.findByTestId('md-editor') as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toBe('orig'));
+    fireEvent.change(editor, { target: { value: 'new content' } });
+    fireEvent.click(screen.getByText('save'));
+    await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
+    // The PUT carried the path + the edited draft.
+    const putCall = fetchSpy.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'PUT');
+    expect(putCall).toBeTruthy();
+    expect(JSON.parse((putCall![1] as RequestInit).body as string)).toEqual({ path: 'memory/notes.md', content: 'new content' });
+  });
+
+  it('save surfaces the server error message when the PUT responds non-OK (body.error)', async () => {
+    artifactRows.push({ harnessSlug: 'h', relPath: 'memory/notes.md', content: 'orig', updatedAt: 1 });
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url.includes('/memory-file') && init?.method === 'PUT') {
+        return { ok: false, status: 409, json: async () => ({ error: 'file is locked' }) } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({ files: [mdFile()] }) } as unknown as Response;
+    }));
+    render(<MemoryBrowser slug="h" alive={false} />);
+    const editor = await screen.findByTestId('md-editor') as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toBe('orig'));
+    fireEvent.change(editor, { target: { value: 'x' } });
+    fireEvent.click(screen.getByText('save'));
+    await waitFor(() => expect(screen.getByText(/save failed: file is locked/)).toBeTruthy());
+  });
+
+  it('a locked file forces the editor read-only and keeps save disabled even when dirty would otherwise enable it', async () => {
+    // Locked file (red tier). Editing is blocked: the editor is readOnly and save stays disabled.
+    artifactRows.push({ harnessSlug: 'h', relPath: 'memory/state.json', content: '{}', updatedAt: 1 });
+    mockMemoryFetch([mdFile({ path: 'memory/state.json', tier: 'red', language: 'json', locked: true, purpose: 'locked state' })]);
+    render(<MemoryBrowser slug="h" alive />);
+    // Non-markdown → Monaco stub. Wait for it to mount with the loaded content.
+    const editor = await screen.findByTestId('monaco') as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.value).toBe('{}'));
+    // Even after an edit, save stays disabled — the gate ANDs `!activeFile.locked`.
+    fireEvent.change(editor, { target: { value: '{"a":1}' } });
+    expect((screen.getByText('save') as HTMLButtonElement).disabled).toBe(true);
+    // The header shows the locked banner.
+    expect(screen.getByText(/locked — stop harness to edit/)).toBeTruthy();
   });
 });
