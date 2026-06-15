@@ -282,6 +282,14 @@ export default function AdvShell({
   useEffect(() => {
     if (allMode && !WORKSPACE_TAB_IDS.has(activeTab)) void setActiveTab('overview');
   }, [allMode, activeTab, setActiveTab]);
+  // overwatch-role-2026-06-15 B-10 (D-009): the Overwatch tab is dark while
+  // papercusp-overwatch is OFF. The strip already hides its button (visibleTabs),
+  // but a direct ?tab=overwatch deep-link / ui:dispatch would otherwise render the
+  // (inert) pane — snap away so the role is FULLY dark, not just button-hidden.
+  // Mirrors the all-mode snap above; scoped to the flag so no other tab is affected.
+  useEffect(() => {
+    if (!overwatchOn && activeTab === 'overwatch') void setActiveTab('overview');
+  }, [overwatchOn, activeTab, setActiveTab]);
 
   // ── Discord-parity keyboard handlers (discord-shortcuts 2026-06-06) ──────
   // Alt+↑/↓ cycles the visible tab strip (Discord's prev/next channel);

@@ -251,6 +251,16 @@ describe('AdvShell — strip + header', () => {
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('overview'));
   });
 
+  it('snaps away from a direct ?tab=overwatch deep-link when papercusp-overwatch is OFF', async () => {
+    // overwatch-role-2026-06-15 B-10/D-009: the tab strip hides the Overwatch
+    // button when the flag is off, but a direct deep-link / ui:dispatch must not
+    // render the (dark) pane either — snap to Overview so the role is FULLY dark.
+    // The flag defaults OFF (real useFlag → FLAG_DEFAULTS).
+    nuqsState.tab = 'overwatch';
+    await renderShell();
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('overview'));
+  });
+
   it('selecting a tab trigger writes the tab to the URL', async () => {
     await renderShell();
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'git' }));
