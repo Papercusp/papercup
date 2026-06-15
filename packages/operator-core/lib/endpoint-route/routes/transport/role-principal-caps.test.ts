@@ -53,6 +53,22 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('search:read')).toBe(true);
   });
 
+  // ── bee — the generic fleet IMPLEMENTER (OWNER-PRIORITY fs-write/bash fix, 2026-06-15) ──
+  describe('bee — the IMPLEMENTER surface (can write code + run bash)', () => {
+    test('bee gets capability:fs-write + capability:bash so it can LAND a fix, not just diagnose', async () => {
+      // The EI-524 read-only confinement was lifted at the ENVELOPE layer; this pins
+      // the matching capability GRANT (the two-gate fix) so a future re-confinement is
+      // a DELIBERATE test change, never a silent regression that re-strands the fleet.
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'bee');
+      expect(caps.has('capability:fs-write')).toBe(true); // capability:write + capability:edit
+      expect(caps.has('capability:bash')).toBe(true); // capability:bash + :bash_output + :bash_kill
+      // ...alongside the engineering surface it already had (parity with psu).
+      expect(caps.has('work_items:write')).toBe(true);
+      expect(caps.has('plans:write')).toBe(true);
+      expect(caps.has('harness:write')).toBe(true);
+    });
+  });
+
   // ── sentinel — the fleet watcher (unify-launch-mechanics-2026-06-09 D-004) ──
   describe('sentinel — the read-mostly fleet watcher surface', () => {
     test("sentinel's WATCH+ALARM contract is reachable: read caps + coord:write, AND fleet:assignments allowlists it", async () => {

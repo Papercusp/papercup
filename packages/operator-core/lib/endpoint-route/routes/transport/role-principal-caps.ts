@@ -183,6 +183,24 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'locks:read', // bee-capability-expansion D-001: locks:queue/list, db:check_drift
     'locks:write', // bee-capability-expansion D-001: explicit multi-file holds
     'issues:read', // bee-capability-expansion D-001: the papercusp://harness/issues resource
+    // OWNER-PRIORITY FIX (2026-06-15): a bee must be able to IMPLEMENT, not just
+    // diagnose. The `bee` read-only confinement (EI-524) was lifted at the ENVELOPE
+    // layer (capability-envelope/policy.ts — the ROLE_ENVELOPES.bee deny was
+    // removed) "so a bee can LAND a code fix", but the matching capability GRANT was
+    // never extended — the two-gate desync. So the principal cap gate still denied
+    // the sanctioned confined write/exec tools: "Principal 'system:bee' lacks
+    // capability 'capability:fs-write'". Grant them here (the workspace-agnostic
+    // baseline that unions with any provisioned row, so EVERY bee — incl. a
+    // blueprint-spawned one with no system_principals row — gets them):
+    //   - capability:fs-write → capability:write + capability:edit (those tools
+    //     already list `bee` in agentRoles; the file-lock guard still serializes).
+    //   - capability:bash     → capability:bash + :bash_output + :bash_kill
+    //     (OS-sandboxed per agent-capability-confinement P-022/D-008).
+    // The anti-hallucination guard is now the verify-before-diagnose discipline +
+    // the validator/reviewer pipeline + tests, NOT a capability wall (policy.ts).
+    // (fs-read / code-inspect already resolve — the bee reads + diagnoses today.)
+    'capability:fs-write',
+    'capability:bash',
   ],
 };
 
