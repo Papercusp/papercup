@@ -9,7 +9,7 @@ const h = vi.hoisted(() => ({
 vi.mock('@papercusp/flags/server', () => ({ getFlag: h.getFlag, setFlagOverride: h.setFlagOverride }));
 vi.mock('./generation-runner', () => ({ runHiveEvalGeneration: h.runGen }));
 
-import { liveBakeoffDeps } from './live-bake-off';
+import { liveBakeoffDeps, buildBakeoffBatteryConfig } from './live-bake-off';
 
 // Minimal stub config — the heavy machinery (runHiveEvalGeneration) is mocked.
 const cfg = {
@@ -68,5 +68,36 @@ describe('liveBakeoffDeps', () => {
     await liveBakeoffDeps(cfg).runBattery({ scenarioIds: ['wide-fanout'] });
     const passedConfig = h.runGen.mock.calls[0][0];
     expect(passedConfig.scenarios.map((sc: { id: string }) => sc.id)).toEqual(['wide-fanout']);
+  });
+});
+
+describe('buildBakeoffBatteryConfig', () => {
+  const manifest = { codeSha: 'abc123', createdAt: new Date(0) };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scenarios = [{ id: 's1' }, { id: 's2' }] as any;
+
+  it('builds a bakeoff-scoped instance + splits the budget across BOTH arms', () => {
+    const out = buildBakeoffBatteryConfig(
+      { workspaceId: 'ws', flagKey: 'papercusp-x', beeCap: 4, capUsd: 80, repeats: 2 },
+      scenarios,
+      manifest,
+    );
+    expect(out.instance.instanceId).toBe('bakeoff-papercusp-x-abc123-ws');
+    expect(out.instance.batterySliceId).toBe('framework-bakeoff');
+    expect(out.scenarios).toHaveLength(2);
+    expect(out.repeats).toBe(2);
+    // 2 scenarios × 2 repeats × 2 arms = 8 runs; 80 / 8 = 10
+    expect(out.budgetUsdCap).toBe(10);
+    expect(out.beeCap).toBe(4);
+  });
+
+  it('filters scenarios by scenarioIds', () => {
+    const out = buildBakeoffBatteryConfig(
+      { workspaceId: 'ws', flagKey: 'f', beeCap: 1, capUsd: 4, scenarioIds: ['s2'] },
+      scenarios,
+      manifest,
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(out.scenarios.map((s: any) => s.id)).toEqual(['s2']);
   });
 });

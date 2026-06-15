@@ -23,14 +23,19 @@ import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
-import { Users, AudioLines, Network, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Users, AudioLines, Network, Crown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 
 const SwarmTab = lazy(() => import('./SwarmTab'));
 const VoiceTab = lazy(() => import('./VoiceTab'));
 const HivesTab = lazy(() => import('./HivesTab'));
+// 👑 Queen steering — the owner's focus/pause controls for the autonomous Queen.
+// Moved here from the /adv top tab strip as the LEFTMOST sidebar tab (owner
+// review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
+const QueenTab = lazy(() => import('./QueenTab'));
 
 const TABS = [
+  { id: 'queen', label: 'Queen', icon: Crown, render: (a: boolean) => <QueenTab active={a} /> },
   { id: 'swarm', label: 'Swarm', icon: Users, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: 'Peers', icon: AudioLines, render: (a: boolean) => <VoiceTab active={a} /> },
   { id: 'hives', label: 'Hives', icon: Network, render: (a: boolean) => <HivesTab active={a} /> },

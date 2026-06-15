@@ -604,6 +604,22 @@ function harnessFinalizeRecipe(projectDir: string): FinalizeRecipe | undefined {
   }
 }
 
+/**
+ * The harness blueprint's `acceptance.kind` (hive-blueprint-generalization P-009),
+ * read from `.papercusp/blueprint.yaml`. Undefined for a pre-blueprint / coding harness
+ * (which declares no `acceptance`), so the finalizer's acceptance gate is a no-op there —
+ * behavior-preserving, exactly like harnessFinalizeRecipe.
+ */
+function harnessAcceptanceKind(projectDir: string): 'tests' | 'judge' | 'human-gate' | 'none' | undefined {
+  try {
+    const f = join(projectDir, '.papercusp', 'blueprint.yaml');
+    if (!existsSync(f)) return undefined;
+    return loadBlueprintFromFile(f).blueprint.acceptance?.kind;
+  } catch {
+    return undefined;
+  }
+}
+
 // Audit P-036: the debugger gate runs on every pipeline invocation past the
 // attempt threshold — opening (and tearing down) a fresh postgres() pool each
 // time burned a connection slot + startup round-trips per spawn. Cache one
@@ -811,6 +827,9 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
     // P-007: the finalize roles come from the blueprint's gates.finalize (declarative),
     // defaulting to the coding recipe when the harness declares none.
     finalize: harnessFinalizeRecipe(projectDir),
+    // hive-blueprint-generalization P-009: the acceptance model gates DONE — undefined for
+    // a coding/pre-blueprint harness, so this is a no-op there (behavior-preserving).
+    acceptanceKind: harnessAcceptanceKind(projectDir),
   });
 
   if (plan.blocked) {

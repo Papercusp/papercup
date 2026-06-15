@@ -201,16 +201,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // end-to-end path; the owner flips it ON after. Pending flip surfaced in the
   // plan's ## Now + the lane completion report.
   FLAGS.EXTERNAL_BENCH,
-  // plan-implementation-framework-2026-06-15 (Wave 1 bets): each ships behind a flag,
-  // DEFAULT OFF during the build (NOT the alpha default-on policy) — experimental, flag-gated
-  // changes to the core plan-implementation loop. Per D-005 the eventual state is default-ON
-  // via per-hive staged rollout, but the flip is the OWNER's call after the framework bake-off
-  // (P-007) shows each bet beats its baseline. Pending flips surfaced in the plan's ## Now +
-  // each item's completion note.
-  FLAGS.COMPILED_BRIEFS, // P-003 — compiled work-item briefs at convert-time
-  FLAGS.TOUCH_SET_EXCLUSION, // P-002 — hive-scoped conflict-free placement admission
-  FLAGS.WORKITEM_AMEND, // P-004 — the structural-amend op (propose/dispose)
-  FLAGS.DEFERRED_EXPANSION, // P-005 — deferred-expansion node → child work_items
+  // plan-implementation-framework-2026-06-15 (Wave 1 bets): the two BEHAVIOR-CHANGING bets stay
+  // dark until the OWNER runs the framework bake-off (P-007) and confirms each beats baseline
+  // (D-005). The two ADDITIVE opt-in tools (work_items:amend / :expand) were flipped default-ON
+  // 2026-06-15 (they change no existing behavior) and are no longer allowlisted here.
+  FLAGS.COMPILED_BRIEFS, // P-003 — compiled work-item briefs at convert-time (behavior-changing; dark)
+  FLAGS.TOUCH_SET_EXCLUSION, // P-002 — hive-scoped placement admission (behavior-changing; dark)
   // bee-context-efficiency-2026-06-14 (sourced from its own FLAG_DEFAULTS comment): an
   // unverified HOT-PATH change to live bee re-invocation (fresh session vs `--resume`). OFF ⇒
   // legacy `--resume`, behavior-neutral; flip ON after the P-006 live verification. (Pre-existing

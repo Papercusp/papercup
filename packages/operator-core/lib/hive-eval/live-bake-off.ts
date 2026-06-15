@@ -22,7 +22,9 @@
 import { getFlag, setFlagOverride } from '@papercusp/flags/server';
 import type { FlagKey } from '@papercusp/flags';
 import { runHiveEvalGeneration } from './generation-runner';
-import type { BakeoffDeps, ArmScore } from './framework-bake-off';
+import { runFrameworkBakeOff } from './framework-bake-off';
+import type { BakeoffDeps, ArmScore, BakeoffResult } from './framework-bake-off';
+import type { HiveScenario } from './scenario';
 
 /** The heavy generation config + deps the caller already has (gen-loop.ts). Derived from the
  *  canonical runner's own parameters so we never drift from its shape. */
@@ -57,4 +59,89 @@ export function liveBakeoffDeps(cfg: LiveBakeoffConfig): BakeoffDeps {
       );
     },
   };
+}
+
+export interface BetBakeoffInput {
+  workspaceId: string;
+  /** The bet flag to A/B (e.g. 'papercusp-compiled-briefs'). */
+  flagKey: string;
+  /** Subset of the corpus (default: the whole corpus). */
+  scenarioIds?: string[];
+  /** Repeats per scenario per arm (variance control). Default 1. */
+  repeats?: number;
+  /** Per-run bee cap. */
+  beeCap: number;
+  /** Total budget across BOTH arms; recorded per-run as budgetUsdCap = capUsd/runs (SOFT — real
+   *  spend is bounded by the per-run timeout + beeCap, not a hard meter). */
+  capUsd: number;
+}
+
+/**
+ * Build the live battery config for a bet bake-off. PURE — the manifest + scenarios are injected,
+ * so the instance-id / scenario-filter / budget-split logic is unit-tested with no git/PG. Mirrors
+ * gen-loop.ts makeLiveRunBattery's construction, with a bake-off-scoped instanceId + slice.
+ */
+export function buildBakeoffBatteryConfig(
+  input: BetBakeoffInput,
+  scenarios: readonly HiveScenario[],
+  manifest: { codeSha: string; createdAt: Date },
+): LiveBakeoffConfig['battery'] {
+  const ids = input.scenarioIds ?? [];
+  const selected = ids.length > 0 ? scenarios.filter((s) => ids.includes(s.id)) : scenarios;
+  const repeats = input.repeats ?? 1;
+  // capUsd is the TOTAL across both arms; split it over every run the bake-off will do.
+  const runsAcrossBothArms = Math.max(1, selected.length * repeats * 2);
+  return {
+    instance: {
+      instanceId: `bakeoff-${input.flagKey}-${manifest.codeSha}-${input.workspaceId}`,
+      workspaceId: input.workspaceId,
+      codeSha: manifest.codeSha,
+      genomeId: undefined,
+      batterySliceId: 'framework-bakeoff',
+      createdAt: manifest.createdAt,
+    },
+    scenarios: selected,
+    repeats,
+    seed: 1,
+    budgetUsdCap: input.capUsd / runsAcrossBothArms,
+    beeCap: input.beeCap,
+  };
+}
+
+/**
+ * Run a REAL bet bake-off (flag OFF vs ON over the live scored corpus) — the OWNER-ATTENDED entry
+ * point (P-011 activation). Inert until called; calling it boots real throwaway hives + spawns real
+ * bee agents (cost + time) — run it ATTENDED with an owner budget, NOT unattended. Mirrors gen-loop's
+ * makeLiveRunBattery live wiring. Returns the BakeoffResult (verdict + delta).
+ */
+export async function runBetBakeoff(input: BetBakeoffInput): Promise<BakeoffResult> {
+  const [
+    { makeLiveHivePorts },
+    { liveHiveOps },
+    { makeReplayExtractor },
+    { createPgHiveEvalStore },
+    { HIVE_EVAL_SCENARIOS },
+    { buildManifest },
+    { getOrgPg },
+  ] = await Promise.all([
+    import('./live-ports'),
+    import('./live-ops'),
+    import('./live-capture'),
+    import('./store-pg'),
+    import('./scenarios'),
+    import('../iq-battery/beekeeper-gen0-runner'),
+    import('@papercusp/db-org'),
+  ]);
+  const { manifest } = buildManifest(input.workspaceId);
+  const { sql } = getOrgPg();
+  const battery = buildBakeoffBatteryConfig(input, HIVE_EVAL_SCENARIOS, manifest);
+  const deps = {
+    store: createPgHiveEvalStore(sql),
+    ports: makeLiveHivePorts(liveHiveOps({ workspaceId: input.workspaceId }), { workspaceId: input.workspaceId }),
+    extractor: makeReplayExtractor(),
+  };
+  return runFrameworkBakeOff(
+    { flagKey: input.flagKey, scenarioIds: input.scenarioIds, repeats: input.repeats },
+    liveBakeoffDeps({ battery, deps }),
+  );
 }

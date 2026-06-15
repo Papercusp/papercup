@@ -107,7 +107,7 @@ export function toggleEligible(current: readonly string[], slug: string): string
 export function steerHiveOptions(
   projects: Array<{ slug: string; parent_slug?: string | null; harness_kind?: string | null }>,
 ): Array<{ value: string; label: string }> {
-  return buildHarnessSelectOptions(projects)
+  return buildHarnessSelectOptions(projects, null)
     .filter((o) => o.value !== ALL_HARNESSES_OPTION && o.value !== '__loading')
     .map((o) => ({ value: o.value, label: o.label }));
 }

@@ -35,7 +35,9 @@ export interface HealthLink {
   href: string;
 }
 
-/** The 14 panels, in render order (Overwatch #15 lands with overwatch-role). */
+/** The 15 panels, in render order. `overwatch` (#15) is the autonomous
+ *  supervisor's own loop health (overwatch-role-2026-06-15 #15, the
+ *  who-watches-the-watcher card). */
 export type PanelKey =
   | 'queen'
   | 'bees'
@@ -50,7 +52,8 @@ export type PanelKey =
   | 'observations'
   | 'improvements'
   | 'infra'
-  | 'suFleet';
+  | 'suFleet'
+  | 'overwatch';
 
 /** Canonical render order for the tab's status-card grid. */
 export const PANEL_ORDER: readonly PanelKey[] = [
@@ -68,6 +71,7 @@ export const PANEL_ORDER: readonly PanelKey[] = [
   'improvements',
   'infra',
   'suFleet',
+  'overwatch',
 ] as const;
 
 export const PANEL_LABELS: Record<PanelKey, string> = {
@@ -85,6 +89,7 @@ export const PANEL_LABELS: Record<PanelKey, string> = {
   improvements: 'Improvements',
   infra: 'Infra',
   suFleet: 'SU fleet',
+  overwatch: 'Overwatch',
 };
 
 /**
@@ -281,6 +286,35 @@ export interface SuFleetHealth {
 }
 
 /**
+ * Overwatch — the autonomous system-health supervisor's OWN loop health (panel
+ * #15, overwatch-role-2026-06-15 / D-004 who-watches-the-watcher). Sourced from
+ * B-07's control state + B-09's liveness + the `papercusp-overwatch` flag — NOT a
+ * second aggregation (D-006). `flagEnabled === false` is the role's intended-dark
+ * default (greyed, not a failure); a started loop that has gone `alive === false`
+ * is the supervisor itself dying (crit).
+ */
+export interface OverwatchPanelHealth {
+  /** The `papercusp-overwatch` activation flag (D-009). false = intentionally dark. */
+  flagEnabled: boolean;
+  /** The persisted `overwatch_started` bit (B-07). true = the loop should be running. */
+  started: boolean;
+  /** Liveness (B-09 isOverwatchAlive): true = alive, false = dark, null = not-in-play/uncomputable. */
+  alive: boolean | null;
+  /** A live `overwatch-wake` routine with a next fire exists (B-09). */
+  armed: boolean;
+  /** The configured wake cadence in seconds (B-07; default 600). */
+  cadenceSec: number;
+  /** ms epoch of the last overwatch wake fire, or null (never fired). */
+  lastWakeAt: number | null;
+  /** ms epoch of the next armed wake, or null. */
+  nextFireAt: number | null;
+  /** ms since the last wake fire (the stall clock), or null. */
+  staleForMs: number | null;
+  /** Overwatch watchdog fallback fires in the last 24h (a forgot-to-declare signal). */
+  watchdogFires24h: number;
+}
+
+/**
  * Who-watches-the-watcher (overwatch-role C-1 / D-004). `overwatchAlive` is null
  * until the overwatch role lands (overwatch-role-2026-06-15). The Health tab
  * surfaces it; the overwatch brief raises an anomaly when a counterpart goes dark.
@@ -306,6 +340,7 @@ export interface SystemHealthPanels {
   improvements: HealthPanel<ImprovementsHealth>;
   infra: HealthPanel<InfraHealth>;
   suFleet: HealthPanel<SuFleetHealth>;
+  overwatch: HealthPanel<OverwatchPanelHealth>;
 }
 
 /**

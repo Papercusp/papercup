@@ -11,10 +11,14 @@
  * clause text + its rationale (project-agnostic; per-project specifics come from the
  * target repo's CLAUDE.md / testing docs) live in `TESTING_STANDARD`'s doc-comment.
  */
-import { TESTING_STANDARD } from '@papercusp/orchestrator/role-prompt';
+import { TESTING_STANDARD, VERIFICATION_STANDARD } from '@papercusp/orchestrator/role-prompt';
 
 /** The shared testing-standard clause, injected into every operator-launched role's
- *  prompt base by `assembleRolePrompt` (mirror of `renderYieldPolicy`). */
-export function renderTestingStandard(): string {
-  return TESTING_STANDARD;
+ *  prompt base by `assembleRolePrompt` (mirror of `renderYieldPolicy`). A hive whose
+ *  `acceptance.kind` is NOT `tests` (judge / human-gate / none) gets the domain-agnostic
+ *  VERIFICATION_STANDARD instead — symmetric with the spawned-bee base's buildPrompt
+ *  conditional so the two bases can't desync (hive-blueprint-generalization P-008).
+ *  Default (no arg) ⇒ TESTING_STANDARD, so every existing caller is unchanged. */
+export function renderTestingStandard(acceptanceKind?: 'tests' | 'judge' | 'human-gate' | 'none'): string {
+  return acceptanceKind && acceptanceKind !== 'tests' ? VERIFICATION_STANDARD : TESTING_STANDARD;
 }

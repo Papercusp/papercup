@@ -7562,18 +7562,16 @@ mod tests {
     }
 
     #[test]
-    fn enter_outside_plugins_tab_is_noop() {
+    fn enter_on_plans_tab_does_not_launch_plugin() {
         let mut a = App::new();
         a.update(key('3', KeyModifiers::NONE)); // leave the default Operator tab → Plans
         a.set_panes(vec![pane("Logs", "p", "/r", &["sh"])]);
-        // On the Plans tab, Enter doesn't launch (on Operator it focuses the composer).
-        assert_eq!(
-            a.update(Event::Key(KeyEvent::new(
-                KeyCode::Enter,
-                KeyModifiers::NONE
-            ))),
-            Action::None
-        );
+        // On the Plans tab, Enter never launches a plugin pane (that's Plugins-tab
+        // only). With no plans in scope it's an inert redraw — the detail popup
+        // (owner ask 2026-06-15 #1) only opens when there's a plan to describe.
+        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(!matches!(act, Action::Launch(_)), "Enter must not launch on Plans: {act:?}");
+        assert!(!a.fleet_detail_open, "no plans in scope → popup stays closed");
     }
 
     #[test]
