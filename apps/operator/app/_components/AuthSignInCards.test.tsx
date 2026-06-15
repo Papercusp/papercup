@@ -17,10 +17,14 @@ vi.mock('@papercusp/operator-core/lib/pty-tauri', () => ({
 }));
 
 // The pty child spawns a real Tauri PTY; render a marker that echoes the
-// command it was handed so the desktop path is observable without a pty.
+// command it was handed and exposes a button to fire onExit so the
+// terminal-finished flow (Done affordance + auth re-probe) is testable.
 vi.mock('./SetupWizard/InlinePtyTerminal', () => ({
-  InlinePtyTerminal: ({ command }: { command: string }) => (
-    <div data-testid="pty-terminal">{command}</div>
+  InlinePtyTerminal: ({ command, onExit }: { command: string; onExit?: () => void }) => (
+    <div data-testid="pty-terminal">
+      {command}
+      <button type="button" data-testid="pty-exit" onClick={() => onExit?.()}>exit</button>
+    </div>
   ),
 }));
 
@@ -110,8 +114,64 @@ describe('<AuthSignInCards />', () => {
     });
     fireEvent.click(btn);
     const term = await screen.findByTestId('pty-terminal');
-    expect(term.textContent).toBe('claude'); // loginClaude.command
+    expect(term.textContent).toContain('claude'); // loginClaude.command
     // The active card's button flips to "Running…".
     expect(screen.getByRole('button', { name: /running…/i })).toBeTruthy();
+  });
+
+  it('the ChatGPT card spawns the omp login spec in the desktop app', async () => {
+    tauriRef.value = true;
+    vi.stubGlobal('fetch', mockFetch({ claude: false, omp: false }));
+    render(<AuthSignInCards />);
+    const btn = await waitFor(() => {
+      const b = screen.getByRole('button', { name: /sign in to chatgpt/i }) as HTMLButtonElement;
+      expect(b.disabled).toBe(false);
+      return b;
+    });
+    fireEvent.click(btn);
+    const term = await screen.findByTestId('pty-terminal');
+    expect(term.textContent).toContain('omp'); // loginOmp.command
+  });
+
+  it('disables the OTHER provider button while one card is actively running', async () => {
+    tauriRef.value = true;
+    vi.stubGlobal('fetch', mockFetch({ claude: false, omp: false }));
+    render(<AuthSignInCards />);
+    const claudeBtn = await waitFor(() => {
+      const b = screen.getByRole('button', { name: /sign in to claude/i }) as HTMLButtonElement;
+      expect(b.disabled).toBe(false);
+      return b;
+    });
+    fireEvent.click(claudeBtn);
+    await screen.findByTestId('pty-terminal');
+    // Claude is now active → the ChatGPT button is disabled (active !== null guard).
+    expect((screen.getByRole('button', { name: /sign in to chatgpt/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('on pty exit, shows the Done affordance and re-probes auth status; Done dismisses the terminal', async () => {
+    tauriRef.value = true;
+    const fetchSpy = mockFetch({ claude: false, omp: false });
+    vi.stubGlobal('fetch', fetchSpy);
+    render(<AuthSignInCards />);
+    const btn = await waitFor(() => {
+      const b = screen.getByRole('button', { name: /sign in to claude/i }) as HTMLButtonElement;
+      expect(b.disabled).toBe(false);
+      return b;
+    });
+    fireEvent.click(btn);
+    await screen.findByTestId('pty-terminal');
+    const authCallsBefore = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('agent-auth-status')).length;
+    // Fire the pty's onExit → handleExit re-probes auth + shows the Done button.
+    fireEvent.click(screen.getByTestId('pty-exit'));
+    const done = await screen.findByRole('button', { name: /^done$/i });
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.filter((c) => String(c[0]).includes('agent-auth-status')).length)
+        .toBeGreaterThan(authCallsBefore),
+    );
+    // The card's primary button is back to "Sign in" (no longer Running…).
+    expect(screen.getByRole('button', { name: /sign in to claude/i })).toBeTruthy();
+    // Done dismisses the exited terminal.
+    fireEvent.click(done);
+    await waitFor(() => expect(screen.queryByTestId('pty-terminal')).toBeNull());
   });
 });

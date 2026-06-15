@@ -7,7 +7,7 @@
 // with a mocked shortcut registry to confirm the grouped surface paints.
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 beforeAll(() => {
   // Radix Dialog touches ResizeObserver / matchMedia in jsdom.
@@ -39,10 +39,11 @@ vi.mock('@papercusp/operator-core/lib/shortcut-registry', () => ({
 // hotkeys' useShortcutOverrides subscribes to a store; a no-op map is enough.
 vi.mock('../../lib/hotkeys', () => ({ useShortcutOverrides: () => ({}) }));
 
-// RouteLink pulls in the router/progress stack — render a plain anchor.
+// RouteLink pulls in the router/progress stack — render a plain anchor that
+// forwards onClick so the cheat-sheet's "close on Settings click" wiring is testable.
 vi.mock('./RouteLink', () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
+  default: ({ children, href, onClick }: { children: React.ReactNode; href: string; onClick?: (e: React.MouseEvent) => void }) => (
+    <a href={href} onClick={onClick}>{children}</a>
   ),
 }));
 
@@ -112,5 +113,26 @@ describe('<ShortcutsCheatSheet />', () => {
     // mod+k → "Ctrl" + "K" kbd tokens (Ctrl appears for both shortcuts).
     expect(screen.getAllByText('Ctrl').length).toBeGreaterThan(0);
     expect(screen.getByText('K')).toBeTruthy();
+  });
+
+  it('clicking the Settings → Shortcuts link fires onClose', () => {
+    const onClose = vi.fn();
+    render(<ShortcutsCheatSheet open onClose={onClose} />);
+    const link = screen.getByText('Settings → Shortcuts').closest('a') as HTMLAnchorElement;
+    const prevent = (e: Event) => e.preventDefault();
+    document.addEventListener('click', prevent, true);
+    try {
+      fireEvent.click(link);
+    } finally {
+      document.removeEventListener('click', prevent, true);
+    }
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('pressing Escape closes the dialog via onClose (Radix onOpenChange→false)', () => {
+    const onClose = vi.fn();
+    render(<ShortcutsCheatSheet open onClose={onClose} />);
+    fireEvent.keyDown(screen.getByText('Keyboard shortcuts').closest('[role="dialog"]')!, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -64,6 +64,7 @@ export default defineTool({
     title: z.string().min(1).max(200),
     summary: z.string().max(8000).optional().describe('body / summary text'),
     harness: z.string().max(80).optional().describe('harness slug — required for feature/research-task/chunk; sets scope for bug/change'),
+    workspace: z.string().max(120).optional().describe('target workspace id — defaults to the request workspace (MCP ?workspace=). Routes the write to this workspace instead of silently falling back to "default" when the harness→projects lookup misses (EI-728).'),
     severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
     parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
     topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
@@ -113,11 +114,20 @@ export default defineTool({
           };
         }
       }
+      // EI-728: route the write to the request's workspace. Precedence: explicit
+      // `workspace` arg → the request's concrete workspace (MCP ?workspace=, on
+      // ctx.workspaceId) → undefined (keep the trigger-derived default). '*'
+      // (unscoped SU) is treated as "no workspace" so the trigger still derives.
+      const workspaceId =
+        (typeof args.workspace === 'string' && args.workspace.trim()) ? args.workspace.trim()
+          : (ctx.workspaceId && ctx.workspaceId !== '*') ? ctx.workspaceId
+            : undefined;
       const workItem = await createWorkItem({
         kind: args.kind as WorkItemKind,
         title: args.title,
         summary: args.summary,
         harness: args.harness,
+        workspaceId,
         severity: args.severity,
         parent: args.parent,
         topics: args.topics,

@@ -144,6 +144,35 @@ beforeEach(async () => {
   fh.spy.mockClear();
 });
 
+describe('EI-728 — feature-family items honor an explicit target workspace', () => {
+  async function wsOf(featureId: string): Promise<string | undefined> {
+    const rows = await db.sql<Array<{ workspace_id: string }>>`
+      SELECT workspace_id FROM harness_shared.harness_features_consolidated WHERE feature_id = ${featureId}`;
+    return rows[0]?.workspace_id;
+  }
+
+  it('WITHOUT a workspace → trigger/column default (unchanged behavior)', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'no ws', harness: 'papercup', createdBy: 'agA' });
+    expect(await wsOf(feat.id)).toBe('default');
+  });
+
+  it('WITH an explicit workspaceId → the row lands in THAT workspace (the fix)', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature', title: 'scoped', harness: 'papercup', workspaceId: 'papercusp-workspace', createdBy: 'agA',
+    });
+    // Pre-fix this silently fell back to 'default' (work_items:create ignored the
+    // workspace), so a hive surveying its own workspace never saw the item.
+    expect(await wsOf(feat.id)).toBe('papercusp-workspace');
+  });
+
+  it("'*' or blank workspaceId is treated as unset → default (no spurious routing)", async () => {
+    const star = await wi.createWorkItem({ kind: 'feature', title: 'star', harness: 'papercup', workspaceId: '*', createdBy: 'agA' });
+    expect(await wsOf(star.id)).toBe('default');
+    const blank = await wi.createWorkItem({ kind: 'feature', title: 'blank', harness: 'papercup', workspaceId: '  ', createdBy: 'agA' });
+    expect(await wsOf(blank.id)).toBe('default');
+  });
+});
+
 describe('work_item change fan-out — notify_kind mapping + actor exclusion', () => {
   it('create fires issue_created, excluding the author', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });

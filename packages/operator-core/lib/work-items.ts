@@ -455,6 +455,17 @@ export interface CreateWorkItemInput {
   parent?: string; // feature-family (a chunk's parent)
   payload?: unknown; // kind-specific data (feature-family + issue-family `task`)
   topics?: string[];
+  /**
+   * Explicit target workspace (EI-728). Feature-family items omit `workspace_id`
+   * and let the `fill_workspace_id_from_projects` BEFORE-INSERT trigger derive it
+   * from the harness's `projects` row (fallback 'default'). When the request
+   * carries a workspace (the MCP `?workspace=` / an explicit `workspace` arg /
+   * the hive's own workspace), pass it here so the write lands there instead of
+   * silently falling back to 'default' when the projects lookup misses — the
+   * trigger fills ONLY when workspace_id is NULL/'', so a provided value wins.
+   * Omit (or pass '*'/'') to keep the trigger-derived default behavior.
+   */
+  workspaceId?: string;
   createdBy?: string;
   /** Assign at creation (issue-family). collapse-delegate: the delegate session. */
   assignee?: string;
@@ -514,16 +525,25 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   if (!input.harness) throw new Error(`work_item kind '${input.kind}' requires a harness`);
   const { sql } = getOrgPg();
   const now = Date.now();
-  // workspace_id is intentionally omitted: the BEFORE-INSERT fill_ws_features trigger
-  // fills it from the harness's project row (fallback 'default'). Positional $N::jsonb
-  // is the operator's proven jsonb write on the org pool (prepare:false mis-binds sql.json()).
+  // workspace_id: when the request carries an explicit workspace (EI-728), set it
+  // here so the write lands there; the fill_workspace_id_from_projects BEFORE-INSERT
+  // trigger fills ONLY when workspace_id is NULL/'', so a provided value wins. When
+  // omitted, the trigger derives from the harness's project row (fallback 'default').
+  // Positional $N::jsonb is the operator's proven jsonb write on the org pool
+  // (prepare:false mis-binds sql.json()).
+  const explicitWs =
+    typeof input.workspaceId === 'string' && input.workspaceId.trim() && input.workspaceId !== '*'
+      ? input.workspaceId.trim()
+      : null;
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_features_consolidated (
        harness_slug, feature_id, title, summary, status, attempts,
-       item_kind, payload, parent_id, needs_design, needs_human_review, ts, created_ts, updated_ts
+       item_kind, payload, parent_id, needs_design, needs_human_review, ts, created_ts, updated_ts${
+         explicitWs ? ', workspace_id' : ''
+       }
      ) VALUES (
        $1, $2, $3, $4, 'todo', 0,
-       $5, $6::jsonb, $7, FALSE, FALSE, $8, $9, $10
+       $5, $6::jsonb, $7, FALSE, FALSE, $8, $9, $10${explicitWs ? ', $11' : ''}
      )
      ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
     [
@@ -537,6 +557,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       now,
       now,
       now,
+      ...(explicitWs ? [explicitWs] : []),
     ],
   );
   const wi: WorkItem = {

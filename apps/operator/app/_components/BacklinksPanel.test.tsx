@@ -7,7 +7,7 @@
 // A render-smoke drives a mocked fetch; ?backlinks open-state via nuqs adapter.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 import { BacklinksPanel } from './BacklinksPanel';
@@ -66,5 +66,36 @@ describe('<BacklinksPanel />', () => {
     // Header still renders the count; the hit rows do not.
     await waitFor(() => expect(screen.getByText(/Backlinks \(2\)/)).toBeTruthy());
     expect(screen.queryByText('see [[target]] here')).toBeNull();
+  });
+
+  it('the header button toggles the body open/closed', async () => {
+    render(<BacklinksPanel target="target" />, { wrapper: withNuqsTestingAdapter({ searchParams: '' }) });
+    // Default open → rows visible.
+    await waitFor(() => expect(screen.getByText('see [[target]] here')).toBeTruthy());
+    // Click the header → collapse → rows gone, count still shown.
+    fireEvent.click(screen.getByRole('button'));
+    await waitFor(() => expect(screen.queryByText('see [[target]] here')).toBeNull());
+    expect(screen.getByText(/Backlinks \(2\)/)).toBeTruthy();
+    // Click again → re-expand.
+    fireEvent.click(screen.getByRole('button'));
+    await waitFor(() => expect(screen.getByText('see [[target]] here')).toBeTruthy());
+  });
+
+  it('falls back to the empty state (not a crash) when the fetch rejects', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down'); }) as unknown as typeof fetch);
+    render(<BacklinksPanel target="lonely" />, { wrapper: withNuqsTestingAdapter({ searchParams: '' }) });
+    // .catch sets hits to [] → the no-references empty state renders.
+    await waitFor(() => expect(screen.getByText(/No files reference/i)).toBeTruthy());
+    expect(screen.getByText(/Backlinks \(0\)/)).toBeTruthy();
+  });
+
+  it('threads the harness slug into the backlinks query', async () => {
+    const fetchSpy = vi.fn(async () => ({ ok: true, json: async () => ({ hits: [] }) }) as unknown as Response);
+    vi.stubGlobal('fetch', fetchSpy);
+    render(<BacklinksPanel target="knowledge" harness="my-h" />, { wrapper: withNuqsTestingAdapter({ searchParams: '' }) });
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain('target=knowledge');
+    expect(url).toContain('harness=my-h');
   });
 });
