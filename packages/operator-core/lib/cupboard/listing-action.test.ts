@@ -9,7 +9,7 @@
  *
  *   harness + hive_pubkey → view-hive   (the repo→Hive lookup row, mig 007)
  *   harness, no hive      → null        (legacy row — per-harness join retired)
- *   blueprint             → fork
+ *   blueprint             → install
  *   plugin                → install
  *   pack                  → install     (migration 006 / tool-distribution-granularity D-001)
  *
@@ -62,8 +62,8 @@ describe('listingActionFor (row → consumer verb, comb-retire D-001/D-003)', ()
     expect(listingActionFor(makeListing({ listing_kind: 'harness' }))).toBeNull();
     expect(listingActionFor(makeListing({ listing_kind: 'harness', hive_pubkey: null }))).toBeNull();
   });
-  it('blueprint → fork', () => {
-    expect(listingActionFor(makeListing({ listing_kind: 'blueprint' }))).toBe('fork');
+  it('blueprint → install', () => {
+    expect(listingActionFor(makeListing({ listing_kind: 'blueprint' }))).toBe('install');
   });
   it('plugin → install', () => {
     expect(listingActionFor(makeListing({ listing_kind: 'plugin' }))).toBe('install');
@@ -75,17 +75,15 @@ describe('listingActionFor (row → consumer verb, comb-retire D-001/D-003)', ()
   it('maps every declared kind to a labelled action or null (no kind falls through)', () => {
     for (const kind of LISTING_KINDS) {
       const action = listingActionFor(makeListing({ listing_kind: kind, hive_pubkey: 'k' }));
-      expect(['view-hive', 'fork', 'install']).toContain(action);
+      expect(['view-hive', 'install']).toContain(action);
       // and the action has a human label for the button
       expect(typeof LISTING_ACTION_LABEL[action!]).toBe('string');
       expect(LISTING_ACTION_LABEL[action!].length).toBeGreaterThan(0);
     }
   });
 
-  it('the label map is action-complete (blueprint fork action now labeled "Install")', () => {
+  it('the label map is action-complete (View Hive / Install)', () => {
     expect(LISTING_ACTION_LABEL['view-hive']).toBe('View Hive');
-    // The blueprint action is internally 'fork' but the op IS an install — labeled "Install".
-    expect(LISTING_ACTION_LABEL.fork).toBe('Install');
     expect(LISTING_ACTION_LABEL.install).toBe('Install');
   });
 });

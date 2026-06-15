@@ -7,7 +7,7 @@
  * tool-distribution-granularity D-001), each with its own consumer action:
  *   harness   → view-hive (the repo→Hive lookup row, mig 007) or none (legacy —
  *               per-harness join is RETIRED, comb-retire-per-harness-sharing)
- *   blueprint → fork      (a blueprint stream within a project)
+ *   blueprint → install   (clone the listing into the installed tier)
  *   plugin    → install   (a distributable plugin — a pack WITH a runtime)
  *   pack      → install   (a runtime-less code-tool pack)
  * Plus the **Tools** discovery view (`?kind=tools`) — tool-level discovery over
@@ -27,7 +27,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import type { HarnessListing, ListingKind, HiveBrowseGroup } from '@papercusp/operator-core/lib/cupboard/types';
@@ -76,11 +76,10 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
   }
 }
 
-/** Icon for a listing's action button (view-hive/fork/install). */
+/** Icon for a listing's action button (view-hive/install). */
 function ActionIcon({ action, size = 13 }: { action: ListingAction; size?: number }) {
   switch (action) {
     case 'view-hive': return <Hexagon size={size} />;
-    case 'fork': return <GitFork size={size} />;
     case 'install': return <Plug size={size} />;
   }
 }
@@ -264,7 +263,7 @@ export default function CupboardClient() {
 
   // Per-listing primary action. Hive-bound harness rows enter the per-Hive
   // rollup (per-harness join is retired — comb-retire-per-harness-sharing);
-  // blueprint/plugin/pack open the listing detail where the fork/install
+  // blueprint/plugin/pack open the listing detail where the install
   // is confirmed + executed (the engine is E1/E2 / plugin-host — see file head).
   const handleAction = useCallback(
     (listing: HarnessListing) => {

@@ -5,9 +5,10 @@
  * Two sources, joined:
  *   - `AGENT_ROLES` (packages/agent-mcp/src/role-config.ts) — the built-in role ids
  *     that appear in tool `roles:` allowlists / `byRole` guidance / quotas.
- *   - the persona files `libs/papercusp/packages/harness/prompts/<role>.md` — the
- *     spawn prompt for each role (not every role has one: operator/oracle are chat
- *     surfaces; and many personas are blueprint deciders/helpers not in AGENT_ROLES).
+ *   - the persona files `libs/papercusp/packages/harness/blueprints/<id>/prompts/<role>.md`
+ *     — the spawn prompt for each role, gathered across every blueprint role library
+ *     (`base` is the universal one). Not every role has a persona (operator/oracle are
+ *     chat surfaces; many personas are blueprint deciders/helpers not in AGENT_ROLES).
  *
  * Emits reference/role-registry.md. Deterministic fs/code read of a low-churn
  * source → CI-gated (D-002).
@@ -20,19 +21,42 @@ import { join } from 'node:path';
 import { AGENT_ROLES } from '../packages/agent-mcp/src/role-config';
 import { REPO_ROOT, emitOrCheck, generatedBanner, frontmatter, cell } from './lib/doc-projection';
 
-const PROMPTS_DIR = join(REPO_ROOT, 'libs', 'papercusp', 'packages', 'harness', 'prompts');
+// blueprint-role-bundling Phase 5: the global harness `prompts/` dir was deleted;
+// spawn personas live in the blueprint role libraries (`blueprints/<id>/prompts/`).
+// `base` is the universal library (every `extends` chain terminates there); the rest
+// are blueprint-specific personas (bee→hive, voter→vote, …).
+const BLUEPRINTS_DIR = join(REPO_ROOT, 'libs', 'papercusp', 'packages', 'harness', 'blueprints');
 const SUMMARY_MAX = 200;
 
-/** The persona role ids = top-level *.md (minus README), basename without extension. */
-function personaRoleIds(): string[] {
-  return readdirSync(PROMPTS_DIR)
-    .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
-    .map((f) => f.replace(/\.md$/, ''))
-    .sort();
+/** Every blueprint prompts/ library, `base` first (the canonical home — base wins
+ *  when the same role id appears in multiple blueprints as an override). */
+function blueprintPromptDirs(): string[] {
+  const ids = readdirSync(BLUEPRINTS_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && existsSync(join(BLUEPRINTS_DIR, d.name, 'prompts')))
+    .map((d) => d.name);
+  return ['base', ...ids.filter((d) => d !== 'base')].map((d) => join(BLUEPRINTS_DIR, d, 'prompts'));
 }
 
-function personaPath(role: string): string {
-  return join(PROMPTS_DIR, `${role}.md`);
+/** The persona role ids = the union of *.md across every blueprint prompts library
+ *  (minus README + the *.base.md generic-prefix layers), basename without extension. */
+function personaRoleIds(): string[] {
+  const ids = new Set<string>();
+  for (const dir of blueprintPromptDirs()) {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.md') || f.endsWith('.base.md') || f.toLowerCase() === 'readme.md') continue;
+      ids.add(f.replace(/\.md$/, ''));
+    }
+  }
+  return [...ids].sort();
+}
+
+/** A role's canonical persona path: base wins, else the first blueprint that ships it. */
+function personaPath(role: string): string | null {
+  for (const dir of blueprintPromptDirs()) {
+    const p = join(dir, `${role}.md`);
+    if (existsSync(p)) return p;
+  }
+  return null;
 }
 
 /**
@@ -42,7 +66,7 @@ function personaPath(role: string): string {
  */
 function personaSummary(role: string): string | null {
   const p = personaPath(role);
-  if (!existsSync(p)) return null;
+  if (!p) return null;
   let md = readFileSync(p, 'utf8');
   // Strip a leading YAML frontmatter block.
   md = md.replace(/^---\n[\s\S]*?\n---\n/, '');
@@ -102,11 +126,11 @@ function build(): string {
   lines.push('# Role & persona registry');
   lines.push('');
   lines.push(
-    'A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role\'s **persona** is its spawn prompt at `libs/papercusp/packages/harness/prompts/<role>.md`. Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.',
+    'A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role\'s **persona** is its spawn prompt at `libs/papercusp/packages/harness/blueprints/<id>/prompts/<role>.md` (the `base` library is the universal one). Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.',
   );
   lines.push('');
   lines.push(
-    `Sources: \`packages/agent-mcp/src/role-config.ts\` (${builtin.length} built-in roles) + \`libs/papercusp/packages/harness/prompts/*.md\` (${personas.length} personas).`,
+    `Sources: \`packages/agent-mcp/src/role-config.ts\` (${builtin.length} built-in roles) + \`libs/papercusp/packages/harness/blueprints/*/prompts/*.md\` (${personas.length} personas).`,
   );
   lines.push('');
 

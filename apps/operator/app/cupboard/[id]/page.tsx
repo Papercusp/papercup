@@ -54,9 +54,6 @@ import { toast } from 'sonner';
 function ActionIcon({ action, size = 14 }: { action: ListingAction | null; size?: number }) {
   switch (action) {
     case 'view-hive': return <Hexagon size={size} />;
-    // Blueprint action: install (clone → installed tier). Same plug icon as plugin/pack
-    // install — the op IS an install (renamed from "Fork", which read as instantiating).
-    case 'fork': return <Plug size={size} />;
     case 'install': return <Plug size={size} />;
     default: return <Globe size={size} />;
   }
@@ -446,7 +443,7 @@ export default function CupboardDetailPage() {
             {busy ? (
               <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Installing {kind}…</>
             ) : (
-              <><ActionIcon action={action} /> {LISTING_ACTION_LABEL[action]}{action === 'install' || action === 'fork' ? ` ${kind}` : ''}</>
+              <><ActionIcon action={action} /> {LISTING_ACTION_LABEL[action]}{action === 'install' ? ` ${kind}` : ''}</>
             )}
           </button>
           )}
@@ -483,7 +480,7 @@ export default function CupboardDetailPage() {
         </div>
 
         {/* Trust note for code-pulling kinds (D-007/D-009). */}
-        {(action === 'fork' || action === 'install') && (
+        {action === 'install' && (
           <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
             Installing pulls code from this listing. Plugin capabilities are gated by manifest + your install-time consent; review the source on GitHub first.
           </p>

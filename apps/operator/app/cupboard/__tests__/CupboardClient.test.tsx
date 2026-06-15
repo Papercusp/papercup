@@ -118,7 +118,7 @@ describe('Cupboard ListingCard — publisher signal', () => {
 
 describe('Cupboard ListingCard — per-listing action (D-005 / comb-retire)', () => {
   const cases: Array<{ kind: ListingKind; action: string; label: string }> = [
-    { kind: 'blueprint', action: 'fork', label: 'Fork' },
+    { kind: 'blueprint', action: 'install', label: 'Install' },
     // ('snapshot → fork' removed — snapshot kind retired by retire-snapshots-instance-spec-2026-06-09 D-005.)
     { kind: 'plugin', action: 'install', label: 'Install' },
     { kind: 'tool-pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (mig 006, renamed mig 008)
@@ -268,7 +268,7 @@ describe('ListingCard — suppressViewHive (rollup mode, P-001)', () => {
         suppressViewHive
       />,
     );
-    expect(screen.getByTestId('cupboard-action').getAttribute('data-action')).toBe('fork');
+    expect(screen.getByTestId('cupboard-action').getAttribute('data-action')).toBe('install');
   });
 });
 

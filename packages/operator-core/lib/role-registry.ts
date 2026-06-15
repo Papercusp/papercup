@@ -2,8 +2,8 @@
  * Role registry — scans for cross-cutting role manifests from
  * two sources:
  *
- *   1. **Built-in roles**: `<harness-package>/prompts/<role>.role.json`
- *      sidecar files. Ship with the substrate.
+ *   1. **Built-in roles**: `<harness-package>/blueprints/base/prompts/<role>.role.json`
+ *      sidecar files (the base role library). Ship with the substrate.
  *
  *   2. **Plugin-contributed roles**: each enabled plugin's
  *      `papercusp.json` may declare a `roles` array. The plugin
@@ -11,8 +11,8 @@
  *      `roles/<role>.md`). Lets ecosystems ship their own specialists.
  *
  * Adding a new built-in role becomes:
- *   1. Write `prompts/<role>.md` (the agent's system prompt).
- *   2. Write `prompts/<role>.role.json` (this manifest).
+ *   1. Write `blueprints/base/prompts/<role>.md` (the agent's system prompt).
+ *   2. Write `blueprints/base/prompts/<role>.role.json` (this manifest).
  *
  * Adding a plugin-contributed role becomes:
  *   1. Write `<plugin>/<promptPath>` (the prompt).
@@ -311,7 +311,10 @@ function pluginsHashForSlug(harnessSlug: string): string {
  * returned.
  */
 export function listRoles(harnessSlug = ''): RoleManifest[] {
-  const promptsDir = join(harnessPackageDir(), 'prompts');
+  // blueprint-role-bundling Phase 5: the global harness `prompts/` dir was deleted;
+  // built-in role manifests (`<role>.role.json` + `<role>.md`) live in the base role
+  // library (`blueprints/base/prompts/`).
+  const promptsDir = join(harnessPackageDir(), 'blueprints', 'base', 'prompts');
   let builtinMtime = 0;
   try {
     const stats = require('node:fs').statSync(promptsDir);

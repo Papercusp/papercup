@@ -15,8 +15,8 @@
  *      role creates tests"; the behavioral check — does its OUTPUT contain real
  *      test files — is an LLM scenario, P-020, which needs the judge to run).
  */
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parseDecision, resolvePromptFile, type PromptResolveContext } from '@papercusp/orchestrator';
@@ -27,20 +27,30 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // apps/operator/lib/dbos → repo root is four up; prompts live under the harness pkg.
 const HARNESS_DIR = resolve(__dirname, '../../../../libs/papercusp/packages/harness');
 
-// The phases/location tiers a role's prompt can live under. A role "resolves"
-// if it has a prompt in at least one (resolvePromptFile falls back to
-// prompts/<role>.md). 'base'/'department' are generic-prompt tiers.
-const PHASES = ['', 'staging', 'testing', 'production', 'base', 'department'];
+// Phase 5 (blueprint-role-bundling-2026-06-15 D-012): the global prompts/ phase
+// tiers were DELETED — `staging` (what the fleet ran) was collapsed into the base
+// role library as canonical. A role's prompt now resolves via
+// blueprints/base/prompts/<role>.md (the universal library — no blueprintId) OR via
+// the blueprint that ships it (blueprintId=<bp>, e.g. bee→hive, voter→vote). A role
+// "resolves" if resolvePromptFile finds it in base or in any built-in blueprint.
+const BLUEPRINTS_DIR = resolve(HARNESS_DIR, 'blueprints');
+const BUILTIN_BLUEPRINTS = readdirSync(BLUEPRINTS_DIR, { withFileTypes: true })
+  .filter((d) => d.isDirectory() && existsSync(join(BLUEPRINTS_DIR, d.name, 'prompts')))
+  .map((d) => d.name);
 
 // Chat-surface roles are answered inline (operator-converse / oracle SSE), NOT
 // spawned from a prompt file — so they are deliberately prompt-less.
 const CHAT_ROLES = new Set(['operator', 'oracle']);
 
-function resolvesInSomePhase(role: string): boolean {
-  return PHASES.some((phase) => {
-    const ctx: PromptResolveContext = { harnessDir: HARNESS_DIR, phase, dept: '' };
-    return resolvePromptFile(ctx, role) !== null;
-  });
+function resolvesSomewhere(role: string): boolean {
+  // The base role library (the universal default — no blueprintId).
+  const inBase: PromptResolveContext = { harnessDir: HARNESS_DIR, phase: '', dept: '' };
+  if (resolvePromptFile(inBase, role) !== null) return true;
+  // …or the blueprint that ships the role (e.g. bee→hive, voter→vote, advocate→deliberate).
+  return BUILTIN_BLUEPRINTS.some(
+    (blueprintId) =>
+      resolvePromptFile({ harnessDir: HARNESS_DIR, phase: '', dept: '', blueprintId }, role) !== null,
+  );
 }
 
 // Every dispatch verb the director/orchestrator can emit (with a sample arg).
@@ -63,29 +73,28 @@ describe('every dispatchable role resolves to a prompt (no orphan dispatch verb)
     expect(action.kind, `${verb} should classify as a role dispatch`).toBe('dispatch');
     const role = (action as { role: string }).role;
     expect(
-      resolvesInSomePhase(role),
-      `dispatch verb "${verb}" routes to role "${role}", which has NO prompt in any phase — a spawn would throw`,
+      resolvesSomewhere(role),
+      `dispatch verb "${verb}" routes to role "${role}", which has NO prompt in base or any blueprint — a spawn would throw`,
     ).toBe(true);
   });
 });
 
 describe('the test-creating role is wired end-to-end', () => {
-  it('GENERATE_TESTS → test-writer → an existing testing-phase prompt', () => {
+  it('GENERATE_TESTS → test-writer → the base test-writer prompt', () => {
     const action = classifyDecision(parseDecision('GENERATE_TESTS'), 'F-1');
     expect(action).toMatchObject({ kind: 'dispatch', role: 'test-writer' });
-    const path = resolvePromptFile({ harnessDir: HARNESS_DIR, phase: 'testing', dept: '' }, 'test-writer');
-    expect(path).toMatch(/testing\/test-writer\.md$/);
+    const path = resolvePromptFile({ harnessDir: HARNESS_DIR, phase: '', dept: '' }, 'test-writer');
+    expect(path).toMatch(/blueprints\/base\/prompts\/test-writer\.md$/);
   });
 
-  it('NEXT_TESTER → tester → an existing prompt (testing + staging phases)', () => {
+  it('NEXT_TESTER → tester → an existing prompt (base role library)', () => {
     const action = classifyDecision(parseDecision('NEXT_TESTER VAL-1'), 'F-1');
     expect(action).toMatchObject({ kind: 'dispatch', role: 'tester' });
-    expect(resolvePromptFile({ harnessDir: HARNESS_DIR, phase: 'testing', dept: '' }, 'tester')).toBeTruthy();
-    expect(resolvePromptFile({ harnessDir: HARNESS_DIR, phase: 'staging', dept: '' }, 'tester')).toBeTruthy();
+    expect(resolvePromptFile({ harnessDir: HARNESS_DIR, phase: '', dept: '' }, 'tester')).toBeTruthy();
   });
 
   it("the test-writer prompt actually INSTRUCTS test generation (not just any role doc)", () => {
-    const path = resolvePromptFile({ harnessDir: HARNESS_DIR, phase: 'testing', dept: '' }, 'test-writer');
+    const path = resolvePromptFile({ harnessDir: HARNESS_DIR, phase: '', dept: '' }, 'test-writer');
     const prompt = readFileSync(path!, 'utf8');
     // It must tell the agent to GENERATE + WRITE tests and report a count —
     // the deterministic proxy for "this role creates tests". If a prompt edit
@@ -100,10 +109,10 @@ describe('the test-creating role is wired end-to-end', () => {
 describe('every spawnable AGENT_ROLES role has a prompt (registry ↔ prompt consistency)', () => {
   const spawnable = AGENT_ROLES.filter((r) => !CHAT_ROLES.has(r));
 
-  it.each(spawnable)('role "%s" resolves to a prompt file in some phase', (role) => {
+  it.each(spawnable)('role "%s" resolves to a prompt file (base or its blueprint)', (role) => {
     expect(
-      resolvesInSomePhase(role),
-      `AGENT_ROLES declares "${role}" but no prompt resolves for it in any phase — it can't be spawned`,
+      resolvesSomewhere(role),
+      `AGENT_ROLES declares "${role}" but no prompt resolves for it in base or any blueprint — it can't be spawned`,
     ).toBe(true);
   });
 

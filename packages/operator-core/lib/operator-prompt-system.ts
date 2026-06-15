@@ -28,12 +28,12 @@ function loadScannerRolePrompt(): string {
   // its key resolution.
   const candidates = [
     // monorepo dev tree
-    join(process.cwd(), '..', '..', 'libs', 'papercusp', 'packages', 'harness', 'prompts', 'scanner.md'),
+    join(process.cwd(), '..', '..', 'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'base', 'prompts', 'scanner.md'),
     // when cwd IS the operator workspace root
-    join(process.cwd(), 'libs', 'papercusp', 'packages', 'harness', 'prompts', 'scanner.md'),
+    join(process.cwd(), 'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'base', 'prompts', 'scanner.md'),
     // standalone build (.next/standalone/apps/operator) — files under
     // libs/ aren't normally copied by next traceFiles. Fall through.
-    join(process.cwd(), '..', '..', '..', '..', 'libs', 'papercusp', 'packages', 'harness', 'prompts', 'scanner.md'),
+    join(process.cwd(), '..', '..', '..', '..', 'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'base', 'prompts', 'scanner.md'),
   ];
   for (const p of candidates) {
     if (existsSync(p)) {

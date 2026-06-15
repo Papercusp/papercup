@@ -115,7 +115,7 @@ describe('CupboardDetailPage — blueprint Fork (install into the local installe
     render(<CupboardDetailPage />);
 
     const btn = await screen.findByTestId('cupboard-detail-action');
-    expect(btn.getAttribute('data-action')).toBe('fork');
+    expect(btn.getAttribute('data-action')).toBe('install');
     fireEvent.click(btn);
 
     await waitFor(() => {

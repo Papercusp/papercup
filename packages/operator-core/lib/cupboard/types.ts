@@ -53,7 +53,7 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  * learning-packs-2026-06-11 D-005). ONE storefront, each kind with its own
  * consumer action:
  *   harness       → view-hive (the repo→Hive lookup index)
- *   blueprint     → fork      (a blueprint stream within a project)
+ *   blueprint     → install   (clone the blueprint listing into the installed tier)
  *   plugin        → install   (a distributable plugin — a tool pack WITH a runtime)
  *   tool-pack     → install   (a runtime-less code-tool pack; n≥1 tools —
  *                              RENAMED from 'pack' by worker migration 008;
@@ -77,21 +77,20 @@ export function isListingKind(v: unknown): v is ListingKind {
   return typeof v === 'string' && (LISTING_KINDS as readonly string[]).includes(v);
 }
 
-export type ListingAction = 'view-hive' | 'fork' | 'install';
+export type ListingAction = 'view-hive' | 'install';
 
 /**
  * The consumer action for a listing ROW (comb-retire-per-harness-sharing
  * D-001/D-003). Per-harness sharing is retired: a `kind='harness'` row is the
  * repo→Hive lookup index (worker mig 007), not a joinable unit — hive-bound
  * rows point at the per-Hive rollup; legacy rows (no `hive_pubkey`) have no
- * primary action (`null`). blueprint → fork, plugin/pack → install, unchanged.
+ * primary action (`null`). blueprint + plugin/pack → install (clone the listing).
  */
 export function listingActionFor(l: HarnessListing): ListingAction | null {
   switch (listingKindOf(l)) {
     case 'harness':
       return l.hive_pubkey ? 'view-hive' : null;
     case 'blueprint':
-      return 'fork';
     case 'plugin':
     case 'tool-pack':
     case 'learning-pack':
@@ -102,10 +101,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
 /** Human label for a kind's action button. */
 export const LISTING_ACTION_LABEL: Record<ListingAction, string> = {
   'view-hive': 'View Hive',
-  // Blueprint action: the op is an INSTALL (clone → validate → place in the installed
-  // tier, usable by harness:create / blueprint:extend) — labeled "Install" to match the
-  // route + toast, not "Fork" (which read as instantiating a running instance + confused).
-  fork: 'Install',
+  // blueprint + plugin + tool-pack + learning-pack all → 'install' (clone the listing).
   install: 'Install',
 };
 

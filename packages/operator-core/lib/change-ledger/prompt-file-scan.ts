@@ -24,11 +24,12 @@ import type { RecordBehaviorChangeInput } from './change-ledger';
 
 /** Repo-relative prompt-source roots whose file edits are behavior-affecting.
  *  (CLAUDE.md § prompts: chat-surface roles + psu playbooks live in
- *  apps/operator/prompts; harness spawn personas in
- *  libs/papercusp/packages/harness/prompts.) */
+ *  apps/operator/prompts; harness spawn personas in the blueprint role libraries
+ *  libs/papercusp/packages/harness/blueprints/<id>/prompts — the global prompts/
+ *  dir was deleted in blueprint-role-bundling Phase 5.) */
 export const PROMPT_SOURCE_PATHS = [
   'apps/operator/prompts',
-  'libs/papercusp/packages/harness/prompts',
+  'libs/papercusp/packages/harness/blueprints',
 ] as const;
 
 /** The git-log invocation contract `parsePromptEditLog` expects:

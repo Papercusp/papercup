@@ -81,7 +81,6 @@ export const PAPERCUSP_SELF_SCOPES: readonly string[] = ['operator', 'harness:pa
 /** Paths that mean the change is a PROMPT/PERSONA/PLAYBOOK edit (the gym-A/B-able class). PROPOSED (P-004). */
 export const PROMPT_PATH_PATTERNS: readonly string[] = [
   'apps/operator/prompts/**',
-  'libs/papercusp/packages/harness/prompts/**',
   'libs/papercusp/packages/harness/blueprints/**/prompts/**',
   '**/*.persona.md',
   '**/*.tools.md',
