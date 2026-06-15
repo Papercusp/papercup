@@ -24,7 +24,30 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
 
-const argsSchema = z.object({
+/**
+ * A boolean flag that ALSO accepts the exact wire strings `'true'`/`'false'`.
+ *
+ * EI-302: a long-lived MCP session's `tools/list` schema is manifest-PINNED
+ * (tool-manifest.ts freezes the exposed surface so the prompt-prefix cache
+ * stays warm), so a session that began before `force` was added to plans:new
+ * cannot see `force` in its cached schema. An agent that passes `force` anyway
+ * sends the JSON string `"true"` (the value was never typed as a boolean), and
+ * a bare `z.boolean()` rejected it → the dispatch layer threw `invalid_args`
+ * (define-tool.ts), forcing a hand-call of the raw HTTP MCP projection.
+ *
+ * Coerce ONLY the two exact strings — never `z.coerce.boolean()`, whose
+ * `"false"` → `true` footgun is exactly why `_plans-args.ts` keeps an explicit
+ * allowlist instead. Every other value (including a real boolean, or a typo
+ * like `"yes"`) passes through to `z.boolean()` unchanged, so a genuine mistake
+ * still fails loudly AND the advertised JSON schema stays `type: boolean`
+ * (the `tools/list` projection renders the pipe's boolean output).
+ */
+const stringTolerantBool = z.preprocess(
+  (v) => (v === 'true' ? true : v === 'false' ? false : v),
+  z.boolean(),
+);
+
+export const argsSchema = z.object({
   harness: harnessArg,
   slug: z
     .string()
@@ -43,11 +66,10 @@ const argsSchema = z.object({
     .describe(
       "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009).",
     ),
-  force: z
-    .boolean()
+  force: stringTolerantBool
     .optional()
     .describe(
-      'Creation is rejected with `similar_exists` + the overlapping plans when existing slugs/titles share this topic (EI-134 — duplicate plans split project history). Review the candidates; pass force: true only when this is genuinely a NEW effort, not a continuation.',
+      'Creation is rejected with `similar_exists` + the overlapping plans when existing slugs/titles share this topic (EI-134 — duplicate plans split project history). Review the candidates; pass force: true only when this is genuinely a NEW effort, not a continuation. Accepts the wire strings "true"/"false" too (EI-302: stale manifest-pinned tools/list schemas).',
     ),
 });
 
