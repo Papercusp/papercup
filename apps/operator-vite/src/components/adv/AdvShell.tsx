@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
@@ -134,6 +134,21 @@ type HarnessProjectLite = {
   is_shared?: boolean;
 };
 
+/**
+ * Which side(s) of the tab strip have tabs scrolled out of view (owner ask
+ * 2026-06-15 #1). Pure so the indicator logic is unit-testable without layout.
+ * `left`/`right` true ⇒ there are hidden tabs that way (fade + chevron shown).
+ * The 1px epsilon absorbs sub-pixel scroll rounding.
+ */
+export function tabOverflowState(
+  scrollLeft: number,
+  scrollWidth: number,
+  clientWidth: number,
+): { left: boolean; right: boolean } {
+  const max = scrollWidth - clientWidth;
+  return { left: scrollLeft > 1, right: scrollLeft < max - 1 };
+}
+
 export default function AdvShell({
   title = 'Advanced',
   children,
@@ -173,6 +188,45 @@ export default function AdvShell({
       /* best effort */
     }
   }, [activeTab]);
+  // Tab-strip overflow indicator (owner ask 2026-06-15 #1): when tabs overflow a
+  // narrow window they were silently clipped with no affordance. Track which
+  // side is scrolled-away so the render can fade that edge + show a scroll
+  // chevron — "there are more tabs over here, click/scroll to reach them".
+  const [tabOverflow, setTabOverflow] = useState({ left: false, right: false });
+  const updateTabOverflow = useCallback(() => {
+    const list = tablistRef.current;
+    if (!list) return;
+    const max = list.scrollWidth - list.clientWidth;
+    setTabOverflow({ left: list.scrollLeft > 1, right: list.scrollLeft < max - 1 });
+  }, []);
+  useEffect(() => {
+    const list = tablistRef.current;
+    if (!list) return;
+    updateTabOverflow();
+    list.addEventListener('scroll', updateTabOverflow, { passive: true });
+    // ResizeObserver catches window/layout width changes; MutationObserver
+    // catches the visible tab set changing (workspace scope hides/shows tabs),
+    // which changes scrollWidth without a size change RO would see.
+    const ro =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => updateTabOverflow()) : null;
+    ro?.observe(list);
+    const mo =
+      typeof MutationObserver !== 'undefined' ? new MutationObserver(() => updateTabOverflow()) : null;
+    mo?.observe(list, { childList: true });
+    window.addEventListener('resize', updateTabOverflow);
+    return () => {
+      list.removeEventListener('scroll', updateTabOverflow);
+      ro?.disconnect();
+      mo?.disconnect();
+      window.removeEventListener('resize', updateTabOverflow);
+    };
+  }, [updateTabOverflow]);
+  // A chevron click nudges the strip ~70% of a screenful toward the hidden tabs.
+  const scrollTabs = useCallback((dir: 1 | -1) => {
+    const list = tablistRef.current;
+    if (!list) return;
+    list.scrollBy({ left: dir * Math.max(140, list.clientWidth * 0.7), behavior: 'smooth' });
+  }, []);
   const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
   // The Harnesses-tab member axis (`?harness=`). The shell only WRITES it on an
   // into-hive create (focus the new member in the rail, P-011 contract) — the
@@ -432,7 +486,25 @@ export default function AdvShell({
         </div>
 
         {/* Tab strip */}
-        <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
+        <Tabs.Root
+          value={activeTab}
+          onValueChange={(value) => void setActiveTab(value as AdvTabId)}
+          className="pc-advshell__tabs"
+          data-of-left={tabOverflow.left ? '' : undefined}
+          data-of-right={tabOverflow.right ? '' : undefined}
+        >
+          {/* Tab-strip overflow chevrons (owner ask 2026-06-15 #1) — shown only
+              when tabs are clipped on that side; click to scroll to the hidden
+              ones. The CSS also fades the clipped edge so it reads at a glance. */}
+          <button
+            type="button"
+            className="pc-advshell__tabnav pc-advshell__tabnav--left"
+            aria-label="Scroll tabs left to hidden tabs"
+            tabIndex={-1}
+            onClick={() => scrollTabs(-1)}
+          >
+            ‹
+          </button>
           <Tabs.List ref={tablistRef} className="pc-advshell__tablist" aria-label="Adv sections">
             {visibleTabs.map((t) => {
               const Icon = t.icon;
@@ -453,6 +525,15 @@ export default function AdvShell({
               );
             })}
           </Tabs.List>
+          <button
+            type="button"
+            className="pc-advshell__tabnav pc-advshell__tabnav--right"
+            aria-label="Scroll tabs right to hidden tabs"
+            tabIndex={-1}
+            onClick={() => scrollTabs(1)}
+          >
+            ›
+          </button>
           {/* a11y (aria-valid-attr-value): AdvShell renders panel content
               imperatively in `pc-advshell__body` below — NOT via Radix
               Tabs.Content — so each Trigger's auto-generated `aria-controls`
@@ -771,7 +852,7 @@ export default function AdvShell({
           color: #86efac;
         }
 
-        .pc-advshell__tabs { min-width: 0; display: flex; align-items: flex-end; padding: 0 12px; }
+        .pc-advshell__tabs { position: relative; min-width: 0; display: flex; align-items: flex-end; padding: 0 12px; }
         .pc-advshell__tab-label { display: inline; }
         .pc-advshell__tablist {
           display: inline-flex;
@@ -789,6 +870,44 @@ export default function AdvShell({
         .pc-advshell__tablist::-webkit-scrollbar {
           display: none;
         }
+        /* Tab-strip overflow affordance (owner ask 2026-06-15 #1). When tabs are
+           clipped, fade the clipped edge (a background-independent CSS mask, with
+           the -webkit- prefix for the WebKitGTK desktop) so it reads "there are
+           more tabs"; the chevron buttons below give a click-to-scroll. */
+        .pc-advshell__tabs[data-of-left][data-of-right] .pc-advshell__tablist {
+          -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px, #000 calc(100% - 26px), transparent 100%);
+          mask-image: linear-gradient(90deg, transparent 0, #000 26px, #000 calc(100% - 26px), transparent 100%);
+        }
+        .pc-advshell__tabs[data-of-left]:not([data-of-right]) .pc-advshell__tablist {
+          -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+          mask-image: linear-gradient(90deg, transparent 0, #000 26px);
+        }
+        .pc-advshell__tabs:not([data-of-left])[data-of-right] .pc-advshell__tablist {
+          -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent 100%);
+          mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent 100%);
+        }
+        .pc-advshell__tabnav {
+          position: absolute;
+          top: 0;
+          bottom: 1px;
+          z-index: 3;
+          display: none;
+          align-items: center;
+          width: 26px;
+          padding: 0;
+          border: none;
+          background: none;
+          color: var(--fg-dim, #b9d4e8);
+          font-size: 18px;
+          line-height: 1;
+          cursor: pointer;
+          transition: color var(--dur-fast, 120ms) var(--ease-out, ease);
+        }
+        .pc-advshell__tabnav:hover { color: var(--fg, #e7f7ff); }
+        .pc-advshell__tabnav--left { left: 12px; justify-content: flex-start; }
+        .pc-advshell__tabnav--right { right: 12px; justify-content: flex-end; }
+        .pc-advshell__tabs[data-of-left] .pc-advshell__tabnav--left { display: inline-flex; }
+        .pc-advshell__tabs[data-of-right] .pc-advshell__tabnav--right { display: inline-flex; }
         .pc-advshell__tab {
           position: relative;
           flex: 0 0 auto;

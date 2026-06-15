@@ -10,6 +10,7 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import RouteLink from './RouteLink';
 import { SHORTCUTS, effectiveCombo, type ShortcutCategory } from '@papercusp/operator-core/lib/shortcut-registry';
+import { isMacPlatform } from '@papercusp/operator-core/lib/shortcut-match';
 import { useShortcutOverrides } from '../../lib/hotkeys';
 
 const CATEGORY_LABELS: Record<ShortcutCategory, string> = {
@@ -38,8 +39,9 @@ const CATEGORY_ORDER: ShortcutCategory[] = [
  */
 function prettyCombo(raw: string): string[] {
   if (!raw) return [];
-  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
-  const modGlyph = isMac ? '⌘' : 'Ctrl';
+  // `isMacPlatform()` (not navigator.platform, which WebKit freezes to "MacIntel"
+  // on every OS) so the Linux desktop shows "Ctrl", matching the keys that fire.
+  const modGlyph = isMacPlatform() ? '⌘' : 'Ctrl';
   return raw
     .split(',')
     .map((alt) => alt.trim())
