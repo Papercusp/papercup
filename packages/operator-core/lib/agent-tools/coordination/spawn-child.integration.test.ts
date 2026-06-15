@@ -144,6 +144,12 @@ function makeDeps(): Deps {
     resolveChild: async (slug) => reg.registered.has(slug),
     scaffold: async (_parentSlug, child) => {
       await h.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_${child.slug.replace(/-/g, '_')}`);
+      // Mirror doScaffoldHarness's PG side: register the child in harness_shared.projects
+      // so the seed-plan step's resolvePlanScope can resolve its workspace. Post-WI-148 an
+      // unregistered concrete slug THROWS instead of defaulting to 'default'.
+      await h.sql`
+        INSERT INTO harness_shared.projects (slug, workspace_id) VALUES (${child.slug}, ${WS})
+        ON CONFLICT (slug) DO UPDATE SET workspace_id = EXCLUDED.workspace_id`;
       reg.registered.add(child.slug);
       return { ok: true as const };
     },
@@ -198,6 +204,12 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_PLANS_DDL);
   await db.sql.unsafe(ASSERTIONS_DDL);
   await db.sql.unsafe(HFC_DDL);
+  // The seed-plan step resolves the child's workspace from harness_shared.projects
+  // (resolvePlanScope, WI-148). The scaffold dep registers the child here; create
+  // the table (slug + workspace_id; parent_slug for the P-004 completion test).
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.projects (
+      slug text PRIMARY KEY, workspace_id text, parent_slug text)`);
 }, 90_000);
 
 afterAll(async () => {

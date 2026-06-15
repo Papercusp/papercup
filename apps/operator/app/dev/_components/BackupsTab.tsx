@@ -26,14 +26,14 @@ interface HealthInfo {
   kopia: { ok: boolean; version?: string; reason?: string };
 }
 
-function fmtBytes(n: number): string {
+export function fmtBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0 B';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let v = n; let i = 0;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return `${v.toFixed(v < 10 ? 2 : 1)} ${u[i]}`;
 }
-function fmtAgo(iso: string | null): string {
+export function fmtAgo(iso: string | null): string {
   if (!iso) return '—';
   const ms = Date.now() - new Date(iso).getTime();
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
@@ -45,7 +45,10 @@ function fmtAgo(iso: string | null): string {
 export default function BackupsTab() {
   interface EventRow { id: number; snapshotId: number | null; kind: string; payload: unknown; at: string; }
   interface Trace { command: string; exitCode: number; stdout: string; stderr: string; durationMs: number; }
-  const { askConfirm, confirmEl } = useConfirmDialog();
+  // useConfirmDialog returns { confirm, element } — alias to the local names used below.
+  // (Previously destructured the wrong keys, so askConfirm was undefined → restore/delete
+  // threw "askConfirm is not a function" and the dialog never rendered.)
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [terminal, setTerminal] = useState<Array<Trace & { startedAt: string }>>([]);
   const appendTrace = (t: Trace) =>
     setTerminal((prev) => [{ ...t, startedAt: new Date().toISOString() }, ...prev].slice(0, 50));

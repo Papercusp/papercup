@@ -103,21 +103,32 @@ describe('seedCorpus', () => {
   it('stores ground_truth and rubric as jsonb', async () => {
     await seedCorpus(sql);
 
-    const cases = await sql<
-      Array<{
-        ground_truth: Record<string, unknown>;
-        rubric: Record<string, unknown>;
-      }>
-    >`
-      SELECT ground_truth, rubric FROM iq_battery_cases LIMIT 1
+    // The column TYPE is what "stored as jsonb" actually means — assert it
+    // directly. (postgres-js 3.4.x hands a jsonb column back to a raw client as
+    // the JSON *text*, which production normalizes at each read site via
+    // beekeeper-gen0-runner's `asObj`/JSON.parse; so a bare `typeof === 'object'`
+    // on the raw read tests client auto-parsing, not storage.)
+    const cols = await sql<Array<{ column_name: string; data_type: string }>>`
+      SELECT column_name, data_type
+        FROM information_schema.columns
+       WHERE table_name = 'iq_battery_cases'
+         AND column_name IN ('ground_truth', 'rubric')
     `;
+    const colType = new Map(cols.map((c) => [c.column_name, c.data_type]));
+    expect(colType.get('ground_truth')).toBe('jsonb');
+    expect(colType.get('rubric')).toBe('jsonb');
 
+    const cases = await sql<Array<{ ground_truth: unknown; rubric: unknown }>>`
+      SELECT ground_truth, rubric FROM iq_battery_cases ORDER BY id LIMIT 1
+    `;
     expect(cases[0]).toBeDefined();
-    expect(cases[0].ground_truth).toBeDefined();
-    expect(typeof cases[0].ground_truth).toBe('object');
-    expect(cases[0].rubric).toBeDefined();
-    expect(typeof cases[0].rubric).toBe('object');
-    const rubric = cases[0].rubric as Record<string, unknown>;
+    // Normalize exactly as production does (asObj): jsonb arrives as JSON text here.
+    const parseJsonb = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v);
+    const groundTruth = parseJsonb(cases[0].ground_truth) as Record<string, unknown>;
+    const rubric = parseJsonb(cases[0].rubric) as Record<string, unknown>;
+    expect(typeof groundTruth).toBe('object');
+    expect(Object.keys(groundTruth).length).toBeGreaterThan(0);
+    expect(typeof rubric).toBe('object');
     expect(Array.isArray(rubric.dimensions)).toBe(true);
   });
 

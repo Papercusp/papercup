@@ -798,13 +798,19 @@ export async function spawnAgentInHarness(
   // is unchanged: she still decides WHO/WHEN; this only guarantees the bee she places can DO the work.
   const benchBeeDirective = role === 'bee' ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() : '';
   if (benchBeeDirective) {
-    input = {
-      ...input,
-      brief: input.brief ? `${input.brief}\n\n${benchBeeDirective}` : benchBeeDirective,
-    };
-    // Pin the bench backend/sandbox per-spawn (self-sufficient, like driveToDone) unless the caller already
-    // resolved a backend (tier) or explicitly overrode these in the process env. Default-on for the pin so a
-    // spawn built in a host lacking AGENT_CMD/PAPERCUSP_SPAWN_BACKEND still runs claude, not omp.
+    // Append the directive when the placer's brief lacks it (the real-Queen arm, whose situational overlay
+    // never contains it). The FIFO arm's executeBatch already passes the SAME directive as the brief, so
+    // skip the append there to avoid a duplicate paragraph (idempotent either way).
+    if (!(input.brief ?? '').includes(benchBeeDirective)) {
+      input = {
+        ...input,
+        brief: input.brief ? `${input.brief}\n\n${benchBeeDirective}` : benchBeeDirective,
+      };
+    }
+    // Pin the bench backend/sandbox per-spawn (self-sufficient, like driveToDone) — every bench bee, not
+    // only the appended ones — unless the caller already resolved a backend (tier) or explicitly overrode
+    // these in the process env. Default-on so a spawn built in a host lacking AGENT_CMD/PAPERCUSP_SPAWN_BACKEND
+    // still runs claude, not omp.
     if (!spawnModelBackend && process.env.PAPERCUSP_SPAWN_BACKEND == null) {
       extraEnv.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
     }

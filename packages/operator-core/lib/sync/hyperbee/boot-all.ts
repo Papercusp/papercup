@@ -297,6 +297,9 @@ export async function bootSingleHarness(
     workspaceRoot?: string;
     timeoutMs?: number;
     resolveSwarmBinding?: SwarmBindingResolver;
+    /** Test seam — override the send-side wiring fns (default: getOrgPg + the
+     *  real wireOutboxForHarness / wirePresenceAnnounceForHarness). */
+    wireSendSide?: SendSideWiringDeps;
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
@@ -306,7 +309,7 @@ export async function bootSingleHarness(
     // boot may have cached the handle but failed to wire the drain (which would
     // otherwise stay broken until restart, since this path short-circuits). No-op
     // once both steps are wired.
-    await ensureSendSideWired(cached);
+    await ensureSendSideWired(cached, opts.wireSendSide);
     return {
       workspaceId,
       harnessSlug,
@@ -363,7 +366,7 @@ export async function bootSingleHarness(
     // next boot pass rather than leaving this cached handle drainless forever
     // (EI-521). The drain/presence stoppers register close-hooks on the handle,
     // so closeBootedHarness/closeAllBootedHarnesses tear them down automatically.
-    await ensureSendSideWired(handle);
+    await ensureSendSideWired(handle, opts.wireSendSide);
     return { workspaceId, harnessSlug, state: 'booted' };
   } catch (e) {
     return {

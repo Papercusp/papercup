@@ -399,4 +399,33 @@ describe('ensureSendSideWired — EI-521: send-side wiring is idempotent + retry
     expect(wireOutbox, 'outbox must not re-wire after success').toHaveBeenCalledTimes(1);
     expect(wirePresence).toHaveBeenCalledTimes(2);
   });
+
+  it('bootSingleHarness RE-WIRES on the already-booted path after a transient wiring failure (EI-521 integration)', async () => {
+    // A handle cached by a prior boot whose drain wiring FAILED — the EI-521
+    // shape (handle cached, peer_connected ✓, but no drain loop).
+    const handle = fakeHandle('ws-rewire', 'h');
+    _setHandleForTests('ws-rewire', 'h', handle);
+    let attempt = 0;
+    const wireOutbox = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('getOrgPg hiccup on first wire');
+    });
+    const wirePresence = vi.fn(async () => {});
+
+    // First boot pass: already-booted, wiring fails → drain NOT online.
+    const r1 = await bootSingleHarness('ws-rewire', 'h', { wireSendSide: { wireOutbox, wirePresence } });
+    expect(r1.state).toBe('already-booted');
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+
+    // Next boot pass (boot-all reconcile / rebootHarness): the already-booted
+    // short-circuit RE-ATTEMPTS the unwired drain — THE EI-521 FIX. Pre-fix this
+    // was skipped forever, so federation stayed dead until a process restart.
+    const r2 = await bootSingleHarness('ws-rewire', 'h', { wireSendSide: { wireOutbox, wirePresence } });
+    expect(r2.state).toBe('already-booted');
+    expect(wireOutbox, 'already-booted path must re-attempt the failed wiring').toHaveBeenCalledTimes(2);
+
+    // Once wired, further passes are no-ops (no redundant drain loops).
+    await bootSingleHarness('ws-rewire', 'h', { wireSendSide: { wireOutbox, wirePresence } });
+    expect(wireOutbox).toHaveBeenCalledTimes(2);
+  });
 });

@@ -23,6 +23,12 @@ function fmtTs(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
+/** Compact details preview for the audit grid: JSON, capped at 100 chars,
+ *  '—' for an empty/missing details payload. */
+export function fmtAuditDetails(details: unknown): string {
+  return details ? JSON.stringify(details).slice(0, 100) : '—';
+}
+
 export default function AuditTab({ workspaceIds }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,6 +118,6 @@ const AUDIT_COLUMNS: ColumnDef<Entry>[] = [
   {
     key: 'details', header: 'Details', width: 3,
     toCopyText: (r) => r.details ? JSON.stringify(r.details) : '',
-    render: ({ row }) => <span className="pc-dev-muted pc-dev-details">{row.details ? JSON.stringify(row.details).slice(0, 100) : '—'}</span>,
+    render: ({ row }) => <span className="pc-dev-muted pc-dev-details">{fmtAuditDetails(row.details)}</span>,
   },
 ];

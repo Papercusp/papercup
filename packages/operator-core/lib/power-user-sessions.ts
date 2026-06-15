@@ -26,6 +26,17 @@ export interface PowerUserSessionRow {
   revokedAt: string | null;
 }
 
+/**
+ * postgres-js returns `timestamptz` columns as JS `Date` (the org connection
+ * customizes only `bigint→Number`, no timestamp parser — connection.ts), but the
+ * row contract above is ISO-8601 strings. Normalize at the boundary so the
+ * declared `string` type is honored (and a `Date | string` pool ever can't leak).
+ */
+function isoOrNull(v: Date | string | null): string | null {
+  if (v == null) return null;
+  return v instanceof Date ? v.toISOString() : String(v);
+}
+
 /** Open a new session row and return its freshly minted id. */
 export async function createPowerUserSession(opts: {
   workspaceId: string;
@@ -56,9 +67,9 @@ export async function getActivePowerUserSession(
       auth_session_id: string;
       workspace_id: string;
       user_id: string;
-      created_at: string;
-      last_seen_at: string;
-      revoked_at: string | null;
+      created_at: Date;
+      last_seen_at: Date;
+      revoked_at: Date | null;
     }>
   >`
     UPDATE harness_shared.power_user_sessions
@@ -74,9 +85,9 @@ export async function getActivePowerUserSession(
     authSessionId: r.auth_session_id,
     workspaceId: r.workspace_id,
     userId: r.user_id,
-    createdAt: r.created_at,
-    lastSeenAt: r.last_seen_at,
-    revokedAt: r.revoked_at,
+    createdAt: isoOrNull(r.created_at)!,
+    lastSeenAt: isoOrNull(r.last_seen_at)!,
+    revokedAt: isoOrNull(r.revoked_at),
   };
 }
 
@@ -101,9 +112,9 @@ export async function listActivePowerUserSessions(
       auth_session_id: string;
       workspace_id: string;
       user_id: string;
-      created_at: string;
-      last_seen_at: string;
-      revoked_at: string | null;
+      created_at: Date;
+      last_seen_at: Date;
+      revoked_at: Date | null;
     }>
   >`
     SELECT auth_session_id, workspace_id, user_id,
@@ -117,8 +128,8 @@ export async function listActivePowerUserSessions(
     authSessionId: r.auth_session_id,
     workspaceId: r.workspace_id,
     userId: r.user_id,
-    createdAt: r.created_at,
-    lastSeenAt: r.last_seen_at,
-    revokedAt: r.revoked_at,
+    createdAt: isoOrNull(r.created_at)!,
+    lastSeenAt: isoOrNull(r.last_seen_at)!,
+    revokedAt: isoOrNull(r.revoked_at),
   }));
 }

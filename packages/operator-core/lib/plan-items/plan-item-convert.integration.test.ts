@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -125,6 +125,7 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(USER_TRUST_LIST_DDL); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
   await db.sql.unsafe(readMigration('241-signal-provenance-origin.sql')).simple();

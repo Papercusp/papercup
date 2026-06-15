@@ -35,7 +35,7 @@ interface ActivityEntry {
   status: string;
 }
 
-function fmtRel(iso: string): string {
+export function fmtRel(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
@@ -43,7 +43,7 @@ function fmtRel(iso: string): string {
   return `${Math.floor(ms / 86_400_000)}d`;
 }
 
-function fmtRelMs(ms: number | null): string {
+export function fmtRelMs(ms: number | null): string {
   if (ms == null) return '—';
   const diff = Date.now() - ms;
   if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;

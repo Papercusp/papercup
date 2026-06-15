@@ -38,9 +38,20 @@
  * stays at the synthetic-placement floor — the MAST delta is real, not manufactured.
  *
  * OPUS: the bee role-model floor is haiku and the queen floor is sonnet (orchestrator/role-models.ts),
- * so the DRIVER PROCESS must export `AGENT_MODELS='{"bee":"opus:xhigh","queen":"opus:xhigh"}'` (both
- * the placed bees AND the Queen agent) + use the `opus` CLI alias (claude v2.1.177 silently runs
- * opus-4-7 for `--model claude-opus-4-8`). VERIFY `agent_usage_samples.model` before any big spend.
+ * so `AGENT_MODELS='{"bee":"opus:xhigh","queen":"opus:xhigh"}'` (both the placed bees AND the Queen) +
+ * the `opus` CLI alias (claude v2.1.177 silently runs opus-4-7 for `--model claude-opus-4-8`) are
+ * required. CRITICAL (D-020): a spawn's `--model`/backend is resolved at spawn-BUILD time from the
+ * SPAWNING process's `process.env.AGENT_MODELS`/`AGENT_CMD` — and the Queen's `fleet:spawn` is serviced by
+ * the long-running :3170 host (`fireLaunchBlueprint('hive')` → loopback invoke), NOT this launcher. So for
+ * the real-Queen arm the opus pin + `AGENT_CMD=claude -p` MUST be on the :3170 host env (apps/operator/
+ * .env.local), not just the launcher. VERIFY `agent_usage_samples.model = claude-opus-4-8 role=bee`
+ * (NOT haiku floor, NOT a no-usage omp/self fall-through) on a 1-task probe before any big spend.
+ *
+ * CONCURRENCY (D-019): the bee cap is the global `maxSimultaneousAgents` (`spawnConcurrencyCeiling()`) —
+ * there is NO separate per-hive cap. It is a per-process module cache that does NOT cross processes, so to
+ * make a cap < backlog bite for the Queen's spawns the launcher PUTs it to :3170's `operator:rate_limit_
+ * config` route (which applies it IN the :3170 process). Setting it only in the launcher cache (the prior
+ * bug) left :3170 at the default 16 → all bees ran at once, no contention.
  *
  * GOVERNOR: binding this spends nothing; the real LLM spend is the bees + the Queen running on the
  * gated launch. The drive always `pauseHive`s at drain/timeout to bound it.
@@ -81,6 +92,20 @@ const ESCALATE_FEATURE_STATUSES = new Set(['escalated', 'blocked']);
  * attaches her own situational brief; this is the standing task directive both arms' bees get (so a
  * bee placed by the FIFO loop — which has no Queen to brief it — still works its lone feature instead
  * of exiting taskless). Identical to the scripted driver's directive (fairness: same bee unit).
+ *
+ * D-020 (the CRITICAL fix). In the real-Queen arm the driver does NOT spawn the bee — the Queen persona
+ * does, via `fleet:spawn`, with HER situational overlay as the brief. Her overlay is NOT a "claim +
+ * implement this lone bench feature" instruction, so a Queen-placed bee booted with FEATURE_ID set but no
+ * directive to claim its (unassigned, `taken_by` NULL) feature → it found no actionable work and did $0 of
+ * model work (no usage sample, no diff; the seeded feature later went `cancelled`). The WORKING scripted
+ * arm avoids this precisely because EVERY bee it spawns (`executeBatch`) carries THIS directive (proven:
+ * the xbh* haiku run produced 10/11 non-empty diffs, features → `passed`, with the feature left
+ * `taken_by` NULL — the bee SELF-claims off the directive). The fix threads this directive to the
+ * Queen-placed bee too: the bench launcher exports it as `PAPERCUSP_XBENCH_BEE_DIRECTIVE` on the host that
+ * services the Queen's `fleet:spawn` (the long-running :3170 operator), and `spawnAgentInHarness`
+ * (operator-spawn.ts) APPENDS it to every placed bee's brief + pins the claude-code backend per-spawn. The
+ * Queen's placement / eviction / re-placement / adaptive-wake treatment is entirely unchanged — she still
+ * decides WHO/WHEN; the directive only guarantees the bee she places can actually DO the coding work.
  */
 const BENCH_BEE_DIRECTIVE = [
   'You are placed on a single-task benchmark member harness. This member holds EXACTLY ONE feature work-item —',

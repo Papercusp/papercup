@@ -20,6 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { validateBlueprintDependencies } from '@papercusp/blueprint-distribution';
 import { COORD_ROLES } from '../coordination/roles';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
+import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { resolveAndValidate } from '../blueprint/_resolve';
 import { DeploymentConfigSchema, parseDeploymentConfig } from '../../deployment/config-schema';
 import { resolveCreateHiveMembership } from './create-hive-membership';
@@ -29,6 +30,28 @@ import type { InstanceConfigFields } from '../../deployment/instance-config';
 const fail = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...payload }) }],
 });
+
+/**
+ * The Hive→member DOMAIN-PROFILE overlay (hive-blueprint-generalization P-021). A
+ * member harness born into a Hive inherits the Hive's DELIVERABLE acceptance/output so
+ * its finalize gate matches the Hive's intent — the live smoke surfaced that a
+ * generic-hive's `acceptance.kind=judge` / `output.kind=artifacts` is declared on the
+ * Hive, but deliverables finalize in the member (research/review/vote), which otherwise
+ * keeps the coding/default profile. Only the NON-CODING kinds propagate: acceptance
+ * `judge`/`human-gate` (a coding hive's defaulted `none` does not) and a non-`repo-commit`
+ * output. So a coding hive overlays nothing → its members are byte-identical. Pure.
+ */
+export function hiveMemberProfileOverlay(hiveBp: {
+  acceptance?: { kind?: string } | null;
+  output?: { kind?: string } | null;
+}): { acceptance?: unknown; output?: unknown } {
+  const overlay: { acceptance?: unknown; output?: unknown } = {};
+  const ak = hiveBp.acceptance?.kind;
+  if (ak === 'judge' || ak === 'human-gate') overlay.acceptance = hiveBp.acceptance;
+  const ok = hiveBp.output?.kind;
+  if (ok != null && ok !== 'repo-commit') overlay.output = hiveBp.output;
+  return overlay;
+}
 
 export default defineTool({
   name: 'harness:create',
@@ -117,6 +140,29 @@ export default defineTool({
       localDirs: args.path != null ? [join(resolvePath(args.path), '.papercusp', 'blueprints')] : [],
     });
     const childObj: Record<string, unknown> = args.blueprint ?? { id: args.slug, extends: args.blueprintId };
+    // hive-blueprint-generalization P-021: a member harness born INTO a Hive inherits
+    // the Hive's DELIVERABLE acceptance/output domain profile, so a generic-hive's
+    // research/review/vote member finalizes under judge + artifacts. This is the missing
+    // wiring the live smoke surfaced — the judge gate (P-009) + artifacts sink (P-010)
+    // live on the harness that FINALIZES the deliverable (the member), but the profile is
+    // declared on the Hive, whose own harness only runs hive-wake placement items. Only
+    // the non-coding kinds propagate (acceptance judge/human-gate; non-repo-commit output),
+    // so a coding hive — acceptance defaults to 'none', output 'repo-commit' — overlays
+    // NOTHING and its members are byte-identical. An explicitly-authored `blueprint` is
+    // respected as-is (no overlay). See agent-insights/generic-hive-acceptance-propagation-gap.
+    if (hiveMembership && args.blueprint == null) {
+      const hivePath = reg.projects.find((p) => p.slug === hiveMembership)?.path;
+      if (hivePath) {
+        try {
+          const hiveBp = loadBlueprintFromFile(join(hivePath, '.papercusp', 'blueprint.yaml'), resolver).blueprint;
+          const overlay = hiveMemberProfileOverlay(hiveBp);
+          if (overlay.acceptance != null && childObj.acceptance == null) childObj.acceptance = overlay.acceptance;
+          if (overlay.output != null && childObj.output == null) childObj.output = overlay.output;
+        } catch {
+          /* hive blueprint unreadable → no overlay; the member keeps its own profile */
+        }
+      }
+    }
     const validation = resolveAndValidate(childObj, resolver);
     if (validation.parseError || !validation.ok) {
       return fail({ error: 'blueprint invalid', parseError: validation.parseError, errors: validation.validation?.errors });
