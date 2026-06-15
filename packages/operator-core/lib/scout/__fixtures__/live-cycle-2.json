@@ -1,0 +1,392 @@
+{
+  "meta": {
+    "capturedAt": "2026-06-15T01:49:26.547Z",
+    "cycleId": "scout-live-cycle-2",
+    "harnessSlug": "papercup",
+    "limits": {
+      "maxCostUsd": 0.5,
+      "maxIdeators": 2
+    },
+    "transport": "anthropic-direct (stateless)",
+    "noveltyCorpusSize": 0,
+    "inertRails": {
+      "planDrafts": [],
+      "gymSeeds": [],
+      "captures": []
+    }
+  },
+  "result": {
+    "cycleId": "scout-live-cycle-2",
+    "stop": "no-ideas",
+    "costUsd": 0,
+    "digest": {
+      "generatedAt": "2026-06-15T01:45:59.688Z",
+      "corpus": {
+        "completions": 510,
+        "reverts": 58,
+        "frictionCaptured": 495,
+        "deferrals": 292,
+        "spendUsd": 66330.14,
+        "spendBuckets": 27
+      },
+      "recurringFriction": [
+        {
+          "category": "recurring-friction",
+          "summary": "Auto-implement dispatch for EI-52 died without resolving — orphaned worker",
+          "detail": "recurred 9× (6 open), last 0.5d ago",
+          "ref": "wi:EI-564",
+          "weight": 1
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "re-read the same large file across turns — no per-session read cache",
+          "detail": "recurred 6× (6 open), last 0d ago",
+          "ref": "wi:EI-617",
+          "weight": 0.8
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "coord invariant: wake-queue depth/age growth",
+          "detail": "recurred 4× (1 open), last 0d ago",
+          "ref": "wi:EI-598",
+          "weight": 0.33
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Many plan-item claims have expired (abandoned work piling up)",
+          "detail": "recurred 4× (1 open), last 0.5d ago",
+          "ref": "wi:EI-556",
+          "weight": 0.33
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Hive papercup: fleet saturated with work still queued",
+          "detail": "recurred 2× (2 open), last 0d ago",
+          "ref": "wi:EI-593",
+          "weight": 0.27
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Service shop is down",
+          "detail": "recurred 3× (1 open), last 0.5d ago",
+          "ref": "wi:EI-547",
+          "weight": 0.27
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Agent spawns are failing repeatedly (timeout)",
+          "detail": "recurred 2× (2 open), last 0.5d ago",
+          "ref": "wi:EI-566",
+          "weight": 0.27
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Role fire-path for gymloopharness/gym-cycle is stuck in error-backoff",
+          "detail": "recurred 2× (2 open), last 0.3d ago",
+          "ref": "wi:EI-265",
+          "weight": 0.27
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Tool plans:set-status erroring repeatedly",
+          "detail": "recurred 2× (2 open), last 3.7d ago",
+          "ref": "wi:EI-131",
+          "weight": 0.27
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Service desktop is down",
+          "detail": "recurred 2× (1 open), last 0.5d ago",
+          "ref": "wi:EI-562",
+          "weight": 0.2
+        }
+      ],
+      "timeTokenSinks": [
+        {
+          "category": "time-token-sink",
+          "summary": "$65947.66 on (unattributed) · interactive",
+          "detail": "8609 run(s), 642,933,679 tokens",
+          "ref": "usage:(unattributed)/interactive",
+          "weight": 1
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$155.09 on papercup-hive · queen",
+          "detail": "195 run(s), 2,017,500 tokens",
+          "ref": "usage:papercup-hive/queen",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$75.88 on papercup · bee",
+          "detail": "130 run(s), 1,530,818 tokens",
+          "ref": "usage:papercup/bee",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$71.57 on papercup · worker",
+          "detail": "38 run(s), 630,754 tokens",
+          "ref": "usage:papercup/worker",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$21.92 on brood-box-alpha · bee",
+          "detail": "121 run(s), 676,049 tokens",
+          "ref": "usage:brood-box-alpha/bee",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$18.35 on papercup · release-fixer",
+          "detail": "19 run(s), 232,816 tokens",
+          "ref": "usage:papercup/release-fixer",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$11.4 on papercup · queen",
+          "detail": "11 run(s), 169,787 tokens",
+          "ref": "usage:papercup/queen",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$10.75 on sb-devboard · worker",
+          "detail": "4 run(s), 159,856 tokens",
+          "ref": "usage:sb-devboard/worker",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$4.15 on sb-devboard-hive · operator",
+          "detail": "12 run(s), 165,627 tokens",
+          "ref": "usage:sb-devboard-hive/operator",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$2.37 on hive-canary · bee",
+          "detail": "7 run(s), 50,913 tokens",
+          "ref": "usage:hive-canary/bee",
+          "weight": 0
+        }
+      ],
+      "chronicDeferrals": [
+        {
+          "category": "chronic-deferral",
+          "summary": "Two-box variant: run P-005's verb sweep + P-008/P-009 rungs across two physical machines per the `vm-federation-separat…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:coord-system-e2e-testing-2026-06-10#P-010",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Functional smoke checklist in the VM: wizard completion, create pot + harness, one live agent turn (needs an Anthropic …",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:windows-desktop-release-readiness-2026-06-11#P-011",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Sign-off before destructive cleanup — confirm PG-only is final (detached coord intentionally dropped) before deleting t…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:coord-channels-pg-port-2026-05-30#P-014",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "OWNER: eyeball the /settings/agent tier editor in the Tauri shell (shipped ahead of the visual pass), and watch the que…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:queen-model-tier-selection-2026-06-11#P-006",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Owner eyeball: the 400+-prompt slash picker UX in a live Claude Code session once the green-checkpoint deploy carries t…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:slash-exposure-tool-catalog-2026-06-12#P-014",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Lazy + bounded harness-substrate boot: replace eager bootAllHarnessesForActiveWorkspace with on-demand boot + LRU idle-…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:operator-memory-and-psu-resilience-2026-06-14#P-008",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Evaluate substrate process isolation (dedicated sidecar) — decouple corestores/Hyperswarm natives + their GC pauses fro…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:operator-memory-and-psu-resilience-2026-06-14#P-009",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Decide whether harness templates migrate from SPEC.md to plan-based seeds. `TemplatesModal.tsx` (lines 46-163) still re…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:spec-md-ui-deprecation-cleanup-2026-05-30#P-010",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Owner decides D-001 — headline claim framing (system-delta / absolute / both).",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:impartial-benchmark-suite-2026-06-15#P-002",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Owner ratifies D-002 — which baseline is the headline (recommendation: native-harness B).",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:impartial-benchmark-suite-2026-06-15#P-003",
+          "weight": 1
+        }
+      ],
+      "capabilityGaps": [
+        {
+          "category": "capability-gap",
+          "summary": "Agent insight 'dogfood-bootstrap' cites files that no longer exist — review for superseded",
+          "detail": "named missing capability, asked 4× (0 open)",
+          "ref": "wi:EI-454",
+          "weight": 1
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Agent insight 'desktop-ipc-transport-map' cites files that no longer exist — review for superseded",
+          "detail": "named missing capability, asked 4× (0 open)",
+          "ref": "wi:EI-453",
+          "weight": 1
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Agent insight 'dbos-durable-execution-gotchas' cites files that no longer exist — review for superseded",
+          "detail": "named missing capability, asked 4× (0 open)",
+          "ref": "wi:EI-452",
+          "weight": 1
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Agent insight 'attention-push-delivery' cites files that no longer exist — review for superseded",
+          "detail": "named missing capability, asked 4× (0 open)",
+          "ref": "wi:EI-451",
+          "weight": 1
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Agent insight 'dogfood-go-live-runbook' cites files that no longer exist — review for superseded",
+          "detail": "named missing capability, asked 3× (0 open)",
+          "ref": "wi:EI-442",
+          "weight": 0.75
+        },
+        {
+          "category": "capability-gap",
+          "summary": "re-read the same large file across turns — no per-session read cache",
+          "detail": "named missing capability, asked 2× (2 open)",
+          "ref": "wi:EI-615",
+          "weight": 0.75
+        },
+        {
+          "category": "capability-gap",
+          "summary": ".papercusp/tests.json TestItem.framework lacks cargo/shell — the Rust desktop gate can't be a first-class Tests-tab reg…",
+          "detail": "net-new ask (1 open)",
+          "ref": "wi:EI-299",
+          "weight": 0.75
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Agent insight 'types-first-from-design-memo' cites files that no longer exist — review for superseded",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-605",
+          "weight": 0.5
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Agent insight 'starlight-migration-2026-05-20' cites files that no longer exist — review for superseded",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-603",
+          "weight": 0.5
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Agent insight 'sleep-mode-shared-checkout' cites files that no longer exist — review for superseded",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-602",
+          "weight": 0.5
+        }
+      ],
+      "reverts": [
+        {
+          "summary": "F-015 reverted 13× (latest validating→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-015",
+          "weight": 1
+        },
+        {
+          "summary": "F-AUTOFIT-001 reverted 7× (latest validating→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-AUTOFIT-001",
+          "weight": 0.73
+        },
+        {
+          "summary": "F-CSV-003 reverted 3× (latest passed→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-CSV-003",
+          "weight": 0.55
+        },
+        {
+          "summary": "F-FIX-012 reverted 3× (latest todo→deprecated)",
+          "detail": "last by api",
+          "ref": "wi:F-FIX-012",
+          "weight": 0.45
+        },
+        {
+          "summary": "F-KV-004 reverted 4× (latest todo→deprecated)",
+          "detail": "last by api",
+          "ref": "wi:F-KV-004",
+          "weight": 0.36
+        },
+        {
+          "summary": "F-FIX-024 reverted 4× (latest validating→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-FIX-024",
+          "weight": 0.27
+        },
+        {
+          "summary": "F-FIX-017 reverted 5× (latest todo→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-FIX-017",
+          "weight": 0.23
+        },
+        {
+          "summary": "F-FIX-028 reverted 4× (latest in_progress→todo)",
+          "detail": "last by api",
+          "ref": "wi:F-FIX-028",
+          "weight": 0.18
+        },
+        {
+          "summary": "F-HOME-001 reverted 1× (latest passed→todo)",
+          "detail": "last by api:reset",
+          "ref": "wi:F-HOME-001",
+          "weight": 0.18
+        },
+        {
+          "summary": "F-FILL-001 reverted 2× (latest validating→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-FILL-001",
+          "weight": 0.18
+        }
+      ],
+      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66330.14), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 510 completions"
+    },
+    "ideas": [],
+    "scored": [],
+    "survivors": [],
+    "proposals": [],
+    "routed": [],
+    "provenance": [],
+    "calls": []
+  }
+}

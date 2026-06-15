@@ -194,6 +194,40 @@ export function toRosterSnapshot(entries: HiveRosterEntry[]): RosterSnapshotLine
   }));
 }
 
+/** Compact relative-age label for a roster line (precomputed seconds → "3m"). */
+function fmtRosterAge(sec: number): string {
+  if (sec < 60) return `${Math.round(sec)}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  return `${Math.round(sec / 3600)}h`;
+}
+
+/**
+ * Pure: render a roster snapshot to a compact, bounded markdown block — the
+ * trusted (local, never-framed) `### Hive peers` body for the directed-wake P-021
+ * spawn-hydration seam. Ranks alive + most-recently-active first and caps to
+ * `maxPeers` so the block stays small; a non-silent "+N more" tail marks any
+ * omission. Returns '' for an empty roster (the seam then omits the section).
+ */
+export function renderRosterSnapshot(lines: RosterSnapshotLine[], maxPeers = 12): string {
+  if (lines.length === 0) return '';
+  const ranked = [...lines].sort((a, b) => {
+    if (a.alive !== b.alive) return a.alive ? -1 : 1;
+    const aa = a.lastActiveSecAgo ?? Number.POSITIVE_INFINITY;
+    const bb = b.lastActiveSecAgo ?? Number.POSITIVE_INFINITY;
+    return aa - bb;
+  });
+  const shown = ranked.slice(0, Math.max(0, maxPeers));
+  const out = shown.map((p) => {
+    const who = p.label ? `${p.label} (${p.ownerId})` : p.ownerId;
+    const role = p.agentRole ? ` ${p.agentRole}` : '';
+    const state = !p.alive ? 'offline' : p.doing ? `on ${p.doing}` : p.awaitingEvent ? 'awaiting' : 'idle';
+    const age = p.lastActiveSecAgo != null ? ` · active ${fmtRosterAge(p.lastActiveSecAgo)} ago` : '';
+    return `- ${who}${role} — ${state}${age}`;
+  });
+  if (ranked.length > shown.length) out.push(`- …+${ranked.length - shown.length} more peer(s)`);
+  return out.join('\n');
+}
+
 export interface ListHiveRosterOpts {
   hiveSlug: string;
   workspaceId?: string | null;

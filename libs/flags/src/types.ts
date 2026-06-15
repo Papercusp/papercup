@@ -511,6 +511,27 @@ export const FLAGS = {
   // an OWNER design point flagged in P-070's report (do not invent
   // release-detection infra). OFF = the Class-C loops ship dark.
   PLATFORM_IMPROVEMENT_LOOPS: "papercusp-platform-improvement-loops",
+  // directed-wake-honesty-and-spawn-handoff-2026-06-14 P-014/P-021: gates the ONE
+  // bounded spawn/wake-hydration block (assembleSpawnHydration) — the volatile-tail
+  // `## Handoff` section a freshly-spawned or warm-woken agent opens with
+  // (predecessor handoff + hive-roster snapshot + work-item carry-note). When ON
+  // (default), the spawn paths (operator-spawn autonomous + bootstrap-role
+  // interactive, P-012) precompute the block and thread it to buildPrompt; when OFF
+  // the block is skipped and no `## Handoff` section renders. DEFAULT ON (alpha
+  // flags-default-on; finished work ships on): each source is fail-soft + bounded,
+  // so the block degrades to empty rather than breaking a spawn.
+  SPAWN_HANDOFF_HYDRATION: "papercusp-spawn-handoff-hydration",
+  // overwatch-role-2026-06-15 (B-10): gates the OVERWATCH role — a new always-on
+  // autonomous system-health supervisor (sibling to the Queen). The flag gates
+  // (a) the `overwatch` role registration (B-01), (b) the autonomous wake-loop +
+  // its routine/rule (B-04), and (c) the Overwatch UI pane (B-08). DEFAULT OFF —
+  // DELIBERATE (NOT the alpha flags-default-on policy): a brand-new, not-yet-proven
+  // AUTONOMOUS role that nudges the running fleet. A confused overwatch must not be
+  // able to thrash the system it protects (D-002/D-004), so it ships dark until
+  // B-12's first live run on staging proves it (coherent brief, nudges-not-replaces,
+  // observes-not-ideas, no thrash, cross-monitors the Queen). The owner flips it ON
+  // after that proof — surfaced loudly in the plan's ## Now + every lane report.
+  OVERWATCH: "papercusp-overwatch",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -800,6 +821,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // PAPERCUSP_PLATFORM_MODE=off (no dev-vs-release runtime signal exists yet —
   // OWNER design point, see P-070). Default-ON ⇒ not in KNOWN_DARK_FLAGS.
   [FLAGS.PLATFORM_IMPROVEMENT_LOOPS]: true,
+  // DEFAULT ON (directed-wake-honesty-and-spawn-handoff P-014) — finished work
+  // ships on. The spawn/wake-hydration block is fail-soft per source + bounded
+  // (P-013), so default-on degrades to an empty section, never a broken spawn.
+  // Default-ON ⇒ not in KNOWN_DARK_FLAGS.
+  [FLAGS.SPAWN_HANDOFF_HYDRATION]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

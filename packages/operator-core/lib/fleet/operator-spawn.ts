@@ -724,6 +724,48 @@ export async function spawnAgentInHarness(
   if (input.brief) {
     extraEnv.QUEEN_BRIEF = input.brief;
   }
+
+  // directed-wake-honesty-and-spawn-handoff P-021/P-012: assemble the ONE bounded
+  // spawn/wake-hydration block (predecessor handoff + hive-roster snapshot +
+  // work-item carry-note) and thread it via extraEnv.SPAWN_HANDOFF. invoke.ts reads
+  // it and buildPrompt renders it VERBATIM in the volatile tail (`## Handoff`). This
+  // is the AUTONOMOUS spawn path's call of the shared seam (the interactive launch
+  // calls assembleSpawnHydration from bootstrap-role). Gated on
+  // SPAWN_HANDOFF_HYDRATION (default on). FAIL-SOFT TWICE: each source degrades to
+  // empty inside assembleSpawnHydration, and this outer guard means a hydration
+  // failure (flag read, DB hiccup) NEVER blocks the spawn.
+  try {
+    if (await getFlag(FLAGS.SPAWN_HANDOFF_HYDRATION, 'system')) {
+      const hydration = await assembleSpawnHydration({
+        harness: slug,
+        featureId: input.featureId ?? undefined,
+        planSlug: input.planSlug ?? undefined,
+        // The bee resumes the work-item it was dispatched on; its carry-note is
+        // keyed by that id (work-item-checkpoint store).
+        workItemId: input.featureId ?? input.itemId ?? undefined,
+        workspaceId: input.workspaceId,
+        ownerId: spawnId,
+        deps: {
+          getHandoff: ({ harness, featureId, planSlug, workspaceId }) =>
+            featureId
+              ? getSpawnHandoffContext({ harness, featureId, planSlug, workspaceId })
+              : Promise.resolve(null),
+          getRoster: async ({ harness, workspaceId }) =>
+            renderRosterSnapshot(await listHiveRosterSnapshot({ hiveSlug: harness, workspaceId })),
+          getCheckpoint: ({ harness, workItemId, workspaceId }) =>
+            getWorkItemCheckpoint({ harness, workItemId, workspaceId }),
+        },
+        log: (m) => console.log(`[operator-spawn] ${spawnId} ${m}`),
+      });
+      if (hydration.text) extraEnv.SPAWN_HANDOFF = hydration.text;
+    }
+  } catch (err) {
+    // fail-soft: hydration is additive context, never a spawn blocker.
+    console.warn(
+      `[operator-spawn] ${spawnId}: spawn-handoff hydration failed (degraded, spawn continues): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // Per-spawn model escalation: buildInvokeOnce reads this to apply `--model`/
   // `--effort` to THIS child's command (outranking AGENT_MODELS + the committed
   // default), and the child's own invoke.ts resolveModel consults it first —

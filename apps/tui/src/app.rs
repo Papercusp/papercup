@@ -31,6 +31,8 @@ pub const CONV_STATES: [&str; 4] = ["open", "resolved", "closed", "all"];
 /// The Conversations kind-filter cycle (Brief 25): `t` steps through these;
 /// `conv_kind_idx` indexes this array. "all" sends no `kind` param.
 pub const CONV_KINDS: [&str; 3] = ["all", "question", "discussion"];
+/// Rows the comms detail popup scrolls per PageDown/PageUp (owner ask 2026-06-14).
+pub const COMMS_DETAIL_SCROLL_STEP: u16 = 6;
 
 /// What the run-loop should do after handling one event.
 /// (No `Eq`: `VoiceChan(VoiceCmd)` carries a `serde_json::Value` for prefs
@@ -1229,8 +1231,11 @@ pub struct App {
     pub plan_filter_sel: usize,
     /// Comms-overlay detail popup (owner ask 2026-06-14): true while a mail/
     /// conversation detail is open over the Fleet comms view. Modal — Esc/`q`
-    /// close, `j`/`k` step to the next/prev item. Transient; not persisted.
+    /// close, `j`/`k` step to the next/prev item, PageUp/PageDown scroll the
+    /// body. `comms_detail_scroll` is the body's row offset (reset on open + on
+    /// item change; clamped to the content at render). Transient; not persisted.
     pub comms_detail_open: bool,
+    pub comms_detail_scroll: u16,
     /// First-run tutorial overlay (P9). `show_tutorial` is set true at startup
     /// when the device hasn't completed it (and re-openable via F1);
     /// `tutorial_step` is the current 0-based step. Default hidden so tests and
@@ -1548,6 +1553,7 @@ impl App {
             plan_filter_open: false,
             plan_filter_sel: 0,
             comms_detail_open: false,
+            comms_detail_scroll: 0,
             show_tutorial: false,
             tutorial_step: 0,
             notifs: Vec::new(),
@@ -4292,6 +4298,18 @@ impl App {
                 }
                 KeyCode::Char('j') | KeyCode::Down => self.comms_detail_step(1),
                 KeyCode::Char('k') | KeyCode::Up => self.comms_detail_step(-1),
+                // PageDown/PageUp scroll a long body/thread; render clamps to the
+                // content so PageDown can't run off the end (owner ask 2026-06-14).
+                KeyCode::PageDown => {
+                    self.comms_detail_scroll =
+                        self.comms_detail_scroll.saturating_add(COMMS_DETAIL_SCROLL_STEP);
+                    Action::Render
+                }
+                KeyCode::PageUp => {
+                    self.comms_detail_scroll =
+                        self.comms_detail_scroll.saturating_sub(COMMS_DETAIL_SCROLL_STEP);
+                    Action::Render
+                }
                 _ => Action::Render,
             };
         }
@@ -5670,12 +5688,14 @@ impl App {
             Inbox | Outbox => {
                 if self.selected_comms_mail().is_some() {
                     self.comms_detail_open = true;
+                    self.comms_detail_scroll = 0;
                 }
                 Action::Render
             }
             Conversations => {
                 if self.selected_conversation().is_some() {
                     self.comms_detail_open = true;
+                    self.comms_detail_scroll = 0;
                     return self.conv_open_detail();
                 }
                 Action::Render
@@ -5688,6 +5708,8 @@ impl App {
     /// refetch the newly-selected thread.
     fn comms_detail_step(&mut self, delta: isize) -> Action {
         use crate::fleet::CommsFocus::*;
+        // A new item starts at the top of the popup.
+        self.comms_detail_scroll = 0;
         let step = |cur: usize, delta: isize, len: usize| -> usize {
             if len == 0 {
                 return 0;
@@ -10236,5 +10258,25 @@ mod tests {
         a.update(ev(KeyCode::Char('c'))); // swallowed — does NOT toggle comms
         assert!(a.comms_detail_open);
         assert_eq!(a.fleet.show_comms, show_before);
+    }
+
+    #[test]
+    fn comms_detail_scroll_pages_and_resets_on_item_change() {
+        let mut a = comms_app();
+        a.update(ev(KeyCode::Char('l'))); // Inbox
+        a.update(ev(KeyCode::Enter)); // open popup
+        assert_eq!(a.comms_detail_scroll, 0);
+        a.update(ev(KeyCode::PageDown));
+        assert_eq!(a.comms_detail_scroll, COMMS_DETAIL_SCROLL_STEP);
+        a.update(ev(KeyCode::PageDown));
+        assert_eq!(a.comms_detail_scroll, 2 * COMMS_DETAIL_SCROLL_STEP);
+        a.update(ev(KeyCode::PageUp));
+        assert_eq!(a.comms_detail_scroll, COMMS_DETAIL_SCROLL_STEP);
+        // Stepping to another item resets the scroll to the top.
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.comms_detail_scroll, 0);
+        // PageUp saturates at 0 (no underflow).
+        a.update(ev(KeyCode::PageUp));
+        assert_eq!(a.comms_detail_scroll, 0);
     }
 }

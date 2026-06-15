@@ -2720,9 +2720,9 @@ fn draw_comms_detail(f: &mut Frame, app: &App) {
         CommsFocus::Inbox | CommsFocus::Outbox => {
             let is_inbox = app.fleet.comms_focus == CommsFocus::Inbox;
             let title = if is_inbox {
-                " inbox · message  (Esc close · j/k next) "
+                " inbox · Esc close · j/k item · PgUp/Dn scroll "
             } else {
-                " outbox · message  (Esc close · j/k next) "
+                " outbox · Esc close · j/k item · PgUp/Dn scroll "
             };
             let lines = match app.selected_comms_mail() {
                 Some(e) => mail_detail_lines(e, is_inbox),
@@ -2731,7 +2731,7 @@ fn draw_comms_detail(f: &mut Frame, app: &App) {
             (title, lines)
         }
         CommsFocus::Conversations => (
-            " conversation  (Esc close · j/k next) ",
+            " conversation · Esc close · j/k item · PgUp/Dn scroll ",
             conv_detail_lines(app),
         ),
         CommsFocus::Roster => (" detail ", Vec::new()),
@@ -2742,7 +2742,22 @@ fn draw_comms_detail(f: &mut Frame, app: &App) {
         .style(Theme::panel_active());
     let inner = block.inner(area);
     f.render_widget(block, area);
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    // Clamp the scroll offset to the wrapped content so PageDown can't run past
+    // the end (owner ask 2026-06-14). Wrapped-row estimate: each logical line
+    // occupies ceil(display_width / inner_width) rows.
+    let inner_w = inner.width.max(1) as u32;
+    let total_rows: u32 = lines
+        .iter()
+        .map(|l| (l.width() as u32).div_ceil(inner_w).max(1))
+        .sum();
+    let max_scroll = (total_rows.min(u32::from(u16::MAX)) as u16).saturating_sub(inner.height);
+    let scroll = app.comms_detail_scroll.min(max_scroll);
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        inner,
+    );
 }
 
 /// The header + full body of one coord-mail entry (the list truncates the body;
