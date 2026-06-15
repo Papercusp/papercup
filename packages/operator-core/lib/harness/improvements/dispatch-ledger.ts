@@ -82,6 +82,13 @@ export interface RecordDispatchInput {
   /** payload.implementAttempts as stamped for THIS dispatch (1-based). */
   attempt: number;
   runnerHarness: string | null;
+  /**
+   * (per-hive-learning-loops P-012) The Hive that OWNS the dispatched improvement,
+   * resolved from the item's `scope:'harness:<X>'` tag (P-032) to its home Hive, so
+   * per-hive dispatch diagnostics align with the per-hive improvement lens (P-040).
+   * NULL for an operator-scoped (workspace-global) item.
+   */
+  hiveSlug?: string | null;
 }
 
 /**
@@ -94,8 +101,8 @@ export async function recordDispatchFired(input: RecordDispatchInput): Promise<s
     const { sql } = getOrgPg();
     const rows = await sql<{ id: string }[]>`
       INSERT INTO harness_shared.improvement_dispatches
-        (workspace_id, item_id, attempt, runner_harness)
-      VALUES (${input.workspaceId}, ${input.itemId}, ${input.attempt}, ${input.runnerHarness})
+        (workspace_id, item_id, attempt, runner_harness, hive_slug)
+      VALUES (${input.workspaceId}, ${input.itemId}, ${input.attempt}, ${input.runnerHarness}, ${input.hiveSlug ?? null})
       RETURNING id`;
     return rows[0]?.id ?? null;
   } catch (e) {

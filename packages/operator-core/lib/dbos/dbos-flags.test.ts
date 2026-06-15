@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import {
   dbosOrchestratorActive,
   dbosTimersActive,
+  dbosPeriodicTimersActive,
   dbosProvisionActive,
   dbosBackupActive,
   dbosCurationActive,
@@ -36,6 +37,22 @@ describe('dbosTimersActive — timers active only when DBOS actually launches (n
     expect(dbosTimersActive({ PAPERCUSP_DBOS_ENABLE: '1', PAPERCUSP_DBOS_TIMERS: '0' })).toBe(false));
   test('ENABLE=1 + ORCHESTRATOR=0 → off (full legacy revert)', () =>
     expect(dbosTimersActive({ PAPERCUSP_DBOS_ENABLE: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
+});
+
+describe('dbosPeriodicTimersActive — registration gate; UTILITY hosts skip the shared-DB drains (EI-596)', () => {
+  // dbosTimersActive() stays the legacy-fallback stand-down predicate (unchanged);
+  // this is the REGISTRATION gate and additionally excludes a utility host (the
+  // gym-operator), whose throwaway DB has no backup config so the drains error.
+  test('main host, timers active → registers (parity with dbosTimersActive)', () =>
+    expect(dbosPeriodicTimersActive({ PAPERCUSP_DBOS_ENABLE: '1' })).toBe(true));
+  test('UTILITY host with timers active → does NOT register the periodic drains', () =>
+    expect(dbosPeriodicTimersActive({ PAPERCUSP_DBOS_ENABLE: '1', PAPERCUSP_UTILITY_HOST: '1' })).toBe(false));
+  test('UTILITY host but timers off anyway → still false', () =>
+    expect(dbosPeriodicTimersActive({ PAPERCUSP_UTILITY_HOST: '1' })).toBe(false));
+  test('main host but DBOS not launched → false (inherits the dbosTimersActive no-gap gate)', () =>
+    expect(dbosPeriodicTimersActive({ PAPERCUSP_DBOS_ENABLE: '0' })).toBe(false));
+  test('main host, timers explicitly off → false', () =>
+    expect(dbosPeriodicTimersActive({ PAPERCUSP_DBOS_ENABLE: '1', PAPERCUSP_DBOS_TIMERS: '0' })).toBe(false));
 });
 
 describe('dbosProvisionActive — default-on with the orchestrator (off only when =0)', () => {

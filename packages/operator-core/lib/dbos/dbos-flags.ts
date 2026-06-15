@@ -14,6 +14,8 @@
  * few timer pieces (push-cred refresher, harness-status sweep) retain a legacy
  * fallback that stands down on that predicate.
  */
+import { utilityHostEnabled } from '../background-workers';
+
 type DbosEnv = Record<string, string | undefined>;
 
 /** The DBOS durable orchestrator is the default (on unless explicitly =0). */
@@ -43,6 +45,25 @@ export function dbosTimersActive(env: DbosEnv = process.env): boolean {
     dbosOrchestratorActive(env) &&
     env.PAPERCUSP_DBOS_TIMERS !== '0'
   );
+}
+
+/**
+ * Whether THIS host should REGISTER the periodic timers (backup cadence,
+ * orphan-cleanup, GC sweeps, embed-backfill, …). The registration gate, distinct
+ * from `dbosTimersActive` — which is left intact because it ALSO drives the
+ * legacy-fallback stand-down (push-cred refresher, harness-status sweep) and must
+ * not shift for non-utility hosts.
+ *
+ * EI-596: a headless UTILITY host (the gym-operator) launches DBOS + the
+ * orchestrator/routines it needs for its own pipelines, but must NOT run these
+ * shared-DB periodic drains — they're irrelevant to a short-lived dedicated
+ * instance and error against its throwaway gym DB (backupHost has no config
+ * there), spamming the boot log every cadence. `utilityHostEnabled()` is the
+ * existing seam for exactly this "needs DBOS, not the shared-DB drains"
+ * distinction (see background-workers.ts).
+ */
+export function dbosPeriodicTimersActive(env: DbosEnv = process.env): boolean {
+  return dbosTimersActive(env) && !utilityHostEnabled(env);
 }
 
 /**

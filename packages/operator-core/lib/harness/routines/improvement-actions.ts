@@ -450,11 +450,27 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
     // or terminal 'fire-failed'. A fire failure no longer aborts the loop — the
     // item stays claimed (stale-claim reclaim backs it off; no hot re-dispatch)
     // and the remaining candidates still dispatch.
+    // (per-hive-learning-loops P-012) Stamp the dispatch with the Hive that owns the
+    // item — resolved from its scope tag (P-032) — so per-hive dispatch diagnostics
+    // align with the per-hive improvement lens. Best-effort: NULL for an operator-
+    // scoped item or any resolution failure; never blocks the dispatch.
+    let dispatchHiveSlug: string | null = null;
+    const candidateScope = (candidate as { scope?: string }).scope;
+    if (candidateScope && candidateScope.startsWith('harness:')) {
+      const h = candidateScope.slice('harness:'.length);
+      try {
+        const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+        dispatchHiveSlug = (await hiveHomeSlugForHarness(ctx.workspaceId, h)) ?? h;
+      } catch {
+        dispatchHiveSlug = h;
+      }
+    }
     const dispatchId = await ledger.recordDispatchFired({
       workspaceId: ctx.workspaceId,
       itemId: candidate.id,
       attempt: (candidate.attempts ?? 0) + 1,
       runnerHarness,
+      hiveSlug: dispatchHiveSlug,
     });
     try {
       const fired = await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate, dispatchId });
