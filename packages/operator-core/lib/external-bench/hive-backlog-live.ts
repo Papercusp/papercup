@@ -181,15 +181,21 @@ export function liveHiveBacklogDriver(ops: HiveBacklogOps, opts: LiveHiveBacklog
         const deadline = startedAtMs + fleetTimeoutMs;
         const home = hiveHome;
         while (ops.now() < deadline) {
-          const [inFlight, frontier] = await Promise.all([
+          const [inFlight, frontier, beeState] = await Promise.all([
             ops.countInFlight({ hiveHome: home, workspaceId: ws }),
             ops.gatherFrontier({ hiveHome: home, arm: req.arm, workspaceId: ws }),
+            // Sample the live bees EVERY poll — not only when the frontier is non-empty. The single
+            // batch placement drains the frontier in one tick, so a frontier-gated sample only ever
+            // saw the (empty) pre-placement bee set → peak stuck at 0 even when N bees then ran
+            // concurrently. Polling bees here (the same window countInFlight covers) catches the true
+            // peak as the placed bees come up and run. (Fixes the broken peakConcurrentBees counter.)
+            ops.gatherBees({ hiveHome: home, workspaceId: ws }),
           ]);
+          peakConcurrentBees = Math.max(peakConcurrentBees, beeState.bees.length);
           if (inFlight === 0 && frontier.length === 0) break; // drained
 
           if (frontier.length > 0) {
-            const { bees, headroom } = await ops.gatherBees({ hiveHome: home, workspaceId: ws });
-            peakConcurrentBees = Math.max(peakConcurrentBees, bees.length);
+            const { bees, headroom } = beeState;
             if (headroom > 0 || bees.length > 0) {
               const plan = planner({ tasks: frontier, bees, headroom });
               const { placements } = await ops.placeBatch({ hiveHome: home, plan, arm: req.arm, workspaceId: ws });

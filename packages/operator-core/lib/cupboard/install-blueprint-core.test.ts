@@ -10,6 +10,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveBuiltinExtends } from '@papercusp/orchestrator/blueprint';
+import { resolvePromptFile } from '@papercusp/orchestrator';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
 import {
   installBlueprintFromCupboardCore,
@@ -86,6 +87,35 @@ describe('installBlueprintFromCupboardCore', () => {
     // blueprint-local prompts ride along; .git does not
     expect(existsSync(join(installedDir, 'neat-bp', 'prompts', 'director.md'))).toBe(true);
     expect(existsSync(join(installedDir, 'neat-bp', '.git'))).toBe(false);
+  });
+
+  // blueprint-role-bundling P-006 — the marketplace round-trip: an installed
+  // blueprint resolves its roles from its OWN prompts dir + the base library, with
+  // NO global prompts/ dir present (the Phase-5 end-state). installedDir is
+  // <root>/blueprints, so a resolver rooted at <root> sees exactly the installed
+  // layout (blueprints/<id>/prompts → blueprints/base/prompts).
+  it('round-trip — an installed blueprint spawns its roles from its own dir + base (no global lib)', async () => {
+    // The base role library under the host (the universal fall-through).
+    await fs.mkdir(join(installedDir, 'base', 'prompts'), { recursive: true });
+    await fs.writeFile(join(installedDir, 'base', 'prompts', 'worker.md'), '# base worker', 'utf8');
+    // A blueprint that ships its OWN director persona (and inherits worker from base).
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML);
+    await fs.mkdir(join(fixtureRepo, 'prompts'), { recursive: true });
+    await fs.writeFile(join(fixtureRepo, 'prompts', 'director.md'), '# installed director', 'utf8');
+
+    const res = await installBlueprintFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/neat-bp' },
+      makeDeps(),
+    );
+    expect(res.ok).toBe(true);
+
+    const ctx = { harnessDir: root, phase: '', dept: '', blueprintId: 'neat-bp' };
+    // its OWN role resolves from the installed blueprint dir …
+    expect(resolvePromptFile(ctx, 'director')).toBe(join(installedDir, 'neat-bp', 'prompts', 'director.md'));
+    // … a role it does NOT ship falls through to the base library …
+    expect(resolvePromptFile(ctx, 'worker')).toBe(join(installedDir, 'base', 'prompts', 'worker.md'));
+    // … and there is NO global prompts/ dir anywhere in the host (the Phase-5 invariant).
+    expect(existsSync(join(root, 'prompts'))).toBe(false);
   });
 
   it('prefers the listing_ref subdir (multi-blueprint repo — the official library layout)', async () => {

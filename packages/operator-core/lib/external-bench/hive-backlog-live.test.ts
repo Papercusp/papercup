@@ -105,6 +105,37 @@ test('the orchestration enrolls the backlog, places via the arm planner, drains,
   assert.ok(result.finishedAtMs >= result.startedAtMs);
 });
 
+test('peakConcurrentBees samples the running fleet even after the frontier drains (counter fix)', async () => {
+  // The single batch placement empties the frontier on the first poll; the bees then come up and run
+  // over the following polls. A frontier-gated sample would miss them (peak stuck at 0). Model that:
+  // frontier is non-empty only on poll 0, but `gatherBees` reports a growing live fleet across polls 1-3
+  // while `countInFlight` keeps the loop alive. The peak (3) must be captured from the post-frontier polls.
+  let beePolls = 0;
+  const liveBees = [
+    [], // poll 0: pre-placement, no bees up yet
+    [{ ownerId: 'bee-a' }],
+    [{ ownerId: 'bee-a' }, { ownerId: 'bee-b' }],
+    [{ ownerId: 'bee-a' }, { ownerId: 'bee-b' }, { ownerId: 'bee-c' }], // peak = 3, frontier already empty
+  ];
+  const { ops } = fakeOps({
+    gatherFrontier: async () =>
+      (beePolls === 0
+        ? TASKS.map((t) => ({ id: t.instanceId, harness: 'm', title: t.instanceId }))
+        : []) as unknown as BatchPlacementInput['tasks'],
+    gatherBees: async () => {
+      const bees = (liveBees[Math.min(beePolls, liveBees.length - 1)] ?? []) as unknown as BatchPlacementInput['bees'];
+      beePolls++;
+      return { bees, headroom: 3 };
+    },
+    countInFlight: async () => (beePolls < 4 ? 1 : 0), // keep the loop alive across the bee-ramp polls
+  });
+  const driver = liveHiveBacklogDriver(ops, { workspaceId: 'ws-1', pollIntervalMs: 1, fleetTimeoutMs: 10_000 });
+  const result = await driver.run(REQ);
+
+  assert.equal(result.runError, undefined);
+  assert.equal(result.peakConcurrentBees, 3, 'peak captured from the post-frontier running window, not just the pre-placement (empty) sample');
+});
+
 test('an arm with NO registered planner → runError, no hive created (not an our-fleet run)', async () => {
   const { ops, calls } = fakeOps();
   const driver = liveHiveBacklogDriver(ops, { workspaceId: 'ws-1' });
