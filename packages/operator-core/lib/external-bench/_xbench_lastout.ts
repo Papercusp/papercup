@@ -1,0 +1,2 @@
+import { getOrgPg } from '@papercusp/db-org';
+(async()=>{const sql=getOrgPg().sql;const ro=await sql`SELECT role, exit_code, started_at, ended_at, length(out_body) ol, left(out_body,1400) ob FROM harness_shared.harness_run_output WHERE harness_slug=${process.argv[2]} ORDER BY started_at DESC LIMIT 1`;console.log(JSON.stringify(ro[0],null,1));await sql.end();})().catch(e=>console.error(e.message));

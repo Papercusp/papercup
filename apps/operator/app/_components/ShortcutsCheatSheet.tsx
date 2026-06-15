@@ -41,7 +41,8 @@ function prettyCombo(raw: string): string[] {
   if (!raw) return [];
   // `isMacPlatform()` (not navigator.platform, which WebKit freezes to "MacIntel"
   // on every OS) so the Linux desktop shows "Ctrl", matching the keys that fire.
-  const modGlyph = isMacPlatform() ? '⌘' : 'Ctrl';
+  const isMac = isMacPlatform();
+  const modGlyph = isMac ? '⌘' : 'Ctrl';
   return raw
     .split(',')
     .map((alt) => alt.trim())
