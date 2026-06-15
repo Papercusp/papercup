@@ -26,6 +26,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
+import { resolveActorIdentity, actorMailboxKeys } from '../actor-identity';
+import { drainAndDeliverUserMailbox } from '../messages';
 import { writePresence, getPresence } from '../presence';
 import { COORD_ROLES } from '../roles';
 import { resolvePlanScope, getPlanRow, planItemsForRow } from '../../plans/source';
@@ -97,6 +99,15 @@ export default defineTool({
       // harness the work is in → resolves the agent's home hive_slug (D-004).
       args.harness ?? null,
     );
+
+    // Offline-member mailbox (shared-hive-collaboration P-016): declaring intent is
+    // the explicit ARRIVAL signal (the OMP hook calls it at session start), so a
+    // returning member's parked `@user:` assignments are delivered into their inbox
+    // here — surfacing in their [coord+N] injection right away. claim-once makes
+    // this a safe no-op alongside the coord:inbox-read hook. Best-effort.
+    await resolveActorIdentity(ctx)
+      .then((actor) => drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId))
+      .catch(() => {});
 
     // Reconcile the declared lane → claims (claim-discipline). Per-item
     // conflicts are reported, never thrown: declaring intent must succeed even

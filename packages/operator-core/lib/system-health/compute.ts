@@ -99,8 +99,9 @@ interface HealthCtx {
 }
 
 /** Run a collector, degrading its own failure to an `unknown` (greyed) panel —
- *  never a fabricated outage. The whole-snapshot correctness floor (D-003). */
-async function panelSafe<T>(
+ *  never a fabricated outage. The whole-snapshot correctness floor (D-003).
+ *  Exported for the fail-soft unit test. */
+export async function panelSafe<T>(
   key: PanelKey,
   run: () => Promise<Omit<HealthPanel<T>, 'key' | 'label' | 'error'>>,
 ): Promise<HealthPanel<T>> {
@@ -712,13 +713,33 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
     plans, escalations, autonomy, observations, improvements, infra, suFleet,
   };
   const overall = worstStatus(Object.values(panels).map((p) => p.status));
-  const queenAlive = queen.data ? queen.data.started && !queen.data.stalled : false;
+  // queenAlive (the who-watches-the-watcher signal, D-004): false ONLY when the
+  // Queen is genuinely DARK — i.e. STALLED. A *paused* Queen is intentionally off,
+  // not dead (started=false, stalled=false → alive), so the overwatch must not
+  // raise a "Queen went dark" anomaly for a deliberate pause (the B-03 semantic
+  // flag). `stalled` already implies started (see collectQueen), so `!stalled`
+  // captures looping + paused + no-hive as alive; an unreadable queen (data null)
+  // is conservatively not-confirmed-alive.
+  const queenAlive = queen.data ? !queen.data.stalled : false;
+
+  // Who-watches-the-watcher reverse leg (overwatch-role-2026-06-15 B-09 / D-004):
+  // fill the `overwatchAlive` stub with overwatch's real liveness. `null` = not
+  // in play (flag off / not started) or not computable — never a false dark.
+  // Dynamic import + fail-soft so the overwatch module can never break the shared
+  // health aggregation.
+  let overwatchAlive: boolean | null = null;
+  try {
+    const { isOverwatchAlive } = await import('../overwatch/cross-monitor');
+    overwatchAlive = await isOverwatchAlive(ws, hiveSlug, { now });
+  } catch {
+    /* leave null — overwatch liveness not computable; null = not-computed (D-004) */
+  }
 
   return {
     workspaceId: ws,
     evaluatedAt: now,
     overall,
-    crossMonitor: { queenAlive, overwatchAlive: null },
+    crossMonitor: { queenAlive, overwatchAlive },
     panels,
   };
 }

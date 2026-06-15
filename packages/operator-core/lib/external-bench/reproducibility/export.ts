@@ -11,6 +11,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
 import { getRollout, getPrereg, listRunResults } from './store';
+import { listFleetRunsFull, getCoordTrace } from './fleet';
 import type { DbScope } from './db';
 
 /** Path-safe slug for a benchmark task id (instance ids carry slashes/colons). */
@@ -24,6 +25,8 @@ export interface ExportResult {
   /** Repo-relative rollout file paths. */
   rolloutFiles: string[];
   count: number;
+  /** Repo-relative L2 fleet-run file paths (Phase 5). */
+  fleetFiles: string[];
 }
 
 /**
@@ -60,6 +63,20 @@ export async function exportRunBundle(
     suites.add(r.suite);
     seeds.add(r.seed);
     graderVersions.add(`${r.graderFamily}@${r.graderVersion}`);
+  }
+
+  // L2 (Phase 5): the fleet runs + their MAST coordination traces.
+  const fleetFiles: string[] = [];
+  const fleetArms = new Set<string>();
+  const fleetRuns = await listFleetRunsFull({ runId, ...scope });
+  for (const fr of fleetRuns) {
+    const trace = await getCoordTrace(fr.fleetRunId, scope);
+    const rel = path.join('benchmarks', 'fleet', runId, `${fr.suite}__${fr.arm}__seed-${fr.seed}.json`);
+    const abs = path.join(repoRoot, rel);
+    mkdirSync(path.dirname(abs), { recursive: true });
+    writeFileSync(abs, `${JSON.stringify({ fleetRun: fr, trace }, null, 2)}\n`, 'utf8');
+    fleetFiles.push(rel);
+    fleetArms.add(fr.arm);
   }
 
   const prereg = await getPrereg({ runId }, scope);

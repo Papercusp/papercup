@@ -45,6 +45,17 @@ For any task that needs context:
 * **Don't call `docs:get` without first calling `docs:outline`** (unless you already know the exact slug). Outline tells you what exists; without it, you guess.
 * **Don't re-fetch the outline mid-run** — it's cached per run. Use what you already have.
 * **Don't use `search:fulltext` for current state.** Use `harness:status` or `harness:list_features` instead — those are authoritative.
+* **Don't trust a code comment as fact.** Verify it — see below.
+
+## When you read code: trust what RUNS, not what the comments say
+
+Code comments, doc-strings, and `## STATUS` / `## HISTORY` headers describe intent **when they were written** — they drift, and stale ones are common: a `// the single source of truth` on a function something newer has since superseded; a "this is the only caller" that's no longer true; a "deprecated" that's actually live, or live-looking code that's actually dead. Before you rely on ANY claim a comment makes, **verify it against the live call graph**:
+
+* **Grep the call sites + imports.** "X is canonical / the only Y / deprecated / always / never" is a *hypothesis* — confirm it by where X is actually called and used, not by what its header says.
+* **Tell live code from dead code.** A file or function can exist, read plausibly, and never run. Check it's reached (imported, wired, behind an *active* flag) before trusting it — `_archived/`, retired surfaces, and flag-off branches are traps.
+* **Two things can both claim to be "the source of truth."** When a comment says so, check whether something newer superseded it (e.g. a runtime const that replaced an older filesystem walk, or vice-versa).
+
+Trust what the code **does** (call sites, usage, the path that actually runs), not what a comment **says** it does. A comment is a lead to verify, never the verdict.
 
 ## Escalating
 

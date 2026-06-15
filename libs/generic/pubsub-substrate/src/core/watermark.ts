@@ -20,6 +20,15 @@ export interface Watermark {
   plan_events_since_ts: string;
   /** msg_ids of subscription `notify`s already surfaced. */
   subscriptions_fired: string[];
+  /**
+   * The cursor advanced past a snapshot the subscriber no longer holds — its
+   * cached read-once baseline was lost (context compaction / fresh resume) while
+   * this durable cursor kept advancing, so on the next read it must RE-BOOTSTRAP
+   * (re-read the full snapshot) before trusting deltas. Set on a session-lifecycle
+   * start, consumed + cleared once on the next read. A read-cursor concept, not
+   * snapshot-payload-specific (presence-v2 D-007 is the first consumer).
+   */
+  snapshot_rebootstrap_pending: boolean;
 }
 
 /** A fresh watermark — everything unread. */
@@ -29,6 +38,7 @@ export function emptyWatermark(): Watermark {
     escalations_since_ts: '',
     plan_events_since_ts: '',
     subscriptions_fired: [],
+    snapshot_rebootstrap_pending: false,
   };
 }
 
@@ -50,6 +60,10 @@ export function normaliseWatermark(parsed: Partial<Watermark> | null | undefined
     subscriptions_fired: Array.isArray(parsed.subscriptions_fired)
       ? parsed.subscriptions_fired.filter((x): x is string => typeof x === 'string')
       : base.subscriptions_fired,
+    snapshot_rebootstrap_pending:
+      typeof parsed.snapshot_rebootstrap_pending === 'boolean'
+        ? parsed.snapshot_rebootstrap_pending
+        : base.snapshot_rebootstrap_pending,
   };
 }
 
@@ -64,5 +78,7 @@ export function mergeWatermark(current: Watermark, patch: Partial<Watermark>): W
     escalations_since_ts: patch.escalations_since_ts ?? current.escalations_since_ts,
     plan_events_since_ts: patch.plan_events_since_ts ?? current.plan_events_since_ts,
     subscriptions_fired: patch.subscriptions_fired ?? current.subscriptions_fired,
+    snapshot_rebootstrap_pending:
+      patch.snapshot_rebootstrap_pending ?? current.snapshot_rebootstrap_pending,
   };
 }

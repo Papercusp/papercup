@@ -90,6 +90,14 @@ export interface QueenBriefFloor {
    * separate hive:status round-trip.
    */
   openPlacements?: OpenPlacementSummary;
+  /**
+   * The OVERWATCH's liveness, as the Queen sees it (overwatch-role-2026-06-15
+   * B-09 / D-004 — the who-watches-the-watcher reverse leg). `true` = overwatch
+   * is alive; `false` = it has gone DARK and the Queen should ESCALATE (she
+   * cannot relaunch it — that is structural). `undefined` = overwatch is not in
+   * play (flag off / not expected) → the cross-monitor line is omitted entirely.
+   */
+  overwatchAlive?: boolean;
 }
 
 /** Per-section list caps so the brief stays a DIGEST, never a raw dump (P-004). */
@@ -253,6 +261,21 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     caps.escalations,
     'curation:feed to drill down',
   );
+
+  // CROSS-MONITOR — the overwatch's liveness (D-004 reverse leg). Rendered only
+  // when overwatch is in play (defined): a DARK overwatch is a critical signal
+  // to ESCALATE (the Queen cannot relaunch it — structural); alive is a quiet
+  // one-liner. Undefined ⇒ overwatch not in play ⇒ omitted (no noise).
+  if (f.overwatchAlive !== undefined) {
+    out.push('');
+    out.push('### Cross-monitor (who-watches-the-watcher)');
+    out.push(
+      f.overwatchAlive
+        ? '- overwatch alive'
+        : '- ⚠ OVERWATCH DARK — your supervisor has gone silent. ESCALATE (coord:escalate / owner); ' +
+            'do not assume the system is being watched. You cannot relaunch overwatch — that is structural.',
+    );
+  }
 
   // CARRY-NOTE — additive second half (P-015). Absent → floor alone (re-derive).
   const note = (input.carryNote ?? '').trim();

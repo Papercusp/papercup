@@ -88,3 +88,22 @@ export function actorUserKey(actor: ActorIdentity): string {
   if (actor.userId) return actor.userId;
   return actor.ownerId;
 }
+
+/**
+ * EVERY stable key a returning session could be addressed by — the inverse of
+ * {@link actorUserKey}'s pick-one. The offline-member mailbox (shared-hive-
+ * collaboration P-016 / drainUserMailbox) addresses an `@user:<actorUserKey>`
+ * slot, but the assigner and the returning member may resolve DIFFERENT rungs of
+ * the ladder: the assigner picks `gh:<id>` from the membership roster, while the
+ * member's own session may only resolve `userId`/`ownerId` today (the dev-box
+ * gh-unauth case actor-identity.ts documents). Draining on ALL of a session's
+ * candidate keys closes that gap — an assignment lands once the member returns,
+ * by whichever key matches. Ordered strongest → weakest; deduped.
+ */
+export function actorMailboxKeys(actor: ActorIdentity): string[] {
+  const keys: string[] = [];
+  if (actor.githubUserId != null) keys.push(`gh:${actor.githubUserId}`);
+  if (actor.userId) keys.push(actor.userId);
+  if (actor.ownerId) keys.push(actor.ownerId);
+  return [...new Set(keys)];
+}

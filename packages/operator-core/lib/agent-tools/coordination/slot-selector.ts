@@ -8,14 +8,26 @@
  *   @role:<role>      — the next agent spawned in that role
  *   @wave:<waveId>    — the next agent dispatched into that wave-lane
  *   @feature:<F-NNN>  — whoever next works that feature
+ *   @user:<key>       — a hive MEMBER who isn't present yet, by their stable
+ *                       actorUserKey (gh:<githubUserId> | <userId> | <ownerId> —
+ *                       see actor-identity.ts). The offline-member-assign mailbox
+ *                       (shared-hive-collaboration P-016): the address is the
+ *                       member's identity, not a live session, so an assignment
+ *                       to an offline member parks until THAT member returns.
  *
  * A `to[]` carrying these is PARKED (./slot-parked-store) instead of delivered to
- * live ownerIds; deliver-on-spawn (P-023) drains them into the spawnee's handoff.
+ * live ownerIds. The DRAIN trigger differs by kind: role/wave/feature drain on
+ * spawn-into-slot (deliver-on-spawn, P-023); a `user` slot drains when the member's
+ * own session RETURNS and resolves the same actorUserKey (drainUserMailbox — an
+ * independent presence/inbox-read hook, NOT the spawn path). One store, one parser,
+ * two drain triggers (su-fc2fd's "build ONE seam" directive).
+ *
  * Pure + dependency-free so it unit-tests without PG — the same core/host split as
- * audience.ts / audience-host.ts.
+ * audience.ts / audience-host.ts. NB the `@user:` ref may itself contain a colon
+ * (`@user:gh:12345`) — the prefix split keeps everything after `@user:` as the ref.
  */
 
-export type SlotKind = 'role' | 'wave' | 'feature';
+export type SlotKind = 'role' | 'wave' | 'feature' | 'user';
 
 export interface SlotSelector {
   kind: SlotKind;
@@ -26,6 +38,7 @@ const SLOT_PREFIX: Record<SlotKind, string> = {
   role: '@role:',
   wave: '@wave:',
   feature: '@feature:',
+  user: '@user:',
 };
 
 /**

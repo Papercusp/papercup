@@ -95,19 +95,24 @@ vocab on the per-task `TaskRunResult`, the fleet vocab (`hive` · `queen-ablated
   it gates on repo-native existing tests + a repro authored from the problem statement.
   This keeps best-of-N from peeking at the held-out grader.
 
-### Fleet-layer arms (provisional vocab — owned by `P-025`)
+### Fleet-layer arms (locked vocab)
 
-- **The Hive arm** (treatment) — a **fleet driver** hands the *whole task SET* to a
-  Hive as a backlog; the Queen places/ranks/evicts and bees run the per-task L1 unit.
-  Bound at the pilot via `setBenchHarnessDriver`, exactly like every other arm.
-- **The Queen-ablated fleet** (the **NEW HEADLINE baseline**, P-023) — the *same* bee
-  fleet and the *same* per-task unit, but with a **naive FIFO / round-robin
-  scheduler** in place of the Queen's intelligent placement. The delta between the
-  Hive arm and this baseline **is the Queen's value**, measured apples-to-apples
-  inside our own system. This supersedes the headline half of D-002.
-- **The native serial-backlog floor** (P-024) — one Claude Code session draining the
-  whole backlog; the serial-throughput floor for the speedup comparison.
-- **Competitor orchestrators** (P-028) — OpenHands(async) / CrewAI / LangGraph over
+Each emits one `FleetRunSummary` per backlog run (`runId`, `suite`, `arm`, `tasks`,
+`resolved`, `wallClockMs`, `costUsd`, `tokensTotal`, `tasksZeroHumanGate`,
+`peakConcurrency?`); the per-task atomic unit stays the locked `TaskRunResult`.
+
+- **`hive`** (treatment) — a **fleet driver** hands the *whole task SET* to a Hive as a
+  backlog; the Queen places/ranks/evicts and bees run the per-task L1 unit. Bound at the
+  pilot via `setBenchHarnessDriver`, exactly like every other arm.
+- **`queen-ablated`** (the **NEW HEADLINE baseline**, P-023) — the *same* bee fleet and
+  the *same* per-task unit, but with a **naive FIFO / round-robin scheduler** in place of
+  the Queen's intelligent placement. The delta between the `hive` arm and this baseline
+  **is the Queen's value**, measured apples-to-apples inside our own system. This
+  supersedes the headline half of D-002.
+- **`native-serial`** (P-024) — one Claude Code session draining the whole backlog; the
+  serial-throughput floor and the **speedup denominator** (`buildHiveReport` computes
+  every arm's `speedupVsSerial` against it).
+- **`openhands-async` · `crewai` · `langgraph`** (P-028) — competitor orchestrators over
   the same backlog + external grader; the *"vs other multi-agent systems"* comparison,
   especially for the L4 coordination claim.
 
@@ -245,19 +250,33 @@ we report against.
    them.
 </Aside>
 
-We compute *our* per-category rates and report them against three references:
+The metric has **two legs** (`scoreMast({ arm, tasks, trace, verdicts }) → MastReport`,
+locked in `@papercusp/bench-metrics`):
 
-1. **The published MAS baseline** (third-party numbers — impartial by construction).
-2. **The Queen-ablated fleet** (our own naive scheduler).
-3. **Other orchestrators** (P-028 — OpenHands-async / CrewAI / LangGraph; with
-   MultiAgentBench/MARBLE, MIT-licensed, cited for its topology framing — the Queen as
-   a *learned* scheduler vs MARBLE's fixed star/chain/tree/graph topologies).
+- **Objective substrate-signal rates — no judge at all.** From the raw `CoordEvent`
+  trace, `substrateSignalRates()` counts *mechanical* failure signals the substrate
+  emits directly: `duplicate_completion`, `orphaned_claim`, `stranded_item`,
+  `lost_handoff`, `claim_conflict`, `superseded_work`, `rework`. These are the most
+  impartial coordination numbers we have — they involve no model judgment, just counts
+  of events the fleet already records.
+- **The LLM-judge per-category rates** — our re-implementation of the 14-mode rubric
+  emits `MastVerdict[]` (`{ mode, failed, taskId? }`) scored into `MastReport.byCategory`
+  (the 3 categories).
+
+We report both against three references: (1) the **published MAS baseline** —
+`MastReport.masBaselineBand` carries the `[0.41, 0.86]` reference band (third-party
+numbers, impartial by construction — re-confirm verbatim before publishing); (2) the
+**Queen-ablated fleet** (our own naive scheduler); (3) **other orchestrators** (P-028 —
+`openhands-async` / `crewai` / `langgraph`; with MultiAgentBench/MARBLE, MIT-licensed,
+cited for its topology framing — the Queen as a *learned* scheduler vs MARBLE's fixed
+star/chain/tree/graph topologies).
 
 The Papercusp substrate is built to suppress exactly these failure modes — `locks`
 (no duplicate edits), `work_items` dedup / redundancy-judge (no duplicate work),
 durable hand-offs (no dropped context) — so this layer measures the substrate's
-designed-for benefit directly. As a **judge-graded** metric it is a coordination-quality
-*diagnostic*, reported alongside the automated-graded headlines, never as one.
+designed-for benefit directly. As a **judge/signal-graded** metric it is a
+coordination-quality *diagnostic*, reported alongside the automated-graded headlines,
+never as one.
 
 ## Contamination handling
 

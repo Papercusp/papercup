@@ -88,6 +88,8 @@ export interface EmitRolloutInput {
   /** Independent-attempt ordinal — ≥3 distinct per (task × arm). */
   seed: number;
   modality: GraderModality;
+  /** The L2 fleet run that placed this task (Phase 5 / D-010); null for standalone L1 arms. */
+  fleetRunId?: string | null;
   generation: {
     status: GenerationStatus;
     error?: string | null;

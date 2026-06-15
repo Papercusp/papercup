@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { canonicalJson } from './canonical-json';
 import { computePreregHash } from './prereg';
 import { rolloutIdFor } from './emit';
+import { fleetRunIdFor } from './fleet';
 
 describe('canonicalJson', () => {
   it('is key-order independent', () => {
@@ -51,6 +52,17 @@ describe('rolloutIdFor', () => {
     expect(base).not.toBe(rolloutIdFor('run1', 'swe-bench-pro', 'task-1', 'papercusp', 1));
     expect(base).not.toBe(rolloutIdFor('run1', 'swe-bench-pro', 'task-1', 'baseline-a-ablation', 0));
     expect(base).not.toBe(rolloutIdFor('run1', 'swe-bench-pro', 'task-2', 'papercusp', 0));
+    expect(base).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('fleetRunIdFor', () => {
+  it('is deterministic and differs per fleet arm, backlog, and seed', () => {
+    const base = fleetRunIdFor('run1', 'swe-bench-pro', 'backlog-A', 'hive', 0);
+    expect(base).toBe(fleetRunIdFor('run1', 'swe-bench-pro', 'backlog-A', 'hive', 0));
+    expect(base).not.toBe(fleetRunIdFor('run1', 'swe-bench-pro', 'backlog-A', 'queen-ablated', 0));
+    expect(base).not.toBe(fleetRunIdFor('run1', 'swe-bench-pro', 'backlog-B', 'hive', 0));
+    expect(base).not.toBe(fleetRunIdFor('run1', 'swe-bench-pro', 'backlog-A', 'hive', 1));
     expect(base).toMatch(/^[0-9a-f]{64}$/);
   });
 });

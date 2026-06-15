@@ -89,6 +89,8 @@ import './hive/create';
 import './hive/create_from_repo';
 // per-hive-learning-loops-2026-06-14 P-071 — opt INTO platform mode ("Papercusp inside Papercusp"):
 import './platform/enable';
+// per-hive-learning-loops-2026-06-14 P-072 — send a local improvement UPSTREAM (fork-PR + Comb learning-pack):
+import './platform/contribute';
 import './hive/dissolve';
 // shared-hive-hardening-2026-06-13 P-012 — a joiner cleanly LEAVES a shared hive:
 import './hive/leave';
@@ -696,6 +698,29 @@ try {
         for (const r of results) {
           if (r.outcome === 'armed' || r.outcome === 'staged') {
             console.warn(`[hive-watchdog] boot ${r.outcome} a fallback wake: ${r.reason}`);
+          }
+        }
+      })
+      .catch(() => {});
+  }
+} catch {
+  /* never block boot */
+}
+
+// overwatch-role-2026-06-15 B-09 / D-004 — the OVERWATCH boot liveness check
+// (crash recovery, who-watches-the-watcher): an overwatch whose host died
+// mid-turn never ran its turn-end hook, so it may sit started with no wake armed.
+// Re-arm the fallback for each GUARDED overwatch. Self-gates on the
+// `papercusp-overwatch` flag + B-07's started bit (no-op until activated).
+// Fail-soft; never blocks boot.
+import { overwatchBootCheck } from '../overwatch/watchdog';
+try {
+  if (backgroundWorkersEnabled()) {
+    void overwatchBootCheck()
+      .then((results) => {
+        for (const r of results) {
+          if (r.outcome === 'armed') {
+            console.warn(`[overwatch-watchdog] boot armed a fallback wake: ${r.reason}`);
           }
         }
       })

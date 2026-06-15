@@ -22,7 +22,7 @@ import { coordLog, coordWorkspaceId, coordSql } from './log';
 import { hasAudienceSelector, expandAudience } from './audience';
 import { hostAudienceResolvers, audienceMode } from './audience-host';
 import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
-import { parkSlotMessage } from './slot-parked-store';
+import { parkSlotMessage, drainUserMailbox } from './slot-parked-store';
 import type { AgentIdentity } from './identity';
 
 export type { InboxOptions };
@@ -151,6 +151,43 @@ export async function readInbox(
 ): Promise<CoordEnvelope[]> {
   const lines = await coordLog.readLines('messages');
   return filterInbox(lines, ownerId, opts);
+}
+
+/**
+ * Deliver any `@user:`-parked messages waiting for a returning member into their
+ * live inbox — the offline-member-assign mailbox (shared-hive-collaboration P-016).
+ *
+ * An assignment to an absent member is parked under `@user:<actorUserKey>`
+ * (slot-parked-store) and writes NO coord_event_log row (a purely-slot send is
+ * delivered by the park alone — see sendMessage). When that member's session
+ * RETURNS, this drains (claim-once) every pending row matching one of their
+ * candidate `keys` (actorMailboxKeys) and re-appends each envelope to the message
+ * log addressed to their live `ownerId`, so it surfaces as a normal inbox card —
+ * the same envelope, so the original assigner (`from`) + summary/body/plan_slug are
+ * preserved. The claim-once UPDATE makes a second session a no-op, so re-delivery
+ * is never a duplicate. Returns the delivered envelopes (the caller may fire an
+ * optimistic inbox-wake on a presence-arrival edge).
+ *
+ * This is the `@user:` analog of the spawn-path deliver-on-spawn (P-023) — same
+ * store, a presence/inbox-read trigger instead of a spawn trigger.
+ */
+export async function drainAndDeliverUserMailbox(
+  keys: readonly string[],
+  ownerId: string,
+): Promise<CoordEnvelope[]> {
+  if (!ownerId || keys.length === 0) return [];
+  const sql = coordSql();
+  const ws = coordWorkspaceId();
+  const drained = await drainUserMailbox(sql, {
+    keys,
+    toOwner: ownerId,
+    nowMs: Date.now(),
+    workspaceId: ws,
+  });
+  for (const env of drained) {
+    await coordLog.appendLine('messages', env.from, { ...env, to: [ownerId] });
+  }
+  return drained;
 }
 
 /**

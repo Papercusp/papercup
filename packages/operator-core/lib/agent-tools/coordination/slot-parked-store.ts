@@ -95,6 +95,60 @@ export async function drainSlotMessages(
     .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
 }
 
+export interface DrainUserMailboxInput {
+  /**
+   * The returning member's candidate stable keys — their actorUserKey forms
+   * (actor-identity.ts): typically `['gh:<githubUserId>', '<userId>', '<ownerId>']`.
+   * A parked `@user:<ref>` row is claimed when its `ref` equals ANY of these, so
+   * an assignment addressed by the assigner's preferred key (e.g. `gh:<id>` from
+   * the membership roster) is delivered even if the returning session resolves a
+   * DIFFERENT rung of the fallback ladder today (the dev-box gh-unauth case).
+   */
+  keys: readonly string[];
+  /** The live ownerId the parked messages are re-delivered to. */
+  toOwner: string;
+  /** epoch ms "now" — also the expiry cutoff. */
+  nowMs: number;
+  workspaceId?: string;
+}
+
+/**
+ * Claim-and-return every pending (un-delivered, un-dropped, un-expired) `@user:`
+ * message parked for ANY of the returning member's `keys` (the offline-member
+ * mailbox — shared-hive-collaboration P-016). Atomic claim: the UPDATE … RETURNING
+ * flips delivered_ts so a concurrent drainer — or the member's *next* session —
+ * can't double-deliver. Expired rows are LEFT for expireStaleSlotMessages so they
+ * drop visibly. Returned in park order (ts then msg_id).
+ *
+ * The sibling of {@link drainSlotMessages}, but the drain TRIGGER differs: a
+ * role/wave/feature slot drains when an agent SPAWNS into it (deliver-on-spawn,
+ * P-023); a `user` slot drains when that MEMBER's own session returns and resolves
+ * one of these keys (an inbox-read / presence-arrival hook — see messages.ts
+ * drainAndDeliverUserMailbox). A user mailbox is identity-scoped, not per-harness,
+ * so harness_slug is not part of the match (an assignment follows the person).
+ */
+export async function drainUserMailbox(
+  sql: postgres.Sql,
+  input: DrainUserMailboxInput,
+): Promise<CoordEnvelope[]> {
+  if (input.keys.length === 0) return [];
+  const ws = input.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  const rows = await sql<{ envelope: CoordEnvelope }[]>`
+    UPDATE harness_shared.slot_parked_messages
+       SET delivered_ts = ${input.nowMs}, delivered_to = ${input.toOwner}
+     WHERE workspace_id = ${ws}
+       AND slot_kind = 'user'
+       AND slot_ref = ANY(${input.keys as string[]})
+       AND delivered_ts IS NULL
+       AND dropped_ts IS NULL
+       AND (ttl_ms IS NULL OR created_ts + ttl_ms > ${input.nowMs})
+     RETURNING envelope
+  `;
+  return rows
+    .map((r) => r.envelope)
+    .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
+}
+
 /**
  * Mark every pending message whose TTL has elapsed as dropped (visibly — the row
  * stays with dropped_reason='ttl-expired' for diagnostics), returning how many.

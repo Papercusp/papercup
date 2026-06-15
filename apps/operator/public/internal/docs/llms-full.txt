@@ -11802,6 +11802,50 @@ Tip
 
 A category-1 (wire) module with no structural predicate isn’t a wire type — it’s a type alias. Add the predicate. Reading “what the wire sends” is the contract; if you trust the wire, you don’t need the type. The predicate is the load-bearing piece.
 
+# Unbounded LLM/IO on a tool's response path drops the MCP transport
+
+> A tool handler that awaits a slow, un-timed-out LLM (or any unbounded IO) call before returning can exceed the MCP CLIENT's request timeout (~60s) under load — the write commits but the caller sees 'transport dropped; response lost' and blind-retries. Keep slow/unbounded work off the response path.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A single tool call (e.g. `memory:remember`) intermittently fails with **“transport dropped; response lost”** — while *other* tools on the **same MCP connection** work fine immediately before and after. The side effect (the DB write) actually **committed**; only the response never arrived. Callers that retry blindly create near-duplicates.
+
+That “only this one tool, only sometimes, but the write landed” shape is the tell: it is **not** a connection teardown and **not** a logic bug. The handler simply took **longer than the MCP client’s request timeout** (the SDK default is \~60s), so the client gave up while the server was still working.
+
+## Why it happens
+
+[Section titled “Why it happens”](#why-it-happens)
+
+The MCP server does **not** enforce a per-call deadline — in this codebase the handler’s `ctx.signal` is `new AbortController().signal` and is **never aborted** (`_mcp-handler.ts`). So the only ceiling on a tool call is the **client’s** timeout. Any handler that `await`s an **unbounded** operation before returning can blow past it:
+
+* an LLM call with **no timeout/abort budget** (the original `memory:remember` awaited mem0’s Haiku “condense” step — `extraction-llm.ts` had no deadline),
+* made worse by the busy dev-box **429 backoff**, which stretches a normally-fast LLM call into tens of seconds,
+* or any slow network/IO fan-out done synchronously on the write path.
+
+The write commits first, then the slow enrichment runs, then the (now-too-late) response is written to a transport the client already abandoned.
+
+## The fix pattern
+
+[Section titled “The fix pattern”](#the-fix-pattern)
+
+**Keep slow, unbounded work off the response path.** Return as soon as the durable part is done. In order of preference:
+
+1. **Remove the slow call from the path** when it isn’t load-bearing for the result. `memory:remember` now stores the agent’s text **verbatim** (`verbatim:true` → mem0 `infer:false`) — no LLM condense call on the explicit-write path (EI-622). The conversation-extraction path keeps the LLM step, where it earns its cost.
+2. **Defer enrichment** — do the minimal durable write, return, run the slow part fire-and-forget (the anchor-persist + sync-invalidate in `remember.ts` already do this).
+3. **Bound it** — if the slow step must run inline, give it a hard timeout well under the client’s, with a fast fallback, so the handler can never outlive the response channel.
+
+Progress notifications (`ctx.progress`) can keep a *cooperating* client’s timer alive, but they’re a **no-op** when the client didn’t send a `progressToken` (`_mcp-handler.ts`), so don’t rely on them as the primary guard.
+
+## Rule of thumb
+
+[Section titled “Rule of thumb”](#rule-of-thumb)
+
+If a tool handler can take more than a few seconds in the worst case, the slow part belongs **off the response path** (removed, deferred, or hard-bounded) — never as a bare `await` the caller’s timeout has to outlast.
+
+Related: [Workspace-agnostic tools need `crossWorkspace: true`](/agent-insights/cross-workspace-tools-and-workspace-required) (the other half of the EI-178 memory-tool cleanup).
+
 # Per-user REST routes must use getSessionUserOrDefault, not a strict 401
 
 > The desktop webview usually carries NO session cookie, so a /user/* route gating on getSessionUser + 401 silently blanks its UI (the settings memory page showed "No memories stored yet." over a 1,700-row store). Per-user data routes fall back to the seeded default user.
@@ -15466,6 +15510,19 @@ For any task that needs context:
 * **Don’t call `docs:get` without first calling `docs:outline`** (unless you already know the exact slug). Outline tells you what exists; without it, you guess.
 * **Don’t re-fetch the outline mid-run** — it’s cached per run. Use what you already have.
 * **Don’t use `search:fulltext` for current state.** Use `harness:status` or `harness:list_features` instead — those are authoritative.
+* **Don’t trust a code comment as fact.** Verify it — see below.
+
+## When you read code: trust what RUNS, not what the comments say
+
+[Section titled “When you read code: trust what RUNS, not what the comments say”](#when-you-read-code-trust-what-runs-not-what-the-comments-say)
+
+Code comments, doc-strings, and `## STATUS` / `## HISTORY` headers describe intent **when they were written** — they drift, and stale ones are common: a `// the single source of truth` on a function something newer has since superseded; a “this is the only caller” that’s no longer true; a “deprecated” that’s actually live, or live-looking code that’s actually dead. Before you rely on ANY claim a comment makes, **verify it against the live call graph**:
+
+* **Grep the call sites + imports.** “X is canonical / the only Y / deprecated / always / never” is a *hypothesis* — confirm it by where X is actually called and used, not by what its header says.
+* **Tell live code from dead code.** A file or function can exist, read plausibly, and never run. Check it’s reached (imported, wired, behind an *active* flag) before trusting it — `_archived/`, retired surfaces, and flag-off branches are traps.
+* **Two things can both claim to be “the source of truth.”** When a comment says so, check whether something newer superseded it (e.g. a runtime const that replaced an older filesystem walk, or vice-versa).
+
+Trust what the code **does** (call sites, usage, the path that actually runs), not what a comment **says** it does. A comment is a lead to verify, never the verdict.
 
 ## Escalating
 
@@ -16094,63 +16151,83 @@ apps/operator/
 
 # Impartial benchmark suite — overview
 
-Draft — methodology frozen, numbers pending the pilot
+Draft — methodology frozen, numbers pending the pilots
 
-This page and [the methodology](/internal/docs/benchmarks/methodology) describe **how** we measure, not **what** we measured. Every headline number is a `TBD-after-pilot` placeholder until the pilot run (`P-009`) lands. No result on these pages may be published to a third party before owner sign-off (`P-017`). Plan of record: `impartial-benchmark-suite-2026-06-15` (`plans:get { slug, harness: 'all' }`).
+This page and [the methodology](/internal/docs/benchmarks/methodology) describe **how** we measure, not **what** we measured. Every headline number is a `TBD-after-pilot` placeholder until the pilots run (`P-009` for the per-task floor; `P-032` for the hive-backlog layer). No result here may be published to a third party before owner sign-off (`P-017`). Plan of record: `impartial-benchmark-suite-2026-06-15` (`plans:get { slug, harness: 'all' }`).
 
 ## What this is
 
 [Section titled “What this is”](#what-this-is)
 
-A benchmark suite we can show **third parties** that credibly demonstrates what the Papercusp **harness system** contributes — not just the ability of the underlying model it runs on.
+A benchmark suite we can show **third parties** that credibly demonstrates what the Papercusp **Hive** contributes — not just the ability of the underlying model it runs on. Per the **D-010 reframe**, the subject under test is the **Hive**: the **Queen** (autonomous placement, ranking, eviction, warm-inject) operating over a **bee fleet** that shares the coordination substrate (`coord:*`, `locks:*`, `work_items:*`, `messages:*`). The per-task `coding` pipeline is a conventional multi-role spine and is *not* the differentiator — the Hive’s autonomous orchestration over a whole backlog is.
 
-The field’s 2026 consensus is that an **agent is a model embedded in an execution system** (`Agent = Model + Harness`), and the harness is responsible for roughly half the performance: scaffold quality alone causes \~22-point swings on identical model weights. Leaderboards like Scale’s run every *model* through *identical* scaffolding to compare models fairly. We do the mirror image:
+The field’s 2026 consensus is that an **agent is a model embedded in an execution system** (`Agent = Model + Harness`), and the harness is roughly half the performance. We hold the model constant and vary the system — and the system we are proving is the **fleet**:
 
-> **Hold the model constant. Vary only the harness.** Measure how much more the same model resolves — on a better cost/accuracy frontier — when it is embedded in Papercusp’s execution system versus the provider’s own native harness.
+> **Hold the model constant. Vary only the Queen.** Measure how much faster, cheaper, more valuable, and less coordination-failure-prone a real backlog is drained by the **Hive** than by the **same fleet with the Queen ablated** (a naive FIFO scheduler).
 
 ## The claim
 
 [Section titled “The claim”](#the-claim)
 
-Per decision **D-001** (framing: *both, system-delta-led*) the headline is a **systems** claim, supported by an **absolute** number and **third-party re-execution**:
+The headline is a **systems** claim (D-001, framing *both, system-delta-led*), supported by an absolute number and third-party re-execution. Under the reframe the “system” is the **Hive** and the headline baseline is the **Queen-ablated fleet** (D-010, superseding the headline half of D-002 — the native harness becomes the L1 / serial-throughput floor):
 
-> *Holding the model constant, the same model embedded in Papercusp’s execution system resolves more real tasks — net of all coordination overhead, at a lower cost — than the same model in the provider’s own native harness.*
+> *Holding the model constant, the Hive drains a real backlog of public tasks faster, cheaper-per-task, with more value captured under a fixed budget, and with fewer coordination failures than the same fleet with the Queen ablated — and its per-task floor matches or beats the provider’s native harness.*
 
-The treatment under test is the **full** Papercusp system (D-004): the coordination substrate (`coord:*`, `locks:*`, `work_items:*`, `messages:*`), the multi-agent spine (scoper → architect → worker → validator → reviewer → documenter → curator), and the blueprint layer. Giving the agents these tools is **the independent variable, not a confounder to strip.**
+## The five measurement layers
+
+[Section titled “The five measurement layers”](#the-five-measurement-layers)
+
+The per-task build wave is the **L1 competence floor** and the atomic unit the fleet places; Phase 5 adds the fleet layers on top.
+
+| Layer                       | Measures                                          | Headline comparison                                      |
+| --------------------------- | ------------------------------------------------- | -------------------------------------------------------- |
+| **L1 competence**           | Per-task resolve rate (pass\@1)                   | Papercusp spine vs native harness / ablation / best-of-N |
+| **L2 throughput**           | Wall-clock speedup, tasks/$, drain time, autonomy | **Hive vs Queen-ablated fleet**                          |
+| **L3 value-capture**        | $ captured under a fixed budget                   | **Hive vs Queen-ablated fleet**                          |
+| **L4 coordination-quality** | Duplication / breakdown / misalignment rates      | Hive vs published MAS baseline + other orchestrators     |
+| **L5 long-horizon**         | Multi-step sequencing                             | Hive vs Queen-ablated fleet                              |
+
+L4 (coordination quality, via the third-party **MAST** taxonomy) is the most differentiated *and* most impartial Hive claim.
 
 ## Impartiality commitments (non-negotiable)
 
 [Section titled “Impartiality commitments (non-negotiable)”](#impartiality-commitments-non-negotiable)
 
-The whole point is that a sophisticated third party cannot discount the result. Our *internal* eval machinery (`iq-battery`, `hive-eval`, the `gym`) is excellent for self-improvement but **worthless as impartial proof** — we author the tasks *and* grade them. Impartiality requires outsourcing both ends (D-005):
+A sophisticated third party discounts our *internal* eval machinery (`iq-battery`, `hive-eval`, the `gym`) to zero — we author the tasks *and* grade them. Impartiality requires outsourcing both ends (D-005):
 
 1. **We don’t author the tasks** — only established public third-party benchmarks.
-2. **We don’t grade** — the benchmark’s *own* official hidden-test harness grades every arm with byte-identical machinery. Where possible we submit to a public leaderboard / the **Artificial Analysis Coding Agent Index** so a third party *re-runs* the result.
-3. **Everything is reproducible** — we publish **rollout records** (the rollout is the unit of reproducibility), full configs, seeds, exact model + harness + grader versions, budgets, and raw grader output. Each run config is **pre-registered in git before the run** so we cannot tune-to-test.
-4. **Firewall** — the `gym` never optimizes on a set this suite reports on (optimize-on and report-on sets are strictly disjoint; enforced in code + CI).
+2. **We don’t grade** — the benchmark’s own official hidden-test harness (or SWE-Lancer’s automated E2E $ grading) grades every arm with byte-identical machinery. Where possible we submit to a public leaderboard / the Artificial Analysis Coding Agent Index so a third party *re-runs* the result.
+3. **Everything is reproducible** — we publish **rollout records** (the rollout is the unit of reproducibility), full configs, seeds, exact versions, and raw grader output, each **pre-registered in git before the run** so we cannot tune-to-test.
+4. **Firewall** — the `gym` never optimizes on a set this suite reports on (statically CI-proven disjoint).
+
+The honesty caveat for the fleet layers
+
+There is **no off-the-shelf public fleet-throughput benchmark**. So L2–L5 impartiality rests on public **tasks** + the external **grader** + the **Queen-ablation baseline** (an apples-to-apples control inside our own system) + **pre-registration**. The Queen-ablation delta is the honest, un-spinnable measure of what the Queen adds — and every cited third-party number (the MAST baseline, any prior-art figure) is re-confirmed verbatim against its source before publishing (D-011).
 
 ## The suite at a glance
 
 [Section titled “The suite at a glance”](#the-suite-at-a-glance)
 
-| Tier                                      | Benchmark                                         | Why                                                            | Grader modality        |
-| ----------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------- | ---------------------- |
-| Contamination-resistant core              | **SWE-bench Pro** (public split)                  | What OpenAI now points to; polyglot                            | M1 offline diff-batch  |
-| Execution / DevOps core                   | **Terminal-Bench 2.0**                            | Real shells in real containers                                 | M2 online in-container |
-| Long-horizon (coordination shines)        | **SWE-EVO**, **RoadmapBench**                     | Multi-file, decomposable — current single agents are weak here | M1                     |
-| Freshness (strongest contamination lever) | **SWE-rebench**, **SWE-bench-Live**               | Auto-mined post-cutoff issues                                  | M1                     |
-| Harness-isolation (air cover)             | **Harness-Bench**                                 | Purpose-built harness comparison; cite methodology now         | M2 (local sandbox)     |
-| Footnote only (retired/saturated)         | SWE-bench Verified, HumanEval/MBPP, LiveCodeBench | Not headline material — see D-006                              | —                      |
+| Tier                            | Benchmark                                         | Why                                                    | Grader                   |
+| ------------------------------- | ------------------------------------------------- | ------------------------------------------------------ | ------------------------ |
+| Contamination-resistant core    | **SWE-bench Pro** (public split)                  | What OpenAI now points to; polyglot                    | M1 offline diff-batch    |
+| Execution / DevOps core         | **Terminal-Bench 2.0**                            | Real shells in real containers                         | M2 online in-container   |
+| Value-capture (L3)              | **SWE-Lancer**                                    | $-weighted real freelance tasks, automated E2E grading | M1 ($-graded)            |
+| Long-horizon (L5)               | **SWE-EVO**, **RoadmapBench**                     | Multi-file, decomposable                               | M1                       |
+| Freshness (contamination lever) | **SWE-rebench**, **SWE-bench-Live**               | Auto-mined post-cutoff issues                          | M1                       |
+| Coordination-quality (L4)       | **MAST** taxonomy                                 | Third-party-defined coordination-failure rubric        | Re-implemented LLM-judge |
+| Harness-isolation (air cover)   | **Harness-Bench**                                 | Cite methodology now; full run deferred                | M2 (local sandbox)       |
+| Footnote only                   | SWE-bench Verified, HumanEval/MBPP, LiveCodeBench | Retired / saturated / model-level (D-006)              | —                        |
 
-The first families (D-003) are **SWE-bench Pro + Terminal-Bench 2.0** as the core, plus **one long-horizon set** so the coordination advantage is actually exercised.
+The first families (D-003) are **SWE-bench Pro + Terminal-Bench 2.0** as the core, plus one long-horizon set. UpBench is cited as economic framing only — it is proprietary + human-graded, so **not runnable** (D-011).
 
 ## How it’s measured (in one breath)
 
 [Section titled “How it’s measured (in one breath)”](#how-its-measured-in-one-breath)
 
-* **Three baselines, run all three** — **A** internal ablation (causal proof), **B** native harness / Claude Code (the **headline**, strawman-proof), **C** best-of-N at matched budget (proves the tokens are justified).
-* **Cost is the load-bearing control** — iso-budget cap on generation + a cost/accuracy Pareto with coordination overhead counted in *our* number + a match against best-of-N.
-* **Statistics** — pass\@1 over **≥3 seeds with confidence intervals**, the *same* pass\@k protocol on every arm.
+* **L1 — three baselines, all three:** native harness / Claude Code (now the serial floor), ablation (causal proof), best-of-N (tokens-justified). Headline metric: pass\@1 over ≥3 seeds with confidence intervals, iso-budget + cost/accuracy Pareto.
+* **L2–L5 — Hive vs Queen-ablated fleet:** throughput (tasks/$, speedup), value under a fixed budget, and MAST coordination-failure rates.
+* **Cost counted honestly:** `tokens_total` sums over *every* role / bee / hand-off / coordination message; `cost_usd` is derived from raw tokens at a pinned price table.
 
 Full detail: **[Methodology →](/internal/docs/benchmarks/methodology)**.
 
@@ -16158,94 +16235,121 @@ Full detail: **[Methodology →](/internal/docs/benchmarks/methodology)**.
 
 [Section titled “Reproduce it yourself”](#reproduce-it-yourself)
 
-The suite is built to be re-run by anyone. The clone-and-run instructions, the run-result schema, and the pre-registered-config layout live in the reproducer README that ships with the suite: **`benchmarks/README.md`** at the repo root.
+The suite is built to be re-run by anyone. The clone-and-run instructions, the locked run-result schema, and the pre-registered-config layout live in the reproducer README that ships with the suite: **`benchmarks/README.md`** at the repo root.
 
 ## Status & references
 
 [Section titled “Status & references”](#status--references)
 
 * **Plan:** `impartial-benchmark-suite-2026-06-15` (`plans:get { slug, harness: 'all' }`).
-* **Feasibility + grader-interface spec (D-008):** `apps/operator/docs/external-bench-grader-feasibility-2026-06-15.md`.
-* **Decisions:** D-001 (claim framing), D-002 (native harness is headline), D-003 (first families), D-004 (treatment = full substrate), D-005 (we neither author nor grade), D-006 (Verified retired), D-007 (Evaluation dock-tab UI), D-008 (two grader modalities).
-* **Key external sources:** OpenAI “Why we no longer evaluate SWE-bench Verified” (2026-02); Harness-Bench (arXiv 2605.27922); SWE-bench Pro (arXiv 2509.16941); Terminal-Bench 2.0; “AI Agents That Matter” (arXiv 2407.01502, cost-controlled Pareto); METR capability-elicitation; “Large Language Monkeys” (arXiv 2407.21787); Rollout Cards (arXiv 2605.12131); Artificial Analysis Coding Agent Index.
+* **Feasibility spikes:** L1 grader interface — D-008 / `apps/operator/docs/external-bench-grader-feasibility-2026-06-15.md`; fleet instruments — D-011 / `apps/operator/docs/hive-instrument-feasibility-2026-06-15.md`.
+* **Decisions:** D-001 (claim framing), D-002 (superseded headline → D-010), D-003 (families), D-004 (treatment = full substrate), D-005 (we neither author nor grade), D-006 (Verified retired), D-007 (Evaluation dock-tab), D-008 (two grader modalities), D-009 (external-bench `extends coding`), **D-010 (benchmark the Hive)**, **D-011 (fleet-instrument go/no-go)**.
+* **Key external sources:** OpenAI “Why we no longer evaluate SWE-bench Verified” (2026-02); Harness-Bench (arXiv 2605.27922); SWE-bench Pro (arXiv 2509.16941); Terminal-Bench 2.0; SWE-Lancer (arXiv 2502.12115); MAST taxonomy (arXiv 2503.13657, NeurIPS 2025); MultiAgentBench/MARBLE (arXiv 2503.01935); OpenHands CAID (arXiv 2603.21489); “AI Agents That Matter” (arXiv 2407.01502); METR elicitation; “Large Language Monkeys” (arXiv 2407.21787); Rollout Cards (arXiv 2605.12131); Artificial Analysis Coding Agent Index.
 
 # Methodology — the controlled comparison
 
-Draft — numbers pending the pilot (P-009)
+Draft — numbers pending the pilots; every external figure verified verbatim before publishing
 
-This describes the protocol, not the results. Every quantitative claim below is a `TBD-after-pilot` placeholder until `P-009` (the \~50-task SWE-bench Pro + Terminal-Bench slice runs). Nothing here is published to a third party before owner sign-off (`P-017`).
+This describes the protocol, not results. Every quantitative claim is a `TBD-after-pilot` placeholder until the pilots run (`P-009` for the L1 per-task floor; `P-032` for the L2–L4 hive-backlog layer). The fleet-layer instruments are now grounded in the hive-instrument feasibility spike (**D-011**, the fleet-layer analog of the L1 grader spike D-008). **Any cited third-party number (the MAST baseline, any prior-art figure) MUST be re-confirmed verbatim against its source at publication time** — an unsourced quantitative claim in an impartiality doc is a credibility risk (D-011 §4). Nothing is published before owner sign-off (`P-017`).
 
-This is the long-form companion to the [overview](/internal/docs/benchmarks/). It specifies exactly what is held constant, the three baselines, the cost model, contamination handling, the grader interface, and how the whole thing maps onto Papercusp machinery. The operational re-run steps are in the reproducer README (`benchmarks/README.md`).
+This is the long-form companion to the [overview](/internal/docs/benchmarks/). It specifies what is held constant, the measurement layers, the arms and baselines, the cost model, contamination handling, the grader interface, the locked run-result schema, and how the whole thing maps onto Papercusp machinery. The operational re-run steps are in the reproducer README (`benchmarks/README.md`).
 
-## The thesis under test
+## What we benchmark: the Hive, not the per-task harness
 
-[Section titled “The thesis under test”](#the-thesis-under-test)
+[Section titled “What we benchmark: the Hive, not the per-task harness”](#what-we-benchmark-the-hive-not-the-per-task-harness)
 
-The **treatment** is the *full* Papercusp execution system, not the base model and not a stripped-down toy of it (D-004). The unit the field now agrees is correct is **a model embedded in an execution system** — agent performance is a property of that pair, not the weights alone. So the comparison fixes the model and varies the system around it:
+Per the **D-010 reframe**, the subject under test is the **Hive** — the **Queen** (autonomous placement, ranking, eviction, and warm-inject) operating over a **bee fleet** that shares the coordination substrate (`coord:*`, `locks:*`, `work_items:*`, `messages:*`). The per-task `coding` pipeline is a conventional multi-role spine and is *not* the differentiator; the Hive’s autonomous orchestration over a whole backlog is.
 
-> Holding the model constant, the same model embedded in Papercusp resolves more real tasks, on a strictly better cost/accuracy frontier, than the same model in any other available execution system — including the provider’s own native harness.
+The per-task build wave is **not wasted** — it is the **L1 competence floor** and the **atomic unit the fleet places**. Everything the field already agrees on for single-task agent evaluation (`Agent = Model + Harness`, hold the model constant, vary the system) holds at L1; the Hive layers add the fleet dimension on top.
+
+> Holding the model constant, the **Hive** drains a real backlog of public tasks faster, cheaper-per-task, with more value captured under a fixed budget, and with fewer coordination failures than the **same fleet with the Queen ablated** — and its per-task floor matches or beats the provider’s native harness.
+
+## The five measurement layers
+
+[Section titled “The five measurement layers”](#the-five-measurement-layers)
+
+| Layer                       | What it measures                                                                        | Headline comparison                                               | Instruments                                                                                                |
+| --------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **L1 competence floor**     | Per-task resolve rate (pass\@1)                                                         | Papercusp spine vs native harness / ablation / best-of-N          | SWE-bench Pro, Terminal-Bench (external graders)                                                           |
+| **L2 throughput**           | Wall-clock speedup, tasks/$, backlog-drain time, autonomy (% done with zero human gate) | **Hive vs Queen-ablated fleet**                                   | Whole benchmark as a backlog; speedup is *our own measured* number (no public throughput benchmark exists) |
+| **L3 value-capture**        | $ captured under a **fixed budget**                                                     | **Hive vs Queen-ablated fleet**                                   | SWE-Lancer ($-weighted, built-in grading); UpBench *not currently runnable* (P-029)                        |
+| **L4 coordination-quality** | Duplication / coordination-breakdown / misalignment rates                               | Hive vs the published MAS baseline **and** vs other orchestrators | MAST failure taxonomy over rollout + coordination traces                                                   |
+| **L5 long-horizon**         | Multi-step sequencing under one backlog                                                 | Hive vs Queen-ablated fleet                                       | RoadmapBench, SWE-EVO                                                                                      |
+
+L2–L4 are the differentiated claims; **L4 (coordination quality) is the most differentiated *and* most impartial** Hive claim — see [below](#l4-coordination-quality-the-mast-taxonomy). The exact metric names, MAST scoring rubric, and value-capture mechanics are owned by `P-025` (throughput), `P-026` (MAST), and `P-027` (value-capture); the instrument feasibility (licenses, grading, integration cost) is settled by `P-029` / **D-011** (`apps/operator/docs/hive-instrument-feasibility-2026-06-15.md`).
+
+**Grading-tier principle (D-011 §5):** *automated-graded sets carry the headline; judge/rubric-graded sets are diagnostics.* SWE-bench Pro / Terminal-Bench / SWE-Lancer (automated, external) carry L1/L3 headlines; the MAST LLM-judge (L4) and MARBLE milestone-KPIs are coordination-quality diagnostics, reported alongside but never *as* the headline pass/fail.
+
+## The arms
+
+[Section titled “The arms”](#the-arms)
+
+The arm an entity plays is carried verbatim on every run-result row. **Both the L1 and the fleet-layer arm vocabularies are now locked** in `@papercusp/bench-metrics`: the L1 vocab on the per-task `TaskRunResult`, the fleet vocab (`hive` · `queen-ablated` · `native-serial` · `openhands-async` · `crewai` · `langgraph`) on the `FleetRunSummary`.
+
+### L1 per-task arms (locked vocab)
+
+[Section titled “L1 per-task arms (locked vocab)”](#l1-per-task-arms-locked-vocab)
+
+* **`papercusp`** — the full `coding` spine (scoper → architect → worker → validator → reviewer → documenter → curator) run as a throwaway harness. This is the `external-bench` blueprint, which **`extends: coding` and overrides nothing** (D-009) — so a fairness auditor confirms *“the benchmark arm is the shipped product”* by diffing two blueprint files.
+* **`baseline-a-ablation`** — the spine collapsed to a single worker (`coding-solo`, which `extends: single-agent`): identical tools / model / infra / budget, the **only** difference being orchestration OFF vs ON. Both arms are spun by **one shared `instantiateBenchHarness` port**, differing **only by `blueprintId`** — so any L1 delta is attributable to coordination itself.
+* **`baseline-b-native`** — the same model in its **own provider harness** (Claude in Claude Code), elicited to its best (the standalone native runner, *not* the single-worker primitive — it spawns the `claude` CLI’s own agent loop). Under the reframe this is the **L1 / serial-backlog floor**, not the headline.
+* **`baseline-c-bestofn`** — a single agent sampled N times with a test-verifier at a matched token budget; proves the per-task tokens are justified. The verifier is **visible-only by construction**: it receives a `VisibleTask` with `graderMeta` stripped, so it literally cannot read `FAIL_TO_PASS` / the test patch / the grader — it gates on repo-native existing tests + a repro authored from the problem statement. This keeps best-of-N from peeking at the held-out grader.
+
+### Fleet-layer arms (locked vocab)
+
+[Section titled “Fleet-layer arms (locked vocab)”](#fleet-layer-arms-locked-vocab)
+
+Each emits one `FleetRunSummary` per backlog run (`runId`, `suite`, `arm`, `tasks`, `resolved`, `wallClockMs`, `costUsd`, `tokensTotal`, `tasksZeroHumanGate`, `peakConcurrency?`); the per-task atomic unit stays the locked `TaskRunResult`.
+
+* **`hive`** (treatment) — a **fleet driver** hands the *whole task SET* to a Hive as a backlog; the Queen places/ranks/evicts and bees run the per-task L1 unit. Bound at the pilot via `setBenchHarnessDriver`, exactly like every other arm.
+* **`queen-ablated`** (the **NEW HEADLINE baseline**, P-023) — the *same* bee fleet and the *same* per-task unit, but with a **naive FIFO / round-robin scheduler** in place of the Queen’s intelligent placement. The delta between the `hive` arm and this baseline **is the Queen’s value**, measured apples-to-apples inside our own system. This supersedes the headline half of D-002.
+* **`native-serial`** (P-024) — one Claude Code session draining the whole backlog; the serial-throughput floor and the **speedup denominator** (`buildHiveReport` computes every arm’s `speedupVsSerial` against it).
+* **`openhands-async` · `crewai` · `langgraph`** (P-028) — competitor orchestrators over the same backlog + external grader; the *“vs other multi-agent systems”* comparison, especially for the L4 coordination claim.
 
 ## Fairness protocol — what is held constant
 
 [Section titled “Fairness protocol — what is held constant”](#fairness-protocol--what-is-held-constant)
 
-Every arm in a comparison gets an **identical environment**; only the harness changes. Held constant across **every** arm:
+Every arm in a comparison gets an **identical environment**; only the harness / orchestrator changes. Held constant across **every** arm:
 
-* **Model** — exact model id + reasoning-effort + temperature + max-tokens.
-* **Base tool capabilities** — read / edit / bash / test-exec / search. (Baseline A holds these *byte-identical*; Baseline B already ships excellent base tools.)
+* **Model** — exact model id + reasoning-effort + temperature + max-tokens. (Exception: `baseline-b-native` runs at **Claude Code’s native sampling** — the `claude-code` backend deliberately ignores our temperature/max-tokens, because *native = native* is the whole point of the strawman-proof baseline. It is turn/wall-clock-capped and post-hoc-normalized instead of token-capped.)
+* **Base tool capabilities** — read / edit / bash / test-exec / search.
 * **Web access** — on or off, the *same* for all arms.
 * **Task instances** — the exact same public task set and splits.
-* **External grader** — the *same* `OfficialGrader` instance + the same pinned `graderVersion` grades all arms for a given task/seed (see [Grading](#grading--the-official-harness-is-arm-agnostic)).
-* **Infra-failure retry policy** — identical (a Docker image pull failure is not a task failure; see `graderError` below).
-* **Automation level** — no human gate for any arm (or an identical gate for all).
+* **External grader** — the *same* `OfficialGrader` instance + pinned `graderVersion` grades all arms for a given task/seed.
+* **Infra-failure retry policy** — identical (an image-pull failure is not a task failure; see `grader_error`/`generation_status` below).
+* **Automation level** — no human gate for any arm (autonomy itself is *measured* at L2, not differentially granted).
 
-**Vary only the harness.** The harness is the independent variable; everything else is a control.
+**Vary only the harness / orchestrator.** At L1 the variable is the spine; at L2–L5 the variable is the Queen.
 
-Why we do NOT equalize the tools
+Why the Queen-ablation baseline carries the fairness load
 
-“Fair” here means holding the model / task / grader / cost-axis constant and being transparent about each full stack — **not** giving every arm the same tools. The coordination substrate *is* the treatment. This is exactly how Harness-Bench and the Artificial Analysis Coding Agent Index compare full model+harness *stacks*: each harness keeps its native execution behavior (D-004).
+There is **no off-the-shelf public fleet-throughput benchmark**. So impartiality at L2–L5 rests on four legs: public **tasks**, the benchmark’s **external grader** (or SWE-Lancer’s automated E2E $ grading), the **Queen-ablation baseline** (an apples-to-apples control *inside our own system* — same fleet, same workers, same substrate, only the scheduler differs), and **pre-registration**. The Queen-ablation delta is the honest, un-spinnable measure of what the Queen adds.
 
-## The three baselines — run all three
+## The L1 baselines — run all three
 
-[Section titled “The three baselines — run all three”](#the-three-baselines--run-all-three)
+[Section titled “The L1 baselines — run all three”](#the-l1-baselines--run-all-three)
 
-Each baseline closes a hole a skeptic would otherwise walk through. Run **all three**; any one alone is attackable, together they are airtight.
+At the competence floor, three baselines each close a hole a skeptic would otherwise walk through:
 
-### Baseline A — internal ablation (the clean causal isolation)
-
-[Section titled “Baseline A — internal ablation (the clean causal isolation)”](#baseline-a--internal-ablation-the-clean-causal-isolation)
-
-Papercusp with the multi-agent spine **collapsed to a single worker agent**: identical tools, model, infra, shared prompts, and budget — the **only** difference is orchestration **OFF vs ON**. This isolates the causal claim: a delta here is *purely* the coordination, not more compute or better plumbing. (Natural home for the existing `ablation_report` / gym A/B machinery, run as an internal experiment.)
-
-### Baseline B — native harness (the HEADLINE, strawman-proof)
-
-[Section titled “Baseline B — native harness (the HEADLINE, strawman-proof)”](#baseline-b--native-harness-the-headline-strawman-proof)
-
-The same model in its **own provider harness** — e.g. Claude (the same Opus) in **Claude Code** — elicited to its best, **not** a deliberately weak toy scaffold. This is the headline (D-002): beating the provider’s shipped agent is what a buyer cares about, and it is immune to *“you nerfed the baseline.”*
+* **A (ablation)** proves the architecture is the cause (orchestration is the only variable).
+* **B (native harness)** proves the floor matches/beats the best real single-agent alternative — and is immune to *“you nerfed the baseline”* because it is the provider’s own shipped agent, elicited to best.
+* **C (best-of-N)** proves the per-task tokens are justified at matched budget.
 
 Anti-strawman discipline (METR elicitation)
 
-Elicit each baseline’s *best* performance — recommended config, full tool access, chain-of-thought, retries — and fix “spurious” failures rather than scoring them. The tell: **if a baseline fails even easy tasks, the elicitation is broken, not the baseline.** Models are tuned for their native harness, so a generic minimal scaffold (e.g. mini-SWE-agent) *understates* them — using it as the baseline would be unfair *in our favor*, and a skeptic will call it. Never hand a baseline a worse setup than we’d give ourselves.
-
-### Baseline C — best-of-N at matched cost (the “worth the tokens” control)
-
-[Section titled “Baseline C — best-of-N at matched cost (the “worth the tokens” control)”](#baseline-c--best-of-n-at-matched-cost-the-worth-the-tokens-control)
-
-A single agent sampled **N times with a test-verifier**, at the **same token budget** as Papercusp. Repeated sampling + a verifier is a strong, cheap baseline; if Papercusp does not beat it at equal cost, the orchestration is not earning its tokens.
-
-**A** proves the architecture is the cause; **B** proves we beat the best real alternative; **C** proves the extra tokens are justified.
+Elicit each baseline’s *best* performance — recommended config, full tool access, chain-of-thought, retries — and fix “spurious” failures rather than scoring them. The tell: **if a baseline fails even easy tasks, the elicitation is broken, not the baseline.** Never hand a baseline a worse setup than we’d give ourselves. This applies equally to the Queen-ablated fleet and the competitor orchestrators (P-028) — run them to *their* best.
 
 ## Cost model — the load-bearing control
 
 [Section titled “Cost model — the load-bearing control”](#cost-model--the-load-bearing-control)
 
-A multi-agent system spends more tokens (many roles, hand-offs, locks). *“We win”* must never secretly mean *“we spent 7×.”* We report **three honest framings, all three**:
+A multi-agent system (and a whole fleet even more so) spends more tokens. *“We win”* must never secretly mean *“we spent 7×.”*
 
-1. **Iso-budget** — cap every arm at the same total tokens (or `$`). The cap lives on the **generation** side; grading is uncapped and identical (it makes no model calls).
-2. **Cost/accuracy Pareto** — plot every arm on a cost-vs-resolved frontier and show Papercusp on a strictly better point (more resolved per dollar), with **all coordination overhead counted inside our own cost number**. The headline becomes *“net of all coordination overhead, better per dollar.”*
-3. **Match against best-of-N** (Baseline C) at the same budget.
-
-**Accounting rule:** the cost number for the Papercusp arm includes *every* token the system spends — every role spawn, every hand-off, every coordination message — not just the worker’s tokens. Under-counting coordination overhead would be the single easiest way to cheat this comparison, so we do the opposite and count it all.
+* **L1 — iso-budget + cost/accuracy Pareto.** Cap every arm at the same generation budget; plot the cost-vs-resolved frontier with **all coordination overhead counted inside our own cost number**; match against best-of-N.
+* **L2 — tasks/$ and $/task** across the whole backlog drain, Hive vs Queen-ablated fleet.
+* **L3 — value captured under a FIXED budget** — the Queen must turn a budget into more graded $ of completed work than the naive scheduler.
+* **The accounting rule everywhere:** `tokens_total` is the **sum over every agent and role** — every Queen decision, every bee, every hand-off, every coordination message (and for best-of-N, all N candidates + the verifier). Under-counting coordination overhead is the single easiest way to fake a win, so the suite counts it all and reports *“net of all coordination overhead, better per dollar.”* `cost_usd` is **derived** from raw tokens at emit time via `priceRun()` against a pinned `price_table_version`; tokens are canonical, dollars are re-derivable.
 
 ### Statistics
 
@@ -16253,156 +16357,161 @@ A multi-agent system spends more tokens (many roles, hand-offs, locks). *“We w
 
 * **pass\@1 averaged over ≥3 seeds with confidence intervals** — these benchmarks are noisy; a single sample is not a result.
 * **The *same* pass\@k protocol on every arm** — never our-pass\@5 vs their-pass\@1.
-* **pass^k** (all-k-succeed) when reliability/consistency is part of the story.
-* On SWE-bench Pro the seed is carried as the submission `prefix` (one `prefix` per seed); see the reproducer README.
+* A run is **scoreable** only if `generation_status='completed'` **and** `grader_status ∈ {passed, failed}` (so `resolved` is non-null). Infra rows (generation error/timeout/budget-exhausted, or grader error/timeout) set `resolved = NULL`, are **excluded from accuracy**, and are reported as separate counts — METR says retry first, never score an infra failure as a genuine fail.
+
+## L2 throughput & L3 value-capture
+
+[Section titled “L2 throughput & L3 value-capture”](#l2-throughput--l3-value-capture)
+
+**L2 — throughput.** Hand the *whole* benchmark to the Hive as a backlog and measure wall-clock speedup, tasks/$, backlog-drain time, and autonomy (% completed with zero human gate) against the Queen-ablated fleet and the native serial floor (`P-024`). There is **no public fleet-throughput benchmark**, so the **speedup is our own measured number** — impartiality comes from public tasks + the external grader + the Queen-ablation control + pre-registration, never from a borrowed throughput score. The closest published analog is **OpenHands async / CAID** (arXiv 2603.21489 — dependency-aware concurrent branch-and-merge, the nearest prior art to a Queen+fleet); cite it for the *architecture*, **not** as a speedup source — it (and the OpenHands async-SWE blog) report **accuracy** gains, not throughput multipliers (D-011 §4). It also notes returns diminish once agent count exceeds the number of parallelizable subtasks — a result our own throughput curve should expect to reproduce.
+
+**L3 — value-capture.** Under a **fixed budget**, measure the dollar value of completed work the Queen’s placement captures versus the naive scheduler. The runnable instrument is **SWE-Lancer** (arXiv 2502.12115 — $1M of real freelance SWE tasks, public, **automated end-to-end test grading**), which reuses the L1 M1 diff→grader path directly (`P-027`). **UpBench** (arXiv 2511.12306) is proprietary to Upwork and **human-graded per submission** — not programmatically re-runnable — so it is cited as economic-framing motivation only, never run (D-011 §1).
+
+## L4 coordination-quality (the MAST taxonomy)
+
+[Section titled “L4 coordination-quality (the MAST taxonomy)”](#l4-coordination-quality-the-mast-taxonomy)
+
+The most differentiated and most impartial Hive claim — because *someone else* defined what counts as a coordination failure. The **MAST failure taxonomy** (arXiv 2503.13657, NeurIPS 2025; built from 1,600+ annotated traces across 7 MAS frameworks) defines **14 failure modes in 3 categories**: (i) **system-design**, (ii) **inter-agent misalignment**, (iii) **task verification**. The paper’s headline finding — multi-agent systems fail a large fraction of the time in production, with substantial token/role-duplication and inter-agent-misalignment rates — is the third-party baseline we report against.
+
+Two MAST prerequisites (D-011 §2) — do not skip
+
+1. **License — re-implement, don’t run their code.** The MAST repo has **no declared license**. Citing the published numbers + methodology is fair use; **running their LLM-judge notebook or redistributing derived results is not clean.** So we **re-implement the published 14-mode / 3-category rubric through our own LLM-judge** — this sidesteps the license entirely *and* keeps the metric impartial (the taxonomy is fully published).
+2. **Verify the figures verbatim.** The exact baseline percentages (MAS-failure rate, duplication, misalignment) must be re-confirmed against arXiv 2503.13657v2 at publication time — **never paraphrased loosely** in an impartiality doc.
+3. **Trace schema is a cross-brief dependency.** `P-010`’s rollout/coordination-event capture must emit our fleet events (locks, `work_items` dedup / redundancy-judge, durable hand-offs, misalignment) in a **MAST-convertible shape**; `P-026` scores them.
+
+The metric has **two legs** (`scoreMast({ arm, tasks, trace, verdicts }) → MastReport`, locked in `@papercusp/bench-metrics`):
+
+* **Objective substrate-signal rates — no judge at all.** From the raw `CoordEvent` trace, `substrateSignalRates()` counts *mechanical* failure signals the substrate emits directly: `duplicate_completion`, `orphaned_claim`, `stranded_item`, `lost_handoff`, `claim_conflict`, `superseded_work`, `rework`. These are the most impartial coordination numbers we have — they involve no model judgment, just counts of events the fleet already records.
+* **The LLM-judge per-category rates** — our re-implementation of the 14-mode rubric emits `MastVerdict[]` (`{ mode, failed, taskId? }`) scored into `MastReport.byCategory` (the 3 categories).
+
+We report both against three references: (1) the **published MAS baseline** — `MastReport.masBaselineBand` carries the `[0.41, 0.86]` reference band (third-party numbers, impartial by construction — re-confirm verbatim before publishing); (2) the **Queen-ablated fleet** (our own naive scheduler); (3) **other orchestrators** (P-028 — `openhands-async` / `crewai` / `langgraph`; with MultiAgentBench/MARBLE, MIT-licensed, cited for its topology framing — the Queen as a *learned* scheduler vs MARBLE’s fixed star/chain/tree/graph topologies).
+
+The Papercusp substrate is built to suppress exactly these failure modes — `locks` (no duplicate edits), `work_items` dedup / redundancy-judge (no duplicate work), durable hand-offs (no dropped context) — so this layer measures the substrate’s designed-for benefit directly. As a **judge/signal-graded** metric it is a coordination-quality *diagnostic*, reported alongside the automated-graded headlines, never as one.
 
 ## Contamination handling
 
 [Section titled “Contamination handling”](#contamination-handling)
 
-The 2026 lesson (D-006): **SWE-bench Verified is effectively retired** — OpenAI stopped reporting it on 2026-02-23 after an audit found **59.4% of the hardest problems had flawed/unsolvable tests**, and every frontier model shows training-set contamination (models at \~80% on Verified drop to \~23% on contamination-resistant Pro). We use Verified only as a legacy comparability footnote, never the headline. Same for HumanEval/MBPP (saturated) and LiveCodeBench (contamination-free but *model*-level, not harness-level).
+The 2026 lesson (D-006): **SWE-bench Verified is effectively retired** — OpenAI stopped reporting it on 2026-02-23 after an audit found **59.4% of the hardest problems had flawed/unsolvable tests**, and every frontier model shows contamination (models at \~80% on Verified drop to \~23% on contamination-resistant Pro). Verified is a legacy footnote only; same for HumanEval/MBPP (saturated) and LiveCodeBench (contamination-free but *model*-level, not harness-level).
 
-Our defenses, in order of strength:
+Defenses, in order of strength:
 
-* **Contamination-resistant headline sets** — SWE-bench Pro (public + a held-out private commercial split) and Terminal-Bench 2.0.
-* **Fresh / live sets** (the strongest lever) — SWE-rebench (\~21k auto-mined *post-cutoff* issues) and SWE-bench-Live (weekly auto-updating). Maintained for us, so no hand-built post-cutoff set is needed.
-* **Pre-registration** — each run config is committed to git **before** the run, so we cannot tune to the test after seeing results.
-* **Gym ↔ report firewall** (D-005, enforced in code + CI) — the `gym` may never optimize on any set this suite reports on. Optimize-on and report-on stay strictly disjoint; intersecting them would contaminate our own impartiality claim.
-* **Hardened graders** — prefer graders augmented against false-positive passes (UTBoost-style test augmentation); drop flawed-grader benchmarks from the headline.
+* **Contamination-resistant headline sets** — SWE-bench Pro and Terminal-Bench 2.0.
+* **Fresh / live sets** (the strongest lever) — SWE-rebench (\~21k auto-mined *post-cutoff* issues) and SWE-bench-Live (weekly auto-updating).
+* **Pre-registration** — each run config is committed to git **before** the run (see [pre-registration](#pre-registration--reproducibility)).
+* **Gym ↔ report firewall** (D-005, enforced in code + CI) — the realized mechanism is `packages/operator-core/lib/gym/report-set-firewall.ts`: the gym’s optimize-on sets (`gym-synthetic`, `gym-real-anchor`) and the report-on suites (`REPORT_ON_SUITES`) are declared, **statically proven disjoint in CI**, and the gym’s task-ingestion choke point (`insertTask`) refuses any task that fingerprints to a report-on benchmark (`taskFingerprint` normalizes repo\@commit across URL variants). `REPORT_ON_SUITES` is also the canonical `suite` vocabulary for the run-result row, so the firewall and the results schema cannot drift.
+* **Hardened graders** — prefer graders augmented against false-positive passes (UTBoost-style); drop flawed-grader benchmarks from the headline.
 
 ## The benchmark must EXERCISE coordination
 
 [Section titled “The benchmark must EXERCISE coordination”](#the-benchmark-must-exercise-coordination)
 
-The coordination advantage only shows up when there is something to coordinate. On a 3-line single-file bug fix, hand-offs / decomposition / locks / multi-role review have nothing to do, and we would measure noise. The suite is therefore **weighted toward long-horizon, multi-file, decomposable tasks** (SWE-EVO, RoadmapBench, the harder SWE-bench Pro instances) where current single agents are weak — e.g. GPT-5.4 + OpenHands gets only \~25% on SWE-EVO. That headroom is where the spine should open a visible, attributable gap.
+The coordination advantage only shows up when there is something to coordinate. A single 3-line bug fix exercises neither the spine (L1) nor the Queen (L2–L5). So the suite is **weighted toward long-horizon, multi-file, decomposable backlogs** (SWE-EVO, RoadmapBench, the harder SWE-bench Pro instances) where current single agents are weak — e.g. GPT-5.4 + OpenHands gets only \~25% on SWE-EVO. That headroom is where both the spine and the Queen should open a visible, attributable gap.
 
 ## Grading — the official harness is arm-agnostic
 
 [Section titled “Grading — the official harness is arm-agnostic”](#grading--the-official-harness-is-arm-agnostic)
 
-The **generation** half is arm-specific (Papercusp spine vs single worker vs Claude Code vs best-of-N). The **grading** half must be byte-for-byte identical across arms or the comparison is unfair. We normalize to a single interface (D-008) so every arm is graded by the same machinery:
+The **generation** half is arm-specific; the **grading** half is byte-for-byte identical across arms or the comparison is unfair. We normalize to one interface (D-008) with two backends chosen per benchmark family:
 
 ```plaintext
 ArmSubmission  →  OfficialGrader.grade()  →  GradeResult
 ```
 
-`OfficialGrader` has **two concrete backends** (the two grader modalities), chosen per benchmark family:
-
 ### Modality M1 — offline diff-batch (SWE-bench Pro, SWE-rebench, SWE-bench-Live)
 
 [Section titled “Modality M1 — offline diff-batch (SWE-bench Pro, SWE-rebench, SWE-bench-Live)”](#modality-m1--offline-diff-batch-swe-bench-pro-swe-rebench-swe-bench-live)
 
-The arm produces a **unified diff** per task; grading is a **separate, arm-agnostic Docker batch** over a predictions JSON. This is the clean, fair, easiest path and is the **pilot backbone** — our existing “spin a coding harness, extract the final diff” plan maps onto it directly.
+The arm produces a **unified diff** per task; grading is a **separate, arm-agnostic Docker batch** over a predictions JSON. The clean, fair, easy path — the **pilot backbone**.
 
-* **Generation:** clone the repo `@ base_commit` → throwaway `coding` harness with `problem_statement` as the work\_item brief → run to DONE under the iso-budget cap → extract the final `git diff` (excluding grader-supplied test files) → emit `{ instance_id, patch, prefix }` (`prefix` = seed).
-* **Grading:** the benchmark’s own batch CLI pulls the per-instance prebuilt image, applies the patch, runs the repo tests, and reports **resolved** on the inherited SWE-bench rule — **all `FAIL_TO_PASS` tests pass AND all `PASS_TO_PASS` tests still pass.** Grading is a pure function of the predictions JSON: it can run long after generation, be re-run, and is identical for every arm.
+* **Generation:** clone the repo `@ base_commit` → `instantiateBenchHarness` (the `external-bench` or `coding-solo` blueprint) with `problem_statement` as the work\_item brief → run to DONE under the iso-budget cap → extract the final `git diff` (excluding grader-supplied test files) → emit `{ instance_id, patch, prefix }` (`prefix` = seed).
+* **Grading:** the benchmark’s own batch CLI pulls the per-instance prebuilt image, applies the patch, runs the repo tests, and reports **resolved** on the SWE-bench rule — **all `FAIL_TO_PASS` pass AND all `PASS_TO_PASS` still pass.** Grading is a pure function of the predictions JSON: it runs long after generation, re-runs freely, and is identical for every arm.
 
 ### Modality M2 — online in-container (Terminal-Bench 2.0 / Harbor, Harness-Bench)
 
 [Section titled “Modality M2 — online in-container (Terminal-Bench 2.0 / Harbor, Harness-Bench)”](#modality-m2--online-in-container-terminal-bench-20--harbor-harness-bench)
 
-There is **no diff**: the agent mutates a benchmark-provided sandbox/container and grading runs *in that same sandbox*. The harness attaches to an externally-owned environment and routes its tools into it (a tool-routing exec shim). `resolved` is the verifier’s pass/fail; there is no `FAIL_TO_PASS`/`PASS_TO_PASS` split.
+No diff: the agent mutates a benchmark-provided sandbox and grading runs *in that same sandbox*. The harness attaches to an externally-owned environment and routes its tools into it (an exec shim). `resolved` is the verifier’s pass/fail; no `FAIL_TO_PASS`/`PASS_TO_PASS` split.
 
 Baseline B is nearly free on Terminal-Bench
 
-Harbor already ships first-class adapters for Claude Code, Codex CLI, OpenHands, Mini-SWE-Agent and Terminus 2. So Baseline B (native Claude Code) on Terminal-Bench is essentially `--agent claude-code` — a strong reason to make Terminal-Bench the second family after SWE-bench Pro.
-
-### What the grader contributes to the run-result row
-
-[Section titled “What the grader contributes to the run-result row”](#what-the-grader-contributes-to-the-run-result-row)
-
-The grader emits this slice of the per-task [run-result schema](#the-run-result-schema); everything else (tokens, `$`, wall-clock, turns, seed, arm id, trajectory ref) is the generation side’s:
-
-| field                            | source          | notes                                                                                                                                |
-| -------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `resolved`                       | all graders     | the headline pass/fail                                                                                                               |
-| `failToPass[]` / `passToPass[]`  | M1 only         | per-test; null for M2                                                                                                                |
-| `rawGraderOutput`                | all graders     | the benchmark’s own report JSON, stored **verbatim**                                                                                 |
-| `graderFamily` + `graderVersion` | all graders     | image tag / `terminal-bench@2.0`+harbor ver / clawbench commit — pinned exactly for pre-registration                                 |
-| `graderError`                    | all graders     | infra failure (image-pull / timeout) — **distinct from “not resolved”**, excluded from accuracy, surfaced in reproducibility records |
-| `submission`                     | M1: the `patch` | the exact diff graded, per seed (`prefix`)                                                                                           |
-
-**Fairness invariant:** the same `OfficialGrader` instance + `graderVersion` grades all arms for a given task/seed; the iso-budget cap is on *generation* only.
+Harbor ships first-class adapters for Claude Code, Codex CLI, OpenHands, Mini-SWE-Agent and Terminus 2. So `baseline-b-native` on Terminal-Bench is essentially `--agent claude-code`, and the competitor orchestrators (P-028) likewise plug in via Harbor — a strong reason to make Terminal-Bench the second family after SWE-bench Pro.
 
 ## Harness-Bench — methodology citation now, full run deferred
 
 [Section titled “Harness-Bench — methodology citation now, full run deferred”](#harness-bench--methodology-citation-now-full-run-deferred)
 
-Harness-Bench (arXiv 2605.27922) is purpose-built for exactly our question — it fixes task/budget/timeout/grader and varies only the harness — so we **cite its methodology and findings as third-party air cover for our whole approach**. The feasibility spike (D-008, §6) found:
-
-* **The adapter is tractable** — `clawbench_v2`’s adapter contract is clean and its local-sandbox (no-Docker) model is the lightest of the three; the wrapper-script shape amortizes the same integration seam as the SWE-bench Pro arm.
-* **But it is not yet citable as a *full* impartial result** — only **28 of the paper’s 106 tasks are publicly released**, and the repo has **no committed license**. We cannot claim *“we ran Harness-Bench”* as third-party air cover today.
-
-**Disposition (P-014):** cite the methodology now (no run needed); build the `clawbench_v2` adapter opportunistically; run the released **28-task subset only as an internal cross-check, clearly labeled partial / unaudited-license**; **defer the full 106-task headline run** until Qihoo/Scale publish the complete set + a redistribution license. SWE-bench Pro + Terminal-Bench carry the pilot.
+Harness-Bench (arXiv 2605.27922) is purpose-built for exactly our question — it fixes task/budget/timeout/grader and varies only the harness — so we **cite its methodology and findings as third-party air cover**. The feasibility spike (D-008, §6) found the adapter is tractable (`clawbench_v2`, lightest of the three, no Docker) **but** only **28 of 106 tasks are public** and the repo has **no committed license**. Disposition (`P-014`): cite the methodology now; build the adapter opportunistically; run the 28-task subset only as an internal cross-check, clearly labeled partial / unaudited-license; **defer the full 106-task headline run** until upstream publishes the complete set + a redistribution license.
 
 ## Fairness traps and their mitigations
 
 [Section titled “Fairness traps and their mitigations”](#fairness-traps-and-their-mitigations)
 
-Every known way this comparison could be unfair, and where each is handled:
-
-| Trap                                          | Mitigation                                                                                                             |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Strawman baseline**                         | Baseline B (native harness) + Baseline A (ablation); elicit each to its best (METR).                                   |
-| **Hidden compute advantage**                  | Iso-budget + cost/accuracy Pareto + coordination overhead counted in *our* cost number.                                |
-| **”Better plumbing” confound**                | Baseline A holds base tools identical, so any delta there is purely orchestration; B already has excellent base tools. |
-| **Contamination / tune-to-test**              | Pre-registration + the gym↔report firewall + fresh/live sets.                                                          |
-| **Coordination not exercised**                | Long-horizon weighting in the suite.                                                                                   |
-| **Flawed grader tests** (the Verified lesson) | Hardened/augmented graders; drop Verified as a headline.                                                               |
-| **Noise**                                     | Multi-seed + confidence intervals; the same pass\@k protocol on every arm.                                             |
+| Trap                                          | Mitigation                                                                                                                                          |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Strawman baseline**                         | L1: native harness (B) + ablation (A) elicited to best (METR). L2–L5: the Queen-ablated fleet + competitor orchestrators, each run to *their* best. |
+| **Hidden compute advantage**                  | Iso-budget (L1) + tasks/$ (L2) + value-under-fixed-budget (L3); coordination overhead counted in *our* `tokens_total`.                              |
+| **”Better plumbing” confound**                | Ablation (A) and the Queen-ablation baseline hold tools/workers/substrate identical, so any delta is purely orchestration / the Queen.              |
+| **No public fleet-throughput benchmark**      | Public tasks + external grader + the within-system Queen-ablation control + pre-registration (the honesty caveat above).                            |
+| **Contamination / tune-to-test**              | Pre-registration + the gym↔report firewall (statically CI-proven) + fresh/live sets.                                                                |
+| **Coordination not exercised**                | Long-horizon, decomposable backlog weighting.                                                                                                       |
+| **Coordination claims unfalsifiable**         | L4 uses the *published* MAST taxonomy + third-party MAS baseline, not a metric we invented.                                                         |
+| **Flawed grader tests** (the Verified lesson) | Hardened/augmented graders; Verified dropped as a headline.                                                                                         |
+| **Noise**                                     | Multi-seed + confidence intervals; the same pass\@k protocol on every arm.                                                                          |
 
 ## How it maps onto Papercusp machinery
 
 [Section titled “How it maps onto Papercusp machinery”](#how-it-maps-onto-papercusp-machinery)
 
-We are not greenfield — most of the runner already exists:
-
-* **Each task = one `coding` work\_item** (kind=feature) in a **throwaway harness**, run to DONE.
-* **`external-bench` blueprint** (modeled on `iq-battery` / `hive-eval`): the scaffold pattern “when the SHA changes, run one budget-capped scored generation” already exists; the new work is swapping the seeded internal corpus for the public benchmark and the internal un-gameable gate for the **external grader**.
-* **The adapter** — the one genuinely new component: clone the repo `@ base_commit` → spin a `coding` harness → feed the issue as the work\_item → extract the final diff (M1) or route tools into the container (M2) → hand to the official grader → record `resolved` + cost + full trajectory.
-* **The UI** is a dedicated workspace-scoped **“Evaluation” dock tab** (D-007) — a *reader* over the runs, reusing the gym’s `frontier` (Pareto scatter) / `compare` (score-delta) viz and the testing-shell run-history chrome.
-* **Gym firewall** enforced in code + CI (D-005).
+* **L1 per-task unit** — `external-bench` (`extends: coding`, overrides nothing = `papercusp` arm) and `coding-solo` (`extends: single-agent` = ablation arm); one shared `instantiateBenchHarness` port (`external-bench/run-loop.ts`), arms differ only by `blueprintId`. The clone→diff→grade→emit loop is `arm-generation.ts` (`P-005`), **not** a blueprint op (D-009 — there is no `external-bench:run`).
+* **The Hive arm + Queen-ablated fleet** — a **fleet driver** over the backlog (`P-022` / `P-023`), bound at the pilot via `setBenchHarnessDriver` like every other arm. The Queen ablation swaps intelligent placement for a naive FIFO scheduler.
+* **Metrics** — `@papercusp/bench-metrics` (`P-011`): `buildSuiteReport(rows)`, `aggregateArm`, `priceRun`; extended with fleet metrics by `P-025` (throughput) and `P-026` (MAST).
+* **The UI** — the workspace-scoped **Evaluation** dock tab (D-007), a *reader* over the runs, with subtabs **External benchmarks · Throughput · Value · Coordination · Internal trends · Report** (`P-030`), built on the shared `eval-viz` components (`apps/operator/app/eval-viz/`: `Frontier`, `Compare`, plus throughput bars / MAST breakdown / value-capture curve from `P-030`).
+* **Gym firewall** — `report-set-firewall.ts`, enforced in code + CI (D-005).
 
 ## Pre-registration & reproducibility
 
 [Section titled “Pre-registration & reproducibility”](#pre-registration--reproducibility)
 
-Reproducibility is a first-class commitment, not an afterthought (D-005). For every run we emit and publish:
+Reproducibility is a first-class commitment (D-005). The mechanism is the locked schema’s three tables (`P-010` / migration `291`):
 
-* **Rollout records** — the rollout is the unit of reproducibility (Rollout Cards standard), not just a headline score.
-* **Full configs, seeds, and exact versions** — model id, harness version, grader family + version, budget.
-* **Raw grader output** stored verbatim.
-* **A pre-registered config committed to git *before* the run** — this is what makes “we did not tune to the test” checkable rather than a promise.
+* **`benchmark_prereg`** — the run config, committed to git **before** the run, keyed by `prereg_hash` (sha256 of the canonical config). Every run-result row’s `prereg_hash` **must** match a prereg row whose git commit *predates* the rollouts — `verifyPreregistration()` checks history + hash + ordering. This is the tune-to-test firewall, made checkable rather than promised.
+* **`benchmark_rollout`** — the **Rollout Card** (the published unit of reproducibility): full `config_snapshot`, model/harness versions + git SHA, `env_fingerprint`, structured + **verbatim** raw grader output, the submission, and the trajectory ref.
+* **`benchmark_run_result`** — the scoreable + provenance row that the metrics lib aggregates.
 
-The exact artifact layout and re-run commands are in the reproducer README (`benchmarks/README.md`); the canonical run-result schema is owned by the cost/scoring lib (`P-011`) and the reproducibility harness (`P-010`).
+Artifact layout (the reproducer README points here): pre-registrations at `benchmarks/preregistrations/<run_id>.json`; published rollout bundles at `benchmarks/rollouts/<run_id>/<arm>/<suite>__<task_id>__seed-<n>.json` + `benchmarks/runs/<run_id>/manifest.json`. **PG is canonical; the files are the publication export.**
 
-## The run-result schema
+## The run-result schema (LOCKED v1)
 
-[Section titled “The run-result schema”](#the-run-result-schema)
+[Section titled “The run-result schema (LOCKED v1)”](#the-run-result-schema-locked-v1)
 
-One row per `(task, seed, arm)`. The shape (canonical definition owned by `P-011` + `P-010`; this is the documented contract):
+One row per `(run_id, suite, task_id, arm, seed)` — `UNIQUE` on that tuple, so re-emit is idempotent. **All arms/runners emit through one function** — `emitRollout(input) → { rollout_id, run_id }` (`packages/operator-core/lib/external-bench/reproducibility/emit.ts`) — which writes the run-result row **and** the rollout card in one transaction, derives `cost_usd` via `priceRun()`, and fires `notifySyncInvalidate('evals.runs', …)`.
 
-| field                            | meaning                                                   |
-| -------------------------------- | --------------------------------------------------------- |
-| `instanceId`                     | the benchmark task id                                     |
-| `benchmark`                      | `swe-bench-pro` / `terminal-bench` / …                    |
-| `arm`                            | `papercusp` / `baseline-a` / `baseline-b` / `baseline-c`  |
-| `seed` / `prefix`                | the seed (≥3 per task)                                    |
-| `resolved`                       | headline pass/fail (from the grader)                      |
-| `tokensIn` / `tokensOut`         | per-arm token accounting (coordination overhead included) |
-| `costUsd`                        | dollar cost at the priced model rate                      |
-| `wallClockMs`                    | wall-clock for the generation                             |
-| `turns`                          | number of agent turns                                     |
-| `trajectoryRef`                  | pointer to the stored rollout/trajectory                  |
-| `submission`                     | M1: the graded `patch`; M2: the env ref                   |
-| `failToPass[]` / `passToPass[]`  | M1 per-test detail                                        |
-| `rawGraderOutput`                | the benchmark’s own report JSON, verbatim                 |
-| `graderFamily` / `graderVersion` | pinned grader identity                                    |
-| `graderError`                    | infra failure, distinct from “not resolved”               |
+| field                                       | source  | meaning                                                                                           |
+| ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `rollout_id` / `run_id`                     | emit    | row PK / the run grouping                                                                         |
+| `prereg_hash`                               | runner  | must match a `benchmark_prereg` row (tune-to-test firewall)                                       |
+| `suite`                                     | runner  | `swe-bench-pro` / `terminal-bench` / … (= `REPORT_ON_SUITES`)                                     |
+| `task_id` / `seed` / `modality`             | runner  | task, seed (≥3), `diff` \| `in-container`                                                         |
+| `arm`                                       | runner  | locked L1 vocab + fleet arms (see [arms](#the-arms))                                              |
+| `generation_status`                         | runner  | `completed` \| `error` \| `timeout` \| `budget_exhausted`                                         |
+| `resolved` (**nullable**)                   | grader  | headline pass/fail; `NULL` ⇒ infra, excluded from accuracy                                        |
+| `grader_status`                             | grader  | `passed` \| `failed` \| `error` \| `timeout` \| `skipped`                                         |
+| `grader_family` / `grader_version`          | grader  | pinned grader identity (pre-registration)                                                         |
+| `grader_error`                              | grader  | infra failure, **distinct** from `resolved=false`                                                 |
+| `tokens_in` / `tokens_out` / `tokens_total` | runner  | `tokens_total` = **sum over ALL roles / candidates + verifier**                                   |
+| `tokens_cache_read` / `tokens_cache_write`  | runner  | cache tokens (material to $ on Opus)                                                              |
+| `cost_usd` / `price_table_version`          | derived | `priceRun()` at emit; tokens canonical, $ re-derivable                                            |
+| `wall_clock_ms` / `turns`                   | runner  | generation wall-clock; agent turns                                                                |
+| `budget_tokens` / `capped`                  | runner  | iso-budget cap (**generation only**) + whether it bound                                           |
+| `model_id` / `harness_version`              | runner  | exact versions                                                                                    |
+| `arm_meta` (jsonb)                          | runner  | per-arm extras (best-of-N `{n, candidates, verifier_tokens}`; fleet/coordination events for MAST) |
 
-Schema is co-owned — this doc tracks it
+Schema is canonical & locked — this doc tracks it
 
-The authoritative run-result schema (types + storage) is built and broadcast by BRIEF 7 (`P-011`, cost/scoring) and BRIEF 8 (`P-010`, reproducibility). This table is the **documented contract**, kept in sync with their canonical definition; when fields move, this page and the reproducer README follow.
+The authoritative types live in `@papercusp/bench-metrics/schema` (`TaskRunResult`, `P-011`) and `packages/operator-core/lib/external-bench/reproducibility/` (the rollout
+
+* prereg records + `emitRollout`, `P-010`), backed by migration `291-benchmark-reproducibility.sql`. Sync reads: `evals.suites` + `evals.runs` (`P-010`), `evals.report` = pass\@1 / CI / Pareto / delta (`P-011`). This table is the documented contract, kept in sync with that code.
 
 # Branding
 

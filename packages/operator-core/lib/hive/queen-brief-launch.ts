@@ -27,6 +27,7 @@ import { readInbox } from '../agent-tools/coordination/messages';
 import { runWithWorkspace } from '../workspace-als';
 import { getOrgPg } from '@papercusp/db-org';
 import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee, type BriefInboxItem } from './queen-brief';
+import { overwatchAliveForQueen } from '../overwatch/cross-monitor';
 
 /** Live hive bees → the floor's bee load + liveness (warm-inject-vs-spawn signal).
  *  gatherLiveBees already excludes non-bees + joins load/liveness; fail-soft. */
@@ -98,6 +99,21 @@ async function gatherInbox(workspaceId: string, installSlug: string, limit = 10)
   }
 }
 
+/**
+ * Overwatch's liveness for the Queen's cross-monitor (overwatch-role-2026-06-15
+ * B-09 / D-004, the reverse leg): `true`/`false` when overwatch is in play,
+ * `undefined` when it is not (flag off / hive paused) so the brief omits the
+ * line. Fail-soft like every other gather — a flaky read degrades to `undefined`
+ * (omit), never a false OVERWATCH-DARK alarm.
+ */
+async function gatherOverwatchLiveness(workspaceId: string, installSlug: string): Promise<boolean | undefined> {
+  try {
+    return await overwatchAliveForQueen(workspaceId, installSlug);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function computeQueenWakeBrief(
   workspaceId: string,
   installSlug: string,
@@ -110,15 +126,17 @@ export async function computeQueenWakeBrief(
     //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
     //    internally fail-soft (returns empty);
     //  - carryNote / escalations — wrapped here.
-    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox] = await Promise.all([
-      surveyHive(workspaceId, installSlug),
-      getHiveCarryNote(workspaceId).catch(() => null),
-      summarizeOpenPlacements(workspaceId, installSlug),
-      gatherEscalations(),
-      gatherRecentChanges(),
-      gatherBees(workspaceId),
-      gatherInbox(workspaceId, installSlug),
-    ]);
+    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive] =
+      await Promise.all([
+        surveyHive(workspaceId, installSlug),
+        getHiveCarryNote(workspaceId).catch(() => null),
+        summarizeOpenPlacements(workspaceId, installSlug),
+        gatherEscalations(),
+        gatherRecentChanges(),
+        gatherBees(workspaceId),
+        gatherInbox(workspaceId, installSlug),
+        gatherOverwatchLiveness(workspaceId, installSlug),
+      ]);
     const wokeBy = opts.wokeBy?.trim();
     const floor = floorFromSurvey(survey, {
       ...(wokeBy ? { wokeBy } : {}),
@@ -127,6 +145,7 @@ export async function computeQueenWakeBrief(
       ...(changeFeed.length > 0 ? { changeFeed } : {}),
       ...(bees.length > 0 ? { bees } : {}),
       ...(inbox.length > 0 ? { inbox } : {}),
+      ...(overwatchAlive !== undefined ? { overwatchAlive } : {}),
     });
     return renderQueenBrief({ floor, carryNote });
   } catch (err) {

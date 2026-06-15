@@ -480,6 +480,29 @@ async function recordFailedAttempt(
 }
 
 /**
+ * EI-249: a brief must reach the bee FULLY SUBSTITUTED. The 2026-06-10
+ * dispatch-pack launched agents whose brief still held the literal `brief-NN`
+ * template placeholder (no number filled in), so six surplus bees had to
+ * race-claim lanes off coord presence — a claim-race stampede. The queen-wave
+ * compiler now substitutes `{item}` up front (`buildWaveFeatures`), but
+ * `spawnAgentInHarness` is the ONE chokepoint every launch path funnels through
+ * (chat `<spawn>`, `fleet:spawn`, `place_batch`), so a fail-loud backstop here
+ * refuses ANY un-substituted brief regardless of caller — option (a) of the
+ * issue ("refuse to launch when the prompt still matches the placeholder").
+ *
+ * Detects the repo's `{item}` template token (the one `buildWaveFeatures`
+ * substitutes) and the historical `brief-NN` dispatch-pack placeholder. Tight
+ * by design — a real brief never contains either — so false positives are nil.
+ * Returns the offending placeholder text (for the error message), or null.
+ */
+const BRIEF_PLACEHOLDER_RE = /\{item\}|\bbrief-NN\b/i;
+export function findBriefPlaceholder(brief: string | null | undefined): string | null {
+  if (!brief) return null;
+  const m = BRIEF_PLACEHOLDER_RE.exec(brief);
+  return m ? m[0] : null;
+}
+
+/**
  * Spawn one agent of `role` into the named harness's project dir, tracked in the
  * durable nursery. Returns immediately after the child process is launched
  * (fire-and-forget); the background completion flips the row to done/failed.

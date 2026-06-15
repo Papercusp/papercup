@@ -10,25 +10,25 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { substrateSignalRates, type CoordEvent, type FleetRunSummary } from '@papercusp/bench-metrics';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { OrgSql } from './db';
 import { preregister, computePreregHash } from './prereg';
 import { emitRollout, emitFromAttempt } from './emit';
 import { listRunResults, listSuites, getRollout, getPrereg } from './store';
+import { emitFleetRun, fleetRunIdFor, listFleetRuns, getCoordTrace } from './fleet';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATION = resolve(
-  __dirname,
-  '../../../../../libs/papercusp/libs/db/sql/291-benchmark-reproducibility.sql',
-);
+const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
+const MIGRATIONS = ['291-benchmark-reproducibility.sql', '292-benchmark-hive-layer.sql'];
 const WS = 'bench-repro-test-ws';
 const RUN = 'run-pilot-1';
 
-/** Read the migration, stripping GRANTs (roles absent) + psql meta + tx wrappers. */
-function migrationSql(): string {
-  return readFileSync(MIGRATION, 'utf8')
+/** Read a migration, stripping GRANTs (roles absent) + psql meta + tx wrappers. */
+function migrationSql(file: string): string {
+  return readFileSync(resolve(SQL_DIR, file), 'utf8')
     .split('\n')
     .filter((l) => !/^\s*\\/.test(l) && !/\bGRANT\b/.test(l) && !/^\s*(BEGIN|COMMIT);\s*$/.test(l))
     .join('\n');
@@ -86,12 +86,14 @@ function input(overrides: Partial<EmitRolloutInput> & { preregHash: string }): E
 beforeAll(async () => {
   db = await createFreshPgDb('benchrepro');
   sql = db.sql as unknown as OrgSql;
-  await db.sql.unsafe(migrationSql());
+  for (const m of MIGRATIONS) await db.sql.unsafe(migrationSql(m));
   // Superuser bypasses RLS, but disable it so the test is role-agnostic.
   await db.sql.unsafe(`
-    ALTER TABLE harness_shared.benchmark_prereg     DISABLE ROW LEVEL SECURITY;
-    ALTER TABLE harness_shared.benchmark_rollout    DISABLE ROW LEVEL SECURITY;
-    ALTER TABLE harness_shared.benchmark_run_result DISABLE ROW LEVEL SECURITY;
+    ALTER TABLE harness_shared.benchmark_prereg      DISABLE ROW LEVEL SECURITY;
+    ALTER TABLE harness_shared.benchmark_rollout     DISABLE ROW LEVEL SECURITY;
+    ALTER TABLE harness_shared.benchmark_run_result  DISABLE ROW LEVEL SECURITY;
+    ALTER TABLE harness_shared.benchmark_fleet_run   DISABLE ROW LEVEL SECURITY;
+    ALTER TABLE harness_shared.benchmark_coord_event DISABLE ROW LEVEL SECURITY;
   `);
   repoRoot = mkdtempSync(join(tmpdir(), 'bench-repro-'));
 }, 120_000);
@@ -234,5 +236,75 @@ describe('listSuites', () => {
     expect(s!.attempts).toBeGreaterThanOrEqual(2);
     // the crashed attempt is infra (resolved NULL) → counted separately, not as a fail.
     expect(s!.infra).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('L2 fleet layer — fleet run + coordination trace (MAST)', () => {
+  const summary: FleetRunSummary = {
+    runId: RUN,
+    suite: 'swe-bench-pro',
+    arm: 'hive',
+    tasks: 5,
+    resolved: 4,
+    wallClockMs: 120_000,
+    costUsd: 12.5,
+    tokensTotal: 3_000_000,
+    tasksZeroHumanGate: 5,
+    peakConcurrency: 4,
+  };
+  const coordEvents: CoordEvent[] = [
+    { kind: 'spawn', agent: 'queen' },
+    { kind: 'placement', agent: 'queen', taskId: 't1' },
+    { kind: 'claim', agent: 'bee-1', taskId: 't1' },
+    { kind: 'complete', agent: 'bee-1', taskId: 't1' },
+    { kind: 'duplicate_completion', agent: 'bee-2', taskId: 't1', detail: 'two bees finished t1' },
+    { kind: 'orphaned_claim', agent: 'bee-3', taskId: 't2' },
+  ];
+
+  it('emitFleetRun persists the summary + trace; reads map to FleetRunSummary + CoordTrace', async () => {
+    const preregHash = computePreregHash(baseConfig);
+    const { fleetRunId } = await emitFleetRun(
+      {
+        summary,
+        preregHash,
+        backlogId: 'backlog-A',
+        seed: 0,
+        modelId: 'claude-opus-4-8[1m]',
+        harnessVersion: 'hive@1+abc123',
+        coordEvents,
+      },
+      { sql, workspaceId: WS },
+    );
+    expect(fleetRunId).toBe(fleetRunIdFor(RUN, 'swe-bench-pro', 'backlog-A', 'hive', 0));
+
+    const fleets = await listFleetRuns({ runId: RUN, sql, workspaceId: WS });
+    const hive = fleets.find((f) => f.arm === 'hive');
+    expect(hive).toMatchObject({ tasks: 5, resolved: 4, tasksZeroHumanGate: 5, tokensTotal: 3_000_000 });
+    expect(hive!.costUsd).toBeCloseTo(12.5, 6);
+
+    const trace = await getCoordTrace(fleetRunId, { sql, workspaceId: WS });
+    expect(trace?.arm).toBe('hive');
+    expect(trace?.events).toHaveLength(6);
+    expect(trace?.agents).toEqual(expect.arrayContaining(['queen', 'bee-1', 'bee-2', 'bee-3']));
+
+    // P-026's objective counter reads the trace P-010 captured.
+    const rates = substrateSignalRates(trace!.events, summary.tasks);
+    expect(rates.counts.duplicate).toBe(1);
+    expect(rates.counts.breakdown).toBe(1);
+    expect(rates.duplicationRate).toBeCloseTo(1 / 5, 6);
+    expect(rates.coordinationBreakdownRate).toBeCloseTo(1 / 5, 6);
+  });
+
+  it('an L1 task row carries its fleet_run_id (placement attribution)', async () => {
+    const preregHash = computePreregHash(baseConfig);
+    const fleetRunId = fleetRunIdFor(RUN, 'swe-bench-pro', 'backlog-A', 'hive', 0);
+    const { rolloutId } = await emitRollout(
+      input({ preregHash, taskId: 't1', fleetRunId }),
+      { sql, workspaceId: WS },
+    );
+    const linked = await sql<{ fleet_run_id: string | null }[]>`
+      SELECT fleet_run_id FROM harness_shared.benchmark_run_result WHERE rollout_id = ${rolloutId}
+    `;
+    expect(linked[0]?.fleet_run_id).toBe(fleetRunId);
   });
 });

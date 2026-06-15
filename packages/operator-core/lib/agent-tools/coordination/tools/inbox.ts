@@ -9,7 +9,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
-import { readInbox } from '../messages';
+import { resolveActorIdentity, actorMailboxKeys } from '../actor-identity';
+import { readInbox, drainAndDeliverUserMailbox } from '../messages';
 import { heartbeatPresence } from '../presence';
 import { COORD_ROLES } from '../roles';
 import { renderInjection, type CoordLineSource } from '../../../coord-schema';
@@ -64,6 +65,15 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const limit = args.limit ?? DEFAULT_INBOX_LIMIT;
+    // Offline-member mailbox (shared-hive-collaboration P-016): before the read,
+    // deliver any `@user:`-parked assignment waiting for THIS member into their
+    // live inbox, so a returning member sees it in this very response. The drain
+    // matches the member's full actorUserKey ladder (resolveActorIdentity adds the
+    // async gh id; cached). Best-effort — a drain hiccup must never break the read;
+    // a fully-online member with no parked mail is a single cheap no-op UPDATE.
+    await resolveActorIdentity(ctx)
+      .then((actor) => drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId))
+      .catch(() => {});
     // Piggyback liveness: reading your inbox IS a heartbeat. Keeps a fresh
     // coord:presence row for every active agent (the read hook runs every
     // tool call) without clobbering a declared intent. Best-effort, and run

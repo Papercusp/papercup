@@ -66,17 +66,40 @@ impl FleetMode {
     }
 }
 
-/// Which panel of the comms sub-view holds keyboard focus (owner ask
-/// 2026-06-14). Spatial nav: `h`/`l` (or ←/→) cross the Roster ↔ mail columns;
-/// `j`/`k` walk the row cursor, falling through Inbox → Outbox → Conversations
-/// at the list edges so the three stacked right-column panels stay reachable
-/// with only the four keys.
+/// Which panel of the Fleet pane holds keyboard focus (owner ask 2026-06-14).
+/// `h`/`l` (or ←/→) CYCLE through the visible panels — comms on:
+/// Roster→Inbox→Outbox→Conversations; comms off: Roster→Dossier→PlanProgress —
+/// and `j`/`k` (↑/↓) move WITHIN the focused panel (roster cursor / list
+/// selection / scroll). Enter acts on the focused panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommsFocus {
+pub enum FleetPanel {
     Roster,
     Inbox,
     Outbox,
     Conversations,
+    Dossier,
+    PlanProgress,
+}
+
+impl FleetPanel {
+    /// The ordered, cyclable panel set for the current Fleet layout: comms on =
+    /// the mail/chat panels; comms off = the dossier + plan-progress panels.
+    pub fn order(show_comms: bool) -> &'static [FleetPanel] {
+        use FleetPanel::*;
+        if show_comms {
+            &[Roster, Inbox, Outbox, Conversations]
+        } else {
+            &[Roster, Dossier, PlanProgress]
+        }
+    }
+
+    /// The panel `delta` steps away in the cyclic order (wraps both ends).
+    pub fn cycle(self, show_comms: bool, delta: isize) -> FleetPanel {
+        let order = FleetPanel::order(show_comms);
+        let n = order.len() as isize;
+        let cur = order.iter().position(|p| *p == self).unwrap_or(0) as isize;
+        order[(((cur + delta) % n + n) % n) as usize]
+    }
 }
 
 /// Fleet-tab state: the live activity ring, the fleet work-items, per-agent todo
@@ -96,13 +119,16 @@ pub struct FleetState {
     /// roster + dossier + plan-progress (default); true = roster + inbox/outbox
     /// (selected agent) over conversations (whole-fleet broadcasts + threads).
     pub show_comms: bool,
-    /// Comms sub-view focus + per-panel row cursors (owner ask 2026-06-14):
-    /// which of the four comms panels takes keys, and the cursor into the
-    /// SELECTED bee's inbox/outbox (rendered newest-first, so index 0 = newest).
-    /// The conversations panel reuses `App::conversation_sel`.
-    pub comms_focus: CommsFocus,
+    /// Fleet-pane panel focus + per-panel cursors/scroll (owner ask 2026-06-14):
+    /// which panel takes keys, the cursor into the SELECTED bee's inbox/outbox
+    /// (rendered newest-first, so 0 = newest), and the scroll offsets for the
+    /// default-view dossier + plan-progress panels. The conversations panel
+    /// reuses `App::conversation_sel`.
+    pub fleet_focus: FleetPanel,
     pub comms_inbox_sel: usize,
     pub comms_outbox_sel: usize,
+    pub dossier_scroll: u16,
+    pub plan_progress_scroll: u16,
     /// Whole-fleet assignments (every bee's ranked work-list), for the DEFAULT
     /// dossier when no agent is selected (#2: "show all tasks from the fleet").
     /// Refreshed on Fleet entry + periodically. A selection narrows to one bee's
@@ -119,9 +145,11 @@ impl Default for FleetState {
             agent_todos: HashMap::new(),
             agent_sel: 0,
             show_comms: false,
-            comms_focus: CommsFocus::Roster,
+            fleet_focus: FleetPanel::Roster,
             comms_inbox_sel: 0,
             comms_outbox_sel: 0,
+            dossier_scroll: 0,
+            plan_progress_scroll: 0,
             all_assignments: Vec::new(),
         }
     }

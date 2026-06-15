@@ -205,6 +205,25 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'hive-watchdog-sweep' },
   );
 
+  // overwatch-role-2026-06-15 B-09 / D-004: the OVERWATCH liveness sweep — the
+  // who-watches-the-watcher backstop, the same deterministic dead-man's switch as
+  // the hive sweep above but for the overwatch supervisor's own wake channel. It
+  // self-gates on the `papercusp-overwatch` flag + B-07's started bit
+  // (`listGuardedOverwatches` is empty when off ⇒ inert), so this is a near-free
+  // no-op until the role is activated. Fail-soft inside the module.
+  await DBOS.runStep(
+    async () => {
+      const { overwatchWatchdogSweep } = await import('../overwatch/watchdog');
+      const results = await overwatchWatchdogSweep();
+      for (const res of results) {
+        if (res.outcome === 'armed') {
+          console.warn(`[overwatch-watchdog] tick armed a fallback wake: ${res.reason}`);
+        }
+      }
+    },
+    { name: 'overwatch-watchdog-sweep' },
+  );
+
   // queen-autonomous-execution-2026-06-13 B-09 (P-020/P-021/P-022): the placement
   // COMPLETION watchdog — the liveness watchdog above keeps the QUEEN awake; this
   // guarantees every unit she PLACED reaches terminal. Same deterministic dead-

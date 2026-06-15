@@ -43,3 +43,12 @@ export {
 } from './store';
 export { exportRunBundle, type ExportResult } from './export';
 export type { RolloutRecord, PreregRecord, EmitRolloutInput } from './schema';
+// L2 Hive layer (Phase 5 / D-010) — fleet runs + the MAST coordination trace.
+export {
+  emitFleetRun,
+  emitCoordEvents,
+  fleetRunIdFor,
+  listFleetRuns,
+  getCoordTrace,
+  type FleetRunInput,
+} from './fleet';

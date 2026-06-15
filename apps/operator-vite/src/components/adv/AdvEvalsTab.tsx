@@ -56,7 +56,20 @@ import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, Dol
 import { Select } from '@/app/harness/Select';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
 // the @papercusp/sync read and feeds these props; the components read no data.
-import { Frontier, Compare, armLabel, type FrontierPoint, type ComparePerTaskRow } from '@/app/eval-viz';
+import {
+  Frontier,
+  Compare,
+  ThroughputBars,
+  MastBreakdown,
+  ValueCaptureCurve,
+  armLabel,
+  armColor,
+  type FrontierPoint,
+  type ComparePerTaskRow,
+  type ThroughputArm,
+  type MastArmRates,
+  type ValueSeries,
+} from '@/app/eval-viz';
 
 // ── Arm vocabulary (LOCKED by P-011, su-4ac61) ───────────────────────────────
 // These exact strings key the schema, the Pareto/delta math, and the viz series.
@@ -87,33 +100,16 @@ const ARM_COLOR: Record<ArmId, string> = {
 // The fleet-level arms: `hive` is the treatment; `queen-ablated` (naive FIFO) is
 // the NEW HEADLINE baseline (supersedes the headline half of D-002); `native-serial`
 // is the serial-throughput floor. The Coordination subtab also compares against
-// competitor orchestrators (P-028). TODO: align these exact strings with P-022/
-// P-023/P-025's lock + extend eval-viz `arms.ts` with them (coordinated w/ 6fdcf).
+// competitor orchestrators (P-028: openhands-async/crewai/langgraph). Labels +
+// colors come from the shared eval-viz `arms.ts` (armLabel/armColor) so the
+// scoreboard tiles match the chart series exactly; only the per-arm tooltip copy
+// is local. FLEET_ARMS drives the Throughput scoreboard's fixed arm order.
 const FLEET_ARMS = ['hive', 'queen-ablated', 'native-serial'] as const;
-type FleetArmId = (typeof FLEET_ARMS)[number];
-const FLEET_ARM_LABEL: Record<string, string> = {
-  hive: 'Hive',
-  'queen-ablated': 'Queen-ablated',
-  'native-serial': 'Native (serial)',
-  'openhands-async': 'OpenHands (async)',
-  crewai: 'CrewAI',
-  langgraph: 'LangGraph',
-};
 const FLEET_ARM_HINT: Record<string, string> = {
   hive: 'The full Hive — Queen autonomous placement/ranking/eviction over the bee fleet. The treatment.',
   'queen-ablated': 'The SAME fleet with the Queen replaced by a naive FIFO scheduler — the headline baseline. Hive − this = the Queen’s value.',
   'native-serial': 'One native-harness session draining the whole backlog sequentially — the serial-throughput floor (1× reference).',
 };
-const FLEET_ARM_COLOR: Record<string, string> = {
-  hive: '#eab308',
-  'queen-ablated': '#fb7185',
-  'native-serial': '#7f9bb4',
-  'openhands-async': '#38bdf8',
-  crewai: '#34d399',
-  langgraph: '#a78bfa',
-};
-const fleetArmLabel = (arm: string): string => FLEET_ARM_LABEL[arm] ?? arm;
-const fleetArmColor = (arm: string): string => FLEET_ARM_COLOR[arm] ?? '#7f9bb4';
 /** Published MAS coordination-failure baseline band (MAST taxonomy, NeurIPS 2025). */
 const MAS_BASELINE_BAND = { lo: 0.41, hi: 0.86 } as const;
 
@@ -158,33 +154,11 @@ export interface EvalRunRow {
   tokensTotal?: number | null;
 }
 
-// ── Fleet-layer (L2–L4) consumer shapes ──────────────────────────────────────
-// Placeholders for P-025/P-026's @papercusp/bench-metrics fleet aggregates; the
-// UI reads these (does not recompute). TODO: import the canonical types once they
-// land. One row per fleet arm, per run.
-export interface ThroughputRow {
-  arm: FleetArmId | string;
-  tasksPerHour: number;
-  costPerTask: number;
-  wallClockMs: number;
-  /** Wall-clock speedup vs the native-serial floor (null for the floor itself). */
-  speedupVsSerial: number | null;
-  /** % of the backlog completed with zero human gate. */
-  autonomyPct?: number | null;
-}
-export interface ValueSeries {
-  arm: FleetArmId | string;
-  /** Value-capture curve: $ captured as budget is spent (UpBench/SWE-Lancer). */
-  points: { budget: number; valueCaptured: number }[];
-}
-export interface CoordRow {
-  arm: FleetArmId | string;
-  /** MAST failure-taxonomy rates (0–1); lower is better. */
-  duplication: number;
-  coordinationBreakdown: number;
-  misalignment: number;
-  redundant: number;
-}
+// Fleet-layer (L2–L4) read shapes ARE the shared eval-viz prop item types —
+// `ThroughputArm` / `ValueSeries` / `MastArmRates` (imported above). The sync
+// resolvers (evals.throughput/value/coordination, owned by P-025/P-010) return
+// these directly, so the UI reads them straight into the charts (no mapper, no
+// recompute). The canonical metric source remains @papercusp/bench-metrics.
 
 export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report'] as const;
 type EvalView = (typeof EVAL_VIEWS)[number];
@@ -496,13 +470,14 @@ interface FleetViewProps {
   suitesLoading: boolean;
 }
 
-/** A per-fleet-arm stat tile (the fleet analog of ArmStat). */
+/** A per-fleet-arm stat tile (the fleet analog of ArmStat). Color/label come from
+ *  the shared eval-viz `arms.ts` so the tile matches the chart series. */
 function FleetStat({ arm, value, sub, hint }: { arm: string; value: string; sub?: string; hint?: string }) {
   return (
-    <div className="pc-evals__stat" title={hint} style={{ ['--arm-accent' as string]: fleetArmColor(arm) }}>
+    <div className="pc-evals__stat" title={hint} style={{ ['--arm-accent' as string]: armColor(arm) }}>
       <span className="pc-evals__statlabel">
         <span className="pc-evals__statdot" aria-hidden />
-        {fleetArmLabel(arm)}
+        {armLabel(arm)}
       </span>
       <span className="pc-evals__statvalue">{value}</span>
       {sub ? <span className="pc-evals__statsub">{sub}</span> : null}
@@ -510,28 +485,10 @@ function FleetStat({ arm, value, sub, hint }: { arm: string; value: string; sub?
   );
 }
 
-/**
- * The chart mount region for a fleet subtab. Until 6fdcf's eval-viz charts land
- * (events:await eval-viz:charts-ready), this renders a placeholder; on
- * charts-ready the real <ThroughputBars>/<ValueCaptureCurve>/<MastBreakdown>
- * (from @/app/eval-viz) replace it, fed by the same rows.
- */
-function FleetChartMount({ kind, count, emptyHint, chart }: { kind: string; count: number; emptyHint: string; chart: string }) {
-  return (
-    <div className="pc-evals__vizmount" data-eval-viz={kind} role="img" aria-label={`${kind} chart (pending data)`}>
-      {count === 0 ? (
-        <p className="pc-evals__empty">{emptyHint}</p>
-      ) : (
-        <p className="pc-evals__empty">{count} arm rows loaded — {chart} (P-021/eval-viz) wires in here.</p>
-      )}
-    </div>
-  );
-}
-
 // ── Throughput view (L2 — fleet speedup, tasks/$, backlog-drain) ──────────────
 
 function ThroughputView({ runId, suites, suitesLoading }: FleetViewProps) {
-  const sync = useSyncQuery<ThroughputRow>({
+  const sync = useSyncQuery<ThroughputArm>({
     queryName: 'evals.throughput',
     args: { run_id: runId },
     staleTime: 30_000,
@@ -562,7 +519,7 @@ function ThroughputView({ runId, suites, suitesLoading }: FleetViewProps) {
               arm={arm}
               value={r?.speedupVsSerial != null ? `${r.speedupVsSerial.toFixed(1)}×` : r ? `${Math.round(r.tasksPerHour)}/hr` : '—'}
               sub={r ? `${fmtUsd(r.costPerTask)}/task` : undefined}
-              hint={`Wall-clock speedup vs the serial floor for ${fleetArmLabel(arm)}. ${FLEET_ARM_HINT[arm] ?? ''}`}
+              hint={`Wall-clock speedup vs the serial floor for ${armLabel(arm)}. ${FLEET_ARM_HINT[arm] ?? ''}`}
             />
           );
         })}
@@ -573,8 +530,12 @@ function ThroughputView({ runId, suites, suitesLoading }: FleetViewProps) {
           <RefreshCw size={13} aria-hidden />
         </button>
       </div>
-      {/* P-021/6fdcf: <ThroughputBars arms={rows} /> from @/app/eval-viz */}
-      <FleetChartMount kind="throughput" count={rows.length} chart="throughput bars" emptyHint="When the fleet drains a backlog, each arm’s tasks/hr and $/task plot here — the Hive bar against the serial-floor and Queen-ablated bars." />
+      <ThroughputBars
+        arms={rows}
+        highlightArm="hive"
+        caption="Fleet wall-clock speedup + $/task vs the native-serial floor (1×)"
+        emptyHint="When the fleet drains a backlog, each arm’s speedup and $/task plot here — the Hive bar against the serial floor and the Queen-ablated fleet."
+      />
     </section>
   );
 }
@@ -612,7 +573,7 @@ function ValueView({ runId, suites, suitesLoading }: FleetViewProps) {
               arm={s.arm}
               value={last ? fmtUsd(last.valueCaptured) : '—'}
               sub={last ? `of ${fmtUsd(last.budget)} budget` : undefined}
-              hint={`Total $ captured by ${fleetArmLabel(s.arm)} at the budget cap.`}
+              hint={`Total $ captured by ${armLabel(s.arm)} at the budget cap.`}
             />
           );
         })}
@@ -623,8 +584,12 @@ function ValueView({ runId, suites, suitesLoading }: FleetViewProps) {
           <RefreshCw size={13} aria-hidden />
         </button>
       </div>
-      {/* P-021/6fdcf: <ValueCaptureCurve series={series} /> from @/app/eval-viz */}
-      <FleetChartMount kind="value" count={series.length} chart="value-capture curve" emptyHint="Each arm draws a curve of $ captured against budget spent — a steeper, higher curve means the Queen placed budget on higher-value work first." />
+      <ValueCaptureCurve
+        series={series}
+        highlightArm="hive"
+        caption="$ captured as budget is spent — a higher, steeper curve places budget on higher-value work first"
+        emptyHint="Each arm draws a curve of $ captured against budget spent once a $-weighted backlog (UpBench / SWE-Lancer) is run under a fixed budget."
+      />
     </section>
   );
 }
@@ -632,7 +597,7 @@ function ValueView({ runId, suites, suitesLoading }: FleetViewProps) {
 // ── Coordination view (L4 — MAST failure-taxonomy rates) ──────────────────────
 
 function CoordinationView({ runId, suites, suitesLoading }: FleetViewProps) {
-  const sync = useSyncQuery<CoordRow>({
+  const sync = useSyncQuery<MastArmRates>({
     queryName: 'evals.coordination',
     args: { run_id: runId },
     staleTime: 30_000,
@@ -662,7 +627,7 @@ function CoordinationView({ runId, suites, suitesLoading }: FleetViewProps) {
               arm={r.arm}
               value={fmtPct(total)}
               sub="mean MAST rate"
-              hint={`Mean MAST failure rate for ${fleetArmLabel(r.arm)} (dup ${fmtPct(r.duplication)} · breakdown ${fmtPct(r.coordinationBreakdown)} · misalign ${fmtPct(r.misalignment)} · redundant ${fmtPct(r.redundant)}). Lower is better; published MAS baseline ${Math.round(MAS_BASELINE_BAND.lo * 100)}–${Math.round(MAS_BASELINE_BAND.hi * 100)}%.`}
+              hint={`Mean MAST failure rate for ${armLabel(r.arm)} (dup ${fmtPct(r.duplication)} · breakdown ${fmtPct(r.coordinationBreakdown)} · misalign ${fmtPct(r.misalignment)} · redundant ${fmtPct(r.redundant)}). Lower is better; published MAS baseline ${Math.round(MAS_BASELINE_BAND.lo * 100)}–${Math.round(MAS_BASELINE_BAND.hi * 100)}%.`}
             />
           );
         })}
@@ -673,8 +638,12 @@ function CoordinationView({ runId, suites, suitesLoading }: FleetViewProps) {
           <RefreshCw size={13} aria-hidden />
         </button>
       </div>
-      {/* P-021/6fdcf: <MastBreakdown arms={rows} baselineBand={MAS_BASELINE_BAND} /> from @/app/eval-viz */}
-      <FleetChartMount kind="coordination" count={rows.length} chart="MAST breakdown bars" emptyHint="Each arm’s coordination-failure modes stack into a bar, shown against the shaded 41–86% published MAS baseline band — the Hive’s substrate (locks, work-item dedup, durable hand-offs) should sit well below it." />
+      <MastBreakdown
+        arms={rows}
+        baselineBand={MAS_BASELINE_BAND}
+        caption="Coordination-failure rates by mode (lower is better) vs the published MAS-failure band"
+        emptyHint="Each arm’s coordination-failure modes stack into a bar, shown against the shaded 41–86% published MAS baseline band — the Hive’s substrate (locks, work-item dedup, durable hand-offs) should sit well below it."
+      />
     </section>
   );
 }
@@ -883,7 +852,6 @@ function EvalsStyles() {
 
       .pc-evals__compareblock { display: grid; gap: 6px; }
       .pc-evals__h3 { margin: 6px 0 0; font-size: 12.5px; font-weight: 700; color: var(--fg, #e7f7ff); }
-      .pc-evals__vizmount { min-height: 160px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--border, rgba(125,211,252,0.22)); border-radius: 12px; padding: 16px; }
 
       .pc-evals__empty { font-size: 12px; color: var(--fg-mute, #7f9bb4); margin: 0; text-align: center; }
       .pc-evals__empty--card { display: grid; justify-items: center; gap: 8px; max-width: 560px; margin: 8px auto; padding: 22px; color: var(--fg-mute, #7f9bb4); }

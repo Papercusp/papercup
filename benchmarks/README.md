@@ -100,9 +100,10 @@ Three PG tables back this (`benchmark_run_result`, `benchmark_rollout`,
 
 ## The arms
 
-**L1 arm vocab is LOCKED** (`@papercusp/bench-metrics`):
-`papercusp` · `baseline-a-ablation` · `baseline-b-native` · `baseline-c-bestofn`.
-Fleet-layer arm strings are **[provisional — owned by `P-025`]**.
+Both vocabularies are **LOCKED** in `@papercusp/bench-metrics`. L1 (on `TaskRunResult`):
+`papercusp` · `baseline-a-ablation` · `baseline-b-native` · `baseline-c-bestofn`. Fleet
+(on `FleetRunSummary`): `hive` · `queen-ablated` · `native-serial` · `openhands-async` ·
+`crewai` · `langgraph`.
 
 ### L1 per-task arms
 
@@ -126,12 +127,17 @@ Fleet-layer arm strings are **[provisional — owned by `P-025`]**.
 
 | Arm | What it is | Owner |
 |---|---|---|
-| Hive (treatment) | A **fleet driver** hands the whole task SET to a Hive (Queen places/ranks/evicts; bees run the L1 unit), bound at the pilot via `setBenchHarnessDriver` | `P-022` |
-| **Queen-ablated fleet** (**headline baseline**) | Same fleet + same per-task unit, **naive FIFO/round-robin** in place of the Queen | `P-023` |
-| Native serial-backlog floor | One Claude Code session draining the whole backlog serially | `P-024` |
-| Competitor orchestrators | OpenHands-async / CrewAI / LangGraph over the same backlog + grader | `P-028` |
+| `hive` (treatment) | A **fleet driver** hands the whole task SET to a Hive (Queen places/ranks/evicts; bees run the L1 unit), bound at the pilot via `setBenchHarnessDriver` | `P-022` |
+| `queen-ablated` (**headline baseline**) | Same fleet + same per-task unit, **naive FIFO/round-robin** in place of the Queen | `P-023` |
+| `native-serial` (floor) | One Claude Code session draining the whole backlog serially — the speedup denominator | `P-024` |
+| `openhands-async` / `crewai` / `langgraph` | Competitor orchestrators over the same backlog + grader | `P-028` |
 
-The **Hive − Queen-ablated** delta is the Queen's value, measured apples-to-apples.
+The **`hive` − `queen-ablated`** delta is the Queen's value, measured apples-to-apples.
+Each fleet arm emits one **`FleetRunSummary`** per backlog run (`runId`, `suite`, `arm`,
+`tasks`, `resolved`, `wallClockMs`, `costUsd`, `tokensTotal`, `tasksZeroHumanGate`,
+`peakConcurrency?`); the per-task unit it places still emits the locked `TaskRunResult`.
+`buildHiveReport(HiveArmInput[]) → HiveBacklogReport` produces per-arm
+`{ throughput, value, mast }` + `queenDelta`.
 
 **Submission shape (M1, every per-task unit):**
 
@@ -191,11 +197,19 @@ Harbor's pass/fail; no `FAIL_TO_PASS`/`PASS_TO_PASS` split.
 
 The MAST repo has **no declared license**, so we **do not run their judge code**.
 Instead we **re-implement the published 14-mode / 3-category rubric** (system-design ·
-inter-agent-misalignment · task-verification) through our own LLM-judge over our
-rollout + coordination traces (`P-026`), and report our per-category rates against the
-**published MAST baseline** (verify the exact figures verbatim against arXiv 2503.13657
-before publishing) + the Queen-ablated fleet + competitors. **[provisional — `P-026` +
-`P-010` trace schema]**
+inter-agent-misalignment · task-verification) and score it with our own judge. Two legs
+(`scoreMast({ arm, tasks, trace, verdicts }) → MastReport`):
+
+- **Objective substrate-signal rates (no judge):** every fleet arm emits a raw
+  `CoordEvent[]` trace (`{ ts?, kind, agent?, taskId?, detail? }`); `substrateSignalRates()`
+  counts the mechanical failure signals `duplicate_completion` / `orphaned_claim` /
+  `stranded_item` / `lost_handoff` / `claim_conflict` / `superseded_work` / `rework`.
+- **LLM-judge per-category rates:** our judge emits `MastVerdict[]` → `MastReport.byCategory`.
+
+Report both against the **published MAST baseline** (`MastReport.masBaselineBand` =
+`[0.41, 0.86]` — re-confirm the exact figures verbatim against arXiv 2503.13657 before
+publishing) + the `queen-ablated` fleet + competitors. `P-010` captures the
+`CoordEvent[]` into the rollout; `P-026` scores it.
 
 ### M2-local — Harness-Bench (`clawbench_v2`)
 

@@ -18,6 +18,7 @@ import type { CoordEnvelope } from '@papercusp/coordination/core';
 import {
   parkSlotMessage,
   drainSlotMessages,
+  drainUserMailbox,
   expireStaleSlotMessages,
   listPendingForSlot,
 } from './slot-parked-store';
@@ -166,5 +167,73 @@ describe('TTL expiry', () => {
       nowMs: 5000,
     });
     expect(drained.map((e) => e.msg_id)).toEqual(['fresh']);
+  });
+});
+
+// Offline-member assign mailbox (shared-hive-collaboration P-016): a @user: slot is
+// parked by the same store (zero schema change — slot_kind is just another TEXT
+// value) but drains on the MEMBER's RETURN, matching ANY rung of their actorUserKey
+// ladder, and is identity-scoped (no harness match) — an assignment follows a person.
+describe('user mailbox (@user: offline-member assign)', () => {
+  // An offline-member assignment: addressed by the member's github id, parked with
+  // NO harness scope (it follows the person, not a harness) and NO TTL (an
+  // assignment must not silently vanish before the member returns).
+  async function parkAssignment(msgId: string, ref: string, nowMs: number): Promise<void> {
+    await parkSlotMessage(sql, {
+      slot: { kind: 'user', ref },
+      harnessSlug: null,
+      envelope: env({
+        msg_id: msgId,
+        to: [`@user:${ref}`],
+        from: 'pc-admin-coord-ui',
+        summary: '📋 Assigned to you: plan shared-hive-collaboration',
+      }),
+      nowMs,
+    });
+  }
+
+  it('delivers a parked @user: assignment when the member returns, exactly once', async () => {
+    await parkAssignment('asg1', 'gh:12345', 1000);
+
+    // The member returns; their session resolves the full key ladder.
+    const keys = ['gh:12345', 'avi@storewolf.com', 'pus-returning-session'];
+    const first = await drainUserMailbox(sql, { keys, toOwner: 'pus-returning-session', nowMs: 2000 });
+    expect(first.map((e) => e.msg_id)).toEqual(['asg1']);
+
+    // Claim-once: the member's NEXT session drains nothing (no double-deliver).
+    const second = await drainUserMailbox(sql, { keys, toOwner: 'pus-returning-session', nowMs: 2001 });
+    expect(second).toEqual([]);
+  });
+
+  it('matches ANY rung of the ladder (assigned by gh id, member resolves a weaker key today)', async () => {
+    // Assigner used the github id (from the membership roster). On a gh-unauth box
+    // the returning session might only resolve its userId/ownerId — but the github
+    // key is still one of its candidate keys, so it matches.
+    await parkAssignment('asg-by-gh', 'gh:777', 1000);
+    const got = await drainUserMailbox(sql, {
+      keys: ['gh:777', 'userId-x', 'su-owner'],
+      toOwner: 'su-owner',
+      nowMs: 2000,
+    });
+    expect(got.map((e) => e.msg_id)).toEqual(['asg-by-gh']);
+  });
+
+  it('does NOT deliver another member’s assignment, and is harness-agnostic', async () => {
+    await parkAssignment('mine', 'gh:111', 1000);
+    await parkAssignment('theirs', 'gh:222', 1000);
+
+    // Returning member gh:111 drains only their own row — even though the park set
+    // no harness scope and this drain names none either (identity, not harness).
+    const mine = await drainUserMailbox(sql, { keys: ['gh:111'], toOwner: 'pus-111', nowMs: 2000 });
+    expect(mine.map((e) => e.msg_id)).toEqual(['mine']);
+
+    // gh:222's row is untouched and still pending for them.
+    const theirs = await drainUserMailbox(sql, { keys: ['gh:222'], toOwner: 'pus-222', nowMs: 2001 });
+    expect(theirs.map((e) => e.msg_id)).toEqual(['theirs']);
+  });
+
+  it('is a no-op for an empty key set (a session with no resolvable identity)', async () => {
+    await parkAssignment('asg', 'gh:9', 1000);
+    expect(await drainUserMailbox(sql, { keys: [], toOwner: 'x', nowMs: 2000 })).toEqual([]);
   });
 });

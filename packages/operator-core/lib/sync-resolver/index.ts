@@ -2473,6 +2473,27 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [...bySuite.values()].map((suiteRows) => buildSuiteReport(suiteRows));
     },
   },
+  // L2 Hive layer (Phase 5 / D-010). evals.fleet = FleetRunSummary[] (P-030
+  // Throughput/Coordination subtabs feed P-011's throughputMetrics/buildHiveReport);
+  // evals.coordTrace = one fleet run's CoordTrace (P-011's substrateSignalRates /
+  // MAST scoring). emitFleetRun/emitCoordEvents invalidate these.
+  'evals.fleet': {
+    argsSchema: z.object({ runId: z.string().optional() }),
+    resolve: async (args) => {
+      const { runId } = args as { runId?: string };
+      const { listFleetRuns } = await import('../external-bench/reproducibility/fleet');
+      return listFleetRuns({ runId });
+    },
+  },
+  'evals.coordTrace': {
+    argsSchema: z.object({ fleetRunId: z.string() }),
+    resolve: async (args) => {
+      const { fleetRunId } = args as { fleetRunId: string };
+      const { getCoordTrace } = await import('../external-bench/reproducibility/fleet');
+      const trace = await getCoordTrace(fleetRunId);
+      return trace ? [trace] : [];
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────
