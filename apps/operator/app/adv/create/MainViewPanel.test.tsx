@@ -9,7 +9,7 @@
 // tests seed.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 const { nuqs, view, maps, setters } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
@@ -33,8 +33,23 @@ vi.mock('./use-create-data', () => ({
   useCreateView: () => [view.value, mkSetter('view')],
 }));
 
-vi.mock('@/app/admin/plans/PlanDetail', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="plan-detail">{slug}</div> }));
-vi.mock('@/app/admin/plans/PlanSearchResults', () => ({ default: ({ query }: { query: string }) => <div data-testid="search-results">{query}</div> }));
+vi.mock('@/app/admin/plans/PlanDetail', () => ({
+  default: ({ slug, onClose, onDirtyChange }: { slug: string; onClose: () => void; onDirtyChange: (d: boolean) => void }) => (
+    <div data-testid="plan-detail">
+      {slug}
+      <button data-testid="pd-dirty" onClick={() => onDirtyChange(true)}>dirty</button>
+      <button data-testid="pd-close" onClick={onClose}>close</button>
+    </div>
+  ),
+}));
+vi.mock('@/app/admin/plans/PlanSearchResults', () => ({
+  default: ({ query, onPick }: { query: string; onPick: (s: string) => void }) => (
+    <div data-testid="search-results">
+      {query}
+      <button data-testid="sr-pick" onClick={() => onPick('picked-plan')}>pick</button>
+    </div>
+  ),
+}));
 vi.mock('@/app/_components/layout/TwoPaneShell', () => ({ default: ({ list, detail }: { list: React.ReactNode; detail: React.ReactNode }) => <div data-testid="twopane">{list}{detail}</div> }));
 vi.mock('./QueuePanel', () => ({ default: () => <div data-testid="queue-panel" /> }));
 vi.mock('./PreviewPanel', () => ({ default: () => <div data-testid="preview-panel" /> }));
@@ -63,7 +78,7 @@ describe('<MainViewPanel /> view routing', () => {
     view.value = 'plans';
     nuqs.plan = 'open-plan';
     render(<MainViewPanel {...mkProps()} />);
-    expect(screen.getByTestId('plan-detail').textContent).toBe('open-plan');
+    expect(screen.getByTestId('plan-detail').textContent).toContain('open-plan');
   });
 
   it('auto-opens the first scoped plan when entering Plans view with none selected', () => {
@@ -82,7 +97,7 @@ describe('<MainViewPanel /> view routing', () => {
     render(<MainViewPanel {...mkProps()} />);
     expect(setters.plan).not.toHaveBeenCalled();
     // search results render instead
-    expect(screen.getByTestId('search-results').textContent).toBe('needle');
+    expect(screen.getByTestId('search-results').textContent).toContain('needle');
   });
 
   it('renders the Sessions panel when view=sessions', () => {
@@ -120,5 +135,50 @@ describe('<MainViewPanel /> view routing', () => {
     maps.planList = { loading: false };
     render(<MainViewPanel {...mkProps()} />);
     expect(screen.getByText(/no plans in this view yet/i)).toBeTruthy();
+  });
+
+  it('picking a search hit sets ?plan to the chosen slug', () => {
+    view.value = 'plans';
+    nuqs.plan = null;
+    nuqs.q = 'needle';
+    render(<MainViewPanel {...mkProps()} />);
+    fireEvent.click(screen.getByTestId('sr-pick'));
+    expect(setters.plan).toHaveBeenCalledWith('picked-plan');
+  });
+});
+
+describe('<MainViewPanel /> open-plan close guard', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('closes (clears ?plan) immediately when there are no unsaved edits', () => {
+    view.value = 'plans';
+    nuqs.plan = 'open-plan';
+    render(<MainViewPanel {...mkProps()} />);
+    fireEvent.click(screen.getByTestId('pd-close'));
+    expect(setters.plan).toHaveBeenCalledWith(null);
+  });
+
+  it('keeps the plan open when edits are dirty and the discard prompt is declined', () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    view.value = 'plans';
+    nuqs.plan = 'open-plan';
+    render(<MainViewPanel {...mkProps()} />);
+    fireEvent.click(screen.getByTestId('pd-dirty')); // mark dirty
+    fireEvent.click(screen.getByTestId('pd-close'));
+    expect(window.confirm).toHaveBeenCalled();
+    expect(setters.plan).not.toHaveBeenCalled();
+  });
+
+  it('discards and closes when dirty but the prompt is confirmed', () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    view.value = 'plans';
+    nuqs.plan = 'open-plan';
+    render(<MainViewPanel {...mkProps()} />);
+    fireEvent.click(screen.getByTestId('pd-dirty'));
+    fireEvent.click(screen.getByTestId('pd-close'));
+    expect(window.confirm).toHaveBeenCalled();
+    expect(setters.plan).toHaveBeenCalledWith(null);
   });
 });

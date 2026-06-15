@@ -71,4 +71,57 @@ describe('<OracleClient />', () => {
     expect(textareas.some((t) => t.value === 'You are the Oracle.')).toBe(true);
     expect(textareas.some((t) => t.value === 'remembered facts')).toBe(true);
   });
+
+  it('Save PUTs the edited prompt + memory and re-seeds on success', async () => {
+    // First fetch = GET config (the beforeEach stub). Re-stub so the PUT echoes
+    // the saved body, then assert the request shape + the success toast.
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(init.body as string);
+        return { ok: true, json: async () => ({ ...CONFIG, ...sent }) } as Response;
+      }
+      return { ok: true, json: async () => CONFIG } as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<OracleClient />);
+    await waitFor(() => expect(screen.getByText('System prompt')).toBeTruthy());
+
+    const promptBox = (screen.getAllByRole('textbox') as HTMLTextAreaElement[])
+      .find((t) => t.value === 'You are the Oracle.')!;
+    fireEvent.change(promptBox, { target: { value: 'You are the NEW Oracle.' } });
+
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => {
+      const put = fetchMock.mock.calls.find((c) => (c[1] as RequestInit)?.method === 'PUT');
+      expect(put).toBeTruthy();
+    });
+    const put = fetchMock.mock.calls.find((c) => (c[1] as RequestInit)?.method === 'PUT')!;
+    expect(put[0]).toBe('/api/oracle/config');
+    const body = JSON.parse((put[1] as RequestInit).body as string);
+    expect(body.prompt).toBe('You are the NEW Oracle.');
+    expect(body.memory).toBe('remembered facts');
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Oracle config saved'));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a save failure via toast.error on a non-ok PUT (edits preserved)', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') return { ok: false, status: 422, json: async () => ({}) } as Response;
+      return { ok: true, json: async () => CONFIG } as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<OracleClient />);
+    await waitFor(() => expect(screen.getByText('System prompt')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('save failed: HTTP 422'));
+    expect(toast.success).not.toHaveBeenCalled();
+    // The edited form value is untouched after a failed save.
+    const textareas = screen.getAllByRole('textbox') as HTMLTextAreaElement[];
+    expect(textareas.some((t) => t.value === 'You are the Oracle.')).toBe(true);
+  });
 });

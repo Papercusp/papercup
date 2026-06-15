@@ -8,6 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { toast } from 'sonner';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('../harness/Select', () => ({
@@ -78,5 +79,92 @@ describe('<PromptStudioPanel />', () => {
     await waitFor(() => expect(screen.getByText('Engineer base')).toBeTruthy());
     expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText('unsaved')).toBeNull();
+  });
+
+  it('saving PUTs the edited content, clears the dirty flag and toasts success', async () => {
+    // Track PUTs against /api/prompt-studio/source.
+    const puts: RequestInit[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/api/prompt-studio/sources')) {
+        return { ok: true, json: async () => ({ dir: '/p', sources: [{ id: 's1', label: 'Engineer base', kind: 'base' }] }) } as Response;
+      }
+      if (url.startsWith('/api/prompt-studio/source') && init?.method === 'PUT') {
+        puts.push(init);
+        return { ok: true, json: async () => ({ ok: true, note: 'queued' }) } as Response;
+      }
+      if (url.startsWith('/api/prompt-studio/source')) {
+        return { ok: true, json: async () => ({ content: '# base' }) } as Response;
+      }
+      if (url.startsWith('/api/prompt-studio/preview')) {
+        return { ok: true, json: async () => ({ text: 'P', chars: 1, projectGuideSource: 'x' }) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch);
+
+    render(<PromptStudioPanel />);
+    const editor = await screen.findByRole('textbox');
+    await waitFor(() => expect((editor as HTMLTextAreaElement).value).toBe('# base'));
+    fireEvent.change(editor, { target: { value: '# base v2' } });
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(JSON.parse(puts[0].body as string)).toEqual({ id: 's1', content: '# base v2' });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Saved', expect.anything()));
+    // Dirty flag clears once saved.
+    await waitFor(() => expect(screen.queryByText('unsaved')).toBeNull());
+  });
+
+  it('surfaces a save failure (non-ok PUT) via toast.error and stays dirty', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/api/prompt-studio/sources')) {
+        return { ok: true, json: async () => ({ dir: '/p', sources: [{ id: 's1', label: 'Engineer base', kind: 'base' }] }) } as Response;
+      }
+      if (url.startsWith('/api/prompt-studio/source') && init?.method === 'PUT') {
+        return { ok: false, status: 500, json: async () => ({ ok: false, error: 'disk full' }) } as Response;
+      }
+      if (url.startsWith('/api/prompt-studio/source')) {
+        return { ok: true, json: async () => ({ content: '# base' }) } as Response;
+      }
+      if (url.startsWith('/api/prompt-studio/preview')) {
+        return { ok: true, json: async () => ({ text: 'P', chars: 1, projectGuideSource: 'x' }) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch);
+
+    render(<PromptStudioPanel />);
+    const editor = await screen.findByRole('textbox');
+    await waitFor(() => expect((editor as HTMLTextAreaElement).value).toBe('# base'));
+    fireEvent.change(editor, { target: { value: '# base v2' } });
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Save failed', { description: 'disk full' }));
+    // Still dirty — the save didn't take.
+    expect(screen.getByText('unsaved')).toBeTruthy();
+  });
+
+  it('switching the preview agent re-fetches the preview with the new agent', async () => {
+    const previewUrls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.startsWith('/api/prompt-studio/sources')) {
+        return { ok: true, json: async () => ({ dir: '/p', sources: [{ id: 's1', label: 'Engineer base', kind: 'base' }] }) } as Response;
+      }
+      if (url.startsWith('/api/prompt-studio/source')) {
+        return { ok: true, json: async () => ({ content: '# base' }) } as Response;
+      }
+      if (url.startsWith('/api/prompt-studio/preview')) {
+        previewUrls.push(url);
+        return { ok: true, json: async () => ({ text: 'P', chars: 1, projectGuideSource: 'x' }) } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch);
+
+    render(<PromptStudioPanel />);
+    await waitFor(() => expect(previewUrls.length).toBeGreaterThan(0));
+    expect(previewUrls[0]).toContain('agent=claude');
+
+    // The agent picker is the second <select> (source, agent, profile).
+    const selects = screen.getAllByTestId('select');
+    fireEvent.change(selects[1], { target: { value: 'omp' } });
+    await waitFor(() => expect(previewUrls.some((u) => u.includes('agent=omp'))).toBe(true));
   });
 });

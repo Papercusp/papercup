@@ -8,7 +8,7 @@
 // backend, so it's left to e2e. fetch is mocked; react-query client per render.
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -86,5 +86,25 @@ describe('<SketchPane />', () => {
     feed.sketches = [{ id: 's1', label: 'first idea', png: null, createdTs: 1_700_000_000_000 }];
     renderPane('F-1');
     await waitFor(() => expect(screen.getByText('first idea')).toBeTruthy());
+  });
+
+  it('clicking Eraser switches the active tool (aria-pressed flips) and disables the color picker', async () => {
+    renderPane('F-1'); // defaults to pen
+    const pen = screen.getByRole('button', { name: /Pen/ });
+    const eraser = screen.getByRole('button', { name: /Eraser/ });
+    expect(pen.getAttribute('aria-pressed')).toBe('true');
+    // Color picker is enabled under the pen.
+    expect((screen.getByLabelText('Stroke color') as HTMLInputElement).disabled).toBe(false);
+
+    fireEvent.click(eraser);
+    await waitFor(() => expect(eraser.getAttribute('aria-pressed')).toBe('true'));
+    expect(pen.getAttribute('aria-pressed')).toBe('false');
+    // Eraser disables the stroke-color input.
+    expect((screen.getByLabelText('Stroke color') as HTMLInputElement).disabled).toBe(true);
+
+    // Switching back to pen re-enables it.
+    fireEvent.click(pen);
+    await waitFor(() => expect(pen.getAttribute('aria-pressed')).toBe('true'));
+    expect((screen.getByLabelText('Stroke color') as HTMLInputElement).disabled).toBe(false);
   });
 });

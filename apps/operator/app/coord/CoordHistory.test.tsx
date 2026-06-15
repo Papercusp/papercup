@@ -7,7 +7,7 @@
 // testing adapter). The 5s poll + abort-on-supersede is an effect detail for e2e.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 const { feed } = vi.hoisted(() => ({
@@ -73,5 +73,70 @@ describe('<CoordHistory />', () => {
     feed.total = 2;
     renderAt();
     await waitFor(() => expect(screen.getByText('plan: plan-x')).toBeTruthy());
+  });
+});
+
+describe('<CoordHistory /> interactions', () => {
+  // Last fetched URL — every refetch goes through this single global stub.
+  const lastUrl = () => {
+    const f = (globalThis.fetch as ReturnType<typeof vi.fn>);
+    return String(f.mock.calls.at(-1)?.[0] ?? '');
+  };
+
+  it('toggling a source pill off narrows the query to a kinds= filter and refetches', async () => {
+    renderAt();
+    // Initial fetch: all four sources selected → no kinds= filter.
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+    expect(lastUrl()).not.toContain('kinds=');
+    const before = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Deselect "Plan event" — the remaining three become an explicit kinds= set.
+    fireEvent.click(screen.getByText('Plan event'));
+    await waitFor(() =>
+      expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(before),
+    );
+    const url = lastUrl();
+    expect(url).toContain('kinds=');
+    expect(url).not.toContain('plan_event');
+    expect(url).toContain('message');
+  });
+
+  it('typing a plan_slug filter refetches with plan_slug in the query', async () => {
+    renderAt();
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+
+    // Both filter inputs share the "(any)" placeholder; the first is plan_slug.
+    const input = screen.getAllByPlaceholderText('(any)')[0] as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'plan-zed' } });
+    await waitFor(() => expect(lastUrl()).toContain('plan_slug=plan-zed'));
+  });
+
+  it('expands a row to reveal its JSON payload, and collapses on a second click', async () => {
+    feed.items = ITEMS;
+    feed.total = 2;
+    renderAt();
+    const rowBtn = await screen.findByText('needs a human');
+    // Payload is hidden until expanded.
+    expect(screen.queryByText(/"detail": "x"/)).toBeNull();
+    fireEvent.click(rowBtn);
+    await waitFor(() => expect(screen.getByText(/"detail": "x"/)).toBeTruthy());
+    fireEvent.click(rowBtn);
+    await waitFor(() => expect(screen.queryByText(/"detail": "x"/)).toBeNull());
+  });
+
+  it('renders the error banner when the history fetch fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }) as Response));
+    renderAt();
+    await waitFor(() => expect(screen.getByText(/Error: status 503/)).toBeTruthy());
+  });
+
+  it('clicking Refresh issues another fetch', async () => {
+    renderAt();
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+    const before = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+    fireEvent.click(screen.getByText('Refresh'));
+    await waitFor(() =>
+      expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(before),
+    );
   });
 });

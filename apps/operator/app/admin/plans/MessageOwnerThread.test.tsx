@@ -126,8 +126,11 @@ describe('<MessageOwnerThread /> open + thread', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     // The compose box gives way to the thread view (Refresh button + posts).
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy());
-    expect(screen.getByText('opening message')).toBeTruthy();
+    // Wait on the loaded thread CONTENT, not just the Refresh button — the
+    // conversation body lands a microtask after conversationId is set (the
+    // loadThread effect), so gating on Refresh alone is racy.
+    await waitFor(() => expect(screen.getByText('opening message')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
     expect(screen.getByText('on it')).toBeTruthy();
     expect(screen.getByText('Thread with Backend Bee')).toBeTruthy();
     expect(api.messageOwner).toHaveBeenCalledOnce();
@@ -144,5 +147,50 @@ describe('<MessageOwnerThread /> open + thread', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     // No thread opened — the compose textbox is still present.
     expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy();
+  });
+
+  async function openThread() {
+    api.messageOwner.mockResolvedValue({ ok: true, conversation_id: 'c1', to: 'agent-42' });
+    api.getConversation.mockResolvedValue(detail({ posts: [] }));
+    render(<MessageOwnerThread item={mkItem({ ownerLabel: 'Backend Bee' })} />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'please look' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reply' })).toBeTruthy());
+  }
+
+  it('posts a reply (Reply gated until non-empty) and re-loads the thread', async () => {
+    api.postConversation.mockResolvedValue({ ok: true });
+    await openThread();
+    // getConversation was called once on open; the reply textbox now drives `send`.
+    const replyBtn = screen.getByRole('button', { name: 'Reply' }) as HTMLButtonElement;
+    expect(replyBtn.disabled).toBe(true); // empty reply
+    const replyBox = screen.getByPlaceholderText('Reply…');
+    fireEvent.change(replyBox, { target: { value: 'thanks' } });
+    expect(replyBtn.disabled).toBe(false);
+    fireEvent.click(replyBtn);
+    await waitFor(() => expect(api.postConversation).toHaveBeenCalledWith('c1', 'thanks'));
+    // a re-load fires after a successful post (open call + reload = 2)
+    await waitFor(() => expect(api.getConversation.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
+
+  it('toasts and keeps the draft when a reply post fails', async () => {
+    const { toast } = await import('sonner');
+    api.postConversation.mockResolvedValue({ ok: false, error: 'thread closed' });
+    await openThread();
+    fireEvent.change(screen.getByPlaceholderText('Reply…'), { target: { value: 'thanks' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Reply failed', expect.objectContaining({ description: 'thread closed' })));
+    // reply text is retained (not cleared) on failure
+    expect((screen.getByPlaceholderText('Reply…') as HTMLTextAreaElement).value).toBe('thanks');
+  });
+
+  it('surfaces a load-thread failure toast when getConversation returns an error', async () => {
+    const { toast } = await import('sonner');
+    api.messageOwner.mockResolvedValue({ ok: true, conversation_id: 'c1', to: 'agent-42' });
+    api.getConversation.mockResolvedValue({ error: 'gone' });
+    render(<MessageOwnerThread item={mkItem()} />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to load thread', expect.objectContaining({ description: 'gone' })));
   });
 });

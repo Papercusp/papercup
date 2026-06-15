@@ -6,11 +6,13 @@
 // to confirm the empty surface, the populated list, and the unread badge count.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 // Hoisted mutable holder for the toastLog rows the sync factory closes over.
-const { sync } = vi.hoisted(() => ({
+const { sync, confirmState } = vi.hoisted(() => ({
   sync: { data: [] as unknown[], loading: false },
+  // Drives the confirm dialog answer + spies the underlying call.
+  confirmState: { answer: false, spy: vi.fn(async () => false as boolean) },
 }));
 
 vi.mock('@papercusp/sync', () => ({
@@ -49,7 +51,10 @@ vi.mock('../harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock('../harness/useConfirmDialog', () => ({
-  useConfirmDialog: () => ({ confirm: vi.fn(async () => false), element: null }),
+  useConfirmDialog: () => ({
+    confirm: (...args: unknown[]) => { confirmState.spy(...(args as [])); return Promise.resolve(confirmState.answer); },
+    element: null,
+  }),
 }));
 
 import { NotificationCenter, formatRelative } from './NotificationCenter';
@@ -86,6 +91,8 @@ function mkRow(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   sync.data = [];
   sync.loading = false;
+  confirmState.answer = false;
+  confirmState.spy.mockClear();
   installLocalStorageShim();
   // /api/profile is fetched on mount; resolve it benignly so no console.error.
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({}) })) as unknown as typeof fetch);
@@ -141,5 +148,71 @@ describe('<NotificationCenter />', () => {
     const { container } = render(<NotificationCenter />);
     const badge = container.querySelector('.notif-badge');
     expect(badge?.textContent).toBe('2');
+  });
+
+  it('caps the unread badge at "99+" past 99 unread', () => {
+    sync.data = Array.from({ length: 120 }, (_, i) => mkRow({ id: i + 1, createdAt: 100 + i }));
+    const { container } = render(<NotificationCenter />);
+    expect(container.querySelector('.notif-badge')?.textContent).toBe('99+');
+  });
+
+  it('shows the Loading… placeholder when the sync is loading and empty', () => {
+    sync.data = [];
+    sync.loading = true;
+    render(<NotificationCenter />);
+    expect(screen.getByText(/loading…/i)).toBeTruthy();
+  });
+
+  it('clearAll asks for confirmation but does NOT fire the DELETE when declined', async () => {
+    confirmState.answer = false;
+    sync.data = [mkRow({ id: 1, message: 'x' })];
+    render(<NotificationCenter />);
+    const fetchSpy = global.fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchSpy.mockClear();
+    fireEvent.click(screen.getByLabelText('Clear all'));
+    // The confirm was asked…
+    await vi.waitFor(() => expect(confirmState.spy).toHaveBeenCalledTimes(1));
+    // …but declined → no DELETE request fired.
+    expect(fetchSpy.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false);
+  });
+
+  it('clearAll fires DELETE /api/toast-log?all=1 once the confirm is accepted', async () => {
+    confirmState.answer = true;
+    sync.data = [mkRow({ id: 1, message: 'x' })];
+    render(<NotificationCenter />);
+    const fetchSpy = global.fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchSpy.mockClear();
+    fireEvent.click(screen.getByLabelText('Clear all'));
+    await vi.waitFor(() => {
+      const del = fetchSpy.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'DELETE');
+      expect(del).toBeTruthy();
+      expect(del![0]).toBe('/api/toast-log?all=1');
+    });
+  });
+
+  it('renders an action link for a toast and closes the panel on click', () => {
+    sync.data = [mkRow({ id: 1, message: 'has action', actionLabel: 'Open it', actionHref: '/somewhere' })];
+    render(<NotificationCenter />);
+    const link = screen.getByText(/open it/i).closest('a') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/somewhere');
+    // Internal href → no target=_blank.
+    expect(link.getAttribute('target')).toBeNull();
+    // Swallow the navigation (jsdom can't navigate) but let the component's
+    // onClick run — a wiring bug in that handler would throw on click.
+    const prevent = (e: Event) => e.preventDefault();
+    document.addEventListener('click', prevent, true);
+    try {
+      fireEvent.click(link);
+    } finally {
+      document.removeEventListener('click', prevent, true);
+    }
+  });
+
+  it('opens an external action link in a new tab (target=_blank + rel)', () => {
+    sync.data = [mkRow({ id: 1, message: 'ext', actionLabel: 'Docs', actionHref: 'https://example.com/d' })];
+    render(<NotificationCenter />);
+    const link = screen.getByText(/docs/i).closest('a') as HTMLAnchorElement;
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
 });

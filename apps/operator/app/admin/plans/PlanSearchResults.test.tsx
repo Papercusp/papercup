@@ -41,10 +41,12 @@ function hit(plan: string, matches: Array<{ scope: string; snippet: string }>, s
 }
 
 function renderWith(props: Partial<Parameters<typeof PlanSearchResults>[0]> = {}, searchParams = '?') {
-  return render(
+  const onUrlUpdate = vi.fn();
+  const utils = render(
     <PlanSearchResults query="memory" onPick={() => {}} {...props} />,
-    { wrapper: withNuqsTestingAdapter({ searchParams }) },
+    { wrapper: withNuqsTestingAdapter({ searchParams, onUrlUpdate }) },
   );
+  return { ...utils, onUrlUpdate };
 }
 
 describe('<PlanSearchResults />', () => {
@@ -119,6 +121,36 @@ describe('<PlanSearchResults />', () => {
     await waitFor(() => expect(screen.getByText('plan-a')).toBeTruthy());
     fireEvent.click(screen.getByText('plan-a').closest('button')!);
     expect(onPick).toHaveBeenCalledWith('plan-a');
+  });
+
+  it('narrows by plan-set for the needs-decision status filter (?qScope=needs-decision)', async () => {
+    search.data = {
+      hits: [
+        hit('plan-a', [{ scope: 'prose', snippet: 'x' }]),
+        hit('plan-b', [{ scope: 'prose', snippet: 'y' }]),
+      ],
+    };
+    const { container } = renderWith({ needsDecisionPlans: new Set(['plan-a']) }, '?qScope=needs-decision');
+    await waitFor(() => expect(container.querySelectorAll('.pc-search__hit')).toHaveLength(1));
+    expect(screen.getByText('plan-a')).toBeTruthy();
+    expect(screen.queryByText('plan-b')).toBeNull();
+  });
+
+  it('clicking a scope chip writes ?qScope and re-filters the rendered hits', async () => {
+    search.data = {
+      hits: [
+        hit('plan-a', [{ scope: 'title', snippet: 'in title' }, { scope: 'prose', snippet: 'in prose' }]),
+        hit('plan-b', [{ scope: 'prose', snippet: 'only prose' }]),
+      ],
+    };
+    const { onUrlUpdate } = renderWith();
+    await waitFor(() => expect(screen.getByText('plan-b')).toBeTruthy());
+    // click the "title" scope chip → the qScope param is written, plan-b (prose-only) drops
+    fireEvent.click(screen.getByRole('button', { name: 'title', pressed: false }));
+    await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+    expect(onUrlUpdate.mock.calls.at(-1)![0].searchParams.get('qScope')).toBe('title');
+    await waitFor(() => expect(screen.queryByText('plan-b')).toBeNull());
+    expect(screen.getByText('plan-a')).toBeTruthy();
   });
 
   it('caps the visible matches at 4 and shows a "+ N more" row', async () => {

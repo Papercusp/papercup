@@ -22,6 +22,7 @@ import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loo
 import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
+import { isBenignHostError } from './host-benign-errors';
 
 // Resilience guard: the multi-tenant host must never let ONE bad inbound frame
 // crash-loop :3070 for the entire fleet. Two known classes originate inside the
@@ -34,8 +35,6 @@ import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
 // request), so SWALLOW them; preserve fail-fast (exit) for everything else so
 // real host bugs still surface. Classification lives in host-benign-errors.ts
 // (unit-tested) so the predicate set is auditable, not buried inline.
-import { isBenignHostError } from './host-benign-errors';
-
 process.on('unhandledRejection', (reason) => {
   if (isBenignHostError(reason)) {
     console.warn(

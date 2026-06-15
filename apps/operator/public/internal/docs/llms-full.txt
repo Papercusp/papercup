@@ -1043,6 +1043,62 @@ The Pot chooses what to run via `blueprint:catalog` (built-in + installed tiers;
 * `packages/agent-mcp/src/tools/harness/{list,status,registry-read}.ts` — the registry-aware harness read tools.
 * Plan `autoloop-pot-operator-rebuild-2026-06-05` — the full design + decisions (D-001..D-009).
 
+# The autonomy gate has a RESIDUE the per-category ceilings can't reach — QUEEN_FULL_AUTONOMY is the only lift
+
+> Raising all 13 autonomy ceilings to critical does NOT make the Queen fully autonomous — a set of CATEGORICAL hard-gates (authority owner, irreversible, protected-lock, unmapped) plus graduation asks still force gated, independent of the ceiling. That is the residue. And it is TWO surfaces, not one — the DECISION gate (decider.ts, may she auto-decide?) and the IMPLEMENT TCB (improvements/policy.ts, may the loop auto-implement protected-path code?). The single reversible owner flag QUEEN_FULL_AUTONOMY (scope autonomy per-workspace, default OFF, fail-dark) lifts BOTH. Verify the live policy before assuming protected==locked; a new staging flag is not flippable via flags-set until the deploy carries it.
+
+When an agent is asked “make the Queen fully autonomous,” the obvious move is to raise every per-category ceiling to `critical` (`autonomy:policy_set`). **That is not enough, and believing it is wastes an hour.** Two non-obvious things bite.
+
+## 1. The ceiling is only HALF the gate — the residue is categorical
+
+[Section titled “1. The ceiling is only HALF the gate — the residue is categorical”](#1-the-ceiling-is-only-half-the-gate--the-residue-is-categorical)
+
+`decideAutonomy` (`packages/operator-core/lib/autonomy/decider.ts`) is the D-004 gate. Its verdict is:
+
+```plaintext
+auto ⟺ risk ≤ min(ceiling, graduated) ∧ reversible ∧ ¬authority_owner ∧ category-mapped
+```
+
+The risk-vs-ceiling half is what `autonomy:policy_set` moves. But there are **categorical hard-gates that are independent of the ceiling** — raising a ceiling to `critical` does nothing to them:
+
+* `authority:'owner'` → always `gated` (decider.ts, the `owner-authority` gate).
+* `irreversible-action` → always `gated` (the B-02 hard floor).
+* a **protected/locked** category → `effectiveCeiling` is `never-auto` regardless of the stored `ceiling` (`ceiling-never-auto`).
+* `unmapped-category` → fail-safe `never-auto`.
+* `graduation:*` ratification asks → routed to the owner by the queen.md persona (the evidence tracker asking to widen automation).
+
+This set is **the residue**: the actions that stay owner-gated even with every ceiling maxed. The live `papercusp-workspace` policy already has all 13 categories at `ceiling:critical, locked:false` — yet `deploy:harness`, `accounts:register`, `flags:set` (authority:owner), and `graduation:*` still gate, because of the residue, not the ceiling. **Always `autonomy:policy_get` first** — don’t assume `protected == locked` (the owner may have unlocked them) and don’t assume a maxed ceiling means full autonomy.
+
+## 2. It’s TWO surfaces, not one — decide vs. implement
+
+[Section titled “2. It’s TWO surfaces, not one — decide vs. implement”](#2-its-two-surfaces-not-one--decide-vs-implement)
+
+Agents conflate these. They are different mechanisms:
+
+* **DECISION gate** — `lib/autonomy/decider.ts`. “May the Queen auto-DECIDE this action (place an item, resolve a question, ratify) without asking the owner?” Keyed by the 13-category taxonomy + risk/reversibility/authority.
+* **IMPLEMENT TCB** — `lib/harness/improvements/policy.ts` `classifyImprovement`. “May the self-improvement loop auto-IMPLEMENT this captured improvement?” A separate filter: `protectedPathPatterns` + `protectedKeywords` (the deploy gate, flags, capability dispatch, migrations, the loop’s own code) + the `autoKinds` kind-gate + infra-environment. Gated *additionally* by the `IMPROVEMENT_AUTO_IMPLEMENT` master flag (default OFF).
+
+The implement TCB is the bootstrapping safety rail — it stops the loop from auto-editing its own safety machinery. The decision gate never touches it.
+
+## 3. QUEEN\_FULL\_AUTONOMY lifts BOTH — one reversible flag
+
+[Section titled “3. QUEEN\_FULL\_AUTONOMY lifts BOTH — one reversible flag”](#3-queen_full_autonomy-lifts-both--one-reversible-flag)
+
+`FLAGS.QUEEN_FULL_AUTONOMY` (`papercusp-queen-full-autonomy`, default OFF, fail-dark, scope `autonomy:<ws>` — the SAME key the arming flag uses, so one flip covers both surfaces) is the owner’s reversible full-autonomy grant (queen-autonomy-and-selffeed-fix-2026-06-15 D-006). When ON:
+
+* the **decider** returns `auto` for the entire residue (owner-authority, protected, irreversible, above-ceiling, unmapped + graduation:\* asks), recording `owner-full-autonomy-grant` alongside the would-have-gated reasons (the audit trail stays in `reasons` for the B-13 ledger);
+* the **implement loop** lifts the `protectedPathPatterns` + `protectedKeywords` bars (via `readOwnerFullAutonomyGrant` → `classifyImprovement(..., {ownerFullAutonomy})`).
+
+It does **not** lift the `autoKinds` kind-gate (a separate Phase-4 dial), infra-environment, or `needsHuman`. OFF restores today’s gates verbatim — the reversibility is the safety net. This is the recursive-self-improvement boundary; the owner flips it deliberately at `/admin/features`.
+
+## Gotchas
+
+[Section titled “Gotchas”](#gotchas)
+
+* **A brand-new flag isn’t flippable until it deploys.** The `flags:get`/`flags:set` tool enum is generated from the *deployed* flag set. A flag you just added in the staging tree won’t appear in the enum (so you can’t flip it via the tool) until the staging→green deploy carries it to the live operator. Go-live therefore waits on the deploy, then the owner’s flip.
+* **`armTripwire` refuses protected/irreversible auto.** A full-autonomy auto of a protected or irreversible action does NOT get a per-action revert handle armed (by design). The reversibility net for those is the grant flag itself (flip it off), not a tripwire.
+* **Display digests need the grant too.** Several `buildDigest` callers (the Learning-tab sync resolver, the human-queue digest routine, the system-health rollup, the `improvements:digest`/`:triage` tools) classify auto-vs-human for display. They must read the grant or they’ll show a protected-surface bug in the human queue while the loop auto-implements it. The live dispatch (`planImplementRun` via `improvement-actions.ts`) is the load-bearing one.
+
 # await-event: don't poll or block — register a wake and sleep
 
 > The universal subscription primitive (events:await/emit/cancel/status + locks:acquire{wake_on_grant}): durable one-shot wake subscriptions with liveness-adaptive delivery (pty-inject / session-resume / inbox-park). What to await, what never wakes, and the cost discipline.
@@ -1168,6 +1224,64 @@ Everyone (including the in-code docstring) assumed the `int` cast would round. *
 
 * Console (often only visible under fail-on-console): `[scout/routed-ledger] lens-weight upsert failed (non-fatal): invalid input syntax for type integer: "0.5"`.
 * State signature: a `*_weights` / analytics table whose `updated_at` stops advancing after a feature that introduced fractional tallies shipped.
+
+# peer_connected ✓ but federation dead: the boot→wire-drain ordering trap (EI-521)
+
+> Why a joined member's writes never federate even though the swarm connected — bootSingleHarness cached the handle before wiring the outbox drain, a swallowed wiring failure + the already-booted short-circuit left it drainless forever, and every test masked it by draining manually.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+Cross-machine hive federation **merge** is dead: a joined member’s local write (feature / issue / coord) is captured into `harness_shared.substrate_outbox` but **never drains** to the replicated log, so the peer never receives it — while `[swarm] peer_connected` fires normally. The tell on a live frame:
+
+* `substrate_outbox` has the undrained row (`drained_at IS NULL`),
+* `peer_connected ✓` (the swarm joined),
+* **0 drain loops** running for that harness.
+
+Connection ≠ federation. The swarm join and the outbox drain are wired **independently**; the swarm can be up while the drain never started.
+
+## Root cause — cache-before-wire + the already-booted short-circuit
+
+[Section titled “Root cause — cache-before-wire + the already-booted short-circuit”](#root-cause--cache-before-wire--the-already-booted-short-circuit)
+
+In `bootSingleHarness` (`packages/operator-core/lib/sync/hyperbee/boot-all.ts`) the handle was cached **before** the send-side was wired:
+
+```plaintext
+handles.set(k, handle);          // ← cached FIRST
+try { await wireOutboxForHarness(handle, sql); } catch { /* swallowed + logged */ }
+```
+
+So if wiring ever throws (a `getOrgPg()` hiccup on a fresh-VM boot is enough), the handle is cached **without a drain loop**. And because it’s now cached, every later `bootSingleHarness` hits the `if (handles.has(k)) return 'already-booted'` short-circuit and **never re-wires**. Federation for that harness is dead until the process restarts. This is the parsimonious explanation for “peer\_connected ✓ but 0 drain loops” — better than the slug / workspace-id mismatch hypotheses (both code-refuted: the mig-102 capture trigger stamps `NEW.harness_slug` and the join boots under that same slug + workspace).
+
+Note what is **not** the cause, to save you the dead ends:
+
+* **Not** `boot-all`’s path-liveness filter (the `existsSync(path)` skip). A `join-link` member registers a real clone `path`, and the confirmed repro runs **with no restart**, so `boot-all` isn’t even on the path.
+* **Not** a boot timeout from a slow DHT: `joinHarnessSwarm` does `void discovery.flushed()` (fire-and-forget), so swarm connectivity never blocks the boot promise.
+
+## Fix — wiring must be idempotent + retryable, attempted on the already-booted path
+
+[Section titled “Fix — wiring must be idempotent + retryable, attempted on the already-booted path”](#fix--wiring-must-be-idempotent--retryable-attempted-on-the-already-booted-path)
+
+`ensureSendSideWired(handle)` brings the outbox drain + presence announce online, marking each step wired **only on success**, coalescing concurrent calls, and running on **both** the fresh-boot and the `already-booted` paths. A transient failure then self-heals on the next boot pass (the periodic boot-all reconcile / `rebootHarness`) instead of staying dead until restart. Wired-state is cleared on close/reset so a reboot re-wires from scratch.
+
+## Why the tests didn’t catch it (the blind spot to avoid repeating)
+
+[Section titled “Why the tests didn’t catch it (the blind spot to avoid repeating)”](#why-the-tests-didnt-catch-it-the-blind-spot-to-avoid-repeating)
+
+Three things were each proven in isolation, but the **seam between them was not**:
+
+* `outbox-drain.integration.test.ts` drives `startOutboxDrain` **directly**.
+* `feature-content-federation.integration.test.ts` proves the full A↔B round-trip but calls `drainOutboxOnce` **manually**, and boots via `bootHarnessSubstrate` directly.
+* `join-default-boot-wiring.test.ts` proves the join orchestrator **calls** `bootSingleHarness` — but **mocks** it.
+
+So nothing proved the *live* `bootSingleHarness → wireOutboxForHarness → startOutboxDrain` loop actually comes online. A federation test that **drains by hand** can never catch a drain loop that never started. The regression guard is `wire-outbox-drain-online.integration.test.ts`: write a row *after* `wireOutboxForHarness` and assert it is **auto-drained by the loop** (no manual `drainOutboxOnce`), plus a negative control for `(workspace, harness)` scoping.
+
+## When you see this again
+
+[Section titled “When you see this again”](#when-you-see-this-again)
+
+Reach for `wireOutboxForHarness` / `ensureSendSideWired` and ask: did the drain loop actually start, or did a swallowed wiring failure leave a cached-but-drainless handle? On a live joined member, `SELECT id, table_name, harness_slug, workspace_id, drained_at FROM harness_shared.substrate_outbox` + whether a drain loop is counted pins it. Cross-machine confirmation needs `deb-hetzner-federation.sh` (the hive flow + `fed_hive_merge_probe`), not a single-box run.
 
 # The command palette and the agent MCP catalog are two registries unified at projection, not merged
 
@@ -3224,6 +3338,56 @@ Old tests imported `{ GET, POST }` from `./route` and called them with a fake `N
 
 `apps/operator/scripts/endpoint-route-progress.mjs --check` exits non-zero if any raw `route.ts` exists under `app/api/**` outside the `[[...route]]` host-seam floor. That catches a re-introduced route regardless of contents — strictly better than a contents-matching ESLint rule. Wire it into CI next to `tsc`.
 
+# A bundled library's CLI self-exec guard kills the desktop sidecar at boot (EI-650)
+
+> Why the packaged operator logged a phase then silently process.exit(0)'d — and the bundle-safe isCliEntry() fix for the whole class of ESM main-module guards.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The **packaged** desktop app (the `.deb`, not `tauri dev`) boots normally — embedded PG starts, migrations apply, the operator logs `[seed-learning-singletons] 13/13 loop(s) would materialize` and even `operator ready` — then the **sidecar process silently exits** \~3s in. No JS stack, no error, exit code 0. Embedded PG goes down with it (`CONNECTION_ENDED`), the Tauri shell stays up as an empty window, and every page shows `upstream error`. 100% deterministic, host **and** VM, fresh-initdb **and** reused data dir. Older builds were fine.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+A **library file that is also a CLI** — `seed-learning-singletons.ts` — ended its module with the ESM main-module guard:
+
+```ts
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().then(() => process.exit(0))…   // dry-run, then exit
+}
+```
+
+That guard is correct for `tsx seed-learning-singletons.ts`. But the desktop sidecar **esbuild-bundles the whole operator into one file** (`serve.mjs`, entry `apps/operator/bin/serve.ts`). In that single bundle **every inlined module shares ONE `import.meta.url`** — the bundle’s own — which **equals `process.argv[1]`** (both are `…/sidecar/serve.mjs`). So the guard fires the moment the module is first imported at boot (here: `learning-loops.ts`, an agent-tool registered during boot, imports `LEARNING_SINGLETONS`). It runs the CLI’s `main()` and then `process.exit(0)` — **killing the operator before it serves**. The dry-run log line is the smoking gun: it’s `main()`’s output, not a boot phase.
+
+This is a whole CLASS of bug. Every spelling collapses to true in the bundle:
+
+* `` import.meta.url === `file://${process.argv[1]}` ``
+* `import.meta.url === pathToFileURL(process.argv[1]).href`
+* `fileURLToPath(import.meta.url) === process.argv[1]`
+
+The CJS sibling (`require.main === module`) was already neutralised — the build banner defines a dummy `module` so it’s always false. The **ESM idiom had no such neutraliser**, so a new ESM-CLI file (the Jun-13/14 deterministic-blueprints migration added `seed-learning-singletons.ts`) silently became a boot landmine. `tauri dev` never reproduces it: dev loads modules separately, so each file’s `import.meta.url` is its own and the guard stays false.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+Bundle-aware guard helper + an esbuild define (symmetric with the CJS banner fix):
+
+* `packages/operator-core/lib/util/cli-entry.ts` exports `isCliEntry(import.meta.url)`. It returns `false` when `__PAPERCUSP_BUNDLED_SIDECAR__` is defined (the bundle), else does the real `import.meta.url === pathToFileURL(process.argv[1]).href` check.
+* `papercusp-desktop/bin/build-desktop-sidecar.sh` passes `--define:__PAPERCUSP_BUNDLED_SIDECAR__=true` to the serve esbuild step. esbuild folds the helper to `if (true) return false`, so **no inlined library CLI can self-execute** — only the real entry (`serve.ts`, which boots unconditionally and does NOT use the helper) runs.
+* Library CLIs guard with `if (isCliEntry(import.meta.url)) { main()… }`. Outside the bundle (tsx/dev/test) the define is absent, so `tsx <file>.ts` still self-executes exactly as before.
+
+A regression guard (`lib/util/cli-entry.test.ts`) fails CI if any `operator-core/lib` file reintroduces a naive ESM self-exec guard. **New library CLI? Use `isCliEntry`, never a raw `import.meta.url`/`process.argv[1]` comparison.**
+
+## How to verify a sidecar boot fix fast
+
+[Section titled “How to verify a sidecar boot fix fast”](#how-to-verify-a-sidecar-boot-fix-fast)
+
+The bug is bundle-only, so `tauri dev` (unbundled tsx) won’t exercise it. Rebuild the sidecar (`bin/build-desktop-sidecar.sh`) and either run the packaged `.deb` or grep the rebuilt `serve.mjs`: `isCliEntry` should compile to `if (true) { return false; }` and the guard sites should read `if (isCliEntry(import.meta.url))`. The two-instance boot+isolation assert in `bin/two-instance-federation-smoke.sh` is the packaged runtime proof.
+
 # __dirname in a type:module package only breaks under tsx FILE-mode — and a swallowed DBOS boot error stalls every routine (deploy train included)
 
 > A top-level __dirname in operator-core threw only under `tsx <file>` (true ESM, no shim), poisoned the register-system-actions import chain, and killed DBOS routines fleet-wide for 80+ min on the 2026-06-12 05:30 deploy — git-sync sweeps, monitors, AND release-trigger, so the deploy train could not carry its own fix. tsx -e repros are INVALID for this class (CJS context shims __dirname). Diagnosis + manual-recovery chain inside.
@@ -4117,6 +4281,123 @@ Migrating a batch of misfiled cores out of the app is a one-time cleanup; the *r
 * A genuinely app-local file whose concept keyword is incidental (e.g. ElevenLabs MSE “backpressure” = browser audio buffering) goes in the `ALLOW` set in the script — not a blanket suppression.
 
 Informational by default (like `lint:knip` — never gates a merge). The convention it guards is the “Borrowable libraries” section of the repo `CLAUDE.md` + `BORROWABLE.md`.
+
+# Generic-hive acceptance/output doesn't gate deliverables yet — the hive↔member finalize split
+
+> A live P-021 smoke found that a generic-hive's acceptance.kind=judge / output.kind=artifacts is declared on the HIVE harness, but deliverables finalize in MEMBER harnesses (research/review/vote) that don't inherit it — so the judge gate (P-009) + artifacts output (P-010), though correctly built + unit-tested, do not fire end-to-end. The fix is propagating the hive's domain profile to its members.
+
+## What the smoke found
+
+[Section titled “What the smoke found”](#what-the-smoke-found)
+
+`hive-blueprint-generalization` P-021 (the live smoke) was meant to prove a `generic-hive` reaches DONE repo-less via **judge acceptance + artifacts output**. Standing one up on the live operator confirmed the *create* path end-to-end:
+
+```bash
+# (raw MCP — see "Gotcha: stale client schema" below)
+hive:create { slug, blueprintId: 'generic-hive' }
+# → a home harness whose .papercusp/blueprint.yaml is `extends: generic-hive`,
+#   inheriting acceptance.kind=judge / output.kind=artifacts / affinity=topic-overlap.
+```
+
+But the judge gate **never fires for the actual deliverables**, because of an execution-model split:
+
+* The **hive harness** runs the hive blueprint: `spine.decider: queen`, `workItem.kind: hive-wake` (idPrefix `POT`). Its work items are the Queen’s **placement/wake triggers**, NOT deliverables. Its finalize path only ever processes `hive-wake` items.
+* **Deliverables** (a report, analysis, decision) are placed by the Queen as feature-family items into **member harnesses** — the `research` / `review` / `vote` pipelines (`generic-hive`’s `dependencies.blueprints`). They run + finalize under the **member’s** blueprint.
+* A member blueprint (`research`, …) declares **no `acceptance`** ⇒ `harnessAcceptanceKind(memberProjectDir)` is `undefined` ⇒ the finalize gate is the plain coding/straight-through path. The hive’s `acceptance.kind=judge` is on the *hive* harness, which the deliverable never finalizes in.
+
+So **P-009 (judge hard-gate) and P-010 (artifacts output) are correct mechanisms — built, unit-tested, byte-identical-for-coding — but unwired to where deliverables actually finalize.** The domain profile is declared on the hive; the work finalizes in the members.
+
+## The fix (the wiring that’s missing)
+
+[Section titled “The fix (the wiring that’s missing)”](#the-fix-the-wiring-thats-missing)
+
+The hive’s `acceptance` / `output` (and `affinity`/`lexicon`) profile must **propagate to the member harnesses** a generic-hive spawns, so a `research` member *of a generic-hive* finalizes under judge + artifacts. Candidate seams (pick one):
+
+1. **At member creation** — when the Queen spins up a member (`harness:create` for a hive-owned pipeline), overlay the hive’s `acceptance`/`output` onto the member’s resolved config. Cleanest “the hive governs its members” model.
+2. **At the finalize gate** — make `harnessAcceptanceKind` / `harnessOutputKind` for a member that BELONGS to a hive fall back to the owning hive’s profile (needs the member→hive link at finalize time).
+
+Until then, a generic-hive’s deliverables finalize like any research task (no judge, no artifacts sink). The `VERIFICATION_STANDARD` preamble swap (P-008) DOES reach the member’s bees (it reads the member’s own blueprint — but the member has no `judge` acceptance either, so a research member’s bee gets `TESTING_STANDARD` unless the member inherits the hive profile too — same propagation gap).
+
+## Gotcha: a long-lived client session has a STALE tool schema
+
+[Section titled “Gotcha: a long-lived client session has a STALE tool schema”](#gotcha-a-long-lived-client-session-has-a-stale-tool-schema)
+
+The su MCP client snapshots tool **schemas at session start**. `hive:create` gained its `blueprintId` arg mid-session (P-006), so an old session’s `mcp__papercusp-su__hive_create` lacks it and can’t create a generic-hive. The operator itself is current (it resolves `@papercusp/operator-core` from **source** `./lib`, not a build). Workarounds: start a fresh client session, or call the operator’s MCP directly — `POST :3070/api/mcp?superuser=1&client=<uiClientId>` with `{method:"tools/call",params:{name:"hive:create",arguments:{…,blueprintId}}}` (the real tool name is colon-form `hive:create`; the handler needs the `&client=` id or it errors `resolveAgentIdentity: superuser context is missing uiClientId`).
+
+## Status of the surrounding work
+
+[Section titled “Status of the surrounding work”](#status-of-the-surrounding-work)
+
+Built + unit-tested + correct, just unwired end-to-end: P-009 judge hard-gate (`parseAcceptanceVerdict` + the finalize-loop skip-onDone-on-`revise`), P-010 output tagging, P-008 preamble swap. The create path + domain-profile inheritance are **live-proven**. The propagation above is the remaining step to make the gate fire on real deliverables. Plan: `hive-blueprint-generalization-2026-06-15` (P-021).
+
+# Generic (non-coding) hives — the hive-blueprint domain profile
+
+> How a Hive runs non-coding work. `generic-hive` is a built-in `kind:'hive'` blueprint that judges deliverables against a rubric (no tests), lands output as artifacts (no commits), and co-locates by topic (not files). The new domain-profile schema fields (acceptance/output/affinity/lexicon/fleet/wake/learning/placement) and where the engine reads each.
+
+## What
+
+[Section titled “What”](#what)
+
+The Hive/Queen/bee work-queue is no longer coding-only. The blueprint engine already carried `kind:'hive'`; what made a Hive “a coding system” was hardcoded create/runtime policy + coding-baked personas. `hive-blueprint-generalization-2026-06-15` lifted that into a declarable **domain profile** and shipped **`generic-hive`** — the non-coding counterpart of the coding `hive`.
+
+```bash
+hive:create { slug: 'my-research-hive', blueprintId: 'generic-hive', wakeInSeconds: 0 }
+```
+
+stands up a Hive whose Queen places **research / analysis / deliberation** work onto bees that produce **deliverables** (reports, decisions, documents):
+
+* **`acceptance.kind: judge`** — “done” is an LLM judge’s verdict against a rubric, not a test pass.
+* **`output.kind: artifacts`** — deliverables persist to the artifacts store, not a repo commit.
+* **`affinity.kind: topic-overlap`** — the Queen co-locates/decomposes by subject, not files.
+* **`dependencies.blueprints: [research, review, vote]`** — the work-blueprints its bees spawn.
+
+Shipped as **`generic-hive extends hive`** (D-009), NOT a strict 3-deep `base-hive` split: the live `hive` is already the de-facto base + coding hive (repo-less, generic roles, only its `prompts/queen.md` is file-coded), and repointing the running fleet to a renamed `coding-hive` was the risky part. So `generic-hive` is an additive sibling; `hive` stays the coding hive.
+
+## The domain-profile schema (where each field is read)
+
+[Section titled “The domain-profile schema (where each field is read)”](#the-domain-profile-schema-where-each-field-is-read)
+
+All additive + **optional** on `BlueprintSchema` (`libs/papercusp/packages/orchestrator/src/blueprint/schema.ts`) — every pre-existing blueprint parses byte-identically, so the coding fleet is unchanged.
+
+| Field                          | Consumed by                                                                                                                                                                                                                          | Coding default (undefined ⇒)                   |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| `acceptance.kind` + `rubric`   | `planFinalization` (`dbos/orchestrator-finalize.ts`): `human-gate` blocks DONE until approved; `judge` inserts a **`judge`-role** step before the onDone recipe. Activated by `harnessAcceptanceKind()` in `orchestrator-runner.ts`. | `tests` — the pipeline’s validator/smoke gates |
+| `output.kind`                  | `planFinalization` tags the documenter with `OUTPUT_KIND=<sink>`; `harnessOutputKind()` reads it.                                                                                                                                    | `repo-commit` — no extra                       |
+| `affinity.kind`                | `fleet:place_batch`’s `affinity_kind` arg → `AFFINITY_WEIGHTS_BY_KIND` presets in `fleet/placement-affinity.ts` (reweights the lexicographic ranker).                                                                                | `file-overlap` — today’s weights               |
+| `lexicon`                      | persona/UI noun overrides (feature/PR vs deliverable/report)                                                                                                                                                                         | the built-in noun                              |
+| `learning.{pack,loops}`        | `createHiveHarness` seeds `learning.pack` as the default seed pack                                                                                                                                                                   | the global default pack                        |
+| `fleet` / `wake` / `placement` | declared; runtime reads are partial (see Gotchas)                                                                                                                                                                                    | global defaults                                |
+| `dependencies.blueprints`      | the spawned-blueprint dep + install-closure (blueprint-role-bundling P-007)                                                                                                                                                          | none                                           |
+
+The shared spawn preamble (`prompt-build.ts` + `testing-standard-policy.ts`) also swaps its hardcoded `TESTING_STANDARD` for a domain-agnostic `VERIFICATION_STANDARD` when `acceptance.kind !== 'tests'` — so a generic bee isn’t told to write tests for a deliverable.
+
+## Roles
+
+[Section titled “Roles”](#roles)
+
+`generic-hive` ships its own **`queen`** (topic-seam decomposition), **`judge`** (scores a deliverable against the acceptance rubric → PASS/NEEDS-REVISION — distinct from the gym judge), and **`documenter`** (honors `OUTPUT_KIND=artifacts` → `artifacts:save`). The **`bee`** is inherited (it’s already \~95% domain-agnostic). The acceptance gate reuses the existing registered **`judge`** role (a FROZEN\_OVERLAY role), not a new `acceptance-judge`.
+
+## Gotchas
+
+[Section titled “Gotchas”](#gotchas)
+
+* **The Queen must pass `affinity_kind` explicitly** to `fleet:place_batch` — the tool does not yet auto-resolve the calling hive’s blueprint (P-015 deferred). The generic queen persona instructs this.
+* **The judge step doesn’t thread `acceptance.rubric`** into its extras yet; the generic judge persona embeds the default dimensions (accuracy/completeness/clarity), which match `generic-hive`’s rubric. A fork with a different rubric would need the rubric threaded.
+* **The full execution smoke** (`generic-hive` → research-task → DONE via judge+artifacts) is the one runtime path not yet exercised; everything up to **live `blueprint:validate`** is verified.
+
+## Source map
+
+[Section titled “Source map”](#source-map)
+
+| Concern                 | Source                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| Blueprint + personas    | `libs/papercusp/packages/harness/blueprints/generic-hive/`                             |
+| Domain-profile schema   | `libs/papercusp/packages/orchestrator/src/blueprint/schema.ts`                         |
+| Acceptance/output gate  | `packages/operator-core/lib/dbos/orchestrator-finalize.ts` + `orchestrator-runner.ts`  |
+| Affinity presets        | `packages/operator-core/lib/fleet/placement-affinity.ts` + `place_batch.ts`            |
+| Preamble de-code        | `libs/papercusp/packages/orchestrator/src/prompt-build.ts`                             |
+| hive:create blueprintId | `packages/operator-core/lib/agent-tools/hive/{create,_create}.ts` + `lib/hive/wake.ts` |
+| Plan                    | `hive-blueprint-generalization-2026-06-15` (D-009 split, D-010 runtime-correctness)    |
 
 # git-sync quarantines a broken doc/code file instead of committing it
 
@@ -6208,6 +6489,26 @@ Ruled out — a red herring: the `x-anthropic-billing-header` `cch=` hash in `sy
 1. **Keep the MCP surface lean and stable.** Each tool schema is a permanent per-request tax; a flapping/reconnecting server re-creates the entire base. Don’t hot-reload the operator during an expensive live session.
 2. **Defer tools.** The Claude Agent SDK supports `ENABLE_TOOL_SEARCH=true` (only names inline, schemas fetched on demand) — measured **67.8k → 24.8k tok/request (−63%)**. Note: Meridian hardcodes this to `"false"` on the non-passthrough path, *suppressing* the SDK’s own deferral.
 3. **Pin the `tools/list` manifest** (commit `955ce391`): `packages/agent-mcp/src/tool-manifest.ts` freezes the exposed surface so a reconnect returns byte-identical bytes — adding tools during dev no longer busts a live session. Regenerate deliberately with `packages/agent-mcp/snapshot-tools.sh`, then restart the operator. Set `$AGENT_MCP_TOOL_MANIFEST` or `~/.papercusp/tool-manifest.json`; absent ⇒ expose all (no-op). Hand-edit the manifest down to curate the surface and shrink the base further.
+
+## Gotcha: a pinned schema is a STALE schema — new args arrive as strings (EI-302)
+
+[Section titled “Gotcha: a pinned schema is a STALE schema — new args arrive as strings (EI-302)”](#gotcha-a-pinned-schema-is-a-stale-schema--new-args-arrive-as-strings-ei-302)
+
+The flip side of pinning the surface for cache stability: a long-lived session’s tool **schema** is frozen too. So when you **add an arg to an existing tool**, every session that began before the change still sees the old schema and cannot type the new arg. The agent often still passes it (it read the source / docs / another agent’s call), and because the value was never schema-typed it arrives as a **JSON string**.
+
+For a boolean flag that means the wire value is `"true"`/`"false"`, and a bare `z.boolean()` rejects it — the dispatch layer (`libs/generic/tooldef/src/define-tool.ts`) throws **`invalid_args`**, with no obvious cause. The reporter’s only workaround was hand-calling the raw HTTP MCP projection with a real boolean. This recurs for **any** new boolean flag, not just the one that surfaced it (EI-302 was `plans:new` `force`).
+
+**Apply:** make a new boolean flag string-tolerant at the schema, but narrowly —
+
+```ts
+const stringTolerantBool = z.preprocess(
+  (v) => (v === 'true' ? true : v === 'false' ? false : v),
+  z.boolean(),
+);
+// force: stringTolerantBool.optional().describe(...)
+```
+
+Coerce **only** the two exact strings. Do **not** reach for `z.coerce.boolean()` — its `"false"` → `true` truthiness footgun is exactly why `_plans-args.ts` keeps an explicit boolean allowlist instead. A real boolean and a typo (`"yes"`, `1`) pass through to `z.boolean()` unchanged, so genuine mistakes still fail loudly. `z.toJSONSchema` renders the pipe’s **output** side, so the advertised `tools/list` schema stays `type: boolean` (a stale session still failing on a wire string is the price of the pin, but a re-connected session sees a clean boolean). Reference fix + regression test: `packages/operator-core/lib/agent-tools/plans/new.ts` + `…/plans/__tests__/new-force-coercion.test.ts`.
 
 # mem0 entity store leaked COMPOUND fragments into memory recall — the collectionName the canonical store ignores
 
@@ -33894,9 +34195,9 @@ Plans are the durable record of project history — each `## Decisions` block is
 
 [Section titled “Role & persona registry”](#role--persona-registry)
 
-A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role’s **persona** is its spawn prompt at `libs/papercusp/packages/harness/prompts/<role>.md`. Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
+A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role’s **persona** is its spawn prompt at `libs/papercusp/packages/harness/blueprints/<id>/prompts/<role>.md` (the `base` library is the universal one). Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (25 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (43 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (50 built-in roles) + `libs/papercusp/packages/harness/blueprints/*/prompts/*.md` (51 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -33904,35 +34205,60 @@ Sources: `packages/agent-mcp/src/role-config.ts` (25 built-in roles) + `libs/pap
 
 These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` guidance overrides. The set is open — plugins contribute `<plugin>:<role>` ids at runtime.
 
-| Role                | Persona | Summary                                                                                                                                                                                                   |
-| ------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scoper`            | ✓       | You are the **SCOPER** in a multi-agent harness. You translate “what we want”                                                                                                                             |
-| `architect`         | ✓       | You are the **ARCHITECT** in an autonomous coding harness.                                                                                                                                                |
-| `worker`            | ✓       | You are the **WORKER** in a 3-agent autonomous coding harness.                                                                                                                                            |
-| `validator`         | ✓       | You are the **VALIDATOR** in a 3-agent autonomous coding harness.                                                                                                                                         |
-| `reviewer`          | ✓       | You are the **REVIEWER** in a multi-agent harness. You are an autonomous gate                                                                                                                             |
-| `debugger`          | ✓       | You are the **DEBUGGER**. You fire when a feature has attempts ≥ threshold (default 3) and keeps failing.                                                                                                 |
-| `documenter`        | ✓       | You are the **DOCUMENTER** in an autonomous coding harness.                                                                                                                                               |
-| `curator`           | ✓       | You are the **CURATOR** in an autonomous coding harness.                                                                                                                                                  |
-| `operator`          | —       | chat/runtime surface — no spawn persona                                                                                                                                                                   |
-| `oracle`            | —       | chat/runtime surface — no spawn persona                                                                                                                                                                   |
-| `bee`               | ✓       | Bee (generic Hive worker) — You are a **bee** — a generic implementation agent in the Hive, placed and woken by                                                                                           |
-| `queen`             | ✓       | Queen (hive placement decider — global fallback persona) — You are **the Queen** — the hive’s placement-specialist decider (the operator                                                                  |
-| `planner`           | ✓       | Planner (interactive plan author) — You are a **planner** — an interactive, owner-driven session for authoring and                                                                                        |
-| `orchestrator`      | —       | chat/runtime surface — no spawn persona                                                                                                                                                                   |
-| `promote`           | ✓       | Promote agent — You promote a plan’s `## Promote` policy into the harness as features — \*\*all                                                                                                           |
-| `security-reviewer` | ✓       | You are the **SECURITY-REVIEW EXPERT** for this harness.                                                                                                                                                  |
-| `infra-reviewer`    | ✓       | You are the **INFRASTRUCTURE-REVIEW EXPERT** for this harness.                                                                                                                                            |
-| `crosscheck`        | ✓       | You are the **CROSSCHECK** validator. You run **after** the primary validator has passed a feature, with a **different model**. Your job is to catch validator bias: cases where the primary validator…   |
-| `ui-qa`             | ✓       | You are the **UI QA** agent. You fire **after** a worker has completed a UI-facing feature and the text-only validator has signed off. Your job: actually open the app in a headless browser (via \`verd… |
-| `auditor`           | ✓       | You are the **Auditor** — Papercusp’s read-only adversarial gate.                                                                                                                                         |
-| `merge-resolver`    | ✓       | You are the **Merge-Resolver** — Papercusp’s automated git-sync conflict fixer.                                                                                                                           |
-| `content-fixer`     | ✓       | You are the **Content-Fixer** — Papercusp’s automated git-sync content-guard repairer.                                                                                                                    |
-| `release-manager`   | ✓       | You are the **Release Manager** — Papercusp’s deploy decision-maker.                                                                                                                                      |
-| `release-fixer`     | ✓       | You are the **Release-Fixer** — Papercusp’s automated green-checkpoint gate fixer.                                                                                                                        |
-| `sentinel`          | ✓       | Sentinel (the fleet watcher) — You are the **sentinel** — the Hive’s watcher, placed and woken by the **Queen**                                                                                           |
+| Role                   | Persona | Summary                                                                                                                                                                                                   |
+| ---------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scoper`               | ✓       | . Aim for 0–4 tags per feature.                                                                                                                                                                           |
+| `architect`            | ✓       | You are the **ARCHITECT** in an autonomous coding harness.                                                                                                                                                |
+| `worker`               | ✓       | You are the **WORKER** in the **staging** phase of a 3-phase autonomous coding harness.                                                                                                                   |
+| `validator`            | ✓       | You are the **VALIDATOR** in a 3-agent autonomous coding harness.                                                                                                                                         |
+| `reviewer`             | ✓       | You are the **REVIEWER** in a multi-agent harness. You are an autonomous gate                                                                                                                             |
+| `debugger`             | ✓       | You are the **DEBUGGER**. You fire when a feature has attempts ≥ threshold (default 3) and keeps failing.                                                                                                 |
+| `documenter`           | ✓       | You are the **DOCUMENTER** in an autonomous coding harness.                                                                                                                                               |
+| `curator`              | ✓       | You are the **CURATOR** in an autonomous coding harness.                                                                                                                                                  |
+| `operator`             | ✓       | The Queen — the Hive operator (the judgment layer over the fleet) — You are **the Queen of this Hive** — the single operator in charge. You were                                                          |
+| `oracle`               | —       | chat/runtime surface — no spawn persona                                                                                                                                                                   |
+| `bee`                  | ✓       | Bee (generic Hive worker) — You are a **bee** — a generic implementation agent in the Hive, placed and woken by                                                                                           |
+| `queen`                | ✓       | Queen (hive placement decider — global fallback persona) — You are **the Queen** — the hive’s placement-specialist decider (the operator                                                                  |
+| `planner`              | ✓       | Planner (interactive plan author) — You are a **planner** — an interactive, owner-driven session for authoring and                                                                                        |
+| `orchestrator`         | ✓       | You are the **ORCHESTRATOR** in the **staging** phase of a 3-phase autonomous coding harness.                                                                                                             |
+| `promote`              | ✓       | Promote agent — You promote a plan’s `## Promote` policy into the harness as features — \*\*all                                                                                                           |
+| `security-reviewer`    | ✓       | You are the **SECURITY-REVIEW EXPERT** for this harness.                                                                                                                                                  |
+| `infra-reviewer`       | ✓       | You are the **INFRASTRUCTURE-REVIEW EXPERT** for this harness.                                                                                                                                            |
+| `crosscheck`           | ✓       | You are the **CROSSCHECK** validator. You run **after** the primary validator has passed a feature, with a **different model**. Your job is to catch validator bias: cases where the primary validator…   |
+| `ui-qa`                | ✓       | You are the **UI QA** agent. You fire **after** a worker has completed a UI-facing feature and the text-only validator has signed off. Your job: actually open the app in a headless browser (via \`verd… |
+| `auditor`              | ✓       | You are the **Auditor** — Papercusp’s read-only adversarial gate.                                                                                                                                         |
+| `merge-resolver`       | ✓       | You are the **Merge-Resolver** — Papercusp’s automated git-sync conflict fixer.                                                                                                                           |
+| `content-fixer`        | ✓       | You are the **Content-Fixer** — Papercusp’s automated git-sync content-guard repairer.                                                                                                                    |
+| `release-manager`      | ✓       | You are the **Release Manager** — Papercusp’s deploy decision-maker.                                                                                                                                      |
+| `release-fixer`        | ✓       | You are the **Release-Fixer** — Papercusp’s automated green-checkpoint gate fixer.                                                                                                                        |
+| `sentinel`             | ✓       | Sentinel (the fleet watcher) — You are the **sentinel** — the Hive’s watcher, placed and woken by the **Queen**                                                                                           |
+| `overwatch`            | ✓       | Overwatch (system-health supervisor — base-library fallback STUB) — You are **the Overwatch** — the autonomous system-health supervisor, a sibling                                                        |
+| `researcher`           | ✓       | Researcher — You research **one task** — the one named in `FEATURE_ID` — and produce written                                                                                                              |
+| `research-director`    | ✓       | Research Director (per-task durable pipeline) — You are the **research-director** for a SINGLE research-task inside a durable                                                                             |
+| `searcher`             | ✓       | Searcher (reactive) — You are a **reactive helper** in a `research` harness: gather and organize the raw                                                                                                  |
+| `discoverer`           | ✓       | Discoverer — You build the **work-list** for a migration task — the one named in `FEATURE_ID`.                                                                                                            |
+| `finding-verifier`     | ✓       | Finding Verifier (reactive · adversarial) — You are a **reactive helper** in a `review` harness, and you are the trustworthiness                                                                          |
+| `findings-synthesizer` | ✓       | Findings Synthesizer — You produce the **final review report** for `FEATURE_ID`: take the confirmed                                                                                                       |
+| `synthesizer`          | ✓       | You are the **SYNTHESIZER** in a multi-agent autonomous coding harness.                                                                                                                                   |
+| `review-director`      | ✓       | Review Director (per-review-task durable pipeline) — You are the **review-director** for a SINGLE review-task inside a durable pipeline                                                                   |
+| `dimension-reviewer`   | ✓       | Dimension Reviewer — You review **one task** — the one named in `FEATURE_ID` — along **one dimension**,                                                                                                   |
+| `verifier`             | ✓       | Verifier (reactive) — You are a **reactive helper** in a `research` harness: independently check the                                                                                                      |
+| `migration-director`   | ✓       | Migration Director (per-migration-task durable pipeline) — You are the **migration-director** for a SINGLE migration-task inside a durable                                                                |
+| `migration-verifier`   | ✓       | Migration Verifier — You verify that a migration task — the one named in `FEATURE_ID` — is **green**:                                                                                                     |
+| `transformer`          | ✓       | Transformer (worktree-isolated) — You transform **ONE site** of a migration task — the task named in `FEATURE_ID`.                                                                                        |
+| `gym-director`         | ✓       | Gym Director (per-gym-task optimization pipeline) — You are the **gym-director** for a SINGLE gym-task inside a durable pipeline (the                                                                     |
+| `judge`                | ✓       | Judge (frozen evaluator of record) — You are the **judge** for the `gym` blueprint — a FROZEN, independent evaluator of                                                                                   |
+| `task-generator`       | ✓       | Task Generator (gym eval-set author) — You are the **task-generator** for the `gym` blueprint. Your job is to produce (or                                                                                 |
+| `variant-runner`       | ✓       | Variant Runner (target sub-harness driver) — You are the **variant-runner** for the `gym` blueprint. You run **one variant** of                                                                           |
+| `proposer`             | ✓       | Proposer (target-blueprint edit synthesizer) — You are the **proposer** for the `gym` blueprint. From the judged eval-matrix, you                                                                         |
+| `scanner`              | ✓       | \<!—                                                                                                                                                                                                      |
+| `director`             | ✓       | Director (per-feature durable pipeline) — You are the **director** for a SINGLE feature inside a durable pipeline                                                                                         |
+| `committer`            | ✓       | Committer (accepted-edit commit → reproject) — You are the **committer** for the `gym` blueprint — the finalize step that makes an                                                                        |
+| `tester`               | ✓       | You are the **TESTER** in the **staging** phase of an autonomous coding harness.                                                                                                                          |
+| `test-writer`          | ✓       | You are the **TEST-WRITER** in the testing phase of an autonomous coding harness.                                                                                                                         |
+| `monitor`              | ✓       | You are the **MONITOR** in the production phase of an autonomous coding harness.                                                                                                                          |
 
-Built-in roles with no persona file (chat/runtime surfaces): `operator`, `oracle`, `orchestrator`.
+Built-in roles with no persona file (chat/runtime surfaces): `oracle`.
 
 ## Persona-only roles (blueprint deciders & helpers)
 
@@ -33940,29 +34266,10 @@ Built-in roles with no persona file (chat/runtime surfaces): `operator`, `oracle
 
 These have a spawn persona but are not `AGENT_ROLES` entries — blueprint deciders (`director`, `*-director`, `scanner`) and the reactive helpers blueprints dispatch (`searcher`, `finding-verifier`, `transformer`, …).
 
-| Role                   | Summary                                                                                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `committer`            | Committer (accepted-edit commit → reproject) — You are the **committer** for the `gym` blueprint — the finalize step that makes an         |
-| `dimension-reviewer`   | Dimension Reviewer — You review **one task** — the one named in `FEATURE_ID` — along **one dimension**,                                    |
-| `director`             | Director (per-feature durable pipeline) — You are the **director** for a SINGLE feature inside a durable pipeline                          |
-| `discoverer`           | Discoverer — You build the **work-list** for a migration task — the one named in `FEATURE_ID`.                                             |
-| `finding-verifier`     | Finding Verifier (reactive · adversarial) — You are a **reactive helper** in a `review` harness, and you are the trustworthiness           |
-| `findings-synthesizer` | Findings Synthesizer — You produce the **final review report** for `FEATURE_ID`: take the confirmed                                        |
-| `gym-director`         | Gym Director (per-gym-task optimization pipeline) — You are the **gym-director** for a SINGLE gym-task inside a durable pipeline (the      |
-| `judge`                | Judge (frozen evaluator of record) — You are the **judge** for the `gym` blueprint — a FROZEN, independent evaluator of                    |
-| `migration-director`   | Migration Director (per-migration-task durable pipeline) — You are the **migration-director** for a SINGLE migration-task inside a durable |
-| `migration-verifier`   | Migration Verifier — You verify that a migration task — the one named in `FEATURE_ID` — is **green**:                                      |
-| `proposer`             | Proposer (target-blueprint edit synthesizer) — You are the **proposer** for the `gym` blueprint. From the judged eval-matrix, you          |
-| `research-director`    | Research Director (per-task durable pipeline) — You are the **research-director** for a SINGLE research-task inside a durable              |
-| `researcher`           | Researcher — You research **one task** — the one named in `FEATURE_ID` — and produce written                                               |
-| `review-director`      | Review Director (per-review-task durable pipeline) — You are the **review-director** for a SINGLE review-task inside a durable pipeline    |
-| `scanner`              | \<!—                                                                                                                                       |
-| `searcher`             | Searcher (reactive) — You are a **reactive helper** in a `research` harness: gather and organize the raw                                   |
-| `synthesizer`          | You are the **SYNTHESIZER** in a multi-agent autonomous coding harness.                                                                    |
-| `task-generator`       | Task Generator (gym eval-set author) — You are the **task-generator** for the `gym` blueprint. Your job is to produce (or                  |
-| `transformer`          | Transformer (worktree-isolated) — You transform **ONE site** of a migration task — the task named in `FEATURE_ID`.                         |
-| `variant-runner`       | Variant Runner (target sub-harness driver) — You are the **variant-runner** for the `gym` blueprint. You run **one variant** of            |
-| `verifier`             | Verifier (reactive) — You are a **reactive helper** in a `research` harness: independently check the                                       |
+| Role       | Summary                                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `advocate` | Advocate — argue against the lead — You are the **advocate** (devil’s advocate) in a `vote` deliberation                             |
+| `voter`    | Voter — one lens of a `vote` deliberation — You are a **voter** in a `vote` deliberation (coordination-ops-as-blueprint-primitives). |
 
 # Tool catalog (grouped)
 
@@ -42962,7 +43269,7 @@ This page is the human-readable face of the **action-surface audit** built by `q
 
 Note
 
-Nothing here ARMS anything. B-04 is the behavior-neutral foundation: pure data + pure functions. The gate that consumes it (B-12), the policy store keyed on it (B-03), and the owner arming gate (P-092) are elsewhere. The migration ships with every category ceiling at **never-auto** (D-007), so the day it lands behavior is identical to today.
+Nothing here ARMS anything. B-04 is the behavior-neutral foundation: pure data + pure functions. The gate that consumes it (B-12), the policy store keyed on it (B-03), and the owner arming gate (P-092) are elsewhere. The migration ships with every category ceiling at **never-auto** (D-007), so the day it lands behavior is identical to today. **Update (2026-06): the owner has since ARMED the policy — all 13 categories now sit at ceiling `critical` (`autonomy:policy_get`), so `autonomy:decide` returns `auto` for the vast majority of actions. See `queen-autonomy-and-selffeed-fix-2026-06-15`.**
 
 ## Why this exists (D-010)
 

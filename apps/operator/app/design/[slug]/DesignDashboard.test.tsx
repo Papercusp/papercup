@@ -115,4 +115,18 @@ describe('<DesignDashboard />', () => {
     renderAt('?pane=sketch');
     await waitFor(() => expect(screen.getByTestId('sketch-pane')).toBeTruthy());
   });
+
+  it('clicking the accepted bucket filters the queue to accepted features', async () => {
+    renderAt(); // starts in the "all" bucket
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+    expect(screen.getByText('Gamma')).toBeTruthy();
+
+    const buckets = screen.getByRole('group', { name: /Filter design features by status/i });
+    fireEvent.click(within(buckets).getByRole('button', { name: /accepted/i }));
+
+    // Only the accepted feature (Beta) remains; pending ones drop out.
+    await waitFor(() => expect(screen.queryByText('Alpha')).toBeNull());
+    expect(screen.getByText('Beta')).toBeTruthy();
+    expect(screen.queryByText('Gamma')).toBeNull();
+  });
 });

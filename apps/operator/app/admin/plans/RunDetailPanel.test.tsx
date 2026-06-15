@@ -144,4 +144,64 @@ describe('<RunDetailPanel /> continue', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await waitFor(() => expect(screen.getByText(/Plan busy — Queen \(planning\)/)).toBeTruthy());
   });
+
+  it('surfaces a thrown resume error in the send-error slot', async () => {
+    api.fetchPlanRunTranscript.mockResolvedValue(transcript());
+    api.resumePlanAgent.mockRejectedValue(new Error('resume down'));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('Run #7')).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText(/send a follow-up/i), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByText('resume down')).toBeTruthy());
+  });
+});
+
+describe('<RunDetailPanel /> console + navigation', () => {
+  it('Open agent console launches with the sessionId, plan slug, and plan title as label', async () => {
+    api.fetchPlanRunTranscript.mockResolvedValue(transcript({ sessionId: 'sess-9' }));
+    api.launchPlanRunConsole.mockResolvedValue({ ok: true });
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('Run #7')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /open agent console/i }));
+    await waitFor(() =>
+      expect(api.launchPlanRunConsole).toHaveBeenCalledWith({ sessionId: 'sess-9', planSlug: 'p', label: 'My Plan' }),
+    );
+  });
+
+  it('surfaces a console launch failure in the error slot', async () => {
+    api.fetchPlanRunTranscript.mockResolvedValue(transcript());
+    api.launchPlanRunConsole.mockRejectedValue(new Error('no terminal'));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('Run #7')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /open agent console/i }));
+    await waitFor(() => expect(screen.getByText('no terminal')).toBeTruthy());
+  });
+
+  it('the ← Runs back button clears the run key and unmounts the panel', async () => {
+    api.fetchPlanRunTranscript.mockResolvedValue(transcript());
+    const { container } = renderPanel();
+    await waitFor(() => expect(screen.getByText('Run #7')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /back to runs list/i }));
+    // run=null → the mount gate returns null
+    await waitFor(() => expect(container.querySelector('.pc-run-detail')).toBeNull());
+  });
+
+  it('Load more appends the next page and consumes the cursor', async () => {
+    api.fetchPlanRunTranscript
+      .mockResolvedValueOnce(
+        transcript({ turns: [{ seq: 1, role: 'user', content: 'first', createdAt: Date.now() }], nextCursor: 1 }),
+      )
+      .mockResolvedValueOnce(
+        transcript({ turns: [{ seq: 2, role: 'assistant', content: 'second', createdAt: Date.now() }], nextCursor: null }),
+      );
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('first')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }));
+    await waitFor(() => expect(screen.getByText('second')).toBeTruthy());
+    // both turns are now present; the cursor was exhausted (no more button)
+    expect(screen.getByText('first')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /load more/i })).toBeNull();
+    // the 2nd fetch carried the cursor
+    expect(api.fetchPlanRunTranscript).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 1, runId: 7 }));
+  });
 });

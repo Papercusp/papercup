@@ -74,4 +74,49 @@ describe('TrustSettingsPage', () => {
     expect(toastFn.error).toHaveBeenCalled();
     expect(mutateMock).not.toHaveBeenCalled();
   });
+
+  it('rejects a non-positive id (0 / negative) too', () => {
+    render(<TrustSettingsPage />);
+    fireEvent.change(screen.getByLabelText('GitHub user id to trust'), { target: { value: '0' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Trust user' }));
+    expect(toastFn.error).toHaveBeenCalled();
+    expect(mutateMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an add-mutate rejection via toast.error', async () => {
+    mutateMock.mockRejectedValueOnce(new Error('route 500'));
+    render(<TrustSettingsPage />);
+    fireEvent.change(screen.getByLabelText('GitHub user id to trust'), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Trust user' }));
+    await waitFor(() =>
+      expect(toastFn.error).toHaveBeenCalledWith(expect.stringContaining("Couldn't trust 7: route 500")),
+    );
+  });
+
+  // The Untrust button doesn't write directly — it raises a confirm toast whose
+  // `action.onClick` does the remove. That callback is precisely the handler-
+  // wiring a render-only test misses (the BackupsTab bug class), so invoke it.
+  it('Untrust raises a confirm toast whose action removes the user', async () => {
+    trustResult = { data: [{ githubUserId: 99, note: null, createdTs: 1000 }], loading: false, error: null };
+    render(<TrustSettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: /Untrust GitHub user 99/ }));
+
+    // The plain toast() (not .error/.success) carries the confirm action.
+    const confirmCall = toastFn.mock.calls.find((c) => /Untrust GitHub user 99\?/.test(String(c[0])));
+    expect(confirmCall).toBeTruthy();
+    const action = (confirmCall![1] as { action: { label: string; onClick: () => void } }).action;
+    expect(action.label).toBe('Untrust');
+
+    // Nothing removed until the action fires.
+    expect(mutateMock).not.toHaveBeenCalled();
+    action.onClick();
+    await waitFor(() => expect(mutateMock).toHaveBeenCalledWith({ action: 'remove', githubUserId: 99 }));
+    await waitFor(() => expect(toastFn.success).toHaveBeenCalledWith('Untrusted 99.'));
+  });
+
+  it('renders the load-error alert when the sync query errors', () => {
+    trustResult = { data: [], loading: false, error: new Error('sync down') };
+    render(<TrustSettingsPage />);
+    expect(screen.getByRole('alert').textContent).toContain('sync down');
+  });
 });
