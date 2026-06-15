@@ -157,5 +157,18 @@ export async function runBetBakeoff(input: BetBakeoffInput): Promise<{ result: B
     });
     autoReverted = out.reverted;
   }
+  // Persist the delta for the Learning/Benchmark-tab trend (P-014, migration 293) + refresh
+  // subscribers. Best-effort: a missing table (pre-migration) or a persist hiccup must NOT fail an
+  // already-computed bake-off. atMs is a normal Date.now() — this is not a deterministic workflow.
+  try {
+    const [{ persistBakeoffDelta }, { notifySyncInvalidate }] = await Promise.all([
+      import('./bakeoff-store'),
+      import('../sync-sse'),
+    ]);
+    await persistBakeoffDelta(sql, { workspaceId: input.workspaceId, result, atMs: Date.now() });
+    await notifySyncInvalidate('learning.bakeoff');
+  } catch (err) {
+    console.warn('[bakeoff] persist/invalidate failed (non-fatal):', err instanceof Error ? err.message : err);
+  }
   return { result, autoReverted };
 }

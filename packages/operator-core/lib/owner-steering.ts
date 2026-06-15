@@ -14,6 +14,10 @@
  * Phase 1 keys (focus steering):
  *   owner-steering:directive       — free-text directive surfaced in the wake brief
  *   owner-steering:eligible-plans  — JSON [slug]; empty/absent ⇒ NO restriction
+ *   owner-steering:eligible-hives  — JSON [harness-slug]; the placement SCOPE — the
+ *                                    hives/harnesses the home Queen may place into
+ *                                    (→ scopeFilter.allowedHarnesses, C-2). Empty ⇒
+ *                                    NO restriction. (queen-steering-panel B-04 round-2.)
  *   owner-steering:pause-new-work  — bool; pause starting NEW work (HARD in survey)
  *   owner-steering:paused-until    — epoch ms; the pause auto-expires at this time
  *
@@ -27,6 +31,7 @@ import { listHiveSettings, setHiveSetting, deleteHiveSetting } from './hive-sett
 export const OWNER_STEERING_KEYS = {
   directive: 'owner-steering:directive',
   eligiblePlans: 'owner-steering:eligible-plans',
+  eligibleHives: 'owner-steering:eligible-hives',
   pauseNewWork: 'owner-steering:pause-new-work',
   pausedUntil: 'owner-steering:paused-until',
 } as const;
@@ -42,6 +47,9 @@ export interface OwnerSteering {
   /** Slugs the Queen may pick up NOW (eligibility, DISTINCT from lifecycle status,
    *  D-002). Empty ⇒ no restriction. */
   eligiblePlans: string[];
+  /** The placement SCOPE — hives/harnesses the home Queen may place into (→
+   *  scopeFilter.allowedHarnesses, C-2). Empty ⇒ no restriction. (B-04 round-2.) */
+  eligibleHives: string[];
   /** Pause starting NEW work (the Queen drives existing placements to terminal then idles). */
   pauseNewWork: boolean;
   /** Epoch ms the pause auto-expires at, or null. A future value pauses like `pauseNewWork`. */
@@ -51,6 +59,7 @@ export interface OwnerSteering {
 export const DEFAULT_OWNER_STEERING: OwnerSteering = {
   directive: null,
   eligiblePlans: [],
+  eligibleHives: [],
   pauseNewWork: false,
   pausedUntil: null,
 };
@@ -80,6 +89,7 @@ export async function getOwnerSteering(
   return {
     directive: typeof directiveVal === 'string' && directiveVal.trim() ? directiveVal : null,
     eligiblePlans: asStringArray(byKey.get(OWNER_STEERING_KEYS.eligiblePlans)),
+    eligibleHives: asStringArray(byKey.get(OWNER_STEERING_KEYS.eligibleHives)),
     pauseNewWork: byKey.get(OWNER_STEERING_KEYS.pauseNewWork) === true,
     pausedUntil: asFiniteNumber(byKey.get(OWNER_STEERING_KEYS.pausedUntil)),
   };
@@ -89,6 +99,7 @@ export async function getOwnerSteering(
 export interface OwnerSteeringPatch {
   directive?: string | null;
   eligiblePlans?: string[];
+  eligibleHives?: string[];
   pauseNewWork?: boolean;
   pausedUntil?: number | null;
   /** Wipe ALL steering keys back to {@link DEFAULT_OWNER_STEERING}. */
@@ -120,6 +131,9 @@ export async function setOwnerSteering(
   }
   if (patch.eligiblePlans !== undefined) {
     writes.push([OWNER_STEERING_KEYS.eligiblePlans, asStringArray(patch.eligiblePlans)]);
+  }
+  if (patch.eligibleHives !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.eligibleHives, asStringArray(patch.eligibleHives)]);
   }
   if (patch.pauseNewWork !== undefined) {
     writes.push([OWNER_STEERING_KEYS.pauseNewWork, patch.pauseNewWork === true]);

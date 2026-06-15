@@ -353,11 +353,17 @@ fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
 
 /// Focus-cursor prefix for pane titles (`▸ ` on the focused pane, empty
 /// otherwise). Single source for the cursor glyph (Brief 27 vocabulary).
-fn focus_cursor(focused: bool) -> String {
-    if focused {
-        format!("{} ", crate::glyph::nav::CURSOR)
-    } else {
+/// The marker prefixed to a column's title. Empty when the column is not
+/// focused; the cursor glyph when it's focused-but-browsing; the cursor plus an
+/// "inside" tag once you've drilled in (two-level nav, owner ask 2026-06-15 #2),
+/// so browsing vs inside reads at a glance.
+fn focus_cursor(focused: bool, entered: bool) -> String {
+    if !focused {
         String::new()
+    } else if entered {
+        format!("{} inside · ", crate::glyph::nav::CURSOR)
+    } else {
+        format!("{} ", crate::glyph::nav::CURSOR)
     }
 }
 
@@ -885,7 +891,7 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .title(Line::from(format!(
                 " {}{} ({}/{}) [/] · features ({}) ",
-                focus_cursor(feat_focused),
+                focus_cursor(feat_focused, app.pane_entered),
                 app.harness,
                 app.harness_sel + 1,
                 app.harnesses.len().max(1),
@@ -901,7 +907,7 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
     // Issues (right) — selectable when focused (Tab toggles focus).
     let ititle = Line::from(format!(
         " {}issues ({}) ",
-        focus_cursor(!feat_focused),
+        focus_cursor(!feat_focused, app.pane_entered),
         app.issues.len()
     ));
     if app.issues.is_empty() {
@@ -1132,7 +1138,7 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .title(Line::from(format!(
                 " {}{} · domains ({}) ",
-                focus_cursor(dom_focused),
+                focus_cursor(dom_focused, app.pane_entered),
                 app.harness,
                 app.testing.len()
             ))),
@@ -1146,7 +1152,7 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
     // Files of the selected domain (right).
     let ftitle = Line::from(format!(
         " {}files ({}) — Enter/r: run ",
-        focus_cursor(!dom_focused),
+        focus_cursor(!dom_focused, app.pane_entered),
         app.testing_files.len()
     ));
     if app.testing_files.is_empty() {

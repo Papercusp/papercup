@@ -82,7 +82,9 @@ export default function LeftSidebar() {
   // lsb=false survived). A single setRail() write is atomic.
   const [{ lsb: open, lst: tab }, setRail] = useQueryStates({
     lsb: parseAsBoolean.withDefault(true),
-    lst: parseAsStringLiteral(TAB_IDS).withDefault('swarm'),
+    // Queen is the DEFAULT-OPEN tab (owner's call 2026-06-15) — the steering
+    // panel is the first thing the owner reaches in the Colony sidebar.
+    lst: parseAsStringLiteral(TAB_IDS).withDefault('queen'),
   });
   const setOpen = (v: boolean) => void setRail({ lsb: v });
   const setTab = (v: TabId) => void setRail({ lst: v });

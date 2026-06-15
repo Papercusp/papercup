@@ -27,7 +27,7 @@ export default defineTool({
   name: 'hive:set-steering',
   profile: 'engineer',
   description:
-    'Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` (the plans she may pick up NOW — eligibility, DISTINCT from a plan\'s lifecycle status), `pauseNewWork` / `pausedUntil` (pause starting new work, immediately or until an epoch-ms timestamp). Writes the owner-steering:* hive_settings, refreshes the panel (sync), AND wakes the Queen so she honours the change immediately. `clear:true` wipes ALL steering back to the default (no restriction); omitted fields are left unchanged (a null/[] value clears that one field).',
+    'Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` (the plans she may pick up NOW — eligibility, DISTINCT from a plan\'s lifecycle status), `eligibleHives` (the placement SCOPE — hives/harnesses she may place into, → survey allowedHarnesses), `pauseNewWork` / `pausedUntil` (pause starting new work, immediately or until an epoch-ms timestamp). Writes the owner-steering:* hive_settings, refreshes the panel (sync), AND wakes the Queen so she honours the change immediately. `clear:true` wipes ALL steering back to the default (no restriction); omitted fields are left unchanged (a null/[] value clears that one field).',
   guidance: {
     when: 'Steering the Queen from the owner surface — focus her on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Queen tab is the UI for this.',
     notWhen:
@@ -56,6 +56,11 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Plan slugs the Queen may pick up NOW (eligibility ≠ lifecycle status). [] = no restriction (default).'),
+    eligibleHives: z
+      .array(z.string().min(1).max(200))
+      .max(500)
+      .optional()
+      .describe('The placement SCOPE — hive/harness slugs the home Queen may place into (→ survey allowedHarnesses). [] = no restriction (default).'),
     pauseNewWork: z
       .boolean()
       .optional()
@@ -82,6 +87,7 @@ export default defineTool({
     const patch: OwnerSteeringPatch = {};
     if (args.directive !== undefined) patch.directive = args.directive;
     if (args.eligiblePlans !== undefined) patch.eligiblePlans = args.eligiblePlans;
+    if (args.eligibleHives !== undefined) patch.eligibleHives = args.eligibleHives;
     if (args.pauseNewWork !== undefined) patch.pauseNewWork = args.pauseNewWork;
     if (args.pausedUntil !== undefined) patch.pausedUntil = args.pausedUntil;
     if (args.clear !== undefined) patch.clear = args.clear;

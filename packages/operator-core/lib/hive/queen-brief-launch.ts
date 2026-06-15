@@ -130,7 +130,7 @@ async function gatherOwnerSteering(
   try {
     const s = await getOwnerSteering(workspaceId, installSlug);
     const pausedNow = isPausedNow(s, Date.now());
-    const active = !!s.directive || s.eligiblePlans.length > 0 || pausedNow;
+    const active = !!s.directive || s.eligiblePlans.length > 0 || s.eligibleHives.length > 0 || pausedNow;
     if (!active) return undefined;
     return pausedNow ? s : { ...s, pauseNewWork: false, pausedUntil: null };
   } catch {
@@ -154,9 +154,15 @@ export async function computeQueenWakeBrief(
     const ownerSteering = await gatherOwnerSteering(workspaceId, installSlug);
     const scopeFilter: ScopeFilter | undefined =
       ownerSteering &&
-      (ownerSteering.pauseNewWork || ownerSteering.pausedUntil != null || ownerSteering.eligiblePlans.length > 0)
+      (ownerSteering.pauseNewWork ||
+        ownerSteering.pausedUntil != null ||
+        ownerSteering.eligiblePlans.length > 0 ||
+        ownerSteering.eligibleHives.length > 0)
         ? {
             ...(ownerSteering.eligiblePlans.length > 0 ? { eligiblePlans: ownerSteering.eligiblePlans } : {}),
+            // Eligible Hives → the survey's allowedHarnesses scope (C-2, su-266): the
+            // Queen may place only into these hives/harnesses (B-04 round-2).
+            ...(ownerSteering.eligibleHives.length > 0 ? { allowedHarnesses: ownerSteering.eligibleHives } : {}),
             ...(ownerSteering.pauseNewWork ? { pauseNewWork: true } : {}),
             ...(ownerSteering.pausedUntil != null ? { pausedUntil: ownerSteering.pausedUntil } : {}),
           }

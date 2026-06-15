@@ -1670,6 +1670,38 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.bakeoff — the Benchmark view's framework bake-off trend (plan-implementation-
+  // framework-2026-06-15 P-014, activation of P-007/P-009) ──
+  //
+  // One trend row per framework bake-off run (a flag A/B result), newest-first, over the
+  // hive_eval_bakeoff_deltas table (migration 293). The A-vs-B proof per bet: did flipping the flag
+  // ON beat baseline? Returns a 1-element array { rows }. Best-effort like learning.hiveEvalTrend —
+  // the first bake-off is owner-attended + the store uses raw SQL (not the generated schema), so
+  // pre-baseline a missing table (42P01) degrades SILENTLY to rows:[] (the clean empty state, not a
+  // 500, so the structural resolver test stays clean). runBetBakeoff fires
+  // notifySyncInvalidate('learning.bakeoff') after persisting a new result.
+  'learning.bakeoff': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readBakeoffTrendRows } = await import('../hive-eval/bakeoff-store');
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) => {
+          const rows = await readBakeoffTrendRows(tx, { workspaceId: ws, limit: 50 });
+          return [{ rows }];
+        });
+      } catch (err) {
+        const code = (err as { code?: string })?.code;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (code !== '42P01' && !/does not exist/i.test(msg)) {
+          console.warn('[learning.bakeoff] bake-off trend read failed:', msg);
+        }
+        return [{ rows: [] }];
+      }
+    },
+  },
+
   // ── learning.knowledge — the Learning tab's Knowledge view (operator-learning-tab P-008) ──
   //
   // Two best-effort halves (learning-system-audit P-042), each degrading
@@ -2416,7 +2448,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // hive.steering — the owner steering controls the 👑 Queen tab reads (queen-
   // steering-panel-2026-06-15 B-01, CONTRACT C-1). One row per Hive (mirrors
   // hive.controlState), each the decoded OwnerSteering over the owner-steering:*
-  // hive_settings keys: { slug, directive, eligiblePlans, pauseNewWork, pausedUntil }.
+  // hive_settings keys: { slug, directive, eligiblePlans, eligibleHives, pauseNewWork, pausedUntil }.
   // A single-hive UI reads data[0]; a multi-hive UI keys by slug. Invalidated
   // explicitly by hive:set-steering (notifySyncInvalidate) AND by the hive_settings
   // table→query map (covers a federated steering write from a peer Swarm).

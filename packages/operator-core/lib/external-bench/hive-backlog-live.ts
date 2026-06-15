@@ -15,27 +15,38 @@
  * running `external-bench` per placed task) happens only when the owner triggers the bounded run at
  * the opus reset; `driveLoop` always pauses the fleet at drain/timeout to bound it.
  *
- * ── REAL-OPS INTEGRATION (verify on the FIRST gated run — flagged, not yet executed) ───────────────
- * `realHiveBacklogOps` wires the established functions (the Explore-mapped fleet/hive machinery):
- *   createHive       → `createHiveHarness` (agent-tools/hive/_create.ts), IDLE.
- *   enrollTask       → `cloneTaskRepo` (./clone) @ base_commit → register the clone as an
- *                      `external-bench`-blueprint MEMBER (the hive-eval `registerMember` seam) → seed
- *                      ONE `feature` work_item (the task's problem_statement) into it.
- *   gatherFrontier   → `gatherFrontier` (fleet/placement-gather.ts) — importance order for 'hive',
- *                      backlog/arrival order for 'queen-ablated' (136a4's FIFO contract).
- *   gatherBees       → `gatherLiveBees` (fleet/placement-gather.ts) + headroom.
+ * ── REAL-OPS INTEGRATION (the LIVE binding — `liveHiveBacklogOps`; verify on the FIRST gated run) ──
+ * `liveHiveBacklogOps` (the real binding; `realHiveBacklogOps` delegates) wires the established
+ * functions — REUSING the hive-eval `liveHiveOps` lifecycle, the fleet placement fns, the spine-drive
+ * CREATE pattern (`bench-harness-live.ts`), and the bench clone/diff ports. ONE member harness per
+ * task (the clone), keyed `feature_id = task.instanceId` so a frontier row IS its task — exact,
+ * time-window-free cost/diff attribution (the same per-member discipline `liveHiveOps` draws):
+ *   createHive       → `liveHiveOps.createHive` (createHiveHarness, a transient IDLE Queen-seat home).
+ *   enrollTask       → `cloneTaskRepo` (./clone) @ base_commit → write `.papercusp/blueprint.yaml`
+ *                      (`extends: external-bench`) into the clone (the spine-drive CREATE pattern,
+ *                      `bench-harness-live.ts`) → `liveHiveOps.registerMember` → `liveHiveOps.seedFeature`
+ *                      ONE feature (`feature_id = task.instanceId`, the problem_statement).
+ *   gatherFrontier   → `gatherFrontier` (fleet/placement-gather.ts) — IMPORTANCE order for 'hive',
+ *                      ARRIVAL/backlog order for 'queen-ablated' (136a4's FIFO contract — su-136a4).
+ *   gatherBees       → `gatherLiveBees` (fleet/placement-gather.ts) + `getSpawnHeadroom`.
  *   placeBatch       → `executeBatch` (fleet/place_batch.ts) over the planner's `BatchPlacementPlan`
- *                      (spawns bees running the member's external-bench spine on the placed task).
- *   countInFlight    → `countHivePlacementsInFlight` (hive_placements rows not yet completed).
+ *                      (spawns/warm-injects bees running the member's external-bench spine).
+ *   countInFlight    → `liveHiveOps.countInFlightPlacements` (hive_placements rows not yet completed).
+ *   pauseFleet       → `liveHiveOps.pauseHive`.
  *   collectTask      → `extractDiff` (./clone) over the member clone + the per-task cost/turns SUM
- *                      from `agent_usage_samples` (the bee-instance.ts pattern) → an {@link ArmAttempt}.
- *   teardown         → drop members + dissolve the hive + rm clones.
- * These are wired below; their FIRST real execution over a benchmark backlog is unverified (the run is
- * gated), so the pilot trigger (su-10912 / ec8fe) confirms them live. The ORCHESTRATION is green.
+ *                      from `agent_usage_samples` (`readBenchRunCost`) + the member's bee spawn row
+ *                      (`readMemberSpawnRows`) → an {@link ArmAttempt} → a {@link FleetTaskResult}.
+ *   teardown         → `liveHiveOps.dropMember` per member + `liveHiveOps.dissolveHive` + rm clones.
+ * Every method is a real best-effort body (NO throwing stub on the core path); the genuinely-uncertain
+ * integrations carry `VERIFY-AT-FIRST-RUN:` flags. The ORCHESTRATION above is green over fakes
+ * regardless; the pilot trigger (su-10912 / ec8fe) confirms the live wires.
  */
 import type { CoordEvent } from '@papercusp/bench-metrics';
+import type postgres from 'postgres';
 import type { BatchPlacementInput, BatchPlacementPlan } from '../fleet/batch-placement';
-import type { ArmAttempt, BenchTask, GenerationBudget } from './types';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import type { ArmAttempt, BenchTask, GenerationBudget, TaskCheckout } from './types';
+import { QUEEN_ABLATED_ARM } from './hive-backlog';
 import {
   getFleetPlanner,
   setHiveBacklogDriver,
@@ -216,42 +227,453 @@ async function collectAll(
 
 /**
  * Bind the live driver so `runHiveBacklog` is instant-go for the pilot. `ops` defaults to the real
- * machinery binding (`realHiveBacklogOps`); the smoke/test path injects a fake. Pass `null` ops to
- * leave the driver bound to whatever was last set (or call `setHiveBacklogDriver(null)` to unbind).
+ * machinery binding (`realHiveBacklogOps` → `liveHiveBacklogOps`); the smoke/test path injects a fake.
+ * Pass `null` ops to leave the driver bound to whatever was last set (or `setHiveBacklogDriver(null)`).
  */
 export function bindLiveHiveBacklogDriver(opts: LiveHiveBacklogOpts, ops?: HiveBacklogOps): void {
   setHiveBacklogDriver(liveHiveBacklogDriver(ops ?? realHiveBacklogOps(opts), opts));
 }
 
+/** Alias kept for callers/pilot wiring that name `bindLiveHiveBacklog` (the brief's name). */
+export const bindLiveHiveBacklog = bindLiveHiveBacklogDriver;
+
+/* -------------------------------------------------------------------------- */
+/* The REAL binding — wires the established functions (the function map above). */
+/* -------------------------------------------------------------------------- */
+
+/** A transient throwaway slug for the bench Queen-seat home / a member harness — hyphen-free so it is a
+ *  schema-safe identifier (`scaffoldHarnessSchema` makes a PG schema of it; `_` is the only safe sep). */
+function scratchSlug(prefix: string): string {
+  return `${prefix}${Math.random().toString(36).slice(2, 10)}`;
+}
+
 /**
- * The REAL machinery binding — wired from the Explore-mapped functions (see the file header). Lazy
- * `require`-free; the real fns are imported by the pilot wiring at trigger time. Until the first gated
- * run verifies it end-to-end, each method documents its real fn; the orchestration above is green
- * over fakes regardless. su-10912/ec8fe verify these on the bounded trigger.
- *
- * NOTE: this scaffold is intentionally a thin, typed placeholder that THROWS a clear "wire at trigger"
- * error — binding it spends nothing, and an accidental unattended call surfaces loudly rather than
- * half-running a real fleet. The pilot wiring replaces these bodies with the live fns (header map) on
- * the gated trigger, OR injects a fully-wired ops set into {@link bindLiveHiveBacklogDriver}.
+ * Map a `BenchTask.instanceId` → a schema-safe member harness slug. The instanceId carries `/`, `-`,
+ * `_`, `.` (e.g. `instance_astropy__astropy-12345`); the member slug must be a clean PG identifier, so
+ * we hash-suffix a sanitized prefix rather than trust the raw id. Kept per-run-unique by the random
+ * Queen-home prefix the factory threads in.
  */
-export function realHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
-  const notWired = (fn: string) => {
-    throw new Error(
-      `realHiveBacklogOps.${fn} not yet wired — the pilot trigger (P-032, su-10912/ec8fe) binds the live fleet fns ` +
-        `(see hive-backlog-live.ts header map); the orchestration is green over fakes. workspace=${opts.workspaceId}`,
-    );
+function memberSlugForTask(homePrefix: string, instanceId: string): string {
+  const safe = instanceId.replace(/[^a-z0-9]+/gi, '').toLowerCase().slice(0, 24);
+  return `${homePrefix}m${safe}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** Per-task live state the factory threads from enroll → place → collect → teardown (the clone handle,
+ *  its member slug, and the placement/timing provenance executeBatch returns). */
+interface LiveEnrolledState extends EnrolledTask {
+  checkout: TaskCheckout;
+  /** The bee spawn id placeBatch assigned (filled at placement). */
+  beeId: string | null;
+  placedAtMs: number | null;
+  disposition: 'spawn' | 'warm-inject' | null;
+}
+
+/**
+ * The REAL machinery binding (the brief's `liveHiveBacklogOps`). Lazy dynamic imports keep this module
+ * import-light (the orchestration carries no PG/registry/fleet dependency, so a fake-driven test never
+ * loads them). Every method is a real best-effort body; the genuinely-uncertain integrations carry
+ * `VERIFY-AT-FIRST-RUN:` flags. The pilot trigger (su-10912/ec8fe) confirms these live; the
+ * orchestration is green over fakes regardless.
+ *
+ * State: one member harness PER task (its clone), keyed `feature_id = task.instanceId`, so a frontier
+ * row IS its task and cost/diff attribution is per-member (exact, no time window) — the same discipline
+ * `liveHiveOps`/`readBenchRunCost` draw. The factory closes over a per-task state map threaded
+ * enroll→place→collect→teardown.
+ */
+export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
+  const ws = opts.workspaceId;
+  // Per-run state: instanceId → its clone/member handle + placement provenance. Closed over so the
+  // ops are stateless from the orchestration's view (it threads opaque EnrolledTask handles).
+  const state = new Map<string, LiveEnrolledState>();
+  // The Queen-home prefix is minted on createHive and reused as the member-slug namespace (per-run-unique).
+  let homePrefix = scratchSlug('xbh');
+
+  const sqlClient = async (): Promise<postgres.Sql> => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    return getOrgPg().sql;
   };
+  const liveOps = async () => {
+    const { liveHiveOps } = await import('../hive-eval/live-ops');
+    return liveHiveOps({ workspaceId: ws });
+  };
+
   return {
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    createHive: () => notWired('createHive'),
-    enrollTask: () => notWired('enrollTask'),
-    gatherFrontier: () => notWired('gatherFrontier'),
-    gatherBees: () => notWired('gatherBees'),
-    placeBatch: () => notWired('placeBatch'),
-    countInFlight: () => notWired('countInFlight'),
-    pauseFleet: () => notWired('pauseFleet'),
-    collectTask: () => notWired('collectTask'),
-    teardown: () => notWired('teardown'),
+
+    async createHive({ runId }) {
+      // A transient IDLE Queen-seat home (the scripted loop drives placement, not a real Queen wake).
+      // `liveHiveOps.createHive` === createHiveHarness, IDLE/repo-less/no learning-pack — exactly the
+      // hive-eval boot. The home slug doubles as the per-run member-slug namespace.
+      homePrefix = scratchSlug('xbh');
+      const hiveHome = homePrefix;
+      const ops = await liveOps();
+      await ops.createHive({ slug: hiveHome, workspaceId: ws });
+      void runId; // runId rides coordEvents/the row, not the slug (the slug must stay schema-safe).
+      return { hiveHome };
+    },
+
+    async enrollTask({ hiveHome, task }) {
+      // 1. REAL git clone @ the pinned base commit (the diff seam every arm shares).
+      const { cloneTaskRepo } = await import('./clone');
+      const checkout = await cloneTaskRepo(task);
+
+      try {
+        // 2. Write `.papercusp/blueprint.yaml` (`extends: external-bench`) into the clone — the
+        //    spine-drive CREATE pattern (bench-harness-live.ts:createHarness). The DBOS pipeline
+        //    resolves a harness's spine from this git-canonical file; without it a registered clone
+        //    defaults to the built-in `coding` spine, so the member would NOT run external-bench.
+        //    VERIFY-AT-FIRST-RUN: confirm the pipeline reads `.papercusp/blueprint.yaml` from the
+        //    member clone's worktree (orchestrator-start.ts:resolveHarnessSpine). cloneTaskRepo
+        //    git-clones a writable repo @ base, so the write lands; fallback if the resolver reads
+        //    from a different path = pass the blueprintId through `registerMember`/the registry row.
+        const member = memberSlugForTask(homePrefix, task.instanceId);
+        const { mkdir, writeFile } = await import('node:fs/promises');
+        const { join } = await import('node:path');
+        const { stringify: stringifyYaml } = await import('yaml');
+        const bpDir = join(checkout.dir, '.papercusp');
+        await mkdir(bpDir, { recursive: true });
+        await writeFile(
+          join(bpDir, 'blueprint.yaml'),
+          stringifyYaml({ id: member, extends: 'external-bench' }, { lineWidth: 100 }),
+          'utf8',
+        );
+
+        // 3. Register the clone as a (non-hive) MEMBER harness of the home + scaffold its schema —
+        //    the hive-eval `registerMember` seam (sets hive_slug DIRECTLY so the throwaway clone never
+        //    gets a git-sync routine seeded; it must not federate/push).
+        const ops = await liveOps();
+        await ops.registerMember({ member, clonePath: checkout.dir, hiveHome, workspaceId: ws });
+
+        // 4. Seed ONE `feature` work_item — the problem_statement — keyed `feature_id = instanceId`
+        //    (the throwaway convention: a frontier row's id IS its task). title = a short slice,
+        //    spec/summary = the full brief the harness works.
+        const featureId = task.instanceId;
+        await ops.seedFeature({
+          member,
+          featureId,
+          title: task.problemStatement.slice(0, 200),
+          spec: task.problemStatement,
+          workspaceId: ws,
+        });
+
+        const enrolled: LiveEnrolledState = {
+          task,
+          member,
+          clonePath: checkout.dir,
+          workItemId: featureId,
+          checkout,
+          beeId: null,
+          placedAtMs: null,
+          disposition: null,
+        };
+        state.set(task.instanceId, enrolled);
+        return { task, member, clonePath: checkout.dir, workItemId: featureId };
+      } catch (e) {
+        // Enroll failed AFTER the clone landed — clean the scratch dir so a failed run leaves nothing.
+        await checkout.cleanup().catch(() => {});
+        throw e;
+      }
+    },
+
+    async gatherFrontier({ arm }) {
+      // Each enrolled member holds ONE feature (`feature_id = instanceId`). Build the candidate id list
+      // and hand it to the SHARED `gatherFrontier` by explicit ids — it resolves each, drops
+      // claimed/settled/blocked, and (CRUCIAL per su-136a4) PRESERVES the caller's order. So the arm's
+      // ordering is decided HERE by the id list we pass:
+      //   - 'hive'         → IMPORTANCE order (priority/feature_order asc, then arrival) — the ranked frontier.
+      //   - 'queen-ablated'→ ARRIVAL/backlog (enrollment) order — un-ranked, so the FIFO ablation is clean.
+      // Enrollment order === arrival order (we enroll the backlog in req.backlog order), so the Map's
+      // insertion order IS the arrival order. Importance order re-sorts by the seeded feature priority.
+      const members = [...state.values()];
+      const ids =
+        arm === QUEEN_ABLATED_ARM
+          ? members.map((m) => m.workItemId) // arrival/backlog order — NOT importance-ranked (136a4 FIFO).
+          : await importanceOrderedIds(members); // importance order — the Queen's ranked frontier.
+
+      const { gatherFrontier } = await import('../fleet/placement-gather');
+      const res = await gatherFrontier({ ids, limit: Math.max(ids.length, 1), workspaceId: ws });
+      return res.tasks as unknown as BatchPlacementInput['tasks'];
+    },
+
+    async gatherBees() {
+      const [{ gatherLiveBees }, { getSpawnHeadroom }] = await Promise.all([
+        import('../fleet/placement-gather'),
+        import('../fleet/operator-spawn'),
+      ]);
+      const bees = await gatherLiveBees(ws);
+      const { headroom } = await getSpawnHeadroom(ws);
+      return { bees: bees as unknown as BatchPlacementInput['bees'], headroom };
+    },
+
+    async placeBatch({ plan, arm }) {
+      // Execute the planner's decisions over the live fleet — spawn/warm-inject bees that run each
+      // placed member's external-bench spine. The Queen-seat home is the placing actor.
+      // VERIFY-AT-FIRST-RUN: executeBatch's actor/role — the scripted loop has no real Queen agent, so
+      // we synthesize an operator-tier AgentIdentity (ownerId = the hive home, role 'operator') as the
+      // placer. `parentSpawnId` is null (not an `s-…` owner), so the bees parent to the operator, not a
+      // bee — correct for a scripted placement. If executeBatch later requires a real `s-…` parent owner
+      // for the spawn-tree, mint a placeholder Queen spawn row first (same seam, one extra insert).
+      const [{ executeBatch }, { getSpawnHeadroom }] = await Promise.all([
+        import('../agent-tools/fleet/place_batch'),
+        import('../fleet/operator-spawn'),
+      ]);
+      const actor: AgentIdentity = {
+        ownerId: homePrefix,
+        ownerLabel: `xbench-queen:${arm}`,
+        source: 'principal',
+        workspaceId: ws,
+        userId: null,
+      };
+      const { headroom } = await getSpawnHeadroom(ws);
+      const exec = await executeBatch({
+        plan,
+        headroom,
+        brief: null,
+        tier: null,
+        actor,
+        role: 'operator',
+        workspaceId: ws,
+      });
+
+      // Map executeBatch's per-decision results back to {instanceId, beeId, disposition}. The decision
+      // task id IS the work-item id IS the task instanceId (the enroll convention). `spawned`/`injected`
+      // are the placements that actually fanned a bee; the rest (unplaced/deferred/raced/failed) carry no bee.
+      const placedAtMs = Date.now();
+      const placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] = [];
+      for (const p of exec.placements) {
+        const instanceId = p.task; // === work-item id === task.instanceId
+        const st = state.get(instanceId);
+        if (p.action === 'spawned' || p.action === 'injected') {
+          const disposition = p.action === 'spawned' ? ('spawn' as const) : ('warm-inject' as const);
+          const beeId = p.spawn_id ?? p.bee ?? instanceId;
+          if (st) {
+            st.beeId = beeId;
+            st.placedAtMs = placedAtMs;
+            st.disposition = disposition;
+          }
+          placements.push({ instanceId, beeId, disposition });
+        }
+      }
+      return { placements };
+    },
+
+    async countInFlight({ hiveHome }) {
+      const ops = await liveOps();
+      return ops.countInFlightPlacements({ hiveHome, workspaceId: ws });
+    },
+
+    async pauseFleet({ hiveHome }) {
+      const ops = await liveOps();
+      await ops.pauseHive({ hiveHome, workspaceId: ws });
+    },
+
+    async collectTask({ enrolled, arm, seed }): Promise<FleetTaskResult> {
+      const st = state.get(enrolled.task.instanceId);
+      const checkout = st?.checkout;
+      const member = enrolled.member;
+
+      // 1. The diff the bee produced (base..worktree, grader test-files excluded) — "" if no change.
+      let diff = '';
+      let generationError: string | undefined;
+      if (checkout) {
+        try {
+          const { extractDiff } = await import('./clone');
+          diff = await extractDiff(checkout, enrolled.task);
+        } catch (e) {
+          generationError = `extractDiff failed: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      } else {
+        generationError = 'enrolled task has no checkout (clone state lost) — cannot extract diff';
+      }
+
+      // 2. SUM the member harness's `agent_usage_samples` → tokens/cost/turns (coordination overhead
+      //    included — fairness #2). Per-member, throwaway + unique → exact attribution, no time window
+      //    (the `readBenchRunCost` pattern, scoped by harness_slug = the member). Also read the member's
+      //    bee spawn rows for the bee id + start/finish timing.
+      const sql = await sqlClient();
+      const [cost, spawnRows] = await Promise.all([
+        readMemberUsage(sql, member, ws).catch(() => ({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 })),
+        readMemberBeeSpawns(sql, member, ws).catch(() => [] as MemberSpawnRow[]),
+      ]);
+      // Derive the stopReason from the seeded feature's terminal status (the member ran ONE feature).
+      const status = await readMemberFeatureStatus(sql, member, enrolled.workItemId, ws).catch(() => null);
+      const stopReason = stopReasonForFeatureStatus(status, generationError);
+
+      // Bee + timing provenance: prefer the placement record (placeBatch), fall back to the spawn row.
+      const firstSpawn = spawnRows[0];
+      const beeId = st?.beeId ?? firstSpawn?.spawnId ?? enrolled.member;
+      const placedAtMs = st?.placedAtMs ?? firstSpawn?.startedAtMs ?? Date.now();
+      const startedAtMs = firstSpawn?.startedAtMs ?? placedAtMs;
+      const finishedAtMs = firstSpawn?.finishedAtMs ?? Date.now();
+      const wallClockMs = Math.max(0, finishedAtMs - startedAtMs);
+
+      const attempt: ArmAttempt = {
+        arm,
+        blueprintId: 'external-bench',
+        instanceId: enrolled.task.instanceId,
+        seed,
+        diff,
+        tokensIn: cost.tokensIn,
+        tokensOut: cost.tokensOut,
+        costUsd: cost.costUsd,
+        turns: cost.turns,
+        wallClockMs,
+        trajectoryRef: `xbench-hive://${member}`,
+        stopReason,
+        ...(generationError ? { generationError } : {}),
+        armMeta: { member, hiveArm: arm, beeId },
+      };
+
+      return {
+        attempt,
+        beeId,
+        placedAtMs,
+        startedAtMs,
+        finishedAtMs,
+        disposition: st?.disposition ?? 'spawn',
+      };
+    },
+
+    async teardown({ hiveHome, members }) {
+      const ops = await liveOps();
+      // Drop each member harness (schema + rows) + remove its clone, then dissolve the Queen-seat home.
+      // Best-effort throughout — a teardown hiccup must not mask the run's outcome.
+      for (const m of members) {
+        await ops.dropMember({ member: m.member, workspaceId: ws }).catch(() => {});
+        const st = state.get(m.task.instanceId);
+        await st?.checkout.cleanup().catch(() => {});
+        state.delete(m.task.instanceId);
+      }
+      await ops.dissolveHive({ hiveHome, workspaceId: ws }).catch(() => {});
+    },
   };
+}
+
+/**
+ * Order enrolled members by IMPORTANCE (the hive arm's ranked frontier) — the seeded feature's
+ * priority/feature_order asc, then arrival (enrollment) order as the tiebreak. Reads each member's
+ * single work-item; a member whose read fails sinks to the tail (treated as +∞ priority) so a flaky
+ * read never drops a task from the frontier. Returns the work-item ids in importance order.
+ */
+async function importanceOrderedIds(members: LiveEnrolledState[]): Promise<string[]> {
+  const { getWorkItem } = await import('../work-items');
+  const ranked = await Promise.all(
+    members.map(async (m, arrivalIdx) => {
+      const wi = await getWorkItem(m.workItemId, m.member).catch(() => null);
+      const priority = wi?.priority ?? Number.POSITIVE_INFINITY;
+      return { id: m.workItemId, priority, arrivalIdx };
+    }),
+  );
+  ranked.sort((a, b) => (a.priority !== b.priority ? a.priority - b.priority : a.arrivalIdx - b.arrivalIdx));
+  return ranked.map((r) => r.id);
+}
+
+/** A bench member's confirmed bee spawn row (the bee that ran its one task) — id + start/finish ms. */
+interface MemberSpawnRow {
+  spawnId: string;
+  startedAtMs: number;
+  finishedAtMs: number | null;
+}
+
+/**
+ * The member's `bee`-role spawn rows (the bee that ran its one task), ordered earliest-first. Reuses
+ * the same `spawned_agents` read shape as `liveHiveOps.readMemberSpawnRows`, narrowed to bee spawns.
+ * Exported for the integration test (verifies the SQL + timestamp coercions). Empty when no bee landed
+ * (e.g. a placement that never spawned) → the collect path falls back to the placement record.
+ */
+export async function readMemberBeeSpawns(sql: postgres.Sql, member: string, workspaceId: string): Promise<MemberSpawnRow[]> {
+  const rows = await sql<{ spawn_id: string; started_at: string | Date; finished_at: string | Date | null }[]>`
+    SELECT spawn_id, started_at, finished_at
+      FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${member} AND child_role = 'bee'
+     ORDER BY started_at ASC`;
+  return rows.map((r) => ({
+    spawnId: r.spawn_id,
+    startedAtMs: new Date(r.started_at).getTime(),
+    finishedAtMs: r.finished_at != null ? new Date(r.finished_at).getTime() : null,
+  }));
+}
+
+/** The member's single seeded feature status (terminal → the stopReason). Null when the row is absent. */
+async function readMemberFeatureStatus(
+  sql: postgres.Sql,
+  member: string,
+  featureId: string,
+  workspaceId: string,
+): Promise<string | null> {
+  const rows = await sql<{ status: string }[]>`
+    SELECT status FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${member} AND feature_id = ${featureId}
+     LIMIT 1`;
+  return rows[0]?.status ?? null;
+}
+
+/** Feature statuses that mean the member's task reached DONE. */
+const DONE_FEATURE_STATUSES = new Set(['passed']);
+/** Feature statuses that mean it escalated / is blocked on a human. */
+const ESCALATE_FEATURE_STATUSES = new Set(['escalated', 'blocked']);
+
+/**
+ * Map a member's terminal feature status → the {@link ArmAttempt} stopReason. A genuine infra failure
+ * (a diff-extraction error) wins — it's a generation-side failure, not a scored terminal. Otherwise
+ * passed → 'done', escalated/blocked → 'escalate', anything still in-flight at collect time (the fleet
+ * was paused at the drain/timeout bound) → 'max-turns' (a cap-hit, NOT an infra error → still scored).
+ *
+ * VERIFY-AT-FIRST-RUN: confirm a bench member's finalizer lands the single feature in `passed` on a
+ * clean DONE (the same statuses `bench-harness-live.ts` keys on). If a member's terminal status differs
+ * (e.g. a hive-member finalizer uses a different terminal), widen these sets — same map, one literal.
+ */
+export function stopReasonForFeatureStatus(
+  status: string | null,
+  generationError: string | undefined,
+): ArmAttempt['stopReason'] {
+  if (generationError) return 'error';
+  if (status && DONE_FEATURE_STATUSES.has(status)) return 'done';
+  if (status && ESCALATE_FEATURE_STATUSES.has(status)) return 'escalate';
+  // Not terminal at collect time — the fleet was paused to bound spend before this task settled.
+  return 'max-turns';
+}
+
+/**
+ * SUM the member harness's `agent_usage_samples` → tokensIn/Out, cost_usd, turns (COUNT DISTINCT
+ * run_id — coordination overhead INCLUDED, fairness #2). The `readBenchRunCost` pattern, scoped by
+ * `harness_slug` = the member (throwaway + unique → exact attribution, no time window). Exported for
+ * the integration test. cost_usd/tokens may be null (COALESCE → 0) when a sample landed unpriced.
+ *
+ * VERIFY-AT-FIRST-RUN: confirm a bench member's per-turn samples carry `harness_slug` + `run_id` (the
+ * same columns `readBenchRunCost`/`readMemberRunStats` filter on — both exist on the table). If a
+ * member's samples are keyed only by `run_id`, sum over the member's `spawned_agents.run_id` set
+ * (the `loadCostBySpawn` join) — same table, one extra join.
+ */
+export async function readMemberUsage(
+  sql: postgres.Sql,
+  member: string,
+  workspaceId: string,
+): Promise<{ tokensIn: number; tokensOut: number; costUsd: number; turns: number }> {
+  const rows = await sql<
+    { tokens_in: string | null; tokens_out: string | null; cost_usd: string | null; turns: string | null }[]
+  >`
+    SELECT SUM(COALESCE(input_tokens, 0))::text  AS tokens_in,
+           SUM(COALESCE(output_tokens, 0))::text AS tokens_out,
+           SUM(COALESCE(cost_usd, 0))::text      AS cost_usd,
+           COUNT(DISTINCT run_id)::text          AS turns
+      FROM harness_shared.agent_usage_samples
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${member}`;
+  const r = rows[0];
+  return {
+    tokensIn: Number(r?.tokens_in ?? 0) || 0,
+    tokensOut: Number(r?.tokens_out ?? 0) || 0,
+    costUsd: Number(r?.cost_usd ?? 0) || 0,
+    turns: Number(r?.turns ?? 0) || 0,
+  };
+}
+
+/**
+ * The REAL machinery binding (the brief's `realHiveBacklogOps`) — a thin delegator to
+ * {@link liveHiveBacklogOps}. Kept as the name `bindLiveHiveBacklogDriver` defaults to, so the pilot
+ * wiring + the existing test contract are unchanged.
+ */
+export function realHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
+  return liveHiveBacklogOps(opts);
 }

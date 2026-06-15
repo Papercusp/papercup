@@ -1101,11 +1101,12 @@ pub struct App {
     pub issue_sel: usize,
     /// Which Harnesses column has focus (j/k + detail follow it).
     pub harness_focus: HarnessFocus,
-    /// Two-level nav for the horizontal 2-pane tabs — Pots (features|issues),
-    /// Testing (domains|files), Plugins (list|panes) — (owner ask 2026-06-15 #2,
-    /// the Fleet model ported): false = BROWSING (↑/↓ switch the focused pane,
-    /// Enter drills in); true = INSIDE (↑/↓ move within, Enter acts, Esc steps
-    /// out). Reset on every tab switch. The Fleet tab keeps its own `fleet.entered`.
+    /// Two-level nav for the side-by-side 2-pane tabs — Pots (features|issues)
+    /// and Testing (domains|files) — (owner ask 2026-06-15 #2, the Fleet model
+    /// ported): false = BROWSING (↑/↓ switch the focused pane, Enter drills in);
+    /// true = INSIDE (↑/↓ move within, Enter acts, Esc steps out). Reset on every
+    /// tab switch. The Fleet tab keeps its own `fleet.entered`. (Plugins is
+    /// excluded — its `Tab` swaps full-screen sub-views, not side-by-side panes.)
     pub pane_entered: bool,
     /// Docs tab: file list + selection + the active doc's content + scroll.
     pub docs_files: Vec<String>,
@@ -5046,12 +5047,10 @@ impl App {
                     self.voice_level = 0.0;
                     return Action::Voice(VoiceCmd::Cancel);
                 }
-                // On a horizontal 2-pane tab (Pots/Testing/Plugins), Esc first
-                // steps OUT of an entered pane back to browsing (two-level nav,
-                // owner ask 2026-06-15 #2).
-                if matches!(self.tab, Tab::Harnesses | Tab::Testing | Tab::Plugins)
-                    && self.pane_entered
-                {
+                // On a side-by-side 2-pane tab (Pots/Testing), Esc first steps OUT
+                // of an entered pane back to browsing (two-level nav, owner ask
+                // 2026-06-15 #2).
+                if matches!(self.tab, Tab::Harnesses | Tab::Testing) && self.pane_entered {
                     self.pane_entered = false;
                     return Action::Render;
                 }
@@ -5250,23 +5249,25 @@ impl App {
             {
                 self.fleet_arrow(-1)
             }
-            // Two-level nav for the horizontal 2-pane tabs — Pots/Testing/Plugins
-            // (owner ask 2026-06-15 #2): ↑/↓ switch the focused pane while
-            // BROWSING, else move within the entered pane; ←/→ switch panes at any
-            // level (so once inside, ←/→ move between panes, ↑/↓ within); Enter
-            // drills in then acts; Esc steps back out. `Tab` stays a switch alias.
+            // Two-level nav for the side-by-side 2-pane tabs — Pots
+            // (features|issues) and Testing (domains|files) (owner ask 2026-06-15
+            // #2): ↑/↓ switch the focused pane while BROWSING, else move within
+            // the entered pane; ←/→ switch panes at any level (so once inside, ←/→
+            // move between panes, ↑/↓ within); Enter drills in then acts; Esc
+            // steps back out. `Tab` stays a switch alias. (Plugins is excluded —
+            // its `Tab` swaps two FULL-SCREEN sub-views, not side-by-side panes.)
             KeyCode::Char('j') | KeyCode::Down
-                if matches!(self.tab, Tab::Harnesses | Tab::Testing | Tab::Plugins) =>
+                if matches!(self.tab, Tab::Harnesses | Tab::Testing) =>
             {
                 self.pane_arrow(1)
             }
             KeyCode::Char('k') | KeyCode::Up
-                if matches!(self.tab, Tab::Harnesses | Tab::Testing | Tab::Plugins) =>
+                if matches!(self.tab, Tab::Harnesses | Tab::Testing) =>
             {
                 self.pane_arrow(-1)
             }
             KeyCode::Left | KeyCode::Right
-                if matches!(self.tab, Tab::Harnesses | Tab::Testing | Tab::Plugins) =>
+                if matches!(self.tab, Tab::Harnesses | Tab::Testing) =>
             {
                 self.pane_toggle_focus();
                 Action::Render
@@ -5301,27 +5302,19 @@ impl App {
                 self.pane_entered = true;
                 Action::Render
             }
-            // Plugins: at the browsing level Enter DRILLS IN; once inside it acts
-            // on the selection (launch the pane / load the plugin config).
-            KeyCode::Enter if self.tab == Tab::Plugins => {
-                if !self.pane_entered {
-                    self.pane_entered = true;
-                    return Action::Render;
-                }
-                match self.plugins_focus {
-                    PluginsFocus::Panes => match self.plugin_launch_spec() {
-                        Some(spec) => Action::Launch(spec),
-                        None => Action::None,
+            KeyCode::Enter if self.tab == Tab::Plugins => match self.plugins_focus {
+                PluginsFocus::Panes => match self.plugin_launch_spec() {
+                    Some(spec) => Action::Launch(spec),
+                    None => Action::None,
+                },
+                PluginsFocus::List => match self.selected_plugin() {
+                    Some(p) if p.config_schema.is_some() => Action::LoadPluginConfig {
+                        harness: self.harness.clone(),
+                        plugin: p.name.clone(),
                     },
-                    PluginsFocus::List => match self.selected_plugin() {
-                        Some(p) if p.config_schema.is_some() => Action::LoadPluginConfig {
-                            harness: self.harness.clone(),
-                            plugin: p.name.clone(),
-                        },
-                        _ => Action::None,
-                    },
-                }
-            }
+                    _ => Action::None,
+                },
+            },
             // Enter on the operator pane (outside compose) focuses the composer.
             KeyCode::Enter if self.tab == Tab::Operator => {
                 self.chat_composing = true;
@@ -5737,10 +5730,10 @@ impl App {
         self.publish_swarm_selection()
     }
 
-    /// ↑/↓ for the horizontal 2-pane tabs — Pots/Testing/Plugins (two-level nav,
-    /// owner ask 2026-06-15 #2): BROWSE between the two panes when not entered,
-    /// else move WITHIN the focused list (replaying the generic `move_sel` side
-    /// effects so Testing's domain→files invalidation still fires).
+    /// ↑/↓ for the side-by-side 2-pane tabs — Pots/Testing (two-level nav, owner
+    /// ask 2026-06-15 #2): BROWSE between the two panes when not entered, else
+    /// move WITHIN the focused list (replaying the generic `move_sel` side effects
+    /// so Testing's domain→files invalidation still fires).
     fn pane_arrow(&mut self, delta: isize) -> Action {
         if !self.pane_entered {
             self.pane_toggle_focus();
@@ -5765,12 +5758,6 @@ impl App {
                 self.testing_focus = match self.testing_focus {
                     TestingFocus::Domains => TestingFocus::Files,
                     TestingFocus::Files => TestingFocus::Domains,
-                }
-            }
-            Tab::Plugins => {
-                self.plugins_focus = match self.plugins_focus {
-                    PluginsFocus::List => PluginsFocus::Panes,
-                    PluginsFocus::Panes => PluginsFocus::List,
                 }
             }
             _ => {}
@@ -7685,7 +7672,6 @@ mod tests {
         assert_eq!(a.plugins_focus, PluginsFocus::List);
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         assert_eq!(a.plugins_focus, PluginsFocus::Panes);
-        a.pane_entered = true; // inside the panes list → Enter launches / ↑↓ move
         // Enter with no panes is a no-op.
         assert_eq!(
             a.update(Event::Key(KeyEvent::new(
@@ -7748,6 +7734,50 @@ mod tests {
             Action::Launch(spec) => assert_eq!(spec.argv[0], "lazygit"),
             other => panic!("expected Launch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pots_tab_two_level_nav_browse_enter_within_esc() {
+        // Owner ask 2026-06-15 #2 (rollout): the horizontal 2-pane tabs gain the
+        // same two-level nav as the Fleet tab — ↑/↓ switch panes while BROWSING,
+        // Enter drills IN, ↑/↓ then move within, Esc steps back out.
+        use crate::models::{HarnessFeature, HarnessIssue};
+        let issue = |id: &str| HarnessIssue {
+            id: id.into(),
+            title: id.into(),
+            severity: "minor".into(),
+            status: "open".into(),
+            source: "x".into(),
+            found_during: None,
+            linked_feature_id: None,
+            attempts: 0,
+        };
+        let mut a = App::new();
+        a.update(key('5', KeyModifiers::NONE)); // Pots
+        a.set_features(vec![HarnessFeature {
+            id: "F-1".into(),
+            title: "f".into(),
+            status: "todo".into(),
+            attempts: 0,
+        }]);
+        a.set_issues(vec![issue("I-1"), issue("I-2")]);
+        assert!(!a.pane_entered);
+        assert_eq!(a.harness_focus, HarnessFocus::Features);
+        // Browsing: ↓ switches the focused pane, NOT a row cursor.
+        a.update(ev(KeyCode::Down));
+        assert_eq!((a.harness_focus, a.pane_entered), (HarnessFocus::Issues, false));
+        assert_eq!(a.issue_sel, 0);
+        // Enter drills into the issues pane.
+        a.update(ev(KeyCode::Enter));
+        assert!(a.pane_entered);
+        // Inside: ↓ now moves the issue cursor.
+        a.update(ev(KeyCode::Down));
+        assert_eq!(a.issue_sel, 1);
+        // Esc steps back out to browsing; ↓ then switches panes again.
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.pane_entered);
+        a.update(ev(KeyCode::Down));
+        assert_eq!(a.harness_focus, HarnessFocus::Features);
     }
 
     #[test]

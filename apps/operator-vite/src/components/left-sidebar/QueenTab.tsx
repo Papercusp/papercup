@@ -1,47 +1,47 @@
 /**
  * QueenTab — the owner's Queen steering panel, docked in the Colony left sidebar
- * (queen-steering-panel-2026-06-15 B-04 / P-004; owner-review relocation 2026-06-15).
+ * (queen-steering-panel-2026-06-15 B-04 / P-004; owner-review rounds 1–2, 2026-06-15).
  *
- * The owner steers the autonomous Queen WITHOUT an interactive session: a focus
- * directive, which plans she may pick up NOW (eligibility — DISTINCT from a
- * plan's lifecycle status, D-002), and a new-work pause (indefinite or N minutes).
- * Owner-review layout (top→bottom): hive picker · Focus directive · Eligible
- * plans · Pause. (The Model-tiers session-override section, D-006, lands between
- * the directive and the plans once its backend override field exists — P-006.)
+ * The owner steers the workspace's HOME Queen WITHOUT an interactive session.
+ * Owner-review layout (top→bottom): Pause new work · Focus directive · Model
+ * tiers (session override — #4, lands here once its backend field exists) ·
+ * Eligible Hives · Eligible Plans.
  *
- * Lives in the Colony left sidebar (LeftSidebar.tsx) — a narrow (~300–384px),
- * collapsible, drag-resizable rail — NOT the /adv top tab strip (owner moved it
- * there 2026-06-15). Rendered only while its tab is active (`active` prop), so
- * the sync queries gate on mount.
+ * Two steering axes, both per-hive checkbox multi-selects (D-002 — eligibility is
+ * DISTINCT from lifecycle status / membership):
+ *  - Eligible PLANS — which plans she may pick up NOW. Empty ⇒ any plan.
+ *  - Eligible HIVES — the placement SCOPE (which hives/harnesses she may place
+ *    into → the survey's `allowedHarnesses`, enforced by C-2). Empty ⇒ anywhere.
+ * Empty selection ⇒ NO restriction (today's behaviour) — surfaced loudly so an
+ * empty list never reads as "nothing is eligible".
  *
- * Data (CONTRACT C-1, su-81fe / B-01):
- *  - hive list  ← the SAME `/api/harness/projects/lite` the main AdvShell selector
- *    uses (buildHarnessSelectOptions) — so the steering dropdown lists the
- *    identical hive set, not the narrower `listHives` set (owner-review fix: it
- *    showed only the 2 formal kind:'hive' projects vs the selector's ~dozen).
- *  - steering   ← `hive.steering` via useSyncQuery (one row per formal hive; a
- *    slug with no row reads the neutral default).
- *  - writes     → `hive:set-steering` via /api/agent-mcp/run-tool; the tool
- *    invalidates `hive.steering` AND wakes the Queen.
+ * There is NO "which hive to steer" picker (owner-review round 2): the tab always
+ * steers the workspace's HOME Queen. The hive set is rendered as the Eligible
+ * Hives SCOPE checkboxes instead of a confusing dropdown.
  *
- * Eligibility semantics (D-002): `eligiblePlans` EMPTY ⇒ NO restriction (any
- * plan, today's behaviour); non-empty ⇒ ONLY those. Surfaced loudly so an empty
- * selection never reads as "nothing is eligible".
+ * Lives in the Colony left sidebar (LeftSidebar.tsx) — a narrow, collapsible
+ * rail — as the DEFAULT-OPEN, leftmost tab. Rendered only while active.
+ *
+ * Data (CONTRACT C-1, su-81fe / B-01 + the round-2 `eligibleHives` extension):
+ *  - hive set ← `/api/harness/projects/lite` (the SAME set the main AdvShell
+ *    selector shows — buildHarnessSelectOptions).
+ *  - steering ← `hive.steering` via useSyncQuery (the home hive's row).
+ *  - writes   → `hive:set-steering` via /api/agent-mcp/run-tool (invalidates
+ *    `hive.steering` + wakes the Queen).
  */
 import { useEffect, useMemo, useState } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, Crown, ListChecks, Pause, Play, RotateCcw } from 'lucide-react';
-import { Select } from '@/app/harness/Select';
+import { AlertTriangle, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
 import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 
-/** One row of the `hive.steering` sync query (C-1, B-01). */
+/** One row of the `hive.steering` sync query (C-1, B-01 + round-2 eligibleHives). */
 export interface HiveSteeringRow {
   slug: string;
   directive: string | null;
   eligiblePlans: string[];
+  eligibleHives: string[];
   pauseNewWork: boolean;
   pausedUntil: number | null;
 }
@@ -49,11 +49,13 @@ export interface HiveSteeringRow {
 const DEFAULT_STEERING: Omit<HiveSteeringRow, 'slug'> = {
   directive: null,
   eligiblePlans: [],
+  eligibleHives: [],
   pauseNewWork: false,
   pausedUntil: null,
 };
 
-/** A plan row rendered with its eligibility checkbox state. */
+type LiteProject = { slug: string; parent_slug?: string | null; harness_kind?: string | null };
+
 export interface SteerPlanRow {
   slug: string;
   title: string;
@@ -97,22 +99,25 @@ export function buildSteerRows(active: readonly PlanListRow[], eligible: readonl
   return out;
 }
 
-/** Add/remove a slug from the eligible set. Pure. */
+/** Add/remove a slug from an eligible set (the checkbox toggle). Pure. */
 export function toggleEligible(current: readonly string[], slug: string): string[] {
   return current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug];
 }
 
-/** The hive options for the steering dropdown — the SAME set the main AdvShell
+/** The steerable hive set as checkbox options — the SAME set the main AdvShell
  *  selector shows, minus the non-steering "All" + loading rows. Pure. */
-export function steerHiveOptions(
-  projects: Array<{ slug: string; parent_slug?: string | null; harness_kind?: string | null }>,
-): Array<{ value: string; label: string }> {
+export function steerHiveOptions(projects: LiteProject[]): Array<{ value: string; label: string }> {
   return buildHarnessSelectOptions(projects, null)
     .filter((o) => o.value !== ALL_HARNESSES_OPTION && o.value !== '__loading')
     .map((o) => ({ value: o.value, label: o.label }));
 }
 
-/** Fire hive:set-steering through the gated run-tool bridge. Throws so callers surface. */
+/** The HOME Queen's hive: the first formal hive (kind:'hive'), else the first
+ *  steering row. The tab always steers this one (owner-review round 2). Pure. */
+export function resolveHomeHive(projects: LiteProject[], rows: readonly HiveSteeringRow[]): string {
+  return projects.find((p) => p.harness_kind === 'hive')?.slug || rows[0]?.slug || '';
+}
+
 async function runSetSteering(args: Record<string, unknown>): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
@@ -143,14 +148,12 @@ function pauseStateLabel(row: HiveSteeringRow, nowMs: number): { active: boolean
 export default function QueenTab({ active }: { active: boolean }) {
   const steeringQ = useSyncQuery<HiveSteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000 });
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
-  const [qhive, setQhive] = useQueryState('qhive', parseAsString);
 
-  const [projects, setProjects] = useState<Array<{ slug: string; parent_slug?: string | null; harness_kind?: string | null }>>([]);
+  const [projects, setProjects] = useState<LiteProject[]>([]);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
   const [pauseMins, setPauseMins] = useState('30');
 
-  // The dropdown's hive set == the main AdvShell selector (owner-review fix).
   useEffect(() => {
     if (!active) return;
     let cancel = false;
@@ -166,15 +169,14 @@ export default function QueenTab({ active }: { active: boolean }) {
   }, [active]);
 
   const rows = (steeringQ.data ?? []) as HiveSteeringRow[];
-  const hiveOptions = useMemo(() => steerHiveOptions(projects), [projects]);
-  // Default to the explicit pick → the first formal hive → the first steering row → the first option.
-  const formalHive = projects.find((p) => p.harness_kind === 'hive')?.slug;
-  const sel = qhive || formalHive || rows[0]?.slug || hiveOptions[0]?.value || '';
-  const current: HiveSteeringRow = rows.find((r) => r.slug === sel) ?? { slug: sel, ...DEFAULT_STEERING };
+  const home = resolveHomeHive(projects, rows);
+  const current: HiveSteeringRow = rows.find((r) => r.slug === home) ?? { slug: home, ...DEFAULT_STEERING };
 
+  const hiveOptions = useMemo(() => steerHiveOptions(projects), [projects]);
   const candidates = selectSteerablePlans(plansQ.data?.plans ?? []);
-  const steerRows = buildSteerRows(candidates, current.eligiblePlans);
-  const restricted = current.eligiblePlans.length > 0;
+  const planRows = buildSteerRows(candidates, current.eligiblePlans);
+  const planRestricted = current.eligiblePlans.length > 0;
+  const hiveRestricted = current.eligibleHives.length > 0;
   const pause = pauseStateLabel(current, Date.now());
 
   const setBusyKey = (key: string, on: boolean) =>
@@ -186,14 +188,14 @@ export default function QueenTab({ active }: { active: boolean }) {
     });
 
   const write = async (key: string, args: Record<string, unknown>) => {
-    if (!sel) {
-      setErr('No hive selected.');
+    if (!home) {
+      setErr('No home hive found — start a hive first.');
       return;
     }
     setBusyKey(key, true);
     setErr(null);
     try {
-      await runSetSteering({ hive: sel, ...args });
+      await runSetSteering({ hive: home, ...args });
       void steeringQ.invalidate?.();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -204,6 +206,8 @@ export default function QueenTab({ active }: { active: boolean }) {
 
   const togglePlan = (slug: string) =>
     void write(`plan:${slug}`, { eligiblePlans: toggleEligible(current.eligiblePlans, slug) });
+  const toggleHive = (slug: string) =>
+    void write(`hive:${slug}`, { eligibleHives: toggleEligible(current.eligibleHives, slug) });
   const togglePause = () => void write('pause', { pauseNewWork: !current.pauseNewWork, pausedUntil: null });
   const pauseForMinutes = () => {
     const n = Number(pauseMins);
@@ -221,21 +225,12 @@ export default function QueenTab({ active }: { active: boolean }) {
       <header className="pc-queen__bar">
         <Crown size={14} aria-hidden />
         <span className="pc-queen__title">Steering</span>
+        {home && <span className="pc-queen__hive" title="The home Queen this steers">{home}</span>}
         <span className="pc-queen__spacer" />
         <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={busy.has('clear')} title="Clear ALL steering back to default">
           <RotateCcw size={11} aria-hidden /> reset
         </button>
       </header>
-
-      <div className="pc-queen__hivepick">
-        <Select
-          value={sel}
-          onChange={(v: string) => void setQhive(v)}
-          options={hiveOptions.length ? hiveOptions : [{ value: sel || '', label: sel || '—' }]}
-          ariaLabel="Select hive to steer"
-          placeholder="Select hive"
-        />
-      </div>
 
       {err && (
         <div className="pc-queen__err" role="alert">
@@ -243,54 +238,7 @@ export default function QueenTab({ active }: { active: boolean }) {
         </div>
       )}
 
-      {/* 1 — Focus directive (top, owner-review reorder) */}
-      <DirectiveEditor
-        key={sel}
-        initial={current.directive ?? ''}
-        busy={busy.has('directive')}
-        onSave={(text) => void write('directive', { directive: text.trim() ? text : null })}
-      />
-
-      {/* 2 — Eligible plans */}
-      <section className="pc-queen__section">
-        <div className="pc-queen__section-head">
-          <ListChecks size={12} aria-hidden />
-          <span className="pc-queen__section-title">Eligible plans</span>
-          <span className="pc-queen__count">{restricted ? `${current.eligiblePlans.length} selected` : 'no restriction'}</span>
-        </div>
-        <div className={`pc-queen__scope${restricted ? ' pc-queen__scope--restricted' : ''}`}>
-          {restricted
-            ? 'Queen works ONLY the checked plans. Uncheck all to remove the restriction.'
-            : 'Nothing selected → Queen may work ANY plan. Check plans to focus her (eligibility ≠ lifecycle status).'}
-        </div>
-        {plansQ.loading && !plansQ.data ? (
-          <div className="pc-queen__placeholder">Loading plans…</div>
-        ) : steerRows.length === 0 ? (
-          <div className="pc-queen__placeholder">No steerable plans.</div>
-        ) : (
-          <ul className="pc-queen__plans">
-            {steerRows.map((p) => (
-              <li key={p.slug} className={`pc-queen__plan${p.eligible ? ' pc-queen__plan--on' : ''}`}>
-                <label className="pc-queen__planlabel">
-                  <input
-                    type="checkbox"
-                    className="pc-queen__check"
-                    checked={p.eligible}
-                    disabled={busy.has(`plan:${p.slug}`)}
-                    onChange={() => togglePlan(p.slug)}
-                  />
-                  <span className="pc-queen__planslug" title={p.slug}>{p.title}</span>
-                </label>
-                <span className="pc-queen__planstatus" data-status={p.inActive ? (p.startStatus === 'started' ? 'started' : p.status ?? '') : 'stale'}>
-                  {p.inActive ? (p.startStatus === 'started' ? 'live' : p.status ?? '') : 'not active'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* 3 — Pause new work (minutes input, owner-review) */}
+      {/* 1 — Pause new work (TOPMOST, owner-review round 2) */}
       <section className="pc-queen__section">
         <div className="pc-queen__section-head">
           <span className="pc-queen__section-title">Pause new work</span>
@@ -307,14 +255,7 @@ export default function QueenTab({ active }: { active: boolean }) {
         </button>
         <div className="pc-queen__pausefor">
           <span className="pc-queen__presetlabel">pause for</span>
-          <input
-            type="number"
-            min={1}
-            className="pc-queen__mins"
-            value={pauseMins}
-            onChange={(e) => setPauseMins(e.target.value)}
-            aria-label="Pause duration in minutes"
-          />
+          <input type="number" min={1} className="pc-queen__mins" value={pauseMins} onChange={(e) => setPauseMins(e.target.value)} aria-label="Pause duration in minutes" />
           <span className="pc-queen__presetlabel">min</span>
           <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={busy.has('until')}>apply</button>
           {current.pausedUntil != null && (
@@ -322,6 +263,80 @@ export default function QueenTab({ active }: { active: boolean }) {
           )}
         </div>
         <span className="pc-queen__hint">drives existing placements to terminal, starts nothing new</span>
+      </section>
+
+      {/* 2 — Focus directive */}
+      <DirectiveEditor
+        key={home}
+        initial={current.directive ?? ''}
+        busy={busy.has('directive')}
+        onSave={(text) => void write('directive', { directive: text.trim() ? text : null })}
+      />
+
+      {/* 3 — Model tiers (session override, D-006) lands here — #4, pending its backend override field. */}
+
+      {/* 4 — Eligible Hives (placement scope, owner-review round 2) */}
+      <section className="pc-queen__section">
+        <div className="pc-queen__section-head">
+          <Network size={12} aria-hidden />
+          <span className="pc-queen__section-title">Eligible hives</span>
+          <span className="pc-queen__count">{hiveRestricted ? `${current.eligibleHives.length} selected` : 'no restriction'}</span>
+        </div>
+        <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
+          {hiveRestricted
+            ? 'Queen may place ONLY into the checked hives. Uncheck all to remove the scope.'
+            : 'Nothing checked → Queen may place into ANY hive. Check hives to scope where she places work.'}
+        </div>
+        {hiveOptions.length === 0 ? (
+          <div className="pc-queen__placeholder">Loading hives…</div>
+        ) : (
+          <ul className="pc-queen__plans">
+            {hiveOptions.map((h) => {
+              const on = current.eligibleHives.includes(h.value);
+              return (
+                <li key={h.value} className={`pc-queen__plan${on ? ' pc-queen__plan--on' : ''}`}>
+                  <label className="pc-queen__planlabel">
+                    <input type="checkbox" className="pc-queen__check" checked={on} disabled={busy.has(`hive:${h.value}`)} onChange={() => toggleHive(h.value)} />
+                    <span className="pc-queen__planslug" title={h.value}>{h.label}</span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      {/* 5 — Eligible Plans */}
+      <section className="pc-queen__section">
+        <div className="pc-queen__section-head">
+          <ListChecks size={12} aria-hidden />
+          <span className="pc-queen__section-title">Eligible plans</span>
+          <span className="pc-queen__count">{planRestricted ? `${current.eligiblePlans.length} selected` : 'no restriction'}</span>
+        </div>
+        <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
+          {planRestricted
+            ? 'Queen works ONLY the checked plans. Uncheck all to remove the restriction.'
+            : 'Nothing selected → Queen may work ANY plan. Check plans to focus her (eligibility ≠ lifecycle status).'}
+        </div>
+        {plansQ.loading && !plansQ.data ? (
+          <div className="pc-queen__placeholder">Loading plans…</div>
+        ) : planRows.length === 0 ? (
+          <div className="pc-queen__placeholder">No steerable plans.</div>
+        ) : (
+          <ul className="pc-queen__plans">
+            {planRows.map((p) => (
+              <li key={p.slug} className={`pc-queen__plan${p.eligible ? ' pc-queen__plan--on' : ''}`}>
+                <label className="pc-queen__planlabel">
+                  <input type="checkbox" className="pc-queen__check" checked={p.eligible} disabled={busy.has(`plan:${p.slug}`)} onChange={() => togglePlan(p.slug)} />
+                  <span className="pc-queen__planslug" title={p.slug}>{p.title}</span>
+                </label>
+                <span className="pc-queen__planstatus" data-status={p.inActive ? (p.startStatus === 'started' ? 'started' : p.status ?? '') : 'stale'}>
+                  {p.inActive ? (p.startStatus === 'started' ? 'live' : p.status ?? '') : 'not active'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <QueenStyles />
@@ -366,6 +381,11 @@ function QueenStyles() {
       .pc-queen__bar { display: flex; align-items: center; gap: 7px; }
       .pc-queen__bar svg { color: #fbbf24; }
       .pc-queen__title { font-size: 12px; font-weight: 760; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg, #e7f7ff); }
+      .pc-queen__hive {
+        font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-mute, #7f9bb4);
+        padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;
+      }
       .pc-queen__spacer { flex: 1; }
       .pc-queen__reset {
         display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 700; text-transform: uppercase;
@@ -374,7 +394,6 @@ function QueenStyles() {
       }
       .pc-queen__reset:hover:not(:disabled) { color: var(--fg, #e7f7ff); }
       .pc-queen__reset:disabled { opacity: 0.5; cursor: default; }
-      .pc-queen__hivepick { width: 100%; }
 
       .pc-queen__err {
         display: flex; align-items: center; gap: 6px; font-size: 11px; color: #fca5a5;
@@ -422,7 +441,7 @@ function QueenStyles() {
       .pc-queen__scope { font-size: 10.5px; line-height: 1.35; color: var(--fg-dim, #b9d4e8); padding: 6px 8px; border-radius: 7px; background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.18); }
       .pc-queen__scope--restricted { color: #fcd34d; background: rgba(251, 191, 36, 0.08); border-color: rgba(251, 191, 36, 0.3); }
 
-      .pc-queen__plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+      .pc-queen__plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
       .pc-queen__plan {
         display: flex; align-items: center; gap: 7px; padding: 5px 8px; border-radius: 7px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.12)); background: rgba(255, 255, 255, 0.02);
