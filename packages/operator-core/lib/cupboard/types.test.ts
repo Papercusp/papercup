@@ -17,6 +17,7 @@ import {
   groupHarnessRowsByHive,
   groupListingsByKind,
   isHarnessListing,
+  isHiveBlueprintListing,
   isHivePubkeyRef,
   isPubliclyVisible,
   listingHiveKey,
@@ -52,6 +53,20 @@ function makeListing(over: Partial<HarnessListing> = {}): HarnessListing {
     ...over,
   };
 }
+
+describe('isHiveBlueprintListing (P-018 — the Hive Templates facet)', () => {
+  it('true ONLY for a blueprint listing with blueprint_kind=hive', () => {
+    expect(isHiveBlueprintListing(makeListing({ listing_kind: 'blueprint', blueprint_kind: 'hive' }))).toBe(true);
+  });
+  it('false for a harness-blueprint (blueprint_kind harness/absent)', () => {
+    expect(isHiveBlueprintListing(makeListing({ listing_kind: 'blueprint', blueprint_kind: 'harness' }))).toBe(false);
+    expect(isHiveBlueprintListing(makeListing({ listing_kind: 'blueprint' }))).toBe(false);
+  });
+  it('false for a non-blueprint listing even if blueprint_kind is somehow hive', () => {
+    expect(isHiveBlueprintListing(makeListing({ listing_kind: 'harness', blueprint_kind: 'hive' }))).toBe(false);
+    expect(isHiveBlueprintListing(makeListing({ listing_kind: 'plugin', blueprint_kind: 'hive' }))).toBe(false);
+  });
+});
 
 describe('constants', () => {
   it('CUPBOARD_SCHEMA_VERSION is 1', () => {

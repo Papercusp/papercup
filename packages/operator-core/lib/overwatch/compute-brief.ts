@@ -395,6 +395,37 @@ export async function computeOverwatchBrief(
         e instanceof Error ? e.message : e,
       );
     }
+    // Pre-fold the overwatch's OWN coord inbox (mirrors the Queen's brief) so it sees
+    // replies / owner directives without a separate coord:inbox call. The owner is the
+    // latest `overwatch · <slug>/…` session's coord_owner_id; the read is workspace-ALS
+    // scoped (the coord log is workspace-keyed). Fail-soft: any error leaves inbox unset.
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readInbox } = await import('../agent-tools/coordination/messages');
+      const { runWithWorkspace } = await import('../workspace-als');
+      const { sql } = getOrgPg();
+      const ownerRows = await sql<{ coord_owner_id: string }[]>`
+        SELECT coord_owner_id FROM harness_shared.adv_sessions
+         WHERE workspace_id = ${workspaceId}
+           AND label LIKE ${'overwatch · ' + hiveSlug + '/%'}
+           AND coord_owner_id IS NOT NULL
+         ORDER BY started_at DESC LIMIT 1`;
+      const owner = ownerRows[0]?.coord_owner_id ?? null;
+      if (owner) {
+        const all = await runWithWorkspace(workspaceId, () => readInbox(owner, {}));
+        const items = all
+          .filter((e) => !e.category) // drop ambient (service-health / governor) like coord:inbox default
+          .slice(-10)
+          .reverse() // newest-first
+          .map((e) => ({ kind: e.kind, from: e.from, summary: (e.summary ?? e.body ?? '').slice(0, 200) }));
+        if (items.length > 0) brief.inbox = items;
+      }
+    } catch (e) {
+      console.warn(
+        `[overwatch-brief] could not fold the overwatch inbox for '${hiveSlug}':`,
+        e instanceof Error ? e.message : e,
+      );
+    }
     return withAnomalies(brief);
   } catch (err) {
     console.warn(

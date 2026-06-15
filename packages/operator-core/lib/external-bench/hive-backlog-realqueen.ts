@@ -252,8 +252,16 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
           const enrolled = await ops.enrollTask({ hiveHome, task, budget: req.budget, workspaceId: ws });
           members.push(enrolled);
           // Persist the enrollment manifest entry immediately (durability — a mid-run kill keeps the
-          // worktree→task mapping the recovery pass needs). Best-effort: never abort enrollment.
-          if (opts.onEnrolled) await Promise.resolve(opts.onEnrolled(enrolled)).catch(() => {});
+          // worktree→task mapping the recovery pass needs). Best-effort: a hook throw (sync OR async)
+          // must NEVER abort enrollment, so the whole invocation is guarded (a sync throw escapes a
+          // bare `.catch`, since it fires before Promise.resolve wraps it).
+          if (opts.onEnrolled) {
+            try {
+              await opts.onEnrolled(enrolled);
+            } catch {
+              /* best-effort durability hook — ignore */
+            }
+          }
         }
 
         const deadline = startedAtMs + fleetTimeoutMs;
@@ -356,8 +364,14 @@ async function collectAll(
     const result = await ops.collectTask({ enrolled, arm: req.arm, seed: String(req.seed), workspaceId: ws });
     out.push(result);
     // Persist this one task's diff/row immediately (durability — a kill mid-collect keeps every diff
-    // already gathered). Best-effort: a hook throw must not abort the rest of the collect loop.
-    if (onTaskCollected) await Promise.resolve(onTaskCollected(result)).catch(() => {});
+    // already gathered). Best-effort: a hook throw (sync OR async) must not abort the rest of the loop.
+    if (onTaskCollected) {
+      try {
+        await onTaskCollected(result);
+      } catch {
+        /* best-effort durability hook — ignore */
+      }
+    }
   }
   return out;
 }

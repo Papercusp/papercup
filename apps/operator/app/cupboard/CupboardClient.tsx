@@ -35,6 +35,7 @@ import {
   isPubliclyVisible,
   listingActionFor,
   listingKindOf,
+  isHiveBlueprintListing,
   listingRepoSlug,
   listingContributorCount,
   listingTopLanguage,
@@ -56,10 +57,13 @@ import { useLexicon } from '@/lib/useLexicon';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
 type KindFilter = 'all' | ListingKind;
-/** The tab row's domain: listing-kind filters + the tool-level discovery view. */
-type ViewFilter = KindFilter | 'tools';
+/** The tab row's domain: listing-kind filters + the tool-level discovery view +
+ *  'hive-blueprint' (P-018) — a CLIENT facet over blueprint listings split on
+ *  blueprint_kind='hive' (the installable Hive templates), distinct from the
+ *  running-hive 'harness' tab and from harness-blueprints. */
+type ViewFilter = KindFilter | 'tools' | 'hive-blueprint';
 
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'hive-blueprint', 'plugin', 'tool-pack', 'learning-pack', 'tools'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -144,6 +148,7 @@ export default function CupboardClient() {
       all: 'All',
       harness: t('pot', { plural: true }),
       blueprint: 'Blueprints',
+      'hive-blueprint': 'Hive Templates',
       plugin: 'Plugins',
       'tool-pack': 'Tool packs',
       'learning-pack': 'Learning Packs',
@@ -200,7 +205,9 @@ export default function CupboardClient() {
         // in this mode, so `kind` is intentionally not forwarded.
         params.set('project', hive);
       } else if (!hive && kindFilter !== 'all' && kindFilter !== 'tools') {
-        params.set('kind', kindFilter);
+        // P-018: 'hive-blueprint' is a CLIENT facet over blueprint listings (split on
+        // blueprint_kind below); the worker only knows server kind='blueprint'.
+        params.set('kind', kindFilter === 'hive-blueprint' ? 'blueprint' : kindFilter);
       }
       // Hive-pubkey rollup (comb-hive-native-sharing P-001): the worker has no
       // hive filter, so fetch unfiltered and narrow client-side by hive_pubkey
@@ -236,7 +243,17 @@ export default function CupboardClient() {
       )
     : [];
   const hiveGroups = hive ? groupListingsByKind(hiveListings) : [];
-  const groupedListings = groupListingsByKind(listings);
+  // P-018: the 'blueprint' tab shows harness-blueprints; the 'hive-blueprint' tab
+  // ("Hive Templates") shows hive-blueprint listings (blueprint_kind='hive'). Both
+  // queried the server with kind='blueprint'; this splits them. Other tabs unaffected
+  // (viewListings === listings). The hive ROLLUP (hiveListings) keeps the raw set.
+  const viewListings =
+    kindFilter === 'hive-blueprint'
+      ? listings.filter(isHiveBlueprintListing)
+      : kindFilter === 'blueprint'
+        ? listings.filter((l) => listingKindOf(l) === 'blueprint' && !isHiveBlueprintListing(l))
+        : listings;
+  const groupedListings = groupListingsByKind(viewListings);
   const facetCount = groupedListings.length;
   // Flat hive-first browse (P-002): harness member rows fold into ONE card per
   // owning hive; legacy (pre-hive) harness rows collapse into their own
@@ -248,7 +265,7 @@ export default function CupboardClient() {
     : null;
   const browseOthers = hiveFirstBrowse
     ? listings.filter((l) => listingKindOf(l) !== 'harness')
-    : listings;
+    : viewListings;
   const activeViewLabel = toolsView && !hive
     ? 'Tool discovery'
     : hive
@@ -379,7 +396,13 @@ export default function CupboardClient() {
               aria-pressed={kindFilter === k}
               style={filterButtonStyle(kindFilter === k)}
             >
-              {k === 'tools' ? <Wrench size={11} /> : k !== 'all' ? <KindIcon kind={k} /> : null}
+              {k === 'tools' ? (
+                <Wrench size={11} />
+              ) : k === 'hive-blueprint' ? (
+                <Hexagon size={11} />
+              ) : k !== 'all' ? (
+                <KindIcon kind={k} />
+              ) : null}
               {VIEW_FILTER_LABEL[k]}
             </button>
           ))}

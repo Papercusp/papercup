@@ -174,7 +174,7 @@ async function main() {
   // driver's onEnrolled/onTaskCollected hooks: an enrollment manifest (instanceId→clonePath→base→member,
   // so a standalone recovery pass — _xbench_recover.ts — can re-extract from the surviving worktrees) and
   // each task's diff the moment it is collected. A kill now loses nothing recoverable.
-  const { writeFileSync: wf, mkdirSync: mkd } = await import('node:fs');
+  const { writeFileSync: wf, mkdirSync: mkd, appendFileSync: af } = await import('node:fs');
   mkd(OUT_DIR, { recursive: true });
   mkd(`${OUT_DIR}/diffs-${ARM}`, { recursive: true });
   const manifestPath = `${OUT_DIR}/${ARM}.manifest.jsonl`;
@@ -193,8 +193,7 @@ async function main() {
         baseCommit: e.checkout.baseCommit,
         testFiles: (e.task.graderMeta?.['testFiles'] as string[] | undefined) ?? [],
       };
-      const { appendFileSync } = require('node:fs');
-      appendFileSync(manifestPath, JSON.stringify(row) + '\n', 'utf8');
+      af(manifestPath, JSON.stringify(row) + '\n', 'utf8');
       console.log(`[realqueen] enrolled ${e.task.instanceId} → ${e.clonePath} (base ${e.checkout.baseCommit.slice(0, 8)})`);
     },
     onTaskCollected: (tr) => {

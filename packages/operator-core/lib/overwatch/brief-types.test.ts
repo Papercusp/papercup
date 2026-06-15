@@ -19,6 +19,10 @@ function unhealthyBrief(): OverwatchBrief {
     plans: { active: 6, stalledItems: 4, agingEscalations: 2 },
     observations: { laneCount: 9, recentByRole: { worker: 5, queen: 3, scout: 1 } },
     crossMonitor: { queenAlive: false, overwatchAlive: true },
+    inbox: [
+      { kind: 'message', from: 'queen', summary: 're: F-FIX-021 — re-opened, thanks' },
+      { kind: 'escalation', summary: 'owner: keep an eye on the opus bucket' },
+    ],
     anomalies: [
       {
         kind: 'observation-dark',
@@ -63,6 +67,11 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   assert.match(out, /### Queen\n- last woke 2026-06-15T01:00:00Z \[STALLED\] · cadence OFF · driving 3 placement\(s\) · next unscheduled/);
   // The Queen-nudge address: coord:send to her resolved coordOwner (lands in her wake brief).
   assert.match(out, /nudge the Queen via `coord:send \{ to: \['s-queen-1781000000-abc'\]/);
+
+  // The pre-folded Inbox section (coord messages addressed to the overwatch).
+  assert.match(out, /### Inbox — coord messages for you/);
+  assert.match(out, /- \[message\] queen: re: F-FIX-021 — re-opened, thanks/);
+  assert.match(out, /- \[escalation\] owner: keep an eye on the opus bucket/);
   assert.match(out, /### Bees\n- running 4 · completed 11 · churning 2 · dead claims 1/);
   assert.match(out, /### Work feed\n- frontier 7 ready · 5 auto-eligible stuck · 1 dead routine\(s\) · 2 stranded/);
   assert.match(out, /### Tokens \/ gateway\n- paused buckets: opus, sonnet · 3 failover\(s\) · 12 429\(s\) · 1 account\(s\) available/);

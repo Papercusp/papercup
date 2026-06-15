@@ -8,7 +8,8 @@
  * fallback is used so substrate still boots (the sidecar is optional).
  */
 
-import { getFlag, FLAGS } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import {
   spawnSubstrateSidecar,
   registerSidecarShutdownHooks,
@@ -40,7 +41,7 @@ export interface BootSubstrateResult {
 export async function bootSubstrateWithFallback(
   opts?: BootSubstrateOpts,
 ): Promise<BootSubstrateResult> {
-  const useSidecar = getFlag(FLAGS.SUBSTRATE_SIDECAR);
+  const useSidecar = await getFlag(FLAGS.SUBSTRATE_SIDECAR, 'system');
 
   if (!useSidecar) {
     // Flag OFF: use in-process (legacy)

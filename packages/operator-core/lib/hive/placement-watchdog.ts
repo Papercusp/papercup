@@ -273,7 +273,9 @@ async function upsertPlacement(
     now: number;
   },
 ): Promise<void> {
-  const recoveryAt = p.bumpRecovery ? new Date(p.now) : null;
+  // The org PG client (getOrgPg) rejects a raw JS Date bound to timestamptz —
+  // it must receive an ISO string (cf. store-pg.ts; org-pg-client-rejects-raw-date).
+  const recoveryAt = p.bumpRecovery ? new Date(p.now).toISOString() : null;
   await sql`
     INSERT INTO harness_shared.hive_placements
       (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
@@ -282,7 +284,7 @@ async function upsertPlacement(
     VALUES (
       ${p.workspaceId}, ${p.installSlug}, ${p.workItemId}, ${p.harnessSlug}, ${p.queenOwnerId},
       ${p.beeSpawnId}, ${p.beeOwnerId}, ${p.status}, ${p.failCount}, ${p.disposition},
-      ${p.escalationMsgId ?? null}, ${recoveryAt}, ${new Date(p.now)}, ${new Date(p.now)}
+      ${p.escalationMsgId ?? null}, ${recoveryAt}, ${new Date(p.now).toISOString()}, ${new Date(p.now).toISOString()}
     )
     ON CONFLICT (workspace_id, install_slug, work_item_id) DO UPDATE SET
       harness_slug      = COALESCE(EXCLUDED.harness_slug, harness_shared.hive_placements.harness_slug),

@@ -172,6 +172,17 @@ export interface Anomaly {
  * The OverwatchBrief (C-1) — the system-health snapshot for one wake. v1 scopes
  * to ONE hive (D-005, per-hive first; the shape is workspace-extensible in v2).
  */
+/** One coord message addressed to the overwatch, pre-folded into the brief (the
+ *  `coord:inbox` digest — mirrors the Queen's BriefInboxItem). */
+export interface OverwatchInboxItem {
+  /** The envelope kind (message / handoff / escalation / ack / …). */
+  kind: string;
+  /** Sender handle, if any. */
+  from?: string;
+  /** One-line summary (or the body head), capped. */
+  summary: string;
+}
+
 export interface OverwatchBrief {
   /** The hive this brief monitors (v1 = one hive; D-005 per-hive scope). */
   hiveSlug: string;
@@ -186,6 +197,10 @@ export interface OverwatchBrief {
   crossMonitor: OverwatchCrossMonitor;
   /** The detected anomalies + each one's suggested action — the actionable payload. */
   anomalies: Anomaly[];
+  /** Coord messages addressed to the overwatch since its last wake — pre-folded so
+   *  it sees replies / owner directives without a separate `coord:inbox` call
+   *  (mirrors the Queen's brief inbox). Omitted/empty when none. */
+  inbox?: readonly OverwatchInboxItem[];
 }
 
 /** Per-section list caps so the brief stays a DIGEST, never a raw dump. */
@@ -329,6 +344,16 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
     }
     const overflow = ordered.length - cap.anomalies;
     if (overflow > 0) out.push(`…+${overflow} more (drill into the full brief)`);
+  }
+
+  // INBOX — coord messages addressed to the overwatch (pre-folded, like the Queen's
+  // brief). Rendered only when present; `coord:inbox` pages deeper.
+  if (brief.inbox && brief.inbox.length > 0) {
+    out.push('');
+    out.push('### Inbox — coord messages for you (act/ack as needed)');
+    for (const m of brief.inbox) {
+      out.push(`- [${m.kind}]${m.from ? ` ${m.from}:` : ''} ${m.summary}`);
+    }
   }
 
   // HEALTH PANELS — supporting context (one line each).

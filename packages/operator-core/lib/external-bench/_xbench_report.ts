@@ -10,6 +10,11 @@ import { substrateSignalRates } from '@papercusp/bench-metrics';
 import type { CoordEvent } from '@papercusp/bench-metrics';
 
 const OUT_DIR = process.env.XBENCH_OUT_DIR ?? '/tmp/xbench-compare-out';
+// The two arms to compare. Defaults to the P-033 real-Queen pair (hive-realqueen vs fifo-noqueen);
+// override to the P-032 pair (hive vs queen-ablated) via XBENCH_HIVE_ARM/XBENCH_ABL_ARM. Same JSON
+// shape either way (_xbench_realqueen_compare.ts / _xbench_recover.ts emit the identical format).
+const HIVE_ARM = process.env.XBENCH_HIVE_ARM ?? 'hive-realqueen';
+const ABL_ARM = process.env.XBENCH_ABL_ARM ?? 'fifo-noqueen';
 
 interface ArmRun {
   arm: string;
@@ -99,8 +104,8 @@ function armReport(arm: string) {
 }
 
 function main() {
-  const hive = armReport('hive');
-  const abl = armReport('queen-ablated');
+  const hive = armReport(HIVE_ARM);
+  const abl = armReport(ABL_ARM);
 
   const delta = {
     resolvedPct_pp: (hive.resolvedPct - abl.resolvedPct) * 100, // percentage points
@@ -119,16 +124,16 @@ function main() {
   };
 
   const totalSpend = hive.totalCostUsd + abl.totalCostUsd;
-  const report = { generatedAt: new Date().toISOString(), hive, queenAblated: abl, delta, totalSpendUsd: totalSpend };
+  const report = { generatedAt: new Date().toISOString(), hiveArm: HIVE_ARM, ablArm: ABL_ARM, hive, queenAblated: abl, delta, totalSpendUsd: totalSpend };
   writeFileSync(`${OUT_DIR}/HEADLINE.json`, JSON.stringify(report, null, 2), 'utf8');
 
   // Human-readable table
   const L: string[] = [];
-  L.push('================ HEADLINE: hive vs queen-ablated (SWE-bench Pro) ================');
+  L.push(`================ HEADLINE: ${HIVE_ARM} vs ${ABL_ARM} (SWE-bench Pro) ================`);
   L.push(`tasks: ${hive.tasks} (same fixed set, same grader, same iso-budget/task)`);
   L.push('');
   const row = (label: string, h: string, a: string, d: string) =>
-    L.push(`${label.padEnd(26)} | hive ${h.padEnd(16)} | ablated ${a.padEnd(16)} | Δ ${d}`);
+    L.push(`${label.padEnd(26)} | ${HIVE_ARM} ${h.padEnd(16)} | ${ABL_ARM} ${a.padEnd(16)} | Δ ${d}`);
   row('RESOLVED %', pct(hive.resolved, hive.graded), pct(abl.resolved, abl.graded), `${delta.resolvedPct_pp >= 0 ? '+' : ''}${delta.resolvedPct_pp.toFixed(1)}pp`);
   row('RESOLVED count', `${hive.resolved}/${hive.graded}`, `${abl.resolved}/${abl.graded}`, `${delta.resolved_count >= 0 ? '+' : ''}${delta.resolved_count}`);
   row('non-empty diffs', `${hive.nonEmptyDiffs}/${hive.tasks}`, `${abl.nonEmptyDiffs}/${abl.tasks}`, '');
@@ -146,10 +151,10 @@ function main() {
   row('misalignment', hive.mast.misalignmentRate.toFixed(3), abl.mast.misalignmentRate.toFixed(3), delta.mast.misalignmentRate.toFixed(3));
   row('redundant work', hive.mast.redundantWorkRate.toFixed(3), abl.mast.redundantWorkRate.toFixed(3), delta.mast.redundantWorkRate.toFixed(3));
   L.push('');
-  L.push(`coord events: hive=${hive.coordEventCount} ablated=${abl.coordEventCount}`);
+  L.push(`coord events: ${HIVE_ARM}=${hive.coordEventCount} ${ABL_ARM}=${abl.coordEventCount}`);
   L.push(`TOTAL SPEND (both arms): $${totalSpend.toFixed(2)}  (ceiling $10,000)`);
-  if (hive.runError) L.push(`⚠ hive runError: ${hive.runError}`);
-  if (abl.runError) L.push(`⚠ ablated runError: ${abl.runError}`);
+  if (hive.runError) L.push(`⚠ ${HIVE_ARM} runError: ${hive.runError}`);
+  if (abl.runError) L.push(`⚠ ${ABL_ARM} runError: ${abl.runError}`);
   L.push('=================================================================================');
   const table = L.join('\n');
   writeFileSync(`${OUT_DIR}/HEADLINE.txt`, table, 'utf8');
