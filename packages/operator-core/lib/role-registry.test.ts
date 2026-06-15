@@ -20,7 +20,9 @@ vi.mock('./papercusp-root', () => ({
 beforeEach(async () => {
   __clearRoleRegistryCache();
   harnessRoot = await mkdtemp(join(tmpdir(), 'role-registry-test-'));
-  promptsDir = join(harnessRoot, 'prompts');
+  // Phase 5: built-in role manifests live in the base role library, which is where
+  // listRoles() scans (join(harnessPackageDir(), 'blueprints', 'base', 'prompts')).
+  promptsDir = join(harnessRoot, 'blueprints', 'base', 'prompts');
   mkdirSync(promptsDir, { recursive: true });
   papercuspRoot = await mkdtemp(join(tmpdir(), 'papercusp-root-test-'));
   mkdirSync(join(papercuspRoot, 'global-plugins'), { recursive: true });

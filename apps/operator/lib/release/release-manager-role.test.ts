@@ -13,11 +13,12 @@
  *      the real spawn-command resolver applies it with the env UNSET.
  *
  *   2. INSTRUCTIONS — the role has a non-empty in-tree playbook. For a
- *      pipeline/dispatched role that file is the harness-side
- *      `packages/harness/prompts/<role>.md` (the same place every role's
- *      persona lives, and what `resolvePromptFile` loads at spawn) — NOT an
- *      `apps/operator/prompts/<role>.persona.md`, which is loaded only for the
+ *      pipeline/dispatched role that file is the harness-side base role library
+ *      `packages/harness/blueprints/base/prompts/<role>.md` (the universal home
+ *      every role's persona lives in, and what `resolvePromptFile` loads at spawn) —
+ *      NOT an `apps/operator/prompts/<role>.persona.md`, which is loaded only for the
  *      operator/oracle CHAT surfaces (see prompt-assembly.ts `loadRolePersona`).
+ *      (Phase 5: the global harness prompts/ dir was deleted; base is canonical.)
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
@@ -26,7 +27,7 @@ import { ROLE_MODEL_DEFAULTS, roleModelDefault } from '@papercusp/orchestrator/r
 import { applyRoleModel } from '@papercusp/operator-core/lib/harness-invoke-once';
 
 const REPO = resolve(__dirname, '../../../../');
-const PERSONA = resolve(REPO, 'libs/papercusp/packages/harness/prompts/release-manager.md');
+const PERSONA = resolve(REPO, 'libs/papercusp/packages/harness/blueprints/base/prompts/release-manager.md');
 
 afterEach(() => vi.unstubAllEnvs());
 

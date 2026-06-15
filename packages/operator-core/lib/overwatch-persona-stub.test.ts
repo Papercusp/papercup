@@ -2,14 +2,17 @@
  * overwatch-persona-stub.test.ts — the D-007 anti-drift guard
  * (overwatch-role-2026-06-15 B-01, the EI-611 lesson).
  *
- * EI-611: the Queen has TWO full personas — a global fallback `prompts/queen.md`
- * and the blueprint `blueprints/hive/prompts/queen.md` — that silently DRIFT;
- * shared instructions repeatedly land in the dead fallback while the live
- * blueprint Queen runs without them. The overwatch must NOT repeat that: its
- * canonical persona ships ONCE in the hive blueprint (B-05), and the fallback
- * `prompts/overwatch.md` (which exists only to satisfy the role-registry's
- * "every spawnable role has a prompt on disk" invariant — getKnownRoles walks
- * that dir) is a THIN STUB that points at the blueprint and adds no instructions.
+ * EI-611: the Queen has TWO full personas — a fallback and the blueprint
+ * `blueprints/hive/prompts/queen.md` — that silently DRIFT; shared instructions
+ * repeatedly land in the dead fallback while the live blueprint Queen runs without
+ * them. The overwatch must NOT repeat that: its canonical persona ships ONCE in the
+ * hive blueprint (B-05), and the base-library fallback
+ * `blueprints/base/prompts/overwatch.md` (which exists only so an `overwatch` spawn
+ * outside the hive blueprint still resolves to *a* prompt via the universal base
+ * library) is a THIN STUB that points at the blueprint and adds no instructions.
+ *
+ * (Phase 5: the legacy global fallback `prompts/overwatch.md` was deleted with the
+ * global prompts/ dir; the base library is now the no-blueprintId fallback home.)
  *
  * This pins that: a refactor that grows the fallback into a second full persona
  * (the exact EI-611 failure) trips here.
@@ -18,7 +21,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { harnessPath } from './harness-paths';
 
-const STUB = harnessPath('prompts', 'overwatch.md');
+const STUB = harnessPath('blueprints', 'base', 'prompts', 'overwatch.md');
 const CANONICAL = harnessPath('blueprints', 'hive', 'prompts', 'overwatch.md');
 
 describe('overwatch persona — one canonical home, the fallback stays a stub (D-007 / EI-611)', () => {

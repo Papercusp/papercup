@@ -1,40 +1,44 @@
-# Worker log — EI-278 (auto-implement dispatch, run 1781528620-worker)
+# worker-log EI-278 (run 1781529442-worker, 2026-06-15)
 
-## Task
-Auto-implement EI-278 (kind=bug): "Tauri webview RSS grows to the 16GB WebKit
-kill threshold on a long-lived instance — OOM-killed after ~14h."
-
-## Outcome: needs-human (re-confirmed; independently re-verified)
+**Outcome: needs-human** (3rd dispatch; matches prior workers ad494296 / 2135b1c3).
 
 ## What I did
-Read-only audit + test run. **No code change** — there is no auto-implementable
-inline fix remaining, and manufacturing a speculative leak fix without profiling
-evidence would be a wrong auto-fix on the exact class this gate prevents.
+Independent re-verification, no code change. Verified the load-bearing facts
+against the LIVE code, not the issue comments:
 
-### Independently re-verified the prior audit's claims (trust what runs, not comments)
-1. **Storm fix shipped + wired + pinned.**
-   - `apps/operator/providers/HarnessZeroProvider.tsx` passes `ssePollIntervalMs=180_000` into the SSE path.
-   - `libs/generic/sync/src/transports/sse/SSEAdapter.tsx:254` defaults `SSE_DRIFT_REPAIR_DEFAULT_MS=180_000`.
-   - `SSEAdapter.test.tsx` pins it into the 60-300s band with the EI-278 rationale.
-2. **`observability/metrics.ts`** - integer counters, zero per-event allocation. (The 162k "misses" were a units artifact: every network fetch, not a growing buffer.)
-3. **`transports/polling/queryClient.ts`** - `gcTime=60min` (NOT Infinity). Bounded working set.
-4. **`bus-tap.ts`** - `Set` with proper unsubscribe; sole consumer `DesktopAttentionNotifier.tsx` returns the unsubscribe directly from its `useEffect`.
-5. **`@papercusp/sse` `resilient-event-source.ts`** - closes the prior EventSource + clears all timers (reconnect/zombie/visibility) on every reconnect/setUrl/close, and removes the visibilitychange listener on close. No listener/timer leak.
+- Storm fix present + wired: `apps/operator/providers/HarnessZeroProvider.tsx:49,58,71`
+  passes `ssePollIntervalMs = 180_000` into the SSE path → `SSEAdapter.tsx:254,260`
+  defaults `SSE_DRIFT_REPAIR_DEFAULT_MS = 180_000`.
+- Pin test present: `SSEAdapter.test.tsx` clamps the const to the 60_000–300_000ms
+  band with the EI-278 rationale.
+- Option (a) (`refetchInterval:false` under healthy SSE) still deferred —
+  `usePollingQuery.ts:59` `refetchInterval: interval` is unconditional; the
+  root-cause comment marks the conditional-disable design-dependent on a
+  bridge-coverage audit.
 
-### Tests run
-`cd libs/generic/sync && npx vitest run` -> **15 files / 110 tests passed** (incl. the `SSEAdapter.test.tsx` EI-278 pin). The product-affecting fix holds.
+## Tests run
+`npx vitest run` in `libs/generic/sync` → **110/110 green** (incl. the EI-278 pin
+in SSEAdapter.test.tsx and usePollingQuery.test.tsx).
 
-### Why needs-human (not an inline fix)
-- The product-affecting cause (the ~3.2 req/s SSE fetch storm -> 16GB-in-14h OOM) is **already fixed + shipped + pinned**. The issue author explicitly kept it open "pending the soak."
-- No localized, regression-testable, unbounded-accumulation bug exists in the client sync path (all 5 candidates bounded).
-- The soak's dominant residual accumulator (auto-opened WebKit inspector, `papercusp-desktop/src-tauri/src/main.rs` `#[cfg(debug_assertions)]`) is compiled out of release -> cannot affect the product; tracked under EI-180.
-- Per su-0feaf's own magnitude analysis, the residual ~96MB/hr idle leak extrapolates to ~1.3GB over 14h - far short of 16GB; it required the now-fixed storm multiplier.
-- Remaining work is NOT auto-implementable: (a) a multi-hour soak to confirm flat webview RSS (the explicit close criterion); (b) profiling discriminator runs to localize the sub-threshold residual before any fix can be pinned; (c) the deferred option-(a) cadence change (`refetchInterval:false` under healthy SSE) which depends on a bridge-coverage audit - larger + design-dependent.
+## Why needs-human (not fixed, not could-not-fix)
+The product-affecting cause of the 16GB-in-14h webview OOM — the ~3.2 req/s SSE
+fetch storm — is already fixed, shipped, wired, and pinned. There is no new
+inline fix to make and no localized unbounded-accumulation bug left to pin with a
+regression test (metrics = integer counters; queryClient gcTime=60min; bus-tap is
+a Set with unsubscribe; resilient-event-source clears timers/closes ES on every
+reconnect). The remaining work is NOT auto-implementable:
+1. A multi-hour soak on a live desktop instance to confirm webview RSS stays flat
+   (the issue author's explicit close criterion — "stays open pending the soak").
+2. Profiling discriminator runs to localize the sub-threshold residual ~96MB/hr
+   idle leak (su-0feaf) before any fix can be pinned — a speculative leak fix
+   without profiling evidence would be a wrong auto-fix.
+3. The deferred option-(a) cadence change pending a bridge-coverage audit
+   (larger / design-dependent).
+4. The debug-only auto-opened WebKit inspector (`src-tauri/src/main.rs`
+   `#[cfg(debug_assertions)]`, compiled out of release) — tracked under EI-180.
 
-### Why it re-appeared in the auto lane
-The policy (`policy.ts:270` `classifyImprovement`) already routes `needsHuman:true` -> human tier. The prior worker set `needsHuman:true` at 12:57Z, but this dispatch's `lastDispatchAt` is 12:30Z - my dispatch raced (predated) the flag. Re-confirming needs-human keeps the flag set and closes this dispatch's ledger row.
-
-## For the human / next agent
-1. Run the soak (desktop on /adv several hours) to confirm webview RSS now stays flat -> then close EI-278.
-2. If RSS still climbs with the storm gone, spin a scoped residual-leak issue off the discriminator-run plan su-0feaf outlined (samples were at /tmp/e2e-r2-soak.tsv).
-3. The debug-only inspector accumulation belongs to EI-180.
+## Validator re-verify
+- Re-run `npx vitest run` in `libs/generic/sync` (expect 110/110).
+- Recommend running the soak to confirm closure of the FILED magnitude bug; if
+  webview RSS still climbs with the storm gone, spin a scoped residual-leak issue
+  off su-0feaf's discriminator-run plan.

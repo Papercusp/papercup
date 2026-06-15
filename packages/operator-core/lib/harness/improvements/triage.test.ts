@@ -97,7 +97,7 @@ describe('classifyIdeaType — D-005 taxonomy', () => {
       'process-prompt',
     );
     expect(
-      classifyIdeaType({ scope: 'operator', paths: ['libs/papercusp/packages/harness/prompts/worker.md'] }).type,
+      classifyIdeaType({ scope: 'operator', paths: ['libs/papercusp/packages/harness/blueprints/base/prompts/worker.md'] }).type,
     ).toBe('process-prompt');
   });
 
