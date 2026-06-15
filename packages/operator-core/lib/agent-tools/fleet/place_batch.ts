@@ -28,6 +28,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { planBatchPlacement, type BatchPlacementPlan } from '../../fleet/batch-placement';
 import { gatherFrontier, gatherLiveBees } from '../../fleet/placement-gather';
 import type { PlacementTask } from '../../fleet/placement-affinity';
+import type { WakeMode } from '../coordination/wake-mode';
 
 interface PlacementResult {
   task: string;
@@ -152,10 +153,17 @@ export default defineTool({
     }
 
     const exec = await executeBatch({ plan, headroom, brief: args.brief ?? null, tier: args.tier ?? null, actor, role: (ctx as { role?: string }).role ?? 'operator', workspaceId });
+    // EI-590: surface a no-op-placement warning when fresh spawns can't actually
+    // start (global wake-mode 'manual' → boot-wakes stage). Best-effort: a read
+    // failure degrades to no warning, never blocks the placement result.
+    const { getDefaultWakeMode } = await import('../coordination/wake-mode');
+    const wakeMode = await getDefaultWakeMode().catch(() => 'auto' as WakeMode);
+    const warnings = buildPlacementWarnings({ spawned: exec.summary.spawned ?? 0, wakeMode });
     return json({
       ok: true,
       surveyed: { frontier: tasks.length, bees: bees.length, headroom },
       ...exec,
+      ...(warnings.length ? { warnings } : {}),
       skipped,
     });
   },
@@ -179,6 +187,25 @@ export function mergeBrief(
   const over = overlay?.trim() || null;
   if (lane && over) return `${lane}\n\n${over}`;
   return lane ?? over ?? null;
+}
+
+/**
+ * EI-590: a fresh-spawned bee's boot-wake STAGES (never fires) when the global
+ * wake-mode is 'manual' (the hive:pause state) — the bees are placed but never
+ * start, a silent no-op the caller otherwise reads as `spawned: N` success.
+ * Surface it as a warning so the operator knows the placement won't run until
+ * wake-mode is restored to 'auto'. Pure so it unit-tests without PG. (Write-
+ * confinement — EI-524 read-only bees — is a second such case; it has no cheap
+ * signal at this layer yet and is left as a follow-up.)
+ */
+export function buildPlacementWarnings(opts: { spawned: number; wakeMode: WakeMode }): string[] {
+  const warnings: string[] = [];
+  if (opts.spawned > 0 && opts.wakeMode === 'manual') {
+    warnings.push(
+      `global wake-mode is 'manual' (hive paused): the ${opts.spawned} fresh-spawned bee(s) are placed but their boot-wake STAGES instead of firing — they will NOT start until wake-mode is restored to 'auto' (coord:wake-mode { mode: 'auto' }). This placement is a no-op until then.`,
+    );
+  }
+  return warnings;
 }
 
 function summarizePlan(plan: BatchPlacementPlan) {

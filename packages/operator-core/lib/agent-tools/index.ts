@@ -83,6 +83,8 @@ import './hive/get';
 import './hive/create';
 // hive-from-github-url-2026-06-11 P-006 — create a Hive FROM a GitHub URL:
 import './hive/create_from_repo';
+// per-hive-learning-loops-2026-06-14 P-071 — opt INTO platform mode ("Papercusp inside Papercusp"):
+import './platform/enable';
 import './hive/dissolve';
 // shared-hive-hardening-2026-06-13 P-012 — a joiner cleanly LEAVES a shared hive:
 import './hive/leave';

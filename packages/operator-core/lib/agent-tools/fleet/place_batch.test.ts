@@ -1,8 +1,26 @@
 import { describe, it, expect, vi } from 'vitest';
-import placeBatchTool, { mergeBrief, executeBatch, type ExecuteBatchDeps } from './place_batch';
+import placeBatchTool, { mergeBrief, executeBatch, buildPlacementWarnings, type ExecuteBatchDeps } from './place_batch';
 import type { PlacementDecision, BatchPlacementPlan } from '../../fleet/batch-placement';
 import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { AgentIdentity } from '../coordination/identity';
+
+describe('buildPlacementWarnings — EI-590 silent-no-op surfacing', () => {
+  it('warns when fresh spawns happen under manual wake-mode (boot-wake stages → no-op)', () => {
+    const w = buildPlacementWarnings({ spawned: 3, wakeMode: 'manual' });
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/manual/);
+    expect(w[0]).toMatch(/3 fresh-spawned/);
+    expect(w[0]).toMatch(/coord:wake-mode/);
+  });
+
+  it('is silent under auto wake-mode (the normal case)', () => {
+    expect(buildPlacementWarnings({ spawned: 3, wakeMode: 'auto' })).toEqual([]);
+  });
+
+  it('is silent when nothing was fresh-spawned, even under manual (warm-inject/queue only)', () => {
+    expect(buildPlacementWarnings({ spawned: 0, wakeMode: 'manual' })).toEqual([]);
+  });
+});
 
 describe('mergeBrief — per-lane brief + Queen overlay (queen-wave-dispatch P-031)', () => {
   it('combines the lane brief and the batch overlay, lane first', () => {
