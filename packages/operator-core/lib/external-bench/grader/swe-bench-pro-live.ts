@@ -100,7 +100,7 @@ export async function preflightSweBenchPro(cfg: SweBenchProGraderConfig, deps: P
 
 /** The exact grading command (for the runbook / a dry-run preview) — matches what the live grader runs. */
 export function describeSweBenchProRun(cfg: SweBenchProGraderConfig, predsPath = '<predictions>.json', outDir = '<out>'): string {
-  return [
+  const lines = [
     `cd ${cfg.evalRepoDir}`,
     `python swe_bench_pro_eval.py \\`,
     `  --raw_sample_path=${cfg.rawSamplePath} \\`,
@@ -109,5 +109,10 @@ export function describeSweBenchProRun(cfg: SweBenchProGraderConfig, predsPath =
     `  --scripts_dir=run_scripts \\`,
     `  --num_workers=${cfg.numWorkers ?? 16} \\`,
     `  --dockerhub_username=${cfg.dockerhubUsername ?? 'jefzda'}`,
-  ].join('\n');
+  ];
+  if (cfg.useLocalDocker !== false) lines[lines.length - 1] += ' \\';
+  if (cfg.useLocalDocker !== false) lines.push('  --use_local_docker');
+  // verdict file the grader reads back
+  lines.push(`# → ${outDir}/eval_results.json  ({ "<instance_id>": resolvedBool })   [one eval run per seed/prefix]`);
+  return lines.join('\n');
 }

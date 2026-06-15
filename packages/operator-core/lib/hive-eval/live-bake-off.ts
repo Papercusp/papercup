@@ -1,0 +1,60 @@
+/**
+ * live-bake-off.ts — the LIVE deps-binding for the framework bake-off (plan-implementation-
+ * framework-2026-06-15 P-011, activation of P-007).
+ *
+ * Composes the pure `runFrameworkBakeOff`'s injected `BakeoffDeps` from the REAL machinery,
+ * reusing — not reinventing — the existing scored pipeline:
+ *   • runBattery → `runHiveEvalGeneration` (the judge-free battery + the un-gameable
+ *     `computeHiveScore` per run), mapping each ScoredRun → ArmScore {composite, gatePassed}.
+ *     The composite + gate come from the CANONICAL scorer; we never recompute metrics here.
+ *   • getFlag / setFlag → `@papercusp/flags/server` getFlag + setFlagOverride (the flags-override
+ *     write path) — so the bake-off toggles the bet flag for real around the two arms.
+ *
+ * The caller supplies the heavy generation config + deps (the InstanceManifest, the seeded
+ * scenarios, the store, the live HiveRunPorts, the extractor) — the same objects the hive-eval
+ * cadence already constructs (gen-loop.ts / live-ports.ts). This module only WIRES them to the
+ * bake-off's seams.
+ *
+ * NOTE: a real bake-off run executes real hive runs (cost + time) and is OWNER-BUDGETED — this
+ * module is the wiring; nothing here runs a generation. setFlag is an explicit flag override:
+ * the bake-off's own finally-restore returns the bet flag to its original value.
+ */
+import { getFlag, setFlagOverride } from '@papercusp/flags/server';
+import type { FlagKey } from '@papercusp/flags';
+import { runHiveEvalGeneration } from './generation-runner';
+import type { BakeoffDeps, ArmScore } from './framework-bake-off';
+
+/** The heavy generation config + deps the caller already has (gen-loop.ts). Derived from the
+ *  canonical runner's own parameters so we never drift from its shape. */
+export interface LiveBakeoffConfig {
+  battery: Parameters<typeof runHiveEvalGeneration>[0];
+  deps: Parameters<typeof runHiveEvalGeneration>[1];
+}
+
+/** Build the real BakeoffDeps. Reuses the validated scored-generation pipeline + the flag-override
+ *  write path; no scorer or metric is recomputed here. */
+export function liveBakeoffDeps(cfg: LiveBakeoffConfig): BakeoffDeps {
+  return {
+    getFlag: (key: string) => getFlag(key as FlagKey, 'system'),
+    setFlag: async (key: string, value: boolean): Promise<void> => {
+      const r = await setFlagOverride(key as FlagKey, value);
+      if (!r.ok) throw new Error(`setFlagOverride(${key}=${value}) failed: ${r.reason}`);
+    },
+    runBattery: async ({ scenarioIds, repeats }): Promise<ArmScore[]> => {
+      const scenarios = scenarioIds
+        ? cfg.battery.scenarios.filter((s) => scenarioIds.includes(s.id))
+        : cfg.battery.scenarios;
+      const config = { ...cfg.battery, scenarios, ...(repeats != null ? { repeats } : {}) };
+      const result = await runHiveEvalGeneration(config, cfg.deps);
+      // The composite + gate are the CANONICAL un-gameable scores (computeHiveScore) — taken
+      // verbatim from the pipeline, never recomputed.
+      return result.scores.map(
+        (r): ArmScore => ({
+          scenarioId: r.scenarioId,
+          composite: r.score.composite,
+          gatePassed: r.score.outcomeGatePassed,
+        }),
+      );
+    },
+  };
+}

@@ -11,7 +11,7 @@
  * ⚠ The exact report layout written by `swe_bench_pro_eval.py` is parsed defensively in
  * {@link parseSweBenchProReport}; confirm the keys against a first real run (BRIEF 1 / P-001's images).
  */
-import type { ArmSubmission, BenchTask, GradeResult, OfficialGrader, TestOutcome } from '../types';
+import type { ArmSubmission, BenchTask, GradeResult, OfficialGrader } from '../types';
 
 /** Run a subprocess; resolve with its captured streams + exit code (never reject on a non-zero exit). */
 export type ProcExec = (
@@ -37,6 +37,8 @@ export interface SweBenchProGraderConfig {
   dockerhubUsername?: string;
   /** Grader concurrency (`--num_workers`). Tune to the grading host. */
   numWorkers?: number;
+  /** Grade on LOCAL Docker (`--use_local_docker`); the eval otherwise targets Modal cloud. Default true. */
+  useLocalDocker?: boolean;
   /** Python interpreter (default `python3`). */
   pythonBin?: string;
   /** Scratch root for predictions JSON + output_dir (default OS temp). */
@@ -61,54 +63,24 @@ interface PredictionRecord {
   prefix: string;
 }
 
-/** A per-instance result as we expect it from the eval report (defensive — keys confirmed on first run). */
-interface RawInstanceResult {
-  resolved?: boolean;
-  fail_to_pass?: Record<string, boolean> | string[];
-  pass_to_pass?: Record<string, boolean> | string[];
-  error?: string;
-  [k: string]: unknown;
-}
-
-function toOutcomes(v: Record<string, boolean> | string[] | undefined, defaultPass: boolean): TestOutcome[] | undefined {
-  if (!v) return undefined;
-  if (Array.isArray(v)) return v.map((test) => ({ test, passed: defaultPass }));
-  return Object.entries(v).map(([test, passed]) => ({ test, passed }));
-}
-
 /**
- * Map the eval report (keyed by instance_id, or by `${instance_id}__${prefix}` for multi-seed) onto the
- * submissions. A submission with no matching report entry → `graderError` (it ran but produced no verdict —
- * an infra failure, NOT a silent fail).
+ * The eval's aggregate verdict file `eval_results.json` = { instance_id: resolvedBool } — CONFIRMED against
+ * the real harness (`swe_bench_pro_eval.py` writes it once at output_dir; `resolved` = (FAIL_TO_PASS ∪
+ * PASS_TO_PASS) ⊆ passed tests, read from the CSV). Keyed by instance_id ONLY → a multi-seed batch must run
+ * ONE eval per prefix (separate output_dir) or the last prefix overwrites. Per-test detail lives in the
+ * per-instance `<uid>/<prefix>_output.json` (optional rollout enrichment — not needed for `resolved`).
  */
+export type SweBenchProEvalResults = Record<string, boolean>;
+
+/** Map eval_results.json onto the submissions. A missing instance → graderError (ran but produced no verdict). */
 export function parseSweBenchProReport(
-  report: Record<string, RawInstanceResult> | { resolved?: string[]; [k: string]: unknown },
+  report: SweBenchProEvalResults,
   submissions: ArmSubmission[],
   version: string,
 ): GradeResult[] {
-  // Support a top-level resolved-list form (`{resolved:[ids], ...}`) as a fallback.
-  const resolvedList: Set<string> | null = Array.isArray((report as { resolved?: unknown }).resolved)
-    ? new Set((report as { resolved: string[] }).resolved)
-    : null;
-
   return submissions.map((sub): GradeResult => {
-    const keyed = `${sub.instanceId}__${sub.prefix}`;
-    const entry = ((report as Record<string, RawInstanceResult>)[keyed] ??
-      (report as Record<string, RawInstanceResult>)[sub.instanceId]) as RawInstanceResult | undefined;
-
-    if (entry && typeof entry === 'object' && entry.error) {
-      return {
-        instanceId: sub.instanceId,
-        prefix: sub.prefix,
-        resolved: false,
-        rawGraderOutput: entry,
-        graderFamily: GRADER_FAMILY,
-        graderVersion: version,
-        graderError: String(entry.error),
-      };
-    }
-
-    if (!entry && resolvedList === null) {
+    const v = report[sub.instanceId];
+    if (typeof v !== 'boolean') {
       return {
         instanceId: sub.instanceId,
         prefix: sub.prefix,
@@ -116,26 +88,14 @@ export function parseSweBenchProReport(
         rawGraderOutput: { missing: true },
         graderFamily: GRADER_FAMILY,
         graderVersion: version,
-        graderError: 'no grader report entry for instance (image pull / eval failure?)',
+        graderError: 'no eval_results.json entry for instance (image pull / eval failure?)',
       };
     }
-
-    const failToPass = toOutcomes(entry?.fail_to_pass, false);
-    const passToPass = toOutcomes(entry?.pass_to_pass, true);
-    const resolved =
-      typeof entry?.resolved === 'boolean'
-        ? entry.resolved
-        : resolvedList !== null
-          ? resolvedList.has(sub.instanceId)
-          : false;
-
     return {
       instanceId: sub.instanceId,
       prefix: sub.prefix,
-      resolved,
-      failToPass,
-      passToPass,
-      rawGraderOutput: entry ?? { resolved },
+      resolved: v,
+      rawGraderOutput: { resolved: v },
       graderFamily: GRADER_FAMILY,
       graderVersion: version,
     };
@@ -168,26 +128,26 @@ export function makeSweBenchProGrader(cfg: SweBenchProGraderConfig, deps: SweBen
         await fs.writeFile(predsPath, JSON.stringify(predictions));
 
         // Drive grading ONLY through swe_bench_pro_eval.py — never `docker exec bash` (the §2 image note).
-        const { code, stderr } = await exec(
-          pythonBin,
-          [
-            'swe_bench_pro_eval.py',
-            `--raw_sample_path=${cfg.rawSamplePath}`,
-            `--patch_path=${predsPath}`,
-            `--output_dir=${outDir}`,
-            '--scripts_dir=run_scripts',
-            `--num_workers=${numWorkers}`,
-            `--dockerhub_username=${dockerhubUsername}`,
-          ],
-          { cwd: cfg.evalRepoDir },
-        );
+        // Default to LOCAL Docker (`--use_local_docker`); the eval otherwise targets Modal cloud.
+        const args = [
+          'swe_bench_pro_eval.py',
+          `--raw_sample_path=${cfg.rawSamplePath}`,
+          `--patch_path=${predsPath}`,
+          `--output_dir=${outDir}`,
+          '--scripts_dir=run_scripts',
+          `--num_workers=${numWorkers}`,
+          `--dockerhub_username=${dockerhubUsername}`,
+        ];
+        if (cfg.useLocalDocker !== false) args.push('--use_local_docker');
+        const { code, stderr } = await exec(pythonBin, args, { cwd: cfg.evalRepoDir });
 
-        let report: Record<string, RawInstanceResult> = {};
+        // The eval writes ONE aggregate `eval_results.json` = { instance_id: bool } at output_dir.
+        let report: SweBenchProEvalResults = {};
         let readErr: string | undefined;
         try {
-          report = JSON.parse(await fs.readFile(`${outDir}/report.json`)) as Record<string, RawInstanceResult>;
+          report = JSON.parse(await fs.readFile(`${outDir}/eval_results.json`)) as SweBenchProEvalResults;
         } catch (e) {
-          readErr = `could not read grader report.json: ${e instanceof Error ? e.message : String(e)}`;
+          readErr = `could not read grader eval_results.json: ${e instanceof Error ? e.message : String(e)}`;
         }
 
         if (readErr) {

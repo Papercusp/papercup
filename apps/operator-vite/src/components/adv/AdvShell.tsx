@@ -7,6 +7,7 @@ import {
   BookOpen,
   Boxes,
   Check,
+  Crown,
   Eye,
   FlaskConical,
   GitBranch,
@@ -36,7 +37,7 @@ import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'overwatch', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'overwatch', 'queen', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -72,6 +73,12 @@ export const ADV_TABS: ReadonlyArray<{
   // also lives in WORKSPACE_TAB_IDS. Flag-gated (OVERWATCH, default OFF). Indigo +
   // the 👁 Eye glyph mirror the role's roster identity (D-011).
   { id: 'overwatch', label: 'Overwatch', icon: Eye, accent: '#6366f1', accentRgb: '99, 102, 241' },
+  // Queen — the owner's steering panel for the autonomous Queen (focus plans /
+  // directive / pause-new-work), beside the supervision surfaces
+  // (queen-steering-panel-2026-06-15 B-04, D-003). Workspace-scoped (steers the
+  // whole hive), so it also lives in WORKSPACE_TAB_IDS. UNGATED — a finished
+  // owner control over existing Queen state, gold 👑 crown.
+  { id: 'queen', label: 'Queen', icon: Crown, accent: '#fbbf24', accentRgb: '251, 191, 36' },
   { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: '#22d3ee', accentRgb: '34, 211, 238' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
@@ -103,6 +110,9 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   // Overwatch supervises the whole running system too (its brief is the
   // actionable subset of the same SystemHealth) — workspace-scoped (B-08, D-006).
   'overwatch',
+  // Queen steering acts on the whole hive (the owner's focus/pause controls) —
+  // workspace-scoped (queen-steering-panel-2026-06-15 B-04).
+  'queen',
   'conversations',
   // Learning aggregates the workspace-wide papercusp-improvement backlog, so it
   // stays visible under "All Pots" (operator-learning-tab-2026-06-09).

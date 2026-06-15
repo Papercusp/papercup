@@ -36,39 +36,18 @@ describe('makeFakeGrader', () => {
 describe('parseSweBenchProReport', () => {
   const subs = [diffSub('a'), diffSub('b')];
 
-  it('maps resolved + per-test outcomes', () => {
-    const report = {
-      a: { resolved: true, fail_to_pass: { 't1': true }, pass_to_pass: { 't2': true } },
-      b: { resolved: false, fail_to_pass: ['t3'] },
-    };
-    const res = parseSweBenchProReport(report, subs, 'v1');
+  it('maps the eval_results.json bool verdict per instance', () => {
+    const res = parseSweBenchProReport({ a: true, b: false }, subs, 'v1');
     expect(res[0].resolved).toBe(true);
-    expect(res[0].failToPass).toEqual([{ test: 't1', passed: true }]);
     expect(res[1].resolved).toBe(false);
-    expect(res[1].failToPass).toEqual([{ test: 't3', passed: false }]); // array form defaults FAIL_TO_PASS to not-passed
+    expect(res[0].graderFamily).toBe('swe-bench-pro');
     expect(res[0].graderVersion).toBe('v1');
   });
 
-  it('prefers the instance__prefix key for multi-seed reports', () => {
-    const report = { 'a__seed-0': { resolved: true }, a: { resolved: false } };
-    expect(parseSweBenchProReport(report, [diffSub('a')], 'v1')[0].resolved).toBe(true);
-  });
-
-  it('surfaces an entry error as graderError', () => {
-    const report = { a: { error: 'patch apply failed' }, b: { resolved: true } };
-    const [a] = parseSweBenchProReport(report, subs, 'v1');
-    expect(a.graderError).toBe('patch apply failed');
-  });
-
-  it('a missing entry is graderError, not a silent fail', () => {
-    const [a] = parseSweBenchProReport({ b: { resolved: true } }, subs, 'v1');
-    expect(a.graderError).toMatch(/no grader report entry/);
-  });
-
-  it('falls back to a top-level resolved-list form', () => {
-    const res = parseSweBenchProReport({ resolved: ['a'] }, subs, 'v1');
-    expect(res[0].resolved).toBe(true);
-    expect(res[1].resolved).toBe(false);
+  it('a missing instance is graderError, not a silent fail', () => {
+    const [a] = parseSweBenchProReport({ b: true }, subs, 'v1');
+    expect(a.graderError).toMatch(/no eval_results.json entry/);
+    expect(a.resolved).toBe(false);
   });
 });
 
@@ -90,7 +69,7 @@ describe('makeSweBenchProGrader', () => {
   }
 
   it('writes predictions JSON, invokes the eval, and maps the report', async () => {
-    const { fs, writes } = fakeFs({ a: { resolved: true, fail_to_pass: { t: true } } });
+    const { fs, writes } = fakeFs({ a: true }); // eval_results.json = { instance_id: bool }
     const exec = vi.fn(async (_cmd: string, _args: string[], _opts?: { cwd?: string }) => ({ stdout: '', stderr: '', code: 0 }));
     const grader = makeSweBenchProGrader({ evalRepoDir: '/eval', rawSamplePath: '/csv.csv', version: 'imgset@2026-05' }, { exec, fs });
 
@@ -102,13 +81,14 @@ describe('makeSweBenchProGrader', () => {
     const preds = JSON.parse(Object.values(writes)[0]);
     expect(preds[0]).toMatchObject({ instance_id: 'a', patch: 'PATCH', prefix: 'seed-1' });
 
-    // eval invoked with the documented argv (shell-free, cwd=evalRepoDir)
+    // eval invoked with the documented argv (shell-free, cwd=evalRepoDir), local Docker by default
     const [cmd, argv, opts] = exec.mock.calls[0];
     expect(cmd).toBe('python3');
     expect(argv[0]).toBe('swe_bench_pro_eval.py');
     expect(argv).toContain('--raw_sample_path=/csv.csv');
     expect(argv.some((a: string) => a.startsWith('--patch_path='))).toBe(true);
     expect(argv).toContain('--dockerhub_username=jefzda');
+    expect(argv).toContain('--use_local_docker');
     expect(opts?.cwd).toBe('/eval');
   });
 
