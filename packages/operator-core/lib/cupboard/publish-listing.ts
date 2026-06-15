@@ -39,6 +39,10 @@ export interface CupboardListingInput {
   hive_pubkey?: string;
   /** Denormalized Hive display title (the directory announce stays the content authority). */
   hive_title?: string;
+  /** For a `listing_kind: 'blueprint'` publish: the blueprint.yaml `kind` — 'hive' (a hive
+   *  template) | 'harness'. The Cupboard "Hives" tab discriminator (worker migration 009 /
+   *  hive-blueprint-generalization P-018). Omit for non-blueprint kinds. */
+  blueprint_kind?: 'hive' | 'harness';
   /**
    * Pack model (worker migration 006 / tool-distribution-granularity): the MCP
    * tool names the unit registers when installed. Kinds plugin|pack only — the

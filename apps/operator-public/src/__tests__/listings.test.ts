@@ -86,6 +86,30 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     expect(store.tables.harnesses).toHaveLength(1);
   });
 
+  it('P-018: a blueprint publish stores + returns blueprint_kind (hive vs harness vs absent)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 7, private: false, permissions: { admin: true } } });
+    const bk = async (r: Response) => (await r.json() as { listing: Record<string, unknown> }).listing.blueprint_kind;
+    // a HIVE blueprint (a hive template — the Hives tab)
+    const hive = await publish(api, env, {
+      ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint',
+      listing_ref: 'generic-hive', title: 'Generic Hive', blueprint_kind: 'hive',
+    });
+    expect(hive.status).toBe(200);
+    expect(await bk(hive)).toBe('hive');
+    // a HARNESS blueprint (the Blueprints tab) — distinct listing_ref on the same repo (1:N)
+    const harness = await publish(api, env, {
+      ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint',
+      listing_ref: 'coding', title: 'Coding', blueprint_kind: 'harness',
+    });
+    expect(await bk(harness)).toBe('harness');
+    // an omitted/garbage value ⇒ null (lenient; never blocks a publish)
+    const none = await publish(api, env, {
+      ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint', listing_ref: 'mystery',
+    });
+    expect(await bk(none)).toBe(null);
+  });
+
   it('a project hosts N blueprints (1:N): two listing_refs on one repo both publish', async () => {
     const { env, store } = makeEnv();
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 7, private: false } });

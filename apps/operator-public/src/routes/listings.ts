@@ -433,6 +433,13 @@ function registerListingEndpoints(
       provides_tools: providesToolsJson,
       hive_pubkey: (body.hive_pubkey as string | undefined) ?? null,
       hive_title: (body.hive_title as string | undefined) ?? null,
+      // P-018: the blueprint.yaml `kind` for a blueprint listing (the Hives-tab
+      // discriminator). Only meaningful for kind='blueprint'; lenient — an absent/bad
+      // value ⇒ null (treated as a harness-blueprint), never blocks a publish.
+      blueprint_kind:
+        kind === 'blueprint' && (body.blueprint_kind === 'hive' || body.blueprint_kind === 'harness')
+          ? body.blueprint_kind
+          : null,
       created_at: now,
     });
     await audit(c.env.DB, now, 'published', {

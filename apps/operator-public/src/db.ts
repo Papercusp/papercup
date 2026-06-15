@@ -179,6 +179,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.provides_tools ?? null,
       h.hive_pubkey ?? null,
       h.hive_title ?? null,
+      h.blueprint_kind ?? null,
       h.review_status ?? 'approved',
       h.created_at,
       h.created_at,
