@@ -28,6 +28,7 @@ import { runWithWorkspace } from '../workspace-als';
 import { getOrgPg } from '@papercusp/db-org';
 import { renderQueenBrief, floorFromSurvey, type BriefEscalation, type BriefBee, type BriefInboxItem } from './queen-brief';
 import { overwatchAliveForQueen } from '../overwatch/cross-monitor';
+import { getOwnerSteering, isPausedNow, type OwnerSteering } from '../owner-steering';
 
 /** Live hive bees → the floor's bee load + liveness (warm-inject-vs-spawn signal).
  *  gatherLiveBees already excludes non-bees + joins load/liveness; fail-soft. */
@@ -114,6 +115,29 @@ async function gatherOverwatchLiveness(workspaceId: string, installSlug: string)
   }
 }
 
+/**
+ * Owner steering (queen-steering-panel-2026-06-15 B-02 / P-002): read C-1's
+ * `getOwnerSteering` fail-soft and surface it ONLY when the Hive is actually
+ * steered — a default (un-steered) Hive returns `undefined`, so the wake brief
+ * omits the `### Owner steering directive` section (purely additive). Expired
+ * `pausedUntil` pauses are normalized away here via `isPausedNow`, so what reaches
+ * the render is the currently-ACTIVE steering (the render never consults the clock).
+ */
+async function gatherOwnerSteering(
+  workspaceId: string,
+  installSlug: string,
+): Promise<OwnerSteering | undefined> {
+  try {
+    const s = await getOwnerSteering(workspaceId, installSlug);
+    const pausedNow = isPausedNow(s, Date.now());
+    const active = !!s.directive || s.eligiblePlans.length > 0 || pausedNow;
+    if (!active) return undefined;
+    return pausedNow ? s : { ...s, pauseNewWork: false, pausedUntil: null };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function computeQueenWakeBrief(
   workspaceId: string,
   installSlug: string,
@@ -126,7 +150,7 @@ export async function computeQueenWakeBrief(
     //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
     //    internally fail-soft (returns empty);
     //  - carryNote / escalations — wrapped here.
-    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive] =
+    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive, ownerSteering] =
       await Promise.all([
         surveyHive(workspaceId, installSlug),
         getHiveCarryNote(workspaceId).catch(() => null),
@@ -136,6 +160,7 @@ export async function computeQueenWakeBrief(
         gatherBees(workspaceId),
         gatherInbox(workspaceId, installSlug),
         gatherOverwatchLiveness(workspaceId, installSlug),
+        gatherOwnerSteering(workspaceId, installSlug),
       ]);
     const wokeBy = opts.wokeBy?.trim();
     const floor = floorFromSurvey(survey, {
@@ -146,6 +171,7 @@ export async function computeQueenWakeBrief(
       ...(bees.length > 0 ? { bees } : {}),
       ...(inbox.length > 0 ? { inbox } : {}),
       ...(overwatchAlive !== undefined ? { overwatchAlive } : {}),
+      ...(ownerSteering ? { ownerSteering } : {}),
     });
     return renderQueenBrief({ floor, carryNote });
   } catch (err) {

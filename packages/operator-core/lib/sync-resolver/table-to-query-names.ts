@@ -152,6 +152,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   // hive_members (admission) is the offline half of the @-assign picker — a new
   // admitted member becomes assignable the moment they're admitted (P-016).
   'harness_shared.hive_members': ['dev.assignableMembers'],
+  // hive_settings backs the owner-steering:* keys (queen-steering-panel B-01/C-1) —
+  // a steering write refreshes the 👑 Queen tab's hive.steering query. The set tool
+  // also fires notifySyncInvalidate explicitly; this covers a FEDERATED steering
+  // write arriving from a peer Swarm (the keys federate via the capture trigger).
+  'harness_shared.hive_settings': ['hive.steering'],
   'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness'],
   'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'hiveRoster.byHive', 'hiveRoster.byHarness'],
   // dev.coordFeed is the live coordination firehose (the PresenceRail Activity

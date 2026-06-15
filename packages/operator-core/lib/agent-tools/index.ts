@@ -77,6 +77,10 @@ import './hive/queen_efficiency';
 import './hive/survey';
 import './hive/start';
 import './hive/pause';
+// queen-steering-panel-2026-06-15 B-01 — owner steering controls for the Queen
+// (focus directive / eligible plans / new-work pause); hive_settings-backed (C-1).
+import './hive/set_steering';
+import './hive/get_steering';
 // overwatch-role-2026-06-15 B-07 — the autonomous system-health supervisor's
 // control surface (start/pause its loop), sibling to hive:start/pause:
 import './overwatch/start';

@@ -115,6 +115,50 @@ test('renderQueenBrief — overwatchAlive false ⇒ a critical OVERWATCH DARK li
   assert.match(out, /cannot relaunch overwatch/i);
 });
 
+// ── Owner steering directive (queen-steering-panel-2026-06-15 B-02 / P-002) ──
+test('renderQueenBrief — owner steering renders an AUTHORITATIVE section BEFORE the frontier', () => {
+  const out = renderQueenBrief({
+    floor: {
+      frontier: frontier3,
+      ownerSteering: {
+        directive: 'Finish the in-flight backlog before anything new.',
+        eligiblePlans: ['plan-x', 'plan-y'],
+        pauseNewWork: false,
+        pausedUntil: null,
+      },
+    },
+  });
+  assert.match(out, /### Owner steering directive \(AUTHORITATIVE — honor before placement\)/);
+  assert.match(out, /Finish the in-flight backlog before anything new\./);
+  assert.match(out, /Eligible plans ONLY:.*plan-x, plan-y/);
+  // It must come BEFORE the frontier so she reads constraints before placing.
+  assert.ok(
+    out.indexOf('### Owner steering directive') < out.indexOf('### Frontier'),
+    'steering section must precede the frontier',
+  );
+});
+
+test('renderQueenBrief — pauseNewWork renders a HARD "PAUSED — start NO new work" line', () => {
+  const out = renderQueenBrief({
+    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], pauseNewWork: true, pausedUntil: null } },
+  });
+  assert.match(out, /\*\*PAUSED — start NO new work\.\*\*/);
+  assert.match(out, /drive existing placements to terminal/i);
+});
+
+test('renderQueenBrief — a pausedUntil renders the deadline (deterministic from the floor value, not the clock)', () => {
+  const until = Date.parse('2026-06-15T12:00:00.000Z');
+  const out = renderQueenBrief({
+    floor: { frontier: frontier3, ownerSteering: { directive: null, eligiblePlans: [], pauseNewWork: false, pausedUntil: until } },
+  });
+  assert.match(out, /PAUSED until 2026-06-15T12:00:00\.000Z — start NO new work/);
+});
+
+test('renderQueenBrief — no ownerSteering ⇒ NO steering section (un-steered Hive is today\'s behaviour)', () => {
+  const out = renderQueenBrief({ floor: { frontier: frontier3 } });
+  assert.doesNotMatch(out, /### Owner steering directive/);
+});
+
 test('renderQueenBrief — deterministic: same floor renders byte-identical output (no clock/random leakage)', () => {
   const floor: QueenBriefFloor = { wokeBy: 'timer', frontier: frontier3, bees: [{ id: 'b1', load: 0, alive: true }] };
   const a = renderQueenBrief({ floor, carryNote: 'note' });

@@ -2413,6 +2413,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // hive.steering — the owner steering controls the 👑 Queen tab reads (queen-
+  // steering-panel-2026-06-15 B-01, CONTRACT C-1). One row per Hive (mirrors
+  // hive.controlState), each the decoded OwnerSteering over the owner-steering:*
+  // hive_settings keys: { slug, directive, eligiblePlans, pauseNewWork, pausedUntil }.
+  // A single-hive UI reads data[0]; a multi-hive UI keys by slug. Invalidated
+  // explicitly by hive:set-steering (notifySyncInvalidate) AND by the hive_settings
+  // table→query map (covers a federated steering write from a peer Swarm).
+  'hive.steering': {
+    resolve: async () => {
+      const { listHives } = await import('../agent-tools/hive/_resolve');
+      const { getOwnerSteering, DEFAULT_OWNER_STEERING } = await import('../owner-steering');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const ws = activeWorkspaceId();
+      const hives = await listHives(ws).catch(() => []);
+      return Promise.all(
+        hives.map(async (hv) => ({
+          slug: hv.slug,
+          ...(await getOwnerSteering(ws, hv.slug).catch(() => DEFAULT_OWNER_STEERING)),
+        })),
+      );
+    },
+  },
+
   // network.board — the aggregate Network-tab board (hive-network-surface
   // B-08 / P-006, CONTRACT C-3): one flat row per other-hive context across the
   // capability-tier ladder (tier 1 this Swarm · tier 2 own other hives · tier 3

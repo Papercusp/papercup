@@ -29,6 +29,7 @@ import type { Ranked } from '../queue-ranker';
 import type { PlacementCandidate } from './placement-ranker';
 import type { HiveSurvey } from './survey';
 import type { OpenPlacementSummary } from './placement-watchdog';
+import type { OwnerSteering } from '../owner-steering';
 
 /** A live bee's load + liveness, from `fleet:assignments`. */
 export interface BriefBee {
@@ -98,6 +99,17 @@ export interface QueenBriefFloor {
    * play (flag off / not expected) → the cross-monitor line is omitted entirely.
    */
   overwatchAlive?: boolean;
+  /**
+   * The owner's steering directive for THIS wake (queen-steering-panel-2026-06-15
+   * B-02 / D-004): the authoritative `### Owner steering directive` block —
+   * free-text directive + plan eligibility + pause state. Gathered fail-soft by
+   * `gatherOwnerSteering` (reads C-1's `getOwnerSteering`); `undefined` ⇒ the Hive
+   * is un-steered (default behaviour) and the section is omitted entirely. Expired
+   * pauses are normalized away in the gather, so a present pause field here is
+   * currently active. The Queen honors it BEFORE placement (advisory in Phase 1;
+   * `pause-new-work` is HARD-enforced in `surveyHive`, P-003).
+   */
+  ownerSteering?: OwnerSteering;
 }
 
 /** Per-section list caps so the brief stays a DIGEST, never a raw dump (P-004). */
@@ -215,6 +227,33 @@ export function renderQueenBrief(input: QueenBriefInput): string {
 
   if (f.headroom) {
     out.push(`**Spawn headroom:** ${f.headroom.headroom} free (${f.headroom.running}/${f.headroom.ceiling} running)`);
+  }
+
+  // OWNER STEERING — the owner's authoritative directive for this wake
+  // (queen-steering-panel-2026-06-15 B-02 / D-004). Rendered BEFORE the frontier so
+  // she reads her constraints before deciding what to place. Present only when the
+  // Hive is actually steered (gatherOwnerSteering returns undefined otherwise +
+  // normalizes away expired pauses), so an un-steered Hive sees no section.
+  const os = f.ownerSteering;
+  if (os) {
+    out.push('');
+    out.push('### Owner steering directive (AUTHORITATIVE — honor before placement)');
+    if (os.pauseNewWork || os.pausedUntil != null) {
+      const until = os.pausedUntil != null ? ` until ${new Date(os.pausedUntil).toISOString()}` : '';
+      out.push(
+        `**PAUSED${until} — start NO new work.** Drive existing placements to terminal, then idle; ` +
+          'do NOT place new frontier work this wake.',
+      );
+    }
+    if (os.eligiblePlans.length > 0) {
+      out.push(
+        `**Eligible plans ONLY:** ${os.eligiblePlans.join(', ')} — place work only from these plans; ` +
+          'start nothing outside them.',
+      );
+    }
+    if (os.directive && os.directive.trim()) {
+      out.push(os.directive.trim());
+    }
   }
 
   // FRONTIER — ready-to-place, ranked. Always present (the heading even when empty

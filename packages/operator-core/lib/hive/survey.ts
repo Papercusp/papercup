@@ -90,6 +90,46 @@ export async function resolveHiveMembership(
   };
 }
 
+// ── Scope / pause enforcement (queen-steering-panel C-2, owned here) ─────────
+
+/**
+ * Frontier scope + pause control for the Queen's survey (queen-steering-panel
+ * Brief B-03 / contract C-2). The steering panel (or an overwatch nudge) sets
+ * this on `surveyHive` to STEER the Queen without stopping her:
+ *
+ *  - `pauseNewWork` (or `now < pausedUntil`) → the FRONTIER is emptied, so the
+ *    Queen places no NEW work and instead drives existing placements to terminal,
+ *    then idles. Started-plan momentum is intentionally NOT paused — pause gates
+ *    only NEW unplaced work, not the work already in flight.
+ *  - `allowedHarnesses` → the survey (frontier AND plans) is restricted to those
+ *    harness slugs — a scope boundary the Queen cannot place outside of.
+ *
+ * Absent / empty ⇒ a no-op (the full, unscoped survey). Pure + side-effect-free
+ * so it composes into surveyHive's existing readiness pipeline + unit-tests with
+ * no DB.
+ */
+export interface ScopeFilter {
+  /** Restrict the survey to these harness slugs (frontier + plans). Omit/[] ⇒ all. */
+  allowedHarnesses?: string[];
+  /** Hard pause: empty the frontier (the Queen places no new work). */
+  pauseNewWork?: boolean;
+  /** Timed pause: empty the frontier while `now < pausedUntil` (epoch ms). */
+  pausedUntil?: number;
+}
+
+/** Is NEW-work placement paused right now under this filter? (pure) */
+export function isNewWorkPaused(f: ScopeFilter | undefined, now: number): boolean {
+  if (!f) return false;
+  if (f.pauseNewWork) return true;
+  return typeof f.pausedUntil === 'number' && now < f.pausedUntil;
+}
+
+/** Does `harnessSlug` pass the filter's allow-list? (pure; no list ⇒ allow all) */
+export function inAllowedHarness(harnessSlug: string, f: ScopeFilter | undefined): boolean {
+  if (!f?.allowedHarnesses || f.allowedHarnesses.length === 0) return true;
+  return f.allowedHarnesses.includes(harnessSlug);
+}
+
 // ── Candidate builders (pure) ───────────────────────────────────────────────
 
 /** Hottest-open-item importance for a plan (done/dropped excluded), 'normal' floor. */
@@ -326,7 +366,7 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
 export async function surveyHive(
   workspaceId: string,
   hiveHomeSlug: string,
-  opts: { frontierLimit?: number; deps?: Partial<SurveyDeps> } = {},
+  opts: { frontierLimit?: number; scopeFilter?: ScopeFilter; deps?: Partial<SurveyDeps> } = {},
 ): Promise<HiveSurvey> {
   const deps: SurveyDeps = { ...defaultSurveyDeps(workspaceId), ...opts.deps };
   const now = deps.now();
@@ -381,14 +421,29 @@ export async function surveyHive(
       }
     }),
   );
-  const { ready: readyFrontierRows, blockedCount } = filterReadyFrontier(frontierRows, graphByHarness);
+  const { ready: readyFrontierRowsAll, blockedCount } = filterReadyFrontier(frontierRows, graphByHarness);
   if (blockedCount > 0) {
-    console.log(`[hive-survey] frontier: ${blockedCount} lane(s) held back by unsatisfied blocked_by; ${readyFrontierRows.length} ready`);
+    console.log(`[hive-survey] frontier: ${blockedCount} lane(s) held back by unsatisfied blocked_by; ${readyFrontierRowsAll.length} ready`);
+  }
+  // queen-steering-panel C-2 — scope/pause enforcement (applied AFTER the
+  // readiness filter so it never resurrects a blocked lane): a PAUSE empties the
+  // frontier so the Queen places no NEW work (and instead drives existing
+  // placements to terminal, then idles); `allowedHarnesses` restricts the scope.
+  // Started-plan momentum is intentionally NOT paused — pause gates only new work.
+  const sf = opts.scopeFilter;
+  const paused = isNewWorkPaused(sf, now);
+  const readyFrontierRows = paused
+    ? []
+    : readyFrontierRowsAll.filter((r) => inAllowedHarness(r.harness_slug, sf));
+  if (paused) {
+    console.log(
+      `[hive-survey] new-work PAUSED (scopeFilter) — frontier emptied (${readyFrontierRowsAll.length} ready item(s) withheld); Queen drives existing placements to terminal.`,
+    );
   }
   const frontierCandidates = readyFrontierRows.map((r) => frontierRowToCandidate(r, now));
 
   const [plans, frontier] = await Promise.all([
-    rankPlacements(planCandidates),
+    rankPlacements(planCandidates.filter((c) => inAllowedHarness(c.harness, sf))),
     rankPlacements(frontierCandidates),
   ]);
 

@@ -570,6 +570,11 @@ export const FLAGS = {
   // COMPILES the work-item brief from the plan item + plan focus (## Now) + the decisions
   // bearing on the item, instead of leaving payload.brief to a hand-authored overlay.
   COMPILED_BRIEFS: "papercusp-compiled-briefs",
+  // plan-implementation-framework P-002 (touch-set-exclusion): when on, the Queen's
+  // placement chokepoint (place_batch) drops a ready work_item whose declared file
+  // touch-set overlaps a running bee's files or an already-admitted sibling — proactive
+  // hive-scoped conflict avoidance (cross-hive collisions stay on reactive git-merge).
+  TOUCH_SET_EXCLUSION: "papercusp-touch-set-exclusion",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -583,6 +588,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // convert-at-pickup brief path (plan-implementation-framework P-003 compiled-briefs).
   // Flip ON via the framework bake-off once it beats the hand-authored baseline.
   [FLAGS.COMPILED_BRIEFS]: false,
+  // DEFAULT OFF (exception to alpha flags-default-on): unverified proactive placement
+  // admission (plan-implementation-framework P-002 touch-set-exclusion). Flip ON via
+  // the framework bake-off once it beats the file-lock-only baseline.
+  [FLAGS.TOUCH_SET_EXCLUSION]: false,
   // DEFAULT ON (alpha flags-default-on) — additive hive-control surfacing.
   [FLAGS.HIVE_CONTROL]: true,
   // DEFAULT ON (alpha flags-default-on) — additive read-only Health dashboard +

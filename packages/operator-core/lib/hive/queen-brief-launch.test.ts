@@ -28,6 +28,19 @@ vi.mock('../fleet/placement-gather', () => ({ gatherLiveBees: (...a: unknown[]) 
 vi.mock('../agent-tools/coordination/messages', () => ({ readInbox: (...a: unknown[]) => readInbox(...a) }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+// owner-steering (C-1): default = un-steered (today's behaviour). isPausedNow kept
+// faithful (pure) so the gather's expired-pause normalization is exercised for real.
+const getOwnerSteering = vi.fn(async (..._a: unknown[]) => ({
+  directive: null as string | null,
+  eligiblePlans: [] as string[],
+  pauseNewWork: false,
+  pausedUntil: null as number | null,
+}));
+vi.mock('../owner-steering', () => ({
+  getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...a),
+  isPausedNow: (s: { pauseNewWork: boolean; pausedUntil: number | null }, now: number) =>
+    s.pauseNewWork ? true : s.pausedUntil != null && now < s.pausedUntil,
+}));
 
 const { computeQueenWakeBrief } = await import('./queen-brief-launch');
 
@@ -47,6 +60,40 @@ test('computeQueenWakeBrief — renders the survey floor + carry-note (B-03/B-04
   assert.match(out!, /revisit the staging deploy/);
   // Surveys the Queen's home (workspace + install slug).
   assert.deepEqual(surveyHive.mock.calls[0], ['ws-1', 'papercup']);
+});
+
+test('computeQueenWakeBrief — owner steering directive flows into the brief (B-02 / P-002)', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getOwnerSteering.mockResolvedValueOnce({ directive: 'Only the in-flight backlog — start nothing new.', eligiblePlans: ['plan-x'], pauseNewWork: false, pausedUntil: null });
+  const out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out);
+  assert.match(out!, /### Owner steering directive/);
+  assert.match(out!, /Only the in-flight backlog/);
+  assert.match(out!, /Eligible plans ONLY:.*plan-x/);
+  // Steering is read for the Queen's home (workspace + install slug).
+  assert.deepEqual(getOwnerSteering.mock.calls[0], ['ws-1', 'papercup']);
+});
+
+test('computeQueenWakeBrief — un-steered Hive renders NO steering section (default behaviour)', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  const out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.doesNotMatch(out!, /### Owner steering directive/);
+});
+
+test('computeQueenWakeBrief — a flaky getOwnerSteering read is fail-soft (brief still renders, section omitted)', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getOwnerSteering.mockRejectedValueOnce(new Error('pg down'));
+  const out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.ok(out, 'the brief still renders despite the steering read failing');
+  assert.doesNotMatch(out!, /### Owner steering directive/);
+});
+
+test('computeQueenWakeBrief — an EXPIRED pausedUntil is normalized away (no stale PAUSED line)', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], pauseNewWork: false, pausedUntil: 1 });
+  const out = await computeQueenWakeBrief('ws-1', 'papercup');
+  assert.doesNotMatch(out!, /PAUSED/);
+  assert.doesNotMatch(out!, /### Owner steering directive/);
 });
 
 test('computeQueenWakeBrief — fleet escalations flow into the floor (P-007); a flaky escalations read is fail-soft', async () => {

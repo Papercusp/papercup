@@ -27,6 +27,9 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { planBatchPlacement, type BatchPlacementPlan } from '../../fleet/batch-placement';
 import { gatherFrontier, gatherLiveBees } from '../../fleet/placement-gather';
+import { admitConflictFree } from '../../fleet/admit-conflict-free';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
 
@@ -124,10 +127,30 @@ export default defineTool({
     const workspaceId = args.workspace ?? actorWs ?? activeWorkspaceId();
     const limit = args.max ?? 32;
 
-    const [{ tasks, skipped }, bees] = await Promise.all([
+    const [gathered, bees] = await Promise.all([
       gatherFrontier({ ids: args.tasks, harness: args.harness, limit, workspaceId }),
       gatherLiveBees(workspaceId),
     ]);
+    // P-002 touch-set exclusion (hive-scoped, flag-gated): among the ready frontier,
+    // drop a task whose declared file touch-set overlaps a running bee's files or an
+    // already-admitted sibling — proactive conflict avoidance (cross-hive collisions
+    // stay on reactive git-merge). Flag OFF ⇒ tasks/skipped identical to today.
+    let tasks = gathered.tasks;
+    let skipped = gathered.skipped;
+    if (await getFlag(FLAGS.TOUCH_SET_EXCLUSION, 'system').catch(() => false)) {
+      const inUse = bees.flatMap((b) => b.currentFiles ?? []);
+      const { admitted, deferred } = admitConflictFree(tasks, inUse);
+      tasks = admitted;
+      if (deferred.length > 0) {
+        skipped = [
+          ...skipped,
+          ...deferred.map((t) => ({
+            id: t.id,
+            reason: 'file-conflict — touch-set overlaps a running bee or an admitted sibling (P-002)',
+          })),
+        ];
+      }
+    }
 
     const { getSpawnHeadroom } = await import('../../fleet/operator-spawn');
     const { headroom } = await getSpawnHeadroom(workspaceId);
