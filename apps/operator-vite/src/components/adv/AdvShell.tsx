@@ -10,6 +10,7 @@ import {
   FlaskConical,
   GitBranch,
   GraduationCap,
+  HeartPulse,
   LayoutDashboard,
   Lightbulb,
   ListChecks,
@@ -32,7 +33,7 @@ import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-
 import { useLexicon } from '@/lib/useLexicon';
 import { useShortcutAction } from '@/lib/hotkeys';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**

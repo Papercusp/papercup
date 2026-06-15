@@ -17,8 +17,10 @@ import {
 } from '../adv/AdvEvalsTab';
 
 describe('EVAL_VIEWS', () => {
-  it('is the three-subtab axis, external first (the default landing subtab)', () => {
-    expect([...EVAL_VIEWS]).toEqual(['external', 'internal', 'report']);
+  it('is the six-subtab axis (L1 + the L2–L4 hive layer), external first', () => {
+    expect([...EVAL_VIEWS]).toEqual([
+      'external', 'throughput', 'value', 'coordination', 'internal', 'report',
+    ]);
   });
 });
 

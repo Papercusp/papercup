@@ -26,16 +26,25 @@ export interface IsoBudgetCap {
   tokens?: number | null;
   /** Stop when cumulative generation cost reaches this. */
   usd?: number | null;
+  /** Stop when wall-clock reaches this (ms). The native arm (P-007) runs at its
+   *  own native sampling and can't take a per-call token cap, so it caps on
+   *  wall-clock; the fleet backlog runs (P-022/P-023) can cap on time too. */
+  wallClockMs?: number | null;
 }
 
 /**
  * True when a run at `spent` has reached/exceeded the cap and generation should
- * stop. `spent.tokensTotal` is the SUMMED generation tokens so far (all roles /
- * all candidates), matching how the run-result row counts them.
+ * stop (first dimension to trip wins). `spent.tokensTotal` is the SUMMED
+ * generation tokens so far (all roles / all candidates), matching how the
+ * run-result row counts them.
  */
-export function budgetExceeded(spent: { tokensTotal: number; costUsd?: number }, cap: IsoBudgetCap): boolean {
+export function budgetExceeded(
+  spent: { tokensTotal: number; costUsd?: number; wallClockMs?: number },
+  cap: IsoBudgetCap,
+): boolean {
   if (cap.tokens != null && spent.tokensTotal >= cap.tokens) return true;
   if (cap.usd != null && spent.costUsd != null && spent.costUsd >= cap.usd) return true;
+  if (cap.wallClockMs != null && spent.wallClockMs != null && spent.wallClockMs >= cap.wallClockMs) return true;
   return false;
 }
 

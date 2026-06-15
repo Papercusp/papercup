@@ -4,7 +4,8 @@
  * Pure orchestration over the deterministic fake ports — no LLM / git / grader / PG. Each test
  * asserts a fairness or correctness invariant of the arm: N-sampling, verifier-driven selection,
  * summed iso-budget accounting, the METR best-effort fallback, and the infra-exclusion paths
- * (whole-arm generation failure, grader error).
+ * (whole-arm generation failure, grader error). The emitted row is the canonical camelCase
+ * `EmitRolloutInput` (P-010); the typed arm_meta rides `out.armMeta`.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -51,13 +52,13 @@ describe('runBestOfNOnce — sampling + emit shape', () => {
     expect(out.emitted.arm).toBe(BASELINE_C_ARM_ID);
     expect(out.emitted.seed).toBe(0);
     expect(out.emitted.modality).toBe('diff');
-    expect(out.emitted.run_id).toBe('run-1');
-    expect(out.emitted.prereg_hash).toBe('prereg-abc');
-    expect(out.emitted.task_id).toBe('instance_astropy__astropy-12345');
-    expect(out.emitted.generation.arm_meta?.n).toBe(5);
-    expect(out.emitted.generation.arm_meta?.samples_run).toBe(5);
-    expect(out.emitted.generation.arm_meta?.blueprint_id).toBe('coding-solo');
-    expect(out.rollout_id).toBe('rollout-1');
+    expect(out.emitted.runId).toBe('run-1');
+    expect(out.emitted.preregHash).toBe('prereg-abc');
+    expect(out.emitted.taskId).toBe('instance_astropy__astropy-12345');
+    expect(out.armMeta.n).toBe(5);
+    expect(out.armMeta.samples_run).toBe(5);
+    expect(out.armMeta.blueprint_id).toBe('coding-solo');
+    expect(out.rolloutId).toBe('rollout-1');
   });
 
   it('defaults N to DEFAULT_BEST_OF_N', async () => {
@@ -71,15 +72,14 @@ describe('runBestOfNOnce — verifier-driven selection (invariant #2: visible-on
   it('submits the highest-verifier-score candidate and grades ONLY that diff', async () => {
     // Candidate 2 is the only one whose repro passes ⇒ highest score ⇒ selected.
     const fake = makeFakeBestOfNPorts({
-      samples: (i) =>
-        cheap({ diff: `patch-${i}`, verify: { reproPassed: i === 2, regressionsPassed: true } }),
+      samples: (i) => cheap({ diff: `patch-${i}`, verify: { reproPassed: i === 2, regressionsPassed: true } }),
     });
     const out = await runBestOfNOnce(baseConfig({ n: 4 }), fake.ports);
 
-    expect(out.emitted.generation.arm_meta?.selected_candidate).toBe(2);
-    expect(out.emitted.generation.arm_meta?.selection_reason).toBe('verified-best');
+    expect(out.armMeta.selected_candidate).toBe(2);
+    expect(out.armMeta.selection_reason).toBe('verified-best');
     expect(out.emitted.generation.submission).toBe('patch-2');
-    expect(out.emitted.generation.trajectory_ref).toBe('traj://0-c2');
+    expect(out.emitted.generation.trajectoryRef).toBe('traj://0-c2');
     // Exactly the selected diff reaches the grader — not all N.
     expect(fake.gradedPatches).toEqual(['patch-2']);
     expect(out.emitted.grading.status).toBe('passed');
@@ -97,7 +97,7 @@ describe('runBestOfNOnce — verifier-driven selection (invariant #2: visible-on
       }),
     });
     const out = await runBestOfNOnce(baseConfig({ n: 3 }), fake.ports);
-    expect(out.emitted.generation.arm_meta?.selected_candidate).toBe(1);
+    expect(out.armMeta.selected_candidate).toBe(1);
     expect(fake.gradedPatches).toEqual(['patch-1']);
   });
 
@@ -106,7 +106,7 @@ describe('runBestOfNOnce — verifier-driven selection (invariant #2: visible-on
       samples: (i) => cheap({ verify: { reproPassed: i === 0 } }),
     });
     const out = await runBestOfNOnce(baseConfig({ n: 3 }), fake.ports);
-    const cands = out.emitted.generation.arm_meta!.candidates;
+    const cands = out.armMeta.candidates;
     expect(cands).toHaveLength(3);
     expect(cands.filter((c) => c.selected)).toHaveLength(1);
     expect(cands[0].selected).toBe(true);
@@ -115,19 +115,19 @@ describe('runBestOfNOnce — verifier-driven selection (invariant #2: visible-on
 });
 
 describe('runBestOfNOnce — iso-budget accounting (invariant #1: summed)', () => {
-  it('tokens_total = SUM over all N candidate attempts + verifier', async () => {
+  it('tokensTotal = SUM over all N candidate attempts + verifier', async () => {
     const fake = makeFakeBestOfNPorts({
       samples: () => cheap({ tokensIn: 50, tokensOut: 50, verify: { tokensIn: 5, tokensOut: 5 } }),
     });
     const out = await runBestOfNOnce(baseConfig({ n: 4 }), fake.ports);
     // 4 samples × (50+50) + 4 verifiers × (5+5) = 400 + 40 = 440.
-    expect(out.emitted.generation.tokens_in).toBe(4 * 50 + 4 * 5);
-    expect(out.emitted.generation.tokens_out).toBe(4 * 50 + 4 * 5);
-    expect(out.emitted.generation.tokens_total).toBe(440);
-    expect(out.emitted.generation.arm_meta?.verifier.tokens_in).toBe(20);
+    expect(out.emitted.generation.tokensIn).toBe(4 * 50 + 4 * 5);
+    expect(out.emitted.generation.tokensOut).toBe(4 * 50 + 4 * 5);
+    expect(out.emitted.generation.tokensTotal).toBe(440);
+    expect(out.armMeta.verifier.tokens_in).toBe(20);
   });
 
-  it('passes each sample a per-candidate cap of floor(budget/n) and reports budget_tokens', async () => {
+  it('passes each sample a per-candidate cap of floor(budget/n) and reports budgetTokens', async () => {
     const seenBudgets: number[] = [];
     const fake = makeFakeBestOfNPorts({ samples: () => cheap() });
     const origSample = fake.ports.sample;
@@ -137,8 +137,8 @@ describe('runBestOfNOnce — iso-budget accounting (invariant #1: summed)', () =
     };
     const out = await runBestOfNOnce(baseConfig({ n: 4, budgetTokens: 1000 }), fake.ports);
     expect(seenBudgets).toEqual([250, 250, 250, 250]); // floor(1000/4)
-    expect(out.emitted.generation.budget_tokens).toBe(1000);
-    expect(out.emitted.generation.arm_meta?.per_candidate_budget_tokens).toBe(250);
+    expect(out.emitted.generation.budgetTokens).toBe(1000);
+    expect(out.armMeta.per_candidate_budget_tokens).toBe(250);
   });
 
   it('capped=false when samples finish under budget; capped=true when they exhaust it', async () => {
@@ -183,7 +183,7 @@ describe('runBestOfNOnce — wall clock + turns', () => {
     const out = await runBestOfNOnce(baseConfig({ n: 3 }), fake.ports);
     expect(out.emitted.generation.turns).toBe(3 * 3 + 3 * 1);
     // 3 samples + 3 verifiers + 1 grade = 7 ops × 1000ms.
-    expect(out.emitted.generation.wall_clock_ms).toBe(7000);
+    expect(out.emitted.generation.wallClockMs).toBe(7000);
   });
 });
 
@@ -199,25 +199,25 @@ describe('runBestOfNOnce — METR best-effort fallback', () => {
       }),
     });
     const out = await runBestOfNOnce(baseConfig({ n: 3 }), fake.ports);
-    expect(out.emitted.generation.arm_meta?.selection_reason).toBe('fallback:unverified-diff');
-    expect(out.emitted.generation.arm_meta?.selected_candidate).toBe(2); // cheapest
+    expect(out.armMeta.selection_reason).toBe('fallback:unverified-diff');
+    expect(out.armMeta.selected_candidate).toBe(2); // cheapest
     expect(out.emitted.generation.submission).toBe('patch-2');
     expect(fake.gradedPatches).toEqual(['patch-2']);
   });
 });
 
 describe('runBestOfNOnce — infra exclusion (METR)', () => {
-  it('whole-arm generation failure → generation error + grading skipped + resolved null, no grade call', async () => {
+  it('whole-arm generation failure → generation error + grading excluded + resolved null, no grade call', async () => {
     const fake = makeFakeBestOfNPorts({
       samples: () => ({ diff: '', generationError: 'sandbox boot failed', tokensIn: 10, tokensOut: 0 }),
     });
     const out = await runBestOfNOnce(baseConfig({ n: 3 }), fake.ports);
     expect(out.emitted.generation.status).toBe('error');
     expect(out.emitted.generation.error).toContain('all 3 samples failed');
-    expect(out.emitted.generation.submission).toBeUndefined();
-    expect(out.emitted.grading.status).toBe('skipped');
+    expect(out.emitted.generation.submission).toBeNull();
+    expect(out.emitted.grading.status).toBe('error'); // no 'skipped' in GraderStatus; resolved=null excludes it
     expect(out.emitted.grading.resolved).toBeNull();
-    expect(out.emitted.generation.arm_meta?.selected_candidate).toBe(-1);
+    expect(out.armMeta.selected_candidate).toBe(-1);
     expect(fake.gradedPatches).toEqual([]); // nothing graded
   });
 
@@ -232,7 +232,7 @@ describe('runBestOfNOnce — infra exclusion (METR)', () => {
     const out = await runBestOfNOnce(baseConfig({ n: 3 }), fake.ports);
     expect(out.emitted.generation.status).toBe('completed');
     expect(out.emitted.generation.error).toContain('partial');
-    expect(out.emitted.generation.arm_meta?.selected_candidate).not.toBe(0);
+    expect(out.armMeta.selected_candidate).not.toBe(0);
     expect(['patch-1', 'patch-2']).toContain(out.emitted.generation.submission);
     expect(fake.gradedPatches).toHaveLength(1);
   });
@@ -268,8 +268,8 @@ describe('cache token accounting', () => {
   it('emits null cache columns (the shared generation unit carries no cache breakdown yet)', async () => {
     const fake = makeFakeBestOfNPorts({ samples: () => cheap() });
     const out = await runBestOfNOnce(baseConfig({ n: 2 }), fake.ports);
-    expect(out.emitted.generation.tokens_cache_read).toBeNull();
-    expect(out.emitted.generation.tokens_cache_write).toBeNull();
+    expect(out.emitted.generation.tokensCacheRead).toBeNull();
+    expect(out.emitted.generation.tokensCacheWrite).toBeNull();
   });
 });
 

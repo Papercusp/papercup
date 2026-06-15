@@ -177,7 +177,7 @@ describe('makeLiveBestOfNPorts', () => {
       generationPorts: { clone: vi.fn(), extractDiff: vi.fn(), instantiate: vi.fn() } as never,
       grader,
       verifierOps: makeFakeVerifierOps().ops,
-      emit: async (input) => ({ rollout_id: 'r1', run_id: input.run_id }),
+      emit: async (input) => ({ rolloutId: 'r1', runId: input.runId }),
       now: () => 0,
     });
 

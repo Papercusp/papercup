@@ -1,0 +1,136 @@
+/**
+ * Baseline B — native-harness SERIAL-BACKLOG floor (P-024 / BRIEF 5, reframe D-010). The L1 /
+ * serial-throughput FLOOR: one native Claude Code arm draining the WHOLE benchmark backlog
+ * SEQUENTIALLY (concurrency 1, no parallelism). This is the denominator of the L2 speedup claim —
+ * the Hive (Queen + bee fleet, P-022) drains the SAME backlog in parallel, and
+ *   speedup = serial backlogDrainMs / hive backlogDrainMs
+ * isolates what the fleet's parallelism + the Queen's placement buy (D-010; OpenHands async-SWE
+ * framing — 1.8–3.7× speedup, diminishing past the # of parallelizable subtasks).
+ *
+ * It reuses the per-task native arm verbatim — {@link runNativeHarnessAttempt} (P-007) is the
+ * atomic unit; this layer just loops it in order and aggregates the serial timing/cost. NOTHING
+ * about the per-task arm changes (same vanilla Claude Code, same grader, same row), so the floor
+ * is apples-to-apples with the fleet (each fleet worker runs the identical per-task unit).
+ *
+ * INTERPRETATION (deliberate, surfaced): "one Claude Code session draining the backlog" = SERIAL
+ * (concurrency 1), realized as sequential INDEPENDENT per-task attempts. We do NOT reuse one
+ * persistent `claude` session across tasks: benchmark tasks live in DIFFERENT repos, and a shared
+ * session would leak cross-task context — an unfair, non-comparable floor (the fleet runs each task
+ * fresh). The serial COST is Σ per-task regardless of process identity, so sequential-fresh is the
+ * clean, faithful floor. (A persistent-session variant is possible via runAgentChat `sessionId`;
+ * deferred unless the methodology asks for it.)
+ *
+ * Generation-only: per-task `resolved` + the resolved-throughput metrics (tasks-resolved/hr,
+ * resolved/$) are derived AFTER grading by P-025's fleet metrics. This produces the serial GENERATION
+ * trace + the floor timing/cost.
+ */
+import { BASELINE_B_ARM, type NativeHarnessConfig } from './native-harness-config';
+import { runNativeHarnessAttempt, type NativeArmResult, type NativeHarnessPorts } from './native-harness-runner';
+import type { BenchTask, GenerationBudget } from './types';
+
+/** One backlog entry — a task and the reproducibility seed this serial pass runs it under. */
+export interface SerialBacklogItem {
+  task: BenchTask;
+  /** Seed/prefix for the per-task attempt (one serial pass = one seed across the backlog). */
+  seed: string;
+}
+
+/** Per-task arm fn. Default binds {@link runNativeHarnessAttempt}; injectable for tests / the M2 (Harbor) variant. */
+export type RunNativeTask = (task: BenchTask, seed: string) => Promise<NativeArmResult>;
+
+export interface SerialBacklogOpts {
+  /** Override the per-task arm (default: the M1 native attempt bound with budget+ports+config). */
+  runTask?: RunNativeTask;
+  /** Injected wall-clock (ms) for the TRUE serial drain time. Default: `ports.now` then `Date.now`. */
+  now?: () => number;
+}
+
+/**
+ * The serial-throughput FLOOR record — one arm draining the backlog sequentially. The L1 baseline
+ * the Hive / Queen-ablated parallel `backlogDrainMs` is compared against (P-025 computes the
+ * speedup + tasks/$ + tasks/hr from this + the graded `resolved`). It is intentionally the SAME
+ * SHAPE every backlog arm should emit (serial floor / hive / queen-ablation) so they're comparable
+ * — proposed to P-025 (fleet metrics) + P-022 (hive driver) for the canonical type; reconcile when
+ * they publish it (swap to their import, delete this).
+ */
+export interface SerialBacklogResult {
+  /** The backlog run mode — distinguishes the serial floor from the fleet arms on the throughput record. */
+  mode: 'serial-native';
+  /** Always 1 — the floor has no parallelism (the whole point of the comparison). */
+  concurrency: 1;
+  /** Arm id on the per-task rows (stays the locked 'baseline-b-native'). */
+  arm: typeof BASELINE_B_ARM;
+  /** One per backlog item, in backlog order — each is a normal per-task run-result row. */
+  attempts: NativeArmResult[];
+  tasksAttempted: number;
+  /** TRUE serial wall-clock to drain the whole backlog (end − start) — the L2 speedup denominator. */
+  backlogDrainMs: number;
+  /** Σ per-task wall-clock (≈ backlogDrainMs; any gap is loop/clone overhead between tasks). */
+  sumTaskWallClockMs: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  /** Σ per-task cost (no coordination overhead — it's a single serial agent). Canonical $ is re-derived from tokens. */
+  totalCostUsd: number;
+  startedAtMs: number;
+  endedAtMs: number;
+}
+
+/**
+ * Drain a backlog SEQUENTIALLY with the native Claude Code arm and return the serial-throughput
+ * floor. Each task runs to completion before the next starts; the per-task arm already excludes
+ * infra failures from accuracy (stopReason 'error'), so a failed task still counts toward
+ * `tasksAttempted` + its (real) cost, but contributes no resolved pass — exactly how the fleet's
+ * floor should read.
+ *
+ * @param backlog the tasks to drain, in order, each with its seed
+ * @param budget  the per-task iso-budget ceiling (the serial floor caps each task identically to the fleet)
+ * @param ports   the injected native-harness seam (clone / extractDiff / spawnAgent / harnessVersion)
+ * @param config  elicited-to-best overrides (model pinned to the other arms' by the pilot)
+ * @param opts    `runTask` override (M2/Harbor variant or a fake) + `now`
+ */
+export async function runNativeSerialBacklog(
+  backlog: readonly SerialBacklogItem[],
+  budget: GenerationBudget,
+  ports: NativeHarnessPorts,
+  config: Partial<NativeHarnessConfig> = {},
+  opts: SerialBacklogOpts = {},
+): Promise<SerialBacklogResult> {
+  const now = opts.now ?? ports.now ?? Date.now;
+  const runTask: RunNativeTask =
+    opts.runTask ?? ((task, seed) => runNativeHarnessAttempt(task, seed, budget, ports, config));
+
+  const startedAtMs = now();
+  const attempts: NativeArmResult[] = [];
+  // SEQUENTIAL by construction — the floor is "no parallelism". `for…await` (not Promise.all) so
+  // backlogDrainMs is the genuine serial cost the Hive's parallel drain is divided into.
+  for (const { task, seed } of backlog) {
+    attempts.push(await runTask(task, seed));
+  }
+  const endedAtMs = now();
+
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
+  let totalCostUsd = 0;
+  let sumTaskWallClockMs = 0;
+  for (const r of attempts) {
+    totalTokensIn += r.attempt.tokensIn;
+    totalTokensOut += r.attempt.tokensOut;
+    totalCostUsd += r.attempt.costUsd;
+    sumTaskWallClockMs += r.attempt.wallClockMs;
+  }
+
+  return {
+    mode: 'serial-native',
+    concurrency: 1,
+    arm: BASELINE_B_ARM,
+    attempts,
+    tasksAttempted: attempts.length,
+    backlogDrainMs: endedAtMs - startedAtMs,
+    sumTaskWallClockMs,
+    totalTokensIn,
+    totalTokensOut,
+    totalCostUsd,
+    startedAtMs,
+    endedAtMs,
+  };
+}

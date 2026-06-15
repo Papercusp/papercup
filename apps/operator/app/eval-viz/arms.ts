@@ -14,16 +14,31 @@
  * labels + colors so both the gym and the evals surface look identical.
  */
 export type ArmId =
+  // L1 per-task arms (Phase 2)
   | 'papercusp'
   | 'baseline-a-ablation'
   | 'baseline-b-native'
-  | 'baseline-c-bestofn';
+  | 'baseline-c-bestofn'
+  // L2–L5 fleet arms (Phase 5 / D-010 reframe). PROVISIONAL strings — confirm
+  // against the fleet arm vocab locked by P-025/P-011 (su-4ac61) + P-023 (su-136a4).
+  | 'hive'
+  | 'queen-ablated'
+  | 'native-serial'
+  | 'openhands'
+  | 'crewai'
+  | 'langgraph';
 
 export const ARM_IDS: readonly ArmId[] = [
   'papercusp',
   'baseline-a-ablation',
   'baseline-b-native',
   'baseline-c-bestofn',
+  'hive',
+  'queen-ablated',
+  'native-serial',
+  'openhands',
+  'crewai',
+  'langgraph',
 ] as const;
 
 /** Short human label for an arm; falls back to the raw id for unknown arms. */
@@ -33,6 +48,13 @@ export function armLabel(arm: string): string {
     case 'baseline-a-ablation': return 'Baseline A · ablation';
     case 'baseline-b-native': return 'Baseline B · native';
     case 'baseline-c-bestofn': return 'Baseline C · best-of-N';
+    // Fleet arms (Phase 5)
+    case 'hive': return 'Hive';
+    case 'queen-ablated': return 'Queen-ablated';
+    case 'native-serial': return 'Native (serial)';
+    case 'openhands': return 'OpenHands';
+    case 'crewai': return 'CrewAI';
+    case 'langgraph': return 'LangGraph';
     default: return arm;
   }
 }
@@ -48,10 +70,19 @@ export function armLabel(arm: string): string {
  */
 export function armColor(arm: string): string {
   switch (arm) {
-    case 'papercusp': return '#eab308'; // gold — the treatment (matches the active-subtab accent)
+    case 'papercusp': return '#eab308'; // gold — the L1 treatment (matches the active-subtab accent)
     case 'baseline-a-ablation': return '#a78bfa'; // violet
-    case 'baseline-b-native': return '#38bdf8'; // sky — the headline baseline (D-002)
+    case 'baseline-b-native': return '#38bdf8'; // sky — native arm
     case 'baseline-c-bestofn': return '#34d399'; // emerald
+    // Fleet arms (Phase 5). hive = the treatment (gold, like papercusp — they
+    // never share a chart). queen-ablated = the headline baseline control (rose).
+    // native-serial reuses native sky. Competitors get distinct hues.
+    case 'hive': return '#eab308'; // gold — the L2+ treatment (D-010)
+    case 'queen-ablated': return '#fb7185'; // rose — the headline baseline (Queen OFF)
+    case 'native-serial': return '#38bdf8'; // sky — serial floor (native, serial)
+    case 'openhands': return '#a78bfa'; // violet
+    case 'crewai': return '#f97316'; // orange
+    case 'langgraph': return '#2dd4bf'; // teal
     default: return 'var(--fg-mute, #7f9bb4)';
   }
 }

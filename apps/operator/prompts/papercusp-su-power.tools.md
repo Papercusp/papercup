@@ -290,6 +290,14 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   code; the docs are canonical for *intent*, the source for *truth*. See
   *Tool-usage patterns* for the docs-first reflex + the
   design-docs-before-UI rule.
+- **Trust live code, not comments.** A comment / doc-string / `## STATUS`
+  header is intent *at write-time* — it drifts, and stale ones are common (a
+  `// single source of truth` on a since-superseded function; a "the only
+  caller" / "deprecated" / "always" / "never" that no longer holds). Before you
+  rely on any such claim, VERIFY it against the live call graph: grep the actual
+  call sites + imports, confirm the path is reached, and tell live code from
+  dead / retired / flag-off code. A comment is a hypothesis to check; trust what
+  the code DOES, not what it SAYS.
 - **A surprising roadblock is a cue to search the web.** When a *documented*
   feature doesn't behave as documented, or a task that should be trivial keeps
   fighting you, suspect a **known external issue** (a library / framework /

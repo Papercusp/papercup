@@ -1470,6 +1470,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── health.snapshot — the whole-system Health tab snapshot ──
+  //
+  // (system-health-tab-2026-06-15 P-003, D-001). ONE `SystemHealth` snapshot —
+  // Queen / bees / work-feed / tokens / deploy / infra / plans / escalations /
+  // autonomy / observations / improvements / SU fleet — read from the per-
+  // workspace cache the ~30s DBOS tick maintains (a stale/missing snapshot
+  // triggers an on-demand recompute; computeSystemHealth is fail-soft per panel).
+  // Returns [] when the SYSTEM_HEALTH_TAB flag is off (the tab hides). NOT
+  // table-backed — refreshes on mount + the server-side notifySyncInvalidate the
+  // tick fires each cycle. The SAME aggregation feeds the overwatch brief (C-1).
+  'health.snapshot': {
+    resolve: async () => {
+      const { getSystemHealth } = await import('../system-health');
+      const health = await getSystemHealth();
+      return health ? [health] : [];
+    },
+  },
+
   // ── learning.gym — the Learning tab's Gym view (operator-learning-tab P-006) ──
   //
   // Cross-harness rollup of the gym control plane: recent prompt-optimization

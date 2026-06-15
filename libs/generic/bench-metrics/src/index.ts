@@ -36,3 +36,35 @@ export { accountTokens, verifyIsoBudget, budgetExceeded, isScored, type IsoBudge
 
 // Report builder — the importable aggregation surface for the Evaluation UI (P-020).
 export { aggregateArm, buildSuiteReport, type AggregateOpts } from './aggregate';
+
+// ── Hive layer (Phase 5 / D-010) — fleet-over-backlog metrics ──────────────
+// L2 throughput + L3 value-capture + the report builder for the UI's
+// Throughput / Value subtabs (P-030).
+export {
+  throughputMetrics,
+  valueMetrics,
+  buildHiveReport,
+  MS_PER_HOUR,
+  type FleetArmId,
+  type FleetRunSummary,
+  type ThroughputMetrics,
+  type TaskValue,
+  type ValueMetrics,
+  type HiveArmReport,
+  type HiveArmInput,
+  type HiveDelta,
+  type HiveBacklogReport,
+  type HiveReportOpts,
+} from './fleet';
+// L4 coordination quality — the MAST failure-taxonomy scorer (P-026).
+export {
+  mastRates,
+  classifyCoordEvent,
+  COORD_FAILURE_KINDS,
+  MAS_FAILURE_BASELINE_BAND,
+  TOKEN_DUPLICATION_BASELINE_BAND,
+  INTERAGENT_MISALIGNMENT_BASELINE,
+  type CoordFailureKind,
+  type CoordEvent,
+  type MastRates,
+} from './mast';

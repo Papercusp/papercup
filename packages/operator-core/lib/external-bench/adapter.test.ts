@@ -101,6 +101,18 @@ describe('toEmitInput', () => {
     const e = toEmitInput(attempt(), grade(), ctx({ budgetTokens: 500_000 }));
     expect(e.generation.budget_tokens).toBe(500_000);
   });
+
+  it('carries cache tokens and merges arm-specific metadata (canonical fields win)', () => {
+    const e = toEmitInput(
+      attempt({ tokensCacheRead: 4000, tokensCacheWrite: 1000, armMeta: { costSource: 'native', retriesUsed: 2, blueprintId: 'SHOULD-NOT-WIN' } }),
+      grade(),
+      ctx(),
+    );
+    expect(e.generation.tokens_cache_read).toBe(4000);
+    expect(e.generation.tokens_cache_write).toBe(1000);
+    // arm extras merged, but canonical blueprintId/stopReason override a colliding armMeta key
+    expect(e.generation.arm_meta).toMatchObject({ costSource: 'native', retriesUsed: 2, blueprintId: 'external-bench', stopReason: 'done' });
+  });
 });
 
 describe('gradeAndEmitBatch', () => {

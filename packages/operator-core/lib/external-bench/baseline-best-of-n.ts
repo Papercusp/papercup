@@ -211,9 +211,11 @@ interface Candidate {
 export interface BestOfNRunOutput {
   /** The exact input handed to `emit` — the runner's testable product (the run_result + rollout). */
   emitted: EmitRolloutInput;
+  /** The TYPED arm_meta (same object that rides `emitted.generation.armMeta` as opaque jsonb). */
+  armMeta: BestOfNArmMeta;
   /** What `emit` returned (the persisted ids). */
-  rollout_id: string;
-  run_id: string;
+  rolloutId: string;
+  runId: string;
 }
 
 /**
@@ -302,44 +304,47 @@ export async function runBestOfNOnce(config: BestOfNConfig, ports: BestOfNPorts)
   const armMeta = buildArmMeta(config, n, samplesRun, perCandidateBudget, reserve, candidates, selection);
 
   const emitted: EmitRolloutInput = {
-    run_id: config.runId,
-    prereg_hash: config.preregHash,
+    runId: config.runId,
+    preregHash: config.preregHash,
     suite: config.suite,
-    task_id: config.task.instanceId,
+    taskId: config.task.instanceId,
     arm: BASELINE_C_ARM_ID,
     seed: config.seed,
     modality: config.modality ?? 'diff',
     generation: {
       // A whole-arm generation failure (all N samples errored) ⇒ no submission ⇒ infra, excluded
-      // from accuracy (scoreable iff generation_status='completed'); a partial (some samples errored
+      // from accuracy (scoreable iff generationStatus='completed'); a partial (some samples errored
       // but ≥1 usable) still produced a valid submission ⇒ 'completed'.
       status: wholeArmFailed ? 'error' : 'completed',
       error: wholeArmFailed
         ? `all ${samplesRun} samples failed: ${generationErrors.join('; ')}`
         : generationErrors.length > 0
           ? `partial: ${generationErrors.length}/${samplesRun} samples errored: ${generationErrors.join('; ')}`
-          : undefined,
-      tokens_in: tokensIn,
-      tokens_out: tokensOut,
-      tokens_total: tokensIn + tokensOut,
-      tokens_cache_read: null,
-      tokens_cache_write: null,
-      wall_clock_ms: wallClockMs,
+          : null,
+      tokensIn,
+      tokensOut,
+      tokensTotal: tokensIn + tokensOut,
+      // The shared generation unit (ArmAttempt) carries no cache-token breakdown, so the row's
+      // (nullable) cache columns are null for this arm (see note above).
+      tokensCacheRead: null,
+      tokensCacheWrite: null,
+      wallClockMs,
       turns,
-      budget_tokens: config.budgetTokens,
+      budgetTokens: config.budgetTokens,
       capped,
-      model_id: config.modelId,
-      harness_version: config.harnessVersion,
-      arm_meta: armMeta,
-      submission: selected ? selected.attempt.diff : undefined,
-      trajectory_ref: selected ? selected.attempt.trajectoryRef : undefined,
-      trajectory_kind: selected ? 'best-of-n-selected' : undefined,
+      modelId: config.modelId,
+      harnessVersion: config.harnessVersion,
+      // arm_meta is opaque jsonb on the row; we keep the typed object on the runner's output.
+      armMeta: armMeta as unknown as Record<string, unknown>,
+      submission: selected ? selected.attempt.diff : null,
+      trajectoryRef: selected ? selected.attempt.trajectoryRef : null,
+      trajectoryKind: selected ? 'best-of-n-selected' : null,
     },
     grading: buildGrading(grade, wholeArmFailed),
   };
 
   const res = await ports.emit(emitted);
-  return { emitted, rollout_id: res.rollout_id, run_id: res.run_id };
+  return { emitted, armMeta, rolloutId: res.rolloutId, runId: res.runId };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -424,12 +429,14 @@ function buildArmMeta(
   };
 }
 
-/** Build the `grading` block from the official grader's outcome (or a 'skipped' block when there
- *  was no submission to grade). A grader infra error → resolved:null + status error/timeout
- *  (excluded from accuracy); a genuine outcome → passed/failed. */
+/** Build the `grading` block from the official grader's outcome (or an infra `error` block when
+ *  there was no submission to grade — generationStatus already carries the real reason; GraderStatus
+ *  has no 'skipped', and P-010's emitFromAttempt uses 'error' for the no-grade case too). A grader
+ *  infra error → resolved:null + status error/timeout (excluded from accuracy); a genuine outcome →
+ *  passed/failed with the per-test breakdown + the verbatim report. */
 function buildGrading(grade: GradeResult | undefined, wholeArmFailed: boolean): EmitRolloutInput['grading'] {
   if (wholeArmFailed || !grade) {
-    return { resolved: null, status: 'skipped', family: '', version: '' };
+    return { resolved: null, status: 'error', family: '', version: '', error: 'generation failed: no submission to grade' };
   }
   if (grade.graderError) {
     return {
@@ -438,7 +445,7 @@ function buildGrading(grade: GradeResult | undefined, wholeArmFailed: boolean): 
       family: grade.graderFamily,
       version: grade.graderVersion,
       error: grade.graderError,
-      raw_output: grade.rawGraderOutput,
+      rawOutput: stringifyGraderOutput(grade.rawGraderOutput),
     };
   }
   return {
@@ -446,9 +453,16 @@ function buildGrading(grade: GradeResult | undefined, wholeArmFailed: boolean): 
     status: grade.resolved ? 'passed' : 'failed',
     family: grade.graderFamily,
     version: grade.graderVersion,
-    structured_output: { failToPass: grade.failToPass ?? null, passToPass: grade.passToPass ?? null },
-    raw_output: grade.rawGraderOutput,
+    failToPass: grade.failToPass ?? null,
+    passToPass: grade.passToPass ?? null,
+    structuredOutput: grade.rawGraderOutput,
+    rawOutput: stringifyGraderOutput(grade.rawGraderOutput),
   };
+}
+
+/** The verbatim grader output is stored as text — stringify a non-string report (matches P-010). */
+function stringifyGraderOutput(raw: unknown): string {
+  return typeof raw === 'string' ? raw : JSON.stringify(raw ?? null);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -594,7 +608,7 @@ export function makeFakeBestOfNPorts(script: FakeBestOfNScript): FakeBestOfNPort
     async emit(input) {
       emitted.push(input);
       emitSeq += 1;
-      return { rollout_id: `rollout-${emitSeq}`, run_id: input.run_id };
+      return { rolloutId: `rollout-${emitSeq}`, runId: input.runId };
     },
   };
 

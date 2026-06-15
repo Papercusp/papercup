@@ -135,6 +135,30 @@ const learningInfraHealthWorkflow = DBOS.registerWorkflow(learningInfraHealthTic
 });
 DBOS.registerScheduled(learningInfraHealthWorkflow, { name: 'learningInfraHealth', crontab: '15 */2 * * * *' });
 
+// Every 30s (at :10/:40, off the :00/:30 sweep stampede): the whole-system Health
+// snapshot tick (system-health-tab-2026-06-15 P-003 / D-001). Recompute the
+// per-workspace SystemHealth (computeSystemHealth, fail-soft per panel) + fire
+// notifySyncInvalidate('health.snapshot') so an open Health tab stays SSE-live.
+// Flag-gated (SYSTEM_HEALTH_TAB, default ON); the resolver's own on-demand recompute
+// is the correctness floor, so this tick is the liveness bonus, not the engine.
+async function systemHealthTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    const { FLAGS } = await import('@papercusp/flags');
+    const { getFlag } = await import('@papercusp/flags/server');
+    if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return;
+    const { runSystemHealthTick } = await import('../system-health');
+    for (const ws of readRegistry().workspaces.map((w) => w.id)) {
+      await runSystemHealthTick(ws).catch((e) => {
+        console.warn(`[system-health] tick failed for ${ws}: ${e instanceof Error ? e.message : e}`);
+      });
+    }
+  }, { name: 'system-health' });
+}
+const systemHealthWorkflow = DBOS.registerWorkflow(systemHealthTick, {
+  name: 'systemHealth', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(systemHealthWorkflow, { name: 'systemHealth', crontab: '10,40 * * * * *' });
+
 // Every 30s: harness_status / harness_lanes PID-liveness sweep (consolidation
 // P-001). Replaces the legacy setInterval in harness-status-sweep.ts (which
 // stands down on dbosTimersActive).

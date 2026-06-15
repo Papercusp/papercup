@@ -13,6 +13,23 @@ const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const numOrNull = (v: unknown): number | null => (v == null ? null : Number(v));
 const toIso = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
 
+/**
+ * jsonb columns come back as STRINGS under the production-faithful client
+ * (prepare:false; see libs/papercusp/libs/db/src/connection.ts) — parse them.
+ * Tolerates an already-parsed object too, so it's correct under any client.
+ */
+function asJson<T>(v: unknown): T | null {
+  if (v == null) return null;
+  if (typeof v === 'string') {
+    try {
+      return JSON.parse(v) as T;
+    } catch {
+      return null;
+    }
+  }
+  return v as T;
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function rowToTaskRunResult(r: any): TaskRunResult {
   return {
@@ -26,8 +43,8 @@ function rowToTaskRunResult(r: any): TaskRunResult {
     graderStatus: r.grader_status,
     graderFamily: r.grader_family,
     graderVersion: r.grader_version,
-    failToPass: (r.fail_to_pass ?? null) as TestOutcome[] | null,
-    passToPass: (r.pass_to_pass ?? null) as TestOutcome[] | null,
+    failToPass: asJson<TestOutcome[]>(r.fail_to_pass),
+    passToPass: asJson<TestOutcome[]>(r.pass_to_pass),
     tokensIn: num(r.tokens_in),
     tokensOut: num(r.tokens_out),
     tokensTotal: num(r.tokens_total),

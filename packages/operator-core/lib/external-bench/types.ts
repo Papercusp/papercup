@@ -104,6 +104,9 @@ export interface ArmAttempt {
   // ---- cost accounting (coordination overhead INCLUDED — fairness #2) ----
   tokensIn: number;
   tokensOut: number;
+  /** Anthropic prompt-cache tokens, when the arm reports them — material to $ on Opus (folded into cost). */
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
   costUsd: number;
   turns: number;
   wallClockMs: number;
@@ -114,6 +117,13 @@ export interface ArmAttempt {
   stopReason: GenerationStopReason;
   /** Infra failure during GENERATION — distinct from "not resolved" AND from the grader's graderError. */
   generationError?: string;
+
+  /**
+   * Arm-specific extra metadata MERGED into the run-result row's `arm_meta` (the canonical `blueprintId` +
+   * `stopReason` always win over it). e.g. native-harness: toolCalls / costSource / retriesUsed / model;
+   * best-of-N: { n, candidates, verifierTokens }. Keeps the row self-describing without forking the schema.
+   */
+  armMeta?: Record<string, unknown>;
 }
 
 /**

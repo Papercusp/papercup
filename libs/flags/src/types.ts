@@ -543,6 +543,15 @@ export const FLAGS = {
   // pilot (P-009) proves the end-to-end path. The owner flips it ON after that — the
   // pending flip is surfaced in the plan's ## Now + every lane report.
   EXTERNAL_BENCH: "papercusp-external-bench",
+  // system-health-tab-2026-06-15: gates the read-only HEALTH tab (a live
+  // at-a-glance dashboard of the whole running system — Queen / bees / work-feed
+  // / tokens / deploy / infra) beside Working in /adv, plus its `health.snapshot`
+  // sync resolver + the periodic system-health tick. DEFAULT ON (alpha
+  // flags-default-on): a purely additive read-only surface over reads that
+  // already exist (computeSystemHealth fail-soft per panel). OFF = the tab is
+  // hidden + the resolver returns empty + the tick no-ops. The SAME aggregation
+  // also feeds the overwatch role (overwatch-role-2026-06-15 C-1, D-001).
+  SYSTEM_HEALTH_TAB: "papercusp-system-health-tab",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -550,6 +559,9 @@ export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT ON (alpha flags-default-on) — additive hive-control surfacing.
   [FLAGS.HIVE_CONTROL]: true,
+  // DEFAULT ON (alpha flags-default-on) — additive read-only Health dashboard +
+  // its fail-soft `health.snapshot` resolver/tick (system-health-tab-2026-06-15).
+  [FLAGS.SYSTEM_HEALTH_TAB]: true,
   // DEFAULT ON — fresh-context interactive brain (reversible to D-013).
   [FLAGS.QUEEN_BRAIN_FRESH]: true,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
