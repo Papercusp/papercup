@@ -484,28 +484,13 @@ const post = defineTool({
       } else {
         promptFile = launchContextPathFor(sessionKey);
         mkdirSync(launchContextDir(), { recursive: true });
-        let promptText = spec.promptText;
-        // queen-interactive-brain-fresh-context P-002: a fresh-context brain
-        // launch opens already-briefed — append the precomputed Queen wake brief
-        // (the same computeQueenWakeBrief the autonomous wakes inject) so the
-        // interactive Queen skips the survey round-trips. Fail-soft: no brief →
-        // just the su launch-context. Gated by FLAGS.QUEEN_BRAIN_FRESH.
-        if (brain) {
-          try {
-            const { getFlag } = await import('@papercusp/flags/server');
-            const { FLAGS } = await import('@papercusp/flags');
-            if (await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system')) {
-              const hiveSlug = await resolveBrainHiveSlug(workspace, harnessSlug);
-              if (hiveSlug) {
-                const { computeQueenWakeBrief } = await import('../../../hive/queen-brief-launch');
-                const brief = await computeQueenWakeBrief(workspace, hiveSlug, { wokeBy: 'interactive-brain' });
-                if (brief) promptText = `${promptText}\n\n${brief}`;
-              }
-            }
-          } catch {
-            /* fail-soft: launch with just the su launch-context */
-          }
-        }
+        // queen-interactive-brain-fresh-context P-002: a fresh-context brain launch
+        // opens already-briefed — maybeAppendBrainBrief appends the precomputed
+        // Queen wake brief (gated by FLAGS.QUEEN_BRAIN_FRESH, fail-soft). Non-brain
+        // launches get the su launch-context unchanged.
+        const promptText = brain
+          ? await maybeAppendBrainBrief(spec.promptText, { workspace, harnessSlug })
+          : spec.promptText;
         writeFileSync(promptFile, promptText, { mode: 0o600 });
       }
     } catch (e: any) {

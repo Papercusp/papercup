@@ -251,10 +251,14 @@ error/timeout) → `resolved=NULL` → excluded from accuracy, reported as separ
 (retry first; never score an infra failure as a genuine fail). pass@1 = mean(`resolved`)
 over a task's ≥3 seeds; same k for every arm.
 
-**Type source of truth:** `TaskRunResult` → `@papercusp/bench-metrics/schema` (`P-011`);
-`RolloutRecord` + `PreregConfig` + `emitRollout` →
+**Type source of truth:** `TaskRunResult` → `@papercusp/bench-metrics` (`P-011` —
+defined in `libs/generic/bench-metrics/src/schema.ts`, imported from the package root,
+*not* a `/schema` subpath); `RolloutRecord` + `PreregConfig` + `emitRollout` →
 `packages/operator-core/lib/external-bench/reproducibility/` (`P-010`); migration
-`libs/papercusp/libs/db/sql/291-benchmark-reproducibility.sql`. **Do not redefine.**
+`291-benchmark-reproducibility.sql`. The **L2 fleet layer** adds `emitFleetRun` /
+`emitCoordEvents` / `fleetRunIdFor` (`reproducibility/fleet.ts`, migration
+`292-benchmark-hive-layer.sql`); fleet runs read via `evals.fleet` / `evals.coordTrace`.
+**Do not redefine.**
 
 ---
 
