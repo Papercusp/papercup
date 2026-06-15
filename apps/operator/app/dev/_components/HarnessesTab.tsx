@@ -24,7 +24,7 @@ interface Props {
   workspaceIds: string[] | null;
 }
 
-function fmtAge(seconds: number | null | undefined): string {
+export function fmtAge(seconds: number | null | undefined): string {
   if (seconds == null) return '—';
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;

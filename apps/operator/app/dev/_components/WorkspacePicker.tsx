@@ -12,6 +12,29 @@ interface Props {
   onChange: (ids: string[] | null) => void;
 }
 
+/**
+ * Pure transition for the workspace multi-select. `selected === null` means
+ * "all workspaces"; otherwise it's the explicit id list. Toggling an id:
+ *   - from "all" → switch to everything-except-`id` (so the click deselects it)
+ *   - present in the list → remove it (empty result reverts to "all" / null)
+ *   - absent → add it
+ * Extracted from the component's `toggle` handler so the rules can be pinned
+ * without rendering.
+ */
+export function nextSelection(
+  selected: string[] | null,
+  allIds: string[],
+  id: string,
+): string[] | null {
+  if (selected === null) {
+    return allIds.filter((x) => x !== id);
+  }
+  const next = selected.includes(id)
+    ? selected.filter((x) => x !== id)
+    : [...selected, id];
+  return next.length === 0 ? null : next;
+}
+
 export default function WorkspacePicker({ selected, onChange }: Props) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,16 +59,7 @@ export default function WorkspacePicker({ selected, onChange }: Props) {
   const allSelected = selected === null;
 
   function toggle(id: string) {
-    if (allSelected) {
-      // switching from "all" to specific: start with everything except `id`
-      onChange(workspaces.filter((w) => w.id !== id).map((w) => w.id));
-      return;
-    }
-    const next = selected!.includes(id)
-      ? selected!.filter((x) => x !== id)
-      : [...selected!, id];
-    // empty array → revert to "all"
-    onChange(next.length === 0 ? null : next);
+    onChange(nextSelection(selected, workspaces.map((w) => w.id), id));
   }
 
   if (loading) return <div className="pc-dev-muted">…</div>;

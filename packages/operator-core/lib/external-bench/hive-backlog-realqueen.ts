@@ -83,12 +83,14 @@ const ESCALATE_FEATURE_STATUSES = new Set(['escalated', 'blocked']);
  * of exiting taskless). Identical to the scripted driver's directive (fairness: same bee unit).
  */
 const BENCH_BEE_DIRECTIVE = [
-  'You are placed on a single-task benchmark member harness. This member holds EXACTLY ONE feature',
-  'work-item — the benchmark problem to solve. Claim it (`work_items:claim_next` for this harness),',
-  'read its full problem_statement, and IMPLEMENT the change directly in this repository as real code',
-  'edits (a working unified diff against the checked-out base). Write the actual source fix — do not',
-  'just plan or describe. When complete and the repo builds, mark the work-item complete',
-  '(`work_items:complete`). You are NOT taskless — the assigned feature IS your task.',
+  'You are placed on a single-task benchmark member harness. This member holds EXACTLY ONE feature work-item —',
+  'the benchmark problem to solve. Claim it (`work_items:claim_next` for this harness, or',
+  '`fleet:assignments { agent: <your spawn id> }` then `work_items:get` for the detail), read its full',
+  'problem_statement, and IMPLEMENT the change directly in this repository as real code edits (a working',
+  'unified diff against the checked-out base). Write the actual source fix — do not just plan or describe.',
+  'When complete and the repo builds, mark the work-item complete (`work_items:complete`). You are NOT',
+  'taskless — the assigned feature IS your task; do not exit FAILED for "no work". There is no',
+  'validator/reviewer downstream; you own the fix end to end.',
 ].join(' ');
 
 /** One enrolled backlog task — its member harness + clone, threaded to collect. */
@@ -352,6 +354,16 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
   if (process.env.PAPERCUSP_FLEET_SANDBOX == null) process.env.PAPERCUSP_FLEET_SANDBOX = '0';
   if (process.env.PAPERCUSP_SPAWN_BACKEND == null) process.env.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
   if (process.env.AGENT_CMD == null && process.env.CLAUDE == null) process.env.AGENT_CMD = 'claude -p';
+  // D-020 fix: the bee self-sufficiency directive. The real Queen places a bench bee via `fleet:spawn`, but
+  // her brief is a situational overlay — not the "claim + implement this lone feature" directive — so a
+  // placed bee did $0 of work (the feature stayed unassigned → `cancelled`). When set, spawnAgentInHarness
+  // APPENDS this to every placed bee's brief + pins the claude backend per-spawn (operator-spawn.ts), the
+  // exact mechanism the WORKING scripted arm uses. CRITICAL: the Queen's `fleet:spawn` is serviced by the
+  // long-running :3170 host (fireLaunchBlueprint → loopback invoke), NOT this launcher process — so for the
+  // real-Queen arm this var MUST also be on :3170's env (set in apps/operator/.env.local). We set it here so
+  // the FIFO arm's IN-PROCESS executeBatch spawns (which run in this launcher) also carry it, and as the
+  // single source of the directive text.
+  if (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE == null) process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = BENCH_BEE_DIRECTIVE;
 
   let homePrefix = scratchSlug('xbq');
   const instanceByFeatureId = new Map<string, string>();

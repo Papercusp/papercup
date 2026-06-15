@@ -98,6 +98,28 @@ export async function cleanupPlans(
   `;
 }
 
+/**
+ * Register a throwaway harness in `harness_shared.projects` so the plan tools'
+ * `resolvePlanScope` can resolve its workspace. Post-WI-148, a concrete (non-
+ * papercup) slug that is NOT registered THROWS instead of silently defaulting to
+ * 'default' (source.ts) — so a test that drives a plan tool against a `zzz-…`
+ * harness must first register it, exactly as production does before any plan is
+ * written for a harness. Idempotent; uses the slug as the id (unique per test).
+ */
+export async function registerHarnessProject(
+  admin: postgres.Sql,
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<void> {
+  await admin`
+    INSERT INTO harness_shared.projects
+      (id, name, status, slug, workspace_id, created_ts, updated_ts)
+    VALUES
+      (${harnessSlug}, ${harnessSlug}, 'active', ${harnessSlug}, ${workspaceId}, 0, 0)
+    ON CONFLICT DO NOTHING
+  `;
+}
+
 /** Seed a plan row directly (admin/bypass) so a read/lock test has content. */
 export async function seedPlan(
   admin: postgres.Sql,
@@ -106,6 +128,9 @@ export async function seedPlan(
   slug: string,
   content: string,
 ): Promise<void> {
+  // A plan for a concrete harness is only resolvable if the harness is registered
+  // in projects (WI-148 fail-loud) — seed that precondition alongside the row.
+  await registerHarnessProject(admin, workspaceId, harnessSlug);
   await admin`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version, origin)

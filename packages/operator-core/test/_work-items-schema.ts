@@ -102,3 +102,27 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     ) STORED,
     PRIMARY KEY (harness_slug, feature_id)
   )`;
+
+/**
+ * `user_trust_list` DDL — the owner's trusted github user ids (migration 276,
+ * shared-hive-trust-admission). The work-items claim path's `autoPickableWhereSql`
+ * (work-items-admission.ts, P-010) LEFT-JOINs this table to let un-screened remote
+ * work whose VERIFIED author is trusted pass the admission gate. The engine reads it
+ * on EVERY claim / claim_next / observe, so any claim-path integration test needs it
+ * present — same D-014 read-path-completeness rationale as the consolidated table
+ * above: add the engine's read dependencies HERE once, apply in the bootstrap block.
+ *
+ * Test-friendly DEFAULT on created_ts (prod requires it explicitly); RLS + GRANTs
+ * from the migration are intentionally omitted — the test connects as the DB owner
+ * (RLS bypassed) and provisions no app roles, matching this fixture's superset-only,
+ * no-enforcement stance. Empty by default → the trust leg matches nothing, so the
+ * gate behaves exactly as it does for an owner with no trusted authors.
+ */
+export const USER_TRUST_LIST_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.user_trust_list (
+    workspace_id            text NOT NULL,
+    trusted_github_user_id  bigint NOT NULL,
+    note                    text,
+    created_ts              bigint NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, trusted_github_user_id)
+  )`;

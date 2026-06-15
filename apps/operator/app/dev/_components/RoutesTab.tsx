@@ -23,7 +23,7 @@ interface Row {
   invoked_at: string;
 }
 
-function fmtRelTime(iso: string): string {
+export function fmtRelTime(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`;
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
@@ -31,7 +31,7 @@ function fmtRelTime(iso: string): string {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
-function fmtDuration(ms: number | null): string {
+export function fmtDuration(ms: number | null): string {
   if (ms == null) return '—';
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(2)}s`;

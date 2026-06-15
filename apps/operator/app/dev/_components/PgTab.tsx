@@ -34,14 +34,14 @@ const CTX_PARAMS = new URLSearchParams({
   spawn: 'dev-page',
 });
 
-function fmtBytes(b: number): string {
+export function fmtBytes(b: number): string {
   if (b < 1024) return `${b}B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)}KB`;
   if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)}MB`;
   return `${(b / 1024 / 1024 / 1024).toFixed(2)}GB`;
 }
 
-function fmtDuration(s: number): string {
+export function fmtDuration(s: number): string {
   if (s < 1) return `${(s * 1000).toFixed(0)}ms`;
   if (s < 60) return `${s.toFixed(1)}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;

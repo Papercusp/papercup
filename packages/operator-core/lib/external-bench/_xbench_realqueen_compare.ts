@@ -109,22 +109,60 @@ async function main() {
   console.log(`[realqueen] AGENT_MODELS=${process.env.AGENT_MODELS ?? '(unset — bees/queen fall to role floor!)'} AGENT_CMD=${process.env.AGENT_CMD ?? '(unset)'}`);
   for (const t of tasks) console.log(`  - ${t.instanceId} (repo=${t.repo})`);
 
-  // CONTENTION CAP (load-bearing): this driver spawns bees IN-PROCESS via operator-spawn,
-  // whose `spawnConcurrencyCeiling()` reads the module-cached rate-limit config. A fresh
-  // node process boots that cache to the DEFAULT (16) — it does NOT auto-read the
-  // persisted `operator_rate_limit_config` the :3170 PUT set. So WITHOUT this, the
-  // in-process headroom reports ~16 and the Queen over-places, defeating the saturated-
-  // fleet contention (cap << backlog). Honor RATE_LIMIT_MAX (explicit) else load the
-  // persisted value, and apply it to THIS process's cache before any placement.
+  // CONTENTION CAP (load-bearing — D-019/D-020 fix). The bee-concurrency limit is the global
+  // `maxSimultaneousAgents` read via `spawnConcurrencyCeiling()` → `getCachedRateLimitConfig()`, a
+  // MODULE-SCOPED per-process cache that propagates only over an IN-PROCESS bus (rate-limit-config.ts:
+  // "the bus does NOT cross processes"). There is NO separate per-hive cap (confirmed: no maxBees / wave
+  // width / swarm cap in hive/** or fleet/**) — this single number IS the hive's concurrency limit.
+  //
+  // THE BUG: the real Queen's `fleet:spawn` runs in the LONG-RUNNING :3170 host (startHive →
+  // fireLaunchBlueprint('hive') → loopback invoke to :3170), NOT in this launcher process. The prior code
+  // set the cap only in the LAUNCHER's cache, so :3170's cache stayed at the default 16 — and with 11 bees
+  // < 16, admitSpawn admitted them all at once (no contention; the Queen made no sequencing decision). The
+  // launcher's writeRateLimitConfig persists to PG but :3170 only reads PG once at boot, and the in-process
+  // bus publish doesn't cross to :3170 → the cap never bit.
+  //
+  // THE FIX: PUT the cap to :3170's own `operator:rate_limit_config` route (auth: loopback) — that handler
+  // runs `writeRateLimitConfig` INSIDE the :3170 process, so its cache + governor honor the cap LIVE with no
+  // restart (rate-limit-config.ts:8-9). That is the cache the Queen's spawns actually read. We ALSO set it
+  // in this launcher's cache (initRateLimitConfig/writeRateLimitConfig) for the FIFO arm, whose executeBatch
+  // spawns DO run in-process here. cap << backlog (e.g. 5 over 13+ tasks) → real saturation → the Queen must
+  // sequence/evict (her measured value).
   {
     const { writeRateLimitConfig, initRateLimitConfig, getCachedRateLimitConfig } = await import('../rate-limit-config');
     const envMax = process.env.RATE_LIMIT_MAX ? Number(process.env.RATE_LIMIT_MAX) : undefined;
     if (envMax && Number.isFinite(envMax)) {
-      await writeRateLimitConfig({ maxSimultaneousAgents: envMax }); // persist + apply to this cache
+      await writeRateLimitConfig({ maxSimultaneousAgents: envMax }); // persist + apply to THIS (launcher) cache
     } else {
-      await initRateLimitConfig(); // load the persisted operator_rate_limit_config into this cache
+      await initRateLimitConfig(); // load the persisted operator_rate_limit_config into THIS cache
     }
-    console.log(`[realqueen] fleet cap (in-process ceiling) = ${getCachedRateLimitConfig().maxSimultaneousAgents} (RATE_LIMIT_MAX=${process.env.RATE_LIMIT_MAX ?? '(unset → persisted)'})`);
+    const launcherCap = getCachedRateLimitConfig().maxSimultaneousAgents;
+
+    // Propagate the cap to the :3170 host where the Queen spawns bees (the cache that actually gates them).
+    const port = process.env.PAPERCUSP_HONO_PORT ?? '3170';
+    let hostCap: number | string = '(unchanged)';
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/operator/rate-limit-config`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ maxSimultaneousAgents: launcherCap }),
+      });
+      if (res.ok) {
+        const body = (await res.json()) as { config?: { maxSimultaneousAgents?: number } };
+        hostCap = body.config?.maxSimultaneousAgents ?? '(ok)';
+      } else {
+        hostCap = `(PUT failed ${res.status})`;
+      }
+    } catch (e) {
+      hostCap = `(PUT error: ${e instanceof Error ? e.message : String(e)})`;
+    }
+    console.log(
+      `[realqueen] fleet cap — launcher cache = ${launcherCap}, :${port} host cache = ${hostCap} ` +
+        `(RATE_LIMIT_MAX=${process.env.RATE_LIMIT_MAX ?? '(unset → persisted)'})`,
+    );
+    if (typeof hostCap === 'number' && hostCap !== launcherCap) {
+      console.warn(`[realqueen] WARNING: :${port} host cap (${hostCap}) != intended (${launcherCap}) — contention may not bite`);
+    }
   }
 
   // The FIFO arm needs its scripted planner registered; the real-Queen arm needs none (the Queen places).

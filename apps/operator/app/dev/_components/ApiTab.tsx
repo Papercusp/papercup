@@ -17,7 +17,7 @@ import SchemaForm from './SchemaForm';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 
-interface Tool {
+export interface Tool {
   name: string;
   pluginName: string;
   description: string;
@@ -52,15 +52,46 @@ const ALL_ROLES = [
   'curator',
 ] as const;
 
-function namespaceOf(name: string): string {
+export function namespaceOf(name: string): string {
   if (name.includes(':')) return name.split(':')[0];
   if (name.includes('.')) return name.split('.')[0];
   return 'misc';
 }
 
-function requiredArgCount(tool: Tool): number {
+export function requiredArgCount(tool: Tool): number {
   const required = tool.inputSchema?.required;
   return Array.isArray(required) ? required.length : 0;
+}
+
+/**
+ * Apply the sidebar's built-in/plugin toggles + free-text filter, then group
+ * the surviving tools by namespace and return the groups sorted by name.
+ * Extracted from the `grouped` memo so the filtering rules can be pinned
+ * without driving the component.
+ */
+export function filterAndGroupTools(
+  tools: Tool[],
+  opts: { filter: string; showBuiltins: boolean; showPlugins: boolean },
+): Array<[string, Tool[]]> {
+  const f = opts.filter.trim().toLowerCase();
+  const filtered = tools.filter((t) => {
+    const isBuiltin = t.pluginName === 'agent-mcp';
+    if (isBuiltin && !opts.showBuiltins) return false;
+    if (!isBuiltin && !opts.showPlugins) return false;
+    if (!f) return true;
+    return (
+      t.name.toLowerCase().includes(f) ||
+      t.description.toLowerCase().includes(f) ||
+      t.pluginName.toLowerCase().includes(f)
+    );
+  });
+  const map = new Map<string, Tool[]>();
+  for (const t of filtered) {
+    const ns = namespaceOf(t.name);
+    if (!map.has(ns)) map.set(ns, []);
+    map.get(ns)!.push(t);
+  }
+  return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
 export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) {
@@ -131,27 +162,10 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
     setDurationMs(null);
   }, [selected?.name]);
 
-  const grouped = useMemo(() => {
-    const f = filter.trim().toLowerCase();
-    const filtered = tools.filter((t) => {
-      const isBuiltin = t.pluginName === 'agent-mcp';
-      if (isBuiltin && !showBuiltins) return false;
-      if (!isBuiltin && !showPlugins) return false;
-      if (!f) return true;
-      return (
-        t.name.toLowerCase().includes(f) ||
-        t.description.toLowerCase().includes(f) ||
-        t.pluginName.toLowerCase().includes(f)
-      );
-    });
-    const map = new Map<string, Tool[]>();
-    for (const t of filtered) {
-      const ns = namespaceOf(t.name);
-      if (!map.has(ns)) map.set(ns, []);
-      map.get(ns)!.push(t);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [tools, filter, showBuiltins, showPlugins]);
+  const grouped = useMemo(
+    () => filterAndGroupTools(tools, { filter, showBuiltins, showPlugins }),
+    [tools, filter, showBuiltins, showPlugins],
+  );
 
   async function invoke() {
     if (!selected) return;

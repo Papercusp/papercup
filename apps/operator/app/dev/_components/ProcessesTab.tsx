@@ -6,7 +6,7 @@ import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
-interface Process {
+export interface Process {
   pid: number;
   kind: string;
   cmdline: string;
@@ -16,22 +16,22 @@ interface Process {
   workspace_id: string | null;
 }
 
-const KILLABLE_KINDS = new Set(['run.sh', 'omp', 'claude']);
-const PROTECTED_REASONS: Record<string, string> = {
+export const KILLABLE_KINDS = new Set(['run.sh', 'omp', 'claude']);
+export const PROTECTED_REASONS: Record<string, string> = {
   paperclip: 'killing paperclip would break the auto-run loop',
   next: 'killing the dev/prod server would break this very page',
   pty: 'pty processes back interactive sessions; kill from the terminal',
   other: 'unknown kind — not killable from /dev',
 };
 
-function fmtAge(seconds: number): string {
+export function fmtAge(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86400)}d`;
 }
 
-const KIND_ORDER: Record<string, number> = {
+export const KIND_ORDER: Record<string, number> = {
   'run.sh': 0,
   omp: 1,
   claude: 2,
@@ -40,9 +40,35 @@ const KIND_ORDER: Record<string, number> = {
   next: 5,
 };
 
-const ALL_KINDS = ['run.sh', 'omp', 'claude', 'paperclip', 'pty', 'next'] as const;
+export const ALL_KINDS = ['run.sh', 'omp', 'claude', 'paperclip', 'pty', 'next'] as const;
 
-interface KillModalState {
+/** Why a process of `kind` may not be killed from /dev, or null if killable. */
+export function protectedReasonFor(kind: string): string | null {
+  if (KILLABLE_KINDS.has(kind)) return null;
+  return PROTECTED_REASONS[kind] ?? 'kind not in killable allowlist';
+}
+
+/**
+ * Parse the comma-separated `processKinds` URL param into a validated Set,
+ * dropping any token not in the known ALL_KINDS allowlist. Empty string =
+ * empty set (filter everything out).
+ */
+export function parseKinds(param: string): Set<string> {
+  if (param === '') return new Set<string>();
+  const allowed = new Set<string>(ALL_KINDS);
+  return new Set(param.split(',').filter((k) => allowed.has(k)));
+}
+
+/** Stable display order: by kind rank, then youngest-first within a kind. */
+export function sortProcesses<T extends { kind: string; started_seconds_ago: number }>(rows: T[]): T[] {
+  return [...rows].sort(
+    (a, b) =>
+      (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99) ||
+      a.started_seconds_ago - b.started_seconds_ago,
+  );
+}
+
+export interface KillModalState {
   process: Process;
   confirmText: string;
   signal: 'SIGTERM' | 'SIGKILL';
@@ -100,11 +126,7 @@ export default function ProcessesTab() {
     };
   }, []);
 
-  const kinds = useMemo(() => {
-    if (kindsParam === '') return new Set<string>();
-    const allowed = new Set<string>(ALL_KINDS);
-    return new Set(kindsParam.split(',').filter((k) => allowed.has(k)));
-  }, [kindsParam]);
+  const kinds = useMemo(() => parseKinds(kindsParam), [kindsParam]);
 
   const filtered = useMemo(
     () => processes.filter((p) => kinds.has(p.kind)),
@@ -147,11 +169,7 @@ export default function ProcessesTab() {
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
       {!loading && !error && (() => {
-        const sortedRows = [...filtered].sort(
-          (a, b) =>
-            (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99) ||
-            a.started_seconds_ago - b.started_seconds_ago,
-        );
+        const sortedRows = sortProcesses(filtered);
         const columns: ColumnDef<Process>[] = [
           { key: 'pid', header: 'PID', width: 0.8, align: 'right', toCopyText: (r) => String(r.pid), render: ({ row }) => <span className="pc-dev-muted">{row.pid}</span> },
           { key: 'kind', header: 'Kind', width: 1, toCopyText: (r) => r.kind, render: ({ row }) => <span className="pc-dev-slug">{row.kind}</span> },
@@ -171,10 +189,8 @@ export default function ProcessesTab() {
           {
             key: 'kill', header: '', width: 0.6, align: 'center',
             render: ({ row }) => {
-              const killable = KILLABLE_KINDS.has(row.kind);
-              const protectedReason = !killable
-                ? PROTECTED_REASONS[row.kind] ?? 'kind not in killable allowlist'
-                : null;
+              const protectedReason = protectedReasonFor(row.kind);
+              const killable = protectedReason === null;
               return (
                 <button
                   type="button"
@@ -206,7 +222,7 @@ export default function ProcessesTab() {
   );
 }
 
-function KillModal({
+export function KillModal({
   state,
   setState,
 }: {

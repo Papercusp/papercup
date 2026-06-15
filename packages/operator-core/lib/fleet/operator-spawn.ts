@@ -773,6 +773,45 @@ export async function spawnAgentInHarness(
     idempotencyKey: runId,
     workspaceId: input.workspaceId,
   });
+
+  // ── external-bench bee SELF-SUFFICIENCY (impartial-benchmark D-020 fix) ──────────────────────────────
+  // In the real-Queen benchmark arm (hive-backlog-realqueen.ts) the Queen persona PLACES a bee via
+  // `fleet:spawn`, but her brief is a situational OVERLAY — not the "claim + implement this lone bench
+  // feature" directive. So a Queen-placed bench bee booted with FEATURE_ID set but no instruction to claim
+  // its (unassigned, taken_by NULL) feature → it found no actionable work and exited $0, no diff, no usage
+  // (the seeded feature later went `cancelled`). The WORKING scripted arm (hive-backlog-live.ts) avoids this
+  // by spawning every bee with the BENCH_BEE_DIRECTIVE brief (proven: 10/11 non-empty diffs on the xbh* run,
+  // feature → `passed`). Two further hazards on this path: (a) the Queen's `fleet:spawn` only pins
+  // PAPERCUSP_SPAWN_BACKEND in extraEnv when a TIER resolves a backend (none here), so the bee command is
+  // built from whatever process.env.AGENT_CMD the SPAWNING process holds — and the Queen's spawns run in the
+  // long-running :3170 host, whose env can differ from the launcher; an unset AGENT_CMD falls through to
+  // `omp -p` (a local/self model → no usage sample, no real diff). (b) the claude-code spawn path is
+  // sandbox-default-ON, and bubblewrap's loopback needs CAP_NET_ADMIN the host lacks → rc=1, no diff.
+  //
+  // FIX (gated, bench-scoped, arm-neutral): when PAPERCUSP_XBENCH_BEE_DIRECTIVE is set (the bench launcher
+  // sets it on the SHARED env both hosts read), every placed `bee` (a) gets that directive APPENDED to its
+  // brief so — whatever situational overlay the Queen attaches — it claims + implements its lone seeded
+  // feature, and (b) gets PAPERCUSP_SPAWN_BACKEND/PAPERCUSP_FLEET_SANDBOX pinned PER-SPAWN (the exact
+  // self-sufficient pins bench-harness-live.ts's `driveToDone` sets) so it runs the real claude/opus backend
+  // regardless of which process built the spawn command. Only ever active under the bench env flag — normal
+  // hive/operator spawns are untouched. The Queen's placement/eviction/re-placement/adaptive-wake treatment
+  // is unchanged: she still decides WHO/WHEN; this only guarantees the bee she places can DO the work.
+  const benchBeeDirective = role === 'bee' ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() : '';
+  if (benchBeeDirective) {
+    input = {
+      ...input,
+      brief: input.brief ? `${input.brief}\n\n${benchBeeDirective}` : benchBeeDirective,
+    };
+    // Pin the bench backend/sandbox per-spawn (self-sufficient, like driveToDone) unless the caller already
+    // resolved a backend (tier) or explicitly overrode these in the process env. Default-on for the pin so a
+    // spawn built in a host lacking AGENT_CMD/PAPERCUSP_SPAWN_BACKEND still runs claude, not omp.
+    if (!spawnModelBackend && process.env.PAPERCUSP_SPAWN_BACKEND == null) {
+      extraEnv.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
+    }
+    if (process.env.PAPERCUSP_FLEET_SANDBOX == null) {
+      extraEnv.PAPERCUSP_FLEET_SANDBOX = '0';
+    }
+  }
   // THE UMBILICAL (voice gap fix): thread the operator's durable `s-…` spawnId into
   // the child's env so invoke()/spawn-mcp bakes it as the signed MCP URL's STABLE
   // `client=` param. Without this the child minted a fresh random `spawnId` per boot

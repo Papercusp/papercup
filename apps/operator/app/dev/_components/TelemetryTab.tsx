@@ -22,6 +22,26 @@ interface Props {
   onRerun: (ctx: RerunContext) => void;
 }
 
+/**
+ * Error rate as a whole-number percentage of calls. 0 calls → 0% (no divide
+ * by zero). Shared by the Err% column's value + its red-threshold class.
+ */
+export function errPct(callCount: number, errorCount: number): number {
+  return callCount > 0 ? (errorCount / callCount) * 100 : 0;
+}
+
+/**
+ * Toggle one transport in/out of the comma-separated `transport` URL param.
+ * Empty result encodes as '' (no filter). Extracted from `toggleTransport`
+ * so the set arithmetic can be pinned without the component.
+ */
+export function nextTransportParam(current: string | null, t: string): string {
+  const set = new Set(current ? current.split(',') : []);
+  if (set.has(t)) set.delete(t);
+  else set.add(t);
+  return set.size === 0 ? '' : Array.from(set).join(',');
+}
+
 export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,10 +94,7 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
 
   const transportSet = new Set(transports ?? []);
   const toggleTransport = (t: string): void => {
-    const next = new Set(transportSet);
-    if (next.has(t)) next.delete(t);
-    else next.add(t);
-    void setTransportParam(next.size === 0 ? '' : Array.from(next).join(','));
+    void setTransportParam(nextTransportParam(transportParam, t));
   };
 
   return (
@@ -134,13 +151,10 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
               },
               {
                 key: 'errpct', header: 'Err %', width: 0.8, align: 'right',
-                toCopyText: (r) => {
-                  const p = r.call_count > 0 ? (r.error_count / r.call_count) * 100 : 0;
-                  return `${p.toFixed(0)}%`;
-                },
+                toCopyText: (r) => `${errPct(r.call_count, r.error_count).toFixed(0)}%`,
                 render: ({ row }) => {
-                  const errPct = row.call_count > 0 ? (row.error_count / row.call_count) * 100 : 0;
-                  return <span className={errPct > 10 ? 'pc-dev-api-err' : 'pc-dev-muted'}>{errPct.toFixed(0)}%</span>;
+                  const p = errPct(row.call_count, row.error_count);
+                  return <span className={p > 10 ? 'pc-dev-api-err' : 'pc-dev-muted'}>{p.toFixed(0)}%</span>;
                 },
               },
               { key: 'p50', header: 'p50', width: 0.8, align: 'right', toCopyText: (r) => r.p50_ms != null ? `${r.p50_ms}ms` : '', render: ({ row }) => <span className="pc-dev-muted">{row.p50_ms ?? '—'}ms</span> },

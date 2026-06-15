@@ -172,7 +172,7 @@ export default function SqlTab() {
   );
 }
 
-function renderCell(v: unknown): string {
+export function renderCell(v: unknown): string {
   if (v === null || v === undefined) return '∅';
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'number') return String(v);
