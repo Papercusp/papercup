@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readAllPlans, resolveHarnessPlansDir } from '../plans/source';
 
-const SCOPES = ['title', 'now', 'items', 'decisions', 'prose'] as const;
+const SCOPES = ['slug', 'title', 'now', 'items', 'decisions', 'prose'] as const;
 type Scope = (typeof SCOPES)[number];
 
 const argsSchema = z.object({
@@ -53,6 +53,17 @@ function scoreScope(text: string, queryTokens: string[]): number {
   return hits;
 }
 
+/** Slug scope: SUBSTRING match (mirrors plans:search) — the tokenizer keeps
+ *  hyphens, so a one-token slug query never token-equals a multi-segment slug,
+ *  and the PG slug isn't in the scored content. Counts query tokens present. */
+function scoreSlug(slug: string, queryTokens: string[]): number {
+  if (!slug) return 0;
+  const lower = slug.toLowerCase();
+  let hits = 0;
+  for (const q of queryTokens) if (lower.includes(q)) hits += 1;
+  return hits;
+}
+
 function snippet(text: string, queryTokens: string[], maxLen = 160): string {
   if (!text) return '';
   const lower = text.toLowerCase();
@@ -71,7 +82,7 @@ export default defineTool({
   name: 'cross_harness:plans_search',
   profile: 'engineer',
   description:
-    "Keyword search across plans of any registered harness by explicit slug. Scopes: title, now, items, decisions, prose. Read-only.",
+    "Keyword search across plans of any registered harness by explicit slug. Scopes: slug, title, now, items, decisions, prose (a slug fragment finds the plan it names). Read-only.",
   guidance: {
     when: 'You\'re looking for prior work in another harness and don\'t have a slug. Pass harnessSlug + query.',
     notWhen:
@@ -108,11 +119,21 @@ export default defineTool({
     });
     const hits: Hit[] = [];
 
-    for (const { parsed } of parsedPlans) {
+    for (const { parsed, row } of parsedPlans) {
       if (parsed.isLegacy && !includeLegacy) continue;
 
       const matches: Hit['matches'] = [];
       let score = 0;
+
+      // Slug scope first (highest-identity signal) — see plans:search; a slug
+      // query must find the plan it names, not only plans that mention it.
+      if (scopes.includes('slug')) {
+        const s = scoreSlug(row.planSlug, queryTokens);
+        if (s > 0) {
+          score += s * 5;
+          matches.push({ scope: 'slug', snippet: row.planSlug });
+        }
+      }
 
       if (parsed.isLegacy) {
         if (scopes.includes('prose')) {

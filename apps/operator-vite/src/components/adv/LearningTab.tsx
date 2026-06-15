@@ -55,6 +55,7 @@ import { RedQueenPanel } from './RedQueenPanel';
 import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';
 import { DemandPanel } from './DemandPanel';
 import { ExperimentsPanel } from './ExperimentsPanel';
+import { Select } from '@/app/harness/Select';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
 import HumanQueueDrain from './HumanQueueDrain';
@@ -296,21 +297,18 @@ export default function LearningTab() {
             <label className="pc-learning__hivepick" title="Scope the hive-aware views (Improvements, Gym, Learnings) to one hive — the tenancy unit. Benchmark, Scout, Knowledge and Throughput are workspace-wide and ignore this.">
               <Brain size={12} aria-hidden />
               <span className="pc-learning__hivepicklabel">hive</span>
-              <select
-                aria-label="Hive lens"
-                className="pc-learning__hiveselect"
+              <Select
+                ariaLabel="Hive lens"
                 value={hive}
-                onChange={(e) => void setLhive(e.target.value)}
+                onChange={(v) => void setLhive(v)}
                 disabled={hives.length === 0}
-              >
-                {hives.length === 0 && <option value="">no hives yet</option>}
-                {hives.map((h) => (
-                  <option key={h.slug} value={h.slug}>
-                    {h.slug}
-                    {h.remote ? ' (joined)' : ''}
-                  </option>
-                ))}
-              </select>
+                placeholder={hives.length === 0 ? 'no hives yet' : undefined}
+                triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
+                options={hives.map((h) => ({
+                  value: h.slug,
+                  label: `${h.slug}${h.remote ? ' (joined)' : ''}`,
+                }))}
+              />
             </label>
           ) : null}
           <button
@@ -443,20 +441,15 @@ function ImprovementsView({ hive }: { hive: string }) {
         <h2>Captured improvements</h2>
         <div className="pc-learning__inlinetools">
           {sources.length > 0 ? (
-            <select
-              className="pc-learning__srcselect"
-              aria-label="Filter by who filed it"
-              title="Who filed it — Scout-routed ideas, Queen captures, system watchdog, …"
-              value={src ?? ''}
-              onChange={(e) => void setSrc(e.target.value || null)}
-            >
-              <option value="">Any source</option>
-              {sources.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+            <Select
+              ariaLabel="Filter by who filed it"
+              value={src ?? '__any__'}
+              onChange={(v) => void setSrc(v === '__any__' ? null : v)}
+              options={[
+                { value: '__any__', label: 'Any source' },
+                ...sources.map((s) => ({ value: s, label: s })),
+              ]}
+            />
           ) : null}
           <div className="pc-learning__lanes" role="tablist" aria-label="Triage lane">
             {LANES.map((l) => (
@@ -1727,18 +1720,16 @@ function LearningsView({ hive }: { hive: string }) {
       <div className="pc-learning__flow" aria-label="Learnings scope">
         <label className="pc-learning__flowchip" style={{ gap: 6 }}>
           show
-          <select
-            aria-label="Filter by origin"
+          <Select
+            ariaLabel="Filter by origin"
             value={lpack}
-            onChange={(e) => void setLpack(e.target.value)}
-            style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 12 }}
-          >
-            <option value="all">everything</option>
-            <option value="organic">hive-learned only</option>
-            {(snap?.packs ?? []).map((p) => (
-              <option key={p.packId} value={p.packId}>pack: {p.packId}</option>
-            ))}
-          </select>
+            onChange={(v) => void setLpack(v)}
+            options={[
+              { value: 'all', label: 'everything' },
+              { value: 'organic', label: 'hive-learned only' },
+              ...(snap?.packs ?? []).map((p) => ({ value: p.packId, label: `pack: ${p.packId}` })),
+            ]}
+          />
         </label>
       </div>
 
@@ -1800,17 +1791,16 @@ function LearningsView({ hive }: { hive: string }) {
           ))}
           {installable.length > 0 && (
             <span className="pc-learning__flowchip" style={{ gap: 6 }}>
-              <select
-                aria-label="Add a learning pack"
+              <Select
+                ariaLabel="Add a learning pack"
                 value={addPack}
-                onChange={(e) => setAddPack(e.target.value)}
-                style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 12 }}
-              >
-                <option value="">add a pack…</option>
-                {installable.map((p) => (
-                  <option key={p.id} value={p.id}>{p.title} — {p.itemCount} learnings</option>
-                ))}
-              </select>
+                onChange={(v) => setAddPack(v)}
+                placeholder="add a pack…"
+                options={installable.map((p) => ({
+                  value: p.id,
+                  label: `${p.title} — ${p.itemCount} learnings`,
+                }))}
+              />
               <button
                 type="button"
                 style={actionBtn}

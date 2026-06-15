@@ -29,6 +29,37 @@ vi.mock('nuqs', () => ({
   parseAsString: { withDefault: () => ({}) },
 }));
 
+// LearningTab's dropdowns now use the themed <Select> (Radix). Mock it as a native
+// <select> with the same contract (mirrors AdvShell.test) so the hive-lens
+// assertions (getByLabelText / option roles / value / disabled) still hold; the
+// placeholder is rendered as the value="" option so the "no hives yet" case asserts.
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({
+    value,
+    onChange,
+    options,
+    ariaLabel,
+    disabled,
+    placeholder,
+  }: {
+    value: string;
+    onChange: (v: string) => void;
+    options: Array<{ value: string; label: string; disabled?: boolean }>;
+    ariaLabel?: string;
+    disabled?: boolean;
+    placeholder?: string;
+  }) => (
+    <select aria-label={ariaLabel} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      {placeholder ? <option value="">{placeholder}</option> : null}
+      {options.map((o) => (
+        <option key={o.value} value={o.value} disabled={o.disabled}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  ),
+}));
+
 const improvementsDigest = {
   generatedAt: new Date(0).toISOString(),
   total: 135,

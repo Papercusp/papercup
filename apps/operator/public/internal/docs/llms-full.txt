@@ -4336,6 +4336,58 @@ Proven 2026-06-13: a real `GYM_LOOP_MAX_CYCLES=1` cycle with the gateway env set
 * **`getFlag(FLAGS.INFERENCE_GATEWAY)` resolves `false` in a standalone CLI/tsx context** (it falls back to `FLAG_DEFAULTS`, where the flag is OFF), even though the PG override / MCP `flags:get` reports it ON. The flag resolves ON only inside a full operator process (PostHog + PG override). So a manual `gym-loop-run.ts` proof must set the gateway env explicitly; the flag-gated auto-apply fires on the live `:3070` operator.
 * **The broader latent gap**: any *other* in-process anthropic-direct consumer (memory `session-extraction-llm.ts`, the `su` llm-test target) has the same blind spot — they only honor `PAPERCUSP_ANTHROPIC_URL`, not `ANTHROPIC_BASE_URL`. If the gateway ever becomes mandatory, make `anthropicDirectTransport` fall back to `ANTHROPIC_BASE_URL` (filed as a follow-up EI).
 
+# Testing the gym live-boot path (runOneAutoloopCycle / runGymBlueprintCycle)
+
+> How to write a committed E2E that boots a real gym-operator (fake/zero-LLM), and the two env-seal gotchas that make /api/health/ready deadlock or flood the boot log. Plus why the wake-mode autonomous-cron chain is NOT a committed test.
+
+## What
+
+[Section titled “What”](#what)
+
+The gym has three live-boot runnables that provision an ephemeral gym PG (testcontainer), boot a **real headless gym-operator** from this checkout, run a cycle, and tear down. Each has a callable core + a thin CLI wrapper:
+
+| Callable                                      | CLI                      | What it drives                                                                    |
+| --------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
+| `runOneAutoloopCycle` (`autoloop-cycle.ts`)   | `gym-loop-run.ts`        | the bespoke optimization loop                                                     |
+| `runGymBlueprintCycle` (`blueprint-cycle.ts`) | `blueprint-cycle-run.ts` | the gym **as a durable DBOS pipeline** (spine walk)                               |
+| `runGymWakeMode` (`wake-mode.ts`)             | `wake-mode-run.ts`       | the **autonomous cron chain** (routinesTick → blueprint-run → orchestrator sweep) |
+
+In **FAKE mode** (`fake: true`, default in the CLIs) they use `fixtures/fake-*-agent.mjs`
+
+* deterministic fake judge/proposer — **zero LLM spend** — so they’re a real assembly check, not a cost. Committed E2Es: `gym/__tests__/{autoloop-cycle,blueprint-cycle}.integration.test.ts`.
+
+## Two env-seal gotchas (each cost a debugging run)
+
+[Section titled “Two env-seal gotchas (each cost a debugging run)”](#two-env-seal-gotchas-each-cost-a-debugging-run)
+
+The gym boot-spec (`gym/boot-spec.ts`) merges `{ ...process.env, ...spec.env }`, so anything it does **not** explicitly seal leaks from the launcher env. Two leaks bite the live boot:
+
+1. **`/api/health/ready` deadlock (the operator binds HTTP but never goes ready).** Readiness is `dbosEnabled ? dbosLaunched : true`. The gym sets `PAPERCUSP_DBOS_ENABLE=1`, so readiness needs `dbosStarted()`. But `backgroundWorkersEnabled()` (which bundles the DBOS launch) returns **false** under `VITEST` *or* an inherited `PAPERCUSP_BACKGROUND_WORKERS=0` (the dev box `.env.local` and the `:3170` staging operator both set it). DBOS never launches → `/api/health/ready` stays 503 → `waitForOperatorReady` times out at 120s. **Fix (shipped):** `boot-spec.ts` now seals `PAPERCUSP_BACKGROUND_WORKERS: '1'`
+
+   * blanks `VITEST` (the gym runs against its OWN isolated DB, so no EI-126 two-host conflict; `UTILITY_HOST=1` still strips the dogfood/voice/embedder legs).
+
+2. **Boot-log flooded with backup-scheduler errors (EI-596).** Once DBOS launches, `lib/dbos/periodic-workflows.ts` registered **all** the shared-DB periodic drains (backup cadence, orphan-cleanup, GC sweeps) unconditionally — and they throw against the gym’s throwaway DB (`backupHost` has no config there) every cadence. Non-fatal (DBOS isolates the failing steps; the pipeline still runs) but noisy + wasteful. **Fix (shipped):** the registration is gated by `dbosPeriodicTimersActive()` = `dbosTimersActive() && !utilityHostEnabled()` (`dbos-flags.ts`). `dbosTimersActive()` itself is left intact (it also drives the legacy-fallback stand-down). The gym keeps the orchestrator/routines it needs — those are separate imports (`orchestrator-loop`, `routines-workflow`), not in `periodic-workflows.ts`.
+
+## Which ones make good committed tests
+
+[Section titled “Which ones make good committed tests”](#which-ones-make-good-committed-tests)
+
+* **`autoloop-cycle` (\~120s) + `blueprint-cycle` (\~45s)** converge reliably in fake mode (manual/explicit dispatch). Committed as `.integration.test.ts` with generous timeouts.
+* **`wake-mode` is NOT committed.** Its autonomous chain is **cron-cadence-bound** (`*/15s` trigger + `*/30s` orchestrator sweep + a multi-hop pipeline), so it does not converge inside a bounded \~5min window — the decider fires (links 1–2 work) but the feature doesn’t reach `passed`. A 5–10min timing-sensitive test would flake the suite. Its **pure** oracle/blueprint/judge logic is covered by `wake-mode.test.ts` (unit); the live chain stays the `wake-mode-run.ts` manual/ nightly CLI.
+
+## How to add another gym live-boot E2E
+
+[Section titled “How to add another gym live-boot E2E”](#how-to-add-another-gym-live-boot-e2e)
+
+Call the **callable** (never the CLI — it `process.exit`s and boots on import). Pick a per-process port + slug so a parallel runner / a live `:3070`-`:3170` never collide:
+
+```ts
+const out = await runGymBlueprintCycle({ fake: true, port: 4200 + (process.pid % 50), gymSlug: `g${process.pid % 1000}`, ... });
+if (!out.ok) throw new Error(`... ${out.report.error}\n${out.report.operatorLogTail}`);
+```
+
+Surface `out.report.operatorLogTail` on failure — an env boot failure is opaque otherwise. Docker required; these run only under the integration config.
+
 # Harness tests gate feature approval, and link to plans through the VAL
 
 > The V2 tester writes one black-box test per VAL; the validator runs them as the approval gate. VALs live in harness_plan_assertions (inline plan bullets via plans:promote) — NOT validation-contract.md or a validation_criteria table. The plan↔test link is a rollup join on the VAL.
@@ -7863,6 +7915,51 @@ Vitest runs through esbuild, which **does not type-check** — a green vitest ru
 * Importing an untyped `.mjs` guard script into a `.ts` test: `// @ts-ignore` only suppresses the **next line**, so a *multi-line* `import { … } from '…/guard.mjs'` leaves `TS7016` on the `from` line unsuppressed. Use `import * as guard from '…/guard.mjs'` (single line) and cast the surface to typed locals (keeps `noImplicitAny` happy when you `.map` over an exported array).
 * A hand-written program-gate branch literal needs `else` (it’s a defaulted — therefore required-in-output — field): `{ when, else: false, op, args }`.
 
+# A fleet placement's `spawned:N` does NOT mean the bees are running — manual wake-mode stages the boot-wake
+
+> fleet:place_batch / fleet:spawn return spawned:N and look successful, but if the GLOBAL wake-mode is 'manual' (hive paused — e.g. set during a firefight and left), each spawned bee's boot-wake STAGES (woken:0) and the bee never starts — a silent no-op. (Read-only confinement, EI-524, was a second such cause but was LIFTED 2026-06-14.) Verify placement with fleet:assignments + work_items state, NOT the placement result. place_batch now warns on the manual-wake case (EI-590).
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+`fleet:place_batch` returned `{ summary: { spawned: 3 } }` and three `placements:[{action:'spawned'}]`. It reads as success. It was a **no-op**: the three bees never booted, and \~3.5h later the work-items were still `open`/unassigned with `fleet:assignments` showing **0 live agents**.
+
+Two independent causes, both invisible in the placement result:
+
+1. **Global wake-mode is `manual`.** A spawn’s boot-wake goes through `wakeRecipients`; under the global `manual` default (the `hive:pause` primitive, stored as `operator_settings` `wake_mode:default`) every wake **stages instead of fires** (`woken:0`). The bee process is created but never woken into a turn. The mode is durable — it survives restarts — so one `hive:pause` during a firefight silently strands every later spawn until someone restores `auto`. (This is exactly what happened fleet-wide on 2026-06-14; it froze placements for hours.)
+2. **Write-confinement (EI-524) — HISTORICAL, lifted 2026-06-14.** The `bee` read-only confinement once meant an awake bee couldn’t do write work, so a placement “succeeded” but the task couldn’t progress. It was lifted when the fleet went fully autonomous (`capability-envelope/policy.ts` — the envelope is now empty under the protected floor). Kept here in case a future per-role confinement is re-armed via `ROLE_ENVELOPES`; today, **manual wake-mode is the only live cause.**
+
+## The diagnostic
+
+[Section titled “The diagnostic”](#the-diagnostic)
+
+**Do not trust the placement result — confirm the bees actually came up:**
+
+```plaintext
+fleet:assignments { harness }   # 0 alive after a "spawned:N" batch ⇒ they didn't boot
+work_items:list { state: 'open' } # your just-placed items still open/unassigned ⇒ no pickup
+coord:wake-mode                  # global default == 'manual' ⇒ wakes are staging (woken:0)
+```
+
+If `spawned:N` but `fleet:assignments` shows no live agents, suspect wake-mode first.
+
+## The fix / workaround
+
+[Section titled “The fix / workaround”](#the-fix--workaround)
+
+* **Restore wakes:** `coord:wake-mode { mode: 'auto' }` (or `hive:start`, which re-affirms `auto`). The staged wakes already piled up don’t auto-fire; live agents get fresh wakes under `auto`.
+* **If a per-role confinement is ever re-armed** (`ROLE_ENVELOPES` in `capability-envelope/policy.ts`): drive write work via a **write-capable subagent** (your client’s Task/Agent tool), not the confined fleet role. (Not in effect today — the EI-524 bee confinement was lifted 2026-06-14.)
+* **The signal now exists for the wake-mode case:** `fleet:place_batch` surfaces a `warnings[]` when there were fresh spawns under `manual` wake-mode (EI-590 — `buildPlacementWarnings` in `packages/operator-core/lib/agent-tools/fleet/place_batch.ts`). Confinement is NOT yet surfaced there (no cheap signal at that layer) — still verify via `fleet:assignments`.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [`always-armed-inbox-wake`](/internal/docs/agent-insights/always-armed-inbox-wake) — the wake model.
+* `packages/operator-core/lib/agent-tools/coordination/wake-mode.ts` — `getDefaultWakeMode` / `setDefaultWakeMode`.
+* EI-590 (this surfacing), EI-524 (the read-only confinement).
+
 # Plugin tools after a deploy: the empty-registry window (gitnexus was never down)
 
 > unknown_tool on a plugin tool (gitnexus.*, repomix.pack, design-phase.*) right after an operator restart meant the projected-tool registry hadn't been populated yet — registration was lazy (first getPluginHost() call), and :3070 restarts on every deploy. Fixed by an eager boot warm in host-bootstrap; diagnosis recipe + the misdiagnosis trap.
@@ -9580,6 +9677,79 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/some-
 
 If that reproduces, add the offending variable to the hermetic scrub (with a comment naming the incident) rather than patching the individual test.
 
+# `sql.json(object)` throws on the getOrgPg pg client — write jsonb via `JSON.stringify(x)::jsonb`
+
+> postgres-js `sql.json(obj)` is the documented way to bind a jsonb param, but on the operator's getOrgPg client it THROWS 'The "string" argument must be of type string ... Received an instance of Object' — a dual-package module-instance mismatch in @papercusp/db, NOT a config issue. Integration tests use a DIFFERENT (root-postgres) client that tolerates it, so they are structurally blind to this class. Write jsonb as `${JSON.stringify(x)}::jsonb` instead. Bit the experiment ledger (D-018) and silently broke EVERY replay-harness cell's persistence (EI-607).
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A jsonb write through the operator’s `getOrgPg().sql` client throws, synchronously, **before** hitting Postgres:
+
+```plaintext
+The "string" argument must be of type string or an instance of Buffer or ArrayBuffer. Received an instance of Object
+```
+
+…wherever the code binds an object/array with postgres-js’s `sql.json(value)`:
+
+```ts
+await sql`UPDATE … SET divergence = ${sql.json(obj)} …`;  // ❌ throws on getOrgPg
+```
+
+The throw is often **swallowed** by a best-effort `try/catch`, so the failure is silent — the row just never persists. Cost/result counters that read an in-memory value (not the DB) still look fine, which masks it further.
+
+## Root cause (confirmed)
+
+[Section titled “Root cause (confirmed)”](#root-cause-confirmed)
+
+It is **not** the client config. A fresh `postgres(url, …)` client built with the *identical* options as `getOrgPg`’s `buildClient` (`prepare:false` + the custom `bigint` type + `connection.search_path`) accepts `sql.json` without error. The difference is a **postgres-js module-instance mismatch** (a dual-package hazard): the `Parameter` wrapper `sql.json()` produces and the serializer that consumes it resolve to *different* copies of postgres-js, so the `instanceof` check fails, the wrapper is treated as a raw object, and `Buffer.byteLength`/`Buffer.from` is handed an object → the throw.
+
+Empirical check against the real client:
+
+```ts
+import { getOrgPg } from '@papercusp/db-org';
+const { sql } = getOrgPg();
+await sql`SELECT ${sql.json({a:1})}::jsonb`;            // ❌ throws
+await sql`SELECT ${JSON.stringify({a:1})}::jsonb`;      // ✅ works
+```
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+Bind jsonb as a JSON **string** cast to jsonb — portable across every client:
+
+```ts
+// object (always present)
+SET col = ${JSON.stringify(obj)}::jsonb
+// nullable
+SET col = ${obj == null ? null : JSON.stringify(obj)}::jsonb
+```
+
+This is semantically identical to `sql.json` for jsonb and works everywhere.
+
+## Why tests don’t catch it
+
+[Section titled “Why tests don’t catch it”](#why-tests-dont-catch-it)
+
+Integration tests use `createFreshPgDb` (`packages/operator-core/test/_pg-helpers.ts`), a **root-postgres** client that resolves the *tolerant* postgres-js instance — so `sql.json` works there and a green integration test says nothing about prod. **A passing `*.integration.test.ts` is not evidence that a `sql.json` write works in production.** The codebase already worked around this ad hoc (`dock-layouts.ts` uses a separate `db()` pool *because* “the operator getOrgPg client where sql.json throws”).
+
+## Safe vs unsafe clients
+
+[Section titled “Safe vs unsafe clients”](#safe-vs-unsafe-clients)
+
+* **Unsafe** (throws): `getOrgPg().sql` / `getOrgPgApp().sql` / any client from `buildClient` in `libs/papercusp/libs/db/src/connection.ts`, and `getHarnessPg(slug)`.
+* **Safe** (tolerates): the root-postgres test client (`createFreshPgDb`), `dock-layouts`’ `db()` pool, and a plain `postgres(uri, {prepare:false})` like the gym’s `gymSql`.
+
+When in doubt, just use `JSON.stringify(x)::jsonb` — it is correct on every client.
+
+## History
+
+[Section titled “History”](#history)
+
+Same class as the experiment-ledger fix (D-018, plan `experiment-registry-invocation-api-2026-06-14`). The sweep that found it (EI-607) fixed five getOrgPg-client sites: `replay/store.ts` `finishRun` (which had broken **every** replay-harness cell’s persistence in prod → 0 scored cells, masking the replay/transfer/regret frontier loops as non-functional), `slot-parked-store.ts`, `owner-preference/interactions.ts`, `change-ledger.ts`, `hive-eval/store-pg.ts`. The true root fix (deduping the postgres-js instance so `sql.json` works everywhere) + a static lint guard banning `sql.json(` in getOrgPg-client code remain open on EI-607.
+
 # A streaming-chat error state must survive the stream close
 
 > An SSE chat consumer that models send-state as one enum (error XOR idle) silently swallows failures if the post-stream cleanup unconditionally resets to idle — the user sees the "thinking" cursor vanish with no reply, no error. Keep the error, and persist a server-side failure marker.
@@ -9594,6 +9764,8 @@ A chat surface that consumes an SSE stream (the `runAgentChat → route SSE → 
 2. **Server** route, on the error path, emits the SSE `error` and closes **without persisting anything**.
 
 Symptom (the EI-577 report): the user sends a message, the “thinking” indicator appears, then **vanishes with no reply and no error**. The transcript keeps only the user turn, 0 tokens. The route did its job (it emitted `event: error`) — the client overwrote the error state one microtask later, and a reload showed a silent gap because nothing was persisted.
+
+There is a **third variant** with the same symptom but a different cause: the stream closes with **neither a `done` nor an `error`** event — the operator process recycled / OOM’d / the connection dropped mid-turn. The route never reached its persist-or-emit code, so there’s no marker to reload and no error to show. The client must detect “closed without a terminal event” and surface it itself (an *incomplete* notice if partial deltas arrived, a *connection closed / restarted* notice if nothing did) rather than falling through to the idle reset.
 
 This bit `apps/operator/app/harness/ChatPanel.tsx`: the read loop set `setSendState({kind:'error'})` on an `error` event, then the post-loop code ran `setSendState({kind:'idle'}); loadChat()` regardless — clobbering the banner before it could render. The most common trigger is a **rate-limit pause**: an interactive turn can’t wait out a 30-minute governor pause, so `runAgentChat` yields `{type:'error', message:'…rate-limited — paused until…'}` — a normal, expected terminal event the UI must show, not a crash.
 
@@ -9612,9 +9784,17 @@ This bit `apps/operator/app/harness/ChatPanel.tsx`: the read loop set `setSendSt
   }
   // …after the loop:
   if (streamError) return;            // banner stays; do NOT reset to idle
-  setSendState({ kind: 'idle' });     // success only
+  if (!sawDone) {                     // closed with no terminal event = dropped
+    setSendState({ kind: 'error', message: assistantText
+      ? 'Connection dropped mid-response — the reply may be incomplete. Try again.'
+      : 'No response: the connection closed before the agent replied (the operator may have restarted). Try again.' });
+    return;
+  }
+  setSendState({ kind: 'idle' });     // success only (saw `done`)
   void loadChat({ forceRest: true });
   ```
+
+  Track `sawDone` by handling the terminal `event: done` in the read loop — a clean close alone is indistinguishable from a drop without it.
 
 * **Server** (`endpoint-route/routes/agent-chats/index.ts`) — persist a **failure-marker** assistant turn (`error: true`, `content = message`, 0 tokens) before emitting the SSE `error`, so a reload / second viewer sees the failed turn instead of a gap. `TranscriptTurn.error?: boolean` is jsonb — no migration. Render `error:true` turns distinctly (`chat-turn--error`).
 

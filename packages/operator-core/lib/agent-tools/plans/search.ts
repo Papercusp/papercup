@@ -28,7 +28,7 @@ import { harnessArg, harnessScopedCtx, HARNESS_ALL, isAllHarnessSentinel } from 
  */
 const CANDIDATE_LIMIT = 200;
 
-const SCOPES = ['title', 'now', 'items', 'decisions', 'prose'] as const;
+const SCOPES = ['slug', 'title', 'now', 'items', 'decisions', 'prose'] as const;
 type Scope = (typeof SCOPES)[number];
 
 const argsSchema = z.object({
@@ -79,6 +79,22 @@ function scoreScope(text: string, queryTokens: string[]): number {
   return hits;
 }
 
+/**
+ * Slug scope scores a SUBSTRING match (not exact-token): the tokenizer keeps
+ * hyphens, so a slug like `watchdog-audit-2026-06-09` is one token that a query
+ * token `watchdog-audit` (also one token) never token-equals — yet the user
+ * plainly means that plan. Substring also mirrors the SQL prefilter's
+ * `plan_slug ILIKE %token%`, so candidacy and scoring agree. Counts query
+ * tokens present in the slug (case-insensitive).
+ */
+function scoreSlug(slug: string, queryTokens: string[]): number {
+  if (!slug) return 0;
+  const lower = slug.toLowerCase();
+  let hits = 0;
+  for (const q of queryTokens) if (lower.includes(q)) hits += 1;
+  return hits;
+}
+
 function snippet(text: string, queryTokens: string[], maxLen = 160): string {
   if (!text) return '';
   const lower = text.toLowerCase();
@@ -96,11 +112,11 @@ function snippet(text: string, queryTokens: string[], maxLen = 160): string {
 export default defineTool({
   name: 'plans:search',
   description:
-    'Search across SU plans by keyword. Scopes: title, now, items, decisions, prose. Includes archived + legacy by default.',
+    'Search across SU plans by keyword. Scopes: slug, title, now, items, decisions, prose. Includes archived + legacy by default. A slug (or slug fragment) finds the plan it names — not only plans that mention it.',
   guidance: {
-    when: 'You\'re looking for prior work, decisions, or items by topic and don\'t have a slug.',
+    when: 'You\'re looking for prior work, decisions, or items by topic and don\'t have a slug — or you have a slug fragment and want the plan it names.',
     notWhen:
-      'You already know the slug — use plans:get. For full prose recall across the project (chats, escalations), use search:fulltext.',
+      'You already know the full exact slug — use plans:get (a direct PG key read). For full prose recall across the project (chats, escalations), use search:fulltext.',
     chaining:
       'plans:search { query } → plans:get { slug } on the top hit.',
   },
@@ -159,14 +175,28 @@ export default defineTool({
       parsed: parsePlan(row.content, {
         filePath: syntheticPlanPath(row.harnessSlug, row.planSlug),
       }),
+      slug: row.planSlug,
     }));
     const hits: Hit[] = [];
 
-    for (const { parsed } of parsedPlans) {
+    for (const { parsed, slug } of parsedPlans) {
       if (parsed.isLegacy && !includeLegacy) continue;
 
       const matches: Hit['matches'] = [];
       let score = 0;
+
+      // Slug scope first (highest-identity signal): the PG slug is not part of
+      // the scored content (the parser strips frontmatter from prose), so without
+      // this a search for a plan's own slug zero-hits the plan itself
+      // (F-FIX-028/029). Weighted above title — an exact-slug query should land
+      // its plan on top.
+      if (scopes.includes('slug')) {
+        const s = scoreSlug(slug, queryTokens);
+        if (s > 0) {
+          score += s * 5;
+          matches.push({ scope: 'slug', snippet: slug });
+        }
+      }
 
       if (parsed.isLegacy) {
         if (scopes.includes('prose')) {
