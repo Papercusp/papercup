@@ -1,5 +1,8 @@
+'use client';
+
 import type { CSSProperties } from 'react';
 import RouteLink from './_components/RouteLink';
+import { useLexicon } from '@/lib/useLexicon';
 
 const frostCard: CSSProperties = {
   position: 'relative',
@@ -16,6 +19,7 @@ const frostCard: CSSProperties = {
 };
 
 export default function NotFound() {
+  const t = useLexicon();
   return (
     <div
       className="pc-shell"
@@ -161,7 +165,7 @@ export default function NotFound() {
                 Return to Mission Control
               </RouteLink>
               <RouteLink href="/cupboard" className="pc-button ghost">
-                Browse the Cupboard
+                Browse the {t('cupboard')}
               </RouteLink>
               <RouteLink href="/support" className="pc-button ghost">
                 Ask for help

@@ -282,6 +282,30 @@ interface LiveEnrolledState extends EnrolledTask {
  */
 export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
   const ws = opts.workspaceId;
+
+  // ── BEE-SPAWN ENV DEFAULTS (the missing wire — confirmed at the first real run) ──────────────────
+  // The hive arm places `role: 'bee'` via executeBatch → spawnAgentInHarness → spawnInvokeOnce, and that
+  // path takes NO per-spawn extraEnv passthrough — so unlike the spine-drive (bench-harness-live.ts, which
+  // pins these in its own extraEnv), the bee child inherits these ONLY from the driver process env. Set the
+  // two bench-run defaults here (the driver process is dedicated to one benchmark run) so EVERY placed bee
+  // gets them, regardless of launcher. Both are the EXACT decisions bench-harness-live.ts documents:
+  //
+  //   PAPERCUSP_FLEET_SANDBOX=0 — the claude-code spawn path is sandbox-DEFAULT-ON (invoke.ts P-013/D-015);
+  //     bubblewrap sets up a private net namespace with a loopback iface whose RTM_NEWADDR needs CAP_NET_ADMIN,
+  //     which a plain (non-fleet) host lacks → `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
+  //     and EVERY bee invoke exits rc=1 with no diff (confirmed at the first real hive run: the bee died this
+  //     way, looped, zero diff). The member clone is already an isolated scratch dir + scratch schema (teardown
+  //     DROPs it), so the sandbox adds no isolation the bench needs and is the one thing blocking the bee.
+  //   PAPERCUSP_SPAWN_BACKEND=claude-code — pin the bee to the Anthropic (Claude) backend. A throwaway member
+  //     inherits the host workspace's DEFAULT agent backend, which on a dev box can be a LOCAL self-hosted
+  //     model ($0, emits a bare tool-call instead of real work) → a meaningless number. The impartial-benchmark
+  //     papercusp arm must run the SHIPPED system on its real model.
+  //
+  // Only SET when unset, so a caller that deliberately wants the sandbox/another backend can override before
+  // the run. (Mirrors bench-harness-live.ts's `?? '0'` / `?? 'claude-code'` discipline.)
+  if (process.env.PAPERCUSP_FLEET_SANDBOX == null) process.env.PAPERCUSP_FLEET_SANDBOX = '0';
+  if (process.env.PAPERCUSP_SPAWN_BACKEND == null) process.env.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
+
   // Per-run state: instanceId → its clone/member handle + placement provenance. Closed over so the
   // ops are stateless from the orchestration's view (it threads opaque EnrolledTask handles).
   const state = new Map<string, LiveEnrolledState>();

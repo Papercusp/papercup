@@ -29,6 +29,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from '@/lib/router-compat/navigation';
+import { useLexicon } from '@/lib/useLexicon';
 import {
   ShieldCheck, ExternalLink, Users, Clock, GitBranch,
   ArrowLeft, Loader2, AlertTriangle, GitFork, Plug, Globe, Hexagon,
@@ -62,6 +63,7 @@ function ActionIcon({ action, size = 14 }: { action: ListingAction | null; size?
 export default function CupboardDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const t = useLexicon();
   const id = params?.id as string;
   const [listing, setListing] = useState<HarnessListing | null>(null);
   const [loading, setLoading] = useState(true);
@@ -312,7 +314,7 @@ export default function CupboardDetailPage() {
   return (
     <div style={{ padding: SIZES.lg, maxWidth: 700, margin: '0 auto' }}>
       <button onClick={() => router.back()} style={backBtnStyle}>
-        <ArrowLeft size={13} /> Back to Cupboard
+        <ArrowLeft size={13} /> Back to {t('cupboard')}
       </button>
 
       <div style={{ marginTop: SIZES.lg }}>

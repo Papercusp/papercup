@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import RouteLink from '../../_components/RouteLink';
+import { useLexicon } from '@/lib/useLexicon';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
@@ -109,6 +110,7 @@ function fmtDate(s?: string): string {
 }
 
 export default function InstalledHarnessesPage() {
+  const t = useLexicon();
   const [data, setData] = useState<InstalledResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -172,7 +174,7 @@ export default function InstalledHarnessesPage() {
         <div className="pc-installed-ops-empty pc-installed-harnesses-empty" style={{ padding: 32, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
           <p style={{ color: 'var(--fg-mute)' }}>No harnesses installed yet.</p>
           <p>
-            <RouteLink href="/cupboard" className="pc-button">Browse the Cupboard</RouteLink>
+            <RouteLink href="/cupboard" className="pc-button">Browse the {t('cupboard')}</RouteLink>
           </p>
         </div>
       )}

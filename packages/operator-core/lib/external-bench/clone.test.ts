@@ -140,6 +140,20 @@ describe('makeExtractDiff', () => {
     expect(diffArgs).toContain(':(exclude)tests/t.py');
   });
 
+  it('always excludes the harness .papercusp/ scaffolding from the predictions patch', async () => {
+    let diffArgs: string[] = [];
+    const git = vi.fn(async (args: string[]) => {
+      if (args.includes('diff')) diffArgs = args;
+      return args.includes('diff') ? 'diff --git a/x b/x\n' : '';
+    });
+    // Even with NO grader test files, the harness's own .papercusp/ scratch state must be excluded —
+    // it is written by createHarness/the spine (blueprint.yaml, debug, logs, memory) and is never
+    // benchmark content; leaking it pollutes the patch the grader applies.
+    await makeExtractDiff({ git })(checkout, task());
+    expect(diffArgs).toContain('--');
+    expect(diffArgs).toContain(':(exclude).papercusp/**');
+  });
+
   it('returns "" when there is no change', async () => {
     const git = vi.fn(async (args: string[]) => (args.includes('diff') ? '   \n' : ''));
     expect(await makeExtractDiff({ git })(checkout, task())).toBe('');

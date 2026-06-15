@@ -24,7 +24,7 @@
  *   HarnessListing shape via the `listing*` helpers in cupboard/types.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight } from 'lucide-react';
@@ -60,15 +60,9 @@ type KindFilter = 'all' | ListingKind;
 type ViewFilter = KindFilter | 'tools';
 
 const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'tools'];
-const VIEW_FILTER_LABEL: Record<ViewFilter, string> = {
-  all: 'All',
-  harness: 'Harnesses',
-  blueprint: 'Blueprints',
-  plugin: 'Plugins',
-  'tool-pack': 'Tool packs',
-  'learning-pack': 'Learning Packs',
-  tools: 'Tools',
-};
+// Tab labels resolve inside the component via the lexicon — see the
+// VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
+// listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
 
 /** Per-kind icon for the card badge + action button. */
 function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
@@ -139,6 +133,23 @@ export default function CupboardClient() {
   // The project-grouping concept renders via the lexicon (label resolves per the
   // the-hive brand pack) — never hardcoded (unify-launch-mechanics D-003 / P-007).
   const t = useLexicon();
+  // Comb storefront filter-tab labels. The project-grouping view (`harness`
+  // listings became hive-bound view-hive rows once per-harness sharing was
+  // retired and the Hive became the sharing unit —
+  // comb-retire-per-harness-sharing-2026-06-11) renders via the lexicon project
+  // term: "Pots" (classic) / "Hives" (the-hive). The rest are static labels.
+  const VIEW_FILTER_LABEL = useMemo<Record<ViewFilter, string>>(
+    () => ({
+      all: 'All',
+      harness: t('pot', { plural: true }),
+      blueprint: 'Blueprints',
+      plugin: 'Plugins',
+      'tool-pack': 'Tool packs',
+      'learning-pack': 'Learning Packs',
+      tools: 'Tools',
+    }),
+    [t],
+  );
   const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
   const [claimFilter, setClaimFilter] = useQueryState<ClaimFilter>(
     'claim',
@@ -324,7 +335,7 @@ export default function CupboardClient() {
               <Sparkles size={12} /> Distribution shelf
             </div>
             <h1 style={{ fontFamily: FONTS.ui, fontWeight: 760, fontSize: 30, lineHeight: 1.05, color: COLORS.text, margin: 0 }}>
-              Cupboard
+              {t('cupboard')}
             </h1>
             <p style={{ fontFamily: FONTS.ui, fontSize: 13, lineHeight: 1.6, color: COLORS.textMuted, margin: '10px 0 0' }}>
               Discover installable harnesses, blueprints, plugins, packs, and tools from the shared Papercusp registry.
@@ -445,7 +456,7 @@ export default function CupboardClient() {
           <input
             value={q}
             onChange={(e) => void setQ(e.target.value || null)}
-            placeholder="Search the Cupboard…"
+            placeholder={`Search the ${t('cupboard')}…`}
             className="pc-input"
             style={{ paddingLeft: 32, fontFamily: FONTS.ui }}
           />
@@ -506,7 +517,7 @@ export default function CupboardClient() {
         >
           {hive
             ? isHivePubkeyRef(hive)
-              ? `No Cupboard listings found for this hive on this page${q ? ` matching "${q}"` : ''}.`
+              ? `No ${t('cupboard')} listings found for this hive on this page${q ? ` matching "${q}"` : ''}.`
               : `No listings found for ${t('pot')} "${hive}"${q ? ` matching "${q}"` : ''}.`
             : `No ${kindFilter === 'all' ? 'listings' : VIEW_FILTER_LABEL[kindFilter].toLowerCase()} found${q ? ` matching "${q}"` : ''}.`}
         </div>
