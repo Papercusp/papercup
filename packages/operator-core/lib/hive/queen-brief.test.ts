@@ -92,6 +92,29 @@ test('renderQueenBrief — floor-only (no carry-note) omits the carry-note secti
   assert.doesNotMatch(out2, /### Your carry-note/);
 });
 
+// overwatch-role-2026-06-15 B-09 / D-004 — the who-watches-the-watcher reverse
+// leg: the Queen's brief carries overwatch's liveness.
+test('renderQueenBrief — overwatchAlive undefined ⇒ the cross-monitor line is omitted (no noise when overwatch is not in play)', () => {
+  const out = renderQueenBrief({ floor: { frontier: frontier3 } });
+  assert.doesNotMatch(out, /Cross-monitor/);
+  assert.doesNotMatch(out, /OVERWATCH DARK/);
+});
+
+test('renderQueenBrief — overwatchAlive true ⇒ a quiet "overwatch alive" line', () => {
+  const out = renderQueenBrief({ floor: { frontier: frontier3, overwatchAlive: true } });
+  assert.match(out, /### Cross-monitor \(who-watches-the-watcher\)/);
+  assert.match(out, /overwatch alive/);
+  assert.doesNotMatch(out, /OVERWATCH DARK/);
+});
+
+test('renderQueenBrief — overwatchAlive false ⇒ a critical OVERWATCH DARK line telling her to ESCALATE', () => {
+  const out = renderQueenBrief({ floor: { frontier: frontier3, overwatchAlive: false } });
+  assert.match(out, /OVERWATCH DARK/);
+  assert.match(out, /ESCALATE/);
+  // She must NOT be told to relaunch it — that is structural (D-002).
+  assert.match(out, /cannot relaunch overwatch/i);
+});
+
 test('renderQueenBrief — deterministic: same floor renders byte-identical output (no clock/random leakage)', () => {
   const floor: QueenBriefFloor = { wokeBy: 'timer', frontier: frontier3, bees: [{ id: 'b1', load: 0, alive: true }] };
   const a = renderQueenBrief({ floor, carryNote: 'note' });

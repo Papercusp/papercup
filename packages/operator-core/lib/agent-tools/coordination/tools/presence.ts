@@ -6,20 +6,16 @@
  * the durable record (harness_shared.power_user_sessions). Sessions
  * whose heartbeat is older than 10 min are returned in `stale`, not
  * `active`. agent-coordination-architecture-v2 §4.2 / §4.3.
+ *
+ * The scope-resolution + snapshot assembly live in `../presence-snapshot`
+ * (shared with the coord:inbox P-010 re-bootstrap, so both read the SAME
+ * hive-scoped roster); this tool is the thin read surface over it.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { listPresence, sweepStalePresence } from '../presence';
-import { listFederatedPresence } from '../federated-presence';
-import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from '../presence-tier1';
-import { toStableRosterRow } from '../presence-payload';
+import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
 import { COORD_ROLES } from '../roles';
-
-/** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
- *  any doubt (PRESENCE_STALE_MS is 10 min) and are swept on read so the roster
- *  can't grow to hundreds of long-ended sessions (the overflow source). */
-const PRESENCE_GC_MS = 24 * 60 * 60 * 1000;
 
 export default defineTool({
   name: 'coord:presence',
@@ -29,7 +25,7 @@ export default defineTool({
     when: '"Who else is working right now, and on what?" — before starting work that might overlap. Default scope is your Hive; use scope=workspace/all for the whole box.',
     notWhen: 'Checking whether a specific file is free — use locks:queue for that. Re-reading the roster every turn to track peers — the [coord+N] lifecycle deltas already carry intent/claim/completion transitions; tail those instead (see chaining).',
     chaining:
-      'Read-once + tail (presence-v2 P-008/D-006): this snapshot is byte-stable (P-009 — identity+state carry no churning timestamps, one roster as_of). Read it ONCE when you need the roster, then rely on the [coord+N] lifecycle deltas (intent/claim/completion) for peer transitions rather than re-reading. The liveness scalar (lastActiveSecAgo) is point-in-time at as_of. Re-read after a context compaction so you never coordinate off a stale baseline (P-010).',
+      'Read-once + tail (presence-v2 P-008/D-006): this snapshot is byte-stable (P-009 — identity+state carry no churning timestamps, one roster as_of). Read it ONCE when you need the roster, then rely on the [coord+N] lifecycle deltas (intent/claim/completion) for peer transitions rather than re-reading. The liveness scalar (lastActiveSecAgo) is point-in-time at as_of. After a context compaction the roster baseline is re-injected automatically (P-010), so you never coordinate off a stale baseline.',
   },
   capability: 'coord:read',
   requirePrincipal: false,
@@ -53,89 +49,22 @@ export default defineTool({
       .describe('Also return the full stale roster (default false — stale is summarised only; the live answer is `active`).'),
   }),
   async handler(args, ctx) {
-    // P-004 hive-scoped read (D-002): default to the caller's Hive — a small,
-    // relevant roster — instead of the whole-workspace dump. Resolve the hive:
-    // explicit `hive` arg wins; else the caller's harness → home Hive. SU/operator
-    // (harness '*'/none or an unmapped harness) has no Hive → fall back to
-    // workspace scope (scope_note records it). ctx is read defensively (no
-    // resolveAgentIdentity throw on an anonymous caller).
+    // P-004 hive-scoped read (D-002): resolve the effective scope from ctx + args
+    // (hive default → caller's home Hive; SU/unmapped → workspace fallback), then
+    // assemble the byte-stable snapshot (P-009). Both steps are the SAME functions
+    // the coord:inbox re-bootstrap uses, so the roster never diverges.
     const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null };
-    const callerWs = args.workspace ?? c.workspaceId ?? null;
-    const scope = args.hive ? 'hive' : (args.scope ?? 'hive');
-    let hiveFilter: string | null = null;
-    let scopeNote: string | undefined;
-    if (scope === 'hive') {
-      hiveFilter = args.hive ?? null;
-      if (!hiveFilter) {
-        const harness = c.harnessSlug && c.harnessSlug !== '*' ? c.harnessSlug : null;
-        if (harness) {
-          try {
-            const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
-            hiveFilter = await hiveHomeSlugForHarness(callerWs ?? 'default', harness);
-          } catch {
-            hiveFilter = null; // best-effort — presence must list even if hive lookup fails
-          }
-        }
-      }
-      if (!hiveFilter) scopeNote = 'caller has no Hive (SU/operator or unmapped harness) — fell back to workspace scope';
-    }
-    // Effective read scope: all → no filters; hive+resolved → workspace+hive;
-    // hive-without-a-hive / workspace → workspace only.
-    const wsId = scope === 'all' ? null : callerWs;
-    const hiveId = scope === 'hive' ? hiveFilter : null;
-
-    // Best-effort GC of long-dead rows so the roster stays bounded. Concurrent
-    // with the read so it adds no latency; failure never breaks the listing.
-    // The federated roster (cross-machine peers from shared_presence,
-    // distributed-coordination-shared-harness-2026-06-04 Phase 0.3) is merged in;
-    // it is [] on a single box and best-effort, so it never breaks the listing.
-    const [records, federated] = await Promise.all([
-      listPresence({ workspaceId: wsId, hiveSlug: hiveId }),
-      listFederatedPresence({ workspaceId: wsId, hiveSlug: hiveId }),
-      sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
-    ]);
-    const all = [...records, ...federated];
-    const active = all.filter((r) => !r.stale);
-    const stale = all.filter((r) => r.stale);
-    // P-003: enrich the LOCAL active rows with the Tier-1 scalars (lastActiveSecAgo
-    // + claimedItems/model/awaitingEvent/wakeMode). Best-effort: a join failure
-    // must never break the listing, and federated `fed:…` rows have no local
-    // join (they get lastActiveSecAgo only). agentRole/hiveSlug already ride the
-    // row (P-002).
-    const now = Date.now();
-    let joins = new Map<string, PresenceTier1Joins>();
-    try {
-      const localIds = active
-        .filter((r) => !(r as { federated?: boolean }).federated)
-        .map((r) => r.ownerId);
-      joins = await fetchPresenceTier1(localIds);
-    } catch {
-      /* best-effort enrichment — presence must list even if a join fails */
-    }
-    const activeEnriched = mergeTier1(active, joins, now);
+    const resolved = await resolvePresenceScope(c, {
+      scope: args.scope,
+      hive: args.hive,
+      workspace: args.workspace,
+    });
+    const snapshot = await assemblePresenceSnapshot(resolved, { includeStale: args.include_stale });
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({
-            // ONE roster-level read-time stamp (P-005 / D-006) — rows are ordered
-            // by ownerId and carry no churning per-read timestamp, so the cached
-            // payload stays byte-stable; `as_of` is the single freshness marker.
-            as_of: new Date(now).toISOString(),
-            scope,
-            ...(hiveId ? { hive: hiveId } : {}),
-            ...(scopeNote ? { scope_note: scopeNote } : {}),
-            summary: { active: active.length, stale: stale.length, federated: federated.length },
-            // P-009 (D-005/D-006): emit each row through the two-lane partition —
-            // identity + state (the byte-stable, delta-eligible payload) + the one
-            // liveness scalar (lastActiveSecAgo). The raw churning timestamps
-            // (heartbeat_at/last_active_at) are dropped; the identity+state portion
-            // of an unchanged agent serializes byte-identically across reads.
-            active: activeEnriched.map(toStableRosterRow),
-            // Stale rows are almost always dead sessions; returning all of them
-            // is what overflowed the token limit (233 rows). Summarise by default.
-            ...(args.include_stale ? { stale: stale.map(toStableRosterRow) } : {}),
-          }),
+          text: JSON.stringify(snapshot),
         },
       ],
     };

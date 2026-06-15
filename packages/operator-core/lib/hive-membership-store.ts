@@ -126,6 +126,30 @@ export async function loadRevokedHivePubkeys(
   return set;
 }
 
+/**
+ * Distinct admitted members across ALL hives in a workspace — the "people you can
+ * @-assign" set for the (workspace-level) plans UI (shared-hive-collaboration
+ * P-016 / offline-member assign). A person in several hives appears ONCE (DISTINCT
+ * ON github_user_id, newest binding kept), since the assign address is their
+ * identity, not a hive. Ordered by display name for a stable picker.
+ */
+export async function listWorkspaceMembers(
+  workspaceId: string,
+  sql?: Sql,
+): Promise<HiveMemberRecord[]> {
+  const rows = (await pg(sql).unsafe(
+    `SELECT ${COLS} FROM (
+       SELECT DISTINCT ON (github_user_id) ${COLS}, joined_at
+         FROM harness_shared.hive_members
+        WHERE workspace_id = $1
+        ORDER BY github_user_id, joined_at DESC
+     ) m
+     ORDER BY COALESCE(display_name, github_username) ASC`,
+    [workspaceId],
+  )) as unknown as HiveMemberPgRow[];
+  return rows.map(rowToRecord);
+}
+
 /** Get one Hive member. */
 export async function getHiveMember(
   workspaceId: string,

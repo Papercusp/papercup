@@ -50,6 +50,7 @@ import {
   abortLocalSpawn,
   spawnConcurrencyCeiling,
   spawnSlotEventKey,
+  findBriefPlaceholder,
 } from './operator-spawn';
 
 // `/tmp` exists on disk, so the project-dir existence check passes without fixtures.
@@ -391,6 +392,61 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toContain(`ceiling ${ceiling}`);
     expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+});
+
+describe('un-substituted brief placeholder guard (EI-249 — dispatch-pack stampede)', () => {
+  describe('findBriefPlaceholder (pure)', () => {
+    it('flags the repo `{item}` template token and the historical `brief-NN` placeholder', () => {
+      expect(findBriefPlaceholder('Universal schema {item}: single handler')).toBe('{item}');
+      expect(findBriefPlaceholder('You are brief-NN — read brief-NN-*.md and execute it')).toBe('brief-NN');
+      expect(findBriefPlaceholder('You are Brief-NN')).toBe('Brief-NN'); // case-insensitive
+    });
+
+    it('passes a fully-substituted brief, an empty/absent brief, and incidental text', () => {
+      expect(findBriefPlaceholder('Universal schema reviews: single handler')).toBeNull();
+      expect(findBriefPlaceholder('watch for the migration race; priority: unblock CI')).toBeNull();
+      expect(findBriefPlaceholder('')).toBeNull();
+      expect(findBriefPlaceholder(null)).toBeNull();
+      expect(findBriefPlaceholder(undefined)).toBeNull();
+      // tight by design — no false positive on words merely containing the marker letters
+      expect(findBriefPlaceholder('debrief the inn-keeper about ANN')).toBeNull();
+    });
+  });
+
+  it('REFUSES to spawn when the brief still holds a placeholder — durable, no child launched', async () => {
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1', harness: 'demo', role: 'bee',
+      brief: 'You are brief-NN — read brief-NN-*.md and execute it',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('un-substituted placeholder "brief-NN"');
+    expect(res.error).toContain('EI-249');
+    // refused BEFORE any child process launches — no claim-race stampede
+    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+    // the rejection is DURABLE (a failed nursery row), not a silent drop
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      status: 'failed',
+      errorMessage: expect.stringContaining('un-substituted placeholder'),
+    }));
+  });
+
+  it('also refuses the `{item}` template token (a caller that bypassed buildWaveFeatures)', async () => {
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1', harness: 'demo', role: 'bee', brief: 'Implement the {item} handler',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('un-substituted placeholder "{item}"');
+    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+
+  it('a fully-substituted brief spawns normally — the guard never false-positives', async () => {
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1', harness: 'demo', role: 'bee', brief: 'Implement the reviews handler',
+    });
+    expect(res.ok).toBe(true);
+    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(env.QUEEN_BRIEF).toBe('Implement the reviews handler');
   });
 });
 

@@ -22,6 +22,20 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import type { SlotSelector } from './slot-selector';
 
+/**
+ * Normalize a `jsonb` envelope column to the object. postgres-js returns a jsonb
+ * column inserted as `${JSON.stringify(x)}::text::jsonb` as the raw TEXT it was
+ * cast from (not an auto-parsed object) under the prod handle's options
+ * (`prepare:false`) AND under a fresh testcontainer pool — so parse a string
+ * defensively. Identical posture to PgCoordLog.parseBody (pg-log.ts); without it
+ * a drained envelope is the raw JSON string and `env.msg_id`/`env.to` are
+ * undefined. (P-025's reads relied on an auto-parse that does not happen here.)
+ */
+function parseEnvelope(v: unknown): CoordEnvelope {
+  if (typeof v === 'string') return JSON.parse(v) as CoordEnvelope;
+  return v as CoordEnvelope;
+}
+
 export interface ParkSlotMessageInput {
   /** The slot the message is addressed to. */
   slot: SlotSelector;
@@ -48,7 +62,7 @@ export async function parkSlotMessage(
     VALUES (
       ${input.envelope.msg_id}, ${ws}, ${input.slot.kind}, ${input.slot.ref},
       ${input.harnessSlug ?? null}, ${input.envelope.from},
-      ${JSON.stringify(input.envelope)}::jsonb,
+      ${JSON.stringify(input.envelope)}::text::jsonb,
       ${input.nowMs}, ${input.ttlMs ?? null}
     )
     ON CONFLICT (workspace_id, id) DO NOTHING
@@ -91,7 +105,7 @@ export async function drainSlotMessages(
      RETURNING envelope
   `;
   return rows
-    .map((r) => r.envelope)
+    .map((r) => parseEnvelope(r.envelope))
     .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
 }
 
@@ -145,7 +159,7 @@ export async function drainUserMailbox(
      RETURNING envelope
   `;
   return rows
-    .map((r) => r.envelope)
+    .map((r) => parseEnvelope(r.envelope))
     .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
 }
 
@@ -199,5 +213,5 @@ export async function listPendingForSlot(
        AND (ttl_ms IS NULL OR created_ts + ttl_ms > ${input.nowMs})
      ORDER BY created_ts ASC, id ASC
   `;
-  return rows.map((r) => r.envelope);
+  return rows.map((r) => parseEnvelope(r.envelope));
 }

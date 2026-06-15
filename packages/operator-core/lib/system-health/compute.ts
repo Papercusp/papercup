@@ -728,11 +728,13 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   // Dynamic import + fail-soft so the overwatch module can never break the shared
   // health aggregation.
   let overwatchAlive: boolean | null = null;
-  try {
-    const { isOverwatchAlive } = await import('../overwatch/cross-monitor');
-    overwatchAlive = await isOverwatchAlive(ws, hiveSlug, { now });
-  } catch {
-    /* leave null — overwatch liveness not computable; null = not-computed (D-004) */
+  if (hiveSlug) {
+    try {
+      const { isOverwatchAlive } = await import('../overwatch/cross-monitor');
+      overwatchAlive = await isOverwatchAlive(ws, hiveSlug, { now });
+    } catch {
+      /* leave null — overwatch liveness not computable; null = not-computed (D-004) */
+    }
   }
 
   return {

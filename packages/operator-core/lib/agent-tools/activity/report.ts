@@ -26,6 +26,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { recordActivity, type TodoItem, type ToolInput } from '@papercusp/activity-bridge';
 import { createPgTelemetryStore } from '../../activity-pg-store';
 import { armInboxWake, cancelInboxWake } from '../../events/await/inbox-wake-arm';
+import { writeWatermark } from '../coordination/watermarks';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends '▶ session started' (SessionStart) and '■ session ended'
@@ -126,6 +127,12 @@ export default defineTool({
     if (phase) {
       try {
         if (phase === 'start') {
+          // presence-v2 P-010 (D-007): a fresh context / resume means the agent's
+          // cached roster baseline is gone while its durable coord cursor kept
+          // advancing — mark a re-bootstrap so the next coord:inbox re-injects the
+          // presence snapshot ONCE. Independent best-effort (its own catch) so an
+          // inbox-wake hiccup never skips it, and vice-versa.
+          await writeWatermark(owner, { snapshot_rebootstrap_pending: true }).catch(() => {});
           await armInboxWake({ ownerId: owner, workspaceId: ctx.principal?.workspaceId });
         } else {
           await cancelInboxWake(owner, ctx.principal?.workspaceId); // D-003: cancel on clean end

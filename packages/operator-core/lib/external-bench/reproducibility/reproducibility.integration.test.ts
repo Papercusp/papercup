@@ -6,7 +6,7 @@
  * priceRun, and the emitFromAttempt infra-failure path nulls `resolved`.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,7 @@ import { preregister, computePreregHash } from './prereg';
 import { emitRollout, emitFromAttempt } from './emit';
 import { listRunResults, listSuites, getRollout, getPrereg } from './store';
 import { emitFleetRun, fleetRunIdFor, listFleetRuns, getCoordTrace } from './fleet';
+import { exportRunBundle } from './export';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
 
@@ -306,5 +307,21 @@ describe('L2 fleet layer — fleet run + coordination trace (MAST)', () => {
       SELECT fleet_run_id FROM harness_shared.benchmark_run_result WHERE rollout_id = ${rolloutId}
     `;
     expect(linked[0]?.fleet_run_id).toBe(fleetRunId);
+  });
+});
+
+describe('exportRunBundle — publishes L1 rollout cards + L2 fleet runs/traces', () => {
+  it('writes a manifest + rollout files + fleet files under benchmarks/', async () => {
+    const res = await exportRunBundle(RUN, { repoRoot, sql, workspaceId: WS });
+    expect(res.count).toBeGreaterThanOrEqual(2);
+    expect(res.fleetFiles.length).toBeGreaterThanOrEqual(1);
+    expect(existsSync(join(repoRoot, res.manifestPath))).toBe(true);
+    for (const f of [...res.rolloutFiles, ...res.fleetFiles]) {
+      expect(existsSync(join(repoRoot, f))).toBe(true);
+    }
+    const manifest = JSON.parse(readFileSync(join(repoRoot, res.manifestPath), 'utf8'));
+    expect(manifest.runId).toBe(RUN);
+    expect(manifest.fleetArms).toContain('hive');
+    expect(manifest.preregHash).toBe(computePreregHash(baseConfig));
   });
 });

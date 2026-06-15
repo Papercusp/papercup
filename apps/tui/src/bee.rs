@@ -85,7 +85,7 @@ impl BeeState {
 }
 
 /// Top region: the bee's full work-list in rank (priority) order.
-pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, scroll: u16) {
     let label = app.bee.display_label().unwrap_or_else(|| "?".into());
     let asn = app.bee.assignment.as_ref();
     let queued: &[BeeWorkItem] = asn.map(|a| a.queued.as_slice()).unwrap_or(&[]);
@@ -127,7 +127,7 @@ pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect) {
     let body_area = crate::ui::block_with_header(
         f,
         area,
-        Theme::block(Line::from(title), asn.is_some()),
+        Theme::block(Line::from(title), focused),
         &format!(" {:<6}{:<5}{}", "rank", "st", "task"),
     );
     // The bee's self-declared intent rides just under the header when present.
@@ -147,7 +147,8 @@ pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect) {
     } else {
         body_area
     };
-    f.render_widget(List::new(body).style(Theme::panel()), body_area);
+    let shown = crate::fleet::scroll_clamp(body, scroll, body_area.height);
+    f.render_widget(List::new(shown).style(Theme::panel()), body_area);
 }
 
 /// One task row: rank · status glyph · title (head-of-line — rank 0 / index 0 —
@@ -337,7 +338,7 @@ mod tests {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(f.area());
-            draw_tasklist(f, app, rows[0]);
+            draw_tasklist(f, app, rows[0], false, 0);
             let bottom = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])

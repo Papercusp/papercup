@@ -4565,6 +4565,22 @@
   color: var(--pc-plans-fg-muted);
   font-size: 11px;
 }
+/* Offline member (P-016): a muted "offline" chip + a dimmed dot, so the picker
+   reads online-vs-offline at a glance (an offline pick parks until they return). */
+.pc-assign__offline {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--pc-plans-fg-muted);
+  background: color-mix(in oklab, var(--pc-plans-fg-muted, #94a3b8), transparent 86%);
+}
+.pc-assign__member.is-offline .pc-assign__dot {
+  opacity: 0.5;
+}
 .pc-assign__actions {
   display: flex;
   justify-content: flex-end;

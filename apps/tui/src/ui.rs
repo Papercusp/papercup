@@ -2713,12 +2713,12 @@ pub(crate) fn block_with_header_rows(
 /// conversation thread under the comms cursor, centered over the dock. Modal —
 /// the key handler closes it on Esc/`q`/Enter and steps the item with `j`/`k`.
 fn draw_comms_detail(f: &mut Frame, app: &App) {
-    use crate::fleet::CommsFocus;
+    use crate::fleet::FleetPanel;
     let area = centered_rect(70, 70, f.area());
     f.render_widget(Clear, area);
-    let (title, lines): (&str, Vec<Line<'static>>) = match app.fleet.comms_focus {
-        CommsFocus::Inbox | CommsFocus::Outbox => {
-            let is_inbox = app.fleet.comms_focus == CommsFocus::Inbox;
+    let (title, lines): (&str, Vec<Line<'static>>) = match app.fleet.fleet_focus {
+        FleetPanel::Inbox | FleetPanel::Outbox => {
+            let is_inbox = app.fleet.fleet_focus == FleetPanel::Inbox;
             let title = if is_inbox {
                 " inbox · Esc close · j/k item · PgUp/Dn scroll "
             } else {
@@ -2730,11 +2730,13 @@ fn draw_comms_detail(f: &mut Frame, app: &App) {
             };
             (title, lines)
         }
-        CommsFocus::Conversations => (
+        FleetPanel::Conversations => (
             " conversation · Esc close · j/k item · PgUp/Dn scroll ",
             conv_detail_lines(app),
         ),
-        CommsFocus::Roster => (" detail ", Vec::new()),
+        FleetPanel::Roster | FleetPanel::Dossier | FleetPanel::PlanProgress => {
+            (" detail ", Vec::new())
+        }
     };
     let block = Block::default()
         .borders(Borders::ALL)

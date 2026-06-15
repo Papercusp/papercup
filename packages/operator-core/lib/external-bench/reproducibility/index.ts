@@ -49,6 +49,8 @@ export {
   emitCoordEvents,
   fleetRunIdFor,
   listFleetRuns,
+  listFleetRunsFull,
   getCoordTrace,
   type FleetRunInput,
+  type FleetRunRecord,
 } from './fleet';

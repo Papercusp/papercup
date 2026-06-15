@@ -2183,6 +2183,65 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // dev.assignableMembers — the @-assign picker roster (shared-hive-collaboration
+  // P-016 / offline-member assign): the LIVE coordination sessions (present,
+  // addressed by ownerId — deliver-and-wake now) UNIONed with the workspace's
+  // admitted hive members who are NOT currently present (offline, addressed by
+  // `@user:gh:<id>`, which PARKS in slot_parked_messages until that member returns).
+  // Each row carries a precomputed `assignAddress` (what AssignDialog passes to
+  // coord:send's `to`) + `present`, so the dialog labels online vs offline without
+  // knowing the `@user:` convention. Deduping an online member OUT of the offline
+  // group is best-effort: presence carries no github id today, so the id spaces
+  // only converge once gh-auth / federation lights up (actor-identity.ts).
+  'dev.assignableMembers': {
+    argsSchema: z.object({ workspace: z.string().optional() }),
+    resolve: async (args) => {
+      const { workspace } = args as { workspace?: string };
+      const [{ listPresence }, { listWorkspaceMembers }, { activeWorkspaceId }] = await Promise.all([
+        import('../agent-tools/coordination/presence'),
+        import('../hive-membership-store'),
+        import('../workspace-registry'),
+      ]);
+      const wsId = workspace ?? activeWorkspaceId();
+      const [presence, members] = await Promise.all([
+        listPresence({ workspaceId: workspace ?? null }) as Promise<
+          Array<{ ownerId: string; ownerLabel: string | null; intent: string | null; userId: string | null; stale?: boolean }>
+        >,
+        listWorkspaceMembers(wsId).catch(() => []),
+      ]);
+      const live = presence.filter((p) => !p.stale);
+      // Which github members are already represented by a live session? Today
+      // presence carries no github id, so this matches only when a session's userId
+      // is already a `gh:<id>` form (nothing on a gh-unauth box) — forward-compatible.
+      const liveKeys = new Set<string>();
+      for (const p of live) {
+        if (p.userId) liveKeys.add(p.userId);
+        liveKeys.add(p.ownerId);
+      }
+      const onlineRows = live.map((p) => ({
+        assignAddress: p.ownerId,
+        key: p.ownerId,
+        label: p.ownerLabel ?? p.ownerId,
+        present: true,
+        intent: p.intent ?? null,
+        userId: p.userId ?? null,
+        githubUsername: null as string | null,
+      }));
+      const offlineRows = members
+        .filter((m) => !liveKeys.has(`gh:${m.githubUserId}`) && !liveKeys.has(String(m.githubUserId)))
+        .map((m) => ({
+          assignAddress: `@user:gh:${m.githubUserId}`,
+          key: `gh:${m.githubUserId}`,
+          label: m.displayName ?? m.githubUsername,
+          present: false,
+          intent: null as string | null,
+          userId: null as string | null,
+          githubUsername: m.githubUsername,
+        }));
+      return [...onlineRows, ...offlineRows];
+    },
+  },
+
   // dev.coordFeed — the WHOLE coordination firehose: every envelope across every
   // channel + every agent (messages/acks/notifies/broadcasts, handoffs,
   // escalations, plan events), newest-first with a cursor. Backs the /adv

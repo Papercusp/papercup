@@ -100,6 +100,18 @@ impl FleetPanel {
         let cur = order.iter().position(|p| *p == self).unwrap_or(0) as isize;
         order[(((cur + delta) % n + n) % n) as usize]
     }
+
+    /// Short display name for the nav legend.
+    pub fn label(self) -> &'static str {
+        match self {
+            FleetPanel::Roster => "roster",
+            FleetPanel::Inbox => "inbox",
+            FleetPanel::Outbox => "outbox",
+            FleetPanel::Conversations => "conversations",
+            FleetPanel::Dossier => "task list",
+            FleetPanel::PlanProgress => "plan progress",
+        }
+    }
 }
 
 /// Fleet-tab state: the live activity ring, the fleet work-items, per-agent todo
@@ -332,26 +344,58 @@ fn progress_bar(done: u32, total: u32, width: usize) -> String {
 pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
     let agg = aggregate(app);
 
-    // A 1-line headline strip above the body.
+    // A 1-line headline strip above the body + a 1-line nav legend below it (the
+    // legend makes the panel-cycle keys + the `c` layout toggle discoverable —
+    // owner ask 2026-06-14). Curated mode only; the mirror firehose has no panels.
+    let curated = app.fleet.mode == FleetMode::Curated;
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .constraints(if curated {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ]
+        } else {
+            vec![Constraint::Length(1), Constraint::Min(1)]
+        })
         .split(area);
     draw_headline(f, &agg, app.fleet.mode, rows[0]);
 
-    // Comms sub-view (pui-dock-consolidation-2026-06-07, `c`): roster + the
-    // selected agent's direct inbox/outbox over the whole-fleet conversations.
-    // Off by default — the dossier + plan-progress view leads. Mirror mode keeps
-    // its own raw feed.
-    if app.fleet.show_comms && app.fleet.mode == FleetMode::Curated {
+    let comms = app.fleet.show_comms && curated;
+    if comms {
+        // Comms sub-view (pui-dock-consolidation-2026-06-07, `c`): roster + the
+        // selected agent's direct inbox/outbox over the whole-fleet conversations.
         draw_comms_view(f, app, rows[1]);
-        return;
+    } else {
+        match app.fleet.mode {
+            FleetMode::Curated => draw_curated(f, app, &agg, rows[1]),
+            FleetMode::Mirror => draw_mirror(f, app, rows[1]),
+        }
     }
 
-    match app.fleet.mode {
-        FleetMode::Curated => draw_curated(f, app, &agg, rows[1]),
-        FleetMode::Mirror => draw_mirror(f, app, rows[1]),
+    if curated {
+        draw_fleet_legend(f, app, rows[2], comms);
     }
+}
+
+/// The always-visible nav legend (owner ask 2026-06-14): the focused panel + the
+/// keys to move between/within panels + the `c` layout toggle. So the comms view
+/// and panel navigation are discoverable without guessing `c`.
+fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
+    let toggle = if comms { "c: task-list+plans" } else { "c: mail+chat" };
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" ▸ {} ", app.fleet.fleet_focus.label()),
+            Theme::title_active(),
+        ),
+        Span::styled(
+            "  ←/→ switch panel · ↑/↓ move · ⏎ open · ",
+            Theme::info(),
+        ),
+        Span::styled(toggle, Theme::info()),
+    ]);
+    f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
 }
 
 /// The comms sub-view (#3/#4): roster (left) | the selected agent's coord
@@ -363,12 +407,12 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
 fn draw_comms_view(f: &mut Frame, app: &App, area: Rect) {
     // The focused panel takes an active border + a highlighted row cursor; the
     // other three render quiet (owner ask 2026-06-14, `h`/`l`/`j`/`k` nav).
-    let focus = app.fleet.comms_focus;
+    let focus = app.fleet.fleet_focus;
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
         .split(area);
-    draw_agents(f, app, cols[0], focus == CommsFocus::Roster);
+    draw_agents(f, app, cols[0], focus == FleetPanel::Roster);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
@@ -379,9 +423,9 @@ fn draw_comms_view(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(right[0]);
-    let inbox_sel = (focus == CommsFocus::Inbox).then_some(app.fleet.comms_inbox_sel);
-    let outbox_sel = (focus == CommsFocus::Outbox).then_some(app.fleet.comms_outbox_sel);
-    let conv_sel = (focus == CommsFocus::Conversations).then_some(app.conversation_sel);
+    let inbox_sel = (focus == FleetPanel::Inbox).then_some(app.fleet.comms_inbox_sel);
+    let outbox_sel = (focus == FleetPanel::Outbox).then_some(app.fleet.comms_outbox_sel);
+    let conv_sel = (focus == FleetPanel::Conversations).then_some(app.conversation_sel);
     crate::bee::draw_inbox(f, app, mail[0], inbox_sel);
     crate::bee::draw_outbox(f, app, mail[1], outbox_sel);
     draw_conversations_compact(f, app, right[1], conv_sel);
@@ -454,7 +498,7 @@ fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rec
         // Key hints: Tab flips curated↔mirror (D-006 moved off `m`); `c` swaps
         // the comms sub-view in/out (dock consolidation #3/#4).
         Span::styled(
-            format!("[{}]  Tab: mode · c: comms", mode.label()),
+            format!("[{}]  Tab: curated⇄mirror", mode.label()),
             Theme::info(),
         ),
     ]);
@@ -468,39 +512,42 @@ fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rec
 /// both to that agent (#2). `c` swaps in the comms sub-view (handled in
 /// `draw_fleet`).
 fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
+    // Whichever panel holds focus wears the active border (owner ask 2026-06-14);
+    // `h`/`l` cycle Roster → Dossier → PlanProgress here.
+    let focus = app.fleet.fleet_focus;
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
         .split(area);
 
-    // The roster is the sole interactive list in the curated view, so it always
-    // wears the active border here.
-    draw_agents(f, app, cols[0], true);
+    draw_agents(f, app, cols[0], focus == FleetPanel::Roster);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
         .split(cols[1]);
-    draw_dossier(f, app, right[0]);
-    draw_plan_progress(f, app, agg, right[1]);
+    draw_dossier(f, app, right[0], focus == FleetPanel::Dossier);
+    draw_plan_progress(f, app, agg, right[1], focus == FleetPanel::PlanProgress);
 }
 
 /// The dossier region (#2): when an agent is selected in the roster, that bee's
 /// ranked task list (reused from `bee.rs`, driven by the in-process selection
 /// fetch); with NO selection, the whole-fleet task list (every bee's claimed
-/// work, from `fleet.all_assignments`).
-fn draw_dossier(f: &mut Frame, app: &App, area: Rect) {
+/// work, from `fleet.all_assignments`). `focused` adds the active border; the
+/// dossier scroll offset comes from `fleet.dossier_scroll`.
+fn draw_dossier(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+    let scroll = app.fleet.dossier_scroll;
     if app.bee.owner_id.is_some() {
-        crate::bee::draw_tasklist(f, app, area);
+        crate::bee::draw_tasklist(f, app, area, focused, scroll);
     } else {
-        draw_all_tasklist(f, app, area);
+        draw_all_tasklist(f, app, area, focused, scroll);
     }
 }
 
 /// Whole-fleet task list: every bee's claimed work-items, grouped by bee in load
 /// order. The default dossier when no agent is selected (#2 "show all tasks from
 /// the fleet"). Reuses `bee::task_row` per item under a per-bee header line.
-fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect) {
+fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, scroll: u16) {
     let asn = &app.fleet.all_assignments;
     let total: i64 = asn.iter().map(|a| a.load).sum();
     let mut items: Vec<ListItem> = Vec::new();
@@ -538,11 +585,25 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect) {
         area,
         Theme::block(
             Line::from(format!(" {} fleet task list ({total} claimed) ", glyph::nav::FLEET)),
-            false,
+            focused,
         ),
         " select an agent to filter · rank · st · task",
     );
-    f.render_widget(List::new(items).style(Theme::panel()), body);
+    let shown = scroll_clamp(items, scroll, body.height);
+    f.render_widget(List::new(shown).style(Theme::panel()), body);
+}
+
+/// Apply a focus-panel scroll offset to a list: drop the top `scroll` rows,
+/// clamped so the last screenful stays in view (the cursor-free analogue of a
+/// `ListState` offset — owner ask 2026-06-14).
+pub(crate) fn scroll_clamp<'a>(
+    items: Vec<ListItem<'a>>,
+    scroll: u16,
+    view_h: u16,
+) -> Vec<ListItem<'a>> {
+    let max = (items.len() as u16).saturating_sub(view_h);
+    let skip = scroll.min(max) as usize;
+    items.into_iter().skip(skip).collect()
 }
 
 /// Compact liveness legend (owner ask 2026-06-11): the roster's dot vocabulary
@@ -740,7 +801,13 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
 /// then by remaining work desc (the plans that need attention float up). With an
 /// agent selected in the roster (#2), narrows to the plans that agent is linked
 /// to (declared plan + claim plan-slugs from `fleet:assignments`).
-fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
+fn draw_plan_progress(
+    f: &mut Frame,
+    app: &App,
+    agg: &FleetAggregate,
+    area: Rect,
+    focused: bool,
+) {
     // The selected agent's plan-set (None = no selection → whole fleet). Prefer
     // the whole-fleet snapshot; fall back to the per-bee dossier fetch.
     let agent_plans: Option<std::collections::HashSet<&str>> =
@@ -804,11 +871,12 @@ fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect
             agg.plan_items_done, agg.plan_items_total
         ),
     };
+    // Inner height ≈ the bordered area minus the top + bottom border rows.
+    let shown = scroll_clamp(body, app.fleet.plan_progress_scroll, area.height.saturating_sub(2));
     f.render_widget(
-        List::new(body).style(Theme::panel()).block(Theme::block(
-            Line::from(title),
-            agg.plan_items_total > 0,
-        )),
+        List::new(shown)
+            .style(Theme::panel())
+            .block(Theme::block(Line::from(title), focused)),
         area,
     );
 }

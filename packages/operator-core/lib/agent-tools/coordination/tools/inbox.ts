@@ -12,6 +12,14 @@ import { resolveAgentIdentity } from '../identity';
 import { resolveActorIdentity, actorMailboxKeys } from '../actor-identity';
 import { readInbox, drainAndDeliverUserMailbox } from '../messages';
 import { heartbeatPresence } from '../presence';
+import { readWatermark } from '../watermarks';
+import { emptyWatermark } from '@papercusp/coordination/core';
+import {
+  resolvePresenceScope,
+  assemblePresenceSnapshot,
+  renderPresenceRebootstrapBlock,
+  consumePresenceRebootstrap,
+} from '../presence-snapshot';
 import { COORD_ROLES } from '../roles';
 import { renderInjection, type CoordLineSource } from '../../../coord-schema';
 
@@ -78,9 +86,13 @@ export default defineTool({
     // coord:presence row for every active agent (the read hook runs every
     // tool call) without clobbering a declared intent. Best-effort, and run
     // concurrently with the read so it adds no latency.
-    const [, all] = await Promise.all([
+    // The watermark is read concurrently too — the P-010 re-bootstrap flag rides
+    // it (snapshot_rebootstrap_pending), so the common no-flag path adds only one
+    // cheap PK read and no extra latency.
+    const [, all, wm] = await Promise.all([
       heartbeatPresence(identity).catch(() => {}),
       readInbox(identity.ownerId, { since_ts: args.since_ts, kinds: args.kinds }),
+      readWatermark(identity.ownerId).catch(() => emptyWatermark()),
     ]);
 
     const isAmbient = (e: { category?: unknown }) =>
@@ -110,7 +122,27 @@ export default defineTool({
     // single-source `coord-schema` so the cc + omp hooks are dumb pipes (they
     // echo `injection` + advance the cursor from `summary.newest_ts`). The
     // cursor/summary metadata stays OUT of the injection body, alongside it.
-    const injection = renderInjection(entries as unknown as CoordLineSource[]);
+    const coordInjection = renderInjection(entries as unknown as CoordLineSource[]);
+
+    // P-010 re-bootstrap-on-compaction (D-007): on the first read after a fresh
+    // context / resume (a session-lifecycle start set snapshot_rebootstrap_pending),
+    // the agent's cached roster baseline is gone but this cursor advanced — so
+    // PREPEND a fresh presence snapshot to the injection ONCE (then the flag is
+    // cleared), and the agent never coordinates off a stale baseline. Best-effort:
+    // a failure leaves the flag set to retry and never breaks the inbox read. It
+    // rides the same dumb-pipe `injection` echo, so no hook change is needed.
+    let rebootstrap: string | null = null;
+    try {
+      const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null };
+      rebootstrap = await consumePresenceRebootstrap(identity.ownerId, wm, async () => {
+        const resolved = await resolvePresenceScope(c);
+        const snap = await assemblePresenceSnapshot(resolved);
+        return renderPresenceRebootstrapBlock(snap);
+      });
+    } catch {
+      rebootstrap = null;
+    }
+    const injection = rebootstrap ? `${rebootstrap}\n${coordInjection}` : coordInjection;
 
     return {
       content: [

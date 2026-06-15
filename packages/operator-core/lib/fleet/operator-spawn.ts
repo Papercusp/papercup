@@ -542,6 +542,23 @@ export async function spawnAgentInHarness(
     );
   }
 
+  // EI-249: refuse to launch a bee whose brief still holds an un-substituted
+  // template placeholder. A literal `{item}` / `brief-NN` means an upstream
+  // substitution step was skipped — the 2026-06-10 dispatch-pack stampede, where
+  // surplus bees raced to claim lanes off coord presence. This central chokepoint
+  // backstops every launch path (fleet:spawn, chat `<spawn>`, place_batch), so the
+  // guard fails loud + durable (recordFailedAttempt) rather than spawn a mis-briefed
+  // bee. The queen-wave compiler substitutes templates up front; this catches any
+  // caller that bypassed it.
+  const briefPlaceholder = findBriefPlaceholder(input.brief);
+  if (briefPlaceholder) {
+    return fail(
+      `spawn rejected: brief contains an un-substituted placeholder "${briefPlaceholder}" — ` +
+        `the brief must be fully substituted before launch (EI-249). Resolve the template ` +
+        `(buildWaveFeatures substitutes {item}) before spawning.`,
+    );
+  }
+
   // Per-spawn model resolution (queen-model-tier-selection-2026-06-11): an
   // explicit spec wins; otherwise a tier name resolves against the user's
   // menu, clamped to [role floor, role ceiling]. Resolved BEFORE admission so

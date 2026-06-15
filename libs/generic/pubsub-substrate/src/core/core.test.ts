@@ -64,6 +64,19 @@ describe('watermark', () => {
     expect(normaliseWatermark({ messages_since_ts: 5 as unknown as string })).toEqual(emptyWatermark());
     expect(normaliseWatermark({ subscriptions_fired: ['ok', 3 as unknown as string] }).subscriptions_fired).toEqual(['ok']);
   });
+  it('snapshot_rebootstrap_pending: defaults false, normalises a non-bool to false, merges/keeps (presence-v2 P-010)', () => {
+    expect(emptyWatermark().snapshot_rebootstrap_pending).toBe(false);
+    expect(normaliseWatermark({ snapshot_rebootstrap_pending: true }).snapshot_rebootstrap_pending).toBe(true);
+    expect(
+      normaliseWatermark({ snapshot_rebootstrap_pending: 'yes' as unknown as boolean }).snapshot_rebootstrap_pending,
+    ).toBe(false);
+    // merge: set it, then a patch that omits it keeps the current value (the
+    // cursor-advance/inbox-read path must not silently clear a pending rebootstrap).
+    const set = mergeWatermark(emptyWatermark(), { snapshot_rebootstrap_pending: true });
+    expect(set.snapshot_rebootstrap_pending).toBe(true);
+    expect(mergeWatermark(set, { messages_since_ts: 't9' }).snapshot_rebootstrap_pending).toBe(true);
+    expect(mergeWatermark(set, { snapshot_rebootstrap_pending: false }).snapshot_rebootstrap_pending).toBe(false);
+  });
 });
 
 describe('foldThread', () => {

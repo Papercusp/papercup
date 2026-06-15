@@ -21,6 +21,8 @@ import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
 import { toStableRosterRow } from './presence-payload';
+import { writeWatermark } from './watermarks';
+import type { Watermark } from '@papercusp/coordination/core';
 
 /** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
  *  any doubt and are swept on read so the roster stays bounded. */
@@ -155,4 +157,27 @@ export function renderPresenceRebootstrapBlock(snap: PresenceSnapshot): string {
   });
   if (overflow > 0) lines.push(`…+${overflow} more (coord:presence for the full roster)`);
   return [header, ...lines].join('\n');
+}
+
+/**
+ * P-010 re-bootstrap-on-compaction (D-007). If the agent's cursor carries a
+ * pending re-bootstrap (its cached roster baseline was lost to a context
+ * compaction / fresh resume while this durable cursor kept advancing), build the
+ * snapshot block + clear the flag ONCE, so the agent re-establishes its baseline
+ * before trusting deltas and is never re-injected on later turns. Returns the
+ * block, or null when no re-bootstrap is pending. `build` runs BEFORE the clear,
+ * so a transient build failure leaves the flag set to retry next turn.
+ *
+ * The caller passes the already-read watermark (it reads it concurrently with
+ * the inbox), so this adds no extra read on the common (no-flag) path.
+ */
+export async function consumePresenceRebootstrap(
+  ownerId: string,
+  wm: Pick<Watermark, 'snapshot_rebootstrap_pending'>,
+  build: () => Promise<string>,
+): Promise<string | null> {
+  if (!wm.snapshot_rebootstrap_pending) return null;
+  const block = await build();
+  await writeWatermark(ownerId, { snapshot_rebootstrap_pending: false });
+  return block;
 }

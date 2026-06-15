@@ -481,32 +481,44 @@ export function messageOwner(args: MessageOwnerArgs) {
   });
 }
 
-/* ── Cross-user handoff / @-mention assign (shared-hive-collaboration P-008) ──
- *  The "assign this plan/item to @user" surface. Roster = the live coord
- *  presence roster (reused — already a sync query); the assign action is
- *  coord:send wake:true (deliver-and-wake the assignee) via the /api/admin/coord
- *  proxy, sender = the admin UI owner. */
+/* ── Cross-user handoff / @-mention assign (shared-hive-collaboration P-008/P-016) ──
+ *  The "assign this plan/item to @user" surface. The picker roster (P-016) unions
+ *  LIVE coordination sessions (present — deliver-and-wake now) with OFFLINE admitted
+ *  hive members (parked until they return). The assign action is a coord:send (via
+ *  the /api/admin/coord proxy, sender = the admin UI owner): a present member is
+ *  addressed by a live ownerId; an offline member by `@user:gh:<id>`, which parks
+ *  in slot_parked_messages and is delivered when that member next reads their inbox. */
 
-export interface CoordRosterMember {
-  ownerId: string;
-  ownerLabel: string | null;
+/**
+ * A pickable @-assign target (shared-hive-collaboration P-016): either a LIVE
+ * coordination session or an OFFLINE admitted hive member. The server
+ * (dev.assignableMembers) precomputes `assignAddress` — what to pass to
+ * assignToUser's `to` — so the UI never constructs the coord `@user:` selector
+ * itself: a present member is a plain ownerId; an offline member is `@user:gh:<id>`.
+ */
+export interface AssignableMember {
+  /** The coord:send `to` address: a live ownerId, or `@user:gh:<id>` (offline). */
+  assignAddress: string;
+  /** Stable id for React keys + the per-user color dot. */
+  key: string;
+  label: string;
+  /** True for a live session (deliver-and-wake), false for an offline member (park). */
+  present: boolean;
   intent: string | null;
-  currentPlanSlug: string | null;
-  /** A cross-machine peer (a real person) vs a local session. */
-  federated?: boolean;
-  /** GitHub user id when the entry is an identified person (federated peers). */
-  userId?: string | null;
-  source?: string | null;
+  userId: string | null;
+  githubUsername: string | null;
 }
 
-/** The live coordination roster — the @-able people/agents for an assignment.
- *  Reuses the dev.coordPresence sync query (already SSE-pushed, non-stale). */
-export function useCoordRoster(): AsyncResult<CoordRosterMember[]> {
-  return useSyncRows<CoordRosterMember>('dev.coordPresence', EMPTY_ARGS);
+/** The @-assign picker roster — live sessions + offline workspace members
+ *  (dev.assignableMembers). Reuses the sync layer (SSE-pushed; a presence flip
+ *  or a new admission refreshes it via the table→query map). */
+export function useAssignableMembers(): AsyncResult<AssignableMember[]> {
+  return useSyncRows<AssignableMember>('dev.assignableMembers', EMPTY_ARGS);
 }
 
 export interface AssignArgs {
-  /** Coord owner-id(s) of the assignee (from the roster). */
+  /** The coord:send `to` address(es): a live ownerId, or an offline member's
+   *  `@user:gh:<id>` selector — i.e. an AssignableMember's `assignAddress`. */
   to: string[];
   planSlug: string;
   /** Plan-item id (e.g. 'P-005') when assigning a single item; omit for the whole plan. */

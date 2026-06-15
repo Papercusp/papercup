@@ -145,7 +145,13 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
     // byHarness (P-007) is the same fold keyed by harness→hive.
     'hiveRoster.byHive',
     'hiveRoster.byHarness',
+    // dev.assignableMembers (P-016) unions live presence + offline members — a
+    // presence flip moves a person between the online/offline groups in the picker.
+    'dev.assignableMembers',
   ],
+  // hive_members (admission) is the offline half of the @-assign picker — a new
+  // admitted member becomes assignable the moment they're admitted (P-016).
+  'harness_shared.hive_members': ['dev.assignableMembers'],
   'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness'],
   'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'hiveRoster.byHive', 'hiveRoster.byHarness'],
   // dev.coordFeed is the live coordination firehose (the PresenceRail Activity

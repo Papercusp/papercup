@@ -91,11 +91,14 @@ export async function exportRunBundle(
     seeds: [...seeds].sort((a, b) => a - b),
     graderVersions: [...graderVersions].sort(),
     rolloutCount: results.length,
+    fleetArms: [...fleetArms].sort(),
+    fleetRunCount: fleetRuns.length,
     exportedAt: new Date().toISOString(),
     rolloutFiles,
+    fleetFiles,
   };
   mkdirSync(path.dirname(manifestAbs), { recursive: true });
   writeFileSync(manifestAbs, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
-  return { manifestPath: manifestRel, rolloutFiles, count: results.length };
+  return { manifestPath: manifestRel, rolloutFiles, count: results.length, fleetFiles };
 }
