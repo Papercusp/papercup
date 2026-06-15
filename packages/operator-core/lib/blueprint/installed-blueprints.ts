@@ -11,8 +11,9 @@
  * distribution layer already supported all three tiers — the tool gating was
  * the artificial restriction, retired per D-005.
  */
-import { join } from 'node:path';
-import type { ResolveExtendsPath } from '@papercusp/orchestrator/blueprint';
+import { dirname, join } from 'node:path';
+import { existsSync, readdirSync } from 'node:fs';
+import { builtinBlueprintPath, type ResolveExtendsPath } from '@papercusp/orchestrator/blueprint';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
 import { papercuspRoot } from '../papercusp-root';
 
@@ -32,4 +33,25 @@ export function operatorResolveExtends(opts: { localDirs?: string[] } = {}): Res
     localDirs: opts.localDirs ?? [],
     installedDir: INSTALLED_BLUEPRINTS_DIR(),
   });
+}
+
+/** Ids under a `<root>/<id>/blueprint.yaml` layout (the tier convention). */
+function listBlueprintIdsIn(root: string): string[] {
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(root, e.name, 'blueprint.yaml')))
+    .map((e) => e.name);
+}
+
+/**
+ * The set of blueprint ids resolvable NOW without a Cupboard fetch — every
+ * built-in plus every Cupboard-installed blueprint. Feeds the dep-validator's
+ * `availableBlueprints` host set so a `dependencies.blueprints` entry (a hive
+ * declaring it spawns `coding`/`research`) resolves as satisfied
+ * (blueprint-role-bundling P-007). The built-in root is derived from
+ * `builtinBlueprintPath` so enumeration never drifts from resolution.
+ */
+export function availableBlueprintIds(): Set<string> {
+  const builtinRoot = dirname(dirname(builtinBlueprintPath('probe')));
+  return new Set([...listBlueprintIdsIn(builtinRoot), ...listBlueprintIdsIn(INSTALLED_BLUEPRINTS_DIR())]);
 }

@@ -30,6 +30,7 @@ import {
   type PackCatalogView,
   type PackDescriptor,
 } from '@papercusp/blueprint-distribution';
+import { availableBlueprintIds } from '../blueprint/installed-blueprints';
 import { getCatalog, listAllProjectedTools } from '@papercusp/agent-mcp';
 import { resolveCupboardBaseUrl } from './base-url';
 import { listAllInstalledPlugins, type InstalledPlugin } from './plugin-listings';
@@ -303,5 +304,9 @@ export function depHostSetsFromCatalog(cat: DerivedPackCatalog): DependencyHostS
     installedPacks,
     cupboardPacks,
     installableToolProviders,
+    // Spawned-blueprint deps resolve against the built-in + installed tiers
+    // (blueprint-role-bundling P-007). Cupboard blueprint listings are pulled by
+    // the install route when it resolves the closure.
+    availableBlueprints: availableBlueprintIds(),
   };
 }

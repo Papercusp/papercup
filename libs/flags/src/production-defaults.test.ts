@@ -210,6 +210,7 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   FLAGS.COMPILED_BRIEFS, // P-003 — compiled work-item briefs at convert-time
   FLAGS.TOUCH_SET_EXCLUSION, // P-002 — hive-scoped conflict-free placement admission
   FLAGS.WORKITEM_AMEND, // P-004 — the structural-amend op (propose/dispose)
+  FLAGS.DEFERRED_EXPANSION, // P-005 — deferred-expansion node → child work_items
   // bee-context-efficiency-2026-06-14 (sourced from its own FLAG_DEFAULTS comment): an
   // unverified HOT-PATH change to live bee re-invocation (fresh session vs `--resume`). OFF ⇒
   // legacy `--resume`, behavior-neutral; flip ON after the P-006 live verification. (Pre-existing

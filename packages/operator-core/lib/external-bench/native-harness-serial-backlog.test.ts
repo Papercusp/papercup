@@ -11,6 +11,9 @@ import type { NativeArmResult, NativeHarnessPorts } from './native-harness-runne
 import {
   runNativeSerialBacklog,
   runNativeSerialBacklogTerminalBench,
+  serialToFleetRunSummary,
+  terminalBenchSerialToFleetRunSummary,
+  NATIVE_SERIAL_ARM,
   type RunNativeTask,
   type SerialBacklogItem,
 } from './native-harness-serial-backlog';
@@ -183,5 +186,56 @@ describe('runNativeSerialBacklogTerminalBench — M2 (Harbor) serial floor', () 
     expect(res.tasksAttempted).toBe(2);
     expect(res.tasksResolved).toBe(1); // 'a' resolved; 'b' is an infra error, not a genuine fail
     expect(res.results[1].grade.graderError).toContain('docker daemon down');
+  });
+});
+
+describe('FleetRunSummary reconciliation (L2 serial floor → @papercusp/bench-metrics, arm native-serial)', () => {
+  it('serialToFleetRunSummary projects the M1 floor; resolved supplied (post-hoc grade)', async () => {
+    const res = await runNativeSerialBacklog(
+      [{ task: task('a'), seed: '0' }, { task: task('b'), seed: '0' }, { task: task('c'), seed: '0' }],
+      {},
+      {} as NativeHarnessPorts,
+      {},
+      { now: () => 0, runTask: async (t, seed) => fakeResult(t.instanceId, { seed, tokensIn: 100, tokensOut: 200, costUsd: 0.05 }) },
+    );
+    const summary = serialToFleetRunSummary(res, { runId: 'run-1', suite: 'swe-bench-pro', resolved: 2 });
+    expect(summary.arm).toBe(NATIVE_SERIAL_ARM);
+    expect(summary.arm).toBe('native-serial');
+    expect(summary.runId).toBe('run-1');
+    expect(summary.suite).toBe('swe-bench-pro');
+    expect(summary.tasks).toBe(3);
+    expect(summary.resolved).toBe(2);
+    expect(summary.wallClockMs).toBe(res.backlogDrainMs);
+    expect(summary.tokensTotal).toBe(res.totalTokensIn + res.totalTokensOut);
+    expect(summary.costUsd).toBeCloseTo(res.totalCostUsd, 6);
+    expect(summary.tasksZeroHumanGate).toBe(3); // native arm = no human gate
+    expect(summary.peakConcurrency).toBe(1);
+  });
+
+  it('terminalBenchSerialToFleetRunSummary uses Harbor-known resolved', async () => {
+    const resolvedMap: Record<string, boolean> = { a: true, b: false, c: true };
+    const res = await runNativeSerialBacklogTerminalBench(
+      [{ task: task('a'), seed: '0' }, { task: task('b'), seed: '0' }, { task: task('c'), seed: '0' }],
+      {},
+      {
+        now: () => 0,
+        runHarbor: async (spec) => ({
+          resolved: resolvedMap[spec.taskId],
+          tokensIn: 100,
+          tokensOut: 200,
+          costUsd: 0.1,
+          wallClockMs: 100,
+          harborVersion: 'terminal-bench@2.0',
+          raw: {},
+        }),
+      },
+    );
+    const summary = terminalBenchSerialToFleetRunSummary(res, { runId: 'run-1', suite: 'terminal-bench' });
+    expect(summary.arm).toBe('native-serial');
+    expect(summary.tasks).toBe(3);
+    expect(summary.resolved).toBe(2); // a + c
+    expect(summary.wallClockMs).toBe(res.backlogDrainMs);
+    expect(summary.tokensTotal).toBe(res.totalTokensIn + res.totalTokensOut);
+    expect(summary.peakConcurrency).toBe(1);
   });
 });

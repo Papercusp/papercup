@@ -32,6 +32,7 @@ import {
   type RunHarbor,
 } from './native-harness-terminal-bench';
 import type { BenchTask, GenerationBudget } from './types';
+import type { BenchSuite, FleetRunSummary } from '@papercusp/bench-metrics';
 
 /** One backlog entry — a task and the reproducibility seed this serial pass runs it under. */
 export interface SerialBacklogItem {
@@ -213,5 +214,62 @@ export async function runNativeSerialBacklogTerminalBench(
     totalCostUsd,
     startedAtMs,
     endedAtMs,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* L2 reconciliation — project the serial floor → the LOCKED FleetRunSummary   */
+/* (@papercusp/bench-metrics, P-025). The rich SerialBacklogResult stays the    */
+/* per-arm record; these are the lean comparison/emit projection P-010's        */
+/* emitFleetRun({ summary }) + P-025's throughputMetrics consume.               */
+/* -------------------------------------------------------------------------- */
+
+/** Fleet arm id for the native serial-backlog floor — the L2 serial baseline (FleetArmId). */
+export const NATIVE_SERIAL_ARM = 'native-serial' as const;
+
+/**
+ * Project the M1 (diff) serial floor → FleetRunSummary (arm 'native-serial'), the throughput
+ * baseline P-025 divides the Hive's parallel `backlogDrainMs` into. `resolved` is supplied by the
+ * caller because M1 grading is POST-HOC (the pilot grades the diffs via the adapter/grader); the M2
+ * variant below knows it directly. `tasksZeroHumanGate` defaults to tasksAttempted (the native arm
+ * runs with no human gate). Emit via `emitFleetRun({ summary, ... })`.
+ */
+export function serialToFleetRunSummary(
+  result: SerialBacklogResult,
+  opts: { runId: string; suite: BenchSuite; resolved: number; tasksZeroHumanGate?: number },
+): FleetRunSummary {
+  return {
+    runId: opts.runId,
+    suite: opts.suite,
+    arm: NATIVE_SERIAL_ARM,
+    tasks: result.tasksAttempted,
+    resolved: opts.resolved,
+    wallClockMs: result.backlogDrainMs,
+    costUsd: result.totalCostUsd,
+    tokensTotal: result.totalTokensIn + result.totalTokensOut,
+    tasksZeroHumanGate: opts.tasksZeroHumanGate ?? result.tasksAttempted,
+    peakConcurrency: 1,
+  };
+}
+
+/**
+ * Project the M2 (Harbor in-container) serial floor → FleetRunSummary (arm 'native-serial').
+ * `resolved` is known directly — Harbor grades in-sandbox as each task finishes.
+ */
+export function terminalBenchSerialToFleetRunSummary(
+  result: TerminalBenchSerialResult,
+  opts: { runId: string; suite: BenchSuite; tasksZeroHumanGate?: number },
+): FleetRunSummary {
+  return {
+    runId: opts.runId,
+    suite: opts.suite,
+    arm: NATIVE_SERIAL_ARM,
+    tasks: result.tasksAttempted,
+    resolved: result.tasksResolved,
+    wallClockMs: result.backlogDrainMs,
+    costUsd: result.totalCostUsd,
+    tokensTotal: result.totalTokensIn + result.totalTokensOut,
+    tasksZeroHumanGate: opts.tasksZeroHumanGate ?? result.tasksAttempted,
+    peakConcurrency: 1,
   };
 }

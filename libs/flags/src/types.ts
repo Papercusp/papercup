@@ -579,6 +579,10 @@ export const FLAGS = {
   // records a non-re-derivable structural decision (split/drop/reapproach/expand/note)
   // durably on a node — the Queen disposes, a bee proposes; the commit-before-dispatch record.
   WORKITEM_AMEND: "papercusp-workitem-amend",
+  // plan-implementation-framework P-005 (deferred-expansion): when on, work_items:expand
+  // emits child work_items from an expand-here node (bee proposes, Queen disposes) — the
+  // record starts shallow and self-elaborates at the point of best context.
+  DEFERRED_EXPANSION: "papercusp-deferred-expansion",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -599,6 +603,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (exception to alpha flags-default-on): a new structural-amend surface
   // (plan-implementation-framework P-004 workitem-amend). Flip ON via the framework bake-off.
   [FLAGS.WORKITEM_AMEND]: false,
+  // DEFAULT OFF (exception to alpha flags-default-on): a new structural-expansion surface
+  // (plan-implementation-framework P-005 deferred-expansion). Flip ON via the framework bake-off.
+  [FLAGS.DEFERRED_EXPANSION]: false,
   // DEFAULT ON (alpha flags-default-on) — additive hive-control surfacing.
   [FLAGS.HIVE_CONTROL]: true,
   // DEFAULT ON (alpha flags-default-on) — additive read-only Health dashboard +

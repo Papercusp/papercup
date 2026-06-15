@@ -186,7 +186,7 @@ describe('installBlueprintFromCupboardCore', () => {
     await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\ndependencies: { plugins: ["ghost-plugin"] }');
     await expect(
       installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps()),
-    ).rejects.toThrow(/plugin dependencies unmet/);
+    ).rejects.toThrow(/dependencies unmet: ghost-plugin/);
   });
 
   it('does NOT fail missing plugins when the Cupboard was unreachable (transient outage)', async () => {

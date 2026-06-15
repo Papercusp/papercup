@@ -50,8 +50,9 @@ export interface InstallBlueprintCoreResult {
   abstract: boolean;
   source: string;
   installedTo: string;
-  /** The blueprint's declared dependencies, verbatim (tool-distribution D-002: tools/packs/plugins). */
-  dependencies: { tools: string[]; packs: string[]; plugins: string[] };
+  /** The blueprint's declared dependencies, verbatim (tool-distribution D-002:
+   *  tools/packs/plugins; blueprint-role-bundling P-007: spawned-blueprint closure). */
+  dependencies: { tools: string[]; packs: string[]; plugins: string[]; blueprints: string[] };
   /** The import-time dep-validation result (null when no deps are declared). */
   depCheck: BlueprintDependencyValidation | null;
 }
@@ -177,7 +178,12 @@ export async function installBlueprintFromCupboardCore(
     // full semantic validation (it requires a runnable shape); it only ever
     // appears as an `extends` parent.
     const abstract = raw.workItem == null && raw.spine == null;
-    let dependencies: { tools: string[]; packs: string[]; plugins: string[] } = { tools: [], packs: [], plugins: [] };
+    let dependencies: { tools: string[]; packs: string[]; plugins: string[]; blueprints: string[] } = {
+      tools: [],
+      packs: [],
+      plugins: [],
+      blueprints: [],
+    };
     if (!abstract) {
       const res = resolveAndValidateBlueprint(raw, deps.resolveExtends);
       if (res.parseError) {
@@ -187,11 +193,14 @@ export async function installBlueprintFromCupboardCore(
         const errs = (res.validation?.errors ?? []).map((e) => `${e.code}: ${e.message}`).join('; ');
         throw new InstallBlueprintError(`blueprint "${id}" is invalid: ${errs}`, 422);
       }
-      const d = res.blueprint!.dependencies as { tools?: string[]; packs?: string[]; plugins?: string[] } | undefined;
+      const d = res.blueprint!.dependencies as
+        | { tools?: string[]; packs?: string[]; plugins?: string[]; blueprints?: string[] }
+        | undefined;
       dependencies = {
         tools: d?.tools ?? [],
         packs: d?.packs ?? [],
         plugins: d?.plugins ?? [],
+        blueprints: d?.blueprints ?? [],
       };
     }
 
@@ -201,7 +210,12 @@ export async function installBlueprintFromCupboardCore(
     // are excluded from `missing` by the provider-aware validator); packs/
     // plugins hard-fail only when the Cupboard was actually reachable.
     let depCheck: BlueprintDependencyValidation | null = null;
-    if (dependencies.tools.length > 0 || dependencies.packs.length > 0 || dependencies.plugins.length > 0) {
+    if (
+      dependencies.tools.length > 0 ||
+      dependencies.packs.length > 0 ||
+      dependencies.plugins.length > 0 ||
+      dependencies.blueprints.length > 0
+    ) {
       const host = await deps.resolveHostSets();
       depCheck = validateBlueprintDependencies(dependencies, host);
       if (depCheck.missing.tools.length > 0) {
@@ -210,10 +224,13 @@ export async function installBlueprintFromCupboardCore(
           422,
         );
       }
-      const missingUnits = [...depCheck.missing.packs, ...depCheck.missing.plugins];
+      // pack/plugin/blueprint deps hard-fail only when the Cupboard was actually
+      // reachable — an installable dep the install path could still pull is not a
+      // hard miss, and an offline run can't prove a unit unavailable.
+      const missingUnits = [...depCheck.missing.packs, ...depCheck.missing.plugins, ...depCheck.missing.blueprints];
       if (host.cupboardReachable && missingUnits.length > 0) {
         throw new InstallBlueprintError(
-          `blueprint "${id}" pack/plugin dependencies unmet: ${missingUnits.join(', ')}`,
+          `blueprint "${id}" pack/plugin/blueprint dependencies unmet: ${missingUnits.join(', ')}`,
           422,
         );
       }

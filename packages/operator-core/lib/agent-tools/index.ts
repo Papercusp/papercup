@@ -428,6 +428,7 @@ import './work_items/tag';
 import './work_items/subscribe';
 import './work_items/comment';
 import './work_items/amend';
+import './work_items/expand';
 import './work_items/promote';
 // Blackboard tuple-space primitives (fleet-as-supervised-blackboard D-004): claim_next
 // is the associative `in` (self-select / work-steal via SKIP LOCKED); observe is `rd`.
