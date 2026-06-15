@@ -38,6 +38,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { markAdvSessionEnded } from './adv-sessions';
+import { interruptViaPty, findLiveHost } from './events/await/psu-pty-discovery';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -339,4 +340,159 @@ export async function findIdleLiveSessions(
     console.warn('[idle-session-reaper] findIdleLiveSessions failed (non-fatal):', (e as Error)?.message ?? e);
     return [];
   }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 2 (WRITE half): live-but-idle session TERMINATION — the actual D-007
+// event-loop-saturation fix. DOUBLE-GATED + busy-excluding + best-effort.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** How long to wait after the graceful Ctrl-C before escalating to SIGKILL. A
+ *  Ctrl-C ends the current turn; a healthy psu host then idles (we still kill it
+ *  — the goal is to free its operator/LISTEN/MCP footprint, not just end a turn),
+ *  but the brief pause lets a co-operating host exit cleanly first so the SIGKILL
+ *  is the exception, not the rule. */
+export const TERMINATE_GRACE_MS = 3000;
+
+export interface IdleLiveTerminateResult {
+  /** False when EITHER flag is off (a no-op). */
+  enabled: boolean;
+  /** Genuinely-idle live sessions the sweep tried to terminate. */
+  targeted: number;
+  /** Sessions marked ended (or that WOULD be, when dryRun). */
+  terminated: number;
+  terminatedIds: number[];
+  /** Sessions whose termination threw / failed (counted, never fatal). */
+  failed: number;
+  dryRun: boolean;
+}
+
+/** Injectable side-effects so the sweep unit-tests without real PG / pty / pids
+ *  (mirrors turn/interrupt.ts deps + the slice-1 pure-function seam). Production
+ *  defaults wire the live psu-pty + adv_sessions helpers. */
+export interface TerminateDeps {
+  /** Flag read; defaults to the real getFlag. */
+  isFlagOn: (flag: (typeof FLAGS)[keyof typeof FLAGS]) => Promise<boolean>;
+  /** The live-but-idle target list; defaults to findIdleLiveSessions. */
+  listIdle: (opts: { livenessMs?: number; idleMs?: number }) => Promise<IdleLiveSession[]>;
+  /** Graceful Ctrl-C into the owner's live psu-pty host; true on a clean write. */
+  gracefulInterrupt: (ownerId: string) => Promise<boolean>;
+  /** Resolve the owner's live host pid (for the SIGKILL escalation), or null. */
+  resolvePid: (ownerId: string) => number | null;
+  /** True iff the pid is still alive. */
+  pidAlive: (pid: number) => boolean;
+  /** Hard-kill the pid; true on success. */
+  sigkill: (pid: number) => boolean;
+  /** Mark the adv_session row ended in PG. */
+  markEnded: (advSessionId: number) => Promise<void>;
+  /** Pause between the Ctrl-C and the liveness re-check. */
+  wait: (ms: number) => Promise<void>;
+}
+
+function defaultPidAlive(pid: number): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM = alive but not ours to signal; ESRCH = gone.
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+const defaultTerminateDeps: TerminateDeps = {
+  isFlagOn: (flag) => getFlag(flag, 'system').catch(() => false),
+  listIdle: (opts) => findIdleLiveSessions(opts),
+  gracefulInterrupt: (ownerId) => interruptViaPty(ownerId, 'sigint').catch(() => false),
+  resolvePid: (ownerId) => findLiveHost(ownerId)?.pid ?? null,
+  pidAlive: defaultPidAlive,
+  sigkill: (pid) => {
+    try {
+      process.kill(pid, 'SIGKILL');
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  markEnded: (advSessionId) => markAdvSessionEnded(advSessionId, null),
+  wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+/**
+ * The WRITE half: terminate every genuinely LIVE-but-IDLE session (the D-007
+ * cohort that actually saturates the :3070 event loop). For each target:
+ *   1. send a graceful Ctrl-C over its managed-pty control socket (ends its turn),
+ *   2. wait TERMINATE_GRACE_MS, and if its host pid is STILL alive, SIGKILL it,
+ *   3. mark its adv_session row ended in PG (frees session-dir-gc + the roster).
+ *
+ * DOUBLE-GATED DEFAULT-OFF: a pure no-op unless BOTH IDLE_SESSION_REAPER (the
+ * slice-1 master switch) AND IDLE_SESSION_REAPER_TERMINATE (this destructive
+ * write half) are on. The target list (findIdleLiveSessions) ALREADY excludes
+ * busy owners via gatherBusyOwners (claim holders / in-flight wakes / running
+ * bees) and dead-process sessions — so this never touches a session holding a
+ * claim, mid-resume, or a fresh-but-quiet human. dryRun = plan + log, no kills /
+ * no PG writes. Best-effort: a per-session failure is counted (`failed`) and the
+ * sweep continues; the whole sweep never throws (it must not wedge the routine).
+ */
+export async function terminateIdleLiveSessions(
+  opts: { dryRun?: boolean; livenessMs?: number; idleMs?: number; deps?: Partial<TerminateDeps> } = {},
+): Promise<IdleLiveTerminateResult> {
+  const dryRun = !!opts.dryRun;
+  const deps: TerminateDeps = { ...defaultTerminateDeps, ...opts.deps };
+  const empty: IdleLiveTerminateResult = {
+    enabled: false,
+    targeted: 0,
+    terminated: 0,
+    terminatedIds: [],
+    failed: 0,
+    dryRun,
+  };
+
+  // Double-gate: both the master switch AND the destructive-write flag.
+  const [master, terminate] = await Promise.all([
+    deps.isFlagOn(FLAGS.IDLE_SESSION_REAPER).catch(() => false),
+    deps.isFlagOn(FLAGS.IDLE_SESSION_REAPER_TERMINATE).catch(() => false),
+  ]);
+  if (!master || !terminate) return empty;
+
+  let targets: IdleLiveSession[] = [];
+  try {
+    // findIdleLiveSessions already excludes busy owners + dead processes.
+    targets = await deps.listIdle({ livenessMs: opts.livenessMs, idleMs: opts.idleMs });
+  } catch (e) {
+    console.warn('[idle-session-reaper] terminate: target gather failed (non-fatal):', (e as Error)?.message ?? e);
+    return { ...empty, enabled: true };
+  }
+
+  const result: IdleLiveTerminateResult = { ...empty, enabled: true, targeted: targets.length };
+
+  for (const t of targets) {
+    try {
+      if (dryRun) {
+        // Plan only — no Ctrl-C, no kill, no PG write.
+        result.terminated += 1;
+        result.terminatedIds.push(t.advSessionId);
+        continue;
+      }
+      // 1. graceful Ctrl-C over the managed-pty control socket (ends the turn).
+      await deps.gracefulInterrupt(t.coordOwnerId);
+      // 2. give it a moment to exit, then SIGKILL the host pid if still alive.
+      await deps.wait(TERMINATE_GRACE_MS);
+      const pid = deps.resolvePid(t.coordOwnerId);
+      if (pid != null && deps.pidAlive(pid)) deps.sigkill(pid);
+      // 3. mark the row ended (re-checks ended_at IS NULL inside markAdvSessionEnded).
+      await deps.markEnded(t.advSessionId);
+      result.terminated += 1;
+      result.terminatedIds.push(t.advSessionId);
+    } catch (e) {
+      // Per-session isolation: count + continue, never break the sweep.
+      result.failed += 1;
+      console.warn(
+        `[idle-session-reaper] terminate failed for session ${t.advSessionId} (owner ${t.coordOwnerId}), non-fatal:`,
+        (e as Error)?.message ?? e,
+      );
+    }
+  }
+
+  return result;
 }

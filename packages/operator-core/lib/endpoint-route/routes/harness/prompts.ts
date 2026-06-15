@@ -87,7 +87,9 @@ const getPromptByRole = defineTool({
     let stored: string | null = null;
     try { stored = await getPromptOverride(activeWorkspaceId(), project.slug, role); } catch {}
     const def = committedDefault(project, role); // immutable repo default (or null)
-    const globalPath = harnessPath('prompts', `${role}.md`);
+    // The canonical base-library persona (Phase 5: the global prompts/ dir was deleted;
+    // the universal role library lives at blueprints/base/prompts/<role>.md).
+    const globalPath = harnessPath('blueprints', 'base', 'prompts', `${role}.md`);
     return Response.json({
       role,
       // effective value the editor shows: workspace override → committed default → ''

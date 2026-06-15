@@ -1,50 +1,60 @@
 /**
- * source-scope.test.ts — unit coverage for source.ts:resolvePlanScope, the
- * (PlanSourceOpts) → concrete (workspaceId, harnessSlug) PG-key resolver every
- * plans read/write funnels through.
+ * source-scope.test.ts — unit coverage for source.ts:resolvePlanScope and
+ * fill_workspace_id_from_projects, the (PlanSourceOpts) → concrete
+ * (workspaceId, harnessSlug) PG-key resolver every plans read/write funnels
+ * through (WI-148 / P-013 workspace-identity reconciliation, SAFE forward half).
  *
- * The pure decision cores (parser / lint / effective-status / evaluateSetContent)
- * are well-tested; resolvePlanScope's BRANCHING — the papercup-primary
- * short-circuit, the explicit-workspaceId bypass, and the unknown-harness →
- * DEFAULT_WORKSPACE_ID fallback (the resolveProject→null catch) — was not.
+ * The slug→workspace lookup against harness_shared.projects is injected via the
+ * `lookup` seam so every branch is exercised with no PG, no filesystem:
+ *   - the papercup-primary short-circuit (empty / '*' / 'all' / papercup),
+ *   - the explicit-workspaceId bypass,
+ *   - the projects-table resolution for a concrete slug,
+ *   - the fail-loud paths: unknown slug → THROW (no silent default), and a
+ *     same-name collision across workspaces → THROW.
  *
- * `resolveProject` (the registry lookup) is mocked so the branches are exercised
- * without a harness registry on disk. No PG, no filesystem.
+ * The most load-bearing assertion (the HARD INVARIANT): papercup / wildcard /
+ * empty STILL resolve to DEFAULT_WORKSPACE_ID. Flipping that without moving the
+ * data 404s every papercup plan — it's gated part-B, out of scope here.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-const H = vi.hoisted(() => ({
-  // Controls what the mocked registry lookup returns for a concrete slug.
-  resolveProject: vi.fn(),
-}));
-
-vi.mock('../../../harness-core', async (orig) => {
-  const actual = await orig<typeof import('../../../harness-core')>();
-  return { ...actual, resolveProject: H.resolveProject };
-});
-
-import { resolvePlanScope } from '../source';
+import {
+  resolvePlanScope,
+  fill_workspace_id_from_projects,
+  type ProjectsWorkspaceLookup,
+} from '../source';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { PAPERCUP_HARNESS_SLUG } from '../../../harness/register-papercup';
 
-beforeEach(() => {
-  H.resolveProject.mockReset();
-});
+/** A lookup seam that returns a fixed match list and records the slug it saw. */
+function lookupReturning(...workspaceIds: string[]): {
+  lookup: ProjectsWorkspaceLookup;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const lookup: ProjectsWorkspaceLookup = async (slug) => {
+    calls.push(slug);
+    return workspaceIds;
+  };
+  return { lookup, calls };
+}
 
-describe('resolvePlanScope — papercup-primary short-circuit', () => {
+describe('resolvePlanScope — papercup-primary short-circuit (HARD INVARIANT)', () => {
   it('no harness → papercup primary in the default workspace', async () => {
-    const r = await resolvePlanScope({});
+    const { lookup, calls } = lookupReturning('ws-should-not-be-used');
+    const r = await resolvePlanScope({ lookup });
     expect(r).toEqual({ workspaceId: DEFAULT_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
-    // The short-circuit never consults the registry.
-    expect(H.resolveProject).not.toHaveBeenCalled();
+    // The short-circuit never consults the projects table.
+    expect(calls).toEqual([]);
   });
 
   it.each(['*', 'all', PAPERCUP_HARNESS_SLUG])(
-    'the %s sentinel → papercup primary (no registry lookup)',
+    'the %s sentinel → papercup primary in DEFAULT_WORKSPACE_ID (no projects lookup)',
     async (slug) => {
-      const r = await resolvePlanScope({ harnessSlug: slug });
+      const { lookup, calls } = lookupReturning('ws-should-not-be-used');
+      const r = await resolvePlanScope({ harnessSlug: slug, lookup });
       expect(r).toEqual({ workspaceId: DEFAULT_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
-      expect(H.resolveProject).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
     },
   );
 
@@ -57,47 +67,81 @@ describe('resolvePlanScope — papercup-primary short-circuit', () => {
     const r = await resolvePlanScope({ harnessSlug: 'all', workspaceId: 'ws-xyz' });
     // For the all/papercup branch the supplied workspaceId is honored verbatim.
     expect(r).toEqual({ workspaceId: 'ws-xyz', harnessSlug: PAPERCUP_HARNESS_SLUG });
-    expect(H.resolveProject).not.toHaveBeenCalled();
   });
 });
 
 describe('resolvePlanScope — explicit workspaceId short-circuit (concrete slug)', () => {
-  it('a concrete slug + explicit workspaceId never hits the registry', async () => {
-    const r = await resolvePlanScope({ harnessSlug: 'my-harness', workspaceId: 'ws-7' });
+  it('a concrete slug + explicit workspaceId never hits the projects table', async () => {
+    const { lookup, calls } = lookupReturning('ws-from-projects');
+    const r = await resolvePlanScope({ harnessSlug: 'my-harness', workspaceId: 'ws-7', lookup });
     expect(r).toEqual({ workspaceId: 'ws-7', harnessSlug: 'my-harness' });
-    // The explicit workspace pins the scope — no resolveProject lookup.
-    expect(H.resolveProject).not.toHaveBeenCalled();
+    // The explicit workspace pins the scope — no projects lookup.
+    expect(calls).toEqual([]);
   });
 });
 
-describe('resolvePlanScope — concrete slug, workspace from the registry', () => {
-  it('resolves the slug to the registry-reported workspace', async () => {
-    H.resolveProject.mockResolvedValue({ slug: 'my-harness', path: '/x', workspaceId: 'ws-from-registry' });
-    const r = await resolvePlanScope({ harnessSlug: 'my-harness' });
-    expect(r).toEqual({ workspaceId: 'ws-from-registry', harnessSlug: 'my-harness' });
-    expect(H.resolveProject).toHaveBeenCalledWith('my-harness');
-  });
-
-  it('a registry hit WITHOUT a workspaceId falls back to DEFAULT', async () => {
-    // The cross-workspace fallback can return a project with no workspaceId field.
-    H.resolveProject.mockResolvedValue({ slug: 'my-harness', path: '/x' });
-    const r = await resolvePlanScope({ harnessSlug: 'my-harness' });
-    expect(r).toEqual({ workspaceId: DEFAULT_WORKSPACE_ID, harnessSlug: 'my-harness' });
+describe('resolvePlanScope — concrete slug, workspace from the projects table', () => {
+  it('resolves the slug to its single projects-table workspace', async () => {
+    const { lookup, calls } = lookupReturning('ws-from-projects');
+    const r = await resolvePlanScope({ harnessSlug: 'my-harness', lookup });
+    expect(r).toEqual({ workspaceId: 'ws-from-projects', harnessSlug: 'my-harness' });
+    expect(calls).toEqual(['my-harness']);
   });
 });
 
-describe('resolvePlanScope — unknown harness → DEFAULT_WORKSPACE_ID fallback', () => {
-  it('an unregistered slug (resolveProject → null) defaults the workspace', async () => {
-    H.resolveProject.mockResolvedValue(null);
-    const r = await resolvePlanScope({ harnessSlug: 'zzz-never-registered' });
-    // Workspace defaults; the harness slug is preserved so the SELECT just
-    // returns no rows (the documented behavior).
-    expect(r).toEqual({ workspaceId: DEFAULT_WORKSPACE_ID, harnessSlug: 'zzz-never-registered' });
+describe('resolvePlanScope — fail-loud (NO silent default)', () => {
+  it('an unregistered slug (0 matches) THROWS — never silently defaults', async () => {
+    const { lookup } = lookupReturning(); // no matches
+    await expect(resolvePlanScope({ harnessSlug: 'zzz-never-registered', lookup })).rejects.toThrow(
+      /not registered in harness_shared\.projects/,
+    );
   });
 
-  it('a registry THROW is swallowed → DEFAULT workspace (the catch branch)', async () => {
-    H.resolveProject.mockRejectedValue(new Error('registry unreadable'));
-    const r = await resolvePlanScope({ harnessSlug: 'broken-harness' });
-    expect(r).toEqual({ workspaceId: DEFAULT_WORKSPACE_ID, harnessSlug: 'broken-harness' });
+  it('a same-name collision across workspaces (2+ matches) THROWS', async () => {
+    const { lookup } = lookupReturning('ws-a', 'ws-b');
+    await expect(resolvePlanScope({ harnessSlug: 'dupe', lookup })).rejects.toThrow(
+      /resolves to 2 workspaces/,
+    );
+  });
+});
+
+describe('fill_workspace_id_from_projects', () => {
+  it.each(['', '   ', '*', 'all', PAPERCUP_HARNESS_SLUG, undefined])(
+    'returns DEFAULT_WORKSPACE_ID for the papercup/wildcard scope %s (gated part-B)',
+    async (slug) => {
+      const { lookup, calls } = lookupReturning('ws-should-not-be-used');
+      const ws = await fill_workspace_id_from_projects(slug, { lookup });
+      expect(ws).toBe(DEFAULT_WORKSPACE_ID);
+      // The papercup scope never consults the projects table — the gated flip
+      // to PAPERCUSP_WORKSPACE_ID is part B, out of scope.
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it('returns the single matching workspace_id', async () => {
+    const { lookup } = lookupReturning('ws-only');
+    expect(await fill_workspace_id_from_projects('some-harness', { lookup })).toBe('ws-only');
+  });
+
+  it('dedups identical matches down to one workspace', async () => {
+    const { lookup } = lookupReturning('ws-dup', 'ws-dup');
+    expect(await fill_workspace_id_from_projects('some-harness', { lookup })).toBe('ws-dup');
+  });
+
+  it('returns null on 0 matches (caller fails loud)', async () => {
+    const { lookup } = lookupReturning();
+    expect(await fill_workspace_id_from_projects('unknown', { lookup })).toBeNull();
+  });
+
+  it('THROWS on a same-name collision across distinct workspaces', async () => {
+    const { lookup } = lookupReturning('ws-a', 'ws-b');
+    await expect(fill_workspace_id_from_projects('dupe', { lookup })).rejects.toThrow(
+      /Ambiguous same-name collision/,
+    );
+  });
+
+  it('ignores empty/blank workspace_ids in the match set', async () => {
+    const { lookup } = lookupReturning('', '   ', 'ws-real');
+    expect(await fill_workspace_id_from_projects('some-harness', { lookup })).toBe('ws-real');
   });
 });

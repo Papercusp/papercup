@@ -1,12 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   planIdleSessionReap,
   classifyLiveIdle,
+  terminateIdleLiveSessions,
   IDLE_SESSION_GRACE_MS,
   IDLE_ACTIVITY_THRESHOLD_MS,
   type ReapableSession,
   type LiveIdleCandidate,
+  type IdleLiveSession,
+  type TerminateDeps,
 } from './idle-session-reaper';
+import { FLAGS } from '@papercusp/flags';
 
 const NOW = 1_000_000_000_000;
 const old = (agoMs: number): number => NOW - agoMs;
@@ -138,5 +142,157 @@ describe('classifyLiveIdle (P-011 slice 2: live-but-idle detection — the D-007
       nowMs: NOW,
     });
     expect(out).toEqual([atThreshold]);
+  });
+});
+
+describe('terminateIdleLiveSessions (P-011 slice 2 / WI-152: live-but-idle TERMINATION — write half)', () => {
+  const idleSession = (advSessionId: number, coordOwnerId: string): IdleLiveSession => ({
+    advSessionId,
+    coordOwnerId,
+    idleMs: 5 * 60 * 60 * 1000,
+  });
+
+  /** A deps harness whose side-effects are all spies — no real PG / pty / pid. */
+  function makeDeps(over: {
+    master?: boolean;
+    terminate?: boolean;
+    targets?: IdleLiveSession[];
+    pidByOwner?: Record<string, number | null>;
+    aliveByPid?: Record<number, boolean>;
+    markEndedImpl?: (id: number) => Promise<void>;
+    gracefulImpl?: (owner: string) => Promise<boolean>;
+  }) {
+    const calls = {
+      graceful: [] as string[],
+      sigkill: [] as number[],
+      marked: [] as number[],
+      listIdle: 0,
+    };
+    const deps: TerminateDeps = {
+      isFlagOn: vi.fn(async (flag) => {
+        if (flag === FLAGS.IDLE_SESSION_REAPER) return over.master ?? true;
+        if (flag === FLAGS.IDLE_SESSION_REAPER_TERMINATE) return over.terminate ?? true;
+        return false;
+      }),
+      listIdle: vi.fn(async () => {
+        calls.listIdle += 1;
+        return over.targets ?? [];
+      }),
+      gracefulInterrupt: vi.fn(async (owner: string) => {
+        calls.graceful.push(owner);
+        return over.gracefulImpl ? over.gracefulImpl(owner) : true;
+      }),
+      resolvePid: vi.fn((owner: string) => over.pidByOwner?.[owner] ?? 1234),
+      pidAlive: vi.fn((pid: number) => over.aliveByPid?.[pid] ?? true),
+      sigkill: vi.fn((pid: number) => {
+        calls.sigkill.push(pid);
+        return true;
+      }),
+      markEnded: vi.fn(async (id: number) => {
+        calls.marked.push(id);
+        if (over.markEndedImpl) await over.markEndedImpl(id);
+      }),
+      // Instant wait so the test never actually sleeps.
+      wait: vi.fn(async () => {}),
+    };
+    return { deps, calls };
+  }
+
+  it('DOUBLE-GATE: no-op (no listIdle, no kills) unless BOTH flags are on', async () => {
+    // master off
+    {
+      const { deps, calls } = makeDeps({ master: false, terminate: true, targets: [idleSession(1, 'su-a')] });
+      const r = await terminateIdleLiveSessions({ deps });
+      expect(r.enabled).toBe(false);
+      expect(r.targeted).toBe(0);
+      expect(calls.listIdle).toBe(0);
+      expect(calls.graceful).toHaveLength(0);
+      expect(calls.marked).toHaveLength(0);
+    }
+    // terminate off
+    {
+      const { deps, calls } = makeDeps({ master: true, terminate: false, targets: [idleSession(1, 'su-a')] });
+      const r = await terminateIdleLiveSessions({ deps });
+      expect(r.enabled).toBe(false);
+      expect(calls.listIdle).toBe(0);
+      expect(calls.marked).toHaveLength(0);
+    }
+    // both off
+    {
+      const { deps } = makeDeps({ master: false, terminate: false, targets: [idleSession(1, 'su-a')] });
+      expect((await terminateIdleLiveSessions({ deps })).enabled).toBe(false);
+    }
+  });
+
+  it('busy-owner exclusion: only the (already busy-filtered) listIdle targets are touched', async () => {
+    // The busy/dead exclusion lives in findIdleLiveSessions/gatherBusyOwners; the
+    // terminate sweep only ever acts on what listIdle hands it. A busy owner that
+    // listIdle filters out is therefore never interrupted/killed/ended.
+    const { deps, calls } = makeDeps({
+      targets: [idleSession(10, 'su-idle')], // 'su-busy' deliberately NOT in the list
+    });
+    const r = await terminateIdleLiveSessions({ deps });
+    expect(r.targeted).toBe(1);
+    expect(r.terminated).toBe(1);
+    expect(calls.graceful).toEqual(['su-idle']);
+    expect(calls.marked).toEqual([10]);
+    // never touched a non-targeted (busy) owner
+    expect(calls.graceful).not.toContain('su-busy');
+  });
+
+  it('dryRun: counts the targets but makes NO kills and NO PG writes', async () => {
+    const { deps, calls } = makeDeps({ targets: [idleSession(1, 'su-a'), idleSession(2, 'su-b')] });
+    const r = await terminateIdleLiveSessions({ dryRun: true, deps });
+    expect(r.dryRun).toBe(true);
+    expect(r.targeted).toBe(2);
+    expect(r.terminated).toBe(2);
+    expect(r.terminatedIds).toEqual([1, 2]);
+    expect(calls.graceful).toHaveLength(0); // no Ctrl-C
+    expect(calls.sigkill).toHaveLength(0); // no SIGKILL
+    expect(calls.marked).toHaveLength(0); // no PG write
+  });
+
+  it('successful termination: Ctrl-C → mark ended, SIGKILL only if still alive after grace', async () => {
+    const { deps, calls } = makeDeps({
+      targets: [idleSession(7, 'su-still-alive'), idleSession(8, 'su-exited')],
+      pidByOwner: { 'su-still-alive': 100, 'su-exited': 200 },
+      aliveByPid: { 100: true /* needs SIGKILL */, 200: false /* exited on Ctrl-C */ },
+    });
+    const r = await terminateIdleLiveSessions({ deps });
+    expect(r.terminated).toBe(2);
+    expect(r.terminatedIds).toEqual([7, 8]);
+    expect(r.failed).toBe(0);
+    expect(calls.graceful).toEqual(['su-still-alive', 'su-exited']);
+    expect(calls.sigkill).toEqual([100]); // only the still-alive pid is SIGKILLed
+    expect(calls.marked).toEqual([7, 8]); // both rows marked ended regardless
+  });
+
+  it('best-effort: a per-session failure is counted but does NOT break the sweep', async () => {
+    // The failure path logs a non-fatal console.warn (production behavior); the
+    // repo's vitest-fail-on-console requires it be mocked + asserted explicitly.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { deps, calls } = makeDeps({
+      targets: [idleSession(1, 'su-ok-1'), idleSession(2, 'su-boom'), idleSession(3, 'su-ok-2')],
+      markEndedImpl: async (id) => {
+        if (id === 2) throw new Error('PG write blew up');
+      },
+    });
+    const r = await terminateIdleLiveSessions({ deps });
+    expect(r.targeted).toBe(3);
+    expect(r.terminated).toBe(2); // the two that succeeded
+    expect(r.failed).toBe(1); // the one that threw
+    expect(r.terminatedIds).toEqual([1, 3]);
+    // the sweep kept going past the failure — the third owner was still interrupted
+    expect(calls.graceful).toEqual(['su-ok-1', 'su-boom', 'su-ok-2']);
+    expect(warn).toHaveBeenCalledTimes(1); // one per-session failure logged
+    warn.mockRestore();
+  });
+
+  it('empty target list: enabled, zero work, no kills', async () => {
+    const { deps, calls } = makeDeps({ targets: [] });
+    const r = await terminateIdleLiveSessions({ deps });
+    expect(r).toMatchObject({ enabled: true, targeted: 0, terminated: 0, failed: 0, terminatedIds: [] });
+    expect(calls.graceful).toHaveLength(0);
+    expect(calls.marked).toHaveLength(0);
   });
 });

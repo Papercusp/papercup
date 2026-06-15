@@ -1,0 +1,160 @@
+/**
+ * HEADLINE REPORT — hive vs queen-ablated (impartial-benchmark-suite-2026-06-15 / P-032).
+ * Reads both arms' run JSON (_xbench_compare.ts output) + the grader verdicts (resolved-<arm>.json
+ * from _xbench_grade.py) and emits the per-arm headline numbers + the hive−ablated delta + MAST rates
+ * (computed from each arm's coordEvents via the shipped substrateSignalRates). NO model calls — pure
+ * aggregation of the already-graded data. Throwaway launcher.
+ */
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { substrateSignalRates } from '@papercusp/bench-metrics';
+import type { CoordEvent } from '@papercusp/bench-metrics';
+
+const OUT_DIR = process.env.XBENCH_OUT_DIR ?? '/tmp/xbench-compare-out';
+
+interface ArmRun {
+  arm: string;
+  runId: string;
+  runError: string | null;
+  wallMs: number;
+  peakConcurrentBees: number;
+  taskCount: number;
+  nonEmptyDiffs: number;
+  totals: { costUsd: number; tokensIn: number; tokensOut: number };
+  perTask: Array<{
+    instanceId: string;
+    costUsd: number;
+    tokensIn: number;
+    tokensOut: number;
+    turns: number;
+    diffBytes: number;
+    stopReason: string;
+    generationError: string | null;
+  }>;
+  coordEvents: CoordEvent[];
+}
+interface Resolved {
+  arm: string;
+  resolved: number;
+  total: number;
+  perInstance: Record<string, boolean>;
+}
+
+function load(arm: string): { run: ArmRun; grade: Resolved | null } {
+  const run = JSON.parse(readFileSync(`${OUT_DIR}/${arm}.json`, 'utf8')) as ArmRun;
+  const gp = `${OUT_DIR}/resolved-${arm}.json`;
+  const grade = existsSync(gp) ? (JSON.parse(readFileSync(gp, 'utf8')) as Resolved) : null;
+  return { run, grade };
+}
+
+function pct(n: number, d: number): string {
+  return d > 0 ? `${((n / d) * 100).toFixed(1)}%` : 'n/a';
+}
+
+function armReport(arm: string) {
+  const { run, grade } = load(arm);
+  const resolved = grade ? grade.resolved : 0;
+  const graded = grade ? grade.total : 0;
+  const wallSec = run.wallMs / 1000;
+  const cost = run.totals.costUsd;
+  const mast = substrateSignalRates(run.coordEvents ?? [], run.taskCount);
+  return {
+    arm,
+    runId: run.runId,
+    runError: run.runError,
+    tasks: run.taskCount,
+    nonEmptyDiffs: run.nonEmptyDiffs,
+    graded,
+    resolved,
+    resolvedPct: graded > 0 ? resolved / graded : 0,
+    totalCostUsd: cost,
+    totalTokensIn: run.totals.tokensIn,
+    totalTokensOut: run.totals.tokensOut,
+    wallSec,
+    peakConcurrentBees: run.peakConcurrentBees,
+    tasksPerHour: wallSec > 0 ? run.taskCount / (wallSec / 3600) : 0,
+    tasksPerDollar: cost > 0 ? run.taskCount / cost : 0,
+    resolvedPerDollar: cost > 0 ? resolved / cost : 0,
+    costPerResolved: resolved > 0 ? cost / resolved : null,
+    coordEventCount: (run.coordEvents ?? []).length,
+    mast: {
+      duplicationRate: mast.duplicationRate,
+      coordinationBreakdownRate: mast.coordinationBreakdownRate,
+      misalignmentRate: mast.misalignmentRate,
+      redundantWorkRate: mast.redundantWorkRate,
+      counts: mast.counts,
+      coordinationActions: mast.coordinationActions,
+    },
+    perInstance: grade
+      ? run.perTask.map((t) => ({
+          instanceId: t.instanceId,
+          resolved: grade.perInstance[t.instanceId] ?? false,
+          costUsd: t.costUsd,
+          turns: t.turns,
+          diffBytes: t.diffBytes,
+          stopReason: t.stopReason,
+          generationError: t.generationError,
+        }))
+      : run.perTask,
+  };
+}
+
+function main() {
+  const hive = armReport('hive');
+  const abl = armReport('queen-ablated');
+
+  const delta = {
+    resolvedPct_pp: (hive.resolvedPct - abl.resolvedPct) * 100, // percentage points
+    resolved_count: hive.resolved - abl.resolved,
+    totalCostUsd: hive.totalCostUsd - abl.totalCostUsd,
+    totalTokensOut: hive.totalTokensOut - abl.totalTokensOut,
+    wallSec: hive.wallSec - abl.wallSec,
+    tasksPerHour: hive.tasksPerHour - abl.tasksPerHour,
+    resolvedPerDollar: hive.resolvedPerDollar - abl.resolvedPerDollar,
+    mast: {
+      duplicationRate: hive.mast.duplicationRate - abl.mast.duplicationRate,
+      coordinationBreakdownRate: hive.mast.coordinationBreakdownRate - abl.mast.coordinationBreakdownRate,
+      misalignmentRate: hive.mast.misalignmentRate - abl.mast.misalignmentRate,
+      redundantWorkRate: hive.mast.redundantWorkRate - abl.mast.redundantWorkRate,
+    },
+  };
+
+  const totalSpend = hive.totalCostUsd + abl.totalCostUsd;
+  const report = { generatedAt: new Date().toISOString(), hive, queenAblated: abl, delta, totalSpendUsd: totalSpend };
+  writeFileSync(`${OUT_DIR}/HEADLINE.json`, JSON.stringify(report, null, 2), 'utf8');
+
+  // Human-readable table
+  const L: string[] = [];
+  L.push('================ HEADLINE: hive vs queen-ablated (SWE-bench Pro) ================');
+  L.push(`tasks: ${hive.tasks} (same fixed set, same grader, same iso-budget/task)`);
+  L.push('');
+  const row = (label: string, h: string, a: string, d: string) =>
+    L.push(`${label.padEnd(26)} | hive ${h.padEnd(16)} | ablated ${a.padEnd(16)} | Δ ${d}`);
+  row('RESOLVED %', pct(hive.resolved, hive.graded), pct(abl.resolved, abl.graded), `${delta.resolvedPct_pp >= 0 ? '+' : ''}${delta.resolvedPct_pp.toFixed(1)}pp`);
+  row('RESOLVED count', `${hive.resolved}/${hive.graded}`, `${abl.resolved}/${abl.graded}`, `${delta.resolved_count >= 0 ? '+' : ''}${delta.resolved_count}`);
+  row('non-empty diffs', `${hive.nonEmptyDiffs}/${hive.tasks}`, `${abl.nonEmptyDiffs}/${abl.tasks}`, '');
+  row('total cost $', `$${hive.totalCostUsd.toFixed(2)}`, `$${abl.totalCostUsd.toFixed(2)}`, `${delta.totalCostUsd >= 0 ? '+' : ''}$${delta.totalCostUsd.toFixed(2)}`);
+  row('total tokens out', hive.totalTokensOut.toLocaleString(), abl.totalTokensOut.toLocaleString(), delta.totalTokensOut.toLocaleString());
+  row('wall-clock (s)', hive.wallSec.toFixed(0), abl.wallSec.toFixed(0), delta.wallSec.toFixed(0));
+  row('tasks / hour', hive.tasksPerHour.toFixed(2), abl.tasksPerHour.toFixed(2), delta.tasksPerHour.toFixed(2));
+  row('tasks / $', hive.tasksPerDollar.toFixed(2), abl.tasksPerDollar.toFixed(2), '');
+  row('resolved / $', hive.resolvedPerDollar.toFixed(3), abl.resolvedPerDollar.toFixed(3), `${delta.resolvedPerDollar >= 0 ? '+' : ''}${delta.resolvedPerDollar.toFixed(3)}`);
+  row('$ / resolved', hive.costPerResolved != null ? `$${hive.costPerResolved.toFixed(2)}` : 'n/a', abl.costPerResolved != null ? `$${abl.costPerResolved.toFixed(2)}` : 'n/a', '');
+  L.push('');
+  L.push('--- MAST coordination rates (objective, from coordEvents) ---');
+  row('duplication', hive.mast.duplicationRate.toFixed(3), abl.mast.duplicationRate.toFixed(3), delta.mast.duplicationRate.toFixed(3));
+  row('coord breakdown', hive.mast.coordinationBreakdownRate.toFixed(3), abl.mast.coordinationBreakdownRate.toFixed(3), delta.mast.coordinationBreakdownRate.toFixed(3));
+  row('misalignment', hive.mast.misalignmentRate.toFixed(3), abl.mast.misalignmentRate.toFixed(3), delta.mast.misalignmentRate.toFixed(3));
+  row('redundant work', hive.mast.redundantWorkRate.toFixed(3), abl.mast.redundantWorkRate.toFixed(3), delta.mast.redundantWorkRate.toFixed(3));
+  L.push('');
+  L.push(`coord events: hive=${hive.coordEventCount} ablated=${abl.coordEventCount}`);
+  L.push(`TOTAL SPEND (both arms): $${totalSpend.toFixed(2)}  (ceiling $10,000)`);
+  if (hive.runError) L.push(`⚠ hive runError: ${hive.runError}`);
+  if (abl.runError) L.push(`⚠ ablated runError: ${abl.runError}`);
+  L.push('=================================================================================');
+  const table = L.join('\n');
+  writeFileSync(`${OUT_DIR}/HEADLINE.txt`, table, 'utf8');
+  console.log(table);
+  console.log('\n[report] wrote HEADLINE.json + HEADLINE.txt');
+}
+
+main();

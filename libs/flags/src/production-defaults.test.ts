@@ -50,6 +50,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // reaper ENDS adv_session rows — DARK until proven on the fleet. OFF ⇒ a no-op;
   // the routine is also seeded INACTIVE. Bring-up: --active --dry-run, then flip.
   FLAGS.IDLE_SESSION_REAPER,
+  // operator-memory-and-psu-resilience-2026-06-14 P-011 / WI-152 (D-007): the
+  // reaper's WRITE half — TERMINATING a LIVE-but-idle session (Ctrl-C then
+  // SIGKILL). DELIBERATE dark ship (the explicit-owner-ask exception to the
+  // alpha default-on policy): a destructive, not-yet-proven reaper of live
+  // processes. DOUBLE-GATED (no-op unless IDLE_SESSION_REAPER is ALSO on) and
+  // busy-owner-excluding; OFF ⇒ a pure no-op. The owner flips it ON only after a
+  // live --dry-run proof on the fleet — same bring-up gate as its slice-1 sibling.
+  FLAGS.IDLE_SESSION_REAPER_TERMINATE,
   // hive-inference-gateway P-012: DELIBERATE dark ship — enabling reroutes
   // every bee's inference auth through a gateway service that must be
   // deployed first; flipping early would break the whole fleet's auth.

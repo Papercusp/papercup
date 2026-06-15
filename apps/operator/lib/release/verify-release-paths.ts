@@ -40,8 +40,8 @@ function promptsDirResolved(): string | null {
 /** loadScannerRolePrompt()'s first candidate (operator-prompt-system.ts). */
 function scannerPromptResolved(): string | null {
   const candidates = [
-    path.join(process.cwd(), '..', '..', 'libs', 'papercusp', 'packages', 'harness', 'prompts', 'scanner.md'),
-    path.join(process.cwd(), 'libs', 'papercusp', 'packages', 'harness', 'prompts', 'scanner.md'),
+    path.join(process.cwd(), '..', '..', 'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'base', 'prompts', 'scanner.md'),
+    path.join(process.cwd(), 'libs', 'papercusp', 'packages', 'harness', 'blueprints', 'base', 'prompts', 'scanner.md'),
   ];
   return candidates.find((p) => fs.existsSync(p)) ?? null;
 }

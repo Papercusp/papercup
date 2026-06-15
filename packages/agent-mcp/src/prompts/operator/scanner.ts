@@ -25,14 +25,14 @@ function findScannerMd(): { path: string; text: string } | null {
   const candidates = [
     ...(here
       ? [
-          resolve(here, '../../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
-          resolve(here, '../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
+          resolve(here, '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/scanner.md'),
+          resolve(here, '../../../../libs/papercusp/packages/harness/blueprints/base/prompts/scanner.md'),
         ]
       : []),
-    resolve(process.cwd(), 'libs/papercusp/packages/harness/prompts/scanner.md'),
+    resolve(process.cwd(), 'libs/papercusp/packages/harness/blueprints/base/prompts/scanner.md'),
     // The operator hosts run with cwd apps/operator (systemd units + Tauri
     // sidecar) — the repo root is two levels up from there.
-    resolve(process.cwd(), '../../libs/papercusp/packages/harness/prompts/scanner.md'),
+    resolve(process.cwd(), '../../libs/papercusp/packages/harness/blueprints/base/prompts/scanner.md'),
   ];
   for (const path of candidates) {
     const text = platform.readTextFileSync(path);

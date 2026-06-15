@@ -23,7 +23,7 @@ let origCwd: string;
  * cwd === <root>/apps/operator:
  *   resolveSqlDir       → <root>/libs/papercusp/libs/db/sql
  *   operatorPrompts     → <root>/apps/operator/prompts
- *   scannerPrompt       → <root>/libs/papercusp/packages/harness/prompts/scanner.md
+ *   scannerPrompt       → <root>/libs/papercusp/packages/harness/blueprints/base/prompts/scanner.md
  *   internalDocs        → <root>/apps/operator/public/internal/docs
  */
 function buildReleaseTree(root: string): void {
@@ -31,8 +31,8 @@ function buildReleaseTree(root: string): void {
   writeFileSync(join(root, 'libs/papercusp/libs/db/sql', '107-x.sql'), 'SELECT 1;');
   mkdirSync(join(root, 'apps/operator/prompts'), { recursive: true });
   writeFileSync(join(root, 'apps/operator/prompts', 'operator.md'), '# prompt');
-  mkdirSync(join(root, 'libs/papercusp/packages/harness/prompts'), { recursive: true });
-  writeFileSync(join(root, 'libs/papercusp/packages/harness/prompts', 'scanner.md'), '# scanner');
+  mkdirSync(join(root, 'libs/papercusp/packages/harness/blueprints/base/prompts'), { recursive: true });
+  writeFileSync(join(root, 'libs/papercusp/packages/harness/blueprints/base/prompts', 'scanner.md'), '# scanner');
   mkdirSync(join(root, 'apps/operator/public/internal/docs'), { recursive: true });
 }
 

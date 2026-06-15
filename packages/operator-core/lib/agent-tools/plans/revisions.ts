@@ -19,6 +19,7 @@
 
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { fill_workspace_id_from_projects } from './source';
 import { hashPlanContent } from './content-hash';
 import {
   resolveAgentIdentity,
@@ -108,7 +109,30 @@ export async function recordPlanRevision(
     const createdAt = Date.now();
 
     const harnessSlug = args.harnessSlug?.trim() || 'papercup';
-    const workspaceId = args.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+    // WI-148: resolve the revision's workspace from the SAME projects source of
+    // truth resolvePlanScope uses, instead of a silent `|| DEFAULT_WORKSPACE_ID`.
+    // An explicit workspaceId still wins (withPlanLock threads the resolved
+    // scope through). Otherwise fill_workspace_id_from_projects resolves it —
+    // for papercup that still lands at DEFAULT_WORKSPACE_ID (via the helper, not
+    // a silent ||). For an unresolvable NON-papercup slug the helper returns null
+    // / throws (same-name collision); revision recording is best-effort (D-014),
+    // so we warn+skip in that case rather than crash the plan write that already
+    // succeeded — the outer try/catch turns a throw into the same return null.
+    const explicitWs = args.workspaceId?.trim();
+    let workspaceId: string;
+    if (explicitWs) {
+      workspaceId = explicitWs;
+    } else {
+      const resolved = await fill_workspace_id_from_projects(harnessSlug);
+      if (resolved === null) {
+        console.warn(
+          `[plan_revisions] skipping revision for ${args.planSlug}: harness ` +
+            `'${harnessSlug}' has no workspace in harness_shared.projects (best-effort, D-014).`,
+        );
+        return null;
+      }
+      workspaceId = resolved;
+    }
     const seq = await withWorkspace(workspaceId, async (tx) => {
       // INSERT … SELECT against the same table: the aggregate
       // sub-select always yields exactly one row (COALESCE(MAX,0)+1 is

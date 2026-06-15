@@ -176,6 +176,20 @@ export const FLAGS = {
   // fleet (it ends session rows). Slice 1 only touches already-dead sessions; it
   // never terminates a live process (that's the follow-on slice).
   IDLE_SESSION_REAPER: "papercusp-idle-session-reaper",
+  // operator-memory-and-psu-resilience-2026-06-14 P-011 / WI-152 (D-007): the
+  // idle-session reaper's WRITE half — actually TERMINATING a LIVE-but-idle
+  // session (the D-007 event-loop-saturation cohort: alive + heartbeating but no
+  // genuine activity for the idle threshold, holding LISTEN conns + polling).
+  // DOUBLE-GATED: the terminate sweep no-ops unless BOTH this flag AND the
+  // sibling IDLE_SESSION_REAPER are on. DEFAULT OFF — DELIBERATE (the
+  // explicit-owner-ask exception to alpha flags-default-on): this is a
+  // DESTRUCTIVE, not-yet-proven reaper that Ctrl-C's then SIGKILLs a live
+  // process; the slice-1 sibling is also dark. It only ever targets genuinely-
+  // idle sessions (busy owners — claim / in-flight wake / running bee — are
+  // excluded); a terminated wake-armed session is safe because the wake-executor
+  // --resumes it. OFF ⇒ a pure no-op. Owner flips ON only after a live
+  // --dry-run proof on the fleet. Listed in KNOWN_DARK_FLAGS.
+  IDLE_SESSION_REAPER_TERMINATE: "papercusp-idle-session-reaper-terminate",
   // EI-316 (hive completion split-brain): when ON, work_items:create refuses a
   // title that embeds an existing OPEN work-item id (the "WI-118: …" mirror
   // signal) — the creator must work the given id, not fork a duplicate it then
@@ -714,6 +728,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.SUBSTRATE_LOG_SNAPSHOT]: true,
   // DEFAULT OFF — P-011 idle-session reaper ends adv_session rows; off until proven on the fleet.
   [FLAGS.IDLE_SESSION_REAPER]: false,
+  // DEFAULT OFF — P-011 / WI-152 (D-007) terminate half: Ctrl-C + SIGKILL of a LIVE-but-idle
+  // session. Destructive + double-gated (no-op unless IDLE_SESSION_REAPER is ALSO on); off until
+  // a live --dry-run proof. The explicit-owner-ask exception to alpha flags-default-on.
+  [FLAGS.IDLE_SESSION_REAPER_TERMINATE]: false,
   // ON by default (alpha flags-default-on policy + EI-316 correctness fix): the
   // guard fires only on a title that embeds an id resolving to a live OPEN
   // work-item — a near-zero-false-positive signal — and force:true is the

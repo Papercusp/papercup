@@ -155,32 +155,126 @@ function rowFromDb(r: PlanDbRow): PlanRow {
 }
 
 /**
+ * True for the harness slugs that resolve to the papercup primary harness:
+ * the empty / unset case, the SU wildcards `'*'` / `'all'`, and the literal
+ * papercup slug. Shared by `fill_workspace_id_from_projects` and
+ * `resolvePlanScope` so the "this is papercup" predicate is defined once.
+ */
+function isPapercupScope(raw: string | undefined): boolean {
+  return !raw || raw === '*' || raw === 'all' || raw === PAPERCUP_HARNESS_SLUG;
+}
+
+/** Injectable seam for the projects-table lookup — overridden in unit tests
+ *  so the slug→workspace resolution is exercised without a live PG. Returns
+ *  the DISTINCT set of workspace_ids that carry the slug. */
+export type ProjectsWorkspaceLookup = (slug: string) => Promise<string[]>;
+
+/**
+ * The canonical projects/registry lookup: which workspace_id(s) carry
+ * `harness_slug` in `harness_shared.projects`. That table is the authoritative
+ * slug→workspace mapping (migration 221 leg 1 — "the registry; authoritative
+ * where present"; UNIQUE (workspace_id, slug)), so a slug appears at most once
+ * per workspace but MAY appear in several (a same-name collision across
+ * workspaces). The cross-workspace read uses the admin-bypass connection
+ * (harness_admin, RLS off) because the calling context's workspace GUC is not
+ * necessarily the one that owns the slug.
+ */
+async function lookupProjectWorkspaceIds(slug: string): Promise<string[]> {
+  return withWorkspace(
+    '',
+    async (tx) => {
+      const rows = await tx<{ workspace_id: string }[]>`
+        SELECT DISTINCT workspace_id
+          FROM harness_shared.projects
+         WHERE slug = ${slug}
+           AND COALESCE(workspace_id, '') <> ''
+      `;
+      return rows.map((r) => r.workspace_id);
+    },
+    { bypassRlsForAdmin: true },
+  );
+}
+
+/**
+ * Resolve a harness slug → its workspace_id from the projects/registry source
+ * of truth (WI-148 / P-013 workspace-identity reconciliation, the SAFE forward
+ * half).
+ *
+ * Rules (fail-loud, no silent cross-workspace default):
+ *   - papercup / empty / '*' / 'all' / PAPERCUP_HARNESS_SLUG → DEFAULT_WORKSPACE_ID.
+ *     NOTE — GATED PART-B CUTOVER: papercup's plan/decision/revision data is all
+ *     stored under workspace_id='default' today. The owner-gated "part B" flips
+ *     this to PAPERCUSP_WORKSPACE_ID ('papercusp-workspace') *in lockstep with a
+ *     data move*; flipping it here WITHOUT moving the rows 404s every papercup
+ *     plan (including the live Queen's substrate). DO NOT change this branch
+ *     until that data move ships. See WI-148.
+ *   - a concrete other slug: look it up in harness_shared.projects.
+ *       0 matches  → null (caller decides how to fail).
+ *       1 match    → that workspace_id.
+ *       2+ matches → THROW (same-name collision across workspaces — fail loud
+ *                    rather than silently pick the wrong workspace).
+ */
+export async function fill_workspace_id_from_projects(
+  harnessSlug: string | undefined,
+  opts: { lookup?: ProjectsWorkspaceLookup } = {},
+): Promise<string | null> {
+  const raw = harnessSlug?.trim();
+  // Gated part-B cutover point — see the doc-comment above. Keep returning
+  // DEFAULT_WORKSPACE_ID until the lockstep flip + data move ships.
+  if (isPapercupScope(raw)) return DEFAULT_WORKSPACE_ID;
+
+  const lookup = opts.lookup ?? lookupProjectWorkspaceIds;
+  const matches = await lookup(raw!);
+  const distinct = [...new Set(matches.filter((w) => w && w.trim()))];
+  if (distinct.length === 0) return null;
+  if (distinct.length > 1) {
+    throw new Error(
+      `fill_workspace_id_from_projects: harness slug '${raw}' resolves to ` +
+        `${distinct.length} workspaces (${distinct.join(', ')}). Ambiguous same-name ` +
+        `collision across workspaces — pass an explicit workspaceId to disambiguate.`,
+    );
+  }
+  return distinct[0]!;
+}
+
+/**
  * Resolve a `PlanSourceOpts` to the concrete (workspaceId, harnessSlug) PG key.
  * No harness / the SU wildcard `'*'` / `'all'` / the papercup slug → the
- * papercup primary harness in its workspace. A concrete other slug → that
- * harness, whose workspace is looked up via the registry (cross-workspace
- * fallback, mirroring the old FS resolver) and defaulted to DEFAULT_WORKSPACE_ID.
+ * papercup primary harness in its workspace (DEFAULT_WORKSPACE_ID — the gated
+ * part-B flip lives in `fill_workspace_id_from_projects`). A concrete other slug
+ * → that harness, whose workspace is resolved from the projects source of truth;
+ * an unresolvable slug THROWS (no silent cross-workspace default — WI-148).
  */
 export async function resolvePlanScope(
-  opts: PlanSourceOpts = {},
+  opts: PlanSourceOpts & { lookup?: ProjectsWorkspaceLookup } = {},
 ): Promise<{ workspaceId: string; harnessSlug: string }> {
   const raw = opts.harnessSlug?.trim();
-  if (!raw || raw === '*' || raw === 'all' || raw === PAPERCUP_HARNESS_SLUG) {
+  if (isPapercupScope(raw)) {
+    // Papercup / wildcard branch — UNCHANGED from pre-WI-148: honor an explicit
+    // workspaceId, else DEFAULT_WORKSPACE_ID. The gated part-B flip to
+    // PAPERCUSP_WORKSPACE_ID lives in fill_workspace_id_from_projects.
     return {
       workspaceId: opts.workspaceId ?? DEFAULT_WORKSPACE_ID,
       harnessSlug: PAPERCUP_HARNESS_SLUG,
     };
   }
-  if (opts.workspaceId) return { workspaceId: opts.workspaceId, harnessSlug: raw };
-  let workspaceId = DEFAULT_WORKSPACE_ID;
-  try {
-    const project = await resolveProject(raw);
-    const ws = (project as { workspaceId?: string } | null | undefined)?.workspaceId;
-    if (ws) workspaceId = ws;
-  } catch {
-    // Unknown harness — default workspace; the SELECT simply returns no rows.
+  // A concrete non-papercup slug. An explicit workspaceId pins the scope.
+  if (opts.workspaceId) return { workspaceId: opts.workspaceId, harnessSlug: raw! };
+  // Otherwise resolve via the projects source of truth — and FAIL LOUD when the
+  // slug doesn't resolve, instead of silently defaulting to 'default' (which
+  // wrote a named harness's plans into the wrong workspace — the WI-148 bug).
+  const workspaceId = await fill_workspace_id_from_projects(raw, {
+    ...(opts.lookup ? { lookup: opts.lookup } : {}),
+  });
+  if (workspaceId === null) {
+    throw new Error(
+      `resolvePlanScope: harness '${raw}' is not registered in harness_shared.projects ` +
+        `in any workspace, so its plan workspace cannot be resolved. Register the harness, ` +
+        `or pass an explicit workspaceId. (Refusing to silently default to ` +
+        `'${DEFAULT_WORKSPACE_ID}' — WI-148.)`,
+    );
   }
-  return { workspaceId, harnessSlug: raw };
+  return { workspaceId, harnessSlug: raw! };
 }
 
 /** Synthetic stable locator for a plan (the old `.md` path) — display + lock key. */
