@@ -111,6 +111,10 @@ export async function resolveHiveMembership(
 export interface ScopeFilter {
   /** Restrict the survey to these harness slugs (frontier + plans). Omit/[] ⇒ all. */
   allowedHarnesses?: string[];
+  /** Restrict the PLAN view to these plan slugs — the owner's `eligiblePlans`
+   *  (owner-steering C-1): "pour bees only into these plans". Omit/[] ⇒ all. The
+   *  frontier (new unplaced work) is gated by pause + allowedHarnesses, not this. */
+  eligiblePlans?: string[];
   /** Hard pause: empty the frontier (the Queen places no new work). */
   pauseNewWork?: boolean;
   /** Timed pause: empty the frontier while `now < pausedUntil` (epoch ms). */
@@ -128,6 +132,12 @@ export function isNewWorkPaused(f: ScopeFilter | undefined, now: number): boolea
 export function inAllowedHarness(harnessSlug: string, f: ScopeFilter | undefined): boolean {
   if (!f?.allowedHarnesses || f.allowedHarnesses.length === 0) return true;
   return f.allowedHarnesses.includes(harnessSlug);
+}
+
+/** Does `planSlug` pass the filter's eligible-plans list? (pure; no list ⇒ allow all) */
+export function inEligiblePlans(planSlug: string, f: ScopeFilter | undefined): boolean {
+  if (!f?.eligiblePlans || f.eligiblePlans.length === 0) return true;
+  return f.eligiblePlans.includes(planSlug);
 }
 
 // ── Candidate builders (pure) ───────────────────────────────────────────────
@@ -443,7 +453,7 @@ export async function surveyHive(
   const frontierCandidates = readyFrontierRows.map((r) => frontierRowToCandidate(r, now));
 
   const [plans, frontier] = await Promise.all([
-    rankPlacements(planCandidates.filter((c) => inAllowedHarness(c.harness, sf))),
+    rankPlacements(planCandidates.filter((c) => inAllowedHarness(c.harness, sf) && inEligiblePlans(c.id, sf))),
     rankPlacements(frontierCandidates),
   ]);
 

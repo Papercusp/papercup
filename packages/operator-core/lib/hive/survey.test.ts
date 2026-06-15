@@ -238,6 +238,90 @@ describe('surveyHive (P-012 regression)', () => {
     expect(ready.frontier.map((c) => c.id)).toEqual(['WI-2']);
     expect(ready.frontierBlocked).toBe(0);
   });
+
+  // ── scopeFilter: pause + scope enforcement (queen-steering-panel C-2 / P-003) ──
+  const planItem = (id: string) => ({ id, status: 'todo' as const, text: '', importance: 'high' as const, blockedBy: [], decisionRefs: [], phase: null });
+
+  it('pauseNewWork empties the FRONTIER (no new work) but keeps started-plan momentum', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { pauseNewWork: true },
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup' ? [planRow({ planSlug: 'p1', harnessSlug: 'papercup', items: [planItem('a')] })] : [],
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-1', harness_slug: 'papercup' })],
+      }),
+    });
+    expect(survey.frontier).toEqual([]); // new unplaced work withheld while paused
+    expect(survey.plans.map((c) => c.id)).toContain('p1'); // existing plan momentum continues
+  });
+
+  it('pausedUntil empties the frontier while now < pausedUntil, restores it once expired', async () => {
+    const mkDeps = () =>
+      depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-1', harness_slug: 'papercup' })],
+      });
+    const paused = await surveyHive('default', 'papercup-hive', { scopeFilter: { pausedUntil: NOW + 60_000 }, deps: mkDeps() });
+    expect(paused.frontier).toEqual([]);
+    const resumed = await surveyHive('default', 'papercup-hive', { scopeFilter: { pausedUntil: NOW - 1 }, deps: mkDeps() });
+    expect(resumed.frontier.map((c) => c.id)).toContain('WI-1');
+  });
+
+  it('allowedHarnesses restricts the frontier to the allowed harness(es)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { allowedHarnesses: ['papercup'] },
+      deps: depsFor({
+        loadRegistry: async () => ({
+          projects: [
+            { slug: 'papercup', hive_slug: 'papercup-hive' },
+            { slug: 'other', hive_slug: 'papercup-hive' },
+          ],
+        }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [
+          frontierRow({ feature_id: 'WI-IN', harness_slug: 'papercup' }),
+          frontierRow({ feature_id: 'WI-OUT', harness_slug: 'other' }),
+        ],
+      }),
+    });
+    const ids = survey.frontier.map((c) => c.id);
+    expect(ids).toContain('WI-IN');
+    expect(ids).not.toContain('WI-OUT');
+  });
+
+  it('eligiblePlans restricts the PLAN view to the eligible plan slug(s)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { eligiblePlans: ['keep-plan'] },
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async (slug) =>
+          slug === 'papercup'
+            ? [
+                planRow({ planSlug: 'keep-plan', harnessSlug: 'papercup', items: [planItem('a')] }),
+                planRow({ planSlug: 'drop-plan', harnessSlug: 'papercup', items: [planItem('b')] }),
+              ]
+            : [],
+        fetchFrontier: async () => [],
+      }),
+    });
+    const ids = survey.plans.map((c) => c.id);
+    expect(ids).toContain('keep-plan');
+    expect(ids).not.toContain('drop-plan');
+  });
+
+  it('an empty/absent scopeFilter is a no-op (full survey)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: {},
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [frontierRow({ feature_id: 'WI-1', harness_slug: 'papercup' })],
+      }),
+    });
+    expect(survey.frontier.map((c) => c.id)).toContain('WI-1');
+  });
 });
 
 describe('filterReadyFrontier (W-01 / P-010 — the shared readiness, pure)', () => {

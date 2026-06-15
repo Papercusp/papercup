@@ -15,7 +15,7 @@
  * as `buildPrompt({ queenBrief })`, which places it in the volatile tail as a
  * `<system-reminder>` (never the cacheable preamble — D-001).
  */
-import { surveyHive } from './survey';
+import { surveyHive, type ScopeFilter } from './survey';
 import { getHiveCarryNote } from './wake';
 import { summarizeOpenPlacements, resolveQueenOwner } from './placement-watchdog';
 import { gatherFleetSignals } from '../curation/fleet-signals';
@@ -144,15 +144,33 @@ export async function computeQueenWakeBrief(
   opts: { wokeBy?: string } = {},
 ): Promise<string | null> {
   try {
+    // queen-steering-panel C-2 (P-003): read owner-steering ONCE up front (via the
+    // B-02 gatherOwnerSteering normalizer — returns the ACTIVE steering, or undefined
+    // when un-steered / expired) so it serves BOTH the survey's scopeFilter (scope +
+    // pause AT THE SOURCE) AND the brief's directive section. A pause empties the
+    // frontier (no new work); eligiblePlans restricts the plan view. The scopeFilter is
+    // built ONLY when steering actually constrains, so an un-steered Hive calls
+    // surveyHive exactly as before (fully backward-compatible).
+    const ownerSteering = await gatherOwnerSteering(workspaceId, installSlug);
+    const scopeFilter: ScopeFilter | undefined =
+      ownerSteering &&
+      (ownerSteering.pauseNewWork || ownerSteering.pausedUntil != null || ownerSteering.eligiblePlans.length > 0)
+        ? {
+            ...(ownerSteering.eligiblePlans.length > 0 ? { eligiblePlans: ownerSteering.eligiblePlans } : {}),
+            ...(ownerSteering.pauseNewWork ? { pauseNewWork: true } : {}),
+            ...(ownerSteering.pausedUntil != null ? { pausedUntil: ownerSteering.pausedUntil } : {}),
+          }
+        : undefined;
+
     // surveyHive is the CORE — if it throws, the whole brief is null and she falls
     // back to the survey tools. The other reads are individually fail-soft so one
     // flaky read degrades that section, never the whole brief (D-004 / D-014):
     //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
     //    internally fail-soft (returns empty);
     //  - carryNote / escalations — wrapped here.
-    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive, ownerSteering] =
+    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive] =
       await Promise.all([
-        surveyHive(workspaceId, installSlug),
+        scopeFilter ? surveyHive(workspaceId, installSlug, { scopeFilter }) : surveyHive(workspaceId, installSlug),
         getHiveCarryNote(workspaceId).catch(() => null),
         summarizeOpenPlacements(workspaceId, installSlug),
         gatherEscalations(),
@@ -160,7 +178,6 @@ export async function computeQueenWakeBrief(
         gatherBees(workspaceId),
         gatherInbox(workspaceId, installSlug),
         gatherOverwatchLiveness(workspaceId, installSlug),
-        gatherOwnerSteering(workspaceId, installSlug),
       ]);
     const wokeBy = opts.wokeBy?.trim();
     const floor = floorFromSurvey(survey, {

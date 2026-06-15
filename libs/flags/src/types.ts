@@ -575,6 +575,10 @@ export const FLAGS = {
   // touch-set overlaps a running bee's files or an already-admitted sibling — proactive
   // hive-scoped conflict avoidance (cross-hive collisions stay on reactive git-merge).
   TOUCH_SET_EXCLUSION: "papercusp-touch-set-exclusion",
+  // plan-implementation-framework P-004 (workitem-amend): when on, work_items:amend
+  // records a non-re-derivable structural decision (split/drop/reapproach/expand/note)
+  // durably on a node — the Queen disposes, a bee proposes; the commit-before-dispatch record.
+  WORKITEM_AMEND: "papercusp-workitem-amend",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -592,6 +596,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // admission (plan-implementation-framework P-002 touch-set-exclusion). Flip ON via
   // the framework bake-off once it beats the file-lock-only baseline.
   [FLAGS.TOUCH_SET_EXCLUSION]: false,
+  // DEFAULT OFF (exception to alpha flags-default-on): a new structural-amend surface
+  // (plan-implementation-framework P-004 workitem-amend). Flip ON via the framework bake-off.
+  [FLAGS.WORKITEM_AMEND]: false,
   // DEFAULT ON (alpha flags-default-on) — additive hive-control surfacing.
   [FLAGS.HIVE_CONTROL]: true,
   // DEFAULT ON (alpha flags-default-on) — additive read-only Health dashboard +

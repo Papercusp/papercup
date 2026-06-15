@@ -33,6 +33,7 @@ import {
   listUnplacedHiveFrontier,
   listNonTerminalPlacements,
 } from '../../hive/wake-frontier-guard';
+import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 
 const subscriptionSchema = z.object({
   on: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).describe(
@@ -110,10 +111,19 @@ export default defineTool({
     // she must drive to completion. Runs BEFORE any mutation so a refused
     // declaration doesn't partially apply. Flag-gated; force overrides.
     if (!wantsTime && !args.force && (await getFlag(FLAGS.HIVE_WAKE_FRONTIER_GUARD, 'system'))) {
-      const [frontierIds, openPlacementIds] = await Promise.all([
+      // queen-steering-panel B-03: when the owner has PAUSED new work (owner-steering
+      // C-1), the Queen is legitimately leaving the unplaced frontier alone — suppress
+      // the frontier leg so she can declare an idle/event-only wake. The drive-to-
+      // terminal leg (openPlacements) STILL applies: she must keep a cadence to finish
+      // in-flight work. Fail-soft: an unreadable steering store ⇒ the full guard.
+      const paused = await getOwnerSteering(workspaceId, installSlug, sql)
+        .then((s) => isPausedNow(s, Date.now()))
+        .catch(() => false);
+      const [frontierIdsRaw, openPlacementIds] = await Promise.all([
         listUnplacedHiveFrontier(sql, workspaceId, installSlug),
         listNonTerminalPlacements(sql, workspaceId, installSlug),
       ]);
+      const frontierIds = paused ? [] : frontierIdsRaw;
       const refusal = evaluateWakeFrontierGuard({ hasTimeWake: false, frontierIds, openPlacementIds });
       if (refusal) {
         return {
