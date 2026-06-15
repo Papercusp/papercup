@@ -42,11 +42,20 @@ import {
   type UserAction,
 } from './OperatorActionLog';
 
-afterEach(() => {
-  cleanup();
+function resetSync() {
   sync.data = [];
   sync.loading = false;
   sync.error = null;
+  // The component pins the last-seen rows into a module-global prefetch cache
+  // (survives mount/unmount). Clear it so a prior test's rows don't seed the
+  // next render (the seed would mask the empty/error branches).
+  (globalThis as { __recentActionsCache?: Map<string, unknown> }).__recentActionsCache?.clear();
+}
+
+beforeEach(resetSync);
+afterEach(() => {
+  cleanup();
+  resetSync();
 });
 
 describe('formatRelative', () => {

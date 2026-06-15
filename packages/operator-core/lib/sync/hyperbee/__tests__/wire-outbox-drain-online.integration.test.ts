@@ -159,9 +159,21 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
   for (const file of [
     'archive/102-substrate-outbox.sql',
     'archive/103-issues-workspace-id-fill-trigger.sql',
+    'archive/104-substrate-meta.sql', // the one-time-backfill marker table
   ]) {
     await sql.unsafe(readFileSync(join(SQL_DIR, file), 'utf8'));
   }
+
+  // Stamp the one-time-backfill `backfill_done` marker so wireOutboxForHarness's
+  // backfill SHORT-CIRCUITS (the seam under test is the live DRAIN, not the
+  // backfill, which is proven elsewhere and reads tables this minimal schema
+  // omits). Backfill failure is best-effort anyway — but skipping keeps the
+  // test deterministic + console-clean.
+  await sql`
+    INSERT INTO harness_shared.substrate_meta (workspace_id, harness_slug, key, value)
+    VALUES (${WORKSPACE_ID}, ${HARNESS_SLUG}, 'backfill_done', '0')
+    ON CONFLICT (workspace_id, harness_slug, key) DO NOTHING
+  `;
 
   // EI-79 step 2 (mig 181): mask the fed_ts LWW-guard column from the broad
   // capture compare (mirrors the proven setup), so an own-log merge-back doesn't

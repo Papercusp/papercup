@@ -57,7 +57,10 @@ describe('handleVanity host gating', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('404s the apex vanity host itself (no subdomain to look up)', async () => {
+  it('404s the apex vanity host itself WITHOUT a DB lookup (regression: apex once mis-derived a truncated subdomain)', async () => {
+    // Bug pinned: when host === vanityHost the old code passed the gate and ran
+    // `slice(0, -1)`, producing a garbage subdomain ("preview.papercuspai.co")
+    // and a spurious DB query instead of cleanly rejecting the apex.
     const res = await reqTo(VANITY_HOST);
     expect(res.status).toBe(404);
     expect(h.getProjectByVanity).not.toHaveBeenCalled();

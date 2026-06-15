@@ -33,6 +33,86 @@ type Smoke = { status: string };
 type FeatureRow = { status: string };
 type AgentRun = { harnessSlug?: string; ts: number };
 
+/**
+ * Pure health verdict — folds the per-query rows into the same shape the badge
+ * always rendered. Extracted from the component's useMemo so the branch logic
+ * (alive / escalated / feature tallies / ghost-rate / checks / overall-ok) is
+ * unit-testable without a sync transport. `lanesLoading` gates the verdict
+ * (returns null) exactly as the live badge does; `now` is injected for the
+ * lastRunAgeSeconds math.
+ */
+export function deriveHealth(input: {
+  lanesLoading: boolean;
+  lanes: readonly Lane[];
+  escalations: readonly Escalation[];
+  features: readonly FeatureRow[];
+  decisions: readonly Decision[];
+  checkpoints: readonly Checkpoint[];
+  smoke: readonly Smoke[];
+  lastRunMs: number;
+  now?: number;
+}): DerivedHealth | null {
+  if (input.lanesLoading) return null;
+
+  const now = input.now ?? Date.now();
+  const alive = input.lanes.length > 0;
+  const escalation = input.escalations[0]?.escalation;
+  const escalated = typeof escalation === 'string' && escalation.length > 0;
+
+  const features = input.features;
+  const total = features.length;
+  const passed = features.filter((f) => f.status === 'passed').length;
+  const failing = features.filter((f) => f.status === 'failing').length;
+  const inProgress = features.filter(
+    (f) => f.status === 'in_progress' || f.status === 'validating',
+  ).length;
+  const blocked = features.filter((f) => f.status === 'blocked').length;
+
+  const decisions = input.decisions;
+  const ghosts = decisions.filter((d) => d.isGhost).length;
+  const ghostRate = decisions.length > 0 ? ghosts / decisions.length : 0;
+
+  const pendingCheckpoints = input.checkpoints.filter((c) => !c.granted).length;
+  const smokeFail = input.smoke[0]?.status === 'fail';
+
+  const lastRunAgeSeconds = input.lastRunMs ? Math.floor((now - input.lastRunMs) / 1000) : null;
+
+  const checks: HealthCheck[] = [
+    { name: 'features_present', ok: total > 0 },
+    { name: 'not_escalated', ok: !escalated, detail: escalated ? 'see escalation.md' : undefined },
+    {
+      name: 'no_pending_checkpoints',
+      ok: pendingCheckpoints === 0,
+      detail: pendingCheckpoints > 0 ? `${pendingCheckpoints} awaiting grant` : undefined,
+    },
+    { name: 'smoke_passing', ok: !smokeFail, detail: smokeFail ? 'see smoke-failure.md' : undefined },
+    {
+      name: 'parser_clean',
+      ok: ghostRate < 0.05,
+      detail: ghostRate >= 0.05 ? `${(ghostRate * 100).toFixed(1)}% ghost decisions` : undefined,
+    },
+  ];
+  const ok = checks.every((c) => c.ok);
+
+  return {
+    ok,
+    alive,
+    escalated,
+    features: { total, passed, failing, inProgress, blocked },
+    lastRunAgeSeconds,
+    ghostRate,
+    checks,
+  };
+}
+
+/** The badge tone from a derived verdict: green when all checks pass, amber
+ *  when ≥70% pass, red otherwise. */
+export function healthTone(data: DerivedHealth): 'good' | 'warn' | 'bad' {
+  const passed = data.checks.filter((c) => c.ok).length;
+  const total = data.checks.length;
+  return data.ok ? 'good' : passed >= Math.ceil(total * 0.7) ? 'warn' : 'bad';
+}
+
 function HealthBadgeInner({ slug }: Props) {
   const workspaceId = useWorkspaceId();
 
@@ -94,63 +174,30 @@ function HealthBadgeInner({ slug }: Props) {
     return max;
   }, [runsQ.data]);
 
-  const data = useMemo<DerivedHealth | null>(() => {
-    // Wait for the small queries to land before producing a verdict.
-    // (featuresOrg/agentRunsOrg can be empty without blocking the badge.)
-    if (lanesQ.loading) return null;
-
-    // alive = an agent process is live in staging (harness_lanes is PID-swept,
-    // so a present row implies a live pid).
-    const alive = (lanesQ.data ?? []).length > 0;
-    const escalation = escalationsQ.data?.[0]?.escalation;
-    const escalated = typeof escalation === 'string' && escalation.length > 0;
-
-    const total = myFeatures.length;
-    const passed = myFeatures.filter((f) => f.status === 'passed').length;
-    const failing = myFeatures.filter((f) => f.status === 'failing').length;
-    const inProgress = myFeatures.filter(
-      (f) => f.status === 'in_progress' || f.status === 'validating',
-    ).length;
-    const blocked = myFeatures.filter((f) => f.status === 'blocked').length;
-
-    const decisions = decisionsQ.data ?? [];
-    const ghosts = decisions.filter((d) => d.isGhost).length;
-    const ghostRate = decisions.length > 0 ? ghosts / decisions.length : 0;
-
-    const pendingCheckpoints = (checkpointsQ.data ?? []).filter((c) => !c.granted).length;
-    const smokeFail = smokeQ.data?.[0]?.status === 'fail';
-
-    const lastRunAgeSeconds = lastRunMs ? Math.floor((Date.now() - lastRunMs) / 1000) : null;
-
-    const checks: HealthCheck[] = [
-      { name: 'features_present',    ok: total > 0 },
-      { name: 'not_escalated',       ok: !escalated, detail: escalated ? 'see escalation.md' : undefined },
-      { name: 'no_pending_checkpoints', ok: pendingCheckpoints === 0,
-        detail: pendingCheckpoints > 0 ? `${pendingCheckpoints} awaiting grant` : undefined },
-      { name: 'smoke_passing',       ok: !smokeFail, detail: smokeFail ? 'see smoke-failure.md' : undefined },
-      { name: 'parser_clean',        ok: ghostRate < 0.05,
-        detail: ghostRate >= 0.05 ? `${(ghostRate * 100).toFixed(1)}% ghost decisions` : undefined },
-    ];
-    const ok = checks.every((c) => c.ok);
-
-    return {
-      ok,
-      alive,
-      escalated,
-      features: { total, passed, failing, inProgress, blocked },
-      lastRunAgeSeconds,
-      ghostRate,
-      checks,
-    };
-  }, [
-    lanesQ.data, lanesQ.loading,
-    escalationsQ.data,
-    decisionsQ.data,
-    checkpointsQ.data,
-    smokeQ.data,
-    myFeatures,
-    lastRunMs,
-  ]);
+  const data = useMemo<DerivedHealth | null>(
+    () =>
+      deriveHealth({
+        // Wait for the small queries to land before producing a verdict.
+        // (featuresOrg/agentRunsOrg can be empty without blocking the badge.)
+        lanesLoading: lanesQ.loading,
+        lanes: lanesQ.data ?? [],
+        escalations: escalationsQ.data ?? [],
+        features: myFeatures,
+        decisions: decisionsQ.data ?? [],
+        checkpoints: checkpointsQ.data ?? [],
+        smoke: smokeQ.data ?? [],
+        lastRunMs,
+      }),
+    [
+      lanesQ.data, lanesQ.loading,
+      escalationsQ.data,
+      decisionsQ.data,
+      checkpointsQ.data,
+      smokeQ.data,
+      myFeatures,
+      lastRunMs,
+    ],
+  );
 
   if (!data) {
     return (
@@ -164,9 +211,7 @@ function HealthBadgeInner({ slug }: Props) {
 
   const passed = data.checks.filter((c) => c.ok).length;
   const total = data.checks.length;
-  const tone: 'good' | 'warn' | 'bad' = data.ok
-    ? 'good'
-    : passed >= Math.ceil(total * 0.7) ? 'warn' : 'bad';
+  const tone = healthTone(data);
 
   const tooltip = [
     `health checks: ${passed}/${total} passing`,

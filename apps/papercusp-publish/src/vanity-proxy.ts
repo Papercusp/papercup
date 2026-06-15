@@ -12,7 +12,11 @@ export async function handleVanity(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const host = url.hostname;
   const vanityHost = env.VANITY_HOST;
-  if (!host.endsWith('.' + vanityHost) && host !== vanityHost) {
+  // Only `<subdomain>.<vanityHost>` is a valid vanity address. The apex host
+  // itself has no subdomain — and the slice below would mis-derive one from it
+  // (`slice(0, -1)` drops the last char rather than yielding ''), so reject it
+  // here before any DB lookup rather than relying on the empty-string guard.
+  if (!host.endsWith('.' + vanityHost)) {
     return new Response('not found', { status: 404 });
   }
   const subdomain = host.slice(0, host.length - vanityHost.length - 1);

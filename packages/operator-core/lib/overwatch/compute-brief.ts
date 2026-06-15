@@ -286,6 +286,9 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
       cadenceOk: queen.cadenceOk,
       workingTracked: queen.workingTracked,
       nextFireAt: msToIso(queen.nextFireAt),
+      // Resolved by the async computeOverwatchBrief wrapper (needs DB) — the pure
+      // mapper leaves it null; SystemHealth.QueenHealth has no coord owner.
+      coordOwner: null,
     };
   }
 
@@ -377,6 +380,21 @@ export async function computeOverwatchBrief(
     const health = await computeSystemHealth(workspaceId);
     const brief = mapSystemHealthToBrief(health, hiveSlug);
     if (wokeBy) brief.wokeBy = wokeBy;
+    // Resolve the Queen's coord owner so the overwatch can address a nudge to her
+    // (it lands in her next wake brief's inbox — the SAME resolveQueenOwner the
+    // Queen's own brief reads, so addressing it delivers). Fail-soft: any error
+    // leaves coordOwner null → the persona escalates Queen-drift instead of nudging.
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { resolveQueenOwner } = await import('../hive/placement-watchdog');
+      const { sql } = getOrgPg();
+      brief.queen.coordOwner = await resolveQueenOwner(sql, workspaceId, hiveSlug);
+    } catch (e) {
+      console.warn(
+        `[overwatch-brief] could not resolve the Queen coord owner for '${hiveSlug}' — nudges will escalate:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
     return withAnomalies(brief);
   } catch (err) {
     console.warn(

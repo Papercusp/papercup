@@ -106,9 +106,9 @@ describe('parseAsColumnFilters (pure parser)', () => {
 // ─── the hook ────────────────────────────────────────────────────────────────
 
 function renderFilters(searchParams: string, rows: Row[] = ROWS) {
-  let lastSearch = '';
+  let lastSearch: URLSearchParams | null = null;
   const onUrlUpdate = (e: UrlUpdateEvent) => {
-    lastSearch = e.searchParams.toString();
+    lastSearch = e.searchParams;
   };
   const view = renderHook(() => useColumnFilters(COLS, rows, { ns: 'wi' }), {
     wrapper: withNuqsTestingAdapter({ searchParams, onUrlUpdate }),
@@ -154,16 +154,18 @@ describe('useColumnFilters (hook)', () => {
     expect(chips[1].label).toBe('Prio: ≥2');
   });
 
-  it('setValue writes the column value into the <ns>f param', () => {
+  it('setValue writes the column value into the <ns>f param', async () => {
     const { view, getLastSearch } = renderFilters('');
     act(() => {
       view.result.current.controller.setValue('name', 'al');
     });
-    expect(getLastSearch()).toContain('wif=name%3Aal');
+    // The nuqs update queue flushes asynchronously — wait for it.
+    await waitFor(() => expect(getLastSearch()).not.toBeNull());
+    expect(getLastSearch()!.get('wif')).toBe('name:al');
     expect(view.result.current.rows.map((r) => r.name)).toEqual(['alpha']);
   });
 
-  it('remove drops just that column; clearAll drops the whole param', () => {
+  it('remove drops just that column; clearAll drops the whole param', async () => {
     const { view, getLastSearch } = renderFilters('?wif=name:al~open:true');
     expect(view.result.current.rows.map((r) => r.name)).toEqual(['alpha']);
 
@@ -171,14 +173,16 @@ describe('useColumnFilters (hook)', () => {
       view.result.current.controller.remove('open');
     });
     // name filter still active → alpha remains, the URL no longer carries open.
+    await waitFor(() => expect(getLastSearch()).not.toBeNull());
     expect(view.result.current.rows.map((r) => r.name)).toEqual(['alpha']);
-    expect(getLastSearch()).not.toContain('open');
+    expect(getLastSearch()!.get('wif')).toBe('name:al');
 
     act(() => {
       view.result.current.clearAll();
     });
+    // Clearing to the default drops the param entirely.
+    await waitFor(() => expect(getLastSearch()!.has('wif')).toBe(false));
     expect(view.result.current.hasActive).toBe(false);
-    expect(getLastSearch()).toBe('');
     expect(view.result.current.rows).toBe(ROWS);
   });
 

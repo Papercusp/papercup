@@ -54,7 +54,7 @@ describe('improvements:digest tool envelope', () => {
 
   it('builds the digest from the read items, then ranks the human lane with the same items as candidates', async () => {
     await callTool({});
-    expect(mockBuild).toHaveBeenCalledWith(ITEMS, { nowMs: expect.any(Number) });
+    expect(mockBuild).toHaveBeenCalledWith(ITEMS, { nowMs: expect.any(Number), ownerFullAutonomy: false });
     expect(mockRank).toHaveBeenCalledWith(BUILT, { candidates: ITEMS });
   });
 

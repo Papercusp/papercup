@@ -44,6 +44,10 @@ export interface OverwatchQueenHealth {
   workingTracked: number;
   /** Her next scheduled wake (ISO-8601), or null if none is declared. */
   nextFireAt: string | null;
+  /** The Queen's resolvable coord owner id — `coord:send` a nudge here and it lands
+   *  in her next wake brief's inbox (she folds `readInbox(resolveQueenOwner)` into
+   *  every wake). null = no recent Queen session to address → escalate instead. */
+  coordOwner: string | null;
 }
 
 /** The worker fleet's health (`fleet:assignments` / `coord:presence`). */
@@ -204,7 +208,7 @@ export const DEFAULT_OVERWATCH_BRIEF_CAPS: OverwatchBriefCaps = {
 export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
   return {
     hiveSlug,
-    queen: { lastWakeAt: null, stalled: false, cadenceOk: true, workingTracked: 0, nextFireAt: null },
+    queen: { lastWakeAt: null, stalled: false, cadenceOk: true, workingTracked: 0, nextFireAt: null, coordOwner: null },
     bees: { running: 0, completed: 0, churning: 0, deadClaims: 0 },
     workFeed: { frontier: 0, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 },
     tokens: { pausedBuckets: [], gatewayFailovers: 0, gw429s: 0, accountsAvailable: 0 },
@@ -334,6 +338,13 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   out.push(
     `- last woke ${q.lastWakeAt ?? 'unknown'}${q.stalled ? ' [STALLED]' : ''} · cadence ${q.cadenceOk ? 'ok' : 'OFF'} · ` +
       `driving ${q.workingTracked} placement(s) · next ${q.nextFireAt ?? 'unscheduled'}`,
+  );
+  // The address for a Queen nudge: coord:send here lands in her next wake brief's
+  // inbox (she reads it every wake). null ⇒ no recent Queen session → escalate.
+  out.push(
+    q.coordOwner
+      ? `- nudge the Queen via \`coord:send { to: ['${q.coordOwner}'], wake: 'optimistic', summary, body }\` (lands in her next wake brief)`
+      : `- nudge channel: no resolvable Queen coord owner right now — ESCALATE Queen-targeted drift instead of nudging`,
   );
 
   const b = brief.bees;
