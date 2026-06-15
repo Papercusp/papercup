@@ -300,7 +300,7 @@ export default function LearningTab() {
               <Select
                 ariaLabel="Hive lens"
                 value={hive}
-                onChange={(v) => void setLhive(v)}
+                onChange={(v: string) => void setLhive(v)}
                 disabled={hives.length === 0}
                 placeholder={hives.length === 0 ? 'no hives yet' : undefined}
                 triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
@@ -444,7 +444,7 @@ function ImprovementsView({ hive }: { hive: string }) {
             <Select
               ariaLabel="Filter by who filed it"
               value={src ?? '__any__'}
-              onChange={(v) => void setSrc(v === '__any__' ? null : v)}
+              onChange={(v: string) => void setSrc(v === '__any__' ? null : v)}
               options={[
                 { value: '__any__', label: 'Any source' },
                 ...sources.map((s) => ({ value: s, label: s })),
@@ -663,10 +663,10 @@ interface GymSnapshot {
 }
 
 const GYM_STATUS_COLOR: Record<string, string> = {
-  accepted: '#34d399',
-  pending: '#fbbf24',
-  rejected: '#f87171',
-  superseded: '#94a3b8',
+  accepted: 'var(--good)',
+  pending: 'var(--warn)',
+  rejected: 'var(--bad)',
+  superseded: 'var(--fg-mute)',
 };
 
 function whenLabel(ms: number): string {
@@ -1723,7 +1723,7 @@ function LearningsView({ hive }: { hive: string }) {
           <Select
             ariaLabel="Filter by origin"
             value={lpack}
-            onChange={(v) => void setLpack(v)}
+            onChange={(v: string) => void setLpack(v)}
             options={[
               { value: 'all', label: 'everything' },
               { value: 'organic', label: 'hive-learned only' },
@@ -1794,7 +1794,7 @@ function LearningsView({ hive }: { hive: string }) {
               <Select
                 ariaLabel="Add a learning pack"
                 value={addPack}
-                onChange={(v) => setAddPack(v)}
+                onChange={(v: string) => setAddPack(v)}
                 placeholder="add a pack…"
                 options={installable.map((p) => ({
                   value: p.id,

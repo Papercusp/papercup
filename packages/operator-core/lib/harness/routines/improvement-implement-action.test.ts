@@ -157,7 +157,9 @@ describe('system:improvement-implement — dispatch ledger write path (consume-e
     await run();
 
     expect(ledgerFired).toEqual([
-      { workspaceId: 'ws-1', itemId: 'EI-1', attempt: 2, runnerHarness: 'improvement-runner-harness' },
+      // hiveSlug is null for an operator-scoped item (cand() defaults scope:'operator') —
+      // the P-012 per-hive dispatch stamp only resolves for `harness:` scopes.
+      { workspaceId: 'ws-1', itemId: 'EI-1', attempt: 2, runnerHarness: 'improvement-runner-harness', hiveSlug: null },
     ]);
     expect(ledgerResults).toEqual([{ dispatchId: 'd-1', result: { ok: true, spawnedRunId: 'launch-123-abc' } }]);
   });
