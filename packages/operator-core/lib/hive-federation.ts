@@ -50,15 +50,21 @@ export async function resolveHiveSwarmBinding(
   const hive = await getHiveBySlug(workspaceId, hiveHomeSlug);
   if (!hive) return null; // Hive identity not resolvable (e.g. un-backfilled)
 
-  // Gate: keep an OWNER's private/un-published Hive local-only (zero DHT
-  // footprint). But a JOINED (remote) Hive has NO owned meta on this peer — the
-  // joiner federates over it precisely because they joined it. Previously the
-  // `!meta` arm wrongly returned null for every joiner, so the OWNER re-keyed to
-  // the Hive-pubkey topic while the JOINER fell through to the gh:<repo_id>
-  // topic → the two peers sat on DIFFERENT swarm topics and never merged
-  // (EI-681). Only block when WE own it AND it is private.
-  const meta = await getOwnedHiveMeta(hiveHomeSlug, workspaceId);
-  if (meta && meta.visibility === 'private') return null;
+  // Gate. A JOINED (remote) Hive view federates over the Hive-pubkey topic —
+  // that is the whole reason the joiner joined it, and it MUST match the OWNER's
+  // re-key so both peers sit on the SAME topic. Before EI-681 the joiner had no
+  // `hives` identity row + no owned meta, so it fell through to the gh:<repo_id>
+  // topic while the OWNER re-keyed to the Hive-pubkey topic → the two peers sat
+  // on DIFFERENT swarm topics and a write never federated. An OWNED Hive only
+  // federates when the owner directory-published it public/invite; a private OR
+  // un-published (no meta = local-only) owned Hive stays local (zero DHT
+  // footprint — no privacy regression).
+  const reg = await loadHarnessRegistry(workspaceId);
+  const isRemoteJoined = reg.projects.find((p) => p.slug === hiveHomeSlug)?.remote_hive === true;
+  if (!isRemoteJoined) {
+    const meta = await getOwnedHiveMeta(hiveHomeSlug, workspaceId);
+    if (!meta || meta.visibility === 'private') return null;
+  }
 
   return { kind: 'hive', hive_pubkey: hive.pubkeyBase64 };
 }

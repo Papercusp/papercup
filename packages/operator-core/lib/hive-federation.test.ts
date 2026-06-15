@@ -17,7 +17,7 @@ type Vis = 'public' | 'invite' | 'private';
 
 let hives: Map<string, { homeSlug: string; pubkeyBase64: string }>;
 let metas: Map<string, { visibility: Vis }>;
-let projects: Array<{ slug: string; hive_slug?: string }>;
+let projects: Array<{ slug: string; hive_slug?: string; remote_hive?: boolean }>;
 
 beforeEach(() => {
   vi.resetModules();
@@ -101,5 +101,33 @@ describe('resolveHiveSwarmBinding — member harness (hive_slug)', () => {
     publishHive('myhive', 'public');
     projects = [{ slug: 'loner' }];
     expect(await resolve('loner')).toBeNull();
+  });
+});
+
+describe('resolveHiveSwarmBinding — JOINED (remote) Hive (EI-681)', () => {
+  it('a member of a JOINED hive federates over the hive-pubkey topic even with NO owned meta', async () => {
+    // The joiner has the remote identity row (pubkey) + a remote_hive view home,
+    // but NO owned directory meta (it never published — it joined). It must STILL
+    // re-key to the hive-pubkey topic to share the OWNER's topic.
+    hives.set('remotehive', { homeSlug: 'remotehive', pubkeyBase64: PUBKEY }); // no metas entry
+    projects = [
+      { slug: 'remotehive', remote_hive: true },
+      { slug: 'joined-member', hive_slug: 'remotehive' },
+    ];
+    expect(await resolve('joined-member')).toEqual({ kind: 'hive', hive_pubkey: PUBKEY });
+    // The remote view home itself also re-keys (consistency).
+    expect(await resolve('remotehive')).toEqual({ kind: 'hive', hive_pubkey: PUBKEY });
+  });
+
+  it('an UN-PUBLISHED OWNED hive (identity, no meta, NOT remote) still → null', async () => {
+    // Same "no meta" shape as a joined hive, but NOT remote_hive → it is a local
+    // owned hive that never published → must stay local (the local-only guard).
+    hives.set('ownedhive', { homeSlug: 'ownedhive', pubkeyBase64: PUBKEY });
+    projects = [
+      { slug: 'ownedhive' }, // no remote_hive flag
+      { slug: 'member-x', hive_slug: 'ownedhive' },
+    ];
+    expect(await resolve('member-x')).toBeNull();
+    expect(await resolve('ownedhive')).toBeNull();
   });
 });

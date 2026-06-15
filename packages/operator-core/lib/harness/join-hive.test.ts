@@ -10,6 +10,7 @@ import type { SeedGitSyncRoutineOpts } from './git-sync/git-sync-routine';
 import type { HarnessRegistry } from '../harness-registry';
 
 const TOPIC = 'a'.repeat(64);
+const HIVE_PUBKEY = 'p'.repeat(43) + '='; // a stand-in raw-32 base64 Ed25519 pubkey
 const link = (repo: string, id: number) =>
   `papercusp://harness?topic=${TOPIC}&github=acme%2F${repo}&repo_id=${id}`;
 
@@ -19,6 +20,12 @@ function fakes(initialProjects: HarnessRegistry['projects'] = []) {
     registry: [...initialProjects] as HarnessRegistry['projects'],
     dirs: [] as string[],
     seeded: [] as SeedGitSyncRoutineOpts[],
+    identities: [] as Array<{
+      workspaceId: string;
+      homeSlug: string;
+      pubkeyBase64: string;
+      keychainId: string;
+    }>,
   };
   const deps: JoinHiveDeps = {
     joinLink: async ({ slug, link: l }) => {
@@ -40,6 +47,10 @@ function fakes(initialProjects: HarnessRegistry['projects'] = []) {
     seedGitSync: async (opts) => {
       calls.seeded.push(opts);
       return { seeded: true, active: false, push: false, pushReason: 'joiner_side', cron: '0 0 * * * *' };
+    },
+    resolveHivePubkey: async () => HIVE_PUBKEY,
+    upsertHiveIdentity: async (input) => {
+      calls.identities.push(input);
     },
   };
   return { deps, calls };
@@ -238,5 +249,49 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     expect(res.ok).toBe(true);
     expect(calls.seeded).toEqual([]);
     expect(res.members[0].detail).toBe('joined'); // no git_sync suffix — nothing to seed
+  });
+
+  // EI-681: the joiner must materialize the remote Hive's IDENTITY (owner pubkey)
+  // so resolveHiveSwarmBinding re-keys its joined harnesses onto the SAME
+  // Hive-pubkey topic the owner uses (else the two peers sit on different topics
+  // and a write never federates).
+  it('materializes the remote Hive identity row with the owner pubkey (EI-681)', async () => {
+    const { deps, calls } = fakes();
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(calls.identities).toHaveLength(1);
+    expect(calls.identities[0]).toMatchObject({
+      workspaceId: 'ws',
+      homeSlug: 'shop-hive', // the local view slug == getHiveBySlug key
+      pubkeyBase64: HIVE_PUBKEY, // the OWNER's hive pubkey from discovery
+      keychainId: 'remote:shop-hive', // non-signing placeholder
+    });
+  });
+
+  it('join still succeeds when the owner pubkey is unavailable — no identity write', async () => {
+    const { deps, calls } = fakes();
+    deps.resolveHivePubkey = async () => null; // announce carried no pubkey
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(calls.identities).toEqual([]); // skipped, not crashed
+  });
+
+  it('an identity-write failure NEVER fails the join', async () => {
+    const { deps } = fakes();
+    deps.upsertHiveIdentity = async () => {
+      throw new Error('pg down');
+    };
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(res.hiveSlug).toBe('shop-hive');
   });
 });

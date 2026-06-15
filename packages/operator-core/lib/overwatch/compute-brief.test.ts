@@ -227,6 +227,7 @@ const workFeedData = (o: Partial<WorkFeedHealth> = {}): WorkFeedHealth => ({
   frontier: 0,
   frontierBlocked: 0,
   startedPlans: 0,
+  autoEligibleStuck: 0,
   deadRoutines: 0,
   deadRoutineNames: [],
   ...o,

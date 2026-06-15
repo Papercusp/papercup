@@ -119,10 +119,16 @@ describe('workItemsStatus', () => {
 
 describe('workFeedStatus', () => {
   const wf = (o: Partial<WorkFeedHealth> = {}): WorkFeedHealth => ({
-    frontier: 5, frontierBlocked: 1, startedPlans: 2, deadRoutines: 0, deadRoutineNames: [], ...o,
+    frontier: 5, frontierBlocked: 1, startedPlans: 2, autoEligibleStuck: 0, deadRoutines: 0, deadRoutineNames: [], ...o,
   });
   it('crit on a dead routine (EI-584 — starves the feed)', () => {
     expect(workFeedStatus(wf({ deadRoutines: 1, deadRoutineNames: ['hive-wake'] }))).toBe('crit');
+  });
+  it('warn when auto-eligible work is stuck at attempts:0 (ready work not flowing)', () => {
+    expect(workFeedStatus(wf({ autoEligibleStuck: 3 }))).toBe('warn');
+  });
+  it('crit (dead routine) dominates auto-stuck', () => {
+    expect(workFeedStatus(wf({ autoEligibleStuck: 3, deadRoutines: 1, deadRoutineNames: ['x'] }))).toBe('crit');
   });
   it('ok with a healthy feed (frontier depth alone is fine)', () => {
     expect(workFeedStatus(wf({ frontier: 500 }))).toBe('ok');

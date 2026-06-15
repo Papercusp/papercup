@@ -46,6 +46,7 @@ import {
   type SeedGitSyncRoutineOpts,
   type SeedGitSyncRoutineOutcome,
 } from './git-sync/git-sync-routine';
+import { insertHiveIfAbsent } from '../hive-store';
 
 // ── Shapes ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,35 @@ export interface JoinHiveDeps {
    *  default B-01's seedGitSyncRoutineForMember). NEVER fails the join — every
    *  outcome folds into the member's `detail`. */
   seedGitSync?: (opts: SeedGitSyncRoutineOpts) => Promise<SeedGitSyncRoutineOutcome>;
+  /** Resolve the discovered Hive's raw-32 base64 Ed25519 pubkey (default: the
+   *  directory's listDiscoveredHives). EI-681: the joiner needs the OWNER's HIVE
+   *  pubkey to re-key its joined harnesses onto the SAME federation topic the
+   *  owner uses — a member-link carries only the topic HASH, not the pubkey. */
+  resolveHivePubkey?: (workspaceId: string, hiveId: string) => Promise<string | null>;
+  /** Get-or-create the remote Hive's identity row (default: insertHiveIfAbsent).
+   *  Best-effort — a missing pubkey or a write failure NEVER fails the join. */
+  upsertHiveIdentity?: (input: {
+    workspaceId: string;
+    homeSlug: string;
+    pubkeyBase64: string;
+    keychainId: string;
+  }) => Promise<unknown>;
+}
+
+/** Resolve a discovered Hive's HIVE-identity pubkey from the local directory's
+ *  discovered set (the announce carries it; the member-link only carries the
+ *  topic hash). Returns null when absent — the caller skips the identity write. */
+async function defaultResolveHivePubkey(
+  _workspaceId: string,
+  hiveId: string,
+): Promise<string | null> {
+  try {
+    const { getHiveDirectory } = await import('../hive-directory-deps');
+    const hives = await getHiveDirectory().listDiscoveredHives({ includeExpired: true });
+    return hives.find((h) => h.hiveId === hiveId)?.hivePubkey ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function defaultJoinLink(input: {
@@ -230,6 +260,39 @@ export async function joinHiveAsView(
           ],
     };
   }, opts.workspaceId);
+
+  // 2b — EI-681: materialize the remote Hive's IDENTITY (the OWNER's HIVE pubkey)
+  //      so the joiner re-keys its joined harnesses onto the SAME Hive-pubkey
+  //      federation topic the owner uses. resolveHiveSwarmBinding needs
+  //      getHiveBySlug(home) to resolve a pubkey for the remote view home;
+  //      without this the joiner falls through to the gh:<repo_id> topic and the
+  //      two peers sit on DIFFERENT topics → a write never federates. The
+  //      member-link carries only the topic HASH, so the pubkey comes from the
+  //      discovery announce. Best-effort: a missing pubkey or a write failure
+  //      NEVER fails the join (the view + member joins already succeeded). The
+  //      keychain_id is a NON-SIGNING placeholder — a joiner never signs or
+  //      announces a Hive it does not own (this remote view "never announces",
+  //      per the §2 contract above), so the keypair-less identity is correct.
+  //      insertHiveIfAbsent is ON CONFLICT DO NOTHING, so a real OWNED identity
+  //      for this slug (if one ever exists) always wins.
+  const resolveHivePubkey = deps.resolveHivePubkey ?? defaultResolveHivePubkey;
+  const upsertHiveIdentity =
+    deps.upsertHiveIdentity ??
+    ((input: { workspaceId: string; homeSlug: string; pubkeyBase64: string; keychainId: string }) =>
+      insertHiveIfAbsent({ ...input, title: opts.title ?? opts.hiveId }));
+  try {
+    const pubkeyBase64 = await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null);
+    if (pubkeyBase64) {
+      await upsertHiveIdentity({
+        workspaceId: opts.workspaceId,
+        homeSlug: hiveSlug,
+        pubkeyBase64,
+        keychainId: `remote:${opts.hiveId}`,
+      });
+    }
+  } catch {
+    /* identity-view write is best-effort; never fail the join over it */
+  }
 
   // 3 — best-effort git-sync seeding per joined member clone (git-sync-any-hive
   //     P-003): joiner-side rows seed ACTIVE (D-008) + push:false (so a local
