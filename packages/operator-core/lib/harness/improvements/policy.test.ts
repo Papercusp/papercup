@@ -86,6 +86,54 @@ describe('classifyImprovement — protected keywords (pre-paths proxy)', () => {
   });
 });
 
+describe('classifyImprovement — OWNER FULL-AUTONOMY grant lifts the protected-path/keyword TCB (Phase 2)', () => {
+  const ON = { ownerFullAutonomy: true };
+  // A bug touching the deploy gate / flags / capability dispatch / migrations / the
+  // loop's own code: HUMAN by default (the TCB bar), AUTO once the owner grants full
+  // autonomy — both directions pinned (reversibility is the safety net).
+  const tcbBug = (paths: string[]) => cand({ id: 'fa', kind: 'bug', title: 'fix it', paths });
+  it('protected PATH bug → human OFF, auto ON', () => {
+    const bug = tcbBug(['packages/operator-core/lib/release/deploy.ts']);
+    expect(classifyImprovement(bug).tier).toBe('human');
+    const on = classifyImprovement(bug, DEFAULT_RISK_TIER_POLICY, ON);
+    expect(on.tier).toBe('auto');
+    expect(on.reasons.join(' ')).toMatch(/full-autonomy grant/);
+  });
+  it('flags / capability-TCB / migration paths all flip to auto under the grant', () => {
+    for (const p of [
+      'libs/flags/src/types.ts',
+      'libs/papercusp/libs/db/sql/140-x.sql',
+      'packages/operator-core/lib/harness/improvements/policy.ts',
+    ]) {
+      expect(classifyImprovement(tcbBug([p])).tier).toBe('human');
+      expect(classifyImprovement(tcbBug([p]), DEFAULT_RISK_TIER_POLICY, ON).tier).toBe('auto');
+    }
+  });
+  it('protected KEYWORD bug → human OFF, auto ON', () => {
+    const bug = cand({ id: 'fk', kind: 'bug', title: 'migration 131 collision' });
+    expect(classifyImprovement(bug).tier).toBe('human');
+    expect(classifyImprovement(bug, DEFAULT_RISK_TIER_POLICY, ON).tier).toBe('auto');
+  });
+  it('the grant does NOT lift the kind gate (autoKinds is a separate dial)', () => {
+    // kind=change is still not auto-eligible — the grant lifts the protected TCB, not autoKinds.
+    expect(classifyImprovement(cand({ id: 'fck', kind: 'change' }), DEFAULT_RISK_TIER_POLICY, ON).tier).toBe('human');
+  });
+  it('the grant does NOT lift needs-human routing', () => {
+    expect(
+      classifyImprovement(cand({ id: 'fnh', kind: 'bug', needsHuman: true }), DEFAULT_RISK_TIER_POLICY, ON).tier,
+    ).toBe('human');
+  });
+  it('the grant does NOT auto-dispatch infra-environment (a worker still cannot fix a down service)', () => {
+    const infra = cand({ id: 'fi', kind: 'bug', title: 'shop down', watchdogKey: 'service-down:shop' });
+    expect(classifyImprovement(infra, DEFAULT_RISK_TIER_POLICY, ON).tier).toBe('human');
+  });
+  it('partitionByTier threads the grant — a protected-path bug lands in the auto lane', () => {
+    const items = [tcbBug(['libs/flags/src/types.ts'])];
+    expect(partitionByTier(items).auto).toHaveLength(0);
+    expect(partitionByTier(items, DEFAULT_RISK_TIER_POLICY, { ownerFullAutonomy: true }).auto).toHaveLength(1);
+  });
+});
+
 describe('classifyImprovement — infra-environment never auto (EI-408 / D-002 / D-005)', () => {
   it('infra kind=bug via watchdog signal class → human (EI-187 service-down shape)', () => {
     const d = classifyImprovement(cand({ id: 'i1', kind: 'bug', title: 'Service shop is down', watchdogKey: 'service-down:shop' }));

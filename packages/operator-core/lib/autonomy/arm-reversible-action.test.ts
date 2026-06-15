@@ -26,9 +26,9 @@ function policy(ceiling: AutonomyCategoryPolicy['ceiling']): (c: string) => Prom
     ({ category, ceiling, locked: false, graduatedLevel: ceiling, thresholdOverrides: {}, ownerOverride: null }) as AutonomyCategoryPolicy;
 }
 /** ARMED + permissive: the gate rules `auto` for any non-protected mapped action. */
-const armedAuto: DeciderDeps = { isArmed: async () => true, getPolicy: policy('critical') };
+const armedAuto: DeciderDeps = { isArmed: async () => true, isFullAutonomy: async () => false, getPolicy: policy('critical') };
 /** The shipped default — disarmed; the gate gates EVERYTHING. */
-const disarmed: DeciderDeps = { isArmed: async () => false, getPolicy: policy('never-auto') };
+const disarmed: DeciderDeps = { isArmed: async () => false, isFullAutonomy: async () => false, getPolicy: policy('never-auto') };
 
 function makeDeps(decider: DeciderDeps, over: Partial<ArmReversibleDeps> = {}): ArmReversibleDeps {
   return {

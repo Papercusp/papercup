@@ -5,7 +5,7 @@
  * filesystem (corestore / autobase boot is exercised in its own suites).
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,7 @@ import {
   closeAllBootedHarnesses,
   closeBootedHarness,
   defaultResolveSwarmBinding,
+  ensureSendSideWired,
   getBootedHarness,
   listBootedHandles,
   rebootHarness,
@@ -317,5 +318,85 @@ describe('boot-all — Phase 11 P-078 swarm-binding resolution', () => {
     });
     expect(result.attempted).toBe(0);
     expect(calls).toBe(0);
+  });
+});
+
+describe('ensureSendSideWired — EI-521: send-side wiring is idempotent + retryable', () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    errSpy.mockRestore();
+  });
+
+  it('a transient outbox-wiring failure is RETRIED on the next call (not permanently skipped)', async () => {
+    const handle = fakeHandle('ws-wire-retry', 'h');
+    let attempt = 0;
+    const wireOutbox = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('getOrgPg hiccup'); // first boot fails
+    });
+    const wirePresence = vi.fn(async () => {});
+
+    // Call 1: outbox throws → NOT marked wired; presence succeeds → wired.
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+
+    // Call 2: outbox is re-attempted (the EI-521 fix — previously this was
+    // skipped forever because the handle was already cached) → now succeeds;
+    // presence already wired → skipped.
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(2);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+
+    // Call 3: both wired → no-op (no further wiring attempts).
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(2);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+  });
+
+  it('concurrent calls COALESCE — a step never double-starts (one drain loop, not two)', async () => {
+    const handle = fakeHandle('ws-wire-coalesce', 'h');
+    let resolveOutbox: (() => void) | undefined;
+    const wireOutbox = vi.fn(
+      () =>
+        new Promise<void>((res) => {
+          resolveOutbox = res;
+        }),
+    );
+    const wirePresence = vi.fn(async () => {});
+
+    // Fire two concurrent calls while the first is still in-flight.
+    const p1 = ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    const p2 = ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    // The second call coalesces onto the first's in-flight promise — wireOutbox
+    // started exactly once (a second startOutboxDrain would double-append/GC).
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+    resolveOutbox?.();
+    await Promise.all([p1, p2]);
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+  });
+
+  it('a presence-wiring failure does NOT block the outbox drain (and presence retries independently)', async () => {
+    const handle = fakeHandle('ws-wire-presence-fail', 'h');
+    const wireOutbox = vi.fn(async () => {});
+    let presenceAttempt = 0;
+    const wirePresence = vi.fn(async () => {
+      presenceAttempt += 1;
+      if (presenceAttempt === 1) throw new Error('presence announce failed');
+    });
+
+    // Call 1: outbox wired (the critical send-side path), presence throws → not wired.
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+
+    // Call 2: outbox already wired → NOT re-attempted; presence retried → succeeds.
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox, 'outbox must not re-wire after success').toHaveBeenCalledTimes(1);
+    expect(wirePresence).toHaveBeenCalledTimes(2);
   });
 });

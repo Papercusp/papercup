@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
+import { readOwnerFullAutonomyGrant } from '../../harness/improvements/full-autonomy-grant';
 import { applyHumanQueueRanking, humanQueueRankerSpec, type RankedHumanQueueItem } from '../../queue-ranker/human-queue';
 import { triageIdea, summarizeTriages, type IdeaType, type TriageDecision } from '../../harness/improvements/triage';
 import { applyTriageDecision } from '../../harness/improvements/triage-core';
@@ -57,7 +58,13 @@ export default defineTool({
     // Queen's triage walk follows the same order the digest, the tab, and the
     // owner inbox show, with each item carrying its rank.features breakdown.
     const items = await readImprovementItems({ state: 'open', limit: 100, harnessSlug: args.harnessSlug });
-    const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now() }), { candidates: items });
+    // The OWNER FULL-AUTONOMY grant (Phase 2): the Queen's recorded triage must match the
+    // live dispatch — when ON, protected-surface kind=bugs route to the auto-implement lane.
+    const { activeWorkspaceId } = await import('../../workspace-registry');
+    const principalWs = ctx?.principal?.workspaceId;
+    const ws = principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId();
+    const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ws);
+    const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now(), ownerFullAutonomy }), { candidates: items });
 
     // Summary mode: just show the breakdown
     if (!args.mode || args.mode === 'summary') {

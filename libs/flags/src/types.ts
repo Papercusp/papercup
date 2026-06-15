@@ -437,6 +437,26 @@ export const FLAGS = {
   // consume-edges live proof. The decider's default deps fail-DARK on a flag-IO
   // error so a hiccup can never arm autonomy. Surfaced loudly as the pending P-092 flip.
   QUEEN_AUTONOMY_ARMED: "papercusp-queen-autonomy-armed",
+  // queen-autonomy-and-selffeed-fix-2026-06-15 Phase 2 (P-001/P-002): the OWNER
+  // FULL-AUTONOMY grant — the reversible knob the owner flips to let the Queen
+  // auto-decide the ENTIRE residue the per-category ceilings can't reach. When ON,
+  // (1) the autonomy decider (lib/autonomy/decider.ts) returns `auto` for the
+  // categorical hard-gates too — `authority:'owner'`, protected/locked categories,
+  // irreversible actions, above-ceiling — and graduation:* ratification asks, so the
+  // Queen widens her own ceilings without pausing; and (2) the self-improvement
+  // auto-implement loop's risk-tier policy (harness/improvements/policy.ts) lifts the
+  // `protectedPathPatterns` + `protectedKeywords` TCB bars, so a kind=bug touching the
+  // deploy gate / flags / capability dispatch / migrations / the loop's own code is
+  // auto-implement-eligible (still separately gated by IMPROVEMENT_AUTO_IMPLEMENT,
+  // default OFF, + the release-manager at deploy). This is the recursive-self-
+  // improvement boundary — the owner was warned it removes the last human check on the
+  // system widening its own ceilings and editing its own safety machinery, and chose
+  // it (knob scope = "decision gate + implement TCB"). OFF by default — DELIBERATE, NOT
+  // the alpha flags-default-on policy; the decider/loop fail-DARK on a flag-IO error.
+  // REVERSIBLE: flipping it OFF restores today's gated residue VERBATIM (the safety
+  // net for an alpha — pinned both directions in tests). Audited via the flag change +
+  // the decision ledger (every auto decision records `owner-full-autonomy-grant`).
+  QUEEN_FULL_AUTONOMY: "papercusp-queen-full-autonomy",
   // queen-autonomy-policy-2026-06-13 B-15 (P-030): the owner control surface —
   // /settings/autonomy, where the owner sets per-category risk ceilings / locks
   // and sees the earned graduated + derived effective level. ON by default (alpha
@@ -891,6 +911,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // behavior-neutral, D-007). The owner's P-092 act flips it ON — and even then
   // every category ships never-auto (D-005), so arming alone auto-decides nothing.
   [FLAGS.QUEEN_AUTONOMY_ARMED]: false,
+  // OFF by default — DELIBERATE (queen-autonomy-and-selffeed-fix Phase 2): the OWNER
+  // FULL-AUTONOMY grant. ON lets the Queen auto-decide the categorical residue
+  // (owner-authority / protected / irreversible / graduation:*) AND lifts the auto-
+  // implement loop's protected-path TCB. Recursive-self-improvement boundary — owner
+  // flips it deliberately; reversible (OFF restores today's gates verbatim).
+  [FLAGS.QUEEN_FULL_AUTONOMY]: false,
   // ON by default (alpha flags-default-on policy) — the owner control surface
   // (B-15) reads + writes the already-audited never-auto policy and arms nothing;
   // OFF hides the /settings/autonomy nav entry.

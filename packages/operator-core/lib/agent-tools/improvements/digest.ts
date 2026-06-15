@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
+import { readOwnerFullAutonomyGrant } from '../../harness/improvements/full-autonomy-grant';
 import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
 
 export default defineTool({
@@ -39,10 +40,16 @@ export default defineTool({
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     const items = await readImprovementItems({ state: args.state, limit: args.limit, harnessSlug: args.harnessSlug });
+    // The OWNER FULL-AUTONOMY grant (Phase 2): keep this review lens consistent with the
+    // live dispatch — when ON, protected-surface kind=bugs show in the auto lane.
+    const { activeWorkspaceId } = await import('../../workspace-registry');
+    const principalWs = ctx?.principal?.workspaceId;
+    const ws = principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId();
+    const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ws);
     // Human lane ordered by the ONE ranker (frontier P-040; blocking impact is
     // feature #1); same enrichment the Learning tab resolver applies, so the
     // shapes can't drift.
-    const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now() }), { candidates: items });
+    const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now(), ownerFullAutonomy }), { candidates: items });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, digest }) }] };
   },
 });

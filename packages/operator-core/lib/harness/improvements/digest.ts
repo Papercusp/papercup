@@ -141,6 +141,13 @@ export interface BuildDigestOptions {
   policy?: RiskTierPolicy;
   /** Now, in ms — passed for deterministic tests; the tool passes Date.now(). */
   nowMs?: number;
+  /**
+   * The OWNER FULL-AUTONOMY grant (`FLAGS.QUEEN_FULL_AUTONOMY`, Phase 2). When true the
+   * tier split lifts the protected-path/keyword TCB bars (see {@link classifyImprovement}),
+   * so a protected-surface kind=bug lands in the auto lane. The IO boundary reads the flag;
+   * defaults off (today's classification). Display surfaces that omit it render the baseline.
+   */
+  ownerFullAutonomy?: boolean;
 }
 
 /** Normalize a title into a dedup signature: strip a leading `[kind]`, lowercase,
@@ -326,7 +333,9 @@ export function buildDigest(
 ): ImprovementDigest {
   const policy = opts.policy ?? DEFAULT_RISK_TIER_POLICY;
   const nowMs = opts.nowMs ?? Date.now();
-  const { decisions } = partitionByTier(candidates, policy);
+  const { decisions } = partitionByTier(candidates, policy, {
+    ...(opts.ownerFullAutonomy !== undefined ? { ownerFullAutonomy: opts.ownerFullAutonomy } : {}),
+  });
 
   const byKind: Record<string, number> = {};
   const bySeverity: Record<string, number> = {};

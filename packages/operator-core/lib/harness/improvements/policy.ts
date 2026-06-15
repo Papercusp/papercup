@@ -187,6 +187,23 @@ export interface TierDecision {
   protectedHit?: string;
 }
 
+/** Per-call classification options (queen-autonomy-and-selffeed-fix Phase 2). */
+export interface ClassifyOptions {
+  /**
+   * The OWNER FULL-AUTONOMY grant (`FLAGS.QUEEN_FULL_AUTONOMY`). When true, the
+   * self-improvement loop's protected-path/keyword TCB bars are LIFTED — a kind=bug
+   * touching the deploy gate / flags / capability dispatch / migrations / the loop's
+   * own code becomes auto-eligible (the owner accepted the recursive-self-improvement
+   * boundary). The needs-human routing, the kind gate (autoKinds — a SEPARATE Phase-4
+   * dial, unchanged here), and the infra-environment gate (a worker cannot fix a down
+   * service regardless) still apply. The auto lane STILL runs blueprint + tests + the
+   * release-manager at deploy (D-005), and is STILL separately gated by
+   * IMPROVEMENT_AUTO_IMPLEMENT (default OFF). REVERSIBLE: clearing the grant restores
+   * the bars verbatim.
+   */
+  ownerFullAutonomy?: boolean;
+}
+
 /** Minimal glob matcher: `**` → any (incl. `/`), `*` → any non-`/` run. */
 export function matchGlob(pattern: string, value: string): boolean {
   const re = new RegExp(
@@ -264,6 +281,7 @@ export function infraEnvironmentHit(c: Pick<ImprovementCandidate, 'watchdogKey' 
 export function classifyImprovement(
   c: ImprovementCandidate,
   policy: RiskTierPolicy = DEFAULT_RISK_TIER_POLICY,
+  opts: ClassifyOptions = {},
 ): TierDecision {
   const reasons: string[] = [];
 
@@ -284,26 +302,40 @@ export function classifyImprovement(
   // down service / port mapping / migration drift. The infra knowledge lives in
   // the signal class + paths (not the kind), so an infra kind=bug (EI-187
   // service-down) would otherwise slip into the auto lane and burn dispatch
-  // attempts on something no worker can resolve (EI-408).
+  // attempts on something no worker can resolve (EI-408). NOT lifted by the
+  // full-autonomy grant: it is a "wrong tool" bar (a worker literally cannot fix it),
+  // not a safety bar — auto-dispatching it would just burn attempts.
   const infraHit = infraEnvironmentHit(c);
   if (infraHit) {
     reasons.push(`infra-environment (${infraHit}) — D-002/D-005: infra failures escalate, never auto → human`);
     return { tier: 'human', reasons, protectedHit: infraHit };
   }
 
-  for (const p of c.paths ?? []) {
-    const hit = policy.protectedPathPatterns.find((pat) => matchGlob(pat, p));
-    if (hit) {
-      reasons.push(`touches protected path "${p}" (pattern ${hit}) → human`);
-      return { tier: 'human', reasons, protectedHit: hit };
+  // The OWNER FULL-AUTONOMY grant (queen-autonomy-and-selffeed-fix Phase 2) LIFTS the
+  // protected-path + protected-keyword TCB bars — the owner accepted the recursive-
+  // self-improvement boundary (the auto-implement loop may edit + ship the deploy gate,
+  // flags, capability dispatch, migrations, and its own code). REVERSIBLE: clearing the
+  // grant restores the bars. The auto lane still runs blueprint + tests + the release-
+  // manager at deploy (D-005), and is still separately gated by IMPROVEMENT_AUTO_IMPLEMENT.
+  if (!opts.ownerFullAutonomy) {
+    for (const p of c.paths ?? []) {
+      const hit = policy.protectedPathPatterns.find((pat) => matchGlob(pat, p));
+      if (hit) {
+        reasons.push(`touches protected path "${p}" (pattern ${hit}) → human`);
+        return { tier: 'human', reasons, protectedHit: hit };
+      }
     }
-  }
 
-  const hay = `${c.title} ${c.body ?? ''}`.toLowerCase();
-  const kw = policy.protectedKeywords.find((k) => hay.includes(k.toLowerCase()));
-  if (kw) {
-    reasons.push(`mentions protected keyword "${kw}" → human (the deploy gate is the real backstop)`);
-    return { tier: 'human', reasons, protectedHit: kw };
+    const hay = `${c.title} ${c.body ?? ''}`.toLowerCase();
+    const kw = policy.protectedKeywords.find((k) => hay.includes(k.toLowerCase()));
+    if (kw) {
+      reasons.push(`mentions protected keyword "${kw}" → human (the deploy gate is the real backstop)`);
+      return { tier: 'human', reasons, protectedHit: kw };
+    }
+  } else {
+    reasons.push(
+      'owner full-autonomy grant — protected-path/keyword TCB bars LIFTED (recursive-self-improvement boundary; still gated by blueprint + tests + release-manager)',
+    );
   }
 
   reasons.push('no protected path/keyword → AUTO-eligible (still gated by blueprint + tests + release-manager)');
@@ -320,12 +352,13 @@ export interface TierPartition {
 export function partitionByTier(
   candidates: ImprovementCandidate[],
   policy: RiskTierPolicy = DEFAULT_RISK_TIER_POLICY,
+  opts: ClassifyOptions = {},
 ): TierPartition {
   const auto: ImprovementCandidate[] = [];
   const human: ImprovementCandidate[] = [];
   const decisions: Record<string, TierDecision> = {};
   for (const c of candidates) {
-    const d = classifyImprovement(c, policy);
+    const d = classifyImprovement(c, policy, opts);
     decisions[c.id] = d;
     (d.tier === 'auto' ? auto : human).push(c);
   }

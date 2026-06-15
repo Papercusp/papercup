@@ -113,6 +113,18 @@ export interface AutonomyDecisionInput {
    * `false` ⇒ everything gated ⇒ behavior-neutral (D-007). No caller arms before P-092.
    */
   armed?: boolean;
+  /**
+   * The OWNER FULL-AUTONOMY grant (queen-autonomy-and-selffeed-fix Phase 2 —
+   * `FLAGS.QUEEN_FULL_AUTONOMY`). When `true` the owner has accepted full autonomy
+   * INCLUDING the residue the per-category ceilings can't reach: this lifts EVERY
+   * substantive hard gate (owner-authority, protected/never-auto ceiling,
+   * irreversible, above-ceiling, unmapped) and graduation:* asks → `auto`, so the
+   * Queen never pauses to ask. The would-have-gated reasons are still recorded (for
+   * the ledger + the settings "why" surface) alongside `owner-full-autonomy-grant`.
+   * Default `false` ⇒ today's gate verbatim. REVERSIBLE: clearing the grant restores
+   * the gated residue exactly. Implies armed (the grant is itself an owner arm act).
+   */
+  ownerFullAutonomy?: boolean;
   /** Optional ranking/evidence signals (P-071) — echoed onto the decision. */
   signals?: EconomicSignals;
 }
@@ -136,6 +148,13 @@ export interface AutonomyDecision {
   protected: boolean;
   /** Whether the policy was armed when this was decided. */
   armed: boolean;
+  /**
+   * Whether the OWNER FULL-AUTONOMY grant was active when this was decided (Phase 2).
+   * When true, `posture` is `auto` regardless of the hard gates (which stay listed in
+   * `reasons` as the audit trail of what WOULD have gated), and `owner-full-autonomy-grant`
+   * is the decisive reason. The decision ledger records this so the owner can review/revert.
+   */
+  ownerFullAutonomy: boolean;
   /**
    * Would this auto-decide IF the policy were armed? (Ignores `armed`, applies
    * the substantive gate.) The shadow signal — what the settings surface (B-15)
@@ -186,10 +205,24 @@ export function decideAutonomy(input: AutonomyDecisionInput): AutonomyDecision {
     hardGates.push(effectiveCeiling === 'never-auto' ? 'ceiling-never-auto' : 'risk-above-ceiling');
   }
   const wouldAutoIfArmed = hardGates.length === 0;
+  const ownerFullAutonomy = input.ownerFullAutonomy ?? false;
 
   const reasons = [...new Set(hardGates)];
   let posture: AutonomyPosture;
-  if (!armed) {
+  if (ownerFullAutonomy) {
+    // The OWNER FULL-AUTONOMY grant (Phase 2): the owner has accepted full autonomy
+    // INCLUDING the categorical residue (owner-authority / protected / irreversible /
+    // above-ceiling / unmapped) and graduation:* asks. Override the posture to `auto`
+    // — but KEEP the would-have-gated reasons above as the audit trail of what the
+    // grant lifted, and name the grant as the decisive reason. The grant implies armed
+    // (it is itself an owner arm act), so it wins over `!armed` too. REVERSIBLE:
+    // clearing the grant drops this branch and restores the gates verbatim. The
+    // reversibility safety-net for a granted PROTECTED/IRREVERSIBLE auto is the grant
+    // flag itself (flip it off), not a per-action tripwire (armTripwire still refuses
+    // to arm a protected/irreversible decision — by design).
+    posture = 'auto';
+    reasons.push('owner-full-autonomy-grant');
+  } else if (!armed) {
     posture = 'gated';
     // Only add the arming reason when nothing else already gates it — otherwise
     // the substantive gates ARE the explanation (and stay correct once armed).
@@ -208,6 +241,7 @@ export function decideAutonomy(input: AutonomyDecisionInput): AutonomyDecision {
     effectiveCeiling,
     protected: isProtected,
     armed,
+    ownerFullAutonomy,
     wouldAutoIfArmed,
     reasons,
     ...(input.signals ? { signals: input.signals } : {}),
@@ -223,6 +257,12 @@ export interface DeciderDeps {
   getPolicy: (category: AutonomyCategory) => Promise<AutonomyCategoryPolicy>;
   /** Is the autonomy policy ARMED for this workspace? (the P-092 flag). */
   isArmed: () => Promise<boolean>;
+  /**
+   * Is the OWNER FULL-AUTONOMY grant active for this workspace? (Phase 2 —
+   * `FLAGS.QUEEN_FULL_AUTONOMY`). When true the resolver lifts the entire residue.
+   * Default deps fail-DARK to `false` on a flag-IO error (a hiccup never grants).
+   */
+  isFullAutonomy: () => Promise<boolean>;
 }
 
 /**
@@ -241,13 +281,13 @@ export async function resolveAutonomyDecision(
 ): Promise<AutonomyDecision> {
   const category =
     input.category !== undefined ? input.category : categoryForAction(input.action ?? '', input.capability);
-  const armed = await deps.isArmed();
+  const [armed, ownerFullAutonomy] = await Promise.all([deps.isArmed(), deps.isFullAutonomy()]);
   let effectiveCeiling: AutonomyCeiling = 'never-auto';
   if (category != null) {
     const policy = await deps.getPolicy(category);
     effectiveCeiling = computeEffectiveCeiling(policy);
   }
-  return decideAutonomy({ ...input, category, effectiveCeiling, armed });
+  return decideAutonomy({ ...input, category, effectiveCeiling, armed, ownerFullAutonomy });
 }
 
 /**
@@ -273,6 +313,17 @@ export function defaultDeciderDeps(
         return await getFlag(FLAGS.QUEEN_AUTONOMY_ARMED, `autonomy:${workspaceId}`);
       } catch {
         return false; // fail-DARK: a flag hiccup must never arm autonomy
+      }
+    },
+    async isFullAutonomy() {
+      try {
+        const [{ FLAGS }, { getFlag }] = await Promise.all([
+          import('@papercusp/flags'),
+          import('@papercusp/flags/server'),
+        ]);
+        return await getFlag(FLAGS.QUEEN_FULL_AUTONOMY, `autonomy:${workspaceId}`);
+      } catch {
+        return false; // fail-DARK: a flag hiccup must never grant full autonomy
       }
     },
   };

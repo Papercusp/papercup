@@ -52,6 +52,106 @@ function key(workspaceId: string, harnessSlug: string): string {
 }
 
 /**
+ * Per-harness "send-side wiring" state (EI-521).
+ *
+ * After a substrate handle boots, two additive loops must come online: the
+ * outbox DRAIN (feature/issue/coord federation send-side) and the presence
+ * ANNOUNCE. These were previously wired inline AFTER `handles.set`, in a
+ * swallowing try/catch — so a transient wiring failure (e.g. a getOrgPg hiccup
+ * during boot) left a CACHED handle whose drain never started, and because the
+ * handle was cached, every later `bootSingleHarness` short-circuited to
+ * `already-booted` and NEVER re-wired. Symptom: `peer_connected` ✓ but the
+ * outbox sits undrained forever (0 drain loops) → a joined hive member's writes
+ * never federate to the peer.
+ *
+ * Fix: wiring is idempotent + RETRYABLE. Each step is marked wired ONLY on
+ * success, and `ensureSendSideWired` runs on BOTH the fresh-boot and the
+ * already-booted paths, so a failed step self-heals on the next boot pass
+ * (boot-all reconcile re-invokes `bootSingleHarness` per registry harness).
+ * Concurrent calls coalesce on `wiringInflight` so a step never double-starts
+ * (a second drain loop would double-append + double-GC the same outbox).
+ */
+const outboxWired = new Set<string>();
+const presenceWired = new Set<string>();
+const wiringInflight = new Map<string, Promise<void>>();
+
+export interface SendSideWiringDeps {
+  /** Default: getOrgPg() + wireOutboxForHarness. Tests inject a fake. */
+  wireOutbox?: (handle: BootedHarnessHandle) => Promise<void>;
+  /** Default: wirePresenceAnnounceForHarness. Tests inject a fake. */
+  wirePresence?: (handle: BootedHarnessHandle) => Promise<void>;
+}
+
+/** Default outbox wiring: resolve the org PG, then wire the drain loop. */
+async function defaultWireOutbox(handle: BootedHarnessHandle): Promise<void> {
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+  await wireOutboxForHarness(handle, sql);
+}
+
+/**
+ * Bring a booted handle's send-side loops (outbox drain + presence announce)
+ * online — idempotently + resiliently. Safe to call repeatedly: each step runs
+ * only until it SUCCEEDS, then no-ops. A step failure is LOGGED (never thrown,
+ * so it can't block boot) and retried on the next call. Concurrent calls for the
+ * same handle coalesce so a step never double-starts.
+ *
+ * Exported for tests (the retry/idempotence/coalesce contract is the EI-521 fix).
+ */
+export async function ensureSendSideWired(
+  handle: BootedHarnessHandle,
+  deps: SendSideWiringDeps = {},
+): Promise<void> {
+  const k = key(handle.workspaceId, handle.harnessSlug);
+  if (outboxWired.has(k) && presenceWired.has(k)) return;
+  const existing = wiringInflight.get(k);
+  if (existing) return existing;
+
+  const wireOutbox = deps.wireOutbox ?? defaultWireOutbox;
+  const wirePresence = deps.wirePresence ?? wirePresenceAnnounceForHarness;
+
+  const run = (async () => {
+    // (1) Outbox drain — the critical federation send-side (EI-521). Best-effort
+    //     so a failure never blocks boot, but RETRYABLE: only marked wired on
+    //     success, so the next boot pass re-attempts it.
+    if (!outboxWired.has(k)) {
+      try {
+        await wireOutbox(handle);
+        outboxWired.add(k);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[boot-all] outbox wiring failed for ${k} (boot still succeeded; ` +
+            `will retry on the next boot pass):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+    // (2) Presence announce — additive (the per-Hive lock authority, P-009,
+    //     elects over the live roster). Same retryable best-effort posture; a
+    //     no-op for a private/unswarmed harness (handle.swarm null).
+    if (!presenceWired.has(k)) {
+      try {
+        await wirePresence(handle);
+        presenceWired.add(k);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[boot-all] presence wiring failed for ${k} (boot still succeeded; ` +
+            `will retry on the next boot pass):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+  })();
+  wiringInflight.set(k, run);
+  try {
+    await run;
+  } finally {
+    wiringInflight.delete(k);
+  }
+}
+
+/**
  * Resolve the workspace root on disk for a given workspaceId. Mirrors
  * `apps/operator/lib/papercusp-root.ts` resolution but stops one level
  * above `.papercusp/` so the substrate (which appends `.papercusp/...`)
@@ -200,7 +300,13 @@ export async function bootSingleHarness(
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
-  if (handles.has(k)) {
+  const cached = handles.get(k);
+  if (cached) {
+    // EI-521: re-attempt any send-side wiring that hasn't yet succeeded. A prior
+    // boot may have cached the handle but failed to wire the drain (which would
+    // otherwise stay broken until restart, since this path short-circuits). No-op
+    // once both steps are wired.
+    await ensureSendSideWired(cached);
     return {
       workspaceId,
       harnessSlug,
@@ -249,37 +355,15 @@ export async function bootSingleHarness(
   try {
     const handle = await bootPromise;
     handles.set(k, handle);
-    // Stage 5 (feature-content federation): bring the send-side online —
-    // one-time backfill of existing local rows + the outbox drain loop. The
-    // drain's stopper is registered as a close-hook on the handle, so
-    // closeBootedHarness/closeAllBootedHarnesses (which call handle.close())
-    // tear it down automatically — no parallel stopper Map needed. Best-effort:
-    // a wiring failure must NEVER block the boot result (federation is additive;
-    // PG-direct still works), so swallow + log.
-    try {
-      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
-      await wireOutboxForHarness(handle, sql);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error(
-        `[boot-all] outbox wiring failed for ${k} (boot still succeeded):`,
-        e instanceof Error ? e.message : String(e),
-      );
-    }
-    // P-008 presence PUBLISHER: start THIS machine's presence-announce loop so a
-    // shared Hive's Swarms see each other (the per-Hive lock authority, P-009,
-    // elects over the live roster). A no-op for a private/unswarmed harness
-    // (handle.swarm null). Best-effort + close-hook-tied (mirrors the outbox wiring);
-    // a failure must NEVER block boot (presence is additive — PG-direct still works).
-    try {
-      await wirePresenceAnnounceForHarness(handle);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error(
-        `[boot-all] presence wiring failed for ${k} (boot still succeeded):`,
-        e instanceof Error ? e.message : String(e),
-      );
-    }
+    // Stage 5 (feature-content federation): bring the send-side online — the
+    // one-time backfill + outbox drain loop, plus the P-008 presence-announce
+    // loop. Both are additive + best-effort (a failure must NEVER block the boot
+    // result; PG-direct still works) AND retryable: `ensureSendSideWired` marks
+    // each step wired only on success, so a transient failure self-heals on the
+    // next boot pass rather than leaving this cached handle drainless forever
+    // (EI-521). The drain/presence stoppers register close-hooks on the handle,
+    // so closeBootedHarness/closeAllBootedHarnesses tear them down automatically.
+    await ensureSendSideWired(handle);
     return { workspaceId, harnessSlug, state: 'booted' };
   } catch (e) {
     return {
@@ -451,6 +535,11 @@ export async function closeBootedHarness(
   const handle = handles.get(k);
   if (!handle) return false;
   handles.delete(k);
+  // Drop the send-side wiring state so a future re-boot re-wires from scratch
+  // (the drain/presence loops are torn down by the handle's close-hooks below).
+  outboxWired.delete(k);
+  presenceWired.delete(k);
+  wiringInflight.delete(k);
   try {
     await handle.close();
   } catch {
@@ -499,6 +588,9 @@ export async function rebootHarness(
 export async function closeAllBootedHarnesses(): Promise<number> {
   const entries = Array.from(handles.entries());
   handles.clear();
+  outboxWired.clear();
+  presenceWired.clear();
+  wiringInflight.clear();
   let closed = 0;
   await Promise.all(
     entries.map(async ([, h]) => {
@@ -538,6 +630,9 @@ export function listBootedHandles(): BootedHandleSummary[] {
 export function _resetHandleMapForTests(): void {
   handles.clear();
   inflight.clear();
+  outboxWired.clear();
+  presenceWired.clear();
+  wiringInflight.clear();
 }
 
 /** For tests. Inject a handle directly (skips real boot). */

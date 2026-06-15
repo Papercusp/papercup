@@ -136,7 +136,9 @@ async function runSetSteering(args: Record<string, unknown>): Promise<void> {
   if (payload.ok === false) throw new Error(payload.message ?? 'hive:set-steering refused');
 }
 
-function pauseStateLabel(row: HiveSteeringRow, nowMs: number): { active: boolean; label: string } {
+/** The pause badge state: indefinite pause, a timed pause still in the future,
+ *  or "flowing". Pure (now is injected). */
+export function pauseStateLabel(row: HiveSteeringRow, nowMs: number): { active: boolean; label: string } {
   if (row.pauseNewWork) return { active: true, label: 'New work PAUSED' };
   if (row.pausedUntil != null && nowMs < row.pausedUntil) {
     const mins = Math.max(1, Math.round((row.pausedUntil - nowMs) / 60000));

@@ -23,7 +23,7 @@ import { stringify as stringifyYaml } from 'yaml';
 import { getOrgPg } from '@papercusp/db-org';
 import type { DeploymentConfig } from '@papercusp/deployment-driver';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../../harness-registry';
-import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
+import { operatorResolveExtends, availableHiveBlueprintIds } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../blueprint/_resolve';
 import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import { HIVE_BLUEPRINT_ID, declareHiveTimeWake, recordHiveWake } from '../../hive/wake';
@@ -115,6 +115,19 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       ok: false,
       error: 'blueprint_invalid',
       message: validation.parseError ?? 'the hive blueprint failed to resolve/validate',
+    };
+  }
+  // P-019: a hive MUST run a kind:'hive' blueprint — reject a harness blueprint
+  // (e.g. `research`) passed by mistake, and surface the installable hive templates so
+  // the choice is discoverable (the "selectable at create" picker's validation backbone).
+  if (validation.blueprint.kind !== 'hive') {
+    const choices = availableHiveBlueprintIds();
+    return {
+      ok: false,
+      error: 'not_a_hive_blueprint',
+      message:
+        `Blueprint "${blueprintId}" is kind:'${validation.blueprint.kind}', not a hive — hive:create needs a ` +
+        `kind:'hive' blueprint. Available hive blueprints: ${choices.length ? choices.join(', ') : '(none found)'}.`,
     };
   }
   const requiresRepo = validation.blueprint.knobs.requiresRepo !== false;

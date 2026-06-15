@@ -38,6 +38,7 @@ import { buildLaunchSpawnRequest } from '../../blueprint/launch-blueprint';
 import type { DurableSpawnFireInput } from '../../dbos/durable-spawn';
 import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
+import { readOwnerFullAutonomyGrant } from '../improvements/full-autonomy-grant';
 import { readRecentDispatches, recordDispatchFired, recordFireResult } from '../improvements/dispatch-ledger';
 import { laneInEnvOutage } from '../improvements/orphaned-dispatch';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
@@ -399,6 +400,12 @@ const defaultFlipExhausted: ExhaustedFlipFn = async (candidate, maxAttempts) => 
 registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Promise<void | SystemActionResult> => {
   const items = await readImprovementItems({ state: 'open' });
   const flagEnabled = await getFlag(FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, `routine:${ctx.installSlug}`);
+  // The OWNER FULL-AUTONOMY grant (queen-autonomy-and-selffeed-fix Phase 2): when ON,
+  // the tier split lifts the protected-path/keyword TCB bars so a kind=bug touching the
+  // deploy gate / flags / capability dispatch / migrations / the loop's own code is
+  // dispatchable. Read at `autonomy:<ws>` (the same key the decider reads), so one owner
+  // flip covers both the decision gate + this implement lane. Fail-DARK (helper).
+  const ownerFullAutonomy = await readOwnerFullAutonomyGrant(ctx.workspaceId);
   const runnerHarness = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || null;
   const maxPerRun = intFromEnv('PAPERCUSP_IMPROVEMENT_MAX_PER_RUN', 1, { min: 0 });
   // maxAttempts is genuinely optional (undefined = no cap). Honor an explicit 0
@@ -425,7 +432,7 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx): Prom
     }
   }
 
-  const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts, laneEnvOutage });
+  const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts, laneEnvOutage, ownerFullAutonomy });
 
   // Exhausted-without-resolve ⇒ needs-human (consume-edges P-012): an item whose
   // dispatch attempts exhausted with no improvements:resolve ever recorded (silent

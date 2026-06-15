@@ -155,7 +155,7 @@ function useUserActions(slug: string | null, opts?: { onTransition?: Listener })
 
 
 
-function formatRelative(ms: number, now: number): string {
+export function formatRelative(ms: number, now: number): string {
   const d = Math.max(0, now - ms);
   if (d < 1000) return 'just now';
   if (d < 60_000) return `${Math.floor(d / 1000)}s ago`;
@@ -164,7 +164,7 @@ function formatRelative(ms: number, now: number): string {
   return `${Math.floor(d / 86_400_000)}d ago`;
 }
 
-function formatElapsed(startedAt: number, finishedAt: number | null, now: number): string {
+export function formatElapsed(startedAt: number, finishedAt: number | null, now: number): string {
   const ms = (finishedAt ?? now) - startedAt;
   if (ms < 1000) return '<1s';
   if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
@@ -254,7 +254,7 @@ export function OperatorActionLog({
  *  same-origin paths to the browser (they start with `/`) but every
  *  request 404s. Some older `user_actions` rows have these baked in;
  *  hiding the open link for them keeps the UI honest. */
-function isOpenableHref(href: string | null | undefined): href is string {
+export function isOpenableHref(href: string | null | undefined): href is string {
   if (!href) return false;
   if (/^https?:\/\//i.test(href)) return true;
   if (href.startsWith('#')) return true;
@@ -269,7 +269,7 @@ function isOpenableHref(href: string | null | undefined): href is string {
 /** Pull the duration token (e.g. "(9s)" or "(2m 4s)") and cost token
  *  (e.g. "cost=0.044") out of a free-form summary string so we can
  *  render them as standalone info-pills next to the summary. */
-function parseSummaryMeta(summary: string | null): {
+export function parseSummaryMeta(summary: string | null): {
   cleaned: string | null;
   duration: string | null;
   cost: string | null;

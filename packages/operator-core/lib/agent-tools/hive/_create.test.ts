@@ -41,10 +41,19 @@ beforeEach(() => {
   }));
   vi.doMock('../../blueprint/materialize-triggers', () => ({ materializeBlueprintTriggers: async () => [] }));
   vi.doMock('../blueprint/_resolve', () => ({
-    resolveAndValidate: () => ({
+    // Kind-aware so the P-019 not-a-hive guard can be exercised: the chosen blueprint
+    // id rides `childObj.extends`; `research` resolves to kind:'harness', everything
+    // else (the default hive / generic-hive) to kind:'hive'.
+    resolveAndValidate: (childObj: { extends?: string }) => ({
       ok: true,
       parseError: null,
-      blueprint: { id: 'hive', version: '0', knobs: { requiresRepo: false }, dependencies: {} },
+      blueprint: {
+        id: 'hive',
+        kind: childObj?.extends === 'research' ? 'harness' : 'hive',
+        version: '0',
+        knobs: { requiresRepo: false },
+        dependencies: {},
+      },
     }),
   }));
   // The first-class Hive identity mint (PG + keychain) is mocked — this test is
@@ -188,5 +197,21 @@ describe('createHiveHarness', () => {
     expect(res.error).toBe('slug_exists');
     expect(existsSync(join(tmpParent, 'dup'))).toBe(false);
     expect(ensureCalls).toEqual([]); // no identity minted on the early reject
+  });
+
+  it('rejects a non-hive blueprint (kind:harness) + lists the hive templates, before any side effect (P-019)', async () => {
+    const { createHiveHarness } = await import('./_create');
+    // `research` is a real built-in blueprint but kind:'harness' — a hive needs kind:'hive'.
+    const res = await createHiveHarness({
+      slug: 'wrong-kind',
+      workspaceId: 'default',
+      parentDir: tmpParent,
+      blueprintId: 'research',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('not_a_hive_blueprint');
+    expect(res.message).toMatch(/generic-hive/); // surfaces the available hive templates
+    expect(existsSync(join(tmpParent, 'wrong-kind'))).toBe(false); // no side effect
+    expect(ensureCalls).toEqual([]); // rejected before identity mint
   });
 });

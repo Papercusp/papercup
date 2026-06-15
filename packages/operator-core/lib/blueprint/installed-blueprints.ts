@@ -12,7 +12,8 @@
  * the artificial restriction, retired per D-005.
  */
 import { dirname, join } from 'node:path';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 import { builtinBlueprintPath, type ResolveExtendsPath } from '@papercusp/orchestrator/blueprint';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
 import { papercuspRoot } from '../papercusp-root';
@@ -54,4 +55,28 @@ function listBlueprintIdsIn(root: string): string[] {
 export function availableBlueprintIds(): Set<string> {
   const builtinRoot = dirname(dirname(builtinBlueprintPath('probe')));
   return new Set([...listBlueprintIdsIn(builtinRoot), ...listBlueprintIdsIn(INSTALLED_BLUEPRINTS_DIR())]);
+}
+
+/**
+ * The available blueprint ids whose declared `kind` is 'hive' — the installable hive
+ * templates a `hive:create` picker offers + the set `hive:create` validates its
+ * `blueprintId` against (hive-blueprint-generalization P-019). Reads each
+ * blueprint.yaml's own `kind` header (default 'harness'); a hive blueprint declares
+ * `kind: hive` (e.g. `hive`, `generic-hive`). Cheap raw-YAML read — no extends
+ * resolution — since `kind` is always declared on the leaf, never inherited.
+ */
+export function availableHiveBlueprintIds(): string[] {
+  const builtinRoot = dirname(dirname(builtinBlueprintPath('probe')));
+  const out: string[] = [];
+  for (const root of [builtinRoot, INSTALLED_BLUEPRINTS_DIR()]) {
+    for (const id of listBlueprintIdsIn(root)) {
+      try {
+        const raw = parseYaml(readFileSync(join(root, id, 'blueprint.yaml'), 'utf8')) as { kind?: unknown } | null;
+        if (raw && typeof raw === 'object' && raw.kind === 'hive') out.push(id);
+      } catch {
+        /* skip an unreadable/unparseable blueprint */
+      }
+    }
+  }
+  return [...new Set(out)].sort();
 }

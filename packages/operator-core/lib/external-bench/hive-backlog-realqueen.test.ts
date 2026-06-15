@@ -97,6 +97,7 @@ function fakeOps(record: string[], opts: { realQueenStarted?: () => void } = {})
     async createHive() { record.push('createHive'); return { hiveHome: 'xbq-fake' }; },
     async enrollTask({ task: t }) { record.push(`enroll:${t.instanceId}`); const e = enrolled(t); enrolledMembers.push(e); return e; },
     async startRealQueen() { record.push('startRealQueen'); opts.realQueenStarted?.(); },
+    async reconcileWatchdog() { record.push('reconcileWatchdog'); },
     async survey() { record.push('survey'); return { frontierLen: polls === 0 ? 1 : 0, plansLen: 0 }; },
     async countInFlight() { record.push('countInFlight'); return polls === 0 ? 1 : 0; },
     async countLiveBees() { return polls === 0 ? 2 : 0; },
@@ -152,6 +153,7 @@ test('real-Queen arm: starts the Queen, polls until drained, uses the hive_place
   assert.ok(record.includes('startRealQueen'), 'startRealQueen called');
   assert.ok(!record.includes('gatherForFifo'), 'real-Queen arm NEVER runs the FIFO scripted loop');
   assert.ok(!record.includes('placeFifoBatch'), 'real-Queen arm NEVER places — the Queen does');
+  assert.ok(record.includes('reconcileWatchdog'), 'real-Queen arm fires the placement-watchdog sweep (eviction/re-placement)');
   assert.equal(res.runError, undefined);
   assert.equal(res.taskResults.length, 1);
   assert.equal(res.coordEvents[0]?.detail, 'real', 'used the hive_placements-derived (real) coord trace');
@@ -172,6 +174,7 @@ test('FIFO no-Queen arm: NEVER starts the Queen, runs the scripted FIFO loop', a
   assert.ok(!record.includes('startRealQueen'), 'startRealQueen NOT called');
   assert.ok(record.includes('gatherForFifo'), 'FIFO arm runs the scripted gather→plan loop');
   assert.ok(record.includes('placeFifoBatch'), 'FIFO arm places via the scripted loop');
+  assert.ok(!record.includes('reconcileWatchdog'), 'FIFO arm does NOT run the watchdog — no eviction/re-placement (the ablation)');
   assert.equal(res.runError, undefined);
   assert.equal(res.taskResults.length, 1);
 });

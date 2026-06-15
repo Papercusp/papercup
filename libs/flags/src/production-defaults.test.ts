@@ -179,6 +179,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // owner's P-092 act flips it ON, and even then every category ships never-auto
   // (D-005) so arming alone auto-decides nothing. The pending flip is owner-only.
   FLAGS.QUEEN_AUTONOMY_ARMED,
+  // queen-autonomy-and-selffeed-fix-2026-06-15 Phase 2: the OWNER FULL-AUTONOMY grant.
+  // ON lets the Queen auto-decide the categorical residue (owner-authority / protected
+  // / irreversible / graduation:*) and lifts the auto-implement loop's protected-path
+  // TCB — the recursive-self-improvement boundary. DELIBERATE dark default (NOT the
+  // alpha default-on policy); the owner flips it, and OFF restores today's gates.
+  FLAGS.QUEEN_FULL_AUTONOMY,
   // agent-capability-confinement-2026-06-13 B-18 (P-020): the FLEET CUTOVER. DELIBERATE
   // dark ship (NOT the alpha default-on policy) — ON removes native write/exec tools from
   // autonomous-fleet spawns and routes them to the gated capability:* tools; flipping it

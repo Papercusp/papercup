@@ -41,10 +41,10 @@ function armDeps(decider: DeciderDeps, over: Partial<ArmReversibleDeps> = {}): A
 }
 /** ARMED with a category ceiling of `ceiling` (unlocked) — `critical` admits any risk. */
 const armedAt = (ceiling: AutonomyCategoryPolicy['ceiling'], over: Partial<ArmReversibleDeps> = {}) =>
-  armDeps({ isArmed: async () => true, getPolicy: policy(ceiling) }, over);
+  armDeps({ isArmed: async () => true, isFullAutonomy: async () => false, getPolicy: policy(ceiling) }, over);
 const armedAuto = (over: Partial<ArmReversibleDeps> = {}) => armedAt('critical', over);
 const disarmed = (over: Partial<ArmReversibleDeps> = {}) =>
-  armDeps({ isArmed: async () => false, getPolicy: policy('never-auto') }, over);
+  armDeps({ isArmed: async () => false, isFullAutonomy: async () => false, getPolicy: policy('never-auto') }, over);
 
 function workItem(over: Partial<WorkItem> = {}): WorkItem {
   return { id: 'WI-1', harness: 'papercup', state: 'todo', priority: 5, ...over } as unknown as WorkItem;

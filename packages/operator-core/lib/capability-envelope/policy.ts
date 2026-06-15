@@ -112,6 +112,15 @@ export function evaluateCapabilityEnvelope(args: {
   toolName: string;
   capabilities: readonly string[];
   ctx: Pick<UnifiedToolContext, 'role' | 'isSuperuser' | 'isPowerUser'>;
+  /**
+   * The per-role envelope map. Defaults to the global `ROLE_ENVELOPES`
+   * (hive-blueprint-generalization P-012); a caller that knows the running harness's
+   * blueprint passes its `fleet.workerRoles`-derived envelopes (via
+   * `blueprintRoleEnvelopes`, merged over the global) so a HIVE enforces its OWN
+   * declared per-role capability envelope. Omitted ⇒ the global map, byte-identical
+   * to before — a non-fleet harness is unchanged.
+   */
+  envelopes?: Partial<Record<string, RoleEnvelope>>;
 }): EnvelopeDecision {
   const { toolName, capabilities, ctx } = args;
 
@@ -120,7 +129,7 @@ export function evaluateCapabilityEnvelope(args: {
   const role = ctx.role;
   if (!role || !FLEET_ENVELOPE_ROLES.has(role)) return { withinEnvelope: true, applied: false };
 
-  const env = ROLE_ENVELOPES[role];
+  const env = (args.envelopes ?? ROLE_ENVELOPES)[role];
   for (const cap of capabilities) {
     if (matchesAny(cap, PROTECTED_CAPABILITY_GLOBS)) {
       return {

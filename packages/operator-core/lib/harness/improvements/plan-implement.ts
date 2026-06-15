@@ -56,6 +56,14 @@ export interface ImplementRunInput {
   /** Claim freshness window for the in-flight skip (close-loop D-001). */
   staleClaimMs?: number;
   policy?: RiskTierPolicy;
+  /**
+   * The OWNER FULL-AUTONOMY grant (`FLAGS.QUEEN_FULL_AUTONOMY`, Phase 2). When true the
+   * tier split lifts the protected-path/keyword TCB bars, so a kind=bug touching the
+   * deploy gate / flags / capability dispatch / migrations / the loop's own code becomes
+   * dispatchable. Read at the action boundary; default off. Still gated by `flagEnabled`
+   * (IMPROVEMENT_AUTO_IMPLEMENT) + the runner harness + the release-manager at deploy.
+   */
+  ownerFullAutonomy?: boolean;
   nowMs?: number;
 }
 
@@ -88,7 +96,11 @@ export function planImplementRun(input: ImplementRunInput): ImplementRunPlan {
   const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const staleClaimMs = input.staleClaimMs ?? DEFAULT_STALE_CLAIM_MS;
   const nowMs = input.nowMs ?? Date.now();
-  const digest = buildDigest(input.items, { policy: input.policy, nowMs });
+  const digest = buildDigest(input.items, {
+    policy: input.policy,
+    nowMs,
+    ...(input.ownerFullAutonomy !== undefined ? { ownerFullAutonomy: input.ownerFullAutonomy } : {}),
+  });
   const auto = digest.autoEligible;
 
   // Close-loop dispatch guards (D-001): skip in-flight + attempts-exhausted.

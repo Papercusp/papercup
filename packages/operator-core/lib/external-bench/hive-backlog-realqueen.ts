@@ -123,6 +123,15 @@ export interface RealQueenBacklogOps {
   }): Promise<RealQueenEnrolled>;
   /** START the REAL Queen over the whole hive (setHiveStarted + requestUrgentHiveWake → the queen agent). */
   startRealQueen(input: { hiveHome: string; kickoff: string; workspaceId: string }): Promise<void>;
+  /**
+   * Run ONE placement-watchdog sweep over the bench hive (the real eviction/re-placement backstop).
+   * The watchdog normally rides the 30s routinesTick, but the staging operator (:3170) runs with
+   * routines DISABLED (PAPERCUSP_DBOS_ROUTINES=0) — so the driver fires the sweep itself each poll,
+   * scoped to the bench hive only (reconcileOneHive), to deliver the SAME stuck-bee detection →
+   * recovery-wake → Queen re-placement the live hive gets, without enabling global staging routines.
+   * Real-Queen arm only (no-op for FIFO). Best-effort — a sweep error must not abort the drive.
+   */
+  reconcileWatchdog(input: { hiveHome: string; workspaceId: string }): Promise<void>;
   /** surveyHive's ready-frontier + started-plan counts (the drained inputs) across all members. */
   survey(input: { hiveHome: string; workspaceId: string }): Promise<{ frontierLen: number; plansLen: number }>;
   /** Placements still in flight = the drain terminator. For the hive arm: hive_placements non-terminal.
@@ -218,6 +227,9 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
               `evict + re-place stuck bees, and drive every member's lone feature to a terminal state.`,
           });
           while (ops.now() < deadline) {
+            // Fire the placement-watchdog sweep ourselves (staging routines are off) so the Queen gets
+            // the real stuck-bee eviction → recovery-wake → re-placement backstop, scoped to this hive.
+            await ops.reconcileWatchdog({ hiveHome: home, workspaceId: ws }).catch(() => {});
             const [liveBees, inFlight, survey] = await Promise.all([
               ops.countLiveBees({ hiveHome: home, workspaceId: ws }),
               ops.countInFlight({ hiveHome: home, members, arm: req.arm, workspaceId: ws }),
@@ -425,6 +437,16 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       // `liveHiveOps.startHive` === setHiveStarted(true) + requestUrgentHiveWake → fireLaunchBlueprint('hive').
       const ops = await liveOps();
       await ops.startHive({ hiveHome, workspaceId: ws, kickoff });
+    },
+
+    async reconcileWatchdog({ hiveHome }) {
+      // Drive ONE placement-watchdog sweep for THIS hive (staging routines are off → no auto sweep).
+      // reconcileOneHive resolves the Queen owner, derives each placed bee's liveness, and fires the
+      // recovery wakes / breaker escalations / stranded-blocker escalations — the real eviction +
+      // re-placement loop, scoped to the bench hive (NOT the global listStartedHives sweep).
+      const sql = await sqlClient();
+      const { reconcileOneHive, placementConfig } = await import('../hive/placement-watchdog');
+      await reconcileOneHive(sql, ws, hiveHome, placementConfig(), Date.now());
     },
 
     async survey({ hiveHome }) {

@@ -195,6 +195,96 @@ describe('decideAutonomy — the D-004 gate', () => {
   });
 });
 
+describe('decideAutonomy — OWNER FULL-AUTONOMY grant lifts the entire residue (Phase 2)', () => {
+  // Each construct gates by exactly one categorical hard-gate. With the grant OFF it
+  // stays gated (today's behavior); with the grant ON it flips to auto and records
+  // `owner-full-autonomy-grant` alongside the would-have-gated reason. Both directions
+  // are pinned — reversibility (flip the grant off) is the safety net for the alpha.
+  const residue: Array<[string, Parameters<typeof decideAutonomy>[0], string]> = [
+    [
+      'authority:owner',
+      { category: 'plan-governance', riskTier: 'low', authority: 'owner', reversibility: 'reversible', effectiveCeiling: 'critical' },
+      'owner-authority',
+    ],
+    [
+      'protected/never-auto ceiling (locked category)',
+      { category: 'release-deploy', riskTier: 'low', authority: 'system', reversibility: 'reversible', effectiveCeiling: 'never-auto' },
+      'ceiling-never-auto',
+    ],
+    [
+      'irreversible action',
+      { category: 'system-control', riskTier: 'low', authority: 'system', reversibility: 'irreversible', effectiveCeiling: 'critical' },
+      'irreversible-action',
+    ],
+    [
+      'risk above ceiling',
+      { category: 'implementation', riskTier: 'critical', authority: 'system', reversibility: 'reversible', effectiveCeiling: 'low' },
+      'risk-above-ceiling',
+    ],
+    [
+      'unmapped category',
+      { category: null, riskTier: 'low', authority: 'system', reversibility: 'reversible', effectiveCeiling: 'critical' },
+      'unmapped-category',
+    ],
+  ];
+
+  it.each(residue)('%s: gated when armed-without-grant, auto when granted', (_label, base, gateReason) => {
+    // armed but no grant → the substantive gate still fires (today's residue).
+    const gated = decideAutonomy({ ...base, armed: true });
+    expect(gated.posture).toBe('gated');
+    expect(gated.reasons).toContain(gateReason);
+    expect(gated.ownerFullAutonomy).toBe(false);
+
+    // grant ON → auto, with the audit trail (the would-have-gated reason) retained.
+    const granted = decideAutonomy({ ...base, armed: true, ownerFullAutonomy: true });
+    expect(granted.posture).toBe('auto');
+    expect(granted.ownerFullAutonomy).toBe(true);
+    expect(granted.reasons).toContain('owner-full-autonomy-grant');
+    expect(granted.reasons).toContain(gateReason); // the lifted gate stays recorded
+  });
+
+  it('the grant wins even when the policy is NOT armed (it is itself an owner arm act)', () => {
+    const d = decideAutonomy({
+      category: 'credentials-auth',
+      riskTier: 'critical',
+      authority: 'owner',
+      reversibility: 'irreversible',
+      effectiveCeiling: 'never-auto',
+      armed: false,
+      ownerFullAutonomy: true,
+    });
+    expect(d.posture).toBe('auto');
+    expect(d.reasons).toContain('owner-full-autonomy-grant');
+  });
+
+  it('wouldAutoIfArmed still reflects the SUBSTANTIVE gate (the grant does not rewrite the shadow signal)', () => {
+    const d = decideAutonomy({
+      category: 'release-deploy',
+      riskTier: 'low',
+      authority: 'owner',
+      reversibility: 'irreversible',
+      effectiveCeiling: 'never-auto',
+      armed: true,
+      ownerFullAutonomy: true,
+    });
+    expect(d.posture).toBe('auto');
+    expect(d.wouldAutoIfArmed).toBe(false); // it would NOT auto on the normal armed path
+  });
+
+  it('resolveAutonomyDecision reads isFullAutonomy from the deps and lifts the residue', async () => {
+    const ownerAction = { action: 'deploy:harness', riskTier: 'critical', authority: 'owner', reversibility: 'irreversible' } as const;
+    const base = {
+      getPolicy: async (category: Parameters<DeciderDeps['getPolicy']>[0]) => defaultPolicyFor(category),
+      isArmed: async () => true,
+    };
+    const off = await resolveAutonomyDecision(ownerAction, { ...base, isFullAutonomy: async () => false });
+    expect(off.posture).toBe('gated');
+    const on = await resolveAutonomyDecision(ownerAction, { ...base, isFullAutonomy: async () => true });
+    expect(on.posture).toBe('auto');
+    expect(on.ownerFullAutonomy).toBe(true);
+  });
+});
+
 describe('P-071 — economic signal routing (calibration/deferral → evidence; owner-preference re-rank only)', () => {
   it('graduationEvidenceSignals keeps calibration + deferral, DROPS owner-preference', () => {
     expect(
@@ -247,6 +337,7 @@ describe('resolveAutonomyDecision — the async resolver wires the policy store 
   const deps = (over: Partial<DeciderDeps> = {}): DeciderDeps => ({
     getPolicy: async (category) => defaultPolicyFor(category),
     isArmed: async () => false,
+    isFullAutonomy: async () => false,
     ...over,
   });
 
@@ -307,6 +398,7 @@ describe('decideRankedItem — the EX P-013 seam (decider reads the ranked front
       graduatedLevel: 'high',
     }),
     isArmed: async () => true,
+    isFullAutonomy: async () => false,
   };
 
   it('reads a ranked frontier row’s economic signals (P-071) and folds them into the decision', async () => {
