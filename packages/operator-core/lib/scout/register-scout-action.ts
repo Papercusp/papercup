@@ -24,8 +24,8 @@
  *
  * No side-effect registration: the scout blueprint's deterministic step
  * (`blueprint-steps/ops/scout-cycle.ts`) imports `productionScoutRunner` directly.
- * The seed routine (seed-scout-routine.ts) fires `system:blueprint-run`, seeded
- * INACTIVE — bring-up human-gated (D-002).
+ * The per-hive scout routine is provisioned INACTIVE at hive:create
+ * (lib/hive/provision-learning-loop.ts) — bring-up human-gated (D-002).
  */
 
 import { type ScoutCycleRunner } from './scout-cycle-action';

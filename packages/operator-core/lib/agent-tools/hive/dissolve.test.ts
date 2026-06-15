@@ -16,6 +16,10 @@ let cancelCalls: string[];
 let clearWakeCalls: string[];
 let deregCalls: string[];
 let dropSchemaCalls: string[];
+let teardownLoopCalls: string[];
+// P-021: when set, teardownHiveLearningLoop throws — proving the dissolve still
+// succeeds (best-effort; a failure WARNS, never fails the dissolve).
+let teardownLoopThrows: boolean;
 let bees: Array<{ holderAlive: boolean; agentId: string | null; harnessSlug: string | null }>;
 // B11 / P-014: the owner-action tier gate is mocked here (it has its own
 // dedicated integration test, member-tier-gate.integration.test.ts). Default
@@ -28,6 +32,8 @@ beforeEach(() => {
   clearWakeCalls = [];
   deregCalls = [];
   dropSchemaCalls = [];
+  teardownLoopCalls = [];
+  teardownLoopThrows = false;
   gateResult = { ok: true, tier: 'owner', reason: 'solo-unbound' };
   bees = [
     { holderAlive: true, agentId: 's-bee-a', harnessSlug: 'h' },
@@ -67,6 +73,13 @@ beforeEach(() => {
       return { changed: true };
     },
   }));
+  vi.doMock('../../hive/provision-learning-loop', () => ({
+    teardownHiveLearningLoop: async ({ hiveSlug }: { hiveSlug: string }) => {
+      teardownLoopCalls.push(hiveSlug);
+      if (teardownLoopThrows) throw new Error('boom');
+      return { hiveSlug, gymAutoloop: true, scoutRoutine: true, governorRegistrants: true };
+    },
+  }));
   vi.doMock('../../fleet/operator-spawn', () => ({ abortLocalSpawn: () => true }));
   vi.doMock('@papercusp/db-org', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -85,6 +98,7 @@ afterEach(() => {
     '../../hive/wake',
     '../../scaffold-harness-schema',
     '../../harness-membership',
+    '../../hive/provision-learning-loop',
     '../../fleet/operator-spawn',
     '@papercusp/db-org',
     '../../hive/member-tier-gate',
@@ -103,8 +117,33 @@ describe('hive:dissolve', () => {
     expect((res.cancelledSpawns as string[]).sort()).toEqual(['s-bee-a', 's-bee-b']);
     expect(deregCalls).toEqual(['h']);
     expect(res.deregistered).toBe(true);
+    // P-021: the per-hive learning loop is torn down (gym row + scout routine + governor registrants).
+    expect(teardownLoopCalls).toEqual(['h']);
+    expect(res.learningLoopTornDown).toBe(true);
+    expect(res.learningLoop).toEqual({
+      hiveSlug: 'h',
+      gymAutoloop: true,
+      scoutRoutine: true,
+      governorRegistrants: true,
+    });
     expect(res.schemaDropped).toBe(false);
     expect(dropSchemaCalls).toEqual([]);
+  });
+
+  it('P-021: a learning-loop teardown failure WARNS but does NOT fail the dissolve (best-effort)', async () => {
+    teardownLoopThrows = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tool = (await import('./dissolve')).default as unknown as Tool;
+    const res = parse(await tool.handler({ slug: 'h', confirm: true, workspace: 'default' }, ROOT_CTX));
+    // The dissolve still succeeds; the prior destructive steps all ran.
+    expect(res.ok).toBe(true);
+    expect(teardownLoopCalls).toEqual(['h']);
+    expect(res.learningLoopTornDown).toBe(false);
+    expect(res.learningLoopError).toBe('boom');
+    expect(deregCalls).toEqual(['h']);
+    // The failure is surfaced as a WARN, not swallowed silently.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('learning-loop teardown for h failed'));
+    warn.mockRestore();
   });
 
   it('requires confirm:true', async () => {
@@ -135,6 +174,7 @@ describe('hive:dissolve', () => {
     expect(clearWakeCalls).toEqual([]);
     expect(cancelCalls).toEqual([]);
     expect(deregCalls).toEqual([]);
+    expect(teardownLoopCalls).toEqual([]);
     expect(dropSchemaCalls).toEqual([]);
   });
 });

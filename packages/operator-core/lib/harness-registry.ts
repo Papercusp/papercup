@@ -121,6 +121,27 @@ export async function loadHarnessRegistry(workspaceId?: string): Promise<Harness
 }
 
 /**
+ * The set of `harness:<slug>` improvement/work scopes belonging to one Hive
+ * (per-hive-learning-loops P-040, D-008 — the Hive is the tenancy unit). A Hive
+ * is identified by its HOME slug; its members are the home itself plus every
+ * project whose `hive_slug` points at it (shared-hive-federation D-003 keeps the
+ * within-Hive harness_slug as the component scope). Pure over the registry
+ * projects so it's unit-testable without PG.
+ */
+export function hiveMemberHarnessScopes(
+  projects: Pick<ProjectEntry, 'slug' | 'hive_slug'>[],
+  hiveHomeSlug: string,
+): string[] {
+  const slugs = new Set<string>();
+  // The home harness is always a member, even before any peer joins.
+  slugs.add(hiveHomeSlug);
+  for (const p of projects) {
+    if (p.slug === hiveHomeSlug || p.hive_slug === hiveHomeSlug) slugs.add(p.slug);
+  }
+  return [...slugs].map((s) => `harness:${s}`);
+}
+
+/**
  * Append an audit_log row recording every registry size change, so a
  * future wipe is traceable to its actor + timestamp (the 2026-05-25
  * incident left no trail because this write was silent). Best-effort —

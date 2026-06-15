@@ -25,6 +25,14 @@ vi.mock('../harness/improvements/flow-metrics', async (importOriginal) => {
 
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
+// P-040: the per-Hive lens resolves the hive → its member-harness scope set via
+// the registry. Keep hiveMemberHarnessScopes REAL (pure) over a mocked registry.
+const loadHarnessRegistry = vi.fn();
+vi.mock('../harness-registry', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../harness-registry')>();
+  return { ...real, loadHarnessRegistry: (...a: unknown[]) => loadHarnessRegistry(...a) };
+});
+
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
 import type { ImprovementDigest } from '../harness/improvements/digest';
 import type { ImprovementFlow } from '../harness/improvements/flow-metrics';
@@ -32,6 +40,7 @@ import type { ImprovementFlow } from '../harness/improvements/flow-metrics';
 beforeEach(() => {
   readImprovementItems.mockReset();
   readWatchdogFlowTicks.mockReset();
+  loadHarnessRegistry.mockReset();
 });
 
 describe('learning.* resolver registration', () => {
@@ -86,6 +95,47 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
       const rows = (await resolveNamedQueryV2('learning.improvements', {})) as Array<ImprovementDigest & { flow: ImprovementFlow }>;
       expect(rows[0].flow.watchdog).toEqual({ lastTickAt: null, ticks24h: 0, captured24h: 0 });
       expect(rows[0].flow.captured7d).toBe(1); // the item half still computed
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('learning.improvements — per-Hive lens (P-040)', () => {
+  beforeEach(() => {
+    readImprovementItems.mockResolvedValue([]);
+    readWatchdogFlowTicks.mockResolvedValue([]);
+  });
+
+  it('resolves the hive → its member-harness scope set and passes harnessScopes to readImprovementItems', async () => {
+    loadHarnessRegistry.mockResolvedValue({
+      projects: [
+        { slug: 'my-hive' },
+        { slug: 'member-a', hive_slug: 'my-hive' },
+        { slug: 'elsewhere', hive_slug: 'other-hive' },
+      ],
+    });
+    await resolveNamedQueryV2('learning.improvements', { hive: 'my-hive' });
+    expect(loadHarnessRegistry).toHaveBeenCalled();
+    const passed = readImprovementItems.mock.calls[0][0] as { harnessScopes?: string[] };
+    expect(passed.harnessScopes?.sort()).toEqual(['harness:member-a', 'harness:my-hive']);
+  });
+
+  it('omits harnessScopes entirely when no hive is given (workspace-wide feed)', async () => {
+    await resolveNamedQueryV2('learning.improvements', {});
+    const passed = readImprovementItems.mock.calls[0][0] as { harnessScopes?: string[] };
+    expect(passed.harnessScopes).toBeUndefined();
+    expect(loadHarnessRegistry).not.toHaveBeenCalled();
+  });
+
+  it('degrades to the unfiltered feed (no 500) when the registry read fails', async () => {
+    loadHarnessRegistry.mockRejectedValue(new Error('registry down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const rows = await resolveNamedQueryV2('learning.improvements', { hive: 'my-hive' });
+      expect(Array.isArray(rows)).toBe(true);
+      const passed = readImprovementItems.mock.calls[0][0] as { harnessScopes?: string[] };
+      expect(passed.harnessScopes).toBeUndefined(); // fell back to workspace-wide
     } finally {
       warn.mockRestore();
     }

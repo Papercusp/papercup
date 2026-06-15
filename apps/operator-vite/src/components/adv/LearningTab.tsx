@@ -29,6 +29,12 @@
  * shown by default) so the tab explains itself; every stat and chip carries a hover
  * hint.
  *
+ * Per-Hive lens (per-hive-learning-loops-2026-06-14 P-042, D-008 — the Hive is the
+ * tenancy unit): a tab-level `?lhive=` param + a header hive dropdown scope the
+ * HIVE-AWARE views (Improvements, Gym, Learnings) to one hive. The workspace-global
+ * views (Benchmark, Scout, Knowledge — and the EKG/RedQueen/scout-ledger panels) and
+ * Throughput (already all-hives) ignore it; the picker hides on those.
+ *
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md). Styled with the
  * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
  */
@@ -163,10 +169,36 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
   ],
 };
 
+/** Sub-views whose data is scoped to ONE Hive (the tenancy unit, D-008) — they
+ *  read the tab-level `?lhive=`. The rest are workspace-global (Benchmark,
+ *  Scout, Knowledge — plus the EKG/RedQueen/scout-ledger panels inside them) and
+ *  ignore it; Throughput already lists every hive, so it ignores it too. */
+const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>(['improvements', 'gym', 'learnings']);
+
 export default function LearningTab() {
   const [lview, setLview] = useQueryState('lview', parseAsStringEnum<LView>([...LVIEWS]).withDefault('improvements'));
   const [showHow, setShowHow] = useQueryState('how', parseAsBoolean.withDefault(true));
+  // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
+  // promoted up from the Learnings sub-view so it applies across every hive-aware
+  // view. Agents drive it via ui:dispatch; the hive-creation success card
+  // deep-links here with ?lhive=<slug>. Default '' ⇒ the first hive (resolved
+  // once the list loads).
+  const [lhive, setLhive] = useQueryState('lhive', parseAsString.withDefault(''));
   const view: LView = (LVIEWS as readonly string[]).includes(lview) ? (lview as LView) : 'improvements';
+
+  // The workspace's hives back the header picker (reuses the Learnings view's
+  // query). Only fetched/shown for hive-aware views; an empty selection falls
+  // back to the first hive so a fresh tab lands on a real hive.
+  const hiveList = useSyncQuery<{ slug: string; remote: boolean }>({
+    queryName: 'learning.hiveList',
+    args: {},
+    staleTime: 60_000,
+    enabled: HIVE_AWARE_VIEWS.has(view),
+  });
+  const hives = hiveList.data ?? [];
+  const hiveAware = HIVE_AWARE_VIEWS.has(view);
+  const hive = lhive || hives[0]?.slug || '';
+
   return (
     <div className="pc-learning">
       <header className="pc-learning__header">
@@ -256,15 +288,41 @@ export default function LearningTab() {
             <span>Learnings<em>hive memory</em></span>
           </button>
         </div>
-        <button
-          type="button"
-          className={`pc-learning__howtoggle${showHow ? ' is-on' : ''}`}
-          aria-expanded={!!showHow}
-          onClick={() => void setShowHow(!showHow)}
-        >
-          <HelpCircle size={13} aria-hidden />
-          How this works
-        </button>
+        <div className="pc-learning__controlsright">
+          {/* Tab-level per-Hive lens (P-042). Hive-aware views read it; the
+              workspace-global views (Benchmark / Scout / Knowledge / Throughput)
+              hide the picker since they ignore it. */}
+          {hiveAware ? (
+            <label className="pc-learning__hivepick" title="Scope the hive-aware views (Improvements, Gym, Learnings) to one hive — the tenancy unit. Benchmark, Scout, Knowledge and Throughput are workspace-wide and ignore this.">
+              <Brain size={12} aria-hidden />
+              <span className="pc-learning__hivepicklabel">hive</span>
+              <select
+                aria-label="Hive lens"
+                className="pc-learning__hiveselect"
+                value={hive}
+                onChange={(e) => void setLhive(e.target.value)}
+                disabled={hives.length === 0}
+              >
+                {hives.length === 0 && <option value="">no hives yet</option>}
+                {hives.map((h) => (
+                  <option key={h.slug} value={h.slug}>
+                    {h.slug}
+                    {h.remote ? ' (joined)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <button
+            type="button"
+            className={`pc-learning__howtoggle${showHow ? ' is-on' : ''}`}
+            aria-expanded={!!showHow}
+            onClick={() => void setShowHow(!showHow)}
+          >
+            <HelpCircle size={13} aria-hidden />
+            How this works
+          </button>
+        </div>
       </div>
 
       {showHow ? (
@@ -282,7 +340,7 @@ export default function LearningTab() {
       ) : null}
 
       {view === 'gym' ? (
-        <GymView />
+        <GymView hive={hive} />
       ) : view === 'benchmark' ? (
         <ApiaryView />
       ) : view === 'scout' ? (
@@ -292,9 +350,9 @@ export default function LearningTab() {
       ) : view === 'knowledge' ? (
         <KnowledgeView />
       ) : view === 'learnings' ? (
-        <LearningsView />
+        <LearningsView hive={hive} />
       ) : (
-        <ImprovementsView />
+        <ImprovementsView hive={hive} />
       )}
 
       <p className="pc-learning__footnote">
@@ -325,8 +383,14 @@ function ageLabel(days: number): string {
   return `${Math.round(days)}d`;
 }
 
-function ImprovementsView() {
-  const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({ queryName: 'learning.improvements', args: {}, staleTime: 30_000 });
+function ImprovementsView({ hive }: { hive: string }) {
+  // P-042: the tab-level hive lens scopes the feed to one hive's member-harness
+  // improvements; '' ⇒ the workspace-wide feed (no hive arg).
+  const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({
+    queryName: 'learning.improvements',
+    args: hive ? { hive } : {},
+    staleTime: 30_000,
+  });
   const digest = sync.data?.[0];
   const [lane, setLane] = useQueryState('lane', parseAsStringEnum<Lane>([...LANES]).withDefault('all'));
   // Source facet (`?lsrc=`): who filed it — Scout / Queen / system / … (payload.sourceRole).
@@ -629,8 +693,14 @@ function deltaLabel(d: number | null): { text: string; tone: 'good' | 'bad' | 'f
   return { text: `${sign}${Math.abs(d).toFixed(3)}`, tone: d > 0 ? 'good' : d < 0 ? 'bad' : 'flat' };
 }
 
-function GymView() {
-  const sync = useSyncQuery<GymSnapshot>({ queryName: 'learning.gym', args: {}, staleTime: 30_000 });
+function GymView({ hive }: { hive: string }) {
+  // P-042: scope the gym rollup to one hive's gym harness; '' ⇒ the whole
+  // workspace (every gym harness).
+  const sync = useSyncQuery<GymSnapshot>({
+    queryName: 'learning.gym',
+    args: hive ? { hive } : {},
+    staleTime: 30_000,
+  });
   const snap = sync.data?.[0];
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
@@ -1537,19 +1607,12 @@ function KnowledgeView() {
 
 type HiveLearningRowT = HiveLearningsSnapshot['rows'][number];
 
-function LearningsView() {
-  // Selection is URL state (agents drive it via ui:dispatch; the creation
-  // success card deep-links here with ?lhive=<slug>).
-  const [lhive, setLhive] = useQueryState('lhive', parseAsString.withDefault(''));
+function LearningsView({ hive }: { hive: string }) {
+  // P-042: the hive selection now lives at the TAB level (`?lhive=`, the shared
+  // lens) — passed in as `hive`/`hives` instead of owned here, so the same
+  // selection drives Improvements + Gym too. The origin filter (`?lpack=`) stays
+  // local to this view.
   const [lpack, setLpack] = useQueryState('lpack', parseAsString.withDefault('all'));
-
-  const hiveList = useSyncQuery<{ slug: string; remote: boolean }>({
-    queryName: 'learning.hiveList',
-    args: {},
-    staleTime: 60_000,
-  });
-  const hives = hiveList.data ?? [];
-  const hive = lhive || hives[0]?.slug || '';
 
   const sync = useSyncQuery<HiveLearningsSnapshot>({
     queryName: 'learning.hive',
@@ -1659,22 +1722,9 @@ function LearningsView() {
 
   return (
     <section className="pc-learning__section">
+      {/* The hive picker now lives in the tab header (P-042) — this strip keeps
+          only the origin filter, scoped to the header-selected hive. */}
       <div className="pc-learning__flow" aria-label="Learnings scope">
-        <label className="pc-learning__flowchip" style={{ gap: 6 }}>
-          <Brain size={11} aria-hidden />
-          hive
-          <select
-            aria-label="Hive"
-            value={hive}
-            onChange={(e) => void setLhive(e.target.value)}
-            style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 12 }}
-          >
-            {hives.length === 0 && <option value="">no hives yet</option>}
-            {hives.map((h) => (
-              <option key={h.slug} value={h.slug}>{h.slug}{h.remote ? ' (joined)' : ''}</option>
-            ))}
-          </select>
-        </label>
         <label className="pc-learning__flowchip" style={{ gap: 6 }}>
           show
           <select
@@ -1951,6 +2001,21 @@ function LearningStyles() {
         background: transparent; color: var(--fg-mute, #7f9bb4);
       }
       .pc-learning__howtoggle.is-on { color: var(--fg-dim, #b9d4e8); border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.07); }
+
+      /* Tab-level per-Hive lens picker (P-042) — sits with the How toggle. */
+      .pc-learning__controlsright { display: inline-flex; align-items: center; gap: 8px; }
+      .pc-learning__hivepick {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 5px 10px; font-size: 11.5px; font-weight: 600; border-radius: 999px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__hivepicklabel { text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
+      .pc-learning__hiveselect {
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
+        border-radius: 6px; color: var(--fg, #e7f7ff); font-size: 12px; padding: 2px 6px; max-width: 200px;
+      }
+      .pc-learning__hiveselect:disabled { opacity: 0.6; cursor: default; }
 
       .pc-learning__how {
         list-style: none; margin: 0; padding: 11px 13px;

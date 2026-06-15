@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import type { Sql } from 'postgres';
 import {
   provisionHiveLearningLoop,
+  teardownHiveLearningLoop,
   hiveScoutRoutineId,
   DEFAULT_HIVE_SCOUT_MAX_COST_USD,
   HIVE_SCOUT_ROUTINE_NAME,
@@ -112,5 +113,71 @@ describe('provisionHiveLearningLoop', () => {
     };
     const res = await provisionHiveLearningLoop({ sql: tag as unknown as Sql, workspaceId: 'w1', hiveSlug: 'delta' });
     await expect(res.undo()).resolves.toBeUndefined();
+  });
+});
+
+describe('teardownHiveLearningLoop (P-021 — the hive:dissolve inverse)', () => {
+  it('deletes the gym row, the scout routine, AND the gym:<hive>/scout:<hive> governor registrants', async () => {
+    const { sql, calls } = makeFakeSql();
+    const res = await teardownHiveLearningLoop({ sql, workspaceId: 'w1', hiveSlug: 'alpha' });
+
+    expect(res).toEqual({
+      hiveSlug: 'alpha',
+      gymAutoloop: true,
+      scoutRoutine: true,
+      governorRegistrants: true,
+    });
+
+    const gymDelete = calls.find((c) => c.text.includes('DELETE FROM harness_shared.gym_autoloop_config'));
+    expect(gymDelete).toBeTruthy();
+    expect(gymDelete!.values).toContain('alpha');
+    expect(gymDelete!.values).toContain('w1');
+
+    const routineDelete = calls.find((c) => c.text.includes('DELETE FROM harness_shared.routines'));
+    expect(routineDelete).toBeTruthy();
+    expect(routineDelete!.values).toContain('alpha');
+    expect(routineDelete!.values).toContain(HIVE_SCOUT_ROUTINE_NAME);
+
+    // The two governor registrant deletes — keyed gym:<hive> and scout:<hive>.
+    const govDeletes = calls.filter((c) =>
+      c.text.includes('DELETE FROM harness_shared.learning_governor_loops'),
+    );
+    expect(govDeletes).toHaveLength(2);
+    const govLoopIds = govDeletes.flatMap((c) => c.values);
+    expect(govLoopIds).toContain('gym:alpha');
+    expect(govLoopIds).toContain('scout:alpha');
+  });
+
+  it('is best-effort per-removal: a failing gym delete does NOT block the scout/governor removals', async () => {
+    // The gym_autoloop_config delete rejects; the others still run + report.
+    const tag = (strings: TemplateStringsArray) => {
+      const text = strings.join(' ');
+      if (text.includes('gym_autoloop_config')) return Promise.reject(new Error('pg down'));
+      return Promise.resolve([] as unknown[]);
+    };
+    const res = await teardownHiveLearningLoop({
+      sql: tag as unknown as Sql,
+      workspaceId: 'w1',
+      hiveSlug: 'beta',
+    });
+    expect(res.gymAutoloop).toBe(false); // the failed removal
+    expect(res.scoutRoutine).toBe(true); // unaffected
+    expect(res.governorRegistrants).toBe(true); // unaffected
+  });
+
+  it('reports a governor-registrant delete failure without throwing', async () => {
+    const tag = (strings: TemplateStringsArray) => {
+      const text = strings.join(' ');
+      if (text.includes('learning_governor_loops')) return Promise.reject(new Error('pg down'));
+      return Promise.resolve([] as unknown[]);
+    };
+    const res = await teardownHiveLearningLoop({
+      sql: tag as unknown as Sql,
+      workspaceId: 'w1',
+      hiveSlug: 'gamma',
+    });
+    expect(res.gymAutoloop).toBe(true);
+    expect(res.scoutRoutine).toBe(true);
+    expect(res.governorRegistrants).toBe(false);
   });
 });

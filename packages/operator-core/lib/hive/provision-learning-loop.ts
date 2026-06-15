@@ -31,6 +31,8 @@
  */
 import type { Sql } from 'postgres';
 import { setAutoloop } from '../gym/control-plane';
+import { gymLoopId, scoutLoopId } from '../learning-governor/core';
+import { deleteLearningLoop } from '../learning-governor/store';
 
 /** The scout routine name a per-hive loop fires from (under the hive install_slug). */
 export const HIVE_SCOUT_ROUTINE_NAME = 'scout-cycle';
@@ -160,4 +162,78 @@ export async function provisionHiveLearningLoop(
     scoutMaxCostUsd: maxCostUsd,
     undo,
   };
+}
+
+export interface TeardownHiveLearningLoopInput {
+  sql: Sql;
+  workspaceId: string;
+  /** The dissolving hive's OWN home install_slug — same key provisionHiveLearningLoop used. */
+  hiveSlug: string;
+}
+
+export interface TeardownHiveLearningLoopResult {
+  hiveSlug: string;
+  /** The dark gym autoloop row was removed (or was already absent). */
+  gymAutoloop: boolean;
+  /** The inactive scout routine row was removed (or was already absent). */
+  scoutRoutine: boolean;
+  /** The `gym:<hive>` / `scout:<hive>` learning-governor registrants were removed (or absent). */
+  governorRegistrants: boolean;
+}
+
+/**
+ * teardownHiveLearningLoop — the lifecycle inverse of provisionHiveLearningLoop,
+ * called from hive:dissolve (per-hive-learning-loops-2026-06-14 P-021; D-003).
+ * Removes EVERYTHING the provision laid down for this hive:
+ *   (a) the dark gym_autoloop_config row keyed (workspace_id, harness_slug=hiveSlug),
+ *   (b) the inactive scout routine (install_slug=hiveSlug, name='scout-cycle'),
+ *   (c) the learning-governor registrants `gym:<hive>` + `scout:<hive>`.
+ *
+ * Mirrors the provision's `undo` (which removes a+b), extended with the governor
+ * registrants the provision NEVER writes (the gym/scout tick mirrors write those
+ * lazily on first armed contact). Idempotent + best-effort throughout: each
+ * removal is independently try/caught so a missing row — or one removal failing —
+ * never blocks the others, and the caller WARNS rather than failing the dissolve.
+ */
+export async function teardownHiveLearningLoop(
+  input: TeardownHiveLearningLoopInput,
+): Promise<TeardownHiveLearningLoopResult> {
+  const { sql, workspaceId, hiveSlug } = input;
+  const result: TeardownHiveLearningLoopResult = {
+    hiveSlug,
+    gymAutoloop: false,
+    scoutRoutine: false,
+    governorRegistrants: false,
+  };
+
+  // (a) dark gym autoloop row.
+  try {
+    await sql`
+      DELETE FROM harness_shared.gym_autoloop_config
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${hiveSlug}`;
+    result.gymAutoloop = true;
+  } catch {
+    /* best-effort — a failure WARNS in the caller, never fails the dissolve */
+  }
+
+  // (b) inactive scout routine (reuse the provision's keying).
+  try {
+    await sql`
+      DELETE FROM harness_shared.routines
+       WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveSlug} AND name = ${HIVE_SCOUT_ROUTINE_NAME}`;
+    result.scoutRoutine = true;
+  } catch {
+    /* best-effort */
+  }
+
+  // (c) learning-governor registrants gym:<hive> + scout:<hive>.
+  try {
+    await deleteLearningLoop(sql, { workspaceId, loopId: gymLoopId(hiveSlug) });
+    await deleteLearningLoop(sql, { workspaceId, loopId: scoutLoopId(hiveSlug) });
+    result.governorRegistrants = true;
+  } catch {
+    /* best-effort */
+  }
+
+  return result;
 }

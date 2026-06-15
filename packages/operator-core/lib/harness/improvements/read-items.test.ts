@@ -162,6 +162,42 @@ describe('readImprovementItems', () => {
     expect(barItems.length).toBe(1);
     expect(barItems[0]?.id).toBe('EI-3');
   });
+
+  it('(P-040) filters by a Hive member-harness scope SET when harnessScopes is provided', async () => {
+    const allIssues = [
+      issue({ id: 'EI-1', title: 'operator-wide', kind: 'bug', scope: 'operator' }),
+      issue({ id: 'EI-2', title: 'home issue', kind: 'change', scope: 'harness:my-hive' }),
+      issue({ id: 'EI-3', title: 'member issue', kind: 'change', scope: 'harness:member-a' }),
+      issue({ id: 'EI-4', title: 'other-hive issue', kind: 'change', scope: 'harness:other' }),
+    ];
+    const fakeList = async () => allIssues;
+    // The Hive lens = the home + member-a scopes; 'other' and 'operator' are excluded.
+    const items = await readImprovementItems(
+      { harnessScopes: ['harness:my-hive', 'harness:member-a'] },
+      { listIssues: fakeList },
+    );
+    expect(items.map((i) => i.id)).toEqual(['EI-2', 'EI-3']);
+  });
+
+  it('(P-040) harnessScopes takes precedence over harnessSlug when both are set', async () => {
+    const allIssues = [
+      issue({ id: 'EI-2', title: 'home', kind: 'change', scope: 'harness:my-hive' }),
+      issue({ id: 'EI-9', title: 'foo', kind: 'bug', scope: 'harness:foo' }),
+    ];
+    const items = await readImprovementItems(
+      { harnessSlug: 'foo', harnessScopes: ['harness:my-hive'] },
+      { listIssues: async () => allIssues },
+    );
+    expect(items.map((i) => i.id)).toEqual(['EI-2']); // the scope set wins, not 'foo'
+  });
+
+  it('(P-040) an EMPTY harnessScopes set matches nothing (a Hive with no member harnesses)', async () => {
+    const items = await readImprovementItems(
+      { harnessScopes: [] },
+      { listIssues: async () => [issue({ id: 'EI-1', title: 'x', kind: 'bug', scope: 'harness:my-hive' })] },
+    );
+    expect(items).toEqual([]);
+  });
 });
 
 describe('readObservationItems (turn-end-reflection-observations-2026-06-14 D-005)', () => {

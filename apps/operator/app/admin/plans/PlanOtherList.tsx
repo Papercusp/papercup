@@ -195,12 +195,21 @@ export default function PlanOtherList({
     'expand',
     parseAsArrayOf(parseAsString).withDefault([]),
   );
+  // P-007: selected autonomy-category filter (nuqs array; new Queue view only).
+  const [catFilter, setCatFilter] = useQueryState('qcat', parseAsArrayOf(parseAsString).withDefault([]));
 
   const planList = planFilters ?? [];
   const otherGroups = otherOnly(groups, kinds ?? [], planList, tierFilter ?? 'all');
   const allItems = otherGroups.flatMap((g) => g.items);
+  // P-007: the autonomy categories present in the current items + the active filter
+  // (new Queue view only; other-items only — plan-items are uniformly plan-governance).
+  const presentCats = [...new Set(allItems.map((i) => i.category).filter((c): c is string => !!c))].sort();
+  const catActive = groupByAuthorizer ? catFilter : [];
+  const baseItems = catActive.length
+    ? allItems.filter((i) => i.category != null && catActive.includes(i.category))
+    : allItems;
   // A1: authorizer buckets in the new Queue view, else the legacy plan/harness groups.
-  const sections = groupByAuthorizer ? byAuthorizer(allItems) : planSections(otherGroups);
+  const sections = groupByAuthorizer ? byAuthorizer(baseItems) : planSections(otherGroups);
 
   // Auto-expand the selected item's section (mirrors the Plans tab). The ref
   // token stops us reopening a section the user just collapsed while the
@@ -365,7 +374,46 @@ export default function PlanOtherList({
     </ul>
   );
 
-  return wrap(groupsEl);
+  // P-007: the category-filter chip row (new Queue view; other-items only).
+  const categoryFacet =
+    groupByAuthorizer && presentCats.length > 1 ? (
+      <nav className="pc-queue__catfacet" aria-label="Filter by autonomy category">
+        {presentCats.map((cat) => {
+          const active = catFilter.includes(cat);
+          return (
+            <button
+              key={cat}
+              type="button"
+              className={`pc-category pc-queue__catchip${active ? ' is-active' : ''}`}
+              aria-pressed={active}
+              onClick={() =>
+                void setCatFilter(active ? catFilter.filter((c) => c !== cat) : [...catFilter, cat])
+              }
+            >
+              {cat}
+            </button>
+          );
+        })}
+        {catFilter.length ? (
+          <button type="button" className="pc-queue__catclear" onClick={() => void setCatFilter([])}>
+            clear
+          </button>
+        ) : null}
+      </nav>
+    ) : null;
+
+  return wrap(
+    <>
+      {categoryFacet}
+      {sections.length ? (
+        groupsEl
+      ) : (
+        <div className="pc-items__empty">
+          No items in the selected categor{catActive.length === 1 ? 'y' : 'ies'}.
+        </div>
+      )}
+    </>,
+  );
 }
 
 export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {

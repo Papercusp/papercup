@@ -147,6 +147,24 @@ export async function listLearningLoops(
 }
 
 /**
+ * Deregister a loop — drop its registration row (the lifecycle inverse of
+ * registerLearningLoop). Used by hive:dissolve to remove the per-hive
+ * `gym:<hive>` / `scout:<hive>` registrants so a dissolved hive's loop leaves no
+ * stranded governor row. Idempotent (a missing row is a no-op); returns whether
+ * a row was deleted. The spend-event ledger is left as the durable audit trail.
+ */
+export async function deleteLearningLoop(
+  sql: Sql,
+  q: { workspaceId: string; loopId: string },
+): Promise<{ deleted: boolean }> {
+  const rows = (await sql`
+    DELETE FROM harness_shared.learning_governor_loops
+     WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
+     RETURNING loop_id`) as Row[];
+  return { deleted: rows.length > 0 };
+}
+
+/**
  * THE unattended-refusal check (D-004): look up the registration and apply the
  * generalized gym rule. Frontier loops call the flag-aware wrapper
  * (registrants.ts learningGovernorPreflight) — this is the PG-level core.

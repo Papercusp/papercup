@@ -3,7 +3,8 @@
  * the autonomous cadence PRIMITIVE (resolves b6c3f's invariants-contract Risk A).
  *
  * A `routines` row with `trigger_kind='cron'` + `target_role='system:scout-cycle'`
- * ticks FREQUENTLY (seed-scout-routine seeds it inactive). On each tick the
+ * ticks FREQUENTLY (provisioned INACTIVE per-hive at hive:create —
+ * lib/hive/provision-learning-loop.ts). On each tick the
  * routines engine runs THIS handler inline (one durable DBOS step), which calls
  * {@link runScoutTick} — and runScoutTick SELF-GATES on {@link shouldRunScoutCycle}
  * (idle capacity OR friction) + the budget + the autoloop fire-gate. So the

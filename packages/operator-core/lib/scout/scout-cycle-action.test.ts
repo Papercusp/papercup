@@ -93,6 +93,49 @@ describe('makeScoutCycleAction', () => {
     expect(gov[0].fired).toBeNull();
   });
 
+  // Per-hive-learning-loops-2026-06-14 P-031: a per-hive scout routine fires under
+  // the HIVE'S OWN install_slug (provisionHiveLearningLoop seeds it that way), so the
+  // cycle is hive-scoped end-to-end: the install_slug flows to the cycle runner AS the
+  // harnessSlug (→ per-hive lens weights P-011 + per-hive routing), and the per-cycle
+  // budget comes from THAT routine's payload_template, mirrored to scout:<hive>.
+  it('is hive-scoped end-to-end: install_slug → cycle runner harnessSlug + per-hive budget → scout:<hive> governor mirror', async () => {
+    const calls = { ran: 0, persisted: 0 };
+    const cycleScopes: Array<{ harnessSlug: string; workspaceId: string; maxCostUsd?: number }> = [];
+    const gov: Array<{ harnessSlug: string; perCycleBudgetUsd: number }> = [];
+    const runCycle: import('./scout-cycle-action').ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget }) => {
+      cycleScopes.push({ harnessSlug, workspaceId, maxCostUsd: budget.maxCostUsd });
+      return { provenance: [], costUsd: 0.3 };
+    };
+    const handler = makeScoutCycleAction(
+      runCycle,
+      fakeBuilder({ idleRatio: 1 }, calls),
+      async (input) => (gov.push({ harnessSlug: input.harnessSlug, perCycleBudgetUsd: input.perCycleBudgetUsd }), { applied: true as const }),
+    );
+    // The per-hive routine ctx: install_slug is the HIVE slug, payload carries the per-hive cap.
+    await handler({ installSlug: 'hive-acme', workspaceId: 'w', triggerConfig: {}, payloadTemplate: { budget: { maxCostUsd: 0.75 } } });
+    expect(calls.ran).toBe(1);
+    // The cycle runner was invoked scoped to the HIVE (its slug is the harnessSlug — drives per-hive lenses + routing).
+    expect(cycleScopes).toEqual([{ harnessSlug: 'hive-acme', workspaceId: 'w', maxCostUsd: 0.75 }]);
+    // The governor sub-budget is keyed per-hive (scout:hive-acme) at the per-hive cap.
+    expect(gov).toEqual([{ harnessSlug: 'hive-acme', perCycleBudgetUsd: 0.75 }]);
+  });
+
+  it('two hives run independently scoped — each cycle + governor mirror carries its OWN slug and budget (P-031)', async () => {
+    const govByHive: Record<string, number> = {};
+    const cycleByHive: Record<string, number | undefined> = {};
+    const handlerFor = (calls: { ran: number; persisted: number }) =>
+      makeScoutCycleAction(
+        async ({ harnessSlug, budget }) => ((cycleByHive[harnessSlug] = budget.maxCostUsd), { provenance: [], costUsd: 0.1 }),
+        fakeBuilder({ idleRatio: 1 }, calls),
+        async (input) => ((govByHive[input.harnessSlug] = input.perCycleBudgetUsd), { applied: true as const }),
+      );
+    await handlerFor({ ran: 0, persisted: 0 })({ installSlug: 'hive-acme', workspaceId: 'w', triggerConfig: {}, payloadTemplate: { budget: { maxCostUsd: 0.5 } } });
+    await handlerFor({ ran: 0, persisted: 0 })({ installSlug: 'hive-beta', workspaceId: 'w', triggerConfig: {}, payloadTemplate: { budget: { maxCostUsd: 2 } } });
+    // Each hive's cycle + governor mirror carried its OWN slug + payload budget — no cross-hive bleed.
+    expect(cycleByHive).toEqual({ 'hive-acme': 0.5, 'hive-beta': 2 });
+    expect(govByHive).toEqual({ 'hive-acme': 0.5, 'hive-beta': 2 });
+  });
+
   it('stays hermetic (no governor IO) when no recorder is wired — the unit-test contract', async () => {
     const calls = { ran: 0, persisted: 0 };
     const handler = makeScoutCycleAction(

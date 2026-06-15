@@ -33,7 +33,8 @@
  *     auto-file to the improvements backlog. Tier 3 stays on-demand (D-004).
  *   - `system:scout-cycle` — hive-creative-ideation-2026-06-08 P-008 (the Scout
  *     autonomous-ideation cadence; D-010). Self-gates on idle/friction + budget;
- *     seeded INACTIVE (seed-scout-routine.ts), bring-up human-gated.
+ *     provisioned INACTIVE per-hive at hive:create
+ *     (lib/hive/provision-learning-loop.ts), bring-up human-gated.
  *   - `system:session-dir-gc` — the per-session isolation-dir janitor (the EI-155
  *     follow-on). Sweeps `session-claude/`, `session-mcp/`, codex homes of
  *     not-live, not-resumable sessions past a retention window. Seeded INACTIVE
@@ -50,8 +51,10 @@
  *   - `system:gym-cycle` — learning-system-audit-improvements-2026-06-09
  *     P-031/P-032. The gym's pulse: per tick, run ONE bounded human-gated gym
  *     cycle for the least-recently-run enabled+idle+budgeted autoloop, with
- *     triage-routed gym ideas fed to the proposer. Seeded INACTIVE
- *     (lib/gym/seed-gym-routine.ts).
+ *     triage-routed gym ideas fed to the proposer. The per-hive autoloop ROWS it
+ *     sweeps are provisioned inline at hive:create (provision-learning-loop.ts,
+ *     dark) — the standalone per-hive `seed-gym-routine.ts` env-slug seed was
+ *     RETIRED (per-hive-learning-loops-2026-06-14 P-022).
  *   - `system:interactive-usage-ingest` + `system:token-weekly-report` —
  *     token-usage-reduction-audit-2026-06-09 P-001/P-003. Tail local Claude Code
  *     transcripts into `agent_usage_samples` (source='interactive'); broadcast a

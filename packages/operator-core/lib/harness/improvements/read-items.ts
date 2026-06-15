@@ -112,6 +112,14 @@ export interface ReadImprovementOpts {
   /** (P-010) Restrict to a specific harness scope. Omit for all scopes (papercusp + all harnesses). */
   harnessSlug?: string;
   /**
+   * (per-hive-learning-loops P-040) Restrict to a SET of harness scopes — the
+   * member-harness scopes of one Hive (`['harness:<home>', 'harness:<member>', …]`,
+   * the Hive being the tenancy unit, D-008). Takes precedence over `harnessSlug`
+   * when both are set. Omit for all scopes. An empty array matches NOTHING (a Hive
+   * with no member harnesses has no improvements of its own).
+   */
+  harnessScopes?: readonly string[];
+  /**
    * Signal-provenance allowlist (frontier P-002/D-002). DEFAULT: organic only —
    * synthetic rows (drill/replay/shadow) never reach a learning consumer unless
    * it explicitly opts in here (e.g. the vaccination measurement loop passes
@@ -173,6 +181,14 @@ async function readByTopic(
   // allowlist — junk values fail closed; a row with NO origin reads organic
   // (the migration-DEFAULT backfill semantics, see provenance.ts).
   const originGated = issues.filter((issue) => originAllowed(issue.signalOrigin, origins));
+
+  // (P-040) Per-Hive lens: filter to the Hive's member-harness scope SET when
+  // given (the Hive is the tenancy unit, D-008). Takes precedence over the
+  // single-harness filter; an empty set matches nothing.
+  if (opts.harnessScopes) {
+    const allowed = new Set(opts.harnessScopes);
+    return originGated.filter((issue) => allowed.has(issue.scope)).map(issueToCandidate);
+  }
 
   // (P-010) Filter by scope if harnessSlug is specified
   if (opts.harnessSlug) {

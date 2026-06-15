@@ -31,6 +31,8 @@ import PlanOtherList, { OtherDetail } from './PlanOtherList';
 import PlanItemPreview from './PlanItemPreview';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
+import DecisionLog from '@/app/_components/DecisionLog';
+import QueueSummary from './QueueSummary';
 import { Plus, ClipboardList, Inbox, Terminal } from 'lucide-react';
 import {
   SessionsRosterList,
@@ -110,6 +112,15 @@ type OtherKind = (typeof OTHER_KIND_IDS)[number];
 /** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
 type QueueTierFilter = AttentionTier | 'all';
 const QUEUE_TIER_FILTERS = ['all', ...ATTENTION_TIERS] as const;
+// B1 (P-006): the Queue's Pending|Queen's-log segmented tabs + the Queen-log layer toggle.
+const QUEUE_TABS: { id: 'pending' | 'queen-log'; label: string; hint: string }[] = [
+  { id: 'pending', label: 'Pending', hint: 'Items an agent escalated for your sign-off.' },
+  { id: 'queen-log', label: "Queen's log", hint: 'What the Queen has decided on her own.' },
+];
+const QUEEN_LOG_LAYERS: { id: 'disposition' | 'action'; label: string; hint: string }[] = [
+  { id: 'disposition', label: 'Decisions', hint: 'What the Queen chose per item (act/defer/reject/route/no-op).' },
+  { id: 'action', label: 'All actions', hint: 'Every governed action that ran — the full audit trail.' },
+];
 
 /** Map a plan-item status category to its inbox tier (D-006): needs-human → a
  *  Decision, blocked → an Alert, an actionable todo → Activity. Plan items don't
@@ -126,7 +137,7 @@ const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }>
   { id: 'coord-escalation', label: 'Escalations', hint: 'Agent escalations from the coord log — a decision is blocking progress.' },
   { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
   { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
-  { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the inbox (chat stays conversation only).' },
+  { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the queue (chat stays conversation only).' },
   { id: 'improvement', label: 'Improvements', hint: 'Self-improvements the auto-implement loop routed to you for triage.' },
   { id: 'standing-approval', label: 'Approvals', hint: 'Standing-approval candidates — grant the operator auto-dispatch, or dismiss.' },
   { id: 'conversation', label: 'Questions', hint: 'Open agent questions / coord:ask conversations awaiting an answer.' },
@@ -206,6 +217,15 @@ export default function PlansClient() {
   // queue-authorization-redesign (P-004): the A1 authorizer-split Queue view
   // (group pending items by who must sign off). Default-ON; OFF = legacy tier grouping.
   const queueAuthzView = useFlag(FLAGS.QUEUE_AUTHORIZATION_VIEW);
+  // B1 (P-006): which queue tab is shown + the Queen-log layer (disposition/action).
+  const [queueTab, setQueueTab] = useQueryState(
+    'queueTab',
+    parseAsStringEnum<'pending' | 'queen-log'>(['pending', 'queen-log']).withDefault('pending'),
+  );
+  const [qlLayer, setQlLayer] = useQueryState(
+    'qlLayer',
+    parseAsStringEnum<'disposition' | 'action'>(['disposition', 'action']).withDefault('disposition'),
+  );
   // Inbox tier filter (D-006) — Decisions ▸ Handled ▸ Alerts ▸ Activity (or all).
   // Only the Decisions tier demands the user; this lets them focus on it.
   // The local is queueTier, but the URL key stays 'inboxTier' — it's a cross-app
@@ -817,6 +837,57 @@ export default function PlansClient() {
                   />
                 ) : view === 'queue' ? (
                   <div className="pc-queue__list">
+                    {/* B1 (P-006): the two-halves summary + the Pending|Queen's-log
+                        segmented control — only in the redesigned Queue (flag-gated). */}
+                    {queueAuthzView ? (
+                      <>
+                        <QueueSummary waitingOnYou={tierCounts.decision} />
+                        <nav className="pc-queue__tabs" aria-label="Queue tab">
+                          {QUEUE_TABS.map((tb) => (
+                            <button
+                              key={tb.id}
+                              type="button"
+                              className={`pc-queue__tab${queueTab === tb.id ? ' is-active' : ''}`}
+                              aria-pressed={queueTab === tb.id}
+                              onClick={() => void setQueueTab(tb.id)}
+                              title={tb.hint}
+                            >
+                              {tb.label}
+                            </button>
+                          ))}
+                        </nav>
+                      </>
+                    ) : null}
+                    {queueAuthzView && queueTab === 'queen-log' ? (
+                      <section className="pc-queue__queenlog" aria-label="Queen's decision log">
+                        <nav className="pc-queue__tabs pc-queue__layer-toggle" aria-label="Decision log layer">
+                          {QUEEN_LOG_LAYERS.map((l) => (
+                            <button
+                              key={l.id}
+                              type="button"
+                              className={`pc-queue__tab${qlLayer === l.id ? ' is-active' : ''}`}
+                              aria-pressed={qlLayer === l.id}
+                              onClick={() => void setQlLayer(l.id)}
+                              title={l.hint}
+                            >
+                              {l.label}
+                            </button>
+                          ))}
+                        </nav>
+                        <DecisionLog
+                          layer={qlLayer}
+                          limit={50}
+                          title={qlLayer === 'disposition' ? 'What the Queen decided' : 'Governed actions (audit)'}
+                          description={
+                            qlLayer === 'disposition'
+                              ? 'Every item the Queen considered and what she chose — act, defer, reject, route, or no-op. Newest first.'
+                              : 'Every governed action that ran, auto or gated — the full audit trail. Newest first.'
+                          }
+                          emptyText="No decisions logged yet. As the Queen considers items, they appear here."
+                        />
+                      </section>
+                    ) : (
+                    <>
                     {/* Tier bar (D-006): Decisions ▸ Handled ▸ Alerts ▸ Activity.
                         Only Decisions demands the user; the rest declutter into
                         their own tiers. */}
@@ -897,6 +968,8 @@ export default function PlansClient() {
                         />
                       ) : null}
                     </div>
+                    </>
+                    )}
                   </div>
                 ) : (
                   /* Plans — the grouped item list (list-only). The selected

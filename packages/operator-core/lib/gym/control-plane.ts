@@ -239,25 +239,30 @@ export async function listProposals(
  */
 export async function listRecentProposalsForWorkspace(
   sql: Sql,
-  q: { workspaceId: string; limit?: number },
+  q: { workspaceId: string; limit?: number; harnessSlug?: string },
 ): Promise<GymProposalRow[]> {
   const limit = Math.min(Math.max(q.limit ?? 50, 1), 200);
+  // (per-hive-learning-loops P-041) the per-Hive lens narrows to one gym
+  // harness's proposals when `harnessSlug` is set; omitted ⇒ the whole workspace.
   const rows = (await sql`
     SELECT * FROM harness_shared.gym_proposals
      WHERE workspace_id = ${q.workspaceId}
+       ${q.harnessSlug ? sql`AND harness_slug = ${q.harnessSlug}` : sql``}
      ORDER BY created_at DESC
      LIMIT ${limit}`) as Row[];
   return rows.map(mapProposal);
 }
 
-/** Every autoloop config in the workspace (one per gym harness), freshest first. */
+/** Every autoloop config in the workspace (one per gym harness), freshest first.
+ *  (P-041) `harnessSlug` narrows to a single Hive's gym for the per-Hive lens. */
 export async function listAutoloopsForWorkspace(
   sql: Sql,
-  q: { workspaceId: string },
+  q: { workspaceId: string; harnessSlug?: string },
 ): Promise<GymAutoloopConfig[]> {
   const rows = (await sql`
     SELECT * FROM harness_shared.gym_autoloop_config
      WHERE workspace_id = ${q.workspaceId}
+       ${q.harnessSlug ? sql`AND harness_slug = ${q.harnessSlug}` : sql``}
      ORDER BY updated_at DESC`) as Row[];
   return rows.map(mapAutoloop);
 }

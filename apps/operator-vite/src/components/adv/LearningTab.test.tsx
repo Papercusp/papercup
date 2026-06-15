@@ -16,9 +16,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
-const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true, tab: null, grade: null };
+const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true, tab: null, grade: null, lhive: '' };
+// Capture the setter per key so tests can assert the hive picker writes ?lhive.
+const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 vi.mock('nuqs', () => ({
-  useQueryState: (key: string) => [nuqsState[key], vi.fn()],
+  useQueryState: (key: string) => {
+    const setter = (nuqsSetters[key] ??= vi.fn((v: unknown) => { nuqsState[key] = v; }));
+    return [nuqsState[key], setter];
+  },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsBoolean: { withDefault: () => ({}) },
   parseAsString: { withDefault: () => ({}) },
@@ -128,9 +133,17 @@ let apiaryResult: Record<string, unknown> = { data: [apiarySnapshot], loading: f
 let knowledgeResult: Record<string, unknown> = { data: [knowledgeSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 let scoutResult: Record<string, unknown> = { data: [scoutSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 let hiveEvalResult: Record<string, unknown> = { data: [{ instances: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+// P-042: the tab-level hive picker reuses learning.hiveList; the Learnings view
+// reads learning.hive + learningPacks.list. Defaults: two hives so the picker
+// renders real options.
+let hiveListResult: Record<string, unknown> = { data: [{ slug: 'alpha-hive', remote: false }, { slug: 'beta-hive', remote: true }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+let hiveResult: Record<string, unknown> = { data: [{ hive: 'alpha-hive', rows: [], packs: [], organicCount: 0 }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+// Per-query args the tab passed — asserted by the P-042 hive-lens tests.
+const seenArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: (opts: { queryName: string }) =>
-    opts.queryName === 'learning.gym'
+  useSyncQuery: (opts: { queryName: string; args?: unknown }) => {
+    seenArgs[opts.queryName] = opts.args;
+    return opts.queryName === 'learning.gym'
       ? gymResult
       : opts.queryName === 'learning.apiary'
         ? apiaryResult
@@ -140,7 +153,14 @@ vi.mock('@papercusp/sync', () => ({
             ? knowledgeResult
             : opts.queryName === 'learning.scout'
               ? scoutResult
-              : improvementsResult,
+              : opts.queryName === 'learning.hiveList'
+                ? hiveListResult
+                : opts.queryName === 'learning.hive'
+                  ? hiveResult
+                  : opts.queryName === 'learningPacks.list' || opts.queryName === 'learningPacks.candidates'
+                    ? { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() }
+                    : improvementsResult;
+  },
 }));
 
 import LearningTab from './LearningTab';
@@ -151,12 +171,17 @@ beforeEach(() => {
   nuqsState.how = true;
   nuqsState.tab = null;
   nuqsState.grade = null;
+  nuqsState.lhive = '';
+  for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
+  for (const k of Object.keys(seenArgs)) delete seenArgs[k];
   improvementsResult = { data: [improvementsDigest], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   gymResult = { data: [gymSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   apiaryResult = { data: [apiarySnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   knowledgeResult = { data: [knowledgeSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   scoutResult = { data: [scoutSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   hiveEvalResult = { data: [{ instances: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+  hiveListResult = { data: [{ slug: 'alpha-hive', remote: false }, { slug: 'beta-hive', remote: true }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+  hiveResult = { data: [{ hive: 'alpha-hive', rows: [], packs: [], organicCount: 0 }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 });
 afterEach(() => cleanup());
 
@@ -518,5 +543,81 @@ describe('LearningTab — Knowledge view', () => {
     render(<LearningTab />);
     expect(screen.getByLabelText('Memory health').textContent).toContain('memory health unavailable');
     expect(screen.getByText('Adding a sync query')).toBeTruthy(); // insights half still renders
+  });
+});
+
+describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-042)', () => {
+  it('renders the tab-level hive picker on hive-aware views (Improvements) with the hiveList options', () => {
+    render(<LearningTab />); // default view = improvements (hive-aware)
+    const picker = screen.getByLabelText('Hive lens') as HTMLSelectElement;
+    expect(picker).toBeTruthy();
+    expect(within(picker).getByRole('option', { name: 'alpha-hive' })).toBeTruthy();
+    // remote hives are badged "(joined)".
+    expect(within(picker).getByRole('option', { name: 'beta-hive (joined)' })).toBeTruthy();
+  });
+
+  it('shows the picker on the Gym and Learnings views too', () => {
+    nuqsState.lview = 'gym';
+    render(<LearningTab />);
+    expect(screen.getByLabelText('Hive lens')).toBeTruthy();
+    cleanup();
+    nuqsState.lview = 'learnings';
+    render(<LearningTab />);
+    expect(screen.getByLabelText('Hive lens')).toBeTruthy();
+  });
+
+  it('HIDES the picker on workspace-global views (Benchmark, Scout, Knowledge, Throughput)', () => {
+    for (const v of ['benchmark', 'scout', 'knowledge', 'throughput']) {
+      cleanup();
+      nuqsState.lview = v;
+      render(<LearningTab />);
+      expect(screen.queryByLabelText('Hive lens')).toBeNull();
+    }
+  });
+
+  it('defaults the selection to the first hive and scopes the feed to it (consistent per-Hive lens)', () => {
+    // lhive='' → the resolved hive falls back to the first list entry, and EVERY
+    // hive-aware view scopes to that concrete hive (matches what the Learnings
+    // view already did). The picker value + the threaded arg agree, so the lens
+    // is never silently workspace-wide while showing a specific hive selected.
+    render(<LearningTab />);
+    const picker = screen.getByLabelText('Hive lens') as HTMLSelectElement;
+    expect(picker.value).toBe('alpha-hive'); // first hive shown as the selection
+    expect(seenArgs['learning.improvements']).toEqual({ hive: 'alpha-hive' });
+  });
+
+  it('threads the chosen hive into the Improvements query args', () => {
+    nuqsState.lhive = 'beta-hive';
+    render(<LearningTab />);
+    expect(seenArgs['learning.improvements']).toEqual({ hive: 'beta-hive' });
+  });
+
+  it('threads the chosen hive into the Gym query args', () => {
+    nuqsState.lview = 'gym';
+    nuqsState.lhive = 'beta-hive';
+    render(<LearningTab />);
+    expect(seenArgs['learning.gym']).toEqual({ hive: 'beta-hive' });
+  });
+
+  it('threads the chosen hive into the Learnings (learning.hive) query args', () => {
+    nuqsState.lview = 'learnings';
+    nuqsState.lhive = 'beta-hive';
+    render(<LearningTab />);
+    expect(seenArgs['learning.hive']).toEqual({ hive: 'beta-hive' });
+  });
+
+  it('writes ?lhive when the picker changes', () => {
+    render(<LearningTab />);
+    fireEvent.change(screen.getByLabelText('Hive lens'), { target: { value: 'beta-hive' } });
+    expect(nuqsSetters.lhive).toHaveBeenCalledWith('beta-hive');
+  });
+
+  it('disables the picker (no hives yet) and queries improvements workspace-wide', () => {
+    hiveListResult = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    render(<LearningTab />);
+    const picker = screen.getByLabelText('Hive lens') as HTMLSelectElement;
+    expect(picker.disabled).toBe(true);
+    expect(within(picker).getByRole('option', { name: 'no hives yet' })).toBeTruthy();
+    expect(seenArgs['learning.improvements']).toEqual({});
   });
 });

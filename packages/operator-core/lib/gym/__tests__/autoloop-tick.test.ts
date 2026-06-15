@@ -337,6 +337,68 @@ describe('runGymAutoloopTick — routed-ideas context (P-032)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Per-HIVE execution (per-hive-learning-loops-2026-06-14 P-030). The gym tick is
+// keyed purely on harnessSlug, so a per-hive gym_autoloop_config row (laid down
+// dark at hive:create by provisionHiveLearningLoop, then armed by the owner) is
+// just another row in the workspace sweep. These pin the two per-hive invariants:
+//   - the workspace sweep picks up EVERY armed per-hive row (LRU across hives), and
+//   - the fire-gate / circuit state is PER-HARNESS, so one failing hive's backoff
+//     never brakes its siblings (the round-robin walks past it to a peer).
+// ---------------------------------------------------------------------------
+
+describe('runGymAutoloopTick — per-hive execution (P-030)', () => {
+  it('sweeps armed per-hive rows across hives, running the least-recently-run hive', async () => {
+    // Three hives' armed gym autoloops, all eligible; the never-run hive leads LRU.
+    const { deps, rec } = makeDeps([
+      autoloop({ harnessSlug: 'hive-acme', lastCycleAt: 5_000 }),
+      autoloop({ harnessSlug: 'hive-beta', lastCycleAt: 1_000 }),
+      autoloop({ harnessSlug: 'hive-gamma', lastCycleAt: null }),
+    ]);
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('hive-gamma'); // never-run hive leads
+    expect(out.eligibleCount).toBe(3); // ALL per-hive rows are in the sweep
+    expect(rec.cycleReqs.map((r) => r.harnessSlug)).toEqual(['hive-gamma']);
+  });
+
+  it('fire-gate is PER-HARNESS: one hive in circuit-backoff does NOT brake its siblings', async () => {
+    // hive-acme's gym is in error-backoff (its OWN (slug,role) autoloop_state row);
+    // the tick must walk past it and run a sibling hive in the SAME tick.
+    const { deps, rec } = makeDeps(
+      [
+        autoloop({ harnessSlug: 'hive-acme', lastCycleAt: 100 }),
+        autoloop({ harnessSlug: 'hive-beta', lastCycleAt: 200 }),
+      ],
+      {
+        checkFireGate: async (slug) =>
+          slug === 'hive-acme'
+            ? { allow: false, reason: 'circuit-open', retryAfterSec: 3600 }
+            : { allow: true },
+      },
+    );
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.harnessSlug).toBe('hive-beta'); // sibling runs despite acme's open circuit
+    expect(out.gateBlocked).toEqual(['hive-acme']); // acme's own gate held it
+    expect(rec.cycleReqs.map((r) => r.harnessSlug)).toEqual(['hive-beta']);
+    // The fire-path bookkeeping is recorded under the SIBLING's slug only — acme's
+    // error counter is untouched by beta's cycle (per-harness fire-state).
+    expect(rec.fires.every((f) => f.slug === 'hive-beta')).toBe(true);
+  });
+
+  it('a per-hive row stays independently budgeted — the cycle cap is THAT hive\'s remaining', async () => {
+    // Two hives with different budgets; only the LRU one runs, capped at its own remaining.
+    const { deps, rec } = makeDeps([
+      autoloop({ harnessSlug: 'hive-acme', budgetUsd: 8, spentUsd: 5, lastCycleAt: null }),
+      autoloop({ harnessSlug: 'hive-beta', budgetUsd: 20, spentUsd: 1, lastCycleAt: 50 }),
+    ]);
+    const out = await runGymAutoloopTick(deps);
+    expect(out.harnessSlug).toBe('hive-acme');
+    expect(rec.cycleReqs[0].budgetUsd).toBeCloseTo(3); // acme's own 8 − 5, not beta's
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Stale-running reclaim (crash recovery) — a host death between set:running
 // and the settle write must not dead-lock the autoloop forever.
 // ---------------------------------------------------------------------------

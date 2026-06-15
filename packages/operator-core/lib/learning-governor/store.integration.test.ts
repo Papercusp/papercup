@@ -14,6 +14,7 @@ import { getTestPg, teardownTestPg } from '@papercusp/test-config';
 import { provisionGymDatabase } from '../gym/gym-db-init';
 import { summarizeLearningSpend } from './core';
 import {
+  deleteLearningLoop,
   getLearningLoop,
   governorCheck,
   listLearningLoops,
@@ -100,6 +101,15 @@ describe('registry — register/get/list', () => {
     const priorities = loops.map((l) => l.priority);
     expect(priorities).toEqual([...priorities].sort((a, b) => a - b));
     expect(loops.some((l) => l.loopId === 'gym:alpha')).toBe(true);
+  });
+
+  it('deleteLearningLoop drops the registration (P-021 dissolve teardown) and is idempotent', async () => {
+    await registerLearningLoop(sql, { workspaceId: WS, loopId: 'gym:doomed', budgetUsd: 5 });
+    expect(await getLearningLoop(sql, { workspaceId: WS, loopId: 'gym:doomed' })).not.toBeNull();
+    expect(await deleteLearningLoop(sql, { workspaceId: WS, loopId: 'gym:doomed' })).toEqual({ deleted: true });
+    expect(await getLearningLoop(sql, { workspaceId: WS, loopId: 'gym:doomed' })).toBeNull();
+    // A second delete (or a never-registered loop) is a no-op, not an error.
+    expect(await deleteLearningLoop(sql, { workspaceId: WS, loopId: 'gym:doomed' })).toEqual({ deleted: false });
   });
 });
 

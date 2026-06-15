@@ -1340,17 +1340,35 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .object({
         state: z.enum(['open', 'resolved', 'closed']).optional(),
         limit: z.number().int().positive().max(500).optional(),
+        // (per-hive-learning-loops P-040) the per-Hive lens: a Hive HOME slug
+        // narrows the feed to that Hive's member-harness scopes (D-008). Omit ⇒
+        // the whole workspace (papercusp + every harness).
+        hive: z.string().max(120).optional(),
       })
       .optional(),
     resolve: async (args) => {
-      const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
+      const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number; hive?: string };
       const { readImprovementItems } = await import('../harness/improvements/read-items');
       const { buildDigest } = await import('../harness/improvements/digest');
       const { applyHumanQueueRanking } = await import('../queue-ranker/human-queue');
       const { computeImprovementFlow, readWatchdogFlowTicks } = await import('../harness/improvements/flow-metrics');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const nowMs = Date.now();
-      const items = await readImprovementItems({ state: a.state, limit: a.limit });
+      // P-040: resolve the Hive → its member-harness scope set (the Hive is the
+      // tenancy unit) so the feed only shows that Hive's improvements. Best-effort:
+      // a registry read failure degrades to the unfiltered (workspace) feed rather
+      // than 500ing the tab.
+      let harnessScopes: string[] | undefined;
+      if (a.hive) {
+        try {
+          const { loadHarnessRegistry, hiveMemberHarnessScopes } = await import('../harness-registry');
+          const reg = await loadHarnessRegistry();
+          harnessScopes = hiveMemberHarnessScopes(reg.projects, a.hive);
+        } catch (err) {
+          console.warn('[learning.improvements] hive scope resolution failed:', err instanceof Error ? err.message : err);
+        }
+      }
+      const items = await readImprovementItems({ state: a.state, limit: a.limit, ...(harnessScopes ? { harnessScopes } : {}) });
       // Human lane ordered by the ONE ranker (frontier P-040; feature #1 is
       // consume-edges P-022's blocking impact) — the owner's queue leads with
       // what blocks the most, each item carrying its per-feature breakdown.
@@ -1461,15 +1479,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // NOT table-backed for PG-trigger invalidation — refreshes on mount + the panel's
   // manual `invalidate()`. Empty until a gym actually runs (graceful empty in the UI).
   'learning.gym': {
-    resolve: async () => {
+    // (per-hive-learning-loops P-041) the per-Hive lens: a Hive HOME slug
+    // narrows the gym proposals + autoloops to that Hive's gym harness. The gym
+    // is scoped per (workspace_id, harness_slug); the Hive home slug IS the gym
+    // harness_slug, so the filter is a direct harness_slug match. Omit ⇒ the
+    // cross-harness workspace rollup (unchanged default).
+    argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
+    resolve: async (args) => {
+      const a = (args ?? {}) as { hive?: string };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
       const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace } = await import('../gym/control-plane');
       const ws = activeWorkspaceId();
+      const harnessSlug = a.hive || undefined;
       return await routeWithWorkspace(async (tx) => {
         const [proposals, autoloops] = await Promise.all([
-          listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50 }),
-          listAutoloopsForWorkspace(tx, { workspaceId: ws }),
+          listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50, ...(harnessSlug ? { harnessSlug } : {}) }),
+          listAutoloopsForWorkspace(tx, { workspaceId: ws, ...(harnessSlug ? { harnessSlug } : {}) }),
         ]);
         return [{ proposals, autoloops }];
       });

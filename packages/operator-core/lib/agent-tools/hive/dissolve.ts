@@ -9,6 +9,12 @@
  *      sibling hives — known limitation).
  *   2. cancel every live bee in the hive's home harness (+ its subtree).
  *   3. deregister the home harness from the workspace registry.
+ *   3.5. tear down the hive's learning loop — the dark gym autoloop row, the
+ *      inactive scout routine, and the gym:<hive>/scout:<hive> governor
+ *      registrants provisionHiveLearningLoop laid down at hive:create
+ *      (per-hive-learning-loops-2026-06-14 P-021; D-003). Best-effort: a failure
+ *      WARNS but never fails the dissolve. Without it per-hive routines leak past
+ *      dissolve.
  *   4. OPTIONALLY drop the harness PG schema (default keep — deregister only).
  *
  * ROOT-ONLY (D-002) + confirm-gated (destructive). Does NOT call
@@ -26,6 +32,7 @@ import { clearHiveTimeWake } from '../../hive/wake';
 import { dropHarnessSchema } from '../../scaffold-harness-schema';
 import { removeHarnessFromWorkspace } from '../../harness-membership';
 import { requireHiveTier } from '../../hive/member-tier-gate';
+import { teardownHiveLearningLoop } from '../../hive/provision-learning-loop';
 import { resolveHive } from './_resolve';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -143,6 +150,23 @@ export default defineTool({
     // 3. Deregister the home harness.
     const dereg = await removeHarnessFromWorkspace(workspaceId, hive.slug);
     steps.deregistered = dereg.changed;
+
+    // 3.5. Tear down the hive's learning loop (the inverse of provisionHiveLearning-
+    // Loop at hive:create — dark gym autoloop row, inactive scout routine, and the
+    // gym:<hive>/scout:<hive> governor registrants). Best-effort: a failure WARNS
+    // but never fails the dissolve (P-021 / D-003). Without it per-hive routines
+    // leak past dissolve and a stale scout routine could re-arm.
+    try {
+      const loop = await teardownHiveLearningLoop({ sql, workspaceId, hiveSlug: hive.slug });
+      steps.learningLoopTornDown = true;
+      steps.learningLoop = loop;
+    } catch (e) {
+      steps.learningLoopTornDown = false;
+      steps.learningLoopError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+      console.warn(
+        `[hive:dissolve] learning-loop teardown for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
+      );
+    }
 
     // 4. Optional schema drop (default keep).
     if (args.dropSchema) {

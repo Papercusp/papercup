@@ -92,6 +92,35 @@ describe('recordGymTickToGovernor', () => {
     ]);
   });
 
+  it('mirrors N per-hive rows to distinct gym:<hive> loops and ledgers the ran hive only (P-030)', async () => {
+    // Per-hive-learning-loops P-030: the workspace sweep returns one gym autoloop
+    // row per hive; the mirror must register EACH under its own gym:<hive> loopId
+    // and ledger spend only against the hive that actually ran this tick.
+    const perHive = [
+      { workspaceId: 'w', harnessSlug: 'hive-acme', enabled: true, budgetUsd: 20, spentUsd: 2 },
+      { workspaceId: 'w', harnessSlug: 'hive-beta', enabled: true, budgetUsd: 15, spentUsd: 7 },
+      { workspaceId: 'w', harnessSlug: 'hive-gamma', enabled: false, budgetUsd: null, spentUsd: 0 },
+    ];
+    const { deps, calls } = fakeDeps();
+    const out = await recordGymTickToGovernor(
+      {
+        workspaceId: 'w',
+        sql: SQL,
+        listAutoloops: async () => perHive,
+        ran: { harnessSlug: 'hive-beta', spentUsd: 0.9, runRef: 'gym-cycle:hive-beta' },
+      },
+      deps,
+    );
+    expect(out).toEqual({ applied: true });
+    // One registration per hive, each its own loopId + native enforcement.
+    expect(calls.register.map((r) => r.loopId)).toEqual(['gym:hive-acme', 'gym:hive-beta', 'gym:hive-gamma']);
+    expect(calls.register.every((r) => r.enforcement === 'native')).toBe(true);
+    // Spend ledgered against the ran hive ONLY (event-only, the row spent comes from the mirror).
+    expect(calls.spend).toEqual([
+      { workspaceId: 'w', loopId: 'gym:hive-beta', costUsd: 0.9, runRef: 'gym-cycle:hive-beta', note: 'gym autoloop cycle', accumulate: false },
+    ]);
+  });
+
   it('skips the spend event for a zero-spend run', async () => {
     const { deps, calls } = fakeDeps();
     await recordGymTickToGovernor(
