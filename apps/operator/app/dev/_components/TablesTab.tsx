@@ -35,7 +35,7 @@ interface TableEntry {
   primaryKey: string[];
 }
 
-interface ColumnSummary {
+export interface ColumnSummary {
   name: string;
   dataType: string;
   columnType: string;
@@ -77,12 +77,12 @@ interface RowsPayload {
 
 const PAGE_SIZE = 50;
 
-type Op =
+export type Op =
   | 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte'
   | 'like' | 'ilike'
   | 'in' | 'notin'
   | 'isnull' | 'notnull';
-const OPS: Array<{ op: Op; label: string; needsValue: boolean }> = [
+export const OPS: Array<{ op: Op; label: string; needsValue: boolean }> = [
   { op: 'eq', label: '=', needsValue: true },
   { op: 'ne', label: '≠', needsValue: true },
   { op: 'gt', label: '>', needsValue: true },
@@ -96,11 +96,27 @@ const OPS: Array<{ op: Op; label: string; needsValue: boolean }> = [
   { op: 'isnull', label: 'IS NULL', needsValue: false },
   { op: 'notnull', label: 'NOT NULL', needsValue: false },
 ];
-const OP_LABEL = new Map(OPS.map((o) => [o.op, o.label]));
-const VALUELESS_OPS = new Set<Op>(['isnull', 'notnull']);
-const ARRAY_OPS = new Set<Op>(['in', 'notin']);
+export const OP_LABEL = new Map(OPS.map((o) => [o.op, o.label]));
+export const VALUELESS_OPS = new Set<Op>(['isnull', 'notnull']);
+export const ARRAY_OPS = new Set<Op>(['in', 'notin']);
 
-interface Filter { col: string; op: Op; value: unknown }
+export interface Filter { col: string; op: Op; value: unknown }
+
+/**
+ * Human-readable chip label for an active WHERE filter. Pure projection of
+ * one `Filter` → `"col OP value"` with array/valueless special-casing.
+ * Extracted from the `filterChips` memo so it can be pinned in isolation.
+ */
+export function filterChipLabel(f: Filter): string {
+  let valueLabel: string;
+  if (VALUELESS_OPS.has(f.op)) valueLabel = '';
+  else if (ARRAY_OPS.has(f.op) && Array.isArray(f.value)) {
+    const items = f.value.slice(0, 4).map(valueToLabel);
+    const more = f.value.length > 4 ? `, …${f.value.length - 4} more` : '';
+    valueLabel = ` (${items.join(', ')}${more})`;
+  } else valueLabel = ` ${valueToLabel(f.value)}`;
+  return `${f.col} ${OP_LABEL.get(f.op)}${valueLabel}`;
+}
 
 export default function TablesTab() {
   const [tables, setTables] = useState<TableEntry[]>([]);
@@ -244,21 +260,12 @@ export default function TablesTab() {
   );
 
   const filterChips = useMemo(() => {
-    return filters.map((f, i) => {
-      let valueLabel: string;
-      if (VALUELESS_OPS.has(f.op)) valueLabel = '';
-      else if (ARRAY_OPS.has(f.op) && Array.isArray(f.value)) {
-        const items = f.value.slice(0, 4).map(valueToLabel);
-        const more = f.value.length > 4 ? `, …${f.value.length - 4} more` : '';
-        valueLabel = ` (${items.join(', ')}${more})`;
-      } else valueLabel = ` ${valueToLabel(f.value)}`;
-      return {
-        key: i,
-        col: f.col,
-        op: f.op,
-        label: `${f.col} ${OP_LABEL.get(f.op)}${valueLabel}`,
-      };
-    });
+    return filters.map((f, i) => ({
+      key: i,
+      col: f.col,
+      op: f.op,
+      label: filterChipLabel(f),
+    }));
   }, [filters]);
 
   const removeFilter = (idx: number) => {
@@ -642,7 +649,7 @@ function FilterComposer({
   );
 }
 
-function coerceFilterValue(col: ColumnSummary | undefined, raw: string): unknown {
+export function coerceFilterValue(col: ColumnSummary | undefined, raw: string): unknown {
   if (!col) return raw;
   const t = col.columnType;
   if (raw === '' && !col.notNull) return null;
@@ -665,7 +672,7 @@ function coerceFilterValue(col: ColumnSummary | undefined, raw: string): unknown
   }
 }
 
-function coerceHint(col: ColumnSummary): string {
+export function coerceHint(col: ColumnSummary): string {
   const t = col.columnType;
   if (t.startsWith('PgInteger') || t.startsWith('PgBigInt') || t.startsWith('PgReal') || t.startsWith('PgDoublePrecision') || t === 'PgNumeric') {
     return 'number';
@@ -674,20 +681,20 @@ function coerceHint(col: ColumnSummary): string {
   return 'text';
 }
 
-function isHarnessSlugCell(colName: string, value: unknown): boolean {
+export function isHarnessSlugCell(colName: string, value: unknown): boolean {
   if (value === null || value === undefined || value === '') return false;
   if (typeof value !== 'string') return false;
   return colName === 'harness_slug' || colName === 'install_slug';
 }
 
-function valueToLabel(v: unknown): string {
+export function valueToLabel(v: unknown): string {
   if (v === null || v === undefined) return '∅';
   if (typeof v === 'string') return v.length > 40 ? v.slice(0, 37) + '…' : v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   return JSON.stringify(v).slice(0, 40);
 }
 
-function renderCell(v: unknown): string {
+export function renderCell(v: unknown): string {
   if (v === null || v === undefined) return '∅';
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'number') return String(v);

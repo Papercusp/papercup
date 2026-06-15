@@ -217,7 +217,7 @@ export function buildPlanItemAttention({
   selected: PlanItem | undefined;
 }): AttentionItem {
   const isNeedsHuman = selected?.storedStatus === 'needs-human';
-  return {
+  const attentionLike: AttentionItem = {
     id: `plan-item:${planSlug}:${itemId}`,
     kind: 'plan-item',
     source: 'plan',
@@ -238,5 +238,6 @@ export function buildPlanItemAttention({
         ]
       : [{ id: 'chat', label: 'Chat' }],
     ref: { kind: 'plan-item', slug: planSlug, itemId },
-  } as AttentionItem;
+  };
+  return attentionLike;
 }

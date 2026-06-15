@@ -66,8 +66,10 @@ type StateTable =
   | 'operator_voice_channels'
   // Migration 182 — P2P hive-directory offline cache (p2p-hive-directory P-003):
   | 'hive_directory_cache'
-  // hive-from-repo-hardening P-005 — withdrawal-tombstone watermarks (same
-  // operator-state row mechanics as the cache; no new migration needed):
+  // Migration 294 — withdrawal-tombstone watermarks (hive-from-repo-hardening
+  // P-005). NOTE: each StateTable is its OWN harness_shared.<name> table, so
+  // this needed its own migration (294) — the original "no new migration
+  // needed" assumption was wrong and broke the hive-directory join path:
   | 'hive_directory_tombstones'
   // Migration 190 — Queen Claude-account pool (cloud-deployment-layer Phase 7 P-019):
   | 'operator_account_pool'

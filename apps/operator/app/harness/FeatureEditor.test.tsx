@@ -25,7 +25,7 @@ vi.mock('nuqs', async () => {
 // Design-system Select → a native select stand-in surfacing the value.
 vi.mock('./Select', () => ({
   Select: ({ value, options, ariaLabel }: { value: string; options: { value: string; label: string }[]; ariaLabel?: string }) => (
-    <select aria-label={ariaLabel} value={value} readOnly>
+    <select aria-label={ariaLabel} value={value} onChange={() => {}}>
       {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   ),

@@ -22,10 +22,13 @@ vi.mock('./Tooltip', () => ({ Tooltip: ({ children }: { children: React.ReactNod
 
 import { ptyWsUrlForId, ptyResumeKey } from './PiPanel';
 
+// Typed view of the runtime-injected window overrides the helper reads.
+const w = window as unknown as { __PAPERCUSP_PTY_WS__?: string | null; __PAPERCUSP_TAURI__?: unknown };
+
 afterEach(() => {
   // Reset any window override the tests set.
-  delete (window as Record<string, unknown>).__PAPERCUSP_PTY_WS__;
-  delete (window as Record<string, unknown>).__PAPERCUSP_TAURI__;
+  delete w.__PAPERCUSP_PTY_WS__;
+  delete w.__PAPERCUSP_TAURI__;
 });
 
 describe('ptyResumeKey', () => {
@@ -42,22 +45,22 @@ describe('ptyResumeKey', () => {
 
 describe('ptyWsUrlForId', () => {
   it('returns null (SSE only) when a Tauri native pty is present', () => {
-    (window as Record<string, unknown>).__PAPERCUSP_TAURI__ = { kind: 'native', spawn: () => {} };
+    w.__PAPERCUSP_TAURI__ = { kind: 'native', spawn: () => {} };
     expect(ptyWsUrlForId('pty1')).toBeNull();
   });
 
   it('returns null when WS is explicitly opted out (override === null)', () => {
-    (window as Record<string, unknown>).__PAPERCUSP_PTY_WS__ = null;
+    w.__PAPERCUSP_PTY_WS__ = null;
     expect(ptyWsUrlForId('pty1')).toBeNull();
   });
 
   it('builds the WS url from a runtime override, appending the encoded pty id', () => {
-    (window as Record<string, unknown>).__PAPERCUSP_PTY_WS__ = 'ws://host:9999';
+    w.__PAPERCUSP_PTY_WS__ = 'ws://host:9999';
     expect(ptyWsUrlForId('pty/with slash')).toBe('ws://host:9999/pty/pty%2Fwith%20slash');
   });
 
   it('strips a trailing slash from the override base before appending', () => {
-    (window as Record<string, unknown>).__PAPERCUSP_PTY_WS__ = 'ws://host:9999/';
+    w.__PAPERCUSP_PTY_WS__ = 'ws://host:9999/';
     expect(ptyWsUrlForId('abc')).toBe('ws://host:9999/pty/abc');
   });
 
