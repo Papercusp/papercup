@@ -1,0 +1,324 @@
+/**
+ * system-health/types — the SystemHealth snapshot contract
+ * (system-health-tab-2026-06-15 P-001, D-001).
+ *
+ * ONE health model, TWO consumers (D-001): the read-only **Health tab** (the
+ * full human view) and the autonomous **overwatch** role (overwatch-role-
+ * 2026-06-15 C-1, whose `OverwatchBrief` is the *actionable subset* — panels +
+ * anomalies + nudges). `computeSystemHealth` (compute.ts) is the single
+ * substrate; `computeOverwatchBrief` (B-03) wraps it. Never two health models
+ * that drift — so these types are a CONTRACT both sides build against.
+ *
+ * Each panel is a green/yellow/red status light + a few key counters, so a human
+ * grasps "is the system healthy, and if not, which panel is red?" in two seconds
+ * (D-003). A flaky source greys its card (`unknown`) — it never blanks the tab.
+ */
+
+/**
+ * A panel's health light. `unknown` = the source could not be read this tick
+ * (greyed, NOT a fabricated outage — fail-soft, mirroring learning-infra-health's
+ * leg model). The status model lives in `./thresholds.ts` (one place, unit-tested).
+ */
+export type PanelStatus = 'ok' | 'warn' | 'crit' | 'unknown';
+
+/** A single counter on a card. `tone` optionally colours the value. */
+export interface HealthMetric {
+  label: string;
+  value: string | number;
+  /** Optional per-metric tone (e.g. a non-zero failure count → 'crit'). */
+  tone?: PanelStatus;
+}
+
+/** A drill-down link to the existing detail surface (the Queen pane, /admin/git, …). */
+export interface HealthLink {
+  label: string;
+  href: string;
+}
+
+/** The 14 panels, in render order (Overwatch #15 lands with overwatch-role). */
+export type PanelKey =
+  | 'queen'
+  | 'bees'
+  | 'workItems'
+  | 'workFeed'
+  | 'tokens'
+  | 'watchdog'
+  | 'deploy'
+  | 'plans'
+  | 'escalations'
+  | 'autonomy'
+  | 'observations'
+  | 'improvements'
+  | 'infra'
+  | 'suFleet';
+
+/** Canonical render order for the tab's status-card grid. */
+export const PANEL_ORDER: readonly PanelKey[] = [
+  'queen',
+  'bees',
+  'workItems',
+  'workFeed',
+  'tokens',
+  'watchdog',
+  'deploy',
+  'plans',
+  'escalations',
+  'autonomy',
+  'observations',
+  'improvements',
+  'infra',
+  'suFleet',
+] as const;
+
+export const PANEL_LABELS: Record<PanelKey, string> = {
+  queen: 'Queen',
+  bees: 'Bees / fleet',
+  workItems: 'Work items',
+  workFeed: 'Work-feed',
+  tokens: 'Tokens / gateway',
+  watchdog: 'Watchdog',
+  deploy: 'Git-sync / deploy',
+  plans: 'Plans',
+  escalations: 'Escalations',
+  autonomy: 'Autonomy',
+  observations: 'Observations',
+  improvements: 'Improvements',
+  infra: 'Infra',
+  suFleet: 'SU fleet',
+};
+
+/**
+ * One status card. `data` carries the raw structured reading (what the overwatch
+ * brief maps over + the card drills into); `metrics` is the glanceable subset the
+ * card shows. `error` is set (and `status` = 'unknown') when the collector threw.
+ */
+export interface HealthPanel<T = unknown> {
+  key: PanelKey;
+  label: string;
+  status: PanelStatus;
+  /** One human line ("looping, last wake 4m ago" / "STALLED 47m — no wake armed"). */
+  summary: string;
+  metrics: HealthMetric[];
+  link?: HealthLink;
+  data: T | null;
+  error?: string;
+}
+
+// ── per-panel data shapes ────────────────────────────────────────────────────
+
+/** Queen loop health — the failure mode the tab exists for (origin 2026-06-15). */
+export interface QueenHealth {
+  hiveSlug: string | null;
+  /** Is the colony meant to be running (getHiveStarted)? false = paused. */
+  started: boolean;
+  /** started && stale past the stall threshold && demand queued && not mid-turn. */
+  stalled: boolean;
+  /** A tracked hive turn is live right now (don't call a working Queen "stalled"). */
+  midTurn: boolean;
+  /** An active hive-wake routine with a next_fire_at exists. */
+  armed: boolean;
+  /** ms epoch of the last wake activity (launch fire or routine fire). */
+  lastWakeAt: number | null;
+  /** ms since the last wake activity (the stall clock). */
+  staleForMs: number | null;
+  /** ms epoch of the next armed wake. */
+  nextFireAt: number | null;
+  /** armed && not stalled — the loop is keeping cadence. */
+  cadenceOk: boolean;
+  /** Hive watchdog fallback fires in the last 24h (a forgot-to-declare signal). */
+  watchdogFires24h: number;
+  /** Standing demand a forgotten wake would strand. */
+  demand: { todoItems: number; startedPlans: number };
+  /** Governed decisions this window, auto vs gated (decision-ledger). */
+  decisionsWindow: { total: number; auto: number; gated: number };
+  /** Open placements the Queen is currently tracking to completion. */
+  workingTracked: number;
+}
+
+/** Bees / fleet. */
+export interface BeesHealth {
+  /** Live `bee`-role nursery spawns (running / restarting). */
+  running: number;
+  alive: number;
+  /** Running but presence-stale (wedged / dead). */
+  stale: number;
+  /** Active claims whose holder is gone/stale. */
+  orphanedClaims: number;
+  totalLoad: number;
+  /** Open-placement dispositions (the completion watchdog). */
+  placements: { recovering: number; cursed: number; stranded: number; workingTracked: number };
+}
+
+/** Work items by lifecycle state. */
+export interface WorkItemsHealth {
+  total: number;
+  byState: Record<string, number>;
+  todo: number;
+  inProgress: number;
+  blocked: number;
+  needsHuman: number;
+  done: number;
+}
+
+/** Work-feed flow. */
+export interface WorkFeedHealth {
+  /** Ready-to-place frontier items (unblocked todo feature-family). */
+  frontier: number;
+  /** Lanes held by unsatisfied blocked_by. */
+  frontierBlocked: number;
+  startedPlans: number;
+  /** Active routines whose next_fire_at is long overdue (the dead-routine / EI-584 signal). */
+  deadRoutines: number;
+  deadRoutineNames: string[];
+}
+
+/** Tokens / gateway — the two starvation modes (5h-exhaustion AND RPM-pacing). */
+export interface TokensHealth {
+  gatewayEnabled: boolean;
+  /** null when the gateway is not in the egress path (flag off) — not probed. */
+  gatewayReachable: boolean | null;
+  pausedBuckets: number;
+  totalBuckets: number;
+  fleetInFlight: number;
+  fleetCap: number;
+  /** $ spend over the lookback window. */
+  spendUsd: number;
+  windowMs: number;
+  accountsTotal: number;
+  accountsAvailable: number;
+  accountsPaused: number;
+}
+
+/** Watchdog liveness. */
+export interface WatchdogHealth {
+  /** Hive watchdog fallback fires in the last 24h. */
+  fires24h: number;
+  /** A wake is armed for the started hive. */
+  livenessArmed: boolean;
+  staleForMs: number | null;
+  /** Recent error-level notifications (anomaly proxy). */
+  recentErrors: number;
+}
+
+/** Git-sync / deploy pipeline. */
+export interface DeployHealth {
+  deployedShortSha: string | null;
+  /** Commits the integration branch (staging) has that the live :3070 doesn't. */
+  deployedBehindMain: number | null;
+  /** Commits staging has that the green pin (main) doesn't — not-yet-green buffer. */
+  readyBehindMain: number | null;
+  /** Green & deployable but not yet deployed. */
+  deployedBehindReady: number | null;
+  /** The green pin is exactly at the staging tip (fully caught up). */
+  readyAtMainHead: boolean | null;
+  deployedAtMs: number | null;
+  /** Integration-branch HEAD commit time — a git-sync lag proxy. */
+  lastCommitAtMs: number | null;
+  errors: string[];
+}
+
+/** Plans. */
+export interface PlansHealth {
+  active: number;
+  started: number;
+  shipped: number;
+  draft: number;
+  itemsDone: number;
+  itemsTotal: number;
+  /** Started plans with no op update in the aging window. */
+  stalledPlans: number;
+}
+
+/** Escalations. */
+export interface EscalationsHealth {
+  open: number;
+  oldestAgeMs: number | null;
+  bySeverity: Record<string, number>;
+  /** Open escalations older than the aging threshold. */
+  aging: number;
+}
+
+/** Autonomy gate ceilings + tripwires. */
+export interface AutonomyHealth {
+  categories: number;
+  locked: number;
+  /** category → effectiveCeiling (the compact heatmap). */
+  byCeiling: Record<string, number>;
+  tripwiresArmed: number;
+  tripwiresTripped: number;
+  tripwiresReverted: number;
+}
+
+/** Observation lane (the pre-idea sensor readings). */
+export interface ObservationsHealth {
+  /** Open observations. */
+  laneCount: number;
+  recentByRole: Record<string, number>;
+  newestAt: number | null;
+}
+
+/** Improvements queue. */
+export interface ImprovementsHealth {
+  open: number;
+  autoEligible: number;
+  humanQueue: number;
+  byKind: Record<string, number>;
+  bySeverity: Record<string, number>;
+}
+
+/** Infra — PG + gateway reachability. */
+export interface InfraHealth {
+  pg: { version: string; total: number; active: number; idle: number } | null;
+  gatewayReachable: boolean | null;
+}
+
+/** SU fleet (interactive collaborators) presence. */
+export interface SuFleetHealth {
+  total: number;
+  live: number;
+  stale: number;
+  byRole: Record<string, number>;
+}
+
+/**
+ * Who-watches-the-watcher (overwatch-role C-1 / D-004). `overwatchAlive` is null
+ * until the overwatch role lands (overwatch-role-2026-06-15). The Health tab
+ * surfaces it; the overwatch brief raises an anomaly when a counterpart goes dark.
+ */
+export interface CrossMonitor {
+  queenAlive: boolean;
+  overwatchAlive: boolean | null;
+}
+
+/** The keyed panel set — heterogeneous data per key. */
+export interface SystemHealthPanels {
+  queen: HealthPanel<QueenHealth>;
+  bees: HealthPanel<BeesHealth>;
+  workItems: HealthPanel<WorkItemsHealth>;
+  workFeed: HealthPanel<WorkFeedHealth>;
+  tokens: HealthPanel<TokensHealth>;
+  watchdog: HealthPanel<WatchdogHealth>;
+  deploy: HealthPanel<DeployHealth>;
+  plans: HealthPanel<PlansHealth>;
+  escalations: HealthPanel<EscalationsHealth>;
+  autonomy: HealthPanel<AutonomyHealth>;
+  observations: HealthPanel<ObservationsHealth>;
+  improvements: HealthPanel<ImprovementsHealth>;
+  infra: HealthPanel<InfraHealth>;
+  suFleet: HealthPanel<SuFleetHealth>;
+}
+
+/**
+ * The whole-system health snapshot. `overall` is the worst non-`unknown` panel
+ * status (an unread source greys its card but never reds the system, D-003 / the
+ * fail-soft stance). Read by the `health.snapshot` sync resolver (SSE-live) and
+ * wrapped by the overwatch brief.
+ */
+export interface SystemHealth {
+  workspaceId: string;
+  /** ms epoch of this evaluation. */
+  evaluatedAt: number;
+  overall: PanelStatus;
+  crossMonitor: CrossMonitor;
+  panels: SystemHealthPanels;
+}

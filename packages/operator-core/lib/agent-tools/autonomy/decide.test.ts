@@ -84,4 +84,44 @@ describe('autonomy:decide tool', () => {
     const body = JSON.parse(res.content[0].text);
     expect(body).toEqual({ ok: true, workspaceId: 'ws-prin', decision: DECISION });
   });
+
+  // ── overwatch envelope dispatch (overwatch-role-2026-06-15 B-06 / D-002) ──
+  // When the caller is the overwatch role the tool applies the overwatch gate
+  // (the real, pure lib/overwatch/autonomy.ts — NOT mocked) and SKIPS the Queen
+  // decider entirely. nudge/observe/escalate → auto; structural → gated.
+  describe('overwatch envelope (B-06)', () => {
+    it('AUTO-decides a nudge and never touches the Queen decider (role arg)', async () => {
+      const res = await callTool({ action: 'coord:send', role: 'overwatch' });
+      const body = JSON.parse(res.content[0].text);
+      expect(body.ok).toBe(true);
+      expect(body.role).toBe('overwatch');
+      expect(body.workspaceId).toBe('ws-active');
+      expect(body.decision.posture).toBe('auto');
+      expect(body.decision.actionClass).toBe('nudge');
+      expect(mockResolve).not.toHaveBeenCalled();
+      expect(mockDeps).not.toHaveBeenCalled();
+    });
+
+    it('dispatches on ctx.role when no role arg is given', async () => {
+      const res = await callTool({ action: 'improvements:capture' }, { role: 'overwatch' });
+      const body = JSON.parse(res.content[0].text);
+      expect(body.role).toBe('overwatch');
+      expect(body.decision.posture).toBe('auto');
+      expect(body.decision.actionClass).toBe('observe');
+      expect(mockResolve).not.toHaveBeenCalled();
+    });
+
+    it('GATES a structural action (escalate-only)', async () => {
+      const res = await callTool({ action: 'processes:kill', role: 'overwatch' });
+      const body = JSON.parse(res.content[0].text);
+      expect(body.decision.posture).toBe('gated');
+      expect(body.decision.escalateOnly).toBe(true);
+      expect(mockResolve).not.toHaveBeenCalled();
+    });
+
+    it('a non-overwatch role still uses the Queen decider', async () => {
+      await callTool({ action: 'coord:send', role: 'queen' });
+      expect(mockResolve).toHaveBeenCalledTimes(1);
+    });
+  });
 });

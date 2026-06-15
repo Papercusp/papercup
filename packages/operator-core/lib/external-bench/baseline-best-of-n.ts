@@ -47,69 +47,23 @@
  */
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// Canonical shared types — imported from the wave's single sources of truth.
-//   - BenchTask / GradeResult / GenerationStopReason → ./types          (BRIEF 3 / P-005)
-//   - SingleAgentAttempt (= ArmAttempt)              → ./single-agent-attempt (BRIEF 4 / P-006)
-// `EmitRolloutInput` is still mirrored locally below — P-010's reproducibility/emit.ts is the last
-// of the contract to land; swap that one import when it does (tracked via the schema-lock event).
+// Canonical shared types — imported from the wave's single sources of truth (all landed):
+//   - BenchTask / GradeResult                → ./types                  (BRIEF 3 / P-005)
+//   - SingleAgentAttempt (= ArmAttempt)      → ./single-agent-attempt   (BRIEF 4 / P-006)
+//   - EmitRolloutInput                       → ./reproducibility/schema (BRIEF 8 / P-010)
+//   - budgetExceeded / ArmId / BenchSuite …  → @papercusp/bench-metrics (BRIEF 7 / P-011)
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-import { budgetExceeded, type IsoBudgetCap } from '@papercusp/bench-metrics';
+import { budgetExceeded, type ArmId, type BenchSuite, type GraderModality, type IsoBudgetCap } from '@papercusp/bench-metrics';
 import type { BenchTask, GradeResult } from './types';
 import type { SingleAgentAttempt } from './single-agent-attempt';
+import type { EmitRolloutInput } from './reproducibility/schema';
 
-export type { BenchTask, GradeResult, SingleAgentAttempt };
+export type { BenchTask, GradeResult, SingleAgentAttempt, EmitRolloutInput };
 
-/** MIRROR of P-010's locked `emitRollout` input (the `generation` + `grading` blocks). One call
- *  writes the run_result row + rollout card; `emitRollout` derives cost_usd via priceRun. Swap to
- *  `import type { EmitRolloutInput } from '.../reproducibility/emit'` when it lands. */
-export interface EmitRolloutInput {
-  run_id: string;
-  prereg_hash: string;
-  suite: string;
-  task_id: string;
-  arm: 'baseline-c-bestofn';
-  seed: number;
-  modality: 'diff' | 'in-container';
-  generation: {
-    status: 'completed' | 'error' | 'timeout' | 'budget_exhausted';
-    error?: string;
-    tokens_in: number;
-    tokens_out: number;
-    /** SUM over ALL N candidates + verifier (invariant #1). */
-    tokens_total: number;
-    tokens_cache_read?: number | null;
-    tokens_cache_write?: number | null;
-    wall_clock_ms: number;
-    turns?: number;
-    /** Iso cap on GENERATION (+ verifier); omit = uncapped. */
-    budget_tokens?: number;
-    capped?: boolean;
-    model_id: string;
-    harness_version: string;
-    arm_meta?: BestOfNArmMeta;
-    /** M1: the unified diff submitted to the grader. */
-    submission?: string;
-    trajectory_ref?: string;
-    trajectory_kind?: string;
-  };
-  grading: {
-    resolved: boolean | null;
-    status: 'passed' | 'failed' | 'error' | 'timeout' | 'skipped';
-    family: string;
-    version: string;
-    error?: string;
-    structured_output?: {
-      failToPass?: { test: string; passed: boolean }[] | null;
-      passToPass?: { test: string; passed: boolean }[] | null;
-    };
-    raw_output?: unknown;
-  };
-}
-
-/** What `emitRollout` returns. */
+/** What P-010's `emitRollout` returns. */
 export interface EmitRolloutResult {
-  rollout_id: string;
-  run_id: string;
+  rolloutId: string;
+  runId: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -217,10 +171,10 @@ export interface BestOfNConfig {
   // Identity / provenance (from the pre-registered run config — P-010).
   runId: string;
   preregHash: string;
-  suite: string;
+  suite: BenchSuite;
   modelId: string;
   harnessVersion: string;
-  modality?: 'diff' | 'in-container';
+  modality?: GraderModality;
   blueprintId?: string;
 
   // Task + the attempt.
@@ -243,7 +197,7 @@ export interface BestOfNConfig {
 }
 
 export const DEFAULT_BEST_OF_N = 5;
-export const BASELINE_C_ARM_ID = 'baseline-c-bestofn' as const;
+export const BASELINE_C_ARM_ID: ArmId = 'baseline-c-bestofn';
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // The orchestration.

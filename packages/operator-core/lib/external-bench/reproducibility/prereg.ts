@@ -40,7 +40,7 @@ export function computePreregHash(config: unknown): string {
 
 const jb = (v: unknown): string | null => (v == null ? null : JSON.stringify(v));
 
-export interface PreregisterInput {
+export interface PreregisterInput extends DbScope {
   runId: string;
   label?: string | null;
   suites: BenchSuite[];
@@ -48,8 +48,6 @@ export interface PreregisterInput {
   config: Record<string, unknown>;
   /** Override the repo root (tests). Default: the resolved monorepo root. */
   repoRoot?: string;
-  /** Override the workspace (default: the active workspace). */
-  workspaceId?: string;
 }
 
 export interface PreregisterResult {
@@ -67,7 +65,7 @@ export interface PreregisterResult {
  * immutable per run — that immutability is the firewall).
  */
 export async function preregister(input: PreregisterInput): Promise<PreregisterResult> {
-  const ws = input.workspaceId ?? activeWorkspaceId();
+  const { sql, ws } = resolveDb(input);
   const preregHash = computePreregHash(input.config);
   const filePath = preregFilePath(input.runId);
   const repoRoot = input.repoRoot ?? REPO_ROOT;
@@ -84,7 +82,6 @@ export async function preregister(input: PreregisterInput): Promise<PreregisterR
   mkdirSync(path.dirname(absFilePath), { recursive: true });
   writeFileSync(absFilePath, `${JSON.stringify(fileDoc, null, 2)}\n`, 'utf8');
 
-  const { sql } = getOrgPg();
   await sql`
     INSERT INTO harness_shared.benchmark_prereg
       (prereg_hash, run_id, workspace_id, label, suites, config, file_path)
@@ -122,11 +119,10 @@ export interface VerifyPreregResult {
  */
 export async function verifyPreregistration(
   runId: string,
-  opts: { repoRoot?: string; workspaceId?: string } = {},
+  opts: { repoRoot?: string } & DbScope = {},
 ): Promise<VerifyPreregResult> {
-  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const { sql, ws } = resolveDb(opts);
   const repoRoot = opts.repoRoot ?? REPO_ROOT;
-  const { sql } = getOrgPg();
 
   const rows = await sql<{ prereg_hash: string; file_path: string }[]>`
     SELECT prereg_hash, file_path FROM harness_shared.benchmark_prereg

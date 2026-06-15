@@ -4,10 +4,9 @@
  * Evaluation UI consume one type with no per-caller mapping. Also reads the
  * rollout cards + prereg rows (P-010-owned artifacts).
  */
-import { getOrgPg } from '@papercusp/db-org';
 import type { TaskRunResult, TestOutcome } from '@papercusp/bench-metrics';
-import { activeWorkspaceId } from '../../workspace-registry';
 import type { PreregRecord, RolloutRecord } from './schema';
+import { resolveDb, type DbScope } from './db';
 
 /** bigint/numeric columns arrive as strings from postgres.js — coerce to number. */
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
@@ -96,10 +95,9 @@ function rowToPrereg(r: any): PreregRecord {
 
 /** The per-(task × arm × seed) rows for a run (and optionally one suite), as TaskRunResult[]. */
 export async function listRunResults(
-  opts: { runId?: string; suite?: string } = {},
+  opts: { runId?: string; suite?: string } & DbScope = {},
 ): Promise<TaskRunResult[]> {
-  const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const { sql, ws } = resolveDb(opts);
   const rows = await sql`
     SELECT * FROM harness_shared.benchmark_run_result
      WHERE workspace_id = ${ws}
@@ -121,9 +119,8 @@ export interface SuiteSummary {
 }
 
 /** Suite scoreboard for the Evaluation UI's "External benchmarks" tab. */
-export async function listSuites(opts: { runId?: string } = {}): Promise<SuiteSummary[]> {
-  const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+export async function listSuites(opts: { runId?: string } & DbScope = {}): Promise<SuiteSummary[]> {
+  const { sql, ws } = resolveDb(opts);
   const rows = await sql<
     {
       suite: string;
@@ -157,9 +154,8 @@ export async function listSuites(opts: { runId?: string } = {}): Promise<SuiteSu
 }
 
 /** The full Rollout Card for one rollout (the published repro artifact). */
-export async function getRollout(rolloutId: string): Promise<RolloutRecord | null> {
-  const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+export async function getRollout(rolloutId: string, opts: DbScope = {}): Promise<RolloutRecord | null> {
+  const { sql, ws } = resolveDb(opts);
   const rows = await sql`
     SELECT * FROM harness_shared.benchmark_rollout
      WHERE rollout_id = ${rolloutId} AND workspace_id = ${ws} LIMIT 1
@@ -168,9 +164,11 @@ export async function getRollout(rolloutId: string): Promise<RolloutRecord | nul
 }
 
 /** The pre-registration row, by hash or by run id. */
-export async function getPrereg(by: { preregHash?: string; runId?: string }): Promise<PreregRecord | null> {
-  const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+export async function getPrereg(
+  by: { preregHash?: string; runId?: string },
+  opts: DbScope = {},
+): Promise<PreregRecord | null> {
+  const { sql, ws } = resolveDb(opts);
   if (!by.preregHash && !by.runId) return null;
   const rows = await sql`
     SELECT * FROM harness_shared.benchmark_prereg

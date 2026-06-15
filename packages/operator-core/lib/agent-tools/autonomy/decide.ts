@@ -1,10 +1,10 @@
 /**
- * autonomy:decide — the Queen autonomy decider gate, as a tool
+ * autonomy:decide — the autonomy decider gate, as a tool
  * (queen-autonomy-policy-2026-06-13 B-12 / P-070; closes queen-autonomous-execution
  * P-013, the shared decider seam).
  *
  * Given an action (the MCP tool/verb it uses) + its risk/authority/reversibility,
- * returns the D-004 verdict: `auto` → the Queen may decide it WITHOUT asking, or
+ * returns the D-004 verdict: `auto` → the caller may decide it WITHOUT asking, or
  * `gated` → it routes to the owner Queue. The verdict resolves the action's
  * category (B-04), reads that category's effective ceiling from the policy store
  * (B-03), and checks the arming flag (P-092) — then runs the pure gate
@@ -14,6 +14,13 @@
  * This is the gate the dark Queen-decider persona consults per ranked queue item
  * (frontier P-045 / FB-19) and the seam B-13's ledger + B-16's tripwire/graduation
  * + B-17's question-ladder consume — they do not fork the gate.
+ *
+ * ── The overwatch envelope (overwatch-role-2026-06-15 B-06 / D-002) ──────────
+ * Overwatch is a DIFFERENT autonomy model: a fixed allowlist (nudge / observe /
+ * escalate are auto; any structural change is escalate-only), not risk × ceiling.
+ * When the caller's role is `overwatch` (the `role` arg, or `ctx.role`), this tool
+ * DISPATCHES to the overwatch gate (`lib/overwatch/autonomy.ts`) instead of the
+ * Queen 13-category gate — one decision tool, two envelopes, no fork.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -27,14 +34,14 @@ export default defineTool({
   // resolved workspace id — so an unscoped operator/SU/Queen session can call it.
   crossWorkspace: true,
   description:
-    'The Queen autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (the Queen may decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. Behavior-neutral (always gated) until the owner arms the policy (P-092).',
+    'The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. Behavior-neutral (always gated) until the owner arms the policy (P-092). When the caller is the overwatch role it instead applies the overwatch envelope (B-06): nudge/observe/escalate are auto, structural is escalate-only.',
   capability: 'intel:read',
   guidance: {
-    when: "You are the Queen (or a bee) deciding whether to auto-handle a queue item / answer a card without the owner. Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
+    when: "You are the Queen (or a bee) deciding whether to auto-handle a queue item / answer a card without the owner — or the overwatch deciding whether to nudge/observe/escalate (auto) vs escalate a structural change (gated). Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
     notWhen:
       'To READ or render the whole policy use autonomy:policy_get. To CHANGE a ceiling use autonomy:policy_set (owner-authority). This tool DECIDES one action; it never mutates.',
     chaining:
-      'hive:survey / improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue.',
+      'hive:survey / improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue. Overwatch: per anomaly suggestedAction → autonomy:decide → perform the `auto` ones, coord:escalate the `gated` ones.',
   },
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
@@ -59,14 +66,34 @@ export default defineTool({
       .enum(['reversible', 'irreversible', 'unknown'])
       .optional()
       .describe('Reversibility of the action. Omit/"unknown" ⇒ fail-safe irreversible.'),
+    role: z
+      .string()
+      .optional()
+      .describe('The deciding role. Defaults to the caller\'s role (ctx.role). "overwatch" applies the overwatch envelope (B-06): nudge/observe/escalate auto, structural escalate-only. Any other value uses the Queen 13-category gate.'),
   }),
   async handler(args, ctx) {
-    const { getOrgPg } = await import('@papercusp/db-org');
     const { activeWorkspaceId } = await import('../../workspace-registry');
-    const { resolveAutonomyDecision, defaultDeciderDeps } = await import('../../autonomy/decider');
-
     const principalWs = ctx?.principal?.workspaceId;
     const ws = principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId();
+
+    // Overwatch is a distinct autonomy envelope (B-06 / D-002): a fixed allowlist,
+    // not risk × ceiling. Dispatch to its pure gate (no PG, no policy store).
+    const role = args.role ?? (ctx?.role as string | undefined);
+    if (role === 'overwatch') {
+      const { decideOverwatchAutonomy } = await import('../../overwatch/autonomy');
+      const decision = decideOverwatchAutonomy({ action: args.action });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ ok: true, workspaceId: ws, role: 'overwatch', decision }, null, 2),
+          },
+        ],
+      };
+    }
+
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { resolveAutonomyDecision, defaultDeciderDeps } = await import('../../autonomy/decider');
     const { sql } = getOrgPg();
 
     const decision = await resolveAutonomyDecision(

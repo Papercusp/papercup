@@ -11,6 +11,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
 import { getRollout, getPrereg, listRunResults } from './store';
+import type { DbScope } from './db';
 
 /** Path-safe slug for a benchmark task id (instance ids carry slashes/colons). */
 function slug(taskId: string): string {
@@ -30,10 +31,11 @@ export interface ExportResult {
  */
 export async function exportRunBundle(
   runId: string,
-  opts: { repoRoot?: string } = {},
+  opts: { repoRoot?: string } & DbScope = {},
 ): Promise<ExportResult> {
   const repoRoot = opts.repoRoot ?? REPO_ROOT;
-  const results = await listRunResults({ runId });
+  const scope: DbScope = { sql: opts.sql, workspaceId: opts.workspaceId };
+  const results = await listRunResults({ runId, ...scope });
 
   const rolloutFiles: string[] = [];
   const arms = new Set<string>();
@@ -42,7 +44,7 @@ export async function exportRunBundle(
   const graderVersions = new Set<string>();
 
   for (const r of results) {
-    const rollout = await getRollout(r.rolloutId);
+    const rollout = await getRollout(r.rolloutId, scope);
     const rel = path.join(
       'benchmarks',
       'rollouts',
@@ -60,7 +62,7 @@ export async function exportRunBundle(
     graderVersions.add(`${r.graderFamily}@${r.graderVersion}`);
   }
 
-  const prereg = await getPrereg({ runId });
+  const prereg = await getPrereg({ runId }, scope);
   const manifestRel = path.join('benchmarks', 'runs', runId, 'manifest.json');
   const manifestAbs = path.join(repoRoot, manifestRel);
   const manifest = {

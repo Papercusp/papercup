@@ -175,6 +175,31 @@ describe('spawnAgentInHarness — happy path', () => {
   });
 });
 
+describe('spawnAgentInHarness — overwatch flag gate (overwatch-role-2026-06-15 B-10 / D-009)', () => {
+  it('rejects role="overwatch" when papercusp-overwatch is OFF (the default) — registered but not activatable', async () => {
+    // getFlag default impl returns FLAG_DEFAULTS[OVERWATCH] = false → gated.
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'overwatch' });
+    expect(res.ok).toBe(false);
+    // the flag-gate rejection, not the unknown-role rejection (overwatch IS registered)
+    expect(res.error).toContain('papercusp-overwatch');
+    expect(res.error).not.toContain('unknown role');
+    // gated BEFORE any child process launches
+    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+
+  it('lets role="overwatch" past the gate when the flag is ON', async () => {
+    vi.mocked(getFlag).mockImplementation(async (key: string) =>
+      key === FLAGS.OVERWATCH ? true : (FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false),
+    );
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'overwatch' });
+    await flush();
+    // the gate passed → the spawn proceeds (happy-path mocks launch + finish it)
+    expect(res.ok).toBe(true);
+    expect(res.error).toBeFalsy(); // no rejection (success returns error: null)
+    expect(spawnInvokeOnce).toHaveBeenCalled();
+  });
+});
+
 describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-007)', () => {
   const findUpdate = () => {
     const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
