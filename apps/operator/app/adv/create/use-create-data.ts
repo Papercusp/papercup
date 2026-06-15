@@ -28,6 +28,7 @@ import {
   type PlanItemRow,
   type AttentionItem,
   type AttentionGroup,
+  type AttentionTier,
 } from '@/app/admin/plans/plans-api';
 import {
   resolveHarnessScope,
@@ -259,10 +260,19 @@ export interface QueueData {
   otherGroups: AttentionGroup[];
   attentionRaw: ReturnType<typeof usePlanAttention>;
   itemStatusCounts: Record<ItemStatusFilter, number>;
+  /** Per-tier counts (decision/handled/alert/activity) — `decision` is the
+   *  QueueSummary "waiting on you" headline (B1). Mirrors PlansClient.tierCounts. */
+  tierCounts: Record<AttentionTier, number>;
   queueTotal: number;
   showOther: boolean;
   showPlanItems: boolean;
   otherFacets: OtherKind[];
+}
+
+/** Plan-item status category → inbox tier (mirrors PlansClient.tierOfPlanCategory):
+ *  needs-human → decision, blocked → alert, an actionable todo → activity. */
+function tierOfPlanCategory(c: 'needs-human' | 'todo' | 'blocked'): AttentionTier {
+  return c === 'needs-human' ? 'decision' : c === 'blocked' ? 'alert' : 'activity';
 }
 
 /** Lifted from PlansClient: the additive item-status × plan-bucket filter
@@ -369,6 +379,19 @@ export function useQueueData(opts: {
     [itemStatusCounts],
   );
 
+  // Per-tier counts (B1 QueueSummary): plan-items by category→tier (respecting
+  // the plan-bucket facet, like itemStatusCounts) + other items by their tier.
+  const tierCounts = useMemo(() => {
+    const acc: Record<AttentionTier, number> = { decision: 0, handled: 0, alert: 0, activity: 0 };
+    for (const e of taggedItems) {
+      if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;
+      acc[tierOfPlanCategory(e.category as 'needs-human' | 'todo' | 'blocked')] += 1;
+    }
+    for (const it of otherItems) acc[it.tier] += 1;
+    return acc;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taggedItems, pBucketsKey, planBucketBySlug, otherItems]);
+
   return {
     loading: itemsLoading,
     error: itemsError,
@@ -378,6 +401,7 @@ export function useQueueData(opts: {
     otherGroups: attention.data?.groups ?? [],
     attentionRaw: attention,
     itemStatusCounts,
+    tierCounts,
     queueTotal,
     showOther,
     showPlanItems,

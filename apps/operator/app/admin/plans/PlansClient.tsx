@@ -33,6 +33,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import DecisionLog from '@/app/_components/DecisionLog';
 import QueueSummary from './QueueSummary';
+import { QUEUE_TABS, QUEEN_LOG_LAYERS } from './queue-authorizer';
 import { Plus, ClipboardList, Inbox, Terminal } from 'lucide-react';
 import {
   SessionsRosterList,
@@ -112,15 +113,8 @@ type OtherKind = (typeof OTHER_KIND_IDS)[number];
 /** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
 type QueueTierFilter = AttentionTier | 'all';
 const QUEUE_TIER_FILTERS = ['all', ...ATTENTION_TIERS] as const;
-// B1 (P-006): the Queue's Pending|Queen's-log segmented tabs + the Queen-log layer toggle.
-const QUEUE_TABS: { id: 'pending' | 'queen-log'; label: string; hint: string }[] = [
-  { id: 'pending', label: 'Pending', hint: 'Items an agent escalated for your sign-off.' },
-  { id: 'queen-log', label: "Queen's log", hint: 'What the Queen has decided on her own.' },
-];
-const QUEEN_LOG_LAYERS: { id: 'disposition' | 'action'; label: string; hint: string }[] = [
-  { id: 'disposition', label: 'Decisions', hint: 'What the Queen chose per item (act/defer/reject/route/no-op).' },
-  { id: 'action', label: 'All actions', hint: 'Every governed action that ran — the full audit trail.' },
-];
+// B1 (P-006) tab + layer constants moved to ./queue-authorizer (shared with the
+// Create dock's QueuePanel so the two Queue surfaces can't diverge).
 
 /** Map a plan-item status category to its inbox tier (D-006): needs-human → a
  *  Decision, blocked → an Alert, an actionable todo → Activity. Plan items don't

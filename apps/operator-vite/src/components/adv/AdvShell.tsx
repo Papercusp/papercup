@@ -7,7 +7,6 @@ import {
   BookOpen,
   Boxes,
   Check,
-  Eye,
   FlaskConical,
   GitBranch,
   GraduationCap,
@@ -36,7 +35,7 @@ import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'overwatch', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -66,12 +65,9 @@ export const ADV_TABS: ReadonlyArray<{
   // beside Working. Workspace-scoped (it aggregates the whole running system, not one
   // pot), so it also lives in WORKSPACE_TAB_IDS. Flag-gated (SYSTEM_HEALTH_TAB).
   { id: 'health', label: 'Health', icon: HeartPulse, accent: '#f43f5e', accentRgb: '244, 63, 94' },
-  // Overwatch — the autonomous system-health supervisor's ACTIONABLE view, beside
-  // the read-only Health dashboard (overwatch-role-2026-06-15 B-08, D-006).
-  // Workspace-scoped (aggregates the whole running system, not one pot), so it
-  // also lives in WORKSPACE_TAB_IDS. Flag-gated (OVERWATCH, default OFF). Indigo +
-  // the 👁 Eye glyph mirror the role's roster identity (D-011).
-  { id: 'overwatch', label: 'Overwatch', icon: Eye, accent: '#6366f1', accentRgb: '99, 102, 241' },
+  // (The Overwatch surface moved to the left sidebar next to Queen — its
+  // actionable control + anomaly→action list — and its duplicated health grid
+  // was dropped in favour of this Health tab. system-health-tab P-008, 2026-06-15.)
   { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: '#22d3ee', accentRgb: '34, 211, 238' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
@@ -100,9 +96,6 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   // Health aggregates the whole running system (Queen / bees / tokens / infra),
   // not a single pot — so it stays visible under "All Pots" (system-health-tab).
   'health',
-  // Overwatch supervises the whole running system too (its brief is the
-  // actionable subset of the same SystemHealth) — workspace-scoped (B-08, D-006).
-  'overwatch',
   'conversations',
   // Learning aggregates the workspace-wide papercusp-improvement backlog, so it
   // stays visible under "All Pots" (operator-learning-tab-2026-06-09).
@@ -322,27 +315,13 @@ export default function AdvShell({
   // Health is flag-gated (SYSTEM_HEALTH_TAB, default ON): hide its strip entry
   // when off (the kill-switch — the resolver/tick also no-op).
   const healthOn = useFlag(FLAGS.SYSTEM_HEALTH_TAB);
-  // Overwatch is a new, not-yet-proven autonomous role: its tab is gated on
-  // papercusp-overwatch (default OFF until B-12 proves it live). Off ⇒ no strip
-  // entry (the resolver/loop are inert too). (overwatch-role-2026-06-15 D-009.)
-  const overwatchOn = useFlag(FLAGS.OVERWATCH);
-  const visibleTabs = visibleAdvTabs(allMode).filter(
-    (tab) => (tab.id !== 'health' || healthOn) && (tab.id !== 'overwatch' || overwatchOn),
-  );
+  const visibleTabs = visibleAdvTabs(allMode).filter((tab) => tab.id !== 'health' || healthOn);
   // If the active tab just went invisible (scope flipped to "All Pots", or a
   // per-pot deep link landed in all-mode), snap to Overview so the strip and
   // the content pane stay consistent.
   useEffect(() => {
     if (allMode && !WORKSPACE_TAB_IDS.has(activeTab)) void setActiveTab('overview');
   }, [allMode, activeTab, setActiveTab]);
-  // overwatch-role-2026-06-15 B-10 (D-009): the Overwatch tab is dark while
-  // papercusp-overwatch is OFF. The strip already hides its button (visibleTabs),
-  // but a direct ?tab=overwatch deep-link / ui:dispatch would otherwise render the
-  // (inert) pane — snap away so the role is FULLY dark, not just button-hidden.
-  // Mirrors the all-mode snap above; scoped to the flag so no other tab is affected.
-  useEffect(() => {
-    if (!overwatchOn && activeTab === 'overwatch') void setActiveTab('overview');
-  }, [overwatchOn, activeTab, setActiveTab]);
 
   // ── Discord-parity keyboard handlers (discord-shortcuts 2026-06-06) ──────
   // Alt+↑/↓ cycles the visible tab strip (Discord's prev/next channel);

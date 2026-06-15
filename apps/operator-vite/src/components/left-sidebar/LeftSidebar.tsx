@@ -23,7 +23,9 @@ import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
-import { Users, AudioLines, Network, Crown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Users, AudioLines, Network, Crown, Eye, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useFlag } from '@papercusp/flags/client';
+import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 
 const SwarmTab = lazy(() => import('./SwarmTab'));
@@ -33,9 +35,15 @@ const HivesTab = lazy(() => import('./HivesTab'));
 // Moved here from the /adv top tab strip as the LEFTMOST sidebar tab (owner
 // review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
 const QueenTab = lazy(() => import('./QueenTab'));
+// 👁 Overwatch — the autonomous supervisor's actionable panel (control + the
+// anomaly→action list). Moved here from the /adv strip next to Queen (owner ask
+// 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
+// Health tab owns the panels). Flag-gated (OVERWATCH); hidden when the role is dark.
+const OverwatchTab = lazy(() => import('./OverwatchTab'));
 
 const TABS = [
   { id: 'queen', label: 'Queen', icon: Crown, render: (a: boolean) => <QueenTab active={a} /> },
+  { id: 'overwatch', label: 'Overwatch', icon: Eye, render: (a: boolean) => <OverwatchTab active={a} /> },
   { id: 'swarm', label: 'Swarm', icon: Users, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: 'Peers', icon: AudioLines, render: (a: boolean) => <VoiceTab active={a} /> },
   { id: 'hives', label: 'Hives', icon: Network, render: (a: boolean) => <HivesTab active={a} /> },
@@ -88,6 +96,16 @@ export default function LeftSidebar() {
   });
   const setOpen = (v: boolean) => void setRail({ lsb: v });
   const setTab = (v: TabId) => void setRail({ lst: v });
+
+  // Overwatch is flag-gated (OVERWATCH, default OFF until proven live, D-009):
+  // hide its sidebar tab while the role is dark. The nuqs enum still accepts
+  // 'overwatch' (deep-link / ui:dispatch), so snap a stale ?lst=overwatch back
+  // to Queen when the flag is off (mirrors AdvShell's health/overwatch guard).
+  const overwatchOn = useFlag(FLAGS.OVERWATCH);
+  const visibleTabs = TABS.filter((x) => x.id !== 'overwatch' || overwatchOn);
+  useEffect(() => {
+    if (!overwatchOn && tab === 'overwatch') void setRail({ lst: 'queen' });
+  }, [overwatchOn, tab, setRail]);
 
   const pathname = usePathname() ?? '';
   const chromeless = CHROMELESS_PREFIXES.some(
@@ -168,7 +186,7 @@ export default function LeftSidebar() {
   if (chromeless) return null;
 
   const renderedWidth = open ? (hydrated ? width : DEFAULT_WIDTH) : COLLAPSED_WIDTH;
-  const active = TABS.find((x) => x.id === tab) ?? TABS[0];
+  const active = visibleTabs.find((x) => x.id === tab) ?? visibleTabs[0];
 
   return (
     <>
@@ -183,7 +201,7 @@ export default function LeftSidebar() {
       >
         {/* Collapsed: the three tab icons — click one to expand into it. */}
         <div className="pclsb__expand-rail" aria-hidden={open}>
-          {TABS.map((x) => {
+          {visibleTabs.map((x) => {
             const Icon = x.icon;
             return (
               <button
@@ -228,7 +246,7 @@ export default function LeftSidebar() {
               </div>
 
               <div className="pclsb__tabs" role="tablist">
-                {TABS.map((x) => {
+                {visibleTabs.map((x) => {
                   const Icon = x.icon;
                   const isActive = x.id === tab;
                   return (

@@ -959,8 +959,9 @@ mod tests {
         assert!(!on.contains("args \"--role\" \"operator\"")); // never the dropped space form
         assert!(!on.contains("args \"chat-pane\""));
         // Owner directive 2026-06-11: every dock agent chat is a LIVE TUI — the
-        // queen is the real `psu --brain` session (so TWO psu commands:
-        // sentinel + brain), with her wake board (`pui wake-pane --queen`) in a
+        // queen is the real `psu --brain` session, and the overwatch pane above
+        // her is a third psu session (so THREE psu commands: overwatch + sentinel
+        // + brain), with her wake board (`pui wake-pane --queen`) in a
         // pane directly beside it inside the `♛ queen` split container. The
         // one-pane `pui agent-pane` variant was reverted (it could only render
         // the WRONG conversation — the sentinel's).
@@ -1001,6 +1002,26 @@ mod tests {
         assert!(queen_at < brief_at, "brain precedes her side column");
         assert!(work_at < stack_at, "the queen split precedes the agent stack");
         assert!(stack_at < driver_at, "the driver is inside the stack");
+    }
+
+    #[test]
+    fn chat_dock_overwatch_pane_sits_above_the_queen() {
+        // overwatch-role-2026-06-15 (owner ask 2026-06-15): the OVERWATCH
+        // supervisor's interactive pane — a fully-scoped no-picker psu launch as
+        // role=overwatch, mirroring the sentinel — sits ABOVE the ♛ queen block.
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        // The pane exists with the 👁 glyph + the `=` role form (psu drops a
+        // space-separated --role, exactly like the sentinel's --role=operator).
+        assert!(kdl.contains("name=\"👁 overwatch\""), "overwatch pane missing: {kdl}");
+        assert!(
+            kdl.contains("args \"--no-picker\" \"--agent=claude\" \"--role=overwatch\""),
+            "overwatch launch args: {kdl}",
+        );
+        assert!(!kdl.contains("args \"--role\" \"overwatch\""), "never the dropped space form");
+        // It is ABOVE the queen: the overwatch pane precedes the ♛ queen split.
+        let ow = kdl.find("name=\"👁 overwatch\"").expect("overwatch pane");
+        let queen = kdl.find("name=\"♛ queen\"").expect("queen split");
+        assert!(ow < queen, "the overwatch pane sits above the queen split");
     }
 
     #[test]
