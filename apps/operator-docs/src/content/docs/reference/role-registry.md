@@ -45,7 +45,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `release-manager` | ✓ | You are the **Release Manager** — Papercusp's deploy decision-maker. |
 | `release-fixer` | ✓ | You are the **Release-Fixer** — Papercusp's automated green-checkpoint gate fixer. |
 | `sentinel` | ✓ | Sentinel (the fleet watcher) — You are the **sentinel** — the Hive's watcher, placed and woken by the **Queen** |
-| `overwatch` | ✓ | Overwatch (system-health supervisor — global fallback STUB) — You are **the Overwatch** — the autonomous system-health supervisor, a sibling |
+| `overwatch` | ✓ | Overwatch (system-health supervisor — base-library fallback STUB) — You are **the Overwatch** — the autonomous system-health supervisor, a sibling |
 | `researcher` | ✓ | Researcher — You research **one task** — the one named in `FEATURE_ID` — and produce written |
 | `research-director` | ✓ | Research Director (per-task durable pipeline) — You are the **research-director** for a SINGLE research-task inside a durable |
 | `searcher` | ✓ | Searcher (reactive) — You are a **reactive helper** in a `research` harness: gather and organize the raw |
