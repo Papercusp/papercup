@@ -169,6 +169,17 @@ export const FLAGS = {
   // as the sibling AUTHORITY_RPC_PROTOMUX). OFF = no snapshot ops produced, cursor
   // seeds at 0 — byte-identical to today. Listed in KNOWN_DARK_FLAGS.
   SUBSTRATE_LOG_SNAPSHOT: "papercusp-substrate-log-snapshot",
+  // operator-memory-and-psu-resilience-2026-06-14 P-009 (D-008): substrate
+  // process isolation — dedicated sidecar for corestores/Hyperswarm natives.
+  // When ON, bootAllHarnessesForActiveWorkspace spawns a sidecar process
+  // (apps/operator/bin/substrate-sidecar.ts, JSON-RPC 2.0 over Unix socket)
+  // and calls it over IPC instead of in-process. Main operator freed from GC
+  // pauses + per-harness RSS; sidecar owns merge loops + replication.
+  // DEFAULT OFF — staged on :3170 FIRST; never :3070 until integration-verified
+  // (two-peer-swarm federation test + event-loop latency regression test).
+  // Phase 1 (this sprint): skeleton + basic methods + IPC client.
+  // Phase 2: socket handoff + integration tests. Listed in KNOWN_DARK_FLAGS.
+  SUBSTRATE_SIDECAR: "papercusp-substrate-sidecar",
   // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
   // reaper. When ON, a periodic sweep marks DEAD-process open adv_sessions ended
   // (owner stopped heartbeating past the liveness grace), reclaiming the live
@@ -726,6 +737,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // -2026-06-13 D-008: a fresh joiner converged with contiguousLength=0 vs the
   // from-start reader's full 4602 over real NAT/WAN/holepunch). P-008 gate cleared.
   [FLAGS.SUBSTRATE_LOG_SNAPSHOT]: true,
+  // DEFAULT OFF — P-009 substrate sidecar staged on :3170 FIRST, never :3070 until
+  // integration-verified (two-peer-swarm federation test + event-loop latency test).
+  [FLAGS.SUBSTRATE_SIDECAR]: false,
   // DEFAULT OFF — P-011 idle-session reaper ends adv_session rows; off until proven on the fleet.
   [FLAGS.IDLE_SESSION_REAPER]: false,
   // DEFAULT OFF — P-011 / WI-152 (D-007) terminate half: Ctrl-C + SIGKILL of a LIVE-but-idle

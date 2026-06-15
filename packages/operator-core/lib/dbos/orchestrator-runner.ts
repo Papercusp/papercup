@@ -57,7 +57,13 @@ import { heartbeatClaim } from '../work-item-claims';
 import { digestTestOutput } from './pre-validator-test-digest';
 import { saveTextArtifact } from '../text-artifacts';
 import { handleFeaturePassed, type FeaturePassedDeps } from '../harness/fork-pr-on-feature-pass';
-import { planFinalization, needsHumanGateUrl, reconcileDoneStatus, type FinalizeRecipe } from './orchestrator-finalize';
+import {
+  planFinalization,
+  needsHumanGateUrl,
+  reconcileDoneStatus,
+  parseAcceptanceVerdict,
+  type FinalizeRecipe,
+} from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 import { acquireAgentDisplay, agentDisplayPool } from '../deployment/display-allocator';
 import {
@@ -890,6 +896,25 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
           durationMs: Date.now() - finalizeStartedAt,
         });
         console.log(`[dbos-finalize] ${step.role}: ${(r.output || '').slice(0, 160) || '(no output)'}`);
+        // P-009 acceptance gate: a judge step whose verdict is `revise` HARD-BLOCKS the
+        // rest of the finalize recipe (onDone — artifacts:save / documenter), so a
+        // deliverable that fails the rubric is NOT published. The work item is left
+        // non-terminal for the Queen to re-place; a `pass` (or a fail-open missing
+        // marker) falls through to the output recipe unchanged. Only fires for a
+        // judge-acceptance hive (the step carries acceptanceGate); coding is untouched.
+        if (step.acceptanceGate && parseAcceptanceVerdict(r.output) === 'revise') {
+          console.warn(
+            `[dbos-finalize] acceptance gate: ${step.role} returned REVISE for ${featureId} — blocking the output recipe (deliverable not published); left for re-placement`,
+          );
+          emitPipelineEvent({
+            name: 'escalate',
+            harnessSlug,
+            featureId: featureId ?? '-',
+            reason: `acceptance: judge verdict REVISE — ${featureId} needs revision before its deliverable is published`,
+            ...(workspaceId ? { workspaceId } : {}),
+          });
+          break;
+        }
       } else if (step.kind === 'postCuratorOutputs') {
         await postCuratorOutputs({ stateDir, harnessDir: harnessPackageDir() }).catch(() => {});
       } else if (step.kind === 'archive') {

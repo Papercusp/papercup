@@ -90,6 +90,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // Hetzner proof landed green (fresh joiner converged with contiguousLength=0
   // vs the from-start reader's full 4602 over real NAT/WAN/holepunch), clearing
   // the P-008 gate. No longer dark.)
+  // substrate-process-isolation-2026-06-15 P-009: dedicated sidecar for corestores/
+  // Hyperswarm natives, freeing main operator from GC pauses + per-harness RSS.
+  // DARK: staged on :3170 FIRST, never :3070 until integration-verified (two-peer-
+  // swarm federation test + event-loop latency regression test). Phase 1: skeleton +
+  // basic methods. Phase 2: socket handoff + integration tests.
+  FLAGS.SUBSTRATE_SIDECAR,
   // worker-chunk-loop-operator-hosted-2026-06-14 (P-142 / D-003): the operator-
   // hosted worker:chunk-loop is the coding HOT PATH and ships dark, then
   // dark-launch → 25/50/100 cohort ramp → retire. OFF = the subprocess chunk

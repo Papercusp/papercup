@@ -1,6 +1,11 @@
 import { describe, test, expect } from 'vitest';
 import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
-import { planFinalization, needsHumanGateUrl, DEFAULT_FINALIZE_RECIPE } from './orchestrator-finalize';
+import {
+  planFinalization,
+  needsHumanGateUrl,
+  parseAcceptanceVerdict,
+  DEFAULT_FINALIZE_RECIPE,
+} from './orchestrator-finalize';
 
 describe('needsHumanGateUrl — harness-scoped needs-human DONE gate (P-008 gate fix)', () => {
   test('scopes by the `harness` param (the plans:items tool key), NOT the ignored `harness_slugs`', () => {
@@ -89,8 +94,24 @@ describe('planFinalization — DONE (porting legacy handleDone)', () => {
       kind: 'invoke',
       role: 'judge',
       extras: ['TRIGGER=done', 'FEATURE_ID=F-001'],
+      // P-009: the judge step is the acceptance GATE — a `revise` verdict blocks onDone.
+      acceptanceGate: true,
     });
     expect(steps[1]).toEqual({ kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] });
+  });
+
+  test('parseAcceptanceVerdict — pass/revise/variants, fail-open on a missing marker (P-009)', () => {
+    // explicit pass / revise
+    expect(parseAcceptanceVerdict('score 0.9\nACCEPTANCE_VERDICT: pass')).toBe('pass');
+    expect(parseAcceptanceVerdict('missing source\nACCEPTANCE_VERDICT: revise')).toBe('revise');
+    // case-insensitive + accepted synonyms all map to revise
+    expect(parseAcceptanceVerdict('ACCEPTANCE_VERDICT: PASS')).toBe('pass');
+    expect(parseAcceptanceVerdict('ACCEPTANCE_VERDICT: needs-revision')).toBe('revise');
+    expect(parseAcceptanceVerdict('ACCEPTANCE_VERDICT: reject')).toBe('revise');
+    // FAIL-OPEN: no marker / garbled ⇒ pass (a judge that ran + didn't object never wedges)
+    expect(parseAcceptanceVerdict('PASS — looks good (no marker line)')).toBe('pass');
+    expect(parseAcceptanceVerdict('')).toBe('pass');
+    expect(parseAcceptanceVerdict('ACCEPTANCE_VERDICT: maybe')).toBe('pass');
   });
 
   test('acceptance tests/none/undefined → unchanged straight-through finalize (coding backward-compat)', () => {

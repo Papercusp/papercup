@@ -27,10 +27,25 @@ export function needsHumanGateUrl(substrateBase: string, harnessSlug: string): s
 }
 
 export type FinalizationStep =
-  | { kind: 'invoke'; role: string; extras: string[] }
+  | { kind: 'invoke'; role: string; extras: string[]; acceptanceGate?: true }
   | { kind: 'postCuratorOutputs' }
   | { kind: 'archive' }
   | { kind: 'hook'; hook: string };
+
+/**
+ * Parse a judge/acceptance role's verdict from its stdout (hive-blueprint-generalization
+ * P-009). The judge persona emits a machine-readable marker `ACCEPTANCE_VERDICT: pass`
+ * or `ACCEPTANCE_VERDICT: revise` (case-insensitive). FAIL-OPEN: a missing/garbled
+ * marker ⇒ 'pass', so a judge that ran-but-forgot-the-marker never WEDGES the hive
+ * (a deliverable a judge looked at + didn't object to is treated as accepted). Only an
+ * explicit `revise` blocks the output recipe.
+ */
+export function parseAcceptanceVerdict(output: string): 'pass' | 'revise' {
+  const m = /ACCEPTANCE_VERDICT:\s*(pass|revise|needs[- ]revision|fail|reject)/i.exec(output ?? '');
+  if (!m) return 'pass';
+  const v = m[1].toLowerCase();
+  return v === 'pass' ? 'pass' : 'revise';
+}
 
 /**
  * The finalize recipe — the ordered role/step names a blueprint declares in
@@ -179,6 +194,10 @@ export function planFinalization(input: FinalizationPlanInput): FinalizationPlan
       kind: 'invoke',
       role: 'judge',
       extras: finalizeRoleExtras('judge', 'done', input.featureId, input.reason, input.outputKind),
+      // P-009: a `revise` verdict from this step HARD-BLOCKS the onDone output recipe
+      // (the runner parses ACCEPTANCE_VERDICT + skips the remaining steps), so a
+      // deliverable that fails the rubric is not published (artifacts:save / documenter).
+      acceptanceGate: true,
     });
   }
   for (const entry of recipe.onDone) {

@@ -398,11 +398,11 @@ export function runBootstrap(): void {
         await import('@papercusp/operator-core/lib/sync/hyperbee/boot-gate');
       markSqlMigrationsComplete();
       markRuntimeEnsureComplete();
-      const { bootAllHarnessesForActiveWorkspace } = await import(
-        '@papercusp/operator-core/lib/sync/hyperbee/boot-all'
+      const { bootSubstrateWithFallback } = await import(
+        '@papercusp/operator-core/lib/sync/hyperbee/substrate-boot-wrapper'
       );
       const t0 = Date.now();
-      const result = await bootAllHarnessesForActiveWorkspace({
+      const result = await bootSubstrateWithFallback({
         perHarnessTimeoutMs: 30_000,
       });
       console.log(

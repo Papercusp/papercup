@@ -1,0 +1,679 @@
+/**
+ * hive-backlog-realqueen.ts — the REAL-QUEEN-vs-no-Queen backlog driver
+ * (impartial-benchmark-suite-2026-06-15 / P-033, owner-directed Option B).
+ *
+ * WHY THIS EXISTS (the structural-null fix, D-015→P-033). The scripted driver
+ * ({@link ../external-bench/hive-backlog-live.ts liveHiveBacklogDriver}) drives BOTH its arms with a
+ * SCRIPTED placement loop (`getFleetPlanner` → planBatchPlacement vs planFifoPlacement) over
+ * one-isolated-hive-PER-task members. queen-ablation.ts states it outright: "EVICTION /
+ * RE-PLACEMENT / ADAPTATION — out of scope for BOTH planners". So NEITHER scripted arm runs the real
+ * Queen; the only diff is importance-vs-FIFO ordering over isolated single-feature members → affinity
+ * always 0, importance degenerate → identical placements (the prior pilot: hive 2/11 vs ablated 3/11,
+ * coordEvents 22==22, MAST 0). That A/B cannot measure the Queen.
+ *
+ * THIS driver measures the ACTUAL Queen. It boots ONE hive holding the WHOLE backlog as N member
+ * harnesses (one cloned bench task each, blueprint `external-bench`), then:
+ *   - HIVE_REALQUEEN_ARM ('hive-realqueen'): `startHive` → the REAL Queen PERSONA AGENT wakes
+ *     (`requestUrgentHiveWake` → `fireLaunchBlueprint('hive')`). She surveys the multi-member frontier,
+ *     ranks + places a capped bee fleet, the placement-watchdog (hive/placement-watchdog.ts) detects
+ *     stuck/dead bees → fires recovery wakes → she RE-PLACES, attaches situational briefs, and declares
+ *     her own adaptive wakes. The driver only POLLS surveyHive + countHivePlacementsInFlight until
+ *     drained, then `pauseHive` to bound spend. The driver does NOT place — the Queen does.
+ *   - FIFO_NOQUEEN_ARM ('fifo-noqueen'): the SAME boot, but the Queen NEVER wakes (no `startHive`).
+ *     The driver runs the scripted `planFifoPlacement` loop over the same members + same fleet cap —
+ *     FIFO, no eviction/re-placement/briefs/adaptive wake. The honest "no orchestration" pole.
+ *
+ * FAIRNESS (D-004): the two arms are IDENTICAL except the Queen treatment — same backlog, same fleet
+ * cap (the global `maxSimultaneousAgents` ceiling), same per-task `external-bench` bee unit, same
+ * iso-budget/task, same clone/diff/grader. The ONLY independent variable is the real Queen vs none.
+ *
+ * CONTENTION (the D-015 fix): ONE hive over the whole backlog with a fleet cap << backlog (set
+ * `maxSimultaneousAgents` ~5 for ~13 tasks → ~3:1 saturation) so the Queen's live management actually
+ * bites. The scripted driver's one-hive-per-task topology could never produce contention.
+ *
+ * COORDINATION CAPTURE (the MAST-non-zero fix): for the real-Queen arm coordEvents are reconstructed
+ * from the REAL `hive_placements` ledger (placed/recovering/cursed/stranded + fail_count + the
+ * watchdog's last_disposition) — so re-placements show as `rework`, stranded/cursed as breakdown, etc.
+ * The FIFO arm writes NO hive_placements rows (the scripted path doesn't), so its coordination trace
+ * stays at the synthetic-placement floor — the MAST delta is real, not manufactured.
+ *
+ * OPUS: the bee role-model floor is haiku and the queen floor is sonnet (orchestrator/role-models.ts),
+ * so the DRIVER PROCESS must export `AGENT_MODELS='{"bee":"opus:xhigh","queen":"opus:xhigh"}'` (both
+ * the placed bees AND the Queen agent) + use the `opus` CLI alias (claude v2.1.177 silently runs
+ * opus-4-7 for `--model claude-opus-4-8`). VERIFY `agent_usage_samples.model` before any big spend.
+ *
+ * GOVERNOR: binding this spends nothing; the real LLM spend is the bees + the Queen running on the
+ * gated launch. The drive always `pauseHive`s at drain/timeout to bound it.
+ */
+import type { CoordEvent } from '@papercusp/bench-metrics';
+import type postgres from 'postgres';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import type { BatchPlacementInput, BatchPlacementPlan } from '../fleet/batch-placement';
+import type { ArmAttempt, BenchTask, GenerationBudget, TaskCheckout } from './types';
+import {
+  getFleetPlanner,
+  setHiveBacklogDriver,
+  type FleetTaskResult,
+  type HiveBacklogDriver,
+  type HiveBacklogResult,
+  type HiveBacklogRunRequest,
+} from './hive-backlog';
+import {
+  readMemberUsage,
+  readMemberBeeSpawns,
+  stopReasonForFeatureStatus,
+} from './hive-backlog-live';
+
+/** The two NEW arms this driver serves (open `FleetArmId` union). */
+export const HIVE_REALQUEEN_ARM = 'hive-realqueen';
+export const FIFO_NOQUEEN_ARM = 'fifo-noqueen';
+
+/** Default drain-poll cadence + fleet-drain timeout (the bound on spend). */
+const DEFAULT_POLL_MS = 20_000;
+const DEFAULT_FLEET_TIMEOUT_MS = 120 * 60 * 1000; // 2h ceiling — a bounded run is far under.
+
+/** Feature statuses that mean a member's task reached a terminal outcome (drain inputs). */
+const DONE_FEATURE_STATUSES = new Set(['passed']);
+const ESCALATE_FEATURE_STATUSES = new Set(['escalated', 'blocked']);
+
+/**
+ * The Queen-brief / bee directive a placed bench bee receives. In the REAL-Queen arm the Queen also
+ * attaches her own situational brief; this is the standing task directive both arms' bees get (so a
+ * bee placed by the FIFO loop — which has no Queen to brief it — still works its lone feature instead
+ * of exiting taskless). Identical to the scripted driver's directive (fairness: same bee unit).
+ */
+const BENCH_BEE_DIRECTIVE = [
+  'You are placed on a single-task benchmark member harness. This member holds EXACTLY ONE feature',
+  'work-item — the benchmark problem to solve. Claim it (`work_items:claim_next` for this harness),',
+  'read its full problem_statement, and IMPLEMENT the change directly in this repository as real code',
+  'edits (a working unified diff against the checked-out base). Write the actual source fix — do not',
+  'just plan or describe. When complete and the repo builds, mark the work-item complete',
+  '(`work_items:complete`). You are NOT taskless — the assigned feature IS your task.',
+].join(' ');
+
+/** One enrolled backlog task — its member harness + clone, threaded to collect. */
+export interface RealQueenEnrolled {
+  task: BenchTask;
+  member: string;
+  clonePath: string;
+  workItemId: string;
+  checkout: TaskCheckout;
+  /** The bee spawn id that served it (filled at collect from spawned_agents / hive_placements). */
+  beeId: string | null;
+  placedAtMs: number | null;
+  disposition: 'spawn' | 'warm-inject' | null;
+}
+
+/**
+ * The injected IO seam. ONE shared hive holds ALL members. Every side effect is one method so the
+ * boot→enroll→drive→collect→teardown ordering + the drained predicate unit-test with fakes (no
+ * git/PG/LLM). The real binding ({@link realQueenBacklogOps}) wires the established seams.
+ */
+export interface RealQueenBacklogOps {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  /** Mint the ONE shared Queen-seat hive home (IDLE — startHive wakes the real Queen for the hive arm). */
+  createHive(input: { runId: string; arm: string; workspaceId: string }): Promise<{ hiveHome: string }>;
+  /** Clone @ base → register an `external-bench` member of `hiveHome` → seed the problem_statement. */
+  enrollTask(input: {
+    hiveHome: string;
+    task: BenchTask;
+    budget: GenerationBudget;
+    workspaceId: string;
+  }): Promise<RealQueenEnrolled>;
+  /** START the REAL Queen over the whole hive (setHiveStarted + requestUrgentHiveWake → the queen agent). */
+  startRealQueen(input: { hiveHome: string; kickoff: string; workspaceId: string }): Promise<void>;
+  /** surveyHive's ready-frontier + started-plan counts (the drained inputs) across all members. */
+  survey(input: { hiveHome: string; workspaceId: string }): Promise<{ frontierLen: number; plansLen: number }>;
+  /** Placements still in flight = the drain terminator. For the hive arm: hive_placements non-terminal.
+   *  For the FIFO arm: members placed (beeId set) whose feature is non-terminal & bee not terminal. */
+  countInFlight(input: { hiveHome: string; members: RealQueenEnrolled[]; arm: string; workspaceId: string }): Promise<number>;
+  /** Count live bees (for the peak-concurrency metric — sampled every poll, the fixed counter). */
+  countLiveBees(input: { hiveHome: string; workspaceId: string }): Promise<number>;
+  /** Free spawn headroom + the FIFO arm's gather (live bees) — only used by the FIFO scripted loop. */
+  gatherForFifo(input: { hiveHome: string; members: RealQueenEnrolled[]; workspaceId: string }): Promise<{
+    tasks: BatchPlacementInput['tasks'];
+    bees: BatchPlacementInput['bees'];
+    headroom: number;
+  }>;
+  /** Execute a FIFO plan (scripted-loop only) — spawn/warm-inject bees running external-bench. */
+  placeFifoBatch(input: {
+    hiveHome: string;
+    plan: BatchPlacementPlan;
+    members: RealQueenEnrolled[];
+    workspaceId: string;
+  }): Promise<{ placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] }>;
+  /** Stop the hive — bound spend at drain/timeout (setHiveStarted false). */
+  pauseFleet(input: { hiveHome: string; workspaceId: string }): Promise<void>;
+  /** Per enrolled task: the diff + cost/timing → FleetTaskResult (cost summed from agent_usage_samples). */
+  collectTask(input: { enrolled: RealQueenEnrolled; arm: string; seed: string; workspaceId: string }): Promise<FleetTaskResult>;
+  /** The REAL coordination trace for the run (hive_placements ledger for the Queen arm; empty for FIFO). */
+  collectCoordEvents(input: { hiveHome: string; members: RealQueenEnrolled[]; arm: string; workspaceId: string }): Promise<CoordEvent[]>;
+  /** Drop every member + dissolve the shared hive + rm the clones. */
+  teardown(input: { hiveHome: string; members: RealQueenEnrolled[]; workspaceId: string }): Promise<void>;
+}
+
+export interface RealQueenBacklogOpts {
+  workspaceId: string;
+  fleetTimeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
+/**
+ * The LIVE {@link HiveBacklogDriver} over the injected {@link RealQueenBacklogOps}. Boots ONE hive
+ * over the whole backlog, then drives the arm: real Queen (startHive + poll-until-drained) or scripted
+ * FIFO (gather → planFifoPlacement → place → poll). Never throws (the generation-failure contract).
+ */
+export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueenBacklogOpts): HiveBacklogDriver {
+  const ws = opts.workspaceId;
+  const fleetTimeoutMs = opts.fleetTimeoutMs ?? DEFAULT_FLEET_TIMEOUT_MS;
+  const pollMs = opts.pollIntervalMs ?? DEFAULT_POLL_MS;
+
+  return {
+    async run(req: HiveBacklogRunRequest): Promise<HiveBacklogResult> {
+      const isRealQueen = req.arm === HIVE_REALQUEEN_ARM;
+      const startedAtMs = ops.now();
+      let coordEvents: CoordEvent[] = [];
+      const empty = (runError: string): HiveBacklogResult => ({
+        arm: req.arm,
+        suite: req.suite,
+        runId: req.runId,
+        seed: req.seed,
+        startedAtMs,
+        finishedAtMs: ops.now(),
+        peakConcurrentBees: 0,
+        taskResults: [],
+        coordEvents,
+        runError,
+      });
+
+      // FIFO arm needs a registered scripted planner (planFifoPlacement registered under FIFO_NOQUEEN_ARM
+      // or QUEEN_ABLATED_ARM); the real-Queen arm needs none (the Queen agent places).
+      const fifoPlanner = isRealQueen ? null : getFleetPlanner(req.arm);
+      if (!isRealQueen && !fifoPlanner) return empty(`no FIFO placement planner registered for arm '${req.arm}'`);
+
+      let hiveHome: string | undefined;
+      const members: RealQueenEnrolled[] = [];
+      let peakConcurrentBees = 0;
+      try {
+        ({ hiveHome } = await ops.createHive({ runId: req.runId, arm: req.arm, workspaceId: ws }));
+
+        // ── enroll the WHOLE backlog as members of the ONE shared hive ──
+        for (const task of req.backlog) {
+          const enrolled = await ops.enrollTask({ hiveHome, task, budget: req.budget, workspaceId: ws });
+          members.push(enrolled);
+        }
+
+        const deadline = startedAtMs + fleetTimeoutMs;
+        const home = hiveHome;
+
+        if (isRealQueen) {
+          // ── REAL-QUEEN DRIVE: wake the Queen agent, then ONLY poll until drained ──
+          await ops.startRealQueen({
+            hiveHome: home,
+            workspaceId: ws,
+            kickoff:
+              `Impartial benchmark backlog (${req.suite}, ${members.length} tasks) is enrolled across this hive's ` +
+              `member harnesses, each holding ONE benchmark feature. Survey the frontier, place your bee fleet, ` +
+              `evict + re-place stuck bees, and drive every member's lone feature to a terminal state.`,
+          });
+          while (ops.now() < deadline) {
+            const [liveBees, inFlight, survey] = await Promise.all([
+              ops.countLiveBees({ hiveHome: home, workspaceId: ws }),
+              ops.countInFlight({ hiveHome: home, members, arm: req.arm, workspaceId: ws }),
+              ops.survey({ hiveHome: home, workspaceId: ws }),
+            ]);
+            peakConcurrentBees = Math.max(peakConcurrentBees, liveBees);
+            // Drained when the Queen has nothing left: no ready frontier, no started plan, nothing in flight.
+            if (survey.frontierLen === 0 && survey.plansLen === 0 && inFlight === 0) break;
+            await ops.sleep(pollMs);
+          }
+        } else {
+          // ── FIFO DRIVE (no Queen): gather → planFifoPlacement → place → poll until drained ──
+          while (ops.now() < deadline) {
+            const [liveBees, inFlight, gathered] = await Promise.all([
+              ops.countLiveBees({ hiveHome: home, workspaceId: ws }),
+              ops.countInFlight({ hiveHome: home, members, arm: req.arm, workspaceId: ws }),
+              ops.gatherForFifo({ hiveHome: home, members, workspaceId: ws }),
+            ]);
+            peakConcurrentBees = Math.max(peakConcurrentBees, liveBees);
+            if (inFlight === 0 && gathered.tasks.length === 0) break; // drained
+
+            if (gathered.tasks.length > 0 && (gathered.headroom > 0 || gathered.bees.length > 0)) {
+              const plan = fifoPlanner!({ tasks: gathered.tasks, bees: gathered.bees, headroom: gathered.headroom });
+              const { placements } = await ops.placeFifoBatch({ hiveHome: home, plan, members, workspaceId: ws });
+              for (const p of placements) {
+                coordEvents.push({ ts: ops.now(), kind: 'placement', taskId: p.instanceId, agent: p.beeId, detail: p.disposition });
+                const st = members.find((m) => m.task.instanceId === p.instanceId);
+                if (st) {
+                  st.beeId = p.beeId;
+                  st.placedAtMs = ops.now();
+                  st.disposition = p.disposition;
+                }
+              }
+            }
+            await ops.sleep(pollMs);
+          }
+        }
+      } catch (e) {
+        if (hiveHome) await ops.pauseFleet({ hiveHome, workspaceId: ws }).catch(() => {});
+        const runError = e instanceof Error ? e.message : String(e);
+        const partial = await collectAll(ops, members, req, ws).catch(() => [] as FleetTaskResult[]);
+        const finishedAtMs = ops.now();
+        if (hiveHome) await ops.teardown({ hiveHome, members, workspaceId: ws }).catch(() => {});
+        return { ...empty(runError), finishedAtMs, peakConcurrentBees, taskResults: partial };
+      }
+
+      // ── always pause (bound spend), collect diffs/cost + the REAL coord trace, then teardown ──
+      await ops.pauseFleet({ hiveHome, workspaceId: ws }).catch(() => {});
+      const taskResults = await collectAll(ops, members, req, ws);
+      const realCoord = await ops.collectCoordEvents({ hiveHome, members, arm: req.arm, workspaceId: ws }).catch(() => [] as CoordEvent[]);
+      // Real-Queen arm: the hive_placements-derived trace IS the coordination signal. FIFO arm: keep the
+      // synthetic per-placement events the loop pushed (no Queen ledger to read).
+      coordEvents = isRealQueen ? realCoord : coordEvents;
+      const finishedAtMs = ops.now();
+      await ops.teardown({ hiveHome, members, workspaceId: ws }).catch(() => {});
+
+      return {
+        arm: req.arm,
+        suite: req.suite,
+        runId: req.runId,
+        seed: req.seed,
+        startedAtMs,
+        finishedAtMs,
+        peakConcurrentBees,
+        taskResults,
+        coordEvents,
+      };
+    },
+  };
+}
+
+async function collectAll(
+  ops: RealQueenBacklogOps,
+  members: RealQueenEnrolled[],
+  req: HiveBacklogRunRequest,
+  ws: string,
+): Promise<FleetTaskResult[]> {
+  const out: FleetTaskResult[] = [];
+  for (const enrolled of members) {
+    out.push(await ops.collectTask({ enrolled, arm: req.arm, seed: String(req.seed), workspaceId: ws }));
+  }
+  return out;
+}
+
+/** Bind the live real-Queen driver so `runHiveBacklog` is instant-go. `ops` defaults to the real binding. */
+export function bindRealQueenBacklogDriver(opts: RealQueenBacklogOpts, ops?: RealQueenBacklogOps): void {
+  setHiveBacklogDriver(realQueenBacklogDriver(ops ?? realQueenBacklogOps(opts), opts));
+}
+
+/* -------------------------------------------------------------------------- */
+/* The REAL binding — ONE shared hive, real-Queen wake + the hive_placements trace. */
+/* -------------------------------------------------------------------------- */
+
+function scratchSlug(prefix: string): string {
+  return `${prefix}${Math.random().toString(36).slice(2, 10)}`;
+}
+function memberSlugForTask(homePrefix: string, instanceId: string): string {
+  const safe = instanceId.replace(/[^a-z0-9]+/gi, '').toLowerCase().slice(0, 24);
+  return `${homePrefix}m${safe}${Math.random().toString(36).slice(2, 6)}`;
+}
+/** Mint a regex-safe (`FEATURE_ID_RE`) feature id — the bee recognizes its feature ONLY for `F-<UPPERHEX>`. */
+function featureIdForTask(instanceId: string): string {
+  const safe = instanceId.replace(/[^a-zA-Z0-9]+/g, '').toUpperCase().slice(0, 16) || 'TASK';
+  return `F-${safe}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+/**
+ * The REAL machinery binding. ONE shared hive home; N member harnesses (one per task). The real-Queen
+ * arm wakes the queen agent (startRealQueen); the FIFO arm never does. Lazy dynamic imports keep the
+ * module import-light so the fake-driven test never loads PG/registry/fleet.
+ *
+ * The bee-spawn env defaults (PAPERCUSP_FLEET_SANDBOX=0 / SPAWN_BACKEND=claude-code / AGENT_CMD=claude -p)
+ * are the SAME load-bearing ones the scripted driver documents (hive-backlog-live.ts) — set on the
+ * driver process so EVERY placed bee inherits them. The opus pin (AGENT_MODELS bee+queen=opus:xhigh)
+ * is the CALLER's responsibility (the launcher), since it must also reach the Queen agent.
+ */
+export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklogOps {
+  const ws = opts.workspaceId;
+
+  if (process.env.PAPERCUSP_FLEET_SANDBOX == null) process.env.PAPERCUSP_FLEET_SANDBOX = '0';
+  if (process.env.PAPERCUSP_SPAWN_BACKEND == null) process.env.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
+  if (process.env.AGENT_CMD == null && process.env.CLAUDE == null) process.env.AGENT_CMD = 'claude -p';
+
+  let homePrefix = scratchSlug('xbq');
+  const instanceByFeatureId = new Map<string, string>();
+
+  const sqlClient = async (): Promise<postgres.Sql> => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    return getOrgPg().sql;
+  };
+  const liveOps = async () => {
+    const { liveHiveOps } = await import('../hive-eval/live-ops');
+    return liveHiveOps({ workspaceId: ws });
+  };
+
+  return {
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+
+    async createHive() {
+      homePrefix = scratchSlug('xbq');
+      const hiveHome = homePrefix;
+      const ops = await liveOps();
+      await ops.createHive({ slug: hiveHome, workspaceId: ws });
+      return { hiveHome };
+    },
+
+    async enrollTask({ hiveHome, task }) {
+      const { cloneTaskRepo } = await import('./clone');
+      const checkout = await cloneTaskRepo(task);
+      try {
+        const member = memberSlugForTask(homePrefix, task.instanceId);
+        const { mkdir, writeFile } = await import('node:fs/promises');
+        const { join } = await import('node:path');
+        const { stringify: stringifyYaml } = await import('yaml');
+        const bpDir = join(checkout.dir, '.papercusp');
+        await mkdir(bpDir, { recursive: true });
+        await writeFile(
+          join(bpDir, 'blueprint.yaml'),
+          stringifyYaml({ id: member, extends: 'external-bench' }, { lineWidth: 100 }),
+          'utf8',
+        );
+
+        const ops = await liveOps();
+        await ops.registerMember({ member, clonePath: checkout.dir, hiveHome, workspaceId: ws });
+
+        const featureId = featureIdForTask(task.instanceId);
+        await ops.seedFeature({
+          member,
+          featureId,
+          title: task.problemStatement.slice(0, 200),
+          spec: task.problemStatement,
+          workspaceId: ws,
+        });
+        // Pin the feature's workspace_id (the fill_ws_features trigger derives `default` for a throwaway
+        // member; the placed bee's claim filters workspace_id = ws → a default-scoped feature is invisible).
+        {
+          const sql = await sqlClient();
+          await sql`
+            UPDATE harness_shared.harness_features_consolidated
+               SET workspace_id = ${ws}, updated_ts = ${Date.now()}
+             WHERE harness_slug = ${member} AND feature_id = ${featureId}`;
+        }
+
+        const enrolled: RealQueenEnrolled = {
+          task,
+          member,
+          clonePath: checkout.dir,
+          workItemId: featureId,
+          checkout,
+          beeId: null,
+          placedAtMs: null,
+          disposition: null,
+        };
+        instanceByFeatureId.set(featureId, task.instanceId);
+        return enrolled;
+      } catch (e) {
+        await checkout.cleanup().catch(() => {});
+        throw e;
+      }
+    },
+
+    async startRealQueen({ hiveHome, kickoff }) {
+      // The core of hive:start: persist started=true (the watchdog's liveness bit) + wake the Queen agent.
+      // `liveHiveOps.startHive` === setHiveStarted(true) + requestUrgentHiveWake → fireLaunchBlueprint('hive').
+      const ops = await liveOps();
+      await ops.startHive({ hiveHome, workspaceId: ws, kickoff });
+    },
+
+    async survey({ hiveHome }) {
+      const { surveyHive } = await import('../hive/survey');
+      const s = await surveyHive(ws, hiveHome);
+      return { frontierLen: s.frontier.length, plansLen: s.plans.length };
+    },
+
+    async countInFlight({ members, arm }) {
+      const sql = await sqlClient();
+      if (arm === HIVE_REALQUEEN_ARM) {
+        // The Queen places via the real flow → hive_placements rows. In-flight = non-terminal placements
+        // PLUS any member whose feature is still non-terminal with no terminal-bee yet (startup window).
+        const placed = await sql<{ status: string }[]>`
+          SELECT status FROM harness_shared.hive_placements
+           WHERE workspace_id = ${ws} AND install_slug = ${homePrefix}
+             AND status IN ('working','recovering')`;
+        if (placed.length > 0) return placed.length;
+        // No live placement rows: fall through to the feature/bee check (covers the pre-first-placement
+        // window AND the post-drain settle). A member counts as in-flight while its feature is non-terminal
+        // and no bee has terminated for it yet.
+      }
+      // FIFO arm (and the real-Queen fallthrough): feature/bee-derived in-flight over placed members.
+      const placedMembers = members.filter((m) => m.beeId != null);
+      // For the real-Queen arm, no bee was recorded by the driver (the Queen placed), so check ALL members.
+      const toCheck = arm === HIVE_REALQUEEN_ARM ? members : placedMembers;
+      if (toCheck.length === 0) return arm === HIVE_REALQUEEN_ARM ? members.length : 0;
+      let inFlight = 0;
+      for (const m of toCheck) {
+        const [featRows, beeRows] = await Promise.all([
+          sql<{ status: string }[]>`
+            SELECT status FROM harness_shared.harness_features_consolidated
+             WHERE workspace_id = ${ws} AND harness_slug = ${m.member} AND feature_id = ${m.workItemId}
+             LIMIT 1`,
+          sql<{ running: string; terminal: string }[]>`
+            SELECT count(*) FILTER (WHERE status IN ('running','restarting'))::text AS running,
+                   count(*) FILTER (WHERE status IN ('done','failed','cancelled'))::text AS terminal
+              FROM harness_shared.spawned_agents
+             WHERE workspace_id = ${ws} AND harness_slug = ${m.member} AND child_role = 'bee'`,
+        ]);
+        const status = featRows[0]?.status ?? '';
+        const featTerminal = DONE_FEATURE_STATUSES.has(status) || ESCALATE_FEATURE_STATUSES.has(status);
+        const running = Number(beeRows[0]?.running ?? 0) || 0;
+        const terminal = Number(beeRows[0]?.terminal ?? 0) || 0;
+        if (!featTerminal && (running > 0 || terminal === 0)) inFlight++;
+      }
+      return inFlight;
+    },
+
+    async countLiveBees() {
+      const { gatherLiveBees } = await import('../fleet/placement-gather');
+      const bees = await gatherLiveBees(ws);
+      return bees.length;
+    },
+
+    async gatherForFifo({ members }) {
+      // FIFO consumes members in ARRIVAL/backlog (enrollment) order — un-ranked (the no-Queen contract).
+      // EXCLUDE already-placed members (beeId set) so the loop doesn't re-place every poll.
+      const unplaced = members.filter((m) => m.beeId == null);
+      const [{ gatherFrontier, gatherLiveBees }, { getSpawnHeadroom }] = await Promise.all([
+        import('../fleet/placement-gather'),
+        import('../fleet/operator-spawn'),
+      ]);
+      const ids = unplaced.map((m) => m.workItemId);
+      const res = ids.length > 0 ? await gatherFrontier({ ids, limit: Math.max(ids.length, 1), workspaceId: ws }) : { tasks: [] };
+      const bees = await gatherLiveBees(ws);
+      const { headroom } = await getSpawnHeadroom(ws);
+      return {
+        tasks: (res.tasks ?? []) as unknown as BatchPlacementInput['tasks'],
+        bees: bees as unknown as BatchPlacementInput['bees'],
+        headroom,
+      };
+    },
+
+    async placeFifoBatch({ plan }) {
+      const { executeBatch } = await import('../agent-tools/fleet/place_batch');
+      const actor: AgentIdentity = {
+        ownerId: homePrefix,
+        ownerLabel: `xbench-fifo:${homePrefix}`,
+        source: 'principal',
+        workspaceId: ws,
+        userId: null,
+      };
+      const { getSpawnHeadroom } = await import('../fleet/operator-spawn');
+      const { headroom } = await getSpawnHeadroom(ws);
+      const exec = await executeBatch({
+        plan,
+        headroom,
+        brief: BENCH_BEE_DIRECTIVE,
+        tier: null,
+        actor,
+        role: 'operator',
+        workspaceId: ws,
+      });
+      const placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] = [];
+      for (const p of exec.placements) {
+        const featureId = p.task;
+        const instanceId = instanceByFeatureId.get(featureId) ?? featureId;
+        if (p.action === 'spawned' || p.action === 'injected') {
+          const disposition = p.action === 'spawned' ? ('spawn' as const) : ('warm-inject' as const);
+          const beeId = p.spawn_id ?? p.bee ?? instanceId;
+          placements.push({ instanceId, beeId, disposition });
+        }
+      }
+      return { placements };
+    },
+
+    async pauseFleet({ hiveHome }) {
+      const ops = await liveOps();
+      await ops.pauseHive({ hiveHome, workspaceId: ws });
+    },
+
+    async collectTask({ enrolled, arm, seed }): Promise<FleetTaskResult> {
+      const member = enrolled.member;
+      let diff = '';
+      let generationError: string | undefined;
+      try {
+        const { extractDiff } = await import('./clone');
+        diff = await extractDiff(enrolled.checkout, enrolled.task);
+      } catch (e) {
+        generationError = `extractDiff failed: ${e instanceof Error ? e.message : String(e)}`;
+      }
+
+      const sql = await sqlClient();
+      const [cost, spawnRows] = await Promise.all([
+        readMemberUsage(sql, member, ws).catch(() => ({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 })),
+        readMemberBeeSpawns(sql, member, ws).catch(() => []),
+      ]);
+      const status = await readMemberFeatureStatus(sql, member, enrolled.workItemId, ws).catch(() => null);
+      const stopReason = stopReasonForFeatureStatus(status, generationError);
+
+      const firstSpawn = spawnRows[0];
+      const beeId = enrolled.beeId ?? firstSpawn?.spawnId ?? member;
+      const placedAtMs = enrolled.placedAtMs ?? firstSpawn?.startedAtMs ?? Date.now();
+      const startedAtMs = firstSpawn?.startedAtMs ?? placedAtMs;
+      const finishedAtMs = firstSpawn?.finishedAtMs ?? Date.now();
+      const wallClockMs = Math.max(0, finishedAtMs - startedAtMs);
+
+      const attempt: ArmAttempt = {
+        arm,
+        blueprintId: 'external-bench',
+        instanceId: enrolled.task.instanceId,
+        seed,
+        diff,
+        tokensIn: cost.tokensIn,
+        tokensOut: cost.tokensOut,
+        costUsd: cost.costUsd,
+        turns: cost.turns,
+        wallClockMs,
+        trajectoryRef: `xbench-realqueen://${member}`,
+        stopReason,
+        ...(generationError ? { generationError } : {}),
+        armMeta: { member, hiveArm: arm, beeId },
+      };
+      return {
+        attempt,
+        beeId,
+        placedAtMs,
+        startedAtMs,
+        finishedAtMs,
+        disposition: enrolled.disposition ?? 'spawn',
+      };
+    },
+
+    async collectCoordEvents({ members, arm }) {
+      if (arm !== HIVE_REALQUEEN_ARM) return []; // FIFO has no Queen ledger — caller keeps the synthetic trace.
+      const sql = await sqlClient();
+      const featureToInstance = new Map(members.map((m) => [m.workItemId, m.task.instanceId]));
+      const rows = await sql<{
+        work_item_id: string;
+        harness_slug: string | null;
+        bee_spawn_id: string | null;
+        status: string;
+        fail_count: number;
+        last_disposition: string | null;
+        placed_at: string | Date;
+      }[]>`
+        SELECT work_item_id, harness_slug, bee_spawn_id, status, fail_count, last_disposition, placed_at
+          FROM harness_shared.hive_placements
+         WHERE workspace_id = ${ws} AND install_slug = ${homePrefix}
+         ORDER BY placed_at ASC`;
+      return buildRealQueenCoordEvents(rows, featureToInstance);
+    },
+
+    async teardown({ hiveHome, members }) {
+      const ops = await liveOps();
+      for (const m of members) {
+        await ops.dropMember({ member: m.member, workspaceId: ws }).catch(() => {});
+        await m.checkout.cleanup().catch(() => {});
+      }
+      await ops.dissolveHive({ hiveHome, workspaceId: ws }).catch(() => {});
+    },
+  };
+}
+
+/** A `hive_placements` ledger row (the real-Queen coordination source). Exported for the test. */
+export interface HivePlacementRow {
+  work_item_id: string;
+  harness_slug: string | null;
+  bee_spawn_id: string | null;
+  status: string;
+  fail_count: number;
+  last_disposition: string | null;
+  placed_at: string | Date;
+}
+
+/**
+ * Reconstruct the REAL-Queen coordination trace from the `hive_placements` ledger — pure, so the test
+ * exercises the mapping with no PG. Each row → a `placement` event; a row whose Queen RE-PLACED it
+ * (fail_count>0 / last_disposition='recover') → an additional `rework` event (the watchdog evicted a
+ * stuck bee and the Queen re-placed — coordination WORK that FIFO never does); 'stranded'/'cursed' →
+ * a coordination-breakdown signal; 'completed' → a `complete`. These are the kinds
+ * `substrateSignalRates` (bench-metrics/mast.ts) counts → the Queen arm's MAST is finally non-zero,
+ * sourced from the real ledger, not manufactured.
+ */
+export function buildRealQueenCoordEvents(
+  rows: readonly HivePlacementRow[],
+  featureToInstance: Map<string, string>,
+): CoordEvent[] {
+  const events: CoordEvent[] = [];
+  for (const r of rows) {
+    const ts = new Date(r.placed_at).getTime();
+    const taskId = featureToInstance.get(r.work_item_id) ?? r.work_item_id;
+    const agent = r.bee_spawn_id ?? 'queen';
+    events.push({ ts, kind: 'placement', agent, taskId, detail: `placed (${r.status})` });
+    if ((r.fail_count ?? 0) > 0 || r.last_disposition === 'recover') {
+      // The watchdog surfaced a stuck/dead bee and the Queen re-placed — re-work the FIFO arm can't do.
+      events.push({ ts, kind: 'rework', agent: 'queen', taskId, detail: `re-placed after ${r.fail_count} fail(s)` });
+    }
+    if (r.status === 'stranded' || r.status === 'cursed') {
+      events.push({ ts, kind: 'stranded_item', agent: 'queen', taskId, detail: `placement ${r.status}` });
+    }
+    if (r.status === 'completed') {
+      events.push({ ts, kind: 'complete', agent, taskId });
+    }
+  }
+  return events;
+}
+
+/** The member's single seeded feature status (terminal → the stopReason). Null when absent. */
+async function readMemberFeatureStatus(
+  sql: postgres.Sql,
+  member: string,
+  featureId: string,
+  workspaceId: string,
+): Promise<string | null> {
+  const rows = await sql<{ status: string }[]>`
+    SELECT status FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${member} AND feature_id = ${featureId}
+     LIMIT 1`;
+  return rows[0]?.status ?? null;
+}
