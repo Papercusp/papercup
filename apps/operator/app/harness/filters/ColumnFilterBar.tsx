@@ -34,7 +34,7 @@ import type { ColumnFilterController } from './useColumnFilters';
 const ADD_FILTER = '_add_filter_';
 
 /** Plain-text header for a column (the editor heading + the Add-filter option). */
-function headerText(col: FilterableColumn<unknown>): string {
+export function headerText(col: FilterableColumn<unknown>): string {
   const h = col.header;
   if (typeof h === 'string' && h.length > 0) return h;
   if (typeof h === 'number') return String(h);

@@ -396,7 +396,8 @@ export default function PlanActions({
   );
 }
 
-function previewNextDecisionId(decisions: PlanDecision[] | undefined): string {
+/** Pure: the next free D-NNN id (max existing + 1, zero-padded). Exported for tests. */
+export function previewNextDecisionId(decisions: PlanDecision[] | undefined): string {
   let max = 0;
   for (const d of decisions ?? []) {
     const n = Number((d.id.match(/D-(\d{3,})$/) ?? [])[1] ?? 0);
@@ -405,7 +406,8 @@ function previewNextDecisionId(decisions: PlanDecision[] | undefined): string {
   return `D-${String(max + 1).padStart(3, '0')}`;
 }
 
-function previewNextItemId(items: PlanItem[] | undefined): string {
+/** Pure: the next free P-NNN id (max existing + 1, zero-padded). Exported for tests. */
+export function previewNextItemId(items: PlanItem[] | undefined): string {
   let max = 0;
   for (const it of items ?? []) {
     const n = Number((it.id.match(/P-(\d{3,})$/) ?? [])[1] ?? 0);
@@ -1066,7 +1068,12 @@ function DialogFooter({
   );
 }
 
-function writeError(r: WriteResult<unknown>): string | null {
+/**
+ * Pure: map a write-API result into an inline error string, or null when the
+ * write succeeded. The lock-conflict (`busy`) path surfaces the holder's
+ * identity + intent. Exported for tests.
+ */
+export function writeError(r: WriteResult<unknown>): string | null {
   if (!r || typeof r !== 'object') return 'unexpected response shape';
   const o = r as Record<string, unknown>;
   if (o.ok === true) return null;
@@ -1083,7 +1090,8 @@ function writeError(r: WriteResult<unknown>): string | null {
   return 'unexpected response shape';
 }
 
-function parseRefList(raw: string): string[] {
+/** Pure: parse a free-text list of P-/D- refs (whitespace/comma separated), keeping only well-formed ids. Exported for tests. */
+export function parseRefList(raw: string): string[] {
   return raw
     .split(/[\s,]+/)
     .map((s) => s.trim())

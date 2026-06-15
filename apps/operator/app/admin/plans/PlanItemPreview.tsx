@@ -22,7 +22,7 @@ import { toast } from 'sonner';
 import PlanEditor from './PlanEditor';
 import PlanChat from './PlanChat';
 import { usePlan } from './plans-api';
-import type { AttentionItem } from './plans-api';
+import type { AttentionItem, PlanItem } from './plans-api';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
 import { InputCard, type InputCardResponse } from '@/app/_components/chat/InputCard';
 import { QueueCardActions } from './QueueCardActions';
@@ -98,30 +98,8 @@ export default function PlanItemPreview({
   const isNeedsHuman = selected?.storedStatus === 'needs-human';
 
   // Build an AttentionItem-shaped view of the selected item so it flows
-  // through the same mapper + dispatch as the Other surfaces. The action set
-  // must match planItemToAttention (adapters.ts) — keep them in sync.
-  const attentionLike: AttentionItem = {
-    id: `plan-item:${planSlug}:${itemId}`,
-    kind: 'plan-item',
-    source: 'plan',
-    harnessSlug: harnessSlug ?? null,
-    planSlug,
-    itemRef: itemId,
-    title: selected?.text ?? itemId,
-    body: selected?.text ?? '',
-    status: selected?.storedStatus ?? '',
-    importance: 'normal',
-    needsHuman: isNeedsHuman,
-    actions: isNeedsHuman
-      ? [
-          { id: 'answer', label: 'Answer' },
-          { id: 'mark-done', label: 'Resolve', primary: true },
-          { id: 'drop', label: 'Drop' },
-          { id: 'chat', label: 'Chat' },
-        ]
-      : [{ id: 'chat', label: 'Chat' }],
-    ref: { kind: 'plan-item', slug: planSlug, itemId },
-  };
+  // through the same mapper + dispatch as the Other surfaces.
+  const attentionLike = buildPlanItemAttention({ planSlug, itemId, harnessSlug, selected });
   const spec = attentionItemToCardSpec(attentionLike);
 
   const onCardResponse = async (resp: AskChoiceResponse) => {
@@ -218,4 +196,47 @@ export default function PlanItemPreview({
       </div>
     </aside>
   );
+}
+
+/**
+ * Pure: build the AttentionItem-shaped view of a selected plan item so it flows
+ * through the same card mapper + dispatch as the inbox surfaces. The action set
+ * must match planItemToAttention (adapters.ts) — needs-human items get the full
+ * Answer/Resolve/Drop/Chat toolkit, everything else just Chat. Exported for
+ * tests.
+ */
+export function buildPlanItemAttention({
+  planSlug,
+  itemId,
+  harnessSlug,
+  selected,
+}: {
+  planSlug: string;
+  itemId: string;
+  harnessSlug?: string | null;
+  selected: PlanItem | undefined;
+}): AttentionItem {
+  const isNeedsHuman = selected?.storedStatus === 'needs-human';
+  return {
+    id: `plan-item:${planSlug}:${itemId}`,
+    kind: 'plan-item',
+    source: 'plan',
+    harnessSlug: harnessSlug ?? null,
+    planSlug,
+    itemRef: itemId,
+    title: selected?.text ?? itemId,
+    body: selected?.text ?? '',
+    status: selected?.storedStatus ?? '',
+    importance: 'normal',
+    needsHuman: isNeedsHuman,
+    actions: isNeedsHuman
+      ? [
+          { id: 'answer', label: 'Answer' },
+          { id: 'mark-done', label: 'Resolve', primary: true },
+          { id: 'drop', label: 'Drop' },
+          { id: 'chat', label: 'Chat' },
+        ]
+      : [{ id: 'chat', label: 'Chat' }],
+    ref: { kind: 'plan-item', slug: planSlug, itemId },
+  } as AttentionItem;
 }

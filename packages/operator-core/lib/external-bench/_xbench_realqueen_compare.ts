@@ -109,6 +109,24 @@ async function main() {
   console.log(`[realqueen] AGENT_MODELS=${process.env.AGENT_MODELS ?? '(unset — bees/queen fall to role floor!)'} AGENT_CMD=${process.env.AGENT_CMD ?? '(unset)'}`);
   for (const t of tasks) console.log(`  - ${t.instanceId} (repo=${t.repo})`);
 
+  // CONTENTION CAP (load-bearing): this driver spawns bees IN-PROCESS via operator-spawn,
+  // whose `spawnConcurrencyCeiling()` reads the module-cached rate-limit config. A fresh
+  // node process boots that cache to the DEFAULT (16) — it does NOT auto-read the
+  // persisted `operator_rate_limit_config` the :3170 PUT set. So WITHOUT this, the
+  // in-process headroom reports ~16 and the Queen over-places, defeating the saturated-
+  // fleet contention (cap << backlog). Honor RATE_LIMIT_MAX (explicit) else load the
+  // persisted value, and apply it to THIS process's cache before any placement.
+  {
+    const { writeRateLimitConfig, initRateLimitConfig, getCachedRateLimitConfig } = await import('../rate-limit-config');
+    const envMax = process.env.RATE_LIMIT_MAX ? Number(process.env.RATE_LIMIT_MAX) : undefined;
+    if (envMax && Number.isFinite(envMax)) {
+      await writeRateLimitConfig({ maxSimultaneousAgents: envMax }); // persist + apply to this cache
+    } else {
+      await initRateLimitConfig(); // load the persisted operator_rate_limit_config into this cache
+    }
+    console.log(`[realqueen] fleet cap (in-process ceiling) = ${getCachedRateLimitConfig().maxSimultaneousAgents} (RATE_LIMIT_MAX=${process.env.RATE_LIMIT_MAX ?? '(unset → persisted)'})`);
+  }
+
   // The FIFO arm needs its scripted planner registered; the real-Queen arm needs none (the Queen places).
   registerFleetPlanner(FIFO_NOQUEEN_ARM, planFifoPlacement);
 

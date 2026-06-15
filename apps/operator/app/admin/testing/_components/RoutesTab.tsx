@@ -4,10 +4,54 @@ import { useEffect, useMemo, useState } from 'react';
 import { loadRuns, type RunSummary, type RouteRollup } from '../_lib/recorder-channel';
 import { getEvents, rateINP, type PerfEvent } from '../_lib/vitals-recorder';
 
-interface MergedRollup extends RouteRollup {
+export interface MergedRollup extends RouteRollup {
   liveCount: number;
   liveMaxInp: number;
   liveErrors: number;
+}
+
+/**
+ * Pure: merge per-route chaos-run rollups with live observer events into a
+ * single per-route table — chaos metrics accumulate (clicks/errors) or take the
+ * max (p50/p95/max INP), live interactions tally liveCount/liveMaxInp, and live
+ * errors bump liveErrors. Sorted by the worst of (chaos p95, live max). Exported
+ * for tests.
+ */
+export function mergeRouteRollups(runs: RunSummary[], live: PerfEvent[]): MergedRollup[] {
+  const byRoute: Record<string, MergedRollup> = {};
+
+  for (const run of runs) {
+    for (const r of Object.values(run.routes)) {
+      const existing = byRoute[r.route] ?? {
+        route: r.route, clicks: 0, p50inp: 0, p95inp: 0, maxInp: 0, errors: 0,
+        liveCount: 0, liveMaxInp: 0, liveErrors: 0,
+      };
+      existing.clicks += r.clicks;
+      existing.maxInp = Math.max(existing.maxInp, r.maxInp);
+      existing.p95inp = Math.max(existing.p95inp, r.p95inp);
+      existing.p50inp = Math.max(existing.p50inp, r.p50inp);
+      existing.errors += r.errors;
+      byRoute[r.route] = existing;
+    }
+  }
+
+  for (const e of live) {
+    const existing = byRoute[e.route] ?? {
+      route: e.route, clicks: 0, p50inp: 0, p95inp: 0, maxInp: 0, errors: 0,
+      liveCount: 0, liveMaxInp: 0, liveErrors: 0,
+    };
+    if (e.kind === 'interaction') {
+      existing.liveCount++;
+      existing.liveMaxInp = Math.max(existing.liveMaxInp, e.duration);
+    } else if (e.kind === 'console-error' || e.kind === 'unhandled-error') {
+      existing.liveErrors++;
+    }
+    byRoute[e.route] = existing;
+  }
+
+  return Object.values(byRoute).sort(
+    (a, b) => Math.max(b.p95inp, b.liveMaxInp) - Math.max(a.p95inp, a.liveMaxInp),
+  );
 }
 
 export default function RoutesTab() {
@@ -19,40 +63,7 @@ export default function RoutesTab() {
     setLive(getEvents());
   }, []);
 
-  const merged: MergedRollup[] = useMemo(() => {
-    const byRoute: Record<string, MergedRollup> = {};
-
-    for (const run of runs) {
-      for (const r of Object.values(run.routes)) {
-        const existing = byRoute[r.route] ?? {
-          route: r.route, clicks: 0, p50inp: 0, p95inp: 0, maxInp: 0, errors: 0,
-          liveCount: 0, liveMaxInp: 0, liveErrors: 0,
-        };
-        existing.clicks += r.clicks;
-        existing.maxInp = Math.max(existing.maxInp, r.maxInp);
-        existing.p95inp = Math.max(existing.p95inp, r.p95inp);
-        existing.p50inp = Math.max(existing.p50inp, r.p50inp);
-        existing.errors += r.errors;
-        byRoute[r.route] = existing;
-      }
-    }
-
-    for (const e of live) {
-      const existing = byRoute[e.route] ?? {
-        route: e.route, clicks: 0, p50inp: 0, p95inp: 0, maxInp: 0, errors: 0,
-        liveCount: 0, liveMaxInp: 0, liveErrors: 0,
-      };
-      if (e.kind === 'interaction') {
-        existing.liveCount++;
-        existing.liveMaxInp = Math.max(existing.liveMaxInp, e.duration);
-      } else if (e.kind === 'console-error' || e.kind === 'unhandled-error') {
-        existing.liveErrors++;
-      }
-      byRoute[e.route] = existing;
-    }
-
-    return Object.values(byRoute).sort((a, b) => Math.max(b.p95inp, b.liveMaxInp) - Math.max(a.p95inp, a.liveMaxInp));
-  }, [runs, live]);
+  const merged: MergedRollup[] = useMemo(() => mergeRouteRollups(runs, live), [runs, live]);
 
   return (
     <>

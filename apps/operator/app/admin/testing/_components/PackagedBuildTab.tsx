@@ -8,12 +8,22 @@ interface CommandsResponse {
   commands: CommandSpec[];
 }
 
-const WDIO_IDS = new Set([
+// Ordered install→build→test pipeline; the tab renders these in this order.
+const WDIO_IDS = [
   'wdio-webkit-driver-check',
   'wdio-install',
   'build-linux-prod',
   'wdio-test',
-]);
+] as const;
+
+/**
+ * Pure: pick the WDIO pipeline commands out of the full command list, in the
+ * fixed install→build→test order, dropping any that aren't present. Exported
+ * for tests.
+ */
+export function orderWdioCommands(commands: CommandSpec[]): CommandSpec[] {
+  return WDIO_IDS.flatMap((id) => commands.find((c) => c.id === id) ?? []);
+}
 
 export default function PackagedBuildTab() {
   const [commands, setCommands] = useState<CommandSpec[] | null>(null);
@@ -25,9 +35,7 @@ export default function PackagedBuildTab() {
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((j: CommandsResponse) => {
         if (cancelled) return;
-        // Order matches the install→build→test pipeline.
-        const ordered = [...WDIO_IDS].flatMap((id) => j.commands.find((c) => c.id === id) ?? []);
-        setCommands(ordered);
+        setCommands(orderWdioCommands(j.commands));
       })
       .catch((e) => {
         if (!cancelled) setError(String(e?.message ?? e));

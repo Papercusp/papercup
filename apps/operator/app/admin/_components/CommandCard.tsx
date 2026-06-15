@@ -208,7 +208,8 @@ function useElapsedLabel(startedAt: number | null, isLive: boolean) {
   return formatMs(Date.now() - startedAt);
 }
 
-function formatMs(ms: number): string {
+/** Pure: format an elapsed-ms span as `Ns` / `NmNNs` / `NhNNm`. Exported for tests. */
+export function formatMs(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);

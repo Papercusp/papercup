@@ -28,7 +28,7 @@ interface AdminTableEntry {
   allowDelete: boolean;
 }
 
-interface ColumnSummary {
+export interface ColumnSummary {
   name: string;
   dataType: string;
   columnType: string;
@@ -293,34 +293,6 @@ function RowModal({
 
   const setField = (name: string, val: string) => setValues((s) => ({ ...s, [name]: val }));
 
-  const coerce = (c: ColumnSummary, raw: string): unknown => {
-    if (raw === '' && !c.notNull) return null;
-    if (raw === '' && c.hasDefault) return undefined; // let DB fill
-    switch (c.columnType) {
-      case 'PgInteger':
-      case 'PgSmallInt':
-      case 'PgSerial':
-      case 'PgSmallSerial':
-      case 'PgBigInt53':
-      case 'PgBigInt64':
-      case 'PgBigSerial53':
-      case 'PgBigSerial64':
-        return raw === '' ? null : Number(raw);
-      case 'PgReal':
-      case 'PgDoublePrecision':
-      case 'PgNumeric':
-      case 'PgDecimal':
-        return raw;
-      case 'PgBoolean':
-        return raw === 'true' || raw === '1';
-      case 'PgJsonb':
-      case 'PgJson':
-        try { return JSON.parse(raw); } catch { return raw; }
-      default:
-        return raw;
-    }
-  };
-
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
@@ -329,7 +301,7 @@ function RowModal({
     try {
       const body: Record<string, unknown> = {};
       for (const c of editableColumns) {
-        const v = coerce(c, values[c.name] ?? '');
+        const v = coerceColumnValue(c, values[c.name] ?? '');
         if (v !== undefined) body[c.name] = v;
       }
       if (mode === 'create') {
@@ -421,7 +393,42 @@ function RowModal({
   );
 }
 
-function renderCell(v: unknown): string {
+/**
+ * Pure: coerce a raw form-string into the value the column's Drizzle type
+ * expects — '' → null (nullable) or undefined (let the DB default fill),
+ * numeric types → Number, bool → true/1 check, json → parsed (raw on bad
+ * JSON). Exported for tests.
+ */
+export function coerceColumnValue(c: ColumnSummary, raw: string): unknown {
+  if (raw === '' && !c.notNull) return null;
+  if (raw === '' && c.hasDefault) return undefined; // let DB fill
+  switch (c.columnType) {
+    case 'PgInteger':
+    case 'PgSmallInt':
+    case 'PgSerial':
+    case 'PgSmallSerial':
+    case 'PgBigInt53':
+    case 'PgBigInt64':
+    case 'PgBigSerial53':
+    case 'PgBigSerial64':
+      return raw === '' ? null : Number(raw);
+    case 'PgReal':
+    case 'PgDoublePrecision':
+    case 'PgNumeric':
+    case 'PgDecimal':
+      return raw;
+    case 'PgBoolean':
+      return raw === 'true' || raw === '1';
+    case 'PgJsonb':
+    case 'PgJson':
+      try { return JSON.parse(raw); } catch { return raw; }
+    default:
+      return raw;
+  }
+}
+
+/** Pure: render a cell value as a short display string. Exported for tests. */
+export function renderCell(v: unknown): string {
   if (v === null || v === undefined) return '∅';
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'number') return String(v);

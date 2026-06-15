@@ -72,7 +72,7 @@ function writeBookmarks(scope: string, set: Set<string>): void {
   }
 }
 
-function formatAge(ts: number): string {
+export function formatAge(ts: number): string {
   const diff = Math.max(0, Date.now() - ts);
   if (diff < 60_000) return 'just now';
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
@@ -81,17 +81,17 @@ function formatAge(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function refClass(ref: string): string {
+export function refClass(ref: string): string {
   if (ref === 'HEAD' || ref.startsWith('HEAD ->')) return 'head';
   if (ref.startsWith('tag: ')) return 'tag';
   return 'branch';
 }
 
-function refLabel(ref: string): string {
+export function refLabel(ref: string): string {
   return ref.replace(/^tag: /, '').replace(/^HEAD -> /, 'HEAD → ');
 }
 
-function matchesCommit(commit: LaidOutCommit, needle: string): boolean {
+export function matchesCommit(commit: LaidOutCommit, needle: string): boolean {
   if (!needle) return true;
   const haystack = [commit.sha, commit.subject, commit.author, ...commit.refs].join(' ').toLowerCase();
   return haystack.includes(needle);

@@ -8,6 +8,33 @@ import { subscribe, clearEvents, rateINP, type PerfEvent, type PerfEventKind } f
 
 type SortKey = 'ts' | 'duration' | 'route';
 
+/**
+ * Pure: apply the kind + route-substring filters, sort by the chosen key
+ * (ts/duration desc, route asc), and cap at 50 rows. Exported for tests.
+ */
+export function filterAndSortEvents(
+  events: PerfEvent[],
+  kindFilter: PerfEventKind | 'all',
+  routeFilter: string,
+  sort: SortKey,
+): PerfEvent[] {
+  let list = events;
+  if (kindFilter !== 'all') list = list.filter((e) => e.kind === kindFilter);
+  if (routeFilter) list = list.filter((e) => e.route.includes(routeFilter));
+  const sorted = [...list];
+  if (sort === 'ts') sorted.sort((a, b) => b.ts - a.ts);
+  else if (sort === 'duration') sorted.sort((a, b) => b.duration - a.duration);
+  else sorted.sort((a, b) => a.route.localeCompare(b.route));
+  return sorted.slice(0, 50);
+}
+
+/** Pure: tally events by kind (all five kinds present, zero-defaulted). Exported for tests. */
+export function countEventsByKind(events: PerfEvent[]): Record<string, number> {
+  const c: Record<string, number> = { interaction: 0, longtask: 0, 'layout-shift': 0, 'console-error': 0, 'unhandled-error': 0 };
+  for (const e of events) c[e.kind] = (c[e.kind] ?? 0) + 1;
+  return c;
+}
+
 export default function LiveMetricsTab() {
   const [events, setEvents] = useState<PerfEvent[]>([]);
   const [kindFilter, setKindFilter] = useQueryState(
@@ -22,22 +49,12 @@ export default function LiveMetricsTab() {
 
   useEffect(() => subscribe(setEvents), []);
 
-  const filtered = useMemo(() => {
-    let list = events;
-    if (kindFilter !== 'all') list = list.filter((e) => e.kind === kindFilter);
-    if (routeFilter) list = list.filter((e) => e.route.includes(routeFilter));
-    const sorted = [...list];
-    if (sort === 'ts') sorted.sort((a, b) => b.ts - a.ts);
-    else if (sort === 'duration') sorted.sort((a, b) => b.duration - a.duration);
-    else sorted.sort((a, b) => a.route.localeCompare(b.route));
-    return sorted.slice(0, 50);
-  }, [events, kindFilter, routeFilter, sort]);
+  const filtered = useMemo(
+    () => filterAndSortEvents(events, kindFilter, routeFilter, sort),
+    [events, kindFilter, routeFilter, sort],
+  );
 
-  const counts = useMemo(() => {
-    const c: Record<string, number> = { interaction: 0, longtask: 0, 'layout-shift': 0, 'console-error': 0, 'unhandled-error': 0 };
-    for (const e of events) c[e.kind] = (c[e.kind] ?? 0) + 1;
-    return c;
-  }, [events]);
+  const counts = useMemo(() => countEventsByKind(events), [events]);
 
   return (
     <>

@@ -98,7 +98,7 @@ describe('<PromptBudgetView />', () => {
     render(<PromptBudgetView slug="h" />);
     await waitFor(() => expect(screen.getByTestId('budget-grid').textContent).toBe('1'));
     // The aggregate headline labels the window ("N invokes").
-    expect(screen.getByText('invokes')).toBeTruthy();
+    expect(screen.getByText(/invokes/)).toBeTruthy();
     // 50% substrate share is rendered from the aggregate.
     expect(screen.getByText('50%')).toBeTruthy();
   });

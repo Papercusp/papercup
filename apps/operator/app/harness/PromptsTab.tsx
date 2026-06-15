@@ -24,6 +24,23 @@ interface RoleData {
   overrideExists: boolean;
 }
 
+/**
+ * Build the role→override-content map from the harness text-artifact rows. Only
+ * rows keyed `prompts/<role>.md` are prompt overrides; the role is the captured
+ * group. Pure so the (slightly fiddly) regex keying is testable on its own.
+ */
+export function overrideMapFromArtifacts(
+  rows: unknown,
+): Map<string, string> {
+  const m = new Map<string, string>();
+  if (!Array.isArray(rows)) return m;
+  for (const r of rows as Array<{ relPath?: string; content?: string }>) {
+    const match = /^prompts\/(.+)\.md$/.exec(r.relPath ?? '');
+    if (match) m.set(match[1], r.content ?? '');
+  }
+  return m;
+}
+
 export default function PromptsTab({ slug, alive }: Props) {
   const [roles, setRoles] = useState<string[]>([]);
   const [overrides, setOverrides] = useState<string[]>([]);
@@ -66,15 +83,7 @@ export default function PromptsTab({ slug, alive }: Props) {
     args: { harnessSlug: slug },
     enabled: !!slug,
   });
-  const overrideByRole = useMemo(() => {
-    const m = new Map<string, string>();
-    if (!Array.isArray(textArtifactRows)) return m;
-    for (const r of textArtifactRows) {
-      const match = /^prompts\/(.+)\.md$/.exec(r.relPath);
-      if (match) m.set(match[1], r.content ?? '');
-    }
-    return m;
-  }, [textArtifactRows]);
+  const overrideByRole = useMemo(() => overrideMapFromArtifacts(textArtifactRows), [textArtifactRows]);
 
   // Hydrate the panel when the selected role changes. Override content
   // is available synchronously from the Zero subscription Map; render

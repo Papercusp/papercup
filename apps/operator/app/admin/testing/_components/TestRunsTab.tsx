@@ -106,16 +106,10 @@ export default function TestRunsTab() {
     }
   }, [runId]);
 
-  const groupedResults = useMemo(() => {
-    const grouped: Record<string, AdminTestCheckResult[]> = {};
-    for (const result of snapshot?.results ?? []) {
-      (grouped[result.suiteId] ??= []).push(result);
-    }
-    for (const suiteId of Object.keys(grouped)) {
-      grouped[suiteId].sort((a, b) => a.label.localeCompare(b.label));
-    }
-    return grouped;
-  }, [snapshot?.results]);
+  const groupedResults = useMemo(
+    () => groupResultsBySuite(snapshot?.results ?? []),
+    [snapshot?.results],
+  );
 
   const suiteCards = useMemo(() => ADMIN_TEST_SUITES.map((suite) => ({
     ...suite,
@@ -359,12 +353,32 @@ function StatusBadge({ status }: { status: AdminTestStatus }) {
   return <span className={`pc-test-badge ${cls}`}>{status}</span>;
 }
 
-function formatCounts(counts: Record<AdminTestStatus, number>): string {
+/** Pure: one-line pass/warn/fail/skip tally. Exported for tests. */
+export function formatCounts(counts: Record<AdminTestStatus, number>): string {
   return `${counts.pass} pass · ${counts.warn} warn · ${counts.fail} fail · ${counts.skip} skip`;
 }
 
-function formatMs(ms: number): string {
+/** Pure: human duration — "0ms" for non-positive, ms under a second, "N.Ns" past. Exported for tests. */
+export function formatMs(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '0ms';
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * Pure: group check results by suiteId, each group sorted by label
+ * (localeCompare). Mirrors the component's `groupedResults` memo. Exported for
+ * tests.
+ */
+export function groupResultsBySuite(
+  results: AdminTestCheckResult[],
+): Record<string, AdminTestCheckResult[]> {
+  const grouped: Record<string, AdminTestCheckResult[]> = {};
+  for (const result of results) {
+    (grouped[result.suiteId] ??= []).push(result);
+  }
+  for (const suiteId of Object.keys(grouped)) {
+    grouped[suiteId].sort((a, b) => a.label.localeCompare(b.label));
+  }
+  return grouped;
 }

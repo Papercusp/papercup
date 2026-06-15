@@ -19,12 +19,14 @@ type QueueRow = { queue_name: string; depth: number; active: number };
 type CountRow = { status: string; n: number };
 type Payload = { enabled: boolean; counts: CountRow[]; workflows: Workflow[]; queues: QueueRow[] };
 
-const fmt = (epochMs: string): string => {
+/** Pure: format an epoch-ms string to a locale time, or em-dash for non-positive/NaN. Exported for tests. */
+export const fmt = (epochMs: string): string => {
   const n = Number(epochMs);
   return Number.isFinite(n) && n > 0 ? new Date(n).toLocaleString() : '—';
 };
 
-const statusColor = (s: string): string =>
+/** Pure: workflow-status → swatch color. Exported for tests. */
+export const statusColor = (s: string): string =>
   s === 'SUCCESS' ? '#86efac'
     : s === 'ERROR' || s.includes('MAX_RECOVERY') ? '#fca5a5'
       : s === 'PENDING' || s === 'ENQUEUED' ? '#fde68a'

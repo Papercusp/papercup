@@ -39,8 +39,20 @@ const labelStyle: CSSProperties = {
   margin: '0 0 4px',
 };
 
-function scopeHarness(scope: SavedPromptsScope): string | undefined {
+export function scopeHarness(scope: SavedPromptsScope): string | undefined {
   return scope.kind === 'harness' ? scope.slug : undefined;
+}
+
+/** A saved-prompt name is valid as a slash command iff it is lowercase
+ *  alphanumeric + dashes, starting with an alphanumeric. */
+export function isValidPromptName(name: string): boolean {
+  return NAME_RE.test(name);
+}
+
+/** Whether the editor's Save action is allowed: a valid name + a non-blank body,
+ *  and not mid-save. The pure gate behind the disabled Save button. */
+export function canSavePrompt(opts: { saving: boolean; name: string; body: string }): boolean {
+  return !opts.saving && isValidPromptName(opts.name) && opts.body.trim().length > 0;
 }
 
 export default function SavedPromptsSection({ scope }: { scope: SavedPromptsScope }) {
@@ -97,8 +109,8 @@ export default function SavedPromptsSection({ scope }: { scope: SavedPromptsScop
     setDraftBody(p?.body ?? '');
   }, [editing, prompts]);
 
-  const nameValid = NAME_RE.test(draftName);
-  const canSave = !saving && nameValid && draftBody.trim().length > 0;
+  const nameValid = isValidPromptName(draftName);
+  const canSave = canSavePrompt({ saving, name: draftName, body: draftBody });
 
   const onSave = useCallback(async () => {
     if (!canSave) return;

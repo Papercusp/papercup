@@ -30,6 +30,17 @@ interface ProjectRow {
   feature_counts: FeatureCounts;
 }
 
+/** Passed-of-total percent for a project's feature counts (0 when no features —
+ *  never NaN). Pure so the progress-cell math is testable. */
+export function projectProgressPct(counts: Pick<FeatureCounts, 'passed' | 'total'>): number {
+  return counts.total > 0 ? Math.round((counts.passed / counts.total) * 100) : 0;
+}
+
+/** Spec size as a one-decimal KB number (chars/1000, rounded to 0.1). */
+export function specSizeKb(spec: string): number {
+  return Math.round(spec.length / 100) / 10;
+}
+
 export default function ProjectsList({ slug }: { slug: string }) {
   const router = useRouter();
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
@@ -73,7 +84,7 @@ export default function ProjectsList({ slug }: { slug: string }) {
       // sortKey expects a string in the new ColumnDef contract; computed sort dropped here.
       render: ({ row }) => {
         const { passed, total, failing, blocked } = row.feature_counts;
-        const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
+        const pct = projectProgressPct(row.feature_counts);
         return (
           <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.textDim }}>
             {passed}/{total} ({pct}%)
@@ -95,7 +106,7 @@ export default function ProjectsList({ slug }: { slug: string }) {
           : null;
         return (
           <span title={lastSpec ?? ''} style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.textDim }}>
-            {Math.round(row.spec.length / 100) / 10}KB
+            {specSizeKb(row.spec)}KB
             {row.spec_manually_edited_at && <span style={{ marginLeft: 4, opacity: 0.7 }}>(edited)</span>}
           </span>
         );

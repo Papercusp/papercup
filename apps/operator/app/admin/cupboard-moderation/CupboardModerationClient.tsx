@@ -38,7 +38,8 @@ interface ReportRow {
   harness_unlisted_at: number | null;
 }
 
-function fmtTime(ms: number | null): string {
+/** Format an epoch-ms timestamp, or an em-dash for null/0. Exported for tests. */
+export function fmtTime(ms: number | null): string {
   if (!ms) return '—';
   try {
     return new Date(ms).toLocaleString();
@@ -47,8 +48,8 @@ function fmtTime(ms: number | null): string {
   }
 }
 
-/** Only render http(s) URLs as links — blocks `javascript:`/`data:` href XSS from registry data. */
-function safeHttpUrl(raw: string | null): string | null {
+/** Only render http(s) URLs as links — blocks `javascript:`/`data:` href XSS from registry data. Exported for tests. */
+export function safeHttpUrl(raw: string | null): string | null {
   if (!raw) return null;
   try {
     const u = new URL(raw);
