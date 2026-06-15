@@ -37,7 +37,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
          critical_path, work_item_count, planted_bug_location)
       VALUES
         (${s.scenarioId}, ${s.title}, ${s.shape}, ${s.idealWallClockUnits}, ${s.idealBeeCount},
-         ${s.totalUnits}, ${this.sql.json(s.criticalPath)}, ${s.workItemCount}, ${s.plantedBugLocation})
+         ${s.totalUnits}, ${s.criticalPath == null ? null : JSON.stringify(s.criticalPath)}::jsonb, ${s.workItemCount}, ${s.plantedBugLocation})
       ON CONFLICT (scenario_id) DO UPDATE SET
         title = EXCLUDED.title,
         shape = EXCLUDED.shape,

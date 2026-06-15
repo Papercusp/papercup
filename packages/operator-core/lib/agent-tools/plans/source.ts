@@ -453,11 +453,15 @@ function escapeLike(token: string): string {
 
 /**
  * SQL candidate prefilter for `plans:search` (audit P-042): only rows whose
- * content contains ≥1 query token (case-insensitive) come back — every
- * search scope (title/now/items/decisions/prose) is a substring of the
- * content blob, so a plan with zero token hits can never score and is
- * lossless to exclude. `limit` caps the candidate set; `truncated` reports
- * when the cap bit (no silent caps).
+ * content OR plan_slug contains ≥1 query token (case-insensitive) come back.
+ * Every content scope (title/now/items/decisions/prose) is a substring of the
+ * content blob; the `slug` scope matches the PG plan_slug — which is NOT part of
+ * what the scorer sees (the parser strips frontmatter from prose), so a
+ * slug-only match (searching a plan's own slug, whose hyphenated tokens never
+ * appear verbatim in its title/body) needs the explicit plan_slug arm or the
+ * plan is lossily excluded (F-FIX-028/029). A plan with zero token hits in
+ * either can never score and is lossless to exclude. `limit` caps the candidate
+ * set; `truncated` reports when the cap bit (no silent caps).
  */
 export async function listPlanRowsMatchingAnyToken(
   tokens: string[],
@@ -477,7 +481,7 @@ export async function listPlanRowsMatchingAnyToken(
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
        ${archivedFilter}
-         AND content ILIKE ANY(${patterns}::text[])
+         AND (content ILIKE ANY(${patterns}::text[]) OR plan_slug ILIKE ANY(${patterns}::text[]))
        ORDER BY plan_slug ASC
        LIMIT ${limit + 1}
     `;

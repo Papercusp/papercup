@@ -127,7 +127,7 @@ export async function recordBehaviorChange(input: RecordBehaviorChangeInput): Pr
          ${input.targetKind}, ${input.target}, ${input.harnessSlug ?? null},
          ${input.role ?? null}, ${input.diffRef ?? null}, ${input.actor ?? null},
          ${input.summary ?? null},
-         ${input.payload ? sql.json(input.payload as never) : null},
+         ${input.payload ? JSON.stringify(input.payload) : null}::jsonb,
          ${input.recordedAtMs != null ? new Date(input.recordedAtMs).toISOString() : sql`now()`})
       ON CONFLICT DO NOTHING
       RETURNING id`;
