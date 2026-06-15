@@ -23,6 +23,7 @@ import type {
   AutonomyHealth,
   ImprovementsHealth,
   InfraHealth,
+  OverwatchPanelHealth,
 } from './types';
 
 // ── tunable thresholds (the status boundaries) ───────────────────────────────
@@ -157,6 +158,24 @@ export function improvementsStatus(_d: ImprovementsHealth): PanelStatus {
 export function infraStatus(d: InfraHealth): PanelStatus {
   if (d.pg === null) return 'unknown';
   if (d.gatewayReachable === false) return 'crit';
+  return 'ok';
+}
+
+/**
+ * Overwatch (#15) — the autonomous supervisor's OWN loop health (the
+ * who-watches-the-watcher panel, D-004). The role ships default-OFF until proven
+ * (D-009), so flag-off — and an owner-paused proven loop — are the INTENDED-dark
+ * states, greyed (`unknown`), never a red/yellow alarm (and `unknown` never reds
+ * the overall, so a not-yet-activated overwatch can't make the dashboard look
+ * sick). Once live (flag on + started): crit = DARK (the supervisor loop itself
+ * died — B-09 liveness false, the failure D-004 exists to catch); warn = repeated
+ * watchdog fallback fires (a forgot-to-declare-next-wake bug); ok = looping.
+ */
+export function overwatchStatus(d: OverwatchPanelHealth): PanelStatus {
+  if (!d.flagEnabled) return 'unknown'; // intentionally dark (default-off, D-009)
+  if (!d.started) return 'unknown'; // proven-but-paused by the owner — idle by choice
+  if (d.alive === false) return 'crit'; // started + dark = the supervisor itself died (D-004)
+  if (d.watchdogFires24h >= WATCHDOG_FIRES_WARN) return 'warn';
   return 'ok';
 }
 

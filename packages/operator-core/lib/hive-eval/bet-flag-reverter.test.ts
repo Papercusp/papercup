@@ -3,9 +3,11 @@ import {
   betFlagRevertHandle,
   revertHandleForRollout,
   makeBetFlagReverter,
+  autoRevertOnRegression,
   BET_FLAG_REVERT_KIND,
 } from './bet-flag-reverter';
 import { makeRevertRegistry, executeRevertVia, type RevertHelpers } from '../autonomy/tripwire/revert-executor';
+import type { BakeoffResult } from './framework-bake-off';
 
 const noHelpers = {} as unknown as RevertHelpers; // reverters here ignore the shared helpers
 
@@ -72,5 +74,25 @@ describe('end-to-end via the tripwire dispatch', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await executeRevertVia(row, registry, {} as any);
     expect(out.reverted).toBe(false);
+  });
+});
+
+describe('autoRevertOnRegression', () => {
+  const result = (verdict: string) =>
+    ({ flagKey: 'papercusp-x', delta: { verdict, deltaMeanComposite: 0, deltaGatePassRate: 0 } }) as unknown as BakeoffResult;
+
+  it('reverts the flag off on a regressed verdict', async () => {
+    const setOff = vi.fn().mockResolvedValue(undefined);
+    const out = await autoRevertOnRegression(result('regressed'), setOff);
+    expect(setOff).toHaveBeenCalledWith('papercusp-x');
+    expect(out.reverted).toBe(true);
+  });
+
+  it('does NOT revert on improved / neutral / inconclusive (and never calls setFlagOff)', async () => {
+    const setOff = vi.fn();
+    for (const v of ['improved', 'neutral', 'inconclusive']) {
+      expect((await autoRevertOnRegression(result(v), setOff)).reverted).toBe(false);
+    }
+    expect(setOff).not.toHaveBeenCalled();
   });
 });

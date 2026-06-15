@@ -25,6 +25,7 @@ import { runHiveEvalGeneration } from './generation-runner';
 import { runFrameworkBakeOff } from './framework-bake-off';
 import type { BakeoffDeps, ArmScore, BakeoffResult } from './framework-bake-off';
 import type { HiveScenario } from './scenario';
+import { autoRevertOnRegression } from './bet-flag-reverter';
 
 /** The heavy generation config + deps the caller already has (gen-loop.ts). Derived from the
  *  canonical runner's own parameters so we never drift from its shape. */
@@ -74,6 +75,8 @@ export interface BetBakeoffInput {
   /** Total budget across BOTH arms; recorded per-run as budgetUsdCap = capUsd/runs (SOFT — real
    *  spend is bounded by the per-run timeout + beeCap, not a hard meter). */
   capUsd: number;
+  /** Auto-revert the bet flag off if the bake-off verdict is 'regressed' (default true). */
+  autoRevert?: boolean;
 }
 
 /**
@@ -114,7 +117,7 @@ export function buildBakeoffBatteryConfig(
  * bee agents (cost + time) — run it ATTENDED with an owner budget, NOT unattended. Mirrors gen-loop's
  * makeLiveRunBattery live wiring. Returns the BakeoffResult (verdict + delta).
  */
-export async function runBetBakeoff(input: BetBakeoffInput): Promise<BakeoffResult> {
+export async function runBetBakeoff(input: BetBakeoffInput): Promise<{ result: BakeoffResult; autoReverted: boolean }> {
   const [
     { makeLiveHivePorts },
     { liveHiveOps },
@@ -140,8 +143,19 @@ export async function runBetBakeoff(input: BetBakeoffInput): Promise<BakeoffResu
     ports: makeLiveHivePorts(liveHiveOps({ workspaceId: input.workspaceId }), { workspaceId: input.workspaceId }),
     extractor: makeReplayExtractor(),
   };
-  return runFrameworkBakeOff(
+  const result = await runFrameworkBakeOff(
     { flagKey: input.flagKey, scenarioIds: input.scenarioIds, repeats: input.repeats },
     liveBakeoffDeps({ battery, deps }),
   );
+  // Immediate auto-revert (P-015): a regressed bet is flipped off NOW — the fitting mechanism for a
+  // bake-off (the queen-autonomy tripwire route needs an autonomy decision + arming, a mis-fit).
+  let autoReverted = false;
+  if (input.autoRevert !== false) {
+    const out = await autoRevertOnRegression(result, async (k) => {
+      const r = await setFlagOverride(k as FlagKey, false);
+      if (!r.ok) throw new Error(`setFlagOverride(${k}=false) failed: ${r.reason}`);
+    });
+    autoReverted = out.reverted;
+  }
+  return { result, autoReverted };
 }

@@ -17,7 +17,8 @@ import type { RevertHandle } from '../autonomy/tripwire/core';
 import type { RevertOutcome } from '../autonomy/tripwire/scan';
 import { registerReverter, type Reverter } from '../autonomy/tripwire/revert-executor';
 import type { FlagKey } from '@papercusp/flags';
-import type { RolloutDecision } from './regression-gate';
+import { shouldRevert, type RolloutDecision } from './regression-gate';
+import type { BakeoffResult } from './framework-bake-off';
 
 /** The revert-handle kind for a bet-flag auto-revert. */
 export const BET_FLAG_REVERT_KIND = 'flag-override';
@@ -56,4 +57,22 @@ export function defaultBetFlagReverter(): Reverter {
 /** Register the bet-flag reverter on a tripwire revert registry (extends; never overrides built-ins). */
 export function registerBetFlagReverter(registry: Map<string, Reverter>): void {
   registerReverter(registry, BET_FLAG_REVERT_KIND, defaultBetFlagReverter());
+}
+
+/**
+ * IMMEDIATE auto-revert (P-015): right after a bake-off, if the bet REGRESSED, set its flag off.
+ * This is the FITTING mechanism for a bake-off (a MEASUREMENT). The queen-autonomy tripwire route
+ * (armTripwireForDecision) does NOT fit: it requires an AutonomyDecision + posture=='auto' +
+ * QUEEN_AUTONOMY_ARMED (the tripwire subsystem is dark by default) and is a DEFERRED sweep, not an
+ * immediate revert. `setFlagOff` is injected (testable). Off-only — never enables a flag.
+ */
+export async function autoRevertOnRegression(
+  result: BakeoffResult,
+  setFlagOff: (key: string) => Promise<unknown>,
+): Promise<RevertOutcome> {
+  if (!shouldRevert(result)) {
+    return { reverted: false, note: `bet '${result.flagKey}' verdict '${result.delta.verdict}' — no revert` };
+  }
+  await setFlagOff(result.flagKey);
+  return { reverted: true, note: `bet '${result.flagKey}' auto-reverted off (bake-off verdict 'regressed')` };
 }

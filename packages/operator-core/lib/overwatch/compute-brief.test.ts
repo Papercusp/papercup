@@ -259,7 +259,7 @@ const observationsData = (o: Partial<ObservationsHealth> = {}): ObservationsHeal
 });
 
 /**
- * A full SystemHealth fixture (all 14 panels — the type requires them). Pass a
+ * A full SystemHealth fixture (all 15 panels — the type requires them). Pass a
  * panel's data to fill it, `null` to simulate an unreadable (greyed) panel, or
  * omit it for the healthy default. Panels the overwatch mapper ignores default to
  * `null`. `'papercup-hive'` is the brief's hive in every case.
@@ -297,6 +297,7 @@ function fakeHealth(
       improvements: naPanel('improvements'),
       infra: naPanel('infra'),
       suFleet: naPanel('suFleet'),
+      overwatch: naPanel('overwatch'),
     },
   };
 }

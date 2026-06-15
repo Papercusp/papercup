@@ -64,3 +64,28 @@ describe('createFailoverPool (EI-535)', () => {
     expect(p.active().accountId).toBe('b');
   });
 });
+
+describe('createFailoverPool — select() header-pinned routing (x-papercusp-account)', () => {
+  it('returns the named pool entry and does NOT move the active account', () => {
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')]);
+    expect(p.select!('b')?.accountId).toBe('b');
+    expect(p.select!('c')?.accountId).toBe('c');
+    expect(p.active().accountId).toBe('a'); // select is a pure lookup — active is unchanged
+  });
+
+  it('returns null for an unknown account id (the gateway then falls back to active())', () => {
+    const p = createFailoverPool([acct('a'), acct('b')]);
+    expect(p.select!('ghost')).toBeNull();
+  });
+
+  it('keeps a header-pinned request on its OWN credential even after a failover moved active', () => {
+    const t = 1_000_000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 3_600_000); // 5h-exhaust 'a' → active rotates to 'b'
+    expect(p.active().accountId).toBe('b');
+    // A request still header-pinned to 'a' routes to a's credential (cache affinity is per-credential),
+    // independent of which account is currently active — that is the whole point of select().
+    expect(p.select!('a')?.accountId).toBe('a');
+    expect(p.select!('b')?.accountId).toBe('b');
+  });
+});

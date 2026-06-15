@@ -45,6 +45,7 @@ import type {
   ImprovementsHealth,
   InfraHealth,
   SuFleetHealth,
+  OverwatchPanelHealth,
 } from './types';
 import { PANEL_LABELS } from './types';
 import {
@@ -60,9 +61,11 @@ import {
   autonomyStatus,
   improvementsStatus,
   infraStatus,
+  overwatchStatus,
   worstStatus,
   deriveQueenAlive,
   QUEEN_STALL_MS,
+  WATCHDOG_FIRES_WARN,
 } from './thresholds';
 
 const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
@@ -97,6 +100,10 @@ interface HealthCtx {
   /** Shared gateway reachability (null = gateway not in the egress path / flag off). */
   gatewayEnabled: boolean;
   gatewayReachable: boolean | null;
+  /** Shared overwatch liveness (B-09): the SAME value feeds the Overwatch panel
+   *  (#15) AND `crossMonitor.overwatchAlive` (D-004) — computed once, no drift.
+   *  null = not-in-play (flag off / not started) or uncomputable (never a false dark). */
+  overwatchAlive: boolean | null;
 }
 
 /** Run a collector, degrading its own failure to an `unknown` (greyed) panel —
@@ -656,6 +663,64 @@ async function collectSuFleet(ctx: HealthCtx): Promise<HealthPanel<SuFleetHealth
   });
 }
 
+async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPanelHealth>> {
+  return panelSafe<OverwatchPanelHealth>('overwatch', async () => {
+    const { ws, now, hiveSlug } = ctx;
+    // Reuse B-08's read surface (D-006 — never a second aggregation): the persisted
+    // started bit + cadence (B-07) + the wake liveness (B-09) + the activation flag.
+    const { getOverwatchControlState } = await import('../overwatch/snapshot');
+    const cs = await getOverwatchControlState({ workspaceId: ws, hiveSlug: hiveSlug ?? undefined });
+    let watchdogFires24h = 0;
+    if (cs.hiveSlug) {
+      try {
+        const { recentOverwatchWatchdogFires } = await import('../overwatch/watchdog');
+        watchdogFires24h = await recentOverwatchWatchdogFires(ws, cs.hiveSlug);
+      } catch { /* fires table unreadable — leave 0 */ }
+    }
+    const lastWakeAt = cs.lastWakeAt ? new Date(cs.lastWakeAt).getTime() : null;
+    const nextFireAt = cs.nextWakeAt ? new Date(cs.nextWakeAt).getTime() : null;
+    const data: OverwatchPanelHealth = {
+      flagEnabled: cs.flagEnabled,
+      started: cs.started,
+      alive: ctx.overwatchAlive,
+      armed: cs.armed,
+      cadenceSec: cs.cadenceSec,
+      lastWakeAt,
+      nextFireAt,
+      staleForMs: cs.staleForMs,
+      watchdogFires24h,
+    };
+    const status = overwatchStatus(data);
+    const stateLabel = !cs.flagEnabled
+      ? cs.started ? 'pre-armed' : 'disabled'
+      : !cs.started
+        ? 'paused'
+        : data.alive === false
+          ? 'dark'
+          : 'looping';
+    const summary = !cs.flagEnabled
+      ? cs.started
+        ? 'pre-armed — started bit set, awaiting the papercusp-overwatch flip (B-12)'
+        : 'disabled — papercusp-overwatch flag off (default-off until proven, B-12)'
+      : !cs.started
+        ? 'paused — supervisor idle by choice'
+        : data.alive === false
+          ? `DARK ${agoMin(lastWakeAt, now)} — supervisor loop gone, no wake armed`
+          : `looping — last wake ${agoMin(lastWakeAt, now)}, next ${untilMin(nextFireAt, now)}`;
+    return {
+      status, summary, data,
+      link: { label: 'Overwatch', href: '/adv?tab=overwatch' },
+      metrics: [
+        m('state', stateLabel, status === 'crit' ? 'crit' : status === 'warn' ? 'warn' : undefined),
+        m('cadence', `${Math.round(cs.cadenceSec / 60)}m`),
+        m('last wake', agoMin(lastWakeAt, now)),
+        m('next wake', untilMin(nextFireAt, now)),
+        m('watchdog 24h', watchdogFires24h, watchdogFires24h >= WATCHDOG_FIRES_WARN ? 'warn' : undefined),
+      ],
+    };
+  });
+}
+
 // ── the aggregator ───────────────────────────────────────────────────────────
 
 /**
@@ -697,33 +762,12 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
     if (gatewayEnabled) gatewayReachable = await probeGatewayHealthz();
   } catch { /* flag IO hiccup — treat as direct egress */ }
 
-  const ctx: HealthCtx = { ws, now, hiveSlug, started, openPlacements, gatewayEnabled, gatewayReachable };
-
-  const [
-    queen, bees, workItems, workFeed, tokens, watchdog, deploy,
-    plans, escalations, autonomy, observations, improvements, infra, suFleet,
-  ] = await Promise.all([
-    collectQueen(ctx), collectBees(ctx), collectWorkItems(ctx), collectWorkFeed(ctx),
-    collectTokens(ctx), collectWatchdog(ctx), collectDeploy(ctx), collectPlans(ctx),
-    collectEscalations(ctx), collectAutonomy(ctx), collectObservations(ctx),
-    collectImprovements(ctx), collectInfra(ctx), collectSuFleet(ctx),
-  ]);
-
-  const panels: SystemHealthPanels = {
-    queen, bees, workItems, workFeed, tokens, watchdog, deploy,
-    plans, escalations, autonomy, observations, improvements, infra, suFleet,
-  };
-  const overall = worstStatus(Object.values(panels).map((p) => p.status));
-  // queenAlive — the who-watches-the-watcher LIVENESS signal (D-004), kept DISTINCT
-  // from `stalled` (EI-623). ONE shared definition (deriveQueenAlive) so the shared
-  // model and the overwatch brief mapper can never drift apart again.
-  const queenAlive = deriveQueenAlive(queen.data);
-
-  // Who-watches-the-watcher reverse leg (overwatch-role-2026-06-15 B-09 / D-004):
-  // fill the `overwatchAlive` stub with overwatch's real liveness. `null` = not
-  // in play (flag off / not started) or not computable — never a false dark.
-  // Dynamic import + fail-soft so the overwatch module can never break the shared
-  // health aggregation.
+  // Overwatch liveness (B-09 / D-004) — resolved ONCE here so the SAME value feeds
+  // both the Overwatch panel (#15, collectOverwatch) and `crossMonitor.overwatchAlive`
+  // (the who-watches-the-watcher reverse leg); two copies of this DID drift once
+  // (EI-623, the queenAlive sibling). `null` = not-in-play (flag off / not started)
+  // or uncomputable — never a false dark. Dynamic import + fail-soft so the
+  // overwatch module can never break the shared health aggregation.
   let overwatchAlive: boolean | null = null;
   if (hiveSlug) {
     try {
@@ -733,6 +777,28 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
       /* leave null — overwatch liveness not computable; null = not-computed (D-004) */
     }
   }
+
+  const ctx: HealthCtx = { ws, now, hiveSlug, started, openPlacements, gatewayEnabled, gatewayReachable, overwatchAlive };
+
+  const [
+    queen, bees, workItems, workFeed, tokens, watchdog, deploy,
+    plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch,
+  ] = await Promise.all([
+    collectQueen(ctx), collectBees(ctx), collectWorkItems(ctx), collectWorkFeed(ctx),
+    collectTokens(ctx), collectWatchdog(ctx), collectDeploy(ctx), collectPlans(ctx),
+    collectEscalations(ctx), collectAutonomy(ctx), collectObservations(ctx),
+    collectImprovements(ctx), collectInfra(ctx), collectSuFleet(ctx), collectOverwatch(ctx),
+  ]);
+
+  const panels: SystemHealthPanels = {
+    queen, bees, workItems, workFeed, tokens, watchdog, deploy,
+    plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch,
+  };
+  const overall = worstStatus(Object.values(panels).map((p) => p.status));
+  // queenAlive — the who-watches-the-watcher LIVENESS signal (D-004), kept DISTINCT
+  // from `stalled` (EI-623). ONE shared definition (deriveQueenAlive) so the shared
+  // model and the overwatch brief mapper can never drift apart again.
+  const queenAlive = deriveQueenAlive(queen.data);
 
   return {
     workspaceId: ws,

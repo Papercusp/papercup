@@ -16,6 +16,7 @@ import {
   plansStatus,
   escalationsStatus,
   autonomyStatus,
+  overwatchStatus,
   worstStatus,
   deriveQueenAlive,
   QUEEN_STALL_MS,
@@ -33,6 +34,7 @@ import type {
   PlansHealth,
   EscalationsHealth,
   AutonomyHealth,
+  OverwatchPanelHealth,
 } from './types';
 
 const queen = (o: Partial<QueenHealth> = {}): QueenHealth => ({
@@ -226,6 +228,34 @@ describe('autonomyStatus', () => {
   });
   it('ok when only armed (locked categories are intentional config)', () => {
     expect(autonomyStatus(au({ tripwiresArmed: 4 }))).toBe('ok');
+  });
+});
+
+describe('overwatchStatus — the who-watches-the-watcher panel (#15, D-004)', () => {
+  const ow = (o: Partial<OverwatchPanelHealth> = {}): OverwatchPanelHealth => ({
+    flagEnabled: true, started: true, alive: true, armed: true, cadenceSec: 600,
+    lastWakeAt: 0, nextFireAt: 0, staleForMs: 60_000, watchdogFires24h: 0, ...o,
+  });
+  it('unknown (greyed) when the flag is off — the intended default-off state, NOT a failure', () => {
+    expect(overwatchStatus(ow({ flagEnabled: false, started: false }))).toBe('unknown');
+  });
+  it('unknown when pre-armed (flag off but started bit set, awaiting B-12)', () => {
+    expect(overwatchStatus(ow({ flagEnabled: false, started: true }))).toBe('unknown');
+  });
+  it('unknown when proven-but-paused by the owner (flag on, not started)', () => {
+    expect(overwatchStatus(ow({ started: false }))).toBe('unknown');
+  });
+  it('crit when live but DARK — the supervisor loop itself died (the D-004 failure)', () => {
+    expect(overwatchStatus(ow({ alive: false }))).toBe('crit');
+  });
+  it('warn when the overwatch watchdog has fired repeatedly (forgot-to-declare bug)', () => {
+    expect(overwatchStatus(ow({ watchdogFires24h: 3 }))).toBe('warn');
+  });
+  it('ok when live + looping (flag on, started, alive, quiet watchdog)', () => {
+    expect(overwatchStatus(ow())).toBe('ok');
+  });
+  it('alive=null (uncomputable) is NOT crit — a started loop with unknown liveness stays ok', () => {
+    expect(overwatchStatus(ow({ alive: null }))).toBe('ok');
   });
 });
 

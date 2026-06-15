@@ -81,15 +81,35 @@ bounded smoke hit exactly this (the gold-patch test PASSED with an exact name ma
 encoding poisoned the required set). **→ Use the canonical `swe_bench_pro_full.csv`; don't synthesize the
 sample.** Our TS grader is unaffected — it only reads `eval_results.json`.
 
-## Bounded smoke recipe (positive control)
+## Bounded smoke — VALIDATED end-to-end (2026-06-15)
 
+A bounded smoke ran the full per-task pipeline on a live task
+(`instance_ansible__ansible-11c1777d…`, 1 seed, `--use_local_docker`, ~2 GB cached image):
+
+| step | result |
+|---|---|
+| grader — gold patch (positive control) | `resolved=true` ✅ |
+| grader — empty patch (negative control) | `resolved=false` ✅ |
+| **native arm** (`claude` CLI on the real issue) → diff → grader | **`resolved=true`** ✅ (solved it) |
+
+### Grader control (gold/empty)
 ```bash
-# 1 task, gold patch (must resolve when fed the canonical CSV row), local Docker, num_workers=1
-python swe_bench_pro_eval.py --raw_sample_path=swe_bench_pro_full.csv \
-  --patch_path=gold_one.json --output_dir=out --scripts_dir=run_scripts \
+# CSV with str-encoded F2P/P2P (NOT a native-array JSONL — see the gotcha above)
+python swe_bench_pro_eval.py --raw_sample_path=sample.csv \
+  --patch_path=gold.json --output_dir=out --scripts_dir=run_scripts \
   --num_workers=1 --dockerhub_username=jefzda --use_local_docker
 cat out/eval_results.json    # → { "<instance_id>": true }
 ```
 
-The TS path is then `buildLiveSweBenchProGrader().grade([{modality:'diff',instanceId,patch,prefix}], tasks)`
-→ reads that `eval_results.json` → `GradeResult{ resolved:true }` → `emitFromAttempt` → run-result row.
+### Native-arm per-task smoke (no GitHub clone — extract the repo from the cached image)
+```bash
+cid=$(docker create jefzda/sweap-images:<tag>); docker cp "$cid:/app" repo; docker rm "$cid"  # repo @ base_commit
+cd repo && claude -p "<problem_statement> — implement under lib/, touch NO test files" --dangerously-skip-permissions
+git add -A && git diff --cached <base_commit> -- . ':(exclude)test/*' > arm_patch.diff               # = extractDiff
+# → predictions [{instance_id, patch:<arm_patch.diff>, prefix:"seed-0"}] → swe_bench_pro_eval.py → eval_results.json
+```
+
+The TS path is `buildLiveSweBenchProGrader().grade([{modality:'diff',instanceId,patch,prefix}], tasks)`
+→ reads `eval_results.json` → `GradeResult{ resolved }` → `emitFromAttempt` → run-result row. The grader
+applies the model patch then `git checkout <fix_commit> -- <test_file>` to add the hidden F2P test (so the
+arm's diff must NOT include test files — `extractDiff` excludes them).

@@ -9,6 +9,7 @@ import { OperatorTarget } from './operator';
 import { OracleTarget } from './oracle';
 import { SuTarget } from './su';
 import { makeQueenTarget } from './queen';
+import { makeOverwatchTarget } from './overwatch';
 
 export type TargetFactory = () => ChatTarget;
 
@@ -28,6 +29,9 @@ const TARGETS: Record<string, TargetFactory> = {
   // queen — the hive Queen's blueprint prompt on the same in-process loop
   // (scout-idea-grading B-06/B-08: does she GRADE routed drafts while triaging?).
   queen: () => makeQueenTarget(),
+  // overwatch — the system-health supervisor's blueprint persona on the same loop
+  // (overwatch-role-2026-06-15 B-11: does it NUDGE-not-replace + OBSERVE-not-idea?).
+  overwatch: () => makeOverwatchTarget(),
 };
 
 export function registerTarget(id: string, factory: TargetFactory): void {

@@ -134,6 +134,14 @@ const HOST: DependencyHostSets = {
   installableToolProviders: new Map(
     [...VIEW.cupboardToolIndex].map(([tool, unit]) => [tool, { kind: unit.kind, name: unit.name }]),
   ),
+  // Spawned-blueprint deps (a hive's memberBlueprints — generic-hive needs research/review/
+  // vote) resolve against the built-in tier (blueprint-role-bundling P-007). Computed inline
+  // since BLUEPRINT_IDS is declared below; same bundled dir.
+  availableBlueprints: new Set(
+    readdirSync(dirname(dirname(builtinBlueprintPath('base')))).filter((bp) =>
+      existsSync(join(dirname(dirname(builtinBlueprintPath('base'))), bp, 'blueprint.yaml')),
+    ),
+  ),
 };
 
 // ─── the bundled built-in blueprints ─────────────────────────────────────────
