@@ -258,6 +258,25 @@ function memberSlugForTask(homePrefix: string, instanceId: string): string {
   return `${homePrefix}m${safe}${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/**
+ * Map a `BenchTask.instanceId` → a REGEX-SAFE feature id (the `feature_id` the bee runs).
+ *
+ * CRITICAL (confirmed at the first real run): the bee's invoke recognizes its feature ONLY when the
+ * `FEATURE_ID=` extra matches the orchestrator's `FEATURE_ID_RE` (`^[A-Z][A-Z0-9]*-[A-Z0-9-]+$`,
+ * run-id.ts:extractFeatureId) — an UPPERCASE-prefixed id like `F-AB12`. The raw `task.instanceId`
+ * (`instance_ansible__ansible-11c1777…`, lowercase + `_`) FAILS that regex, so `extractFeatureId`
+ * returned null, the bee booted with NO feature (`prompt-budget … feature=-`), found no work in its
+ * lane, and exited taskless ($0, empty diff) — the drain loop then re-placed it every poll forever.
+ * The spine-drive (bench-harness-live.ts) sidesteps this by minting `XBENCH-<HEX>` (already regex-safe);
+ * the hive arm must do the same. We derive a stable, schema-/regex-safe `F-<UPPERHEX>` and keep the
+ * featureId↔instanceId mapping in the driver's state (cost/diff attribution is by member slug + the
+ * stored instanceId, NOT this id, so the swap is attribution-safe).
+ */
+function featureIdForTask(instanceId: string): string {
+  const safe = instanceId.replace(/[^a-zA-Z0-9]+/g, '').toUpperCase().slice(0, 16) || 'TASK';
+  return `F-${safe}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
 /** Per-task live state the factory threads from enroll → place → collect → teardown (the clone handle,
  *  its member slug, and the placement/timing provenance executeBatch returns). */
 interface LiveEnrolledState extends EnrolledTask {
@@ -309,6 +328,9 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
   // Per-run state: instanceId → its clone/member handle + placement provenance. Closed over so the
   // ops are stateless from the orchestration's view (it threads opaque EnrolledTask handles).
   const state = new Map<string, LiveEnrolledState>();
+  // featureId (the regex-safe work-item id the bee runs) → instanceId, so placeBatch can resolve the
+  // state from executeBatch's `p.task` (which is the work-item/feature id, NOT the raw instanceId).
+  const instanceByFeatureId = new Map<string, string>();
   // The Queen-home prefix is minted on createHive and reused as the member-slug namespace (per-run-unique).
   let homePrefix = scratchSlug('xbh');
 
@@ -369,10 +391,12 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
         const ops = await liveOps();
         await ops.registerMember({ member, clonePath: checkout.dir, hiveHome, workspaceId: ws });
 
-        // 4. Seed ONE `feature` work_item — the problem_statement — keyed `feature_id = instanceId`
-        //    (the throwaway convention: a frontier row's id IS its task). title = a short slice,
-        //    spec/summary = the full brief the harness works.
-        const featureId = task.instanceId;
+        // 4. Seed ONE `feature` work_item — the problem_statement. The `feature_id` MUST be regex-safe
+        //    (FEATURE_ID_RE) or the placed bee won't recognize its feature (see featureIdForTask) — so
+        //    we mint `F-<HEX>` rather than use the raw lowercase `task.instanceId`. The instanceId stays
+        //    the attempt's identity (cost/diff attribution is by member slug + the stored task). title =
+        //    a short slice, spec/summary = the full brief the harness works.
+        const featureId = featureIdForTask(task.instanceId);
         await ops.seedFeature({
           member,
           featureId,
@@ -392,6 +416,7 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
           disposition: null,
         };
         state.set(task.instanceId, enrolled);
+        instanceByFeatureId.set(featureId, task.instanceId);
         return { task, member, clonePath: checkout.dir, workItemId: featureId };
       } catch (e) {
         // Enroll failed AFTER the clone landed — clean the scratch dir so a failed run leaves nothing.
@@ -461,12 +486,14 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
       });
 
       // Map executeBatch's per-decision results back to {instanceId, beeId, disposition}. The decision
-      // task id IS the work-item id IS the task instanceId (the enroll convention). `spawned`/`injected`
-      // are the placements that actually fanned a bee; the rest (unplaced/deferred/raced/failed) carry no bee.
+      // task id is the WORK-ITEM/feature id we placed (`F-<HEX>`, featureIdForTask) — resolve the real
+      // instanceId + state via the featureId→instanceId index. `spawned`/`injected` are the placements
+      // that actually fanned a bee; the rest (unplaced/deferred/raced/failed) carry no bee.
       const placedAtMs = Date.now();
       const placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] = [];
       for (const p of exec.placements) {
-        const instanceId = p.task; // === work-item id === task.instanceId
+        const featureId = p.task; // === work-item id we placed (F-<HEX>), NOT the raw instanceId
+        const instanceId = instanceByFeatureId.get(featureId) ?? featureId;
         const st = state.get(instanceId);
         if (p.action === 'spawned' || p.action === 'injected') {
           const disposition = p.action === 'spawned' ? ('spawn' as const) : ('warm-inject' as const);
