@@ -138,6 +138,11 @@ pub struct FleetState {
     /// plan-progress list (↑/↓ move it, Enter opens that plan's detail popup —
     /// owner ask 2026-06-15). The conversations panel reuses `App::conversation_sel`.
     pub fleet_focus: FleetPanel,
+    /// Two-level nav (owner ask 2026-06-15 #2): false = BROWSING panes (↑/↓
+    /// switch the focused pane, Enter drills in); true = INSIDE the focused pane
+    /// (↑/↓ move within, Enter acts, Esc steps back out). Reset to false whenever
+    /// the focused pane changes via ←/→, the comms view toggles, or the mode flips.
+    pub entered: bool,
     pub comms_inbox_sel: usize,
     pub comms_outbox_sel: usize,
     pub dossier_scroll: u16,
@@ -159,6 +164,7 @@ impl Default for FleetState {
             agent_sel: 0,
             show_comms: false,
             fleet_focus: FleetPanel::Roster,
+            entered: false,
             comms_inbox_sel: 0,
             comms_outbox_sel: 0,
             dossier_scroll: 0,
@@ -175,6 +181,9 @@ impl FleetState {
             FleetMode::Curated => FleetMode::Mirror,
             FleetMode::Mirror => FleetMode::Curated,
         };
+        // Mirror has no panes — drop any entered-pane state so curated reopens
+        // at the browsing level (owner ask 2026-06-15 #2).
+        self.entered = false;
     }
 
     pub fn set_work_items(&mut self, items: Vec<WorkItem>) {
@@ -385,15 +394,23 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
 /// and panel navigation are discoverable without guessing `c`.
 fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
     let toggle = if comms { "c: task-list+plans" } else { "c: mail+chat" };
-    let line = Line::from(vec![
-        Span::styled(
+    // Two-level nav (owner ask 2026-06-15 #2): the legend names which level you
+    // are in — BROWSING panes (↑/↓ switch · ⏎ enter) vs INSIDE a pane (↑/↓ move ·
+    // ⏎ open · Esc back).
+    let (marker, keys) = if app.fleet.entered {
+        (
+            format!(" ▸ {} · inside ", app.fleet.fleet_focus.label()),
+            "  ↑/↓ move · ⏎ open · Esc back · ",
+        )
+    } else {
+        (
             format!(" ▸ {} ", app.fleet.fleet_focus.label()),
-            Theme::title_active(),
-        ),
-        Span::styled(
-            "  ←/→ switch panel · ↑/↓ move · ⏎ open · ",
-            Theme::info(),
-        ),
+            "  ↑/↓ or ←/→ switch pane · ⏎ enter · ",
+        )
+    };
+    let line = Line::from(vec![
+        Span::styled(marker, Theme::title_active()),
+        Span::styled(keys, Theme::info()),
         Span::styled(toggle, Theme::info()),
     ]);
     f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);

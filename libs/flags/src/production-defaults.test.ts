@@ -201,12 +201,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // end-to-end path; the owner flips it ON after. Pending flip surfaced in the
   // plan's ## Now + the lane completion report.
   FLAGS.EXTERNAL_BENCH,
-  // plan-implementation-framework-2026-06-15 (Wave 1 bets): the two BEHAVIOR-CHANGING bets stay
-  // dark until the OWNER runs the framework bake-off (P-007) and confirms each beats baseline
-  // (D-005). The two ADDITIVE opt-in tools (work_items:amend / :expand) were flipped default-ON
-  // 2026-06-15 (they change no existing behavior) and are no longer allowlisted here.
-  FLAGS.COMPILED_BRIEFS, // P-003 — compiled work-item briefs at convert-time (behavior-changing; dark)
-  FLAGS.TOUCH_SET_EXCLUSION, // P-002 — hive-scoped placement admission (behavior-changing; dark)
+  // plan-implementation-framework-2026-06-15 (Wave 1 bets): ALL FOUR bets flipped default-ON
+  // 2026-06-15 (owner authorization) — none remain dark. compiled-briefs + touch-set-exclusion are
+  // validated by the framework bake-off running concurrently (a 'regressed' verdict auto-reverts
+  // the flag off via autoRevertOnRegression / P-015).
   // bee-context-efficiency-2026-06-14 (sourced from its own FLAG_DEFAULTS comment): an
   // unverified HOT-PATH change to live bee re-invocation (fresh session vs `--resume`). OFF ⇒
   // legacy `--resume`, behavior-neutral; flip ON after the P-006 live verification. (Pre-existing

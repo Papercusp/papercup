@@ -96,7 +96,7 @@ export function clampWakeAt(requested: Date, now: Date = new Date()): { at: Date
  */
 export async function declareHiveTimeWake(
   sql: Sql,
-  opts: { workspaceId: string; installSlug: string; at: Date; kickoff?: string; now?: Date },
+  opts: { workspaceId: string; installSlug: string; at: Date; kickoff?: string; now?: Date; blueprintId?: string },
 ): Promise<{ at: Date; clamped: boolean }> {
   const { at, clamped } = clampWakeAt(opts.at, opts.now);
   await upsertRoutine(
@@ -109,7 +109,7 @@ export async function declareHiveTimeWake(
       triggerConfig: {}, // no cron expr ⇒ one-shot
       targetRole: 'system:blueprint-run',
       payloadTemplate: {
-        blueprintId: HIVE_BLUEPRINT_ID,
+        blueprintId: opts.blueprintId ?? HIVE_BLUEPRINT_ID,
         kickoff:
           opts.kickoff ??
           `Self-declared wake (declared ${new Date().toISOString()}). You are the operator in charge; survey the fleet and figure out what to do.`,

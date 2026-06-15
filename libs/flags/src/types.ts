@@ -592,14 +592,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // to live bee re-invocation (fresh session vs `--resume`). Flip ON after P-006
   // live verification. OFF ⇒ legacy `--resume`, behavior-neutral.
   [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]: false,
-  // DEFAULT OFF (exception to alpha flags-default-on): an unverified change to the
-  // convert-at-pickup brief path (plan-implementation-framework P-003 compiled-briefs).
-  // Flip ON via the framework bake-off once it beats the hand-authored baseline.
-  [FLAGS.COMPILED_BRIEFS]: false,
-  // DEFAULT OFF (exception to alpha flags-default-on): unverified proactive placement
-  // admission (plan-implementation-framework P-002 touch-set-exclusion). Flip ON via
-  // the framework bake-off once it beats the file-lock-only baseline.
-  [FLAGS.TOUCH_SET_EXCLUSION]: false,
+  // DEFAULT ON — activated 2026-06-15 (owner authorization, plan-implementation-framework P-010).
+  // The convert-at-pickup compiled-brief path (P-003). The framework bake-off runs concurrently to
+  // validate it; a 'regressed' verdict auto-reverts it off (autoRevertOnRegression / P-015).
+  [FLAGS.COMPILED_BRIEFS]: true,
+  // DEFAULT ON — activated 2026-06-15 (owner authorization). Proactive placement admission (P-002).
+  // The bake-off validates concurrently; a 'regressed' verdict auto-reverts it off (P-015).
+  [FLAGS.TOUCH_SET_EXCLUSION]: true,
   // DEFAULT ON — an additive OPT-IN tool (work_items:amend): enabling exposes the tool; it changes
   // NO existing behavior (an agent must call it). Activated 2026-06-15 (owner authorization,
   // plan-implementation-framework P-010). The bake-off still measures it; it does not GATE an

@@ -98,6 +98,9 @@ describe('scenario registry', () => {
       'queen-Q02-owner-grade-sovereign-no-retry',
       // queen ranked-queue decider (self-learning-frontier-2026-06-12 P-045 / FB-19)
       'queen-Q03-ranked-queue-decider',
+      // overwatch persona boundaries (overwatch-role-2026-06-15 B-11)
+      'overwatch-OW01-nudge-not-replace',
+      'overwatch-OW02-observe-not-idea',
     ].sort());
   });
 
@@ -107,7 +110,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(['operator', 'oracle', 'architect', 'su', 'queen']).toContain(s.target);
+      expect(['operator', 'oracle', 'architect', 'su', 'queen', 'overwatch']).toContain(s.target);
     }
   });
 

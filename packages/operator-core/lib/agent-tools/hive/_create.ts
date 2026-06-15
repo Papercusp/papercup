@@ -58,6 +58,12 @@ export interface CreateHiveOpts {
    * best-effort — a provision failure warns and reports, never fails the create.
    */
   provisionLearningLoop?: boolean;
+  /**
+   * The kind:'hive' blueprint id to provision + launch (hive-blueprint-generalization
+   * P-006). Default HIVE_BLUEPRINT_ID ('hive', the coding hive); 'generic-hive' for a
+   * non-coding hive. Resolved local → installed → built-in.
+   */
+  blueprintId?: string;
 }
 
 export interface SeededLearningsSummary {
@@ -98,9 +104,11 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     return { ok: false, error: 'slug_exists', message: `A harness '${opts.slug}' already exists in this workspace.` };
   }
 
-  // Resolve + validate the built-in hive (kind:'hive') blueprint.
+  // Resolve + validate the chosen kind:'hive' blueprint (default the coding `hive`;
+  // 'generic-hive' for a non-coding hive — hive-blueprint-generalization P-006).
+  const blueprintId = opts.blueprintId ?? HIVE_BLUEPRINT_ID;
   const resolver = operatorResolveExtends({ localDirs: [] });
-  const childObj: Record<string, unknown> = { id: opts.slug, extends: HIVE_BLUEPRINT_ID };
+  const childObj: Record<string, unknown> = { id: opts.slug, extends: blueprintId };
   const validation = resolveAndValidate(childObj, resolver);
   if (validation.parseError || !validation.ok || !validation.blueprint) {
     return {
@@ -313,7 +321,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
         opts.kickoff ??
         `Hive '${opts.slug}' created. You are the Queen/operator in charge; survey the fleet and figure out what to do.${seededNote}`;
       if (opts.wakeInSeconds <= 0) {
-        await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug: opts.slug, workspaceId: ws, kickoff });
+        await fireLaunchBlueprint(blueprintId, { installSlug: opts.slug, workspaceId: ws, kickoff });
         await recordHiveWake(ws);
       } else {
         const { sql } = getOrgPg();
@@ -322,6 +330,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           installSlug: opts.slug,
           at: new Date(Date.now() + opts.wakeInSeconds * 1000),
           kickoff,
+          blueprintId,
         });
       }
       waked = true;

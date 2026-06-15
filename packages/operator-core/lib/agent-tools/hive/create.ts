@@ -55,6 +55,13 @@ export default defineTool({
       .optional()
       .describe('Wake the Queen after N seconds (0 = now). Omit ⇒ create idle; wake later with hive:wake / hive:declare-wake.'),
     kickoff: z.string().max(2000).optional().describe('Kickoff context for the first wake.'),
+    blueprintId: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        "The kind:'hive' blueprint to run — default 'hive' (the coding hive); 'generic-hive' for a non-coding hive (judge-accepted, artifacts output, topic affinity). Resolved local→installed→built-in; blueprint:catalog lists the hive blueprints.",
+      ),
     learningPack: z
       .string()
       .max(120)
@@ -85,6 +92,7 @@ export default defineTool({
       deployment: args.deployment,
       wakeInSeconds: args.wakeInSeconds,
       kickoff: args.kickoff,
+      blueprintId: args.blueprintId ?? undefined,
       // 'none' ⇒ null (seed nothing); omit ⇒ undefined (default pack).
       learningPack: args.learningPack === 'none' ? null : args.learningPack ?? undefined,
     });

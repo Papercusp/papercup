@@ -165,7 +165,7 @@ test('round-trip: a SECOND hive installs negative-space from the Cupboard and it
   assert.equal(res.version, '0.1.0');
   assert.equal(res.abstract, false);
   assert.equal(res.installedTo, join(installedDir, 'negative-space'));
-  assert.deepEqual(res.dependencies, { tools: [], packs: [], plugins: [] });
+  assert.deepEqual(res.dependencies, { tools: [], packs: [], plugins: [], blueprints: [] });
   assert.equal(res.depCheck, null);
   // Physically placed in the second hive's installed tier; .git excluded.
   assert.ok(existsSync(join(installedDir, 'negative-space', 'blueprint.yaml')));

@@ -10,7 +10,11 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'GET',
   path: '/admin/inference-gateway/stats',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — the deploy-accounts
+  // pool view reads this for live per-account utilization, same trust posture as the
+  // sibling GET /admin/deploy-accounts (which exposes strictly more — credentialRef).
+  // This returns only non-secret rate-headroom (utilization %, account id, queue depth).
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler() {
     const headroom = await fetchGatewayHeadroom();
     return Response.json({ ok: true, gateway: headroom });

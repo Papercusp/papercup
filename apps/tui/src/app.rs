@@ -5046,6 +5046,16 @@ impl App {
                     self.memory_sel = 0;
                     return Action::Render;
                 }
+                // On the Fleet tab, Esc first steps OUT of an entered pane back to
+                // pane-browsing (two-level nav, owner ask 2026-06-15 #2); only
+                // then (a second Esc) does it clear an active agent filter.
+                if self.tab == Tab::Fleet
+                    && self.fleet.mode == crate::fleet::FleetMode::Curated
+                    && self.fleet.entered
+                {
+                    self.fleet.entered = false;
+                    return Action::Render;
+                }
                 // On the Fleet tab, Esc clears an active agent filter back to
                 // the whole-fleet dossier/plan view (#2). The run loop applies
                 // the cleared selection in-process + republishes the relay.
@@ -5150,11 +5160,20 @@ impl App {
                 }
                 Action::Render
             }
-            // Enter on the Fleet tab acts on the FOCUSED panel (owner ask
-            // 2026-06-14): roster → reach the agent; inbox/outbox/conversations →
-            // open the detail popup; plan-progress → open the selected plan's
-            // detail popup; dossier → no per-row detail.
-            KeyCode::Enter if self.tab == Tab::Fleet => self.fleet_enter_focused(),
+            // Enter on the Fleet tab (two-level nav, owner ask 2026-06-15 #2): at
+            // the pane-browsing level it DRILLS INTO the focused pane; once
+            // inside, it acts on the selection — roster → reach the agent;
+            // inbox/outbox/conversations → open the detail popup; plan-progress →
+            // open the selected plan's detail popup; dossier → no per-row detail.
+            // Mirror has no panes, so Enter acts directly.
+            KeyCode::Enter if self.tab == Tab::Fleet => {
+                if self.fleet.mode == crate::fleet::FleetMode::Curated && !self.fleet.entered {
+                    self.fleet.entered = true;
+                    Action::Render
+                } else {
+                    self.fleet_enter_focused()
+                }
+            }
             // Launch a native agent pane from the Fleet tab (the old Sessions
             // launcher, folded in — D-002b).
             KeyCode::Char('n') if self.tab == Tab::Fleet => Action::Launch(self.launch_spec()),
@@ -5168,6 +5187,7 @@ impl App {
                 // Reset to the roster on every toggle so the view opens in a
                 // known place, and drop any stale detail popup (owner ask 2026-06-14).
                 self.fleet.fleet_focus = crate::fleet::FleetPanel::Roster;
+                self.fleet.entered = false;
                 self.fleet_detail_open = false;
                 // The conversations half reuses the Conversations-tab data —
                 // lazy-load it the first time the comms view opens.
@@ -5179,11 +5199,15 @@ impl App {
                 }
                 Action::Render
             }
-            // Fleet panel cycle (owner ask 2026-06-14): h/l (or ←/→) CYCLE focus
-            // through the visible panels — works in BOTH the default (roster ·
-            // task-list · plan-progress) and comms (roster · inbox · outbox ·
-            // conversations) layouts. Active only in Curated mode; in Mirror `h`
-            // still falls through to the Overview tab-switch below.
+            // Fleet two-level nav (owner ask 2026-06-15 #2): BROWSE panes vs work
+            // INSIDE one. Only Enter (drill in) / Esc (step out) / `c` change the
+            // level. ←/→ (h/l) switch the focused pane at WHATEVER level you're on
+            // (so once inside, ←/→ moves between panes, ↑/↓ within — a clean 2-D
+            // nav); ↑/↓ (j/k) switch panes while browsing, else move within the
+            // entered pane. Works in BOTH the default (roster · task-list ·
+            // plan-progress) and comms (roster · inbox · outbox · conversations)
+            // layouts. Active only in Curated mode; in Mirror these fall through
+            // to the global handlers below.
             KeyCode::Char('h') | KeyCode::Left
                 if self.tab == Tab::Fleet
                     && self.fleet.mode == crate::fleet::FleetMode::Curated =>
@@ -5198,24 +5222,17 @@ impl App {
                 self.fleet.fleet_focus = self.fleet.fleet_focus.cycle(self.fleet.show_comms, 1);
                 Action::Render
             }
-            // j/k (↑/↓) move WITHIN the focused panel (list cursor / scroll). When
-            // the roster holds focus these don't match and the generic arms below
-            // run the roster move + bee-selection publish.
             KeyCode::Char('j') | KeyCode::Down
                 if self.tab == Tab::Fleet
-                    && self.fleet.mode == crate::fleet::FleetMode::Curated
-                    && self.fleet.fleet_focus != crate::fleet::FleetPanel::Roster =>
+                    && self.fleet.mode == crate::fleet::FleetMode::Curated =>
             {
-                self.fleet_within_move(1);
-                Action::Render
+                self.fleet_arrow(1)
             }
             KeyCode::Char('k') | KeyCode::Up
                 if self.tab == Tab::Fleet
-                    && self.fleet.mode == crate::fleet::FleetMode::Curated
-                    && self.fleet.fleet_focus != crate::fleet::FleetPanel::Roster =>
+                    && self.fleet.mode == crate::fleet::FleetMode::Curated =>
             {
-                self.fleet_within_move(-1);
-                Action::Render
+                self.fleet_arrow(-1)
             }
             // Hives tab (p2p-hive-directory P-006): 'J' JOINS a discovered hive —
             // POST each of its member links to /api/harness/join-link. Picks the
@@ -5630,10 +5647,36 @@ impl App {
         side.entries.get(n - 1 - sel.min(n - 1))
     }
 
+    /// Fleet ↑/↓ (two-level nav, owner ask 2026-06-15 #2): BROWSE between panes
+    /// when not yet entered; once inside, move WITHIN the focused pane (the
+    /// roster publishes its new bee selection; the other panes move their
+    /// cursor/scroll).
+    fn fleet_arrow(&mut self, delta: isize) -> Action {
+        if !self.fleet.entered {
+            self.fleet.fleet_focus = self.fleet.fleet_focus.cycle(self.fleet.show_comms, delta);
+            return Action::Render;
+        }
+        if self.fleet.fleet_focus == crate::fleet::FleetPanel::Roster {
+            return self.fleet_roster_move(delta);
+        }
+        self.fleet_within_move(delta);
+        Action::Render
+    }
+
+    /// Move the roster cursor + republish the bee selection (a new agent means
+    /// new mail, so the comms cursors reset). The entered-roster ↑/↓ path — the
+    /// roster-move side effects the generic `move_sel` arm used to run for Fleet.
+    fn fleet_roster_move(&mut self, delta: isize) -> Action {
+        self.move_sel(delta);
+        self.fleet.comms_inbox_sel = 0;
+        self.fleet.comms_outbox_sel = 0;
+        self.publish_swarm_selection()
+    }
+
     /// `j`/`k` (↑/↓) move WITHIN the focused panel: the inbox/outbox/conversation
     /// row cursor (clamped — no fall-through; `h`/`l` switch panels), or the
-    /// dossier / plan-progress scroll offset. The roster is driven by the generic
-    /// `move_sel` path, so it's a no-op here.
+    /// dossier scroll offset / plan-progress selection. Only reached when the
+    /// pane is "entered" (two-level nav); the roster has its own `fleet_roster_move`.
     fn fleet_within_move(&mut self, delta: isize) {
         use crate::fleet::FleetPanel::*;
         let sel_step = |cur: usize, delta: isize, len: usize| -> usize {
@@ -6958,6 +7001,7 @@ mod tests {
             bee_roster_entry("su-bbb", "codex"),
         ]);
         a.fleet.agent_sel = 0;
+        a.fleet.entered = true; // inside the roster pane → ↑/↓ move its cursor
         // j moves to the second bee and publishes IT.
         match a.update(key('j', KeyModifiers::NONE)) {
             Action::PublishBeeSelection { owner_id, name } => {
@@ -7271,6 +7315,7 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Fleet;
         a.set_roster(vec![live_windowed_entry("claude")]);
+        a.fleet.entered = true; // inside the roster → Enter reaches the agent
         match a.on_key(KeyCode::Enter, KeyModifiers::empty()) {
             Action::FocusWindow { window_id, .. } => {
                 assert_eq!(window_id.as_deref(), Some("0x0123abcd"))
@@ -7286,6 +7331,7 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Fleet;
         a.set_roster(vec![ended_resumable_entry("codex")]);
+        a.fleet.entered = true; // inside the roster → Enter resumes the agent
         match a.on_key(KeyCode::Enter, KeyModifiers::empty()) {
             Action::Launch(spec) => {
                 assert!(spec.argv.iter().any(|x| x == "--resume"));
@@ -7310,6 +7356,7 @@ mod tests {
             ..Default::default()
         };
         a.set_roster(vec![entry]);
+        a.fleet.entered = true; // inside the roster → Enter acts on the agent
         assert_eq!(
             a.on_key(KeyCode::Enter, KeyModifiers::empty()),
             Action::Render
@@ -7338,6 +7385,7 @@ mod tests {
             ..Default::default()
         };
         a.set_roster(vec![entry]);
+        a.fleet.entered = true; // inside the roster → Enter acts on the agent
         assert_eq!(
             a.on_key(KeyCode::Enter, KeyModifiers::empty()),
             Action::Render
@@ -9015,6 +9063,7 @@ mod tests {
         let mut a = App::new();
         a.update(key('4', KeyModifiers::NONE)); // Fleet
         a.set_roster(vec![roster_entry("claude"), roster_entry("codex")]);
+        a.fleet.entered = true; // inside the roster pane → ↑/↓ move its cursor
         assert_eq!(a.fleet.agent_sel, 0);
         a.update(key('j', KeyModifiers::NONE));
         assert_eq!(a.fleet.agent_sel, 1);
@@ -10177,6 +10226,7 @@ mod tests {
     fn fleet_jk_moves_within_panel_no_fallthrough() {
         use crate::fleet::FleetPanel;
         let mut a = comms_app();
+        a.fleet.entered = true; // inside the panes → ↑/↓ move within (←/→ keep switching)
         a.update(ev(KeyCode::Char('l'))); // Inbox (2 items)
         a.update(ev(KeyCode::Char('j')));
         assert_eq!((a.fleet.fleet_focus, a.fleet.comms_inbox_sel), (FleetPanel::Inbox, 1));
@@ -10194,6 +10244,41 @@ mod tests {
     }
 
     #[test]
+    fn fleet_two_level_nav_browse_enter_within_esc() {
+        // Owner ask 2026-06-15 #2: ↑/↓ switch panes while BROWSING; Enter drills
+        // INTO the focused pane; then ↑/↓ move within; Esc steps back out.
+        use crate::fleet::FleetPanel;
+        let mut a = App::new();
+        a.tab = Tab::Fleet; // comms off → Roster · Dossier · PlanProgress
+        let mut p1 = plan("plan-a");
+        p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
+        let mut p2 = plan("plan-b");
+        p2.item_counts = crate::models::ItemCounts { todo: 1, done: 1, ..Default::default() };
+        a.set_plans(vec![p1, p2]);
+        assert!(!a.fleet.entered);
+        assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
+        // Browsing: ↓ switches panes (does NOT move a cursor).
+        a.update(ev(KeyCode::Down));
+        assert_eq!((a.fleet.fleet_focus, a.fleet.entered), (FleetPanel::Dossier, false));
+        a.update(ev(KeyCode::Down));
+        assert_eq!((a.fleet.fleet_focus, a.fleet.entered), (FleetPanel::PlanProgress, false));
+        // Enter drills into the focused pane (no popup yet — just enters).
+        a.update(ev(KeyCode::Enter));
+        assert!(a.fleet.entered);
+        assert!(!a.fleet_detail_open);
+        // Inside: ↓ now moves the plan selection within plan-progress.
+        assert_eq!(a.fleet.plan_progress_sel, 0);
+        a.update(ev(KeyCode::Down));
+        assert_eq!(a.fleet.plan_progress_sel, 1);
+        // Esc steps back out to browsing (does NOT clear anything else yet).
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.fleet.entered);
+        // Browsing again: ↓ switches panes (wraps Roster → …).
+        a.update(ev(KeyCode::Down));
+        assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
+    }
+
+    #[test]
     fn fleet_default_view_cycles_dossier_scroll_and_plan_select() {
         use crate::fleet::FleetPanel;
         let mut a = App::new();
@@ -10204,6 +10289,7 @@ mod tests {
         let mut p2 = plan("plan-b");
         p2.item_counts = crate::models::ItemCounts { todo: 1, done: 1, ..Default::default() };
         a.set_plans(vec![p1, p2]);
+        a.fleet.entered = true; // inside the panes → ↑/↓ move within (←/→ keep switching)
         assert!(!a.fleet.show_comms);
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
         a.update(ev(KeyCode::Char('l')));
@@ -10265,6 +10351,7 @@ mod tests {
         p2.item_counts =
             crate::models::ItemCounts { todo: 1, wip: 1, ..Default::default() };
         a.set_plans(vec![p1, p2]);
+        a.fleet.entered = true; // inside the panes → ←/→ switch, ⏎ opens, ↑/↓ within
         // Cycle focus to the plan-progress panel (Roster → Dossier → PlanProgress).
         a.update(ev(KeyCode::Char('l')));
         a.update(ev(KeyCode::Char('l')));
@@ -10298,6 +10385,7 @@ mod tests {
         a.set_roster(vec![fleet_bee("bee-1", "claude"), fleet_bee("bee-2", "claude")]);
         a.fleet.comms_inbox_sel = 1;
         a.fleet.comms_outbox_sel = 1;
+        a.fleet.entered = true; // inside the roster → j moves its cursor
         // Roster holds focus → j moves the roster cursor and resets the mail cursors
         // (a new agent has new mail).
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
@@ -10309,6 +10397,7 @@ mod tests {
     #[test]
     fn comms_enter_opens_detail_and_esc_closes() {
         let mut a = comms_app();
+        a.fleet.entered = true; // inside the panes → Enter opens the focused item
         a.update(ev(KeyCode::Char('l'))); // focus Inbox
         assert!(!a.fleet_detail_open);
         a.update(ev(KeyCode::Enter));
@@ -10327,6 +10416,7 @@ mod tests {
         use crate::fleet::FleetPanel;
         let mut a = comms_app();
         a.fleet.fleet_focus = FleetPanel::Conversations;
+        a.fleet.entered = true; // inside the conversations pane → Enter opens the thread
         let act = a.update(ev(KeyCode::Enter));
         assert!(a.fleet_detail_open);
         assert!(matches!(act, Action::FetchConversationDetail { .. }));
@@ -10336,6 +10426,7 @@ mod tests {
     fn fleet_detail_step_stays_within_focused_panel() {
         use crate::fleet::FleetPanel;
         let mut a = comms_app();
+        a.fleet.entered = true; // inside the panes
         a.update(ev(KeyCode::Char('l'))); // Inbox
         a.update(ev(KeyCode::Enter)); // open popup
         // j/k inside the popup step within the inbox only — no fall-through.
@@ -10368,6 +10459,7 @@ mod tests {
         // While the detail popup is open, unrelated keys (e.g. `c`/`n`) are
         // swallowed so they can't drive the dock underneath — Esc closes first.
         let mut a = comms_app();
+        a.fleet.entered = true; // inside the panes
         a.update(ev(KeyCode::Char('l')));
         a.update(ev(KeyCode::Enter)); // open the popup
         assert!(a.fleet_detail_open);
@@ -10380,6 +10472,7 @@ mod tests {
     #[test]
     fn fleet_detail_scroll_pages_and_resets_on_item_change() {
         let mut a = comms_app();
+        a.fleet.entered = true; // inside the panes
         a.update(ev(KeyCode::Char('l'))); // Inbox
         a.update(ev(KeyCode::Enter)); // open popup
         assert_eq!(a.fleet_detail_scroll, 0);
