@@ -64,7 +64,21 @@ export default defineTool({
       hive: args.hive,
       workspace: args.workspace,
     });
-    const snapshot = await assemblePresenceSnapshot(resolved, { includeStale: args.include_stale });
+    // P-011: include_detail adds the cross-DB held-files lane. The lock store is
+    // keyed by coordinationDomain (the repo root, not workspaceId) — resolve it
+    // defensively so an anonymous caller never breaks the lean read.
+    let detail: { coordinationDomain: string } | undefined;
+    if (args.include_detail) {
+      try {
+        detail = { coordinationDomain: readIdentity(ctx).coordinationDomain };
+      } catch {
+        detail = undefined;
+      }
+    }
+    const snapshot = await assemblePresenceSnapshot(resolved, {
+      includeStale: args.include_stale,
+      ...(detail ? { detail } : {}),
+    });
     return {
       content: [
         {

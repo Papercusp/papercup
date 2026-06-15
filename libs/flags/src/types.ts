@@ -559,11 +559,22 @@ export const FLAGS = {
   // hidden + the resolver returns empty + the tick no-ops. The SAME aggregation
   // also feeds the overwatch role (overwatch-role-2026-06-15 C-1, D-001).
   SYSTEM_HEALTH_TAB: "papercusp-system-health-tab",
+  // bee-context-efficiency Phase 1 (D-001/D-018/D-019): fresh-context warm-inject.
+  // When a DRAINED bee is warm-injected a NEW task, re-invoke with a FRESH session
+  // (full bee-prompt re-assembly + the hydration tail) instead of `--resume`-ing the
+  // grown transcript (the ~138K/turn dead-transcript carry, D-011). DEFAULT OFF — an
+  // unverified HOT-PATH change to live bee re-invocation; flip ON after P-006 live
+  // verification (kill-switch: OFF ⇒ legacy `--resume`, behavior-neutral).
+  BEE_FRESH_CONTEXT_WARM_INJECT: "papercusp-bee-fresh-context-warm-inject",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
+  // DEFAULT OFF (exception to alpha flags-default-on): an unverified HOT-PATH change
+  // to live bee re-invocation (fresh session vs `--resume`). Flip ON after P-006
+  // live verification. OFF ⇒ legacy `--resume`, behavior-neutral.
+  [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]: false,
   // DEFAULT ON (alpha flags-default-on) — additive hive-control surfacing.
   [FLAGS.HIVE_CONTROL]: true,
   // DEFAULT ON (alpha flags-default-on) — additive read-only Health dashboard +

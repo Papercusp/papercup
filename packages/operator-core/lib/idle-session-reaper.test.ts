@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   planIdleSessionReap,
+  classifyLiveIdle,
   IDLE_SESSION_GRACE_MS,
+  IDLE_ACTIVITY_THRESHOLD_MS,
   type ReapableSession,
+  type LiveIdleCandidate,
 } from './idle-session-reaper';
 
 const NOW = 1_000_000_000_000;
@@ -84,5 +87,56 @@ describe('planIdleSessionReap (P-011 idle-session reaper — slice 1: dead-proce
     expect(plan.keptLive).toEqual([live]);
     expect(plan.keptFresh).toEqual([fresh]);
     expect(plan.keptNoOwner).toEqual([noOwner]);
+  });
+});
+
+describe('classifyLiveIdle (P-011 slice 2: live-but-idle detection — the D-007 cohort)', () => {
+  const cand = (
+    coordOwnerId: string,
+    heartbeatAgoMs: number,
+    lastActiveAgoMs: number | null,
+  ): LiveIdleCandidate => ({
+    coordOwnerId,
+    heartbeatAtMs: NOW - heartbeatAgoMs,
+    lastActiveAtMs: lastActiveAgoMs == null ? null : NOW - lastActiveAgoMs,
+  });
+
+  it('flags a session that is alive (fresh heartbeat) but idle (stale activity) and not busy', () => {
+    const c = cand('su-idle', 30_000 /* alive */, 5 * 60 * 60 * 1000 /* 5h idle */);
+    const out = classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW });
+    expect(out).toEqual([c]);
+  });
+
+  it('does NOT flag a recently-active session', () => {
+    const c = cand('su-active', 30_000, 60_000 /* active 1 min ago */);
+    expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toHaveLength(0);
+  });
+
+  it('does NOT flag a DEAD-process session (stale heartbeat) — that is the dead-ghost reaper job', () => {
+    const c = cand('su-dead', 5 * IDLE_SESSION_GRACE_MS /* heartbeat stale → dead */, 5 * 60 * 60 * 1000);
+    expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toHaveLength(0);
+  });
+
+  it('does NOT flag an idle session whose owner is BUSY (holds a claim / wake / running bee)', () => {
+    const c = cand('su-busy', 30_000, 5 * 60 * 60 * 1000);
+    expect(
+      classifyLiveIdle({ candidates: [c], busyOwners: new Set(['su-busy']), nowMs: NOW }),
+    ).toHaveLength(0);
+  });
+
+  it('treats a null last_active_at as never-active → idle (when alive + not busy)', () => {
+    const c = cand('su-never', 30_000, null);
+    expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toEqual([c]);
+  });
+
+  it('idle boundary: just under the threshold is not idle; at/over it is', () => {
+    const justUnder = cand('su-u', 30_000, IDLE_ACTIVITY_THRESHOLD_MS - 1);
+    const atThreshold = cand('su-a', 30_000, IDLE_ACTIVITY_THRESHOLD_MS);
+    const out = classifyLiveIdle({
+      candidates: [justUnder, atThreshold],
+      busyOwners: new Set(),
+      nowMs: NOW,
+    });
+    expect(out).toEqual([atThreshold]);
   });
 });

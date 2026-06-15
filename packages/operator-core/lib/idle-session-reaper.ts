@@ -204,3 +204,134 @@ export async function runIdleSessionReap(
     return { ...empty, enabled: true };
   }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 2 (read-only half): LIVE-but-IDLE detection — the actual D-007
+// event-loop-saturation cohort (~52 sessions holding LISTEN conns + polling).
+// This half only IDENTIFIES + COUNTS them; safely TERMINATING a live session
+// (via the managed-pty control socket / pid) is the flag-gated follow-on.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Default "idle" threshold. A session is idle when it has done no GENUINE
+ *  activity for this long — `coord_presence.last_active_at` (mig 277) is bumped
+ *  ONLY by real activity, NOT by the per-60s supervisor heartbeat — while its
+ *  process is still alive (fresh `heartbeat_at`). 4h: long enough that a human
+ *  between tasks isn't flagged, short enough to catch abandoned-but-alive
+ *  sessions. */
+export const IDLE_ACTIVITY_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+
+export interface LiveIdleCandidate {
+  coordOwnerId: string;
+  /** Process-aliveness clock (the supervisor beat). */
+  heartbeatAtMs: number;
+  /** Genuine-activity clock (mig 277); null = never recorded activity. */
+  lastActiveAtMs: number | null;
+}
+
+/**
+ * PURE: a session is LIVE-but-IDLE when its process is alive (heartbeat within
+ * `livenessMs`) AND it has done no genuine activity for `idleMs` AND it is NOT
+ * busy (holds no claim / has no registered wake / is not a running bee). NOTE the
+ * asymmetry vs the dead-ghost reaper: presence-alive is the PRECONDITION here, so
+ * the "busy" set must EXCLUDE presence (else every alive session looks protected
+ * and nothing is ever idle). A null lastActiveAt = never active → idle. Injected
+ * clock so the boundary unit-tests deterministically.
+ */
+export function classifyLiveIdle(opts: {
+  candidates: LiveIdleCandidate[];
+  busyOwners: Set<string>;
+  nowMs: number;
+  livenessMs?: number;
+  idleMs?: number;
+}): LiveIdleCandidate[] {
+  const livenessMs = opts.livenessMs ?? IDLE_SESSION_GRACE_MS;
+  const idleMs = opts.idleMs ?? IDLE_ACTIVITY_THRESHOLD_MS;
+  return opts.candidates.filter((c) => {
+    if (opts.nowMs - c.heartbeatAtMs >= livenessMs) return false; // dead process → dead-ghost reaper's job
+    if (opts.busyOwners.has(c.coordOwnerId)) return false; // holds a claim / wake / running bee
+    return opts.nowMs - (c.lastActiveAtMs ?? 0) >= idleMs; // no genuine activity for idleMs
+  });
+}
+
+/**
+ * Owners that are BUSY (must never be counted live-idle / terminated): work-item
+ * claim holders + registered/​in-flight wake subscribers + running nursery
+ * aliases. Deliberately EXCLUDES coord_presence (a fresh heartbeat is the
+ * live-idle precondition, not a protection). One read.
+ */
+export async function gatherBusyOwners(
+  sql: Awaited<ReturnType<typeof getOrgPg>>['sql'],
+  opts: { graceMs?: number } = {},
+): Promise<Set<string>> {
+  const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
+  const rows = await sql<Array<{ alias: string }>>`
+    WITH busy AS (
+      SELECT taken_by AS alias
+        FROM harness_shared.harness_features_consolidated
+       WHERE taken_by IS NOT NULL
+      UNION
+      SELECT subscriber_id AS alias
+        FROM harness_shared.event_awaits
+       WHERE fired_at IS NULL AND cancelled_at IS NULL
+      UNION
+      SELECT subscriber_id AS alias
+        FROM harness_shared.event_wake_deliveries
+       WHERE status IN ('pending', 'parked', 'delivering')
+      UNION
+      SELECT a.alias
+        FROM harness_shared.spawned_agents n
+        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+       WHERE n.status IN ('running', 'restarting')
+         AND n.heartbeat_at IS NOT NULL
+         AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
+    )
+    SELECT DISTINCT alias FROM busy WHERE alias IS NOT NULL AND alias <> ''`;
+  return new Set(rows.map((r) => r.alias));
+}
+
+export interface IdleLiveSession {
+  advSessionId: number;
+  coordOwnerId: string;
+  idleMs: number;
+}
+
+/**
+ * READ-ONLY: the live-but-idle sessions right now — the D-007 saturation cohort.
+ * Joins fresh-heartbeat presence rows (process alive) to their OPEN adv_sessions,
+ * keeps those with stale `last_active_at` and a non-busy owner. Surfaced as a
+ * metric + the future termination target list; this slice TERMINATES nothing.
+ */
+export async function findIdleLiveSessions(
+  opts: { livenessMs?: number; idleMs?: number } = {},
+): Promise<IdleLiveSession[]> {
+  try {
+    const { sql } = getOrgPg();
+    const busyOwners = await gatherBusyOwners(sql, { graceMs: opts.livenessMs });
+    const rows = await sql<
+      Array<{ id: number; coord_owner_id: string; heartbeat_at: string | Date; last_active_at: string | Date | null }>
+    >`
+      SELECT s.id, p.owner_id AS coord_owner_id, p.heartbeat_at, p.last_active_at
+        FROM harness_shared.coord_presence p
+        JOIN harness_shared.adv_sessions s ON s.coord_owner_id = p.owner_id AND s.ended_at IS NULL
+       WHERE p.heartbeat_at IS NOT NULL`;
+    const nowMs = Date.now();
+    const candidates: Array<LiveIdleCandidate & { advSessionId: number }> = rows.map((r) => ({
+      advSessionId: r.id,
+      coordOwnerId: r.coord_owner_id,
+      heartbeatAtMs: new Date(r.heartbeat_at).getTime(),
+      lastActiveAtMs: r.last_active_at ? new Date(r.last_active_at).getTime() : null,
+    }));
+    const idle = classifyLiveIdle({ candidates, busyOwners, nowMs, livenessMs: opts.livenessMs, idleMs: opts.idleMs });
+    const idleKeys = new Set(idle.map((c) => c.coordOwnerId));
+    return candidates
+      .filter((c) => idleKeys.has(c.coordOwnerId))
+      .map((c) => ({
+        advSessionId: c.advSessionId,
+        coordOwnerId: c.coordOwnerId,
+        idleMs: nowMs - (c.lastActiveAtMs ?? 0),
+      }));
+  } catch (e) {
+    console.warn('[idle-session-reaper] findIdleLiveSessions failed (non-fatal):', (e as Error)?.message ?? e);
+    return [];
+  }
+}

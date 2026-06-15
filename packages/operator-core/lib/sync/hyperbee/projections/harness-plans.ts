@@ -200,6 +200,7 @@ async function writeToPg(
     WHERE harness_shared.harness_plans.fed_ts IS NULL
        OR EXCLUDED.fed_ts >= harness_shared.harness_plans.fed_ts
   `;
+  flagPlanClobber(row.plan_slug, provenance);
 }
 
 async function deleteFromPg(

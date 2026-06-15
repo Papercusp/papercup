@@ -32,6 +32,18 @@ import {
   type OutboxDrainHandle,
 } from './outbox-drain';
 import { fanoutOutboxRow } from './fanout-projection';
+import { registerPlanClobberNotifier } from './plan-clobber-notify';
+import { sendMessage } from '../../agent-tools/coordination/messages';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+
+/** System sender for the P-007 plan-clobber notice (mirrors LEARNING_HEALTH_IDENTITY). */
+const PLAN_CLOBBER_IDENTITY: AgentIdentity = {
+  ownerId: 'plan-clobber-watch',
+  ownerLabel: 'plan-clobber-watch',
+  source: 'static-client',
+  workspaceId: null,
+  userId: null,
+};
 
 export interface WireOutboxDeps {
   backfillLocalState?: (
@@ -50,6 +62,23 @@ export async function wireOutboxForHarness(
   pg: postgres.Sql,
   deps: WireOutboxDeps = {},
 ): Promise<OutboxDrainHandle> {
+  // P-007: register the plan-clobber → human-notify listener (idempotent — the
+  // clobber emitter is process-global, so a per-harness boot collapses to one
+  // listener). A raced plan edit then surfaces a coord notice to the human
+  // ("your edit raced X's") instead of a silent LWW loss. Best-effort send.
+  registerPlanClobberNotifier((notice) =>
+    sendMessage(PLAN_CLOBBER_IDENTITY, {
+      to: ['human'],
+      summary: notice.summary,
+      body: notice.body,
+      plan_slug: notice.planSlug,
+      category: 'clobber',
+    }).then(
+      () => {},
+      () => {},
+    ),
+  );
+
   const backfill = deps.backfillLocalState ?? realBackfillLocalState;
   // Default drain wires the local subscribe→inject fan-out as a per-row consumer
   // on the SAME drain (coordination-substrate Phase 2). Tests override

@@ -70,6 +70,14 @@ from waiter-table truth each 30s sweep.
   the inbox itself) catches a miss — then a miss is silent by design. Legacy `wake:true`
   coerces to `'required'`; broadcast (`*`/`human`) is exempt (never wakeable).
   (directed-wake-honesty-2026-06-14)
+* **`events:emit` is honest, not strict (D-001):** emit is fire-and-forget
+  broadcast — a fact-announcer (`release:green`, `work-item:done:<id>`) doesn't
+  know who's listening, so "nobody awaiting" is the normal, correct case. It
+  returns an honest `{ woken, notified }` count; the discipline is to **read the
+  count** when you care that someone heard you (a `woken:0` means no live waiter
+  yet), NOT to expect emit to throw. There is deliberately no strict mode on
+  emit — that's the directed-wake-honesty fix for emit (vs `coord:send`'s loud
+  `recipient_absent` for a *directed* wake). (directed-wake-honesty-2026-06-14)
 * **Wake-at-reset for a rate limit:** you hold a `retryAfterMs` →
   `events:await { event: 'rate-limit:reset:<scope>', timeout_sec: ceil(ms/1000), on_timeout: 'wake' }`
   — the deadline IS the reset wake; an earlier reset emit just arrives sooner.

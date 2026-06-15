@@ -129,6 +129,14 @@ a silent <code dir="auto">woken:0</code>. Use <code dir="auto">wake:'optimistic'
 the inbox itself) catches a miss — then a miss is silent by design. Legacy <code dir="auto">wake:true</code>
 coerces to <code dir="auto">'required'</code>; broadcast (<code dir="auto">*</code>/<code dir="auto">human</code>) is exempt (never wakeable).
 (directed-wake-honesty-2026-06-14)</li>
+<li><strong><code dir="auto">events:emit</code> is honest, not strict (D-001):</strong> emit is fire-and-forget
+broadcast — a fact-announcer (<code dir="auto">release:green</code>, <code dir="auto">work-item:done:&#x3C;id></code>) doesn’t
+know who’s listening, so “nobody awaiting” is the normal, correct case. It
+returns an honest <code dir="auto">{ woken, notified }</code> count; the discipline is to <strong>read the
+count</strong> when you care that someone heard you (a <code dir="auto">woken:0</code> means no live waiter
+yet), NOT to expect emit to throw. There is deliberately no strict mode on
+emit — that’s the directed-wake-honesty fix for emit (vs <code dir="auto">coord:send</code>’s loud
+<code dir="auto">recipient_absent</code> for a <em>directed</em> wake). (directed-wake-honesty-2026-06-14)</li>
 <li><strong>Wake-at-reset for a rate limit:</strong> you hold a <code dir="auto">retryAfterMs</code> →
 <code dir="auto">events:await { event: 'rate-limit:reset:&#x3C;scope>', timeout_sec: ceil(ms/1000), on_timeout: 'wake' }</code>
 — the deadline IS the reset wake; an earlier reset emit just arrives sooner.</li>
