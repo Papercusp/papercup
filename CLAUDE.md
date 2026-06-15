@@ -115,8 +115,8 @@ abstraction — **make it now, in full**: redesign instead of layering, rename
 instead of aliasing, migrate schemas when they're correct, pick the best
 tool/library not the safe one, prefer a maintained library or existing internal
 surface over rolling your own, lift anything general into a shared/generic lib.
-Surface what you're changing so the user knows; don't ask permission to do it
-well.
+Surface what you're changing to whoever supervises your work; don't ask
+permission to do it well.
 
 ## Don't silently defer or drop scope
 

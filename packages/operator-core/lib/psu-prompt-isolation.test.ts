@@ -81,3 +81,40 @@ describe('psu prompt isolation — installer no longer enables OMP native memory
     expect(installer).not.toContain('"memory.backend" "hindsight"');
   });
 });
+
+/**
+ * EI-148 — the repo CLAUDE.md (symlinked as AGENTS.md) is the project guide a psu
+ * session gets ON PURPOSE via the P-001 splice. But self-hosting BEES whose cwd is
+ * this checkout ALSO auto-load it: role spawns use --append-system-prompt, which
+ * keeps the backend's default project-memory loading ON (only MCP is locked, via
+ * --strict-mcp-config). A bee's supervisor is the Queen, not a human in a chat —
+ * so human-interaction-with-the-USER imperatives ("deferring is the USER's call",
+ * "re-surface every deferred item to the USER in every status update") must live
+ * ONLY in the psu engineer playbook, never in the auto-loaded repo guide, or the
+ * bee gets pointed at a human who is not in its loop. A descriptive POINTER that
+ * says "those rules live in the playbook" is fine; an imperative is not.
+ */
+describe('repo project guide leaks no human-facing interaction rule to self-hosting bees (EI-148)', () => {
+  const claudeMd = readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf8');
+  const engineerPlaybook = readFileSync(
+    join(operatorAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+    'utf8',
+  );
+
+  it('AGENTS.md is the same content as CLAUDE.md (symlink) — guarding one guards both', () => {
+    expect(readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8')).toBe(claudeMd);
+  });
+
+  it('CLAUDE.md carries no human-to-the-USER imperative', () => {
+    expect(claudeMd).not.toMatch(/the user's call/i);
+    expect(claudeMd).not.toMatch(/so the user knows/i);
+    expect(claudeMd).not.toMatch(/EVERY deferred item in EVERY status update/);
+    // any directive aiming a status update / deferral at "the user" is a leak
+    expect(claudeMd).not.toMatch(/(status update|deferred item)[^.]*\bto the user\b/i);
+  });
+
+  it('the psu engineer playbook still carries those rules (a MOVE, not a delete)', () => {
+    expect(engineerPlaybook).toMatch(/Deferring is the user's call/i);
+    expect(engineerPlaybook).toMatch(/Surface EVERY deferred item in EVERY status update/);
+  });
+});
