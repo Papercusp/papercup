@@ -174,10 +174,24 @@ export function valueMetrics(taskValues: readonly TaskValue[], arm: FleetArmId, 
 /** One arm's bundle of inputs for the report. */
 export interface HiveArmInput {
   summary: FleetRunSummary;
-  /** L3 — per-task $ values (UpBench/SWE-Lancer). Omit for arms without a value run. */
+  /** L3 — per-task $ values (SWE-Lancer; UpBench is citation-only per D-011). Omit for non-value runs. */
   taskValues?: TaskValue[];
-  /** L4 — the classified coordination trace (P-010 emits; ./mast classifies). */
+  /** L4 — the raw coordination trace (P-010 emits) for objective substrate-signal rates. */
   coordEvents?: CoordEvent[];
+  /** L4 — our LLM-judge's 14-mode MAST verdicts (methodology-aligned per-category rates). */
+  mastVerdicts?: MastVerdict[];
+}
+
+/** The headline coordination-failure rate for a MAST report: the judge's overall
+ *  rate if available, else the summed objective substrate rates as a floor. */
+export function mastHeadlineRate(report: MastReport | null): number | null {
+  if (!report) return null;
+  if (report.overallFailureRate != null) return report.overallFailureRate;
+  if (report.substrate) {
+    const s = report.substrate;
+    return s.duplicationRate + s.coordinationBreakdownRate + s.misalignmentRate + s.redundantWorkRate;
+  }
+  return null;
 }
 
 export interface HiveReportOpts {

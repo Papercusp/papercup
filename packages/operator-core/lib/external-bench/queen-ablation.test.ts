@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import { planBatchPlacement } from '../fleet/batch-placement';
 import type { PlacementBee, PlacementTask } from '../fleet/placement-affinity';
-import { planFifoPlacement, QUEEN_ABLATED_ARM, FIFO_POLICY } from './queen-ablation';
+import { planFifoPlacement, FIFO_POLICY } from './queen-ablation';
 
 function task(id: string, over: Partial<PlacementTask> = {}): PlacementTask {
   return { id, harness: 'h', title: id, ...over };
@@ -126,8 +126,7 @@ describe('planFifoPlacement — the Queen-ablation (naive FIFO/round-robin) sche
     expect(fifo.decisions[0].bee).not.toBe(queen.decisions[0].bee);
   });
 
-  it('exposes the locked fleet arm id + policy name for the row/arm_meta', () => {
-    expect(QUEEN_ABLATED_ARM).toBe('queen-ablated');
+  it('exposes the placement-policy name for arm_meta (arm id is owned by hive-backlog/bench-metrics)', () => {
     expect(FIFO_POLICY).toBe('fifo');
   });
 });

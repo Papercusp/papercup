@@ -1,6 +1,6 @@
 {
   "meta": {
-    "capturedAt": "2026-06-15T01:57:02.709Z",
+    "capturedAt": "2026-06-15T03:17:52.567Z",
     "cycleId": "scout-live-cycle-2",
     "harnessSlug": "papercup",
     "limits": {
@@ -20,13 +20,13 @@
     "stop": "no-ideas",
     "costUsd": 0,
     "digest": {
-      "generatedAt": "2026-06-15T01:53:40.037Z",
+      "generatedAt": "2026-06-15T03:14:31.784Z",
       "corpus": {
         "completions": 510,
         "reverts": 58,
-        "frictionCaptured": 495,
-        "deferrals": 292,
-        "spendUsd": 66331.41,
+        "frictionCaptured": 497,
+        "deferrals": 290,
+        "spendUsd": 66337.3,
         "spendBuckets": 27
       },
       "recurringFriction": [
@@ -40,14 +40,14 @@
         {
           "category": "recurring-friction",
           "summary": "re-read the same large file across turns — no per-session read cache",
-          "detail": "recurred 6× (6 open), last 0d ago",
+          "detail": "recurred 6× (6 open), last 0.1d ago",
           "ref": "wi:EI-617",
           "weight": 0.8
         },
         {
           "category": "recurring-friction",
           "summary": "coord invariant: wake-queue depth/age growth",
-          "detail": "recurred 4× (1 open), last 0d ago",
+          "detail": "recurred 4× (1 open), last 0.1d ago",
           "ref": "wi:EI-598",
           "weight": 0.33
         },
@@ -60,8 +60,15 @@
         },
         {
           "category": "recurring-friction",
+          "summary": "Tool plans:get returns a structural error",
+          "detail": "recurred 3× (1 open), last 0d ago",
+          "ref": "wi:EI-619",
+          "weight": 0.27
+        },
+        {
+          "category": "recurring-friction",
           "summary": "Hive papercup: fleet saturated with work still queued",
-          "detail": "recurred 2× (2 open), last 0d ago",
+          "detail": "recurred 2× (2 open), last 0.1d ago",
           "ref": "wi:EI-593",
           "weight": 0.27
         },
@@ -82,7 +89,7 @@
         {
           "category": "recurring-friction",
           "summary": "Role fire-path for gymloopharness/gym-cycle is stuck in error-backoff",
-          "detail": "recurred 2× (2 open), last 0.3d ago",
+          "detail": "recurred 2× (2 open), last 0.4d ago",
           "ref": "wi:EI-265",
           "weight": 0.27
         },
@@ -92,34 +99,27 @@
           "detail": "recurred 2× (2 open), last 3.7d ago",
           "ref": "wi:EI-131",
           "weight": 0.27
-        },
-        {
-          "category": "recurring-friction",
-          "summary": "Service desktop is down",
-          "detail": "recurred 2× (1 open), last 0.5d ago",
-          "ref": "wi:EI-562",
-          "weight": 0.2
         }
       ],
       "timeTokenSinks": [
         {
           "category": "time-token-sink",
-          "summary": "$65947.71 on (unattributed) · interactive",
-          "detail": "8610 run(s), 642,934,155 tokens",
+          "summary": "$65948.92 on (unattributed) · interactive",
+          "detail": "8617 run(s), 642,936,839 tokens",
           "ref": "usage:(unattributed)/interactive",
           "weight": 1
         },
         {
           "category": "time-token-sink",
-          "summary": "$155.09 on papercup-hive · queen",
-          "detail": "195 run(s), 2,017,500 tokens",
+          "summary": "$158.88 on papercup-hive · queen",
+          "detail": "199 run(s), 2,067,243 tokens",
           "ref": "usage:papercup-hive/queen",
           "weight": 0
         },
         {
           "category": "time-token-sink",
-          "summary": "$75.88 on papercup · bee",
-          "detail": "130 run(s), 1,530,818 tokens",
+          "summary": "$76.75 on papercup · bee",
+          "detail": "132 run(s), 1,551,464 tokens",
           "ref": "usage:papercup/bee",
           "weight": 0
         },
@@ -174,6 +174,13 @@
         }
       ],
       "chronicDeferrals": [
+        {
+          "category": "chronic-deferral",
+          "summary": "Owner sign-off on the methodology + first results before any third-party publication.",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:impartial-benchmark-suite-2026-06-15#P-017",
+          "weight": 1
+        },
         {
           "category": "chronic-deferral",
           "summary": "Two-box variant: run P-005's verb sweep + P-008/P-009 rungs across two physical machines per the `vm-federation-separat…",
@@ -232,16 +239,9 @@
         },
         {
           "category": "chronic-deferral",
-          "summary": "Owner decides D-001 — headline claim framing (system-delta / absolute / both).",
+          "summary": "Owner sign-off that the API never auto-mutates live prompts/policy — it proposes + scores; the existing accept path (co…",
           "detail": "deferred 1× across 1 plan(s) [needs-human]",
-          "ref": "plan:impartial-benchmark-suite-2026-06-15#P-002",
-          "weight": 1
-        },
-        {
-          "category": "chronic-deferral",
-          "summary": "Owner ratifies D-002 — which baseline is the headline (recommendation: native-harness B).",
-          "detail": "deferred 1× across 1 plan(s) [needs-human]",
-          "ref": "plan:impartial-benchmark-suite-2026-06-15#P-003",
+          "ref": "plan:experiment-registry-invocation-api-2026-06-14#P-061",
           "weight": 1
         }
       ],
@@ -297,23 +297,23 @@
         },
         {
           "category": "capability-gap",
+          "summary": "Lint-ban sql.json( in operator runtime code + standardize jsonb writes on ${JSON.stringify(x)}::text::jsonb",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-618",
+          "weight": 0.5
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Cross-agent misrouting: one agent's always-armed inbox-wake (turn-lifecycle-control) fires into a DIFFERENT agent's ses…",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-151",
+          "weight": 0.5
+        },
+        {
+          "category": "capability-gap",
           "summary": "Agent insight 'types-first-from-design-memo' cites files that no longer exist — review for superseded",
           "detail": "named missing capability (1 open)",
           "ref": "wi:EI-605",
-          "weight": 0.5
-        },
-        {
-          "category": "capability-gap",
-          "summary": "Agent insight 'starlight-migration-2026-05-20' cites files that no longer exist — review for superseded",
-          "detail": "named missing capability (1 open)",
-          "ref": "wi:EI-603",
-          "weight": 0.5
-        },
-        {
-          "category": "capability-gap",
-          "summary": "Agent insight 'sleep-mode-shared-checkout' cites files that no longer exist — review for superseded",
-          "detail": "named missing capability (1 open)",
-          "ref": "wi:EI-602",
           "weight": 0.5
         }
       ],
@@ -379,7 +379,7 @@
           "weight": 0.18
         }
       ],
-      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66331.41), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 510 completions"
+      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66337.3), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 510 completions"
     },
     "ideas": [],
     "scored": [],

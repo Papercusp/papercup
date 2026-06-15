@@ -1,50 +1,66 @@
 /**
  * P-022 / redirect BRIEF 2 (su-1226c) — the HIVE-OVER-BACKLOG runner: the **'hive' treatment
  * arm** of the reframed suite (D-010). Hand the WHOLE benchmark task SET to a Hive (Queen + bee
- * fleet) as a backlog; the Queen places / ranks / evicts / warm-injects autonomously; each placed
- * task → a bee runs the per-task `external-bench` unit (`instantiateBenchHarness('external-bench',…)`,
- * D-009) to DONE; we collect the raw fleet generation trace. The headline of the reframe: the
- * `hive` arm vs the `queen-ablated` arm (P-023, same fleet + naive FIFO) — the delta IS the Queen's
- * value.
+ * fleet) as a backlog; the Queen places / ranks / warm-injects; each placed task → a bee runs the
+ * per-task `external-bench` unit (`instantiateBenchHarness('external-bench',…)`, D-009) to DONE; we
+ * collect the raw fleet generation trace. The headline of the reframe is `hive` vs `queen-ablated`
+ * (P-023, same fleet + naive FIFO) — the delta IS the Queen's placement value.
+ *
+ * THIS FILE IS THE FLEET-LAYER CONVERGENCE POINT — the canonical over-backlog request + result every
+ * fleet arm emits (P-022 hive, P-023 queen-ablated, P-024 native-serial su-9a191, P-028 competitors
+ * su-8c30f) and the planner seam P-023 plugs into. Peers reconcile their local shapes to these.
  *
  * ── CONTRACT BOUNDARY (who owns what) ──────────────────────────────────────────────────────────
- * This runner EMITS the raw fleet GENERATION record ({@link HiveBacklogResult}); the DERIVED metrics
- * stay single-owned downstream (same boundary as the L1 row in D-009):
+ * This runner EMITS the raw fleet GENERATION record ({@link HiveBacklogResult}); DERIVED metrics stay
+ * single-owned downstream (same boundary as the L1 row in D-009):
  *   - per-task `resolved` ← BRIEF 3's `OfficialGrader` grading the {@link FleetTaskResult.attempt} diffs.
  *   - throughput / value / autonomy ← P-025 `@papercusp/bench-metrics` `buildHiveReport` over the
  *     {@link FleetRunSummary} this record projects to ({@link toFleetRunSummary}).
  *   - MAST coordination rates ← P-026 over the {@link HiveBacklogResult.coordEvents} trace
  *     (`CoordEvent`s, incl. every placement) that P-010's rollout layer persists.
- * So the metrics shapes live in bench-metrics (locked, P-025/P-026); this owns only the raw record +
- * the runner port. Arm ids are the LOCKED `FleetArmId` vocab ('hive' | 'queen-ablated' | …).
+ * Metrics shapes live in bench-metrics (locked, P-025/P-026); this owns the raw record + the runner
+ * port + the planner seam. Arm ids are the LOCKED `FleetArmId` vocab ('hive' | 'queen-ablated' | …).
  *
- * ── THE SCHEDULER SEAM (hive ↔ queen-ablated — P-023, su-136a4 plugs in here) ──────────────────
+ * ── THE PLANNER SEAM (hive ↔ queen-ablated — P-023, su-136a4) ──────────────────────────────────
  * The ONLY thing that differs between the treatment and its headline baseline is the placement
- * POLICY. {@link FleetScheduler} is that policy; everything else (seed the backlog / await drain /
- * collect the trace / teardown) is the shared runner. I register the `'hive'` scheduler (boot the
- * real Queen persona); P-023 registers `'queen-ablated'` (a scripted naive-FIFO loop over the same
- * `frontier()`/`place()` primitives). Same split as `instantiateBenchHarness` ↔ `coding-solo`.
+ * PLANNER — a pure `BatchPlacementInput → BatchPlacementPlan` function (the real fleet machinery,
+ * `../fleet/batch-placement`). The hive arm runs `planBatchPlacement` (the Queen's importance+affinity
+ * ranking); the queen-ablated arm runs su-136a4's `planFifoPlacement` (naive FIFO/round-robin, same
+ * queue mechanics, zero placement intelligence). The shared runner (seed backlog / drive the loop /
+ * await drain / collect the trace / teardown) is identical — "swap ONE function and nothing else"
+ * (136a4). Same isolation discipline as `instantiateBenchHarness` ↔ `coding-solo` at L1.
+ *
+ * SCOPE NOTE (matches 136a4's): this isolates the Queen's PLACEMENT ALGORITHM (ranking + affinity).
+ * The Queen's richer agentic behaviors — live eviction / re-placement / situational briefs / adaptive
+ * wake-timing — are a PERSONA, not a pure planner, and are deliberately out of scope for BOTH arms of
+ * this clean A/B. A full real-Queen-persona 'hive' variant (vs a real-fleet-no-Queen ablation) is a
+ * richer, separate claim the pilot may ALSO run; flagged to the owner (10912), not baked in here.
  *
  * ── STAGING (D-009 discipline — live driver bound at the pilot) ────────────────────────────────
  * Spinning a real Hive over a backlog spends real fleet budget, so — like `instantiateBenchHarness`,
  * the grader, and the single-agent drive — the LIVE driver is bound at the P-032 pilot via
- * {@link setHiveBacklogDriver}. The live driver mirrors hive-eval's `makeLiveHivePorts` loop
- * (create transient hive → seed backlog work_items → the arm's scheduler drives placement →
- * `countHivePlacementsInFlight()==0` → collect `spawned_agents`/work-item outcomes → teardown). The
- * live function map is documented on {@link HiveBacklogDriver}. UNBOUND, the port returns an
- * infra-error result so the wave builds + tests against it today; fake-tested below.
+ * {@link setHiveBacklogDriver}. The live driver mirrors hive-eval's `makeLiveHivePorts` loop (create
+ * transient hive → seed backlog work_items → drive `getFleetPlanner(arm)` over
+ * gatherFrontier/gatherLiveBees/fleet:place_batch until `countHivePlacementsInFlight()==0` → collect
+ * `spawned_agents`/work-item outcomes → teardown). The live function map is on {@link HiveBacklogDriver}.
+ * UNBOUND, the port returns an infra-error result so the wave builds + tests against it today.
  */
 import type { BenchSuite, CoordEvent, FleetArmId, FleetRunSummary } from '@papercusp/bench-metrics';
+import type { BatchPlacementInput, BatchPlacementPlan } from '../fleet/batch-placement';
+import { planBatchPlacement } from '../fleet/batch-placement';
+import { planFifoPlacement } from './queen-ablation';
 import type { ArmAttempt, BenchTask, GenerationBudget } from './types';
 
-/** The treatment arm this runner spins by default — the real Queen + bee fleet. */
+/** The treatment arm this runner spins by default — the real Queen's placement algorithm + bee fleet. */
 export const HIVE_ARM: FleetArmId = 'hive';
+/** The headline baseline arm (su-136a4's planFifoPlacement). */
+export const QUEEN_ABLATED_ARM: FleetArmId = 'queen-ablated';
 
 /* -------------------------------------------------------------------------- */
-/* The raw fleet run record (this runner's output)                            */
+/* The raw fleet run record (the canonical fleet-arm output)                   */
 /* -------------------------------------------------------------------------- */
 
-/** How the scheduler placed a task onto a bee (the Queen's placement vocabulary). */
+/** How the scheduler placed a task onto a bee (the placement vocabulary). */
 export type PlacementDisposition = 'spawn' | 'warm-inject';
 
 /** One backlog task's leaf result, with its fleet placement + timing provenance. */
@@ -63,7 +79,7 @@ export interface FleetTaskResult {
   disposition: PlacementDisposition;
 }
 
-/** The whole backlog run handed to one fleet arm — the raw generation trace. */
+/** The whole backlog run handed to one fleet arm — the raw generation trace (the canonical shape). */
 export interface HiveBacklogResult {
   /** LOCKED fleet vocab — 'hive' (this) | 'queen-ablated' (P-023) | 'native-serial' (P-024) | competitors. */
   arm: FleetArmId;
@@ -118,88 +134,32 @@ export function toFleetRunSummary(result: HiveBacklogResult, resolvedCount: numb
 }
 
 /* -------------------------------------------------------------------------- */
-/* The scheduler seam — the hive ↔ queen-ablated placement-policy toggle       */
+/* The planner seam — the hive ↔ queen-ablated placement-policy toggle         */
 /* -------------------------------------------------------------------------- */
 
-/** A ready, unplaced backlog task (importance/backlog order; index 0 = highest). */
-export interface FrontierTask {
-  taskId: string;
-  importance: number;
-}
-
-/** A live bee + its current load (for affinity / FIFO assignment). */
-export interface FleetBee {
-  id: string;
-  load: number;
-}
-
-/** One placement decision a scheduler emits: run `taskId` on `bee` ('spawn' = a fresh bee). */
-export interface PlacementDecision {
-  taskId: string;
-  bee: string | 'spawn';
-  disposition: PlacementDisposition;
-}
-
 /**
- * The live fleet primitives a {@link FleetScheduler} drives, provided by the pilot-bound driver
- * (the hive-eval `makeLiveHivePorts` surface, narrowed to placement). A scripted scheduler (FIFO,
- * P-023) uses the low-level frontier/fleet/place loop; the Queen scheduler delegates to the real
- * Queen persona via `wakeQueen` + `awaitDrain`. Both record their behavior via `emit`.
+ * A fleet placement planner — the pure `BatchPlacementInput → BatchPlacementPlan` function the
+ * shared runner swaps per arm. `planBatchPlacement` (the Queen) and `planFifoPlacement` (the
+ * ablation) are both exactly this shape, so the runner changes ONE binding and nothing else.
  */
-export interface FleetSchedulerContext {
-  /** The benchmark backlog (already seeded as work_items). */
-  readonly backlog: readonly BenchTask[];
-  /** Ready, unplaced tasks in backlog/importance order (gatherFrontier). */
-  frontier(): Promise<readonly FrontierTask[]>;
-  /** Live bee roster + free spawn slots (gatherLiveBees + headroom). */
-  fleet(): Promise<{ bees: readonly FleetBee[]; headroom: number }>;
-  /** Place a batch of decisions (fleet:place_batch → spawn / warm-inject). */
-  place(decisions: readonly PlacementDecision[]): Promise<void>;
-  /** Tasks still in flight (countHivePlacementsInFlight); 0 = the backlog is drained. */
-  inFlight(): Promise<number>;
-  /** Wait for a fleet change (a bee freed / a task completed) before re-planning. */
-  awaitProgress(timeoutMs?: number): Promise<void>;
-  /** Boot the real Queen persona over the seeded backlog (the 'hive' arm; no-op for a scripted arm). */
-  wakeQueen(): Promise<void>;
-  /** Resolve once `inFlight()` reaches 0 (used by the Queen arm, which doesn't place itself). */
-  awaitDrain(): Promise<void>;
-  /** Record a coordination event into the run's MAST trace (placements, hand-offs, failures). */
-  emit(event: CoordEvent): void;
+export type PlacementPlanner = (input: BatchPlacementInput) => BatchPlacementPlan;
+
+const _planners = new Map<FleetArmId, PlacementPlanner>([
+  [HIVE_ARM, planBatchPlacement], //         the Queen's importance + affinity placement (the treatment)
+  [QUEEN_ABLATED_ARM, planFifoPlacement], // naive FIFO / round-robin, zero placement intelligence
+]);
+
+/** Register/override a fleet arm's placement planner (e.g. an experimental Queen variant). */
+export function registerFleetPlanner(arm: FleetArmId, planner: PlacementPlanner): void {
+  _planners.set(arm, planner);
 }
 
-/** The placement POLICY — the only thing that differs between arms (the D-009 `blueprintId` analog). */
-export interface FleetScheduler {
-  arm: FleetArmId;
-  /** Drive the seeded backlog to drained, using the ctx primitives this policy needs. */
-  drivePlacement(ctx: FleetSchedulerContext): Promise<void>;
+/** The placement planner for an arm (the live driver dispatches on the run's arm). `undefined` for
+ *  arms that are NOT our-fleet placement runs — e.g. P-028's external competitor orchestrators, which
+ *  drive their own placement and emit {@link HiveBacklogResult} directly. */
+export function getFleetPlanner(arm: FleetArmId): PlacementPlanner | undefined {
+  return _planners.get(arm);
 }
-
-const _schedulers = new Map<FleetArmId, FleetScheduler>();
-
-/** Register a placement policy for an arm. P-022 registers 'hive'; P-023 registers 'queen-ablated'. */
-export function registerFleetScheduler(scheduler: FleetScheduler): void {
-  _schedulers.set(scheduler.arm, scheduler);
-}
-
-/** Look up a registered scheduler (the live driver dispatches on the run's arm). */
-export function getFleetScheduler(arm: FleetArmId): FleetScheduler | undefined {
-  return _schedulers.get(arm);
-}
-
-/**
- * The 'hive' treatment scheduler (P-022): boot the REAL Queen and let it place autonomously, then
- * await drain. The Queen's intelligence (ranking / eviction / warm-inject / briefs / wake-timing) is
- * the treatment under test — it is a PERSONA, not a function, so this delegates rather than scripting
- * placement. The substrate's placement events are captured into the trace by the live driver's `emit`.
- */
-export const hiveQueenScheduler: FleetScheduler = {
-  arm: HIVE_ARM,
-  async drivePlacement(ctx) {
-    await ctx.wakeQueen();
-    await ctx.awaitDrain();
-  },
-};
-registerFleetScheduler(hiveQueenScheduler);
 
 /* -------------------------------------------------------------------------- */
 /* The runner port — live driver bound at the P-032 pilot                      */
@@ -222,12 +182,13 @@ export interface HiveBacklogRunRequest {
  *   CREATE   — a transient hive home (`createHiveHarness`, `agent-tools/hive/_create.ts`).
  *   SEED     — insert the backlog as `feature` work_items into the member harness
  *              (`harness_features_consolidated`), status 'todo', unassigned — the Queen's frontier.
- *   DRIVE    — `getFleetScheduler(req.arm).drivePlacement(ctx)` where ctx wraps the live fleet
- *              (`surveyHive`/`gatherFrontier`/`gatherLiveBees`/`fleet:place_batch`/
- *              `countHivePlacementsInFlight`). Each placed task → a bee running
- *              `instantiateBenchHarness('external-bench', task, …)` (the L1 leaf, D-009).
- *   COLLECT  — read `spawned_agents` (timing/cost) + work-item outcomes → assemble `FleetTaskResult[]`,
- *              the placement/coord `CoordEvent[]`, and the drain window.
+ *   DRIVE    — loop `getFleetPlanner(req.arm)` over the live fleet (`surveyHive`/`gatherFrontier`/
+ *              `gatherLiveBees` → planner(input) → `fleet:place_batch`/`executeBatch`) until
+ *              `countHivePlacementsInFlight()==0`. Feed the hive arm the IMPORTANCE-ordered frontier;
+ *              feed queen-ablated the BACKLOG/arrival order (FIFO — 136a4). Each placed task → a bee
+ *              running `instantiateBenchHarness('external-bench', task, …)` (the L1 leaf, D-009).
+ *   COLLECT  — read `spawned_agents` (timing/cost) + work-item outcomes → `FleetTaskResult[]`, the
+ *              placement/coord `CoordEvent[]` (incl. a `kind:'placement'` per decision), the drain window.
  *   TEARDOWN — dissolve the transient hive.
  */
 export interface HiveBacklogDriver {

@@ -127,8 +127,10 @@ export function planFifoPlacement(input: BatchPlacementInput): BatchPlacementPla
   return { decisions, spawnCount, injectCount, unplacedCount, projectedLoad, remainingHeadroom };
 }
 
-/** The fleet arm id for the Queen-ablation baseline on the run-result row (proposed vocab: 4c360). */
-export const QUEEN_ABLATED_ARM = 'queen-ablated';
-
-/** The placement-policy name recorded in arm_meta so a row's scheduler is unambiguous. */
+/**
+ * The placement-policy name recorded in `arm_meta.placement_policy` so a queen-ablated row's
+ * scheduler is unambiguous on the row (paired with `arm='queen-ablated'`). The arm-id vocab itself
+ * is owned by the fleet convergence point (`hive-backlog.ts#QUEEN_ABLATED_ARM` / bench-metrics
+ * `FleetArmId`) — the planner does not declare its own arm id.
+ */
 export const FIFO_POLICY = 'fifo';
