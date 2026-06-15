@@ -113,6 +113,27 @@ vi.mock('@papercusp/operator-core/lib/embedded-pg-discovery', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/operator-core/lib/embedded-pg-discovery')>('@papercusp/operator-core/lib/embedded-pg-discovery');
   return { ...actual, getHarnessAdminUrl: () => ctl.dbUrl };
 });
+// Only STARTED hives get their work placed (placement-started-gate, start-hive-wake
+// P-004): resolveTickHarnesses filters its env candidates by listStartedHives, which
+// reads the `operator_settings` KV on getOrgPg()'s connection — a DIFFERENT DB than
+// this test's fresh ctl.dbUrl. These tests exercise the DISPATCH sweep, not the
+// start-gate (that has its own coverage in orchestrator-tick-harnesses.test.ts), so
+// mark whatever the test env-pins as started (read at call time, so it tracks the
+// test's PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES / PAPERCUSP_WORKSPACE_ID).
+vi.mock('@papercusp/operator-core/lib/hive/started', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/operator-core/lib/hive/started')>('@papercusp/operator-core/lib/hive/started');
+  return {
+    ...actual,
+    listStartedHives: async () => {
+      const ws = process.env.PAPERCUSP_WORKSPACE_ID ?? 'default';
+      return (process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s && s !== 'none' && s !== '*')
+        .map((installSlug) => ({ workspaceId: ws, installSlug }));
+    },
+  };
+});
 
 let DBOS: typeof DBOSType;
 let loop: typeof import('@papercusp/operator-core/lib/dbos/orchestrator-loop');

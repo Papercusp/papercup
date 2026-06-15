@@ -8,8 +8,17 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 // Use vi.fn() directly inside factories — avoids the TDZ issue from referencing
 // module-level vars inside hoisted vi.mock calls.
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+// Spread the real module so a lazy transitive import (curation-surface →
+// operator-conversations → `generated`) the async tail may touch still resolves;
+// only getOrgPg is overridden with the test handle.
+vi.mock('@papercusp/db-org', async (importActual) => ({
+  ...(await importActual<typeof import('@papercusp/db-org')>()),
+  getOrgPg: vi.fn(),
+}));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
+// Heartbeat the long-lived launch row (P-011 liveness fix) — the SPAWN_HEARTBEAT_INTERVAL_MS
+// is kept SMALL here so the interval fires within the test (the real 60s never would).
+vi.mock('../fleet/spawn-reclaim', () => ({ heartbeatSpawns: vi.fn(), SPAWN_HEARTBEAT_INTERVAL_MS: 10 }));
 vi.mock('../loopback-fetch', async (importActual) => ({
   ...(await importActual<typeof import('../loopback-fetch')>()),
   loopbackFetch: vi.fn(),
@@ -19,6 +28,7 @@ vi.mock('../dbos/dbos-flags', () => ({ dbosOrchestratorActive: vi.fn(() => false
 
 import { getOrgPg } from '@papercusp/db-org';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
+import { heartbeatSpawns } from '../fleet/spawn-reclaim';
 import { loopbackFetch } from '../loopback-fetch';
 import {
   fireLaunchBlueprint,
@@ -131,5 +141,81 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     expect(body.timeoutMs).toBe(120_000);
     expect(body.extra).toContain('BLUEPRINT_ID=bee');
     expect(body.extra).toContain('FOO=bar');
+  });
+});
+
+/**
+ * Heartbeat the long-lived launch row (P-011 liveness fix). `loopbackFetch` holds
+ * the connection for the WHOLE worker run — a kind:'hive' Queen wake runs up to the
+ * invoke route's 2700s ceiling, far past RECLAIM_STALE_MS (300s). Before this fix the
+ * recorded row was never heartbeated, so the P-011 reclaim sweep (opportunistic inside
+ * every admitSpawn) reaped a still-running Queen at ~310s ("spawn heartbeat stale > 300s
+ * … launching operator host presumed dead"), killing orchestration mid-run (P-033 bench).
+ */
+describe('defaultFire fallback — heartbeats the launch row while the fetch is in flight (P-011)', () => {
+  // Real timers (the SPAWN_HEARTBEAT_INTERVAL_MS mock is 10ms) — fake timers here pull a
+  // lazy import chain into the partial @papercusp/db-org mock during microtask flushing.
+  const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  beforeEach(() => {
+    vi.mocked(getOrgPg).mockReturnValue({ sql: mockSql } as ReturnType<typeof getOrgPg>);
+    vi.mocked(recordSpawn).mockResolvedValue(undefined);
+    vi.mocked(finishSpawn).mockResolvedValue(undefined);
+    vi.mocked(heartbeatSpawns).mockResolvedValue(undefined);
+  });
+
+  it('beats the recorded spawnId on the heartbeat interval until the fetch settles', async () => {
+    // A fetch that resolves only when we let it — so the row stays "in flight" while we tick.
+    let resolveFetch!: (r: Response) => void;
+    vi.mocked(loopbackFetch).mockReturnValue(new Promise<Response>((r) => { resolveFetch = r; }));
+
+    await fireLaunchBlueprint('bee', { ...opts, kickoff: 'wake' });
+    const recordedSpawnId = vi.mocked(recordSpawn).mock.calls[0]![1].spawnId;
+
+    // Several heartbeat intervals while the worker (fetch) is still running.
+    await tick(45);
+    expect(heartbeatSpawns).toHaveBeenCalled();
+    expect(heartbeatSpawns.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const [sql, ids] of vi.mocked(heartbeatSpawns).mock.calls) {
+      expect(sql).toBe(mockSql);
+      expect(ids).toEqual([recordedSpawnId]);
+    }
+
+    // Worker finishes → the heartbeat stops and the row flips done.
+    resolveFetch(new Response('', { status: 200 }));
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+    const beatsAtFinish = heartbeatSpawns.mock.calls.length;
+
+    // No further beats after the fetch settled (the interval was cleared).
+    await tick(45);
+    expect(heartbeatSpawns.mock.calls.length).toBe(beatsAtFinish);
+  });
+
+  it('stops heartbeating when the fetch fails too (no leak)', async () => {
+    let rejectFetch!: (e: unknown) => void;
+    vi.mocked(loopbackFetch).mockReturnValue(new Promise<Response>((_r, rej) => { rejectFetch = rej; }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await fireLaunchBlueprint('bee', opts);
+    await tick(25);
+    expect(heartbeatSpawns).toHaveBeenCalled();
+
+    rejectFetch(new Error('loopback: ECONNREFUSED'));
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+    const beatsAtFail = heartbeatSpawns.mock.calls.length;
+    await tick(45);
+    expect(heartbeatSpawns.mock.calls.length).toBe(beatsAtFail);
+    warn.mockRestore();
+  });
+
+  it('does not heartbeat when the row was never recorded (pg null)', async () => {
+    vi.mocked(recordSpawn).mockRejectedValue(new Error('pg down'));
+    vi.mocked(loopbackFetch).mockResolvedValue(new Response('', { status: 200 }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await fireLaunchBlueprint('bee', opts);
+    await tick(45);
+    expect(heartbeatSpawns).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

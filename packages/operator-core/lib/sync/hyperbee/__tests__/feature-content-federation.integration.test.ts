@@ -227,6 +227,7 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
       author_pubkey       TEXT,
       origin              TEXT NOT NULL DEFAULT 'local',
       fed_ts              BIGINT, -- EI-79 step 2 (mig 181): PG-level LWW guard column
+      verified_author_github_user_id BIGINT, -- mig 273: the federated-ingest projection writes this; without it B's apply INSERT throws "column does not exist" and the feature never lands
       PRIMARY KEY (harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.harness_issues_consolidated (

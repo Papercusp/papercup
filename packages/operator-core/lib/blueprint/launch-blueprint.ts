@@ -32,6 +32,7 @@ import { loopbackFetch, describeFetchError } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
+import { heartbeatSpawns, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 
 // The invoke route is a Hono API route on the operator's API port — derive the base from
@@ -341,17 +342,49 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
     pg = null;
   }
 
+  // HEARTBEAT THE LAUNCH ROW (P-011 liveness fix). `loopbackFetch` holds the
+  // connection open for the WHOLE worker run — a kind:'hive' Queen wake (or an
+  // overwatch loop) runs up to the invoke route's 2700s ceiling, far past
+  // RECLAIM_STALE_MS (300s). Unlike the fleet:spawn path (operator-spawn.ts'
+  // ensureSpawnHeartbeatLoop), this fire-and-forget launch row was recorded but
+  // never heartbeated — so the P-011 reclaim sweep (run opportunistically inside
+  // every admitSpawn, even DBOS-off) reaped a still-running Queen at ~310s with
+  // "spawn heartbeat stale > 300s (launching operator host presumed dead)",
+  // killing orchestration mid-run (the P-033 real-Queen bench symptom). Beat the
+  // row for as long as THIS process is awaiting the fetch — when this process dies
+  // the beats stop and the reclaim correctly frees the slot. unref'd so it never
+  // holds the process open; cleared the instant the fetch settles.
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  if (pg) {
+    const sql = pg.sql;
+    heartbeat = setInterval(() => {
+      void heartbeatSpawns(sql, [spawnId]).catch(() => {
+        /* best-effort — a missed beat at worst risks an early reclaim, itself
+           recoverable (the launch re-fires on the next cadence/wake). */
+      });
+    }, SPAWN_HEARTBEAT_INTERVAL_MS);
+    if (typeof heartbeat.unref === 'function') heartbeat.unref();
+  }
+  const stopHeartbeat = (): void => {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  };
+
   void loopbackFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
     .then(() => {
+      stopHeartbeat();
       if (pg) {
         void finishSpawn(pg.sql, { spawnId, workspaceId, status: 'done' }).catch(() => {});
       }
     })
     .catch((e) => {
+      stopHeartbeat();
       // describeFetchError surfaces undici's hidden cause code (e.g. UND_ERR_SOCKET)
       // so the persisted error_message + watchdog signal are self-diagnosing (EI-390).
       const detail = describeFetchError(e);
