@@ -8,8 +8,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', () => ({
-  AGENT_ROLES: ['scoper', 'worker', 'validator', 'reviewer', 'operator', 'bee'],
+  // 'overwatch' included so the B-10 flag-gate (which runs AFTER the known-role
+  // check) is reachable in the gate tests below.
+  AGENT_ROLES: ['scoper', 'worker', 'validator', 'reviewer', 'operator', 'bee', 'overwatch'],
 }));
+// @papercusp/flags itself stays REAL (FLAG_DEFAULTS / FLAGS); only the server-side
+// getFlag is mocked so the overwatch gate's flag read is controllable. The default
+// impl (set in beforeEach) returns each flag's real default, so the other getFlag
+// callers in operator-spawn (WEDGE_AUTO_REAP / SPAWN_HANDOFF_HYDRATION) behave exactly
+// as they did under the real getFlag's no-PostHog fallback — behavior-preserving.
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 vi.mock('../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
@@ -29,6 +37,8 @@ vi.mock('../events/await/engine', () => ({
 }));
 
 import { getOrgPg } from '@papercusp/db-org';
+import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
@@ -70,6 +80,13 @@ beforeEach(() => {
   vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: 'done!', exitCode: 0, stderr: '' });
   vi.mocked(recordSpawn).mockResolvedValue(undefined);
   vi.mocked(finishSpawn).mockResolvedValue(undefined);
+  // Default getFlag → each flag's real default (no PostHog), matching the prior
+  // real-getFlag fallback. Overwatch defaults OFF, so the gate rejects it unless a
+  // test overrides this. Other callers (WEDGE_AUTO_REAP/SPAWN_HANDOFF_HYDRATION) keep
+  // their default-true behavior.
+  vi.mocked(getFlag).mockImplementation(
+    async (key: string) => FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false,
+  );
 });
 afterEach(() => {
   errorSpy.mockRestore();

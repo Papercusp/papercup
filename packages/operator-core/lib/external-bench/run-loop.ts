@@ -1,140 +1,138 @@
 /**
- * `runExternalBench` — the SHARED external-bench generation+grading orchestration,
- * the single source of truth the `external-bench:run` deterministic blueprint step
- * runs (impartial-benchmark-suite-2026-06-15 P-019 / BRIEF 2; the SIBLING of
- * `iq-battery`/`hive-eval` gen-loops, inverted to PUBLIC tasks + the EXTERNAL grader,
- * D-005).
+ * `instantiateBenchHarness` — Port (P-019 / BRIEF 2, su-1226c): spin a THROWAWAY harness of
+ * `blueprintId` over a cloned task checkout, feed `task.problemStatement` as the work_item,
+ * run to DONE under the iso-budget cap, and return the generation telemetry. The shared
+ * instantiation infra for the impartial benchmark suite (`impartial-benchmark-suite-2026-06-15`):
  *
- * Per the plan's "Mapping onto Papercusp machinery" + the BRIEF 1 feasibility spike
- * (apps/operator/docs/external-bench-grader-feasibility-2026-06-15.md), the per-task
- * loop is the adapter and stays INTERNAL to the op (Option A, like iq-battery's bee
- * spawn — NOT a `spawn-roles` step): for each task → clone the repo @ base_commit →
- * spin a THROWAWAY `coding` harness (one `feature` work_item = the issue) → run to DONE
- * under the iso-budget cap → extract the diff (M1) / finished sandbox (M2) → hand to the
- * benchmark's OFFICIAL grader (BRIEF 1 §1 `OfficialGrader`) → write a per-task run-result
- * row (the BRIEF 7/8 shared schema).
+ *   - the FULL Papercusp arm passes `'external-bench'` — the complete coding spine (spine ON).
+ *   - Baseline A (ablation) passes `'coding-solo'` — one worker, spine OFF (P-006, su-136a4's
+ *     `runSingleAgentAttempt` calls THIS port with `'coding-solo'`).
+ *   - Baseline C (best-of-N, P-008) samples the `'coding-solo'` primitive through it N times.
  *
- * ── OWNERSHIP (BRIEF 2 ↔ BRIEF 3) ────────────────────────────────────────────────
- * BRIEF 2 (P-019) owns this file's TYPED CONTRACT — `ExternalBenchRunInput`,
- * `ExternalBenchRunOutcome`, `ExternalBenchRunDeps`, `runExternalBench`'s budget gate —
- * and ships a DEFAULT that REFUSES until the adapter is bound (the hive-eval precedent:
- * "the op's default refuses until it is bound"). So `external-bench:run` is a registered
- * known op + the blueprint validates + the colocated test passes TODAY, before the
- * adapter lands.
+ * Everything ELSE (clone, infra, iso-budget cap, diff-extract, grader) is byte-identical across
+ * arms → the ONLY delta is the blueprint's spine (D-004 fairness; D-002 causal-isolation headline).
+ * This is the implementation behind the {@link InstantiateBenchHarness} port type in `./types.ts`
+ * (BRIEF 3's shared contract); BRIEF 3's `arm-generation.ts` + BRIEF 4's `single-agent-attempt.ts`
+ * receive it as `GenerationPorts.instantiate`.
  *
- * BRIEF 3 (P-005) owns the BODY: replace `defaultRunner`'s stub with a lazy import of the
- * real adapter (its grader/clone/spin/diff-extract modules as new siblings under
- * `lib/external-bench/`), exactly as iq-battery's `defaultRunBattery` lazy-imports the
- * gen-0 runner. The adapter writes the per-task run-result ROWS; this orchestration
- * returns only the RUN-LEVEL outcome + the `runId` pointer (so the row shape stays
- * single-owned by BRIEF 7/8).
- *
- * Deps are injectable PARAMETERS (the op's test seam passes a fake `runner` — no
- * PG/git/Docker/LLM), mirroring `IqBatteryGenDeps`.
+ * ── STAGING (the hive-eval / single-agent-attempt live-ports discipline) ───────────────────────
+ * Spinning a real throwaway harness + driving its spine to DONE + summing its cost is a multi-
+ * subsystem integration that SPENDS real model budget — so, exactly like the rest of the wave
+ * (BRIEF 3's grader, BRIEF 4's drive), the LIVE driver is bound at PILOT time (P-009), not in this
+ * build. `instantiateBenchHarness` is the typed prod port the pilot wires into
+ * `GenerationPorts.instantiate`; it delegates to a {@link BenchHarnessDriver} bound via
+ * {@link setBenchHarnessDriver}. UNBOUND, it returns a clean infra-error telemetry
+ * (`stopReason: 'error'`, `generationStatus`-excludable) rather than half-running a real spend —
+ * the scoring lib then drops the row (`resolved: null`), never scores it as a task failure
+ * (METR: retry infra failures, never score them). Unit-tested with a fake driver; the pilot binds
+ * the live one (the exact function map is in {@link BenchHarnessDriver}'s doc).
  */
+import type {
+  BenchHarnessRun,
+  BenchTask,
+  GenerationBudget,
+  GenerationTelemetry,
+  InstantiateBenchHarness,
+  TaskCheckout,
+} from './types';
 
-/** One generation+grading pass's run config — the op args, normalized. */
-export interface ExternalBenchRunInput {
-  workspaceId: string;
-  installSlug: string;
-  /** The benchmark family — 'swe-bench-pro' | 'terminal-bench' | 'harness-bench' | … */
-  benchmark: string;
-  /** Instance ids to run; omitted ⇒ the configured split. ONE id = the smoke path. */
-  taskIds?: string[];
-  /** The coding-harness arm: 'papercusp' (full spine) | 'ablation-a' (single worker, P-006).
-   *  Baselines B/C are SEPARATE runners that emit the BRIEF 1 §1 submission directly. */
-  arm?: string;
-  /** The seed / submission `prefix` for the ≥3-seed pass@1 protocol (BRIEF 1 §2). */
-  seed?: number;
-  /** The iso-budget cap (USD, BRIEF 7). Absent ⇒ the run is REFUSED (unattended-spend guard). */
-  budgetUsd?: number;
-  /** Plumbing-only: generate + record, skip the paid grader / coding spend. */
-  dryRun?: boolean;
+/** The blueprint ids the suite instantiates (the matched causal-isolation pair). */
+export const FULL_SPINE_BLUEPRINT = 'external-bench'; // arm 'papercusp' — spine ON
+export const SINGLE_WORKER_BLUEPRINT = 'coding-solo'; // arm 'baseline-a-ablation' — spine OFF
+
+/** Inputs a driver needs to spin + run + cost ONE throwaway bench harness. */
+export interface BenchHarnessRunRequest {
+  /** `'external-bench'` (full spine) | `'coding-solo'` (single worker). */
+  blueprintId: string;
+  task: BenchTask;
+  /** The clean checkout the harness edits (the diff is taken from `checkout.dir`). */
+  checkout: TaskCheckout;
+  /** The iso-budget ceiling the harness enforces on the GENERATION side (BRIEF 7). */
+  budget: GenerationBudget;
 }
 
 /**
- * The RUN-LEVEL outcome (the discriminated cadence outcome, like `iq-battery:gen`) — NOT
- * the per-task run-result row. The per-task row (resolved + the BRIEF 1 §5 grader slice +
- * tokens in/out, $, wall-clock, turns, seed, arm id, trajectory ref, raw grader output)
- * is written by the adapter into the BRIEF 7/8 schema; this carries only the pointer.
+ * The LIVE bench-harness driver — bound at pilot time (P-009). One method, the whole lifecycle:
+ * spin a throwaway harness of `blueprintId` rooted at `checkout.dir`, add ONE `feature` work_item
+ * with `task.problemStatement`, drive the spine to DONE under `budget`, sum the cost, tear down.
+ *
+ * The pilot composes it from (researched function map, all in `packages/operator-core/lib`):
+ *   - CREATE     — the `harness:create` tool-handler pattern (`agent-tools/harness/create.ts`):
+ *                  register + scaffold a throwaway harness at `checkout.dir`, blueprint=`blueprintId`,
+ *                  a unique scratch slug (e.g. `xbench-<instanceId>-<seed>`).
+ *   - FEED       — insert ONE `item_kind='feature'` row into
+ *                  `harness_shared.harness_features_consolidated` (title/summary = `problemStatement`),
+ *                  status 'todo' (the `create_feature` action in `execute-action.ts`).
+ *   - DRIVE      — drive the feature to DONE under the cap: `ensureFeaturePipeline`
+ *                  (`dbos/orchestrator-start.ts`) + poll the feature status, OR a director loop over
+ *                  `spawnInvokeOnce` (`dbos/orchestrator-runner.ts`) — THE governed launch chokepoint.
+ *                  Map the terminal state → `stopReason` (done / escalate / budget-exhausted /
+ *                  max-turns / error). The iso-budget cap bounds tokens/$, turns are a runaway bound.
+ *   - COST       — SUM `harness_shared.agent_usage_samples` for the slug over the run window:
+ *                  tokensIn/Out, cost_usd, COUNT(DISTINCT run_id) as turns (the `iq-battery/bee-instance.ts`
+ *                  pattern). Cost includes EVERY agent + turn (coordination overhead counted — fairness #2).
+ *   - TEARDOWN   — unregister from `harness_shared.harness_registry` + DROP SCHEMA + rm the scratch dir.
  */
-export interface ExternalBenchRunOutcome {
-  action: 'refused' | 'skipped' | 'ran' | 'failed';
-  /** The BRIEF 8 / P-010 pre-registered config id the run-result rows wrote under. */
-  runId?: string;
-  benchmark?: string;
-  arm?: string;
-  seed?: number;
-  /** Per-task rows written this pass. */
-  tasksGraded?: number;
-  /** Convenience tally — rows with `resolved=true`. */
-  resolvedCount?: number;
-  /** The effective iso-budget cap applied (USD). */
-  capUsd?: number;
-  /** Why a refused/skipped run did not run. */
-  reason?: string;
-  /** Why a failed run failed (infra error — distinct from "not resolved"). */
-  error?: string;
+export interface BenchHarnessDriver {
+  spinRunAndCost(req: BenchHarnessRunRequest): Promise<BenchHarnessRun>;
+}
+
+/** Zeroed cost — no model budget was spent (an infra failure before/at generation). */
+function zeroTelemetry(over: Partial<GenerationTelemetry> = {}): GenerationTelemetry {
+  return {
+    tokensIn: 0,
+    tokensOut: 0,
+    costUsd: 0,
+    turns: 0,
+    wallClockMs: 0,
+    trajectoryRef: '',
+    stopReason: 'error',
+    ...over,
+  };
 }
 
 /**
- * The bound adapter runner (BRIEF 3 / P-005) — runs the real clone → spin coding harness
- * → extract → grade → record loop and writes the per-task rows. Returns the run-level
- * outcome. Injectable so the op's test seam passes a fake (no PG/git/Docker/LLM).
+ * The default driver — NOT bound until the pilot wires the live one. It throws so an accidental
+ * unbound prod call surfaces loudly in logs; `instantiateBenchHarness` catches it and returns
+ * infra-error telemetry (excluded from accuracy, never scored as a task failure).
  */
-export type ExternalBenchAdapter = (input: ExternalBenchRunInput) => Promise<ExternalBenchRunOutcome>;
+const UNBOUND_DRIVER: BenchHarnessDriver = {
+  async spinRunAndCost() {
+    throw new Error(
+      'live bench-harness driver not bound — setBenchHarnessDriver() is wired at pilot time (P-009 / impartial-benchmark-suite-2026-06-15)',
+    );
+  },
+};
 
-export interface ExternalBenchRunDeps {
-  /** The adapter runner. Default = `defaultRunner` (refuses until BRIEF 3 binds it). */
-  runner?: ExternalBenchAdapter;
-  log?: (msg: string) => void;
+let _driver: BenchHarnessDriver | null = null;
+
+/**
+ * Bind the live bench-harness driver (the pilot, P-009) — or a fake (unit tests). Pass `null` to
+ * restore the unbound default (the test-teardown contract, like `setIqBatteryGenDeps(null)`).
+ */
+export function setBenchHarnessDriver(driver: BenchHarnessDriver | null): void {
+  _driver = driver;
 }
 
 /**
- * Default adapter — REFUSES until BRIEF 3 (P-005) binds the real runner.
- *
- * BRIEF 3: replace the body with the lazy import of the adapter, e.g.
- *   const { runExternalBenchAdapter } = await import('./adapter.js');
- *   return runExternalBenchAdapter(input);
- * (lazily, so the routines boot path never loads the grader/Docker graph — the exact
- * shape of iq-battery's `defaultRunBattery`).
+ * The `InstantiateBenchHarness` port impl (BRIEF 2). Delegates to the bound {@link BenchHarnessDriver};
+ * an unbound/failed driver yields infra-error telemetry over `checkout.dir` (never throws — the
+ * generation-failure contract every arm runner relies on, mirroring `runSingleAgentAttempt`).
  */
-const defaultRunner: ExternalBenchAdapter = async (input) => ({
-  action: 'refused',
-  benchmark: input.benchmark,
-  reason: 'external-bench adapter not yet bound (P-005 / BRIEF 3) — set payload.dryRun aside; bind runExternalBenchAdapter',
-});
-
-/**
- * Run one external-bench generation+grading pass.
- *
- * Gate (the fairness rail, like iq-battery's budget gate): a real generation costs model
- * tokens, so REFUSE without an owner-set iso-budget `budgetUsd` (the unattended-spend
- * guard). With a budget, delegate to the bound adapter; the adapter owns the per-task
- * clone/spin/grade/record + the dedupe/pre-registration skip.
- */
-export async function runExternalBench(
-  input: ExternalBenchRunInput,
-  deps: ExternalBenchRunDeps = {},
-): Promise<ExternalBenchRunOutcome> {
-  const log = deps.log ?? ((m: string) => console.log(m));
-
-  if (input.budgetUsd == null) {
+export const instantiateBenchHarness: InstantiateBenchHarness = async (
+  blueprintId,
+  task,
+  checkout,
+  budget,
+) => {
+  const driver = _driver ?? UNBOUND_DRIVER;
+  try {
+    return await driver.spinRunAndCost({ blueprintId, task, checkout, budget });
+  } catch (e) {
+    const generationError = e instanceof Error ? e.message : String(e);
     return {
-      action: 'refused',
-      benchmark: input.benchmark,
-      arm: input.arm,
-      seed: input.seed,
-      reason: 'no budgetUsd — refusing (iso-budget / unattended-spend guard; set payload.budgetUsd to run)',
+      worktreePath: checkout.dir,
+      telemetry: zeroTelemetry({ generationError }),
     };
   }
-
-  const runner = deps.runner ?? defaultRunner;
-  const outcome = await runner(input);
-  log(
-    `external-bench:run benchmark=${input.benchmark} arm=${input.arm ?? 'papercusp'} ` +
-      `seed=${input.seed ?? 0} tasks=${input.taskIds?.length ?? 'all'} → ${outcome.action}` +
-      (outcome.runId ? ` runId=${outcome.runId}` : ''),
-  );
-  return outcome;
-}
+};

@@ -19,6 +19,7 @@
   "dependencies": {
     "@papercusp/activity-bridge": "*",
     "@papercusp/audio-dsp": "*",
+    "@papercusp/bench-metrics": "*",
     "@papercusp/blueprint-distribution": "*",
     "@papercusp/chat-protocol": "*",
     "@papercusp/debounce-coalesce": "*",

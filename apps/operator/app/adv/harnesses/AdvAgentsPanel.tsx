@@ -7,7 +7,7 @@
 //   - working (default): the fleet:assignments projection scoped to this
 //     harness via `fleetAssignments.byHarness` — every agent with claims or
 //     spawns here (psu sessions included), tagged with the colony tab's kind
-//     glyph (♛/🐝/🛡/📋/🛠), its head-of-line work item, and its load. Same
+//     glyph (♛/👁/🐝/🛡/📋/🛠), its head-of-line work item, and its load. Same
 //     vocabulary as zellij, narrower lens (plan D-001).
 //   - runs: the original run-history grid (`agentRunsConsolidated.bySlug` via
 //     useHarnessAgents) — "what executed here", kept as history, not deleted.
@@ -39,6 +39,7 @@ import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
 // the pui colony roster; the tooltip carries the one-line "what is this kind".
 const KIND_LEGEND: Array<{ kind: string; hint: string }> = [
   { kind: 'queen', hint: 'Queen — the autonomous brain session (cadence-driven)' },
+  { kind: 'overwatch', hint: 'Overwatch — the autonomous system-health supervisor (a Queen sibling); watches + nudges, never edits' },
   { kind: 'bee', hint: 'Bee — Queen-spawned headless worker (invoke-once); ephemeral' },
   { kind: 'sentinel', hint: 'Sentinel — the always-on, owner-facing operator chat persona' },
   { kind: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },

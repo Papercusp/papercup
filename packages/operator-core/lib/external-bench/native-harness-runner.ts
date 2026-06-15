@@ -27,6 +27,7 @@
  * tokens/cost (Claude reports `total_cost_usd` directly), and let BRIEF 7 do the iso-budget /
  * Pareto normalization. A wall-clock-cap abort maps to `stopReason:'budget-exhausted'`.
  */
+import { budgetExceeded, type IsoBudgetCap } from '@papercusp/bench-metrics';
 import { costFromTokens } from '@papercusp/model-pricing';
 import type { ChatEvent, RunAgentChatOptions } from '../agent-chat-stream';
 import {
@@ -91,6 +92,12 @@ export interface NativeArmResult {
   model: string;
   /** `claude --version` output — `emit.generation.harness_version`. */
   harnessVersion: string;
+  /**
+   * Did the run hit/exceed the iso-budget cap — `emit.generation.capped`. Computed with the SHARED
+   * `budgetExceeded` (P-011) so it's identical across arms. A capped run that still produced a diff
+   * is `generationStatus:'completed'` and graded normally (NOT an infra fail) — P-011's rule.
+   */
+  capped: boolean;
   /** Native extras for `emit.generation.arm_meta` (see {@link NativeArmResult}). */
   armMeta: Record<string, unknown>;
 }
@@ -341,6 +348,14 @@ export async function runNativeHarnessAttempt(
   const stopReason: GenerationStopReason =
     last.stop === 'done' ? 'done' : last.stop === 'budget-exhausted' ? 'budget-exhausted' : 'error';
 
+  // `capped` via the SHARED check (identical across arms = real iso-budget). True on a wall-clock
+  // abort OR when actual tokens/$ reached the cap. (The native CLI can't pre-empt mid-run, so this
+  // is post-hoc — the wall-clock ceiling is the only mid-run lever; see the module header.)
+  const cap: IsoBudgetCap = { tokens: budget.maxTokens ?? null, usd: budget.maxUsd ?? null };
+  const capped =
+    last.stop === 'budget-exhausted' ||
+    budgetExceeded({ tokensTotal: last.tokensIn + last.tokensOut, costUsd: last.costUsd }, cap);
+
   const attemptRow: ArmAttempt = {
     arm: BASELINE_B_ARM,
     blueprintId: NATIVE_BLUEPRINT_ID,
@@ -373,5 +388,5 @@ export async function runNativeHarnessAttempt(
     ...(budget.maxWallClockMs ? { budgetMaxWallClockMs: budget.maxWallClockMs } : {}),
   };
 
-  return { attempt: attemptRow, model: cfg.model, harnessVersion, armMeta };
+  return { attempt: attemptRow, model: cfg.model, harnessVersion, capped, armMeta };
 }

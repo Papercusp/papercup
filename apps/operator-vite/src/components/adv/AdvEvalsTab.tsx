@@ -96,7 +96,7 @@ interface EvalArmAggregate {
   costUsd?: number;
   isoBudgetTokens?: number | null;
 }
-interface EvalReport {
+export interface EvalReport {
   suite: string;
   byArm: EvalArmAggregate[];
   /** System-delta vs each baseline (papercusp − baseline). */
@@ -106,7 +106,7 @@ interface EvalReport {
 // One per-(task × arm × seed) row from `evals.runs`. camelCase mirror of the
 // `benchmark_run_result` PG row. TODO(P-011): replace with the canonical
 // `TaskRunResult` from `@papercusp/bench-metrics/schema` once it is importable.
-interface EvalRunRow {
+export interface EvalRunRow {
   taskId: string;
   arm: ArmId | string;
   seed: number;
@@ -116,7 +116,7 @@ interface EvalRunRow {
   tokensTotal?: number | null;
 }
 
-const EVAL_VIEWS = ['external', 'internal', 'report'] as const;
+export const EVAL_VIEWS = ['external', 'internal', 'report'] as const;
 type EvalView = (typeof EVAL_VIEWS)[number];
 
 const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : `${Math.round(v * 100)}%`);
@@ -124,8 +124,8 @@ const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : 
 // ── Mappers: sync data → viz props (presentation only; stats stay in P-011) ───
 
 /** Per-arm cost/accuracy points for the Frontier — one point per arm, from the
- *  report's per-arm aggregate (pass@1 + derived cost). */
-function toFrontierPoints(report: EvalReport | undefined): FrontierPoint[] {
+ *  report's per-arm aggregate (pass@1 + derived cost). Exported for tests. */
+export function toFrontierPoints(report: EvalReport | undefined): FrontierPoint[] {
   if (!report) return [];
   return report.byArm
     .filter((a) => a.costUsd != null)
@@ -134,8 +134,9 @@ function toFrontierPoints(report: EvalReport | undefined): FrontierPoint[] {
 
 /** Per-task pass@1 pivot for the A/B table: mean(resolved over seeds) per (task,
  *  arm). Presentation-level grouping only — the cross-task pass@k statistics
- *  stay in P-011's `buildSuiteReport`; this just lays raw rows side by side. */
-function toComparePerTask(rows: EvalRunRow[], baseline: string, treatment: string): ComparePerTaskRow[] {
+ *  stay in P-011's `buildSuiteReport`; this just lays raw rows side by side.
+ *  Exported for tests. */
+export function toComparePerTask(rows: EvalRunRow[], baseline: string, treatment: string): ComparePerTaskRow[] {
   const byTask = new Map<string, { b: number[]; t: number[] }>();
   for (const r of rows) {
     if (r.resolved == null) continue; // infra error — excluded from accuracy
@@ -313,16 +314,17 @@ function ExternalBenchmarksView({
   suites: EvalSuiteSummary[];
   suitesLoading: boolean;
 }) {
-  // Per-(task × arm × seed) rows for the selected run. Keyed by run_id to match
-  // emitRollout's notifySyncInvalidate('evals.runs', { run_id }). Feeds the
-  // cost/accuracy Pareto (P-021 Frontier) + the scoreboard.
-  const runsSync = useSyncQuery<unknown>({
-    queryName: 'evals.runs',
+  // The per-arm aggregate for the selected run (pass@1 + derived cost), keyed by
+  // run_id to match emitRollout's notifySyncInvalidate('evals.report', { run_id }).
+  // Feeds the cost/accuracy Pareto (P-021 Frontier).
+  const reportSync = useSyncQuery<EvalReport>({
+    queryName: 'evals.report',
     args: { run_id: runId },
     staleTime: 30_000,
     enabled: !!runId,
   });
-  const rows = runsSync.data ?? [];
+  const report = reportSync.data?.[0];
+  const frontierPoints = useMemo(() => toFrontierPoints(report), [report]);
 
   if (suitesLoading) {
     return <p className="pc-evals__empty">Loading benchmark suites…</p>;
@@ -352,36 +354,30 @@ function ExternalBenchmarksView({
         ))}
       </div>
 
-      {/* Cost/accuracy Pareto — the P-021 Frontier viz mounts here, fed by `rows`
-          shaped as { label, cost, score, arm } points. Until that component lands
-          (events:await eval-viz:components:ready), render a clean placeholder. */}
+      {/* Cost/accuracy Pareto (P-021 Frontier) — fed by the per-arm aggregate.
+          Frontier renders its own empty state until a run lands. */}
       <div className="pc-evals__sectionhead">
         <h2>Cost / accuracy frontier</h2>
         <button
           type="button"
           className="pc-evals__refresh"
-          aria-label="Reload the runs"
-          disabled={runsSync.fetching}
-          onClick={() => runsSync.invalidate()}
+          aria-label="Reload the report"
+          disabled={reportSync.fetching}
+          onClick={() => reportSync.invalidate()}
         >
           <RefreshCw size={13} aria-hidden />
         </button>
       </div>
-      <div className="pc-evals__vizmount" data-eval-viz="pareto" role="img" aria-label="Cost vs accuracy Pareto (pending data)">
-        {/* P-021: import { Frontier } from '@/app/eval-viz/Frontier';
-            <Frontier points={toFrontierPoints(rows)} /> */}
-        {runsSync.loading && !runsSync.data ? (
-          <p className="pc-evals__empty">Loading runs…</p>
-        ) : rows.length === 0 ? (
-          <EmptyCard
-            icon={<Gauge size={20} aria-hidden />}
-            title="No runs for this suite yet"
-            body="When this suite is run across the arms, each arm plots as a point — accuracy (pass@1) against total cost (all tokens, coordination overhead included). The honest systems claim is the arm that sits up-and-to-the-left of the native baseline."
-          />
-        ) : (
-          <p className="pc-evals__empty">{rows.length} run rows loaded — Pareto viz (P-021) wires in here.</p>
-        )}
-      </div>
+      <Frontier
+        points={frontierPoints}
+        xLabel="cost ($)"
+        yLabel="pass@1"
+        formatX={fmtUsd}
+        formatY={fmtPct}
+        highlightArm="papercusp"
+        caption={suite ? `${suite} — accuracy vs cost across arms (lower-left dominated, upper-left wins)` : undefined}
+        emptyHint="No runs for this suite yet — each arm plots once it has been run across the task set."
+      />
     </section>
   );
 }
@@ -439,7 +435,16 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
     staleTime: 30_000,
     enabled: !!runId,
   });
+  // Raw per-(task × arm × seed) rows — pivoted into the per-task A/B Compare
+  // tables. Keyed by run_id to match emitRollout's invalidation of evals.runs.
+  const runsSync = useSyncQuery<EvalRunRow>({
+    queryName: 'evals.runs',
+    args: { run_id: runId },
+    staleTime: 30_000,
+    enabled: !!runId,
+  });
   const report = reportSync.data?.[0];
+  const runs = runsSync.data ?? [];
 
   return (
     <section className="pc-evals__section">
@@ -449,8 +454,11 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
           type="button"
           className="pc-evals__refresh"
           aria-label="Reload the report"
-          disabled={reportSync.fetching}
-          onClick={() => reportSync.invalidate()}
+          disabled={reportSync.fetching || runsSync.fetching}
+          onClick={() => {
+            reportSync.invalidate();
+            runsSync.invalidate();
+          }}
         >
           <RefreshCw size={13} aria-hidden />
         </button>
@@ -462,7 +470,7 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
         <EmptyCard
           icon={<Scale size={20} aria-hidden />}
           title="No report yet"
-          body="Once a suite has been run across all four arms with ≥3 seeds, the headline lands here: pass@1 with a 95% confidence interval per arm, the iso-budget cost, and the system-delta — “holding the model constant, the Papercusp harness resolves X% more at Z% of the native-harness cost.” The per-baseline A/B/C deltas (P-021 Compare) plot below."
+          body="Once a suite has been run across all four arms with ≥3 seeds, the headline lands here: pass@1 with a 95% confidence interval per arm, the iso-budget cost, and the system-delta — “holding the model constant, the Papercusp harness resolves X% more at Z% of the native-harness cost.” The per-baseline A/B/C deltas plot below as Papercusp-vs-baseline tables."
         />
       ) : (
         <>
@@ -477,11 +485,22 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
               />
             ))}
           </div>
-          {/* P-021: import { Compare } from '@/app/eval-viz/Compare';
-              <Compare baseline="baseline-b-native" treatment="papercusp" perTask={...} /> */}
-          <div className="pc-evals__vizmount" data-eval-viz="compare" role="img" aria-label="System-delta vs baselines (pending viz)">
-            <p className="pc-evals__empty">System-delta viz (P-021 Compare) wires in here.</p>
-          </div>
+
+          {/* Papercusp vs each baseline — per-task score deltas (P-021 Compare),
+              B native first (the headline baseline, D-002). Each Compare renders
+              its own empty state until per-task rows arrive. */}
+          {BASELINE_ARMS.map((baseline) => (
+            <div key={baseline} className="pc-evals__compareblock">
+              <h3 className="pc-evals__h3">Papercusp vs {ARM_LABEL[baseline]}</h3>
+              <Compare
+                baseline={baseline}
+                treatment="papercusp"
+                perTask={toComparePerTask(runs, baseline, 'papercusp')}
+                format={fmtPct}
+                emptyHint={`No comparable tasks yet for Papercusp vs ${ARM_LABEL[baseline]}.`}
+              />
+            </div>
+          ))}
         </>
       )}
     </section>
@@ -565,7 +584,8 @@ function EvalsStyles() {
       .pc-evals__statvalue { font-size: 22px; font-weight: 760; color: var(--fg, #e7f7ff); line-height: 1; }
       .pc-evals__statsub { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-      .pc-evals__vizmount { min-height: 180px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--border, rgba(125,211,252,0.22)); border-radius: 12px; padding: 16px; }
+      .pc-evals__compareblock { display: grid; gap: 6px; }
+      .pc-evals__h3 { margin: 6px 0 0; font-size: 12.5px; font-weight: 700; color: var(--fg, #e7f7ff); }
 
       .pc-evals__empty { font-size: 12px; color: var(--fg-mute, #7f9bb4); margin: 0; text-align: center; }
       .pc-evals__empty--card { display: grid; justify-items: center; gap: 8px; max-width: 560px; margin: 8px auto; padding: 22px; color: var(--fg-mute, #7f9bb4); }

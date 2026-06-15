@@ -38,16 +38,20 @@ export function armLabel(arm: string): string {
 }
 
 /**
- * Series color for an arm (CSS var with hex fallback so it works whether or not
- * the semantic stylesheet is mounted). Papercusp = accent; baselines = a muted
- * distinct hue each. Unknown arms get the neutral muted color.
+ * Series color for an arm. These EXACT hexes are the canonical arm palette —
+ * the Evaluation surface's legend + per-arm scoreboard key on the same values
+ * (AdvEvalsTab `ARM_COLOR`), so the Frontier scatter dots match the legend.
+ * This is the single source of truth: the surface should import `armColor` from
+ * here rather than re-declaring it (categorical series colors, not semantic
+ * theme tokens, so raw hex — not CSS vars — is correct). Unknown arms get the
+ * neutral muted color.
  */
 export function armColor(arm: string): string {
   switch (arm) {
-    case 'papercusp': return 'var(--accent, #38bdf8)';
-    case 'baseline-a-ablation': return 'var(--violet-400, #a78bfa)';
-    case 'baseline-b-native': return 'var(--amber-400, #fbbf24)';
-    case 'baseline-c-bestofn': return 'var(--rose-400, #fb7185)';
+    case 'papercusp': return '#eab308'; // gold — the treatment (matches the active-subtab accent)
+    case 'baseline-a-ablation': return '#a78bfa'; // violet
+    case 'baseline-b-native': return '#38bdf8'; // sky — the headline baseline (D-002)
+    case 'baseline-c-bestofn': return '#34d399'; // emerald
     default: return 'var(--fg-mute, #7f9bb4)';
   }
 }

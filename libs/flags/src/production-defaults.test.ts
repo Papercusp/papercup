@@ -188,6 +188,15 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // the wake-loop/routine (B-04), and the UI pane (B-08). Pending flip surfaced in
   // the plan's ## Now + every lane report.
   FLAGS.OVERWATCH,
+  // impartial-benchmark-suite-2026-06-15 P-005 (BRIEF 3): the EXTERNAL-BENCH grader
+  // adapter + the `external-bench:run` op. DELIBERATE dark ship (NOT the alpha
+  // default-on policy) — the runner is genuinely incomplete (M2 in-container
+  // modality unbuilt) and infra-heavy (it spins real throwaway harnesses + drives
+  // the official SWE-bench Pro Docker grader with GB-scale per-instance image pulls
+  // on a dedicated host). It ships dark until the ~50-task pilot (P-009) proves the
+  // end-to-end path; the owner flips it ON after. Pending flip surfaced in the
+  // plan's ## Now + the lane completion report.
+  FLAGS.EXTERNAL_BENCH,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

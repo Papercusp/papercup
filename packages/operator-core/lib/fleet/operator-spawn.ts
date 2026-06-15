@@ -504,6 +504,20 @@ export async function spawnAgentInHarness(
   if (role === 'worker' && !input.chunkId) {
     return fail('spawn rejected: role="worker" requires a chunk id (spawn a scoper first to chunk the feature)');
   }
+  // overwatch-role-2026-06-15 (B-10 / D-009): the OVERWATCH role ships DARK behind
+  // papercusp-overwatch (default OFF) until B-12's live staging proof. The role is
+  // statically REGISTERED (so the BuiltinAgentRole union + ROLE_ENVELOPES stay stable)
+  // but not ACTIVATABLE while the flag is off — refuse to spawn it here, at the central
+  // role-admission chokepoint that fleet:spawn + every agent-driven launch funnel
+  // through (B-04 additionally gates the autonomous wake-loop routine; B-08 the UI
+  // pane). Role-scoped so a flag-read fault never touches other roles; getFlag fails
+  // safe to FLAG_DEFAULTS[OVERWATCH]=false (a closed gate) when PostHog is unreachable.
+  if (role === 'overwatch' && !(await getFlag(FLAGS.OVERWATCH, 'system'))) {
+    return fail(
+      'spawn rejected: role="overwatch" is gated behind the papercusp-overwatch flag ' +
+        '(default OFF until B-12 proves it live on staging) — enable it in /admin/features to spawn.',
+    );
+  }
 
   // Per-spawn model resolution (queen-model-tier-selection-2026-06-11): an
   // explicit spec wins; otherwise a tier name resolves against the user's

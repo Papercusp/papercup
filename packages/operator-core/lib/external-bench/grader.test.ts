@@ -3,8 +3,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { getOfficialGrader, makeFakeGrader, makeSweBenchProGrader, parseSweBenchProReport } from './grader';
-import type { ArmSubmission, BenchTask, GraderFs } from './grader';
-import type { BenchTask as Task } from './types';
+import type { GraderFs } from './grader';
+import type { ArmSubmission, BenchTask as Task } from './types';
 
 function task(id: string): Task {
   return { benchmark: 'swe-bench-pro', instanceId: id, problemStatement: 'x', repo: 'a/b', baseCommit: 'abc1234', graderMeta: {} };
@@ -91,7 +91,7 @@ describe('makeSweBenchProGrader', () => {
 
   it('writes predictions JSON, invokes the eval, and maps the report', async () => {
     const { fs, writes } = fakeFs({ a: { resolved: true, fail_to_pass: { t: true } } });
-    const exec = vi.fn(async () => ({ stdout: '', stderr: '', code: 0 }));
+    const exec = vi.fn(async (_cmd: string, _args: string[], _opts?: { cwd?: string }) => ({ stdout: '', stderr: '', code: 0 }));
     const grader = makeSweBenchProGrader({ evalRepoDir: '/eval', rawSamplePath: '/csv.csv', version: 'imgset@2026-05' }, { exec, fs });
 
     const res = await grader.grade([diffSub('a', 'PATCH', 'seed-1')], [task('a')]);

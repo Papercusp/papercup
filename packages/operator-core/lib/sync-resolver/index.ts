@@ -918,7 +918,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // fleet:assignments assembly (presence + plan-item claims + work-item claims,
   // claim-primary, with each agent's ordered work-list) filtered to one harness,
   // each agent stamped with its AgentPaneKind so the desktop shares the colony
-  // tab's glyph vocabulary (♛/🐝/🛡/📋/🛠). Role context joins from adv_sessions
+  // tab's glyph vocabulary (♛/👁/🐝/🛡/📋/🛠). Role context joins from adv_sessions
   // (queen/sentinel/planner kinds are role-keyed; su falls out of the ownerId
   // prefix). Invalidated via the table bridge from coord_presence /
   // feature_claims / claim_audit / spawned_agents.
@@ -2356,6 +2356,46 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
       const res = (await callPlansRead('get', { slug: planSlug })) as { items?: unknown[] };
       return Array.isArray(res?.items) ? res.items : [];
+    },
+  },
+
+  // ─── Evaluation surface — impartial benchmark suite (impartial-benchmark-suite-2026-06-15).
+  // evals.suites/evals.runs are P-010 store reads over benchmark_run_result (migration 291);
+  // evals.report is P-011's pass@1/CI/Pareto/delta math (buildSuiteReport) over the same rows,
+  // grouped per suite (buildSuiteReport is single-suite). emitRollout() fires
+  // notifySyncInvalidate('evals.runs', { runId }) + ('evals.suites', {}) after each write.
+  'evals.suites': {
+    argsSchema: z.object({ runId: z.string().optional() }),
+    resolve: async (args) => {
+      const { runId } = args as { runId?: string };
+      const { listSuites } = await import('../external-bench/reproducibility/store');
+      return listSuites({ runId });
+    },
+  },
+  'evals.runs': {
+    argsSchema: z.object({ runId: z.string().optional(), suite: z.string().optional() }),
+    resolve: async (args) => {
+      const { runId, suite } = args as { runId?: string; suite?: string };
+      const { listRunResults } = await import('../external-bench/reproducibility/store');
+      return listRunResults({ runId, suite });
+    },
+  },
+  'evals.report': {
+    argsSchema: z.object({ runId: z.string(), suite: z.string().optional() }),
+    resolve: async (args) => {
+      const { runId, suite } = args as { runId: string; suite?: string };
+      const { listRunResults } = await import('../external-bench/reproducibility/store');
+      const { buildSuiteReport } = await import('@papercusp/bench-metrics');
+      const rows = await listRunResults({ runId, suite });
+      if (rows.length === 0) return [];
+      // buildSuiteReport is single-suite — group rows per suite, one report each.
+      const bySuite = new Map<string, typeof rows>();
+      for (const r of rows) {
+        const list = bySuite.get(r.suite) ?? [];
+        list.push(r);
+        bySuite.set(r.suite, list);
+      }
+      return [...bySuite.values()].map((suiteRows) => buildSuiteReport(suiteRows));
     },
   },
 } satisfies Record<string, QueryEntry<unknown>>;

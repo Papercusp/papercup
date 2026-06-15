@@ -53,6 +53,7 @@
 // `EmitRolloutInput` is still mirrored locally below — P-010's reproducibility/emit.ts is the last
 // of the contract to land; swap that one import when it does (tracked via the schema-lock event).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+import { budgetExceeded, type IsoBudgetCap } from '@papercusp/bench-metrics';
 import type { BenchTask, GradeResult } from './types';
 import type { SingleAgentAttempt } from './single-agent-attempt';
 
@@ -229,8 +230,11 @@ export interface BestOfNConfig {
   seed: number;
   /** Number of independent samples. Default {@link DEFAULT_BEST_OF_N}. */
   n?: number;
-  /** The matched iso-budget cap for this (task, arm) — held equal to the Papercusp arm. */
+  /** The matched iso-budget cap (tokens) for this (task, arm) — held equal to the Papercusp arm.
+   *  Stored on the row as `budget_tokens`; the cap is enforced with the SHARED `budgetExceeded`. */
   budgetTokens: number;
+  /** Optional matched $ cap (the shared cap is `{tokens, usd}`); omit for a tokens-only cap. */
+  budgetUsd?: number;
   /** Fraction of budget reserved for a model-driven verifier (authoring repro tests). 0 for a pure
    *  test-exec verifier (default), so all of `budgetTokens` funds generation. */
   verifierReserveFrac?: number;
@@ -274,19 +278,30 @@ export async function runBestOfNOnce(config: BestOfNConfig, ports: BestOfNPorts)
   const generationBudget = Math.floor(config.budgetTokens * (1 - reserve));
   const perCandidateBudget = Math.max(1, Math.floor(generationBudget / n));
 
+  // The SHARED iso-budget cap — every arm caps generation with this exact check, so "iso-budget"
+  // is real and not per-arm-rolled (P-011 fairness invariant). The per-candidate split below is
+  // arm-specific; the ARM TOTAL is what `budgetExceeded` governs.
+  const cap: IsoBudgetCap = {
+    tokens: config.budgetTokens,
+    ...(config.budgetUsd != null ? { usd: config.budgetUsd } : {}),
+  };
+
   const startedAtMs = ports.now();
   const candidates: Candidate[] = [];
   let usedTokens = 0; // generation + verifier, summed — the iso-budget number (invariant #1)
+  let usedCostUsd = 0;
   let samplesRun = 0;
 
   for (let i = 0; i < n; i++) {
-    // Hard iso-budget floor: never start a sample we cannot afford in full.
-    if (usedTokens + perCandidateBudget > config.budgetTokens) break;
+    // Stop launching samples once the arm's shared iso-budget is spent (the per-candidate cap
+    // bounds any single-sample overshoot to one slice). Identical check to every other arm.
+    if (budgetExceeded({ tokensTotal: usedTokens, costUsd: usedCostUsd }, cap)) break;
 
     const innerSeed = `${config.seed}-c${i}`;
     const attempt = await ports.sample({ task: config.task, seed: innerSeed, budgetTokens: perCandidateBudget });
     samplesRun++;
     usedTokens += attempt.tokensIn + attempt.tokensOut;
+    usedCostUsd += attempt.costUsd;
 
     // Verify only a usable candidate (produced a non-empty diff, no generation error). A pure
     // test-exec verifier spends ~0 model tokens; a model-driven one is funded by the reserve.
@@ -294,10 +309,9 @@ export async function runBestOfNOnce(config: BestOfNConfig, ports: BestOfNPorts)
     if (!attempt.generationError && attempt.diff.trim() !== '') {
       verify = await ports.verify({ task: config.task, attempt });
       usedTokens += verify.tokensIn + verify.tokensOut;
+      usedCostUsd += verify.costUsd;
     }
     candidates.push({ attempt, verify });
-
-    if (usedTokens >= config.budgetTokens) break; // spent the whole arm budget
   }
 
   const selection = selectCandidate(candidates);
@@ -305,7 +319,7 @@ export async function runBestOfNOnce(config: BestOfNConfig, ports: BestOfNPorts)
   const selected = wholeArmFailed ? undefined : candidates[selection.index];
 
   // Grade the selected diff (uncapped, arm-agnostic). No submission ⇒ skip grading (generation fail).
-  let grade: GradeOutcome | undefined;
+  let grade: GradeResult | undefined;
   if (selected) {
     grade = await ports.grade({ task: config.task, patch: selected.attempt.diff, prefix: String(config.seed) });
   }
@@ -321,8 +335,9 @@ export async function runBestOfNOnce(config: BestOfNConfig, ports: BestOfNPorts)
   // them here — priceRun already prices cache read/write separately (P-011 price-table-v1).
 
   // ── capped: did this run bump the iso-budget ceiling anywhere? (P-011 honest-reporting signal) ──
+  // A capped run that still produced a diff is graded normally — capped ≠ infra fail.
   const capped =
-    usedTokens >= config.budgetTokens ||
+    budgetExceeded({ tokensTotal: usedTokens, costUsd: usedCostUsd }, cap) ||
     samplesRun < n ||
     candidates.some((c) => c.attempt.stopReason === 'budget-exhausted');
 
