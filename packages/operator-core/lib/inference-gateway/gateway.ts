@@ -28,6 +28,12 @@ import {
   type AdmissionSnapshot,
 } from '@papercusp/papercup-shared/agent';
 import { withOAuthBeta } from './credential-store';
+import type { AccountEgress } from '../deployment/account-pool';
+
+/** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
+ *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
+type UndiciDispatcher = import('undici').Dispatcher;
+type FetchInit = RequestInit & { dispatcher?: UndiciDispatcher };
 
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-retry-after
@@ -47,10 +53,10 @@ export interface ActiveAccount {
   accountId: string;
   token(): Promise<string>;
   invalidateToken?(): void;
-  /** Credential channel — decides the upstream auth header. `key` (a billed API key) is sent as
-   *  `x-api-key` with NO OAuth beta; `token`/`file`/undefined (subscription OAuth) use
-   *  `Authorization: Bearer` + the oauth beta. */
-  kind?: 'token' | 'file' | 'key';
+  /** Per-account upstream egress (per-account IP routing — D-003). When set, the gateway forwards
+   *  THIS account's upstream requests through a dedicated undici Dispatcher (an HTTP/SOCKS proxy or
+   *  a bound source IP) so each Max subscription egresses from its own IP. Absent ⇒ default egress. */
+  egress?: AccountEgress;
 }
 
 /**
@@ -95,8 +101,10 @@ export interface GatewayDeps {
   /** Aging interval for the priority queue (ms a waiter takes to gain +1 priority). Default 1000. */
   agingIntervalMs?: number;
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
-  /** Fired with each upstream response's headers + status (pool projection / observability). */
-  onResponse?(headers: Record<string, string | undefined>, status: number, model: string): void;
+  /** Fired with each upstream response's headers + status + the account that served it (pool
+   *  projection / observability) — the gateway is the only process that sees the unified-budget
+   *  headers, so this is how the cross-process drain projection (account utilization) is fed. */
+  onResponse?(headers: Record<string, string | undefined>, status: number, model: string, accountId: string): void;
 }
 
 export interface GatewayStats {
@@ -151,6 +159,24 @@ export function parseRateReset(h: Record<string, string | undefined>, now = Date
   return out;
 }
 
+/**
+ * Parse the unified-5h rolling budget window from an upstream response (present on 200s too, not
+ * just 429s) → the fraction used + the reset boundary. This is the cross-process signal the drain
+ * selector routes by (more Max subscriptions = more aggregate 5h budget — the capacity lever).
+ * `utilization` is a fraction where 1.0 = 100% (1.01 = over budget); `windowResetAt` is epoch ms.
+ */
+export function parseUnifiedWindow(h: Record<string, string | undefined>): { utilization?: number; windowResetAt?: number } {
+  const out: { utilization?: number; windowResetAt?: number } = {};
+  const u = h['anthropic-ratelimit-unified-5h-utilization'] ?? h['anthropic-ratelimit-unified-utilization'];
+  if (u !== undefined) {
+    const n = Number(u);
+    if (Number.isFinite(n) && n >= 0) out.utilization = n;
+  }
+  const r = h['anthropic-ratelimit-unified-5h-reset'] ?? h['anthropic-ratelimit-unified-reset'];
+  if (r && /^\d+$/.test(r)) out.windowResetAt = Number(r) * 1000;
+  return out;
+}
+
 function headersToObject(h: Headers): Record<string, string | undefined> {
   const o: Record<string, string | undefined> = {};
   h.forEach((v, k) => {
@@ -193,6 +219,30 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (g.state.limits.maxConcurrent < concurrency) g.state.limits.maxConcurrent = concurrency;
     return g;
   };
+
+  // Per-account egress dispatchers (per-account IP routing — D-003): a Max subscription can be pinned
+  // to its own outbound IP via an HTTP/SOCKS proxy or a bound source address, so N subscriptions don't
+  // all share one egress IP. Built lazily from undici + cached per (accountId + binding).
+  const dispatcherCache = new Map<string, UndiciDispatcher>();
+  let undiciMod: typeof import('undici') | undefined;
+  async function dispatcherFor(account: ActiveAccount): Promise<UndiciDispatcher | undefined> {
+    const eg = account.egress;
+    if (!eg || (!eg.proxyUrl && !eg.localAddress)) return undefined;
+    const key = `${account.accountId}|${eg.proxyUrl ?? ''}|${eg.localAddress ?? ''}`;
+    const hit = dispatcherCache.get(key);
+    if (hit) return hit;
+    try {
+      undiciMod ??= await import('undici');
+      const d: UndiciDispatcher = eg.proxyUrl
+        ? new undiciMod.ProxyAgent(eg.proxyUrl)
+        : new undiciMod.Agent({ connect: { localAddress: eg.localAddress } });
+      dispatcherCache.set(key, d);
+      return d;
+    } catch (e) {
+      log('warn', `egress dispatcher for '${account.accountId}' failed (${(e as Error).message}); using default egress`);
+      return undefined;
+    }
+  }
 
   let totalRequests = 0;
   let upstream429 = 0;
@@ -269,23 +319,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
         headers[k] = Array.isArray(v) ? v.join(', ') : v;
       }
-      if (active.kind === 'key') {
-        // Billed API key — `x-api-key` auth, NO OAuth beta (the subscription-only flag would 400).
-        headers['x-api-key'] = token;
-        delete headers['authorization'];
-      } else {
-        // Subscription OAuth (token/file/undefined) — Bearer + the required oauth beta.
-        headers['authorization'] = `Bearer ${token}`;
-        headers['anthropic-beta'] = withOAuthBeta(headers['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined));
-      }
+      // Every account is a Claude Max subscription OAuth credential → `Authorization: Bearer` + the
+      // required `oauth-2025-04-20` beta. There is NO x-api-key path: this deployment has no billed
+      // API key, and a raw key would 400 against the subscription-only beta (any x-api-key a bee
+      // sends is stripped above by STRIP_REQUEST). NOTE for raw-SDK callers routed through here on a
+      // Max token: the FIRST `system` block must be the Claude Code identifier or the request is
+      // shunted to a far stricter bucket and 429s — the `claude` CLI bees already frame themselves.
+      headers['authorization'] = `Bearer ${token}`;
+      headers['anthropic-beta'] = withOAuthBeta(headers['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined));
       if (!headers['anthropic-version']) headers['anthropic-version'] = ANTHROPIC_VERSION;
       headers['accept-encoding'] = 'identity';
 
       let up: Response;
       try {
-        const init: RequestInit = { method: req.method ?? 'POST', headers };
+        const init: FetchInit = { method: req.method ?? 'POST', headers };
         if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
-        up = await doFetch(`${upstreamBase}${url}`, init);
+        // Per-account IP routing: forward this account's request through its dedicated egress
+        // dispatcher (proxy / bound source IP) when configured; absent ⇒ default (shared) egress.
+        const dispatcher = await dispatcherFor(active);
+        if (dispatcher) init.dispatcher = dispatcher;
+        up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
       } catch (e) {
         upstreamErrors++;
         log('error', `upstream fetch failed: ${(e as Error).message}`);
@@ -295,7 +348,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
       const hobj = headersToObject(up.headers);
       gov.recordResponse(hobj);
-      deps.onResponse?.(hobj, up.status, model);
+      deps.onResponse?.(hobj, up.status, model, active.accountId);
       if (up.status === 429 || up.status === 529) {
         upstream429++;
         const reset = parseRateReset(hobj);
@@ -377,6 +430,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return typeof addr === 'object' && addr ? addr.port : 0;
     },
     close(): Promise<void> {
+      // Tear down any per-account egress dispatchers (best-effort; they hold sockets).
+      for (const d of dispatcherCache.values()) void (d as { close?: () => Promise<void> }).close?.();
+      dispatcherCache.clear();
       return new Promise((resolve) => server.close(() => resolve()));
     },
   };

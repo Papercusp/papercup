@@ -13,7 +13,7 @@
 import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool } from './account-failover';
-import { createInferenceGateway, type InferenceGateway } from './gateway';
+import { createInferenceGateway, parseUnifiedWindow, type InferenceGateway } from './gateway';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
@@ -63,6 +63,40 @@ function defaultObservePool(_accountId: string, ws: string | undefined, log: Gat
   return () => unsub();
 }
 
+/**
+ * Build the gateway `onResponse` hook that feeds each upstream response's unified-5h budget window
+ * (utilization + reset) into the account-pool projection (D-003). The gateway is the ONLY process
+ * that sees these headers, so this is how the spawn-side drain selector (`selectAccountForSpawn`)
+ * gets real cross-process budget. Throttled: ≤1 PG write / 30s / account, and only on a meaningful
+ * utilization move (≥0.03) or a window-reset roll — the projection is low-churn, the gateway hot.
+ */
+function makeWindowProjector(
+  ws: string | undefined,
+  log: (level: 'info' | 'warn' | 'error', msg: string) => void,
+): (headers: Record<string, string | undefined>, status: number, model: string, accountId: string) => void {
+  const WRITE_MIN_MS = 30_000;
+  const last = new Map<string, { util: number; resetAt: number; at: number }>();
+  return (headers, _status, _model, accountId) => {
+    const w = parseUnifiedWindow(headers);
+    if (w.utilization === undefined && w.windowResetAt === undefined) return;
+    const t = Date.now();
+    const prev = last.get(accountId);
+    const util = w.utilization ?? prev?.util ?? 0;
+    const resetAt = w.windowResetAt ?? prev?.resetAt ?? 0;
+    if (prev && t - prev.at < WRITE_MIN_MS) return; // throttle
+    const significant = !prev || Math.abs(util - prev.util) >= 0.03 || resetAt !== prev.resetAt;
+    if (!significant) return;
+    last.set(accountId, { util, resetAt, at: t });
+    void import('../deployment/account-pool-store')
+      .then(({ updateAccountPool }) =>
+        import('../deployment/account-pool').then(({ recordAccountWindow }) =>
+          updateAccountPool((p) => recordAccountWindow(p, accountId, { utilization: util, windowResetAt: resetAt || undefined }, t), ws),
+        ),
+      )
+      .catch((e) => log('warn', `account window projection write failed for '${accountId}': ${(e as Error).message}`));
+  };
+}
+
 export async function startGatewayService(opts: GatewayServiceOptions = {}): Promise<RunningGatewayService> {
   const log = opts.log ?? ((lvl, m) => console.log(`[inference-gateway:${lvl}] ${m}`));
   const makeResolver = opts.makeResolver ?? makeCredentialResolver;
@@ -87,9 +121,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       accountId: account.accountId,
       token: () => resolver.current(),
       invalidateToken: () => resolver.invalidate(),
-      // Carry the credential channel so the gateway picks the auth header (key → x-api-key, no
-      // OAuth beta; token/file → Bearer + oauth beta) — P-002.
-      kind: resolver.kind,
+      // Per-account IP routing (D-003): the gateway routes this account's upstream through its own
+      // egress dispatcher (proxy / bound source IP) when configured; absent ⇒ default shared egress.
+      egress: account.egress,
     })),
     { log },
   );
@@ -101,6 +135,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     concurrency: opts.concurrency,
     fetchImpl: opts.fetchImpl,
     log,
+    onResponse: makeWindowProjector(opts.workspace, log),
   });
 
   const port = await gateway.listen(opts.port ?? DEFAULT_GATEWAY_PORT);

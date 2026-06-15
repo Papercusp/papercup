@@ -25,19 +25,26 @@ const wsArg = z.string().min(1).optional().describe('Workspace id (defaults to t
 export default defineTool({
   name: 'accounts:register',
   description:
-    "Register (or update) a Claude account in the Queen's account pool. `credentialRef` is mounted on a frame at deploy time: `token:<path>` (a `claude setup-token` OAuth token) | `file:<path>` / absolute / `~` (a `.credentials.json` bundle) — a REFERENCE, never the secret. Re-registering an existing id updates its credentialRef/label, preserving bindings + rate state. Returns {ok, account}.",
+    "Register (or update) a Claude Max subscription in the Queen's account pool. `credentialRef` is a Claude Max OAuth credential — `token:<path>` (a `claude setup-token`) | `file:<path>` / absolute / `~` (a refreshable `.credentials.json` bundle) — a REFERENCE, never the secret. There is NO static-API-key channel (this deployment runs on Max subscriptions, not billed API keys). Optional `egress` pins the account to its own outbound IP (per-account IP routing). Re-registering an existing id updates credentialRef/label/egress, preserving bindings + rate state. Returns {ok, account}.",
   guidance: {
-    when: 'Adding a Claude subscription the Queen can deploy Swarms onto (each account has its own rate limits). Build the pool before deploying a Hive that should spread across accounts.',
+    when: 'Adding a Claude Max subscription the Queen can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.',
     notWhen: 'Setting the operator API key (operator:credentials). A one-off local run (no deploy).',
-    chaining: 'accounts:register (×N) → deploy:hive { members, swarm } (binds an account per member by headroom) → accounts:status.',
+    chaining: 'accounts:register (×N Max subs) → flip papercusp-inference-gateway-multi-account → bees route by cache-affinity + 5h-budget drain; deploy:hive binds an account per member.',
   },
   capability: 'harness:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     id: z.string().min(1).describe('Stable account id (A-Za-z0-9 . _ - only; becomes part of the rate-bucket key)'),
-    credentialRef: z.string().min(1).describe('token:<path> | file:<path> | absolute/~ path to the credential bundle'),
+    credentialRef: z.string().min(1).describe('Claude Max OAuth credential: token:<path> (a claude setup-token) | file:<path> | absolute/~ path to a .credentials.json bundle'),
     label: z.string().min(1).optional().describe('Optional human label'),
+    egress: z
+      .object({
+        proxyUrl: z.string().min(1).optional().describe('http(s)/socks proxy URL to route THIS account upstream through (its own IP)'),
+        localAddress: z.string().min(1).optional().describe('local source IP to bind this account upstream socket to'),
+      })
+      .optional()
+      .describe('Per-account egress for per-account IP routing (optional; default = shared egress). Owner-provisioned.'),
     workspace: wsArg,
   }),
   async handler(args) {
@@ -46,7 +53,7 @@ export default defineTool({
     const ws = args.workspace ?? activeWorkspaceId();
     try {
       const pool = await loadAccountPool(ws);
-      const next = registerAccount(pool, { id: args.id, credentialRef: args.credentialRef, label: args.label }, Date.now());
+      const next = registerAccount(pool, { id: args.id, credentialRef: args.credentialRef, label: args.label, egress: args.egress }, Date.now());
       await saveAccountPool(next, ws);
       return ok({ account: getAccount(next, args.id) });
     } catch (e) {

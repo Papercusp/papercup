@@ -7,9 +7,13 @@
  * v1 mutates prompts ONLY (D-015). The schema carries `models` for a later phase,
  * but it never produces a prompt op here, and the v1 runner does not apply it.
  */
-import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { AGENT_ROLES, FROZEN_OVERLAY_ROLES } from '@papercusp/agent-mcp';
 
 const KNOWN_ROLES: ReadonlySet<string> = new Set(AGENT_ROLES);
+// The external judge is frozen (D-003) and must never be overlaid — guarded
+// EXPLICITLY now that `judge` is a member of AGENT_ROLES (blueprint-role-bundling
+// EI-621), so the freeze no longer relies on it being an "unknown" role.
+const FROZEN_ROLES: ReadonlySet<string> = new Set(FROZEN_OVERLAY_ROLES);
 
 export interface VariantOverlay {
   /** role → full prompt markdown that overrides that role for the run. */
@@ -31,10 +35,15 @@ export interface VariantOverlayPlan {
 export function planVariantOverlay(overlay: VariantOverlay): VariantOverlayPlan {
   const roles = Object.keys(overlay.promptOverrides).sort();
   for (const role of roles) {
+    if (FROZEN_ROLES.has(role)) {
+      throw new Error(
+        `gym variant overlay cannot overlay the frozen role "${role}": the external ` +
+          `judge is frozen (D-003) so a variant cannot rewrite its own evaluator.`,
+      );
+    }
     if (!KNOWN_ROLES.has(role)) {
       throw new Error(
-        `gym variant overlay references unknown role "${role}" (not in AGENT_ROLES). ` +
-          `The frozen judge is not a harness role and cannot be overlaid.`,
+        `gym variant overlay references unknown role "${role}" (not in AGENT_ROLES).`,
       );
     }
   }

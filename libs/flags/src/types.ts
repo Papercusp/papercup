@@ -82,13 +82,13 @@ export const FLAGS = {
   // ~/.claude credential directly).
   INFERENCE_GATEWAY: "papercusp-inference-gateway",
   // inference-gateway-multi-credential-routing-2026-06-14 (P-009): when ON, the
-  // inference gateway routes each request to one of N registered credentials by the
-  // `x-papercusp-account` header (billed-API multi-credential — rate-limit-pool
-  // isolation / cost attribution / failover), and the spawn chokepoint assigns a
-  // cache-affinity credential per bee. DEFAULT OFF — DELIBERATE (not the alpha
-  // default-on policy): it changes credential routing/egress and needs billed API
-  // keys registered + a real multi-key run before the flip (D-001). OFF = the
-  // single bound-credential gateway, byte-identical to today. Listed in KNOWN_DARK_FLAGS.
+  // inference gateway routes each request to one of N registered Claude Max subscriptions by the
+  // `x-papercusp-account` header (multi-credential — aggregate 5h-budget pooling / per-account IP
+  // routing / cache-affinity / failover), and the spawn chokepoint assigns a cache-affinity +
+  // budget-draining credential per bee. DEFAULT OFF — DELIBERATE (not the alpha default-on policy):
+  // it changes credential routing/egress and needs ≥2 Max OAuth subscriptions registered + a real
+  // multi-account run before the flip (D-003). OFF = the single bound-credential gateway,
+  // byte-identical to today. Listed in KNOWN_DARK_FLAGS.
   INFERENCE_GATEWAY_MULTI_ACCOUNT: "papercusp-inference-gateway-multi-account",
   // agent-liveness-heartbeat-hardening-2026-06-12 P-010 (owner decision D-006):
   // auto-reap WEDGED bees — alive + supervisor-heartbeating but stream-silent

@@ -14,13 +14,15 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { loadAccountPool } from '../deployment/account-pool-store';
-import { accountByCredentialRef } from '../deployment/account-pool';
+import { accountByCredentialRef, type AccountEgress } from '../deployment/account-pool';
 
 export interface ResolvedAccount {
   accountId: string;
   credentialRef: string;
   /** How it was resolved (for /healthz + logs). */
   source: 'env' | 'sole-pool-account' | 'local-fallback';
+  /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress. */
+  egress?: AccountEgress;
 }
 
 export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount> {
@@ -28,12 +30,12 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
   const wanted = process.env.PAPERCUSP_ACCOUNT_ID?.trim();
   if (wanted) {
     const acct = pool.accounts.find((a) => a.id === wanted);
-    if (acct) return { accountId: acct.id, credentialRef: acct.credentialRef, source: 'env' };
+    if (acct) return { accountId: acct.id, credentialRef: acct.credentialRef, egress: acct.egress, source: 'env' };
     throw new Error(`inference-gateway: PAPERCUSP_ACCOUNT_ID='${wanted}' not in the account pool`);
   }
   if (pool.accounts.length === 1) {
     const a = pool.accounts[0];
-    return { accountId: a.id, credentialRef: a.credentialRef, source: 'sole-pool-account' };
+    return { accountId: a.id, credentialRef: a.credentialRef, egress: a.egress, source: 'sole-pool-account' };
   }
   // No env pin and 0 or >1 pool accounts → the box's own login. (>1 with no pin is ambiguous;
   // the local login is the safe, explicit default rather than guessing which pool account.)
@@ -54,6 +56,7 @@ export async function resolveAccountPool(ws?: string): Promise<ResolvedAccount[]
   const all: ResolvedAccount[] = pool.accounts.map((a) => ({
     accountId: a.id,
     credentialRef: a.credentialRef,
+    egress: a.egress,
     source: 'sole-pool-account' as const,
   }));
   if (all.length === 0) {

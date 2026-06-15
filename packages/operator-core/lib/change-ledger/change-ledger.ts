@@ -37,6 +37,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { coerceJson } from '../pg-jsonb';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
@@ -196,7 +197,7 @@ export async function readRecentChanges(
     diffRef: r.diff_ref,
     actor: r.actor,
     summary: r.summary,
-    payload: r.payload,
+    payload: coerceJson<Record<string, unknown>>(r.payload),
   }));
 }
 

@@ -7,6 +7,7 @@
  * RESETS the row to a fresh attempt rather than colliding. Scoring is HE-06's table.
  */
 import postgres from 'postgres';
+import { coerceJson } from '../pg-jsonb';
 import type {
   HiveEvalStore,
   HiveEvalRunFinish,
@@ -171,7 +172,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
       fabricationDetected: r.fabrication_detected,
       criticalPathRatio: Number(r.critical_path_ratio),
       floorCeiling: Number(r.floor_ceiling),
-      detail: r.detail,
+      detail: coerceJson(r.detail),
       scoredAt: r.scored_at,
     };
   }

@@ -367,12 +367,17 @@ export default function LearningTab() {
 const LANES = ['all', 'auto', 'human'] as const;
 type Lane = (typeof LANES)[number];
 
-/** Severity → accent. Matches the feed/coord severity palette. */
+/** Severity → accent. Tokenized to the app's semantic palette so severity reads
+ *  the same here as in the sibling issue panels (RealIssuesPanel/PinnedIssuePanel):
+ *  critical=danger, minor=warn, nit=muted. `major` stays a hardcoded orange — there
+ *  is no semantic orange token, and every severity panel hardcodes it. Hardcoded
+ *  semantic chip colors alongside the CSS-var tokens are the established idiom
+ *  (apps/operator/app/harness/TrustBadge.tsx). */
 const SEV_COLOR: Record<string, string> = {
-  critical: '#f87171',
+  critical: 'var(--bad)',
   major: '#fb923c',
-  minor: '#fbbf24',
-  nit: '#94a3b8',
+  minor: 'var(--warn)',
+  nit: 'var(--fg-mute)',
 };
 
 function ageLabel(days: number): string {
@@ -509,7 +514,7 @@ function ImprovementRow({
   selected?: boolean;
   onDismissSelect?: () => void;
 }) {
-  const sevColor = SEV_COLOR[item.severity ?? 'minor'] ?? '#94a3b8';
+  const sevColor = SEV_COLOR[item.severity ?? 'minor'] ?? 'var(--fg-mute)';
   const human = item.tier === 'human';
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
@@ -2001,11 +2006,6 @@ function LearningStyles() {
         background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
       }
       .pc-learning__hivepicklabel { text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
-      .pc-learning__hiveselect {
-        background: var(--bg-2, rgba(255, 255, 255, 0.03)); border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
-        border-radius: 6px; color: var(--fg, #e7f7ff); font-size: 12px; padding: 2px 6px; max-width: 200px;
-      }
-      .pc-learning__hiveselect:disabled { opacity: 0.6; cursor: default; }
 
       .pc-learning__how {
         list-style: none; margin: 0; padding: 11px 13px;
@@ -2035,16 +2035,16 @@ function LearningStyles() {
       .pc-learning__flowchip strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
       .pc-learning__flowchip em { font-style: normal; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__flownet { display: inline-flex; align-items: center; gap: 1px; font-weight: 740; font-variant-numeric: tabular-nums; }
-      .pc-learning__flownet--good { color: #86efac; }
-      .pc-learning__flownet--warn { color: #fcd34d; }
+      .pc-learning__flownet--good { color: var(--good); }
+      .pc-learning__flownet--warn { color: var(--warn); }
       .pc-learning__flownet--flat { color: var(--fg-mute, #7f9bb4); }
       .pc-learning__flowchip--wd-good { border-color: rgba(52, 211, 153, 0.4); }
       .pc-learning__flowchip--wd-warn { border-color: rgba(252, 211, 77, 0.45); }
       .pc-learning__flowchip--wd-bad { border-color: rgba(248, 113, 113, 0.5); }
       .pc-learning__flowdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-      .pc-learning__flowdot--good { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
-      .pc-learning__flowdot--warn { background: #fbbf24; box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
-      .pc-learning__flowdot--bad { background: #f87171; box-shadow: 0 0 5px rgba(248, 113, 113, 0.6); }
+      .pc-learning__flowdot--good { background: var(--good); box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
+      .pc-learning__flowdot--warn { background: var(--warn); box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
+      .pc-learning__flowdot--bad { background: var(--bad); box-shadow: 0 0 5px rgba(248, 113, 113, 0.6); }
 
       .pc-learning__scoreboard { display: flex; flex-wrap: wrap; gap: 8px; }
       .pc-learning__throughputhive { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
@@ -2102,11 +2102,6 @@ function LearningStyles() {
       .pc-learning__sev { width: 4px; height: 100%; min-height: 18px; border-radius: 3px; }
       .pc-learning__row--link { cursor: pointer; }
       .pc-learning__row--selected { border-color: #f59e0b; box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35); cursor: pointer; }
-      .pc-learning__srcselect {
-        font-size: 11px; padding: 3px 7px; border-radius: 7px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
-        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-dim, #b9d4e8);
-      }
       .pc-learning__row--link:hover, .pc-learning__row--link:focus-visible { border-color: var(--accent, rgba(125, 211, 252, 0.45)); background: var(--bg-3, rgba(255, 255, 255, 0.06)); }
       .pc-learning__id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 650; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
       .pc-learning__title { font-size: 12.5px; color: var(--fg, #e7f7ff); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2121,8 +2116,8 @@ function LearningStyles() {
       .pc-learning__chip--auto { color: #86efac; border-color: rgba(134, 239, 172, 0.5); }
       .pc-learning__chip--human { color: #fcd34d; border-color: rgba(252, 211, 77, 0.5); }
       .pc-learning__delta { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .pc-learning__delta--good { color: #86efac; }
-      .pc-learning__delta--bad { color: #f87171; }
+      .pc-learning__delta--good { color: var(--good); }
+      .pc-learning__delta--bad { color: var(--bad); }
       .pc-learning__delta--flat { color: var(--fg-mute, #7f9bb4); }
       .pc-learning__age { font-size: 11px; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
       .pc-learning__score { font-size: 11px; font-weight: 700; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; min-width: 18px; text-align: right; }

@@ -17,6 +17,21 @@
  * exhaustively unit-testable with no fixtures.
  */
 
+/**
+ * Per-account upstream egress binding — per-account IP routing (D-003). Each registered Claude Max
+ * subscription can be pinned to its own outbound IP so N consumer subscriptions don't all egress from
+ * one shared address (consumer plans can correlate/flag a shared origin). Either an HTTP/SOCKS proxy
+ * URL the gateway routes this account's upstream traffic through, or a local source IP to bind. A
+ * REFERENCE/config, never a secret — safe to persist/federate. Absent ⇒ default (shared) egress; the
+ * owner provisions the actual proxies (owner-gated infra, like the credentials themselves).
+ */
+export interface AccountEgress {
+  /** `http(s)://` or `socks(5)://` proxy URL for this account's upstream requests. */
+  proxyUrl?: string;
+  /** Local source IP to bind the upstream socket to (when the host has multiple egress IPs). */
+  localAddress?: string;
+}
+
 /** One Claude subscription the Queen can draw from. */
 export interface ClaudeAccount {
   /**
@@ -34,6 +49,8 @@ export interface ClaudeAccount {
   credentialRef: string;
   /** Optional human label. */
   label?: string;
+  /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress. */
+  egress?: AccountEgress;
   /** When added (epoch ms). */
   addedAt: number;
   /** Swarm member harness slugs currently bound to this account (P-020). */
@@ -55,6 +72,17 @@ export interface AccountRateState {
   penaltyCount: number;
   /** Epoch ms the current penalty window started. `0` = no window open. */
   windowStartedAt: number;
+  /**
+   * Unified-5h rolling utilization (a fraction: 1.0 = 100%, >1 = over budget), fed from the gateway
+   * response headers — the only process that sees them — so the cross-process drain selector can
+   * route by REAL remaining budget. The aggregate 5h budget across subscriptions is the capacity
+   * lever for Claude Max (D-003). `undefined` until first observed.
+   */
+  utilization?: number;
+  /** Epoch ms the unified-5h window resets (`anthropic-ratelimit-unified-5h-reset`). `undefined` until observed. */
+  windowResetAt?: number;
+  /** Epoch ms `utilization`/`windowResetAt` were last observed — lets the selector ignore stale budget. */
+  utilizationAt?: number;
 }
 
 export interface AccountPool {
@@ -113,7 +141,7 @@ export function accountByCredentialRef(pool: AccountPool, credentialRef: string)
  */
 export function registerAccount(
   pool: AccountPool,
-  input: { id: string; credentialRef: string; label?: string },
+  input: { id: string; credentialRef: string; label?: string; egress?: AccountEgress },
   now: number,
 ): AccountPool {
   const id = input.id.trim();
@@ -126,7 +154,7 @@ export function registerAccount(
   if (getAccount(pool, id)) {
     return {
       accounts: pool.accounts.map((a) =>
-        a.id === id ? { ...a, credentialRef, label: input.label ?? a.label } : a,
+        a.id === id ? { ...a, credentialRef, label: input.label ?? a.label, egress: input.egress ?? a.egress } : a,
       ),
     };
   }
@@ -134,6 +162,7 @@ export function registerAccount(
     id,
     credentialRef,
     label: input.label,
+    egress: input.egress,
     addedAt: now,
     boundTo: [],
     rate: freshRate(),
@@ -192,6 +221,32 @@ export function recordAccountPenalty(
 export function recordAccountReset(pool: AccountPool, id: string): AccountPool {
   return {
     accounts: pool.accounts.map((a) => (a.id === id ? { ...a, rate: freshRate() } : a)),
+  };
+}
+
+/**
+ * Record an account's observed unified-5h budget window (utilization + reset) into the projection —
+ * the cross-process signal the drain selector routes by (the gateway sees the headers; the spawn
+ * chokepoint reads this). Stamps `utilizationAt = now` for staleness. A field left undefined keeps
+ * its prior value. Unknown id = no-op. Pure.
+ */
+export function recordAccountWindow(
+  pool: AccountPool,
+  id: string,
+  w: { utilization?: number; windowResetAt?: number },
+  now: number,
+): AccountPool {
+  return {
+    accounts: pool.accounts.map((a) => {
+      if (a.id !== id) return a;
+      const rate: AccountRateState = {
+        ...a.rate,
+        utilization: w.utilization ?? a.rate.utilization,
+        windowResetAt: w.windowResetAt ?? a.rate.windowResetAt,
+        utilizationAt: now,
+      };
+      return { ...a, rate };
+    }),
   };
 }
 
@@ -261,31 +316,81 @@ export interface SpawnSelectOpts {
   priorAccountId?: string;
 }
 
+/** Beyond this age the unified-budget projection is treated as unknown (the gateway hasn't egressed
+ *  through that account recently), so the drain selector falls back to recency order. */
+export const DRAIN_UTIL_STALE_MS = 10 * 60_000;
+/** A window resetting within this horizon is "about to reset" — drain its remaining budget first
+ *  (use-it-before-you-lose-it: that budget vanishes at the reset). */
+export const DRAIN_URGENT_RESET_MS = 20 * 60_000;
+/** At/above this unified utilization an account is effectively full — don't route fresh load to it. */
+export const DRAIN_FULL_UTIL = 0.97;
+
+/** The account's drain-relevant utilization: the observed unified-5h fraction, or 0 when never
+ *  observed / stale (treat as most-available so a cold pool degrades gracefully). */
+function drainUtil(a: ClaudeAccount, now: number): number {
+  const r = a.rate;
+  if (r.utilization === undefined) return 0;
+  if (r.utilizationAt !== undefined && now - r.utilizationAt > DRAIN_UTIL_STALE_MS) return 0;
+  return r.utilization;
+}
+
+/**
+ * Choose the available account that best FILLS the aggregate Claude Max budget — the multi-account
+ * capacity lever (more subscriptions = more aggregate 5h budget; D-003). Keeps every subscription's
+ * 5h window productive instead of spreading thin or hammering one. Ranking (ascending = better),
+ * among available (not paused) candidates:
+ *   1. urgency — a window about to reset AND still under-full sorts first (use-it-before-you-lose-it);
+ *   2. lowest current utilization (most remaining 5h budget) — balances load so no window sits idle;
+ *   3. least-recently penalized; 4. oldest-added; 5. id (stable tie-break).
+ * Utilization that is unknown or stale is treated as 0, so a cold pool degrades to recency order.
+ * This is the consumer-Max budget-maximizing selector D-001 wrongly excluded as "unnecessary".
+ */
+export function selectAccountByDrain(pool: AccountPool, now: number, opts: SelectOpts = {}): ClaudeAccount | undefined {
+  const { exclude = [], availableOnly = true } = opts;
+  let candidates = pool.accounts.filter((a) => !exclude.includes(a.id));
+  if (availableOnly) candidates = candidates.filter((a) => isAvailable(a, now));
+  if (candidates.length === 0) return undefined;
+
+  const urgent = (a: ClaudeAccount): boolean => {
+    const reset = a.rate.windowResetAt;
+    return reset !== undefined && reset - now > 0 && reset - now <= DRAIN_URGENT_RESET_MS && drainUtil(a, now) < DRAIN_FULL_UTIL;
+  };
+  const rank = (a: ClaudeAccount): number[] => [urgent(a) ? 0 : 1, drainUtil(a, now), a.rate.lastPenaltyAt, a.addedAt];
+  return [...candidates].sort((x, y) => {
+    const rx = rank(x);
+    const ry = rank(y);
+    for (let i = 0; i < rx.length; i++) if (rx[i] !== ry[i]) return rx[i] - ry[i];
+    return x.id < y.id ? -1 : x.id > y.id ? 1 : 0;
+  })[0];
+}
+
 /**
  * Pick the account a spawning bee should egress through (inference-gateway-multi-credential-routing
- * P-005). Cache-affinity policy, first match wins:
+ * P-005, corrected to the Claude Max basis — D-003). Cache-affinity FIRST (the dominant cost lever —
+ * the conversation/prompt cache is per-credential), then budget-draining among the rest:
  *   1. STICKY — the bee's prior account, if still available (preserves its per-credential cache).
  *   2. HARNESS-PIN — an available account with the bee's harness in `boundTo`, so a harness's bees
- *      co-locate on one credential (shared system/tools prefix cache); ties broken by headroom.
- *   3. HEADROOM — otherwise the least-loaded available account.
- * Returns the chosen account id, or undefined when no account is available (the caller sets no
- * header and the gateway falls back to its active account). NO quota-drain / deadline logic (D-001).
+ *      co-locate on one credential (shared system/tools prefix cache); ties broken by drain.
+ *   3. DRAIN — otherwise the account that best fills the aggregate Max 5h budget (selectAccountByDrain:
+ *      use-before-reset, then most remaining budget) so no subscription's window sits idle.
+ * Returns the chosen account id, or undefined when no account is available (the caller sets no header
+ * and the gateway falls back to its active account).
  */
 export function selectAccountForSpawn(pool: AccountPool, now: number, opts: SpawnSelectOpts = {}): string | undefined {
-  // 1. Sticky to the prior account while it is still usable.
+  // 1. Sticky to the prior account while it is still usable (cache affinity dominates cost).
   if (opts.priorAccountId) {
     const prior = getAccount(pool, opts.priorAccountId);
     if (prior && isAvailable(prior, now)) return prior.id;
   }
-  // 2. Harness-pinned account (cache co-location), most headroom among the pinned ties.
+  // 2. Harness-pinned account (cache co-location), best drain among the pinned ties.
   if (opts.harness) {
     const harness = opts.harness;
     const pinned = pool.accounts.filter((a) => a.boundTo.includes(harness) && isAvailable(a, now));
-    const best = selectAccountByHeadroom({ accounts: pinned }, now);
+    const best = selectAccountByDrain({ accounts: pinned }, now);
     if (best) return best.id;
   }
-  // 3. Least-loaded available account.
-  return selectAccountByHeadroom(pool, now)?.id;
+  // 3. Budget-drain across the whole pool.
+  return selectAccountByDrain(pool, now)?.id;
 }
 
 export type ScaleOutDecision =

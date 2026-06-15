@@ -180,6 +180,23 @@ export const AGENT_ROLES = [
 export type BuiltinAgentRole = (typeof AGENT_ROLES)[number];
 
 /**
+ * Roles that exist in AGENT_ROLES but must NEVER be applied as a gym variant
+ * prompt-overlay or throwaway-harness override target. The external `judge` is
+ * FROZEN (gym D-003): the gym overlays + optimizes a harness's PIPELINE roles and
+ * the judge then EVALUATES the resulting variants — overlaying the judge itself
+ * would let a variant rewrite (and so game) its own evaluator.
+ *
+ * This protection used to be IMPLICIT — `judge` was absent from AGENT_ROLES, so the
+ * overlay validators rejected it as an "unknown role". That hole re-opened silently
+ * when blueprint-role-bundling (EI-621 / D-008) made AGENT_ROLES the COMPLETE
+ * built-in role universe (judge is a gym/learning-loop blueprint role). It is now
+ * EXPLICIT and pinned here next to the role declaration so adding a role to
+ * AGENT_ROLES can't re-open it. `satisfies` pins each member to AGENT_ROLES, so
+ * renaming `judge` breaks compilation here instead of silently orphaning the freeze.
+ */
+export const FROZEN_OVERLAY_ROLES = ['judge'] as const satisfies readonly BuiltinAgentRole[];
+
+/**
  * The standard SU-tool `agentRoles:` allowlist — the eight pipeline roles +
  * the operator chat role. THE single source for this set (audit P-072,
  * EI-145/EI-66 — it used to exist as ~113 identical inline copies named

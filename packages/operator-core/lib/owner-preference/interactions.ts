@@ -22,6 +22,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { coerceJson } from '../pg-jsonb';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
   bucketKeysFor,
@@ -144,11 +145,12 @@ export async function readOwnerSignal(): Promise<OwnerSignal> {
   ]);
 
   // Every EI id referenced by either side, joined once for attributes.
-  const engagedItemIdByRow = engRows.map((r) => refToItemId(r.payload?.routedRef));
+  const engagedItemIdByRow = engRows.map((r) => refToItemId(coerceJson<{ routedRef?: unknown }>(r.payload)?.routedRef));
   const exposureCountById = new Map<string, number>();
   let totalExposures = 0;
   for (const r of expRows) {
-    const ids = Array.isArray(r.payload?.ids) ? (r.payload.ids as unknown[]) : [];
+    const p = coerceJson<{ ids?: unknown }>(r.payload);
+    const ids = Array.isArray(p?.ids) ? (p!.ids as unknown[]) : [];
     for (const id of ids) {
       if (typeof id !== 'string') continue;
       exposureCountById.set(id, (exposureCountById.get(id) ?? 0) + 1);

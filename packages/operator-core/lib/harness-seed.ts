@@ -12,9 +12,13 @@
  * injectable so the external gym controller can file over HTTP while a co-located
  * caller can use in-process functions.
  */
-import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { AGENT_ROLES, FROZEN_OVERLAY_ROLES } from '@papercusp/agent-mcp';
 
 const KNOWN_ROLES: ReadonlySet<string> = new Set(AGENT_ROLES);
+// The external judge is frozen (D-003) and is never a throwaway-harness override
+// target — guarded EXPLICITLY now that `judge` is a member of AGENT_ROLES
+// (blueprint-role-bundling EI-621), so the freeze no longer relies on absence.
+const FROZEN_ROLES: ReadonlySet<string> = new Set(FROZEN_OVERLAY_ROLES);
 
 export interface SeedFeature {
   id: string;
@@ -49,6 +53,9 @@ export async function seedThrowawayHarness(
 ): Promise<{ harnessSlug: string }> {
   const overrides = input.promptOverrides ?? {};
   for (const role of Object.keys(overrides)) {
+    if (FROZEN_ROLES.has(role)) {
+      throw new Error(`seedThrowawayHarness: cannot override the frozen role "${role}" (the external judge is frozen)`);
+    }
     if (!KNOWN_ROLES.has(role)) {
       throw new Error(`seedThrowawayHarness: unknown override role "${role}" (not in AGENT_ROLES)`);
     }

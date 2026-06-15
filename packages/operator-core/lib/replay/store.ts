@@ -6,6 +6,7 @@
  * `learning_spend_events` (governed.ts) — this table is the run record.
  */
 import type { Sql } from 'postgres';
+import { coerceJson } from '../pg-jsonb';
 import { REPLAY_ORIGIN, replayCaseRef, type ReplayCase, type ReplayStore, type ReplayVariant } from './types';
 
 export class PgReplayStore implements ReplayStore {
@@ -145,7 +146,7 @@ export async function listReplayRuns(
     composite: r.composite === null ? null : Number(r.composite),
     judgeRationale: (r.judge_rationale as string) ?? null,
     rubricHash: (r.rubric_hash as string) ?? null,
-    divergence: r.divergence,
+    divergence: coerceJson(r.divergence),
     costUsd: Number(r.cost_usd),
     error: (r.error as string) ?? null,
     elapsedMs: r.elapsed_ms === null ? null : Number(r.elapsed_ms),
