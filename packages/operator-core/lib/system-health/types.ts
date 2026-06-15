@@ -172,6 +172,9 @@ export interface WorkFeedHealth {
   /** Lanes held by unsatisfied blocked_by. */
   frontierBlocked: number;
   startedPlans: number;
+  /** Auto-eligible improvements stuck at attempts:0 — eligible but never dispatched
+   *  (the EI-584 dead-feed signature: the feed isn't pumping ready work). */
+  autoEligibleStuck: number;
   /** Active routines whose next_fire_at is long overdue (the dead-routine / EI-584 signal). */
   deadRoutines: number;
   deadRoutineNames: string[];

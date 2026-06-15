@@ -307,8 +307,19 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
          AND next_fire_at < now() - make_interval(secs => ${DEAD_ROUTINE_OVERDUE_MS / 1000})
        ORDER BY next_fire_at ASC LIMIT 20`;
     const deadRoutineNames = rows.map((r) => r.name);
+    // Auto-eligible-stuck (EI-584): improvements that ARE auto-eligible but sit at
+    // attempts:0 — eligible yet never dispatched (the feed isn't pumping them). Read
+    // the same digest collectImprovements uses; independent + fail-soft (leave 0).
+    let autoEligibleStuck = 0;
+    try {
+      const { readImprovementItems } = await import('../harness/improvements/read-items');
+      const { buildDigest } = await import('../harness/improvements/digest');
+      const items = await readImprovementItems({ state: 'open', limit: 1000 });
+      const digest = buildDigest(items, { nowMs: ctx.now });
+      autoEligibleStuck = digest.autoEligible.filter((i) => (i.attempts ?? 0) === 0).length;
+    } catch { /* improvements unreadable — leave 0 (the dead-routine signal still computes) */ }
     const data: WorkFeedHealth = {
-      frontier, frontierBlocked, startedPlans,
+      frontier, frontierBlocked, startedPlans, autoEligibleStuck,
       deadRoutines: deadRoutineNames.length, deadRoutineNames,
     };
     const status = workFeedStatus(data);
@@ -316,13 +327,14 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       status,
       summary: data.deadRoutines > 0
         ? `DEAD ROUTINE(S): ${deadRoutineNames.slice(0, 3).join(', ')}`
-        : `${frontier} ready, ${frontierBlocked} blocked, ${startedPlans} started plan(s)`,
+        : `${frontier} ready, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}`,
       data,
       link: { label: 'Working', href: '/adv?tab=harnesses' },
       metrics: [
         m('frontier', frontier),
         m('blocked', frontierBlocked),
         m('started plans', startedPlans),
+        m('auto-stuck', autoEligibleStuck, autoEligibleStuck > 0 ? 'warn' : undefined),
         m('dead routines', data.deadRoutines, data.deadRoutines > 0 ? 'crit' : undefined),
       ],
     };

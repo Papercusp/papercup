@@ -308,7 +308,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
   // the bees panel's placement dispositions (see mapping notes above).
   brief.workFeed = {
     frontier: workFeed?.frontier ?? 0,
-    autoEligibleStuck: 0, // attempts:0 count not in WorkFeedHealth yet — fail-soft default.
+    autoEligibleStuck: workFeed?.autoEligibleStuck ?? 0, // now wired from WorkFeedHealth — activates the work-feed-stuck detector
     deadRoutines: workFeed?.deadRoutines ?? 0,
     blockedStranded: bees?.placements.stranded ?? 0,
   };

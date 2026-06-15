@@ -151,6 +151,15 @@ export interface RealQueenBacklogOps {
   /** START the REAL Queen over the whole hive (setHiveStarted + requestUrgentHiveWake → the queen agent). */
   startRealQueen(input: { hiveHome: string; kickoff: string; workspaceId: string }): Promise<void>;
   /**
+   * RE-WAKE the Queen for ANOTHER survey→place cycle (requestUrgentHiveWake only — the hive is already
+   * started). The initial startRealQueen wakes her ONCE; on the staging host (:3170, DBOS routines off)
+   * her first session can exit after a single survey without placing the whole frontier (observed: a
+   * Queen ran 156s, placed 0 bees, exited `done`). The driver re-wakes her each poll while there is a
+   * READY FRONTIER but NO live bees + nothing in flight — the missing "place the rest of the backlog"
+   * nudge the auto-routine would otherwise deliver. Best-effort; a wake error must not abort the drive.
+   */
+  rewakeQueen(input: { hiveHome: string; reason: string; workspaceId: string }): Promise<void>;
+  /**
    * Run ONE placement-watchdog sweep over the bench hive (the real eviction/re-placement backstop).
    * The watchdog normally rides the 30s routinesTick, but the staging operator (:3170) runs with
    * routines DISABLED (PAPERCUSP_DBOS_ROUTINES=0) — so the driver fires the sweep itself each poll,
@@ -289,6 +298,23 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
             peakConcurrentBees = Math.max(peakConcurrentBees, liveBees);
             // Drained when the Queen has nothing left: no ready frontier, no started plan, nothing in flight.
             if (survey.frontierLen === 0 && survey.plansLen === 0 && inFlight === 0) break;
+            // RE-WAKE the Queen when there is READY work she has not placed: a ready frontier remains but
+            // NO bee is live and NOTHING is in flight → her prior session exited without placing the rest
+            // (observed on :3170 with auto-routines off). Another urgent wake = another survey→place cycle,
+            // the nudge the routinesTick would deliver. While bees ARE live/in-flight we do NOT re-wake
+            // (she's already working) — the watchdog handles stuck/dead recovery. Best-effort.
+            if (survey.frontierLen > 0 && liveBees === 0 && inFlight === 0) {
+              await ops
+                .rewakeQueen({
+                  hiveHome: home,
+                  workspaceId: ws,
+                  reason:
+                    `${survey.frontierLen} benchmark feature(s) are still READY and unplaced with no live bee. ` +
+                    `Survey the frontier and place your bee fleet (fleet cap is the contention bound) so every ` +
+                    `member's lone feature gets a working bee.`,
+                })
+                .catch(() => {});
+            }
             await ops.sleep(pollMs);
           }
         } else {
@@ -509,6 +535,14 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       // `liveHiveOps.startHive` === setHiveStarted(true) + requestUrgentHiveWake → fireLaunchBlueprint('hive').
       const ops = await liveOps();
       await ops.startHive({ hiveHome, workspaceId: ws, kickoff });
+    },
+
+    async rewakeQueen({ hiveHome, reason }) {
+      // Another urgent wake → another fireLaunchBlueprint('hive') → a fresh Queen session that surveys +
+      // places the still-ready frontier. The hive is already started (startRealQueen did setHiveStarted);
+      // this is the re-wake the disabled auto-routine would have delivered. Same call hive:start uses.
+      const { requestUrgentHiveWake } = await import('../hive/urgent-wake');
+      await requestUrgentHiveWake({ reason, harness: hiveHome, workspaceId: ws });
     },
 
     async reconcileWatchdog({ hiveHome }) {

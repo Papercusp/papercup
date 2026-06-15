@@ -90,10 +90,13 @@ export function workItemsStatus(d: WorkItemsHealth): PanelStatus {
   return 'ok';
 }
 
-/** Work-feed. crit = a dead routine (EI-584 — a stalled routine starves the
- *  whole feed). Otherwise ok (frontier depth alone is not unhealthy). */
+/** Work-feed. crit = a dead routine (EI-584 — a stalled routine starves the whole
+ *  feed). warn = auto-eligible work stuck at attempts:0 while routines are alive
+ *  (ready work not flowing — mirrors the overwatch's work-feed-stuck nudge). ok
+ *  otherwise (frontier depth alone is not unhealthy). */
 export function workFeedStatus(d: WorkFeedHealth): PanelStatus {
   if (d.deadRoutines > 0) return 'crit';
+  if (d.autoEligibleStuck > 0) return 'warn';
   return 'ok';
 }
 
