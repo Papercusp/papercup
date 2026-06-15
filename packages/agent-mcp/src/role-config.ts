@@ -130,6 +130,50 @@ export const AGENT_ROLES = [
   // (blueprints/hive/prompts/overwatch.md, B-05); the fallback prompts/overwatch.md is a
   // thin STUB so the two cannot drift (D-007 / the EI-611 lesson).
   'overwatch',
+  // ── Blueprint-shipped specialist roles (blueprint-role-bundling-2026-06-15 Phase 0 /
+  // EI-621). These ship a persona under the harness `prompts/` dir (moving to the owning
+  // blueprint in Phase 2) and are dispatched by their blueprint's spine — but predated this
+  // const, so the registry only "knew" them via the now-retired getKnownRoles filesystem
+  // walk. Listed here so AGENT_ROLES is the COMPLETE built-in role universe and the
+  // filesystem is no longer the registry (D-008). NOT including the program-blueprint-scoped
+  // roles (advocate/voter — resolved only via blueprints/vote) nor the retired org-model
+  // roles (ceo/coordinator); those stay valid as bare `string`s.
+  //
+  // research blueprint — investigation pipeline.
+  'researcher',
+  'research-director',
+  'searcher',
+  'discoverer',
+  'finding-verifier',
+  'findings-synthesizer',
+  'synthesizer',
+  // review blueprint — multi-dimension adversarial review.
+  'review-director',
+  'dimension-reviewer',
+  'verifier',
+  // migration blueprint — codemod pipeline.
+  'migration-director',
+  'migration-verifier',
+  'transformer',
+  // gym / learning-loop blueprints — eval + variant generation.
+  'gym-director',
+  'judge',
+  'task-generator',
+  'variant-runner',
+  'proposer',
+  // scan blueprint — the negative-space/scout scanner (also a blueprint override in scan/).
+  'scanner',
+  // The generic director + committer (single-agent / coding sub-roles).
+  'director',
+  'committer',
+  // Multi-phase coding pipeline (staging/testing/production) roles still DISPATCHED live by
+  // classifyDecision (orchestrator-decide): GENERATE_TESTS→test-writer, NEXT_TESTER→tester,
+  // NEXT_MONITOR→monitor. Their personas currently live ONLY in the phase subdirs
+  // (prompts/{testing,staging,production}/<role>.md); their blueprint-resolvable home is
+  // decided in Phase 2/5 (they must move before the global prompts/ dir is deleted).
+  'tester',
+  'test-writer',
+  'monitor',
 ] as const;
 
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */

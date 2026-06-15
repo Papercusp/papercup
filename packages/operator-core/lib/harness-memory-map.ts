@@ -96,10 +96,15 @@ export function isHarnessAlive(project: ProjectEntry): boolean {
 
 /**
  * Fail-closed guard: every role in MEMORY_MAP.writtenBy/readBy must be a
- * real role (prompt file on disk) or a meta-actor in
+ * registered role (`AGENT_ROLES`, via getKnownRoles) or a meta-actor in
  * MEMORY_ATTRIBUTION_META — otherwise the operator refuses to boot.
- * Runs once on module import. (Relocated verbatim from the IIFE that
- * used to live in `_hono/harness.ts`.)
+ * Runs once on module import.
+ *
+ * blueprint-role-bundling-2026-06-15 Phase 0 (EI-621): this was a *prompt-file-
+ * on-disk* existence check (the FS was the registry). It now validates against
+ * the `AGENT_ROLES` const so it survives deleting the global `prompts/` dir
+ * (Phase 5) — same integrity guarantee (a typo'd attribution still fails boot),
+ * decoupled from the filesystem.
  */
 (function validateMemoryMapAttributions() {
   const validRoles = new Set(getKnownRoles());
@@ -115,8 +120,8 @@ export function isHarnessAlive(project: ProjectEntry): boolean {
   if (offenders.length > 0) {
     const lines = offenders.map((o) => `  - ${o.path} ${o.field}: '${o.role}'`).join('\n');
     throw new Error(
-      `MEMORY_MAP references roles that don't exist on disk (${offenders.length} bad reference${offenders.length === 1 ? '' : 's'}):\n${lines}\n` +
-      `Either add the missing prompt file at libs/papercusp/packages/harness/prompts/<role>.md, ` +
+      `MEMORY_MAP references roles not in the AGENT_ROLES registry (${offenders.length} bad reference${offenders.length === 1 ? '' : 's'}):\n${lines}\n` +
+      `Either add the role to AGENT_ROLES (packages/agent-mcp/src/role-config.ts), ` +
       `remove the attribution, or add the value to MEMORY_ATTRIBUTION_META if it's a non-role meta-actor.`,
     );
   }

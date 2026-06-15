@@ -1,43 +1,21 @@
-import { existsSync, readdirSync, type Dirent } from 'node:fs';
-import { join } from 'node:path';
-import { harnessPath } from './harness-paths';
-
-let _cache: { value: string[]; expires: number } | null = null;
-const TTL_MS = 30_000;
+import { AGENT_ROLES } from '@papercusp/agent-mcp';
 
 /**
- * The single source of truth for "what role names exist." Walks every
- * .md file under the global prompts directory (top-level + all subdirs:
- * org/, department/, staging/, testing/, production/, …). Names are
- * deduped — same role may appear in multiple subdirs as a phase variant.
+ * The single source of truth for "what role names exist": the `AGENT_ROLES`
+ * const (`@papercusp/agent-mcp`), NOT a filesystem walk.
  *
- * `_archived/`, files starting with `_`, and README.md are skipped.
+ * blueprint-role-bundling-2026-06-15 Phase 0 (EI-621 / D-008): this used to walk
+ * every `.md` under the global `prompts/` directory (top-level + phase subdirs).
+ * That made the *filesystem* the role registry, which blocked deleting the global
+ * `prompts/` dir (Phase 5) — and silently drifted from `AGENT_ROLES`. The registry
+ * is now the const; `AGENT_ROLES` was expanded (Phase 0) to the COMPLETE built-in
+ * universe so this switch is superset-preserving. Plugin-contributed roles widen
+ * `AgentRole` to bare `string` at runtime and are intentionally NOT in this set.
  *
- * Cached for 30 seconds. The list re-reads on next call after the TTL,
- * so dropping a new prompt file is picked up without a server restart.
+ * Kept as a function (rather than inlining `AGENT_ROLES` at every call site) so
+ * operator-core has one local accessor for the built-in registry. Returns a fresh
+ * array each call — callers may freely mutate/sort it.
  */
 export function getKnownRoles(): string[] {
-  const now = Date.now();
-  if (_cache && _cache.expires > now) return _cache.value;
-  const found = new Set<string>();
-  function walk(dir: string) {
-    let entries: Dirent[] = [];
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      if (e.name.startsWith('_') || e.name === 'README.md') continue;
-      if (e.isFile() && e.name.endsWith('.md')) {
-        found.add(e.name.replace(/\.md$/, ''));
-      } else if (e.isDirectory()) {
-        walk(join(dir, e.name));
-      }
-    }
-  }
-  try {
-    const dir = harnessPath('prompts');
-    if (existsSync(dir)) walk(dir);
-  } catch {}
-  let roles = [...found].sort();
-  if (roles.length === 0) roles = ['orchestrator'];
-  _cache = { value: roles, expires: now + TTL_MS };
-  return roles;
+  return [...AGENT_ROLES];
 }
