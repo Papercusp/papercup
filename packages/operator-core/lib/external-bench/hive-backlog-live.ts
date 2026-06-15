@@ -339,10 +339,22 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
   //     model ($0, emits a bare tool-call instead of real work) → a meaningless number. The impartial-benchmark
   //     papercusp arm must run the SHIPPED system on its real model.
   //
-  // Only SET when unset, so a caller that deliberately wants the sandbox/another backend can override before
-  // the run. (Mirrors bench-harness-live.ts's `?? '0'` / `?? 'claude-code'` discipline.)
+  //   AGENT_CMD=claude -p — the LOAD-BEARING one for the bee path (confirmed at the first full-driver run).
+  //     The backend swap that turns PAPERCUSP_SPAWN_BACKEND into the real `claude -p` command reads it from
+  //     the SPAWN's extraEnv (harness-invoke-once.ts: `spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND`), NOT from
+  //     process.env — and the bee spawn path (executeBatch→spawnAgentInHarness) only sets that extraEnv key
+  //     when a TIER resolves a backend (we pass none). So a driver-spawned bee fell through to the default
+  //     base command `process.env.AGENT_CMD ?? CLAUDE ?? 'omp -p'` and ran omp (unconfigured here → 1-byte
+  //     output, $0, taskless) instead of claude — even though the direct-spawn probe (which set SPAWN_BACKEND
+  //     in extraEnv) ran claude and wrote a real diff. The robust fix for the bee path is to set AGENT_CMD
+  //     itself: buildInvokeOnce resolves the base command from `process.env.AGENT_CMD` (inherited by the
+  //     spawned child), so this pins the bee to `claude -p` directly — no extraEnv passthrough needed.
+  //
+  // Only SET when unset, so a caller that deliberately wants the sandbox/another backend/command can override
+  // before the run. (Mirrors bench-harness-live.ts's `?? '0'` / `?? 'claude-code'` discipline.)
   if (process.env.PAPERCUSP_FLEET_SANDBOX == null) process.env.PAPERCUSP_FLEET_SANDBOX = '0';
   if (process.env.PAPERCUSP_SPAWN_BACKEND == null) process.env.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
+  if (process.env.AGENT_CMD == null && process.env.CLAUDE == null) process.env.AGENT_CMD = 'claude -p';
 
   // Per-run state: instanceId → its clone/member handle + placement provenance. Closed over so the
   // ops are stateless from the orchestration's view (it threads opaque EnrolledTask handles).
@@ -469,7 +481,15 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
       //   - 'queen-ablated'→ ARRIVAL/backlog (enrollment) order — un-ranked, so the FIFO ablation is clean.
       // Enrollment order === arrival order (we enroll the backlog in req.backlog order), so the Map's
       // insertion order IS the arrival order. Importance order re-sorts by the seeded feature priority.
-      const members = [...state.values()];
+      // EXCLUDE already-placed members (beeId set): a member is placed once, then its bee self-claims its
+      // lone feature off the directive. Until that self-claim lands the feature still reads unassigned, so
+      // WITHOUT this guard the loop would re-place it every poll (a fresh bee each tick) before the first
+      // bee claims — the double-placement the post-spawn-claim used to (wrongly) prevent. The drain loop
+      // keeps the placed member alive via countInFlight (placed + non-terminal), so dropping it from the
+      // frontier here doesn't lose it. shared gatherFrontier ALSO drops it once the bee self-claims
+      // (wi.assignee set) — this is the belt; that's the suspenders.
+      const members = [...state.values()].filter((m) => m.beeId == null);
+      if (members.length === 0) return [] as unknown as BatchPlacementInput['tasks'];
       const ids =
         arm === QUEEN_ABLATED_ARM
           ? members.map((m) => m.workItemId) // arrival/backlog order — NOT importance-ranked (136a4 FIFO).
@@ -498,10 +518,9 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
       // placer. `parentSpawnId` is null (not an `s-…` owner), so the bees parent to the operator, not a
       // bee — correct for a scripted placement. If executeBatch later requires a real `s-…` parent owner
       // for the spawn-tree, mint a placeholder Queen spawn row first (same seam, one extra insert).
-      const [{ executeBatch }, { getSpawnHeadroom }, { claimWorkItem }] = await Promise.all([
+      const [{ executeBatch }, { getSpawnHeadroom }] = await Promise.all([
         import('../agent-tools/fleet/place_batch'),
         import('../fleet/operator-spawn'),
-        import('../work-items'),
       ]);
       const actor: AgentIdentity = {
         ownerId: homePrefix,
@@ -542,13 +561,15 @@ export function liveHiveBacklogOps(opts: LiveHiveBacklogOpts): HiveBacklogOps {
         if (p.action === 'spawned' || p.action === 'injected') {
           const disposition = p.action === 'spawned' ? ('spawn' as const) : ('warm-inject' as const);
           const beeId = p.spawn_id ?? p.bee ?? instanceId;
-          // CLAIM the feature to this bee's lane so `fleet:assignments { agent: <beeId> }` surfaces it as
-          // the bee's head-of-line work (warm-inject already claims; the fresh-spawn path does NOT, so the
-          // scripted loop must do it). taken_by=beeId also flips the feature out of the unassigned frontier
-          // so the next gatherFrontier stops re-placing it (the drain-loop terminator). Best-effort: a race
-          // where the bee self-claims first (off its FEATURE_ID + the directive) is fine — same end state.
-          if (st && (p.action === 'spawned' || p.action === 'injected')) {
-            await claimWorkItem(featureId, beeId, { harness: st.member }).catch(() => {});
+          // Record the placement in state. We deliberately do NOT pre-claim the feature to the bee here
+          // (confirmed at the first full-driver run that doing so HURT): a post-spawn `claimWorkItem` races
+          // the bee's own boot — and worse, once `taken_by=beeId` is set, the bee's directed
+          // `work_items:claim_next` (which requires `taken_by IS NULL`) finds nothing and the bee gives up
+          // taskless before its lane read settles. The bee SELF-claims its lone feature off the directive
+          // brief + FEATURE_ID (proven: the direct-spawn probe self-claimed and wrote a real 29-line diff).
+          // Double-placement is prevented by excluding already-placed members from the frontier (gatherFrontier
+          // below), and `st.beeId` set here is what flips this member to in-flight for the drain loop.
+          if (st) {
             st.beeId = beeId;
             st.placedAtMs = placedAtMs;
             st.disposition = disposition;
