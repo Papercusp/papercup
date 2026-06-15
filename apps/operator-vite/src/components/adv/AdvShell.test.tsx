@@ -227,6 +227,11 @@ describe('AdvShell — strip + header', () => {
     // defaults ON, so it shows. The test uses the real useFlag → FLAG_DEFAULTS.
     expect(screen.getAllByRole('tab')).toHaveLength(ADV_TABS.length - 1);
     expect(screen.queryByRole('tab', { name: 'overwatch' })).toBeNull();
+    // Tab-strip overflow affordance (owner ask 2026-06-15 #1): the scroll
+    // chevrons are wired into the strip (CSS reveals them only when clipped, so
+    // query the DOM directly rather than the a11y tree).
+    expect(document.querySelector('button.pc-advshell__tabnav--left')).toBeTruthy();
+    expect(document.querySelector('button.pc-advshell__tabnav--right')).toBeTruthy();
     // labels render lowercased in the trigger span
     expect(screen.getByRole('tab', { name: 'working' })).toBeTruthy();
     expect(screen.getByText('sub-harnesses')).toBeTruthy();

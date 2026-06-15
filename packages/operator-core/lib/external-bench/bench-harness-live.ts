@@ -231,12 +231,10 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
 /* The REAL binding — wires the established functions (the function map above). */
 /* -------------------------------------------------------------------------- */
 
-/** Statuses a feature lands in when its pipeline reached DONE (the worker/validator passed). */
+/** Statuses a feature lands in when its pipeline reached DONE (the worker/validator passed). The
+ *  director-loop DRIVE reads the spine's terminal verb, not these — this is the tie-break for a director
+ *  that emits `idle` (no next step) so a feature already in a DONE status resolves `done`, not `escalate`. */
 const DONE_STATUSES = new Set(['passed']);
-/** Statuses meaning the feature escalated / is blocked on a human — a terminal NON-done disposition. */
-const ESCALATE_STATUSES = new Set(['escalated', 'blocked']);
-/** DBOS workflow statuses that mean the feature's pipeline is still in flight (owns the feature). */
-const LIVE_PIPELINE_STATUSES = ['PENDING', 'ENQUEUED'];
 
 /** A short scratch slug for a throwaway bench harness: `xbench-<rand>` (lowercase alnum, schema-safe). */
 function scratchSlug(): string {
@@ -335,61 +333,148 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
     },
 
     async driveToDone({ handle, budget, timeoutMs, pollMs, workspaceId }) {
-      // DRIVE: start the durable pipeline for the single feature, then poll the feature's status + the
-      // pipeline's DBOS workflow rows until terminal-or-cap. This is the canonical "drive one feature to
-      // DONE" pattern (gym/wake-mode.ts:480 settle loop): a feature is settled when its status is terminal
-      // AND no PENDING/ENQUEUED pipeline workflow remains.
+      // DRIVE (the spawnInvokeOnce director-loop variant — P-009 pilot, confirmed at first run).
       //
-      // VERIFY-AT-FIRST-RUN (the one genuinely-uncertain integration): the durable pipeline is registered
-      // + enqueued only when the operator host runs with PAPERCUSP_DBOS_ORCHESTRATOR=1 (orchestrator-start.ts
-      // header) AND the invoke runner is wired (orchestrator-runner.ts:wireOrchestratorInvokeRunner). The
-      // pilot host satisfies both. If a future caller drives from a host WITHOUT DBOS, `ensureFeaturePipeline`
-      // has nothing to enqueue on and the feature never advances → this loop times out ('timeout'
-      // disposition, NOT a hang). Confirm at first run that the pilot host is DBOS-on; if a non-DBOS drive
-      // is ever needed, swap to a director-loop over `spawnInvokeOnce` (orchestrator-runner.ts) here —
-      // same seam, different body. The orchestration above is agnostic to which.
-      const { ensureFeaturePipeline } = await import('../dbos/orchestrator-start');
+      // ── WHY this variant (not `ensureFeaturePipeline`) ──────────────────────────────────────────────
+      // The durable-pipeline DRIVE (`ensureFeaturePipeline`) only advances a feature where DBOS background
+      // workers run (PAPERCUSP_DBOS_ORCHESTRATOR=1 + the invoke runner wired); from a plain `npx tsx`/MCP
+      // process it enqueues onto nothing and the feature never moves (poll → timeout). Booting a SECOND
+      // DBOS against the shared system DB is disallowed (it would contend the live operator's workflow
+      // tables). So for the pilot — and any non-DBOS host — we drive the SAME coding spine directly through
+      // `spawnInvokeOnce` (orchestrator-runner.ts), THE governed agent-spawn chokepoint that the durable
+      // pipeline's own role runner uses. This is the exact fallback the run-loop.ts function map + the prior
+      // `// VERIFY-AT-FIRST-RUN` note named ("a director loop over spawnInvokeOnce … same seam, different
+      // body"). NO second DBOS, no system-schema writes (the throwaway harness uses its own scratch schema
+      // that teardown DROPs), and the orchestration above (create→feed→drive→cost→teardown + the never-throws
+      // contract) is unchanged.
+      //
+      // ── The loop (a faithful port of featurePipelineImpl, orchestrator-workflow.ts:269) ─────────────
+      // Resolve the clone's spine from `.papercusp/blueprint.yaml` (external-bench `extends: coding`
+      // ⇒ decider `director`, the full scoper→architect→worker→validator→reviewer graph). Each turn:
+      //   1. spawn the decider (`spine.decider`) → it inspects the feature + emits a verb (NEXT_WORKER / … /
+      //      DONE / ESCALATE);  2. `deriveNext(spine, parseDecisionFor(verbs, output), featureId)` maps the
+      //   verb → the next PipelineAction;  3. dispatch the chosen role via `spawnInvokeOnce`. Repeat until a
+      //   terminal action (done/escalate), the iso-budget cap, the turn bound, or the wall-clock deadline.
+      // The budget is checked BEFORE every spawn from the live `agent_usage_samples` sum so a run that blows
+      // the cap stops promptly (real spend bounded even before a terminal verb).
+      const { spawnInvokeOnce } = await import('../dbos/orchestrator-runner');
+      const { buildPipelineExtraEnv } = await import('../dbos/orchestrator-spawn-env');
+      const { loadBlueprintFromFile } = await import('@papercusp/orchestrator/blueprint');
+      const { parseDecisionFor } = await import('@papercusp/orchestrator');
+      const { deriveNext } = await import('@papercusp/orchestrator/blueprint');
+      const { join } = await import('node:path');
+
       const sql = await sqlClient();
       const deadline = Date.now() + timeoutMs;
+      const projectDir = handle.worktreePath;
 
-      // Start (or reuse a live) pipeline. Idempotent under concurrency (workflow-id-as-claim).
-      await ensureFeaturePipeline(handle.slug, handle.featureId, workspaceId);
+      // The spine the clone declares (we wrote `.papercusp/blueprint.yaml` in createHarness). null → the
+      // built-in coding default would apply in the durable path, but here we need the file to resolve the
+      // decider + verbs, so a missing/invalid spine is a hard infra failure (the orchestration → 'error').
+      const bp = loadBlueprintFromFile(join(projectDir, '.papercusp', 'blueprint.yaml')).blueprint;
+      const spine = bp.spine;
+      const spineVerbs = Object.keys(spine.edges ?? {});
+      const deciderRole = spine.decider;
+      // The turn bound (runaway guard atop the iso-budget cap) — the spine's own maxTurns, env-overridable.
+      const maxTurns = Number(process.env.PAPERCUSP_DBOS_PIPELINE_MAX_TURNS ?? spine.maxTurns ?? 200);
 
-      while (Date.now() < deadline) {
-        await new Promise<void>((r) => setTimeout(r, pollMs));
+      // Extra env for every spawn: pin the registry slug (correct schema) + the captured workspace. The
+      // bench agent command defaults to `claude -p` (invoke-once's resolveAgentCmd) — the same backend the
+      // grader's native-arm smoke used — unless the caller overrides AGENT_CMD.
+      //
+      // PAPERCUSP_FLEET_SANDBOX=0: the claude-code spawn path is sandbox-DEFAULT-ON (invoke.ts P-013/D-015)
+      // and the bubblewrap sandbox sets up a private network namespace with a loopback iface. That
+      // `RTM_NEWADDR` requires CAP_NET_ADMIN, which a plain (non-DBOS, non-fleet) host like the pilot runner
+      // lacks → `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` and EVERY role invoke exits
+      // rc=1 with no output (confirmed at first real run: the director died this way → 'error' disposition,
+      // zero diff). The bench drive runs the throwaway clone WITHOUT the fleet sandbox — the clone is already
+      // an isolated scratch dir + scratch schema (teardown DROPs it), so the sandbox adds no isolation the
+      // bench run needs, and it's the one thing blocking the spawn here. (Matches the grader's working
+      // native-arm, which ran `claude` directly.) A caller that DOES want the sandbox can re-set it.
+      //
+      // PAPERCUSP_SPAWN_BACKEND=claude-code: PIN the bench arm to the Anthropic (Claude) backend. A
+      // throwaway harness inherits the host workspace's DEFAULT agent backend via readEffectiveHarnessConfig
+      // — and on a dev box that default can be a LOCAL self-hosted model (confirmed at first real run: the
+      // director ran on `qwen3.5:latest` / model_class=self, $0, and emitted a bare tool-call instead of a
+      // spine decision verb → parseDecisionFor found no verb → escalate, no code). The impartial-benchmark
+      // papercusp arm must run the SHIPPED coding system on its real model, not whatever local backend the
+      // box defaults to, or the number is meaningless. `PAPERCUSP_SPAWN_BACKEND` swaps the base command to
+      // that backend's default (`claude -p`) AND pins AGENT_BACKEND so every backend-keyed flag resolves
+      // right (buildInvokeOnce). Overridable: a caller pins a specific tier/model via the env before the run.
+      const extraEnv = {
+        ...buildPipelineExtraEnv({ harnessSlug: handle.slug, workspaceId }),
+        PAPERCUSP_FLEET_SANDBOX: process.env.PAPERCUSP_FLEET_SANDBOX ?? '0',
+        PAPERCUSP_SPAWN_BACKEND: process.env.PAPERCUSP_SPAWN_BACKEND ?? 'claude-code',
+        ...(process.env.PAPERCUSP_SPAWN_MODEL ? { PAPERCUSP_SPAWN_MODEL: process.env.PAPERCUSP_SPAWN_MODEL } : {}),
+      };
 
-        // Iso-budget cap (BRIEF 7): the GENERATION-side $/token ceiling. Read the live cost first so a
-        // run that blows the cap stops promptly (the cap bounds spend even before a terminal status).
+      // Read the live cost + bail if the iso-budget cap is already hit. Shared by the pre-decider and
+      // pre-dispatch guards so a cap-blowing run never spawns another agent.
+      const budgetExhausted = async (): Promise<boolean> => {
         const cost = await readBenchRunCost(sql, handle.slug, workspaceId).catch(
           () => ({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 }),
         );
-        if (budget.maxUsd != null && cost.costUsd >= budget.maxUsd) return { disposition: 'budget-exhausted' };
-        if (budget.maxTokens != null && cost.tokensIn + cost.tokensOut >= budget.maxTokens) {
-          return { disposition: 'budget-exhausted' };
+        if (budget.maxUsd != null && cost.costUsd >= budget.maxUsd) return true;
+        if (budget.maxTokens != null && cost.tokensIn + cost.tokensOut >= budget.maxTokens) return true;
+        return false;
+      };
+
+      let lastVerb = 'NONE';
+      for (let turn = 0; turn < maxTurns; turn++) {
+        if (Date.now() >= deadline) {
+          return { disposition: 'timeout', detail: `drive exceeded ${timeoutMs}ms (last verb=${lastVerb})` };
+        }
+        if (await budgetExhausted()) return { disposition: 'budget-exhausted', detail: `before decider turn ${turn}` };
+
+        // 1. The decider inspects the feature + emits the next verb. An empty/failed decide invoke is NOT a
+        //    clean terminal (parseDecisionFor('') → null → spine.default = idle would FALSE-SUCCEED with no
+        //    work) — surface it as an error disposition (the orchestration → 'error' telemetry, excluded).
+        const decide = await spawnInvokeOnce(projectDir, deciderRole, [`FEATURE_ID=${handle.featureId}`], extraEnv);
+        if (decide.exitCode !== 0 || !decide.output.trim()) {
+          return {
+            disposition: 'error',
+            detail: `decide invoke failed turn ${turn} (exit=${decide.exitCode}, empty=${!decide.output.trim()})${decide.stderr ? `: ${decide.stderr.slice(0, 300)}` : ''}`,
+          };
         }
 
-        // Read the feature's current status + whether a pipeline workflow is still in flight.
-        const [statusRows, liveRows] = await Promise.all([
-          sql<{ status: string }[]>`
+        const action = deriveNext(spine, parseDecisionFor(spineVerbs, decide.output), handle.featureId);
+
+        if (action.kind === 'terminal') {
+          if (action.outcome === 'done') return { disposition: 'done' };
+          if (action.outcome === 'escalate') return { disposition: 'escalate', detail: action.reason || 'escalated' };
+          // 'idle' — nothing to dispatch this turn; in a single-feature drive that means the spine has no
+          // next step (e.g. the director sees the feature already terminal). Treat as done iff the feature
+          // row is in a DONE status, else escalate (the director declined to advance it).
+          const [row] = await sql<{ status: string }[]>`
             SELECT status FROM harness_shared.harness_features_consolidated
              WHERE workspace_id = ${workspaceId} AND harness_slug = ${handle.slug}
-               AND feature_id = ${handle.featureId}
-             LIMIT 1`,
-          sql<{ n: number }[]>`
-            SELECT count(*)::int AS n FROM dbos.workflow_status
-             WHERE workflow_uuid LIKE ${'pipeline:' + handle.slug + ':' + handle.featureId + ':%'}
-               AND status = ANY(${LIVE_PIPELINE_STATUSES})`,
-        ]);
-        const status = statusRows[0]?.status ?? 'todo';
-        const pipelineInFlight = (liveRows[0]?.n ?? 0) > 0;
+               AND feature_id = ${handle.featureId} LIMIT 1`;
+          if (row && DONE_STATUSES.has(row.status)) return { disposition: 'done' };
+          return { disposition: 'escalate', detail: `director idle at status=${row?.status ?? 'unknown'}` };
+        }
+        if (action.kind === 'unsupported') {
+          // A global-only verb (parallel lanes / NEXT_HARNESS / CEO) the per-feature drive doesn't run.
+          return { disposition: 'escalate', detail: `unsupported verb ${action.verb}` };
+        }
 
-        // A non-done terminal (escalate/blocked) is terminal regardless of the pipeline rows (the feature
-        // won't advance without a human). DONE requires the pipeline to also have settled (the finalizer's
-        // curator/documenter ran) — exactly the gym settle predicate.
-        if (ESCALATE_STATUSES.has(status)) return { disposition: 'escalate', detail: `feature status=${status}` };
-        if (DONE_STATUSES.has(status) && !pipelineInFlight) return { disposition: 'done' };
+        // 2. dispatch the chosen role (worker / validator / reviewer / scoper / architect …).
+        if (Date.now() >= deadline) {
+          return { disposition: 'timeout', detail: `drive exceeded ${timeoutMs}ms before ${action.role}` };
+        }
+        if (await budgetExhausted()) {
+          return { disposition: 'budget-exhausted', detail: `before ${action.role} turn ${turn}` };
+        }
+        const dispatch = await spawnInvokeOnce(projectDir, action.role, action.extras, extraEnv);
+        if (dispatch.exitCode !== 0 && !dispatch.output.trim()) {
+          // A role that exits non-zero with NO output is an infra failure (throw-before-run); surface it.
+          return {
+            disposition: 'error',
+            detail: `${action.role} invoke failed turn ${turn} (exit=${dispatch.exitCode})${dispatch.stderr ? `: ${dispatch.stderr.slice(0, 300)}` : ''}`,
+          };
+        }
+        lastVerb = action.role.toUpperCase();
       }
-      return { disposition: 'timeout', detail: `feature did not settle within ${timeoutMs}ms` };
+      return { disposition: 'max-turns', detail: `feature did not settle within ${maxTurns} turns` };
     },
 
     async collectCost({ handle, workspaceId }) {

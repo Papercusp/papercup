@@ -1,0 +1,12 @@
+import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { stringify } from 'yaml';
+const dir = mkdtempSync(join(tmpdir(), 'xbspine-'));
+mkdirSync(join(dir, '.papercusp'), { recursive: true });
+writeFileSync(join(dir, '.papercusp', 'blueprint.yaml'), stringify({ id: 'xbench-test', extends: 'external-bench' }), 'utf8');
+const bp = loadBlueprintFromFile(join(dir, '.papercusp', 'blueprint.yaml')).blueprint;
+console.log('decider =', bp.spine.decider);
+console.log('maxTurns =', bp.spine.maxTurns);
+console.log('verbs =', Object.keys(bp.spine.edges ?? {}).join(','));

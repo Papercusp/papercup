@@ -21,7 +21,10 @@ Nothing here ARMS anything. B-04 is the behavior-neutral foundation: pure data +
 pure functions. The gate that consumes it (B-12), the policy store keyed on it
 (B-03), and the owner arming gate (P-092) are elsewhere. The migration ships with
 every category ceiling at **never-auto** (D-007), so the day it lands behavior is
-identical to today.
+identical to today. **Update (2026-06): the owner has since ARMED the policy — all
+13 categories now sit at ceiling `critical` (`autonomy:policy_get`), so
+`autonomy:decide` returns `auto` for the vast majority of actions. See
+`queen-autonomy-and-selffeed-fix-2026-06-15`.**
 </Aside>
 
 ## Why this exists (D-010)

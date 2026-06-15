@@ -196,8 +196,7 @@ export default function AdvShell({
   const updateTabOverflow = useCallback(() => {
     const list = tablistRef.current;
     if (!list) return;
-    const max = list.scrollWidth - list.clientWidth;
-    setTabOverflow({ left: list.scrollLeft > 1, right: list.scrollLeft < max - 1 });
+    setTabOverflow(tabOverflowState(list.scrollLeft, list.scrollWidth, list.clientWidth));
   }, []);
   useEffect(() => {
     const list = tablistRef.current;

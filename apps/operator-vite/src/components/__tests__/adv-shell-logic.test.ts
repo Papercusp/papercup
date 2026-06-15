@@ -14,7 +14,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ADV_TABS, type AdvTabId, buildHarnessSelectOptions, visibleAdvTabs } from '../adv/AdvShell';
+import {
+  ADV_TABS,
+  type AdvTabId,
+  buildHarnessSelectOptions,
+  visibleAdvTabs,
+  tabOverflowState,
+} from '../adv/AdvShell';
 
 // ─── ADV_TABS structural invariants ──────────────────────────────────────────
 
@@ -201,5 +207,26 @@ describe('harness route panel → tab mapping contract', () => {
     // Config tab retired → its legacy panel now lands on Settings.
     expect(EXPECTED_MAPPING.config).toBe('settings');
     expect(EXPECTED_MAPPING.docs).toBe('docs');
+  });
+});
+
+// ─── tab-strip overflow indicator (owner ask 2026-06-15 #1) ──────────────────
+describe('tabOverflowState', () => {
+  it('reports no overflow when the strip fits', () => {
+    expect(tabOverflowState(0, 400, 400)).toEqual({ left: false, right: false });
+  });
+  it('reports right-only overflow at the start of a clipped strip', () => {
+    // 900px of tabs in a 400px strip, scrolled to the start.
+    expect(tabOverflowState(0, 900, 400)).toEqual({ left: false, right: true });
+  });
+  it('reports left-only overflow scrolled fully to the end', () => {
+    expect(tabOverflowState(500, 900, 400)).toEqual({ left: true, right: false });
+  });
+  it('reports both sides when scrolled to the middle', () => {
+    expect(tabOverflowState(250, 900, 400)).toEqual({ left: true, right: true });
+  });
+  it('tolerates 1px sub-pixel rounding at both ends', () => {
+    expect(tabOverflowState(1, 900, 400)).toEqual({ left: false, right: true }); // ~start
+    expect(tabOverflowState(499, 900, 400)).toEqual({ left: true, right: false }); // ~end
   });
 });
