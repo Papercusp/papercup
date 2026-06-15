@@ -12,12 +12,14 @@
 //! P-011 grouping); kept here so the contract is locked from P-001.
 #![allow(dead_code)]
 
-/// The five owner-facing dock pane kinds. Mirrors `AGENT_PANE_KINDS` (backend).
-/// `Su` = the owner's own interactive psu session (progress-tab-agents-convergence
-/// P-005): visible in the colony ROSTER, never dock-paned.
+/// The six owner-facing dock pane kinds. Mirrors `AGENT_PANE_KINDS` (backend).
+/// `Overwatch` = the autonomous system-health supervisor, a sibling to the Queen
+/// (overwatch-role-2026-06-15 B-01). `Su` = the owner's own interactive psu session
+/// (progress-tab-agents-convergence P-005): visible in the colony ROSTER, never dock-paned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentPaneKind {
     Queen,
+    Overwatch,
     Bee,
     Sentinel,
     Planner,
@@ -30,6 +32,7 @@ impl AgentPaneKind {
     pub fn from_wire(s: &str) -> Option<Self> {
         match s {
             "queen" => Some(Self::Queen),
+            "overwatch" => Some(Self::Overwatch),
             "bee" => Some(Self::Bee),
             "sentinel" => Some(Self::Sentinel),
             "planner" => Some(Self::Planner),
@@ -47,6 +50,7 @@ impl AgentPaneKind {
     pub fn as_wire(self) -> &'static str {
         match self {
             Self::Queen => "queen",
+            Self::Overwatch => "overwatch",
             Self::Bee => "bee",
             Self::Sentinel => "sentinel",
             Self::Planner => "planner",
@@ -60,6 +64,7 @@ impl AgentPaneKind {
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Queen => "♛",
+            Self::Overwatch => "👁",
             Self::Bee => "🐝",
             Self::Sentinel => "🛡",
             Self::Planner => "📋",
@@ -73,6 +78,9 @@ impl AgentPaneKind {
         use ratatui::style::Color;
         match self {
             Self::Queen => Color::Magenta,
+            // Indigo (#6366f1) — mirrors the web AGENT_KIND table (theme.ts); distinct
+            // from the queen's magenta so the dock separates the two sibling auto-roles.
+            Self::Overwatch => Color::Rgb(99, 102, 241),
             Self::Bee => Color::Yellow,
             Self::Sentinel => Color::Cyan,
             Self::Planner => Color::Green,
@@ -90,11 +98,13 @@ impl AgentPaneKind {
         match self {
             Self::Sentinel => 0,
             Self::Queen => 1,
-            Self::Bee => 2,
-            Self::Planner => 3,
+            // Overwatch ranks right after the Queen — its sibling supervisor.
+            Self::Overwatch => 2,
+            Self::Bee => 3,
+            Self::Planner => 4,
             // su sessions are never dock-paned, but the roster sorts by rank —
             // the owner's own sessions list after the dock kinds.
-            Self::Su => 4,
+            Self::Su => 5,
         }
     }
 
@@ -104,7 +114,7 @@ impl AgentPaneKind {
     /// None for unglyphed names (the colony driver, bars, user panes).
     pub fn from_glyph_prefix(title: &str) -> Option<Self> {
         let t = title.trim_start();
-        [Self::Queen, Self::Bee, Self::Sentinel, Self::Planner, Self::Su]
+        [Self::Queen, Self::Overwatch, Self::Bee, Self::Sentinel, Self::Planner, Self::Su]
             .into_iter()
             .find(|&k| t.starts_with(k.glyph()))
     }
@@ -121,9 +131,10 @@ pub fn glyph_prefixed_title(base: &str, kind: Option<AgentPaneKind>) -> String {
     }
 }
 
-/// All kinds in display order — the order the legend and docs read (♛ 🐝 🛡 📋 🛠).
-pub const ALL_KINDS: [AgentPaneKind; 5] = [
+/// All kinds in display order — the order the legend and docs read (♛ 👁 🐝 🛡 📋 🛠).
+pub const ALL_KINDS: [AgentPaneKind; 6] = [
     AgentPaneKind::Queen,
+    AgentPaneKind::Overwatch,
     AgentPaneKind::Bee,
     AgentPaneKind::Sentinel,
     AgentPaneKind::Planner,
@@ -191,6 +202,7 @@ mod tests {
     fn pane_kind_wire_contract() {
         for (s, k) in [
             ("queen", AgentPaneKind::Queen),
+            ("overwatch", AgentPaneKind::Overwatch),
             ("bee", AgentPaneKind::Bee),
             ("sentinel", AgentPaneKind::Sentinel),
             ("planner", AgentPaneKind::Planner),
@@ -220,6 +232,7 @@ mod tests {
     fn pane_kind_glyph_and_color_are_distinct_per_kind() {
         let kinds = [
             AgentPaneKind::Queen,
+            AgentPaneKind::Overwatch,
             AgentPaneKind::Bee,
             AgentPaneKind::Sentinel,
             AgentPaneKind::Planner,
@@ -241,7 +254,8 @@ mod tests {
     fn group_rank_orders_sentinel_queen_bee_planner() {
         // P-011: the dock-stack group order — and every rank distinct.
         assert!(AgentPaneKind::Sentinel.group_rank() < AgentPaneKind::Queen.group_rank());
-        assert!(AgentPaneKind::Queen.group_rank() < AgentPaneKind::Bee.group_rank());
+        assert!(AgentPaneKind::Queen.group_rank() < AgentPaneKind::Overwatch.group_rank());
+        assert!(AgentPaneKind::Overwatch.group_rank() < AgentPaneKind::Bee.group_rank());
         assert!(AgentPaneKind::Bee.group_rank() < AgentPaneKind::Planner.group_rank());
         assert!(AgentPaneKind::Planner.group_rank() < AgentPaneKind::Su.group_rank());
     }
@@ -253,6 +267,7 @@ mod tests {
         assert_eq!(AgentPaneKind::from_glyph_prefix("♛ brain"), Some(AgentPaneKind::Queen));
         assert_eq!(AgentPaneKind::from_glyph_prefix("🛡 operator"), Some(AgentPaneKind::Sentinel));
         assert_eq!(AgentPaneKind::from_glyph_prefix("📋 planner · my-plan"), Some(AgentPaneKind::Planner));
+        assert_eq!(AgentPaneKind::from_glyph_prefix("👁 overwatch"), Some(AgentPaneKind::Overwatch));
         // Unglyphed (colony driver / user panes) → None.
         assert_eq!(AgentPaneKind::from_glyph_prefix("colony"), None);
         assert_eq!(AgentPaneKind::from_glyph_prefix("claude · ab12"), None);
@@ -279,8 +294,8 @@ mod tests {
                 k.color()
             );
         }
-        // Dim separators between entries (4 gaps for 5 kinds).
-        assert_eq!(line.spans.iter().filter(|s| s.content == " · ").count(), 4);
+        // Dim separators between entries (5 gaps for 6 kinds).
+        assert_eq!(line.spans.iter().filter(|s| s.content == " · ").count(), 5);
     }
 
     #[test]

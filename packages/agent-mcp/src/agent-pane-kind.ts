@@ -12,6 +12,11 @@
  * The four owner-facing pane kinds (the zellij dock tabs the owner sees):
  *   - queen     — the autonomous brain: the `psu --brain` session, driven by the
  *                 cadence loop + events (D-006). Auto-injected by default.
+ *   - overwatch — the autonomous system-health SUPERVISOR, a sibling to the Queen
+ *                 (overwatch-role-2026-06-15 C-2 / B-01): cadence-woken like the Queen
+ *                 (driveMode auto), but it WATCHES + NUDGES the running system rather
+ *                 than placing work. Its own dock pane-kind so the roster separates it
+ *                 from the Queen.
  *   - bee       — a system-driven worker/role agent: the generic `bee`, the
  *                 pipeline roles (scoper…curator), AND the read-mostly fleet
  *                 `sentinel` WATCHER role + the other cross-cutting roles. Auto.
@@ -36,7 +41,7 @@
  * mode (D-005) can still flip an `auto` agent to manual at runtime.
  */
 
-export const AGENT_PANE_KINDS = ['queen', 'bee', 'sentinel', 'planner', 'su'] as const;
+export const AGENT_PANE_KINDS = ['queen', 'overwatch', 'bee', 'sentinel', 'planner', 'su'] as const;
 export type AgentPaneKind = (typeof AGENT_PANE_KINDS)[number];
 
 export const DRIVE_MODES = ['auto', 'responsive'] as const;
@@ -60,6 +65,8 @@ export type AgentLaunchHint = 'brain' | 'planner' | undefined;
  * Precedence (most specific first):
  *   1. brain launch OR the `brain` principal role OR the registered `queen`
  *      role (the hive blueprint's placement decider) → queen / auto
+ *   1b. overwatch role        → overwatch / auto   (the system-health supervisor, a
+ *                              cadence-woken sibling to the Queen — overwatch-role B-01)
  *   2. planner launch/role   → planner / responsive
  *   3. operator role         → sentinel / responsive   (the owner-facing persona)
  *   4. oracle role           → sentinel / responsive   (a responsive Q&A chat)
@@ -81,6 +88,11 @@ export function classifyAgentPane(input: {
   // arm and glyphed 🐝).
   if (input.launch === 'brain' || role === 'brain' || role === 'queen') {
     return { kind: 'queen', driveMode: 'auto' };
+  }
+  // The overwatch is the Queen's sibling supervisor — cadence-woken (auto), but its OWN
+  // pane kind so the roster/dock separates it from the Queen (overwatch-role-2026-06-15 B-01).
+  if (role === 'overwatch') {
+    return { kind: 'overwatch', driveMode: 'auto' };
   }
   if (input.launch === 'planner' || role === 'planner') {
     return { kind: 'planner', driveMode: 'responsive' };

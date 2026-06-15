@@ -190,7 +190,10 @@ const post = defineTool({
           const hydration = await assembleSpawnHydration({
             harness: harnessSlug,
             featureId: feature ?? undefined,
-            planSlug: plan ?? undefined,
+            // Honor the role's `consumes.plan` contract for the handoff's plan SLICE,
+            // exactly as the full planContext above does: a non-plan-consuming role
+            // gets predecessor handoff + roster + carry-note, but no plan slice.
+            planSlug: plan && consumes.plan !== 'none' ? plan : undefined,
             workItemId: feature ?? undefined,
             workspaceId: workspace,
             deps: productionSpawnHydrationDeps(),

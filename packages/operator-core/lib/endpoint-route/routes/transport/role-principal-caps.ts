@@ -46,6 +46,36 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'activity:read',
     'search:read',
   ],
+  // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
+  // C-2 / B-01; a sibling to the Queen, the sense→decide→act actuator the watchdog lacks).
+  // READ-EVERYTHING + NUDGE/OBSERVE/ESCALATE ONLY. Like the sentinel its only world-writes
+  // are coord:write (coord:send nudge / coord:escalate / improvements:capture observation),
+  // but its READ surface is broader — the whole running system: the work frontier
+  // (work_items:read → work_items:list, fleet:assignments/tree), the Queen + watchdog +
+  // gateway health (harness:read → hive:status, harness:health/escalation), the ledgers +
+  // rate-governor + gym-experiment telemetry (intel:read → decision_ledger,
+  // dev:rate_governor_status, change_ledger), the plan state (plans:read), recent app
+  // notifications (notifications:read → notifications:recent), activity (activity:read),
+  // and search (search:read) to ground its nudges. PLUS messages:write so it can forward a
+  // directive to a specific agent (messages:send). DELIBERATELY WITHOUT work_items:write /
+  // harness:write / plans:write / routines:write / fleet:spawn / processes:kill: it NUDGES
+  // the Queen to re-place, it never re-places/edits/restarts (D-001/D-002). The capability
+  // ENVELOPE (capability-envelope/policy.ts ROLE_ENVELOPES.overwatch) ALSO denies
+  // capability:fs-write + capability:bash — it cannot edit code. TWO-GATE REALITY: these
+  // caps are paired with adding `overwatch` to each tool's `agentRoles` (COORD_ROLES + the
+  // explicit notifications/dev:rate_governor/plans/search/harness/activity allowlists).
+  overwatch: [
+    'coord:read',
+    'coord:write', // nudge/observe/escalate only: coord:send / coord:escalate / improvements:capture
+    'work_items:read',
+    'harness:read',
+    'intel:read',
+    'plans:read',
+    'notifications:read',
+    'activity:read',
+    'search:read',
+    'messages:write', // messages:send — forward a directive to a specific agent
+  ],
   // The Pot's decider (autoloop-pot-operator-rebuild-2026-06-05 P-004,
   // D-001/D-003): the `pot` launch blueprint wakes the `operator` role to
   // survey the blackboard (work_items frontier, curation feed, activity

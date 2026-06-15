@@ -27,7 +27,9 @@ import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
 
-const ALL_ROLES = [...SU_ROLES, 'promote'] as const;
+// + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
+// plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
+const ALL_ROLES = [...SU_ROLES, 'promote', 'overwatch'] as const;
 
 const argsSchema = z.object({
   harness: harnessArg,

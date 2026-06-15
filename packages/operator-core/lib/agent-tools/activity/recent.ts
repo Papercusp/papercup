@@ -16,7 +16,8 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 
-const ALL_ROLES = [...SU_ROLES, 'sentinel'] as const;
+// + overwatch (overwatch-role-2026-06-15 B-01): reads recent activity to sense drift.
+const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;

@@ -37,6 +37,7 @@ export default defineConfig({
         section('Agents', 'agents'),
         section('Agent Spawning', 'agent-spawning'),
         section('Agent Insights', 'agent-insights'),
+        section('Benchmarks', 'benchmarks'),
         section('Build System', 'build-system'),
         section('Data Sync', 'data-sync'),
         section('Design', 'design'),

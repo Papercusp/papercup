@@ -9,7 +9,8 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getHealth } from '../../harness-readers';
 
-const ALL_ROLES = [...SU_ROLES, 'sentinel'] as const;
+// + overwatch (overwatch-role-2026-06-15 B-01): the supervisor reads harness health.
+const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
 
 export default defineTool({
   name: 'harness:health',

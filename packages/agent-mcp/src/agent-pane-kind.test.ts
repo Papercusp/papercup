@@ -58,6 +58,13 @@ describe('classifyAgentPane', () => {
     expect(classifyAgentPane({ role: 'queen' })).toEqual({ kind: 'queen', driveMode: 'auto' });
   });
 
+  it('the `overwatch` role → overwatch/auto (its own kind, a Queen sibling — B-01)', () => {
+    // Cadence-woken like the Queen (auto), but its OWN pane kind so the roster
+    // separates the system-health supervisor from the placement Queen.
+    expect(classifyAgentPane({ role: 'overwatch' })).toEqual({ kind: 'overwatch', driveMode: 'auto' });
+    expect(classifyAgentPane({ role: 'OVERWATCH' }).kind).toBe('overwatch');
+  });
+
   it("the owner's psu sessions → su/responsive, NOT the bee fallback (P-005)", () => {
     // Explicit role.
     expect(classifyAgentPane({ role: 'su' })).toEqual({ kind: 'su', driveMode: 'responsive' });
@@ -84,8 +91,8 @@ describe('classifyAgentPane', () => {
     }
   });
 
-  it('exposes exactly the five kinds + two modes', () => {
-    expect(AGENT_PANE_KINDS).toEqual(['queen', 'bee', 'sentinel', 'planner', 'su']);
+  it('exposes exactly the six kinds + two modes', () => {
+    expect(AGENT_PANE_KINDS).toEqual(['queen', 'overwatch', 'bee', 'sentinel', 'planner', 'su']);
     expect(DRIVE_MODES).toEqual(['auto', 'responsive']);
   });
 });

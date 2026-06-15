@@ -5,6 +5,7 @@ import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
 import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
 import LearningTab from '../../components/adv/LearningTab';
 import AdvFramesTab from '../../components/adv/AdvFramesTab';
+import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
@@ -36,6 +37,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'learning') return 'Learning';
   if (tab === 'harnesses') return 'Working';
   if (tab === 'frames') return 'Frames';
+  if (tab === 'evals') return 'Evaluation';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
     return ADV_HARNESS_PANEL_LABELS[tab as keyof typeof ADV_HARNESS_PANEL_LABELS];
   }
@@ -56,6 +58,10 @@ function renderAdvTab(tab: AdvTabId) {
       // Swarm live view — per-agent-display thumbnails from deployed frames
       // (hive-frame-desktops-live-view P-006).
       return <AdvFramesTab />;
+    case 'evals':
+      // Evaluation — the impartial-benchmark surface (External benchmarks |
+      // Internal trends | Report) (impartial-benchmark-suite-2026-06-15 D-007).
+      return <AdvEvalsTab />;
     case 'brainstorm':
     case 'prs':
     case 'insights':

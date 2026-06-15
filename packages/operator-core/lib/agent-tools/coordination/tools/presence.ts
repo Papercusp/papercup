@@ -13,6 +13,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { listPresence, sweepStalePresence } from '../presence';
 import { listFederatedPresence } from '../federated-presence';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from '../presence-tier1';
+import { toStableRosterRow } from '../presence-payload';
 import { COORD_ROLES } from '../roles';
 
 /** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
@@ -123,10 +124,15 @@ export default defineTool({
             ...(hiveId ? { hive: hiveId } : {}),
             ...(scopeNote ? { scope_note: scopeNote } : {}),
             summary: { active: active.length, stale: stale.length, federated: federated.length },
-            active: activeEnriched,
+            // P-009 (D-005/D-006): emit each row through the two-lane partition —
+            // identity + state (the byte-stable, delta-eligible payload) + the one
+            // liveness scalar (lastActiveSecAgo). The raw churning timestamps
+            // (heartbeat_at/last_active_at) are dropped; the identity+state portion
+            // of an unchanged agent serializes byte-identically across reads.
+            active: activeEnriched.map(toStableRosterRow),
             // Stale rows are almost always dead sessions; returning all of them
             // is what overflowed the token limit (233 rows). Summarise by default.
-            ...(args.include_stale ? { stale } : {}),
+            ...(args.include_stale ? { stale: stale.map(toStableRosterRow) } : {}),
           }),
         },
       ],

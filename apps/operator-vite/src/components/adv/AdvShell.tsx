@@ -19,6 +19,7 @@ import {
   Settings,
   Share2,
   TrendingUp,
+  Trophy,
 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
@@ -31,7 +32,7 @@ import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-
 import { useLexicon } from '@/lib/useLexicon';
 import { useShortcutAction } from '@/lib/hotkeys';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -64,6 +65,10 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'insights', label: 'Insights', icon: TrendingUp, accent: '#14b8a6', accentRgb: '20, 184, 166' },
   { id: 'conversations', label: 'Conversations', icon: MessageCircle, accent: '#ec4899', accentRgb: '236, 72, 153' },
   { id: 'learning', label: 'Learning', icon: GraduationCap, accent: '#34d399', accentRgb: '52, 211, 153' },
+  // Evaluation — the impartial-benchmark surface (impartial-benchmark-suite-2026-06-15
+  // D-007). Workspace-scoped (aggregates external benchmark runs across the whole
+  // workspace, not one pot), so it also lives in WORKSPACE_TAB_IDS below.
+  { id: 'evals', label: 'Evaluation', icon: Trophy, accent: '#eab308', accentRgb: '234, 179, 8' },
   { id: 'settings', label: 'Settings', icon: Settings, accent: '#f97316', accentRgb: '249, 115, 22' },
 ] as const;
 
@@ -85,6 +90,9 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   // Swarm live view aggregates every deployed frame in the workspace
   // (hive-frame-desktops-live-view P-006).
   'frames',
+  // Evaluation aggregates external-benchmark runs (all arms × suites) across the
+  // whole workspace — it is not a per-pot view (impartial-benchmark-suite D-007).
+  'evals',
 ]);
 
 /** The tab strip for a scope: full strip for a single pot, workspace-level subset under "All Pots". */

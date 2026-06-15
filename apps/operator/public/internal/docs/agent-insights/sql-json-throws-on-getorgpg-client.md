@@ -32,6 +32,8 @@ await sql`SELECT ${sql.json({a:1})}::jsonb`;            // ❌ throws
 await sql`SELECT ${JSON.stringify({a:1})}::jsonb`;      // ✅ works
 ```
 
+**Exact failure point (from the throw's stack):** `Buffer.byteLength(<object>)` inside postgres-js's `Bind` → `reset.str`, in the **CJS build** (`node_modules/postgres/cjs/src/connection.js`, the `prepare:false` `ParameterDescription` path) — the `sql.json` Parameter reaches `Bind` un-serialized. getOrgPg's client resolves the **CJS** build; a fresh `import postgres from 'postgres'` resolves the **ESM** build (`src/`) and serializes the same Parameter correctly. Two builds of one version loaded together is the dual-package hazard. The "true root fix" (dedupe so getOrgPg uses a single build) is deliberately **not** pursued: `${JSON.stringify(x)}::jsonb` is universally correct and enforced by `scripts/check-no-sql-json.mjs`, so restoring `sql.json` has no upside.
+
 ## Fix
 
 Bind jsonb as a JSON **string** cast to jsonb — portable across every client:

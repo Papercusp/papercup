@@ -112,6 +112,34 @@ describe('evaluateCapabilityEnvelope — bee write-capable (confinement LIFTED 2
   });
 });
 
+describe('evaluateCapabilityEnvelope — overwatch read+nudge confinement (overwatch-role-2026-06-15 B-01 / D-002)', () => {
+  const ow = (capabilities: readonly string[], toolName = 't') =>
+    evaluateCapabilityEnvelope({ toolName, capabilities, ctx: { role: 'overwatch' } });
+
+  it('DENIES capability:fs-write for the overwatch (it nudges + observes, it never edits code)', () => {
+    const d = ow(['capability:fs-write'], 'capability:write');
+    expect(d.applied).toBe(true);
+    expect(d.withinEnvelope).toBe(false);
+    expect(d.reason).toContain('overwatch');
+  });
+
+  it('DENIES capability:bash for the overwatch (no shell — it acts on AGENTS, never on the box)', () => {
+    expect(ow(['capability:bash'], 'capability:bash').withinEnvelope).toBe(false);
+  });
+
+  it('leaves its read + nudge/observe plane open (coord:write nudges, messages:write directives, reads)', () => {
+    for (const cap of ['coord:write', 'messages:write']) {
+      expect(ow([cap]).withinEnvelope, `${cap} should stay within the overwatch envelope`).toBe(true);
+    }
+    expect(ow(['capability:fs-read'], 'capability:read').withinEnvelope).toBe(true);
+  });
+
+  it('STILL denies the universal protected set (the floor holds for the watcher too)', () => {
+    expect(ow(['secrets:read:x']).withinEnvelope).toBe(false);
+    expect(ow(['processes:kill']).withinEnvelope).toBe(false);
+  });
+});
+
 describe('envelope constants', () => {
   it('FLEET_ENVELOPE_ROLES excludes the chat roles but includes the autonomous fleet', () => {
     expect(FLEET_ENVELOPE_ROLES.has('operator')).toBe(false);

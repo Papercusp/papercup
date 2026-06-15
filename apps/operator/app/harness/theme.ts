@@ -154,6 +154,9 @@ const _AGENT_KIND_TABLE = {
   sentinel: { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',  text: '#6ee7b7', label: 'Sentinel' },
   planner:  { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)',  text: '#d8b4fe', label: 'Planner' },
   su:       { solid: '#ec4899', bg: 'rgba(236,72,153,0.15)',  text: '#f9a8d4', label: 'SU' },
+  // overwatch-role-2026-06-15 B-01: the autonomous system-health supervisor (a sibling to
+  // the Queen). Indigo — distinct from the queen's amber so the roster separates them.
+  overwatch: { solid: '#6366f1', bg: 'rgba(99,102,241,0.15)',  text: '#a5b4fc', label: 'Overwatch' },
 } as const;
 
 export const AGENT_KIND = new Proxy(_AGENT_KIND_TABLE as Record<string, StatusMeta>, {

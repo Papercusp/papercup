@@ -9,6 +9,7 @@
 import type { Sql } from 'postgres';
 import type { VariantOverlay } from './variant-overlay';
 import type { GymScore } from './judge';
+import { assertGymTaskNotContaminated } from './report-set-firewall';
 
 export interface VariantRow {
   variantId: string;
@@ -37,9 +38,24 @@ export interface TaskRow {
   intent: string;
   plantedBug?: unknown;
   generatedBy?: string;
+  /**
+   * The declared source set this task came from (e.g. 'gym-synthetic'). Vetted by the
+   * gym↔report-set firewall (P-012): a report-on benchmark set is refused here so the gym
+   * can never tune on a set the impartial suite reports on. See report-set-firewall.ts.
+   */
+  sourceSet?: string;
 }
 
 export async function insertTask(sql: Sql, t: TaskRow): Promise<void> {
+  // Firewall (P-012/D-005): refuse any task that originates from a report-on benchmark set
+  // BEFORE it can enter the gym corpus — this is the single ingestion choke point.
+  assertGymTaskNotContaminated({
+    taskId: t.taskId,
+    repoUrl: t.repoUrl,
+    repoCommit: t.repoCommit,
+    sourceSet: t.sourceSet,
+    generatedBy: t.generatedBy,
+  });
   await sql`
     INSERT INTO harness_gym.gym_tasks (task_id, pool, repo_url, repo_commit, spec, intent, planted_bug, generated_by)
     VALUES (${t.taskId}, ${t.pool}, ${t.repoUrl}, ${t.repoCommit}, ${t.spec}, ${t.intent},

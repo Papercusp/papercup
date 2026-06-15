@@ -22,6 +22,10 @@ describe('COORD_ROLES', () => {
     expect(COORD_ROLES).toContain('sentinel');
   });
 
+  test('overwatch is a coord role (overwatch-role-2026-06-15 B-01 — coord:send/escalate + improvements:capture + topics:feed resolve for an overwatch URL)', () => {
+    expect(COORD_ROLES).toContain('overwatch');
+  });
+
   test('the pipeline + chat coord roles are all present (catches an accidental removal)', () => {
     for (const role of [
       'scoper',

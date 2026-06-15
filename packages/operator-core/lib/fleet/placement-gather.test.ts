@@ -63,6 +63,38 @@ describe('workItemToTask — payload → PlacementTask mapping', () => {
   });
 });
 
+describe('pickBeeRecentActivityMs — genuine recent-activity for affinity, never the keepalive heartbeat (P-015 / presence-v2 D-003)', () => {
+  const PRES = '2026-06-14T12:00:00.000Z';
+  const presMs = Date.parse(PRES);
+
+  it('prefers presence last_active_at over the nursery fallback', () => {
+    expect(pickBeeRecentActivityMs(PRES, 999)).toBe(presMs);
+  });
+
+  it('falls back to the nursery activity ts when there is no presence row yet (just-spawned bee)', () => {
+    expect(pickBeeRecentActivityMs(null, 12345)).toBe(12345);
+    expect(pickBeeRecentActivityMs(undefined, 12345)).toBe(12345);
+  });
+
+  it('returns null when neither a presence last_active_at nor a nursery ts is available', () => {
+    expect(pickBeeRecentActivityMs(null, null)).toBeNull();
+    expect(pickBeeRecentActivityMs(undefined, null)).toBeNull();
+  });
+
+  it('ignores an unparseable presence last_active_at and uses the nursery fallback', () => {
+    expect(pickBeeRecentActivityMs('not-a-date', 777)).toBe(777);
+    expect(pickBeeRecentActivityMs('not-a-date', null)).toBeNull();
+  });
+
+  it('REGRESSION (P-015): a parked-but-alive bee scores on its REAL last activity, not a fresh keepalive heartbeat', () => {
+    // The keepalive heartbeat is no longer even an input to recent-activity. A bee
+    // whose process is kept alive (heartbeat fresh) but did real work an hour ago
+    // must rank on that hour-old last_active_at — not read as just-now active.
+    const hourAgo = '2026-06-14T11:00:00.000Z';
+    expect(pickBeeRecentActivityMs(hourAgo, /* nursery */ null)).toBe(Date.parse(hourAgo));
+  });
+});
+
 describe('partitionTasksByReadiness — blocked_by gate over the placement frontier (P-030)', () => {
   const task = (id: string, harness: string): PlacementTask => ({ id, harness, title: id });
 

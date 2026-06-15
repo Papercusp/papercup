@@ -89,6 +89,56 @@ describe('loadRoleCapabilities', () => {
     });
   });
 
+  // ── overwatch — the autonomous system-health supervisor (overwatch-role-2026-06-15 C-2 / B-01) ──
+  describe('overwatch — the read-everything + nudge/observe/escalate surface', () => {
+    test("overwatch's WATCH+NUDGE contract is reachable: broad read caps + coord:write, AND the watcher tools allowlist it", async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'overwatch');
+      // The broad read surface it senses the whole system with.
+      for (const c of [
+        'coord:read',
+        'harness:read',
+        'work_items:read',
+        'intel:read',
+        'plans:read',
+        'notifications:read',
+        'activity:read',
+        'search:read',
+      ]) {
+        expect(caps.has(c), `overwatch missing read cap ${c}`).toBe(true);
+      }
+      // The nudge/observe/escalate channel + the directed-message channel.
+      expect(caps.has('coord:write')).toBe(true); // coord:send / coord:escalate / improvements:capture
+      expect(caps.has('messages:write')).toBe(true); // messages:send
+      // The two-gate other half — the read+nudge tools must allowlist overwatch, else the
+      // caps are INERT (the bee/scanner/sentinel lesson). One representative per gate kind:
+      const { default: hiveStatus } = await import('../../../agent-tools/hive/status.js');
+      expect(hiveStatus.agentRoles).toContain('overwatch'); // via COORD_ROLES
+      const { default: governor } = await import('../../../agent-tools/dev/rate_governor_status.js');
+      expect(governor.agentRoles).toContain('overwatch'); // explicit allowlist
+      const { default: notifications } = await import('../../../agent-tools/operator/notifications_recent.js');
+      expect(notifications.agentRoles).toContain('overwatch'); // [...SU_ROLES, 'overwatch']
+      const { default: capture } = await import('../../../agent-tools/improvements/capture.js');
+      expect(capture.agentRoles).toContain('overwatch'); // via COORD_ROLES — observations land
+    });
+
+    test('overwatch is READ + NUDGE only: no work/harness/plan/routine WRITE caps (nudge the Queen, never re-place — D-001)', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'overwatch');
+      expect(caps.has('work_items:write')).toBe(false);
+      expect(caps.has('harness:write')).toBe(false);
+      expect(caps.has('plans:write')).toBe(false);
+      expect(caps.has('routines:write')).toBe(false);
+    });
+
+    test('overwatch is carved OUT of placement/optimization (fleet:spawn + gym:judge — D-001/D-002)', async () => {
+      const { default: spawn } = await import('../../../agent-tools/fleet/spawn.js');
+      expect(spawn.agentRoles).not.toContain('overwatch'); // placement is the Queen's; it NUDGES her
+      const { default: judge } = await import('../../../agent-tools/gym/judge.js');
+      expect(judge.agentRoles).not.toContain('overwatch'); // not a gym evaluator (gates on harness:read it holds)
+      // ...but the Queen (operator) still places.
+      expect(spawn.agentRoles).toContain('operator');
+    });
+  });
+
   test('an ordinary pipeline role with no row gets ONLY the universal tool-discovery cap (least-privilege)', async () => {
     // Pre-change this was the empty set. `agent_tools:list` is declared
     // ALL_ROLES + requirePrincipal:false and every pipeline-role persona instructs

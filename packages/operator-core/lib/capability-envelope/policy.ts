@@ -78,7 +78,21 @@ export interface RoleEnvelope {
  * the validator/reviewer pipeline + tests — not a capability wall. Re-add a
  * `bee` entry here to re-confine. Live behind `papercusp-capability-envelope`.
  */
-export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {};
+export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
+  // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
+  // C-2 / B-01 + D-002). It READS the whole system and NUDGES/OBSERVES/ESCALATES
+  // (coord:send / coord:escalate / improvements:capture / messages:send), but it must
+  // NEVER edit code or run a shell — it tells the Queen/bees what to do, it doesn't act
+  // on WORK itself (D-001). So, mirroring the lifted `bee` read-only confinement
+  // (EI-524), deny the write+exec capabilities at the envelope layer. (Its
+  // BLUEPRINT_ROLE_CAPS grant already omits work_items:write/harness:write/plans:write,
+  // so this is the explicit belt: even a tool that asks for fs-write/bash is refused.)
+  // The structural-action DECISION gate (restart a routine, flip a flag, kill a proc) is
+  // B-06's autonomy-policy wiring, distinct from this static capability wall.
+  overwatch: {
+    denyCapabilities: ['capability:fs-write', 'capability:bash'],
+  },
+};
 
 export interface EnvelopeDecision {
   /** false ⇒ beyond the envelope (a protected / denied capability). */

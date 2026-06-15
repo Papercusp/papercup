@@ -45,3 +45,8 @@ import './ops/iq-battery-gen.js';
 // whole-Hive runs over the seeded scenario corpus (internal to the op) → HE-06 score +
 // persist to its OWN tables. Also gated on the owner-set budgetUsd; live runner P-051.
 import './ops/hive-eval-gen.js';
+// impartial-benchmark-suite-2026-06-15 (P-019, BRIEF 2): the IMPARTIAL third-party
+// benchmark runner — det budget-gate → per public task, spin a throwaway `coding`
+// harness → extract diff → the benchmark's OWN external grader → run-result rows
+// (internal to the op; the adapter is BRIEF 3 / P-005). On-demand, not scheduled.
+import './ops/external-bench-run.js';
