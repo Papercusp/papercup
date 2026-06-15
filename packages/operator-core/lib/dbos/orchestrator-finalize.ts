@@ -83,6 +83,11 @@ export interface FinalizationPlanInput {
   acceptanceKind?: 'tests' | 'judge' | 'human-gate' | 'none';
   /** human-gate only: whether the human acceptance approval has been granted. */
   acceptanceApproved?: boolean;
+  /** The blueprint's `output.kind` (hive-blueprint-generalization P-010) — where a finished
+   *  deliverable LANDS. `repo-commit` (the coding default) / undefined ⇒ unchanged (no extra);
+   *  `artifacts` / `external-action` / `work-item-payload` ⇒ the output-producing finalize
+   *  roles get an `OUTPUT_KIND=<kind>` extra so the documenter routes to that sink. */
+  outputKind?: 'repo-commit' | 'artifacts' | 'external-action' | 'work-item-payload';
 }
 
 export interface FinalizationPlan {
@@ -97,10 +102,22 @@ export interface FinalizationPlan {
  * shape: curator gets `TRIGGER` only (+ `REASON` on escalate); every other role
  * also gets `FEATURE_ID` (the documenter needs it; P-023).
  */
-function finalizeRoleExtras(role: string, outcome: 'done' | 'escalate', featureId: string, reason?: string): string[] {
+function finalizeRoleExtras(
+  role: string,
+  outcome: 'done' | 'escalate',
+  featureId: string,
+  reason?: string,
+  outputKind?: FinalizationPlanInput['outputKind'],
+): string[] {
   const extras = [`TRIGGER=${outcome}`];
   if (role !== 'curator') extras.push(`FEATURE_ID=${featureId}`);
   if (outcome === 'escalate') extras.push(`REASON=${reason ?? ''}`);
+  // P-010: a non-repo-commit output sink is announced to the output-producing roles (the
+  // documenter) so they route the deliverable to artifacts / external-action / the work-item
+  // payload instead of a repo commit. repo-commit / undefined ⇒ no extra (legacy unchanged).
+  if (role !== 'curator' && outputKind && outputKind !== 'repo-commit') {
+    extras.push(`OUTPUT_KIND=${outputKind}`);
+  }
   return extras;
 }
 
@@ -113,7 +130,11 @@ function recipeEntryToStep(
   if (entry === 'archive') return input.archiveOnDone ? { kind: 'archive' } : null;
   if (entry === 'postCuratorOutputs') return { kind: 'postCuratorOutputs' };
   if (FINALIZE_STEP_NAMES.has(entry)) return null; // unknown finalize-step name → skip
-  return { kind: 'invoke', role: entry, extras: finalizeRoleExtras(entry, outcome, input.featureId, input.reason) };
+  return {
+    kind: 'invoke',
+    role: entry,
+    extras: finalizeRoleExtras(entry, outcome, input.featureId, input.reason, input.outputKind),
+  };
 }
 
 /**
@@ -155,7 +176,7 @@ export function planFinalization(input: FinalizationPlanInput): FinalizationPlan
     steps.push({
       kind: 'invoke',
       role: 'acceptance-judge',
-      extras: finalizeRoleExtras('acceptance-judge', 'done', input.featureId, input.reason),
+      extras: finalizeRoleExtras('acceptance-judge', 'done', input.featureId, input.reason, input.outputKind),
     });
   }
   for (const entry of recipe.onDone) {

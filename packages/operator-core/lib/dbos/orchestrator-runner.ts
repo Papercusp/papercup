@@ -620,6 +620,23 @@ function harnessAcceptanceKind(projectDir: string): 'tests' | 'judge' | 'human-g
   }
 }
 
+/**
+ * The harness blueprint's `output.kind` (hive-blueprint-generalization P-010), read from
+ * `.papercusp/blueprint.yaml`. Undefined for a pre-blueprint / coding harness (⇒ repo-commit
+ * default, no OUTPUT_KIND extra), so the finalizer is behavior-preserving there.
+ */
+function harnessOutputKind(
+  projectDir: string,
+): 'repo-commit' | 'artifacts' | 'external-action' | 'work-item-payload' | undefined {
+  try {
+    const f = join(projectDir, '.papercusp', 'blueprint.yaml');
+    if (!existsSync(f)) return undefined;
+    return loadBlueprintFromFile(f).blueprint.output?.kind;
+  } catch {
+    return undefined;
+  }
+}
+
 // Audit P-036: the debugger gate runs on every pipeline invocation past the
 // attempt threshold — opening (and tearing down) a fresh postgres() pool each
 // time burned a connection slot + startup round-trips per spawn. Cache one
@@ -830,6 +847,8 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
     // hive-blueprint-generalization P-009: the acceptance model gates DONE — undefined for
     // a coding/pre-blueprint harness, so this is a no-op there (behavior-preserving).
     acceptanceKind: harnessAcceptanceKind(projectDir),
+    // P-010: the output sink — undefined/repo-commit for a coding harness ⇒ no change.
+    outputKind: harnessOutputKind(projectDir),
   });
 
   if (plan.blocked) {

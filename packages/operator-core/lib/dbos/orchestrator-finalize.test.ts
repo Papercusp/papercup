@@ -101,6 +101,21 @@ describe('planFinalization — DONE (porting legacy handleDone)', () => {
       expect(steps[0]).toEqual({ kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] });
     }
   });
+
+  test('output.kind: artifacts tags the output roles with OUTPUT_KIND (P-010); repo-commit/undefined unchanged', () => {
+    const extrasFor = (p: ReturnType<typeof planFinalization>, role: string): string[] => {
+      const s = p.steps.find((x) => x.kind === 'invoke' && x.role === role);
+      return s && s.kind === 'invoke' ? s.extras : [];
+    };
+    const artifacts = planFinalization({ ...base, outputKind: 'artifacts' });
+    expect(extrasFor(artifacts, 'documenter')).toContain('OUTPUT_KIND=artifacts');
+    expect(extrasFor(artifacts, 'curator')).not.toContain('OUTPUT_KIND=artifacts'); // curator has no work output
+    // repo-commit (the coding default) + undefined ⇒ no OUTPUT_KIND extra (backward-compat).
+    for (const outputKind of [undefined, 'repo-commit'] as const) {
+      const p = planFinalization({ ...base, outputKind });
+      expect(extrasFor(p, 'documenter').some((e) => e.startsWith('OUTPUT_KIND='))).toBe(false);
+    }
+  });
 });
 
 describe('planFinalization — ESCALATE (porting legacy handleEscalate)', () => {

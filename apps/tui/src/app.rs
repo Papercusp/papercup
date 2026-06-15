@@ -1101,6 +1101,12 @@ pub struct App {
     pub issue_sel: usize,
     /// Which Harnesses column has focus (j/k + detail follow it).
     pub harness_focus: HarnessFocus,
+    /// Two-level nav for the horizontal 2-pane tabs — Pots (features|issues),
+    /// Testing (domains|files), Plugins (list|panes) — (owner ask 2026-06-15 #2,
+    /// the Fleet model ported): false = BROWSING (↑/↓ switch the focused pane,
+    /// Enter drills in); true = INSIDE (↑/↓ move within, Enter acts, Esc steps
+    /// out). Reset on every tab switch. The Fleet tab keeps its own `fleet.entered`.
+    pub pane_entered: bool,
     /// Docs tab: file list + selection + the active doc's content + scroll.
     pub docs_files: Vec<String>,
     pub doc_sel: usize,
@@ -1490,6 +1496,7 @@ impl App {
             issues: Vec::new(),
             issue_sel: 0,
             harness_focus: HarnessFocus::Features,
+            pane_entered: false,
             docs_files: Vec::new(),
             doc_sel: 0,
             doc_content: String::new(),
@@ -5039,6 +5046,15 @@ impl App {
                     self.voice_level = 0.0;
                     return Action::Voice(VoiceCmd::Cancel);
                 }
+                // On a horizontal 2-pane tab (Pots/Testing/Plugins), Esc first
+                // steps OUT of an entered pane back to browsing (two-level nav,
+                // owner ask 2026-06-15 #2).
+                if matches!(self.tab, Tab::Harnesses | Tab::Testing | Tab::Plugins)
+                    && self.pane_entered
+                {
+                    self.pane_entered = false;
+                    return Action::Render;
+                }
                 // On the Memory tab, Esc first clears an active search back to
                 // the full list (D-006); else dismiss the transient toast.
                 if self.tab == Tab::Memory && self.memory_hits.is_some() {
@@ -5234,6 +5250,27 @@ impl App {
             {
                 self.fleet_arrow(-1)
             }
+            // Two-level nav for the horizontal 2-pane tabs — Pots/Testing/Plugins
+            // (owner ask 2026-06-15 #2): ↑/↓ switch the focused pane while
+            // BROWSING, else move within the entered pane; ←/→ switch panes at any
+            // level (so once inside, ←/→ move between panes, ↑/↓ within); Enter
+            // drills in then acts; Esc steps back out. `Tab` stays a switch alias.
+            KeyCode::Char('j') | KeyCode::Down
+                if matches!(self.tab, Tab::Harnesses | Tab::Testing | Tab::Plugins) =>
+            {
+                self.pane_arrow(1)
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if matches!(self.tab, Tab::Harnesses | Tab::Testing | Tab::Plugins) =>
+            {
+                self.pane_arrow(-1)
+            }
+            KeyCode::Left | KeyCode::Right
+                if matches!(self.tab, Tab::Harnesses | Tab::Testing | Tab::Plugins) =>
+            {
+                self.pane_toggle_focus();
+                Action::Render
+            }
             // Hives tab (p2p-hive-directory P-006): 'J' JOINS a discovered hive —
             // POST each of its member links to /api/harness/join-link. Picks the
             // first JOINABLE directory hive (one carrying full member links); a
@@ -5257,28 +5294,52 @@ impl App {
             // selected pane (original D-002 behavior); in List focus, Enter
             // loads the selected plugin's per-harness config for the settings
             // view (no-op when the plugin has no configSchema).
-            KeyCode::Enter if self.tab == Tab::Plugins => match self.plugins_focus {
-                PluginsFocus::Panes => match self.plugin_launch_spec() {
-                    Some(spec) => Action::Launch(spec),
-                    None => Action::None,
-                },
-                PluginsFocus::List => match self.selected_plugin() {
-                    Some(p) if p.config_schema.is_some() => Action::LoadPluginConfig {
-                        harness: self.harness.clone(),
-                        plugin: p.name.clone(),
+            // Pots: no per-item action — Enter just DRILLS IN (so ↑/↓ scroll the
+            // focused list); Esc steps back out (two-level nav, owner ask
+            // 2026-06-15 #2).
+            KeyCode::Enter if self.tab == Tab::Harnesses => {
+                self.pane_entered = true;
+                Action::Render
+            }
+            // Plugins: at the browsing level Enter DRILLS IN; once inside it acts
+            // on the selection (launch the pane / load the plugin config).
+            KeyCode::Enter if self.tab == Tab::Plugins => {
+                if !self.pane_entered {
+                    self.pane_entered = true;
+                    return Action::Render;
+                }
+                match self.plugins_focus {
+                    PluginsFocus::Panes => match self.plugin_launch_spec() {
+                        Some(spec) => Action::Launch(spec),
+                        None => Action::None,
                     },
-                    _ => Action::None,
-                },
-            },
+                    PluginsFocus::List => match self.selected_plugin() {
+                        Some(p) if p.config_schema.is_some() => Action::LoadPluginConfig {
+                            harness: self.harness.clone(),
+                            plugin: p.name.clone(),
+                        },
+                        _ => Action::None,
+                    },
+                }
+            }
             // Enter on the operator pane (outside compose) focuses the composer.
             KeyCode::Enter if self.tab == Tab::Operator => {
                 self.chat_composing = true;
                 Action::Render
             }
-            // Testing run-on-click (D-004a): Enter drills into a domain's files /
-            // runs the selected file; `r` is the run alias on the file column
-            // (placed BEFORE the global relaunch `r` so it wins on this tab).
-            KeyCode::Enter if self.tab == Tab::Testing => self.testing_activate(),
+            // Testing run-on-click (D-004a): at the browsing level Enter DRILLS
+            // INTO the focused pane; once inside it activates — loads a domain's
+            // files / runs the selected file (two-level nav, owner ask 2026-06-15
+            // #2). `r` is the run alias on the file column (placed BEFORE the
+            // global relaunch `r` so it wins on this tab).
+            KeyCode::Enter if self.tab == Tab::Testing => {
+                if !self.pane_entered {
+                    self.pane_entered = true;
+                    Action::Render
+                } else {
+                    self.testing_activate()
+                }
+            }
             KeyCode::Char('r')
                 if self.tab == Tab::Testing && self.testing_focus == TestingFocus::Files =>
             {
@@ -5489,6 +5550,9 @@ impl App {
     /// changes flow through, so digit/letter keys and `<`/`>` cycling share it.
     fn switch_to(&mut self, tab: Tab) {
         self.tab = tab;
+        // Leaving a multi-pane tab drops its entered-pane state so the next one
+        // opens at the browsing level (two-level nav, owner ask 2026-06-15 #2).
+        self.pane_entered = false;
         if tab == Tab::Inbox {
             self.unseen_notifs = 0;
             self.toast = None;
@@ -5671,6 +5735,46 @@ impl App {
         self.fleet.comms_inbox_sel = 0;
         self.fleet.comms_outbox_sel = 0;
         self.publish_swarm_selection()
+    }
+
+    /// ↑/↓ for the horizontal 2-pane tabs — Pots/Testing/Plugins (two-level nav,
+    /// owner ask 2026-06-15 #2): BROWSE between the two panes when not entered,
+    /// else move WITHIN the focused list (replaying the generic `move_sel` side
+    /// effects so Testing's domain→files invalidation still fires).
+    fn pane_arrow(&mut self, delta: isize) -> Action {
+        if !self.pane_entered {
+            self.pane_toggle_focus();
+            return Action::Render;
+        }
+        let prev_domain = self.testing_sel;
+        self.move_sel(delta);
+        self.testing_domain_changed(prev_domain); // no-op unless Testing + Domains
+        Action::Render
+    }
+
+    /// Toggle the focused pane of the current horizontal 2-pane tab.
+    fn pane_toggle_focus(&mut self) {
+        match self.tab {
+            Tab::Harnesses => {
+                self.harness_focus = match self.harness_focus {
+                    HarnessFocus::Features => HarnessFocus::Issues,
+                    HarnessFocus::Issues => HarnessFocus::Features,
+                }
+            }
+            Tab::Testing => {
+                self.testing_focus = match self.testing_focus {
+                    TestingFocus::Domains => TestingFocus::Files,
+                    TestingFocus::Files => TestingFocus::Domains,
+                }
+            }
+            Tab::Plugins => {
+                self.plugins_focus = match self.plugins_focus {
+                    PluginsFocus::List => PluginsFocus::Panes,
+                    PluginsFocus::Panes => PluginsFocus::List,
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `j`/`k` (↑/↓) move WITHIN the focused panel: the inbox/outbox/conversation
@@ -7471,6 +7575,7 @@ mod tests {
         assert_eq!(a.update(key('5', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Harnesses);
         a.set_features(vec![f("F-1"), f("F-2")]);
+        a.pane_entered = true; // inside the features pane → ↑/↓ move its cursor
         a.update(key('j', KeyModifiers::NONE));
         assert_eq!(a.feat_sel, 1);
         assert_eq!(a.features[a.feat_sel].id, "F-2");
@@ -7540,6 +7645,7 @@ mod tests {
                 tier: "project".into(),
             },
         ]);
+        a.pane_entered = true; // inside the domains pane → ↑/↓ move its cursor
         a.update(key('j', KeyModifiers::NONE));
         assert_eq!(a.testing_sel, 1);
         assert_eq!(a.update(key('8', KeyModifiers::NONE)), Action::Render);
@@ -7579,6 +7685,7 @@ mod tests {
         assert_eq!(a.plugins_focus, PluginsFocus::List);
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         assert_eq!(a.plugins_focus, PluginsFocus::Panes);
+        a.pane_entered = true; // inside the panes list → Enter launches / ↑↓ move
         // Enter with no panes is a no-op.
         assert_eq!(
             a.update(Event::Key(KeyEvent::new(
@@ -7665,6 +7772,7 @@ mod tests {
             attempts: 0,
         }]);
         a.set_issues(vec![issue("I-1"), issue("I-2")]);
+        a.pane_entered = true; // inside a pane → ↑/↓ move within (Tab still switches)
         assert_eq!(a.harness_focus, HarnessFocus::Features);
         // Tab switches focus to issues; j then moves the issue list.
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
@@ -9774,6 +9882,7 @@ mod tests {
         let mut a = App::new();
         a.update(key('7', KeyModifiers::NONE)); // Testing
         a.set_testing(vec![test_domain("unit"), test_domain("e2e")]);
+        a.pane_entered = true; // inside the panes → Enter activates / ↑↓ move within
         // Enter on the domain column fetches the selected domain's files.
         match a.update(ev(KeyCode::Enter)) {
             Action::FetchTestingFiles { harness, domain_id } => {
@@ -9825,6 +9934,7 @@ mod tests {
         let mut a = App::new();
         a.update(key('7', KeyModifiers::NONE));
         a.set_testing(vec![test_domain("unit"), test_domain("e2e")]);
+        a.pane_entered = true; // inside the panes → ↑/↓ move within (Tab still switches)
         // A stale fetch for a NON-selected domain is dropped.
         a.update(key('j', KeyModifiers::NONE)); // select e2e
         a.update(Event::TestingFiles {
