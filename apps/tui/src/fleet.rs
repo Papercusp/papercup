@@ -839,17 +839,24 @@ pub(crate) fn plan_progress_list(app: &App) -> Vec<&crate::models::PlanSummary> 
     plans
 }
 
-/// The detail-popup body for the plan under the plan-progress cursor (owner ask
-/// 2026-06-15): identity (slug/title/status/priority/owner/harness/updated), the
-/// full per-status item breakdown with a progress bar, and the plan's `## Now`
-/// next action. Reuses `plan_progress_list` + `fleet.plan_progress_sel` so the
-/// popup always describes the SAME plan the panel highlights. `(no plan
-/// selected)` when the list is empty.
+/// The Fleet plan-progress popup body: resolve the plan under the cursor
+/// (`plan_progress_list` + `fleet.plan_progress_sel`, so the popup always
+/// describes the SAME plan the panel highlights), then render its detail.
+/// `(no plan selected)` when the list is empty.
 pub(crate) fn plan_detail_lines(app: &App) -> Vec<Line<'static>> {
     let plans = plan_progress_list(app);
-    let Some(p) = plans.get(app.fleet.plan_progress_sel.min(plans.len().saturating_sub(1))) else {
-        return vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))];
-    };
+    match plans.get(app.fleet.plan_progress_sel.min(plans.len().saturating_sub(1))) {
+        Some(p) => plan_detail_lines_for(p),
+        None => vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))],
+    }
+}
+
+/// The detail-popup body for a single plan (owner ask 2026-06-15): identity
+/// (slug/title/status/priority/owner/harness/updated), the full per-status item
+/// breakdown with a progress bar, and the plan's `## Now` next action. Shared by
+/// the Fleet plan-progress popup AND the Plans-tab popup so both surfaces show
+/// the same rich detail.
+pub(crate) fn plan_detail_lines_for(p: &crate::models::PlanSummary) -> Vec<Line<'static>> {
     let c = &p.item_counts;
     let title = if p.title.is_empty() {
         p.slug.clone()

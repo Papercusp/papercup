@@ -75,6 +75,14 @@ export interface FinalizationPlanInput {
   archiveOnDone: boolean;
   /** The blueprint's `gates.finalize` recipe; defaults to the coding recipe. */
   finalize?: FinalizeRecipe;
+  /** The blueprint's `acceptance` model (hive-blueprint-generalization P-009) — decouples
+   *  "done" from "tests pass": `human-gate` blocks DONE until approved; `judge` inserts an
+   *  acceptance-judge step before the onDone recipe; `tests` (the coding default) relies on
+   *  the pipeline's validator/smoke gates; `none`/undefined ⇒ today's straight-through
+   *  finalize, so existing harnesses are unchanged. */
+  acceptanceKind?: 'tests' | 'judge' | 'human-gate' | 'none';
+  /** human-gate only: whether the human acceptance approval has been granted. */
+  acceptanceApproved?: boolean;
 }
 
 export interface FinalizationPlan {
@@ -134,8 +142,22 @@ export function planFinalization(input: FinalizationPlanInput): FinalizationPlan
   // DONE gates.
   if (input.needsHumanOpen) return { blocked: true, steps: [] };
   if (input.smokeEnabled && input.smokePassed === false) return { blocked: true, steps: [] };
+  // Acceptance gate (P-009): a human-gate hive blocks DONE until the human approves —
+  // the pluggable-done equivalent of needsHumanOpen for a non-test-verified hive.
+  if (input.acceptanceKind === 'human-gate' && !input.acceptanceApproved) {
+    return { blocked: true, steps: [] };
+  }
 
   const steps: FinalizationStep[] = [];
+  // A judge-acceptance hive runs an acceptance judge before the onDone recipe (P-009) —
+  // the generic-hive analogue of the coding pipeline's validator/tests gate.
+  if (input.acceptanceKind === 'judge') {
+    steps.push({
+      kind: 'invoke',
+      role: 'acceptance-judge',
+      extras: finalizeRoleExtras('acceptance-judge', 'done', input.featureId, input.reason),
+    });
+  }
   for (const entry of recipe.onDone) {
     const s = recipeEntryToStep(entry, 'done', input);
     if (s) steps.push(s);

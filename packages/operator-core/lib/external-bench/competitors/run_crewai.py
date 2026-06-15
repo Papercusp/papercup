@@ -11,6 +11,7 @@ def _build(inp: dict, log: "C.EventLog"):
     from crewai.tools import tool
 
     model = C.configure_anthropic_env(inp)
+    budget, max_tokens = C.thinking_config(inp)
     repo_dir = inp["repoDir"]
     problem = inp.get("problemStatement", "")
     fns = C.make_file_tools(repo_dir, log, agent="coder")
@@ -35,7 +36,12 @@ def _build(inp: dict, log: "C.EventLog"):
         """Run a shell command in the repo (run tests, grep, build)."""
         return fns["run_shell"](command)
 
-    llm = LLM(model=model)  # base_url/api_key resolved from ANTHROPIC_* env
+    # base_url/api_key resolved from ANTHROPIC_API_BASE/ANTHROPIC_API_KEY (litellm); extended thinking = xhigh.
+    llm_kwargs = dict(model=C.litellm_model(model), max_tokens=max_tokens)
+    if budget > 0:
+        llm_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        llm_kwargs["temperature"] = 1
+    llm = LLM(**llm_kwargs)
     planner = Agent(
         role="Planner",
         goal="Produce a concrete plan to resolve the issue in the repository.",

@@ -34,8 +34,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                 draw_toast(f, t);
             }
         }
-        // The comms detail popup is modal — render it on top of everything else
-        // in the pinned dock pane (the dock-driver is where the comms view lives).
+        // The detail popup is modal — render it on top of everything else in the
+        // pinned dock pane (mail/conversation/plan detail, depending on focus).
         if app.fleet_detail_open {
             draw_fleet_detail(f, app);
         }
@@ -150,7 +150,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     } else if let Some(rev) = &app.wake_review {
         draw_wake_review(f, rev);
     }
-    // The Fleet comms detail popup floats above the body + the other overlays.
+    // The detail popup (Fleet mail/conversation/plan, or the Plans-tab plan)
+    // floats above the body + the other overlays.
     if app.fleet_detail_open {
         draw_fleet_detail(f, app);
     }
@@ -2713,33 +2714,9 @@ pub(crate) fn block_with_header_rows(
 /// conversation thread under the comms cursor, centered over the dock. Modal —
 /// the key handler closes it on Esc/`q`/Enter and steps the item with `j`/`k`.
 fn draw_fleet_detail(f: &mut Frame, app: &App) {
-    use crate::fleet::FleetPanel;
     let area = centered_rect(70, 70, f.area());
     f.render_widget(Clear, area);
-    let (title, lines): (&str, Vec<Line<'static>>) = match app.fleet.fleet_focus {
-        FleetPanel::Inbox | FleetPanel::Outbox => {
-            let is_inbox = app.fleet.fleet_focus == FleetPanel::Inbox;
-            let title = if is_inbox {
-                " inbox · Esc close · j/k item · PgUp/Dn scroll "
-            } else {
-                " outbox · Esc close · j/k item · PgUp/Dn scroll "
-            };
-            let lines = match app.selected_comms_mail() {
-                Some(e) => mail_detail_lines(e, is_inbox),
-                None => vec![Line::from(Span::styled("(no message selected)", Theme::dim()))],
-            };
-            (title, lines)
-        }
-        FleetPanel::Conversations => (
-            " conversation · Esc close · j/k item · PgUp/Dn scroll ",
-            conv_detail_lines(app),
-        ),
-        FleetPanel::PlanProgress => (
-            " plan · Esc close · j/k plan · PgUp/Dn scroll ",
-            crate::fleet::plan_detail_lines(app),
-        ),
-        FleetPanel::Roster | FleetPanel::Dossier => (" detail ", Vec::new()),
-    };
+    let (title, lines): (&str, Vec<Line<'static>>) = fleet_detail_content(app);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -2762,6 +2739,45 @@ fn draw_fleet_detail(f: &mut Frame, app: &App) {
             .scroll((scroll, 0)),
         inner,
     );
+}
+
+/// The title + body for the detail popup. The Plans tab shows the selected
+/// plan's full detail (owner ask 2026-06-15 #1 — the same rich body as the Fleet
+/// plan-progress popup); otherwise the focused Fleet panel decides (mail /
+/// conversation / plan).
+fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
+    use crate::fleet::FleetPanel;
+    if app.tab == crate::app::Tab::Plans {
+        let lines = match app.selected_plan() {
+            Some(p) => crate::fleet::plan_detail_lines_for(p),
+            None => vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))],
+        };
+        return (" plan · Esc close · j/k plan · PgUp/Dn scroll ", lines);
+    }
+    match app.fleet.fleet_focus {
+        FleetPanel::Inbox | FleetPanel::Outbox => {
+            let is_inbox = app.fleet.fleet_focus == FleetPanel::Inbox;
+            let title = if is_inbox {
+                " inbox · Esc close · j/k item · PgUp/Dn scroll "
+            } else {
+                " outbox · Esc close · j/k item · PgUp/Dn scroll "
+            };
+            let lines = match app.selected_comms_mail() {
+                Some(e) => mail_detail_lines(e, is_inbox),
+                None => vec![Line::from(Span::styled("(no message selected)", Theme::dim()))],
+            };
+            (title, lines)
+        }
+        FleetPanel::Conversations => (
+            " conversation · Esc close · j/k item · PgUp/Dn scroll ",
+            conv_detail_lines(app),
+        ),
+        FleetPanel::PlanProgress => (
+            " plan · Esc close · j/k plan · PgUp/Dn scroll ",
+            crate::fleet::plan_detail_lines(app),
+        ),
+        FleetPanel::Roster | FleetPanel::Dossier => (" detail ", Vec::new()),
+    }
 }
 
 /// The header + full body of one coord-mail entry (the list truncates the body;
@@ -2958,6 +2974,28 @@ mod tests {
             item_counts: Default::default(),
             priority: None,
         }
+    }
+
+    #[test]
+    fn plans_tab_plan_detail_popup_renders() {
+        // Owner ask 2026-06-15 #1: the Plans tab's Enter→popup renders the
+        // selected plan's full detail via the shared `draw` path.
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        let mut p = plan("plan-popup-demo", "active");
+        p.item_counts = crate::models::ItemCounts {
+            todo: 2,
+            wip: 1,
+            done: 4,
+            ..Default::default()
+        };
+        app.set_plans(vec![p]);
+        app.fleet_detail_open = true;
+        let text = render(&app, 120, 30);
+        assert!(text.contains("Esc close"), "popup title missing: {text}");
+        assert!(text.contains("plan-popup-demo"), "plan slug missing from popup");
+        assert!(text.contains("progress"), "progress row missing from popup");
+        assert!(text.contains("remaining"), "remaining count missing from popup");
     }
 
     #[test]

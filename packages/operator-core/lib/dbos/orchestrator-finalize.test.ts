@@ -72,6 +72,35 @@ describe('planFinalization — DONE (porting legacy handleDone)', () => {
     expect(blocked).toBe(true);
     expect(steps).toEqual([]);
   });
+
+  test('acceptance human-gate BLOCKS done until approved (hive-blueprint-generalization P-009)', () => {
+    const gated = planFinalization({ ...base, acceptanceKind: 'human-gate' });
+    expect(gated.blocked).toBe(true);
+    expect(gated.steps).toEqual([]);
+    const approved = planFinalization({ ...base, acceptanceKind: 'human-gate', acceptanceApproved: true });
+    expect(approved.blocked).toBe(false);
+    expect(approved.steps[0]).toEqual({ kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] });
+  });
+
+  test('acceptance judge inserts an acceptance-judge step before the onDone recipe (P-009)', () => {
+    const { blocked, steps } = planFinalization({ ...base, acceptanceKind: 'judge' });
+    expect(blocked).toBe(false);
+    expect(steps[0]).toEqual({
+      kind: 'invoke',
+      role: 'acceptance-judge',
+      extras: ['TRIGGER=done', 'FEATURE_ID=F-001'],
+    });
+    expect(steps[1]).toEqual({ kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] });
+  });
+
+  test('acceptance tests/none/undefined → unchanged straight-through finalize (coding backward-compat)', () => {
+    for (const acceptanceKind of [undefined, 'tests', 'none'] as const) {
+      const { blocked, steps } = planFinalization({ ...base, acceptanceKind });
+      expect(blocked).toBe(false);
+      expect(steps.some((s) => s.kind === 'invoke' && s.role === 'acceptance-judge')).toBe(false);
+      expect(steps[0]).toEqual({ kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] });
+    }
+  });
 });
 
 describe('planFinalization — ESCALATE (porting legacy handleEscalate)', () => {

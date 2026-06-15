@@ -6,12 +6,16 @@ graph topology IS the coordination MAST measures. Run in ~/.papercusp/competitor
 import _common as C
 
 
-def _llm(model: str):
+def _llm(model: str, budget: int, max_tokens: int):
     from langchain_anthropic import ChatAnthropic
 
     # ChatAnthropic reads ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL from env (set by configure_anthropic_env).
-    name = model.split("/", 1)[1] if model.startswith("anthropic/") else model
-    return ChatAnthropic(model=name, max_tokens=8192, timeout=600)
+    kwargs = dict(model=C.bare_model(model), max_tokens=max_tokens, timeout=600)
+    if budget > 0:
+        # Extended thinking = the xhigh effort realization; Anthropic requires temperature=1 with thinking on.
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        kwargs["temperature"] = 1
+    return ChatAnthropic(**kwargs)
 
 
 def _tools(repo_dir: str, log: "C.EventLog"):
@@ -40,12 +44,13 @@ def _usage(msgs) -> tuple[int, int, int]:
 
 def run(inp: dict) -> dict:
     model = C.configure_anthropic_env(inp)
+    budget, max_tokens = C.thinking_config(inp)
     repo_dir = inp["repoDir"]
     problem = inp.get("problemStatement", "")
     max_iter = int(inp.get("maxIterations") or 40)
     log = C.EventLog()
 
-    llm = _llm(model)
+    llm = _llm(model, budget, max_tokens)
     tools = _tools(repo_dir, log)
 
     from langgraph.prebuilt import create_react_agent

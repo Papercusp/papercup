@@ -18,12 +18,14 @@ def _build(inp: dict):
     from openhands.tools import get_default_tools
 
     model = C.configure_anthropic_env(inp)
-    name = model if model.startswith("anthropic/") else f"anthropic/{model}"
-    llm_kwargs = {"model": name, "usage_id": "competitor-openhands"}
+    budget, max_tokens = C.thinking_config(inp)
+    llm_kwargs = {"model": C.litellm_model(model), "usage_id": "competitor-openhands", "max_output_tokens": max_tokens}
     if os.environ.get("ANTHROPIC_API_KEY"):
         llm_kwargs["api_key"] = os.environ["ANTHROPIC_API_KEY"]
     if os.environ.get("ANTHROPIC_BASE_URL"):
         llm_kwargs["base_url"] = os.environ["ANTHROPIC_BASE_URL"]
+    if budget > 0:
+        llm_kwargs["extended_thinking_budget"] = budget  # the xhigh effort realization (OpenHands SDK field)
     llm = LLM(**llm_kwargs)
 
     # Browser off (no GUI in the bench sandbox); sub-agents ON = the async-delegation arm.

@@ -91,18 +91,46 @@ def error_result(msg: str, events=None) -> dict:
 def configure_anthropic_env(inp: dict) -> str:
     """
     Resolve the Anthropic creds the framework's LLM layer will read. Returns the model string. baseUrl points
-    every arm at the SAME inference gateway (fair routing + shared accounts + counted cost); the api key comes
-    from the env var named by apiKeyEnv (default ANTHROPIC_API_KEY). Sets ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY
-    so the anthropic SDK / litellm / langchain-anthropic all pick them up uniformly.
+    every arm at the SAME inference gateway (fair routing + shared accounts + counted cost — the bees' path);
+    the gateway STRIPS + reinjects the real OAuth, so the key need only be SET (any value) for the SDKs not to
+    error. Sets BOTH ANTHROPIC_BASE_URL (anthropic SDK / langchain) AND ANTHROPIC_API_BASE (litellm / crewai)
+    so every framework routes through the gateway uniformly.
     """
     base_url = inp.get("baseUrl")
     if base_url:
         os.environ["ANTHROPIC_BASE_URL"] = base_url
+        os.environ["ANTHROPIC_API_BASE"] = base_url  # litellm (crewai) reads this, NOT ANTHROPIC_BASE_URL
     key_env = inp.get("apiKeyEnv") or "ANTHROPIC_API_KEY"
-    key = os.environ.get(key_env, "")
+    key = os.environ.get(key_env) or ("sk-gateway-routed" if base_url else "")
     if key:
         os.environ["ANTHROPIC_API_KEY"] = key
-    return inp.get("model") or "anthropic/claude-opus-4-8"
+    return inp.get("model") or "claude-opus-4-8"
+
+
+def thinking_config(inp: dict) -> tuple[int, int]:
+    """
+    The xhigh extended-thinking realization: returns (budget_tokens, max_tokens). Every arm runs
+    claude-opus-4-8 @ xhigh; for the raw-API frameworks that means extended thinking at `budget_tokens`
+    (the `--effort xhigh` equivalent — the claude CLI owns the canonical mapping, so the budget is supplied
+    by the TS driver and confirmed with the owner). max_tokens must exceed the thinking budget.
+    """
+    budget = int(inp.get("thinkingBudgetTokens") or 0)
+    max_tokens = int(inp.get("maxTokens") or 0)
+    if budget > 0 and max_tokens <= budget:
+        max_tokens = budget + 16384
+    if max_tokens <= 0:
+        max_tokens = 16384
+    return budget, max_tokens
+
+
+def litellm_model(model: str) -> str:
+    """litellm/crewai needs the provider-prefixed id (anthropic/<model>)."""
+    return model if "/" in model else f"anthropic/{model}"
+
+
+def bare_model(model: str) -> str:
+    """langchain ChatAnthropic / the anthropic SDK want the bare id (no provider prefix)."""
+    return model.split("/", 1)[1] if model.startswith("anthropic/") else model
 
 
 def make_file_tools(repo_dir: str, log: EventLog, agent: str):

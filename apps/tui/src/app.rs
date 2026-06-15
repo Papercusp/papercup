@@ -1229,9 +1229,10 @@ pub struct App {
     pub plan_filter: BTreeSet<String>,
     pub plan_filter_open: bool,
     pub plan_filter_sel: usize,
-    /// Fleet-panel detail popup (owner ask 2026-06-14): true while a detail view
-    /// is open over the Fleet pane — a mail/conversation (comms view) or a plan
-    /// (plan-progress panel). Modal — Esc/`q` close, `j`/`k` step to the next/prev
+    /// Detail popup (owner ask 2026-06-14): true while a detail view is open —
+    /// over the Fleet pane (a mail/conversation in the comms view, or a plan in
+    /// the plan-progress panel) or over the Plans tab (the selected plan, owner
+    /// ask 2026-06-15). Modal — Esc/`q` close, `j`/`k` step to the next/prev
     /// item, PageUp/PageDown scroll the body. `fleet_detail_scroll` is the body's
     /// row offset (reset on open + on item change; clamped to the content at
     /// render). Transient; not persisted.
@@ -5138,9 +5139,21 @@ impl App {
             // (pui-workbench-usability D-001): local pane focus / external-window
             // focus / resume an ended session / the [r]/[n]/[f] menu — never the
             // old silent focus-empty-pane no-op.
+            // Enter on the Plans tab opens the selected plan's detail popup
+            // (owner ask 2026-06-15 #1) — the same rich popup as the Fleet
+            // plan-progress panel, reusing the fleet-detail modal. No-op when no
+            // plan is in scope.
+            KeyCode::Enter if self.tab == Tab::Plans => {
+                if !self.visible_plans().is_empty() {
+                    self.fleet_detail_open = true;
+                    self.fleet_detail_scroll = 0;
+                }
+                Action::Render
+            }
             // Enter on the Fleet tab acts on the FOCUSED panel (owner ask
             // 2026-06-14): roster → reach the agent; inbox/outbox/conversations →
-            // open the detail popup; dossier/plan-progress → no detail (yet).
+            // open the detail popup; plan-progress → open the selected plan's
+            // detail popup; dossier → no per-row detail.
             KeyCode::Enter if self.tab == Tab::Fleet => self.fleet_enter_focused(),
             // Launch a native agent pane from the Fleet tab (the old Sessions
             // launcher, folded in — D-002b).
@@ -5702,9 +5715,10 @@ impl App {
         }
     }
 
-    /// `j`/`k` while the comms detail popup is open: step WITHIN the focused panel
+    /// `j`/`k` while the detail popup is open: step WITHIN the focused list
     /// (clamped — no fall-through, the popup stays on one list); conversations
-    /// refetch the newly-selected thread.
+    /// refetch the newly-selected thread. On the Plans tab the popup steps the
+    /// plan-list selection (owner ask 2026-06-15 #1).
     fn fleet_detail_step(&mut self, delta: isize) -> Action {
         use crate::fleet::FleetPanel::*;
         // A new item starts at the top of the popup.
@@ -5719,6 +5733,13 @@ impl App {
                 cur.saturating_sub(1)
             }
         };
+        // The Plans tab reuses this popup; j/k step its plan-list selection
+        // (`plan_sel`), so closing the popup leaves the list where you navigated.
+        if self.tab == Tab::Plans {
+            let len = self.visible_plans().len();
+            self.plan_sel = step(self.plan_sel, delta, len);
+            return Action::Render;
+        }
         match self.fleet.fleet_focus {
             Inbox => {
                 self.fleet.comms_inbox_sel =
@@ -10207,6 +10228,31 @@ mod tests {
         assert_eq!(a.fleet.plan_progress_sel, 0);
         a.update(ev(KeyCode::Char('l'))); // wrap → Roster
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
+    }
+
+    #[test]
+    fn plans_tab_enter_opens_plan_detail_popup_and_steps() {
+        // Owner ask 2026-06-15 #1: the Plans tab gains the same Enter→detail
+        // popup as the Fleet plan-progress panel, reusing the fleet-detail modal.
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        let mut p1 = plan("plan-x");
+        p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
+        a.set_plans(vec![p1, plan("plan-y")]);
+        assert!(!a.fleet_detail_open);
+        // Enter opens the popup for the selected (row 0) plan.
+        a.update(ev(KeyCode::Enter));
+        assert!(a.fleet_detail_open);
+        assert_eq!(a.selected_plan().unwrap().slug, "plan-x");
+        // j steps the plan selection WITHIN the popup (modal); other keys swallowed.
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.plan_sel, 1);
+        assert_eq!(a.selected_plan().unwrap().slug, "plan-y");
+        a.update(ev(KeyCode::Char('x')));
+        assert!(a.fleet_detail_open);
+        // Esc closes it.
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.fleet_detail_open);
     }
 
     #[test]

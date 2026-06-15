@@ -600,12 +600,15 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // admission (plan-implementation-framework P-002 touch-set-exclusion). Flip ON via
   // the framework bake-off once it beats the file-lock-only baseline.
   [FLAGS.TOUCH_SET_EXCLUSION]: false,
-  // DEFAULT OFF (exception to alpha flags-default-on): a new structural-amend surface
-  // (plan-implementation-framework P-004 workitem-amend). Flip ON via the framework bake-off.
-  [FLAGS.WORKITEM_AMEND]: false,
-  // DEFAULT OFF (exception to alpha flags-default-on): a new structural-expansion surface
-  // (plan-implementation-framework P-005 deferred-expansion). Flip ON via the framework bake-off.
-  [FLAGS.DEFERRED_EXPANSION]: false,
+  // DEFAULT ON — an additive OPT-IN tool (work_items:amend): enabling exposes the tool; it changes
+  // NO existing behavior (an agent must call it). Activated 2026-06-15 (owner authorization,
+  // plan-implementation-framework P-010). The bake-off still measures it; it does not GATE an
+  // additive surface. (The behavior-CHANGING bets — compiled-briefs / touch-set-exclusion — stay
+  // dark until the owner runs the bake-off.)
+  [FLAGS.WORKITEM_AMEND]: true,
+  // DEFAULT ON — an additive OPT-IN tool (work_items:expand): same rationale as work_items:amend —
+  // enabling exposes the tool, changes no existing behavior. Activated 2026-06-15.
+  [FLAGS.DEFERRED_EXPANSION]: true,
   // DEFAULT ON (alpha flags-default-on) — additive hive-control surfacing.
   [FLAGS.HIVE_CONTROL]: true,
   // DEFAULT ON (alpha flags-default-on) — additive read-only Health dashboard +

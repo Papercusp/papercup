@@ -22,9 +22,24 @@ import { setCompetitorDriver, type CompetitorBacklogDriver } from './competitor-
 import { CORE_COMPETITOR_ARM_IDS, getCompetitor, type CompetitorArmId } from './competitor-registry';
 import type { FleetTaskResult, HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
 import type { ArmAttempt, BenchTask, CloneTaskRepo, ExtractDiff, GenerationStopReason, TaskCheckout } from './types';
+import { gatewayPort, GATEWAY_BASE_URL_ENV, GATEWAY_SDK_URL_ENV } from '../inference-gateway/spawn-env';
 
 /** Must match `_common.py` RESULT_SENTINEL. */
 export const RESULT_SENTINEL = '@@COMPETITOR_RESULT@@';
+
+/**
+ * FAIRNESS-CRITICAL (D-004): every arm — competitors included — runs claude-opus-4-8 @ xhigh via the SAME
+ * localhost inference gateway the bees use, NOT the frameworks' default models. The base url reads the port
+ * from spawn-env (never hardcoded); xhigh is realized as extended thinking at DEFAULT_THINKING_BUDGET_TOKENS
+ * (the raw-API equivalent of the claude CLI's `--effort xhigh` — owner-confirmed).
+ */
+export const DEFAULT_COMPETITOR_MODEL = 'claude-opus-4-8';
+export const DEFAULT_THINKING_BUDGET_TOKENS = 32000;
+
+/** The localhost inference-gateway base url (port from spawn-env's gatewayPort(), env-overridable). */
+export function gatewayBaseUrl(): string {
+  return `http://127.0.0.1:${gatewayPort()}`;
+}
 
 /** Injected subprocess seam (default {@link defaultExec}); a fake returns canned runner JSON in tests. */
 export type ExecFn = (
@@ -58,6 +73,10 @@ export interface CompetitorDriverConfig {
   baseUrl?: string | null;
   /** env var the runner reads the api key from (default ANTHROPIC_API_KEY). */
   apiKeyEnv?: string;
+  /** Extended-thinking budget = the xhigh effort realization (default DEFAULT_THINKING_BUDGET_TOKENS). */
+  thinkingBudgetTokens?: number;
+  /** Max output tokens (default thinkingBudgetTokens + 16384; must exceed the thinking budget). */
+  maxTokens?: number;
   /** agent iteration cap per task. */
   maxIterations?: number;
   /** per-task wall-clock ceiling (ms). */
@@ -150,6 +169,18 @@ export function makeCompetitorDriver(cfg: CompetitorDriverConfig): CompetitorBac
   const now = cfg.now ?? Date.now;
   const concurrency = cfg.concurrency ?? 1;
   const timeoutMs = cfg.perTaskTimeoutMs ?? 30 * 60_000;
+  const baseUrl = cfg.baseUrl ?? gatewayBaseUrl();
+  const apiKeyEnv = cfg.apiKeyEnv ?? 'ANTHROPIC_API_KEY';
+  const thinkingBudgetTokens = cfg.thinkingBudgetTokens ?? DEFAULT_THINKING_BUDGET_TOKENS;
+  const maxTokens = cfg.maxTokens ?? thinkingBudgetTokens + 16384;
+  // Gateway routing env (belt + braces with the input JSON): litellm reads ANTHROPIC_API_BASE; the anthropic
+  // SDK reads ANTHROPIC_BASE_URL; the gateway strips + reinjects real creds, so the key need only be SET.
+  const gatewayEnv: Record<string, string> = {
+    [GATEWAY_BASE_URL_ENV]: baseUrl,
+    ANTHROPIC_API_BASE: baseUrl,
+    [GATEWAY_SDK_URL_ENV]: baseUrl,
+    ANTHROPIC_API_KEY: process.env[apiKeyEnv] ?? 'sk-gateway-routed',
+  };
 
   /** Stamp every within-task event with its backlog task id (MAST attribution). */
   const tag = (events: CoordEvent[] | undefined, taskId: string): CoordEvent[] =>
@@ -186,12 +217,14 @@ export function makeCompetitorDriver(cfg: CompetitorDriverConfig): CompetitorBac
               instanceId: task.instanceId,
               problemStatement: task.problemStatement,
               model: cfg.model,
-              baseUrl: cfg.baseUrl ?? null,
-              apiKeyEnv: cfg.apiKeyEnv ?? 'ANTHROPIC_API_KEY',
+              baseUrl,
+              apiKeyEnv,
+              thinkingBudgetTokens,
+              maxTokens,
               maxIterations: cfg.maxIterations ?? 40,
               ...(cfg.selfcheck ? { selfcheck: true } : {}),
             });
-            const { stdout, stderr, code } = await exec(cfg.pythonBin, [cfg.runnerScript], input, { timeoutMs });
+            const { stdout, stderr, code } = await exec(cfg.pythonBin, [cfg.runnerScript], input, { timeoutMs, env: gatewayEnv });
             const res = parseRunnerResult(stdout);
             if (!res) {
               const msg = `runner produced no result (code ${code}): ${stderr.slice(-300)}`;
@@ -263,9 +296,14 @@ export function runnerScriptPath(competitorId: CompetitorArmId): string {
 }
 
 export interface BindLiveCompetitorsOptions {
-  model: string;
+  /** Default DEFAULT_COMPETITOR_MODEL ('claude-opus-4-8') — fairness: every arm uses the same model. */
+  model?: string;
+  /** Default gatewayBaseUrl() (the bees' inference gateway, port from spawn-env). */
   baseUrl?: string | null;
   apiKeyEnv?: string;
+  /** xhigh effort realization; default DEFAULT_THINKING_BUDGET_TOKENS. */
+  thinkingBudgetTokens?: number;
+  maxTokens?: number;
   clone: CloneTaskRepo;
   extractDiff: ExtractDiff;
   /** Which competitors to bind (default the core three; ROMA is opt-in + has no runner yet). */
