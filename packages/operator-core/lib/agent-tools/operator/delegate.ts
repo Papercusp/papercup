@@ -200,7 +200,7 @@ export default defineTool({
     let workItemId: string | null = null;
     if (sessionCreated) {
       const task = await createDelegatedTask({
-        title: input.requestText.split(/\s+/).slice(0, 8).join(' ').slice(0, 200) || 'delegated task',
+        title: input.requestText.split(/\s+/).filter(Boolean).slice(0, 8).join(' ').slice(0, 200) || 'delegated task',
         summary: input.requestText.slice(0, 2000),
         agentSessionId,
         origin: 'voice',

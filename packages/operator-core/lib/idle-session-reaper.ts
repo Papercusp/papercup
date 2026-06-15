@@ -255,9 +255,17 @@ export function classifyLiveIdle(opts: {
 
 /**
  * Owners that are BUSY (must never be counted live-idle / terminated): work-item
- * claim holders + registered/​in-flight wake subscribers + running nursery
- * aliases. Deliberately EXCLUDES coord_presence (a fresh heartbeat is the
- * live-idle precondition, not a protection). One read.
+ * claim holders + running nursery aliases + IN-FLIGHT wake deliveries (a session
+ * mid-resume).
+ *
+ * CRITICAL — does NOT exclude STANDING `event_awaits`: every idle SU session is
+ * parked on an always-armed inbox-wake (a standing await), so excluding those
+ * made the detector silently always-0 and HID the entire D-007 cohort (verified
+ * live: 24 alive-idle sessions → 0). A wake-armed idle session IS the cohort —
+ * terminating it is safe BECAUSE the wake-executor `--resume`s it on its next
+ * wake (and session-dir-gc keeps its dir for exactly that). Only a wake mid-
+ * DELIVERY (event_wake_deliveries) must be spared. Also EXCLUDES coord_presence
+ * (a fresh heartbeat is the live-idle precondition, not a protection). One read.
  */
 export async function gatherBusyOwners(
   sql: Awaited<ReturnType<typeof getOrgPg>>['sql'],
@@ -270,10 +278,7 @@ export async function gatherBusyOwners(
         FROM harness_shared.harness_features_consolidated
        WHERE taken_by IS NOT NULL
       UNION
-      SELECT subscriber_id AS alias
-        FROM harness_shared.event_awaits
-       WHERE fired_at IS NULL AND cancelled_at IS NULL
-      UNION
+      -- in-flight wake delivery only (mid-resume) — NOT standing event_awaits.
       SELECT subscriber_id AS alias
         FROM harness_shared.event_wake_deliveries
        WHERE status IN ('pending', 'parked', 'delivering')
