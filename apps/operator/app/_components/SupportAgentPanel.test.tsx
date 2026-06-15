@@ -7,7 +7,7 @@
 // network send path needs a live SSE endpoint, so it's left to e2e.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 // MarkdownPreview pulls in the editor stack; a passthrough is enough — no
 // assistant message is rendered in these smoke cases anyway.
@@ -29,6 +29,24 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
+
+/** Build a Response whose body is a ReadableStream emitting the given SSE
+ *  frame strings (each already terminated by the "\n\n" the parser splits on). */
+function sseResponse(frames: string[], ok = true): Response {
+  const enc = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const f of frames) controller.enqueue(enc.encode(f));
+      controller.close();
+    },
+  });
+  return { ok, status: ok ? 200 : 500, body, text: async () => 'request failed' } as unknown as Response;
+}
+
+async function typeAndAsk(text: string) {
+  fireEvent.change(screen.getByPlaceholderText(/set up my first harness/i), { target: { value: text } });
+  fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+}
 
 describe('<SupportAgentPanel />', () => {
   it('renders the assistant card with the default budget readout on localhost', () => {

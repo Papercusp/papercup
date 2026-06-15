@@ -372,7 +372,13 @@ export interface SurveyDeps {
 function defaultSurveyDeps(workspaceId: string): SurveyDeps {
   return {
     loadRegistry: loadHarnessRegistry,
-    listPlanRows: (harnessSlug) => listPlanIndexRows({ harnessSlug }),
+    // Pass the survey's known workspaceId so resolvePlanScope short-circuits on it
+    // instead of throwing for a harness not (yet) in harness_shared.projects — the
+    // WI-148 survey-starvation: an unregistered harness made the plan-read throw,
+    // emptying the Queen's frontier so she placed nothing. The survey already scopes
+    // to this workspace's harnesses, so its workspaceId IS the correct plan scope
+    // (the error's sanctioned "or pass an explicit workspaceId" path).
+    listPlanRows: (harnessSlug) => listPlanIndexRows({ harnessSlug, workspaceId }),
     fetchFrontier: (surveySlugs, limit) => {
       const { sql } = getOrgPg();
       return fetchFrontierRows(sql, workspaceId, surveySlugs, limit);

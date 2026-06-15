@@ -186,4 +186,63 @@ describe('<OperatorActionLog />', () => {
     expect(screen.getByText(/could not load action log/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy();
   });
+
+  it('shows the loading placeholder when sync is loading with no rows', () => {
+    sync.loading = true;
+    sync.data = [];
+    render(<OperatorActionLog slug="my-harness" />);
+    expect(screen.getByText(/loading actions/i)).toBeTruthy();
+  });
+
+  it('still renders rows (not the error surface) when sync errors BUT data is present', () => {
+    sync.error = new Error('transient');
+    sync.data = [mkAction({ id: 7, kind: 'snapshot' })];
+    render(<OperatorActionLog slug="my-harness" />);
+    // error + data → the list wins; no error banner.
+    expect(screen.queryByText(/could not load action log/i)).toBeNull();
+    expect(screen.getByText('snapshot')).toBeTruthy();
+  });
+
+  it('renders an openable detail link as an anchor, and hides it for filesystem-path detailUrls', () => {
+    sync.data = [
+      mkAction({ id: 1, kind: 'with-link', detailUrl: 'https://example.com/run/1', summary: 'ok' }),
+      mkAction({ id: 2, kind: 'fs-path', detailUrl: '/home/avi/.papercusp/runs/x.log', summary: 'ok' }),
+    ];
+    render(<OperatorActionLog slug="my-harness" />);
+    const links = screen.getAllByText(/open ↗/);
+    // Only the http(s) row gets an "open" link; the filesystem path is filtered.
+    expect(links).toHaveLength(1);
+    const a = links[0].closest('a') as HTMLAnchorElement;
+    expect(a.getAttribute('href')).toBe('https://example.com/run/1');
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+
+  it('renders the error text (truncated, in the bad color) for a failed action', () => {
+    sync.data = [mkAction({ id: 1, kind: 'replan', status: 'failed', errorText: 'exploded mid-run', summary: null })];
+    render(<OperatorActionLog slug="my-harness" />);
+    expect(screen.getByText('exploded mid-run')).toBeTruthy();
+  });
+
+  it('falls back to a "(no summary)" placeholder when a succeeded action has no summary and no error', () => {
+    sync.data = [mkAction({ id: 1, kind: 'cleanup', status: 'succeeded', summary: null, errorText: null })];
+    render(<OperatorActionLog slug="my-harness" />);
+    expect(screen.getByText('(no summary)')).toBeTruthy();
+  });
+
+  it('renders the cost pill when the summary carries a cost token', () => {
+    sync.data = [mkAction({ id: 1, kind: 'replan', summary: 'replan (12s) · cost=0.044' })];
+    render(<OperatorActionLog slug="my-harness" />);
+    expect(screen.getByTitle('Run cost (USD)')).toBeTruthy();
+    expect(screen.getByText('0.044')).toBeTruthy();
+  });
+
+  it('marks a running action with the running level class and a live elapsed duration', () => {
+    sync.data = [mkAction({ id: 1, kind: 'replan', status: 'running', finishedAt: null, summary: 'in flight' })];
+    const { container } = render(<OperatorActionLog slug="my-harness" />);
+    // The row carries the status-keyed class…
+    expect(container.querySelector('li.notif-item--running')).toBeTruthy();
+    // …and a live elapsed duration pill (running rows show the fallback counter).
+    expect(screen.getByTitle('Run duration')).toBeTruthy();
+  });
 });

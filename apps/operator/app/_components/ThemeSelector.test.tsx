@@ -34,8 +34,8 @@ vi.mock('../harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock('./RouteLink', () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
+  default: ({ children, href, onClick }: { children: React.ReactNode; href: string; onClick?: (e: React.MouseEvent) => void }) => (
+    <a href={href} onClick={onClick}>{children}</a>
   ),
 }));
 
@@ -81,5 +81,51 @@ describe('<ThemeSelector />', () => {
     const menu = await screen.findByRole('menu');
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: /Light/ }));
     expect(theme.writeActiveTheme).toHaveBeenCalledWith('light');
+  });
+
+  it('clicking the trigger opens the menu from a closed state', async () => {
+    render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '' }) });
+    expect(screen.queryByRole('menu')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /switch theme/i }));
+    // aria-expanded flips and the portaled menu mounts.
+    await screen.findByRole('menu');
+    expect(screen.getByRole('button', { name: /switch theme/i }).getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('picking a theme closes the menu', async () => {
+    render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '?themeSwitch=true' }) });
+    const menu = await screen.findByRole('menu');
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: /Light/ }));
+    // pick() calls setOpen(false) → the menu unmounts.
+    await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+
+  it('an outside mousedown closes the open menu', async () => {
+    render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '?themeSwitch=true' }) });
+    await screen.findByRole('menu');
+    // mousedown outside the trigger + menu → the document listener closes it.
+    fireEvent.mouseDown(document.body);
+    await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+
+  it('Escape closes the open menu', async () => {
+    render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '?themeSwitch=true' }) });
+    await screen.findByRole('menu');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+
+  it('the Manage themes… link closes the menu on click', async () => {
+    render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '?themeSwitch=true' }) });
+    const menu = await screen.findByRole('menu');
+    const manage = within(menu).getByText(/manage themes/i).closest('a') as HTMLAnchorElement;
+    const prevent = (e: Event) => e.preventDefault();
+    document.addEventListener('click', prevent, true);
+    try {
+      fireEvent.click(manage);
+    } finally {
+      document.removeEventListener('click', prevent, true);
+    }
+    await vi.waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
   });
 });
