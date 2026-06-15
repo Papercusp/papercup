@@ -105,8 +105,12 @@ export interface ScoutTickOptions {
 
 export interface ScoutTickResult {
   fired: boolean;
-  /** Cadence reason when fired/withheld, or 'circuit'/'claim-lost'/'cycle-error'. */
-  reason: ScoutCadenceVerdict['reason'] | 'circuit' | 'claim-lost' | 'cycle-error';
+  /**
+   * Cadence reason when fired/withheld, or a structural-gate refusal:
+   * 'circuit' / 'claim-lost' / 'cycle-error', or 'workspace-ceiling' (P-051 —
+   * the workspace-wide scout spend ceiling refused this cycle BEFORE the tick).
+   */
+  reason: ScoutCadenceVerdict['reason'] | 'circuit' | 'claim-lost' | 'cycle-error' | 'workspace-ceiling';
   cycleId?: string;
   routedCount?: number;
   /** The fired cycle's reported LLM spend (cycle.costUsd) — FB-01 learning-governor ledgering. */

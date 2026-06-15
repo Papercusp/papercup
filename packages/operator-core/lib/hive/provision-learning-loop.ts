@@ -16,7 +16,9 @@
  *       under the hive's OWN install_slug — NOT @singleton, which is reserved
  *       for the workspace-singleton frontier loops (D-008). active:false ⇒ the
  *       routines engine never ticks it; its per-hive cycle budget lives in
- *       payload_template.budget.maxCostUsd (parseScoutCycleConfig reads it).
+ *       payload_template.budget.maxCostUsd (parseScoutCycleConfig reads it). Its
+ *       cron is DETERMINISTICALLY STAGGERED per hive (P-050:
+ *       {@link staggeredHiveScoutCron}) so N armed hives never burst together.
  *       ARMING = the owner flipping it active via the routines admin AFTER the
  *       cost-control prerequisites (D-005 / Phase 5) are in place.
  *
@@ -40,13 +42,60 @@ export const HIVE_SCOUT_ROUTINE_NAME = 'scout-cycle';
 export const SCOUT_CYCLE_TARGET_ROLE = 'system:scout-cycle';
 
 /**
- * Default per-hive scout cron — ticks every 30 min at :05/:35 (deliberately
- * OFFSET from the deploy/green-checkpoint :00/:15/:30/:45 rhythm, like the
- * gym-cycle :10/:40 offset). The routine is seeded INACTIVE; staggered per-hive
- * crons that scale the offset by N (P-050) are a later cost-control lane — this
- * is the inert default until then.
+ * Per-hive scout cadence window: a cycle heartbeat fires twice an hour (every
+ * 30 min). staggeredHiveScoutCron spreads each hive's two fires DETERMINISTICALLY
+ * across this window so N hives never collide on one boundary (P-050).
+ */
+export const HIVE_SCOUT_CADENCE_MIN = 30;
+
+/**
+ * Legacy fixed per-hive scout cron — every 30 min at :05/:35 (OFFSET from the
+ * deploy/green-checkpoint :00/:15/:30/:45 rhythm). Superseded by the deterministic
+ * per-hive stagger (P-050: {@link staggeredHiveScoutCron}); kept only as the
+ * documented "what the un-staggered default was" anchor. The provision default is
+ * now per-hive-staggered.
  */
 export const DEFAULT_HIVE_SCOUT_CRON = '0 5,35 * * * *';
+
+/**
+ * A stable 32-bit FNV-1a hash of a string. Deterministic + dependency-free — the
+ * same slug always hashes to the same value (so a re-provision is idempotent),
+ * and two different slugs almost never collide on BOTH the derived minute AND
+ * second (P-050 only needs "distinct boundaries", not a perfect partition).
+ */
+function fnv1a32(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    // h *= 16777619, kept in 32-bit unsigned via the >>> 0 below.
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/**
+ * P-050 — DETERMINISTIC per-hive scout cron. Scout is the one engine that
+ * multiplies (N hives × ~13 in-process LLM calls/cycle on ONE shared Anthropic
+ * rate limit, D-005). If every hive's routine fired on the same cron boundary,
+ * N hives = 13N concurrent API calls at that instant. Spreading each hive's
+ * heartbeat to a STABLE per-hive minute+second within the 30-min cadence window
+ * — a pure function of the hive slug — declusters those bursts without any
+ * coordination: hive A fires at e.g. `:07:42 / :37:42`, hive B at `:23:11 /
+ * :53:11`, deterministically and idempotently (the same slug always lands on
+ * the same offset, so re-provisioning never churns the schedule).
+ *
+ * The minute offset ranges over [0, 30) and the second over [0, 60), giving
+ * 1800 distinct slots within a half-hour — ample to scatter realistic hive
+ * counts. Returns a 6-field (seconds-resolution) cron `S M,M+30 * * * *`.
+ */
+export function staggeredHiveScoutCron(hiveSlug: string): string {
+  const h = fnv1a32(hiveSlug);
+  // Two independent fields from the one hash: low bits → minute, high bits → second.
+  const minute = h % HIVE_SCOUT_CADENCE_MIN; // [0, 30)
+  const second = Math.floor(h / HIVE_SCOUT_CADENCE_MIN) % 60; // [0, 60)
+  const minutes = `${minute},${minute + HIVE_SCOUT_CADENCE_MIN}`; // e.g. "7,37"
+  return `${second} ${minutes} * * * *`;
+}
 
 /**
  * Default per-cycle scout budget for a fresh per-hive loop (USD). Conservative —
@@ -63,7 +112,11 @@ export interface ProvisionHiveLearningLoopInput {
   hiveSlug: string;
   /** Override the per-cycle scout budget cap (USD). Default 0.5. */
   scoutMaxCostUsd?: number;
-  /** Override the scout routine cron. Default :05/:35 every 30 min. */
+  /**
+   * Override the scout routine cron. Default = the DETERMINISTIC per-hive stagger
+   * (P-050: {@link staggeredHiveScoutCron}) — a stable per-slug minute+second
+   * within the 30-min window so N hives don't burst together.
+   */
   scoutCron?: string;
   now?: number;
 }
@@ -102,7 +155,10 @@ export async function provisionHiveLearningLoop(
   const { sql, workspaceId, hiveSlug } = input;
   const now = input.now ?? Date.now();
   const maxCostUsd = input.scoutMaxCostUsd ?? DEFAULT_HIVE_SCOUT_MAX_COST_USD;
-  const cron = input.scoutCron ?? DEFAULT_HIVE_SCOUT_CRON;
+  // P-050: a DETERMINISTIC per-hive cron offset (a stable hash of the hive slug),
+  // so N hives' scout heartbeats scatter across the 30-min window instead of all
+  // firing on one boundary (which would burst ~13N concurrent LLM calls).
+  const cron = input.scoutCron ?? staggeredHiveScoutCron(hiveSlug);
   const routineId = hiveScoutRoutineId(hiveSlug);
 
   // (a) DARK gym autoloop row — enabled:false + budget:null. setAutoloop upserts;

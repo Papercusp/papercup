@@ -8,8 +8,11 @@ import { describe, expect, it } from 'vitest';
 import {
   LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
   checkLoopVerdict,
+  checkScoutWorkspaceCeiling,
+  DEFAULT_SCOUT_WORKSPACE_CEILING_USD,
   gymLoopId,
   gymRegistrationInput,
+  isScoutLoopId,
   remainingLoopBudgetUsd,
   scoutLoopId,
   scoutRegistrationInput,
@@ -169,5 +172,72 @@ describe('registrant mappings — gym + scout become governor sub-budgets, zero 
   it('loop-id helpers are stable', () => {
     expect(gymLoopId('x')).toBe('gym:x');
     expect(scoutLoopId('x')).toBe('scout:x');
+  });
+});
+
+describe('checkScoutWorkspaceCeiling — the P-051 aggregate scout gate (D-005)', () => {
+  const scout = (hive: string, spentUsd: number) => reg({ loopId: scoutLoopId(hive), spentUsd });
+
+  it('isScoutLoopId distinguishes scout:<hive> from other registrants', () => {
+    expect(isScoutLoopId('scout:alpha')).toBe(true);
+    expect(isScoutLoopId('gym:alpha')).toBe(false);
+    expect(isScoutLoopId('frontier:transfer-harness')).toBe(false);
+  });
+
+  it('UNDER cap ⇒ proceed', () => {
+    const v = checkScoutWorkspaceCeiling([scout('a', 1), scout('b', 2)], 10);
+    expect(v.allow).toBe(true);
+    expect(v.reason).toBeUndefined();
+    expect(v.totalScoutSpentUsd).toBe(3);
+    expect(v.remainingUsd).toBe(7);
+    expect(v.scoutLoopCount).toBe(2);
+  });
+
+  it('OVER cap ⇒ refuse with workspace-ceiling-exceeded', () => {
+    const v = checkScoutWorkspaceCeiling([scout('a', 6), scout('b', 5)], 10);
+    expect(v.allow).toBe(false);
+    expect(v.reason).toBe('workspace-ceiling-exceeded');
+    expect(v.totalScoutSpentUsd).toBe(11);
+    expect(v.remainingUsd).toBe(-1);
+  });
+
+  it('the ceiling SUMS ACROSS HIVES — three hives each under their own cap can still breach the aggregate', () => {
+    // Each hive is a modest per-cycle spender; together they exceed the workspace cap.
+    const v = checkScoutWorkspaceCeiling([scout('a', 4), scout('b', 4), scout('c', 4)], 10);
+    expect(v.totalScoutSpentUsd).toBe(12);
+    expect(v.allow).toBe(false);
+    expect(v.scoutLoopCount).toBe(3);
+  });
+
+  it('exactly AT the cap ⇒ refuse (strictly-under semantics, like checkScoutBudget)', () => {
+    expect(checkScoutWorkspaceCeiling([scout('a', 10)], 10).allow).toBe(false);
+    expect(checkScoutWorkspaceCeiling([scout('a', 9.99)], 10).allow).toBe(true);
+  });
+
+  it('IGNORES gym + frontier registrants — only scout:<hive> spend counts toward the ceiling', () => {
+    const v = checkScoutWorkspaceCeiling(
+      [
+        scout('a', 3),
+        reg({ loopId: gymLoopId('a'), spentUsd: 50 }), // gym spend must NOT count
+        reg({ loopId: 'frontier:transfer-harness', spentUsd: 50 }), // nor frontier
+      ],
+      10,
+    );
+    expect(v.totalScoutSpentUsd).toBe(3); // gym/frontier excluded
+    expect(v.scoutLoopCount).toBe(1);
+    expect(v.allow).toBe(true);
+  });
+
+  it('no scout registrants ⇒ zero sum, allow', () => {
+    const v = checkScoutWorkspaceCeiling([reg({ loopId: gymLoopId('a'), spentUsd: 99 })], 10);
+    expect(v.totalScoutSpentUsd).toBe(0);
+    expect(v.scoutLoopCount).toBe(0);
+    expect(v.allow).toBe(true);
+  });
+
+  it('defaults to DEFAULT_SCOUT_WORKSPACE_CEILING_USD when no cap is passed', () => {
+    const v = checkScoutWorkspaceCeiling([scout('a', DEFAULT_SCOUT_WORKSPACE_CEILING_USD + 1)]);
+    expect(v.ceilingUsd).toBe(DEFAULT_SCOUT_WORKSPACE_CEILING_USD);
+    expect(v.allow).toBe(false);
   });
 });

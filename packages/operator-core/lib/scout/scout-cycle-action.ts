@@ -23,6 +23,7 @@
 
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
 import { recordScoutTickToGovernor } from '../learning-governor/registrants';
+import { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
 import {
   runScoutCycleTick,
   parseScoutCycleConfig,
@@ -62,13 +63,22 @@ export function makeScoutCycleAction(
   buildDeps: ScoutTickDepsBuilder = productionDepsBuilder,
   // No production default ON PURPOSE: this factory's unit-test contract is
   // PG-free (see the header), and the real glue resolves the live admin pool.
-  // The boot path (registerScoutCycleAction) wires recordScoutTickToGovernor.
+  // The boot path (registerScoutCycleAction) wires recordScoutTickToGovernor +
+  // workspaceCeilingGate.
   recordGovernor?: typeof recordScoutTickToGovernor,
+  // P-051: the workspace-wide scout spend ceiling preflight. Same PG-free
+  // contract — unwired in unit tests, wired at boot.
+  workspaceCeilingGate?: typeof scoutWorkspaceCeilingGate,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
     const result = await runScoutCycleTick(
       { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payloadTemplate: ctx.payloadTemplate },
-      { runCycle, buildDeps, ...(recordGovernor ? { recordGovernor } : {}) },
+      {
+        runCycle,
+        buildDeps,
+        ...(recordGovernor ? { recordGovernor } : {}),
+        ...(workspaceCeilingGate ? { workspaceCeilingGate } : {}),
+      },
     );
 
     if (result.fired) {
@@ -79,6 +89,11 @@ export function makeScoutCycleAction(
     } else if (result.reason === 'cycle-error') {
       // eslint-disable-next-line no-console
       console.warn(`[scout-cycle] ${ctx.installSlug}: cycle error — ${result.error}`);
+    } else if (result.reason === 'workspace-ceiling') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[scout-cycle] ${ctx.installSlug}: refused — workspace-wide scout spend ceiling reached (P-051)`,
+      );
     }
     // A withheld tick (min-interval / no-trigger / circuit) is the common, silent no-op.
   };
@@ -92,6 +107,9 @@ export function makeScoutCycleAction(
 export function registerScoutCycleAction(runCycle: ScoutCycleRunner): void {
   registerSystemAction(
     SCOUT_CYCLE_ACTION,
-    makeScoutCycleAction(runCycle, undefined, recordScoutTickToGovernor),
+    // Wire BOTH governor seams at boot: the post-tick spend mirror
+    // (recordScoutTickToGovernor) and the P-051 workspace-wide ceiling preflight
+    // (scoutWorkspaceCeilingGate). Both flag-gated + best-effort/fail-open.
+    makeScoutCycleAction(runCycle, undefined, recordScoutTickToGovernor, scoutWorkspaceCeilingGate),
   );
 }

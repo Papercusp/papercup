@@ -37,6 +37,7 @@ import { InputCard, type InputCardResponse } from '@/app/_components/chat/InputC
 import { QueueCardActions } from './QueueCardActions';
 import { attentionItemToCardSpec, resolveAttentionAction, answerAttentionItem } from './attention-card';
 import { TIER_LABEL, type AttentionGroup, type AttentionItem, type AttentionKind, type AttentionTier } from './plans-api';
+import { byAuthorizer, planSections, whyLine } from './queue-authorizer';
 
 const KIND_LABEL: Record<AttentionKind, string> = {
   'plan-item': 'item',
@@ -51,81 +52,9 @@ const KIND_LABEL: Record<AttentionKind, string> = {
   'scout-grade': 'grade',
 };
 
-/* ── A1 authorizer split (queue-authorization-redesign P-004/P-005) ───────── */
-
-/** Human reason for each whyGated value — the tail of the per-card why-line. */
-const WHYGATED_REASON: Record<string, string> = {
-  protected: 'protected category — your call by right',
-  'owner-only': 'your ratification',
-  unarmed: 'the Queen isn’t armed yet',
-  'above-ceiling': 'above the Queen’s autonomy ceiling',
-};
-
-/** The "why it's here" line: who must sign off + why. Null for non-decisions. */
-function whyLine(it: AttentionItem): string | null {
-  if (!it.authorizer) return null;
-  const who = it.authorizer === 'you' ? 'needs you' : 'the Queen could take this';
-  const reason = it.whyGated ? WHYGATED_REASON[it.whyGated] : null;
-  return reason ? `${who} · ${reason}` : who;
-}
-
-/** A rendered section of the Other list — either an authorizer bucket or, in the
- *  legacy view, one plan/harness AttentionGroup. */
-interface DisplaySection {
-  key: string;
-  title: string;
-  /** Authorizer-bucket explainer (new view). */
-  hint?: string;
-  /** Source harness pill (legacy plan/harness grouping). */
-  harnessSlug?: string | null;
-  /** Render the "Let the Queen handle these →" link (queen-eligible bucket). */
-  queenLink?: boolean;
-  items: AttentionItem[];
-}
-
-const AUTH_BUCKETS: {
-  key: string;
-  match: 'you' | 'queen-eligible' | 'other';
-  title: string;
-  hint: string;
-  queenLink?: boolean;
-}[] = [
-  {
-    key: 'auth:you',
-    match: 'you',
-    title: 'Needs your call',
-    hint: 'Only you can decide these — protected actions and your ratifications.',
-  },
-  {
-    key: 'auth:queen',
-    match: 'queen-eligible',
-    title: 'Automatable — for now',
-    hint: 'The Queen could handle these once her autonomy is widened.',
-    queenLink: true,
-  },
-  {
-    key: 'auth:other',
-    match: 'other',
-    title: 'Alerts & activity',
-    hint: 'Signals and FYI — not a decision waiting on anyone.',
-  },
-];
-
-/** Partition flat items into the three authorizer buckets, dropping empties. */
-function byAuthorizer(items: AttentionItem[]): DisplaySection[] {
-  return AUTH_BUCKETS.map((b) => ({
-    key: b.key,
-    title: b.title,
-    hint: b.hint,
-    queenLink: b.queenLink,
-    items: items.filter((i) => (b.match === 'other' ? !i.authorizer : i.authorizer === b.match)),
-  })).filter((s) => s.items.length > 0);
-}
-
-/** Legacy: one section per plan/harness AttentionGroup. */
-function planSections(groups: AttentionGroup[]): DisplaySection[] {
-  return groups.map((g) => ({ key: g.key, title: g.title, harnessSlug: g.harnessSlug, items: g.items }));
-}
+// A1 grouping helpers (byAuthorizer / whyLine / planSections / DisplaySection)
+// live in ./queue-authorizer so they're unit-testable without this component's
+// React/nuqs/radix import graph (queue-authorization-redesign P-004/P-005/P-009).
 
 interface Props {
   groups: AttentionGroup[];

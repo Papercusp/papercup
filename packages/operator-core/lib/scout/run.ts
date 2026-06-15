@@ -38,6 +38,7 @@ import { readHiveIdleRatio, readFrictionSignalCount } from './cadence-signals';
 import type { ScoutCadenceOptions } from './cadence';
 import { resolveScoutBudget, type ScoutBudget } from './budget';
 import type { recordScoutTickToGovernor } from '../learning-governor/registrants';
+import type { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
 
 /** Runs ONE budgeted Scout cycle for a harness (wraps cb4b9's runScoutCycle + ports). */
 export type ScoutCycleRunner = (ctx: {
@@ -94,6 +95,15 @@ export interface ScoutCycleDeps {
   buildDeps?: ScoutTickDepsBuilder;
   /** Best-effort governor sub-budget mirror (boot wires recordScoutTickToGovernor). */
   recordGovernor?: typeof recordScoutTickToGovernor;
+  /**
+   * P-051 workspace-wide scout spend ceiling PREFLIGHT (boot wires
+   * scoutWorkspaceCeilingGate). Consulted BEFORE the tick: when it refuses
+   * (aggregate `scout:<hive>` spend ≥ the workspace ceiling, D-005) the tick
+   * is short-circuited as a no-op cycle so per-hive scout in aggregate can't
+   * saturate the shared rate limit. Unwired ⇒ no ceiling check (the hermetic
+   * unit-test contract — runScoutTick's structural self-gates still bound it).
+   */
+  workspaceCeilingGate?: typeof scoutWorkspaceCeilingGate;
 }
 
 /**
@@ -107,6 +117,31 @@ export async function runScoutCycleTick(
   deps: ScoutCycleDeps,
 ): Promise<ScoutTickResult> {
   const cfg = parseScoutCycleConfig(input.payloadTemplate);
+
+  // P-051 (D-005): the WORKSPACE-WIDE scout spend ceiling — consulted BEFORE the
+  // tick. The per-hive per-cycle cap bounds ONE cycle but cannot see the fleet;
+  // this aggregate gate refuses a new cycle once Σ `scout:<hive>` spend across the
+  // workspace crosses the ceiling, so per-hive scout in aggregate can't saturate
+  // the shared Anthropic rate limit / operator daily budget. Flag-gated +
+  // fail-open by contract (scout-ceiling.ts), so it never hard-fails a tick; only
+  // wired at boot ⇒ the hermetic unit-test path skips it entirely.
+  if (deps.workspaceCeilingGate) {
+    const ceiling = await deps.workspaceCeilingGate({ workspaceId: input.workspaceId });
+    if (!ceiling.allow) {
+      // Refused before fanning out — still MIRROR the per-cycle cap (fired:null)
+      // so the governor's scout sub-budget stays current even on a held cycle.
+      if (deps.recordGovernor) {
+        await deps.recordGovernor({
+          workspaceId: input.workspaceId,
+          harnessSlug: input.installSlug,
+          perCycleBudgetUsd: resolveScoutBudget(cfg.budget).maxCostUsd,
+          fired: null,
+        });
+      }
+      return { fired: false, reason: 'workspace-ceiling' };
+    }
+  }
+
   const tickDeps = (deps.buildDeps ?? productionDepsBuilder)(input, deps.runCycle);
 
   const result = await runScoutTick(tickDeps, {

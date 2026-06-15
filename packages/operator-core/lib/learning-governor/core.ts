@@ -174,6 +174,87 @@ export function scoutLoopId(harnessSlug: string): string {
   return `scout:${harnessSlug}`;
 }
 
+/** The `scout:` loop_id prefix — the workspace-ceiling rule sums every registrant under it. */
+export const SCOUT_LOOP_ID_PREFIX = 'scout:';
+
+/** Is this a per-hive scout registrant (`scout:<hive>`)? Used to scope the workspace ceiling. */
+export function isScoutLoopId(loopId: string): boolean {
+  return loopId.startsWith(SCOUT_LOOP_ID_PREFIX);
+}
+
+// ---------------------------------------------------------------------------
+// P-051 — WORKSPACE-WIDE scout spend ceiling
+//
+// Scout is the one engine that multiplies (D-005): each hive carries its OWN
+// `scout:<hive>` per-cycle registrant, and the per-cycle cap bounds ONE cycle —
+// but it says nothing about the AGGREGATE across N hives. N armed hives, each
+// individually under its small per-cycle cap, can still sum to a spend that
+// saturates the shared Anthropic rate limit / operator daily budget. This rule
+// is the missing aggregate gate: sum every `scout:<hive>` registrant's ledgered
+// spend in the workspace and REFUSE a new scout cycle once the total crosses the
+// ceiling — the per-hive caps bound each cycle, this bounds the fleet.
+// ---------------------------------------------------------------------------
+
+/**
+ * Default workspace-wide scout spend ceiling (USD).
+ *
+ * OWNER-TUNABLE DESIGN POINT (P-051): this is the aggregate cap across ALL
+ * `scout:<hive>` registrants before the workspace refuses new scout cycles. The
+ * value is a deliberate, conservative starting point — ~$10 ≈ six full default
+ * cycles (~$1.69 each) of headroom across the whole fleet per accounting window
+ * — sized to protect the shared Anthropic rate limit + the operator daily budget,
+ * NOT a researched optimum. Override per-workspace via the
+ * `PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD` env (see scout-ceiling.ts). Revisit
+ * once real multi-hive scout spend data exists.
+ */
+export const DEFAULT_SCOUT_WORKSPACE_CEILING_USD = 10.0;
+
+export type ScoutCeilingRefusal = 'workspace-ceiling-exceeded';
+
+export interface ScoutWorkspaceCeilingVerdict {
+  /** May a NEW scout cycle proceed (aggregate scout spend strictly below the ceiling)? */
+  allow: boolean;
+  reason?: ScoutCeilingRefusal;
+  /** Σ ledgered spend across every `scout:<hive>` registrant in the workspace. */
+  totalScoutSpentUsd: number;
+  /** The ceiling this verdict was checked against. */
+  ceilingUsd: number;
+  /** ceiling − total (≤ 0 when exceeded). */
+  remainingUsd: number;
+  /** How many `scout:<hive>` registrants contributed to the sum (the fleet width). */
+  scoutLoopCount: number;
+}
+
+/**
+ * The pure workspace-ceiling rule: sum the ledgered `spentUsd` of EVERY
+ * `scout:<hive>` registrant (gym + frontier loops are ignored — this gate is
+ * scout-only), and refuse once that aggregate reaches the ceiling. A new cycle
+ * is allowed only while the sum is STRICTLY below the cap (a cycle that would
+ * land exactly on it is the first refusal), mirroring checkScoutBudget's
+ * strictly-under semantics. Pure ⇒ unit-tested with zero PG.
+ */
+export function checkScoutWorkspaceCeiling(
+  regs: readonly Pick<LearningLoopRegistration, 'loopId' | 'spentUsd'>[],
+  ceilingUsd: number = DEFAULT_SCOUT_WORKSPACE_CEILING_USD,
+): ScoutWorkspaceCeilingVerdict {
+  let total = 0;
+  let count = 0;
+  for (const reg of regs) {
+    if (!isScoutLoopId(reg.loopId)) continue;
+    total += Math.max(0, reg.spentUsd);
+    count += 1;
+  }
+  const allow = total < ceilingUsd;
+  return {
+    allow,
+    ...(allow ? {} : { reason: 'workspace-ceiling-exceeded' as const }),
+    totalScoutSpentUsd: total,
+    ceilingUsd,
+    remainingUsd: ceilingUsd - total,
+    scoutLoopCount: count,
+  };
+}
+
 /** The mirror sync priority defaults (lower = more important when budgets contend). */
 export const GYM_REGISTRANT_PRIORITY = 50;
 export const SCOUT_REGISTRANT_PRIORITY = 60;

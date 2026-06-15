@@ -12,6 +12,8 @@ import {
   provisionHiveLearningLoop,
   teardownHiveLearningLoop,
   hiveScoutRoutineId,
+  staggeredHiveScoutCron,
+  HIVE_SCOUT_CADENCE_MIN,
   DEFAULT_HIVE_SCOUT_MAX_COST_USD,
   HIVE_SCOUT_ROUTINE_NAME,
   SCOUT_CYCLE_TARGET_ROLE,
@@ -30,6 +32,45 @@ function makeFakeSql(): { sql: Sql; calls: Array<{ text: string; values: unknown
 describe('hiveScoutRoutineId', () => {
   it('sanitizes the install_slug into a routines id', () => {
     expect(hiveScoutRoutineId('My-Hive.1')).toBe('rt_my_hive_1_scout_cycle');
+  });
+});
+
+describe('staggeredHiveScoutCron (P-050 — deterministic per-hive cron offset)', () => {
+  /** Parse a 6-field "S M,M+30 * * * *" cron into its second + the two minute fields. */
+  function parse(cron: string): { second: number; minutes: number[] } {
+    const [sec, mins] = cron.split(' ');
+    return { second: Number(sec), minutes: mins.split(',').map(Number) };
+  }
+
+  it('produces a 6-field seconds-resolution cron firing twice an hour, 30 min apart', () => {
+    const { second, minutes } = parse(staggeredHiveScoutCron('alpha'));
+    expect(second).toBeGreaterThanOrEqual(0);
+    expect(second).toBeLessThan(60);
+    expect(minutes).toHaveLength(2);
+    const [m0, m1] = minutes;
+    expect(m0).toBeGreaterThanOrEqual(0);
+    expect(m0).toBeLessThan(HIVE_SCOUT_CADENCE_MIN);
+    expect(m1 - m0).toBe(HIVE_SCOUT_CADENCE_MIN); // the second fire is exactly +30 min
+  });
+
+  it('is STABLE / idempotent — the same slug always yields the same cron', () => {
+    expect(staggeredHiveScoutCron('hive-acme')).toBe(staggeredHiveScoutCron('hive-acme'));
+    // Independent of how many times we ask (no clock / no randomness).
+    const once = staggeredHiveScoutCron('hive-acme');
+    for (let i = 0; i < 5; i++) expect(staggeredHiveScoutCron('hive-acme')).toBe(once);
+  });
+
+  it('gives two DIFFERENT slugs DISTINCT offsets (the anti-burst guarantee)', () => {
+    // The load-bearing P-050 claim: distinct hives fire at distinct cron boundaries.
+    expect(staggeredHiveScoutCron('hive-acme')).not.toBe(staggeredHiveScoutCron('hive-beta'));
+    expect(staggeredHiveScoutCron('alpha')).not.toBe(staggeredHiveScoutCron('omega'));
+  });
+
+  it('scatters a realistic fleet across many distinct (minute,second) slots — no mass collision', () => {
+    const slugs = Array.from({ length: 50 }, (_, i) => `hive-${i}`);
+    const offsets = new Set(slugs.map((s) => staggeredHiveScoutCron(s).split(' ').slice(0, 2).join(' ')));
+    // 1800 slots in the window ⇒ 50 hives should spread to (near-)all distinct boundaries.
+    expect(offsets.size).toBeGreaterThanOrEqual(48);
   });
 });
 
@@ -67,6 +108,26 @@ describe('provisionHiveLearningLoop', () => {
       (v) => typeof v === 'string' && v.includes('maxCostUsd'),
     ) as string;
     expect(JSON.parse(payload)).toEqual({ budget: { maxCostUsd: DEFAULT_HIVE_SCOUT_MAX_COST_USD } });
+
+    // P-050: the cron defaults to the DETERMINISTIC per-hive stagger (not the
+    // legacy fixed :05/:35), a stable function of the hive slug.
+    const cron = routineInsert!.values.find((v) => typeof v === 'string' && v.includes('"cron"')) as string;
+    expect(JSON.parse(cron)).toEqual({ cron: staggeredHiveScoutCron('alpha') });
+  });
+
+  it('staggers the scout cron PER-HIVE — two hives provision DISTINCT cron offsets (P-050)', async () => {
+    const cronFor = async (hiveSlug: string): Promise<string> => {
+      const { sql, calls } = makeFakeSql();
+      await provisionHiveLearningLoop({ sql, workspaceId: 'w1', hiveSlug });
+      const routineInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.routines'));
+      const cron = routineInsert!.values.find((v) => typeof v === 'string' && v.includes('"cron"')) as string;
+      return JSON.parse(cron).cron as string;
+    };
+    const acme = await cronFor('hive-acme');
+    const beta = await cronFor('hive-beta');
+    expect(acme).not.toBe(beta); // distinct boundaries ⇒ no shared-boundary burst
+    // ...and idempotent: re-provisioning the same hive lays down the SAME cron.
+    expect(await cronFor('hive-acme')).toBe(acme);
   });
 
   it('honors a per-hive budget + cron override', async () => {
