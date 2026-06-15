@@ -41,6 +41,24 @@ interface NurseryBeeRow {
 }
 
 /**
+ * P-015 (presence-v2 D-003): the bee's RECENT-ACTIVITY timestamp for affinity
+ * scoring — genuine work, NOT the keepalive heartbeat. Prefer the presence
+ * `last_active_at` (bumped only by real tool dispatch / declare-intent / inbox
+ * reads, never by the 60s psu-launcher keepalive); fall back to the nursery
+ * activity ts for a just-spawned bee that has no presence row yet. Reading
+ * `heartbeat_at` here made a parked-but-alive bee score as recently active.
+ */
+export function pickBeeRecentActivityMs(
+  presenceLastActiveAt: string | null | undefined,
+  nurseryMs: number | null,
+): number | null {
+  const presMs = presenceLastActiveAt ? Date.parse(presenceLastActiveAt) : NaN;
+  if (Number.isFinite(presMs)) return presMs;
+  if (nurseryMs != null && Number.isFinite(nurseryMs)) return nurseryMs;
+  return null;
+}
+
+/**
  * The live `bee`-role spawns for a workspace, mapped to PlacementBee with their
  * presence + assignment signals merged in. Non-bee roster entries (SU / operator /
  * human) are excluded by construction — only nursery rows with child_role='bee'.
@@ -49,10 +67,11 @@ export async function gatherLiveBees(workspaceId: string): Promise<PlacementBee[
   const { sql } = getOrgPg();
   const beeRows = await sql<NurseryBeeRow[]>`
     SELECT spawn_id, session_owner, harness_slug,
-           (EXTRACT(EPOCH FROM GREATEST(
-              COALESCE(last_output_at, heartbeat_at, started_at),
-              COALESCE(heartbeat_at, started_at)
-            )) * 1000)::bigint::text AS last_active_ms
+           -- P-015 (presence-v2 D-003): nursery activity = GENUINE work
+           -- (last_output_at), not the keepalive heartbeat_at — a parked-but-alive
+           -- bee must not read as recently active. started_at is the floor: a
+           -- just-spawned bee with no output yet is legitimately "recent".
+           (EXTRACT(EPOCH FROM COALESCE(last_output_at, started_at)) * 1000)::bigint::text AS last_active_ms
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
        AND status IN ('running', 'restarting')
@@ -84,13 +103,11 @@ export async function gatherLiveBees(workspaceId: string): Promise<PlacementBee[
     // presence row yet (just spawned) we still treat the running nursery row as
     // live; the woken-check at execution is the real reachability gate.
     const alive = pres ? !pres.stale : true;
-    const heartbeatMs = pres?.heartbeatAt ? Date.parse(pres.heartbeatAt) : NaN;
-    const nurseryMs = r.last_active_ms != null ? Number(r.last_active_ms) : NaN;
-    const lastActiveMs = Number.isFinite(heartbeatMs)
-      ? heartbeatMs
-      : Number.isFinite(nurseryMs)
-        ? nurseryMs
-        : null;
+    // P-015 (presence-v2 D-003): RECENT ACTIVITY for affinity = genuine work via
+    // pres.lastActiveAt, never the keepalive heartbeat. Liveness (`alive`) still
+    // rides pres.stale — that's heartbeat-correct (process up ≠ recently active).
+    const nurseryMs = r.last_active_ms != null ? Number(r.last_active_ms) : null;
+    const lastActiveMs = pickBeeRecentActivityMs(pres?.lastActiveAt, nurseryMs);
     const queuedHarnesses = group
       ? [...new Set((group.queued ?? []).map((q) => claimHarness.get(q.id) ?? null).filter((h): h is string => !!h))]
       : [];

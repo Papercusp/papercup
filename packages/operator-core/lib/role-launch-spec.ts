@@ -82,6 +82,14 @@ export interface BuildRoleLaunchSpecInput {
   planContext?: string;
   /** Queen-authored brief: the situational overlay the bee is MISSING. P-060: passed at placement time. */
   brief?: string;
+  /**
+   * The ONE bounded spawn/wake-hydration block (directed-wake-honesty P-021/P-012):
+   * predecessor handoff + hive-roster snapshot + work-item carry-note, assembled by
+   * assembleSpawnHydration and carrying its own `## Handoff` heading. Harness-scoped
+   * (the caller hydrates it before building the spec). Rendered verbatim in the
+   * volatile tail. Only meaningful for a harness-scoped launch.
+   */
+  handoff?: string;
   /** Extra runtime-context bullets, e.g. ['MODE=replan']. */
   extras?: readonly string[];
   /** Signed-URL TTL; defaults to the signer's 24h. */
@@ -213,6 +221,7 @@ export async function buildRoleLaunchSpec(
       extras,
       planContext: input.planContext,
       brief: input.brief,
+      handoff: input.handoff,
       promptOverrideText,
     });
     runId = assembled.meta.runId;

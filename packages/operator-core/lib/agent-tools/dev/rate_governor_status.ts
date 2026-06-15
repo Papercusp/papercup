@@ -23,7 +23,10 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'operator', 'documenter', 'curator', 'bee'],
+  // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor reads the governor's
+  // paused buckets / failovers / 429s to detect the token-saturation anomaly (the
+  // 2026-06-15 opus-pacing stall) and nudge the Queen.
+  agentRoles: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'operator', 'documenter', 'curator', 'bee', 'overwatch'],
   args: z.object({
     usageWindowMinutes: z
       .number()

@@ -26,7 +26,9 @@ export default defineTool({
   },
   capability: 'harness:write',
   requirePrincipal: false,
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'),
+  // Overwatch excluded too (overwatch-role-2026-06-15 D-001): it never runs experiments
+  // (cap-blocked by harness:write anyway; excluded here for an honest role surface).
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch'),
   args: z.object({
     testId: z.string().default('replay').describe('The test id from experiment:catalog. v1 executes only the offline "replay" tier; others are staged.'),
     batteryId: z.string().min(1).describe('Groups this run’s cells/rows.'),

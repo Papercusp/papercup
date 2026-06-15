@@ -8,7 +8,9 @@ import {
   filterPresenceToHive,
   foldHiveRoster,
   toRosterSnapshot,
+  renderRosterSnapshot,
   type FoldPresence,
+  type RosterSnapshotLine,
 } from './hive-roster';
 import type { AgentAssignment, WorkListItem } from './assignments';
 import type { PresenceTier1Joins } from '../agent-tools/coordination/presence-tier1';
@@ -212,5 +214,53 @@ describe('toRosterSnapshot (the lean dossier shape — directed-wake P-021 seam)
   it('renders an idle agent as doing:null', () => {
     const entries = foldHiveRoster([pres({ ownerId: 'su-idle' })], [], tier1({}), NOW);
     expect(toRosterSnapshot(entries)[0].doing).toBeNull();
+  });
+});
+
+describe('renderRosterSnapshot (the `### Hive peers` body — directed-wake P-021 seam)', () => {
+  function line(p: Partial<RosterSnapshotLine> & { ownerId: string }): RosterSnapshotLine {
+    return {
+      label: null,
+      agentRole: null,
+      alive: true,
+      lastActiveSecAgo: null,
+      doing: null,
+      load: 0,
+      claimedItems: [],
+      awaitingEvent: false,
+      federated: false,
+      ...p,
+    };
+  }
+
+  it('returns empty string for an empty roster (so the seam omits the section)', () => {
+    expect(renderRosterSnapshot([])).toBe('');
+  });
+
+  it('renders one compact bullet per peer with role + state + age', () => {
+    const out = renderRosterSnapshot([
+      line({ ownerId: 'su-x', label: 'su · su-x', agentRole: 'worker', doing: 'WI-1', lastActiveSecAgo: 120 }),
+    ]);
+    expect(out).toBe('- su · su-x (su-x) worker — on WI-1 · active 2m ago');
+  });
+
+  it('distinguishes offline / awaiting / idle states', () => {
+    const out = renderRosterSnapshot([
+      line({ ownerId: 'a', alive: false }),
+      line({ ownerId: 'b', awaitingEvent: true, lastActiveSecAgo: 5 }),
+      line({ ownerId: 'c', lastActiveSecAgo: 30 }),
+    ]);
+    // alive peers rank ahead of offline; among alive, most-recently-active first.
+    expect(out).toBe(
+      ['- b — awaiting · active 5s ago', '- c — idle · active 30s ago', '- a — offline'].join('\n'),
+    );
+  });
+
+  it('caps to maxPeers and marks the omitted tail (no silent cap)', () => {
+    const lines = Array.from({ length: 5 }, (_, i) => line({ ownerId: `p${i}`, lastActiveSecAgo: i }));
+    const out = renderRosterSnapshot(lines, 3);
+    const rows = out.split('\n');
+    expect(rows).toHaveLength(4); // 3 peers + the "+N more" marker
+    expect(rows[3]).toBe('- …+2 more peer(s)');
   });
 });

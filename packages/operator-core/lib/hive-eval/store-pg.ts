@@ -92,7 +92,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
         work_items_total = ${o.workItemsTotal},
         work_items_completed = ${o.workItemsCompleted},
         cost_usd = ${o.costUsd},
-        observations = ${this.sql.json(o as unknown as postgres.JSONValue)},
+        observations = ${JSON.stringify(o)}::jsonb,
         trace_ref = ${fields.traceRef || null}
       WHERE run_id = ${runId}
     `;
@@ -111,7 +111,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
         (${row.runId}, ${row.rubricHash}, ${row.rubricVersion}, ${row.outcomeGatePassed},
          ${row.efficiencyScore}, ${row.speedScore}, ${row.composite}, ${row.judgeComposite ?? null},
          ${row.regressions}, ${row.plantedBugCaught}, ${row.fabricationDetected},
-         ${row.criticalPathRatio}, ${row.floorCeiling}, ${this.sql.json(row.detail as postgres.JSONValue)})
+         ${row.criticalPathRatio}, ${row.floorCeiling}, ${row.detail == null ? null : JSON.stringify(row.detail)}::jsonb)
       ON CONFLICT (run_id, rubric_hash) DO UPDATE SET
         rubric_version = EXCLUDED.rubric_version,
         outcome_gate_passed = EXCLUDED.outcome_gate_passed,

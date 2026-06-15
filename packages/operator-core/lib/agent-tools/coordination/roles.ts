@@ -35,4 +35,15 @@ export const COORD_ROLES = [
   // resolves. Excluded from fleet:spawn (placement is the Queen's, not the
   // watcher's — see fleet/spawn.ts, same carve-out as bee).
   'sentinel',
+  // The OVERWATCH — the autonomous system-health supervisor (overwatch-role-2026-06-15
+  // C-2 / B-01). Like the sentinel, its core surface IS coord: it READS the substrate
+  // (coord:presence/inbox/feed, improvements:digest, topics:feed) + the fleet
+  // (fleet:assignments/tree) + the work frontier (work_items:list) + the ledgers
+  // (decision_ledger, hive:status) and its ONLY writes are NUDGES + observations
+  // (coord:send / coord:escalate / improvements:capture). Its caps
+  // (BLUEPRINT_ROLE_CAPS.overwatch) are read-mostly (coord:write for nudges only), so the
+  // COORD_ROLES write tools it cannot use stay capped out. Excluded from fleet:spawn
+  // (placement is the Queen's — the overwatch NUDGES her to re-place, never re-places
+  // itself; D-001 — same carve-out as bee/sentinel).
+  'overwatch',
 ] as const;

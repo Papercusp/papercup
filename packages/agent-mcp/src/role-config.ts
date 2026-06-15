@@ -114,6 +114,22 @@ export const AGENT_ROLES = [
   // through the SAME unified primitive as a bee and PLACED BY THE QUEEN (fleet:spawn
   // or the `sentinel` launch blueprint). No execution/mutation capability.
   'sentinel',
+  // The OVERWATCH — the autonomous system-health SUPERVISOR, a sibling to the Queen
+  // (overwatch-role-2026-06-15 C-2 / B-01). Where the Queen SCHEDULES (places work)
+  // and the sentinel WATCHES the fleet, the overwatch runs the short-term
+  // sense→decide→act control loop over the WHOLE running system (the Queen, the bees,
+  // the work-feed, tokens, plans, escalations): it detects drift and makes LIVE
+  // course-corrections by NUDGING the running agents (coord:send) + recording
+  // OBSERVATIONS (improvements:capture lane:observation), never re-placing work itself
+  // (D-001 — the hard Queen-boundary). READ-EVERYTHING + nudge/observe/escalate ONLY:
+  // its write-to-the-world verbs are coord:send / coord:escalate / improvements:capture
+  // / messages:send, and its ROLE_ENVELOPES entry DENIES capability:fs-write +
+  // capability:bash — it nudges, it never edits code. Registered statically + UNGATED
+  // here (the `papercusp-overwatch` flag gates the LOOP/spawn/UI in B-04/B-08/B-10, not
+  // this type-level role id). Canonical persona ships at the hive blueprint
+  // (blueprints/hive/prompts/overwatch.md, B-05); the fallback prompts/overwatch.md is a
+  // thin STUB so the two cannot drift (D-007 / the EI-611 lesson).
+  'overwatch',
 ] as const;
 
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */

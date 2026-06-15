@@ -129,7 +129,8 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // + overwatch (overwatch-role-2026-06-15 B-01): searches plans to ground its nudges.
+  agentRoles: [...SU_ROLES, 'overwatch'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

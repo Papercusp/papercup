@@ -20,7 +20,9 @@ export default defineTool({
     notWhen: `For PERSISTENT inbox items, use \`messages:inbox\`. Notifications are ephemeral toasts.`,
   },
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads
+  // recent notifications/toasts to spot "why did the app just error?" drift.
+  agentRoles: [...SU_ROLES, 'overwatch'],
   args: z.object({
     level: z.enum(['default', 'info', 'success', 'warning', 'error', 'loading', 'all']).optional(),
     limit: z.number().int().positive().max(500).optional(),

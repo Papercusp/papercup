@@ -149,6 +149,15 @@ jobs:
       - name: Lint no-restart imports
         run: npm run lint:no-restart
 
+      # sql.json guard (EI-607): postgres-js sql.json(object) THROWS on the getOrgPg
+      # client (a dual-package postgres-js module-instance mismatch in @papercusp/db)
+      # — it silently broke the experiment ledger + EVERY replay-harness cell's
+      # persistence, and integration tests are BLIND to it (tolerant root-postgres
+      # client). GATING — bind jsonb as ${JSON.stringify(x)}::jsonb (server-side
+      # cast → real jsonb object) instead. ALLOW-lists deliberate fresh-pool sites.
+      - name: Lint no sql.json on getOrgPg client
+        run: npm run lint:no-sql-json
+
       # Smart-quote guard (EI-418, found via EI-412): a curly quote used as a
       # code delimiter (copy-paste through a smart-quoting surface) is a hard
       # esbuild/tsc parse failure that reads as mysterious. GATING — flags

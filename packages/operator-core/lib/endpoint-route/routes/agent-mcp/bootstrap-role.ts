@@ -32,6 +32,10 @@ import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { roleConsumes } from '../../../role-registry';
 import { buildRoleLaunchSpec } from '../../../role-launch-spec';
 import { getPlanContextBySlug } from '../../../plan-context-for-feature';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { assembleSpawnHydration } from '../../../fleet/spawn-hydration';
+import { productionSpawnHydrationDeps } from '../../../fleet/spawn-hydration-deps';
 import { writeRoleCodexHome } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import {
@@ -172,6 +176,35 @@ const post = defineTool({
       planContext = (await getPlanContextBySlug(plan).catch(() => null)) ?? undefined;
     }
 
+    // directed-wake-honesty-and-spawn-handoff P-021/P-012: the INTERACTIVE launch's
+    // call of the shared spawn/wake-hydration seam — the human-driven counterpart of
+    // the autonomous path (operator-spawn → extraEnv.SPAWN_HANDOFF). Both paths bind
+    // the source seam through productionSpawnHydrationDeps so they never diverge.
+    // Harness-scoped: skipped for a workspace-level (no-harness) session. Gated on
+    // SPAWN_HANDOFF_HYDRATION (default on); fully fail-soft so a hydration failure
+    // never blocks the launch.
+    let handoff: string | undefined;
+    if (harnessSlug) {
+      try {
+        if (await getFlag(FLAGS.SPAWN_HANDOFF_HYDRATION, 'system')) {
+          const hydration = await assembleSpawnHydration({
+            harness: harnessSlug,
+            featureId: feature ?? undefined,
+            planSlug: plan ?? undefined,
+            workItemId: feature ?? undefined,
+            workspaceId: workspace,
+            deps: productionSpawnHydrationDeps(),
+            log: (m) => console.log(`[bootstrap-role] ${m}`),
+          });
+          if (hydration.text) handoff = hydration.text;
+        }
+      } catch (err) {
+        console.warn(
+          `[bootstrap-role] spawn-handoff hydration failed (degraded, launch continues): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     // Build the shared spec: role prompt + signed role-scoped MCP URL + cwd.
     let spec;
     try {
@@ -180,6 +213,7 @@ const post = defineTool({
         workspaceId: workspace,
         harnessSlug,
         ...(planContext ? { planContext } : {}),
+        ...(handoff ? { handoff } : {}),
         operatorBaseUrl: new URL(req.url).origin,
         featureId: feature,
       });

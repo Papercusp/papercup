@@ -37,9 +37,7 @@ import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import { assembleSpawnHydration } from './spawn-hydration';
-import { listHiveRosterSnapshot, renderRosterSnapshot } from './hive-roster';
-import { getSpawnHandoffContext } from '../handoff-context';
-import { getWorkItemCheckpoint } from '../work-item-checkpoint';
+import { productionSpawnHydrationDeps } from './spawn-hydration-deps';
 import type { Db } from './pg-stores';
 import {
   heartbeatSpawns,
@@ -749,16 +747,7 @@ export async function spawnAgentInHarness(
         workItemId: input.featureId ?? input.itemId ?? undefined,
         workspaceId: input.workspaceId,
         ownerId: spawnId,
-        deps: {
-          getHandoff: ({ harness, featureId, planSlug, workspaceId }) =>
-            featureId
-              ? getSpawnHandoffContext({ harness, featureId, planSlug, workspaceId })
-              : Promise.resolve(null),
-          getRoster: async ({ harness, workspaceId }) =>
-            renderRosterSnapshot(await listHiveRosterSnapshot({ hiveSlug: harness, workspaceId })),
-          getCheckpoint: ({ harness, workItemId, workspaceId }) =>
-            getWorkItemCheckpoint({ harness, workItemId, workspaceId }),
-        },
+        deps: productionSpawnHydrationDeps(),
         log: (m) => console.log(`[operator-spawn] ${spawnId} ${m}`),
       });
       if (hydration.text) extraEnv.SPAWN_HANDOFF = hydration.text;

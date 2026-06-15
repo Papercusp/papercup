@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { workItemToTask, partitionTasksByReadiness } from './placement-gather';
+import { workItemToTask, partitionTasksByReadiness, pickBeeRecentActivityMs } from './placement-gather';
 import type { WorkItem } from '../work-items';
 import type { PlacementTask } from './placement-affinity';
 import type { HarnessBlockGraph } from '../hive/survey';

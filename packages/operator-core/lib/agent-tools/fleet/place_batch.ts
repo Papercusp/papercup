@@ -92,7 +92,8 @@ export default defineTool({
   requirePrincipal: false,
   // Placement is the Queen's (or operator's) surface — same carve-out as fleet:spawn:
   // the worker-bee + the watch-only sentinel are excluded (they don't place agents).
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'),
+  // Overwatch excluded too (overwatch-role-2026-06-15 D-001): it does not place work.
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch'),
   args: z.object({
     tasks: z
       .array(z.string().min(1).max(120))
