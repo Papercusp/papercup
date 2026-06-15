@@ -61,6 +61,8 @@ export {
 export {
   scoreMast,
   substrateSignalRates,
+  buildMastJudgePrompt,
+  mockMastJudge,
   MAST_CATEGORIES,
   MAST_MODES,
   MAS_FAILURE_BASELINE_BAND,

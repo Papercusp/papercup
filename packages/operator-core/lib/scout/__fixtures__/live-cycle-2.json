@@ -1,6 +1,6 @@
 {
   "meta": {
-    "capturedAt": "2026-06-15T03:17:52.567Z",
+    "capturedAt": "2026-06-15T04:21:54.394Z",
     "cycleId": "scout-live-cycle-2",
     "harnessSlug": "papercup",
     "limits": {
@@ -20,20 +20,20 @@
     "stop": "no-ideas",
     "costUsd": 0,
     "digest": {
-      "generatedAt": "2026-06-15T03:14:31.784Z",
+      "generatedAt": "2026-06-15T04:18:28.530Z",
       "corpus": {
         "completions": 510,
         "reverts": 58,
-        "frictionCaptured": 497,
-        "deferrals": 290,
-        "spendUsd": 66337.3,
+        "frictionCaptured": 501,
+        "deferrals": 289,
+        "spendUsd": 66389.79,
         "spendBuckets": 27
       },
       "recurringFriction": [
         {
           "category": "recurring-friction",
           "summary": "Auto-implement dispatch for EI-52 died without resolving — orphaned worker",
-          "detail": "recurred 9× (6 open), last 0.5d ago",
+          "detail": "recurred 9× (6 open), last 0.6d ago",
           "ref": "wi:EI-564",
           "weight": 1
         },
@@ -47,14 +47,14 @@
         {
           "category": "recurring-friction",
           "summary": "coord invariant: wake-queue depth/age growth",
-          "detail": "recurred 4× (1 open), last 0.1d ago",
+          "detail": "recurred 4× (1 open), last 0d ago",
           "ref": "wi:EI-598",
           "weight": 0.33
         },
         {
           "category": "recurring-friction",
           "summary": "Many plan-item claims have expired (abandoned work piling up)",
-          "detail": "recurred 4× (1 open), last 0.5d ago",
+          "detail": "recurred 4× (1 open), last 0.6d ago",
           "ref": "wi:EI-556",
           "weight": 0.33
         },
@@ -75,59 +75,66 @@
         {
           "category": "recurring-friction",
           "summary": "Service shop is down",
-          "detail": "recurred 3× (1 open), last 0.5d ago",
+          "detail": "recurred 3× (1 open), last 0.6d ago",
           "ref": "wi:EI-547",
           "weight": 0.27
         },
         {
           "category": "recurring-friction",
+          "summary": "Auto-implement dispatch for EI-151 died without resolving — orphaned worker",
+          "detail": "recurred 2× (2 open), last 0d ago",
+          "ref": "wi:EI-626",
+          "weight": 0.27
+        },
+        {
+          "category": "recurring-friction",
           "summary": "Agent spawns are failing repeatedly (timeout)",
-          "detail": "recurred 2× (2 open), last 0.5d ago",
+          "detail": "recurred 2× (2 open), last 0.6d ago",
           "ref": "wi:EI-566",
           "weight": 0.27
         },
         {
           "category": "recurring-friction",
-          "summary": "Role fire-path for gymloopharness/gym-cycle is stuck in error-backoff",
-          "detail": "recurred 2× (2 open), last 0.4d ago",
-          "ref": "wi:EI-265",
-          "weight": 0.27
-        },
-        {
-          "category": "recurring-friction",
-          "summary": "Tool plans:set-status erroring repeatedly",
-          "detail": "recurred 2× (2 open), last 3.7d ago",
-          "ref": "wi:EI-131",
+          "summary": "Role fire-path for papercup/gym-cycle is stuck in error-backoff",
+          "detail": "recurred 2× (2 open), last 0d ago",
+          "ref": "wi:EI-511",
           "weight": 0.27
         }
       ],
       "timeTokenSinks": [
         {
           "category": "time-token-sink",
-          "summary": "$65948.92 on (unattributed) · interactive",
-          "detail": "8617 run(s), 642,936,839 tokens",
+          "summary": "$65950.06 on (unattributed) · interactive",
+          "detail": "8622 run(s), 642,938,895 tokens",
           "ref": "usage:(unattributed)/interactive",
           "weight": 1
         },
         {
           "category": "time-token-sink",
-          "summary": "$158.88 on papercup-hive · queen",
-          "detail": "199 run(s), 2,067,243 tokens",
+          "summary": "$168.52 on papercup-hive · queen",
+          "detail": "206 run(s), 2,217,965 tokens",
           "ref": "usage:papercup-hive/queen",
           "weight": 0
         },
         {
           "category": "time-token-sink",
-          "summary": "$76.75 on papercup · bee",
-          "detail": "132 run(s), 1,551,464 tokens",
+          "summary": "$96.51 on papercup · worker",
+          "detail": "45 run(s), 750,233 tokens",
+          "ref": "usage:papercup/worker",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$84.48 on papercup · bee",
+          "detail": "144 run(s), 1,721,323 tokens",
           "ref": "usage:papercup/bee",
           "weight": 0
         },
         {
           "category": "time-token-sink",
-          "summary": "$71.57 on papercup · worker",
-          "detail": "38 run(s), 630,754 tokens",
-          "ref": "usage:papercup/worker",
+          "summary": "$28.59 on papercup · release-fixer",
+          "detail": "24 run(s), 348,543 tokens",
+          "ref": "usage:papercup/release-fixer",
           "weight": 0
         },
         {
@@ -135,13 +142,6 @@
           "summary": "$21.92 on brood-box-alpha · bee",
           "detail": "121 run(s), 676,049 tokens",
           "ref": "usage:brood-box-alpha/bee",
-          "weight": 0
-        },
-        {
-          "category": "time-token-sink",
-          "summary": "$19.57 on papercup · release-fixer",
-          "detail": "20 run(s), 245,107 tokens",
-          "ref": "usage:papercup/release-fixer",
           "weight": 0
         },
         {
@@ -174,13 +174,6 @@
         }
       ],
       "chronicDeferrals": [
-        {
-          "category": "chronic-deferral",
-          "summary": "Owner sign-off on the methodology + first results before any third-party publication.",
-          "detail": "deferred 1× across 1 plan(s) [needs-human]",
-          "ref": "plan:impartial-benchmark-suite-2026-06-15#P-017",
-          "weight": 1
-        },
         {
           "category": "chronic-deferral",
           "summary": "Two-box variant: run P-005's verb sweep + P-008/P-009 rungs across two physical machines per the `vm-federation-separat…",
@@ -218,20 +211,6 @@
         },
         {
           "category": "chronic-deferral",
-          "summary": "Lazy + bounded harness-substrate boot: replace eager bootAllHarnessesForActiveWorkspace with on-demand boot + LRU idle-…",
-          "detail": "deferred 1× across 1 plan(s) [needs-human]",
-          "ref": "plan:operator-memory-and-psu-resilience-2026-06-14#P-008",
-          "weight": 1
-        },
-        {
-          "category": "chronic-deferral",
-          "summary": "Evaluate substrate process isolation (dedicated sidecar) — decouple corestores/Hyperswarm natives + their GC pauses fro…",
-          "detail": "deferred 1× across 1 plan(s) [needs-human]",
-          "ref": "plan:operator-memory-and-psu-resilience-2026-06-14#P-009",
-          "weight": 1
-        },
-        {
-          "category": "chronic-deferral",
           "summary": "Decide whether harness templates migrate from SPEC.md to plan-based seeds. `TemplatesModal.tsx` (lines 46-163) still re…",
           "detail": "deferred 1× across 1 plan(s) [needs-human]",
           "ref": "plan:spec-md-ui-deprecation-cleanup-2026-05-30#P-010",
@@ -242,6 +221,27 @@
           "summary": "Owner sign-off that the API never auto-mutates live prompts/policy — it proposes + scores; the existing accept path (co…",
           "detail": "deferred 1× across 1 plan(s) [needs-human]",
           "ref": "plan:experiment-registry-invocation-api-2026-06-14#P-061",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "`orchestrator.md`'s fate. It's the retired-loop persona but the loop is the sanctioned revert path (`PAPERCUSP_DBOS_ORC…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:dbos-pipeline-prompt-reconciliation-2026-06-01#P-001",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Pre-loop disposition — **the crux of the directive.** The scoper-`MODE=initial` + reviewer-`MODE=plan` pre-loop is lega…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:dbos-pipeline-prompt-reconciliation-2026-06-01#P-002",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Gating verification on TWO real machines (or a VM rig): two peers on one shared hive, contended file-lock to the author…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:shared-hive-hardening-2026-06-13#P-003",
           "weight": 1
         }
       ],
@@ -379,7 +379,7 @@
           "weight": 0.18
         }
       ],
-      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66337.3), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 510 completions"
+      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66389.79), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 510 completions"
     },
     "ideas": [],
     "scored": [],

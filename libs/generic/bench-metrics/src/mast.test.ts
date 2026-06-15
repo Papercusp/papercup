@@ -2,11 +2,14 @@ import { describe, it, expect } from 'vitest';
 import {
   scoreMast,
   substrateSignalRates,
+  buildMastJudgePrompt,
+  mockMastJudge,
   MAST_MODES,
   MAST_CATEGORIES,
   MAS_FAILURE_BASELINE_BAND,
   type MastVerdict,
   type CoordEvent,
+  type CoordTrace,
 } from './mast';
 
 describe('MAST taxonomy', () => {
@@ -73,5 +76,53 @@ describe('scoreMast', () => {
     expect(r.overallFailureRate).toBeNull();
     expect(r.substrate).toBeNull();
     expect(r.masBaselineBand).toEqual([0.41, 0.86]);
+  });
+});
+
+describe('buildMastJudgePrompt', () => {
+  it('renders the 14-mode rubric + the chronological trace + a structured-output ask', () => {
+    const trace: CoordTrace = {
+      arm: 'hive',
+      agents: ['queen', 'bee-1'],
+      events: [
+        { ts: 1, kind: 'placement', agent: 'queen', taskId: 't1' },
+        { ts: 2, kind: 'duplicate_completion', agent: 'bee-1', taskId: 't1', detail: 'redone' },
+      ],
+    };
+    const p = buildMastJudgePrompt(trace);
+    expect(p).toContain('Arm: hive');
+    expect(p).toContain('queen, bee-1');
+    // every mode id appears in the rubric
+    for (const m of MAST_MODES) expect(p).toContain(m.id);
+    expect(p).toContain('duplicate_completion');
+    expect(p).toContain('"failed"');
+  });
+
+  it('handles an empty trace', () => {
+    expect(buildMastJudgePrompt({ arm: 'queen-ablated', events: [] })).toContain('(no events)');
+  });
+});
+
+describe('mockMastJudge', () => {
+  it('emits one verdict per mode, failing modes evidenced by substrate signals', () => {
+    const verdicts = mockMastJudge([
+      { kind: 'duplicate_completion', taskId: 't1' }, // → mode 1.3
+      { kind: 'orphaned_claim', taskId: 't2' }, // → mode 2.4
+    ]);
+    expect(verdicts).toHaveLength(14);
+    const byMode = new Map(verdicts.map((v) => [v.mode, v]));
+    expect(byMode.get('1.3')!.failed).toBe(true);
+    expect(byMode.get('1.3')!.taskId).toBe('t1');
+    expect(byMode.get('2.4')!.failed).toBe(true);
+    expect(byMode.get('1.1')!.failed).toBe(false); // no evidence
+    // round-trips through scoreMast
+    const r = scoreMast({ arm: 'hive', tasks: 2, verdicts });
+    expect(r.byMode!['1.3']).toBe(1);
+    expect(r.byCategory!['specification-system-design']).toBeGreaterThan(0);
+  });
+
+  it('is deterministic', () => {
+    const ev: CoordEvent[] = [{ kind: 'claim_conflict' }];
+    expect(mockMastJudge(ev)).toEqual(mockMastJudge(ev));
   });
 });

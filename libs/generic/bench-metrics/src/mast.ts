@@ -247,3 +247,94 @@ export function scoreMast(input: {
     masBaselineBand: MAS_FAILURE_BASELINE_BAND,
   };
 }
+
+// ── The judge bridge (trace → prompt → verdicts) ────────────────────────────
+// The LLM-judge CALL lives outside this pure lib (P-010/pilot); these are the
+// pure pieces around it: the canonical prompt (so the judge always sees the
+// same rubric + trace format — load-bearing for the impartial/reproducible
+// claim) and a deterministic mock for tests/dry-runs. (Gap identified by the
+// WI-145 bee; landed here since the rubric lives in this file.)
+
+/**
+ * Render a coordination trace into the canonical MAST judge prompt: the 14-mode
+ * rubric (grouped by category) + the chronological trace + an instruction to
+ * return one structured verdict per mode. Pure — the caller feeds the returned
+ * string to our own LLM-judge and parses its output into `MastVerdict[]`. The
+ * trace carries only coordination events (no grader/answer data), so it cannot
+ * leak the benchmark solution.
+ */
+export function buildMastJudgePrompt(trace: CoordTrace): string {
+  const rubric = MAST_CATEGORIES.map((cat) => {
+    const modes = MAST_MODES.filter((m) => m.category === cat)
+      .map((m) => `  - ${m.id} ${m.label}: ${m.definition}`)
+      .join('\n');
+    return `${cat}:\n${modes}`;
+  }).join('\n\n');
+
+  const events = trace.events
+    .map((e, i) => {
+      const ts = e.ts != null ? `t=${e.ts} ` : '';
+      const who = e.agent ? `[${e.agent}] ` : '';
+      const task = e.taskId ? ` (task ${e.taskId})` : '';
+      const detail = e.detail ? ` — ${e.detail}` : '';
+      return `${String(i + 1).padStart(3, ' ')}. ${ts}${who}${e.kind}${task}${detail}`;
+    })
+    .join('\n');
+
+  const agents = trace.agents?.length ? trace.agents.join(', ') : 'unspecified';
+
+  return [
+    'You are an impartial evaluator. Score the following multi-agent coordination',
+    'trace against the MAST failure taxonomy. Judge ONLY coordination quality —',
+    'not whether the underlying tasks were solved.',
+    '',
+    `Arm: ${trace.arm}`,
+    `Agents: ${agents}`,
+    '',
+    'MAST failure modes:',
+    rubric,
+    '',
+    'Coordination trace (chronological):',
+    events || '  (no events)',
+    '',
+    'For EACH of the 14 modes, decide whether it occurred in this trace. Return a',
+    'JSON array of objects { "mode": "<id>", "failed": <bool>, "taskId": <string|null>,',
+    '"rationale": "<one line>" } — one entry per mode (more if a mode recurs per task).',
+    'Be conservative: mark failed only with direct evidence in the trace.',
+  ].join('\n');
+}
+
+/** Which substrate failure signal evidences which MAST mode (deterministic mock mapping). */
+const MOCK_SIGNAL_TO_MODE: Record<string, MastModeId> = {
+  duplicate_completion: '1.3', // step repetition
+  rework: '1.3',
+  superseded_work: '1.4', // loss of history
+  orphaned_claim: '2.4', // information withholding
+  stranded_item: '2.4',
+  lost_handoff: '2.4',
+  claim_conflict: '2.5', // ignored other agent's input
+};
+
+/**
+ * Deterministic stand-in for the LLM-judge: derives `MastVerdict[]` from the
+ * trace's mechanical failure signals (a mode `failed` iff a signal mapped to it
+ * appears). Returns exactly one verdict per mode so a dry-run yields a full
+ * `MastReport`. For tests / `dryRun` only — NOT a substitute for the real judge.
+ */
+export function mockMastJudge(events: readonly CoordEvent[]): MastVerdict[] {
+  const firedModes = new Set<MastModeId>();
+  const evidence = new Map<MastModeId, string | null>();
+  for (const e of events) {
+    const mode = MOCK_SIGNAL_TO_MODE[e.kind as string];
+    if (mode) {
+      firedModes.add(mode);
+      if (!evidence.has(mode)) evidence.set(mode, e.taskId ?? null);
+    }
+  }
+  return MAST_MODES.map((m) => ({
+    mode: m.id,
+    failed: firedModes.has(m.id),
+    taskId: evidence.get(m.id) ?? null,
+    rationale: firedModes.has(m.id) ? `substrate signal mapped to ${m.label}` : 'no substrate evidence',
+  }));
+}
