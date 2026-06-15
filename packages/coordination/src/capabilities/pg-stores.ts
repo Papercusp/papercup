@@ -507,7 +507,12 @@ export class PgThreadStore implements ThreadableStore {
       INSERT INTO harness_shared.coord_threads
         (workspace_id, thread_id, parent_kind, parent_ref, title, created_by, created_at, harness_slug)
       VALUES (${this.ws}, ${opts.thread_id}, ${parent.kind}, ${parent.ref}, ${opts.title ?? null}, ${opts.created_by ?? null}, ${opts.created_ts}, ${opts.harness_slug ?? null})
-      ON CONFLICT (workspace_id, thread_id) DO NOTHING`;
+      ON CONFLICT (workspace_id, parent_kind, parent_ref) DO NOTHING`;
+    // Idempotency is keyed on the PARENT (the get-or-create semantic key), NOT the
+    // thread_id — a second call for the same parent with a DIFFERENT thread_id must
+    // return the existing thread, not violate coord_threads_parent_uq. (Current
+    // callers derive thread_id deterministically from the parent, so the PK arbiter
+    // happened to suffice; conformance proved it diverges from the in-memory store.)
     const existing = await this.getThreadByParent(parent);
     if (!existing) throw new Error(`coord_threads: failed to read back thread for ${parent.kind}:${parent.ref}`);
     return existing;

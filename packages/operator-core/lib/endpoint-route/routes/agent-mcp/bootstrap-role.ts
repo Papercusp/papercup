@@ -179,7 +179,12 @@ const post = defineTool({
     // directed-wake-honesty-and-spawn-handoff P-021/P-012: the INTERACTIVE launch's
     // call of the shared spawn/wake-hydration seam — the human-driven counterpart of
     // the autonomous path (operator-spawn → extraEnv.SPAWN_HANDOFF). Both paths bind
-    // the source seam through productionSpawnHydrationDeps so they never diverge.
+    // the source seam through productionSpawnHydrationDeps so they never diverge on
+    // predecessor-handoff + roster + carry-note. NOTE: this path deliberately omits
+    // `deliverTo`/`role`, so B2 slot-parked draining (P-023) does NOT fire here —
+    // slot delivery is the AUTONOMOUS spawn's domain (the Queen parks for a
+    // not-yet-spawned bee; delivered_to = its spawnId). Wiring it here needs the
+    // session owner BEFORE buildRoleLaunchSpec mints `sid` (a small follow-up).
     // Harness-scoped: skipped for a workspace-level (no-harness) session. Gated on
     // SPAWN_HANDOFF_HYDRATION (default on); fully fail-soft so a hydration failure
     // never blocks the launch.

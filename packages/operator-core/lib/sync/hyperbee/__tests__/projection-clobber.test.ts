@@ -11,6 +11,7 @@ import {
   _setNowForTests,
   type ClobberEvent,
 } from '../clobber-events';
+import { _testing as plansTesting } from '../projections/harness-plans';
 
 afterEach(() => {
   _clearRegistryForTests();
@@ -154,6 +155,55 @@ describe('applyHyperbeeOpToPg — clobber-event integration', () => {
       ts: 1_200,
       writerPubkey: 'remote-hex',
     });
+    expect(events).toHaveLength(0);
+  });
+});
+
+// P-007: plans federate via CDC (no writerPubkey on the op), so they DON'T use the
+// generic writerPubkey path above — the harness-plans projection fires the clobber
+// from `flagPlanClobber` using the immutable, receiver-stamped provenance identity
+// (sourceLogKeyHex, D-004). The drain (outbox-drain.ts) records the local plan write.
+describe('harness-plans flagPlanClobber — plan clobber (P-007)', () => {
+  const { flagPlanClobber } = plansTesting;
+
+  it('fires when a REMOTE plan apply beats a recent local plan write', () => {
+    _setNowForTests(() => 1_000);
+    const events: ClobberEvent[] = [];
+    clobberEvents.on('clobber', (e) => events.push(e));
+    // The drain recorded our local plan edit (keyed by this device's own log key).
+    recordLocalWrite({ table: 'plans-by-slug', hbKey: 'my-plan', ts: 1_000, pubkey: 'local-log-key' });
+    _setNowForTests(() => 1_500);
+    // A remote peer's plan op lands (origin=remote, immutable source key, later ts).
+    flagPlanClobber('my-plan', { authorPubkey: 'remote-source-key', origin: 'remote', ts: 1_200 });
+    expect(events).toHaveLength(1);
+    expect(events[0].table).toBe('plans-by-slug');
+    expect(events[0].hbKey).toBe('my-plan');
+    expect(events[0].my.pubkey).toBe('local-log-key');
+    expect(events[0].theirs.pubkey).toBe('remote-source-key');
+  });
+
+  it('does NOT fire on a LOCAL plan apply (own-write replay never self-clobbers)', () => {
+    _setNowForTests(() => 1_000);
+    const events: ClobberEvent[] = [];
+    clobberEvents.on('clobber', (e) => events.push(e));
+    recordLocalWrite({ table: 'plans-by-slug', hbKey: 'my-plan', ts: 1_000, pubkey: 'local-log-key' });
+    flagPlanClobber('my-plan', { authorPubkey: 'local-log-key', origin: 'local', ts: 1_200 });
+    expect(events).toHaveLength(0);
+  });
+
+  it('does NOT fire when there was no recent local plan write', () => {
+    const events: ClobberEvent[] = [];
+    clobberEvents.on('clobber', (e) => events.push(e));
+    flagPlanClobber('my-plan', { authorPubkey: 'remote-source-key', origin: 'remote', ts: 1_200 });
+    expect(events).toHaveLength(0);
+  });
+
+  it('is a no-op without provenance (legacy op)', () => {
+    _setNowForTests(() => 1_000);
+    const events: ClobberEvent[] = [];
+    clobberEvents.on('clobber', (e) => events.push(e));
+    recordLocalWrite({ table: 'plans-by-slug', hbKey: 'my-plan', ts: 1_000, pubkey: 'local-log-key' });
+    flagPlanClobber('my-plan', undefined);
     expect(events).toHaveLength(0);
   });
 });

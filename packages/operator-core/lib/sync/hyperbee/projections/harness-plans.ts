@@ -239,4 +239,5 @@ export const _testing = {
   composeKey,
   decodeValue,
   isHarnessPlanRow,
+  flagPlanClobber,
 };
