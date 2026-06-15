@@ -64,10 +64,10 @@ export default defineTool({
   name: 'memory:remember',
   capability: 'memory:write',
   description:
-    'Store a STABLE fact about the user into persistent memory. Use one of 4 kinds (user / feedback / project / reference). For transient state, use coord — not memory.',
+    'Store a STABLE fact about the user into persistent memory, kept VERBATIM as written. Use one of 4 kinds (user / feedback / project / reference). Write ONE tight, self-contained fact per call. For transient state, use coord — not memory.',
   guidance: {
     when:
-      'When the user says "remember X" / "don\'t forget Y" / "next time…" / "from now on…", OR when YOU notice an error you made that would recur without persistence. ALWAYS inform the user out loud ("I\'ll remember that"). For project-specific facts, pass harness_slug — the fact then surfaces for anyone working in that harness.',
+      'When the user says "remember X" / "don\'t forget Y" / "next time…" / "from now on…", OR when YOU notice an error you made that would recur without persistence. ALWAYS inform the user out loud ("I\'ll remember that"). For project-specific facts, pass harness_slug — the fact then surfaces for anyone working in that harness. Write ONE self-contained fact per call, tightly phrased: it is stored EXACTLY as written (no server-side rewriting or condensing), so make it stand on its own, lead with the searchable terms/anchors (file paths, F-NNN, backticked symbols), and drop conversational preamble.',
     notWhen:
       'Default scope is per-user. Do not pass harness_slug for personal preferences. For IN-FLIGHT / ephemeral state (what you are doing right now), use coord (coord:declare-intent / coord:send) — it is delta-delivered, not a semantic store.',
     chaining:
@@ -214,6 +214,18 @@ export default defineTool({
       scope: scopeKey,
       kind: args.kind,
       metadata,
+      // Store the agent's text VERBATIM (infer:false) — do NOT run mem0's
+      // LLM fact-extraction/condense step on the explicit single-fact write
+      // path. That step is an unbounded Anthropic (Haiku) call with no
+      // timeout; under the busy-fleet 429 backoff it routinely outlived the
+      // MCP client's request timeout (~60s) and dropped the transport
+      // mid-call — the PG insert committed, but the caller saw "transport
+      // dropped; response lost" and blind-retried into near-duplicates
+      // (EI-178). An explicit remember is already a clean one-line fact the
+      // agent wrote deliberately, so condensation adds little here; the
+      // conversation-extraction path (backend.rememberConversation) keeps the
+      // LLM extraction, where pulling facts out of a chat window earns it.
+      verbatim: true,
     });
 
     // Live-refresh the settings memory page (userMemory.list sync query) —

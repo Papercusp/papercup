@@ -324,7 +324,8 @@ insights = how things work** (spec: `papercusp-su-memory-2026-05-25`).
 - **mem0** — stable curated facts. `memory:remember/search/list/forget/update`;
   `harness_slug` for project facts, omit for personal. Write when the user says
   "remember X" OR you'd repeat a mistake without it; anchor with file paths /
-  `F-NNN` / backticked symbols. On `similar_exists`: forget the old, merge, or
+  `F-NNN` / backticked symbols. Stored VERBATIM (no server-side condensing) —
+  write ONE tight, self-contained fact per call, leading with those anchors. On `similar_exists`: forget the old, merge, or
   `force:true`. **Correction → forget:** when a user correction contradicts an
   injected memory line (`- [kind] (id=<uuid>)`), `memory:forget` that id.
 - **coord** — live ephemera (intents, handoffs, presence, plan events).

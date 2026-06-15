@@ -67,9 +67,10 @@ the headline pass/fail.
 
 ## The arms
 
-The arm an entity plays is carried verbatim on every run-result row. **L1 arm vocab
-is locked** (`@papercusp/bench-metrics`); the fleet-layer arm strings land with
-`P-025` and are marked provisional.
+The arm an entity plays is carried verbatim on every run-result row. **Both the L1 and
+the fleet-layer arm vocabularies are now locked** in `@papercusp/bench-metrics`: the L1
+vocab on the per-task `TaskRunResult`, the fleet vocab (`hive` · `queen-ablated` ·
+`native-serial` · `openhands-async` · `crewai` · `langgraph`) on the `FleetRunSummary`.
 
 ### L1 per-task arms (locked vocab)
 

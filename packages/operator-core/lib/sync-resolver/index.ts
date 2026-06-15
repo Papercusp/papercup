@@ -914,7 +914,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   // fleetAssignments.byHarness — "who's working here?" for the Progress tab's
-  // Agents panel (progress-tab-agents-convergence-2026-06-11 P-001/P-002): the
+  // Agents panel (progress-tab-agents-convergence-2026-06-11 P-001/P-002).
+  // ⚠ DEPRECATED for NEW consumers (presence-v2 P-007): this is the "divergent"
+  // bare-assignment shape (no presence identity / mig-277 scalars / Tier-1).
+  // Prefer hiveRoster.byHarness — the unified projection with the SAME
+  // {doing,queued,load,orphaned} work shape + agentPaneKind/driveMode stamping.
+  // Kept live because AdvAgentsPanel still reads it (its migration belongs to the
+  // progress-tab plan, not P-007). The MemberWorkPanel (B10) repointed to
+  // hiveRoster.byHarness. Below: the
   // fleet:assignments assembly (presence + plan-item claims + work-item claims,
   // claim-primary, with each agent's ordered work-list) filtered to one harness,
   // each agent stamped with its AgentPaneKind so the desktop shares the colony
@@ -968,6 +975,56 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { hiveSlug, workspaceId } = args as { hiveSlug: string; workspaceId?: string };
       const { listHiveRoster } = await import('../fleet/hive-roster');
       return (await listHiveRoster({ hiveSlug, workspaceId: workspaceId ?? null })) as unknown[];
+    },
+  },
+
+  // hiveRoster.byHarness — presence-v2 P-007: the SAME unified hive-roster fold,
+  // but keyed by a HARNESS (resolved to its home Hive via hiveHomeSlugForHarness)
+  // and stamped with the SAME AgentPaneKind/driveMode as fleetAssignments.byHarness
+  // — so a harness-keyed UI surface (the B10 MemberWorkPanel) reads ONE projection
+  // (presence + mig-277 scalars + Tier-1 + the {doing,queued,load,orphaned} work
+  // shape) with a query swap, instead of the divergent fleetAssignments.byHarness
+  // shape. Falls back to the harness slug as the scope key when the harness has no
+  // Hive home — listHiveRoster's includeUnattributed then surfaces the standalone /
+  // SU agents (NULL hive_slug). Invalidated via the same coord_presence /
+  // feature_claims / claim_audit / spawned_agents bridge.
+  'hiveRoster.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const [
+        { listHiveRoster },
+        { hiveHomeSlugForHarness },
+        { activeWorkspaceId },
+        { listAdvSessions },
+        { classifyAgentPane },
+      ] = await Promise.all([
+        import('../fleet/hive-roster'),
+        import('../hive-federation'),
+        import('../workspace-registry'),
+        import('../adv-sessions'),
+        import('@papercusp/agent-mcp'),
+      ]);
+      const workspaceId = activeWorkspaceId();
+      const hiveSlug = (await hiveHomeSlugForHarness(workspaceId, harnessSlug)) ?? harnessSlug;
+      const roster = await listHiveRoster({ hiveSlug, workspaceId });
+      const roleByOwner = new Map<string, string | null>();
+      try {
+        for (const s of await listAdvSessions(200)) {
+          if (s.coordOwnerId && !roleByOwner.has(s.coordOwnerId)) {
+            roleByOwner.set(s.coordOwnerId, s.role ?? null);
+          }
+        }
+      } catch {
+        /* role enrichment is best-effort — ownerId-only classification still works */
+      }
+      return roster.map((a) => {
+        const pane = classifyAgentPane({
+          role: roleByOwner.get(a.agentId) ?? null,
+          ownerId: a.agentId,
+        });
+        return { ...a, agentPaneKind: pane.kind, driveMode: pane.driveMode } as unknown;
+      });
     },
   },
 

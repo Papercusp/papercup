@@ -96,6 +96,21 @@ describe('memory:remember — backend seam (D-003)', () => {
       kind: 'project',
     }));
   });
+
+  // EI-178: the explicit-write path must store the agent's text AS-IS
+  // (verbatim → mem0 infer:false). The old default ran mem0's unbounded LLM
+  // condense step before returning, which under 429 backoff outlived the MCP
+  // client timeout and dropped the transport (write committed, response lost).
+  it('stores the fact verbatim (skips the LLM condense step) on every explicit write', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+
+    await remember.handler({ content: 'a clean one-line fact', kind: 'reference' }, fakeCtx);
+    expect(b.remember).toHaveBeenLastCalledWith(
+      'a clean one-line fact',
+      expect.objectContaining({ verbatim: true }),
+    );
+  });
 });
 
 describe('memory:remember — anchor extraction (P-015)', () => {
@@ -320,7 +335,7 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
   });
 
   it('skips the writer when the backend reported no newly-added ids', async () => {
-    const b = fakeBackend([], []); // e.g. mem0 merged into existing entries (UPDATE/NONE)
+    const b = fakeBackend([], []); // defensive: backend reports no new ids (e.g. a dedup-merge); verbatim writes normally return one ADD
     useBackend(b);
 
     const sql = vi.fn(async () => undefined);

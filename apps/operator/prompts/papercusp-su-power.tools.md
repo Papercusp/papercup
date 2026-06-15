@@ -332,7 +332,8 @@ decisions). `memory:remember/search/list/forget/update`. Pass `harness_slug`
 for project facts, omit for personal ones. Write when the user says
 "remember X" OR you'd repeat a mistake without it — anchor text with file
 paths / `F-NNN` / backticked symbols so the audit layer can validate
-cheaply. If `remember` returns `{ ok:false, reason:'similar_exists' }`,
+cheaply. Each write is stored VERBATIM (no server-side condensing) — keep it
+one tight, self-contained fact. If `remember` returns `{ ok:false, reason:'similar_exists' }`,
 decide: `forget` the old one, merge, or `force:true`. **Correction →
 forget:** when a user correction contradicts an injected memory (lines
 prefixed `- [kind] (id=<uuid>)`), `memory:forget` that `id` before

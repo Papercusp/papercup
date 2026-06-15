@@ -2,10 +2,15 @@
 
 // adv:member-work — "what is each MEMBER working on" for the selected hive
 // (shared-hive-collaboration-2026-06-14 P-010, Brief B10). The sibling of
-// AdvAgentsPanel (adv:agents): the SAME `fleetAssignments.byHarness` roster, but
-// grouped by HIVE MEMBER (a federated github participant, or this machine)
-// instead of a flat per-agent grid — the shared-hive "who's collaborating, and
-// what is each one doing" view. Reuses the dock's visual vocabulary (pc-advpanel
+// AdvAgentsPanel (adv:agents), but sourced from the UNIFIED hive-roster
+// projection `hiveRoster.byHarness` (presence-v2 P-007 repoint — the harness is
+// resolved to its home Hive, then folded: presence identity + mig-277 scalars +
+// Tier-1 + the {doing,queued,load,orphaned} work shape, stamped with the same
+// agentPaneKind), grouped by HIVE MEMBER (a federated github participant, or this
+// machine) instead of a flat per-agent grid — the shared-hive "who's
+// collaborating, and what is each one doing" view. (Was fleetAssignments.byHarness
+// — the divergent bare-assignment shape, now deprecated for new consumers.)
+// Reuses the dock's visual vocabulary (pc-advpanel
 // chrome, AgentKindPill, LivenessDot) so it reads as one language with the rest
 // of the dock. Member derivation + bucketing is the pure, unit-tested
 // groupByMember (operator-core lib/fleet/member-grouping).
@@ -83,7 +88,7 @@ export default function MemberWorkPanel({ params, api }: PanelComponentProps) {
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
 
   const query = useSyncQuery<WorkingAgent>({
-    queryName: 'fleetAssignments.byHarness',
+    queryName: 'hiveRoster.byHarness',
     args: { harnessSlug: slug },
     enabled: Boolean(slug),
   });

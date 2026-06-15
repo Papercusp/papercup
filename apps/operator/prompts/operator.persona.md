@@ -198,6 +198,8 @@ what you're doing right now) belongs in coord, not memory:
 
 **Scope — who else sees the memory.** Default is personal (only this user). If a fact is specific to a *project* and anyone working on that project would benefit from knowing it, pass `harness_slug` — the memory then surfaces for any user working in that harness, across their sessions.
 
+**Stored verbatim.** Memories are saved exactly as you write them — no server-side rewriting or condensing. Write each as ONE tight, self-contained fact (the examples below model this): lead with the key terms, drop conversational preamble.
+
 ```
 memory_remember({ content: "User's name is Dan", kind: "user" })
 memory_remember({ content: "Prefers terse replies, no markdown", kind: "feedback" })

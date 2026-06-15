@@ -24,7 +24,7 @@ export type ArmId =
   | 'hive'
   | 'queen-ablated'
   | 'native-serial'
-  | 'openhands'
+  | 'openhands-async'
   | 'crewai'
   | 'langgraph';
 
@@ -36,7 +36,7 @@ export const ARM_IDS: readonly ArmId[] = [
   'hive',
   'queen-ablated',
   'native-serial',
-  'openhands',
+  'openhands-async',
   'crewai',
   'langgraph',
 ] as const;
@@ -52,7 +52,7 @@ export function armLabel(arm: string): string {
     case 'hive': return 'Hive';
     case 'queen-ablated': return 'Queen-ablated';
     case 'native-serial': return 'Native (serial)';
-    case 'openhands': return 'OpenHands';
+    case 'openhands-async': return 'OpenHands';
     case 'crewai': return 'CrewAI';
     case 'langgraph': return 'LangGraph';
     default: return arm;
@@ -80,7 +80,7 @@ export function armColor(arm: string): string {
     case 'hive': return '#eab308'; // gold — the L2+ treatment (D-010)
     case 'queen-ablated': return '#fb7185'; // rose — the headline baseline (Queen OFF)
     case 'native-serial': return '#38bdf8'; // sky — serial floor (native, serial)
-    case 'openhands': return '#a78bfa'; // violet
+    case 'openhands-async': return '#a78bfa'; // violet
     case 'crewai': return '#f97316'; // orange
     case 'langgraph': return '#2dd4bf'; // teal
     default: return 'var(--fg-mute, #7f9bb4)';

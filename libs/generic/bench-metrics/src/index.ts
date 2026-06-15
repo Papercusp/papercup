@@ -44,6 +44,7 @@ export {
   throughputMetrics,
   valueMetrics,
   buildHiveReport,
+  mastHeadlineRate,
   MS_PER_HOUR,
   type FleetArmId,
   type FleetRunSummary,
@@ -58,13 +59,20 @@ export {
 } from './fleet';
 // L4 coordination quality — the MAST failure-taxonomy scorer (P-026).
 export {
-  mastRates,
-  classifyCoordEvent,
-  COORD_FAILURE_KINDS,
+  scoreMast,
+  substrateSignalRates,
+  MAST_CATEGORIES,
+  MAST_MODES,
   MAS_FAILURE_BASELINE_BAND,
   TOKEN_DUPLICATION_BASELINE_BAND,
   INTERAGENT_MISALIGNMENT_BASELINE,
-  type CoordFailureKind,
+  type MastCategory,
+  type MastMode,
+  type MastModeId,
+  type CoordEventKind,
   type CoordEvent,
-  type MastRates,
+  type CoordTrace,
+  type SubstrateSignalRates,
+  type MastVerdict,
+  type MastReport,
 } from './mast';

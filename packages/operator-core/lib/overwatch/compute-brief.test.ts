@@ -171,6 +171,11 @@ function hp<T>(key: PanelKey, data: T | null, status: PanelStatus = data == null
   return { key, label: key, status, summary: '', metrics: [], data };
 }
 
+/** A greyed/unreadable panel (T inferred from the assignment's contextual type). */
+function naPanel<T>(key: PanelKey): HealthPanel<T> {
+  return { key, label: key, status: 'unknown', summary: '', metrics: [], data: null };
+}
+
 const queenData = (o: Partial<QueenHealth> = {}): QueenHealth => ({
   hiveSlug: 'papercup-hive',
   started: true,
@@ -275,18 +280,18 @@ function fakeHealth(
     panels: {
       queen: hp('queen', pick(p.queen, queenData())),
       bees: hp('bees', pick(p.bees, beesData())),
-      workItems: hp('workItems', null),
+      workItems: naPanel('workItems'),
       workFeed: hp('workFeed', pick(p.workFeed, workFeedData())),
       tokens: hp('tokens', pick(p.tokens, tokensData())),
-      watchdog: hp('watchdog', null),
-      deploy: hp('deploy', null),
+      watchdog: naPanel('watchdog'),
+      deploy: naPanel('deploy'),
       plans: hp('plans', pick(p.plans, plansData())),
       escalations: hp('escalations', pick(p.escalations, escalationsData())),
-      autonomy: hp('autonomy', null),
+      autonomy: naPanel('autonomy'),
       observations: hp('observations', pick(p.observations, observationsData())),
-      improvements: hp('improvements', null),
-      infra: hp('infra', null),
-      suFleet: hp('suFleet', null),
+      improvements: naPanel('improvements'),
+      infra: naPanel('infra'),
+      suFleet: naPanel('suFleet'),
     },
   };
 }

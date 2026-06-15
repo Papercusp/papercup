@@ -77,6 +77,10 @@ import './hive/queen_efficiency';
 import './hive/survey';
 import './hive/start';
 import './hive/pause';
+// overwatch-role-2026-06-15 B-07 — the autonomous system-health supervisor's
+// control surface (start/pause its loop), sibling to hive:start/pause:
+import './overwatch/start';
+import './overwatch/pause';
 // hive-tool-namespace-2026-06-08 — local hive lifecycle (read + create/dissolve/update):
 import './hive/list';
 import './hive/get';

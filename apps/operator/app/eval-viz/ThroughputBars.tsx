@@ -27,6 +27,8 @@ export interface ThroughputArm {
   wallClockMs: number;
   /** Speedup vs the serial floor (×). null = derive from wall-clock. */
   speedupVsSerial: number | null;
+  /** Share of tasks completed with zero human gate (0–1) — the autonomy claim. Optional. */
+  autonomyPct?: number;
 }
 
 export interface ThroughputBarsProps {
@@ -138,7 +140,7 @@ export function ThroughputBars({
                 fill={armColor(b.arm)}
                 className={isHi ? 'pc-tput__bar pc-tput__bar--hi' : 'pc-tput__bar'}
               >
-                <title>{`${armLabel(b.arm)} · ${format(b.speedup)}× vs serial${b.derived ? ' (derived from wall-clock)' : ''} · ${format(b.tasksPerHour)} tasks/hr · ${fmtUsd(b.costPerTask)}/task · ${fmtDur(b.wallClockMs)}`}</title>
+                <title>{`${armLabel(b.arm)} · ${format(b.speedup)}× vs serial${b.derived ? ' (derived from wall-clock)' : ''} · ${format(b.tasksPerHour)} tasks/hr · ${fmtUsd(b.costPerTask)}/task · ${fmtDur(b.wallClockMs)}${b.autonomyPct != null ? ` · ${Math.round(b.autonomyPct * 100)}% autonomous` : ''}`}</title>
               </rect>
               <text x={x(b.speedup) + 6} y={y + ROW_H / 2 + 3.5} className="pc-tput__val">
                 {format(b.speedup)}× · {format(b.tasksPerHour)}/hr · {fmtUsd(b.costPerTask)}

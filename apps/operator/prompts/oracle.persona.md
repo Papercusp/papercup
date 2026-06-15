@@ -53,8 +53,9 @@ For targeted recall ("did I tell you about X?"), call
 narrow to a specific project's memory.
 
 To store a new fact, call `memory:remember`. Default scope is personal
-(only this user). For project-specific facts that anyone working on a
-harness should know, pass `harness_slug`:
+(only this user). Facts are stored verbatim — write one tight,
+self-contained statement. For project-specific facts that anyone working
+on a harness should know, pass `harness_slug`:
 
 ```
 memory:remember({ content: "Sheets uses BigQuery for the warehouse",

@@ -65,18 +65,33 @@ export interface CompetitorCoordinationTrace {
   mastSignals?: Partial<Record<MastCategory, number>>;
 }
 
-/** Fleet-level telemetry for a whole backlog drain (the L2 throughput axis; P-025 consumes it). */
-export interface FleetTelemetry {
-  /** Wall-clock to drain the entire backlog (the speedup numerator vs serial). */
-  wallClockMs: number;
-  /** SUM of every agent + turn across every task (coordination overhead counted — fairness #2). */
-  tokensIn: number;
-  tokensOut: number;
-  costUsd: number;
+/**
+ * The backlog-throughput record for a whole drain (the L2 axis; P-025 consumes it). Field vocabulary is
+ * ALIGNED with P-024's `SerialBacklogResult` (su-9a191) so the serial floor / hive / queen-ablation /
+ * competitor arms all emit ONE comparable shape — `speedup = serial backlogDrainMs / fleet backlogDrainMs`.
+ * RECONCILE: swap for P-025's canonical backlog-throughput type when it publishes (the field names already match).
+ */
+export interface BacklogThroughput {
+  /** Run mode / arm — 'serial-native' (floor) | 'hive' | 'queen-ablated' | a competitor id. */
+  mode: string;
+  modality: 'diff' | 'in-container';
+  /** Parallelism degree (1 = the serial floor; >1 = a fleet/competitor draining in parallel). */
+  concurrency: number;
   /** Tasks the orchestrator produced a submission for (a diff, empty or not). */
   tasksAttempted: number;
+  /** TRUE wall-clock to drain the whole backlog (end − start) — the L2 speedup numerator. */
+  backlogDrainMs: number;
+  /** Σ per-task wall-clock (≈ backlogDrainMs / concurrency at perfect parallelism). */
+  sumTaskWallClockMs: number;
+  /** SUMMED across every agent + turn + task (coordination overhead counted — fairness #2). */
+  totalTokensIn: number;
+  totalTokensOut: number;
+  /** Σ cost incl. coordination overhead. Canonical $ is re-derived from raw tokens (P-011). */
+  totalCostUsd: number;
   /** Did the drain hit the backlog-level iso-budget cap? */
   capped: boolean;
+  startedAtMs: number;
+  endedAtMs: number;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -100,7 +115,7 @@ export interface CompetitorBacklogRun {
   /** One per task (arm = competitorId); costs SUM within `budget`. Order/coverage need not match input. */
   attempts: ArmAttempt[];
   trace: CompetitorCoordinationTrace;
-  fleet: FleetTelemetry;
+  fleet: BacklogThroughput;
 }
 
 /**
@@ -172,7 +187,7 @@ export async function runCompetitorBacklog(
       competitorId,
       attempts: tasks.map((t) => infraErrorAttempt(competitorId, t, seed, `unknown competitor '${competitorId}'`)),
       trace: emptyTrace(competitorId),
-      fleet: zeroFleet(tasks.length),
+      fleet: zeroFleet(competitorId, tasks.length),
     };
   }
 
@@ -189,7 +204,7 @@ export async function runCompetitorBacklog(
         ),
       ),
       trace: emptyTrace(competitorId),
-      fleet: zeroFleet(tasks.length),
+      fleet: zeroFleet(competitorId, tasks.length),
     };
   }
 
@@ -201,24 +216,60 @@ export async function runCompetitorBacklog(
       competitorId,
       attempts: tasks.map((t) => infraErrorAttempt(competitorId, t, seed, `competitor drain failed: ${msg}`)),
       trace: emptyTrace(competitorId),
-      fleet: zeroFleet(tasks.length),
+      fleet: zeroFleet(competitorId, tasks.length),
     };
   }
 }
 
-function zeroFleet(tasksAttempted: number): FleetTelemetry {
-  return { wallClockMs: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, tasksAttempted, capped: false };
+function zeroFleet(mode: string, tasksAttempted: number): BacklogThroughput {
+  return {
+    mode,
+    modality: 'diff',
+    concurrency: 0,
+    tasksAttempted,
+    backlogDrainMs: 0,
+    sumTaskWallClockMs: 0,
+    totalTokensIn: 0,
+    totalTokensOut: 0,
+    totalCostUsd: 0,
+    capped: false,
+    startedAtMs: 0,
+    endedAtMs: 0,
+  };
 }
 
-/** Derive fleet telemetry from per-task attempts (the SUMMED cost — coordination overhead counted). */
-export function summarizeFleet(attempts: readonly ArmAttempt[], opts: { capped?: boolean } = {}): FleetTelemetry {
+/**
+ * Derive the backlog-throughput record from per-task attempts (SUMMED cost — coordination overhead counted).
+ * The driver supplies the true `backlogDrainMs` + `startedAtMs`/`endedAtMs` (it knows the real parallel
+ * drain window); the SUM fields + `sumTaskWallClockMs` come from the attempts. A live competitor driver calls
+ * this then overrides `backlogDrainMs`/timestamps/`concurrency` with its measured values.
+ */
+export function summarizeBacklog(
+  attempts: readonly ArmAttempt[],
+  opts: {
+    mode: string;
+    modality?: 'diff' | 'in-container';
+    concurrency?: number;
+    backlogDrainMs?: number;
+    startedAtMs?: number;
+    endedAtMs?: number;
+    capped?: boolean;
+  },
+): BacklogThroughput {
+  const sumTaskWallClockMs = attempts.reduce((s, a) => s + a.wallClockMs, 0);
   return {
-    wallClockMs: attempts.reduce((m, a) => Math.max(m, a.wallClockMs), 0),
-    tokensIn: attempts.reduce((s, a) => s + a.tokensIn, 0),
-    tokensOut: attempts.reduce((s, a) => s + a.tokensOut, 0),
-    costUsd: attempts.reduce((s, a) => s + a.costUsd, 0),
+    mode: opts.mode,
+    modality: opts.modality ?? 'diff',
+    concurrency: opts.concurrency ?? 1,
     tasksAttempted: attempts.length,
+    backlogDrainMs: opts.backlogDrainMs ?? sumTaskWallClockMs,
+    sumTaskWallClockMs,
+    totalTokensIn: attempts.reduce((s, a) => s + a.tokensIn, 0),
+    totalTokensOut: attempts.reduce((s, a) => s + a.tokensOut, 0),
+    totalCostUsd: attempts.reduce((s, a) => s + a.costUsd, 0),
     capped: opts.capped ?? attempts.some((a) => a.stopReason === 'budget-exhausted'),
+    startedAtMs: opts.startedAtMs ?? 0,
+    endedAtMs: opts.endedAtMs ?? 0,
   };
 }
 
@@ -231,7 +282,7 @@ export interface CompetitorBacklogResult {
   /** Per-task graded + emitted rows (via the shared `gradeAndEmitBatch` — identical grading to every arm). */
   rows: AdapterRowResult[];
   trace: CompetitorCoordinationTrace;
-  fleet: FleetTelemetry;
+  fleet: BacklogThroughput;
 }
 
 /**

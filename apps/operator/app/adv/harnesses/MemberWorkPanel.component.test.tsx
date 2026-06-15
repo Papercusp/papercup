@@ -2,7 +2,7 @@
 /**
  * MemberWorkPanel (adv:member-work) — the per-user work dashboard for a shared hive
  * (shared-hive-collaboration-2026-06-14 P-010, Brief B10). Reads the live
- * `fleetAssignments.byHarness` roster and groups it by HIVE MEMBER (a federated github
+ * `hiveRoster.byHarness` roster and groups it by HIVE MEMBER (a federated github
  * participant, or this machine), showing each member's agents + head-of-line work + load +
  * liveness. The component + its `groupByMember` bucketing landed under D-004 (su-2ab53);
  * this is the missing component-render test (the brief's "tests" criterion) — it drives a
@@ -81,7 +81,7 @@ const api = { setParams: vi.fn(), setTitle: vi.fn(), close: vi.fn() } as unknown
 const PANEL = { panelId: 'test-panel', panelType: 'adv:member-work' } as const;
 
 function renderPanel(searchParams = '', roster: WorkingAgent[] | undefined = ROSTER) {
-  if (roster) syncResults['fleetAssignments.byHarness'] = roster;
+  if (roster) syncResults['hiveRoster.byHarness'] = roster;
   return render(
     <TooltipProvider>
       <NuqsTestingAdapter searchParams={searchParams}>
@@ -113,8 +113,8 @@ describe('MemberWorkPanel (adv:member-work)', () => {
     expect(screen.getByText('Worker B')).toBeTruthy();
     expect(screen.getAllByText('idle').length).toBeGreaterThan(0);
 
-    // The data source is the contracted fleetAssignments.byHarness query, enabled for the slug.
-    expect(syncCalls.some((c) => c.queryName === 'fleetAssignments.byHarness' && c.enabled === true)).toBe(true);
+    // The data source is the contracted hiveRoster.byHarness query, enabled for the slug.
+    expect(syncCalls.some((c) => c.queryName === 'hiveRoster.byHarness' && c.enabled === true)).toBe(true);
   });
 
   it('shows the empty affordance when no members are working in the hive', async () => {
@@ -144,6 +144,6 @@ describe('MemberWorkPanel (adv:member-work)', () => {
     );
     await waitFor(() => screen.getByText(/No harness slug/i));
     // enabled:false (Boolean('') === false) → no fetch fired for the roster.
-    expect(syncCalls.some((c) => c.queryName === 'fleetAssignments.byHarness' && c.enabled === false)).toBe(true);
+    expect(syncCalls.some((c) => c.queryName === 'hiveRoster.byHarness' && c.enabled === false)).toBe(true);
   });
 });

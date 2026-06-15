@@ -118,8 +118,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
     'workItems.byHarness',
     'fleetAssignments.byHarness',
     // hiveRoster.byHive (presence-v2 P-006 fold) reads spawned_agents for the
-    // Tier-1 model tier; an outcome/model flip re-fires it too.
+    // Tier-1 model tier; an outcome/model flip re-fires it too. byHarness (P-007,
+    // the MemberWorkPanel repoint) is the same fold keyed by harness→hive.
     'hiveRoster.byHive',
+    'hiveRoster.byHarness',
   ],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the
   // fleet_assignment view = presence + plan-item claims + work-item claims.
@@ -140,10 +142,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
     'dev.coordPresence',
     // hiveRoster.byHive (presence-v2 P-006) folds coord_presence + the fleet
     // work-detail; a presence/intent/claim/last_active write refreshes it too.
+    // byHarness (P-007) is the same fold keyed by harness→hive.
     'hiveRoster.byHive',
+    'hiveRoster.byHarness',
   ],
-  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board', 'hiveRoster.byHive'],
-  'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'hiveRoster.byHive'],
+  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness'],
+  'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'hiveRoster.byHive', 'hiveRoster.byHarness'],
   // dev.coordFeed is the live coordination firehose (the PresenceRail Activity
   // tab + the /adv Conversations Feed). The emit_change_notify trigger on
   // coord_event_log is filtered to ORIGINAL rows (body->>'notify_kind' IS NULL)
