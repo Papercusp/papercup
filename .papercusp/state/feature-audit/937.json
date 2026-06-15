@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781484753043-16a85ffd",
+  "feature_id": "F-FIX-024",
+  "field": "__created",
+  "id": 937,
+  "new_value": "{\"id\":\"F-FIX-024\",\"title\":\"Tool plans:get returns a structural error\",\"sourceIssueId\":\"EI-592\"}",
+  "old_value": "null",
+  "ts": 1781484945885
+}

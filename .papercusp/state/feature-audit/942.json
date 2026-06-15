@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781484753043-16a85ffd",
+  "feature_id": "F-FIX-029",
+  "field": "__created",
+  "id": 942,
+  "new_value": "{\"id\":\"F-FIX-029\",\"title\":\"Resolution gap: plans searches for \\\"watchdog-audit-2026-06-09\\\" zero-hit although it exists\",\"sourceIssueId\":\"EI-588\"}",
+  "old_value": "null",
+  "ts": 1781484987651
+}

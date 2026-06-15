@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781484753043-16a85ffd",
+  "feature_id": "F-FIX-025",
+  "field": "__created",
+  "id": 938,
+  "new_value": "{\"id\":\"F-FIX-025\",\"title\":\"Tool plans:add-item returns a structural error\",\"sourceIssueId\":\"EI-594\"}",
+  "old_value": "null",
+  "ts": 1781484946246
+}

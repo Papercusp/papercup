@@ -33,10 +33,21 @@ import { applyToProcessEnv, readAgentConfig } from './agent-config';
 
 setAgentConfigBootstrap(async () => applyToProcessEnv(await readAgentConfig()));
 
+/** Prompt sentinel that makes the fake-LLM seam yield a terminal `error` event
+ *  instead of deltas — lets a test/e2e exercise the SSE error path (the
+ *  rate-limit / backend-failure case) deterministically, with no real model. */
+export const FAKE_LLM_ERROR_SENTINEL = '__FAKE_LLM_ERROR__';
+
 async function* fakeRunAgentChat(
   opts: RunAgentChatOptions,
 ): AsyncGenerator<ChatEvent, void, void> {
-  const tail = (opts.promptText || '').slice(-32) || 'fake-llm';
+  const prompt = opts.promptText || '';
+  if (prompt.includes(FAKE_LLM_ERROR_SENTINEL)) {
+    await new Promise((r) => setTimeout(r, 5));
+    yield { type: 'error', message: '[fake-llm] forced error (FAKE_LLM_ERROR_SENTINEL)' };
+    return;
+  }
+  const tail = prompt.slice(-32) || 'fake-llm';
   const deltas = [
     `[fake-llm] received "${tail}". `,
     'Generating deterministic output for tests. ',

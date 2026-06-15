@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781484753043-16a85ffd",
+  "feature_id": "F-FIX-026",
+  "field": "__created",
+  "id": 939,
+  "new_value": "{\"id\":\"F-FIX-026\",\"title\":\"Tool plans:set-now returns a structural error\",\"sourceIssueId\":\"EI-595\"}",
+  "old_value": "null",
+  "ts": 1781484946903
+}

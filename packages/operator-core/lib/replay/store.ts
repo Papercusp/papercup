@@ -38,9 +38,14 @@ export class PgReplayStore implements ReplayStore {
   }
 
   async finishRun(runId: string, fields: { divergence: unknown; costUsd: number; elapsedMs: number }): Promise<void> {
+    // jsonb via JSON.stringify(...)::jsonb, NOT sql.json(...): the prod org-pg
+    // client throws 'The "string" argument ... Received an instance of Object' on
+    // sql.json(object) (same class as the experiment-ledger fix, D-018) — every
+    // replay cell's finish silently errored in prod while integration tests (a
+    // different pg client that tolerates sql.json) stayed green. EI-607.
     await this.sql`
       UPDATE harness_shared.replay_runs SET
-        divergence = ${this.sql.json(fields.divergence as never)},
+        divergence = ${fields.divergence == null ? null : JSON.stringify(fields.divergence)}::jsonb,
         cost_usd   = ${fields.costUsd},
         elapsed_ms = ${Math.round(fields.elapsedMs)},
         updated_at = now()

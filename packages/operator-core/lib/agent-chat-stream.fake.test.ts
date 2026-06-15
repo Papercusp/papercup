@@ -46,6 +46,22 @@ describe('agent-chat-stream fake-LLM seam', () => {
     expect(firstDelta.text).toContain('unique-marker-XYZ123');
   });
 
+  it('yields a single terminal error event when the prompt carries the error sentinel', async () => {
+    const { runAgentChat, FAKE_LLM_ERROR_SENTINEL } = await import('./agent-chat-stream');
+    const events: { type: string; message?: string }[] = [];
+    for await (const ev of runAgentChat({
+      promptText: `please fail ${FAKE_LLM_ERROR_SENTINEL}`,
+      role: 'worker',
+    } as Parameters<typeof runAgentChat>[0])) {
+      events.push(ev as { type: string; message?: string });
+    }
+    expect(events.length).toBe(1);
+    expect(events[0].type).toBe('error');
+    expect(events[0].message).toContain('fake-llm');
+    // No delta/result leaked through.
+    expect(events.some((e) => e.type === 'delta' || e.type === 'result')).toBe(false);
+  });
+
   it('result event terminal has zero cost (fake LLM is free)', async () => {
     const { runAgentChat } = await import('./agent-chat-stream');
     const events: { type: string; costUsd?: number }[] = [];
