@@ -309,9 +309,19 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
     // the agent runs on (brief led first), the staged-wake queue, her coord mail, and her
     // work items + plan linkage. Each is its own `pui <x>-pane --queen`
     // process (one pinned Tab each); zellij owns the vertical stack.
+    // overwatch-role-2026-06-15 (owner ask 2026-06-15): the OVERWATCH supervisor's
+    // interactive pane sits ABOVE the ♛ queen block — a fully-scoped no-picker psu
+    // launch as role=overwatch, mirroring the sentinel pane's --role=operator launch
+    // (--role=overwatch MUST use `=`; psu-launcher drops a space-separated --role).
+    // 👁 glyph + indigo identity come from AgentPaneKind::Overwatch (B-01). It is the
+    // Queen's sibling system-health supervisor, so it leads the dock above her.
     let dock_body = {
         format!(
             r#"    pane split_direction="horizontal" {{
+        pane name="👁 overwatch" size="22%" {{
+            command "psu"
+            args "--no-picker" "--agent=claude" "--role=overwatch"
+        }}
         pane name="♛ queen" split_direction="vertical" size="46%" {{
             pane name="{brain_name}" {{
                 command "{brain_cmd}"{args_line}
@@ -954,7 +964,7 @@ mod tests {
         // pane directly beside it inside the `♛ queen` split container. The
         // one-pane `pui agent-pane` variant was reverted (it could only render
         // the WRONG conversation — the sentinel's).
-        assert_eq!(on.matches("command \"psu\"").count(), 2); // sentinel + brain
+        assert_eq!(on.matches("command \"psu\"").count(), 3); // overwatch + sentinel + brain
         assert!(!on.contains("agent-pane"), "the reverted one-pane variant must not return: {on}");
         assert!(on.contains("name=\"♛ queen\" split_direction=\"vertical\""), "queen split container: {on}");
         // The queen's side column is the FOUR stacked data boards (dock 4-pane
