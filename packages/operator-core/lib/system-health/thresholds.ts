@@ -54,6 +54,26 @@ export function queenStatus(d: QueenHealth): PanelStatus {
   return 'ok';
 }
 
+/**
+ * queenAlive — the who-watches-the-watcher LIVENESS signal (D-004), deliberately
+ * DISTINCT from the `stalled` panel state so the overwatch's queen-stalled
+ * detector isn't dead code (EI-623). DARK (false) ONLY when the loop is genuinely
+ * gone: started AND no next wake armed AND stalled. A started-but-ARMED Queen is
+ * alive even when stalled (the wake will fire / the watchdog re-arms — `armed`
+ * absorbs a normal stall, so `stalled` flows to its OWN detector, not queen-dark).
+ * A paused Queen (not started) is intentionally off → alive, never a false dark.
+ * An unreadable queen (null) is conservatively alive (favour not-alarming, D-002).
+ *
+ * ONE definition, shared by the SystemHealth model (compute.ts) and the overwatch
+ * brief mapper (overwatch/compute-brief.ts) so the two can never drift apart again
+ * — the duplicated copies that DID drift were the EI-623 root cause.
+ */
+export function deriveQueenAlive(queen: QueenHealth | null): boolean {
+  if (!queen) return true; // unreadable ⇒ conservatively alive (never a false dark)
+  if (!queen.started) return true; // paused ⇒ intentional, alive
+  return queen.armed || !queen.stalled; // started ⇒ dark only when unarmed AND stalled
+}
+
 /** Bees. crit = a cursed placement (failed past the breaker, escalated). warn =
  *  orphaned claims / stranded / recovering placements. ok otherwise. */
 export function beesStatus(d: BeesHealth): PanelStatus {

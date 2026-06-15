@@ -44,13 +44,13 @@ function fakeClaude(): { provider: OAuthProvider; refreshes: () => number } {
   return { provider, refreshes: () => n };
 }
 
-test('parseCredentialRef — token / file / key / bare / ~ channels', () => {
+test('parseCredentialRef — token / file / bare / ~ channels (no static API-key channel)', () => {
   assert.deepEqual(parseCredentialRef('token:/a/b'), { kind: 'token', path: '/a/b' });
   assert.deepEqual(parseCredentialRef('file:/a/b'), { kind: 'file', path: '/a/b' });
-  assert.deepEqual(parseCredentialRef('key:/a/b'), { kind: 'key', path: '/a/b' });
-  assert.deepEqual(parseCredentialRef('key:env:FOO'), { kind: 'key', path: 'env:FOO' });
   assert.deepEqual(parseCredentialRef('/a/b'), { kind: 'file', path: '/a/b' });
   assert.throws(() => parseCredentialRef('env:NAME'));
+  // The billed-API key: channel is removed — this deployment is Claude Max OAuth only (D-003).
+  assert.throws(() => parseCredentialRef('key:/a/b'), /unsupported/);
 });
 
 test('withOAuthBeta — always includes oauth flag, de-duplicated, preserves others', () => {
@@ -91,32 +91,6 @@ test('makeCredentialResolver — token: returns the raw setup-token, cached (no 
   assert.equal(await r.current(), 'sk-ant-oat-abc');
   r.invalidate();
   assert.equal(await r.current(), 'sk-ant-oat-CHANGED');
-});
-
-test('makeCredentialResolver — key: (file) returns the raw API key, cached (no refresh)', async () => {
-  const path = join(dir, 'apikey');
-  await fs.writeFile(path, '  sk-ant-api03-xyz\n');
-  const r = makeCredentialResolver(`key:${path}`);
-  assert.equal(r.kind, 'key');
-  assert.equal(await r.current(), 'sk-ant-api03-xyz');
-  // mutate the file; cached value persists until invalidate() (no refresh path for keys)
-  await fs.writeFile(path, 'sk-ant-api03-CHANGED');
-  assert.equal(await r.current(), 'sk-ant-api03-xyz');
-  r.invalidate();
-  assert.equal(await r.current(), 'sk-ant-api03-CHANGED');
-});
-
-test('makeCredentialResolver — key:env: reads the env var; unset throws', async () => {
-  process.env.IG_TEST_API_KEY = 'sk-ant-api03-from-env';
-  try {
-    const r = makeCredentialResolver('key:env:IG_TEST_API_KEY');
-    assert.equal(r.kind, 'key');
-    assert.equal(await r.current(), 'sk-ant-api03-from-env');
-  } finally {
-    delete process.env.IG_TEST_API_KEY;
-  }
-  const missing = makeCredentialResolver('key:env:IG_TEST_MISSING_KEY');
-  await assert.rejects(() => missing.current(), /empty\/unset/);
 });
 
 test('makeCredentialResolver — file: refreshes a near-expiry bundle once, then serves the cache', async () => {

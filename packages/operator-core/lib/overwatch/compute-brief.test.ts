@@ -20,8 +20,13 @@ import type {
 // Mock ONLY the runtime aggregator (the index's computeSystemHealth) — the mapper
 // tests are pure (no DB), and the wrapper tests drive this mock. The SystemHealth
 // TYPES come from '../system-health/types' (type-only, erased), so the real
-// compute.ts + its DB deps never load in this unit file.
-vi.mock('../system-health', () => ({ computeSystemHealth: vi.fn() }));
+// compute.ts + its DB deps never load in this unit file. `deriveQueenAlive` (the
+// shared liveness derivation the mapper calls, EI-623) is pure — re-export the REAL
+// one from the DB-free './thresholds' module so the mapper derives correctly here.
+vi.mock('../system-health', async () => {
+  const real = await vi.importActual<typeof import('../system-health/thresholds')>('../system-health/thresholds');
+  return { computeSystemHealth: vi.fn(), deriveQueenAlive: real.deriveQueenAlive };
+});
 
 /** A healthy brief we mutate one panel at a time to trip exactly one detector. */
 function base(): OverwatchBrief {

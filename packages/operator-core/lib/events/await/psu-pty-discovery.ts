@@ -66,12 +66,28 @@ function pidAlive(pid: number): boolean {
  * host pid must be alive AND its socket must still exist (a crashed host that
  * left its file behind is skipped). So a non-null result means "there is a live
  * interactive session whose pty I can inject into right now".
+ *
+ * Cross-owner safety (EI-151): the discovery file is located purely by FILENAME
+ * (`<sanitizeKey(ownerId)>.json`), but `sanitizeKey` is lossy — it maps every
+ * char outside `[a-zA-Z0-9._-]` to `_` and truncates to 200, so two DISTINCT
+ * coord owner ids can resolve to the SAME file (e.g. a structured hive-Scout id
+ * vs a colliding one, or a stale file left at a reused key during a `/loop`
+ * re-host). Whoever wrote last owns the filename. So we ALSO require the file's
+ * RECORDED `ownerId` to match the one we asked for: a mismatch means this file
+ * belongs to a DIFFERENT agent, and returning it would let one agent's wake (or
+ * `turn:interrupt`) land in another agent's live session — the exact cross-agent
+ * misroute EI-151 reported. On mismatch we treat it as "no host" (→ park/inbox,
+ * never the wrong session).
  */
 export function findLiveHost(ownerId: string, dir: string = PSU_PTY_DIR): PsuPtyHost | null {
   const metaPath = join(dir, `${sanitizeKey(ownerId)}.json`);
   if (!existsSync(metaPath)) return null;
   try {
     const h = JSON.parse(readFileSync(metaPath, 'utf8')) as PsuPtyHost;
+    // Identity must match (EI-151): the file's recorded owner is authoritative;
+    // a sanitize-collision / stale-reuse leaves a file whose `ownerId` is a
+    // different agent — never hand that back as this owner's host.
+    if (h && h.ownerId && h.ownerId !== ownerId) return null;
     if (h && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid)) return h;
   } catch {
     /* unreadable / partial write — treat as no host */

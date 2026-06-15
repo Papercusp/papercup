@@ -61,6 +61,7 @@ import {
   improvementsStatus,
   infraStatus,
   worstStatus,
+  deriveQueenAlive,
   QUEEN_STALL_MS,
 } from './thresholds';
 
@@ -713,17 +714,10 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
     plans, escalations, autonomy, observations, improvements, infra, suFleet,
   };
   const overall = worstStatus(Object.values(panels).map((p) => p.status));
-  // queenAlive (the who-watches-the-watcher signal, D-004) — LIVENESS-ONLY, kept
-  // DISTINCT from `stalled` so B-09's queen-stalled detector isn't dead code
-  // (EI-623). DARK = the loop is genuinely gone: started AND no next wake armed AND
-  // stale. A started-but-ARMED Queen is ALIVE even when stalled (the wake will fire
-  // / the watchdog re-arms — `armed` absorbs a normal stall, so stalled flows to its
-  // OWN detector, not queen-dark). A *paused* Queen (not started) is intentionally
-  // off → ALIVE, never a false "went dark" alarm. An unreadable queen (data null) is
-  // conservatively ALIVE (favour not-alarming, D-002). This is byte-identical to the
-  // canonical derivation B-03's mapper uses (compute-brief.ts:347, proven by
-  // compute-brief.test.ts) so the shared model and the overwatch brief agree.
-  const queenAlive = !queen.data ? true : !queen.data.started ? true : queen.data.armed || !queen.data.stalled;
+  // queenAlive — the who-watches-the-watcher LIVENESS signal (D-004), kept DISTINCT
+  // from `stalled` (EI-623). ONE shared definition (deriveQueenAlive) so the shared
+  // model and the overwatch brief mapper can never drift apart again.
+  const queenAlive = deriveQueenAlive(queen.data);
 
   // Who-watches-the-watcher reverse leg (overwatch-role-2026-06-15 B-09 / D-004):
   // fill the `overwatchAlive` stub with overwatch's real liveness. `null` = not

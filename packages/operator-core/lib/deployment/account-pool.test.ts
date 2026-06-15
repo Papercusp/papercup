@@ -14,13 +14,16 @@ import {
   unbindAccount,
   recordAccountPenalty,
   recordAccountReset,
+  recordAccountWindow,
   isAvailable,
   isSustainedlyLimited,
   selectAccountByHeadroom,
+  selectAccountByDrain,
   selectAccountForSpawn,
   decideScaleOut,
   AccountPoolError,
   DEFAULT_SCALE_POLICY,
+  DRAIN_UTIL_STALE_MS,
   type AccountPool,
 } from './account-pool';
 
@@ -52,6 +55,13 @@ describe('registerAccount', () => {
     expect(a.label).toBe('renamed');
     expect(a.boundTo).toEqual(['harness-a']);
     expect(a.rate.pausedUntil).toBe(T0 + 5 * MIN);
+  });
+
+  it('persists a per-account egress binding (per-account IP routing) + updates it on re-register', () => {
+    let p = registerAccount(emptyPool(), { id: 'acct-1', credentialRef: 'token:~/t', egress: { proxyUrl: 'http://10.0.0.1:3128' } }, T0);
+    expect(getAccount(p, 'acct-1')!.egress).toEqual({ proxyUrl: 'http://10.0.0.1:3128' });
+    p = registerAccount(p, { id: 'acct-1', credentialRef: 'token:~/t', egress: { localAddress: '203.0.113.7' } }, T0 + 1);
+    expect(getAccount(p, 'acct-1')!.egress).toEqual({ localAddress: '203.0.113.7' });
   });
 
   it('rejects ids containing the bucket-key delimiters or empty credentialRef', () => {
@@ -204,6 +214,71 @@ describe('selectAccountByHeadroom (P-020)', () => {
     let p = poolOf('a', 'b');
     p = bindAccount(p, 'a', 'h1'); // a bound; a was added first so without preferUnbound it'd tie-break to... fewest bindings = b
     expect(selectAccountByHeadroom(p, T0, { preferUnbound: true })!.id).toBe('b');
+  });
+});
+
+describe('recordAccountWindow (D-003 unified-5h projection)', () => {
+  it('records utilization + reset + a freshness stamp; an undefined field keeps its prior value', () => {
+    let p = poolOf('a');
+    p = recordAccountWindow(p, 'a', { utilization: 0.4, windowResetAt: T0 + 60 * MIN }, T0);
+    let r = getAccount(p, 'a')!.rate;
+    expect(r.utilization).toBe(0.4);
+    expect(r.windowResetAt).toBe(T0 + 60 * MIN);
+    expect(r.utilizationAt).toBe(T0);
+    // a later partial update bumps utilization but keeps the prior reset
+    p = recordAccountWindow(p, 'a', { utilization: 0.6 }, T0 + MIN);
+    r = getAccount(p, 'a')!.rate;
+    expect(r.utilization).toBe(0.6);
+    expect(r.windowResetAt).toBe(T0 + 60 * MIN);
+    expect(r.utilizationAt).toBe(T0 + MIN);
+  });
+
+  it('is a no-op for an unknown id', () => {
+    const p = recordAccountWindow(poolOf('a'), 'nope', { utilization: 0.9 }, T0);
+    expect(getAccount(p, 'a')!.rate.utilization).toBeUndefined();
+  });
+});
+
+describe('selectAccountByDrain (D-003 budget-draining selector)', () => {
+  it('with no budget data, degrades to recency order (oldest-added among clean accounts)', () => {
+    expect(selectAccountByDrain(poolOf('a', 'b'), T0)!.id).toBe('a');
+  });
+
+  it('prefers the account with the most remaining 5h budget (lowest utilization)', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountWindow(p, 'a', { utilization: 0.8 }, T0);
+    p = recordAccountWindow(p, 'b', { utilization: 0.2 }, T0);
+    expect(selectAccountByDrain(p, T0)!.id).toBe('b');
+  });
+
+  it('drains an about-to-reset window first (use-it-before-you-lose-it), over a lower-util fresh window', () => {
+    let p = poolOf('a', 'b');
+    // a is busier (0.6) but resets in 5 min → its budget vanishes soon → drain it first
+    p = recordAccountWindow(p, 'a', { utilization: 0.6, windowResetAt: T0 + 5 * MIN }, T0);
+    // b is fresher (0.1) but resets in 4h → its budget persists → keep in reserve
+    p = recordAccountWindow(p, 'b', { utilization: 0.1, windowResetAt: T0 + 240 * MIN }, T0);
+    expect(selectAccountByDrain(p, T0)!.id).toBe('a');
+  });
+
+  it('does NOT treat an about-to-reset but already-full account as urgent', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountWindow(p, 'a', { utilization: 0.99, windowResetAt: T0 + 5 * MIN }, T0); // full → not urgent
+    p = recordAccountWindow(p, 'b', { utilization: 0.3, windowResetAt: T0 + 240 * MIN }, T0);
+    expect(selectAccountByDrain(p, T0)!.id).toBe('b');
+  });
+
+  it('ignores stale utilization (older than the staleness horizon) → treats it as most-available', () => {
+    let p = poolOf('a', 'b');
+    // a's high utilization is stale → treated as 0; b's is fresh at 0.5 → a wins as "emptier"
+    p = recordAccountWindow(p, 'a', { utilization: 0.9 }, T0);
+    p = recordAccountWindow(p, 'b', { utilization: 0.5 }, T0 + DRAIN_UTIL_STALE_MS + MIN);
+    expect(selectAccountByDrain(p, T0 + DRAIN_UTIL_STALE_MS + MIN)!.id).toBe('a');
+  });
+
+  it('skips paused accounts and honors exclude', () => {
+    let p = poolOf('a', 'b', 'c');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 10 * MIN });
+    expect(selectAccountByDrain(p, T0 + MIN, { exclude: ['b'] })!.id).toBe('c');
   });
 });
 

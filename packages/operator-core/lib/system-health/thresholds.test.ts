@@ -17,6 +17,7 @@ import {
   escalationsStatus,
   autonomyStatus,
   worstStatus,
+  deriveQueenAlive,
   QUEEN_STALL_MS,
   SYNC_LAG_WARN_MS,
   DEPLOY_BEHIND_WARN,
@@ -59,6 +60,27 @@ describe('queenStatus', () => {
   });
   it('ok when looping with cadence', () => {
     expect(queenStatus(queen())).toBe('ok');
+  });
+});
+
+describe('deriveQueenAlive — liveness-only, kept DISTINCT from stalled (EI-623)', () => {
+  it('alive when looping with cadence (started + armed + not stalled)', () => {
+    expect(deriveQueenAlive(queen())).toBe(true);
+  });
+  it('alive when started + ARMED even if stalled (re-armable → flows to queen-stalled, NOT queen-dark)', () => {
+    expect(deriveQueenAlive(queen({ stalled: true, armed: true }))).toBe(true);
+  });
+  it('DARK when started + NOT armed + stalled (no next wake AND stale = the loop is gone)', () => {
+    expect(deriveQueenAlive(queen({ stalled: true, armed: false }))).toBe(false);
+  });
+  it('alive when started + not armed but not stalled (between wakes, not dead)', () => {
+    expect(deriveQueenAlive(queen({ stalled: false, armed: false }))).toBe(true);
+  });
+  it('alive when paused (not started) — intentional, never a false dark alarm', () => {
+    expect(deriveQueenAlive(queen({ started: false, armed: false, stalled: false }))).toBe(true);
+  });
+  it('alive when the queen panel is unreadable (null) — conservative, never false-dark', () => {
+    expect(deriveQueenAlive(null)).toBe(true);
   });
 });
 

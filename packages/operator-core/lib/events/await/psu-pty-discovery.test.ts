@@ -80,6 +80,25 @@ describe('findLiveHost', () => {
     expect(h!.sock).toBe(sock);
     expect(h!.ownerId).toBe('su-live');
   });
+
+  it('EI-151: returns null when the recorded ownerId differs from the requested key (cross-owner misroute)', () => {
+    // A live, otherwise-valid host file sitting at agent A's discovery path, but
+    // RECORDED as agent B (a sanitizeKey collision or a stale-reuse during a
+    // /loop re-host). Resolving it would inject A's wake / turn:interrupt into
+    // B's live session — the EI-151 cross-agent misroute. Must be rejected.
+    const dir = tmpDir();
+    // Write the file at owner A's filename, but with content ownerId = B, and a
+    // genuinely live pid + bound socket so ONLY the identity check can reject it.
+    const sock = join(dir, `${sanitizeKey('su-A')}.sock`);
+    const server = net.createServer();
+    server.listen(sock);
+    cleanups.push(() => server.close());
+    writeFileSync(
+      join(dir, `${sanitizeKey('su-A')}.json`),
+      JSON.stringify({ ownerId: 'su-B', pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1 }),
+    );
+    expect(findLiveHost('su-A', dir)).toBeNull();
+  });
 });
 
 describe('injectIntoHost', () => {

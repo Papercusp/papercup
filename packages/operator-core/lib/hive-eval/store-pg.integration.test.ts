@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config';
 import { createPgHiveEvalStore } from './store-pg';
+import { coerceJson } from '../pg-jsonb';
 import type { HiveEvalRunRow, HiveEvalScenarioRow, HiveEvalScoreRow, InstanceManifest } from './store';
 
 // 264 records the runs; 268 (HE-06) adds the scores table that FK-references the runs.
@@ -106,10 +107,10 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
     expect(row.terminal_state).toBe('drained');
     expect(Number(row.wall_clock_ms)).toBe(1234);
     expect(row.frontier_drained).toBe(true);
-    expect(row.observations.costUsd).toBe(0.5);
+    expect(coerceJson<{ costUsd: number }>(row.observations)?.costUsd).toBe(0.5);
     const [sc] = await sql`SELECT * FROM harness_shared.hive_eval_scenarios WHERE scenario_id = 'serial-pipeline'`;
     expect(sc.ideal_bee_count).toBe(1);
-    expect(sc.critical_path).toEqual(['w1', 'w2', 'w3', 'w4']);
+    expect(coerceJson(sc.critical_path)).toEqual(['w1', 'w2', 'w3', 'w4']);
   });
 
   it('keeps every repeat as a distinct row (the P-022 distribution)', async () => {

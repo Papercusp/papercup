@@ -27,7 +27,7 @@
  */
 import { emptyOverwatchBrief } from './brief-types';
 import type { Anomaly, OverwatchBrief } from './brief-types';
-import { computeSystemHealth } from '../system-health';
+import { computeSystemHealth, deriveQueenAlive } from '../system-health';
 import type { SystemHealth } from '../system-health/types';
 
 /**
@@ -254,14 +254,15 @@ function msToIso(ms: number | null): string | null {
  *  - `workFeed.blockedStranded` ← `bees.placements.stranded` — su-3b017 sourced the
  *    stranded-on-a-resolved-constraint count there in response to the B-03 co-shape
  *    flag (it is NOT `workFeed.frontierBlocked`, which is blocked-on-UNsatisfied).
- *  - `crossMonitor.queenAlive` is DERIVED here, NOT taken from
- *    `SystemHealth.crossMonitor.queenAlive`: the shared value folds in `stalled`
- *    (`started && !stalled`), which would make the detector's `queen-stalled` path
- *    dead code (a stalled Queen would always pre-empt to `queen-dark`). The
- *    overwatch needs the two as DISTINCT signals (dark = the loop is gone; stalled
- *    = late but recoverable), so "dark" here = started, no next wake armed, AND
- *    stale. A paused (not-started) Queen is intentional, never "dark". (Flagged to
- *    su-3b017/su-04d22 to align the shared crossMonitor on a liveness-only value.)
+ *  - `crossMonitor.queenAlive` is the SHARED `deriveQueenAlive` derivation (in
+ *    system-health/thresholds) — the SAME function `computeSystemHealth` uses, so
+ *    this mapper and the Health tab can't disagree. It is liveness-only, kept
+ *    DISTINCT from `stalled` so the detector's `queen-stalled` path stays live:
+ *    dark = the loop is gone (started, no next wake armed, AND stale); a started-
+ *    but-armed Queen is alive even when stalled; a paused (not-started) Queen is
+ *    intentional, never dark. EI-623 was the earlier drift — the shared model and
+ *    this mapper each carried their OWN copy and the shared one lagged on
+ *    `started && !stalled`; the one shared helper removes that whole drift class.
  *
  * Known degraded-to-default fields until the shared model exposes them (each is
  * renderer-context only OR fail-soft-quiet for its detector, never a wrong alarm):
@@ -339,12 +340,12 @@ export function mapSystemHealthToBrief(health: SystemHealth, hiveSlug: string): 
     };
   }
 
-  // Cross-monitor (D-004). queenAlive derived (see mapping notes): a paused Queen
-  // is intentional (alive); a started Queen is "dark" only when she has no next
-  // wake armed AND is stale (the loop is gone), else alive (stalled is handled by
-  // its own detector). overwatchAlive defaults true on its own brief (it is
+  // Cross-monitor (D-004). queenAlive = the shared liveness-only derivation
+  // (deriveQueenAlive) — the SAME function the shared SystemHealth model uses, so
+  // the brief and the Health tab can't disagree (EI-623: they used to be duplicated
+  // copies that drifted). overwatchAlive defaults true on its own brief (it is
   // computing → alive); B-09 wires the real reverse leg into the shared model.
-  const queenAlive = !queen ? true : !queen.started ? true : queen.armed || !queen.stalled;
+  const queenAlive = deriveQueenAlive(queen);
   brief.crossMonitor = {
     queenAlive,
     overwatchAlive: health.crossMonitor.overwatchAlive ?? true,

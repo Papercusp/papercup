@@ -7,6 +7,7 @@ import LearningTab from '../../components/adv/LearningTab';
 import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
 import HealthTab from '../../components/adv/HealthTab';
+import OverwatchTab from '../../components/adv/OverwatchTab';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
@@ -38,6 +39,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'learning') return 'Learning';
   if (tab === 'harnesses') return 'Working';
   if (tab === 'health') return 'Health';
+  if (tab === 'overwatch') return 'Overwatch';
   if (tab === 'frames') return 'Frames';
   if (tab === 'evals') return 'Evaluation';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
@@ -59,6 +61,10 @@ function renderAdvTab(tab: AdvTabId) {
     case 'health':
       // The read-only system Health dashboard (system-health-tab-2026-06-15).
       return <HealthTab />;
+    case 'overwatch':
+      // The Overwatch supervisor's actionable view — brief + anomalies + nudges
+      // (overwatch-role-2026-06-15 B-08, D-006). Flag-gated (OVERWATCH).
+      return <OverwatchTab />;
     case 'frames':
       // Swarm live view — per-agent-display thumbnails from deployed frames
       // (hive-frame-desktops-live-view P-006).

@@ -1545,6 +1545,35 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── overwatch.snapshot — the Overwatch pane's current brief ──
+  //
+  // (overwatch-role-2026-06-15 B-08, D-006). The ACTIONABLE SUBSET of the same
+  // `SystemHealth` the Health tab serves — health panels + detected anomalies +
+  // suggested nudges. NOT a second aggregation: `getOverwatchSnapshot` reuses the
+  // shared system-health cache and maps it via the pure B-03 mapper/detector.
+  // SSE-live — `runSystemHealthTick` invalidates this name alongside
+  // `health.snapshot` each ~30s tick. Always returns a 1-element array (the
+  // fail-soft neutral brief when health is unreadable), so the pane has a shape.
+  'overwatch.snapshot': {
+    resolve: async () => {
+      const { getOverwatchSnapshot } = await import('../overwatch/snapshot');
+      return [await getOverwatchSnapshot()];
+    },
+  },
+
+  // ── overwatch.controlState — the Overwatch pane's header (start/cadence/liveness) ──
+  //
+  // (overwatch-role-2026-06-15 B-08). The persisted overwatch_started bit + wake
+  // cadence (B-07) + live wake liveness (B-09) + the papercusp-overwatch flag
+  // (D-009). `overwatch:start` / `overwatch:pause` invalidate this name (wired in
+  // B-07), so the header flips the moment the owner starts/pauses the loop.
+  'overwatch.controlState': {
+    resolve: async () => {
+      const { getOverwatchControlState } = await import('../overwatch/snapshot');
+      return [await getOverwatchControlState()];
+    },
+  },
+
   // ── learning.gym — the Learning tab's Gym view (operator-learning-tab P-006) ──
   //
   // Cross-harness rollup of the gym control plane: recent prompt-optimization

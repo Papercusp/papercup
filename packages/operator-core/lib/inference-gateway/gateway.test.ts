@@ -298,18 +298,45 @@ test('per-request x-papercusp-account header routes to the named pool account (P
   assert.equal(upstream.last.headers['x-papercusp-account'], undefined);
 });
 
-test('a key-kind account authenticates with x-api-key and no OAuth beta (P-002)', async () => {
-  const billed: ActiveAccount = { accountId: 'billed', kind: 'key', token: async () => 'sk-ant-api03-K' };
-  const pool: AccountPool = { active: () => billed, onExhausted: () => null };
+test('every account is Claude Max OAuth — a bee-sent x-api-key is stripped + replaced with Bearer (D-003)', async () => {
   await boot((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
-  }, { pool });
-  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(upstream.last.headers['x-api-key'], 'sk-ant-api03-K');
-  assert.equal(upstream.last.headers['authorization'], undefined, 'no Bearer for an API key');
-  assert.ok(
-    !String(upstream.last.headers['anthropic-beta'] ?? '').includes('oauth-2025-04-20'),
-    'no oauth beta for an API key',
-  );
+  });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': 'sk-ant-api03-bee-sent' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(upstream.last.headers['x-api-key'], undefined, 'no static API key reaches upstream (channel removed)');
+  assert.equal(upstream.last.headers['authorization'], 'Bearer test-token', 'subscription OAuth Bearer injected');
+  assert.ok(String(upstream.last.headers['anthropic-beta']).includes('oauth-2025-04-20'), 'oauth beta always present');
+});
+
+test('a per-account egress builds a dispatcher passed to the upstream fetch (per-account IP routing, D-003)', async () => {
+  let captured: { dispatcher?: unknown } | undefined;
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured = init;
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const egAcct: ActiveAccount = { accountId: 'eg', token: async () => 'T', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
+  const pool: AccountPool = { active: () => egAcct, onExhausted: () => null };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.ok(captured?.dispatcher, 'egress account passes an undici dispatcher to fetch');
+});
+
+test('no per-account egress → no dispatcher (default shared egress)', async () => {
+  let captured: { dispatcher?: unknown } | undefined;
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured = init;
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const plain: ActiveAccount = { accountId: 'plain', token: async () => 'T' };
+  const pool: AccountPool = { active: () => plain, onExhausted: () => null };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(captured?.dispatcher, undefined, 'no egress → fetch gets no dispatcher');
 });

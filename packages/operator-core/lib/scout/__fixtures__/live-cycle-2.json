@@ -1,6 +1,6 @@
 {
   "meta": {
-    "capturedAt": "2026-06-15T04:21:54.394Z",
+    "capturedAt": "2026-06-15T04:43:01.902Z",
     "cycleId": "scout-live-cycle-2",
     "harnessSlug": "papercup",
     "limits": {
@@ -20,13 +20,13 @@
     "stop": "no-ideas",
     "costUsd": 0,
     "digest": {
-      "generatedAt": "2026-06-15T04:18:28.530Z",
+      "generatedAt": "2026-06-15T04:39:40.785Z",
       "corpus": {
-        "completions": 510,
+        "completions": 511,
         "reverts": 58,
-        "frictionCaptured": 501,
+        "frictionCaptured": 505,
         "deferrals": 289,
-        "spendUsd": 66389.79,
+        "spendUsd": 66397.46,
         "spendBuckets": 27
       },
       "recurringFriction": [
@@ -68,7 +68,7 @@
         {
           "category": "recurring-friction",
           "summary": "Hive papercup: fleet saturated with work still queued",
-          "detail": "recurred 2× (2 open), last 0.1d ago",
+          "detail": "recurred 2× (2 open), last 0.2d ago",
           "ref": "wi:EI-593",
           "weight": 0.27
         },
@@ -104,15 +104,15 @@
       "timeTokenSinks": [
         {
           "category": "time-token-sink",
-          "summary": "$65950.06 on (unattributed) · interactive",
-          "detail": "8622 run(s), 642,938,895 tokens",
+          "summary": "$65950.59 on (unattributed) · interactive",
+          "detail": "8624 run(s), 642,961,618 tokens",
           "ref": "usage:(unattributed)/interactive",
           "weight": 1
         },
         {
           "category": "time-token-sink",
-          "summary": "$168.52 on papercup-hive · queen",
-          "detail": "206 run(s), 2,217,965 tokens",
+          "summary": "$172.65 on papercup-hive · queen",
+          "detail": "208 run(s), 2,270,960 tokens",
           "ref": "usage:papercup-hive/queen",
           "weight": 0
         },
@@ -132,8 +132,8 @@
         },
         {
           "category": "time-token-sink",
-          "summary": "$28.59 on papercup · release-fixer",
-          "detail": "24 run(s), 348,543 tokens",
+          "summary": "$31.61 on papercup · release-fixer",
+          "detail": "25 run(s), 377,499 tokens",
           "ref": "usage:papercup/release-fixer",
           "weight": 0
         },
@@ -297,13 +297,6 @@
         },
         {
           "category": "capability-gap",
-          "summary": "Lint-ban sql.json( in operator runtime code + standardize jsonb writes on ${JSON.stringify(x)}::text::jsonb",
-          "detail": "named missing capability (1 open)",
-          "ref": "wi:EI-618",
-          "weight": 0.5
-        },
-        {
-          "category": "capability-gap",
           "summary": "Cross-agent misrouting: one agent's always-armed inbox-wake (turn-lifecycle-control) fires into a DIFFERENT agent's ses…",
           "detail": "named missing capability (1 open)",
           "ref": "wi:EI-151",
@@ -311,9 +304,16 @@
         },
         {
           "category": "capability-gap",
-          "summary": "Agent insight 'types-first-from-design-memo' cites files that no longer exist — review for superseded",
+          "summary": "Missing knowledge: plans searches for \"zzzznomatch\" find nothing",
           "detail": "named missing capability (1 open)",
-          "ref": "wi:EI-605",
+          "ref": "wi:EI-628",
+          "weight": 0.5
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Missing knowledge: plans searches for \"dogfo\" find nothing",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-627",
           "weight": 0.5
         }
       ],
@@ -379,7 +379,7 @@
           "weight": 0.18
         }
       ],
-      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66389.79), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 510 completions"
+      "headline": "State of the Hive: 10 recurring friction, 10 spend sink(s) ($66397.46), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 511 completions"
     },
     "ideas": [],
     "scored": [],

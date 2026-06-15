@@ -56,6 +56,12 @@ SET col = ${obj == null ? null : JSON.stringify(obj)}::jsonb
 
 This is semantically identical to `sql.json` for jsonb and works everywhere.
 
+## Read side — `${JSON.stringify(x)}::jsonb` reads back as a STRING on the test pools
+
+A column written this way reads back as a **raw JSON string** under the testcontainer / org-test pools (and any client that doesn't auto-decode jsonb), whereas the prod getOrgPg/CJS client **auto-parses it to an object/array**. So a reader that uses the value as an object/array must decode defensively, or it silently sees a string (e.g. `row.payload.routedRef` → `undefined`, no crash, wrong result). Decode at every jsonb read boundary with the shared `coerceJson<T>(v)` (`packages/operator-core/lib/pg-jsonb.ts`) — it returns an object/array untouched and `JSON.parse`s a string. (Mirrors `coerceJsonArray`, slot-parked-store `parseEnvelope`, pg-log `parseBody`.)
+
+**Trap:** switching a write off `sql.json` UNBLOCKS the write, which can newly EXPOSE a latent read bug whose column was previously never populated (the throwing write meant nothing was ever stored to read). Always fix the write and its reads together — a green write is only half the migration.
+
 ## Why tests don't catch it
 
 Integration tests use `createFreshPgDb` (`packages/operator-core/test/_pg-helpers.ts`), a **root-postgres** client that resolves the *tolerant* postgres-js instance — so `sql.json` works there and a green integration test says nothing about prod. **A passing `*.integration.test.ts` is not evidence that a `sql.json` write works in production.** The codebase already worked around this ad hoc (`dock-layouts.ts` uses a separate `db()` pool *because* "the operator getOrgPg client where sql.json throws").

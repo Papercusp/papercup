@@ -833,9 +833,10 @@ export async function spawnAgentInHarness(
   // strips + reinjects auth), so flag-OFF instantly reverts to direct egress. Fails CLOSED:
   // if the gateway service is down the bee's request is refused rather than bursting direct.
   // P-004 (multi-credential routing): when INFERENCE_GATEWAY_MULTI_ACCOUNT is ALSO on, pin this bee
-  // to a cache-affinity pool account (sticky → harness-pin → headroom) via ANTHROPIC_CUSTOM_HEADERS,
-  // so its per-credential conversation cache survives. Fail-soft: any error → no header → the gateway
-  // routes to its active() account (today's single-credential behavior).
+  // to a pool account (sticky → harness-pin → 5h-budget drain) via ANTHROPIC_CUSTOM_HEADERS, so its
+  // per-credential conversation cache survives and the aggregate Max budget across subscriptions
+  // stays filled (D-003). Fail-soft: any error → no header → the gateway routes to its active()
+  // account (today's single-credential behavior).
   const gwOn = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
   let routeAccountId: string | undefined;
   if (gwOn && (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system'))) {

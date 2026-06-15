@@ -23,6 +23,7 @@ import {
   recordQueueExposure,
 } from './interactions';
 import { gradeRoutedIdea, recordRoutedIdea } from '../scout/routed-ledger';
+import { coerceJson } from '../pg-jsonb';
 
 let db: OrgTestDb;
 
@@ -36,13 +37,16 @@ afterAll(async () => {
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
-const interactionRows = (kind?: string) =>
-  kind
-    ? h.sql<{ kind: string; subject_id: string; payload: Record<string, unknown> }[]>`
+const interactionRows = async (kind?: string) => {
+  const rows = kind
+    ? await h.sql<{ kind: string; subject_id: string; payload: unknown }[]>`
         SELECT kind, subject_id, payload FROM harness_shared.owner_interactions
          WHERE kind = ${kind} ORDER BY ts`
-    : h.sql<{ kind: string; subject_id: string; payload: Record<string, unknown> }[]>`
+    : await h.sql<{ kind: string; subject_id: string; payload: unknown }[]>`
         SELECT kind, subject_id, payload FROM harness_shared.owner_interactions ORDER BY ts`;
+  // jsonb reads come back as raw STRINGS under the test pool (prod getOrgPg auto-parses) — decode (EI-607).
+  return rows.map((r) => ({ ...r, payload: coerceJson<Record<string, unknown>>(r.payload) }));
+};
 
 describe('owner_interactions write/read (migration 254)', () => {
   it('records an interaction row and reads it back as an attribute-joined engagement', async () => {

@@ -216,6 +216,37 @@ export function emptyOverwatchBrief(hiveSlug: string): OverwatchBrief {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
+ * The control-state view (B-08 UI pane).
+ *
+ * NOT part of the C-1 brief — a small PURE projection of the overwatch's
+ * persisted control bit + cadence (B-07 control-state.ts) + its liveness (B-09
+ * liveness.ts), read by the `overwatch.controlState` sync resolver and rendered
+ * as the pane's header. Kept here (the pure contract module) so the operator-vite
+ * SPA imports it WITHOUT pulling the DB-touching read surface (snapshot.ts) into
+ * the client bundle — mirrors how `system-health/types.ts` is the client-safe
+ * type home for the Health tab.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+export interface OverwatchControlState {
+  /** The hive the overwatch supervises (D-005 per-hive); null when none resolvable. */
+  hiveSlug: string | null;
+  /** The persisted `overwatch_started` bit (B-07) — true = the loop should be running. */
+  started: boolean;
+  /** The configured wake cadence in seconds (B-07; default 600). */
+  cadenceSec: number;
+  /** The `papercusp-overwatch` activation flag (D-009). `started && !flagEnabled` = PRE-ARMED. */
+  flagEnabled: boolean;
+  /** A live `overwatch-wake` routine row with a next fire exists (B-09 liveness). */
+  armed: boolean;
+  /** The next armed wake (ISO-8601), or null if none. */
+  nextWakeAt: string | null;
+  /** The last wake fire (ISO-8601), or null if never fired. */
+  lastWakeAt: string | null;
+  /** ms since the last wake fire, or null (never fired). */
+  staleForMs: number | null;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
  * The renderer.
  * ──────────────────────────────────────────────────────────────────────────── */
 
