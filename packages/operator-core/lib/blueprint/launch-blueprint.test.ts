@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import {
   BUILTIN_LAUNCH_BLUEPRINTS,
   resolveLaunchTarget,
@@ -255,5 +255,63 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     } as any));
     const target = await resolveLaunchTarget('deploy', opts);
     expect(target.role).toBe('custom-role');
+  });
+});
+
+/**
+ * BENCH-SCOPED, FAIL-CLOSED OPUS PIN — the Queen half (P-033 Fix 2). A Queen wake for a
+ * BENCH hive (the bench flag set + an `xbq…` install slug) is fired with
+ * bodyExtra.spawnModel = the bench model, threaded to the /invoke route → her child's
+ * PAPERCUSP_SPAWN_MODEL. Scoped: a non-bench hive Queen (or no flag) is never pinned, so
+ * every other hive keeps its sonnet floor and no GLOBAL AGENT_MODELS opus is needed.
+ */
+describe('launch-blueprint — bench-scoped Queen opus pin (P-033 Fix 2)', () => {
+  const KEY = 'PAPERCUSP_XBENCH_BEE_DIRECTIVE';
+  const MODEL = 'PAPERCUSP_XBENCH_MODEL';
+  let savedKey: string | undefined;
+  let savedModel: string | undefined;
+  beforeEach(() => {
+    savedKey = process.env[KEY];
+    savedModel = process.env[MODEL];
+  });
+  afterEach(() => {
+    if (savedKey === undefined) delete process.env[KEY]; else process.env[KEY] = savedKey;
+    if (savedModel === undefined) delete process.env[MODEL]; else process.env[MODEL] = savedModel;
+  });
+
+  it('pins a bench-hive Queen wake to opus via bodyExtra.spawnModel (flag set + xbq slug)', async () => {
+    process.env[KEY] = 'bench directive';
+    delete process.env[MODEL];
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('hive', { installSlug: 'xbqabc123', workspaceId: 'ws_test', kickoff: 'survey' });
+    expect(fired).toHaveLength(1);
+    expect(fired[0]!.role).toBe('queen');
+    expect((fired[0]!.bodyExtra as Record<string, unknown>)?.spawnModel).toBe('opus:xhigh');
+  });
+
+  it('honors the PAPERCUSP_XBENCH_MODEL knob for the Queen pin', async () => {
+    process.env[KEY] = 'bench directive';
+    process.env[MODEL] = 'opus:high';
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('hive', { installSlug: 'xbqdef456', workspaceId: 'ws_test', kickoff: 'survey' });
+    expect((fired[0]!.bodyExtra as Record<string, unknown>)?.spawnModel).toBe('opus:high');
+  });
+
+  it('does NOT pin a NON-bench hive Queen (xbq slug but no bench flag → normal floor)', async () => {
+    delete process.env[KEY];
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('hive', { installSlug: 'xbqghi789', workspaceId: 'ws_test', kickoff: 'survey' });
+    expect((fired[0]!.bodyExtra as Record<string, unknown> | undefined)?.spawnModel).toBeUndefined();
+  });
+
+  it('does NOT pin a Queen whose slug is not a bench home (flag set but slug not xbq…)', async () => {
+    process.env[KEY] = 'bench directive';
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('hive', { installSlug: 'papercup', workspaceId: 'ws_test', kickoff: 'survey' });
+    expect((fired[0]!.bodyExtra as Record<string, unknown> | undefined)?.spawnModel).toBeUndefined();
   });
 });

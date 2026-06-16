@@ -24,7 +24,7 @@
  *   XBENCH_ARM=hive-realqueen  npx tsx _xbench_realqueen_compare.ts
  */
 import { readFileSync } from 'node:fs';
-import { bindRealQueenBacklogDriver, HIVE_REALQUEEN_ARM, FIFO_NOQUEEN_ARM } from './hive-backlog-realqueen';
+import { bindRealQueenBacklogDriver, dissolveBenchHive, HIVE_REALQUEEN_ARM, FIFO_NOQUEEN_ARM } from './hive-backlog-realqueen';
 import { runHiveBacklog, registerFleetPlanner } from './hive-backlog';
 import { planFifoPlacement } from './queen-ablation';
 import type { BenchTask } from './types';
@@ -37,6 +37,49 @@ const OUT_DIR = process.env.XBENCH_OUT_DIR ?? '/tmp/xbench-realqueen-out';
 const MAX_USD_PER_TASK = Number(process.env.XBENCH_MAX_USD ?? 10);
 const MAX_TOKENS_PER_TASK = Number(process.env.XBENCH_MAX_TOKENS ?? 4_000_000);
 const MAX_TASKS = process.env.XBENCH_MAX_TASKS ? Number(process.env.XBENCH_MAX_TASKS) : undefined;
+
+// TEARDOWN-ON-EXIT (P-033 Fix 4 — close the D-022 orphan-respin gap). Every hive this launcher creates is
+// registered here the instant it exists (the driver's onHiveCreated hook). A SIGTERM/SIGINT (e.g. the
+// Anthropic API rate-limit kill) or any process exit dissolves EVERY registered hive — full hive:dissolve
+// (Queen wake cleared + every bee subtree cancelled + the gymAutoloop/scoutRoutine learning loops torn
+// down), so no orphan re-spins opus after the launcher dies. The driver ALSO tears down on its normal/catch
+// path; this is the belt for a SIGKILL-class exit that bypasses the driver entirely. Idempotent.
+const createdHives = new Set<string>();
+let tearingDown = false;
+async function dissolveAllHives(reason: string): Promise<void> {
+  if (createdHives.size === 0) return;
+  console.warn(`[realqueen] teardown (${reason}): dissolving ${createdHives.size} bench hive(s): ${[...createdHives].join(', ')}`);
+  for (const slug of [...createdHives]) {
+    try {
+      await dissolveBenchHive(slug, WORKSPACE_ID);
+      createdHives.delete(slug);
+      console.warn(`[realqueen] teardown: dissolved ${slug}`);
+    } catch (e) {
+      console.warn(`[realqueen] teardown: dissolve ${slug} FAILED: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+function installTeardownHandlers(): void {
+  const onSignal = (sig: string) => {
+    void (async () => {
+      if (tearingDown) return;
+      tearingDown = true;
+      await dissolveAllHives(`signal ${sig}`);
+      process.exit(sig === 'SIGINT' ? 130 : 143);
+    })();
+  };
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  // A fatal uncaught error / rejection must also dissolve before the process dies.
+  process.on('uncaughtException', (e) => {
+    console.error('[realqueen] uncaughtException', e);
+    void (async () => { if (!tearingDown) { tearingDown = true; await dissolveAllHives('uncaughtException'); } process.exit(1); })();
+  });
+  process.on('unhandledRejection', (e) => {
+    console.error('[realqueen] unhandledRejection', e);
+    void (async () => { if (!tearingDown) { tearingDown = true; await dissolveAllHives('unhandledRejection'); } process.exit(1); })();
+  });
+}
 
 interface Row {
   instance_id: string;
@@ -104,6 +147,7 @@ function loadTasks(): BenchTask[] {
 }
 
 async function main() {
+  installTeardownHandlers(); // P-033 Fix 4 — dissolve every created hive on signal/fatal exit.
   const tasks = loadTasks();
   console.log(`[realqueen] arm=${ARM} ws=${WORKSPACE_ID} tasks=${tasks.length} port=${process.env.PAPERCUSP_HONO_PORT ?? '(default)'}`);
   console.log(`[realqueen] AGENT_MODELS=${process.env.AGENT_MODELS ?? '(unset — bees/queen fall to role floor!)'} AGENT_CMD=${process.env.AGENT_CMD ?? '(unset)'}`);
@@ -201,6 +245,12 @@ async function main() {
       const diff = a.diff ?? '';
       wf(`${OUT_DIR}/diffs-${ARM}/${a.instanceId}.diff`, diff, 'utf8');
       console.log(`[realqueen] collected ${a.instanceId}: diffBytes=${Buffer.byteLength(diff, 'utf8')} cost=$${(a.costUsd || 0).toFixed(2)} stop=${a.stopReason}`);
+    },
+    // Register the hive the instant it is minted so the SIGTERM/SIGINT/exit handler can dissolve it even on a
+    // rate-limit SIGKILL that bypasses the driver's own teardown (P-033 Fix 4, the D-022 orphan-respin gap).
+    onHiveCreated: (hiveHome) => {
+      createdHives.add(hiveHome);
+      console.log(`[realqueen] hive created + registered for teardown: ${hiveHome}`);
     },
   });
 

@@ -33,7 +33,7 @@
  *     through PG-direct.
  */
 
-import { getHarnessStore, type HarnessStoreOpts } from './corestore';
+import { getHarnessStore, closeHarnessStore, type HarnessStoreOpts } from './corestore';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp } from './peer-log';
 import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
@@ -1510,7 +1510,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (swarmHandle) {
         try { await swarmHandle.close(); } catch {}
       }
-      try { await store.close(); } catch {}
+      // EI-681: close via closeHarnessStore (NOT store.close()) so the closed
+      // Corestore is EVICTED from the getHarnessStore cache. A bare store.close()
+      // left the closed instance cached, so a re-boot (rebootHarness — used by the
+      // hive re-key on the owner-publish + joiner paths) got back the dead store
+      // and failed with "Corestore is closed", so the joiner never re-keyed onto
+      // the Hive-pubkey topic and federation never crossed. Eviction lets the
+      // re-boot open a fresh Corestore over the same on-disk data.
+      try { await closeHarnessStore(storeOpts); } catch {}
       recordBootEvent(opts.workspaceId, opts.harnessSlug, 'close');
     },
   };

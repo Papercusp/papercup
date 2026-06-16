@@ -452,6 +452,23 @@ export async function fireLaunchBlueprint(
     if (brief) fireInput = { ...input, bodyExtra: { ...input.bodyExtra, queenBrief: brief } };
   }
 
+  // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). Pin the BENCH-hive Queen to opus PER-WAKE — threaded
+  // as bodyExtra.spawnModel → the /invoke route → her child's PAPERCUSP_SPAWN_MODEL (the highest-precedence
+  // model channel). Scoped to a bench hive ONLY (the bench flag is set + the install slug is a bench home,
+  // `xbq…`), so this replaces the GLOBAL AGENT_MODELS queen=opus on :3170: every NON-bench hive's Queen keeps
+  // its sonnet floor, only the bench Queen is pinned. FAIL-CLOSED — the governor WAITS on a paused opus bucket
+  // (never substitutes) and the model-tiers floor-clamp never downgrades below the pin. Honors a caller-set
+  // bodyExtra.spawnModel + PAPERCUSP_XBENCH_MODEL (default opus:xhigh) as the one knob.
+  if (
+    target.role === 'queen' &&
+    fireInput.bodyExtra?.spawnModel == null &&
+    (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() &&
+    /^xbq/.test(input.installSlug)
+  ) {
+    const benchModel = (process.env.PAPERCUSP_XBENCH_MODEL ?? 'opus:xhigh').trim();
+    fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnModel: benchModel } };
+  }
+
   const fire = _fire ?? defaultFire;
   const fired = (await fire({ ...fireInput, ...target })) as LaunchSpawnInfo | undefined;
   return { ...target, spawn: fired ?? null };

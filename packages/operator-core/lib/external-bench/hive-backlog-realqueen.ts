@@ -212,9 +212,13 @@ export interface RealQueenBacklogOpts {
    *     instanceId → clonePath → baseCommit → member mapping so a standalone recovery pass can re-extract.
    *   - `onTaskCollected` fires per member as `collectAll` finishes it → persist that one task's diff +
    *     row immediately, so a kill during the (serial) collect loop keeps every diff already gathered.
+   *   - `onHiveCreated` fires the instant the shared hive home is minted (P-033 Fix 4, teardown-on-exit) →
+   *     the launcher registers the slug so its SIGTERM/SIGINT/exit handler can hive:dissolve it even when a
+   *     rate-limit SIGKILL bypasses the driver's normal/catch teardown — closing the D-022 orphan-respin gap.
    */
   onEnrolled?: (enrolled: RealQueenEnrolled) => void | Promise<void>;
   onTaskCollected?: (result: FleetTaskResult) => void | Promise<void>;
+  onHiveCreated?: (hiveHome: string) => void | Promise<void>;
 }
 
 /**
@@ -255,6 +259,15 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
       let peakConcurrentBees = 0;
       try {
         ({ hiveHome } = await ops.createHive({ runId: req.runId, arm: req.arm, workspaceId: ws }));
+        // Register the hive slug with the launcher the instant it exists (P-033 Fix 4) so a
+        // SIGKILL-bypassed teardown still dissolves it. Best-effort: a hook throw must not abort the drive.
+        if (opts.onHiveCreated && hiveHome) {
+          try {
+            await opts.onHiveCreated(hiveHome);
+          } catch {
+            /* best-effort teardown-registration hook — ignore */
+          }
+        }
 
         // ── enroll the WHOLE backlog as members of the ONE shared hive ──
         for (const task of req.backlog) {
@@ -405,6 +418,20 @@ async function collectAll(
 /** Bind the live real-Queen driver so `runHiveBacklog` is instant-go. `ops` defaults to the real binding. */
 export function bindRealQueenBacklogDriver(opts: RealQueenBacklogOpts, ops?: RealQueenBacklogOps): void {
   setHiveBacklogDriver(realQueenBacklogDriver(ops ?? realQueenBacklogOps(opts), opts));
+}
+
+/**
+ * FULL dissolve of a bench hive by slug (P-033 Fix 4, teardown-on-exit). Stops the Queen wake, cancels every
+ * live bee subtree (+ SIGTERMs the local processes), tears down the per-hive learning loops (the D-022
+ * orphan-respin source), deregisters the home harness and drops its schema — the exact closure
+ * `live-ops.dissolveHive` (now full) delivers. The LAUNCHER's SIGTERM/SIGINT/exit handler calls this for
+ * every hive it registered (`onHiveCreated`) so a rate-limit SIGKILL that bypasses the driver's normal/catch
+ * teardown still leaves NO orphan re-spinning opus. Idempotent + best-effort (a teardown error must not mask
+ * the exit). Lazy import keeps the fake-driven test from loading PG/registry.
+ */
+export async function dissolveBenchHive(hiveHome: string, workspaceId: string): Promise<void> {
+  const { liveHiveOps } = await import('../hive-eval/live-ops');
+  await liveHiveOps({ workspaceId }).dissolveHive({ hiveHome, workspaceId });
 }
 
 /* -------------------------------------------------------------------------- */

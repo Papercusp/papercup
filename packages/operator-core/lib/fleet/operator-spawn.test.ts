@@ -395,6 +395,63 @@ describe('spawnAgentInHarness — role + cap validation', () => {
   });
 });
 
+/**
+ * BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). Only a bench bee (the bench flag
+ * PAPERCUSP_XBENCH_BEE_DIRECTIVE set) gets pinned to opus PER-SPAWN via
+ * extraEnv.PAPERCUSP_SPAWN_MODEL — so the opus requirement is bench-scoped (a normal
+ * hive bee keeps its committed haiku floor; no GLOBAL AGENT_MODELS opus needed). The
+ * pin is the highest-precedence model channel buildInvokeOnce reads, so a paused opus
+ * bucket WAITS (fail-closed) and the floor-clamp never downgrades below it.
+ */
+describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
+  const KEY = 'PAPERCUSP_XBENCH_BEE_DIRECTIVE';
+  const MODEL = 'PAPERCUSP_XBENCH_MODEL';
+  let savedKey: string | undefined;
+  let savedModel: string | undefined;
+  beforeEach(() => {
+    savedKey = process.env[KEY];
+    savedModel = process.env[MODEL];
+  });
+  afterEach(() => {
+    if (savedKey === undefined) delete process.env[KEY]; else process.env[KEY] = savedKey;
+    if (savedModel === undefined) delete process.env[MODEL]; else process.env[MODEL] = savedModel;
+  });
+
+  it('pins a BENCH bee to opus:xhigh via PAPERCUSP_SPAWN_MODEL when the bench flag is set', async () => {
+    process.env[KEY] = 'claim + implement your lone bench feature';
+    delete process.env[MODEL]; // default → opus:xhigh
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    expect(res.ok).toBe(true);
+    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:xhigh');
+  });
+
+  it('honors the PAPERCUSP_XBENCH_MODEL knob', async () => {
+    process.env[KEY] = 'claim + implement your lone bench feature';
+    process.env[MODEL] = 'opus:high';
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    expect(res.ok).toBe(true);
+    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:high');
+  });
+
+  it('does NOT pin a bee to opus when the bench flag is unset (normal hive keeps its floor)', async () => {
+    delete process.env[KEY];
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    expect(res.ok).toBe(true);
+    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(env.PAPERCUSP_SPAWN_MODEL).toBeUndefined();
+  });
+
+  it('does NOT pin a non-bee role even under the bench flag (only bench bees are pinned)', async () => {
+    process.env[KEY] = 'claim + implement your lone bench feature';
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(env.PAPERCUSP_SPAWN_MODEL).toBeUndefined();
+  });
+});
+
 describe('un-substituted brief placeholder guard (EI-249 — dispatch-pack stampede)', () => {
   describe('findBriefPlaceholder (pure)', () => {
     it('flags the repo `{item}` template token and the historical `brief-NN` placeholder', () => {

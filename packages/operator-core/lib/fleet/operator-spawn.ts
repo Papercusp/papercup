@@ -826,8 +826,11 @@ export async function spawnAgentInHarness(
     // floor-clamp never downgrades below opus — a paused/throttled opus stalls the bench spawn, it never
     // silently drops to sonnet/haiku (the provable-opus-only requirement). Skip only if a TIER already
     // resolved an explicit per-spawn model (its floor-clamp already governs). Configurable via
-    // PAPERCUSP_XBENCH_MODEL (default opus:xhigh) so the pin is one knob, not scattered.
-    if (!spawnModelOverride) {
+    // PAPERCUSP_XBENCH_MODEL (default opus:xhigh) so the pin is one knob, not scattered. Skip only when an
+    // explicit per-spawn modelSpec/tier already resolved (spawnModelSpec) — line below applies it, its own
+    // floor-clamp governs. (This sets extraEnv; the spawnModelSpec block further down would override it, but
+    // we guard here to keep the intent explicit and avoid stamping then overwriting.)
+    if (!spawnModelSpec) {
       extraEnv.PAPERCUSP_SPAWN_MODEL = (process.env.PAPERCUSP_XBENCH_MODEL ?? 'opus:xhigh').trim();
     }
   }

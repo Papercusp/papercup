@@ -322,6 +322,15 @@ const invoke = defineTool({
     // QUEEN_BRIEF (the kickoff / Queen→bee overlay).
     const queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
     if (queenWakeBrief.trim()) env.QUEEN_WAKE_BRIEF = queenWakeBrief;
+    // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). A per-invocation model spec threaded by
+    // fireLaunchBlueprint (bodyExtra.spawnModel) for a BENCH-hive Queen wake → PAPERCUSP_SPAWN_MODEL,
+    // the highest-precedence model channel (invoke.ts resolveModel reads it FIRST, above AGENT_MODELS +
+    // the committed floor). This pins the bench Queen to opus WITHOUT a GLOBAL AGENT_MODELS opus entry on
+    // :3170 — so only the bench hive's Queen is pinned, every other hive keeps its sonnet floor. FAIL-CLOSED
+    // by the same two guarantees as the bee pin: the governor WAITS on a paused opus bucket (never
+    // substitutes) and the model-tiers floor-clamp never downgrades below the pinned model.
+    const spawnModelPin = typeof (body as any)?.spawnModel === 'string' ? ((body as any).spawnModel as string).trim() : '';
+    if (spawnModelPin) env.PAPERCUSP_SPAWN_MODEL = spawnModelPin;
     // overwatch-role-2026-06-15 B-04 (C-3): the overwatch's precomputed
     // OverwatchBrief (assembled by the system:overwatch-launch action). invoke.ts
     // hands it to buildPrompt({ overwatchBrief }), which renders it as a
