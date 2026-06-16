@@ -18,6 +18,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { isSafeRunId } from '../../../external-bench/preserved-runs';
 import { launchBenchRun, cancelBenchRun } from '../../../external-bench/run-launcher';
+import { gradeBenchRun } from '../../../external-bench/grade-runner';
 import { knownTaskSets } from '../../../external-bench/task-sets';
 
 // Per-task opus cost basis: the m3 real-Queen pass cost $33.98 over 11 tasks
@@ -119,4 +120,22 @@ const estimate = defineTool({
   },
 });
 
-export default [launch, cancel, estimate];
+const grade = defineTool({
+  method: 'POST',
+  path: '/external-bench/runs/:id/grade',
+  auth: 'loopback',
+  timeoutSec: 30,
+  async handler(_req, ctx) {
+    const id = ctx.params.id as string;
+    if (!isSafeRunId(id)) {
+      return Response.json({ ok: false, error: 'invalid_run_id' }, { status: 400 });
+    }
+    const res = await gradeBenchRun(id);
+    if ('error' in res) {
+      return Response.json({ ok: false, error: res.error }, { status: 404 });
+    }
+    return Response.json({ ok: true, runId: res.runId, grading: true });
+  },
+});
+
+export default [launch, cancel, estimate, grade];

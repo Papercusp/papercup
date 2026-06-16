@@ -12,7 +12,7 @@
  *                          throws an honest error rather than silently running a
  *                          partial set; wiring the full dataset is owner-gated).
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { BenchTask } from './types';
@@ -126,6 +126,19 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
     }
   }
   return Promise.resolve(tasks);
+}
+
+/** Write the grader's sample JSONL (the raw rows, filtered to `instanceIds` when
+ *  given) to `destPath` — the --raw_sample_path the official grader reads. */
+export function writeTaskSampleJsonl(taskSetId: string, instanceIds: string[] | undefined, destPath: string): number {
+  if (taskSetId === 'swe-bench-pro-full') {
+    throw new Error('swe-bench-pro-full sample is not provisioned on this host');
+  }
+  const rows = readJsonl(pilotTaskSetPath());
+  const want = instanceIds && instanceIds.length > 0 ? new Set(instanceIds) : null;
+  const selected = want ? rows.filter((r) => want.has(r.instance_id)) : rows;
+  writeFileSync(destPath, selected.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  return selected.length;
 }
 
 /** The task sets the launch form offers (id + label + count when known). */

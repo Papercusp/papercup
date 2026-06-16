@@ -50,6 +50,10 @@ import { loadBenchTaskSet } from './task-sets';
 interface ActiveRun {
   runId: string;
   workspaceId: string;
+  arm: string;
+  taskSetId: string;
+  taskIds?: string[];
+  startedAtMs: number;
   hiveSlugs: Set<string>;
   cancelled: boolean;
 }
@@ -162,7 +166,16 @@ export async function launchBenchRun(
     await upsertBenchRunTask(runId, { instanceId: t.instanceId, taskStatus: 'todo' }, scope);
   }
 
-  const active: ActiveRun = { runId, workspaceId: ws, hiveSlugs: new Set(), cancelled: false };
+  const active: ActiveRun = {
+    runId,
+    workspaceId: ws,
+    arm: input.arm,
+    taskSetId: input.taskSetId,
+    taskIds: input.taskIds,
+    startedAtMs: Date.now(),
+    hiveSlugs: new Set(),
+    cancelled: false,
+  };
   activeRuns.set(runId, active);
 
   // Wire the persister durability hooks onto the real-Queen driver.
@@ -222,6 +235,23 @@ async function executeDetached(
   try {
     const result = await run(req);
     if (active.cancelled) return; // cancelBenchRun already froze the status
+    // Write the on-disk snapshot (PreservedArmRun + diffs + sample) so the run is
+    // gradeable (P-010) + exportable (P-013), exactly like a CLI run. Best-effort.
+    if (result.taskResults.length > 0) {
+      try {
+        const { writeRunSnapshot } = await import('./run-snapshot');
+        writeRunSnapshot({
+          runId,
+          arm: active.arm,
+          result,
+          startedAtMs: active.startedAtMs,
+          taskSetId: active.taskSetId,
+          taskIds: active.taskIds,
+        });
+      } catch {
+        /* snapshot is best-effort — the PG store already has the live truth */
+      }
+    }
     await setBenchRunEvents(runId, result.coordEvents ?? [], scope);
     await recordRunCompletion(
       runId,

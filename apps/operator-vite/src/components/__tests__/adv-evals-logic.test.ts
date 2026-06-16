@@ -19,7 +19,7 @@ import {
 describe('EVAL_VIEWS', () => {
   it('is the subtab axis (L1 + the L2–L4 hive layer + the runs + launch views), external first', () => {
     expect([...EVAL_VIEWS]).toEqual([
-      'external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'launch',
+      'external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'launch', 'compare',
     ]);
   });
 });

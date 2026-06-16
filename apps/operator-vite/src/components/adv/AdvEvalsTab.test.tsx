@@ -56,6 +56,7 @@ vi.mock('@/app/eval-viz', () => ({
     { key: 'empty-diff', label: 'Non-empty diffs', status: 'warn', detail: 'some empty' },
   ],
   isRunValid: () => true,
+  validityCaveats: (sigs: Array<{ status: string }>) => sigs.filter((s) => s.status === 'warn' || s.status === 'fail'),
 }));
 
 // ── Radix Select → a native <select> so onChange is testable. ──
@@ -82,6 +83,8 @@ beforeEach(() => {
   nuqsState.evalView = 'external';
   nuqsState.evalSuite = null;
   nuqsState.evalRun = null;
+  nuqsState.compareA = null;
+  nuqsState.compareB = null;
   H.results = {};
 });
 afterEach(() => cleanup());
@@ -281,6 +284,38 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
     render(<AdvEvalsTab />);
     expect(screen.getByText(/A run is already in flight/)).toBeTruthy();
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+// The Compare subtab (P-011/P-012) — arm vs arm over the operational store.
+describe('<AdvEvalsTab> compare subtab (P-011/P-012)', () => {
+  const RUN = (id: string, arm: string) => ({ id, arm, taskSetId: '11-task-pilot', status: 'done', source: 'import' });
+  const DETAIL = {
+    id: 'm3', arm: 'hive-realqueen', taskSetId: '11-task-pilot', status: 'done', source: 'import', config: { cap: 5 },
+    run: { arm: 'hive-realqueen', coordEvents: [] },
+    perTask: [{ instanceId: 'instance_a', resolved: true }, { instanceId: 'instance_b', resolved: false }],
+    summary: { arm: 'hive-realqueen', gradedCount: 2, resolvedCount: 1, taskCount: 2, resolvedPct: 0.5, costUsd: 7, tokensIn: 1, tokensOut: 1, wallMs: 0, peakConcurrentBees: 1, nonEmptyDiffs: 1, coordEventCount: 0, recovered: true },
+    coordRates: { duplicationRate: 0, coordinationBreakdownRate: 0, misalignmentRate: 0, redundantWorkRate: 0, counts: { duplicate: 0, breakdown: 0, misalignment: 0, redundant: 0 }, coordinationActions: 0 },
+  };
+
+  it('asks for a second run when fewer than two exist', () => {
+    nuqsState.evalView = 'compare';
+    H.results['evals.benchRuns'] = { ...blank(), data: [RUN('m3', 'hive-realqueen')] };
+    render(<AdvEvalsTab />);
+    expect(screen.getByText('Need at least two runs to compare')).toBeTruthy();
+  });
+
+  it('renders the A/B pickers + the delta + caveats once two runs are picked', () => {
+    nuqsState.evalView = 'compare';
+    nuqsState.compareA = 'm3';
+    nuqsState.compareB = 'mini';
+    H.results['evals.benchRuns'] = { ...blank(), data: [RUN('m3', 'hive-realqueen'), RUN('mini', 'mini-swe-agent')] };
+    H.results['evals.benchRun'] = { ...blank(), data: [DETAIL] };
+    render(<AdvEvalsTab />);
+    expect(screen.getByLabelText('Baseline run (A)')).toBeTruthy();
+    expect(screen.getByLabelText('Treatment run (B)')).toBeTruthy();
+    // The honest-caveats panel is always present once both arms are picked (D-003).
+    expect(screen.getByText(/Honest caveats/)).toBeTruthy();
   });
 });
 

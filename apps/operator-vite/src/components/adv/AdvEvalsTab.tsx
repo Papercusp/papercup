@@ -66,6 +66,7 @@ import {
   armColor,
   computeValiditySignals,
   isRunValid,
+  validityCaveats,
   type FrontierPoint,
   type ComparePerTaskRow,
   type ThroughputArm,
@@ -164,7 +165,7 @@ export interface EvalRunRow {
 // these directly, so the UI reads them straight into the charts (no mapper, no
 // recompute). The canonical metric source remains @papercusp/bench-metrics.
 
-export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'launch'] as const;
+export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'launch', 'compare'] as const;
 type EvalView = (typeof EVAL_VIEWS)[number];
 
 // ── Bench runs (live, via @papercusp/sync) ───────────────────────────────────
@@ -226,6 +227,9 @@ interface PreservedRunDetail {
   // Lifecycle + launch config (present on store-backed BenchRunDetail; optional so
   // an imported run without them still renders).
   status?: string;
+  arm?: string;
+  taskSetId?: string;
+  source?: string;
   config?: { cap?: number | null } | null;
   run: { arm: string; startedAt?: string; coordEvents?: Array<{ kind: string; agent?: string; taskId?: string | null; detail?: string }> };
   perTask: PreservedResolvedTask[];
@@ -408,6 +412,16 @@ export default function AdvEvalsTab() {
             <Play size={13} aria-hidden />
             <span>Launch<em>run a benchmark</em></span>
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'compare'}
+            className={`pc-evals__subtab${view === 'compare' ? ' is-active' : ''}`}
+            onClick={() => void setEvalView('compare')}
+          >
+            <Scale size={13} aria-hidden />
+            <span>Compare<em>arm vs arm</em></span>
+          </button>
         </div>
         <div className="pc-evals__controlsright">
           {/* Suite picker — shared across views; hidden until suites exist. */}
@@ -457,6 +471,8 @@ export default function AdvEvalsTab() {
         <PreservedRunsView />
       ) : view === 'launch' ? (
         <LaunchRunView />
+      ) : view === 'compare' ? (
+        <CompareRunsView />
       ) : (
         <ExternalBenchmarksView
           suite={activeSuite}
@@ -1196,6 +1212,166 @@ function CoordTimeline({ events }: { events: Array<{ kind: string; agent?: strin
   );
 }
 
+// ── Compare view (P-011 / P-012) — arm vs arm, with the validity gate + caveats ──
+// Pick two runs over the SAME task set → resolved% delta + Frontier + per-task
+// Compare, fed from the operational store. D-003: if EITHER arm fails a validity
+// check, REFUSE to render a delta as a number — show "no valid delta" + why. The
+// honest-caveats panel auto-surfaces every per-arm + cross-arm caveat (P-012).
+function validitySignalsFor(d: PreservedRunDetail | null): ValiditySignal[] {
+  if (!d) return [];
+  return computeValiditySignals({
+    taskCount: d.summary.taskCount,
+    nonEmptyDiffs: d.summary.nonEmptyDiffs,
+    capValue: d.config?.cap ?? null,
+    recovered: d.summary.recovered,
+    seedCount: 1,
+  });
+}
+
+function crossArmCaveats(a: PreservedRunDetail, b: PreservedRunDetail): string[] {
+  const out: string[] = [];
+  if (a.taskSetId && b.taskSetId && a.taskSetId !== b.taskSetId) {
+    out.push(`Task sets differ (${a.taskSetId} vs ${b.taskSetId}) — this is NOT a same-task comparison; the delta is not apples-to-apples.`);
+  }
+  if (a.summary.taskCount !== b.summary.taskCount) {
+    out.push(`Task counts differ (${a.summary.taskCount} vs ${b.summary.taskCount}) — the arms ran over different-sized sets.`);
+  }
+  const capA = a.config?.cap ?? null;
+  const capB = b.config?.cap ?? null;
+  if (capA != null && capB != null && capA !== capB) {
+    out.push(`Fleet caps differ (${capA} vs ${capB}) — cap asymmetry favors the higher-cap arm on throughput.`);
+  }
+  if (a.source && b.source && a.source !== b.source) {
+    out.push(`Spawn paths differ (${a.source} vs ${b.source}) — spawn-path parity not held.`);
+  }
+  return out;
+}
+
+function CompareRunsView() {
+  const [aId, setAId] = useQueryState('compareA', parseAsString);
+  const [bId, setBId] = useQueryState('compareB', parseAsString);
+
+  const runsSync = useSyncQuery<BenchRunListEntry>({ queryName: 'evals.benchRuns', args: {} });
+  const runs = useMemo(() => (Array.isArray(runsSync.data) ? runsSync.data : []), [runsSync.data]);
+
+  const aSync = useSyncQuery<PreservedRunDetail>({ queryName: 'evals.benchRun', args: { runId: aId ?? '' }, enabled: Boolean(aId) });
+  const bSync = useSyncQuery<PreservedRunDetail>({ queryName: 'evals.benchRun', args: { runId: bId ?? '' }, enabled: Boolean(bId) });
+  const a = aSync.data?.[0] ?? null;
+  const b = bSync.data?.[0] ?? null;
+
+  if (runs.length < 2) {
+    return (
+      <EmptyCard
+        icon={<Scale size={20} aria-hidden />}
+        title="Need at least two runs to compare"
+        body="Run (or import) a second arm over the same task set — e.g. the SWE-bench Pro reference harness (mini-SWE-agent) on the same 11 tasks + opus — then compare it against the hive arm here."
+      />
+    );
+  }
+
+  const options = runs.map((r) => ({ value: r.id, label: `${r.id} · ${armLabel(r.arm)}` }));
+  const aSignals = validitySignalsFor(a);
+  const bSignals = validitySignalsFor(b);
+  const aValid = a ? isRunValid(aSignals) : true;
+  const bValid = b ? isRunValid(bSignals) : true;
+  const bothPicked = Boolean(a && b);
+  const validDelta = bothPicked && aValid && bValid;
+
+  const frontierPoints: FrontierPoint[] = [a, b]
+    .filter((d): d is PreservedRunDetail => Boolean(d))
+    .filter((d) => d.summary.resolvedPct != null)
+    .map((d) => ({ label: armLabel(d.arm ?? d.summary.arm), cost: d.summary.costUsd, score: d.summary.resolvedPct as number, arm: d.arm ?? d.summary.arm }));
+
+  // Per-task A-vs-B delta rows (baseline = A, treatment = B).
+  const perTaskRows: ComparePerTaskRow[] = bothPicked
+    ? (() => {
+        const am = new Map(a!.perTask.map((t) => [t.instanceId, t.resolved]));
+        const bm = new Map(b!.perTask.map((t) => [t.instanceId, t.resolved]));
+        const ids = [...new Set([...am.keys(), ...bm.keys()])].sort();
+        return ids.map((id) => ({
+          label: shortInstance(id),
+          baseline: am.get(id) == null ? null : am.get(id) ? 1 : 0,
+          treatment: bm.get(id) == null ? null : bm.get(id) ? 1 : 0,
+        }));
+      })()
+    : [];
+
+  const deltaPct = validDelta && a!.summary.resolvedPct != null && b!.summary.resolvedPct != null
+    ? (b!.summary.resolvedPct - a!.summary.resolvedPct) * 100
+    : null;
+
+  const caveats: string[] = [
+    ...(bothPicked ? crossArmCaveats(a!, b!) : []),
+    ...validityCaveats(aSignals).map((s: ValiditySignal) => `${armLabel(a!.arm ?? a!.summary.arm)} — ${s.label}: ${s.detail}`),
+    ...validityCaveats(bSignals).map((s: ValiditySignal) => `${armLabel(b!.arm ?? b!.summary.arm)} — ${s.label}: ${s.detail}`),
+  ];
+
+  return (
+    <section className="pc-evals__section">
+      <div className="pc-evals__controlsright" style={{ gap: 12 }}>
+        <label className="pc-evals__suitepick">
+          <span className="pc-evals__suitelabel">baseline (A)</span>
+          <Select ariaLabel="Baseline run (A)" value={aId || ''} onChange={(v: string) => void setAId(v)} triggerStyle={{ maxWidth: 260 }} options={options} />
+        </label>
+        <label className="pc-evals__suitepick">
+          <span className="pc-evals__suitelabel">treatment (B)</span>
+          <Select ariaLabel="Treatment run (B)" value={bId || ''} onChange={(v: string) => void setBId(v)} triggerStyle={{ maxWidth: 260 }} options={options} />
+        </label>
+      </div>
+
+      {!bothPicked ? (
+        <p className="pc-evals__empty">Pick a baseline (A) and a treatment (B) run to compare.</p>
+      ) : (
+        <>
+          {/* D-003 gate — a degenerate arm can never be shown as a clean delta. */}
+          {!validDelta ? (
+            <div className="pc-evals__caveat" role="alert" aria-label="no valid delta" style={{ marginBottom: 12 }}>
+              <strong>No valid delta.</strong> {!aValid ? `${armLabel(a!.arm ?? a!.summary.arm)} (A) fails a validity check. ` : ''}
+              {!bValid ? `${armLabel(b!.arm ?? b!.summary.arm)} (B) fails a validity check. ` : ''}
+              A delta is not shown as a number because at least one arm is degenerate — see the failing badges + caveats below.
+            </div>
+          ) : (
+            <div className="pc-evals__scoreboard" aria-label="resolved delta">
+              <FleetStat
+                arm={b!.arm ?? b!.summary.arm}
+                value={deltaPct == null ? '—' : `${deltaPct >= 0 ? '+' : ''}${Math.round(deltaPct * 10) / 10} pts`}
+                sub={`${armLabel(b!.arm ?? b!.summary.arm)} − ${armLabel(a!.arm ?? a!.summary.arm)}`}
+                hint="Resolved% delta (treatment − baseline) over the compared task set."
+              />
+              <FleetStat arm={a!.arm ?? a!.summary.arm} value={pctLabel(a!.summary.resolvedPct)} sub={`A · ${armLabel(a!.arm ?? a!.summary.arm)}`} hint="Baseline resolved%." />
+              <FleetStat arm={b!.arm ?? b!.summary.arm} value={pctLabel(b!.summary.resolvedPct)} sub={`B · ${armLabel(b!.arm ?? b!.summary.arm)}`} hint="Treatment resolved%." />
+            </div>
+          )}
+
+          {/* Validity badges for both arms. */}
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <div><div className="pc-evals__suitelabel">{armLabel(a!.arm ?? a!.summary.arm)} (A)</div><ValidityBadges signals={aSignals} /></div>
+            <div><div className="pc-evals__suitelabel">{armLabel(b!.arm ?? b!.summary.arm)} (B)</div><ValidityBadges signals={bSignals} /></div>
+          </div>
+
+          <div className="pc-evals__sectionhead"><h2>Cost / accuracy frontier</h2></div>
+          <Frontier points={frontierPoints} highlightArm={b!.arm ?? b!.summary.arm} caption="Each arm as a cost/accuracy point — up-and-left is better." emptyHint="No graded arms to plot." />
+
+          <div className="pc-evals__sectionhead"><h2>Per-task A vs B</h2></div>
+          <Compare baseline={armLabel(a!.arm ?? a!.summary.arm)} treatment={armLabel(b!.arm ?? b!.summary.arm)} perTask={perTaskRows} format={(n) => (n == null ? '—' : n ? '✓' : '✗')} emptyHint="No shared tasks." />
+
+          {/* Honest-caveats panel (P-012 / D-003) — a delta is never cleaner than its caveats. */}
+          <div className="pc-evals__sectionhead"><h2>Honest caveats<span style={{ color: 'var(--fg-dim)', fontWeight: 400 }}> · {caveats.length}</span></h2></div>
+          {caveats.length === 0 ? (
+            <p className="pc-evals__empty">No caveats — the arms are comparable on the surfaced dimensions.</p>
+          ) : (
+            <ul className="pc-evals__caveatlist" style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {caveats.map((c, i) => (
+                <li key={i} style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{c}</li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 // ── Preserved / live runs view — the real graded snapshots, now via @papercusp/sync ──
 
 function PreservedRunsView() {
@@ -1235,6 +1411,25 @@ function PreservedRunsView() {
     pollIntervalMs: isActive ? 4000 : undefined,
   });
   const live = liveSync.data?.[0] ?? null;
+
+  // Grade / re-grade trigger (P-010) — kicks the official grader; status streams
+  // back via the sync invalidation (grading → done).
+  const [grading, setGrading] = useState(false);
+  const [gradeErr, setGradeErr] = useState<string | null>(null);
+  async function gradeRun() {
+    if (!selId) return;
+    setGrading(true);
+    setGradeErr(null);
+    try {
+      const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(selId)}/grade`, { method: 'POST' });
+      const json = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !json.ok) setGradeErr(json.error || `grade failed (${res.status})`);
+    } catch (e) {
+      setGradeErr(String(e));
+    } finally {
+      setGrading(false);
+    }
+  }
 
   if (loading) return <p className="pc-evals__empty">Loading runs…</p>;
   if (listErr) {
@@ -1319,7 +1514,20 @@ function PreservedRunsView() {
             options={runs.map((r) => ({ value: r.id, label: `${r.id}${r.arm ? ` · ${armLabel(r.arm)}` : ''}` }))}
           />
         </label>
+        {selId ? (
+          <button
+            type="button"
+            onClick={() => void gradeRun()}
+            disabled={grading || detail?.status === 'grading'}
+            aria-label="Grade this run with the official grader"
+            title="Run the official swe_bench_pro_eval over this run's diffs (re-gradeable)."
+            style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg-dim)', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: grading ? 'wait' : 'pointer' }}
+          >
+            {detail?.status === 'grading' || grading ? 'Grading…' : 'Grade'}
+          </button>
+        ) : null}
       </div>
+      {gradeErr ? <div className="pc-evals__caveat" role="alert">{gradeErr}</div> : null}
 
       {detailErr ? (
         <EmptyCard icon={<Archive size={20} aria-hidden />} title="Couldn’t load this run" body={detailErr} />
