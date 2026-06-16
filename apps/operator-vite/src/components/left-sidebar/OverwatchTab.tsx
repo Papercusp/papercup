@@ -9,6 +9,7 @@
  * cross-monitor, via its Queen + Overwatch liveness cards). What's left here is
  * the overwatch's UNIQUE value, which can't live in a read-only dashboard:
  *   - the loop CONTROL/status (running / paused / pre-armed · cadence · liveness)
+ *     incl. a START / PAUSE toggle (mirrors QueenTab) → overwatch:start/pause
  *   - the ANOMALY → ACTION list (each detected anomaly + the NUDGE / OBSERVE /
  *     ESCALATE it would take — the D-001 nudge-not-replace boundary, straight off
  *     `anomaly.suggestedAction`).
@@ -19,9 +20,10 @@
  * at the sidebar (LeftSidebar hides the tab when off); this also renders a clear
  * dark/empty state defensively.
  */
+import { useState } from 'react';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, Eye } from 'lucide-react';
+import { AlertTriangle, Eye, Pause, Play } from 'lucide-react';
 import type {
   Anomaly,
   AnomalyActionType,
@@ -53,6 +55,31 @@ function whenLabel(iso: string | null): string {
   return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/**
+ * Fire an overwatch loop-control tool through the gated/audited run-tool bridge
+ * (mirrors hive-control.ts `runHiveControl`, the Queen-tab path). The tool persists
+ * `overwatch_started` and fires `notifySyncInvalidate('overwatch.controlState')`, so
+ * this panel refreshes live after the toggle. Throws on failure so the caller can
+ * surface it inline.
+ */
+async function runOverwatchControl(tool: 'overwatch:start' | 'overwatch:pause', harness: string | null): Promise<void> {
+  const res = await fetch('/api/agent-mcp/run-tool', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: tool, args: harness ? { harness } : {}, confirmed: true }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    message?: string;
+    result?: { content?: Array<{ text?: string }> };
+  };
+  if (!res.ok || !body.ok) throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
+  const text = body.result?.content?.[0]?.text;
+  const payload = text ? (JSON.parse(text) as { ok?: boolean; message?: string }) : { ok: true };
+  if (payload.ok === false) throw new Error(payload.message ?? `${tool} refused`);
+}
+
 export default function OverwatchTab({ active }: { active: boolean }) {
   const snap = useSyncQuery<OverwatchBrief>({ queryName: 'overwatch.snapshot', args: {}, staleTime: 15_000 });
   const ctrl = useSyncQuery<OverwatchControlState>({ queryName: 'overwatch.controlState', args: {}, staleTime: 15_000 });
@@ -60,25 +87,123 @@ export default function OverwatchTab({ active }: { active: boolean }) {
     'owsev',
     parseAsStringEnum<SevFilter>([...SEV_FILTERS]).withDefault('all'),
   );
+  const [busy, setBusy] = useState(false);
+  const [ctrlErr, setCtrlErr] = useState<string | null>(null);
 
   const brief = active ? snap.data?.[0] : undefined;
-  const control = ctrl.data?.[0];
+  const control = active ? ctrl.data?.[0] : undefined;
 
-  if (!brief) {
+  // Render the control header whenever we have EITHER the control-state or a brief —
+  // critically so a PAUSED overwatch (which has no live brief) still shows its Start
+  // button. Only the genuinely-unavailable case (neither) shows the empty placeholder.
+  if (!control && !brief) {
     return (
       <div className="pc-owsb pc-owsb--empty">
         <div className="pc-owsb__placeholder">
           {snap.error
             ? `Overwatch unavailable — ${String(snap.error)}`
-            : snap.loading
+            : snap.loading || ctrl.loading
               ? 'Loading the overwatch brief…'
-              : 'Overwatch is paused/dark. The full system health is on the Health tab.'}
+              : 'Overwatch is dark. The full system health is on the Health tab.'}
         </div>
         <OverwatchStyles />
       </div>
     );
   }
 
+  const running = !!control?.started && !!control?.flagEnabled;
+  const preArmed = !!control?.started && !control?.flagEnabled;
+  const isStarted = !!control?.started;
+  const tone = running ? 'good' : preArmed ? 'warn' : 'mute';
+  const stateLabel = running ? 'Running' : preArmed ? 'Pre-armed' : 'Paused';
+  const cadenceMin = control ? Math.round(control.cadenceSec / 60) : null;
+  const slug = control?.hiveSlug ?? brief?.hiveSlug ?? null;
+
+  const toggle = async () => {
+    setBusy(true);
+    setCtrlErr(null);
+    try {
+      await runOverwatchControl(isStarted ? 'overwatch:pause' : 'overwatch:start', slug);
+    } catch (e) {
+      setCtrlErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="pc-owsb">
+      {/* Control / status header — status + START/PAUSE toggle (mirrors QueenTab) */}
+      <header className="pc-owsb__bar" data-tone={tone}>
+        <span className={`pc-owsb__dot pc-owsb__dot--${tone}`} aria-hidden />
+        <Eye size={14} aria-hidden />
+        <span className="pc-owsb__title">{stateLabel}</span>
+        {slug && (
+          <span className="pc-owsb__hive" title="Supervised hive">{slug}</span>
+        )}
+        <button
+          type="button"
+          className="pc-owsb__toggle"
+          data-on={isStarted}
+          disabled={busy}
+          onClick={() => void toggle()}
+          style={slug ? undefined : { marginLeft: 'auto' }}
+          title={isStarted ? 'Pause the overwatch supervisor (overwatch:pause)' : 'Start the overwatch supervisor (overwatch:start)'}
+          aria-label={isStarted ? 'Pause overwatch' : 'Start overwatch'}
+        >
+          {busy ? (
+            '…'
+          ) : isStarted ? (
+            <>
+              <Pause size={11} aria-hidden /> Pause
+            </>
+          ) : (
+            <>
+              <Play size={11} aria-hidden /> Start
+            </>
+          )}
+        </button>
+      </header>
+      <div className="pc-owsb__meta">
+        {cadenceMin != null && <span>cadence {cadenceMin}m</span>}
+        <span>{control?.armed ? `next ${whenLabel(control.nextWakeAt)}` : 'no wake armed'}</span>
+        <span title="Last overwatch wake">woke {ageLabel(control?.staleForMs ?? null)}</span>
+      </div>
+
+      {ctrlErr && <div className="pc-owsb__err">Control failed — {ctrlErr}</div>}
+      {preArmed && (
+        <div className="pc-owsb__hint">
+          Started, but the <strong>papercusp-overwatch</strong> flag is OFF — pre-armed, not looping. Flip it on at /admin/features.
+        </div>
+      )}
+
+      {brief ? (
+        <OverwatchAnomalies brief={brief} sevFilter={sevFilter} setSevFilter={setSevFilter} />
+      ) : (
+        <div className="pc-owsb__placeholder">
+          Overwatch is paused — no live brief. Start it above to resume system-health
+          supervision; full health is always on the <strong>Health</strong> tab.
+        </div>
+      )}
+
+      <div className="pc-owsb__footnote">
+        Full system health → the <strong>Health</strong> tab. This panel is the supervisor's actions.
+      </div>
+
+      <OverwatchStyles />
+    </div>
+  );
+}
+
+function OverwatchAnomalies({
+  brief,
+  sevFilter,
+  setSevFilter,
+}: {
+  brief: OverwatchBrief;
+  sevFilter: SevFilter;
+  setSevFilter: (value: SevFilter | null) => unknown;
+}) {
   const anomalies = [...brief.anomalies]
     .map((a, idx) => ({ a, idx }))
     .sort((x, y) => SEV_RANK[x.a.severity] - SEV_RANK[y.a.severity] || x.idx - y.idx)
@@ -87,72 +212,42 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   const crit = brief.anomalies.filter((a) => a.severity === 'critical').length;
   const warn = brief.anomalies.filter((a) => a.severity === 'warning').length;
 
-  const running = !!control?.started && !!control?.flagEnabled;
-  const preArmed = !!control?.started && !control?.flagEnabled;
-  const tone = running ? 'good' : preArmed ? 'warn' : 'mute';
-  const stateLabel = running ? 'Running' : preArmed ? 'Pre-armed' : 'Paused';
-  const cadenceMin = control ? Math.round(control.cadenceSec / 60) : null;
-
   return (
-    <div className="pc-owsb">
-      {/* Control / status header */}
-      <header className="pc-owsb__bar" data-tone={tone}>
-        <span className={`pc-owsb__dot pc-owsb__dot--${tone}`} aria-hidden />
-        <Eye size={14} aria-hidden />
-        <span className="pc-owsb__title">{stateLabel}</span>
-        {(control?.hiveSlug ?? brief.hiveSlug) && (
-          <span className="pc-owsb__hive" title="Supervised hive">{control?.hiveSlug ?? brief.hiveSlug}</span>
-        )}
-      </header>
-      <div className="pc-owsb__meta">
-        {cadenceMin != null && <span>cadence {cadenceMin}m</span>}
-        <span>{control?.armed ? `next ${whenLabel(control.nextWakeAt)}` : 'no wake armed'}</span>
-        <span title="Last overwatch wake">woke {ageLabel(control?.staleForMs ?? null)}</span>
-      </div>
-
-      {/* Anomalies → actions */}
-      <section className="pc-owsb__section">
-        <div className="pc-owsb__section-head">
-          <AlertTriangle size={12} aria-hidden />
-          <span className="pc-owsb__section-title">Anomalies</span>
-          <div className="pc-owsb__counts">
-            {crit > 0 && <span className="pc-owsb__count pc-owsb__count--bad">{crit} crit</span>}
-            {warn > 0 && <span className="pc-owsb__count pc-owsb__count--warn">{warn} warn</span>}
-            {crit === 0 && warn === 0 && <span className="pc-owsb__count pc-owsb__count--good">clear</span>}
-          </div>
+    <section className="pc-owsb__section">
+      <div className="pc-owsb__section-head">
+        <AlertTriangle size={12} aria-hidden />
+        <span className="pc-owsb__section-title">Anomalies</span>
+        <div className="pc-owsb__counts">
+          {crit > 0 && <span className="pc-owsb__count pc-owsb__count--bad">{crit} crit</span>}
+          {warn > 0 && <span className="pc-owsb__count pc-owsb__count--warn">{warn} warn</span>}
+          {crit === 0 && warn === 0 && <span className="pc-owsb__count pc-owsb__count--good">clear</span>}
         </div>
-        <div className="pc-owsb__filters" role="group" aria-label="Filter anomalies by severity">
-          {SEV_FILTERS.map((f) => (
-            <button
-              key={f}
-              type="button"
-              className={`pc-owsb__chip${sevFilter === f ? ' pc-owsb__chip--on' : ''}`}
-              aria-pressed={sevFilter === f}
-              onClick={() => void setSevFilter(f === 'all' ? null : f)}
-            >
-              {f}
-            </button>
+      </div>
+      <div className="pc-owsb__filters" role="group" aria-label="Filter anomalies by severity">
+        {SEV_FILTERS.map((f) => (
+          <button
+            key={f}
+            type="button"
+            className={`pc-owsb__chip${sevFilter === f ? ' pc-owsb__chip--on' : ''}`}
+            aria-pressed={sevFilter === f}
+            onClick={() => void setSevFilter(f === 'all' ? null : f)}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+      {brief.anomalies.length === 0 ? (
+        <div className="pc-owsb__healthy">No anomalies — system healthy.</div>
+      ) : anomalies.length === 0 ? (
+        <div className="pc-owsb__placeholder">No {sevFilter} anomalies.</div>
+      ) : (
+        <ul className="pc-owsb__anoms">
+          {anomalies.map((a, i) => (
+            <AnomalyRow key={`${a.kind}-${a.subject}-${i}`} anomaly={a} />
           ))}
-        </div>
-        {brief.anomalies.length === 0 ? (
-          <div className="pc-owsb__healthy">No anomalies — system healthy.</div>
-        ) : anomalies.length === 0 ? (
-          <div className="pc-owsb__placeholder">No {sevFilter} anomalies.</div>
-        ) : (
-          <ul className="pc-owsb__anoms">
-            {anomalies.map((a, i) => (
-              <AnomalyRow key={`${a.kind}-${a.subject}-${i}`} anomaly={a} />
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <div className="pc-owsb__footnote">
-        Full system health → the <strong>Health</strong> tab. This panel is the supervisor's actions.
-      </div>
-
-      <OverwatchStyles />
-    </div>
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -193,8 +288,19 @@ function OverwatchStyles() {
       .pc-owsb__hive {
         margin-left: auto; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-mute, #7f9bb4);
         padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px;
       }
+      .pc-owsb__toggle {
+        margin-left: 6px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0;
+        font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+        padding: 3px 9px; border-radius: 999px; color: var(--fg, #e7f7ff);
+        border: 1px solid rgba(125, 211, 252, 0.3); background: rgba(255, 255, 255, 0.05);
+      }
+      .pc-owsb__toggle:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+      .pc-owsb__toggle:disabled { opacity: 0.55; cursor: default; }
+      .pc-owsb__toggle[data-on='true'] { color: #fcd34d; border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.1); }
+      .pc-owsb__toggle[data-on='false'] { color: #6ee7b7; border-color: rgba(52, 211, 153, 0.5); background: rgba(52, 211, 153, 0.1); }
+      .pc-owsb__toggle svg { display: block; }
       .pc-owsb__dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
       .pc-owsb__dot--good { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
       .pc-owsb__dot--warn { background: #fbbf24; box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
@@ -203,6 +309,15 @@ function OverwatchStyles() {
         display: flex; flex-wrap: wrap; gap: 3px 10px; padding: 0 2px;
         font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums;
       }
+      .pc-owsb__err {
+        font-size: 10.5px; line-height: 1.35; color: #fca5a5; padding: 6px 9px; border-radius: 8px;
+        border: 1px solid rgba(244, 63, 94, 0.4); background: rgba(244, 63, 94, 0.08);
+      }
+      .pc-owsb__hint {
+        font-size: 10px; line-height: 1.4; color: #fcd34d; padding: 6px 9px; border-radius: 8px;
+        border: 1px solid rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.07);
+      }
+      .pc-owsb__hint strong { color: #fde68a; font-weight: 760; }
 
       .pc-owsb__section {
         display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 10px;

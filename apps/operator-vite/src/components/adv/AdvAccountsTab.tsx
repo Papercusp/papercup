@@ -44,6 +44,7 @@ import {
   X,
   Copy,
   ExternalLink,
+  Zap,
 } from 'lucide-react';
 import './AdvAccountsTab.css';
 
@@ -398,6 +399,50 @@ export default function AdvAccountsTab() {
     }
   }, []);
 
+  // P-004: the owner's session-now account override (forced allow-list + exclude).
+  // Read once via GET; each write returns the new override (no refetch needed). The
+  // POST also invalidates accounts.pool, so the cards refresh. Fail-soft: a read error
+  // just shows no override (the no-restriction default).
+  const [override, setOverride] = useState<{ forcedAccounts: string[]; excludeAccounts: string[] } | null>(null);
+  const [overrideBusy, setOverrideBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const res = await fetch('/api/admin/deploy-accounts/session-override');
+        const j = (await res.json()) as { ok?: boolean; override?: { forcedAccounts: string[]; excludeAccounts: string[] } };
+        if (live && j?.ok && j.override) setOverride(j.override);
+      } catch {
+        /* fail-soft — no override shown */
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const patchOverride = useCallback(async (patch: { forcedAccounts?: string[]; excludeAccounts?: string[]; clear?: boolean }) => {
+    setOverrideBusy(true);
+    try {
+      const { ok, j } = await postJson('/api/admin/deploy-accounts/session-override', patch);
+      if (!ok || !j.ok) throw new Error(j.error || 'override failed');
+      setOverride((j.override as { forcedAccounts: string[]; excludeAccounts: string[] }) ?? { forcedAccounts: [], excludeAccounts: [] });
+      toast.success(patch.clear ? 'Cleared the account override' : 'Updated the account override');
+    } catch (e) {
+      toast.error(`Override failed: ${errMsg(e)}`);
+    } finally {
+      setOverrideBusy(false);
+    }
+  }, []);
+
+  const forced = new Set(override?.forcedAccounts ?? []);
+  const excluded = new Set(override?.excludeAccounts ?? []);
+  const overrideActive = forced.size > 0 || excluded.size > 0;
+  const toggleForce = (id: string) =>
+    void patchOverride({ forcedAccounts: forced.has(id) ? [...forced].filter((x) => x !== id) : [...forced, id] });
+  const toggleExclude = (id: string) =>
+    void patchOverride({ excludeAccounts: excluded.has(id) ? [...excluded].filter((x) => x !== id) : [...excluded, id] });
+
   return (
     <div className="pc-advacct">
       <header className="pc-advacct__header">
@@ -416,6 +461,34 @@ export default function AdvAccountsTab() {
       </header>
 
       {addOpen && <AddAccountPanel onClose={() => void setAddOpen(false)} />}
+
+      {overrideActive && (
+        <div className="pc-advacct__ovrbanner" role="status">
+          <Zap size={14} aria-hidden />
+          <div className="pc-advacct__ovrtext">
+            <strong>Session override active.</strong>{' '}
+            {forced.size > 0 && (
+              <>
+                Fleet may use only:{' '}
+                {[...forced].map((id) => (
+                  <span key={id} className="pc-advacct__chip pc-advacct__chip--accent">{id}</span>
+                ))}{' '}
+              </>
+            )}
+            {excluded.size > 0 && (
+              <>
+                Excluding:{' '}
+                {[...excluded].map((id) => (
+                  <span key={id} className="pc-advacct__chip pc-advacct__chip--warn">{id}</span>
+                ))}
+              </>
+            )}
+          </div>
+          <button type="button" className="pc-advacct__btn" disabled={overrideBusy} onClick={() => void patchOverride({ clear: true })}>
+            Clear override
+          </button>
+        </div>
+      )}
 
       {error ? (
         <div className="pc-advacct__empty pc-advacct__empty--err">Failed to load the account pool: {String(error.message ?? error)}</div>
@@ -548,6 +621,28 @@ export default function AdvAccountsTab() {
                     </div>
                   ) : null}
                 </dl>
+
+                <div className="pc-advacct__routing">
+                  <span className="pc-advacct__routinglbl">routing</span>
+                  <button
+                    type="button"
+                    className={`pc-advacct__rbtn${forced.has(a.id) ? ' is-forced' : ''}`}
+                    disabled={overrideBusy}
+                    onClick={() => toggleForce(a.id)}
+                    title={forced.has(a.id) ? 'Remove from the forced allow-list' : 'Force the fleet to use only this account (allow-list)'}
+                  >
+                    {forced.has(a.id) ? '✓ Forced' : 'Force'}
+                  </button>
+                  <button
+                    type="button"
+                    className={`pc-advacct__rbtn${excluded.has(a.id) ? ' is-excluded' : ''}`}
+                    disabled={overrideBusy}
+                    onClick={() => toggleExclude(a.id)}
+                    title={excluded.has(a.id) ? 'Stop excluding this account' : 'Exclude this account from fleet selection'}
+                  >
+                    {excluded.has(a.id) ? '✓ Excluded' : 'Exclude'}
+                  </button>
+                </div>
 
                 {a.liveBuckets.length > 0 && (
                   <button

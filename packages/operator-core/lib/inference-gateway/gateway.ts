@@ -177,6 +177,25 @@ export function parseUnifiedWindow(h: Record<string, string | undefined>): { uti
   return out;
 }
 
+/**
+ * Parse the unified-7d (weekly) rolling budget window from an upstream response
+ * (`anthropic-ratelimit-unified-7d-*`) — the LONGER Claude Max limit alongside the 5h.
+ * Sibling of parseUnifiedWindow: `utilization7d` is a fraction (1.0 = 100%); `windowResetAt7d`
+ * is epoch ms. Surfaced read-only on the Accounts tab (accounts-pool-tab P-006); not (yet) a
+ * routing input — the 5h window remains the drain selector's signal.
+ */
+export function parseUnified7dWindow(h: Record<string, string | undefined>): { utilization7d?: number; windowResetAt7d?: number } {
+  const out: { utilization7d?: number; windowResetAt7d?: number } = {};
+  const u = h['anthropic-ratelimit-unified-7d-utilization'];
+  if (u !== undefined) {
+    const n = Number(u);
+    if (Number.isFinite(n) && n >= 0) out.utilization7d = n;
+  }
+  const r = h['anthropic-ratelimit-unified-7d-reset'];
+  if (r && /^\d+$/.test(r)) out.windowResetAt7d = Number(r) * 1000;
+  return out;
+}
+
 function headersToObject(h: Headers): Record<string, string | undefined> {
   const o: Record<string, string | undefined> = {};
   h.forEach((v, k) => {

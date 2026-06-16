@@ -130,10 +130,21 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
   // the escalation's severity folds into `risk_tier`, and the alert-vs-decision
   // tier derives from THAT — one scale, not two. blocker/question (critical/high)
   // → Decision (a genuine human call: coord:ask-owner + coord:escalate(blocker)
-  // land here); advisory (low) → Alert (surface, don't demand). Behavior-identical
-  // to the prior direct `severity === 'advisory'` test.
+  // land here); advisory (low) → Alert (surface, don't demand).
   const riskTier = severityToRiskTier(e.severity);
-  const tier: AttentionTier = riskTierIsDecision(riskTier) ? 'decision' : 'alert';
+  // queue-pending-accuracy D-005: a SYSTEM-emitted escalation with no options is
+  // OPERATIONAL (placement-watchdog cursed placements, aging sweeps, breakers) —
+  // an alert to surface, NOT a human decision-with-choice. Genuine decisions come
+  // from agents (coord:escalate / coord:ask-owner) and either come from a real
+  // sender or carry options to pick. Surfacing every cursed placement as a
+  // "waiting on you" decision flooded the queue (~7000+ open, 135 ever resolved);
+  // the derived placements.cursed health metric is the proper rollup.
+  const operationalSystem = e.from === 'system' && options.length === 0;
+  const tier: AttentionTier = operationalSystem
+    ? 'alert'
+    : riskTierIsDecision(riskTier)
+      ? 'decision'
+      : 'alert';
   const needsHuman = needsHumanForTier(tier);
   return {
     id: `coord-escalation:${e.msgId}`,

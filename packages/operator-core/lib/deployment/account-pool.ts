@@ -83,6 +83,15 @@ export interface AccountRateState {
   windowResetAt?: number;
   /** Epoch ms `utilization`/`windowResetAt` were last observed — lets the selector ignore stale budget. */
   utilizationAt?: number;
+  /**
+   * Unified-7d (weekly) rolling utilization (a fraction; 1.0 = 100%) from
+   * `anthropic-ratelimit-unified-7d-utilization` — the LONGER Claude Max limit alongside the 5h.
+   * A read-only surface signal for the Accounts tab (accounts-pool-tab P-006); NOT a routing input
+   * (the 5h window remains the drain selector's signal). `undefined` until observed.
+   */
+  utilization7d?: number;
+  /** Epoch ms the unified-7d window resets (`anthropic-ratelimit-unified-7d-reset`). `undefined` until observed. */
+  windowResetAt7d?: number;
 }
 
 export interface AccountPool {
@@ -235,7 +244,7 @@ export function recordAccountReset(pool: AccountPool, id: string): AccountPool {
 export function recordAccountWindow(
   pool: AccountPool,
   id: string,
-  w: { utilization?: number; windowResetAt?: number },
+  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number },
   now: number,
 ): AccountPool {
   return {
@@ -245,6 +254,8 @@ export function recordAccountWindow(
         ...a.rate,
         utilization: w.utilization ?? a.rate.utilization,
         windowResetAt: w.windowResetAt ?? a.rate.windowResetAt,
+        utilization7d: w.utilization7d ?? a.rate.utilization7d,
+        windowResetAt7d: w.windowResetAt7d ?? a.rate.windowResetAt7d,
         utilizationAt: now,
       };
       return { ...a, rate };

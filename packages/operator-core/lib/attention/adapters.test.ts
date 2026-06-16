@@ -77,6 +77,32 @@ describe('P-013 — escalation severity folds into risk_tier', () => {
       expect(a.tier).toBe(expected);
     }
   });
+
+  it('D-005: a SYSTEM-emitted escalation with no options is an ALERT, not a decision (cursed-placement flood)', () => {
+    // placement-watchdog cursed placements escalate from='system' as a blocker but
+    // carry NO options — operational, not a human decision. Without this, ~7000 open
+    // cursed-placement escalations flooded the "waiting on you" decision tier.
+    const sys = coordEscalationToAttention({
+      msgId: 'm-sys',
+      severity: 'blocker',
+      summary: 'Cursed placement: F-X failed 301×',
+      from: 'system',
+    });
+    expect(sys.tier).toBe('alert');
+    expect(sys.needsHuman).toBe(false);
+    // A system escalation that DOES carry a choice stays a decision.
+    const sysChoice = coordEscalationToAttention({
+      msgId: 'm-sys2',
+      severity: 'blocker',
+      summary: 's',
+      from: 'system',
+      options: [{ id: 'a', label: 'A' }],
+    });
+    expect(sysChoice.tier).toBe('decision');
+    // A genuine agent escalation (non-system) is unchanged → decision.
+    const agent = coordEscalationToAttention({ msgId: 'm-ag', severity: 'blocker', summary: 's', from: 'bee-7' });
+    expect(agent.tier).toBe('decision');
+  });
 });
 
 describe('planItemToAttention — tier + needsHuman (D-001/D-002/D-006)', () => {

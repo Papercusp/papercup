@@ -10,7 +10,7 @@
  * on the Health tab) — so we also assert those panel labels no longer render.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const H = vi.hoisted(() => ({
   snapshotResult: { data: [] as unknown[], loading: false, error: null as unknown },
@@ -102,5 +102,30 @@ describe('OverwatchTab (sidebar)', () => {
   it('renders the dark/empty state when inactive or no brief has arrived', () => {
     render(<OverwatchTab active={false} />);
     expect(screen.getByText(/Health tab/)).toBeTruthy();
+  });
+
+  it('renders a Pause button when started + fires overwatch:pause on click', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<OverwatchTab active />);
+    fireEvent.click(screen.getByRole('button', { name: 'Pause overwatch' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(url).toBe('/api/agent-mcp/run-tool');
+    const sent = JSON.parse(init.body) as { name: string; args: { harness?: string } };
+    expect(sent.name).toBe('overwatch:pause');
+    expect(sent.args.harness).toBe('papercup-hive');
+    vi.unstubAllGlobals();
+  });
+
+  it('shows a Start button + header even when paused (started=false, no brief)', () => {
+    H.controlResult = { data: [{ ...control, started: false }], loading: false, error: null };
+    H.snapshotResult = { data: [], loading: false, error: null };
+    render(<OverwatchTab active />);
+    expect(screen.getByText('Paused')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start overwatch' })).toBeTruthy();
   });
 });
