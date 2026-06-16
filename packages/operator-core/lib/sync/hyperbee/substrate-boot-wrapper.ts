@@ -29,7 +29,7 @@ export interface BootSubstrateResult {
   results: Array<{
     workspaceId: string;
     harnessSlug: string;
-    state: 'booted' | 'alreadyBooted' | 'failed';
+    state: 'booted' | 'already-booted' | 'failed';
     error?: string;
   }>;
   usedSidecar: boolean;

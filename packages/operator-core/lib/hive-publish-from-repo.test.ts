@@ -43,7 +43,7 @@ function fakes(over: Partial<PublishCreatedHiveDeps> = {}) {
     published: [] as Record<string, unknown>[],
     listings: [] as Record<string, unknown>[],
     localBindings: [] as Record<string, unknown>[],
-    rebooted: [] as Array<{ ws: string; slug: string }>,
+    rekeyed: [] as Array<{ ws: string; slug: string }>,
   };
   const deps: PublishCreatedHiveDeps = {
     saveMeta: async (meta) => {
@@ -349,7 +349,7 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
   });
 
   it('a reboot failure (sync throw or async reject) NEVER fails the publish, and never skips a later member', async () => {
-    const rebooted: string[] = [];
+    const rekeyed: string[] = [];
     const { deps } = fakes({
       loadRegistry: async () => ({
         projects: [
@@ -368,13 +368,13 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
       // swallow it); 'extra' must still be rebooted and the publish must succeed.
       rekeyHarness: (_ws: string, slug: string) => {
         if (slug === 'shop') throw new Error('boom (sync)');
-        rebooted.push(slug);
+        rekeyed.push(slug);
         return Promise.resolve();
       },
     });
     const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
     expect(out.announced).toBe(true); // publish unaffected by the reboot throw
-    expect(rebooted).toEqual(['extra']); // the throw on 'shop' did not skip 'extra'
+    expect(rekeyed).toEqual(['extra']); // the throw on 'shop' did not skip 'extra'
   });
 
   it('async-rejecting reboot does not fail the publish', async () => {
