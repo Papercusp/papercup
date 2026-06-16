@@ -22,7 +22,8 @@
  * The only interactive state is the transient per-row "reverting" lifecycle
  * (useState — not user-meaningful, so not nuqs).
  */
-import { type CSSProperties, useMemo, useState } from 'react';
+import { type CSSProperties, type ReactNode, useMemo, useState } from 'react';
+import { parseAsInteger, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 
@@ -117,6 +118,85 @@ function relativeTime(iso: string): string {
   return `${Math.round(hr / 24)}d ago`;
 }
 
+function DetailField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', gap: 8, fontSize: 12 }}>
+      <span style={{ flex: '0 0 110px', color: 'var(--fg-mute)' }}>{label}</span>
+      <span style={{ flex: '1 1 auto', minWidth: 0, color: 'var(--fg)', wordBreak: 'break-word' }}>{children}</span>
+    </div>
+  );
+}
+
+/** Expanded detail for a selected decision row — every field the collapsed
+ *  one-liner truncates or drops (full `why`, the governance tuple, links, raw
+ *  metadata). Rendered only for the open row. */
+function DecisionDetail({ row }: { row: DecisionRow }) {
+  const fields: Array<[string, ReactNode]> = [];
+  if (row.action) fields.push(['Action', <code style={{ fontSize: 11 }}>{row.action}</code>]);
+  if (row.disposition) fields.push(['Disposition', DISPOSITION_LABEL[row.disposition] ?? row.disposition]);
+  fields.push(['Posture', POSTURE_STYLE[row.posture]?.label ?? row.posture]);
+  if (row.category) fields.push(['Category', row.category]);
+  if (row.riskTier) fields.push(['Risk tier', row.riskTier]);
+  if (row.reversibility) fields.push(['Reversibility', row.reversibility]);
+  if (row.authority) fields.push(['Authority', row.authority]);
+  fields.push(['Layer', row.layer]);
+  fields.push(['When', new Date(row.ts).toLocaleString()]);
+  const linkEntries = row.links ? Object.entries(row.links) : [];
+  const hasMetadata = row.metadata && Object.keys(row.metadata).length > 0;
+  return (
+    <div
+      style={{
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        margin: '4px 0 0',
+        padding: '10px 12px',
+        background: 'var(--bg-2)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}
+    >
+      {row.why ? (
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--fg)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{row.why}</p>
+      ) : null}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        {fields.map(([label, value]) => (
+          <DetailField key={label} label={label}>{value}</DetailField>
+        ))}
+      </div>
+      {linkEntries.length > 0 ? (
+        <DetailField label="Links">
+          <span style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {linkEntries.map(([k, v]) => (
+              <span key={k}>
+                <span style={{ color: 'var(--fg-mute)' }}>{k}:</span>{' '}
+                {typeof v === 'string' || typeof v === 'number' ? String(v) : JSON.stringify(v)}
+              </span>
+            ))}
+          </span>
+        </DetailField>
+      ) : null}
+      {hasMetadata ? (
+        <pre
+          style={{
+            margin: 0,
+            fontSize: 11,
+            color: 'var(--fg-mute)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            padding: '6px 8px',
+          }}
+        >
+          {JSON.stringify(row.metadata, null, 2)}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
 export default function DecisionLog({
   layer = 'disposition',
   limit = 25,
@@ -144,6 +224,10 @@ export default function DecisionLog({
   });
   const rows = useMemo<DecisionRow[]>(() => data ?? [], [data]);
   const [reverting, setReverting] = useState<string | null>(null);
+  // Which row is expanded to show its full detail. nuqs (not useState): a
+  // selected entry is user-meaningful + deep-linkable, and the agent UI control
+  // surface reads selection from the URL (CLAUDE.md "selection ids → nuqs").
+  const [selectedId, setSelectedId] = useQueryState('decision', parseAsInteger);
 
   const onUndo = async (row: DecisionRow) => {
     if (!row.tripwireId) return;
@@ -193,21 +277,49 @@ export default function DecisionLog({
         // the posture (action layer) so an audit row is never a bare "—".
         const primaryLabel = DISPOSITION_LABEL[row.disposition ?? ''] ?? row.disposition ?? p.label;
         const detail = [row.action, row.why].filter(Boolean).join(' — ');
+        const isOpen = selectedId === row.id;
+        const toggle = () => void setSelectedId(isOpen ? null : row.id);
         return (
+          <div key={row.id} style={{ marginBottom: 6 }}>
           <div
-            key={row.id}
+            role="button"
+            tabIndex={0}
+            aria-expanded={isOpen}
+            onClick={toggle}
+            onKeyDown={(e) => {
+              // Only the row itself toggles on keyboard — not a focused child
+              // (e.g. the Undo button), whose Enter/Space bubbles up here.
+              if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+                e.preventDefault();
+                toggle();
+              }
+            }}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              border: '1px solid var(--border)',
+              border: '1px solid',
+              borderColor: isOpen ? 'var(--accent)' : 'var(--border)',
               borderRadius: 8,
               padding: '6px 12px',
-              marginBottom: 6,
-              background: 'var(--bg)',
+              background: isOpen ? 'var(--bg-2)' : 'var(--bg)',
               minWidth: 0,
+              cursor: 'pointer',
             }}
           >
+            <span
+              aria-hidden
+              style={{
+                flex: '0 0 auto',
+                width: 10,
+                fontSize: 10,
+                color: 'var(--fg-mute)',
+                transition: 'transform 0.1s',
+                transform: isOpen ? 'rotate(90deg)' : 'none',
+              }}
+            >
+              ▸
+            </span>
             <span style={{ flex: '0 0 auto', fontWeight: 600, color: 'var(--fg)', fontSize: 13, whiteSpace: 'nowrap' }}>
               {primaryLabel}
             </span>
@@ -244,7 +356,7 @@ export default function DecisionLog({
             {showUndo && row.tripwireId ? (
               <button
                 type="button"
-                onClick={() => void onUndo(row)}
+                onClick={(e) => { e.stopPropagation(); void onUndo(row); }}
                 disabled={reverting === row.tripwireId}
                 style={{
                   flex: '0 0 auto',
@@ -261,6 +373,8 @@ export default function DecisionLog({
                 {reverting === row.tripwireId ? 'Undoing…' : 'Undo'}
               </button>
             ) : null}
+          </div>
+          {isOpen ? <DecisionDetail row={row} /> : null}
           </div>
         );
       })}
