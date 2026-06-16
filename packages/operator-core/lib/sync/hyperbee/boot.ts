@@ -418,8 +418,14 @@ export interface BootedHarnessHandle {
    */
   registerCloseHook(hook: () => void | Promise<void>): () => void;
   /** Cleanup. Idempotent. Runs close-hooks, then tears down swarm + merge
-   *  poller + Corestore. */
-  close(): Promise<void>;
+   *  poller + Corestore.
+   *
+   *  `keepStore: true` tears down everything EXCEPT the Corestore — used by a
+   *  harness RE-KEY (rebootHarness) so the replication muxers pinned on the
+   *  shared swarm sockets survive and the re-boot reuses the same live store
+   *  (EI-681: a full store teardown kills block replication over existing
+   *  sockets, so the re-keyed peer admits but never replicates the other's log). */
+  close(opts?: { keepStore?: boolean }): Promise<void>;
 }
 
 export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
@@ -1489,7 +1495,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         closeHooks.delete(hook);
       };
     },
-    async close() {
+    async close(closeOpts?: { keepStore?: boolean }) {
       stopped = true;
       // Run teardown hooks (e.g. the Stage-5 outbox drain stopper) FIRST, before
       // the store/swarm tear down — a drain mid-flight should stop appending to
@@ -1535,14 +1541,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (swarmHandle) {
         try { await swarmHandle.close(); } catch {}
       }
-      // EI-681: close via closeHarnessStore (NOT store.close()) so the closed
-      // Corestore is EVICTED from the getHarnessStore cache. A bare store.close()
-      // left the closed instance cached, so a re-boot (rebootHarness — used by the
-      // hive re-key on the owner-publish + joiner paths) got back the dead store
-      // and failed with "Corestore is closed", so the joiner never re-keyed onto
-      // the Hive-pubkey topic and federation never crossed. Eviction lets the
-      // re-boot open a fresh Corestore over the same on-disk data.
-      try { await closeHarnessStore(storeOpts); } catch {}
+      // EI-681 (re-key): a HARNESS RE-KEY (rebootHarness on the hive
+      // owner-publish + joiner paths) must NOT tear down the Corestore. The
+      // Corestore owns the replication muxer pinned on each shared swarm socket
+      // (`socket.userData`); closing it kills block replication over those
+      // sockets, and the freshly-booted store cannot re-attach to the existing
+      // muxer — so the re-keyed peer ADMITS the other's log (announce works) but
+      // receives ZERO blocks (the feature never crosses). `keepStore` leaves the
+      // store + its socket muxers intact so the re-boot reuses the SAME live
+      // store (cached by getHarnessStore) and replication continues seamlessly;
+      // it also preserves the own-log (a fresh store would re-open it at len 0,
+      // orphaning the peer's already-replicated copy).
+      //
+      // A FULL close (process shutdown / non-reboot teardown) still evicts via
+      // closeHarnessStore — NOT a bare store.close(), which would leave the dead
+      // instance cached and trip "Corestore is closed" on the next boot.
+      if (!closeOpts?.keepStore) {
+        try { await closeHarnessStore(storeOpts); } catch {}
+      }
       recordBootEvent(opts.workspaceId, opts.harnessSlug, 'close');
     },
   };
