@@ -154,3 +154,28 @@ test('an ops failure mid-run → runError, fleet paused + torn down, NEVER throw
   assert.ok(calls.paused >= 1);
   assert.equal(calls.torn, 1);
 });
+
+// ── FAIRNESS (benchmark-fairness-fix): drain-unsettled is NON-scored, not max-turns-as-fail ──────────
+test('stopReasonForFeatureStatus: passed→done, escalated/blocked→escalate, diff-error→error', async () => {
+  const { stopReasonForFeatureStatus } = await import('./hive-backlog-live');
+  const { isScoredStopReason } = await import('./types');
+  assert.equal(stopReasonForFeatureStatus('passed', undefined), 'done');
+  assert.equal(stopReasonForFeatureStatus('escalated', undefined), 'escalate');
+  assert.equal(stopReasonForFeatureStatus('blocked', undefined), 'escalate');
+  assert.equal(stopReasonForFeatureStatus('passed', 'extractDiff failed'), 'error'); // a genuine infra error wins
+  // done/escalate are SCORED capability terminals.
+  assert.equal(isScoredStopReason('done'), true);
+  assert.equal(isScoredStopReason('escalate'), true);
+});
+
+test('FAIRNESS: a member STILL IN-FLIGHT when the fleet was paused → infra-failed (NON-scored), NOT max-turns', async () => {
+  const { stopReasonForFeatureStatus } = await import('./hive-backlog-live');
+  const { isScoredStopReason } = await import('./types');
+  // The fleet was paused to bound spend before this member settled — under contention it never got a fair
+  // run, so it is EXCLUDED from resolved%, never counted as a capability fail.
+  for (const inFlightStatus of [null, 'todo', 'wip', 'in_progress', 'restarting']) {
+    const sr = stopReasonForFeatureStatus(inFlightStatus, undefined);
+    assert.equal(sr, 'infra-failed', `status=${inFlightStatus}`);
+    assert.equal(isScoredStopReason(sr), false, `status=${inFlightStatus} must be excluded`);
+  }
+});

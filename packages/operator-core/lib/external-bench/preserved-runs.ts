@@ -27,6 +27,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { CoordEvent } from '@papercusp/bench-metrics';
 import { substrateSignalRates } from '@papercusp/bench-metrics';
+import { isScoredStopReason } from './types';
 
 /** Default base dir for preserved runs (`~/.papercusp/bench-results`). */
 export function defaultBenchResultsDir(): string {
@@ -74,13 +75,19 @@ export interface ResolvedPerTask extends PreservedPerTask {
 /** Headline rollup for a preserved run. */
 export interface PreservedRunSummary {
   arm: string;
-  /** Tasks the grader returned a verdict for. */
+  /** Tasks SCORED — the grader returned a verdict AND generation was not an external/transient/infra failure. */
   gradedCount: number;
-  /** Tasks marked resolved (true) by the grader. */
+  /** Tasks marked resolved (true) by the grader (among the SCORED tasks). */
   resolvedCount: number;
   /** perTask length (the run's task set). */
   taskCount: number;
-  /** resolvedCount / gradedCount (0–1), or null when nothing graded. */
+  /**
+   * Tasks EXCLUDED from the resolved% denominator because generation was an external/transient/infra
+   * failure (stopReason ∈ {error, timeout, infra-failed} or a generationError) — never a capability fail.
+   * The fairness count (mirrors bench-metrics' `infraErrors`).
+   */
+  infraExcluded: number;
+  /** resolvedCount / gradedCount (0–1) where gradedCount = SCORED tasks (infra excluded); null when none scored. */
   resolvedPct: number | null;
   /** Summed cost across the run (prefer the snapshot `totals`, else sum perTask). */
   costUsd: number;
@@ -194,14 +201,32 @@ export function mergeResolved(
   }));
 }
 
-/** Compute the headline summary from the merged rows + the run snapshot. */
+/**
+ * Compute the headline summary from the merged rows + the run snapshot.
+ *
+ * FAIRNESS (benchmark-fairness-fix): a row whose generation was an EXTERNAL/transient/infra failure
+ * (stopReason ∈ {error, timeout, infra-failed} per {@link isScoredStopReason}, or a non-null
+ * generationError) is EXCLUDED from the resolved% denominator — never counted as a capability fail —
+ * and tallied in `infraExcluded` instead. So `gradedCount` = SCORED tasks the grader verdicted, and
+ * resolvedPct = resolved / SCORED-tasks, NOT resolved / all-graded (the audit's core correction). This
+ * is the file-dir mirror of `@papercusp/bench-metrics` `isScored`.
+ */
 export function summarizePreservedRun(
   run: PreservedArmRun,
   merged: readonly ResolvedPerTask[],
 ): PreservedRunSummary {
   let gradedCount = 0;
   let resolvedCount = 0;
+  let infraExcluded = 0;
   for (const t of merged) {
+    // NON-SCORED: an external/transient/infra failure (by stopReason or a generationError) is excluded
+    // from the denominator even if the grade map carries a verdict for it (it never produced a real,
+    // fairly-given submission). Count it separately.
+    const infra = !isScoredStopReason(t.stopReason) || (t.generationError != null && t.generationError !== '');
+    if (infra) {
+      infraExcluded += 1;
+      continue;
+    }
     if (t.resolved == null) continue;
     gradedCount += 1;
     if (t.resolved) resolvedCount += 1;
@@ -214,6 +239,7 @@ export function summarizePreservedRun(
     arm: run.arm,
     gradedCount,
     resolvedCount,
+    infraExcluded,
     taskCount: merged.length,
     resolvedPct: gradedCount > 0 ? resolvedCount / gradedCount : null,
     costUsd: run.totals?.costUsd ?? summedCost,

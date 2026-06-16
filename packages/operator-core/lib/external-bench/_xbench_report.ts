@@ -8,6 +8,7 @@
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { substrateSignalRates } from '@papercusp/bench-metrics';
 import type { CoordEvent } from '@papercusp/bench-metrics';
+import { isScoredStopReason } from './types';
 
 const OUT_DIR = process.env.XBENCH_OUT_DIR ?? '/tmp/xbench-compare-out';
 // The two arms to compare. Defaults to the P-033 real-Queen pair (hive-realqueen vs fifo-noqueen);
@@ -57,11 +58,34 @@ function pct(n: number, d: number): string {
 
 function armReport(arm: string) {
   const { run, grade } = load(arm);
-  const resolved = grade ? grade.resolved : 0;
-  const graded = grade ? grade.total : 0;
   const wallSec = run.wallMs / 1000;
   const cost = run.totals.costUsd;
   const mast = substrateSignalRates(run.coordEvents ?? [], run.taskCount);
+
+  // FAIRNESS (benchmark-fairness-fix): exclude EXTERNAL/transient/infra tasks from the resolved%
+  // denominator. A task is NON-SCORED when its stopReason ∈ {error, timeout, infra-failed} (per
+  // isScoredStopReason) or it carries a generationError — it never produced a fairly-given submission,
+  // so it is resolved=null/excluded, NOT a capability fail. resolved% is then resolved / SCORED-tasks
+  // (NOT resolved / grader-total). We re-derive the resolved count from the SCORED rows' per-instance
+  // verdicts so a grader-manufactured `false` on an infra row can never sneak into the numerator either.
+  const perInstance = grade?.perInstance ?? {};
+  let scoredGraded = 0;
+  let scoredResolved = 0;
+  let infraExcluded = 0;
+  for (const t of run.perTask) {
+    const infra = !isScoredStopReason(t.stopReason) || (t.generationError != null && t.generationError !== '');
+    if (infra) {
+      infraExcluded += 1;
+      continue;
+    }
+    // A scored task counts toward the denominator only once the grader returned a verdict for it.
+    if (Object.prototype.hasOwnProperty.call(perInstance, t.instanceId)) {
+      scoredGraded += 1;
+      if (perInstance[t.instanceId] === true) scoredResolved += 1;
+    }
+  }
+  const graded = scoredGraded;
+  const resolved = scoredResolved;
   return {
     arm,
     runId: run.runId,
@@ -70,6 +94,7 @@ function armReport(arm: string) {
     nonEmptyDiffs: run.nonEmptyDiffs,
     graded,
     resolved,
+    infraExcluded,
     resolvedPct: graded > 0 ? resolved / graded : 0,
     totalCostUsd: cost,
     totalTokensIn: run.totals.tokensIn,
@@ -136,6 +161,8 @@ function main() {
     L.push(`${label.padEnd(26)} | ${HIVE_ARM} ${h.padEnd(16)} | ${ABL_ARM} ${a.padEnd(16)} | Δ ${d}`);
   row('RESOLVED %', pct(hive.resolved, hive.graded), pct(abl.resolved, abl.graded), `${delta.resolvedPct_pp >= 0 ? '+' : ''}${delta.resolvedPct_pp.toFixed(1)}pp`);
   row('RESOLVED count', `${hive.resolved}/${hive.graded}`, `${abl.resolved}/${abl.graded}`, `${delta.resolved_count >= 0 ? '+' : ''}${delta.resolved_count}`);
+  // FAIRNESS: external/transient/infra tasks EXCLUDED from the resolved% denominator (never a fail).
+  row('infra excluded', `${hive.infraExcluded}/${hive.tasks}`, `${abl.infraExcluded}/${abl.tasks}`, '');
   row('non-empty diffs', `${hive.nonEmptyDiffs}/${hive.tasks}`, `${abl.nonEmptyDiffs}/${abl.tasks}`, '');
   row('total cost $', `$${hive.totalCostUsd.toFixed(2)}`, `$${abl.totalCostUsd.toFixed(2)}`, `${delta.totalCostUsd >= 0 ? '+' : ''}$${delta.totalCostUsd.toFixed(2)}`);
   row('total tokens out', hive.totalTokensOut.toLocaleString(), abl.totalTokensOut.toLocaleString(), delta.totalTokensOut.toLocaleString());

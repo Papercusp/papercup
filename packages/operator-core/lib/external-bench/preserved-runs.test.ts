@@ -152,6 +152,58 @@ describe('summarizePreservedRun', () => {
   });
 });
 
+// ── FAIRNESS (benchmark-fairness-fix): external/transient/infra rows EXCLUDED from resolved% ─────────
+describe('summarizePreservedRun — fairness exclusion', () => {
+  function fairnessRun(): PreservedArmRun {
+    // 5 tasks: 2 scored-resolved, 1 scored-fail, and 2 NON-scored (a timeout + an infra-failed) that must
+    // be EXCLUDED from the denominator — not counted as capability fails.
+    return {
+      arm: 'hive-realqueen',
+      runId: 'fairness-run',
+      taskCount: 5,
+      perTask: [
+        { instanceId: 'ok-1', stopReason: 'done', diffBytes: 100 },
+        { instanceId: 'ok-2', stopReason: 'done', diffBytes: 100 },
+        { instanceId: 'fail-1', stopReason: 'escalate', diffBytes: 100 }, // a GENUINE non-resolution (scored)
+        { instanceId: 'timeout-1', stopReason: 'timeout', diffBytes: 0 }, // wall-clock under contention → excluded
+        { instanceId: 'infra-1', stopReason: 'infra-failed', generationError: '429 contention', diffBytes: 0 }, // excluded
+      ],
+    };
+  }
+  // The grader (wrongly, pre-fix) returned a verdict for EVERY instance, incl. the infra ones.
+  const fullGrade = (): Record<string, boolean> => ({
+    'ok-1': true,
+    'ok-2': true,
+    'fail-1': false,
+    'timeout-1': false, // a grader-manufactured false on a never-fairly-run task — must NOT count as a fail
+    'infra-1': false, // ditto
+  });
+
+  it('excludes timeout / infra-failed rows from the denominator even if the grade map has a (false) verdict', () => {
+    const run = fairnessRun();
+    const merged = mergeResolved(run.perTask!, fullGrade());
+    const s = summarizePreservedRun(run, merged);
+    // Denominator is the 3 SCORED tasks (ok-1, ok-2, fail-1), NOT all 5.
+    expect(s.gradedCount).toBe(3);
+    expect(s.resolvedCount).toBe(2);
+    expect(s.infraExcluded).toBe(2); // timeout-1 + infra-1
+    expect(s.resolvedPct).toBeCloseTo(2 / 3, 5); // resolved / SCORED-tasks, NOT 2/5
+    expect(s.taskCount).toBe(5); // taskCount still reflects the whole set
+  });
+
+  it('a timeout/infra row contributes ZERO to resolvedCount and is never a fail', () => {
+    const run = fairnessRun();
+    // Even with NO grade entries for the infra rows (the grade-path fix omits them), the result is identical.
+    const partialGrade: Record<string, boolean> = { 'ok-1': true, 'ok-2': true, 'fail-1': false };
+    const merged = mergeResolved(run.perTask!, partialGrade);
+    const s = summarizePreservedRun(run, merged);
+    expect(s.gradedCount).toBe(3);
+    expect(s.resolvedCount).toBe(2);
+    expect(s.infraExcluded).toBe(2);
+    expect(s.resolvedPct).toBeCloseTo(2 / 3, 5);
+  });
+});
+
 describe('isSafeRunId', () => {
   it('accepts plain run ids', () => {
     expect(isSafeRunId('m3-realqueen-2026-06-16')).toBe(true);

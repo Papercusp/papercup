@@ -97,13 +97,69 @@ export interface GenerationBudget {
   maxWallClockMs?: number;
 }
 
-/** Why a generation attempt stopped — separates a clean finish from a cap-hit from an infra failure. */
+/**
+ * Why a generation attempt stopped — separates a clean finish from a cap-hit from an infra failure.
+ *
+ * FAIRNESS (benchmark-fairness-fix): the stop reasons split into two scoring classes, and the split
+ * IS the fairness fix. {@link isScoredStopReason} is the single source of truth; do NOT re-derive it.
+ *  - SCORED terminals (a genuine capability outcome — counted in the resolved% denominator):
+ *      'done'           — the harness reached DONE (resolved=true|false by the grader)
+ *      'escalate'       — the harness gave up / needs a human (a genuine non-resolution)
+ *      'budget-exhausted' — hit the iso-budget cap (the arm spent its whole budget and didn't solve it)
+ *      'max-turns'      — hit the GENUINE turn bound (the arm ran its full turn budget and didn't settle)
+ *  - NON-SCORED terminals (an external/transient/infra failure — EXCLUDED, resolved=null, never a fail):
+ *      'error'          — infra failure during generation (crash, OOM, diff-extract fail)
+ *      'timeout'        — wall-clock ceiling hit under contention (NOT the arm's fault → not a capability
+ *                         fail; was wrongly routed to 'max-turns'-as-scored — the central bug this fixes)
+ *      'infra-failed'   — an explicit transient/external failure: spawn rc≠0-with-empty-output
+ *                         (a 429 / gateway-contention symptom), a RateLimit/RetryError at the spawn
+ *                         boundary, or a drain-unsettled-under-contention member (the fleet was paused
+ *                         to bound spend before the task got a fair chance to run)
+ */
 export type GenerationStopReason =
   | 'done' // the harness reached DONE
   | 'escalate' // the harness ESCALATEd (needs human / blocked)
   | 'budget-exhausted' // hit the iso-budget cap
-  | 'max-turns'
-  | 'error'; // infra failure during generation
+  | 'max-turns' // hit the GENUINE turn bound (scored — the arm ran its full turn budget)
+  | 'timeout' // wall-clock ceiling under contention (NON-scored — external, not a capability fail)
+  | 'infra-failed' // transient/external failure: 429/contention spawn, drain-unsettled (NON-scored)
+  | 'error'; // infra failure during generation (NON-scored)
+
+/**
+ * The set of stop reasons that are NON-SCORED — an external/transient/infra failure excluded from the
+ * resolved% denominator (treated as resolved=null, never counted as a capability fail). The single
+ * source of truth for the fairness exclusion; {@link generationStatusForStopReason} maps these onto the
+ * bench-metrics `generationStatus` ('error'|'timeout') so `isScored` drops them, and every live rollup
+ * (run-store / preserved-runs / _xbench_report) excludes them via {@link isScoredStopReason}.
+ */
+export const NON_SCORED_STOP_REASONS: ReadonlySet<GenerationStopReason> = new Set<GenerationStopReason>([
+  'error',
+  'timeout',
+  'infra-failed',
+]);
+
+/** True when a stop reason is a GENUINE capability terminal (counted in resolved%); false when it is an
+ *  external/transient/infra failure (excluded — resolved=null, never a fail). The fairness predicate. */
+export function isScoredStopReason(stopReason: GenerationStopReason | string | null | undefined): boolean {
+  if (stopReason == null) return true; // absent reason → don't exclude (a graded row stands on its grade)
+  return !NON_SCORED_STOP_REASONS.has(stopReason as GenerationStopReason);
+}
+
+/**
+ * Bridge a generation `stopReason` → the bench-metrics `GenerationStatus` ('completed'|'error'|'timeout')
+ * the canonical scoring layer (`@papercusp/bench-metrics` `isScored` / `aggregateArm`) keys on. A scored
+ * terminal → 'completed' (graded normally; the grader's verdict stands); 'timeout' → 'timeout' (infra,
+ * excluded); every other non-scored reason ('error'|'infra-failed') → 'error' (infra, excluded). This is
+ * the SINGLE place the live external-bench stopReason vocabulary maps onto the bench-metrics status
+ * vocabulary, so wiring the live rollups into bench-metrics `isScored` is a derive, not a fork.
+ */
+export function generationStatusForStopReason(
+  stopReason: GenerationStopReason | string | null | undefined,
+): 'completed' | 'error' | 'timeout' {
+  if (stopReason === 'timeout') return 'timeout';
+  if (isScoredStopReason(stopReason)) return 'completed';
+  return 'error';
+}
 
 /**
  * What ONE generation attempt produces — the SHARED generation unit across arms (Baseline A is exactly

@@ -11,6 +11,7 @@ import {
   liveBenchHarnessDriver,
   bindLiveBenchHarness,
   stopReasonForDisposition,
+  isTransientSpawnFailure,
   type BenchHarnessOps,
   type BenchHarnessHandle,
   type BenchRunCost,
@@ -23,6 +24,7 @@ import {
   type BenchHarnessRunRequest,
 } from './run-loop';
 import type { BenchTask, GenerationBudget, TaskCheckout } from './types';
+import { isScoredStopReason } from './types';
 
 afterEach(() => setBenchHarnessDriver(null));
 
@@ -155,18 +157,22 @@ describe('liveBenchHarnessDriver — orchestration over fake ops', () => {
   });
 });
 
-// ── disposition → stopReason mapping ─────────────────────────────────────────
+// ── disposition → stopReason mapping (FAIRNESS: scored vs excluded) ───────────
 describe('disposition → stopReason mapping', () => {
-  const cases: Array<[DriveDisposition, string]> = [
-    ['done', 'done'],
-    ['escalate', 'escalate'],
-    ['budget-exhausted', 'budget-exhausted'],
-    ['max-turns', 'max-turns'],
-    ['timeout', 'max-turns'], // a wall-clock cap-hit maps to the runaway-bound stop reason (still scored)
-    ['error', 'error'],
+  const cases: Array<[DriveDisposition, string, boolean]> = [
+    // [disposition, stopReason, isScored]
+    ['done', 'done', true],
+    ['escalate', 'escalate', true],
+    ['budget-exhausted', 'budget-exhausted', true],
+    ['max-turns', 'max-turns', true], // GENUINE turn bound — the spine ran its full budget → still SCORED
+    ['timeout', 'timeout', false], // FAIRNESS FIX: wall-clock under contention → NON-scored (was 'max-turns')
+    ['transient', 'infra-failed', false], // a 429/contention spawn → NON-scored, retry-able
+    ['error', 'error', false],
   ];
-  it.each(cases)('stopReasonForDisposition(%s) → %s', (d, expected) => {
-    expect(stopReasonForDisposition(d)).toBe(expected);
+  it.each(cases)('stopReasonForDisposition(%s) → %s (scored=%s)', (d, expected, scored) => {
+    const sr = stopReasonForDisposition(d);
+    expect(sr).toBe(expected);
+    expect(isScoredStopReason(sr)).toBe(scored);
   });
 
   it('an ESCALATE disposition → stopReason escalate, costs still summed, NO generationError (a real terminal)', async () => {
@@ -188,10 +194,110 @@ describe('disposition → stopReason mapping', () => {
     expect(run.telemetry.generationError).toBeUndefined();
   });
 
-  it('a TIMEOUT disposition → stopReason max-turns (the runaway bound)', async () => {
-    const { ops } = fakeOps({ drive: { disposition: 'timeout', detail: 'did not settle' } });
+  it('FAIRNESS: a TIMEOUT disposition → NON-scored "timeout" (NOT max-turns), with the detail on generationError', async () => {
+    const { ops } = fakeOps({ drive: { disposition: 'timeout', detail: 'drive exceeded the wall-clock ceiling' } });
     const run = await liveBenchHarnessDriver(ops, OPTS).spinRunAndCost(req());
-    expect(run.telemetry.stopReason).toBe('max-turns');
+    expect(run.telemetry.stopReason).toBe('timeout');
+    expect(isScoredStopReason(run.telemetry.stopReason)).toBe(false); // excluded from resolved%, never a fail
+    expect(run.telemetry.generationError).toMatch(/wall-clock ceiling/); // non-scored ⇒ detail explains why
+  });
+
+  it('FAIRNESS: a TRANSIENT (429/contention) disposition → NON-scored "infra-failed"', async () => {
+    const { ops } = fakeOps({ drive: { disposition: 'transient', detail: 'decide invoke failed: 429 rate limit' } });
+    const run = await liveBenchHarnessDriver(ops, { ...OPTS, maxTransientRetries: 0 }).spinRunAndCost(req());
+    expect(run.telemetry.stopReason).toBe('infra-failed');
+    expect(isScoredStopReason(run.telemetry.stopReason)).toBe(false);
+    expect(run.telemetry.generationError).toMatch(/rate limit/);
+  });
+});
+
+// ── isTransientSpawnFailure (the 429/contention detector at the spawn boundary) ─
+describe('isTransientSpawnFailure', () => {
+  it('detects 429 / rate-limit / overloaded / 503 markers on a non-zero exit', () => {
+    expect(isTransientSpawnFailure({ exitCode: 1, stderr: 'Error: 429 Too Many Requests' })).toBe(true);
+    expect(isTransientSpawnFailure({ exitCode: 1, stderr: 'anthropic RateLimitError' })).toBe(true);
+    expect(isTransientSpawnFailure({ exitCode: 1, stderr: 'overloaded_error' })).toBe(true);
+    expect(isTransientSpawnFailure({ exitCode: 1, stderr: 'HTTP 503 service unavailable' })).toBe(true);
+    expect(isTransientSpawnFailure({ exitCode: 1, stderr: 'ETIMEDOUT connecting to gateway' })).toBe(true);
+  });
+  it('a clean exit is never transient', () => {
+    expect(isTransientSpawnFailure({ exitCode: 0, stderr: '429' })).toBe(false);
+  });
+  it('a genuine non-429 failure is NOT transient (a real error, distinct)', () => {
+    expect(isTransientSpawnFailure({ exitCode: 1, stderr: 'SyntaxError: unexpected token in worker' })).toBe(false);
+    expect(isTransientSpawnFailure({ exitCode: 2, stderr: '' })).toBe(false);
+  });
+});
+
+// ── Priority 3: auto-retry-on-transient (the task-level outer ride-out) ───────
+describe('auto-retry-on-transient (Priority 3)', () => {
+  /** A fake whose drive returns the i-th disposition each call, accumulating cost per attempt. */
+  function retryingOps(dispositions: DriveDisposition[], perAttemptCost: BenchRunCost) {
+    let clock = 0;
+    let call = 0;
+    const drives: DriveDisposition[] = [];
+    const ops: BenchHarnessOps = {
+      now: () => clock,
+      async createHarness({ checkout }) {
+        return { slug: `xbench-${call}`, featureId: 'F-XB', worktreePath: checkout.dir };
+      },
+      async addFeature() {},
+      async driveToDone() {
+        clock += 1_000;
+        const d = dispositions[Math.min(call, dispositions.length - 1)];
+        call += 1;
+        drives.push(d);
+        return { disposition: d, detail: d === 'transient' ? '429 rate limit' : d };
+      },
+      async collectCost() {
+        return { ...perAttemptCost };
+      },
+      async teardown() {},
+    };
+    return { ops, drives };
+  }
+  const COST: BenchRunCost = { tokensIn: 100, tokensOut: 50, costUsd: 1.5, turns: 2 };
+
+  it('rides out a transient throttle: retries up to N then records the eventual DONE, summing every attempt cost', async () => {
+    // transient, transient, done — 1 initial + 2 retries (N=2) → 3 attempts.
+    const { ops, drives } = retryingOps(['transient', 'transient', 'done'], COST);
+    const run = await liveBenchHarnessDriver(ops, {
+      ...OPTS,
+      maxTransientRetries: 2,
+      transientRetryBackoffMs: 0,
+    }).spinRunAndCost(req());
+    expect(drives).toEqual(['transient', 'transient', 'done']); // rode out two throttles then succeeded
+    expect(run.telemetry.stopReason).toBe('done'); // the eventual real terminal is recorded
+    // EVERY attempt's spend is summed onto the headline (honest cost counts the throttled rides-out too).
+    expect(run.telemetry.costUsd).toBeCloseTo(1.5 * 3, 10);
+    expect(run.telemetry.turns).toBe(2 * 3);
+  });
+
+  it('gives up after N transient retries → records NON-scored infra-failed (excluded), not a fail', async () => {
+    // always transient → 1 + 2 retries = 3 attempts, all transient.
+    const { ops, drives } = retryingOps(['transient'], COST);
+    const run = await liveBenchHarnessDriver(ops, {
+      ...OPTS,
+      maxTransientRetries: 2,
+      transientRetryBackoffMs: 0,
+    }).spinRunAndCost(req());
+    expect(drives).toHaveLength(3);
+    expect(run.telemetry.stopReason).toBe('infra-failed');
+    expect(isScoredStopReason(run.telemetry.stopReason)).toBe(false); // excluded from resolved%, NOT a fail
+    expect(run.telemetry.generationError).toMatch(/after 2 transient retries/);
+  });
+
+  it('a non-transient terminal is NEVER retried (a capability outcome must not be re-rolled)', async () => {
+    const { ops, drives } = retryingOps(['done'], COST);
+    await liveBenchHarnessDriver(ops, { ...OPTS, maxTransientRetries: 2, transientRetryBackoffMs: 0 }).spinRunAndCost(req());
+    expect(drives).toEqual(['done']); // exactly one attempt — no retry on a real terminal
+  });
+
+  it('maxTransientRetries=0 disables the ride-out (records the first transient directly)', async () => {
+    const { ops, drives } = retryingOps(['transient'], COST);
+    const run = await liveBenchHarnessDriver(ops, { ...OPTS, maxTransientRetries: 0, transientRetryBackoffMs: 0 }).spinRunAndCost(req());
+    expect(drives).toHaveLength(1);
+    expect(run.telemetry.stopReason).toBe('infra-failed');
   });
 });
 

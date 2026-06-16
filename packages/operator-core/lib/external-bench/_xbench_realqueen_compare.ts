@@ -304,7 +304,12 @@ async function main() {
     perTask,
     coordEvents: result.coordEvents,
   };
-  writeFileSync(`${OUT_DIR}/${ARM}.json`, JSON.stringify(out, null, 2), 'utf8');
+  // FAIRNESS (benchmark-fairness-fix, Priority 2): READ-MODIFY-WRITE the arm snapshot by instanceId so a
+  // partial rerun MERGES into the existing perTask instead of clobbering siblings (mirrors the PG
+  // upsertBenchRunTask idempotency + run_minisweagent.py:update_preds). taskCount/totals/nonEmptyDiffs are
+  // recomputed from the merged set by writeArmSnapshotMerged.
+  const { writeArmSnapshotMerged } = await import('./arm-snapshot');
+  writeArmSnapshotMerged(`${OUT_DIR}/${ARM}.json`, out);
 
   console.log('\n===== ARM RUN SUMMARY =====');
   console.log(JSON.stringify({

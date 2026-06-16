@@ -44,11 +44,46 @@ import type {
   GenerationTelemetry,
   TaskCheckout,
 } from './types';
+import { isScoredStopReason } from './types';
 import {
   setBenchHarnessDriver,
   type BenchHarnessDriver,
   type BenchHarnessRunRequest,
 } from './run-loop';
+
+/**
+ * Detect a TRANSIENT / external failure (a 429 / rate-limit / gateway-contention symptom) at the spawn
+ * boundary, from a spawn's exit code + stderr. Under the shared-gateway iso-budget runs this is the
+ * dominant external failure: the upstream throttles, the spawn dies with rc≠0 and an empty/near-empty
+ * stdout, and the stderr carries a rate-limit / 429 / overloaded marker. A transient spawn outcome is
+ * RETRY-able (Priority 3) and, if it terminates the run, is recorded as a NON-scored `infra-failed`
+ * terminal — never a capability fail. (Mirrors the native arm's `transient` retry classification.)
+ */
+export function isTransientSpawnFailure(spawn: { exitCode: number; stderr?: string; output?: string }): boolean {
+  if (spawn.exitCode === 0) return false;
+  const hay = `${spawn.stderr ?? ''}`.toLowerCase();
+  // 429 / rate-limit / overloaded / retry / quota / gateway-contention markers an upstream throttle emits.
+  return (
+    /\b429\b/.test(hay) ||
+    hay.includes('rate limit') ||
+    hay.includes('ratelimit') ||
+    hay.includes('rate_limit') ||
+    hay.includes('rate-limit') ||
+    hay.includes('too many requests') ||
+    hay.includes('overloaded') ||
+    hay.includes('retryerror') ||
+    hay.includes('retry_error') ||
+    hay.includes('quota') ||
+    hay.includes('exhausted') ||
+    hay.includes('503') ||
+    hay.includes('502') ||
+    hay.includes('service unavailable') ||
+    hay.includes('gateway') ||
+    hay.includes('econnreset') ||
+    hay.includes('etimedout') ||
+    hay.includes('temporarily')
+  );
+}
 
 /** Default ceiling on the drive poll loop (ms) — a runaway bound on top of the iso-budget cap. */
 const DEFAULT_DRIVE_TIMEOUT_MS = 60 * 60 * 1000; // 1h; a bounded pilot task is far under this.
@@ -68,9 +103,22 @@ export interface BenchRunCost {
  * How the DRIVE seam terminated — the raw disposition the orchestration maps to a {@link GenerationStopReason}.
  * `done` (the feature reached its terminal `passed` status + the pipeline settled), `escalate` (the feature
  * blocked / escalated — needs human), `budget-exhausted` (the iso-budget $/token cap was hit), `max-turns`
- * (the runaway turn bound), `timeout` (the drive wall-clock ceiling), or `error` (an infra failure).
+ * (the GENUINE turn bound — the spine ran its full turn budget without settling), `timeout` (the drive
+ * wall-clock ceiling — an EXTERNAL/contention symptom, NOT a capability fail), `transient` (a 429 / rate-limit
+ * / contention spawn failure detected at the spawn boundary — retry-able, excluded), or `error` (an infra failure).
+ *
+ * SCORING (benchmark-fairness-fix): `done`/`escalate`/`budget-exhausted`/`max-turns` are SCORED capability
+ * terminals; `timeout`/`transient`/`error` are NON-scored external/infra failures (excluded from resolved%,
+ * never a fail). See {@link stopReasonForDisposition} + {@link GenerationStopReason}.
  */
-export type DriveDisposition = 'done' | 'escalate' | 'budget-exhausted' | 'max-turns' | 'timeout' | 'error';
+export type DriveDisposition =
+  | 'done'
+  | 'escalate'
+  | 'budget-exhausted'
+  | 'max-turns'
+  | 'timeout'
+  | 'transient'
+  | 'error';
 
 /** What the DRIVE seam returns: the disposition + an optional human-readable detail (the escalate reason / error). */
 export interface DriveResult {
@@ -135,9 +183,30 @@ export interface LiveBenchHarnessOpts {
   pollIntervalMs?: number;
   /** A trajectory-ref builder for the row (BRIEF 8 handle). Default `xbench://<slug>`. */
   trajectoryRef?: (handle: BenchHarnessHandle) => string;
+  /**
+   * Priority 3 (benchmark-fairness-fix): AUTO-RETRY-ON-TRANSIENT. When a task's drive terminates with a
+   * TRANSIENT external failure (a 429 / rate-limit / contention spawn failure → 'transient' disposition),
+   * re-run it on a FRESH harness up to this many times before recording its terminal — the task-level
+   * mirror of mini-swe's PacedLitellmModel outer ride-out (and the native arm's transient retry). Default 2.
+   * Set 0 to disable. Only a TRANSIENT disposition retries; a genuine capability terminal (done / escalate /
+   * budget / max-turns), a wall-clock `timeout`, or a plain `error` never retries (retrying them would
+   * change the measured outcome, not ride out a throttle).
+   */
+  maxTransientRetries?: number;
+  /** Backoff between transient retries (ms). Default 2s, multiplied by the attempt index. */
+  transientRetryBackoffMs?: number;
 }
 
-/** Map the DRIVE disposition → the {@link GenerationStopReason} on the row. */
+/**
+ * Map the DRIVE disposition → the {@link GenerationStopReason} on the row.
+ *
+ * FAIRNESS (benchmark-fairness-fix): the central correction. A wall-clock `timeout` is NO LONGER routed
+ * to 'max-turns'-as-scored — a drive that ran out of wall-clock under gateway/contention pressure was not
+ * given a fair chance to demonstrate capability, so scoring it as a capability fail is the exact unfairness
+ * the audit found. `timeout` → 'timeout' (a NON-scored external terminal, excluded from resolved%), and a
+ * spawn-boundary 429/contention failure → 'infra-failed' (also excluded). Only `max-turns` — the GENUINE
+ * turn-bound exhaustion (the spine ran its FULL turn budget without settling) — stays scored.
+ */
 export function stopReasonForDisposition(d: DriveDisposition): GenerationStopReason {
   switch (d) {
     case 'done':
@@ -147,11 +216,17 @@ export function stopReasonForDisposition(d: DriveDisposition): GenerationStopRea
     case 'budget-exhausted':
       return 'budget-exhausted';
     case 'max-turns':
+      // The GENUINE turn bound — the spine spent its FULL turn budget and never settled. A real capability
+      // outcome (the arm had the turns and didn't solve it) → SCORED, not excluded.
       return 'max-turns';
     case 'timeout':
-      // A wall-clock timeout under an iso-budget run is the runaway turn/time bound being hit — the
-      // closest shared-vocabulary stop reason is 'max-turns' (a cap-hit, NOT an infra error → still scored).
-      return 'max-turns';
+      // A wall-clock ceiling hit. Under an iso-budget run with a contended shared gateway this is an
+      // EXTERNAL/transient symptom, not a capability fail → 'timeout' (NON-scored, excluded from resolved%).
+      return 'timeout';
+    case 'transient':
+      // A 429 / rate-limit / contention spawn failure caught at the spawn boundary → an explicit
+      // non-scored terminal (retry-able; excluded from resolved%, never a capability fail).
+      return 'infra-failed';
     case 'error':
       return 'error';
   }
@@ -171,60 +246,102 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
   const timeoutMs = opts.driveTimeoutMs ?? DEFAULT_DRIVE_TIMEOUT_MS;
   const pollMs = opts.pollIntervalMs ?? DEFAULT_POLL_MS;
   const trajectoryRefFor = opts.trajectoryRef ?? ((h: BenchHarnessHandle) => `xbench://${h.slug}`);
+  const maxTransientRetries = Math.max(0, opts.maxTransientRetries ?? 2);
+  const retryBackoffMs = opts.transientRetryBackoffMs ?? 2_000;
+
+  /** ONE attempt: CREATE → FEED → DRIVE → COST → TEARDOWN over a fresh handle. Never throws. */
+  const oneAttempt = async (
+    req: BenchHarnessRunRequest,
+  ): Promise<{ disposition: DriveDisposition; detail?: string; cost: BenchRunCost; handle: BenchHarnessHandle | null }> => {
+    const { blueprintId, task, checkout, budget } = req;
+    let handle: BenchHarnessHandle | null = null;
+    let disposition: DriveDisposition = 'error';
+    let detail: string | undefined;
+
+    try {
+      // CREATE → FEED → DRIVE.
+      handle = await ops.createHarness({ blueprintId, checkout, workspaceId: ws });
+      await ops.addFeature({ handle, task, workspaceId: ws });
+      const drive = await ops.driveToDone({ handle, budget, timeoutMs, pollMs, workspaceId: ws });
+      disposition = drive.disposition;
+      detail = drive.detail;
+    } catch (e) {
+      // An infra failure during create/feed/drive → 'error' telemetry (never a thrown exception). The
+      // cost sum below still runs (any real spend before the failure is counted); teardown still runs.
+      disposition = 'error';
+      detail = e instanceof Error ? e.message : String(e);
+    }
+
+    // COST: always sum what was spent (even on a failure — real spend before a failure must be counted).
+    let cost: BenchRunCost = { tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 };
+    if (handle) {
+      cost = await ops.collectCost({ handle, workspaceId: ws }).catch(() => cost);
+    }
+
+    // TEARDOWN: best-effort — a teardown hiccup must not mask the run's outcome (mirrors hive-eval's
+    // teardown discipline). The caller owns `checkout.cleanup` (we leave the clone).
+    if (handle) {
+      await ops.teardown({ handle, workspaceId: ws }).catch(() => {});
+    }
+    return { disposition, detail, cost, handle };
+  };
 
   return {
     async spinRunAndCost(req: BenchHarnessRunRequest): Promise<BenchHarnessRun> {
-      const { blueprintId, task, checkout, budget } = req;
       const startedAtMs = ops.now();
 
-      let handle: BenchHarnessHandle | null = null;
-      let disposition: DriveDisposition = 'error';
-      let detail: string | undefined;
-
-      try {
-        // CREATE → FEED → DRIVE.
-        handle = await ops.createHarness({ blueprintId, checkout, workspaceId: ws });
-        await ops.addFeature({ handle, task, workspaceId: ws });
-        const drive = await ops.driveToDone({ handle, budget, timeoutMs, pollMs, workspaceId: ws });
-        disposition = drive.disposition;
-        detail = drive.detail;
-      } catch (e) {
-        // An infra failure during create/feed/drive → 'error' telemetry (never a thrown exception). The
-        // cost sum below still runs (any real spend before the failure is counted); teardown still runs.
-        disposition = 'error';
-        detail = e instanceof Error ? e.message : String(e);
+      // Priority 3: AUTO-RETRY-ON-TRANSIENT — the task-level outer ride-out. Re-run on a FRESH harness
+      // while the drive terminates 'transient' (a 429/contention throttle) and retries remain. The cost of
+      // EVERY attempt (incl. the throttled ones) is summed into the headline — an honest cost number counts
+      // tokens actually spent, even the rides-out. A non-transient terminal (any capability outcome, a
+      // wall-clock timeout, or a plain error) breaks the loop immediately — retrying it changes the measured
+      // result, not the throttle. (Mirrors the native arm's transient retry; mini-swe's PacedLitellmModel.)
+      let attempt = 0;
+      let result = await oneAttempt(req);
+      let summedCost: BenchRunCost = { ...result.cost };
+      let retriesUsed = 0;
+      while (result.disposition === 'transient' && attempt < maxTransientRetries) {
+        attempt += 1;
+        retriesUsed += 1;
+        await sleep(retryBackoffMs * attempt);
+        result = await oneAttempt(req);
+        // Accumulate the retry's spend onto the headline (the throttled attempts cost real tokens).
+        summedCost = {
+          tokensIn: summedCost.tokensIn + result.cost.tokensIn,
+          tokensOut: summedCost.tokensOut + result.cost.tokensOut,
+          costUsd: summedCost.costUsd + result.cost.costUsd,
+          turns: summedCost.turns + result.cost.turns,
+        };
       }
 
-      // COST: always sum what was spent (even on a failure — real spend before a failure must be counted).
-      let cost: BenchRunCost = { tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 };
-      if (handle) {
-        cost = await ops.collectCost({ handle, workspaceId: ws }).catch(() => cost);
-      }
-
-      // TEARDOWN: best-effort — a teardown hiccup must not mask the run's outcome (mirrors hive-eval's
-      // teardown discipline). The caller owns `checkout.cleanup` (we leave the clone).
-      if (handle) {
-        await ops.teardown({ handle, workspaceId: ws }).catch(() => {});
-      }
-
+      const { disposition, detail, handle } = result;
       const stopReason = stopReasonForDisposition(disposition);
       const telemetry: GenerationTelemetry = {
-        tokensIn: cost.tokensIn,
-        tokensOut: cost.tokensOut,
-        costUsd: cost.costUsd,
-        turns: cost.turns,
+        tokensIn: summedCost.tokensIn,
+        tokensOut: summedCost.tokensOut,
+        costUsd: summedCost.costUsd,
+        turns: summedCost.turns,
         wallClockMs: ops.now() - startedAtMs,
         trajectoryRef: handle ? trajectoryRefFor(handle) : '',
         stopReason,
-        // `generationError` is the GENERATION-side infra failure marker (excluded from accuracy). Only an
-        // 'error' disposition carries it; an escalate/budget/max-turns is a real (scored) terminal, not an
-        // infra failure — its `detail` is informational and stays off the error field.
-        ...(disposition === 'error' && detail ? { generationError: detail } : {}),
+        // `generationError` carries the failure detail for every NON-scored terminal (error / timeout /
+        // infra-failed / transient) — these are all excluded from accuracy, and the detail explains why
+        // (a 429/contention spawn, a wall-clock ceiling, a crash). A SCORED terminal (done / escalate /
+        // budget / max-turns) is a real outcome, not a failure → its `detail` stays informational, off the field.
+        ...(!isScoredStopReason(stopReason) && detail
+          ? { generationError: `${detail}${retriesUsed > 0 ? ` [after ${retriesUsed} transient retr${retriesUsed === 1 ? 'y' : 'ies'}]` : ''}` }
+          : {}),
       };
 
-      return { worktreePath: handle?.worktreePath ?? checkout.dir, telemetry };
+      return { worktreePath: handle?.worktreePath ?? req.checkout.dir, telemetry };
     },
   };
+}
+
+/** A small sleep used by the transient-retry ride-out (overridable cadence in tests via opts). */
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -431,9 +548,13 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
         //    work) — surface it as an error disposition (the orchestration → 'error' telemetry, excluded).
         const decide = await spawnInvokeOnce(projectDir, deciderRole, [`FEATURE_ID=${handle.featureId}`], extraEnv);
         if (decide.exitCode !== 0 || !decide.output.trim()) {
+          // FAIRNESS: a 429 / rate-limit / contention spawn failure is TRANSIENT/external, not a capability
+          // fail — tag it 'transient' (→ 'infra-failed', NON-scored, retry-able) rather than 'error'. A
+          // genuine empty-output exit with no rate-limit marker stays 'error' (also non-scored, but distinct).
+          const transient = isTransientSpawnFailure(decide);
           return {
-            disposition: 'error',
-            detail: `decide invoke failed turn ${turn} (exit=${decide.exitCode}, empty=${!decide.output.trim()})${decide.stderr ? `: ${decide.stderr.slice(0, 300)}` : ''}`,
+            disposition: transient ? 'transient' : 'error',
+            detail: `decide invoke failed turn ${turn} (exit=${decide.exitCode}, empty=${!decide.output.trim()}${transient ? ', transient/429' : ''})${decide.stderr ? `: ${decide.stderr.slice(0, 300)}` : ''}`,
           };
         }
 
@@ -466,10 +587,13 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
         }
         const dispatch = await spawnInvokeOnce(projectDir, action.role, action.extras, extraEnv);
         if (dispatch.exitCode !== 0 && !dispatch.output.trim()) {
-          // A role that exits non-zero with NO output is an infra failure (throw-before-run); surface it.
+          // A role that exits non-zero with NO output is an infra failure (throw-before-run). FAIRNESS: when
+          // the stderr carries a 429 / rate-limit / contention marker it's TRANSIENT/external (→ 'transient'
+          // → 'infra-failed', NON-scored, retry-able), not a capability fail; otherwise a plain 'error'.
+          const transient = isTransientSpawnFailure(dispatch);
           return {
-            disposition: 'error',
-            detail: `${action.role} invoke failed turn ${turn} (exit=${dispatch.exitCode})${dispatch.stderr ? `: ${dispatch.stderr.slice(0, 300)}` : ''}`,
+            disposition: transient ? 'transient' : 'error',
+            detail: `${action.role} invoke failed turn ${turn} (exit=${dispatch.exitCode}${transient ? ', transient/429' : ''})${dispatch.stderr ? `: ${dispatch.stderr.slice(0, 300)}` : ''}`,
           };
         }
         lastVerb = action.role.toUpperCase();

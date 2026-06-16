@@ -87,7 +87,9 @@ export interface BenchRunListEntry {
   taskCount: number | null;
   gradedCount: number | null;
   resolvedCount: number | null;
-  /** resolvedCount / gradedCount (0–1), or null when nothing graded. */
+  /** External/transient/infra rows EXCLUDED from the resolved% denominator (the fairness count). */
+  infraExcluded: number | null;
+  /** resolvedCount / gradedCount (0–1) where gradedCount = SCORED tasks (infra excluded); null when none scored. */
   resolvedPct: number | null;
   nonEmptyDiffs: number | null;
   costUsd: number | null;
@@ -274,7 +276,17 @@ export async function setBenchRunStatus(
   await invalidate(runId);
 }
 
-/** Roll up + persist run-level metrics from the per-task rows (call on completion). */
+/**
+ * Roll up + persist run-level metrics from the per-task rows (call on completion).
+ *
+ * FAIRNESS (benchmark-fairness-fix): a per-task row whose generation/grading was an EXTERNAL or TRANSIENT
+ * failure (stop_reason ∈ {error, timeout, infra-failed} or a non-null generation_error) is EXCLUDED from
+ * the resolved% denominator — it is treated as resolved=null (never a capability fail) and counted
+ * SEPARATELY in `infra_excluded`. So `graded_count` = scored rows the grader actually verdicted, and
+ * resolved% = resolved_count / graded_count is resolved / SCORED-tasks, NOT resolved / all-graded. This is
+ * the live mirror of `@papercusp/bench-metrics` `isScored` (the same stop-reason → generationStatus bridge
+ * `generationStatusForStopReason` encodes; `NON_SCORED_STOP_REASONS` is the locked set, kept in sync here).
+ */
 export async function rollupBenchRunMetrics(runId: string, opts: DbScope = {}): Promise<void> {
   const { sql, ws } = resolveDb(opts);
   await sql`
@@ -282,6 +294,7 @@ export async function rollupBenchRunMetrics(runId: string, opts: DbScope = {}): 
       task_count = agg.task_count,
       graded_count = agg.graded_count,
       resolved_count = agg.resolved_count,
+      infra_excluded = agg.infra_excluded,
       non_empty_diffs = agg.non_empty_diffs,
       cost_usd = agg.cost_usd,
       tokens_in = agg.tokens_in,
@@ -290,8 +303,21 @@ export async function rollupBenchRunMetrics(runId: string, opts: DbScope = {}): 
     FROM (
       SELECT
         count(*)::int AS task_count,
-        count(*) FILTER (WHERE resolved IS NOT NULL)::int AS graded_count,
-        count(*) FILTER (WHERE resolved IS TRUE)::int AS resolved_count,
+        -- A row is NON-SCORED (excluded — external/transient/infra) when its stop_reason is one of the
+        -- locked non-scored reasons OR it carries a generation_error. These never count as a fail.
+        count(*) FILTER (
+          WHERE (stop_reason IS NULL OR stop_reason NOT IN ('error', 'timeout', 'infra-failed'))
+            AND generation_error IS NULL
+            AND resolved IS NOT NULL
+        )::int AS graded_count,
+        count(*) FILTER (
+          WHERE (stop_reason IS NULL OR stop_reason NOT IN ('error', 'timeout', 'infra-failed'))
+            AND generation_error IS NULL
+            AND resolved IS TRUE
+        )::int AS resolved_count,
+        count(*) FILTER (
+          WHERE stop_reason IN ('error', 'timeout', 'infra-failed') OR generation_error IS NOT NULL
+        )::int AS infra_excluded,
         count(*) FILTER (WHERE diff_bytes > 0)::int AS non_empty_diffs,
         COALESCE(sum(cost_usd), 0) AS cost_usd,
         COALESCE(sum(tokens_in), 0)::bigint AS tokens_in,
@@ -528,6 +554,7 @@ async function finalizeImportedRun(
       task_count = ${summary.taskCount},
       graded_count = ${summary.gradedCount},
       resolved_count = ${summary.resolvedCount},
+      infra_excluded = ${summary.infraExcluded},
       non_empty_diffs = ${summary.nonEmptyDiffs},
       cost_usd = ${summary.costUsd},
       tokens_in = ${summary.tokensIn},
@@ -590,6 +617,7 @@ function parseJsonb<T>(v: unknown): T | null {
 function toListEntry(r: RunRow): BenchRunListEntry {
   const resolvedCount = r.resolved_count == null ? null : Number(r.resolved_count);
   const gradedCount = r.graded_count == null ? null : Number(r.graded_count);
+  // resolved% = resolved / SCORED-tasks (gradedCount already excludes infra/transient rows — fairness fix).
   const resolvedPct = resolvedCount != null && gradedCount != null && gradedCount > 0 ? resolvedCount / gradedCount : null;
   return {
     id: r.id,
@@ -602,6 +630,7 @@ function toListEntry(r: RunRow): BenchRunListEntry {
     taskCount: r.task_count == null ? null : Number(r.task_count),
     gradedCount,
     resolvedCount,
+    infraExcluded: r.infra_excluded == null ? null : Number(r.infra_excluded),
     resolvedPct,
     nonEmptyDiffs: r.non_empty_diffs == null ? null : Number(r.non_empty_diffs),
     costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
@@ -631,6 +660,7 @@ interface RunRow {
   task_count: number | null;
   graded_count: number | null;
   resolved_count: number | null;
+  infra_excluded: number | null;
   non_empty_diffs: number | null;
   cost_usd: number | null;
   tokens_in: number | null;

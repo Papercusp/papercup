@@ -10,7 +10,7 @@
  * (excluded from accuracy). A budget-/turn-capped run still `completed` + `capped` (graded; capped ≠ a fail).
  */
 import type { ArmId } from '@papercusp/bench-metrics';
-import { diffSubmission, type ArmAttempt, type BenchTask, type GradeResult, type OfficialGrader } from './types';
+import { diffSubmission, isScoredStopReason, type ArmAttempt, type BenchTask, type GradeResult, type OfficialGrader } from './types';
 import type { EmitFromAttemptInput, EmitOptions } from './reproducibility/emit';
 
 export type { EmitFromAttemptInput } from './reproducibility/emit';
@@ -52,9 +52,14 @@ export interface AdapterRowResult {
   rollout: { rolloutId: string; runId: string };
 }
 
-/** True when an attempt produced a submission worth grading (a genuine termination, not an infra failure). */
+/**
+ * True when an attempt produced a submission worth grading (a genuine capability termination, not an
+ * external/transient/infra failure). FAIRNESS (benchmark-fairness-fix): excludes 'error' AND the new
+ * non-scored terminals 'timeout' (wall-clock under contention) + 'infra-failed' (429/contention spawn /
+ * drain-unsettled) — those never produced a fairly-given submission → resolved=null, never a fail.
+ */
 function isScoreable(attempt: ArmAttempt): boolean {
-  return attempt.stopReason !== 'error';
+  return isScoredStopReason(attempt.stopReason);
 }
 
 /** A placeholder grade for an attempt whose generation infra-failed — emitFromAttempt forces resolved=null. */

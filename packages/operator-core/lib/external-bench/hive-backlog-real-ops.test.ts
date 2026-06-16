@@ -30,9 +30,11 @@ test('stopReasonForFeatureStatus maps a member feature terminal → the ArmAttem
   assert.equal(stopReasonForFeatureStatus('passed', undefined), 'done');
   assert.equal(stopReasonForFeatureStatus('escalated', undefined), 'escalate');
   assert.equal(stopReasonForFeatureStatus('blocked', undefined), 'escalate');
-  // Not terminal at collect time (the fleet was paused to bound spend) → a cap-hit, still scored.
-  assert.equal(stopReasonForFeatureStatus('todo', undefined), 'max-turns');
-  assert.equal(stopReasonForFeatureStatus(null, undefined), 'max-turns');
+  // FAIRNESS (benchmark-fairness-fix): not terminal at collect time means the fleet was paused to bound
+  // spend before this member got a fair run under contention — an EXTERNAL drain-unsettled symptom, NOT a
+  // capability fail → 'infra-failed' (NON-scored, excluded from resolved%), NOT the old 'max-turns'-as-fail.
+  assert.equal(stopReasonForFeatureStatus('todo', undefined), 'infra-failed');
+  assert.equal(stopReasonForFeatureStatus(null, undefined), 'infra-failed');
 });
 
 // ── the per-member cost / spawn reads (over a fake tagged-template sql) ───────

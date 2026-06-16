@@ -95,6 +95,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('benchlaunch');
   sql = db.sql as unknown as OrgSql;
   await db.sql.unsafe(migrationSql('296-bench-run-operational-store.sql'));
+  await db.sql.unsafe(migrationSql('298-bench-run-infra-excluded.sql'));
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.bench_runs       DISABLE ROW LEVEL SECURITY;
     ALTER TABLE harness_shared.bench_run_tasks  DISABLE ROW LEVEL SECURITY;

@@ -780,8 +780,15 @@ const ESCALATE_FEATURE_STATUSES = new Set(['escalated', 'blocked']);
 /**
  * Map a member's terminal feature status → the {@link ArmAttempt} stopReason. A genuine infra failure
  * (a diff-extraction error) wins — it's a generation-side failure, not a scored terminal. Otherwise
- * passed → 'done', escalated/blocked → 'escalate', anything still in-flight at collect time (the fleet
- * was paused at the drain/timeout bound) → 'max-turns' (a cap-hit, NOT an infra error → still scored).
+ * passed → 'done', escalated/blocked → 'escalate'.
+ *
+ * FAIRNESS (benchmark-fairness-fix): a member that was still IN-FLIGHT when the fleet was paused at the
+ * drain/timeout bound was NOT given a fair chance to settle — under contention (a fleet cap << backlog),
+ * the bee may simply never have been placed, or was evicted, before the run's wall-clock ceiling forced a
+ * pause. Scoring that as 'max-turns'-counted-as-fail was the audit's central unfairness for the fleet arms.
+ * It now maps to 'infra-failed' (a NON-scored external terminal — EXCLUDED from resolved%, never a
+ * capability fail). A bee that genuinely ran its full turn/budget would have landed the feature in a
+ * terminal status (passed/escalated/blocked) → those stay scored.
  *
  * VERIFY-AT-FIRST-RUN: confirm a bench member's finalizer lands the single feature in `passed` on a
  * clean DONE (the same statuses `bench-harness-live.ts` keys on). If a member's terminal status differs
@@ -794,8 +801,9 @@ export function stopReasonForFeatureStatus(
   if (generationError) return 'error';
   if (status && DONE_FEATURE_STATUSES.has(status)) return 'done';
   if (status && ESCALATE_FEATURE_STATUSES.has(status)) return 'escalate';
-  // Not terminal at collect time — the fleet was paused to bound spend before this task settled.
-  return 'max-turns';
+  // Not terminal at collect time — the fleet was paused to bound spend before this task settled. Under
+  // contention this is an EXTERNAL drain-unsettled symptom, not a capability fail → 'infra-failed' (excluded).
+  return 'infra-failed';
 }
 
 /**

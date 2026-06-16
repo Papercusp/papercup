@@ -30,6 +30,7 @@ import {
   listBenchRuns,
   getBenchRunDetail,
   importPreservedRunToStore,
+  rollupBenchRunMetrics,
 } from './run-store';
 import type { FleetTaskResult } from './hive-backlog';
 
@@ -52,6 +53,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('benchstore');
   sql = db.sql as unknown as OrgSql;
   await db.sql.unsafe(migrationSql('296-bench-run-operational-store.sql'));
+  await db.sql.unsafe(migrationSql('298-bench-run-infra-excluded.sql'));
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.bench_runs       DISABLE ROW LEVEL SECURITY;
     ALTER TABLE harness_shared.bench_run_tasks  DISABLE ROW LEVEL SECURITY;
@@ -157,6 +159,45 @@ describe('bench run-store (live write + read)', () => {
   it('lists runs newest-first', async () => {
     const runs = await listBenchRuns(scope);
     expect(runs.some((r) => r.id === 'r1')).toBe(true);
+  });
+});
+
+describe('rollupBenchRunMetrics — fairness exclusion (benchmark-fairness-fix)', () => {
+  it('EXCLUDES external/transient/infra tasks from the resolved% denominator + counts them separately', async () => {
+    await upsertBenchRun(
+      { id: 'fair1', arm: 'hive-realqueen', taskSetId: 'custom:5-task', model: 'opus', status: 'running' },
+      scope,
+    );
+    // 5 tasks: 2 scored-resolved, 1 scored-fail, 1 wall-clock timeout, 1 infra-failed (429/contention).
+    await upsertBenchRunTask('fair1', { instanceId: 'ok-1', taskStatus: 'graded', resolved: true, stopReason: 'done', diffBytes: 100, costUsd: 4 }, scope);
+    await upsertBenchRunTask('fair1', { instanceId: 'ok-2', taskStatus: 'graded', resolved: true, stopReason: 'done', diffBytes: 100, costUsd: 4 }, scope);
+    await upsertBenchRunTask('fair1', { instanceId: 'fail-1', taskStatus: 'graded', resolved: false, stopReason: 'escalate', diffBytes: 100, costUsd: 4 }, scope);
+    await upsertBenchRunTask('fair1', { instanceId: 'timeout-1', taskStatus: 'collected', resolved: null, stopReason: 'timeout', diffBytes: 0, costUsd: 4, generationError: 'wall-clock ceiling' }, scope);
+    await upsertBenchRunTask('fair1', { instanceId: 'infra-1', taskStatus: 'collected', resolved: null, stopReason: 'infra-failed', diffBytes: 0, costUsd: 4, generationError: '429 contention' }, scope);
+
+    await rollupBenchRunMetrics('fair1', scope);
+    const runs = await listBenchRuns(scope);
+    const r = runs.find((x) => x.id === 'fair1')!;
+    expect(r.taskCount).toBe(5);
+    expect(r.gradedCount).toBe(3); // ONLY the scored tasks — infra/timeout EXCLUDED from the denominator
+    expect(r.resolvedCount).toBe(2);
+    expect(r.infraExcluded).toBe(2); // timeout-1 + infra-1, surfaced separately
+    expect(r.resolvedPct).toBeCloseTo(2 / 3, 5); // resolved / SCORED-tasks, NOT 2/5
+    // Cost still counts EVERY task (a crashed/throttled run still spent real tokens — honest cost).
+    expect(r.costUsd).toBeCloseTo(20, 5);
+  });
+
+  it('a grader-manufactured (false) verdict on an infra row is NOT counted as a capability fail', async () => {
+    await upsertBenchRun({ id: 'fair2', arm: 'su-independent', taskSetId: 'custom:2-task', model: 'opus' }, scope);
+    await upsertBenchRunTask('fair2', { instanceId: 'ok', taskStatus: 'graded', resolved: true, stopReason: 'done', costUsd: 1 }, scope);
+    // The grade map applied resolved=false, but the row also carries a non-scored stopReason → excluded.
+    await upsertBenchRunTask('fair2', { instanceId: 'infra', taskStatus: 'graded', resolved: false, stopReason: 'infra-failed', generationError: 'spawn 429', costUsd: 1 }, scope);
+    await rollupBenchRunMetrics('fair2', scope);
+    const r = (await listBenchRuns(scope)).find((x) => x.id === 'fair2')!;
+    expect(r.gradedCount).toBe(1); // only the genuine 'done' row
+    expect(r.resolvedCount).toBe(1);
+    expect(r.infraExcluded).toBe(1);
+    expect(r.resolvedPct).toBe(1); // 1/1 scored, NOT 1/2
   });
 });
 
