@@ -124,6 +124,21 @@ export interface CoordEscalationInput {
   fromLabel?: string | null;
 }
 
+/**
+ * queue-pending-accuracy D-005: an escalation is OPERATIONAL — a system/automated
+ * alert, NOT a human decision — when its sender is a `system` owner (incl.
+ * `system:<emitter>` like `system:hive-placement-watchdog`) AND it carries no
+ * options (no choice to make). Placement-watchdog cursed placements + aging
+ * sweeps are the dominant class (~7000 open, 135 ever resolved). Genuine human
+ * decisions come from agents (coord:escalate / coord:ask-owner) — a real sender,
+ * often with options. Operational escalations are surfaced in the ALERT tier and
+ * auto-resolved by the reconciliation sweep; they never reach "waiting on you".
+ * The shared classifier so the reader (tiering) and the reconcile sweep agree.
+ */
+export function isOperationalEscalation(from: string | null | undefined, hasOptions: boolean): boolean {
+  return !hasOptions && typeof from === 'string' && (from === 'system' || from.startsWith('system:'));
+}
+
 export function coordEscalationToAttention(e: CoordEscalationInput): AttentionItem {
   const options = e.options ?? [];
   // Tier (D-002/D-001) via the canonical risk scale (queen-autonomy-policy P-013):
@@ -139,7 +154,7 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
   // sender or carry options to pick. Surfacing every cursed placement as a
   // "waiting on you" decision flooded the queue (~7000+ open, 135 ever resolved);
   // the derived placements.cursed health metric is the proper rollup.
-  const operationalSystem = e.from === 'system' && options.length === 0;
+  const operationalSystem = isOperationalEscalation(e.from, options.length > 0);
   const tier: AttentionTier = operationalSystem
     ? 'alert'
     : riskTierIsDecision(riskTier)

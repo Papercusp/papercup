@@ -79,23 +79,28 @@ describe('P-013 — escalation severity folds into risk_tier', () => {
   });
 
   it('D-005: a SYSTEM-emitted escalation with no options is an ALERT, not a decision (cursed-placement flood)', () => {
-    // placement-watchdog cursed placements escalate from='system' as a blocker but
-    // carry NO options — operational, not a human decision. Without this, ~7000 open
-    // cursed-placement escalations flooded the "waiting on you" decision tier.
+    // placement-watchdog cursed placements escalate as a blocker from the REAL owner
+    // `system:hive-placement-watchdog` (NOT bare `system`) but carry NO options —
+    // operational, not a human decision. Without this, ~7000 open cursed-placement
+    // escalations flooded the "waiting on you" decision tier.
     const sys = coordEscalationToAttention({
       msgId: 'm-sys',
       severity: 'blocker',
       summary: 'Cursed placement: F-X failed 301×',
-      from: 'system',
+      from: 'system:hive-placement-watchdog',
     });
     expect(sys.tier).toBe('alert');
     expect(sys.needsHuman).toBe(false);
+    // bare `system` (e.g. aging sweeps) is operational too.
+    expect(
+      coordEscalationToAttention({ msgId: 'm-sys0', severity: 'blocker', summary: 's', from: 'system' }).tier,
+    ).toBe('alert');
     // A system escalation that DOES carry a choice stays a decision.
     const sysChoice = coordEscalationToAttention({
       msgId: 'm-sys2',
       severity: 'blocker',
       summary: 's',
-      from: 'system',
+      from: 'system:hive-placement-watchdog',
       options: [{ id: 'a', label: 'A' }],
     });
     expect(sysChoice.tier).toBe('decision');

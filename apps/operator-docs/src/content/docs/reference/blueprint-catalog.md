@@ -12,7 +12,7 @@ sidebar:
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (31 concrete + 2 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (32 concrete + 4 abstract).
 
 ## Built-in blueprints
 
@@ -23,6 +23,7 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (31 con
 | `calibration` | base | mining-run (`CAL`) | — | inherited | 0 | Deterministic learning loop: mature open calibration bets against their domain probes, resolving or voiding past the grace window (the calibration-markets resolution sweep) on a cadence. Pure SQL, no agent. |
 | `change-ledger` | base | mining-run (`CLG`) | — | inherited | 0 | Deterministic recorder: git-log the prompt-source roots over a trailing window and offer one behavior-change-ledger row per (commit, file) (the change-ledger repo-edit scan) on a cadence. Pure bookkeeping — git + SQL, no agent, no LLM. |
 | `coding` | base | feature (`F`) | director | concurrency 4, plan-order | 11 | The default coding harness: a per-feature director drives scoper → architect → worker → validator → reviewer → documenter → curator, with opt-in quality gates (tester / security / crosscheck / ui-qa). |
+| `coding-solo` | single-agent | feature (`F`) | worker | inherited | 1 | Baseline A internal ablation: the coding harness with the multi-agent spine collapsed to a single end-to-end worker — identical model / base tools / infra / budget to the full coding spine, only orchestration OFF. The single-agent generation unit for the impartial benchmark suite (also the per-sample unit Baseline C best-of-N samples). |
 | `content-fix` | single-agent | content-fix (`CFX`) | content-fixer | inherited | 1 | Fix a git-sync content-guard quarantine: a content-fixer agent fixes ONLY the syntax of the named files so they pass their content detector (an .mdx that won't compile, a curly quote used as code), changes nothing else, leaves the tree clean, and does not push. |
 | `deferral-interest` | base | mining-run (`DIR`) | — | inherited | 0 | Deterministic learning loop: backfill realized deferral costs from history and re-fit the learned deferral-pricing model the queue ranker reads (the deferral-interest refit) on a cadence. Pure SQL + math, no agent. |
 | `deliberate` | base | decision (`DLIB`) | — | inherited | 0 | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split. |
@@ -55,6 +56,8 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (31 con
 | Blueprint | Description |
 |---|---|
 | `base` | Abstract base blueprint — common knobs + defaults. Not directly runnable; extended by concrete blueprints. |
+| `external-bench` | The full Papercusp arm of the impartial benchmark suite: the complete coding spine + coordination substrate run autonomously to DONE over one cloned public benchmark task, under an iso-budget cap, graded by the benchmark's OWN external harness. The spine-ON pole of the `coding-solo` causal-isolation pairing (arm 'papercusp'); we neither author nor grade. Spun by the `instantiateBenchHarness` port (./run-loop.ts). |
+| `generic-hive` | A generic (non-coding) Hive — the Queen places research / analysis / deliberation work onto a fleet of bees that produce DELIVERABLES (reports, decisions, documents). "Done" is decided by an LLM judge against a rubric; output lands in the artifacts store; the Queen co-locates work by topic, not file. Repo-less. The non-coding counterpart of the coding `hive`. |
 | `single-agent` | Abstract parent for single-role run-to-done launches — the shared single-role spine (one decider role + DONE/ESCALATE/IDLE edges + inline planner) plus the governed + durable launch contract. Not directly runnable; extended by implement / scan / merge-resolution / deploy. |
 
 ## Details
@@ -115,6 +118,16 @@ The default coding harness: a per-feature director drives scoper → architect �
 - **Finalize gates:** done: curator → postCuratorOutputs → documenter → archive; escalate: curator
 - **Roles (11):** `director`, `scoper`, `architect`, `worker`, `validator`, `debugger` (reactive), `documenter`, `curator`, `security-reviewer` (reactive), `crosscheck` (reactive), `ui-qa` (reactive)
 
+### `coding-solo`
+
+Baseline A internal ablation: the coding harness with the multi-agent spine collapsed to a single end-to-end worker — identical model / base tools / infra / budget to the full coding spine, only orchestration OFF. The single-agent generation unit for the impartial benchmark suite (also the per-sample unit Baseline C best-of-N samples).
+
+- **Extends:** `single-agent`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `F`)
+- **Spine decider:** `worker` (maxTurns 200)
+- **Roles (1):** `worker`
+
 ### `content-fix`
 
 Fix a git-sync content-guard quarantine: a content-fixer agent fixes ONLY the syntax of the named files so they pass their content detector (an .mdx that won't compile, a curly quote used as code), changes nothing else, leaves the tree clean, and does not push.
@@ -151,6 +164,13 @@ The release-gate deploy launch: the release-manager agent reviews the gathered d
 - **Spine decider:** `release-manager` (maxTurns 20)
 - **Roles (1):** `release-manager`
 
+### `external-bench`
+
+The full Papercusp arm of the impartial benchmark suite: the complete coding spine + coordination substrate run autonomously to DONE over one cloned public benchmark task, under an iso-budget cap, graded by the benchmark's OWN external harness. The spine-ON pole of the `coding-solo` causal-isolation pairing (arm 'papercusp'); we neither author nor grade. Spun by the `instantiateBenchHarness` port (./run-loop.ts).
+
+- **Extends:** `coding`
+- **Version:** 0.1.0
+
 ### `fleet-ekg`
 
 Deterministic learning loop: embed recent agent sessions into behavioral vectors, detect fleet-wide distribution shifts vs the trailing baseline, attribute against the behavior-change ledger, and alarm unattributable MAJOR shifts (the Fleet EKG) on a cadence. Pure SQL, no agent.
@@ -158,6 +178,13 @@ Deterministic learning loop: embed recent agent sessions into behavioral vectors
 - **Extends:** `base`
 - **Version:** 0.1.0
 - **Work item:** `scan-run` (id prefix `EKG`)
+
+### `generic-hive`
+
+A generic (non-coding) Hive — the Queen places research / analysis / deliberation work onto a fleet of bees that produce DELIVERABLES (reports, decisions, documents). "Done" is decided by an LLM judge against a rubric; output lands in the artifacts store; the Queen co-locates work by topic, not file. Repo-less. The non-coding counterpart of the coding `hive`.
+
+- **Extends:** `hive`
+- **Version:** 0.1.0
 
 ### `graduation`
 

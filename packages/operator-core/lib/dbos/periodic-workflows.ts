@@ -29,6 +29,7 @@ import { sweepOrphanSnapshots } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
 import { getOrgPg } from '@papercusp/db-org';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
+import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
 // enforce retention. A transient PostHog failure already degrades to retry-next,
@@ -114,6 +115,22 @@ const outboxBackstopGcWorkflow = DBOS.registerWorkflow(outboxBackstopGcTick, {
   name: 'outboxBackstopGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', crontab: '0 0 */6 * * *' });
+
+// Hourly (:20, off the :00 stampede): reconcile the attention queue — auto-resolve
+// stale OPERATIONAL escalations (placement-watchdog cursed placements / aging
+// sweeps: system sender, no options) idle past the TTL. They are redundant
+// duplicates of the derived placements.cursed health metric, emitted en masse and
+// never resolved (~7000 open / ~135 resolved), so without this they accumulate
+// forever in the alert tier. Genuine human-decision escalations are never touched.
+// Batch-limited (500/tick) to drain a large backlog without a coord-log write
+// burst. queue-pending-accuracy-and-drift P-003/P-005.
+async function attentionReconcileTick(): Promise<void> {
+  await DBOS.runStep(() => reconcileStaleEscalationsOnce(), { name: 'attention-reconcile' });
+}
+const attentionReconcileWorkflow = DBOS.registerWorkflow(attentionReconcileTick, {
+  name: 'attentionReconcile', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(attentionReconcileWorkflow, { name: 'attentionReconcile', crontab: '0 20 * * * *' });
 
 // Every minute: probe the dev endpoints (:3070/:3055/:3350/…) and
 // broadcast a coord message on each up/down TRANSITION (fleet-coordination-

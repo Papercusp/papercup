@@ -645,7 +645,14 @@ async function fireUnblockWake(
 async function escalateCursedPlacement(unitId: string, harness: string | null, fails: number): Promise<string | null> {
   try {
     const rec = await openEscalation(watchdogIdentity, {
-      severity: 'blocker',
+      // advisory, not blocker: the watchdog has ALREADY stopped auto-re-placing —
+      // this is an FYI to investigate, not a decision blocking the system. blocker
+      // here (+ surfacing every cursed placement) flooded "waiting on you" with
+      // ~7000 option-less ops escalations (queue-pending-accuracy D-005). The
+      // reader demotes system escalations to the alert tier regardless; this keeps
+      // the stored severity/importance honest too. The derived placements.cursed
+      // health metric is the real cursed-state surface.
+      severity: 'advisory',
       summary: `Cursed placement: ${unitId} failed ${fails}× — stopped auto-re-placing`,
       body:
         `Work-item ${unitId}${harness ? ` (${harness})` : ''} has been placed and lost ${fails} times without ` +
