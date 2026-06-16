@@ -35,7 +35,8 @@ describe('lexicon:active_pack', () => {
     const out = await callTool();
     expect(out.ok).toBe(true);
     expect(out.packId).toBe('classic');
-    expect(out.terms.pot).toEqual({ one: 'Pot', other: 'Pots' });
+    // Owner directive 2026-06-16: `pot` is canonically "Hive" in the baseline.
+    expect(out.terms.pot).toEqual({ one: 'Hive', other: 'Hives' });
     expect(out.terms.fleet.one).toBe('Fleet');
     expect(out.terms.operator.one).toBe('Operator');
     expect(out.terms.cupboard.one).toBe('Cupboard');
