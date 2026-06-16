@@ -36,19 +36,25 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { makeClaudeProvider, CLAUDE_CODE_CLIENT_ID, pkceChallenge, type TokenResponse } from '../oauth/providers';
 
 /**
- * The CURRENT Claude subscription-login OAuth flow (what `claude /login` does to mint a
- * session token for inference), matched to the live claude CLI (v2.1.x) + GitHub
- * anthropics/claude-code#29983. NOT the older console/setup-token params: a hand-built URL
- * with `code=true` + the `org:create_api_key` scope + the `console.anthropic.com` redirect
- * is rejected by claude.ai with "Invalid request format" (the endpoints migrated
- * console.anthropic.com → platform.claude.com). Kept LOCAL to the link flow so the shared
- * CLAUDE_OAUTH_DEFAULTS (which the inference-gateway's token-refresh uses) is untouched.
- * (accounts-pool-tab-2026-06-15 D-013.)
+ * The CURRENT Claude OAuth login flow — captured VERBATIM from the live `claude setup-token`
+ * URL (claude CLI v2.1.178), the ground-truth that claude.ai actually accepts. Do NOT trust
+ * GitHub issues / older docs for this; they're stale. The exact working URL is:
+ *   https://claude.com/cai/oauth/authorize?code=true&client_id=<CC>&response_type=code
+ *     &redirect_uri=https://platform.claude.com/oauth/code/callback&scope=user:inference
+ *     &code_challenge=<S256>&code_challenge_method=S256&state=<rand>
+ * The three things that cause claude.ai "Authorization failed: Invalid request format":
+ *   (1) the host MUST be claude.com/cai/oauth/authorize (NOT claude.ai/oauth/authorize),
+ *   (2) `code=true` is REQUIRED (it's the manual code-paste flag), and
+ *   (3) the scope is exactly `user:inference` (NOT org:create_api_key, NOT the user:profile/
+ *       sessions/mcp set). Endpoints migrated console.anthropic.com → platform.claude.com.
+ * Kept LOCAL to the link flow so the shared CLAUDE_OAUTH_DEFAULTS (gateway token-refresh) is
+ * untouched. Recovery if it breaks again: `CLAUDE_CONFIG_DIR=/tmp/x claude setup-token` and
+ * copy the URL it prints. (accounts-pool-tab-2026-06-15 D-013/D-014; insight: claude-oauth-authorize-url.)
  */
-const CLAUDE_LOGIN_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
+const CLAUDE_LOGIN_AUTHORIZE_URL = 'https://claude.com/cai/oauth/authorize';
 const CLAUDE_LOGIN_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
 const CLAUDE_LOGIN_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
-const CLAUDE_LOGIN_SCOPES = ['user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers'];
+const CLAUDE_LOGIN_SCOPES = ['user:inference'];
 import type { ClaudeCredentialBundle } from '../inference-gateway/credential-store';
 import { registerAccount } from './account-pool';
 import { updateAccountPool, accountStatus, type AccountStatusRow } from './account-pool-store';
@@ -145,10 +151,10 @@ export function startAccountLink(input: StartAccountLinkInput): StartAccountLink
   const verifier = genVerifier();
   // State echoed by claude.ai in `code#state` — a random binding value, NOT the verifier.
   const state = b64url(randomBytes(16));
-  // Build the subscription-login authorize URL with the CURRENT params (see the constants
-  // above). NOT provider.buildAuthorizeUrl — that one hardcodes `code=true` + the stale
-  // console/api-key scopes that claude.ai rejects as "Invalid request format".
+  // Build the authorize URL byte-for-byte like `claude setup-token` (the only format claude.ai
+  // accepts) — NOT provider.buildAuthorizeUrl (stale host/scope). Param order mirrors the CLI.
   const u = new URL(CLAUDE_LOGIN_AUTHORIZE_URL);
+  u.searchParams.set('code', 'true');
   u.searchParams.set('client_id', CLAUDE_CODE_CLIENT_ID);
   u.searchParams.set('response_type', 'code');
   u.searchParams.set('redirect_uri', CLAUDE_LOGIN_REDIRECT_URI);

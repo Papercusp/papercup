@@ -39,13 +39,19 @@ describe('linkId sign/verify', () => {
 });
 
 describe('startAccountLink', () => {
-  it('builds a claude.ai PKCE authorize URL + a linkId carrying the verifier', () => {
+  it('builds the EXACT working claude OAuth authorize URL (matches `claude setup-token`) + a linkId carrying the verifier', () => {
     const r = startAccountLink({ accountId: 'acme', label: 'Acme', now: () => 1_000, genVerifier: () => 'verifier-xyz' });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const u = new URL(r.authorizeUrl);
-    expect(u.host).toBe('claude.ai');
-    expect(u.pathname).toBe('/oauth/authorize');
+    // Ground-truth from `claude setup-token` (claude CLI v2.1.178) — claude.ai REJECTS any
+    // other host/scope/code combo with "Invalid request format". Pin all three so a regression
+    // is caught (see insight claude-oauth-authorize-url; accounts-pool-tab D-014):
+    expect(u.host).toBe('claude.com'); //                       NOT claude.ai
+    expect(u.pathname).toBe('/cai/oauth/authorize'); //         NOT /oauth/authorize
+    expect(u.searchParams.get('code')).toBe('true'); //         REQUIRED (manual code-paste flag)
+    expect(u.searchParams.get('scope')).toBe('user:inference'); // NOT org:create_api_key / the user:* set
+    expect(u.searchParams.get('redirect_uri')).toBe('https://platform.claude.com/oauth/code/callback');
     expect(u.searchParams.get('code_challenge_method')).toBe('S256');
     expect(u.searchParams.get('code_challenge')).toBeTruthy();
     // The VERIFIER itself must never appear in the authorize URL (only the challenge).

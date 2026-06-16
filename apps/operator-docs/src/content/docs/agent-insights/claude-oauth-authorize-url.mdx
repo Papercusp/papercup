@@ -1,0 +1,79 @@
+---
+title: The Claude OAuth authorize URL (link a Max account) — exact format, or "Invalid request format"
+description: A hand-built Claude OAuth authorize URL is rejected by claude.ai with "Authorization failed Invalid request format" unless it matches the CLI byte-for-byte. The working host is claude.com/cai/oauth/authorize (NOT claude.ai), code=true is REQUIRED, and the scope is exactly user:inference. Recover the current format by capturing `claude setup-token`'s URL. GitHub issues + older docs are stale.
+discovered: 2026-06-16
+tags: [oauth, claude, max-account, accounts-pool, deploy-accounts, external-api]
+status: active
+---
+
+## What
+
+When you build a Claude OAuth "authorize" URL yourself (to let the owner link a Max
+account by clicking a link, instead of running `claude setup-token`), claude.ai will
+reject it with **"Authorization failed — Invalid request format"** unless every part
+matches what the `claude` CLI currently sends. This has burned multiple agents on the
+same plan (`accounts-pool-tab-2026-06-15`) — each re-derived it; nobody recorded it.
+This page is the record.
+
+## The exact working URL (claude CLI v2.1.178, 2026-06-16)
+
+```
+https://claude.com/cai/oauth/authorize
+  ?code=true
+  &client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e
+  &response_type=code
+  &redirect_uri=https://platform.claude.com/oauth/code/callback
+  &scope=user:inference
+  &code_challenge=<base64url(sha256(verifier))>
+  &code_challenge_method=S256
+  &state=<random>
+```
+
+Exchange the pasted code at **`https://platform.claude.com/v1/oauth/token`**
+(`grant_type=authorization_code`, `code`, `redirect_uri` matching the above, `client_id`,
+`code_verifier`).
+
+## The three things that cause "Invalid request format"
+
+1. **Host.** It MUST be `claude.com/cai/oauth/authorize`. **Not** `claude.ai/oauth/authorize`
+   (the older host — rejected) and not `platform.claude.com/oauth/authorize` (that's the
+   Console/API-key authorize). `cai` = the subscription login.
+2. **`code=true` is REQUIRED.** It's the "show me the code to paste" (manual / headless)
+   flag. Removing it (as some GitHub issues advise) breaks the paste flow.
+3. **Scope is exactly `user:inference`.** Not `org:create_api_key` (that's the Console
+   API-key scope — wrong for a subscription login), and not the broader
+   `user:profile user:inference user:sessions:claude_code user:mcp_servers` set.
+
+Endpoints migrated **`console.anthropic.com` → `platform.claude.com`**; an
+`console.anthropic.com/oauth/code/callback` redirect is stale.
+
+## Do NOT trust GitHub issues / blog posts for this
+
+anthropics/claude-code#29983 et al. describe an *older* variant (claude.ai host, drop
+`code=true`, the 4-scope set). Following it produces a URL that STILL gets "Invalid request
+format." Anthropic changes this flow; only the installed CLI is ground truth.
+
+## Recovery (when it breaks again — it will)
+
+Capture the URL the CLI actually produces, in an isolated config dir so it can't touch
+`~/.claude`, and don't complete it:
+
+```bash
+CLAUDE_CONFIG_DIR=/tmp/cstp timeout 20 script -qec 'claude setup-token' /dev/null </dev/null 2>&1 \
+  | tr -d '\r' | grep -oiE 'https://[a-z0-9./_-]+/oauth/authorize[^ "]+'
+```
+
+Then make the in-app URL match it exactly (host, `code=true`, scope), keeping your own
+per-request `code_challenge`/`state`.
+
+## Where it lives
+
+`packages/operator-core/lib/deployment/account-link-store.ts` builds this URL (the
+`CLAUDE_LOGIN_*` constants + `startAccountLink`); `account-link-store.test.ts` pins all
+three params so a regression to the wrong host/scope/code fails CI. The flow is surfaced in
+the Settings → Deploy Accounts wizard ("Via browser (OAuth)") and the /adv Accounts tab.
+
+> NOTE: the SHARED `oauth/providers.ts` `CLAUDE_OAUTH_DEFAULTS` is still on the stale
+> `console.anthropic.com` + `org:create_api_key` + `code=true`-via-`buildAuthorizeUrl`
+> params, and the inference-gateway's token REFRESH uses it. Tracked as EI-867 — verify +
+> migrate that to `platform.claude.com` behind a probe (it's the live fleet's auth path).
