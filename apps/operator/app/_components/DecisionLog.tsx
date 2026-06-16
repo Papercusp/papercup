@@ -22,14 +22,14 @@
  * The only interactive state is the transient per-row "reverting" lifecycle
  * (useState — not user-meaningful, so not nuqs).
  */
-import { type CSSProperties, type ReactNode, useMemo, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useState } from 'react';
 import { parseAsInteger, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 
 /* Wire type — mirrors DecisionLedgerEntry (operator-core/lib/decision-ledger/read.ts),
  * kept local per the client wire-type decoupling convention. */
-interface DecisionRow {
+export interface DecisionRow {
   id: number;
   ts: string;
   layer: string;
@@ -66,6 +66,11 @@ export interface DecisionLogProps {
   /** Passthrough for the root <section> (lets the settings page keep its spacing). */
   className?: string;
   style?: CSSProperties;
+  /** queue-pending-accuracy P-004: when provided, the row detail is rendered
+   *  EXTERNALLY (a 3-pane right column) — a row click reports the selected row
+   *  here (null on deselect) and the inline expand is suppressed. Omit (the
+   *  settings page) to keep the self-contained inline accordion. */
+  onSelectRow?: (row: DecisionRow | null) => void;
 }
 
 /** POST the revert to the dedicated loopback route (mirrors GraduationPrompts'
@@ -129,8 +134,9 @@ function DetailField({ label, children }: { label: string; children: ReactNode }
 
 /** Expanded detail for a selected decision row — every field the collapsed
  *  one-liner truncates or drops (full `why`, the governance tuple, links, raw
- *  metadata). Rendered only for the open row. */
-function DecisionDetail({ row }: { row: DecisionRow }) {
+ *  metadata). Rendered inline below the open row, or (queue 3-pane) in the shared
+ *  right detail pane. */
+export function DecisionDetail({ row }: { row: DecisionRow }) {
   const fields: Array<[string, ReactNode]> = [];
   if (row.action) fields.push(['Action', <code style={{ fontSize: 11 }}>{row.action}</code>]);
   if (row.disposition) fields.push(['Disposition', DISPOSITION_LABEL[row.disposition] ?? row.disposition]);
@@ -208,6 +214,7 @@ export default function DecisionLog({
   showUndo = true,
   className,
   style,
+  onSelectRow,
 }: DecisionLogProps) {
   const args = useMemo(
     () => ({
@@ -228,6 +235,13 @@ export default function DecisionLog({
   // selected entry is user-meaningful + deep-linkable, and the agent UI control
   // surface reads selection from the URL (CLAUDE.md "selection ids → nuqs").
   const [selectedId, setSelectedId] = useQueryState('decision', parseAsInteger);
+  // External-detail mode (queue 3-pane): mirror the selected row to the parent so
+  // it renders the detail in the shared right pane (the inline expand is suppressed
+  // below). Covers clicks, a `?decision=` deep-link, and data refresh uniformly.
+  useEffect(() => {
+    if (!onSelectRow) return;
+    onSelectRow(selectedId != null ? (rows.find((r) => r.id === selectedId) ?? null) : null);
+  }, [onSelectRow, selectedId, rows]);
 
   const onUndo = async (row: DecisionRow) => {
     if (!row.tripwireId) return;
@@ -374,7 +388,7 @@ export default function DecisionLog({
               </button>
             ) : null}
           </div>
-          {isOpen ? <DecisionDetail row={row} /> : null}
+          {isOpen && !onSelectRow ? <DecisionDetail row={row} /> : null}
           </div>
         );
       })}

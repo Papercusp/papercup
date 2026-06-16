@@ -2,30 +2,26 @@
  * account-session-override — the owner's "session-now" steer over WHICH pool accounts
  * the fleet may spawn/deploy on (accounts-pool-tab-2026-06-15 P-004; owner greenlit
  * "allow-list + exclude", whole-fleet, no TTL). The account sibling of owner-steering.ts
- * (the Queen-focus lever): same hive_settings-backed, no-migration, fail-soft pattern.
+ * (the Queen-focus lever).
  *
  * Two axes, both empty by default (⇒ EXACTLY today's selection — purely additive):
- *   account-session-override:forced   — JSON [accountId]; the Queen may use ONLY these
- *                                       (allow-list). Empty ⇒ no restriction.
- *   account-session-override:exclude  — JSON [accountId]; skip these (e.g. a flaky /
- *                                       rate-limited account). Empty ⇒ skip none.
+ *   forcedAccounts   — the Queen may use ONLY these (allow-list). Empty ⇒ no restriction.
+ *   excludeAccounts  — skip these (e.g. a flaky / rate-limited account). Empty ⇒ skip none.
  *
  * Applied as a precedence layer BEFORE the existing headroom/drain selectors
  * (account-pool-store.ts): restrict to `forced`, drop `exclude`, then select among
  * what survives. FAIL-SOFT and NO-OP-WHEN-UNSET — a read error or an empty override is
  * exactly the pre-override behaviour, so it can never wedge the live spawn chokepoint.
  *
- * Whole-fleet: stored on the workspace's HOME hive (the same hive_settings owner-steering
- * uses), and the spawn/deploy selectors read it regardless of the spawning harness.
+ * WORKSPACE-LEVEL, not per-hive (D-017): persisted as a single-row-per-workspace JSONB
+ * in `harness_shared.operator_account_override` (migration 297) — the operator-state
+ * idiom, the same store the account POOL uses. The original P-004 design keyed it to the
+ * home hive's hive_settings, which broke when no home hive was configured
+ * ("no_home_harness") and split the write key from the read key. Living in its own
+ * operator-state row (apart from operator_account_pool) keeps the owner's intent from
+ * being clobbered by the pool's high-churn rate-projection writes.
  */
-import type { Sql } from 'postgres';
-import { listHiveSettings, setHiveSetting, deleteHiveSetting } from '../hive-settings-store';
-
-/** The hive_settings keys the account override occupies (P-004). */
-export const ACCOUNT_OVERRIDE_KEYS = {
-  forcedAccounts: 'account-session-override:forced',
-  excludeAccounts: 'account-session-override:exclude',
-} as const;
+import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 
 /** The decoded override. Both empty ⇒ no restriction (today's behaviour). */
 export interface AccountSessionOverride {
@@ -36,6 +32,8 @@ export interface AccountSessionOverride {
 }
 
 export const DEFAULT_ACCOUNT_OVERRIDE: AccountSessionOverride = { forcedAccounts: [], excludeAccounts: [] };
+
+const OVERRIDE_STATE_TABLE = 'operator_account_override' as const;
 
 function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
@@ -65,20 +63,6 @@ export function applyAccountOverride(accountIds: readonly string[], o: AccountSe
   return ids;
 }
 
-/** Read the override for a hive (one query; missing keys default to no-restriction). */
-export async function getAccountSessionOverride(
-  workspaceId: string,
-  hiveHomeSlug: string,
-  sql?: Sql,
-): Promise<AccountSessionOverride> {
-  const rows = await listHiveSettings(workspaceId, hiveHomeSlug, sql);
-  const byKey = new Map(rows.map((r) => [r.settingKey, r.value]));
-  return {
-    forcedAccounts: asStringArray(byKey.get(ACCOUNT_OVERRIDE_KEYS.forcedAccounts)),
-    excludeAccounts: asStringArray(byKey.get(ACCOUNT_OVERRIDE_KEYS.excludeAccounts)),
-  };
-}
-
 export interface AccountSessionOverridePatch {
   forcedAccounts?: string[];
   excludeAccounts?: string[];
@@ -86,45 +70,33 @@ export interface AccountSessionOverridePatch {
   clear?: boolean;
 }
 
+/** Read the workspace's account override (no hive needed; missing row ⇒ no restriction). */
+export async function getAccountOverride(workspaceId: string): Promise<AccountSessionOverride> {
+  const raw = await readOperatorState<Partial<AccountSessionOverride>>(OVERRIDE_STATE_TABLE, workspaceId);
+  return {
+    forcedAccounts: asStringArray(raw?.forcedAccounts),
+    excludeAccounts: asStringArray(raw?.excludeAccounts),
+  };
+}
+
 /**
- * Write an override patch (upsert per axis). `clear:true` wipes both; otherwise only the
- * provided axes are written ([] clears that axis; omitted is untouched). Returns the result.
+ * Write an override patch (read-modify-write the single row). `clear:true` wipes both;
+ * otherwise only the provided axes change ([] clears that axis; omitted is untouched).
+ * Returns the resulting override.
  */
-export async function setAccountSessionOverride(
+export async function setAccountOverride(
   workspaceId: string,
-  hiveHomeSlug: string,
   patch: AccountSessionOverridePatch,
-  sql?: Sql,
 ): Promise<AccountSessionOverride> {
   if (patch.clear) {
-    for (const key of Object.values(ACCOUNT_OVERRIDE_KEYS)) {
-      await deleteHiveSetting(workspaceId, hiveHomeSlug, key, sql);
-    }
+    await writeOperatorState(OVERRIDE_STATE_TABLE, DEFAULT_ACCOUNT_OVERRIDE, workspaceId);
     return DEFAULT_ACCOUNT_OVERRIDE;
   }
-  if (patch.forcedAccounts !== undefined) {
-    await setHiveSetting({ workspaceId, hiveHomeSlug, settingKey: ACCOUNT_OVERRIDE_KEYS.forcedAccounts, value: asStringArray(patch.forcedAccounts) }, sql);
-  }
-  if (patch.excludeAccounts !== undefined) {
-    await setHiveSetting({ workspaceId, hiveHomeSlug, settingKey: ACCOUNT_OVERRIDE_KEYS.excludeAccounts, value: asStringArray(patch.excludeAccounts) }, sql);
-  }
-  return getAccountSessionOverride(workspaceId, hiveHomeSlug, sql);
-}
-
-/**
- * The account override is WORKSPACE-LEVEL (the whole pool, whole fleet) — NOT per-hive. Keying it
- * to a home hive (the original design) broke when no home hive is configured ("no_home_harness")
- * and split the write key from the read key. We key it under a stable per-workspace pseudo-slug in
- * hive_settings so it works with zero hives and write/read always agree (accounts-pool-tab D-017).
- */
-export const ACCOUNT_OVERRIDE_SLUG = '__account-pool__';
-
-/** Read the workspace's account override (no hive needed). */
-export function getAccountOverride(workspaceId: string, sql?: Sql): Promise<AccountSessionOverride> {
-  return getAccountSessionOverride(workspaceId, ACCOUNT_OVERRIDE_SLUG, sql);
-}
-
-/** Write the workspace's account override (no hive needed). */
-export function setAccountOverride(workspaceId: string, patch: AccountSessionOverridePatch, sql?: Sql): Promise<AccountSessionOverride> {
-  return setAccountSessionOverride(workspaceId, ACCOUNT_OVERRIDE_SLUG, patch, sql);
+  const cur = await getAccountOverride(workspaceId);
+  const next: AccountSessionOverride = {
+    forcedAccounts: patch.forcedAccounts !== undefined ? asStringArray(patch.forcedAccounts) : cur.forcedAccounts,
+    excludeAccounts: patch.excludeAccounts !== undefined ? asStringArray(patch.excludeAccounts) : cur.excludeAccounts,
+  };
+  await writeOperatorState(OVERRIDE_STATE_TABLE, next, workspaceId);
+  return next;
 }

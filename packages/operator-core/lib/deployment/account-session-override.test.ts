@@ -1,41 +1,30 @@
 /**
  * account-session-override — the owner's session-now account override (accounts-pool-tab
- * P-004). The hive_settings store is mocked at its boundary; this exercises the C-1-style
- * decode/default/write logic AND the pure precedence filter (the live-spawn-path lever).
+ * P-004; workspace-level via operator-state, D-017). The operator-state store is mocked at
+ * its boundary; this exercises the decode/default/patch logic AND the pure precedence
+ * filter (the live-spawn-path lever).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-type SetInput = { workspaceId: string; hiveHomeSlug: string; settingKey: string; value: unknown };
-const listHiveSettings = vi.fn<(ws: string, hive: string, sql?: unknown) => Promise<Array<{ settingKey: string; value: unknown }>>>();
-const setHiveSetting = vi.fn<(input: SetInput, sql?: unknown) => Promise<unknown>>();
-const deleteHiveSetting = vi.fn<(ws: string, hive: string, key: string, sql?: unknown) => Promise<void>>();
+const readOperatorState = vi.fn<(table: string, ws?: string) => Promise<unknown>>();
+const writeOperatorState = vi.fn<(table: string, payload: unknown, ws?: string) => Promise<void>>();
 
-vi.mock('../hive-settings-store', () => ({
-  listHiveSettings: (...a: [string, string, unknown?]) => listHiveSettings(...a),
-  setHiveSetting: (...a: [SetInput, unknown?]) => setHiveSetting(...a),
-  deleteHiveSetting: (...a: [string, string, string, unknown?]) => deleteHiveSetting(...a),
+vi.mock('../operator-state-pg', () => ({
+  readOperatorState: (...a: [string, string?]) => readOperatorState(...a),
+  writeOperatorState: (...a: [string, unknown, string?]) => writeOperatorState(...a),
 }));
 
 import {
   applyAccountOverride,
   isOverrideEmpty,
-  getAccountSessionOverride,
-  setAccountSessionOverride,
   getAccountOverride,
   setAccountOverride,
   DEFAULT_ACCOUNT_OVERRIDE,
-  ACCOUNT_OVERRIDE_KEYS,
-  ACCOUNT_OVERRIDE_SLUG,
 } from './account-session-override';
 
-function rows(map: Record<string, unknown>) {
-  return Object.entries(map).map(([settingKey, value]) => ({ settingKey, value }));
-}
-
 beforeEach(() => {
-  listHiveSettings.mockReset();
-  setHiveSetting.mockReset().mockResolvedValue({});
-  deleteHiveSetting.mockReset().mockResolvedValue(undefined);
+  readOperatorState.mockReset().mockResolvedValue(null);
+  writeOperatorState.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -64,58 +53,36 @@ describe('applyAccountOverride (the live-path filter)', () => {
   });
 });
 
-describe('getAccountSessionOverride', () => {
-  it('no keys → the default (no restriction)', async () => {
-    listHiveSettings.mockResolvedValue([]);
-    expect(await getAccountSessionOverride('ws', 'hive')).toEqual(DEFAULT_ACCOUNT_OVERRIDE);
+describe('getAccountOverride (workspace-level, operator-state backed)', () => {
+  it('no row → the default (no restriction), read from operator_account_override', async () => {
+    readOperatorState.mockResolvedValue(null);
+    expect(await getAccountOverride('ws')).toEqual(DEFAULT_ACCOUNT_OVERRIDE);
+    expect(readOperatorState).toHaveBeenCalledWith('operator_account_override', 'ws');
   });
   it('decodes both axes, keeping only non-empty strings', async () => {
-    listHiveSettings.mockResolvedValue(
-      rows({
-        [ACCOUNT_OVERRIDE_KEYS.forcedAccounts]: ['a', '', 3, 'b'],
-        [ACCOUNT_OVERRIDE_KEYS.excludeAccounts]: ['x'],
-      }),
-    );
-    expect(await getAccountSessionOverride('ws', 'hive')).toEqual({ forcedAccounts: ['a', 'b'], excludeAccounts: ['x'] });
+    readOperatorState.mockResolvedValue({ forcedAccounts: ['a', '', 3, 'b'], excludeAccounts: ['x'] });
+    expect(await getAccountOverride('ws')).toEqual({ forcedAccounts: ['a', 'b'], excludeAccounts: ['x'] });
   });
   it('is fail-soft on a junk value', async () => {
-    listHiveSettings.mockResolvedValue(rows({ [ACCOUNT_OVERRIDE_KEYS.forcedAccounts]: 'not-an-array' }));
-    expect((await getAccountSessionOverride('ws', 'hive')).forcedAccounts).toEqual([]);
+    readOperatorState.mockResolvedValue({ forcedAccounts: 'not-an-array' });
+    expect((await getAccountOverride('ws')).forcedAccounts).toEqual([]);
   });
 });
 
-describe('setAccountSessionOverride', () => {
-  it('writes only the provided axis', async () => {
-    listHiveSettings.mockResolvedValue([]);
-    await setAccountSessionOverride('ws', 'hive', { excludeAccounts: ['flaky'] });
-    expect(setHiveSetting).toHaveBeenCalledTimes(1);
-    expect(setHiveSetting).toHaveBeenCalledWith(
-      { workspaceId: 'ws', hiveHomeSlug: 'hive', settingKey: ACCOUNT_OVERRIDE_KEYS.excludeAccounts, value: ['flaky'] },
-      undefined,
+describe('setAccountOverride (workspace-level)', () => {
+  it('writes only the provided axis, preserving the other', async () => {
+    readOperatorState.mockResolvedValue({ forcedAccounts: ['keep'], excludeAccounts: [] });
+    const out = await setAccountOverride('ws', { excludeAccounts: ['flaky'] });
+    expect(out).toEqual({ forcedAccounts: ['keep'], excludeAccounts: ['flaky'] });
+    expect(writeOperatorState).toHaveBeenCalledWith(
+      'operator_account_override',
+      { forcedAccounts: ['keep'], excludeAccounts: ['flaky'] },
+      'ws',
     );
   });
-  it('clear:true deletes both axes and returns the default', async () => {
-    const out = await setAccountSessionOverride('ws', 'hive', { clear: true });
-    expect(deleteHiveSetting.mock.calls.map((c) => c[2])).toEqual(Object.values(ACCOUNT_OVERRIDE_KEYS));
-    expect(setHiveSetting).not.toHaveBeenCalled();
+  it('clear:true wipes both axes and returns the default', async () => {
+    const out = await setAccountOverride('ws', { clear: true });
     expect(out).toEqual(DEFAULT_ACCOUNT_OVERRIDE);
-  });
-});
-
-// The workspace-level wrappers (D-017): no home hive needed — they key under a stable
-// per-workspace pseudo-slug, so write/read always agree (fixes "no_home_harness").
-describe('getAccountOverride / setAccountOverride (workspace-level)', () => {
-  it('getAccountOverride reads under the per-workspace pseudo-slug', async () => {
-    listHiveSettings.mockResolvedValue([]);
-    expect(await getAccountOverride('ws')).toEqual(DEFAULT_ACCOUNT_OVERRIDE);
-    expect(listHiveSettings).toHaveBeenCalledWith('ws', ACCOUNT_OVERRIDE_SLUG, undefined);
-  });
-  it('setAccountOverride writes under the SAME pseudo-slug the read uses', async () => {
-    listHiveSettings.mockResolvedValue([]);
-    await setAccountOverride('ws', { excludeAccounts: ['flaky'] });
-    expect(setHiveSetting).toHaveBeenCalledWith(
-      { workspaceId: 'ws', hiveHomeSlug: ACCOUNT_OVERRIDE_SLUG, settingKey: ACCOUNT_OVERRIDE_KEYS.excludeAccounts, value: ['flaky'] },
-      undefined,
-    );
+    expect(writeOperatorState).toHaveBeenCalledWith('operator_account_override', DEFAULT_ACCOUNT_OVERRIDE, 'ws');
   });
 });

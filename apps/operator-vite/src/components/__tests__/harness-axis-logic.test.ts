@@ -83,14 +83,16 @@ describe('hiveMembers', () => {
   });
 
   it('passes through harness_kind + is_shared, defaulting the absent fields', () => {
+    // A non-'hive' kind stays a member (a 'hive'-kind root is the group itself
+    // and is skipped — see the co-located harness-axis.test.ts hive-home case).
     const out = hiveMembers(
       [
-        p('org', { harness_kind: 'hive', is_shared: true }),
+        p('org', { harness_kind: 'coding', is_shared: true }),
         p('kid', { parent_slug: 'org' }),
       ],
       'org',
     );
-    expect(out[0]).toEqual(m('org', true, { harness_kind: 'hive', is_shared: true }));
+    expect(out[0]).toEqual(m('org', true, { harness_kind: 'coding', is_shared: true }));
     expect(out[1]).toEqual(m('kid', false));
   });
 });

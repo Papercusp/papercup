@@ -32,7 +32,7 @@ import PlanItemPreview from './PlanItemPreview';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
-import DecisionLog from '@/app/_components/DecisionLog';
+import DecisionLog, { DecisionDetail, type DecisionRow } from '@/app/_components/DecisionLog';
 import QueueSummary from './QueueSummary';
 import { QUEUE_TABS, QUEEN_LOG_LAYERS } from './queue-authorizer';
 import { Plus, ClipboardList, Inbox, Terminal } from 'lucide-react';
@@ -222,6 +222,9 @@ export default function PlansClient() {
     'qlLayer',
     parseAsStringEnum<'disposition' | 'action'>(['disposition', 'action']).withDefault('disposition'),
   );
+  // queue-pending-accuracy P-004: the Queen's-log selected row is rendered in the
+  // shared right pane (3-pane consistency), not an inline accordion in the list.
+  const [selectedDecision, setSelectedDecision] = useState<DecisionRow | null>(null);
   // Inbox tier filter (D-006) — Decisions ▸ Handled ▸ Alerts ▸ Activity (or all).
   // Only the Decisions tier demands the user; this lets them focus on it.
   // The local is queueTier, but the URL key stays 'inboxTier' — it's a cross-app
@@ -641,6 +644,19 @@ export default function PlansClient() {
   // (`?item=`) or Other attention item (`?other=`), or an empty prompt. Both
   // list sections feed this one pane instead of each owning a detail column.
   const renderQueuePreview = () => {
+    // Queen's-log tab: the selected decision's full detail shows here (right pane),
+    // not as an inline accordion in the list (3-pane consistency, P-004).
+    if (queueAuthzView && queueTab === 'queen-log') {
+      return (
+        <aside className="pc-items__detail">
+          {selectedDecision ? (
+            <DecisionDetail row={selectedDecision} />
+          ) : (
+            <div className="pc-items__detail-empty">Select a decision to see its full detail.</div>
+          )}
+        </aside>
+      );
+    }
     if (queueItemSel) {
       const idx = queueItemSel.indexOf('::');
       const pSlug = idx === -1 ? null : queueItemSel.slice(0, idx);
@@ -880,6 +896,7 @@ export default function PlansClient() {
                               : 'Every governed action that ran, auto or gated — the full audit trail. Newest first.'
                           }
                           emptyText="No decisions logged yet. As the Queen considers items, they appear here."
+                          onSelectRow={setSelectedDecision}
                         />
                       </section>
                     ) : (

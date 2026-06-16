@@ -106,6 +106,28 @@ describe('DecisionLog (queue-authorization-redesign P-003/P-006)', () => {
     expect(screen.getByRole('button', { expanded: true })).toBeTruthy();
   });
 
+  /* ── external-detail mode (queue 3-pane, P-004): detail in the right pane ── */
+
+  it('onSelectRow: a click reports the row to the parent and suppresses the inline expand', () => {
+    const onSelectRow = vi.fn();
+    syncResult = { data: [decision({ id: 5 })], loading: false, error: null };
+    renderLog(<DecisionLog title="Queen's log" onSelectRow={onSelectRow} />);
+
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    // The parent is told which row to render in the shared right pane…
+    expect(onSelectRow).toHaveBeenCalledWith(expect.objectContaining({ id: 5 }));
+    // …and the inline detail is NOT rendered here (it lives in the right pane).
+    expect(screen.queryByText('Reversibility')).toBeNull();
+  });
+
+  it('onSelectRow: a ?decision= deep-link reports the row to the parent (no inline detail)', () => {
+    const onSelectRow = vi.fn();
+    syncResult = { data: [decision({ id: 9 })], loading: false, error: null };
+    renderLog(<DecisionLog title="Queen's log" onSelectRow={onSelectRow} />, '?decision=9');
+    expect(onSelectRow).toHaveBeenCalledWith(expect.objectContaining({ id: 9 }));
+    expect(screen.queryByText('Reversibility')).toBeNull();
+  });
+
   it('clicking Undo does not expand the row', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ok":true}', { status: 200 })));
     syncResult = { data: [decision({ tripwireId: 'tw-abc' })], loading: false, error: null };
