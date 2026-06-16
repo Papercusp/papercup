@@ -951,6 +951,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         await seedCursorFromSnapshots(logs, mergeCursor);
       }
 
+      // EI-681 diag: surface the live merge log-set so we can see whether a
+      // rebooted handle's merge actually sees the admitted REMOTE log (vs only
+      // its own log). Only logs when a remote is present (logs.length > 1).
+      if (logs.length > 1) {
+        console.log(
+          `[ei681-diag] mergeOnePass(${opts.harnessSlug}): logs=${logs.length} [` +
+            logs
+              .map(
+                (l) =>
+                  `${l.keyHex === ownLog.keyHex ? 'OWN' : l.keyHex.slice(0, 8)}:len${l.length}@cur${mergeCursor.positions.get(l.keyHex) ?? 0}`,
+              )
+              .join(' ') +
+            ']',
+        );
+      }
+
       // EI-79 steady-state skip (cursor form): nothing new past any log's
       // cursor → skip decode/fold/apply entirely. Lengths are post-update()
       // so growth is caught promptly; the cadenced refresh/reverify hooks
@@ -1011,6 +1027,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         result = await mergeAdmittedLogsIncremental(logs, mergeCursor, mergeOpts);
       }
       const { applied } = result;
+      if (applied > 0) {
+        console.log(`[ei681-diag] mergeOnePass(${opts.harnessSlug}): APPLIED ${applied} ops`);
+      }
 
       // P-005 (design A, flag-gated): compact the OWN log once it has grown past
       // the threshold since its last snapshot — append ONE additive snapshot op
