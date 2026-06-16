@@ -16,6 +16,33 @@
  */
 const DEFAULT_BACKOFFS_MS = [400, 800, 1200];
 
+/**
+ * A long-lived launch dispatcher for the in-process loopback calls that hold the
+ * connection open for a WHOLE worker run (P-033). undici's `fetch` defaults
+ * `headersTimeout`/`bodyTimeout` to 5 min — but a kind:'hive' Queen wake (or an
+ * overwatch loop) can run up to the invoke route's 2700s (45 min) ceiling before its
+ * FIRST response headers arrive, especially on a slow opus:xhigh turn paced behind the
+ * inference gateway. The 5-min headers cap severed those still-running launches with
+ * `UND_ERR_HEADERS_TIMEOUT` (the EI-390 / P-033 "fetch failed" queen-launch death,
+ * observed killing the bench Queen at ~5–20 min before she placed a bee). A dedicated
+ * dispatcher with the header/body timeouts raised to the route ceiling lets a legitimately
+ * long launch run to completion instead of being timed out by the CALLER. Lazily built
+ * (only when a launch asks for it) so the normal short loopback calls keep the default
+ * global dispatcher. `0` disables the per-request timer; we use the route ceiling so a
+ * genuinely hung launch still eventually frees the connection.
+ */
+const LAUNCH_LOOPBACK_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 2_700_000) + 60_000;
+let launchDispatcher: unknown;
+async function getLaunchDispatcher(): Promise<unknown> {
+  if (launchDispatcher) return launchDispatcher;
+  const { Agent } = await import('undici');
+  launchDispatcher = new Agent({
+    headersTimeout: LAUNCH_LOOPBACK_TIMEOUT_MS,
+    bodyTimeout: LAUNCH_LOOPBACK_TIMEOUT_MS,
+  });
+  return launchDispatcher;
+}
+
 /** True if error is a transient network error worth retrying. */
 export function isTransientNetworkError(err: unknown): boolean {
   const cause = (err as { cause?: { code?: string } } | null)?.cause;
@@ -66,13 +93,21 @@ export function isConnRefused(err: unknown): boolean {
 export async function loopbackFetch(
   input: string | URL,
   init?: RequestInit,
-  opts: { backoffsMs?: number[] } = {},
+  opts: { backoffsMs?: number[]; launch?: boolean } = {},
 ): Promise<Response> {
   const backoffs = opts.backoffsMs ?? DEFAULT_BACKOFFS_MS;
+  // P-033: a long-running launch call (kind:'hive' Queen / overwatch) opts into the
+  // raised-timeout dispatcher so its connection isn't severed by the caller's 5-min
+  // undici headers/body cap while the worker runs up to the route's 45-min ceiling.
+  let fetchInit = init;
+  if (opts.launch) {
+    const dispatcher = await getLaunchDispatcher();
+    fetchInit = { ...(init ?? {}), dispatcher } as RequestInit;
+  }
   let lastErr: unknown;
   for (let attempt = 0; attempt <= backoffs.length; attempt++) {
     try {
-      return await fetch(input, init);
+      return await fetch(input, fetchInit);
     } catch (err) {
       lastErr = err;
       if (isTransientNetworkError(err) && attempt < backoffs.length) {

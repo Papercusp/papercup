@@ -384,11 +384,19 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
     }
   };
 
-  void loopbackFetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  void loopbackFetch(
+    url,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    // P-033: this fire holds the connection for the WHOLE worker run (a kind:'hive'
+    // Queen wake runs up to the route's 45-min ceiling). Opt into the raised-timeout
+    // launch dispatcher so a slow opus:xhigh queen turn isn't severed by undici's
+    // default 5-min headers cap (UND_ERR_HEADERS_TIMEOUT) before she places a bee.
+    { launch: true },
+  )
     .then(() => {
       stopHeartbeat();
       if (pg) {
