@@ -1,79 +1,57 @@
 ---
-title: The Claude OAuth authorize URL (link a Max account) — exact format, or "Invalid request format"
-description: A hand-built Claude OAuth authorize URL is rejected by claude.ai with "Authorization failed Invalid request format" unless it matches the CLI byte-for-byte. The working host is claude.com/cai/oauth/authorize (NOT claude.ai), code=true is REQUIRED, and the scope is exactly user:inference. Recover the current format by capturing `claude setup-token`'s URL. GitHub issues + older docs are stale.
+title: You CANNOT hand-build a Claude Max OAuth link — claude.ai needs claude-code's own handshake; use `claude setup-token`
+description: Linking a Claude Max account by having the owner click a hand-built claude.ai authorize URL does NOT work — claude.ai returns "Authorization failed Invalid request format" even for a URL byte-for-byte identical to what `claude setup-token` generates. claude.ai requires the claude-code client's own handshake, which a plain browser click can't reproduce. The ONLY working path is `claude setup-token` (the CLI does the handshake) → paste the sk-ant-oat token / .credentials.json. Stop re-attempting the in-app OAuth link.
 discovered: 2026-06-16
-tags: [oauth, claude, max-account, accounts-pool, deploy-accounts, external-api]
+tags: [oauth, claude, max-account, accounts-pool, deploy-accounts, external-api, dead-end]
 status: active
 ---
 
-## What
+## The bottom line (this has burned ≥3 agents on `accounts-pool-tab-2026-06-15`)
 
-When you build a Claude OAuth "authorize" URL yourself (to let the owner link a Max
-account by clicking a link, instead of running `claude setup-token`), claude.ai will
-reject it with **"Authorization failed — Invalid request format"** unless every part
-matches what the `claude` CLI currently sends. This has burned multiple agents on the
-same plan (`accounts-pool-tab-2026-06-15`) — each re-derived it; nobody recorded it.
-This page is the record.
+Do **not** try to let the owner "click a link and OAuth in the browser" to add a Claude
+Max account. It cannot work. claude.ai's authorize endpoint **requires the claude-code
+client's own handshake**; a hand-built URL opened in a normal browser is rejected with:
 
-## The exact working URL (claude CLI v2.1.178, 2026-06-16)
+> Authorization failed — Invalid request format
+
+This was already recorded in `deploy-accounts-register.ts` ("claude.ai's authorize endpoint
+rejects a hand-built OAuth URL (it needs claude-code's own client handshake), so the owner
+runs `claude setup-token`"). Agents keep ignoring it and rebuilding the in-app OAuth link.
+**Heed it.** The working path is below.
+
+## Proof it's not a URL-format problem
+
+We built the in-app link three ways (console params; then the GitHub-#29983 variant
+claude.ai + user:* scopes + no code=true; then byte-for-byte the CLI's URL). The owner
+clicked a URL **identical** to what `claude setup-token` generates —
 
 ```
-https://claude.com/cai/oauth/authorize
-  ?code=true
-  &client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e
-  &response_type=code
-  &redirect_uri=https://platform.claude.com/oauth/code/callback
-  &scope=user:inference
-  &code_challenge=<base64url(sha256(verifier))>
-  &code_challenge_method=S256
-  &state=<random>
+https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e
+  &response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback
+  &scope=user:inference&code_challenge=<S256>&code_challenge_method=S256&state=<rand>
 ```
 
-Exchange the pasted code at **`https://platform.claude.com/v1/oauth/token`**
-(`grant_type=authorization_code`, `code`, `redirect_uri` matching the above, `client_id`,
-`code_verifier`).
+— and STILL got "Invalid request format". Same params, different outcome ⇒ the difference
+is not the URL; it's that the CLI performs a client handshake (session/registration) that a
+standalone browser click of a copied URL does not. (How to re-capture the CLI's current URL,
+should you ever need to compare: `CLAUDE_CONFIG_DIR=/tmp/x claude setup-token` — but capturing
+it does NOT make it clickable-standalone.)
 
-## The three things that cause "Invalid request format"
+## The working path — `claude setup-token` (what the UI defaults to)
 
-1. **Host.** It MUST be `claude.com/cai/oauth/authorize`. **Not** `claude.ai/oauth/authorize`
-   (the older host — rejected) and not `platform.claude.com/oauth/authorize` (that's the
-   Console/API-key authorize). `cai` = the subscription login.
-2. **`code=true` is REQUIRED.** It's the "show me the code to paste" (manual / headless)
-   flag. Removing it (as some GitHub issues advise) breaks the paste flow.
-3. **Scope is exactly `user:inference`.** Not `org:create_api_key` (that's the Console
-   API-key scope — wrong for a subscription login), and not the broader
-   `user:profile user:inference user:sessions:claude_code user:mcp_servers` set.
+1. On a machine signed in as the TARGET Max account, run `claude setup-token` (it opens the
+   browser, does the handshake, you approve, it prints an `sk-ant-oat…` token).
+2. Paste that token (or a `.credentials.json` bundle) into Settings → Deploy Accounts →
+   "+ Link Max account" → **Paste a setup-token** (the default tab), or `accounts:register`
+   / `POST /api/admin/deploy-accounts/register`. credentialRef becomes `token:<path>` /
+   `file:<path>`; the raw token never reaches the browser.
 
-Endpoints migrated **`console.anthropic.com` → `platform.claude.com`**; an
-`console.anthropic.com/oauth/code/callback` redirect is stale.
-
-## Do NOT trust GitHub issues / blog posts for this
-
-anthropics/claude-code#29983 et al. describe an *older* variant (claude.ai host, drop
-`code=true`, the 4-scope set). Following it produces a URL that STILL gets "Invalid request
-format." Anthropic changes this flow; only the installed CLI is ground truth.
-
-## Recovery (when it breaks again — it will)
-
-Capture the URL the CLI actually produces, in an isolated config dir so it can't touch
-`~/.claude`, and don't complete it:
-
-```bash
-CLAUDE_CONFIG_DIR=/tmp/cstp timeout 20 script -qec 'claude setup-token' /dev/null </dev/null 2>&1 \
-  | tr -d '\r' | grep -oiE 'https://[a-z0-9./_-]+/oauth/authorize[^ "]+'
-```
-
-Then make the in-app URL match it exactly (host, `code=true`, scope), keeping your own
-per-request `code_challenge`/`state`.
+The in-app "Via browser (OAuth)" tab is kept but defaulted-off and labelled experimental —
+it will say "Invalid request format" against live claude.ai. Don't promote it without a new
+mechanism that does the claude-code handshake (not just a prettier URL).
 
 ## Where it lives
 
-`packages/operator-core/lib/deployment/account-link-store.ts` builds this URL (the
-`CLAUDE_LOGIN_*` constants + `startAccountLink`); `account-link-store.test.ts` pins all
-three params so a regression to the wrong host/scope/code fails CI. The flow is surfaced in
-the Settings → Deploy Accounts wizard ("Via browser (OAuth)") and the /adv Accounts tab.
-
-> NOTE: the SHARED `oauth/providers.ts` `CLAUDE_OAUTH_DEFAULTS` is still on the stale
-> `console.anthropic.com` + `org:create_api_key` + `code=true`-via-`buildAuthorizeUrl`
-> params, and the inference-gateway's token REFRESH uses it. Tracked as EI-867 — verify +
-> migrate that to `platform.claude.com` behind a probe (it's the live fleet's auth path).
+`account-link-store.ts` builds the (non-working-standalone) OAuth URL; `deploy-accounts-register.ts`
+is the working paste path. Both surfaced in Settings → Deploy Accounts + the /adv Accounts tab,
+both defaulting to the paste path. (accounts-pool-tab-2026-06-15 D-005/D-013/D-014/D-015.)

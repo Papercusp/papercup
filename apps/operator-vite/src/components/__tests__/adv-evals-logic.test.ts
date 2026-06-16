@@ -17,9 +17,9 @@ import {
 } from '../adv/AdvEvalsTab';
 
 describe('EVAL_VIEWS', () => {
-  it('is the subtab axis (L1 + the L2–L4 hive layer + the runs + launch views), external first', () => {
+  it('is the subtab axis (launch first, then L1 + the L2–L4 hive layer + the runs + compare views)', () => {
     expect([...EVAL_VIEWS]).toEqual([
-      'external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'launch', 'compare',
+      'launch', 'external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'compare',
     ]);
   });
 });

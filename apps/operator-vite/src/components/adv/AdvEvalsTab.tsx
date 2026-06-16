@@ -165,7 +165,7 @@ export interface EvalRunRow {
 // these directly, so the UI reads them straight into the charts (no mapper, no
 // recompute). The canonical metric source remains @papercusp/bench-metrics.
 
-export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'launch', 'compare'] as const;
+export const EVAL_VIEWS = ['launch', 'external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'compare'] as const;
 type EvalView = (typeof EVAL_VIEWS)[number];
 
 // ── Bench runs (live, via @papercusp/sync) ───────────────────────────────────
@@ -291,7 +291,7 @@ const fmtUsd = (n: number): string => `$${n >= 100 ? Math.round(n) : Math.round(
 export default function AdvEvalsTab() {
   const [evalView, setEvalView] = useQueryState(
     'evalView',
-    parseAsStringEnum<EvalView>([...EVAL_VIEWS]).withDefault('external'),
+    parseAsStringEnum<EvalView>([...EVAL_VIEWS]).withDefault('launch'),
   );
   const [evalSuite, setEvalSuite] = useQueryState('evalSuite', parseAsString);
   const [evalRun, setEvalRun] = useQueryState('evalRun', parseAsString);
@@ -332,6 +332,16 @@ export default function AdvEvalsTab() {
 
       <div className="pc-evals__controls">
         <div className="pc-evals__subnav" role="tablist" aria-label="Evaluation view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'launch'}
+            className={`pc-evals__subtab${view === 'launch' ? ' is-active' : ''}`}
+            onClick={() => void setEvalView('launch')}
+          >
+            <Play size={13} aria-hidden />
+            <span>Launch<em>run a benchmark</em></span>
+          </button>
           <button
             type="button"
             role="tab"
@@ -401,16 +411,6 @@ export default function AdvEvalsTab() {
           >
             <Archive size={13} aria-hidden />
             <span>Preserved runs<em>real graded runs</em></span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'launch'}
-            className={`pc-evals__subtab${view === 'launch' ? ' is-active' : ''}`}
-            onClick={() => void setEvalView('launch')}
-          >
-            <Play size={13} aria-hidden />
-            <span>Launch<em>run a benchmark</em></span>
           </button>
           <button
             type="button"

@@ -58,7 +58,11 @@ export default function DeployAccountsPage() {
   // browser → paste the code (the link-start/link-complete round-trip); "token" = the proven
   // `claude setup-token` paste. OAuth is the default the owner reaches for; it's experimental
   // because claude.ai may reject a server-built authorize URL (D-005) — the token flow always works.
-  const [linkMode, setLinkMode] = useState<'oauth' | 'token'>('oauth');
+  // Default to the PROVEN setup-token paste. The in-app OAuth link can't work for Claude Max:
+  // claude.ai rejects a hand-built authorize URL opened in a plain browser (it needs claude-code's
+  // own client handshake — confirmed 2026-06-16 by clicking a URL byte-identical to `claude
+  // setup-token`'s and still getting "Invalid request format"). See insight claude-oauth-authorize-url.
+  const [linkMode, setLinkMode] = useState<'oauth' | 'token'>('token');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [linkId, setLinkId] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -248,7 +252,7 @@ export default function DeployAccountsPage() {
                 setAddError(null);
               }}
             >
-              🔗 Via browser (OAuth)
+              🔗 Via browser (OAuth — experimental, often rejected by claude.ai)
             </button>
             <button
               type="button"
