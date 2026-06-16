@@ -15,6 +15,7 @@ import { writeFile, mkdir, chmod } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { registerAccount } from '../../../deployment/account-pool';
 import { updateAccountPool, accountStatus } from '../../../deployment/account-pool-store';
+import { notifySyncInvalidate } from '../../../sync-sse';
 import { papercuspPath } from '../../../papercusp-root';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -71,6 +72,8 @@ export default defineTool({
         registerAccount(p, { id: accountId, credentialRef, label: body.label?.trim() || undefined }, Date.now()),
       );
       const account = (await accountStatus()).find((a) => a.id === accountId) ?? null;
+      // Live UI reflection — the Accounts tab reads the accounts.pool sync query.
+      void notifySyncInvalidate('accounts.pool', {}).catch(() => {});
       return Response.json({ ok: true, account });
     } catch (err) {
       return Response.json({ ok: false, error: (err as Error).message }, { status: 500 });

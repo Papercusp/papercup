@@ -2654,6 +2654,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return trace ? [trace] : [];
     },
   },
+  // Operational live run store (benchmark-evaluation-ui-2026-06-16 P-003 / D-001):
+  // bench_runs/bench_run_tasks/bench_run_events (migration 296) — the live, MUTABLE
+  // source the Evaluation UI reads for run launch/monitor/history, distinct from the
+  // reproducibility cards above. run-store.ts fires notifySyncInvalidate('evals.benchRuns',
+  // {}) + ('evals.benchRun', { runId }) on every write, so an in-flight run streams
+  // live over desktop SSE with no polling. Detail rows carry the PreservedArmRun shape
+  // the eval-viz already renders.
+  'evals.benchRuns': {
+    argsSchema: z.object({}),
+    resolve: async () => {
+      const { listBenchRuns } = await import('../external-bench/run-store');
+      return listBenchRuns();
+    },
+  },
+  'evals.benchRun': {
+    argsSchema: z.object({ runId: z.string() }),
+    resolve: async (args) => {
+      const { runId } = args as { runId: string };
+      const { getBenchRunDetail } = await import('../external-bench/run-store');
+      const detail = await getBenchRunDetail(runId);
+      return detail ? [detail] : [];
+    },
+  },
   // accounts.pool — the Queen's Claude Max account pool as a live read-model for
   // the Accounts tab (accounts-pool-tab-2026-06-15 P-001). One row per pool
   // account: the union of accounts:list + accounts:status (id/label/credentialRef/

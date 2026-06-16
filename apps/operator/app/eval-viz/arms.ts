@@ -26,7 +26,16 @@ export type ArmId =
   | 'native-serial'
   | 'openhands-async'
   | 'crewai'
-  | 'langgraph';
+  | 'langgraph'
+  // Real run-engine arm ids (benchmark-evaluation-ui-2026-06-16 D-004). These are
+  // the EXACT strings the live engine + preserved/operational store emit
+  // (hive-backlog-realqueen.ts HIVE_REALQUEEN_ARM/FIFO_NOQUEEN_ARM) + the
+  // SWE-bench Pro reference harness. The m3 real-Queen pass is `hive-realqueen`;
+  // the headline comparison is hive-realqueen (treatment) vs mini-swe-agent (the
+  // standard-harness baseline, same model + same tasks).
+  | 'hive-realqueen'
+  | 'fifo-noqueen'
+  | 'mini-swe-agent';
 
 export const ARM_IDS: readonly ArmId[] = [
   'papercusp',
@@ -39,6 +48,9 @@ export const ARM_IDS: readonly ArmId[] = [
   'openhands-async',
   'crewai',
   'langgraph',
+  'hive-realqueen',
+  'fifo-noqueen',
+  'mini-swe-agent',
 ] as const;
 
 /** Short human label for an arm; falls back to the raw id for unknown arms. */
@@ -55,6 +67,10 @@ export function armLabel(arm: string): string {
     case 'openhands-async': return 'OpenHands';
     case 'crewai': return 'CrewAI';
     case 'langgraph': return 'LangGraph';
+    // Real run-engine arms (D-004).
+    case 'hive-realqueen': return 'Hive (real Queen)';
+    case 'fifo-noqueen': return 'FIFO (no Queen)';
+    case 'mini-swe-agent': return 'mini-SWE-agent';
     default: return arm;
   }
 }
@@ -83,6 +99,12 @@ export function armColor(arm: string): string {
     case 'openhands-async': return '#a78bfa'; // violet
     case 'crewai': return '#f97316'; // orange
     case 'langgraph': return '#2dd4bf'; // teal
+    // Real run-engine arms (D-004). hive-realqueen = treatment (gold, like hive);
+    // fifo-noqueen = the Queen-OFF control (rose, like queen-ablated); mini-swe-agent
+    // = the standard-harness reference baseline (sky — the harness floor).
+    case 'hive-realqueen': return '#eab308'; // gold — real-Queen treatment
+    case 'fifo-noqueen': return '#fb7185'; // rose — no-Queen control
+    case 'mini-swe-agent': return '#38bdf8'; // sky — reference standard harness
     default: return 'var(--fg-mute, #7f9bb4)';
   }
 }
