@@ -1,59 +1,49 @@
-# Worker log — EI-9 (auto-implement, attempt 3)
+# Worker log — EI-402 (implement / self-improvement auto-fix)
 
-**Bug:** `pui workbench` — the companion zellij plugin opens a focus-stealing
-floating pane on first launch, blocking pui input until hidden (Ctrl-p w).
+**Item:** EI-402 (kind=bug) — "Latitude VM creates platform-broken: correct
+create (OS+site+key, Running) unreachable on all ports from 2 vantages — use
+Hetzner for bench fleets until a retest clears it"
 
-## Root cause (confirmed from zellij 0.44.3 source)
-`zellij pipe --plugin <url>` launches the plugin with `floating_plugin`
-defaulting to **floating** (`zellij-utils/src/cli.rs` Pipe.floating_plugin —
-"defaults to floating"). There is **no** CLI flag for a background/no-pane
-launch (only floating ↔ tiled ↔ in-place — all visible), so the launch path
-(`apps/tui/src/companion.rs::pipe_argv`) cannot make it headless. The companion
-renders nothing (`render()` empty) so the pane sits blank and, being focused,
-steals keystrokes from the tiled `pui hud` pane.
+**Outcome:** `needs-human` (STOP condition — infra-environment, no code fix).
 
-## Fix (plugin-side, `apps/pui-zellij-plugin/src/main.rs`)
-The plugin suppresses its own pane via `hide_self()`:
-- Called in `load()`, and once more on the first `PaneUpdate` (one-shot latch
-  `should_retry_self_hide`) as race insurance for the case where the pane isn't
-  in the session yet at `load()` time. The retry is idempotent — once the pane
-  is suppressed it's no longer in the tiled/floating sets.
-- Verified from zellij source that this is correct + complete:
-  - `hide_self` → `SuppressPane(PaneId::Plugin(self))`; permission-free
-    (falls through to the catch-all `Granted` in `check_command_permission`).
-  - `tab::has_non_suppressed_pane_with_pid` + `extract_pane` both handle
-    **floating** panes, so the floating companion pane is suppressed.
-  - When ours is the **only** floating pane, `extract_pane` calls
-    `hide_floating_panes()` + `move_clients_out_of_pane()` — hiding the floating
-    layer *and* returning focus to the tiled HUD. Both bug symptoms fixed in one
-    call. The plugin stays alive (suppressed ≠ closed), so the pipe link holds.
+## What I did
+1. `work_items:get EI-402` — read the item + thread. Triage decision is already
+   **gate** with reason: "Infra-environment: Latitude VM provisioning is broken
+   at the provider level (unreachable on all ports). No code fix applies — owner
+   needs to decide whether to switch bench fleet provider to Hetzner or wait for
+   Latitude retest. D-005 infra-environment -> owner-escalation." The
+   auto-implement dispatcher picked it up despite the gate verdict.
+2. Read agent-insights/latitude-vm-creates-currently-unbootable.md. It splits
+   the original wedge into three legs:
+   - Leg 1 (OS-less create husk) — already fixed in code.
+   - Leg 2 (VM create ignored region/site) — already fixed in code.
+   - Leg 3 (platform residue) — NOT fixable in code: a fully-correct create
+     (OS attached, site honored, ssh key injected, status: Running) stays
+     unreachable on 22 AND 443 from two independent vantages for 10+ minutes.
+     This is EI-402.
+3. Verified the two code legs are in place (trust-what-runs):
+   packages/operator-core/lib/deployment/latitude/latitude-driver.ts
+   - :53  const DEFAULT_VM_OS = 'ubuntu_24_04_x64_lts'
+   - :175 ...(config.region ? { site: config.region } : {})
+   - :177 operating_system: (...) ?? DEFAULT_VM_OS
+   Pinned by latitude-driver.test.ts.
 
-## Why the prior attempt (su-ad289) failed, and why this differs
-Attempt 1 fired an **external** `zellij action toggle-floating-panes` on
-`Event::CompanionReady` — it raced pane creation (pane appeared *after* the
-toggle → no-op). `hide_self()` is issued **from inside the plugin** during
-`load()` (the pane already hosts the plugin) and is retried on first PaneUpdate,
-so it is not subject to that race. It also targets only the plugin's own pane,
-never a work pane, and never toggles all floating panes.
+## Why needs-human (not fixed / could-not-fix)
+- The remaining defect is a provider-side platform outage — there is no code to
+  change, and you cannot write a regression test for a third party's broken
+  control plane.
+- The only available "fix" is a policy/infra decision (make Hetzner the default
+  bench-fleet provider, or wait for a Latitude retest). That:
+  - touches deploy/provisioning machinery (a protected surface), and
+  - is explicitly an owner decision per the triage.
+- Both are STOP conditions in the implement contract. A wrong auto-fix on
+  provisioning machinery driven by a transient provider outage is exactly what
+  this gate prevents.
 
-## Verification
-- `cd apps/pui-zellij-plugin && cargo test` → 9 passed (incl. new
-  `self_hide_retry_latch_fires_exactly_once`, which pins the retry to one-shot).
-- `cargo build --release --target wasm32-wasip1` → clean (compiles the wasm
-  `hide_self()` call sites — the real ship target).
-- `cargo clippy --release --target wasm32-wasip1` → clean.
-
-## For the validator / live verification
-The behavioral assertion (no floating pane on first `pui workbench`; HUD
-driveable immediately) needs a **live zellij** session — not runnable in this
-runner and not expressible in the four canonical test frameworks (the
-`hide_self()` host call is wasm-only). Repro harness from the original session:
-`/tmp/pui-livetest/drive_spawn2.py`. The installed wasm
-(`~/.papercusp/pui-companion.wasm`) must be rebuilt+reinstalled by the normal
-build/release pipeline for the fix to take effect live — this worker does not
-deploy.
-
-## Scope check
-Plugin-side only. Touches no protected surface (no release/deploy machinery,
-scheduler, git-sync, lock authority, migrations, flags, auth, or the
-self-improvement loop). Self/inline-sized: 1 file, +58 lines.
+## What the human should decide / re-verify
+- Retest a correct Latitude vm.small create end-to-end (OS + site + ssh key) —
+  if reachable, this EI can close. If still unreachable, decide whether to pin
+  Hetzner as the bench-fleet default (provisioning-config change) until Latitude
+  clears.
+- Suggest also re-checking the triage routing: a gate/infra-environment item
+  should not have been routed to the auto-implement runner.
