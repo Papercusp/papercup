@@ -10337,7 +10337,11 @@ mod tests {
         a.tab = Tab::Plans;
         a.plans = vec![plan("one"), plan("two"), plan("three")];
         a.operator_dock_open = true; // visible but NOT focused
+        // The unfocused dock lets keys reach the Plans tab's two-level nav (owner
+        // ask 2026-06-16): Enter drills into the list pane, then j moves the
+        // selection — and the chat is never scrolled.
         let before = a.plan_sel;
+        a.update(ev(KeyCode::Enter)); // → inside the list pane
         a.update(key('j', KeyModifiers::NONE)); // moves the Plans selection
         assert_eq!(a.plan_sel, before + 1);
         assert_eq!(a.chat_scroll, 0); // chat untouched
