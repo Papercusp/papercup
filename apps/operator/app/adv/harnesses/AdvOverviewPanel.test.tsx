@@ -78,7 +78,7 @@ describe('computeStats', () => {
 describe('<AdvOverviewPanel />', () => {
   it('renders the empty hint when no slug is in params', () => {
     render(<AdvOverviewPanel panelId="p" panelType="adv:overview" params={{}} api={mkApi()} />);
-    expect(screen.getByText(/no harness slug in params/i)).toBeTruthy();
+    expect(screen.getByText(/no hive slug in params/i)).toBeTruthy();
   });
 
   it('shows the loading state before the status fetch resolves', () => {

@@ -19,6 +19,18 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/flags/client', () => ({ useFlag: (f: string) => H.flags[f] ?? false }));
+// VoiceTab now pulls brand terms via useLexicon (the-hive-lexicon migration), which
+// reaches the real flag-hooks → getFlagSnapshot. Stub it with a deterministic
+// classic-style resolver so the test isolates gating/copy from the live flag —
+// mirrors AdvShell.test's lexicon stub.
+vi.mock('@/lib/useLexicon', () => ({
+  useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
+    let s = key === 'pot' ? 'Pot' : key;
+    if (opts?.plural) s += 's';
+    if (opts?.lower) s = s.toLowerCase();
+    return s;
+  },
+}));
 vi.mock('@/app/adv/create/use-create-data', () => ({ useResolvedHarnessSlug: () => H.slug }));
 vi.mock('@papercusp/operator-core/lib/client-navigation', () => ({ navigateClient: H.navigate }));
 vi.mock('../voice-video/VideoGrid', () => ({
@@ -66,7 +78,7 @@ describe('<VoiceTab>', () => {
     H.slug = null;
     render(<VoiceTab active={true} />);
     expect(screen.queryByTestId('video-grid')).toBeNull();
-    expect(screen.getByText(/Select a shared harness to join its peer channel/)).toBeTruthy();
+    expect(screen.getByText(/Select a shared pot to join its peer channel/)).toBeTruthy();
   });
 
   it('does not mount the children when the tab is inactive', () => {

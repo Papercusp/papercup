@@ -24,6 +24,17 @@ const flagState: Record<string, boolean> = {};
 vi.mock('@papercusp/flags/client', () => ({
   useFlag: (flag: string) => flagState[flag] ?? false,
 }));
+// The pane now resolves brand terms via useLexicon (the-hive-lexicon migration),
+// which reaches the real flag-hooks → getFlagSnapshot. Stub it with a
+// deterministic classic-style resolver so the test isolates copy from the live flag.
+vi.mock('@/lib/useLexicon', () => ({
+  useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
+    let s = key === 'pot' ? 'Pot' : key;
+    if (opts?.plural) s += 's';
+    if (opts?.lower) s = s.toLowerCase();
+    return s;
+  },
+}));
 
 import { WorkbenchVoicePanel } from './WorkbenchVoicePanel';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
@@ -58,11 +69,11 @@ describe('WorkbenchVoicePanel', () => {
     expect(screen.getByTestId('video-grid-stub').textContent).toBe('demo');
   });
 
-  it('shows "select a shared harness" when the flag is on but no harness is set', () => {
+  it('shows "select a shared pot" when the flag is on but no harness is set', () => {
     flagState['papercusp-video-channels'] = true;
     render(<WorkbenchVoicePanel {...props({})} />);
     expect(screen.queryByTestId('video-grid-stub')).toBeNull();
-    expect(screen.getByText(/Select a shared harness/i)).toBeTruthy();
+    expect(screen.getByText(/Select a shared pot/i)).toBeTruthy();
   });
 
   it('mounts the voice-channels panel only when papercusp-voice-channels is on', () => {

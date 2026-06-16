@@ -314,6 +314,9 @@ async function main() {
     coordKinds: tally(result.coordEvents.map((e) => e.kind)),
   }, null, 2));
   console.log(`\n[realqueen] wrote ${OUT_DIR}/${ARM}.json + ${perTask.length} diffs under diffs-${ARM}/`);
+  // Belt-and-suspenders (P-033 Fix 4): the driver dissolves on its normal path, but dissolve any hive still
+  // registered here (e.g. a teardown that partially failed) so the launcher NEVER exits leaving an orphan.
+  await dissolveAllHives('normal-exit');
   process.exit(0);
 }
 
@@ -325,5 +328,9 @@ function tally(xs: string[]): Record<string, number> {
 
 main().catch((e) => {
   console.error('[realqueen] FATAL', e instanceof Error ? e.stack : e);
-  process.exit(1);
+  // Dissolve any created hive before dying on a fatal error (P-033 Fix 4 — no orphan re-spin).
+  void (async () => {
+    if (!tearingDown) { tearingDown = true; await dissolveAllHives('fatal'); }
+    process.exit(1);
+  })();
 });

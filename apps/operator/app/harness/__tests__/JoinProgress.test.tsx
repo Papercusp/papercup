@@ -11,7 +11,7 @@
  *  - The `gh_auth_required` error path: an `oauth_attest` step in error
  *    surfaces its detail as the call-to-action copy.
  *  - The fatal/error banner renders when `fatalError` is set.
- *  - The "Open harness →" link renders only when `insightsPath` is set.
+ *  - The "Open hive →" link renders only when `insightsPath` is set.
  *
  * Uses @testing-library/react + vitest only (no jest-dom matchers).
  */
@@ -120,14 +120,14 @@ describe('JoinProgress — fatal error + completion', () => {
     expect(screen.getByText('Join failed: network unreachable')).toBeTruthy();
   });
 
-  it('does NOT render the "Open harness" link when insightsPath is absent', () => {
+  it('does NOT render the "Open hive" link when insightsPath is absent', () => {
     render(<JoinProgress steps={[]} />);
-    expect(screen.queryByText(/Open harness/)).toBeNull();
+    expect(screen.queryByText(/Open hive/i)).toBeNull();
   });
 
-  it('renders the "Open harness →" link pointing at insightsPath when set', () => {
+  it('renders the "Open hive →" link pointing at insightsPath when set', () => {
     render(<JoinProgress steps={[]} insightsPath="/harness/myslug/insights" />);
-    const link = screen.getByText(/Open harness/);
+    const link = screen.getByText(/Open hive/i);
     expect(link).toBeTruthy();
     expect(link.getAttribute('href')).toBe('/harness/myslug/insights');
   });

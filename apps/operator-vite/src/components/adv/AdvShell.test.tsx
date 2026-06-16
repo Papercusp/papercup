@@ -126,9 +126,11 @@ vi.mock('./DiscordBadge', () => ({
   ),
 }));
 vi.mock('@/lib/useLexicon', () => ({
-  useLexicon: () => (key: string, opts?: { plural?: boolean }) => {
-    const base = key === 'pot' ? 'Pot' : key;
-    return opts?.plural ? `${base}s` : base;
+  useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
+    let s = key === 'pot' ? 'Pot' : key;
+    if (opts?.plural) s += 's';
+    if (opts?.lower) s = s.toLowerCase();
+    return s;
   },
 }));
 
@@ -234,7 +236,7 @@ describe('AdvShell — strip + header', () => {
     expect(document.querySelector('button.pc-advshell__tabnav--right')).toBeTruthy();
     // labels render lowercased in the trigger span
     expect(screen.getByRole('tab', { name: 'working' })).toBeTruthy();
-    expect(screen.getByText('sub-harnesses')).toBeTruthy();
+    expect(screen.getByText('sub-pots')).toBeTruthy();
     // single-slug widgets get the active slug
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('pot-a');
   });
@@ -244,7 +246,7 @@ describe('AdvShell — strip + header', () => {
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.getAttribute('title'));
     expect(tabs).toEqual(['Overview', 'Create', 'Working', 'Health', 'Frames', 'Conversations', 'Learning', 'Evaluation']);
-    expect(screen.queryByText('sub-harnesses')).toBeNull();
+    expect(screen.queryByText('sub-pots')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');
   });
@@ -296,7 +298,7 @@ describe('AdvShell — selection restore (resolveAdvHarnessSelection wiring)', (
       </AdvShell>,
     );
     expect(
-      await screen.findByRole('option', { name: 'Failed to load harnesses' }),
+      await screen.findByRole('option', { name: 'Failed to load Pots' }),
     ).toBeTruthy();
   });
 });
@@ -333,7 +335,7 @@ describe('AdvShell — selector + actions', () => {
 
   it('the sub-harnesses toggle flips scope between expanded and self', async () => {
     await renderShell();
-    const toggle = screen.getByText('sub-harnesses').closest('label')!.querySelector('input')!;
+    const toggle = screen.getByText('sub-pots').closest('label')!.querySelector('input')!;
     expect(toggle.checked).toBe(true);
     fireEvent.click(toggle);
     await waitFor(() => expect(nuqsSetters.scope).toHaveBeenCalledWith('self'));

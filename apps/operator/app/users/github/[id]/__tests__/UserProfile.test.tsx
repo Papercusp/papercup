@@ -67,7 +67,7 @@ describe('UserProfile — P-072', () => {
 
   it('P-072b empty harnesses shows the empty-state copy', () => {
     render(<UserProfile data={data({ harnesses: [] })} />);
-    expect(screen.getByText(/No visible harnesses/)).toBeTruthy();
+    expect(screen.getByText(/No visible hives/)).toBeTruthy();
   });
 
   it('P-072c recent activity renders entries with time-ago labels', () => {

@@ -114,7 +114,7 @@ describe('<HarnessTopBar /> RegisterSubsButton', () => {
   async function clickRegister() {
     render(<HarnessTopBar slug="root-h" />);
     await waitFor(() => expect(screen.getByTestId('stat-pulse')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /register sub-harnesses/i }));
+    fireEvent.click(screen.getByRole('button', { name: /register sub-hives/i }));
   }
 
   it('POSTs with the rootSlug and reports new + reconciled counts on success', async () => {
@@ -152,7 +152,7 @@ describe('<HarnessTopBar /> RegisterSubsButton', () => {
     );
     await clickRegister();
     await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
-    expect(toastSuccess.mock.calls[0][0]).toMatch(/No new sub-harnesses/);
+    expect(toastSuccess.mock.calls[0][0]).toMatch(/No new sub-hives/);
   });
 
   it('routes a payload with per-slug errors to toast.error', async () => {
