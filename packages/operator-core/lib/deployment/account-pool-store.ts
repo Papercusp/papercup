@@ -48,7 +48,7 @@ import {
 /**
  * Read the owner's session-now account override (P-004) — FAIL-SOFT: any error returns the
  * empty (no-restriction) override, so the live spawn/deploy selectors can never wedge on a
- * bad read. Workspace-level (D-017): the override lives on a per-workspace pseudo-slug in
+ * bad read. Workspace-level (D-015): the override lives on a per-workspace pseudo-slug in
  * hive_settings and applies regardless of the spawning harness (no home hive required).
  */
 async function readAccountOverride(ws: string | undefined): Promise<AccountSessionOverride> {

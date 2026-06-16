@@ -1,6 +1,6 @@
 /**
  * account-session-override — the owner's session-now account override (accounts-pool-tab
- * P-004; workspace-level via operator-state, D-017). The operator-state store is mocked at
+ * P-004; workspace-level via operator-state, D-015). The operator-state store is mocked at
  * its boundary; this exercises the decode/default/patch logic AND the pure precedence
  * filter (the live-spawn-path lever).
  */

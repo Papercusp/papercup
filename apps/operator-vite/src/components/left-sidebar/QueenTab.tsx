@@ -249,6 +249,17 @@ export default function QueenTab({ active }: { active: boolean }) {
     overlay({ eligibleHives: next });
     enqueue({ eligibleHives: next });
   };
+  // Select-all / clear-all for each eligibility axis (owner-requested 2026-06-16).
+  const setAllHives = (on: boolean) => {
+    const next = on ? hiveOptions.map((h) => h.value) : [];
+    overlay({ eligibleHives: next });
+    enqueue({ eligibleHives: next });
+  };
+  const setAllPlans = (on: boolean) => {
+    const next = on ? planRows.map((p) => p.slug) : [];
+    overlay({ eligiblePlans: next });
+    enqueue({ eligiblePlans: next });
+  };
   const togglePause = () => {
     const next = !live().pauseNewWork;
     overlay({ pauseNewWork: next, pausedUntil: null });
@@ -347,6 +358,9 @@ export default function QueenTab({ active }: { active: boolean }) {
           <Network size={12} aria-hidden />
           <span className="pc-queen__section-title">Eligible hives</span>
           <span className="pc-queen__count">{hiveRestricted ? `${view.eligibleHives.length} selected` : 'no restriction'}</span>
+          <span className="pc-queen__spacer" />
+          <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={saving || hiveOptions.length === 0} title="Select every hive">all</button>
+          <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={saving || !hiveRestricted} title="Clear the hive scope">none</button>
         </div>
         <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
           {hiveRestricted
@@ -378,6 +392,9 @@ export default function QueenTab({ active }: { active: boolean }) {
           <ListChecks size={12} aria-hidden />
           <span className="pc-queen__section-title">Eligible plans</span>
           <span className="pc-queen__count">{planRestricted ? `${view.eligiblePlans.length} selected` : 'no restriction'}</span>
+          <span className="pc-queen__spacer" />
+          <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(true)} disabled={saving || planRows.length === 0} title="Select every plan shown">all</button>
+          <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(false)} disabled={saving || !planRestricted} title="Clear the plan restriction">none</button>
         </div>
         <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
           {planRestricted

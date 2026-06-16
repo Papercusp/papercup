@@ -3,7 +3,7 @@
  * steer over WHICH pool accounts the fleet may spawn/deploy on (accounts-pool-tab-2026-06-15
  * P-004; owner greenlit "allow-list + exclude"). The agent-surface twin of the
  * /api/admin/deploy-accounts/session-override route. Thin wrappers over
- * deployment/account-session-override; WORKSPACE-LEVEL (D-017 — no home hive required),
+ * deployment/account-session-override; WORKSPACE-LEVEL (D-015 — no home hive required),
  * hive_settings-backed (no migration), fail-soft, applied BEFORE the headroom/drain selectors.
  */
 import { z } from 'zod';

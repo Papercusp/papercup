@@ -13,7 +13,7 @@
  * what survives. FAIL-SOFT and NO-OP-WHEN-UNSET — a read error or an empty override is
  * exactly the pre-override behaviour, so it can never wedge the live spawn chokepoint.
  *
- * WORKSPACE-LEVEL, not per-hive (D-017): persisted as a single-row-per-workspace JSONB
+ * WORKSPACE-LEVEL, not per-hive (D-015): persisted as a single-row-per-workspace JSONB
  * in `harness_shared.operator_account_override` (migration 297) — the operator-state
  * idiom, the same store the account POOL uses. The original P-004 design keyed it to the
  * home hive's hive_settings, which broke when no home hive was configured

@@ -14,7 +14,7 @@ vi.mock('../operator-state-pg', () => ({
 }));
 vi.mock('./account-session-override', async (orig) => ({
   ...(await orig<typeof import('./account-session-override')>()),
-  // The override is now WORKSPACE-LEVEL (D-017) — readAccountOverride calls getAccountOverride(ws).
+  // The override is now WORKSPACE-LEVEL (D-015) — readAccountOverride calls getAccountOverride(ws).
   getAccountOverride: (...a: [string]) => getAccountOverride(...a),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));

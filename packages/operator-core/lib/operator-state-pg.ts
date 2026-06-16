@@ -73,7 +73,7 @@ type StateTable =
   | 'hive_directory_tombstones'
   // Migration 190 — Queen Claude-account pool (cloud-deployment-layer Phase 7 P-019):
   | 'operator_account_pool'
-  // Migration 297 — owner's session-now account override (accounts-pool-tab P-004/D-017):
+  // Migration 297 — owner's session-now account override (accounts-pool-tab P-004/D-015):
   | 'operator_account_override'
   // Migration 216 — PG-backed runtime flag overrides (audit P-070, EI-76):
   | 'operator_flag_overrides'

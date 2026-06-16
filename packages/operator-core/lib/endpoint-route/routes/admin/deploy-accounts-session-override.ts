@@ -23,7 +23,7 @@ const getRoute = defineTool({
   // unverified-loopback: cookie-less desktop webview (EI-338) — mirrors /register, /reset-rate.
   auth: VTL,
   async handler() {
-    // Workspace-level — no home hive required (D-017).
+    // Workspace-level — no home hive required (D-015).
     return Response.json({ ok: true, override: await getAccountOverride(activeWorkspaceId()) });
   },
 });
@@ -46,7 +46,7 @@ const postRoute = defineTool({
     if (Array.isArray(body?.excludeAccounts)) patch.excludeAccounts = body.excludeAccounts.filter((x): x is string => typeof x === 'string');
     if (typeof body?.clear === 'boolean') patch.clear = body.clear;
     try {
-      // Workspace-level — no home hive required (D-017).
+      // Workspace-level — no home hive required (D-015).
       const override = await setAccountOverride(activeWorkspaceId(), patch);
       void notifySyncInvalidate('accounts.pool', {}).catch(() => {});
       return Response.json({ ok: true, override });
