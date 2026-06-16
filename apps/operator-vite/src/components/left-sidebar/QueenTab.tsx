@@ -29,7 +29,7 @@
  *  - writes   → `hive:set-steering` via /api/agent-mcp/run-tool (invalidates
  *    `hive.steering` + wakes the Queen).
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { AlertTriangle, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
@@ -158,7 +158,15 @@ export default function QueenTab({ active }: { active: boolean }) {
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
 
   const [projects, setProjects] = useState<LiteProject[]>([]);
-  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  // Optimistic overlay over the server steering row (owner bug 2026-06-16). The
+  // REF is the synchronous source of truth for back-to-back toggles (React state
+  // lags a render, so two clicks in one tick would otherwise both read stale); the
+  // STATE drives re-render. overlay() + the reconcile effect keep them in lockstep.
+  const [optimistic, setOptimistic] = useState<Partial<Omit<HiveSteeringRow, 'slug'>> | null>(null);
+  const optimisticRef = useRef<Partial<Omit<HiveSteeringRow, 'slug'>> | null>(null);
+  const chainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const inflightRef = useRef(0);
   const [err, setErr] = useState<string | null>(null);
   const [pauseMins, setPauseMins] = useState('30');
 
@@ -179,54 +187,100 @@ export default function QueenTab({ active }: { active: boolean }) {
   const rows = (steeringQ.data ?? []) as HiveSteeringRow[];
   const home = resolveHomeHive(projects, rows);
   const current: HiveSteeringRow = rows.find((r) => r.slug === home) ?? { slug: home, ...DEFAULT_STEERING };
+  // The VIEW = the server row + an optimistic overlay. Fast checkbox clicks used
+  // to read-modify-write the SERVER array, so a 2nd click before the refetch read
+  // the stale array and CLOBBERED the 1st (owner bug 2026-06-16). Every toggle now
+  // reads + updates the overlay (never the stale server row), and writes are
+  // SERIALIZED so the server applies them in click order.
+  const view: HiveSteeringRow = { ...current, ...(optimistic ?? {}) };
+
+  // Once writes drain and fresh server data lands, drop the overlay so the server
+  // row is the source of truth again (no permanent divergence).
+  useEffect(() => {
+    if (inflightRef.current === 0) {
+      optimisticRef.current = null;
+      setOptimistic(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steeringQ.data]);
 
   const hiveOptions = useMemo(() => steerHiveOptions(projects), [projects]);
   const candidates = selectSteerablePlans(plansQ.data?.plans ?? []);
-  const planRows = buildSteerRows(candidates, current.eligiblePlans);
-  const planRestricted = current.eligiblePlans.length > 0;
-  const hiveRestricted = current.eligibleHives.length > 0;
-  const pause = pauseStateLabel(current, Date.now());
+  const planRows = buildSteerRows(candidates, view.eligiblePlans);
+  const planRestricted = view.eligiblePlans.length > 0;
+  const hiveRestricted = view.eligibleHives.length > 0;
+  const pause = pauseStateLabel(view, Date.now());
 
-  const setBusyKey = (key: string, on: boolean) =>
-    setBusy((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(key);
-      else next.delete(key);
-      return next;
-    });
-
-  const write = async (key: string, args: Record<string, unknown>) => {
+  /** Serialized, fail-soft write (the optimistic fields are already in `view`). */
+  const enqueue = (patch: Record<string, unknown>) => {
     if (!home) {
       setErr('No home hive found — start a hive first.');
       return;
     }
-    setBusyKey(key, true);
+    inflightRef.current += 1;
+    setSaving(true);
     setErr(null);
-    try {
-      await runSetSteering({ hive: home, ...args });
-      void steeringQ.invalidate?.();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyKey(key, false);
-    }
+    chainRef.current = chainRef.current
+      .then(() => runSetSteering({ hive: home, ...patch }))
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => {
+        inflightRef.current -= 1;
+        if (inflightRef.current === 0) {
+          setSaving(false);
+          void steeringQ.invalidate?.();
+        }
+      });
   };
+  const overlay = (patch: Partial<Omit<HiveSteeringRow, 'slug'>>) => {
+    optimisticRef.current = { ...(optimisticRef.current ?? {}), ...patch };
+    setOptimistic(optimisticRef.current);
+  };
+  /** The LIVE steering (server row + the synchronous overlay ref) — toggles read
+   *  THIS so back-to-back clicks in one tick accumulate instead of clobbering. */
+  const live = (): HiveSteeringRow => ({ ...current, ...(optimisticRef.current ?? {}) });
 
-  const togglePlan = (slug: string) =>
-    void write(`plan:${slug}`, { eligiblePlans: toggleEligible(current.eligiblePlans, slug) });
-  const toggleHive = (slug: string) =>
-    void write(`hive:${slug}`, { eligibleHives: toggleEligible(current.eligibleHives, slug) });
-  const togglePause = () => void write('pause', { pauseNewWork: !current.pauseNewWork, pausedUntil: null });
+  const togglePlan = (slug: string) => {
+    const next = toggleEligible(live().eligiblePlans, slug);
+    overlay({ eligiblePlans: next });
+    enqueue({ eligiblePlans: next });
+  };
+  const toggleHive = (slug: string) => {
+    const next = toggleEligible(live().eligibleHives, slug);
+    overlay({ eligibleHives: next });
+    enqueue({ eligibleHives: next });
+  };
+  const togglePause = () => {
+    const next = !live().pauseNewWork;
+    overlay({ pauseNewWork: next, pausedUntil: null });
+    enqueue({ pauseNewWork: next, pausedUntil: null });
+  };
   const pauseForMinutes = () => {
     const n = Number(pauseMins);
     if (!Number.isFinite(n) || n <= 0) {
       setErr('Enter a positive number of minutes.');
       return;
     }
-    void write('until', { pauseNewWork: false, pausedUntil: Date.now() + Math.round(n) * 60_000 });
+    const until = Date.now() + Math.round(n) * 60_000;
+    overlay({ pauseNewWork: false, pausedUntil: until });
+    enqueue({ pauseNewWork: false, pausedUntil: until });
   };
-  const clearPause = () => void write('until', { pauseNewWork: false, pausedUntil: null });
-  const clearAll = () => void write('clear', { clear: true });
+  const clearPause = () => {
+    overlay({ pauseNewWork: false, pausedUntil: null });
+    enqueue({ pauseNewWork: false, pausedUntil: null });
+  };
+  const setModelTiers = (mt: ModelTier[] | null) => {
+    overlay({ modelTiers: mt });
+    enqueue({ modelTiers: mt });
+  };
+  const onSaveDirective = (text: string) => {
+    const directive = text.trim() ? text : null;
+    overlay({ directive });
+    enqueue({ directive });
+  };
+  const clearAll = () => {
+    overlay({ directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null, modelTiers: null });
+    enqueue({ clear: true });
+  };
 
   return (
     <div className="pc-queen">
@@ -235,7 +289,7 @@ export default function QueenTab({ active }: { active: boolean }) {
         <span className="pc-queen__title">Steering</span>
         {home && <span className="pc-queen__hive" title="The home Queen this steers">{home}</span>}
         <span className="pc-queen__spacer" />
-        <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={busy.has('clear')} title="Clear ALL steering back to default">
+        <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={saving} title="Clear ALL steering back to default">
           <RotateCcw size={11} aria-hidden /> reset
         </button>
       </header>
@@ -257,20 +311,20 @@ export default function QueenTab({ active }: { active: boolean }) {
         </div>
         <button
           type="button"
-          className={`pc-queen__btn pc-queen__btn--block${current.pauseNewWork ? ' pc-queen__btn--stop' : ' pc-queen__btn--go'}`}
+          className={`pc-queen__btn pc-queen__btn--block${view.pauseNewWork ? ' pc-queen__btn--stop' : ' pc-queen__btn--go'}`}
           onClick={togglePause}
-          disabled={busy.has('pause')}
+          disabled={saving}
         >
-          {current.pauseNewWork ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
-          {current.pauseNewWork ? 'Resume new work' : 'Pause indefinitely'}
+          {view.pauseNewWork ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
+          {view.pauseNewWork ? 'Resume new work' : 'Pause indefinitely'}
         </button>
         <div className="pc-queen__pausefor">
           <span className="pc-queen__presetlabel">pause for</span>
           <input type="number" min={1} className="pc-queen__mins" value={pauseMins} onChange={(e) => setPauseMins(e.target.value)} aria-label="Pause duration in minutes" />
           <span className="pc-queen__presetlabel">min</span>
-          <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={busy.has('until')}>apply</button>
-          {current.pausedUntil != null && (
-            <button type="button" className="pc-queen__chip" onClick={clearPause} disabled={busy.has('until')}>clear</button>
+          <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={saving}>apply</button>
+          {view.pausedUntil != null && (
+            <button type="button" className="pc-queen__chip" onClick={clearPause} disabled={saving}>clear</button>
           )}
         </div>
         <span className="pc-queen__hint">drives existing placements to terminal, starts nothing new</span>
@@ -279,24 +333,20 @@ export default function QueenTab({ active }: { active: boolean }) {
       {/* 2 — Focus directive */}
       <DirectiveEditor
         key={home}
-        initial={current.directive ?? ''}
-        busy={busy.has('directive')}
-        onSave={(text) => void write('directive', { directive: text.trim() ? text : null })}
+        initial={view.directive ?? ''}
+        busy={saving}
+        onSave={onSaveDirective}
       />
 
       {/* 3 — Model tiers (session override, D-006 / #4) */}
-      <ModelTiersOverride
-        override={current.modelTiers ?? null}
-        onWrite={(mt) => void write('modelTiers', { modelTiers: mt })}
-        busy={busy.has('modelTiers')}
-      />
+      <ModelTiersOverride override={view.modelTiers ?? null} onWrite={setModelTiers} busy={saving} />
 
       {/* 4 — Eligible Hives (placement scope, owner-review round 2) */}
       <section className="pc-queen__section">
         <div className="pc-queen__section-head">
           <Network size={12} aria-hidden />
           <span className="pc-queen__section-title">Eligible hives</span>
-          <span className="pc-queen__count">{hiveRestricted ? `${current.eligibleHives.length} selected` : 'no restriction'}</span>
+          <span className="pc-queen__count">{hiveRestricted ? `${view.eligibleHives.length} selected` : 'no restriction'}</span>
         </div>
         <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
           {hiveRestricted
@@ -308,11 +358,11 @@ export default function QueenTab({ active }: { active: boolean }) {
         ) : (
           <ul className="pc-queen__plans">
             {hiveOptions.map((h) => {
-              const on = current.eligibleHives.includes(h.value);
+              const on = view.eligibleHives.includes(h.value);
               return (
                 <li key={h.value} className={`pc-queen__plan${on ? ' pc-queen__plan--on' : ''}`}>
                   <label className="pc-queen__planlabel">
-                    <input type="checkbox" className="pc-queen__check" checked={on} disabled={busy.has(`hive:${h.value}`)} onChange={() => toggleHive(h.value)} />
+                    <input type="checkbox" className="pc-queen__check" checked={on} onChange={() => toggleHive(h.value)} />
                     <span className="pc-queen__planslug" title={h.value}>{h.label}</span>
                   </label>
                 </li>
@@ -327,7 +377,7 @@ export default function QueenTab({ active }: { active: boolean }) {
         <div className="pc-queen__section-head">
           <ListChecks size={12} aria-hidden />
           <span className="pc-queen__section-title">Eligible plans</span>
-          <span className="pc-queen__count">{planRestricted ? `${current.eligiblePlans.length} selected` : 'no restriction'}</span>
+          <span className="pc-queen__count">{planRestricted ? `${view.eligiblePlans.length} selected` : 'no restriction'}</span>
         </div>
         <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
           {planRestricted
@@ -343,7 +393,7 @@ export default function QueenTab({ active }: { active: boolean }) {
             {planRows.map((p) => (
               <li key={p.slug} className={`pc-queen__plan${p.eligible ? ' pc-queen__plan--on' : ''}`}>
                 <label className="pc-queen__planlabel">
-                  <input type="checkbox" className="pc-queen__check" checked={p.eligible} disabled={busy.has(`plan:${p.slug}`)} onChange={() => togglePlan(p.slug)} />
+                  <input type="checkbox" className="pc-queen__check" checked={p.eligible} onChange={() => togglePlan(p.slug)} />
                   <span className="pc-queen__planslug" title={p.slug}>{p.title}</span>
                 </label>
                 <span className="pc-queen__planstatus" data-status={p.inActive ? (p.startStatus === 'started' ? 'started' : p.status ?? '') : 'stale'}>

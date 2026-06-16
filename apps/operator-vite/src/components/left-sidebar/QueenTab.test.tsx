@@ -114,4 +114,17 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(setSteeringBody().args.pauseNewWork).toBe(true);
   });
+
+  it('accumulates fast back-to-back checkbox clicks without clobbering (owner bug 2026-06-16)', async () => {
+    render(<QueenTab active={true} />);
+    // two clicks before any server refetch — the old read-modify-write on the
+    // stale server array dropped the first selection; optimistic state accumulates.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Plan A' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Plan B' }));
+    const runTool = () => H.fetchMock.mock.calls.filter((c) => String((c as unknown[])[0]).includes('run-tool'));
+    await waitFor(() => expect(runTool().length).toBeGreaterThanOrEqual(2));
+    // the LAST write carries BOTH selections (no clobber)
+    const last = JSON.parse((runTool().slice(-1)[0][1] as { body: string }).body);
+    expect(last.args.eligiblePlans).toEqual(['plan-a', 'plan-b']);
+  });
 });
