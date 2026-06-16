@@ -179,6 +179,7 @@ function ErrorBanner({ message }: { message: string }) {
 // ── Entry 1 form — new local directory ────────────────────────────────────
 
 function NewLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string }) {
+  const t = useLexicon();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const slugRef = useRef<HTMLInputElement>(null);
@@ -211,7 +212,7 @@ function NewLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSucce
         return;
       }
       const data: CreateResult = await res.json();
-      toast.success(`Harness '${data.project.slug}' created at ${data.project.path}`);
+      toast.success(`${t('pot')} '${data.project.slug}' created at ${data.project.path}`);
       onSuccess(data.project.slug);
     } catch (err: unknown) {
       setError((err as Error).message ?? 'Network error');
@@ -225,7 +226,7 @@ function NewLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSucce
       <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>New local directory</h2>
       {error && <ErrorBanner message={error} />}
       <Label>
-        <FieldLabel>Harness slug</FieldLabel>
+        <FieldLabel>{t('pot')} slug</FieldLabel>
         <input ref={slugRef} type="text" placeholder="my-project" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
         <HintText>Lowercase, hyphens OK. Used as the folder name inside the state dir.</HintText>
       </Label>
@@ -239,7 +240,7 @@ function NewLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSucce
         <input ref={folderNameRef} type="text" placeholder="my-project" style={inputStyle} />
         <HintText>The new directory to create inside the parent. Must not already exist.</HintText>
       </Label>
-      <SubmitRow busy={busy} label="Create harness" onBack={onBack} />
+      <SubmitRow busy={busy} label={`Create ${t('pot')}`} onBack={onBack} />
     </form>
   );
 }
@@ -247,6 +248,7 @@ function NewLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSucce
 // ── Entry 3 form — existing local repo ────────────────────────────────────
 
 function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string }) {
+  const t = useLexicon();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const slugRef = useRef<HTMLInputElement>(null);
@@ -276,7 +278,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; on
         return;
       }
       const data: CreateResult = await res.json();
-      toast.success(`Harness '${data.project.slug}' linked in place — ${data.project.path} (folder not moved)`);
+      toast.success(`${t('pot')} '${data.project.slug}' linked in place — ${data.project.path} (folder not moved)`);
       onSuccess(data.project.slug);
     } catch (err: unknown) {
       setError((err as Error).message ?? 'Network error');
@@ -307,7 +309,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; on
         folder can be linked into more than one workspace (e.g. to try different prompts on it).
       </div>
       <Label>
-        <FieldLabel>Harness slug</FieldLabel>
+        <FieldLabel>{t('pot')} slug</FieldLabel>
         <input ref={slugRef} type="text" placeholder="my-project" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
         <HintText>Lowercase, hyphens OK.</HintText>
       </Label>
@@ -316,7 +318,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; on
         <input ref={pathRef} type="text" placeholder="/home/user/projects/my-project" style={inputStyle} />
         <HintText>Absolute path to an existing git repository or project directory. Stays where it is — linked, not moved.</HintText>
       </Label>
-      <SubmitRow busy={busy} label="Add harness" onBack={onBack} />
+      <SubmitRow busy={busy} label={`Add ${t('pot')}`} onBack={onBack} />
     </form>
   );
 }
@@ -618,14 +620,14 @@ function buildSections(opts: {
             key: 'new-local',
             step: 'new-local',
             label: 'New local directory',
-            description: 'Create a new folder, run git init, and register it as a harness.',
+            description: `Create a new folder, run git init, and register it as a ${hiveLower}.`,
             icon: '📁',
           },
           {
             key: 'existing-local',
             step: 'existing-local',
             label: 'Existing local repo',
-            description: 'Register an existing local directory or git repo as a harness.',
+            description: `Register an existing local directory or git repo as a ${hiveLower}.`,
             icon: '📂',
           },
         ],
@@ -645,8 +647,8 @@ function buildSections(opts: {
           {
             key: 'harness-link',
             step: 'harness-link',
-            label: 'Harness link',
-            description: 'Join a shared harness via a papercusp://harness?… invite link.',
+            label: `${capitalize(hiveLower)} link`,
+            description: `Join a shared ${hiveLower} via a papercusp://harness?… invite link.`,
             icon: '🔗',
           },
         ],
@@ -665,7 +667,7 @@ function buildSections(opts: {
           key: 'new-local',
           step: 'new-local',
           label: 'New local directory',
-          description: 'A fresh folder, git-initialised and registered as a harness.',
+          description: `A fresh folder, git-initialised and registered as a ${hiveLower}.`,
           icon: '📁',
         },
         {
@@ -705,8 +707,8 @@ function buildSections(opts: {
         {
           key: 'harness-link',
           step: 'harness-link',
-          label: 'Harness link',
-          description: 'Join a single shared harness via a papercusp://harness link.',
+          label: `${capitalize(hiveLower)} link`,
+          description: `Join a single shared ${hiveLower} via a papercusp://harness link.`,
           icon: '🔗',
         },
       ],
@@ -756,11 +758,11 @@ function ForkToggle({
         👑 New {lower}
       </button>
       {hiveScope && (
-        <button type="button" role="tab" aria-selected={mode === 'into-hive'} onClick={() => onMode('into-hive')} style={btn(mode === 'into-hive')} title={`Add the new harness into ${hiveScope}`}>
+        <button type="button" role="tab" aria-selected={mode === 'into-hive'} onClick={() => onMode('into-hive')} style={btn(mode === 'into-hive')} title={`Add the new ${lower} into ${hiveScope}`}>
           Add to {hiveScope}
         </button>
       )}
-      <button type="button" role="tab" aria-selected={mode === 'standalone'} onClick={() => onMode('standalone')} style={btn(mode === 'standalone')} title="A standalone harness with no hive membership">
+      <button type="button" role="tab" aria-selected={mode === 'standalone'} onClick={() => onMode('standalone')} style={btn(mode === 'standalone')} title={`A standalone ${lower}, not nested under another hive`}>
         Standalone
       </button>
     </div>
@@ -797,11 +799,11 @@ function PickerStep({
   );
   return (
     <div>
-      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Add a harness</h2>
+      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Add a {hiveLabel}</h2>
       <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--fg-dim)' }}>
         {intoHive
-          ? <>New harnesses will be added into <code>{hiveScope}</code>.</>
-          : 'Choose how to add a new harness to this workspace.'}
+          ? <>New {hiveLabel}s will be added into <code>{hiveScope}</code>.</>
+          : `Choose how to add a new ${hiveLower} to this workspace.`}
       </p>
       {/* Flag OFF: the fork toggle sits at the top (legacy layout). Flag ON it
           moves inside the Create section — only creation reads the mode (P-006). */}
@@ -974,7 +976,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
       <Modal
         open={open}
         onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(true); }}
-        title={step === 'share-offer' && createdSlug ? 'Harness created' : 'Add a harness'}
+        title={step === 'share-offer' && createdSlug ? `${t('pot')} created` : `Add a ${t('pot')}`}
         contentStyle={{
           width: 'min(520px, 96vw)',
           background: 'var(--bg-popover, #0d1829)',
@@ -1057,7 +1059,7 @@ function ShareOfferStep({
   return (
     <div>
       <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>
-        ✓ Harness created
+        ✓ {hiveLabel} created
       </h2>
       <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--fg-dim)' }}>
         <code>{slug}</code> is registered.
@@ -1068,8 +1070,7 @@ function ShareOfferStep({
         </div>
       ) : (
         <p data-testid="share-offer-standalone-note" style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--fg-dim)' }}>
-          Sharing happens at the hive level — to collaborate on this harness,
-          add it to a hive (or create one) and publish the hive.
+          Sharing happens at the hive level — publish this {hiveLabel.toLowerCase()} to let others collaborate.
         </p>
       )}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>

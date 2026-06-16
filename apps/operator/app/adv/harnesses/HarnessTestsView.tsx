@@ -8,7 +8,7 @@ import {
   ACCEPTANCE_DOMAIN_ID,
 } from '@papercusp/operator-core/lib/harness-testing-registry';
 import { type TestDomain } from '@papercusp/operator-core/lib/testing-domains';
-import { TESTING_CUSTOM_TABS, UNIVERSAL_TESTING_TABS } from '@/app/admin/testing/testing-custom-tabs';
+import { useTestingCustomTabs, useUniversalTestingTabs } from '@/app/admin/testing/testing-custom-tabs';
 import { makeHarnessTestingDataSource } from './harness-testing-data-source';
 import AcceptancePanel from './AcceptancePanel';
 
@@ -32,6 +32,8 @@ import AcceptancePanel from './AcceptancePanel';
  * fallback nav immediately (no blocking spinner) and swaps in the full set.
  */
 export default function HarnessTestsView({ slug }: { slug: string }) {
+  const universalTestingTabs = useUniversalTestingTabs();
+  const testingCustomTabs = useTestingCustomTabs();
   const [declared, setDeclared] = useState<
     { domains: TestDomain[]; tierLabels: Record<string, string> } | null
   >(null);

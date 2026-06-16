@@ -27,6 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useDebouncedSave } from '../../harness/useDebouncedSave';
 import { DraftInput, DraftTextarea, FormField } from '@/lib/forms';
+import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
 import {
   AGENT_BACKENDS,
@@ -89,6 +90,7 @@ const ROLE_HINTS = ['operator', 'orchestrator', 'scoper', 'worker', 'validator',
 const CEILING_ROLES = ['bee', 'worker', 'validator', 'scoper', 'reviewer', 'scanner', 'judge'];
 
 export default function AgentSettingsPage() {
+  const t = useLexicon();
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
@@ -628,9 +630,9 @@ export default function AgentSettingsPage() {
 
       {/* Headless caveat */}
       <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
-        <h2>Headless harness runs</h2>
+        <h2>Headless {t('pot', { lower: true })} runs</h2>
         <p style={{ fontSize: 13, margin: 0 }}>
-          When you run the harness orchestrator from a terminal directly
+          When you run the {t('pot', { lower: true })} orchestrator from a terminal directly
           (outside the operator), it does NOT inherit settings from this
           page — it reads <code>$AGENT_BACKEND</code>/<code>$AGENT_CMD</code>{' '}
           from the shell instead. Either set them before invoking:

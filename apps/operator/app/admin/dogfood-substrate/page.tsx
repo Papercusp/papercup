@@ -16,6 +16,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { term } from '@papercusp/operator-core/lib/lexicon';
 import { listBootedHandles } from '@papercusp/operator-core/lib/sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '@papercusp/operator-core/lib/sync/hyperbee/bootstrap-progress';
 import { listBootHistory } from '@papercusp/operator-core/lib/sync/hyperbee/boot-history';
@@ -111,7 +112,7 @@ export default async function DogfoodSubstratePage() {
   const hint = !enabled
     ? null
     : booted.length > 0
-      ? `${booted.length} harness${booted.length === 1 ? '' : 'es'}`
+      ? `${booted.length} ${term('pot', { count: booted.length })}`
       : null;
 
   // Compute the workspace-level health summary for the top bar.
@@ -156,21 +157,23 @@ export default async function DogfoodSubstratePage() {
         }}
       >
         Model B sync substrate boot state for the local process. The substrate
-        always boots; PG remains the canonical store and each harness federates
-        over its own per-peer log when shared.
+        always boots; PG remains the canonical store and each{' '}
+        {term('pot', { lower: true })} federates over its own per-peer log when
+        shared.
       </p>
 
       {booted.length === 0 ? (
         <div style={EMPTY}>
-          No harnesses have booted yet. Watch this page; the orchestrator boots
-          each harness on its own.
+          No {term('pot', { plural: true, lower: true })} have booted yet. Watch
+          this page; the orchestrator boots each {term('pot', { lower: true })} on
+          its own.
         </div>
       ) : (
         <table style={TABLE} data-testid="dogfood-substrate-table">
           <thead>
             <tr>
               <th style={TH}>Workspace</th>
-              <th style={TH}>Harness</th>
+              <th style={TH}>{term('pot')}</th>
               <th style={TH}>Health</th>
               <th style={TH}>Bootstrap</th>
               <th style={TH}>Claim audit</th>

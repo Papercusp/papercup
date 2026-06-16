@@ -39,6 +39,7 @@ import {
 } from './use-create-data';
 
 export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
+  const t = useLexicon();
   const scope = useCreateScope();
   const maps = usePlanListMaps(scope);
   const [istatus, setIstatus] = useItemStatusFilter();
@@ -136,7 +137,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
                   className={`pc-queue__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
                   aria-pressed={active}
                   onClick={() => toggleItemStatus(f.id)}
-                  title={f.hint}
+                  title={f.hint.replace('{pot}', t('pot'))}
                 >
                   <span className="pc-queue__filter-label">{f.label}</span>
                   <span className="pc-queue__filter-count">

@@ -1,7 +1,8 @@
 'use client';
 
-import type { ReactElement } from 'react';
+import { useMemo, type ReactElement } from 'react';
 import { buildUniversalTesting, type TestingShellTab } from '@papercusp/testing-shell';
+import { useLexicon } from '@/lib/useLexicon';
 import LiveMetricsTab from './_components/LiveMetricsTab';
 import RoutesTab from './_components/RoutesTab';
 import PackagedBuildTab from './_components/PackagedBuildTab';
@@ -35,30 +36,45 @@ const OPERATOR_SPA_URL = 'http://127.0.0.1:3070/';
  *   sees chaos-desktop runs.
  * - liveObserver (live-web) is a pure in-page observer, no backend.
  */
-const universal = buildUniversalTesting({
-  liveObserver: true,
-  chaosWeb: { runEndpoint: '/api/admin/testing/chaos-web', baseUrl: OPERATOR_SPA_URL },
-  aiExplore: {
-    runEndpoint: '/api/admin/testing/ai-explore',
-    defaultStartUrl: 'http://127.0.0.1:3055/',
-    defaultGoal: 'Open the harnesses page, click into the first harness, switch to the Issues tab.',
-  },
-  chaosDesktop: { defaultRoute: '/' }, // recorderUrl defaults to the current origin
-  // LLM scenario-driven evaluation (sim-user → SUT → judge). The lib's
-  // LlmTestPanel (Runs / Scenarios / Targets / Findings) drives the operator's
-  // existing /api/admin/llm-tests/* routes + /api/credentials — every path is a
-  // prop, nothing hardcoded in the lib (Phase 7 P-073).
-  llm: {
-    scenariosEndpoint: '/api/admin/llm-tests/scenarios',
-    runsEndpoint: '/api/admin/llm-tests/runs',
-    runDetailEndpoint: '/api/admin/llm-tests/runs',
-    findingsEndpoint: '/api/admin/llm-tests/findings',
-    credentialsEndpoint: '/api/credentials',
-  },
-});
+/**
+ * Build the universal-testing config + tabs. A hook (not a module const) so the
+ * AI-Explore default goal renders the project unit through the active lexicon
+ * pack ("harnesses"/"harness" → "Hives"/"Hive" when the-hive is on). Reactive
+ * to a live flag flip via `useLexicon()`.
+ */
+function useUniversalTesting() {
+  const t = useLexicon();
+  return useMemo(
+    () =>
+      buildUniversalTesting({
+        liveObserver: true,
+        chaosWeb: { runEndpoint: '/api/admin/testing/chaos-web', baseUrl: OPERATOR_SPA_URL },
+        aiExplore: {
+          runEndpoint: '/api/admin/testing/ai-explore',
+          defaultStartUrl: 'http://127.0.0.1:3055/',
+          defaultGoal: `Open the ${t('pot', { plural: true, lower: true })} page, click into the first ${t('pot', { lower: true })}, switch to the Issues tab.`,
+        },
+        chaosDesktop: { defaultRoute: '/' }, // recorderUrl defaults to the current origin
+        // LLM scenario-driven evaluation (sim-user → SUT → judge). The lib's
+        // LlmTestPanel (Runs / Scenarios / Targets / Findings) drives the operator's
+        // existing /api/admin/llm-tests/* routes + /api/credentials — every path is a
+        // prop, nothing hardcoded in the lib (Phase 7 P-073).
+        llm: {
+          scenariosEndpoint: '/api/admin/llm-tests/scenarios',
+          runsEndpoint: '/api/admin/llm-tests/runs',
+          runDetailEndpoint: '/api/admin/llm-tests/runs',
+          findingsEndpoint: '/api/admin/llm-tests/findings',
+          credentialsEndpoint: '/api/credentials',
+        },
+      }),
+    [t],
+  );
+}
 
 /** The universal tabs' metadata (Live / Chaos-web / AI Explore / Chaos-desktop), for the host tab lists. */
-export const UNIVERSAL_TESTING_TABS: TestingShellTab[] = universal.tabs;
+export function useUniversalTestingTabs(): TestingShellTab[] {
+  return useUniversalTesting().tabs;
+}
 
 /**
  * id→component map for the testing panels.
@@ -70,15 +86,24 @@ export const UNIVERSAL_TESTING_TABS: TestingShellTab[] = universal.tabs;
  * operator-specific (Test Runs / Live metrics (vitals) / Memory / Routes /
  * Packaged). Tabs not in this map render via the shared `<DomainTestPanel>`.
  *
+ * A hook (not a module const) so the universal panels' lexicon-derived copy
+ * (e.g. the AI-Explore default goal) tracks the active brand pack.
+ *
  * Lives under `app/admin/testing/` (alongside `_components/`) so it is
  * importable from both operator-vite (`@/app/...`) and the `/adv` view.
  */
-export const TESTING_CUSTOM_TABS: Record<string, () => ReactElement> = {
-  ...universal.customTabs, // live-web, chaos-web, ai-explore, chaos-desktop
-  'test-runs': TestRunsTab,
-  vitals: LiveMetricsTab, // operator desktop vitals (renamed from `live`; the universal observer owns `live-web`)
-  memory: MemoryTab,
-  routes: RoutesTab,
-  packaged: PackagedBuildTab,
-  // `llm` is supplied by `...universal.customTabs` (the lib's LlmTestPanel).
-};
+export function useTestingCustomTabs(): Record<string, () => ReactElement> {
+  const universal = useUniversalTesting();
+  return useMemo(
+    () => ({
+      ...universal.customTabs, // live-web, chaos-web, ai-explore, chaos-desktop
+      'test-runs': TestRunsTab,
+      vitals: LiveMetricsTab, // operator desktop vitals (renamed from `live`; the universal observer owns `live-web`)
+      memory: MemoryTab,
+      routes: RoutesTab,
+      packaged: PackagedBuildTab,
+      // `llm` is supplied by `...universal.customTabs` (the lib's LlmTestPanel).
+    }),
+    [universal],
+  );
+}

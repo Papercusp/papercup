@@ -5,6 +5,7 @@ import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface BrokenAnchor {
   kind: string;
@@ -97,6 +98,7 @@ interface ClaudeHygiene {
 const KIND_SUGGESTIONS = ['user', 'feedback', 'project', 'reference'];
 
 export default function MemoryPage() {
+  const t = useLexicon();
   const [userId, setUserId] = useState<string | null>(null);
   const [metaLoaded, setMetaLoaded] = useState(false);
   const [stats, setStats] = useState<FeedbackStats | null>(null);
@@ -535,7 +537,7 @@ export default function MemoryPage() {
         <h1>Papercusp memory</h1>
         <p className="pc-settings-intro">
           Everything Papercusp remembers, organized by who can see it.
-          Personal entries are private to you; per-harness entries are
+          Personal entries are private to you; per-{t('pot', { lower: true })} entries are
           shared with anyone working on that project; the deprecated
           workspace tier is shown only if you have legacy entries to
           clean up. Edits and deletes are recorded as feedback for
@@ -673,7 +675,7 @@ export default function MemoryPage() {
               style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-3)', color: 'var(--fg)', fontSize: 13 }}
             >
               <option value="">Personal</option>
-              {harnesses.map((h) => <option key={h} value={h}>harness: {h}</option>)}
+              {harnesses.map((h) => <option key={h} value={h}>{t('pot', { lower: true })}: {h}</option>)}
             </select>
             <div style={{ flex: 1 }} />
             <button
@@ -810,17 +812,17 @@ export default function MemoryPage() {
               empty="No personal memories yet. Tell Papercusp something to remember — &ldquo;remember I prefer terse replies&rdquo; — and it&rsquo;ll land here."
             />
             <Section
-              title="Per-harness memory"
-              description="Project-specific facts shared with anyone who has access to that harness. Use these for team conventions, project context, or anything an agent working on this project should know."
+              title={`Per-${t('pot')} memory`}
+              description={`Project-specific facts shared with anyone who has access to that ${t('pot', { lower: true })}. Use these for team conventions, project context, or anything an agent working on this project should know.`}
               rows={harnessRows}
               renderRow={renderRow}
               groupedBySlug={bySlug}
-              empty="No per-harness memories yet. Ask Papercusp to remember a project fact and tag a harness — &ldquo;for the sheets harness, we use BigQuery&rdquo;."
+              empty={`No per-${t('pot', { lower: true })} memories yet. Ask Papercusp to remember a project fact and tag a ${t('pot', { lower: true })} — “for the sheets ${t('pot', { lower: true })}, we use BigQuery”.`}
             />
             {workspaceRows.length > 0 && (
               <Section
                 title="Deprecated — workspace memory"
-                description="Older shared memories from before per-harness scope existed. Move important ones into the right harness (delete here, then ask Papercusp to remember with a harness_slug), or just delete."
+                description={`Older shared memories from before per-${t('pot', { lower: true })} scope existed. Move important ones into the right ${t('pot', { lower: true })} (delete here, then ask Papercusp to remember with a harness_slug), or just delete.`}
                 rows={workspaceRows}
                 renderRow={renderRow}
                 deprecated

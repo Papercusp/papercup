@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface MaskedCreds {
   tenantId: string | null;
@@ -14,6 +15,7 @@ interface MaskedCreds {
 }
 
 export default function PublishingClient() {
+  const t = useLexicon();
   const [creds, setCreds] = useState<MaskedCreds | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -83,7 +85,7 @@ export default function PublishingClient() {
       {confirmEl}
       <h1>Publishing</h1>
       <p className="pc-settings-intro">
-        One-click public publishing for coding harnesses, hosted on{' '}
+        One-click public publishing for coding {t('pot', { plural: true, lower: true })}, hosted on{' '}
         <code>*.preview.papercuspai.com</code>. The substrate auto-registers a
         per-machine tenant the first time you click Publish; this page lets you
         review and rotate that machine identity.
@@ -91,7 +93,7 @@ export default function PublishingClient() {
 
       {!registered && (
         <div className="pc-callout pc-callout-info">
-          <strong>Not yet registered.</strong> Open a coding harness, enable the{' '}
+          <strong>Not yet registered.</strong> Open a coding {t('pot', { lower: true })}, enable the{' '}
           <code>@papercupai/cloudflare-pages</code> plugin, and click
           Publish. The substrate will register a tenant automatically.
         </div>

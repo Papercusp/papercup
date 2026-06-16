@@ -1,10 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 import { ALL_FLAG_KEYS, FLAGS, type FlagKey, type FlagValues } from '@papercusp/flags';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { toast } from 'sonner';
+import { useLexicon } from '@/lib/useLexicon';
+import type { BoundLexicon } from '@papercusp/lexicon';
 
 /**
  * Interactive feature-flag console. Lets admins:
@@ -18,41 +20,48 @@ import { toast } from 'sonner';
  * Both are fetched live via the operator's flag-bus.
  */
 
-const FLAG_LABELS: Record<FlagKey, string> = {
-  [FLAGS.CLOUDFLARE_PUBLISH]: 'Cloudflare publishing',
-  [FLAGS.HARNESS_PHASES]: 'Harness phases',
-  [FLAGS.DESIGN]: 'Design tab',
-  [FLAGS.TESTING]: 'Testing surfaces',
-  [FLAGS.INBOX_DURABLE_ESCALATIONS]: 'Durable inbox escalations',
-  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: 'Auto-implement improvements',
-  [FLAGS.VIDEO_CHANNELS]: 'Video channels (desktop)',
-  [FLAGS.VOICE_CHANNELS]: 'Voice channels (desktop)',
-  [FLAGS.THE_HIVE]: 'The Swarm (bee lexicon)',
-  [FLAGS.OPEN_SIGNUP]: 'Open signup',
-  [FLAGS.ENDPOINT_AUTH_TIERS]: 'Endpoint auth tiers',
-};
+// Labels/blurbs are built at render through the lexicon (`t`) so the
+// project-meaning "harness" strings render as the active brand term ("Hive").
+// They are NOT module-level consts — a hook can't run at module scope.
+function flagLabels(t: BoundLexicon): Record<FlagKey, string> {
+  return {
+    [FLAGS.CLOUDFLARE_PUBLISH]: 'Cloudflare publishing',
+    [FLAGS.HARNESS_PHASES]: `${t('pot')} phases`,
+    [FLAGS.DESIGN]: 'Design tab',
+    [FLAGS.TESTING]: 'Testing surfaces',
+    [FLAGS.INBOX_DURABLE_ESCALATIONS]: 'Durable inbox escalations',
+    [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: 'Auto-implement improvements',
+    [FLAGS.VIDEO_CHANNELS]: 'Video channels (desktop)',
+    [FLAGS.VOICE_CHANNELS]: 'Voice channels (desktop)',
+    [FLAGS.THE_HIVE]: 'The Swarm (bee lexicon)',
+    [FLAGS.OPEN_SIGNUP]: 'Open signup',
+    [FLAGS.ENDPOINT_AUTH_TIERS]: 'Endpoint auth tiers',
+  };
+}
 
-const FLAG_BLURBS: Record<FlagKey, string> = {
-  [FLAGS.CLOUDFLARE_PUBLISH]: 'Publish-to-Cloudflare flow. Cut for V1 ship.',
-  [FLAGS.HARNESS_PHASES]: 'Multi-phase harness (staging / testing / production). Cut for V1 ship.',
-  [FLAGS.DESIGN]: 'In-harness design tab + /design route. Cut for V1 ship.',
-  [FLAGS.TESTING]:
-    'Testing-only surfaces: pi tab, + add plugin button, Oracle assistant (tutorial dock + menubar button + /api/oracle). Cut for V1 ship.',
-  [FLAGS.INBOX_DURABLE_ESCALATIONS]:
-    'Mirror chat decision cards to durable coord escalations (answer live or from the inbox).',
-  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]:
-    'Master switch for auto-implementing captured improvements. Off = capture + triage only.',
-  [FLAGS.VIDEO_CHANNELS]:
-    'Desktop P2P video channel (participant-grid) for shared harnesses. Off until the live-camera E2E passes.',
-  [FLAGS.VOICE_CHANNELS]:
-    'Desktop P2P voice channel (holepunch) for shared harnesses. Off until the live Tauri+mic pass.',
-  [FLAGS.THE_HIVE]:
-    'Bee-themed user-facing lexicon (Pot→Hive, Fleet→Colony, Operator→Sentinel Bee, Queen=brain, Humans=Keepers; Swarm = a deployment). Presentation only — code/DB/tools unchanged. Off = classic Papercusp.',
-  [FLAGS.OPEN_SIGNUP]:
-    'Allow new account signup after the first user exists. Off (default): the internet-facing /auth/signup only bootstraps the first account — security gate, deliberate default-OFF.',
-  [FLAGS.ENDPOINT_AUTH_TIERS]:
-    'Enforce loopback-tier routes at the dispatch chokepoint (auth-tier Wave 1: mutating routes reject non-loopback hosts). Off = emergency revert to pre-rollout behavior.',
-};
+function flagBlurbs(t: BoundLexicon): Record<FlagKey, string> {
+  return {
+    [FLAGS.CLOUDFLARE_PUBLISH]: 'Publish-to-Cloudflare flow. Cut for V1 ship.',
+    [FLAGS.HARNESS_PHASES]: `Multi-phase ${t('pot')} (staging / testing / production). Cut for V1 ship.`,
+    [FLAGS.DESIGN]: `In-${t('pot')} design tab + /design route. Cut for V1 ship.`,
+    [FLAGS.TESTING]:
+      'Testing-only surfaces: pi tab, + add plugin button, Oracle assistant (tutorial dock + menubar button + /api/oracle). Cut for V1 ship.',
+    [FLAGS.INBOX_DURABLE_ESCALATIONS]:
+      'Mirror chat decision cards to durable coord escalations (answer live or from the inbox).',
+    [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]:
+      'Master switch for auto-implementing captured improvements. Off = capture + triage only.',
+    [FLAGS.VIDEO_CHANNELS]:
+      `Desktop P2P video channel (participant-grid) for shared ${t('pot', { plural: true, lower: true })}. Off until the live-camera E2E passes.`,
+    [FLAGS.VOICE_CHANNELS]:
+      `Desktop P2P voice channel (holepunch) for shared ${t('pot', { plural: true, lower: true })}. Off until the live Tauri+mic pass.`,
+    [FLAGS.THE_HIVE]:
+      'Bee-themed user-facing lexicon (Pot→Hive, Fleet→Colony, Operator→Sentinel Bee, Queen=brain, Humans=Keepers; Swarm = a deployment). Presentation only — code/DB/tools unchanged. Off = classic Papercusp.',
+    [FLAGS.OPEN_SIGNUP]:
+      'Allow new account signup after the first user exists. Off (default): the internet-facing /auth/signup only bootstraps the first account — security gate, deliberate default-OFF.',
+    [FLAGS.ENDPOINT_AUTH_TIERS]:
+      'Enforce loopback-tier routes at the dispatch chokepoint (auth-tier Wave 1: mutating routes reject non-loopback hosts). Off = emergency revert to pre-rollout behavior.',
+  };
+}
 
 type LoadState =
   | { kind: 'loading' }
@@ -60,6 +69,9 @@ type LoadState =
   | { kind: 'ok'; testingFeatures: boolean; source: string; flags: FlagValues };
 
 export default function FeaturesAdmin() {
+  const t = useLexicon();
+  const labels = useMemo(() => flagLabels(t), [t]);
+  const blurbs = useMemo(() => flagBlurbs(t), [t]);
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -152,7 +164,7 @@ export default function FeaturesAdmin() {
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
       await refresh();
     } catch (e) {
-      toast.error(`Failed to update ${FLAG_LABELS[key]}`, { description: (e as Error).message });
+      toast.error(`Failed to update ${labels[key]}`, { description: (e as Error).message });
     } finally {
       setBusy(null);
     }
@@ -251,8 +263,8 @@ export default function FeaturesAdmin() {
         <div className="fa-flags">
           {ALL_FLAG_KEYS.map((key) => {
             const on = effective[key] ?? false;
-            const label = FLAG_LABELS[key];
-            const blurb = FLAG_BLURBS[key];
+            const label = labels[key];
+            const blurb = blurbs[key];
             return (
               <div key={key} className={`fa-flag${!testingOn ? ' disabled' : ''}`}>
                 <div className="fa-flag-main">

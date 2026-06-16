@@ -11,11 +11,13 @@
  */
 
 import { parseAsString, useQueryState } from 'nuqs';
+import { useLexicon } from '@/lib/useLexicon';
 import { AddPanelCatalog } from '../../harness/dock/AddPanelCatalog';
 import AdvGitDock from './AdvGitDock';
 import './adv-dock.css';
 
 export default function AdvGitWorkspace() {
+  const t = useLexicon();
   const [slug] = useQueryState('slug', parseAsString.withDefault(''));
 
   return (
@@ -31,7 +33,7 @@ export default function AdvGitWorkspace() {
         {slug ? (
           <AdvGitDock slug={slug} />
         ) : (
-          <div className="pc-adv-git__empty">Pick a harness from the selector above.</div>
+          <div className="pc-adv-git__empty">Pick a {t('pot', { lower: true })} from the selector above.</div>
         )}
       </div>
 

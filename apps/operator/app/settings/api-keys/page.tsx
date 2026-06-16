@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import type { UseFormRegisterReturn } from 'react-hook-form';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+import { useLexicon } from '@/lib/useLexicon';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { AuthSignInCards } from '@/app/_components/AuthSignInCards';
 import RouteLink from '@/app/_components/RouteLink';
@@ -39,6 +40,7 @@ const ApiKeysSchema = z.object({
 type ApiKeysFormData = z.infer<typeof ApiKeysSchema>;
 
 export default function ApiKeysPage() {
+  const t = useLexicon();
   const [masked, setMasked] = useState<MaskedCoreCredentials | null>(null);
   const [voiceCreds, setVoiceCreds] = useState<VoiceCredsSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -128,7 +130,7 @@ export default function ApiKeysPage() {
           subscription (no API key needed). Set an Anthropic key only if you switch
           to <code>AGENT_BACKEND=claude-code</code> and don&rsquo;t already have a
           Claude Code OAuth session. OpenAI is a fallback for some plugins. GitHub
-          PAT is needed only when publishing harnesses to the marketplace.
+          PAT is needed only when publishing {t('pot', { plural: true, lower: true })} to the marketplace.
         </p>
 
         <form onSubmit={submit(onSubmit)} className="pc-card">
@@ -164,7 +166,7 @@ export default function ApiKeysPage() {
         />
         <SecretField
           label="GitHub personal access token"
-          help="Optional. Needed only if you want to publish harnesses to the marketplace."
+          help={`Optional. Needed only if you want to publish ${t('pot', { plural: true, lower: true })} to the marketplace.`}
           placeholder={masked?.github_pat ?? 'ghp_…'}
           masked={masked?.github_pat}
           uses={['Marketplace publishing']}

@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { usePlanList, type PlanListRow } from '../../admin/plans/plans-api';
@@ -233,6 +234,7 @@ const SU_AGENT_OPTIONS = [
 ];
 
 export default function AdvSessionsClient() {
+  const t = useLexicon();
   const [rows, setRows] = useState<SessionRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [aliveByPid, setAliveByPid] = useState<Record<number, boolean>>({});
@@ -733,8 +735,8 @@ export default function AdvSessionsClient() {
               disabled={launchingSu}
               title={
                 launchPlanSlug
-                  ? `Launch ${suAgent}-su for plan ${launchPlanSlug} in the active harness`
-                  : `Launch ${suAgent}-su (no plan) in the active harness`
+                  ? `Launch ${suAgent}-su for plan ${launchPlanSlug} in the active ${t('pot', { lower: true })}`
+                  : `Launch ${suAgent}-su (no plan) in the active ${t('pot', { lower: true })}`
               }
             >
               {launchingSu ? 'Launching…' : `Launch SU${launchPlanSlug ? '' : ' (no plan)'}`}
@@ -748,12 +750,12 @@ export default function AdvSessionsClient() {
             </button>
             {sessionHarnessOptions.length > 1 ? (
               <select
-                aria-label="Filter sessions by harness"
+                aria-label={`Filter sessions by ${t('pot', { lower: true })}`}
                 className="pc-adv-sessions__harness-filter"
                 value={sessionHarnessFilter ?? ''}
                 onChange={(e) => void setSessionHarnessFilter(e.target.value || null)}
               >
-                <option value="">All harnesses</option>
+                <option value="">All {t('pot', { plural: true })}</option>
                 {sessionHarnessOptions.map((h) => (
                   <option key={h} value={h}>{h}</option>
                 ))}
@@ -842,7 +844,7 @@ export default function AdvSessionsClient() {
                                 </span>
                               ) : null}
                               {harnessForRow(row) ? (
-                                <span className="pc-adv-sessions__harness-chip" title={`harness: ${harnessForRow(row)}`}>
+                                <span className="pc-adv-sessions__harness-chip" title={`${t('pot', { lower: true })}: ${harnessForRow(row)}`}>
                                   {harnessForRow(row)}
                                 </span>
                               ) : null}

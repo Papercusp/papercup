@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { Select } from '@/app/harness/Select';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface QrPayload {
   server: string;
@@ -30,6 +31,7 @@ interface WorkspaceOption {
 }
 
 export default function MobileSettingsPage() {
+  const t = useLexicon();
   const [qr, setQr] = useState<QrPayload | null>(null);
   const [expiresAt, setExpiresAt] = useState<number>(0);
   const [now, setNow] = useState(Date.now());
@@ -125,7 +127,7 @@ export default function MobileSettingsPage() {
       <header>
         <h1>Mobile access</h1>
         <p className="pc-settings-intro">
-          Pair the Papercup Mobile app on your phone to monitor harnesses, voice-control Papercup, and receive intervention pushes when away from your desk.
+          Pair the Papercup Mobile app on your phone to monitor {t('pot', { plural: true, lower: true })}, voice-control Papercup, and receive intervention pushes when away from your desk.
         </p>
       </header>
 

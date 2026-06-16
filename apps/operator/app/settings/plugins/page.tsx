@@ -198,17 +198,17 @@ export default function PluginSettingsPage() {
       </p>
 
       {harnesses.length === 0 ? (
-        <p>No harnesses installed yet.</p>
+        <p>No {t('pot', { plural: true, lower: true })} installed yet.</p>
       ) : configurable.length === 0 ? (
         <p>No installed plugin declares a <code>configSchema</code>.</p>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 24 }}>
           <aside>
-            <label style={lbl}>Harness</label>
+            <label style={lbl}>{t('pot')}</label>
             <Select
               value={activeHarness}
               onChange={(v) => { setActiveHarness(v); setActivePlugin(''); }}
-              ariaLabel="Harness"
+              ariaLabel={t('pot')}
               options={harnesses.map((h) => ({ value: h.slug, label: h.slug }))}
               triggerStyle={input}
             />
@@ -230,7 +230,7 @@ export default function PluginSettingsPage() {
                         background: isActive ? 'var(--bg-1, #1e1e1e)' : 'transparent',
                         opacity: enabled ? 1 : 0.55,
                       }}
-                      title={enabled ? '' : 'Not enabled in this harness'}
+                      title={enabled ? '' : `Not enabled in this ${t('pot', { lower: true })}`}
                     >
                       {p.name.split('/').pop()}
                       {!enabled && <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--fg-mute, #888)' }}>off</span>}
@@ -257,7 +257,7 @@ export default function PluginSettingsPage() {
                   {!enabledHere && (
                     <div style={notice}>
                       Not currently enabled on <strong>{activeHarness}</strong>. Saved config will apply
-                      once you enable it from the harness dashboard's plugin picker.
+                      once you enable it from the {t('pot')} dashboard's plugin picker.
                     </div>
                   )}
                 </div>

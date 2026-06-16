@@ -34,6 +34,7 @@ import { type DateWindow } from './PlanFilters';
 import { applyPlanFilters, OWNER_VIEWS, type OwnerView } from './plan-filtering';
 import { comparePlans, PLAN_SORT_IDS, type PlanSort } from './plan-sorting';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 
 /** Imperative handle PlansClient uses for J/K keyboard navigation. */
 export interface PlanRailHandle {
@@ -500,8 +501,9 @@ function StatusPill({ status }: { status: PlanStatus }) {
  * scope to include multiple harnesses (Phase 2 sub-harness scope).
  */
 function HarnessPill({ harness }: { harness: string }) {
+  const t = useLexicon();
   return (
-    <Tooltip label={`harness: ${harness}`}>
+    <Tooltip label={`${t('pot', { lower: true })}: ${harness}`}>
       <span className="pc-pill pc-pill--harness">{harness}</span>
     </Tooltip>
   );

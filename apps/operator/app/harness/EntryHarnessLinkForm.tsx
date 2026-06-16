@@ -6,6 +6,7 @@ import { parseHarnessLink, formatParseError } from '@papercusp/operator-core/lib
 // (which pulls node:child_process/fs/os + the identity chain into the SPA bundle).
 import { ALL_STEP_IDS } from '@papercusp/operator-core/lib/harness/join-steps';
 import type { JoinStepState, JoinStepStatus } from '@papercusp/operator-core/lib/harness/join-steps';
+import { useLexicon } from '@/lib/useLexicon';
 import { JoinProgress } from './JoinProgress';
 
 interface Props {
@@ -20,6 +21,7 @@ function initialSteps(): JoinStepState[] {
 }
 
 export function EntryHarnessLinkForm({ onBack, onCreated }: Props) {
+  const t = useLexicon();
   const [url, setUrl] = useState('');
   const [parseError, setParseError] = useState('');
   const [phase, setPhase] = useState<Phase>('input');
@@ -80,7 +82,7 @@ export function EntryHarnessLinkForm({ onBack, onCreated }: Props) {
             ),
           );
         } else if (code === 'slug_conflict') {
-          setFatalError(`Harness slug '${slug}' is already registered in this workspace.`);
+          setFatalError(`${t('pot')} slug '${slug}' is already registered in this workspace.`);
         } else if (!body.state) {
           // Pre-step error (bad input, etc.)
           setFatalError(errMsg);
@@ -123,7 +125,7 @@ export function EntryHarnessLinkForm({ onBack, onCreated }: Props) {
     return (
       <div>
         <h2 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 600 }}>
-          {phase === 'joining' ? 'Joining harness…' : phase === 'done' ? 'Joined!' : 'Join failed'}
+          {phase === 'joining' ? `Joining ${t('pot')}…` : phase === 'done' ? 'Joined!' : 'Join failed'}
         </h2>
         {parsed?.ok && (
           <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--fg-dim)' }}>
@@ -182,7 +184,7 @@ export function EntryHarnessLinkForm({ onBack, onCreated }: Props) {
             onClick={() => void handleJoin()}
             style={{ padding: '7px 16px', fontSize: 13, background: 'var(--accent, #6366f1)', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer', fontWeight: 500 }}
           >
-            Join harness
+            Join {t('pot')}
           </button>
         </div>
       </div>
@@ -198,13 +200,13 @@ export function EntryHarnessLinkForm({ onBack, onCreated }: Props) {
       >
         ← Back
       </button>
-      <h2 style={{ margin: '0 0 14px', fontSize: 15, fontWeight: 600 }}>Harness link</h2>
+      <h2 style={{ margin: '0 0 14px', fontSize: 15, fontWeight: 600 }}>{t('pot')} link</h2>
       <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
-        Paste a <code style={{ fontFamily: 'monospace', fontSize: 12 }}>papercusp://harness?…</code> link shared by a harness owner.
+        Paste a <code style={{ fontFamily: 'monospace', fontSize: 12 }}>papercusp://harness?…</code> link shared by a {t('pot', { lower: true })} owner.
       </p>
       <div style={{ marginBottom: 4 }}>
         <label htmlFor="harness-link-input" style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6, color: 'var(--fg-dim)' }}>
-          Harness link
+          {t('pot')} link
         </label>
         <textarea
           id="harness-link-input"

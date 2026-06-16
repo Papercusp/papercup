@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
+import { useLexicon } from '@/lib/useLexicon';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
 
 type DocSource = 'generated' | 'manual' | 'augmented';
@@ -82,6 +83,7 @@ function StatusDot({ status }: { status: DocStatus }) {
 }
 
 export default function AdvDocsTab({ slug }: { slug: string }) {
+  const t = useLexicon();
   // ?docpath= is the selected doc — URL-backed (nuqs) so it deep-links + is agent-driveable.
   const [docPath, setDocPath] = useQueryState('docpath', parseAsString);
   const [data, setData] = useState<MergedDocsResponse | null>(null);
@@ -140,12 +142,12 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
   if (error) return <div className="pc-adv-harness-panel__empty">Could not load docs: {error}</div>;
   if (!data) return <div className="pc-adv-harness-panel__empty">Loading docs…</div>;
   if (data.reason === 'unknown_harness') {
-    return <div className="pc-adv-harness-panel__empty">Unknown harness “{slug}”.</div>;
+    return <div className="pc-adv-harness-panel__empty">Unknown {t('pot', { lower: true })} “{slug}”.</div>;
   }
   if (!data.files.length) {
     return (
       <div className="pc-adv-harness-panel__empty">
-        No project docs yet. Add markdown under <code>docs/</code> in this harness’s repo to populate this tab.
+        No project docs yet. Add markdown under <code>docs/</code> in this {t('pot', { lower: true })}’s repo to populate this tab.
       </div>
     );
   }

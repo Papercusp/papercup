@@ -14,35 +14,39 @@
 // (which pulls node:child_process/fs/os + the identity chain into the SPA bundle).
 import { JOIN_STEP_IDS } from '@papercusp/operator-core/lib/harness/join-steps';
 import type { JoinStepId, JoinStepState, JoinStepStatus } from '@papercusp/operator-core/lib/harness/join-steps';
+import type { BoundLexicon } from '@papercusp/lexicon';
+import { useLexicon } from '@/lib/useLexicon';
 
 // ─── step metadata ─────────────────────────────────────────────────────────
 
-const STEP_META: Record<JoinStepId, { label: string; detail: string }> = {
-  oauth_attest: {
-    label: 'Authenticating with GitHub',
-    detail: 'Checking your OAuth token and device keypair.',
-  },
-  clone_repo: {
-    label: 'Cloning repository',
-    detail: 'Downloading the shared GitHub repository.',
-  },
-  publish_binding: {
-    label: 'Publishing your binding',
-    detail: 'Signing and publishing your contributor file via GitHub.',
-  },
-  boot_federate: {
-    label: 'Joining the swarm',
-    detail: 'Booting the Model B federation substrate.',
-  },
-  await_admission_merge: {
-    label: 'Syncing with peers',
-    detail: 'Waiting for a remote peer to admit and merge.',
-  },
-  route_insights: {
-    label: 'Opening insights',
-    detail: 'Opening the Insights tab for your new harness.',
-  },
-};
+function buildStepMeta(t: BoundLexicon): Record<JoinStepId, { label: string; detail: string }> {
+  return {
+    oauth_attest: {
+      label: 'Authenticating with GitHub',
+      detail: 'Checking your OAuth token and device keypair.',
+    },
+    clone_repo: {
+      label: 'Cloning repository',
+      detail: 'Downloading the shared GitHub repository.',
+    },
+    publish_binding: {
+      label: 'Publishing your binding',
+      detail: 'Signing and publishing your contributor file via GitHub.',
+    },
+    boot_federate: {
+      label: 'Joining the swarm',
+      detail: 'Booting the Model B federation substrate.',
+    },
+    await_admission_merge: {
+      label: 'Syncing with peers',
+      detail: 'Waiting for a remote peer to admit and merge.',
+    },
+    route_insights: {
+      label: 'Opening insights',
+      detail: `Opening the Insights tab for your new ${t('pot', { lower: true })}.`,
+    },
+  };
+}
 
 const STEP_ORDER: JoinStepId[] = JOIN_STEP_IDS;
 

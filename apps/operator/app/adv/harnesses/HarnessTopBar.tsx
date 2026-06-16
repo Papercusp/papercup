@@ -8,6 +8,7 @@ import { resetLayout } from '../../harness/dock/dock-actions';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 import { StatCard } from '@papercusp/ui-primitives';
+import { useLexicon } from '@/lib/useLexicon';
 import HealthBadge from '../../harness/HealthBadge';
 import HarnessWorkspacesButton from './HarnessWorkspacesButton';
 
@@ -37,6 +38,7 @@ interface Props {
  * /adv tab), so they are intentionally absent here.
  */
 export default function HarnessTopBar({ slug }: Props) {
+  const t = useLexicon();
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [lanes, setLanes] = useState<LanesPayload | null>(null);
 
@@ -148,7 +150,7 @@ export default function HarnessTopBar({ slug }: Props) {
           />
         )}
         {slug && (
-          <Tooltip label="Reset this harness's panel layout to the default Work items / Detail split">
+          <Tooltip label={`Reset this ${t('pot', { lower: true })}'s panel layout to the default Work items / Detail split`}>
             <button
               type="button"
               className="pc-adv-topbar__reset-layout"
@@ -270,9 +272,10 @@ export default function HarnessTopBar({ slug }: Props) {
  * currently selected root harness.
  */
 function RegisterSubsButton({ slug }: { slug: string }) {
+  const t = useLexicon();
   const [pending, setPending] = useState(false);
   return (
-    <Tooltip label="Scan this harness for git submodules and register them as sub-harnesses">
+    <Tooltip label={`Scan this ${t('pot')} for git submodules and register them as sub-${t('pot', { plural: true, lower: true })}`}>
     <button
       type="button"
       className="pc-adv-topbar__register-subs"
@@ -299,7 +302,7 @@ function RegisterSubsButton({ slug }: { slug: string }) {
             data.membership?.kind === 'hive_slug' ? ` Members of hive '${data.membership.value}'.` : '';
           const msg = `Discovered ${data.discovered ?? 0} submodules — ${newCount} new, ${fixedCount} reconciled${errCount ? `, ${errCount} errors` : ''}.${hiveNote}`;
           if (errCount > 0) toast.error(msg);
-          else if (newCount + fixedCount === 0) toast.success(`No new sub-harnesses (registry up-to-date).`, { duration: 2500 });
+          else if (newCount + fixedCount === 0) toast.success(`No new sub-${t('pot', { plural: true, lower: true })} (registry up-to-date).`, { duration: 2500 });
           else toast.success(msg, { duration: 3000 });
         } catch (e) {
           toast.error(`register-subs failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -310,7 +313,7 @@ function RegisterSubsButton({ slug }: { slug: string }) {
       disabled={pending}
     >
       <Network size={13} aria-hidden />
-      {pending ? 'Scanning…' : 'Register sub-harnesses'}
+      {pending ? 'Scanning…' : `Register sub-${t('pot', { plural: true, lower: true })}`}
       <style>{`
         .pc-adv-topbar__register-subs {
           display: inline-flex;

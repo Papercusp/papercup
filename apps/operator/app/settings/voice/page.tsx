@@ -11,6 +11,7 @@ import { Modal } from '../../harness/Modal';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import { Button } from '../../harness/Button';
 import { DraftInput } from '@/lib/forms';
+import { useLexicon } from '@/lib/useLexicon';
 import { NumField } from './NumField';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import {
@@ -1206,6 +1207,7 @@ function PerSlugVoiceTable({
   onAssign: (key: string, voice: string) => void;
   onTest: (key: string) => void;
 }) {
+  const t = useLexicon();
   const overrides = Object.keys(config.roleVoices).filter((k) => k.includes('@'));
   const [addRole, setAddRole] = useState('worker');
   const [addSlug, setAddSlug] = useState('');
@@ -1253,8 +1255,8 @@ function PerSlugVoiceTable({
     <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
       <h3 style={{ fontSize: 14, marginBottom: 6 }}>Per-slug voice overrides</h3>
       <p style={hint}>
-        Override the role voice for a specific harness instance.
-        Useful when you have multiple harnesses from the same template
+        Override the role voice for a specific {t('pot', { lower: true })} instance.
+        Useful when you have multiple {t('pot', { plural: true, lower: true })} from the same template
         and want to distinguish them by ear.
       </p>
       {overrides.length > 0 && (
@@ -1280,7 +1282,7 @@ function PerSlugVoiceTable({
           />
         </div>
         <div>
-          <label style={{ ...lbl, fontSize: 11 }}>Harness slug</label>
+          <label style={{ ...lbl, fontSize: 11 }}>{t('pot')} slug</label>
           <input
             type="text"
             value={addSlug}

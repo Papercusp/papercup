@@ -19,6 +19,7 @@
  */
 
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
+import { useLexicon } from '@/lib/useLexicon';
 import { useHarnessFeatures, useHarnessIssues } from './useHarnessData';
 
 /**
@@ -52,13 +53,14 @@ export function HarnessWelcomeCard({
   onOpenPlans,
   onDismiss,
 }: HarnessWelcomeCardProps) {
+  const t = useLexicon();
   return (
     <div className="pc-harness-welcome" data-testid="harness-welcome" role="status">
       <div className="pc-harness-welcome__card">
-        <h2 className="pc-harness-welcome__title">Welcome to your harness.</h2>
+        <h2 className="pc-harness-welcome__title">Welcome to your {t('pot')}.</h2>
         <p className="pc-harness-welcome__copy">
           Come up with ideas in the brainstorm tab, plan them in the plan tab.
-          Start them, and then watch agents work on them in the harness tab.
+          Start them, and then watch agents work on them in the {t('pot')} tab.
         </p>
         <div className="pc-harness-welcome__actions">
           <button

@@ -24,6 +24,7 @@ import {
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 import { usePromptDialog } from '../harness/usePromptDialog';
 import { Tooltip } from '../harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 import { getBrowserWorkspaceId, resolveActiveWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 
 export default function WorkspaceSwitcher() {

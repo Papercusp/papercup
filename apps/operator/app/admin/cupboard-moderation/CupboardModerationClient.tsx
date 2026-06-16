@@ -19,6 +19,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { toast } from 'sonner';
 import { Flag, ExternalLink, RefreshCw, Shield } from 'lucide-react';
+import { useLexicon } from '@/lib/useLexicon';
 
 const STATUS_FILTERS = ['pending', 'resolved_unlist', 'resolved_dismiss', 'all'] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
@@ -226,6 +227,7 @@ function PendingReviewQueue() {
 }
 
 export default function CupboardModerationClient() {
+  const t = useLexicon();
   const [filter, setFilter] = useQueryState(
     'cb_status',
     parseAsStringLiteral(STATUS_FILTERS).withDefault('pending'),
@@ -387,7 +389,7 @@ export default function CupboardModerationClient() {
                       disabled={busyId === r.id}
                       onClick={() => void resolve(r.id, 'unlist', notes[r.id])}
                     >
-                      Unlist harness
+                      Unlist {t('pot')}
                     </button>
                   </div>
                 </div>

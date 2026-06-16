@@ -17,6 +17,7 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 
 import type { CSSProperties, ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Command as CmdK } from 'cmdk';
+import { useLexicon } from '@/lib/useLexicon';
 
 export interface Command {
   id: string;
@@ -44,6 +45,7 @@ export default function CommandPalette({
   onClose: () => void;
   commands: Command[];
 }) {
+  const t = useLexicon();
   // Defer the heavy command list. The palette dialog mounts and the
   // input becomes interactive on the first paint; the items render on
   // a subsequent low-priority React render.
@@ -98,7 +100,7 @@ export default function CommandPalette({
             input?.focus();
           }}
         >
-          <Dialog.Description style={SR_ONLY}>Search commands, harnesses, and actions</Dialog.Description>
+          <Dialog.Description style={SR_ONLY}>Search commands, {t('pot', { plural: true, lower: true })}, and actions</Dialog.Description>
           <Dialog.Title style={SR_ONLY}>Command palette</Dialog.Title>
           <CmdK label="Command palette" loop shouldFilter>
             <div className="h-cmd-inputbar">

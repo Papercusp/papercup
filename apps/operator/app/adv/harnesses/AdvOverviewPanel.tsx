@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '../../harness/Tooltip';
 import { StatusPill } from '../../harness/primitives';
 import type { HarnessStatus } from '../../harness/theme';
@@ -49,6 +50,7 @@ export function computeStats(
 }
 
 export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
+  const t = useLexicon();
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const phase = ((params.phase as Phase) ?? 'staging') as Phase;
   const [data, setData] = useState<StatusResponse | null>(null);
@@ -118,7 +120,7 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
     });
   };
 
-  if (!slug) return <div className="pc-advpanel__empty">No harness slug in params.</div>;
+  if (!slug) return <div className="pc-advpanel__empty">No {t('pot', { lower: true })} slug in params.</div>;
 
   return (
     <div className="pc-advpanel pc-adv-ov">

@@ -837,7 +837,7 @@ function PromoteDialog({
     e.preventDefault();
     const hs = harnessSlug.trim();
     if (!hs) {
-      setError('Harness slug is required.');
+      setError(`${t('pot')} slug is required.`);
       return;
     }
     const features = candidateItems
@@ -868,7 +868,7 @@ function PromoteDialog({
     <Modal
       open={open}
       onOpenChange={(o) => !o && onClose()}
-      title="Promote to harness"
+      title={`Promote to ${t('pot', { lower: true })}`}
       srOnlyTitle
       contentClassName="pc-plan-dialog"
     >
@@ -896,15 +896,15 @@ function PromoteDialog({
       ) : (
         <form onSubmit={onSubmit} className="pc-plan-dialog__form">
           <header className="pc-plan-dialog__head">
-            <h3>→ Promote to Harness</h3>
+            <h3>→ Promote to {t('pot')}</h3>
             <p>
-              Creates harness features from the selected plan items via{' '}
+              Creates {t('pot', { lower: true })} features from the selected plan items via{' '}
               <code>plans:promote</code>. Each item's text becomes the feature
               title; items are marked done after promotion.
             </p>
           </header>
           <label className="pc-plan-dialog__field">
-            <span>Harness slug</span>
+            <span>{t('pot')} slug</span>
             <input
               type="text"
               value={harnessSlug}
