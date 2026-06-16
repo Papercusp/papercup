@@ -49,10 +49,10 @@
  * Until those resolvers register + the first run lands, every query resolves to
  * `[]` and each subtab renders a clean empty state — this is the BRIEF 9 scaffold.
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network } from 'lucide-react';
+import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
 // the @papercusp/sync read and feeds these props; the components read no data.
@@ -160,8 +160,69 @@ export interface EvalRunRow {
 // these directly, so the UI reads them straight into the charts (no mapper, no
 // recompute). The canonical metric source remains @papercusp/bench-metrics.
 
-export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report'] as const;
+export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved'] as const;
 type EvalView = (typeof EVAL_VIEWS)[number];
+
+// ── Preserved runs (REST, not @papercusp/sync) ───────────────────────────────
+// The "Preserved runs" subtab reads the real preserved benchmark snapshots from
+// `~/.papercusp/bench-results/<id>/` via REST (`/api/external-bench/runs`),
+// mirroring the gym tab's `api()` pattern — NOT the PG-backed @papercusp/sync
+// resolvers the other subtabs use (those populate once a run is ingested into
+// `benchmark_run_result`). This is the honest, today-available data path: the
+// first preserved run is the M3 real-Queen SWE-bench Pro pass (6/11 resolved).
+// Shapes mirror packages/operator-core/lib/external-bench/preserved-runs.ts.
+interface PreservedRunListEntry {
+  id: string;
+  arm: string | null;
+  mtimeMs: number;
+}
+interface PreservedResolvedTask {
+  instanceId: string;
+  beeId?: string;
+  disposition?: string;
+  stopReason?: string;
+  costUsd?: number;
+  turns?: number;
+  wallClockMs?: number;
+  diffBytes?: number;
+  resolved: boolean | null;
+}
+interface PreservedRunSummary {
+  arm: string;
+  gradedCount: number;
+  resolvedCount: number;
+  taskCount: number;
+  resolvedPct: number | null;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  wallMs: number;
+  peakConcurrentBees: number;
+  nonEmptyDiffs: number;
+  coordEventCount: number;
+  recovered: boolean;
+}
+interface PreservedCoordRates {
+  duplicationRate: number;
+  coordinationBreakdownRate: number;
+  misalignmentRate: number;
+  redundantWorkRate: number;
+  counts: { duplicate: number; breakdown: number; misalignment: number; redundant: number };
+  coordinationActions: number;
+}
+interface PreservedRunDetail {
+  id: string;
+  run: { arm: string; startedAt?: string; coordEvents?: Array<{ kind: string; agent?: string; taskId?: string | null; detail?: string }> };
+  perTask: PreservedResolvedTask[];
+  summary: PreservedRunSummary;
+  coordRates: PreservedCoordRates;
+}
+
+async function evalApi<T>(path: string): Promise<T> {
+  const res = await fetch(`/api/external-bench${path}`, { headers: { 'content-type': 'application/json' } });
+  if (!res.ok) throw new Error(`${path} → ${res.status}: ${await res.text().catch(() => '')}`);
+  return (await res.json()) as T;
+}
 
 const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : `${Math.round(v * 100)}%`);
 
@@ -304,6 +365,16 @@ export default function AdvEvalsTab() {
             <FileText size={13} aria-hidden />
             <span>Report<em>headline + deltas</em></span>
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'preserved'}
+            className={`pc-evals__subtab${view === 'preserved' ? ' is-active' : ''}`}
+            onClick={() => void setEvalView('preserved')}
+          >
+            <Archive size={13} aria-hidden />
+            <span>Preserved runs<em>real graded runs</em></span>
+          </button>
         </div>
         <div className="pc-evals__controlsright">
           {/* Suite picker — shared across views; hidden until suites exist. */}
@@ -349,6 +420,8 @@ export default function AdvEvalsTab() {
         <InternalTrendsView suite={activeSuite} suites={suites} suitesLoading={suitesSync.loading && !suitesSync.data} />
       ) : view === 'report' ? (
         <ReportView suite={activeSuite} runId={runId} />
+      ) : view === 'preserved' ? (
+        <PreservedRunsView />
       ) : (
         <ExternalBenchmarksView
           suite={activeSuite}
@@ -773,6 +846,214 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
   );
 }
 
+// ── Preserved runs view (REST — the real graded snapshots on disk) ───────────
+
+function PreservedRunsView() {
+  // Reuse ?evalRun= as the selected preserved run id (it's the run-selection
+  // param; the sync views key on it too but only when a suite is active).
+  const [selId, setSelId] = useQueryState('evalRun', parseAsString);
+  const [runs, setRuns] = useState<PreservedRunListEntry[]>([]);
+  const [listErr, setListErr] = useState<string | null>(null);
+  const [detail, setDetail] = useState<PreservedRunDetail | null>(null);
+  const [detailErr, setDetailErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Load the run list once; default-select the newest.
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    evalApi<{ runs: PreservedRunListEntry[] }>('/runs')
+      .then((r) => {
+        if (!live) return;
+        setRuns(r.runs);
+        setListErr(null);
+        if (!selId && r.runs[0]) void setSelId(r.runs[0].id);
+      })
+      .catch((e) => { if (live) setListErr(String(e)); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load the selected run's detail.
+  useEffect(() => {
+    if (!selId) { setDetail(null); return; }
+    let live = true;
+    evalApi<PreservedRunDetail>(`/runs/${encodeURIComponent(selId)}`)
+      .then((d) => { if (live) { setDetail(d); setDetailErr(null); } })
+      .catch((e) => { if (live) { setDetail(null); setDetailErr(String(e)); } });
+    return () => { live = false; };
+  }, [selId]);
+
+  if (loading) return <p className="pc-evals__empty">Loading preserved runs…</p>;
+  if (listErr) {
+    return (
+      <EmptyCard icon={<Archive size={20} aria-hidden />} title="Couldn’t load preserved runs" body={listErr} />
+    );
+  }
+  if (runs.length === 0) {
+    return (
+      <EmptyCard
+        icon={<Archive size={20} aria-hidden />}
+        title="No preserved runs yet"
+        body="Preserved benchmark snapshots (the arm-run JSON + the official grader’s per-instance verdicts) live under ~/.papercusp/bench-results/<id>/. When a real pass is preserved for reproducibility, it appears here with the merged per-task resolved/cost table and the throughput + coordination views."
+      />
+    );
+  }
+
+  // Per-task rows mapped to the Compare table: treatment = the resolved score
+  // (1/0), baseline left null (a single preserved arm has no control arm yet —
+  // an honest caveat shown below). Compare renders the per-task table + bars.
+  const perTaskRows: ComparePerTaskRow[] = (detail?.perTask ?? []).map((t) => ({
+    label: shortInstance(t.instanceId),
+    baseline: null,
+    treatment: t.resolved == null ? null : t.resolved ? 1 : 0,
+  }));
+
+  // Throughput from the single arm (speedup derived from wall-clock at render).
+  const tputArms: ThroughputArm[] = detail
+    ? [{
+        arm: detail.summary.arm,
+        tasksPerHour: detail.summary.wallMs > 0 ? (detail.summary.taskCount / (detail.summary.wallMs / 3_600_000)) : 0,
+        costPerTask: detail.summary.taskCount > 0 ? detail.summary.costUsd / detail.summary.taskCount : 0,
+        wallClockMs: detail.summary.wallMs,
+        speedupVsSerial: null,
+      }]
+    : [];
+
+  // MAST from the objective substrate-signal rates over the coordEvents trace.
+  const mastArms: MastArmRates[] = detail
+    ? [{
+        arm: detail.summary.arm,
+        duplication: detail.coordRates.duplicationRate,
+        coordinationBreakdown: detail.coordRates.coordinationBreakdownRate,
+        misalignment: detail.coordRates.misalignmentRate,
+        redundant: detail.coordRates.redundantWorkRate,
+      }]
+    : [];
+
+  const s = detail?.summary;
+  return (
+    <section className="pc-evals__section">
+      <div className="pc-evals__controlsright">
+        <label className="pc-evals__suitepick" title="The preserved benchmark run to view.">
+          <Archive size={12} aria-hidden />
+          <span className="pc-evals__suitelabel">run</span>
+          <Select
+            ariaLabel="Preserved run"
+            value={selId || ''}
+            onChange={(v: string) => void setSelId(v)}
+            triggerStyle={{ maxWidth: 280 }}
+            options={runs.map((r) => ({ value: r.id, label: `${r.id}${r.arm ? ` · ${armLabel(r.arm)}` : ''}` }))}
+          />
+        </label>
+      </div>
+
+      {detailErr ? (
+        <EmptyCard icon={<Archive size={20} aria-hidden />} title="Couldn’t load this run" body={detailErr} />
+      ) : !s ? (
+        <p className="pc-evals__empty">Loading the run…</p>
+      ) : (
+        <>
+          {/* Honest caveats (impartial-benchmark-suite D-027): this is a single
+              preserved arm, not strictly opus, empty diffs counted as unresolved,
+              no valid no-Queen control yet, and an 11-task subset. */}
+          <div className="pc-evals__note" role="note">
+            <strong>Real graded run · {armLabel(s.arm)}</strong>
+            <span>
+              Officially graded snapshot. Caveats: ~92% opus (not strictly opus); empty diffs (no patch) score as
+              unresolved; no valid no-Queen control arm yet (single treatment arm, so the per-task table has no
+              baseline column); {s.taskCount}-task subset, not the full set.
+              {s.recovered ? ' This snapshot was reconstructed from recovered fleet state (no preserved wall-clock).' : ''}
+            </span>
+          </div>
+
+          <div className="pc-evals__scoreboard" aria-label={`${s.arm} — preserved run summary`}>
+            <FleetStat
+              arm={s.arm}
+              value={s.resolvedPct == null ? '—' : `${Math.round(s.resolvedPct * 1000) / 10}%`}
+              sub={`${s.resolvedCount}/${s.gradedCount} resolved`}
+              hint={`Official-grader pass rate: ${s.resolvedCount} of ${s.gradedCount} graded tasks resolved.`}
+            />
+            <FleetStat arm={s.arm} value={fmtUsd(s.costUsd)} sub={`${s.taskCount} tasks`} hint="Total cost across the run." />
+            <FleetStat arm={s.arm} value={`${s.nonEmptyDiffs}/${s.taskCount}`} sub="non-empty diffs" hint="Tasks where a real patch was produced." />
+            <FleetStat arm={s.arm} value={fmtDurMs(s.wallMs)} sub={`${s.coordEventCount} coord events`} hint="Parallel backlog-drain wall-clock + coordination-trace volume." />
+          </div>
+
+          {/* Per-task resolved + cost/turns/diff table (the Compare viz; single
+              arm so the baseline column is empty — see the caveat note). */}
+          <div className="pc-evals__sectionhead"><h2>Per-task results</h2></div>
+          <table className="pc-preserved__table">
+            <thead>
+              <tr>
+                <th>task</th><th className="pc-preserved__num">resolved</th>
+                <th className="pc-preserved__num">cost</th><th className="pc-preserved__num">turns</th>
+                <th className="pc-preserved__num">diff bytes</th><th>stop</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail!.perTask.map((t) => (
+                <tr key={t.instanceId}>
+                  <td className="pc-preserved__task" title={t.instanceId}>{shortInstance(t.instanceId)}</td>
+                  <td className={`pc-preserved__num ${t.resolved ? 'pc-preserved__ok' : t.resolved === false ? 'pc-preserved__bad' : ''}`}>
+                    {t.resolved == null ? '—' : t.resolved ? '✓' : '✗'}
+                  </td>
+                  <td className="pc-preserved__num">{fmtUsd(t.costUsd ?? 0)}</td>
+                  <td className="pc-preserved__num">{t.turns ?? '—'}</td>
+                  <td className="pc-preserved__num">{t.diffBytes ?? 0}</td>
+                  <td className="pc-preserved__stop">{t.stopReason ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* Resolved-as-score per-task bars (Compare) — keeps the shared viz in
+              the loop; treatment = resolved (1/0), no baseline arm. */}
+          <div className="pc-evals__sectionhead"><h2>Per-task resolved <em>treatment only · no control arm</em></h2></div>
+          <Compare
+            baseline="control (none)"
+            treatment={s.arm}
+            perTask={perTaskRows}
+            format={(n: number | null | undefined) => (n == null ? '—' : n ? '✓' : '✗')}
+            summary={false}
+            emptyHint="No per-task rows."
+          />
+
+          <div className="pc-evals__sectionhead"><h2>Throughput</h2></div>
+          <ThroughputBars
+            arms={tputArms}
+            highlightArm={s.arm}
+            caption="Single preserved arm — $/task + wall-clock (speedup needs a serial-floor control arm)."
+            emptyHint="No throughput for this run."
+          />
+
+          <div className="pc-evals__sectionhead"><h2>Coordination <em>objective substrate signals · {s.coordEventCount} events</em></h2></div>
+          <MastBreakdown
+            arms={mastArms}
+            baselineBand={MAS_BASELINE_BAND}
+            caption="Objective coordination-failure rates counted from the run’s coordEvents trace (rework / stranded-item / conflicts), per task — no judge."
+            emptyHint="No coordination events recorded for this run."
+          />
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Trim the long SWE-bench instance id to a readable `org__repo` head. */
+function shortInstance(id: string): string {
+  const m = id.replace(/^instance_/, '').match(/^([^-]+__[^-]+)/);
+  return m ? m[1] : id.replace(/^instance_/, '');
+}
+const fmtDurMs = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  const h = ms / 3_600_000;
+  if (h >= 1) return `${Math.round(h * 10) / 10}h`;
+  const m = ms / 60_000;
+  if (m >= 1) return `${Math.round(m)}m`;
+  return `${Math.round(ms / 1000)}s`;
+};
+
 // ── Small shared pieces ──────────────────────────────────────────────────────
 
 function ArmStat({
@@ -852,6 +1133,18 @@ function EvalsStyles() {
 
       .pc-evals__compareblock { display: grid; gap: 6px; }
       .pc-evals__h3 { margin: 6px 0 0; font-size: 12.5px; font-weight: 700; color: var(--fg, #e7f7ff); }
+
+      .pc-evals__note { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in oklab, #eab308, transparent 60%); background: color-mix(in oklab, #eab308, transparent 90%); font-size: 12px; line-height: 1.5; color: var(--fg-dim, #b9d4e8); }
+      .pc-evals__note strong { color: var(--fg, #e7f7ff); font-size: 12.5px; }
+
+      .pc-preserved__table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--fg-dim, #b9d4e8); }
+      .pc-preserved__table th { text-align: left; padding: 4px 8px; font-size: 10.5px; font-weight: 600; color: var(--fg-mute, #7f9bb4); border-bottom: 1px solid var(--border, rgba(125,211,252,0.18)); }
+      .pc-preserved__table tbody tr { border-top: 1px solid var(--border, rgba(125,211,252,0.1)); }
+      .pc-preserved__num { text-align: right; padding: 4px 8px; white-space: nowrap; }
+      .pc-preserved__task { padding: 4px 8px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-preserved__stop { padding: 4px 8px; color: var(--fg-mute, #7f9bb4); }
+      .pc-preserved__ok { color: var(--good, #34d399); font-weight: 700; }
+      .pc-preserved__bad { color: var(--bad, #fb7185); font-weight: 700; }
 
       .pc-evals__empty { font-size: 12px; color: var(--fg-mute, #7f9bb4); margin: 0; text-align: center; }
       .pc-evals__empty--card { display: grid; justify-items: center; gap: 8px; max-width: 560px; margin: 8px auto; padding: 22px; color: var(--fg-mute, #7f9bb4); }

@@ -32,10 +32,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { AlertTriangle, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
+import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
 import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 import QueenHeartbeat from './QueenHeartbeat';
+import ModelTiersOverride from './ModelTiersOverride';
 
 /** One row of the `hive.steering` sync query (C-1, B-01 + round-2 eligibleHives). */
 export interface HiveSteeringRow {
@@ -45,6 +47,8 @@ export interface HiveSteeringRow {
   eligibleHives: string[];
   pauseNewWork: boolean;
   pausedUntil: number | null;
+  /** Session model-tier override (D-006); null ⇒ workspace default. */
+  modelTiers?: ModelTier[] | null;
 }
 
 const DEFAULT_STEERING: Omit<HiveSteeringRow, 'slug'> = {
@@ -53,6 +57,7 @@ const DEFAULT_STEERING: Omit<HiveSteeringRow, 'slug'> = {
   eligibleHives: [],
   pauseNewWork: false,
   pausedUntil: null,
+  modelTiers: null,
 };
 
 type LiteProject = { slug: string; parent_slug?: string | null; harness_kind?: string | null };
@@ -279,7 +284,12 @@ export default function QueenTab({ active }: { active: boolean }) {
         onSave={(text) => void write('directive', { directive: text.trim() ? text : null })}
       />
 
-      {/* 3 — Model tiers (session override, D-006) lands here — #4, pending its backend override field. */}
+      {/* 3 — Model tiers (session override, D-006 / #4) */}
+      <ModelTiersOverride
+        override={current.modelTiers ?? null}
+        onWrite={(mt) => void write('modelTiers', { modelTiers: mt })}
+        busy={busy.has('modelTiers')}
+      />
 
       {/* 4 — Eligible Hives (placement scope, owner-review round 2) */}
       <section className="pc-queen__section">

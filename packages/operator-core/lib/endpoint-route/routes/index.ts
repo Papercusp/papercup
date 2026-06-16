@@ -405,6 +405,7 @@ import desktopGitPipeline from './desktop/git-pipeline';
 import marketplaceCatalog from './marketplace/catalog';
 import marketplaceSpawnable from './marketplace/spawnable';
 import gymControl from './gym/control';
+import externalBenchPreserved from './external-bench/preserved';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -805,4 +806,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   // Gym control-plane (gym-ui-handoff backend). /gym/harnesses (literal) precedes
   // /gym/:slug (param) within the array so it isn't shadowed.
   ...flatten(gymControl as unknown as AnyRoute[]),
+  // Preserved external-bench runs (Evaluation "Preserved runs" surface). The
+  // /external-bench/runs literal is sorted before /external-bench/runs/:id by
+  // the registrar's bySpecificity ordering, so the list isn't shadowed.
+  ...flatten(externalBenchPreserved as unknown as AnyRoute[]),
 ];

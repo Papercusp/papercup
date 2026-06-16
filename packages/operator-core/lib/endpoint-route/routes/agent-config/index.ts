@@ -18,6 +18,7 @@
  * the original (un-authed) behavior.
  */
 import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, parseSurfaceModels, parseTiers, parseTierCeilings, type AgentConfig } from '../../../agent-config';
+import { DEFAULT_MODEL_TIERS } from '../../../agent-config-constants';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -30,6 +31,11 @@ export default [
       const cfg = await readAgentConfig();
       return Response.json({
         config: cfg,
+        // The committed default tier menu — the EFFECTIVE workspace baseline when
+        // cfg.tiers is empty. Surfaced so the 👑-tab model-tier override editor
+        // (queen-steering D-006) gets the baseline without a client-side
+        // operator-core constant import. Additive; existing consumers ignore it.
+        defaultTiers: DEFAULT_MODEL_TIERS,
         binaries: detectBinaries(),
         effectiveBackend: effectiveBackend(cfg),
         envOverrides: {
