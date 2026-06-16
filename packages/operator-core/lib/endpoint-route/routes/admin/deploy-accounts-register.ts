@@ -73,7 +73,7 @@ export default defineTool({
       await chmod(credPath, 0o600);
       const credentialRef = `${isBundle ? 'file' : 'token'}:${credPath}`;
       await updateAccountPool((p) =>
-        registerAccount(p, { id: accountId, credentialRef, label: body.label?.trim() || undefined }, Date.now()),
+        registerAccount(p, { id: accountId, credentialRef, label: body.label?.trim() || undefined, egress }, Date.now()),
       );
       const account = (await accountStatus()).find((a) => a.id === accountId) ?? null;
       // Live UI reflection — the Accounts tab reads the accounts.pool sync query.

@@ -12,19 +12,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../cors', () => ({ requireAllowedOriginOr403: () => null }));
 
-const loadAccountPool = vi.fn();
-const saveAccountPool = vi.fn(async () => {});
+const h = vi.hoisted(() => ({
+  loadAccountPool: vi.fn(),
+  saveAccountPool: vi.fn(),
+  notifySyncInvalidate: vi.fn(),
+}));
 vi.mock('../../../deployment/account-pool-store', () => ({
-  loadAccountPool: (...a: unknown[]) => loadAccountPool(...a),
-  saveAccountPool: (...a: unknown[]) => saveAccountPool(...a),
+  loadAccountPool: h.loadAccountPool,
+  saveAccountPool: h.saveAccountPool,
 }));
-
-const notifySyncInvalidate = vi.fn(async () => {});
-vi.mock('../../../sync-sse', () => ({
-  notifySyncInvalidate: (...a: unknown[]) => notifySyncInvalidate(...a),
-}));
+vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: h.notifySyncInvalidate }));
 
 import resetRoute from './deploy-accounts-reset';
+
+interface TestPool {
+  accounts: { id: string; rate: { pausedUntil: number; penaltyCount: number } }[];
+}
 
 function poolWith(id: string) {
   return {
@@ -51,11 +54,11 @@ async function post(body: unknown) {
 }
 
 beforeEach(() => {
-  loadAccountPool.mockReset();
-  saveAccountPool.mockReset();
-  saveAccountPool.mockResolvedValue(undefined);
-  notifySyncInvalidate.mockReset();
-  notifySyncInvalidate.mockResolvedValue(undefined);
+  h.loadAccountPool.mockReset();
+  h.saveAccountPool.mockReset();
+  h.saveAccountPool.mockResolvedValue(undefined);
+  h.notifySyncInvalidate.mockReset();
+  h.notifySyncInvalidate.mockResolvedValue(undefined);
 });
 
 describe('POST /api/admin/deploy-accounts/reset-rate', () => {
@@ -67,31 +70,29 @@ describe('POST /api/admin/deploy-accounts/reset-rate', () => {
     const { status, body } = await post({});
     expect(status).toBe(400);
     expect(String(body?.error)).toMatch(/id required/);
-    expect(loadAccountPool).not.toHaveBeenCalled();
+    expect(h.loadAccountPool).not.toHaveBeenCalled();
   });
 
   it('404s an unknown account and does NOT save', async () => {
-    loadAccountPool.mockResolvedValue(poolWith('a1'));
+    h.loadAccountPool.mockResolvedValue(poolWith('a1'));
     const { status, body } = await post({ id: 'nope' });
     expect(status).toBe(404);
     expect(body?.error).toBe('unknown_account');
-    expect(saveAccountPool).not.toHaveBeenCalled();
-    expect(notifySyncInvalidate).not.toHaveBeenCalled();
+    expect(h.saveAccountPool).not.toHaveBeenCalled();
+    expect(h.notifySyncInvalidate).not.toHaveBeenCalled();
   });
 
   it('resets a known account: clears the projected pause/penalty, saves, invalidates the tab', async () => {
-    loadAccountPool.mockResolvedValue(poolWith('a1'));
+    h.loadAccountPool.mockResolvedValue(poolWith('a1'));
     const { status, body } = await post({ id: 'a1' });
     expect(status).toBe(200);
     expect(body?.ok).toBe(true);
     // The saved pool carries a fresh rate for a1 (pause + penalty cleared).
-    const saved = saveAccountPool.mock.calls[0][0] as {
-      accounts: { id: string; rate: { pausedUntil: number; penaltyCount: number } }[];
-    };
-    const acct = saved.accounts.find((a) => a.id === 'a1');
+    const saved = h.saveAccountPool.mock.calls[0]?.[0] as TestPool | undefined;
+    const acct = saved?.accounts.find((a) => a.id === 'a1');
     expect(acct?.rate.pausedUntil).toBe(0);
     expect(acct?.rate.penaltyCount).toBe(0);
     // The tab is told to refresh.
-    expect(notifySyncInvalidate).toHaveBeenCalledWith('accounts.pool', {});
+    expect(h.notifySyncInvalidate).toHaveBeenCalledWith('accounts.pool', {});
   });
 });

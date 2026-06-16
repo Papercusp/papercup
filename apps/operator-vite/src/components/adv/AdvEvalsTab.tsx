@@ -1437,6 +1437,10 @@ function PreservedRunsView() {
   const [, setLaunchArm] = useQueryState('launchArm', parseAsString);
   const [, setLaunchTaskSet] = useQueryState('launchTaskSet', parseAsString);
   const [, setLaunchCap] = useQueryState('launchCap', parseAsString);
+  // Filter the run list by arm (P-014 browse/filter).
+  const [armFilter, setArmFilter] = useQueryState('runArmFilter', parseAsString);
+  const armOptions = useMemo(() => [...new Set(runs.map((r) => r.arm))].sort(), [runs]);
+  const filteredRuns = armFilter ? runs.filter((r) => r.arm === armFilter) : runs;
 
   async function gradeRun() {
     if (!selId) return;
@@ -1569,6 +1573,17 @@ function PreservedRunsView() {
   return (
     <section className="pc-evals__section">
       <div className="pc-evals__controlsright">
+        {armOptions.length > 1 ? (
+          <label className="pc-evals__suitepick" title="Filter the run list by arm.">
+            <span className="pc-evals__suitelabel">arm</span>
+            <Select
+              ariaLabel="Filter runs by arm"
+              value={armFilter || ''}
+              onChange={(v: string) => void setArmFilter(v || null)}
+              options={[{ value: '', label: 'All arms' }, ...armOptions.map((a) => ({ value: a, label: armLabel(a) }))]}
+            />
+          </label>
+        ) : null}
         <label className="pc-evals__suitepick" title="The benchmark run to view (live + preserved).">
           <Archive size={12} aria-hidden />
           <span className="pc-evals__suitelabel">run</span>
@@ -1577,7 +1592,7 @@ function PreservedRunsView() {
             value={selId || ''}
             onChange={(v: string) => void setSelId(v)}
             triggerStyle={{ maxWidth: 300 }}
-            options={runs.map((r) => ({
+            options={filteredRuns.map((r) => ({
               value: r.id,
               label: `${r.id} · ${armLabel(r.arm)} · ${r.resolvedPct != null ? Math.round(r.resolvedPct * 100) + '%' : '—'} · ${r.status}`,
             }))}
