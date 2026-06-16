@@ -51,6 +51,14 @@ export interface BenchTask {
   language?: string;
 
   /**
+   * Difficulty tier for stratified task-sets (e.g. the `stratified-30` set). Carried through so resolved%
+   * can be reported per-tier. Derived from empirical per-task solve rate across reference models + a
+   * structural difficulty score (see {@link loadBenchTaskSet} / the `stratified-30` loader). Omitted by
+   * non-stratified sets.
+   */
+  tier?: 'easy' | 'medium' | 'hard';
+
+  /**
    * $-payout for value-weighted families (SWE-Lancer, the L3 value-capture layer): a RESOLVED task
    * "captures" this value. The Hive's $-aware placement (P-022) reads it; the value-captured-under-budget
    * metric (P-025) sums it over resolved rows under a fixed budget. Omitted by non-value benchmarks.

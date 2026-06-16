@@ -64,6 +64,7 @@ import type { ArmAttempt, BenchTask, GenerationBudget, TaskCheckout } from './ty
 import {
   getFleetPlanner,
   setHiveBacklogDriver,
+  type ConcurrencyTimeline,
   type FleetTaskResult,
   type HiveBacklogDriver,
   type HiveBacklogResult,
@@ -261,6 +262,17 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
       let hiveHome: string | undefined;
       const members: RealQueenEnrolled[] = [];
       let peakConcurrentBees = 0;
+      // su-vs-queen-expansion P-003: record the live-concurrency timeline (not just the peak) so the
+      // parallelism comparison shows actual-vs-cap for the hive arms too (the su-independent arm already
+      // fills this). Each poll already computes liveBees; we just also append a {tMs, live} sample.
+      const concurrencySamples: { tMs: number; live: number }[] = [];
+      const buildTimeline = (): ConcurrencyTimeline => ({
+        samples: concurrencySamples,
+        avgConcurrent: concurrencySamples.length
+          ? concurrencySamples.reduce((s, x) => s + x.live, 0) / concurrencySamples.length
+          : 0,
+        peakConcurrent: concurrencySamples.reduce((m, x) => Math.max(m, x.live), 0),
+      });
       try {
         ({ hiveHome } = await ops.createHive({ runId: req.runId, arm: req.arm, workspaceId: ws }));
         // Register the hive slug with the launcher the instant it exists (P-033 Fix 4) so a
@@ -323,6 +335,7 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
               ops.survey({ hiveHome: home, workspaceId: ws }),
             ]);
             peakConcurrentBees = Math.max(peakConcurrentBees, liveBees);
+            concurrencySamples.push({ tMs: ops.now() - startedAtMs, live: liveBees });
             // Drained when the Queen has nothing left: no ready frontier, no started plan, nothing in flight.
             if (survey.frontierLen === 0 && survey.plansLen === 0 && inFlight === 0) break;
             // RE-WAKE the Queen when there is READY work that NOBODY is driving: a ready frontier remains,
@@ -357,6 +370,7 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
               ops.gatherForFifo({ hiveHome: home, members, workspaceId: ws }),
             ]);
             peakConcurrentBees = Math.max(peakConcurrentBees, liveBees);
+            concurrencySamples.push({ tMs: ops.now() - startedAtMs, live: liveBees });
             if (inFlight === 0 && gathered.tasks.length === 0) break; // drained
 
             if (gathered.tasks.length > 0 && (gathered.headroom > 0 || gathered.bees.length > 0)) {
@@ -381,7 +395,7 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
         const partial = await collectAll(ops, members, req, ws, opts.onTaskCollected).catch(() => [] as FleetTaskResult[]);
         const finishedAtMs = ops.now();
         if (hiveHome) await ops.teardown({ hiveHome, members, workspaceId: ws }).catch(() => {});
-        return { ...empty(runError), finishedAtMs, peakConcurrentBees, taskResults: partial };
+        return { ...empty(runError), finishedAtMs, peakConcurrentBees, taskResults: partial, concurrencyTimeline: buildTimeline() };
       }
 
       // ── always pause (bound spend), collect diffs/cost + the REAL coord trace, then teardown ──
@@ -404,6 +418,7 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
         peakConcurrentBees,
         taskResults,
         coordEvents,
+        concurrencyTimeline: buildTimeline(),
       };
     },
   };

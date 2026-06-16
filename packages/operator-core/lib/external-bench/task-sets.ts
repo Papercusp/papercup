@@ -7,6 +7,10 @@
  * UI launch and a CLI launch produce identical tasks.
  *
  *   '11-task-pilot'      → the locked 11-task public SWE-bench Pro pilot (the m3 set).
+ *   'stratified-30'      → 10 EASY + 10 MEDIUM + 10 HARD difficulty-stratified tasks
+ *                          (benchmark-arms-su-vs-queen-expansion-2026-06-16 P-005),
+ *                          tiered by empirical per-task solve rate + a structural score.
+ *                          Each task carries its `tier` so resolved% reports per-tier.
  *   'custom'             → the pilot set filtered to an explicit instance-id list.
  *   'swe-bench-pro-full' → the full ~731-task set (NOT yet provisioned on disk —
  *                          throws an honest error rather than silently running a
@@ -26,6 +30,8 @@ interface TaskRow {
   fail_to_pass?: string;
   selected_test_files_to_run?: string;
   language?: string;
+  /** Difficulty tier — only present on stratified rows (see {@link stratifiedTaskSetPath}). */
+  tier?: 'easy' | 'medium' | 'hard';
 }
 
 /** The canonical 11-task pilot JSONL (env-overridable). */
@@ -33,6 +39,22 @@ export function pilotTaskSetPath(): string {
   return (
     process.env.PAPERCUSP_BENCH_PILOT_JSONL ??
     join(homedir(), '.papercusp', 'bench-results', 'm3-realqueen-2026-06-16', 'tasks-sample.jsonl')
+  );
+}
+
+/** The difficulty-stratified 30-task JSONL (env-overridable). */
+export function stratifiedTaskSetPath(): string {
+  return (
+    process.env.PAPERCUSP_BENCH_STRATIFIED_JSONL ??
+    join(homedir(), '.papercusp', 'bench-results', 'stratified-30', 'tasks.jsonl')
+  );
+}
+
+/** The stratified set's tier map (instance_id → tier + difficulty score), env-overridable. */
+export function stratifiedTiersPath(): string {
+  return (
+    process.env.PAPERCUSP_BENCH_STRATIFIED_TIERS ??
+    join(homedir(), '.papercusp', 'bench-results', 'stratified-30', 'tiers.json')
   );
 }
 
@@ -74,7 +96,8 @@ function shortName(instanceId: string): string {
   return instanceId.replace(/^instance_/, '').replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60);
 }
 
-/** Map one JSONL row → a BenchTask (same shape the CLI builds). */
+/** Map one JSONL row → a BenchTask (same shape the CLI builds). `tier` (when set) is
+ *  carried both as a first-class field and inside graderMeta for per-tier reporting. */
 export function rowToBenchTask(r: TaskRow): BenchTask {
   return {
     benchmark: 'swe-bench-pro',
@@ -83,11 +106,13 @@ export function rowToBenchTask(r: TaskRow): BenchTask {
     repo: `${reposRoot()}/${shortName(r.instance_id)}`,
     baseCommit: r.base_commit ?? '',
     language: r.language,
+    ...(r.tier ? { tier: r.tier } : {}),
     graderMeta: {
       dockerhub_tag: dockerhubTag(r.instance_id, r.repo ?? ''),
       FAIL_TO_PASS: pyList(r.fail_to_pass),
       PASS_TO_PASS: [],
       testFiles: pyList(r.selected_test_files_to_run),
+      ...(r.tier ? { tier: r.tier } : {}),
     },
   } satisfies BenchTask;
 }
@@ -103,6 +128,27 @@ function readJsonl(path: string): TaskRow[] {
     .map((line) => JSON.parse(line) as TaskRow);
 }
 
+/** The tiers.json shape (instance_id → tier + difficulty diagnostics). */
+type TierEntry = { tier: 'easy' | 'medium' | 'hard'; score?: number };
+
+/** Read the stratified set's tier map; missing file → empty map (rows then carry no tier). */
+function readTiers(path: string): Map<string, 'easy' | 'medium' | 'hard'> {
+  const out = new Map<string, 'easy' | 'medium' | 'hard'>();
+  if (!existsSync(path)) return out;
+  const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, TierEntry>;
+  for (const [iid, entry] of Object.entries(raw)) {
+    if (entry?.tier === 'easy' || entry?.tier === 'medium' || entry?.tier === 'hard') out.set(iid, entry.tier);
+  }
+  return out;
+}
+
+/** Load the difficulty-stratified 30-task set → BenchTask[], tier merged from tiers.json. */
+export function loadStratifiedTaskSet(): BenchTask[] {
+  const rows = readJsonl(stratifiedTaskSetPath());
+  const tiers = readTiers(stratifiedTiersPath());
+  return rows.map((r) => rowToBenchTask({ ...r, tier: r.tier ?? tiers.get(r.instance_id) }));
+}
+
 /** Load a named task set → BenchTask[]. */
 export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise<BenchTask[]> {
   if (taskSetId === 'swe-bench-pro-full') {
@@ -112,6 +158,9 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
           'wire the full SWE-bench Pro dataset before launching it (owner-gated). Use "11-task-pilot" or "custom".',
       ),
     );
+  }
+  if (taskSetId === 'stratified-30') {
+    return Promise.resolve(loadStratifiedTaskSet());
   }
   const rows = readJsonl(pilotTaskSetPath());
   let tasks = rows.map(rowToBenchTask);
@@ -134,7 +183,7 @@ export function writeTaskSampleJsonl(taskSetId: string, instanceIds: string[] | 
   if (taskSetId === 'swe-bench-pro-full') {
     throw new Error('swe-bench-pro-full sample is not provisioned on this host');
   }
-  const rows = readJsonl(pilotTaskSetPath());
+  const rows = readJsonl(taskSetId === 'stratified-30' ? stratifiedTaskSetPath() : pilotTaskSetPath());
   const want = instanceIds && instanceIds.length > 0 ? new Set(instanceIds) : null;
   const selected = want ? rows.filter((r) => want.has(r.instance_id)) : rows;
   writeFileSync(destPath, selected.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
@@ -149,8 +198,19 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
   } catch {
     pilotCount = null;
   }
+  let stratifiedCount: number | null = null;
+  try {
+    stratifiedCount = readJsonl(stratifiedTaskSetPath()).length;
+  } catch {
+    stratifiedCount = null;
+  }
   return [
     { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)', count: pilotCount },
+    {
+      id: 'stratified-30',
+      label: 'Difficulty-stratified 30 (10 easy / 10 medium / 10 hard)',
+      count: stratifiedCount,
+    },
     { id: 'swe-bench-pro-full', label: 'Full SWE-bench Pro (~731)', count: 731 },
     { id: 'custom', label: 'Custom instance ids', count: null },
   ];

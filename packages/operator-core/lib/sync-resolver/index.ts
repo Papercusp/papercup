@@ -2439,25 +2439,33 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { listHives } = await import('../agent-tools/hive/_resolve');
       const { getHiveStarted } = await import('../hive/started');
       const { recentWatchdogFires } = await import('../hive/watchdog');
-      const { summarizeOpenPlacements } = await import('../hive/placement-watchdog');
+      const { summarizeOpenPlacements, latestQueenWakeAt } = await import('../hive/placement-watchdog');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const ws = activeWorkspaceId();
       const hives = await listHives(ws).catch(() => []);
       return Promise.all(
-        hives.map(async (hv) => ({
-          slug: hv.slug,
-          started: await getHiveStarted(ws, hv.slug).catch(() => false),
-          nextFireAt: hv.wake?.nextFireAt ?? null,
-          lastWakeAt: hv.wake?.lastWakeAt ?? null,
-          watchdogFires24h: await recentWatchdogFires(ws, hv.slug).catch(() => 0),
-          placements: await summarizeOpenPlacements(ws, hv.slug).catch(() => ({
-            recovering: 0,
-            cursed: 0,
-            stranded: 0,
-            workingTracked: 0,
-            items: [] as Array<{ workItemId: string; status: string; failCount: number; harness: string | null }>,
-          })),
-        })),
+        hives.map(async (hv) => {
+          // lastWakeAt = the MORE RECENT of the recordHiveWake ledger AND the Queen's
+          // REAL queen-spawn wakes. The wake-brain Queen never calls recordHiveWake, so
+          // without the real-spawn read the heartbeat shows "Paused/Stalled" while she
+          // is alive (the visibility regression). ISO strings sort chronologically.
+          const realWake = await latestQueenWakeAt(ws, hv.slug).catch(() => null);
+          const lastWakeAt = [realWake, hv.wake?.lastWakeAt ?? null].filter(Boolean).sort().at(-1) ?? null;
+          return {
+            slug: hv.slug,
+            started: await getHiveStarted(ws, hv.slug).catch(() => false),
+            nextFireAt: hv.wake?.nextFireAt ?? null,
+            lastWakeAt,
+            watchdogFires24h: await recentWatchdogFires(ws, hv.slug).catch(() => 0),
+            placements: await summarizeOpenPlacements(ws, hv.slug).catch(() => ({
+              recovering: 0,
+              cursed: 0,
+              stranded: 0,
+              workingTracked: 0,
+              items: [] as Array<{ workItemId: string; status: string; failCount: number; harness: string | null }>,
+            })),
+          };
+        }),
       );
     },
   },
