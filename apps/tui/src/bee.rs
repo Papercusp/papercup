@@ -28,7 +28,7 @@ use crate::ui::trunc;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{List, ListItem, Paragraph},
+    widgets::{List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -84,8 +84,10 @@ impl BeeState {
     }
 }
 
-/// Top region: the bee's full work-list in rank (priority) order.
-pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, scroll: u16) {
+/// Top region: the bee's full work-list in rank (priority) order. `sel` is the
+/// highlighted task cursor when this pane is the focused/entered dossier
+/// (owner ask 2026-06-16); `None` renders it cursor-free (the read-only embeds).
+pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, sel: Option<usize>) {
     let label = app.bee.display_label().unwrap_or_else(|| "?".into());
     let asn = app.bee.assignment.as_ref();
     let queued: &[BeeWorkItem] = asn.map(|a| a.queued.as_slice()).unwrap_or(&[]);
@@ -147,8 +149,18 @@ pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool,
     } else {
         body_area
     };
-    let shown = crate::fleet::scroll_clamp(body, scroll, body_area.height);
-    f.render_widget(List::new(shown).style(Theme::panel()), body_area);
+    // A highlighted cursor + auto-scroll when the dossier is focused/entered
+    // (owner ask 2026-06-16) — the same idiom as the roster / plan-progress; an
+    // unselectable embed (sel=None) or empty list just renders the rows.
+    let mut state = ListState::default();
+    if let (Some(i), false) = (sel, queued.is_empty()) {
+        state.select(Some(i.min(queued.len().saturating_sub(1))));
+    }
+    let list = List::new(body)
+        .style(Theme::panel())
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, body_area, &mut state);
 }
 
 /// One task row: rank · status glyph · title (head-of-line — rank 0 / index 0 —
@@ -338,7 +350,7 @@ mod tests {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(f.area());
-            draw_tasklist(f, app, rows[0], false, 0);
+            draw_tasklist(f, app, rows[0], false, None);
             let bottom = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])

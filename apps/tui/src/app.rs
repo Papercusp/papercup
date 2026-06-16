@@ -1006,6 +1006,39 @@ pub enum TestingFocus {
     Files,
 }
 
+/// Which pane of the Plans master-detail surface holds keyboard focus (owner ask
+/// 2026-06-16): the plans LIST (left) or the selected plan's work-ITEMS (bottom
+/// right). ←/→ (or ↑/↓ while browsing) switch the two; Enter drills in; ↑/↓ then
+/// move within. Shared by the in-app Plans tab AND the dock's pinned plans-pane
+/// (`Tab::Plans` / `Tab::PlansBoard`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlansFocus {
+    List,
+    Items,
+}
+
+impl PlansFocus {
+    /// The other pane (List ↔ Items) — the ←/→ / browse toggle.
+    pub fn toggle(self) -> PlansFocus {
+        match self {
+            PlansFocus::List => PlansFocus::Items,
+            PlansFocus::Items => PlansFocus::List,
+        }
+    }
+}
+
+/// Step a clamped list cursor by `delta` (±1), saturating at both ends; an empty
+/// list stays at 0. Shared by the Plans two-level nav arms.
+fn step_clamped(cur: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        0
+    } else if delta > 0 {
+        (cur + 1).min(len - 1)
+    } else {
+        cur.saturating_sub(1)
+    }
+}
+
 /// Which sub-view of the Plugins tab has focus (D-007/D-014). `Tab` toggles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginsFocus {
@@ -1044,6 +1077,16 @@ pub struct App {
     /// Highlight cursor for the pinned plans status board (`pui plans-pane`,
     /// pui-plans-status-board-2026-06-14). Indexes `plans_board::board_rows`.
     pub plans_board_sel: usize,
+    /// Two-level pane nav for the Plans master-detail surface (owner ask
+    /// 2026-06-16) — shared by `Tab::Plans` + `Tab::PlansBoard` (only one is the
+    /// active tab at a time, so they share the cursor/focus/entered state):
+    /// which pane is focused (plans list ↔ work items), whether we've drilled in
+    /// (↑/↓ move WITHIN vs switch panes), and the work-items cursor. Reset on tab
+    /// entry. The items come from `plan_item_states` (fetched for the selected
+    /// plan), so the cursor is shared too.
+    pub plans_focus: PlansFocus,
+    pub plans_entered: bool,
+    pub plan_items_sel: usize,
     /// Merged plan-item assignment/claim/liveness for the SELECTED plan (P-005a),
     /// or None until fetched. Rendered in the Plans detail pane; the draw guards on
     /// `plan == selected_plan().slug` so a stale fetch never paints the wrong plan.
@@ -1474,6 +1517,9 @@ impl App {
             plans: Vec::new(),
             plan_sel: 0,
             plans_board_sel: 0,
+            plans_focus: PlansFocus::List,
+            plans_entered: false,
+            plan_items_sel: 0,
             plan_item_states: None,
             roster: Vec::new(),
             tracked_panes: crate::session_panes::TrackedPanes::new(),
@@ -2591,6 +2637,28 @@ impl App {
             })
     }
 
+    /// The work items backing the Plans surface's Items pane (owner ask
+    /// 2026-06-16) — the fetched `plan_item_states` for the currently-selected
+    /// plan, guarded so a stale fetch for a PRIOR plan never leaks the wrong
+    /// items. Empty until the fetch lands (or when no plan is selected). Shared by
+    /// `Tab::Plans` + `Tab::PlansBoard` (whichever is active).
+    pub(crate) fn plans_items(&self) -> &[crate::models::PlanItemState] {
+        let want = match self.tab {
+            Tab::PlansBoard => self.selected_board_plan().map(|(_, slug)| slug),
+            _ => self.selected_plan().map(|p| p.slug.clone()),
+        };
+        match (&self.plan_item_states, want) {
+            (Some(s), Some(slug)) if s.plan == slug => s.items.as_slice(),
+            _ => &[],
+        }
+    }
+
+    /// The work item under the Plans Items-pane cursor (`plan_items_sel`), or
+    /// `None` when the list is empty.
+    pub(crate) fn selected_plan_item(&self) -> Option<&crate::models::PlanItemState> {
+        self.plans_items().get(self.plan_items_sel)
+    }
+
     /// The swarm pane's currently-selected bee (ownerId, agent-name) — the row
     /// `fleet.agent_sel` lands on in the visible roster. None when the roster is
     /// empty. Used to PUBLISH the selection to the bee-dossier relay (Feature 1).
@@ -3478,37 +3546,81 @@ impl App {
     }
 
     /// Keymap for the pinned plans status board (`pui plans-pane`,
-    /// pui-plans-status-board-2026-06-14): j/k move the highlight over the
-    /// board rows, g forces an immediate plans+roster refetch. Everything else
-    /// is swallowed (a pinned dock pane has no tab strip to navigate).
+    /// pui-plans-status-board-2026-06-14). Two-level pane nav (owner ask
+    /// 2026-06-16, the same idiom as the Colony tab): ←/→ (and ↑/↓ while
+    /// BROWSING) switch the focused pane (plans list ↔ work items); Enter drills
+    /// in; ↑/↓ then move WITHIN the focused pane; Enter again opens that row's
+    /// detail popup; Esc steps back out. `g` forces a refetch at any level.
     fn plans_board_key(&mut self, code: KeyCode) -> Action {
-        // Row count for clamping — computed before the borrow ends so the
-        // mutations below don't overlap the immutable borrow of `self`.
-        let count = crate::plans_board::board_rows(self).len();
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.plans_board_sel + 1 < count {
-                    self.plans_board_sel += 1;
-                }
-                self.fetch_selected_board_item_states()
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.plans_board_sel = self.plans_board_sel.saturating_sub(1);
-                self.fetch_selected_board_item_states()
-            }
-            // Enter opens the selected plan's detail popup (owner ask 2026-06-15
-            // #1) — the same rich popup as the Fleet plan-progress panel, reusing
-            // the fleet-detail modal. No-op on an empty board.
-            KeyCode::Enter => {
-                if count > 0 {
-                    self.fleet_detail_open = true;
-                    self.fleet_detail_scroll = 0;
-                }
+            KeyCode::Char('g') => Action::FetchPlansBoard,
+            // ←/→ switch the focused pane at ANY level (browse or inside).
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('l') | KeyCode::Right => {
+                self.plans_focus = self.plans_focus.toggle();
                 Action::Render
             }
-            KeyCode::Char('g') => Action::FetchPlansBoard,
+            // ↑/↓ while BROWSING switch panes; once INSIDE they move within.
+            KeyCode::Char('j') | KeyCode::Down if !self.plans_entered => {
+                self.plans_focus = self.plans_focus.toggle();
+                Action::Render
+            }
+            KeyCode::Char('k') | KeyCode::Up if !self.plans_entered => {
+                self.plans_focus = self.plans_focus.toggle();
+                Action::Render
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.plans_board_within_move(1),
+            KeyCode::Char('k') | KeyCode::Up => self.plans_board_within_move(-1),
+            // Enter drills in (browse → inside), then opens the focused row's
+            // detail popup; reusing the fleet-detail modal (owner ask 2026-06-15
+            // #1 for the plan body, extended to work items 2026-06-16).
+            KeyCode::Enter => {
+                if !self.plans_entered {
+                    self.plans_entered = true;
+                    Action::Render
+                } else {
+                    self.plans_open_focused_detail()
+                }
+            }
+            KeyCode::Esc if self.plans_entered => {
+                self.plans_entered = false;
+                Action::Render
+            }
             _ => Action::None,
         }
+    }
+
+    /// ↑/↓ within the focused Plans-board pane (entered): the plans LIST moves the
+    /// board cursor + fetches the new plan's items (resetting the items cursor);
+    /// the ITEMS pane moves the work-item cursor. Clamped (no fall-through).
+    fn plans_board_within_move(&mut self, delta: isize) -> Action {
+        match self.plans_focus {
+            PlansFocus::List => {
+                let count = crate::plans_board::board_rows(self).len();
+                self.plans_board_sel = step_clamped(self.plans_board_sel, delta, count);
+                self.plan_items_sel = 0; // a new plan → its own items
+                self.fetch_selected_board_item_states()
+            }
+            PlansFocus::Items => {
+                let len = self.plans_items().len();
+                self.plan_items_sel = step_clamped(self.plan_items_sel, delta, len);
+                Action::Render
+            }
+        }
+    }
+
+    /// Enter on the focused (entered) Plans pane: the plans LIST opens the plan
+    /// detail popup; the ITEMS pane opens the selected work item's detail. Shared
+    /// by `Tab::Plans` + `Tab::PlansBoard`. No-op on an empty list.
+    fn plans_open_focused_detail(&mut self) -> Action {
+        let has = match self.plans_focus {
+            PlansFocus::List => self.selected_plan().is_some() || self.selected_board_plan().is_some(),
+            PlansFocus::Items => self.selected_plan_item().is_some(),
+        };
+        if has {
+            self.fleet_detail_open = true;
+            self.fleet_detail_scroll = 0;
+        }
+        Action::Render
     }
 
     /// Kick an immediate plan-item-states fetch for the board's now-selected
@@ -5749,6 +5861,9 @@ impl App {
         self.move_sel(delta);
         self.fleet.comms_inbox_sel = 0;
         self.fleet.comms_outbox_sel = 0;
+        // A new agent narrows the dossier to that bee — reset the task cursor so
+        // it doesn't point past the new (shorter) list.
+        self.fleet.dossier_sel = 0;
         self.publish_swarm_selection()
     }
 
@@ -5801,14 +5916,6 @@ impl App {
                 cur.saturating_sub(1)
             }
         };
-        // Scroll offsets clamp upward at render; here we only saturate at 0.
-        let scroll_step = |cur: u16, delta: isize| -> u16 {
-            if delta > 0 {
-                cur.saturating_add(1)
-            } else {
-                cur.saturating_sub(1)
-            }
-        };
         match self.fleet.fleet_focus {
             Roster => {}
             Inbox => {
@@ -5824,7 +5931,10 @@ impl App {
                 self.conversation_sel = sel_step(self.conversation_sel, delta, len);
             }
             Dossier => {
-                self.fleet.dossier_scroll = scroll_step(self.fleet.dossier_scroll, delta);
+                // ↑/↓ now move a highlighted task cursor (was a bare scroll),
+                // skipping per-bee headers (owner ask 2026-06-16).
+                let len = crate::fleet::dossier_task_count(self);
+                self.fleet.dossier_sel = sel_step(self.fleet.dossier_sel, delta, len);
             }
             PlanProgress => {
                 let len = crate::fleet::plan_progress_list(self).len();
@@ -5867,7 +5977,15 @@ impl App {
                 }
                 Action::Render
             }
-            Dossier => Action::Render,
+            // Dossier (worklist): open the selected work item's detail popup —
+            // consistent with the other panes' guarded Enter (owner ask 2026-06-16).
+            Dossier => {
+                if crate::fleet::selected_dossier_item(self).is_some() {
+                    self.fleet_detail_open = true;
+                    self.fleet_detail_scroll = 0;
+                }
+                Action::Render
+            }
         }
     }
 
@@ -5925,7 +6043,14 @@ impl App {
                     step(self.fleet.plan_progress_sel, delta, len);
                 Action::Render
             }
-            Roster | Dossier => Action::Render,
+            // Dossier: step the task cursor within the popup so closing it leaves
+            // the worklist where you navigated (owner ask 2026-06-16).
+            Dossier => {
+                let len = crate::fleet::dossier_task_count(self);
+                self.fleet.dossier_sel = step(self.fleet.dossier_sel, delta, len);
+                Action::Render
+            }
+            Roster => Action::Render,
         }
     }
 
@@ -10448,7 +10573,7 @@ mod tests {
     }
 
     #[test]
-    fn fleet_default_view_cycles_dossier_scroll_and_plan_select() {
+    fn fleet_default_view_cycles_dossier_cursor_and_plan_select() {
         use crate::fleet::FleetPanel;
         let mut a = App::new();
         a.tab = Tab::Fleet; // comms OFF (default) → Roster → Dossier → PlanProgress
@@ -10458,18 +10583,35 @@ mod tests {
         let mut p2 = plan("plan-b");
         p2.item_counts = crate::models::ItemCounts { todo: 1, done: 1, ..Default::default() };
         a.set_plans(vec![p1, p2]);
+        // Whole-fleet dossier (no agent selected) with 3 tasks → a non-empty,
+        // selectable worklist (owner ask 2026-06-16: cursor, not bare scroll).
+        a.fleet.all_assignments = vec![crate::models::BeeAssignment {
+            agent_id: "su-a".into(),
+            load: 3,
+            queued: (0..3)
+                .map(|i| crate::models::BeeWorkItem {
+                    id: format!("WI-{i}"),
+                    title: format!("task {i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }];
         a.fleet.entered = true; // inside the panes → ↑/↓ move within (←/→ keep switching)
         assert!(!a.fleet.show_comms);
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
         a.update(ev(KeyCode::Char('l')));
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Dossier);
-        // j/k scroll the dossier (not the roster) while it holds focus.
+        // j/k move a SELECTION cursor over the 3 tasks (skipping the bee header),
+        // clamped — not a bare scroll.
         a.update(ev(KeyCode::Char('j')));
-        assert_eq!(a.fleet.dossier_scroll, 1);
+        assert_eq!(a.fleet.dossier_sel, 1);
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.fleet.dossier_sel, 2);
+        a.update(ev(KeyCode::Char('j'))); // clamp at the last task
+        assert_eq!(a.fleet.dossier_sel, 2);
         a.update(ev(KeyCode::Char('k')));
-        assert_eq!(a.fleet.dossier_scroll, 0);
-        a.update(ev(KeyCode::Char('k'))); // saturates at 0
-        assert_eq!(a.fleet.dossier_scroll, 0);
+        assert_eq!(a.fleet.dossier_sel, 1);
         a.update(ev(KeyCode::Char('l'))); // → PlanProgress
         assert_eq!(a.fleet.fleet_focus, FleetPanel::PlanProgress);
         // j/k now move a SELECTION cursor over the plan list (2 plans), clamped.
@@ -10481,6 +10623,53 @@ mod tests {
         assert_eq!(a.fleet.plan_progress_sel, 0);
         a.update(ev(KeyCode::Char('l'))); // wrap → Roster
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
+    }
+
+    #[test]
+    fn fleet_dossier_enter_opens_work_item_detail_and_steps() {
+        // Owner ask 2026-06-16: the worklist Enter opens the selected work item's
+        // detail popup; j/k step the task cursor within the modal; Esc closes.
+        use crate::fleet::FleetPanel;
+        let mut a = App::new();
+        a.tab = Tab::Fleet;
+        a.fleet.all_assignments = vec![crate::models::BeeAssignment {
+            agent_id: "su-a".into(),
+            load: 2,
+            queued: vec![
+                crate::models::BeeWorkItem {
+                    id: "WI-1".into(),
+                    title: "first task".into(),
+                    status: Some("wip".into()),
+                    ..Default::default()
+                },
+                crate::models::BeeWorkItem {
+                    id: "WI-2".into(),
+                    title: "second task".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }];
+        a.fleet.entered = true;
+        a.update(ev(KeyCode::Char('l'))); // → Dossier
+        assert_eq!(a.fleet.fleet_focus, FleetPanel::Dossier);
+        assert!(!a.fleet_detail_open);
+        a.update(ev(KeyCode::Enter)); // opens the selected work item's detail
+        assert!(a.fleet_detail_open);
+        // The popup body names the selected (cursor 0) work item.
+        let body: String = crate::fleet::dossier_detail_lines(&a)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(body.contains("first task"), "popup should name the selected work item: {body}");
+        // Modal: j steps the task cursor; an unrelated key is swallowed.
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.fleet.dossier_sel, 1);
+        a.update(ev(KeyCode::Char('x')));
+        assert!(a.fleet_detail_open);
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.fleet_detail_open);
     }
 
     #[test]

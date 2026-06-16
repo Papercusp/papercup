@@ -131,11 +131,11 @@ pub struct FleetState {
     /// roster + dossier + plan-progress (default); true = roster + inbox/outbox
     /// (selected agent) over conversations (whole-fleet broadcasts + threads).
     pub show_comms: bool,
-    /// Fleet-pane panel focus + per-panel cursors/scroll (owner ask 2026-06-14):
+    /// Fleet-pane panel focus + per-panel cursors (owner ask 2026-06-14):
     /// which panel takes keys, the cursor into the SELECTED bee's inbox/outbox
-    /// (rendered newest-first, so 0 = newest), the scroll offset for the
-    /// default-view dossier panel, and the SELECTION cursor into the
-    /// plan-progress list (↑/↓ move it, Enter opens that plan's detail popup —
+    /// (rendered newest-first, so 0 = newest), the SELECTION cursor into the
+    /// dossier (worklist) task list, and the SELECTION cursor into the
+    /// plan-progress list (↑/↓ move them, Enter opens that row's detail popup —
     /// owner ask 2026-06-15). The conversations panel reuses `App::conversation_sel`.
     pub fleet_focus: FleetPanel,
     /// Two-level nav (owner ask 2026-06-15 #2): false = BROWSING panes (↑/↓
@@ -145,7 +145,12 @@ pub struct FleetState {
     pub entered: bool,
     pub comms_inbox_sel: usize,
     pub comms_outbox_sel: usize,
-    pub dossier_scroll: u16,
+    /// Selection cursor into the dossier (worklist) task list (owner ask
+    /// 2026-06-16): ↑/↓ move a highlighted cursor over the tasks (skipping the
+    /// per-bee header rows of the whole-fleet view), Enter opens the selected
+    /// work item's detail popup — same idiom as plan-progress/mail/chat (it used
+    /// to be a bare scroll offset with no item cursor).
+    pub dossier_sel: usize,
     pub plan_progress_sel: usize,
     /// Whole-fleet assignments (every bee's ranked work-list), for the DEFAULT
     /// dossier when no agent is selected (#2: "show all tasks from the fleet").
@@ -167,7 +172,7 @@ impl Default for FleetState {
             entered: false,
             comms_inbox_sel: 0,
             comms_outbox_sel: 0,
-            dossier_scroll: 0,
+            dossier_sel: 0,
             plan_progress_sel: 0,
             all_assignments: Vec::new(),
         }
@@ -552,23 +557,118 @@ fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
 /// ranked task list (reused from `bee.rs`, driven by the in-process selection
 /// fetch); with NO selection, the whole-fleet task list (every bee's claimed
 /// work, from `fleet.all_assignments`). `focused` adds the active border; the
-/// dossier scroll offset comes from `fleet.dossier_scroll`.
+/// `fleet.dossier_sel` cursor highlights the task ↑/↓ navigates (owner ask
+/// 2026-06-16) — shared with `selected_dossier_item` so highlight + Enter agree.
 fn draw_dossier(f: &mut Frame, app: &App, area: Rect, focused: bool) {
-    let scroll = app.fleet.dossier_scroll;
+    let sel = Some(app.fleet.dossier_sel);
     if app.bee.owner_id.is_some() {
-        crate::bee::draw_tasklist(f, app, area, focused, scroll);
+        crate::bee::draw_tasklist(f, app, area, focused, sel);
     } else {
-        draw_all_tasklist(f, app, area, focused, scroll);
+        draw_all_tasklist(f, app, area, focused, sel);
     }
+}
+
+/// The whole-fleet assignments in render order — busiest bee first — so the
+/// renderer and the dossier cursor flatten the tasks the SAME way (the highlight
+/// and `selected_dossier_item` can never disagree).
+fn dossier_assignments_ordered(app: &App) -> Vec<&crate::models::BeeAssignment> {
+    let mut ordered: Vec<&crate::models::BeeAssignment> =
+        app.fleet.all_assignments.iter().collect();
+    ordered.sort_by(|a, b| b.load.cmp(&a.load));
+    ordered
+}
+
+/// Selectable-task count in the current dossier scope (per-bee selection or
+/// whole-fleet) — the clamp bound for `fleet.dossier_sel`.
+pub(crate) fn dossier_task_count(app: &App) -> usize {
+    if app.bee.owner_id.is_some() {
+        app.bee
+            .assignment
+            .as_ref()
+            .map(|a| a.queued.len())
+            .unwrap_or(0)
+    } else {
+        dossier_assignments_ordered(app)
+            .iter()
+            .map(|a| a.queued.len())
+            .sum()
+    }
+}
+
+/// The work item under the dossier cursor (`fleet.dossier_sel`), flattened across
+/// the current scope in render order. `None` when the dossier is empty.
+pub(crate) fn selected_dossier_item(app: &App) -> Option<&crate::models::BeeWorkItem> {
+    let sel = app.fleet.dossier_sel;
+    if app.bee.owner_id.is_some() {
+        app.bee.assignment.as_ref()?.queued.get(sel)
+    } else {
+        dossier_assignments_ordered(app)
+            .into_iter()
+            .flat_map(|a| a.queued.iter())
+            .nth(sel)
+    }
+}
+
+/// The dossier-popup body: the selected work item's detail (owner ask
+/// 2026-06-16 — the dossier's Enter, matching plan-progress/mail/chat).
+pub(crate) fn dossier_detail_lines(app: &App) -> Vec<Line<'static>> {
+    match selected_dossier_item(app) {
+        Some(w) => work_item_detail_lines(w),
+        None => vec![Line::from(Span::styled("(no work item selected)", Theme::dim()))],
+    }
+}
+
+/// The detail-popup body for one work item (id · kind · status · rank · who
+/// placed it). The dossier rows are thin (`fleet:assignments` queued items), so
+/// the popup just surfaces those fields rather than re-fetching.
+fn work_item_detail_lines(w: &crate::models::BeeWorkItem) -> Vec<Line<'static>> {
+    let title = if w.title.is_empty() {
+        w.id.clone()
+    } else {
+        w.title.clone()
+    };
+    let mut out = vec![
+        Line::from(Span::styled(title, Theme::title_active())),
+        Line::from(vec![
+            Span::styled("id       ", Theme::dim()),
+            Span::raw(w.id.clone()),
+        ]),
+    ];
+    if let Some(k) = w.item_kind.clone().filter(|s| !s.is_empty()) {
+        out.push(Line::from(vec![
+            Span::styled("kind     ", Theme::dim()),
+            Span::raw(k),
+        ]));
+    }
+    out.push(Line::from(vec![
+        Span::styled("status   ", Theme::dim()),
+        Span::raw(w.status.clone().unwrap_or_else(|| "—".to_string())),
+        Span::styled("    rank  ", Theme::dim()),
+        Span::raw(
+            w.rank
+                .map(|r| format!("#{r}"))
+                .unwrap_or_else(|| "—".to_string()),
+        ),
+    ]));
+    if let Some(wri) = w.rank_writer.clone().filter(|s| !s.is_empty()) {
+        out.push(Line::from(vec![
+            Span::styled("placed by", Theme::dim()),
+            Span::raw(format!(" {wri}")),
+        ]));
+    }
+    out
 }
 
 /// Whole-fleet task list: every bee's claimed work-items, grouped by bee in load
 /// order. The default dossier when no agent is selected (#2 "show all tasks from
 /// the fleet"). Reuses `bee::task_row` per item under a per-bee header line.
-fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, scroll: u16) {
+fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, sel: Option<usize>) {
     let asn = &app.fleet.all_assignments;
     let total: i64 = asn.iter().map(|a| a.load).sum();
     let mut items: Vec<ListItem> = Vec::new();
+    // Map the Nth selectable TASK to its flat row index (header rows interleave),
+    // so the cursor skips per-bee headers and the highlight lands on a task.
+    let mut task_flat_idx: Vec<usize> = Vec::new();
     if asn.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
             "(loading fleet task list…)",
@@ -576,9 +676,7 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, scroll
         ))));
     } else {
         // Busiest bees first; a bee with no claimed work still shows its header.
-        let mut ordered: Vec<&crate::models::BeeAssignment> = asn.iter().collect();
-        ordered.sort_by(|a, b| b.load.cmp(&a.load));
-        for a in ordered {
+        for a in dossier_assignments_ordered(app) {
             let label = a
                 .name
                 .clone()
@@ -594,6 +692,7 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, scroll
                 Theme::info(),
             ))));
             for (i, w) in a.queued.iter().enumerate() {
+                task_flat_idx.push(items.len());
                 items.push(crate::bee::task_row(i, w));
             }
         }
@@ -607,21 +706,19 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, scroll
         ),
         " select an agent to filter · rank · st · task",
     );
-    let shown = scroll_clamp(items, scroll, body.height);
-    f.render_widget(List::new(shown).style(Theme::panel()), body);
-}
-
-/// Apply a focus-panel scroll offset to a list: drop the top `scroll` rows,
-/// clamped so the last screenful stays in view (the cursor-free analogue of a
-/// `ListState` offset — owner ask 2026-06-14).
-pub(crate) fn scroll_clamp<'a>(
-    items: Vec<ListItem<'a>>,
-    scroll: u16,
-    view_h: u16,
-) -> Vec<ListItem<'a>> {
-    let max = (items.len() as u16).saturating_sub(view_h);
-    let skip = scroll.min(max) as usize;
-    items.into_iter().skip(skip).collect()
+    // Highlight + auto-scroll to the cursor's task row (owner ask 2026-06-16);
+    // `sel=None` (or an empty list) just renders the rows.
+    let mut state = ListState::default();
+    if let Some(i) = sel {
+        if let Some(&flat) = task_flat_idx.get(i.min(task_flat_idx.len().saturating_sub(1))) {
+            state.select(Some(flat));
+        }
+    }
+    let list = List::new(items)
+        .style(Theme::panel())
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, body, &mut state);
 }
 
 /// Compact liveness legend (owner ask 2026-06-11): the roster's dot vocabulary

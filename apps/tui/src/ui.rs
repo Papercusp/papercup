@@ -2792,7 +2792,12 @@ fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
             " plan · Esc close · j/k plan · PgUp/Dn scroll ",
             crate::fleet::plan_detail_lines(app),
         ),
-        FleetPanel::Roster | FleetPanel::Dossier => (" detail ", Vec::new()),
+        // Dossier (worklist): the selected work item's detail (owner ask 2026-06-16).
+        FleetPanel::Dossier => (
+            " work item · Esc close · j/k item · PgUp/Dn scroll ",
+            crate::fleet::dossier_detail_lines(app),
+        ),
+        FleetPanel::Roster => (" detail ", Vec::new()),
     }
 }
 
