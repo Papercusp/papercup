@@ -38,10 +38,12 @@
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md); only mid-edit
  * reply drafts + loading/busy lifecycle + the expand-set are useState.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import ChatPanel from '@/app/harness/ChatPanel';
 import '@/app/admin/coordination/coordination.css';
@@ -1270,9 +1272,66 @@ function AgentChatsView() {
   const harnesses = useMemo(() => [...new Set(list.map((c) => c.harness_slug).filter(Boolean))].sort() as string[], [list]);
   const roles = useMemo(() => [...new Set(list.map((c) => c.role).filter(Boolean))].sort() as string[], [list]);
 
+  // U1 (operator-vite-ui-consolidation): the agent-chats rail renders through
+  // the shared, virtualized @papercusp/grid-core RichGrid instead of a raw
+  // `.map()`. RichGrid runs in `inline` mode so the existing `.pc-coord__rail`
+  // stays the scroll container; one full-width column whose `render` emits the
+  // original `.pc-coord__row` card keeps the visual result identical.
+  // `virtualMode` mounts only the visible window (the list pulls up to 500
+  // sessions). This is the template for the other rails — see the report for
+  // the grouped/expandable gap the live coord feed will hit next.
+  const railScrollRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: list.length,
+    getScrollElement: () => railScrollRef.current,
+    // Three stacked lines (top meta / title / meta) inside a 7px-padded card.
+    // Rows are uniform height, so a matching estimate keeps virtual offsets
+    // exact; RichGrid only re-measures expanded rows, which this list has none.
+    estimateSize: () => 64,
+    overscan: 10,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [list, rowVirtualizer]);
+
+  // RichGrid's selection set, derived from the nuqs `?chat=` scalar — drives
+  // the cell's `isSelected` → `.pc-coord__row.is-active` styling.
+  const selectedSet = useMemo(() => new Set(sel ? [sel] : []), [sel]);
+
+  // One full-width column. RichGrid's cell wrapper is `display:flex` and adds
+  // its own padding; we strip that via `cellStyle` and render the original
+  // `.pc-coord__row` card (with its stacked-span layout from coordination.css)
+  // as the cell body, so the visual result is byte-for-byte the prior markup.
+  const columns = useMemo<ColumnDef<AgentChatRow>[]>(
+    () => [
+      {
+        key: 'session',
+        header: '',
+        headerText: '',
+        width: 1,
+        toCopyText: (c) => c.title ?? c.id,
+        cellStyle: { display: 'block', padding: 0, overflow: 'visible' },
+        render: ({ row: c, isSelected }) => (
+          <div className={`pc-coord__row${isSelected ? ' is-active' : ''}`}>
+            <span className="pc-advconv__threadtop">
+              <span className="pc-coord__kind">{c.role ?? 'agent'}</span>
+              {c.archived_at ? <span className="pc-advconv__statepill pc-advconv__statepill--closed">archived</span> : null}
+              <span className="pc-advconv__rowdate">{fmtTs(c.created_at)}</span>
+            </span>
+            <span className="pc-coord__row-title">{c.title ?? c.id}</span>
+            <span className="pc-coord__row-meta">
+              {c.harness_slug ?? 'workspace'}{c.feature_id ? ` · ${c.feature_id}` : ''} · {c.turns} turn{c.turns === 1 ? '' : 's'}
+            </span>
+          </div>
+        ),
+      },
+    ],
+    [],
+  );
+
   return (
     <div className="pc-coord__split pc-advconv__threads">
-      <aside className="pc-coord__rail">
+      <aside className="pc-coord__rail" ref={railScrollRef}>
         <div className="pc-advconv__railhead">
           <span>Agent chat sessions</span>
           <strong>{loading ? '…' : list.length}</strong>
@@ -1306,19 +1365,30 @@ function AgentChatsView() {
             <span>No multi-turn agent chat sessions match the current filter.</span>
           </div>
         ) : (
-          list.map((c) => (
-            <button key={c.id} type="button" className={`pc-coord__row${sel === c.id ? ' is-active' : ''}`} onClick={() => void setSel(c.id)}>
-              <span className="pc-advconv__threadtop">
-                <span className="pc-coord__kind">{c.role ?? 'agent'}</span>
-                {c.archived_at ? <span className="pc-advconv__statepill pc-advconv__statepill--closed">archived</span> : null}
-                <span className="pc-advconv__rowdate">{fmtTs(c.created_at)}</span>
-              </span>
-              <span className="pc-coord__row-title">{c.title ?? c.id}</span>
-              <span className="pc-coord__row-meta">
-                {c.harness_slug ?? 'workspace'}{c.feature_id ? ` · ${c.feature_id}` : ''} · {c.turns} turn{c.turns === 1 ? '' : 's'}
-              </span>
-            </button>
-          ))
+          <RichGrid<AgentChatRow>
+            inline
+            disableCopySupport
+            columns={columns}
+            getRowId={(c) => c.id}
+            virtualMode={{
+              virtualizer: rowVirtualizer,
+              totalRows: list.length,
+              rowAt: (i) => list[i],
+            }}
+            // Selection is the nuqs `?chat=` param — feed it in so the cell's
+            // `isSelected` drives the original `.pc-coord__row.is-active` style.
+            selectedRowIds={selectedSet}
+            onRowClick={(c) => void setSel(c.id)}
+            // The card look is fully class-driven (.pc-advconv__threads
+            // .pc-coord__row). Neutralize RichGrid's own per-row chrome
+            // (striping bg + bottom border) so only the original styling shows;
+            // the 6px inter-card gap the flex rail used becomes per-row bottom
+            // padding since virtual rows are positioned edge-to-edge.
+            getRowBg={() => 'transparent'}
+            rowProps={() => ({
+              style: { borderBottom: 'none', paddingBottom: 6 },
+            })}
+          />
         )}
       </aside>
       <section className="pc-coord__detail">

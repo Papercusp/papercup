@@ -26,7 +26,7 @@ export {
   ResultEncodeError,
 } from './formats';
 
-export { encode, decode, encodeAuto, encodeToonChecked, isFlatObjectArray } from './encode';
+export { encode, decode, encodeAuto, encodeToonChecked, isFlatObjectArray, TOON_VERIFY_MAX_BYTES } from './encode';
 
 export {
   type EligibilityResult,

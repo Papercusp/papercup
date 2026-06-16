@@ -13,7 +13,7 @@
 import { join } from 'node:path';
 import { statSync, readFileSync, openSync, readSync, closeSync } from 'node:fs';
 import { sseResponse } from '@papercusp/sse';
-import { resolvePhasedProject, harnessDir, parseFeatures } from '../../../harness-core';
+import { resolvePhasedProject, harnessDir, parseFeatures, tailFile } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import {
   activeStreams,
@@ -328,11 +328,7 @@ const slugStream = defineTool({
         let lastFeatureState = '';
 
         try {
-          const stat = statSync(runLogPath);
-          const tailBytes = 256 * 1024;
-          const start = Math.max(0, stat.size - tailBytes);
-          const fd = readFileSync(runLogPath, 'utf8');
-          const chunk = fd.slice(start);
+          const chunk = tailFile(runLogPath, 256 * 1024);
           if (chunk) sink.eventRaw('log', chunk);
         } catch { /* no log file yet */ }
 

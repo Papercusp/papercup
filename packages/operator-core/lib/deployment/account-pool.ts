@@ -53,8 +53,19 @@ export interface ClaudeAccount {
   egress?: AccountEgress;
   /** When added (epoch ms). */
   addedAt: number;
-  /** Swarm member harness slugs currently bound to this account (P-020). */
+  /** Swarm member harness slugs currently bound to this account (P-020). A MANUAL / deploy-time
+   *  bind (owner intent) — never auto-cleared by the soft-pin lazy-repin (D-001). */
   boundTo: string[];
+  /**
+   * SOFT cache-affinity auto-pins (account-cache-affinity-auto-pin-2026-06-16): harness slugs the
+   * SPAWN selector auto-pinned to this credential so a harness's consecutive bees co-locate on one
+   * account and reuse its per-credential prompt-cache prefix. Distinct from `boundTo` (a manual
+   * owner/deploy bind): a soft pin is system-set and LAZILY re-pinned — cleared the moment this
+   * account fills (`drainUtil ≥ DRAIN_FULL_UTIL`) or goes unavailable, so the next spawn re-drains
+   * to a fresh account and re-pins there (D-002). NEVER overwrites a manual `boundTo` bind (D-001).
+   * Absent/empty ⇒ no auto-pin (today's behavior). Pure projection — the impure caller persists it.
+   */
+  softPin?: string[];
   /**
    * Per-account rate-limit projection the Queen tracks (P-019). Updated from the
    * account's governor pause signals (local process) + federated frame signals.
@@ -198,6 +209,44 @@ export function bindAccount(pool: AccountPool, id: string, slug: string): Accoun
 /** Remove a slug from whatever account currently holds it (a slug binds ≤1 account). Pure. */
 export function unbindAccount(pool: AccountPool, slug: string): AccountPool {
   return { accounts: pool.accounts.map((a) => ({ ...a, boundTo: a.boundTo.filter((s) => s !== slug) })) };
+}
+
+/** The account a harness is MANUALLY bound to (`boundTo`), if any — the owner/deploy intent the
+ *  soft auto-pin must never overwrite (D-001). Pure. */
+export function manuallyBoundAccount(pool: AccountPool, slug: string): ClaudeAccount | undefined {
+  return pool.accounts.find((a) => a.boundTo.includes(slug));
+}
+
+/** The account a harness is SOFT-pinned to (`softPin`), if any (cache-affinity auto-pin). Pure. */
+export function softPinnedAccount(pool: AccountPool, slug: string): ClaudeAccount | undefined {
+  return pool.accounts.find((a) => a.softPin?.includes(slug));
+}
+
+/**
+ * Soft-pin a harness to one account (cache-affinity auto-pin): set the pin on `id`, removing any
+ * prior soft pin for `slug` on a DIFFERENT account (a slug soft-pins ≤1 account, mirroring a bind).
+ * A NO-OP when the harness is already manually bound (D-001 — never shadow an owner bind) or already
+ * soft-pinned to `id`. Pure — the impure caller persists the returned pool.
+ */
+export function setSoftPin(pool: AccountPool, id: string, slug: string): AccountPool {
+  if (manuallyBoundAccount(pool, slug)) return pool; // owner bind wins — don't auto-pin over it
+  return {
+    accounts: pool.accounts.map((a) => {
+      const has = a.softPin?.includes(slug) ?? false;
+      if (a.id === id) return has ? a : { ...a, softPin: [...(a.softPin ?? []), slug] };
+      if (has) return { ...a, softPin: a.softPin!.filter((s) => s !== slug) }; // drop the stale pin
+      return a;
+    }),
+  };
+}
+
+/** Clear a harness's soft pin from whatever account holds it (lazy re-pin / failover). Pure. */
+export function clearSoftPin(pool: AccountPool, slug: string): AccountPool {
+  return {
+    accounts: pool.accounts.map((a) =>
+      a.softPin?.includes(slug) ? { ...a, softPin: a.softPin.filter((s) => s !== slug) } : a,
+    ),
+  };
 }
 
 /**
@@ -373,11 +422,39 @@ export const DRAIN_FULL_UTIL = 0.97;
 
 /** The account's drain-relevant utilization: the observed unified-5h fraction, or 0 when never
  *  observed / stale (treat as most-available so a cold pool degrades gracefully). */
-function drainUtil(a: ClaudeAccount, now: number): number {
+export function drainUtil(a: ClaudeAccount, now: number): number {
   const r = a.rate;
   if (r.utilization === undefined) return 0;
   if (r.utilizationAt !== undefined && now - r.utilizationAt > DRAIN_UTIL_STALE_MS) return 0;
   return r.utilization;
+}
+
+/**
+ * Is this account effectively FULL for fresh load — paused, or its (fresh) unified-5h utilization at/
+ * above `DRAIN_FULL_UTIL`? Used to (a) LAZILY re-pin a soft cache-affinity pin off a near-cap account
+ * (D-002) and (b) decide the account-aware class pause: the opus class only pauses globally when EVERY
+ * account is full (mirrors the gateway failover — "only when ALL are exhausted does egress pause").
+ */
+export function accountFull(a: ClaudeAccount, now: number): boolean {
+  return !isAvailable(a, now) || drainUtil(a, now) >= DRAIN_FULL_UTIL;
+}
+
+/**
+ * Account-aware opus-pause decision (account-aware-rate-governor-routing-2026-06-16 Phase 1). A single
+ * account's 429 must NOT pause the whole model class while other accounts have headroom — the class
+ * "pauses" ONLY when EVERY account is full (paused or at/over its 5h cap). With ≥1 account having
+ * headroom this is false, so the spawn-admission gate keeps admitting (routed to the fresh account by
+ * `selectAccountForSpawn`). An EMPTY pool is NOT exhausted (single-credential fallback handles pacing).
+ */
+export function isClassExhausted(pool: AccountPool, now: number): boolean {
+  if (pool.accounts.length === 0) return false;
+  return pool.accounts.every((a) => accountFull(a, now));
+}
+
+/** Any account with headroom right now (the inverse — a spawn/in-process call can route somewhere
+ *  without globally pausing the class). An empty pool reads "available" (frame-default fallback). */
+export function anyAccountAvailable(pool: AccountPool, now: number): boolean {
+  return pool.accounts.length === 0 || pool.accounts.some((a) => !accountFull(a, now));
 }
 
 /**
@@ -411,32 +488,57 @@ export function selectAccountByDrain(pool: AccountPool, now: number, opts: Selec
 }
 
 /**
+ * The result of `selectAccountForSpawn`. `accountId` is the chosen egress credential (undefined ⇒ no
+ * available account → the caller sets no header, the gateway falls back to its active account).
+ * `newlyPinned` is set ONLY when the DRAIN step assigned a fresh soft cache-affinity pin for `harness`
+ * → `accountId` that the (impure) caller should PERSIST (account-cache-affinity-auto-pin Phase 1) so
+ * the harness's next bees stick to the same credential. `pinSource` is observability: which rule chose.
+ */
+export interface SpawnSelection {
+  accountId?: string;
+  /** Set when DRAIN newly soft-pinned this harness to `accountId` — the caller persists the pin. */
+  newlyPinned?: { harness: string; accountId: string };
+  pinSource?: 'sticky' | 'manual-bind' | 'soft-pin' | 'drain';
+}
+
+/**
  * Pick the account a spawning bee should egress through (inference-gateway-multi-credential-routing
  * P-005, corrected to the Claude Max basis — D-003). Cache-affinity FIRST (the dominant cost lever —
  * the conversation/prompt cache is per-credential), then budget-draining among the rest:
  *   1. STICKY — the bee's prior account, if still available (preserves its per-credential cache).
- *   2. HARNESS-PIN — an available account with the bee's harness in `boundTo`, so a harness's bees
- *      co-locate on one credential (shared system/tools prefix cache); ties broken by drain.
- *   3. DRAIN — otherwise the account that best fills the aggregate Max 5h budget (selectAccountByDrain:
- *      use-before-reset, then most remaining budget) so no subscription's window sits idle.
- * Returns the chosen account id, or undefined when no account is available (the caller sets no header
- * and the gateway falls back to its active account).
+ *   2. MANUAL-BIND — an available account with the harness in `boundTo` (owner/deploy pin); ties → drain.
+ *   3. SOFT-PIN — an available, NOT-yet-full account the harness was auto-pinned to (`softPin`), so a
+ *      harness's consecutive bees reuse one credential's prompt-cache prefix. A full/paused soft pin is
+ *      SKIPPED (lazy re-pin, D-002) and the next step re-pins fresh.
+ *   4. DRAIN — otherwise the account that best fills the aggregate Max 5h budget; when a `harness` is
+ *      given this also NEWLY soft-pins it (surfaced via `newlyPinned` for the caller to persist), so
+ *      the harness amortizes a warm-cache RUN on that account instead of cold-starting per bee.
+ * Pure — the soft-pin WRITE-BACK is the caller's (keeps this exhaustively unit-testable).
  */
-export function selectAccountForSpawn(pool: AccountPool, now: number, opts: SpawnSelectOpts = {}): string | undefined {
+export function selectAccountForSpawn(pool: AccountPool, now: number, opts: SpawnSelectOpts = {}): SpawnSelection {
   // 1. Sticky to the prior account while it is still usable (cache affinity dominates cost).
   if (opts.priorAccountId) {
     const prior = getAccount(pool, opts.priorAccountId);
-    if (prior && isAvailable(prior, now)) return prior.id;
+    if (prior && isAvailable(prior, now)) return { accountId: prior.id, pinSource: 'sticky' };
   }
-  // 2. Harness-pinned account (cache co-location), best drain among the pinned ties.
-  if (opts.harness) {
-    const harness = opts.harness;
-    const pinned = pool.accounts.filter((a) => a.boundTo.includes(harness) && isAvailable(a, now));
-    const best = selectAccountByDrain({ accounts: pinned }, now);
-    if (best) return best.id;
+  const harness = opts.harness;
+  if (harness) {
+    // 2. Manually-bound account (owner/deploy intent), best drain among the bound ties.
+    const bound = pool.accounts.filter((a) => a.boundTo.includes(harness) && isAvailable(a, now));
+    const boundBest = selectAccountByDrain({ accounts: bound }, now);
+    if (boundBest) return { accountId: boundBest.id, pinSource: 'manual-bind' };
+    // 3. Soft cache-affinity pin — only while it still has headroom (lazy re-pin past the cap, D-002).
+    const softPinned = softPinnedAccount(pool, harness);
+    if (softPinned && !accountFull(softPinned, now)) return { accountId: softPinned.id, pinSource: 'soft-pin' };
   }
-  // 3. Budget-drain across the whole pool.
-  return selectAccountByDrain(pool, now)?.id;
+  // 4. Budget-drain across the whole pool; auto-pin the chosen account for a fresh harness.
+  const drained = selectAccountByDrain(pool, now);
+  if (!drained) return {};
+  return {
+    accountId: drained.id,
+    pinSource: 'drain',
+    ...(harness ? { newlyPinned: { harness, accountId: drained.id } } : {}),
+  };
 }
 
 export type ScaleOutDecision =

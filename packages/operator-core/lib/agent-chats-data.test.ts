@@ -4,14 +4,31 @@
  * PG-row → ChatRow mapping with transcript JSON-parse vs passthrough, bigint→
  * Number token/cost coercion, bigint epoch-ms → ISO timestamp coercion
  * (migration 116), null defaults). known-roles is mocked.
+ *
+ * Plus listChats LIMIT/OFFSET bounding (F-C1): the query is always bounded —
+ * default 100, clamped to 1..100, offset for paging — so the forever-growing
+ * agent_chats table can't be SELECT *'d in full. db-org is mocked to capture
+ * the SQL + bound args.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./known-roles', () => ({
   getKnownRoles: () => ['worker', 'scoper', 'validator', 'orchestrator'],
 }));
 
-import { isValidChatRole, rowToChat } from './agent-chats-data';
+// Capture the SQL + bound args that listChats hands to the legacy client.
+const allMock = vi.fn(async () => [] as Array<Record<string, unknown>>);
+let lastSql = '';
+vi.mock('@papercusp/db-org', () => ({
+  getLegacyClient: () => ({
+    prepare: (sql: string) => {
+      lastSql = sql;
+      return { all: allMock };
+    },
+  }),
+}));
+
+import { isValidChatRole, rowToChat, listChats, LIST_CHATS_DEFAULT_LIMIT } from './agent-chats-data';
 
 describe('isValidChatRole', () => {
   it('accepts a known role', () => {
@@ -69,5 +86,50 @@ describe('rowToChat', () => {
   it('defaults an absent transcript to []', () => {
     const c = rowToChat({ id: 'c3', role: 'worker', created_at: 'c', updated_at: 'u' });
     expect(c.transcript).toEqual([]);
+  });
+});
+
+describe('listChats — bounded query (F-C1)', () => {
+  afterEach(() => {
+    allMock.mockClear();
+    allMock.mockResolvedValue([]);
+  });
+
+  it('always applies a LIMIT + OFFSET (default 100, offset 0)', async () => {
+    const r = await listChats({ slug: 'foo' });
+    expect(r.ok).toBe(true);
+    expect(lastSql).toContain('LIMIT ? OFFSET ?');
+    expect(lastSql).toContain('WHERE archived_at IS NULL'); // active-only by default
+    expect(allMock).toHaveBeenCalledWith(LIST_CHATS_DEFAULT_LIMIT, 0);
+  });
+
+  it('clamps limit above 100 down to 100', async () => {
+    await listChats({ slug: 'foo', limit: 5000 });
+    expect(allMock).toHaveBeenCalledWith(100, 0);
+  });
+
+  it('clamps limit at/below 0 up to 1', async () => {
+    await listChats({ slug: 'foo', limit: 0 });
+    expect(allMock).toHaveBeenCalledWith(1, 0);
+    allMock.mockClear();
+    await listChats({ slug: 'foo', limit: -10 });
+    expect(allMock).toHaveBeenCalledWith(1, 0);
+  });
+
+  it('threads a custom limit + offset (keyset paging)', async () => {
+    await listChats({ slug: 'foo', limit: 25, offset: 50 });
+    expect(allMock).toHaveBeenCalledWith(25, 50);
+  });
+
+  it('floors a negative offset to 0 and truncates fractional values', async () => {
+    await listChats({ slug: 'foo', limit: 10.9, offset: -3 });
+    expect(allMock).toHaveBeenCalledWith(10, 0);
+  });
+
+  it('includeArchived drops the archived_at filter but stays bounded', async () => {
+    await listChats({ slug: 'foo', includeArchived: true, limit: 30 });
+    expect(lastSql).toContain('LIMIT ? OFFSET ?');
+    expect(lastSql).not.toContain('WHERE archived_at IS NULL');
+    expect(allMock).toHaveBeenCalledWith(30, 0);
   });
 });

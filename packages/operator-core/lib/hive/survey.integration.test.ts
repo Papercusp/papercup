@@ -39,14 +39,52 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
+  // EI-865 — the frontier anti-joins hive_placements to exclude cursed items, so the
+  // table must exist. The migration's trailing GRANT / DO-block is stripped by
+  // readMigration's line filter (breaking the DO body); the CREATE TABLE + INDEX is
+  // all the anti-join needs, so apply just that (mirrors HARNESS_FEATURES_CONSOLIDATED_DDL).
+  await db.sql.unsafe(HIVE_PLACEMENTS_DDL).simple();
 }, 90_000);
+
+/** The hive_placements table (migration 263), table + index only — see beforeAll. */
+const HIVE_PLACEMENTS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.hive_placements (
+    workspace_id      text NOT NULL,
+    install_slug      text NOT NULL,
+    work_item_id      text NOT NULL,
+    harness_slug      text,
+    queen_owner_id    text,
+    bee_spawn_id      text,
+    bee_owner_id      text,
+    status            text NOT NULL DEFAULT 'working',
+    fail_count        integer NOT NULL DEFAULT 0,
+    last_disposition  text,
+    escalation_msg_id text,
+    placed_at         timestamptz NOT NULL DEFAULT now(),
+    last_recovery_at  timestamptz,
+    last_seen_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT hive_placements_pkey PRIMARY KEY (workspace_id, install_slug, work_item_id),
+    CONSTRAINT hive_placements_status_check CHECK (status IN
+      ('working', 'recovering', 'cursed', 'stranded', 'completed', 'abandoned'))
+  );
+  CREATE INDEX IF NOT EXISTS hive_placements_open_idx
+    ON harness_shared.hive_placements (workspace_id, install_slug, status);`;
+
+/** Seed a hive_placements row (the breaker ledger) for the cursed-exclusion test. */
+async function seedPlacement(id: string, status: string, opts: { harness?: string; failCount?: number } = {}) {
+  await db.sql`
+    INSERT INTO harness_shared.hive_placements
+      (workspace_id, install_slug, work_item_id, harness_slug, status, fail_count)
+    VALUES ('default', ${opts.harness ?? MEMBER_A}, ${id}, ${opts.harness ?? MEMBER_A}, ${status}, ${opts.failCount ?? 0})`;
+}
 
 afterAll(async () => {
   await db.cleanup();
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.harness_features_consolidated`;
+  await db.sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.hive_placements`;
 });
 
 const HOME = 'papercup-hive';
@@ -100,5 +138,22 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     const byId = new Map(rows.map((r) => [r.feature_id, r.plan_slug]));
     expect(byId.get('WI-PLANNED')).toBe('queen-steering-panel-2026-06-15');
     expect(byId.get('WI-UNPLANNED')).toBeNull();
+  });
+
+  it('EI-865: excludes a CURSED item — the breaker holds a doomed item out of the frontier', async () => {
+    await seed(MEMBER_A, 'WI-OK', { createdTs: 1 });
+    await seed(MEMBER_A, 'WI-CURSED', { createdTs: 2 });
+    await seedPlacement('WI-CURSED', 'cursed', { failCount: 3 });
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    expect(rows.map((r) => r.feature_id)).toEqual(['WI-OK']); // the cursed item never re-surfaces
+  });
+
+  it('EI-865: a NON-cursed placement row (recovering/working) does NOT exclude its item — only the curse latches it out', async () => {
+    await seed(MEMBER_A, 'WI-RECOVERING', { createdTs: 1 });
+    await seed(MEMBER_A, 'WI-WORKING', { createdTs: 2 });
+    await seedPlacement('WI-RECOVERING', 'recovering', { failCount: 1 });
+    await seedPlacement('WI-WORKING', 'working');
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    expect(rows.map((r) => r.feature_id).sort()).toEqual(['WI-RECOVERING', 'WI-WORKING']);
   });
 });

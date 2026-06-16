@@ -33,6 +33,33 @@ const TERMINAL_STATES = new Set([
   'passed', 'deprecated', 'resolved', 'closed', 'cancelled', 'done', 'dropped', 'merged',
 ]);
 
+/**
+ * EI-865 — the set of work-item ids the placement watchdog's circuit breaker has
+ * LATCHED `cursed` for this workspace (`hive_placements.status='cursed'`). A cursed
+ * item is a doomed placement the breaker has halted; it must NEVER re-enter the
+ * placement frontier (by explicit id OR via the harness backlog) — else the Queen
+ * re-places it the moment the breaker halt wears off across a wake and failCount
+ * climbs unbounded (the 356→460 regression). Workspace-scoped, matching the
+ * breaker's own scope. Returns the curse only leaves when a human/Queen clears it.
+ */
+export async function loadCursedWorkItemIds(workspaceId: string): Promise<Set<string>> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ work_item_id: string }[]>`
+      SELECT DISTINCT work_item_id
+        FROM harness_shared.hive_placements
+       WHERE workspace_id = ${workspaceId}
+         AND status = 'cursed'`;
+    return new Set(rows.map((r) => r.work_item_id));
+  } catch (e) {
+    // Fail-open: a flaky breaker-ledger read must not blank the frontier — the
+    // re-fire latch in the watchdog itself is the primary halt; this exclusion is
+    // belt-and-braces so a cursed item also stays out of the survey/backlog.
+    console.warn(`[placement-gather] cursed-item read failed — frontier not cursed-filtered:`, e instanceof Error ? e.message : e);
+    return new Set();
+  }
+}
+
 interface NurseryBeeRow {
   spawn_id: string;
   session_owner: string | null;
@@ -256,9 +283,17 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
   // the equivalent via autoPickableWhereSql(sql, workspaceId).
   const trustedAuthors = await loadTrustedGithubUserIds(opts.workspaceId);
 
+  // EI-865 — the cursed-item exclusion: items the breaker has latched `cursed` are
+  // never re-placed (by explicit id or via the backlog). Loaded once, workspace-scoped.
+  const cursedIds = await loadCursedWorkItemIds(opts.workspaceId);
+
   if (opts.ids && opts.ids.length > 0) {
     candidates = [];
     for (const id of opts.ids.slice(0, opts.limit)) {
+      if (cursedIds.has(id)) {
+        skipped.push({ id, reason: 'cursed — the placement breaker has halted re-placing this item' });
+        continue;
+      }
       const wi = await getWorkItem(id).catch(() => null);
       if (!wi) {
         skipped.push({ id, reason: 'not found' });
@@ -286,10 +321,12 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
     const items = await listWorkItems({ harness: opts.harness, limit: Math.min(opts.limit * 3, 500) });
     candidates = items
       // G2 admission (P-005): exclude remote, un-admitted work from placement candidates.
+      // EI-865: also exclude any item the breaker has latched `cursed`.
       .filter(
         (wi) =>
           !wi.assignee &&
           !TERMINAL_STATES.has(wi.state) &&
+          !cursedIds.has(wi.id) &&
           isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trustedAuthors),
       )
       .sort((a, b) => {

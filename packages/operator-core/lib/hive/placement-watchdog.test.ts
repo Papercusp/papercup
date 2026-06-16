@@ -148,6 +148,50 @@ describe('evaluatePlacement — P-021 cursed-item circuit breaker (mirrors repla
   });
 });
 
+describe('evaluatePlacement — EI-865 the breaker LATCHES (it does NOT re-fire)', () => {
+  it('an already-cursed unit short-circuits to `latched` — no re-fire, no failCount bump', () => {
+    // The bug: a cursed unit fell through to the failed-placement path every sweep
+    // (the debounce only guards `recovering`), re-entering `breaker` → re-escalating
+    // + climbing failCount unbounded (356→460). The latch HALTS it.
+    const d = evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3 }), CFG);
+    expect(d.kind).toBe('latched');
+  });
+
+  it('the latch holds across MANY sweeps — failCount never climbs past the breaker count', () => {
+    // Simulate the nightly re-sweep loop: a cursed unit, no live holder, not terminal.
+    // Before the fix this returned `breaker` with an ever-rising nextFailCount; now it
+    // is `latched` every time, so the stored failCount stays put.
+    let storedFailCount = 3; // the breaker count when it tripped
+    for (let i = 0; i < 100; i++) {
+      const d = evaluatePlacement(obs({ placementStatus: 'cursed', failCount: storedFailCount }), CFG);
+      expect(d.kind).toBe('latched');
+      // `latched` carries no nextFailCount — the reconcile re-writes the SAME count.
+      // (storedFailCount is intentionally NOT bumped — that's the whole point.)
+    }
+    expect(storedFailCount).toBe(3);
+  });
+
+  it('the curse CLEARS when the unit reaches terminal (a re-placed item that finally completed)', () => {
+    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, unitTerminal: true }), CFG).kind).toBe('completed');
+  });
+
+  it('the curse CLEARS when a LIVE bee re-claims the unit (a fix + re-place that took)', () => {
+    expect(evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3, hasLiveHolder: true }), CFG).kind).toBe('healthy');
+  });
+
+  it('the breaker still TRIPS once (recovering → breaker at the threshold), then latches thereafter', () => {
+    // First the threshold-th failure trips the breaker (cursed not yet set):
+    const trip = evaluatePlacement(
+      obs({ placementStatus: 'recovering', failCount: 2, lastRecoveryAtMs: NOW - (CFG.recoveryDebounceMs + 1) }),
+      CFG,
+    );
+    expect(trip.kind).toBe('breaker');
+    // The reconcile writes status='cursed'; the NEXT sweep then latches (no second breaker).
+    const after = evaluatePlacement(obs({ placementStatus: 'cursed', failCount: 3 }), CFG);
+    expect(after.kind).toBe('latched');
+  });
+});
+
 describe('P-023 — reconcile "steer, don\'t dispatch" WITH the completion mandate', () => {
   // The decider is the structural proof that the Queen PROPOSES placement + DRIVES
   // completion, while bees DISPOSE their own sequencing:

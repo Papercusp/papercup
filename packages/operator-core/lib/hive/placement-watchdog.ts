@@ -142,6 +142,7 @@ export type PlacementDecision =
   | { kind: 'recover'; nextFailCount: number; reason: string }
   | { kind: 'debounced' }
   | { kind: 'breaker'; nextFailCount: number; reason: string }
+  | { kind: 'latched' }
   | { kind: 'abandon'; reason: string };
 
 /**
@@ -149,14 +150,33 @@ export type PlacementDecision =
  *   unit gone        → abandon
  *   unit terminal    → completed              (the placement succeeded)
  *   live holder      → healthy                (working / re-placement took)
+ *   already cursed   → latched                (the breaker has tripped — HALT)
  *   else (failed)    → breaker | debounced | recover
  * `breaker` fires once the count AFTER this failure reaches the threshold, so the
  * unit is escalated rather than re-placed a (threshold+1)-th time.
+ *
+ * EI-865 — the breaker LATCHES. Once a unit is `cursed`, every later sweep
+ * short-circuits to `latched`: NO re-fire, NO re-escalation, NO failCount bump.
+ * Before this latch the `cursed` status fell through to the failed-placement path
+ * every tick (the debounce only guards `recovering`), so the watchdog re-entered
+ * `breaker`, re-escalated, and climbed failCount UNBOUNDED (observed 356→460 in a
+ * night) while the Queen kept re-placing a doomed item. The latch is the early-out
+ * that turns the breaker from a one-shot-that-re-fires into a true HALT. The unit
+ * leaves the latch only when it reaches terminal (→ completed) or is re-placed and
+ * worked by a live bee (→ healthy); a human/Queen who fixes + re-places it clears it.
  */
 export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfig): PlacementDecision {
   if (!obs.unitExists) return { kind: 'abandon', reason: 'unit no longer exists' };
   if (obs.unitTerminal) return { kind: 'completed' };
   if (obs.hasLiveHolder) return { kind: 'healthy' };
+
+  // EI-865 — the cursed latch: a unit already tripped by the breaker is HALTED.
+  // No live holder + not terminal + already cursed ⇒ leave it latched. Re-firing /
+  // re-escalating here is exactly the unbounded-retry bug (failCount 356→460); the
+  // breaker only halts for real if a cursed unit short-circuits before the failed
+  // path. (terminal / live-holder above already clear the curse the moment it's
+  // genuinely resolved or re-placed-and-working.)
+  if (obs.placementStatus === 'cursed') return { kind: 'latched' };
 
   // Non-terminal unit with no live holder → this placement failed.
   // Debounce repeated wakes only while we are ALREADY mid-recovery for it.
@@ -536,6 +556,25 @@ export async function reconcileOneHive(
           });
           break;
         }
+        case 'latched':
+          // EI-865 — the breaker has tripped and the unit is still cursed: HALT.
+          // Refresh last_seen_at (the row stays observable in hive:status) but do
+          // NOT re-fire, NOT re-escalate (escalation_msg_id is preserved), and do
+          // NOT bump fail_count — the latch holds it steady at the breaker count.
+          await upsertPlacement(sql, {
+            ...base,
+            status: 'cursed',
+            failCount: obs.failCount,
+            disposition: 'breaker',
+          });
+          out.push({
+            workspaceId,
+            installSlug,
+            workItemId: unitId,
+            decision: 'latched',
+            detail: `cursed, halted (fail_count ${obs.failCount} frozen)`,
+          });
+          break;
         case 'debounced':
           await upsertPlacement(sql, {
             ...base,

@@ -30,6 +30,7 @@
     "@papercusp/locks-core": "*",
     "@papercusp/model-pricing": "*",
     "@papercusp/p2p-voice": "*",
+    "@papercusp/resource-profile": "*",
     "@papercusp/result-encoding": "*",
     "@papercusp/rules": "*",
     "@papercusp/step-program": "*",

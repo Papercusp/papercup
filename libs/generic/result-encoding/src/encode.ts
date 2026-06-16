@@ -59,13 +59,35 @@ export function decode(text: string, format: ResultFormat): unknown {
 }
 
 /**
+ * Above this many bytes of TOON output we SKIP the lossless round-trip
+ * verification (the `toonDecode` + double `JSON.stringify`). On the operator's
+ * single event loop that verification is synchronous and O(size)×3, so on a big
+ * list result it blocks the loop long enough to drop MCP/SSE connections under
+ * load (operator-scalability-event-loop P1-1 / app-wide-load-traps F-A1). The
+ * round-trip is a cheap insurance check against a rare encoder edge case; below
+ * the gate we keep paying it, above it we don't — a large payload takes the
+ * safe lossless-JSON path instead of risking a corrupt-but-unverified compact
+ * body. 16 KiB comfortably covers the small list results where TOON's token win
+ * matters; multi-hundred-row dumps fall back to JSON (and shouldn't be TOON-
+ * encoded on the hot path anyway).
+ */
+export const TOON_VERIFY_MAX_BYTES = 16 * 1024;
+
+/**
  * Encode to TOON only when it round-trips losslessly. `@toon-format/toon` is a
  * JSON-lossless superset in the common case, but has rare edge cases (e.g. an
  * empty-string key wrapping a nested object — `[{"": {":": 0}}]`) where
  * `decode(encode(v)) !== v` or the decoder throws. The lossless-to-JSON
- * guarantee is the encoder's contract, not the dependency's, so we VERIFY the
- * round-trip and report whether it held — callers fall back to JSON when it
- * didn't, rather than hand the model a corrupt compact payload.
+ * guarantee is the encoder's contract, not the dependency's, so below
+ * `TOON_VERIFY_MAX_BYTES` we VERIFY the round-trip and report whether it held —
+ * callers fall back to JSON when it didn't, rather than hand the model a corrupt
+ * compact payload.
+ *
+ * Above the gate the verification is skipped (it's the synchronous hot-path
+ * cost P1-1/F-A1 targets): `lossless` is reported `false` so callers route the
+ * large payload to plain JSON, never to an UNVERIFIED TOON body. The encoder is
+ * lossless in the overwhelming common case, so the only cost of the skip is
+ * forgoing TOON's token win on payloads where it barely helps.
  */
 export function encodeToonChecked(value: unknown): { text: string; lossless: boolean } {
   let text: string;
@@ -73,6 +95,12 @@ export function encodeToonChecked(value: unknown): { text: string; lossless: boo
     text = toonEncode(value);
   } catch {
     return { text: '', lossless: false };
+  }
+  // Size-gate: above the threshold, skip the O(size)×3 round-trip verify and
+  // report not-lossless so the caller falls back to JSON (never serves an
+  // unverified compact body).
+  if (text.length > TOON_VERIFY_MAX_BYTES) {
+    return { text, lossless: false };
   }
   try {
     const back = toonDecode(text);

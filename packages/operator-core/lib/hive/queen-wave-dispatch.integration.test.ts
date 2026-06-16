@@ -103,6 +103,14 @@ async function blocksEdge(blocker: string, blocked: string): Promise<void> {
     VALUES ('default', 'feature', ${HIVE + '#' + blocker}, 'feature', ${HIVE + '#' + blocked}, 'blocks')`;
 }
 
+/** EI-865 — seed a cursed breaker ledger row for a lane (the latched-out state). */
+async function seedCursed(id: string): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.hive_placements
+      (workspace_id, install_slug, work_item_id, harness_slug, status, fail_count)
+    VALUES (${WS}, ${HIVE}, ${id}, ${HIVE}, 'cursed', 3)`;
+}
+
 /** Mark a tier1 lane completed by its placed bee — terminal status + held by the bee. */
 async function completeLane(id: string, bee: string): Promise<void> {
   await sql`
@@ -188,6 +196,24 @@ describe('queen wave dispatch — wave ordering through bee placement (real PG, 
     expect(f3.tasks.map((t) => t.id)).toEqual(['F-510']);
     expect(f3.tasks[0].brief).toBe('Tier2: integrate the universal handlers');
     expect(f3.skipped).toEqual([]);
+  });
+
+  it('EI-865: a CURSED lane is excluded from the placement frontier — by backlog AND by explicit id', async () => {
+    await seedLane({ id: 'F-700', brief: 'a healthy ready lane', order: 1 });
+    await seedLane({ id: 'F-701', brief: 'a doomed lane the breaker latched', order: 2 });
+    await seedCursed('F-701');
+
+    // Backlog path: the cursed lane never appears as a candidate.
+    const backlog = await gatherFrontier({ harness: HIVE, workspaceId: WS, limit: 10 });
+    expect(backlog.tasks.map((t) => t.id)).toEqual(['F-700']);
+
+    // Explicit-id path: even named directly, the cursed lane is skipped (not re-placed).
+    const byId = await gatherFrontier({ ids: ['F-700', 'F-701'], workspaceId: WS, limit: 10 });
+    expect(byId.tasks.map((t) => t.id)).toEqual(['F-700']);
+    expect(byId.skipped).toContainEqual({
+      id: 'F-701',
+      reason: 'cursed — the placement breaker has halted re-placing this item',
+    });
   });
 
   it('a generate-derived lane with no blocker is placeable immediately, carrying its substituted brief', async () => {

@@ -3,10 +3,12 @@ import {
   encode,
   decode,
   encodeAuto,
+  encodeToonChecked,
   isFlatObjectArray,
   encodeDelimited,
   decodeDelimited,
   encodeMarkdownTable,
+  TOON_VERIFY_MAX_BYTES,
   ResultEncodeError,
 } from './index';
 
@@ -109,6 +111,50 @@ describe('encodeAuto — no-schema runtime sniff', () => {
   it('scalars → json', () => {
     expect(encodeAuto('hi')).toEqual({ format: 'json', text: '"hi"' });
     expect(encodeAuto(42)).toEqual({ format: 'json', text: '42' });
+  });
+});
+
+describe('encodeToonChecked — lossless round-trip size-gate (P1-1 / F-A1)', () => {
+  it('verifies and reports lossless for a small array', () => {
+    const r = encodeToonChecked([{ id: 1, name: 'a' }, { id: 2, name: 'b' }]);
+    expect(r.lossless).toBe(true);
+    expect(decode(r.text, 'toon')).toEqual([{ id: 1, name: 'a' }, { id: 2, name: 'b' }]);
+    expect(r.text.length).toBeLessThanOrEqual(TOON_VERIFY_MAX_BYTES);
+  });
+
+  it('reports not-lossless on the rare encoder edge case (small payload, verify runs)', () => {
+    // Empty-string key wrapping a nested object — the documented round-trip-
+    // breaking shape. Below the gate, the verify catches it and reports false.
+    const r = encodeToonChecked([{ '': { ':': 0 } }]);
+    expect(r.lossless).toBe(false);
+  });
+
+  it('SKIPS the verify above the byte gate and reports not-lossless (so callers use JSON)', () => {
+    // A faithfully-encodable array whose TOON output exceeds the gate. The
+    // verify would have returned lossless:true; the size-gate skips it and
+    // returns false so the caller routes the large payload to plain JSON
+    // rather than pay the O(size)×3 round-trip on the event loop.
+    const big = Array.from({ length: 5000 }, (_, i) => ({ id: i, name: `row-${i}` }));
+    const r = encodeToonChecked(big);
+    expect(r.text.length).toBeGreaterThan(TOON_VERIFY_MAX_BYTES);
+    expect(r.lossless).toBe(false);
+    // The text is still produced (a valid TOON encoding), just unverified.
+    expect(r.text.length).toBeGreaterThan(0);
+  });
+
+  it('encodeAuto falls back to JSON for an over-gate array', () => {
+    const big = Array.from({ length: 5000 }, (_, i) => ({ id: i, name: `row-${i}` }));
+    const r = encodeAuto(big);
+    expect(r.format).toBe('json');
+    expect(decode(r.text, 'json')).toEqual(big);
+  });
+
+  it('still TOON-encodes an array right at/under the gate', () => {
+    // ~100 rows — comfortably under 16 KiB — stays TOON.
+    const modest = Array.from({ length: 100 }, (_, i) => ({ id: i, v: i * 2 }));
+    const r = encodeAuto(modest);
+    expect(r.format).toBe('toon');
+    expect(decode(r.text, 'toon')).toEqual(modest);
   });
 });
 

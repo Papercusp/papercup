@@ -51,6 +51,20 @@ let lastSweepAt = 0;
 
 const KEY_MAX = 200;
 
+/**
+ * Above this many bytes of serialized result we SKIP persisting the replay row
+ * (operator-scalability-event-loop P1-2 / app-wide-load-traps F-A1 "stacked
+ * 4th stringify"). The store is a synchronous payload-sized `JSON.stringify` on
+ * the serving event loop; for a large result that blocks long enough to drop
+ * the very MCP/SSE connections this buffer exists to make resilient. The buffer
+ * is opt-in and exists for WRITE idempotency — those results are small
+ * confirmation payloads (`{ ok, created: 'WI-42' }`), comfortably under the
+ * gate. A pathologically large result is exactly the one we must not block on;
+ * skipping its row only forgoes replay for a write whose result was huge, while
+ * the write itself still committed. Best-effort by contract, so a skip is safe.
+ */
+const REPLAY_STORE_MAX_BYTES = 256 * 1024;
+
 /** Validate a caller-supplied idempotency key — non-empty string, bounded. */
 export function validIdempotencyKey(v: unknown): string | null {
   if (typeof v !== 'string') return null;

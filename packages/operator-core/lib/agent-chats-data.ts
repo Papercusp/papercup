@@ -156,18 +156,33 @@ export async function readFeatureLockState(
 
 // ── reads ──────────────────────────────────────────────────────────
 
+/** Default page size for listChats — agent_chats is a forever-growing table,
+ *  so the query is always bounded. Matches the 1..100 clamp on sibling list
+ *  tools (agents:list). Callers page via `offset`. */
+export const LIST_CHATS_DEFAULT_LIMIT = 100;
+export const LIST_CHATS_MAX_LIMIT = 100;
+
 export interface ListChatsInput {
   slug: string;
   includeArchived?: boolean;
+  /** Page size, clamped to 1..LIST_CHATS_MAX_LIMIT. Defaults to LIST_CHATS_DEFAULT_LIMIT. */
+  limit?: number;
+  /** Keyset offset (rows to skip, ordered by updated_at DESC). Defaults to 0. */
+  offset?: number;
 }
 
 export async function listChats(input: ListChatsInput): Promise<Result<{ chats: ChatRow[] }>> {
   try {
     const db = dbForSlug(input.slug);
+    const limit = Math.min(
+      LIST_CHATS_MAX_LIMIT,
+      Math.max(1, Math.trunc(input.limit ?? LIST_CHATS_DEFAULT_LIMIT)),
+    );
+    const offset = Math.max(0, Math.trunc(input.offset ?? 0));
     const sql = input.includeArchived
-      ? 'SELECT * FROM agent_chats ORDER BY updated_at DESC'
-      : 'SELECT * FROM agent_chats WHERE archived_at IS NULL ORDER BY updated_at DESC';
-    const rows = (await db.prepare(sql).all()) as Array<Record<string, unknown>>;
+      ? 'SELECT * FROM agent_chats ORDER BY updated_at DESC LIMIT ? OFFSET ?'
+      : 'SELECT * FROM agent_chats WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?';
+    const rows = (await db.prepare(sql).all(limit, offset)) as Array<Record<string, unknown>>;
     return { ok: true, data: { chats: rows.map(rowToChat) } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to list chats: ${(e as Error).message}` };

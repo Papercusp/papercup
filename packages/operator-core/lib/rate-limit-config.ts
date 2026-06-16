@@ -18,6 +18,7 @@
 import { getChannel } from '@papercusp/sse';
 import { setGlobalConcurrencyCap, setGlobalConcurrencyFloor } from '@papercusp/papercup-shared/agent';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { getResourceProfile } from './resource-profile';
 
 export interface RateLimitConfig {
   /** Fleet-wide cap on concurrently-running agent spawns. The governor's global gate + the
@@ -31,7 +32,19 @@ export interface RateLimitConfig {
 /** Absolute ceiling the route/UI allow a user to set (defense-in-depth above the orchestrator's
     own SAFETY_CEILING backstop). */
 export const RATE_LIMIT_MAX_CEILING = 64;
-export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = { maxSimultaneousAgents: 16, concurrencyFloor: 1 };
+
+/** The DEFAULT cap is SEEDED from the host's resource profile (P0 of
+    operator-scalability-event-loop-2026-06-16) instead of a constant tuned for one box: a laptop
+    sharing an embedded PG seeds a small cap, a 128-core server seeds the ceiling. This is only the
+    DEFAULT — the user's persisted live config (PG `operator_rate_limit_config`) still wins, since
+    `clampRateLimitConfig` falls back to this seed ONLY when no stored value exists, and
+    init/writeRateLimitConfig push the stored value over it. Memoized via getResourceProfile(). */
+export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = {
+  get maxSimultaneousAgents(): number {
+    return getResourceProfile().maxSimultaneousAgents;
+  },
+  concurrencyFloor: 1,
+};
 
 function clampInt(v: unknown, fallback: number, lo: number, hi: number): number {
   const n = typeof v === 'number' ? Math.floor(v) : Number.NaN;

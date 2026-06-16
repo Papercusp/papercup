@@ -1182,7 +1182,11 @@ async function resumeFlow(args = {}) {
 async function brainFlow(args = {}) {
   let pin = null;
   try {
-    pin = (await api('/api/agent-mcp/console/bootstrap-su/brain'))?.brainSessionId ?? null;
+    // EI-908: the brain pin is workspace-scoped. Pass our workspace when one
+    // was given so a non-active-workspace `psu --brain` resolves ITS pin;
+    // omitted → the server defaults to the active workspace (the dock case).
+    const brainQ = args.workspace ? `?workspace=${encodeURIComponent(args.workspace)}` : '';
+    pin = (await api(`/api/agent-mcp/console/bootstrap-su/brain${brainQ}`))?.brainSessionId ?? null;
   } catch (e) {
     // Pin endpoint unavailable (an operator predating D-013, or a DB error).
     // Do NOT fresh-launch here — a server that can't read the pin can't WRITE

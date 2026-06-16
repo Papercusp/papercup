@@ -25,14 +25,21 @@ import {
   type AccountPool,
   type AccountRateState,
   type ScalePolicy,
+  type SpawnSelection,
+  accountFull,
   bindAccount,
+  clearSoftPin,
   decideScaleOut,
   getAccount,
   isAvailable,
+  isClassExhausted,
   isSustainedlyLimited,
+  manuallyBoundAccount,
   recordAccountPenalty,
   selectAccountByHeadroom,
   selectAccountForSpawn,
+  setSoftPin,
+  softPinnedAccount,
   unbindAccount,
 } from './account-pool';
 import {
@@ -71,10 +78,50 @@ export async function saveAccountPool(pool: AccountPool, ws?: string): Promise<v
 }
 
 /**
- * Resolve the pool account a spawning bee should egress through (P-004/P-005). Loads the pool
- * (fail-soft → undefined on any IO error) and applies the cache-affinity selection. Returns
- * undefined when there are ≤1 accounts (no routing needed — the gateway's active() account serves)
- * or nothing is available, so the caller sets no routing header.
+ * Persist a NEWLY-assigned soft cache-affinity pin (account-cache-affinity-auto-pin Phase 1) under an
+ * ATOMIC read-modify-write so N bees spawning concurrently for a fresh harness all converge on the SAME
+ * account (P-005 concurrency). The write is a CAS-by-reconcile: if a CONCURRENT spawn already soft-pinned
+ * this harness to a still-budgeted account, that winning pin stands (we return its id) and we DON'T
+ * clobber it; otherwise we set the pin to `accountId`. A manual `boundTo` bind always wins (D-001) — when
+ * present we clear any stray soft pin and route to the bind. Fail-soft: a write error returns the
+ * originally-selected `accountId` (the spawn still routes; only the persisted affinity is lost).
+ */
+async function persistSoftPin(
+  ws: string | undefined,
+  harness: string,
+  accountId: string,
+  now: number,
+): Promise<string> {
+  try {
+    let winner = accountId;
+    await updateAccountPool((p) => {
+      // Owner bind wins — never auto-pin over it (D-001). Clear any stale soft pin and defer to the bind.
+      const bound = manuallyBoundAccount(p, harness);
+      if (bound) {
+        winner = bound.id;
+        return clearSoftPin(p, harness);
+      }
+      // A concurrent spawn already pinned this harness to a still-budgeted account → keep that pin (CAS).
+      const existing = softPinnedAccount(p, harness);
+      if (existing && !accountFull(existing, now)) {
+        winner = existing.id;
+        return p;
+      }
+      winner = accountId;
+      return setSoftPin(p, accountId, harness);
+    }, ws);
+    return winner;
+  } catch {
+    return accountId; // affinity write lost — the spawn still routes to the selected account
+  }
+}
+
+/**
+ * Resolve the pool account a spawning (or in-process) call should egress through (P-004/P-005). Loads
+ * the pool (fail-soft → undefined on any IO error), applies the cache-affinity selection, and PERSISTS
+ * a fresh soft auto-pin so the harness's consecutive bees co-locate on one credential's prompt cache
+ * (account-cache-affinity-auto-pin Phase 1). Returns undefined when there are ≤1 accounts (no routing
+ * needed — the gateway's active() account serves) or nothing is available, so the caller sets no header.
  */
 export async function selectSpawnAccount(
   ws: string | undefined,
@@ -83,6 +130,7 @@ export async function selectSpawnAccount(
 ): Promise<string | undefined> {
   const pool = await loadAccountPool(ws).catch(() => null);
   if (!pool) return undefined;
+  const now = Date.now();
   // P-004: apply the owner's session-now override BEFORE selection (fail-soft, no-op when
   // unset). A `forced` allow-list restricts the candidates; `exclude` skips some. An
   // over-restrictive override (no candidate survives) → undefined = the frame-default
@@ -98,14 +146,53 @@ export async function selectSpawnAccount(
     // pin it (the owner's explicit choice; pause/failover is handled downstream).
     if (allowed.length === 1) return allowed[0];
     const allow = new Set(allowed);
-    return selectAccountForSpawn({ accounts: pool.accounts.filter((a) => allow.has(a.id)) }, Date.now(), {
+    const sel = selectAccountForSpawn({ accounts: pool.accounts.filter((a) => allow.has(a.id)) }, now, {
       harness,
       priorAccountId,
     });
+    return resolveSelection(ws, sel, now);
   }
   // No override → today's exact path: no routing needed for ≤1 account.
   if (pool.accounts.length <= 1) return undefined;
-  return selectAccountForSpawn(pool, Date.now(), { harness, priorAccountId });
+  const sel = selectAccountForSpawn(pool, now, { harness, priorAccountId });
+  return resolveSelection(ws, sel, now);
+}
+
+/** Apply a `SpawnSelection`: persist a newly-assigned soft pin (atomic CAS) and return the routed id. */
+async function resolveSelection(ws: string | undefined, sel: SpawnSelection, now: number): Promise<string | undefined> {
+  if (sel.newlyPinned) return persistSoftPin(ws, sel.newlyPinned.harness, sel.newlyPinned.accountId, now);
+  return sel.accountId;
+}
+
+/**
+ * Account-AWARE replacement for the old account-BLIND "is the opus class paused?" check
+ * (account-aware-rate-governor-routing-2026-06-16 Phase 1). The global `<provider>:<modelClass>`
+ * governor bucket is account-blind: ONE account's 429 pauses it for the whole fleet even with idle
+ * accounts (the owner's "rate-limit-with-headroom = routing bug"). This consults the POOL instead —
+ * the class is genuinely paused ONLY when EVERY account is full (paused or at/over its 5h cap). With
+ * ≥1 account having headroom this is false, so the caller keeps admitting + routes to the fresh
+ * account via `selectSpawnAccount`. Fail-soft: any IO error → false (don't wedge admission on a bad
+ * read — the per-account governor still paces each egress). An empty/≤1-account pool → false (the
+ * single-credential governor pause governs, today's behavior).
+ */
+export async function accountRoutingExhausted(ws?: string, now = Date.now()): Promise<boolean> {
+  const pool = await loadAccountPool(ws).catch(() => null);
+  if (!pool || pool.accounts.length <= 1) return false;
+  return isClassExhausted(pool, now);
+}
+
+/**
+ * Pick the account an IN-PROCESS anthropic-direct / Queen-brain call should egress through
+ * (account-aware-rate-governor-routing Phase 2). The Queen-brain + in-process operator calls used to
+ * all egress on the gateway's fixed `active()` account, hammering + 429-ing it → poisoning the global
+ * opus bucket → freezing the fleet. Routing them through the SAME per-account pool selector spreads
+ * that non-bee load (drain → fresh budget) and keeps a sticky/soft-pinned credential for cache warmth.
+ * `key` is a stable logical identity (e.g. `'brain'` or an operator-session id) used as the cache-
+ * affinity harness so repeat in-process calls reuse one credential. Returns the account id to stamp on
+ * the `x-papercusp-account` header, or undefined (≤1 account / all full) → the gateway's active().
+ */
+export async function selectInProcessAccount(key: string, ws?: string, priorAccountId?: string): Promise<string | undefined> {
+  return selectSpawnAccount(ws, key, priorAccountId);
 }
 
 /**

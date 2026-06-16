@@ -98,9 +98,17 @@ const listChatsRoute = defineTool({
   auth: 'public',
   async handler(req, ctx) {
     const { listChats } = await import('../../../agent-chats-data');
+    const sp = new URL(req.url).searchParams;
+    const parseNum = (v: string | null): number | undefined => {
+      if (v === null) return undefined;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
     const result = await listChats({
       slug: ctx.params.slug,
-      includeArchived: new URL(req.url).searchParams.get('include') === 'archived',
+      includeArchived: sp.get('include') === 'archived',
+      limit: parseNum(sp.get('limit')),
+      offset: parseNum(sp.get('offset')),
     });
     if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
     return Response.json(result.data);

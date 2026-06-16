@@ -330,6 +330,15 @@ export function filterReadyFrontier(
  * that are `todo` and unassigned — exactly what placement would dispatch.
  * `surveySlugs` empty ⇒ workspace-wide (the P-012 fallback). Oldest-first,
  * capped. One query (no per-slug loop).
+ *
+ * EI-865 — CURSED items are excluded. Once the placement watchdog's circuit
+ * breaker latches a doomed item `cursed` (`hive_placements.status='cursed'`), it
+ * must NEVER re-enter the Queen's frontier — else she re-places it the moment the
+ * breaker halt wears off across a wake, defeating the latch (the failCount-356
+ * regression). The anti-join is workspace-scoped (matching the breaker's own
+ * scope), so a curse from ANY hive in the workspace holds the item out of the
+ * frontier. The item returns only when a human/Queen clears the curse (re-places
+ * it → the breaker row leaves `cursed`).
  */
 export async function fetchFrontierRows(
   sql: postgres.Sql,
@@ -340,11 +349,17 @@ export async function fetchFrontierRows(
   const rows = await sql<FrontierRow[]>`
     SELECT feature_id, harness_slug, title, item_kind, created_ts, feature_order,
            source_plan_slug AS plan_slug
-      FROM harness_shared.harness_features_consolidated
+      FROM harness_shared.harness_features_consolidated f
      WHERE workspace_id = ${workspaceId}
        AND item_kind IN ('feature', 'research-task', 'chunk')
        AND status = 'todo'
        AND (taken_by IS NULL OR taken_by = '')
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.hive_placements p
+          WHERE p.workspace_id = f.workspace_id
+            AND p.work_item_id = f.feature_id
+            AND p.status = 'cursed'
+       )
        ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
      ORDER BY created_ts ASC
      LIMIT ${limit}`;

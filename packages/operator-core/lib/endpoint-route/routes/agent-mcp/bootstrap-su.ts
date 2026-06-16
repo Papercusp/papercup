@@ -194,13 +194,17 @@ export async function maybeAppendBrainBrief(
  * takes the fresh mint-launch path (the POST injects the Queen brief); flag OFF →
  * the persistent D-013 pinned session. Exported so the flag branch unit-tests
  * without the route's auth machinery.
+ *
+ * EI-908: the pin is workspace-scoped. The dock's brain pane is the ACTIVE
+ * workspace's Queen, so this reads that workspace's scoped pin (a demo
+ * instance's pin lives under its own key and can never be returned here).
  */
-export async function resolveBrainPin(): Promise<string | null> {
+export async function resolveBrainPin(workspaceId: string): Promise<string | null> {
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
   if (await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system')) return null;
   const { getBrainSession } = await import('../../../brain-pin');
-  return getBrainSession();
+  return getBrainSession(workspaceId);
 }
 
 const brainGet = defineTool({
@@ -210,8 +214,11 @@ const brainGet = defineTool({
   async handler(req) {
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
+    // EI-908: scope to a workspace. `?workspace=<id>` overrides; omitted →
+    // the active workspace (the desktop dock's Queen), mirroring /options.
+    const workspace = new URL(req.url).searchParams.get('workspace')?.trim() || activeWorkspaceId();
     try {
-      return jsonRes({ brainSessionId: await resolveBrainPin() });
+      return jsonRes({ brainSessionId: await resolveBrainPin(workspace), workspace });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: `brain pin read failed: ${e?.message ?? e}` }, 500);
     }
@@ -468,8 +475,10 @@ const post = defineTool({
         return jsonRes({ status: 'error', error: 'brain launch minted no native session id' }, 500);
       }
       try {
+        // EI-908: scope the pin to THIS launch's workspace so a demo-instance
+        // brain (its own workspace) can never clobber the main desktop's pin.
         const { setBrainSession } = await import('../../../brain-pin');
-        await setBrainSession(nativeSessionId);
+        await setBrainSession(workspace, nativeSessionId);
       } catch (e: any) {
         return jsonRes({ status: 'error', error: `brain pin failed: ${e?.message ?? e}` }, 500);
       }

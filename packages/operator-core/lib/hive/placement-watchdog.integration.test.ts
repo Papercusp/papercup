@@ -171,6 +171,45 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(mocks.wakeRecipients).not.toHaveBeenCalled(); // breaker STOPS re-placing
   });
 
+  it('EI-865: an already-cursed item is LATCHED on re-sweep — failCount frozen, no re-escalation, no wake', async () => {
+    // Pre-seed the unit ALREADY cursed at the breaker count (the breaker tripped on a
+    // prior sweep). The bug: every later sweep re-entered the breaker, re-escalated,
+    // and bumped fail_count without bound (356→460). The latch must HALT all of that.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-CURSED', ${HIVE}, ${QUEEN},
+              'cursed', 3, 'esc-prior', now(), now(), now())`;
+    await seedBee({ owner: 'bee-c', featureId: 'F-CURSED', status: 'failed' }); // still dead, still not terminal
+    await seedUnit({ id: 'F-CURSED', status: 'in_progress', takenBy: 'bee-c' });
+
+    const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    const p = await readPlacement('F-CURSED');
+    expect(p?.status).toBe('cursed'); // still cursed
+    expect(p?.fail_count).toBe(3); // FROZEN — does not climb (the 356→460 bug)
+    expect(p?.escalation_msg_id).toBe('esc-prior'); // the original escalation, NOT a new one
+    expect(out.find((r) => r.workItemId === 'F-CURSED')?.decision).toBe('latched');
+    expect(mocks.openEscalation).not.toHaveBeenCalled(); // no re-escalation
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled(); // no re-placement wake
+  });
+
+  it('EI-865: the curse CLEARS when the cursed unit finally reaches terminal (completed)', async () => {
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-CURED', ${HIVE}, ${QUEEN},
+              'cursed', 3, 'esc-prior', now(), now(), now())`;
+    await seedBee({ owner: 'bee-d', featureId: 'F-CURED', status: 'done' });
+    await seedUnit({ id: 'F-CURED', status: 'passed', takenBy: 'bee-d' }); // re-placed + finally done
+
+    await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
+
+    expect((await readPlacement('F-CURED'))?.status).toBe('completed'); // latch released
+  });
+
   it('P-022: a stuck failing blocker gating a non-terminal downstream → stranded + one escalation', async () => {
     await seedUnit({ id: 'F-300', status: 'failing' }); // the stuck blocker
     await seedUnit({ id: 'F-301', status: 'todo' }); // the gated downstream
