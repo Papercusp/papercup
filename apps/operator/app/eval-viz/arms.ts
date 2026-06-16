@@ -35,7 +35,11 @@ export type ArmId =
   // standard-harness baseline, same model + same tasks).
   | 'hive-realqueen'
   | 'fifo-noqueen'
-  | 'mini-swe-agent';
+  | 'mini-swe-agent'
+  // The independent-su-agents arm (benchmark-arms-su-vs-queen-expansion-2026-06-16 P-001): N
+  // independent su/worker agents, one SWE-bench-Pro task each, NO queen + NO hive coordination — the
+  // honest "our agent system, no orchestration" pole, compared against hive-realqueen + mini-swe-agent.
+  | 'su-independent';
 
 export const ARM_IDS: readonly ArmId[] = [
   'papercusp',
@@ -51,6 +55,7 @@ export const ARM_IDS: readonly ArmId[] = [
   'hive-realqueen',
   'fifo-noqueen',
   'mini-swe-agent',
+  'su-independent',
 ] as const;
 
 /** Short human label for an arm; falls back to the raw id for unknown arms. */
@@ -71,6 +76,7 @@ export function armLabel(arm: string): string {
     case 'hive-realqueen': return 'Hive (real Queen)';
     case 'fifo-noqueen': return 'FIFO (no Queen)';
     case 'mini-swe-agent': return 'mini-SWE-agent';
+    case 'su-independent': return 'SU agents (independent)';
     default: return arm;
   }
 }
@@ -105,6 +111,9 @@ export function armColor(arm: string): string {
     case 'hive-realqueen': return '#eab308'; // gold — real-Queen treatment
     case 'fifo-noqueen': return '#fb7185'; // rose — no-Queen control
     case 'mini-swe-agent': return '#38bdf8'; // sky — reference standard harness
+    // su-independent (P-001): N independent agents, no orchestration — the honest "our agent system"
+    // pole vs the Queen system + the reference harness. Lime, distinct from gold/rose/sky.
+    case 'su-independent': return '#84cc16'; // lime — independent-agents pole
     default: return 'var(--fg-mute, #7f9bb4)';
   }
 }

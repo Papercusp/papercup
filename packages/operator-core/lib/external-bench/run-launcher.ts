@@ -29,9 +29,10 @@
  * cancel flag cannot be serialized; PG is the source of truth.)
  */
 import type { BenchTask } from './types';
-import type { HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
+import type { FleetTaskResult, HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
 import { runHiveBacklog } from './hive-backlog';
 import { bindRealQueenBacklogDriver, dissolveBenchHive } from './hive-backlog-realqueen';
+import { bindSuIndependentBacklogDriver, SU_INDEPENDENT_ARM } from './su-independent-backlog';
 import { assertExternalBenchEnabled } from './gate';
 import { resolveDb, type DbScope } from './reproducibility/db';
 import {
@@ -79,13 +80,28 @@ export interface LaunchBenchRunInput {
   maxUsdPerRun?: number;
 }
 
+/**
+ * The persister-hook surface BOTH backlog driver binds (real-Queen + su-independent) accept — the
+ * normalized seam `launchBenchRun` wires its bench_runs persistence through. Each bind reads only the
+ * common fields it needs; `onHiveCreated` is meaningful for the hive arms and a harmless no-op for the
+ * hive-less su-independent arm (it never fires). The enrolled/task shapes are narrowed to the fields the
+ * launcher reads (`enrolled.task.instanceId`, the FleetTaskResult), so both concrete binds — which take
+ * their own richer enrolled type — are assignable here (callback param contravariance).
+ */
+export type BenchDriverBinder = (opts: {
+  workspaceId: string;
+  onHiveCreated?: (hiveHome: string) => void | Promise<void>;
+  onEnrolled?: (enrolled: { task: BenchTask }) => void | Promise<void>;
+  onTaskCollected?: (result: FleetTaskResult) => void | Promise<void>;
+}) => void;
+
 /** Test/host injection seam — defaults wire the real engine. */
 export interface LaunchDeps {
   scope?: DbScope;
   /** Run the backlog (default runHiveBacklog). */
   run?: (req: HiveBacklogRunRequest) => Promise<HiveBacklogResult>;
-  /** Bind the real-Queen driver with the persister hooks (default bindRealQueenBacklogDriver). */
-  bindDriver?: typeof bindRealQueenBacklogDriver;
+  /** Bind the backlog driver with the persister hooks (per-arm default: real-Queen / su-independent). */
+  bindDriver?: BenchDriverBinder;
   /** Dissolve a spawned hive (default dissolveBenchHive). */
   dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void>;
   /** Load the task set → BenchTask[] (default loadBenchTaskSet). */
@@ -132,7 +148,12 @@ export async function launchBenchRun(
   const runId = deps.runId ?? `ui-${input.arm}-${Date.now()}`;
   const loadBacklog = deps.loadBacklog ?? loadBenchTaskSet;
   const run = deps.run ?? runHiveBacklog;
-  const bindDriver = deps.bindDriver ?? bindRealQueenBacklogDriver;
+  // Per-arm driver selection (same mechanism the engine already uses: ONE bound HiveBacklogDriver per
+  // run, picked by arm). 'su-independent' → the independent-su-agents pool driver (NO queen/hive); every
+  // other arm → the real-Queen driver, which itself branches on 'hive-realqueen' vs 'fifo-noqueen'. A
+  // test/host may override with deps.bindDriver. Both binds share the {workspaceId, onEnrolled,
+  // onTaskCollected} persister surface; onHiveCreated is a no-op for the hive-less su-independent arm.
+  const bindDriver = deps.bindDriver ?? (input.arm === SU_INDEPENDENT_ARM ? bindSuIndependentBacklogDriver : bindRealQueenBacklogDriver);
   const dissolve = deps.dissolve ?? dissolveBenchHive;
 
   const backlog = await loadBacklog(input.taskSetId, input.taskIds);

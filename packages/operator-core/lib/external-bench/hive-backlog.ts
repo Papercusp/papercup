@@ -79,6 +79,25 @@ export interface FleetTaskResult {
   disposition: PlacementDisposition;
 }
 
+/**
+ * A live-concurrency timeline for a backlog run (su-vs-queen-expansion P-003, su-independent arm).
+ *
+ * `peakConcurrentBees` is a single scalar (the max ever observed); for the honest "how many agents
+ * actually ran at once, on average" question we need the *shape* of concurrency over the run, not just
+ * its peak. This records a `live` sample on a fixed cadence so the report can show the actual
+ * utilization curve (a pool with cap=5 that only ever had 2 live tasks is very different from one that
+ * pinned 5). Additive + optional — arms that don't populate it (hive-realqueen / fifo-noqueen) are
+ * unaffected; the su-independent driver fills it from its pool-occupancy counter.
+ */
+export interface ConcurrencyTimeline {
+  /** One sample per cadence tick: `tMs` = ms since the run started, `live` = concurrent agents then. */
+  samples: { tMs: number; live: number }[];
+  /** Mean of `samples[].live` (0 when no samples) — the average concurrency the run actually sustained. */
+  avgConcurrent: number;
+  /** Max of `samples[].live` (0 when no samples) — the sampled peak (≈ `peakConcurrentBees`). */
+  peakConcurrent: number;
+}
+
 /** The whole backlog run handed to one fleet arm — the raw generation trace (the canonical shape). */
 export interface HiveBacklogResult {
   /** LOCKED fleet vocab — 'hive' (this) | 'queen-ablated' (P-023) | 'native-serial' (P-024) | competitors. */
@@ -97,6 +116,12 @@ export interface HiveBacklogResult {
   taskResults: FleetTaskResult[];
   /** The coordination trace (every placement/evict + substrate event) → P-026 MAST + P-010 rollout. */
   coordEvents: CoordEvent[];
+  /**
+   * The live-concurrency timeline (su-vs-queen-expansion P-003) — sampled occupancy over the run +
+   * its avg/peak. Optional + additive: only arms that sample it populate it (the su-independent pool
+   * driver does); existing arms (hive-realqueen / fifo-noqueen) leave it undefined.
+   */
+  concurrencyTimeline?: ConcurrencyTimeline;
   /** Generation-side infra failure for the WHOLE run (e.g. the live driver is unbound); null on a clean run. */
   runError?: string | null;
 }

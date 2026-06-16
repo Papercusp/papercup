@@ -36,6 +36,13 @@ const GUARDED_MODULES = [
   '@papercusp/operator-core/lib/operator-converse-tags',
   '@papercusp/operator-core/lib/voice-node/operator-voice-bus',
   '@papercusp/operator-core/lib/voice-node/el-convai-protocol',
+  // EI-8: the plan-item CLAIM write path routes through the swarm claim
+  // authority → lock-authority → device-identity chain. It used to EAGERLY pull
+  // in a holepunch/Hypercore CJS dep, throwing `require is not defined` under
+  // tsx on :3070 while every vitest bundle stayed green (vitest bundles, the
+  // host doesn't). The chain was refactored to no longer eager-load the swarm
+  // layer; this guard fails if anyone re-introduces such an import.
+  '@papercusp/operator-core/lib/plan-items/claim-authority-swarm',
 ];
 
 // Run from apps/operator — the host's own cwd, so workspace resolution matches
