@@ -54,7 +54,10 @@ creates + supervises **harnesses** (work-pipelines each shaped by a
 
 A `coding` harness's feature *state* moves through its pipeline (scoper →
 architect → worker → validator → reviewer → …); you read it, you don't
-hand-mutate it (see *Where not to go*). Other blueprints have different shapes.
+hand-mutate it (see *Where not to go*). Other blueprints have different shapes — notably the `hive` blueprint has **no
+spine**: its Queen *places* ranked work onto generic `bee`s (a bee is NOT a
+scoper/architect/worker role — see
+[hive-vs-coding-blueprint](/internal/docs/agent-insights/hive-vs-coding-blueprint)).
 
 ## Scope: which harness a tool acts on
 

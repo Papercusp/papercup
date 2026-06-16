@@ -31,6 +31,14 @@ typecheck gate). — `packages/operator-core/lib/work-items.ts`
 live lease with a dead holder is an *orphaned claim*, surfaced by
 `fleet:assignments`.
 
+**Coding blueprint** · The default *execution pipeline* (`kind:'harness'`): a
+per-feature `director` drives a deterministic **spine** — scoper → architect →
+worker → validator → documenter → curator (+ opt-in tester / security /
+crosscheck / ui-qa; reviewer = the PR gate) — over one `feature` (`F-NNN`).
+Contrast the **Hive blueprint** (orchestration, *no* spine): different layers,
+not flavors. — `blueprints/coding/blueprint.yaml`,
+[hive-vs-coding](/internal/docs/agent-insights/hive-vs-coding-blueprint)
+
 **Curator** · The memory-compaction pipeline role; the only role that deletes
 harness memory. — [Why a curator](/internal/docs/harness/decisions/curator)
 
@@ -69,6 +77,13 @@ verb; tracked as a rate and a health signal (`low_ghost_rate`). —
 
 **Harness** · One managed work pipeline (repo + work queue + runs),
 instantiated from a blueprint; slug-identified.
+
+**Hive blueprint** · The *orchestration* layer (`kind:'hive'`, root-only, **never
+nested**): a **Queen** surveys the work frontier and *places* ranked `work_items`
+onto generic **bees** — **no spine**, self-declared wake (`hive:declare-wake`) —
+and can create coding/research harnesses. Contrast the **Coding blueprint** (one
+pipeline it runs). — `blueprints/hive/blueprint.yaml`,
+[hive-vs-coding](/internal/docs/agent-insights/hive-vs-coding-blueprint)
 
 **Hook** · An out-of-band shell script at `.papercusp/hooks/<name>.sh` run at
 pipeline boundaries. — [Lifecycle hooks](/internal/docs/harness/hooks)

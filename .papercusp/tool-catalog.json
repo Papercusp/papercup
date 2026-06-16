@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 409,
+  "count": 434,
   "tools": [
     {
       "name": "ablation:report",
@@ -26,13 +26,114 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "Reviewing which SU-playbook governance rules earn their tokens: \"which rules survived repeated ablation with zero behavioral delta?\" — the owner review queue for prompt slimming, or checking what last week's shadow cycle measured.",
         "notWhen": "You want prompt MUTATION history (who changed what) — change_ledger:list. You want to RUN an ablation — the system:prompt-ablation routine (dark until the frontier P-001 arming gate).",
         "chaining": "ablation:report → for a candidate rule, read its ruleKey rows ({ ruleKey }) for the per-scenario evidence → an actual removal is a normal reviewed playbook edit (rides the change ledger + the su llm-test suite)."
+      }
+    },
+    {
+      "name": "accounts:get-session-override",
+      "http": {
+        "path": "/api/agent-tools/accounts/get-session-override",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the current owner session-now account override (forcedAccounts allow-list + excludeAccounts) the fleet honours when picking a pool account. An un-steered hive returns both empty (no restriction). The READ twin of accounts:set-session-override. Returns {ok, override}.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Checking how account selection is currently steered, before changing it.",
+        "notWhen": "Per-account rate/status — accounts:status. The whole pool — accounts:list."
+      }
+    },
+    {
+      "name": "accounts:link-complete",
+      "http": {
+        "path": "/api/agent-tools/accounts/link-complete",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Complete the EXPERIMENTAL one-click account link (accounts-pool-tab P-002): exchange the pasted claude.ai code (using the verifier carried in `linkId`) → write the credential server-side → register the account in the pool. The token NEVER appears in the response. Returns {ok, account} (the registered account row, no token).",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Finishing an accounts:link-start flow — paste the `code` claude.ai showed after the owner authorized, with the linkId from link-start.",
+        "notWhen": "Starting the flow — accounts:link-start. The reliable path — accounts:register."
+      }
+    },
+    {
+      "name": "accounts:link-start",
+      "http": {
+        "path": "/api/agent-tools/accounts/link-start",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "EXPERIMENTAL one-click Max-account link (accounts-pool-tab P-002): returns a claude.ai OAuth authorize URL + an opaque single-use linkId. The owner opens the URL in a browser logged into the TARGET Max account, authorizes, then pastes the shown code into accounts:link-complete with this linkId. The PROVEN default is the `claude setup-token` paste (accounts:register); this is the beta alternative, NOT yet verified against live claude.ai. Returns {ok, authorizeUrl, linkId}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Linking a new Max subscription into the pool via the one-click OAuth beta (vs the setup-token paste). Pair with accounts:link-complete.",
+        "notWhen": "The reliable path — accounts:register with a `claude setup-token` (token:<path>) or a .credentials.json bundle. Inspecting the pool — accounts:list / accounts:status.",
+        "chaining": "accounts:link-start { id } → owner authorizes the URL → accounts:link-complete { linkId, code } → registered."
       }
     },
     {
@@ -59,7 +160,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Seeing which accounts the Queen can draw from and what each is bound to.",
@@ -74,7 +176,7 @@
           "POST"
         ]
       },
-      "description": "Register (or update) a Claude account in the Queen's account pool. `credentialRef` is mounted on a frame at deploy time: `token:<path>` (a `claude setup-token` OAuth token) | `file:<path>` / absolute / `~` (a `.credentials.json` bundle) — a REFERENCE, never the secret. Re-registering an existing id updates its credentialRef/label, preserving bindings + rate state. Returns {ok, account}.",
+      "description": "Register (or update) a Claude Max subscription in the Queen's account pool. `credentialRef` is a Claude Max OAuth credential — `token:<path>` (a `claude setup-token`) | `file:<path>` / absolute / `~` (a refreshable `.credentials.json` bundle) — a REFERENCE, never the secret. There is NO static-API-key channel (this deployment runs on Max subscriptions, not billed API keys). Optional `egress` pins the account to its own outbound IP (per-account IP routing). Re-registering an existing id updates credentialRef/label/egress, preserving bindings + rate state. Returns {ok, account}.",
       "capabilities": [
         "harness:write"
       ],
@@ -90,12 +192,13 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
-        "when": "Adding a Claude subscription the Queen can deploy Swarms onto (each account has its own rate limits). Build the pool before deploying a Hive that should spread across accounts.",
+        "when": "Adding a Claude Max subscription the Queen can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.",
         "notWhen": "Setting the operator API key (operator:credentials). A one-off local run (no deploy).",
-        "chaining": "accounts:register (×N) → deploy:hive { members, swarm } (binds an account per member by headroom) → accounts:status."
+        "chaining": "accounts:register (×N Max subs) → flip papercusp-inference-gateway-multi-account → bees route by cache-affinity + 5h-budget drain; deploy:hive binds an account per member."
       }
     },
     {
@@ -122,11 +225,44 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Retiring an account from the pool (e.g. a subscription you no longer use).",
         "notWhen": "Tearing down a deployed frame — deploy:teardown / deploy:teardown_hive."
+      }
+    },
+    {
+      "name": "accounts:reset-rate",
+      "http": {
+        "path": "/api/agent-tools/accounts/reset-rate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Clear an account's rate-limit penalty state — its pause (pausedUntil), penalty count, and the rolling penalty window — back to fresh (accounts-pool-tab P-004; wraps the recordAccountReset projection reset). The owner's manual override for when an account's PROJECTED pause is stale (e.g. the 5h window actually reset, or a false-exhaustion). Does NOT touch live governor buckets (those self-expire) or the credential. Returns {ok, account}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Clearing a pool account's projected pause/penalty after a confirmed reset — the Accounts tab's per-account Reset button, or unsticking an account the drain selector is avoiding on a stale projection.",
+        "notWhen": "Moving work off an exhausted account NOW — accounts:scale_out. Inspecting state — accounts:status."
       }
     },
     {
@@ -153,11 +289,46 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "An account is rate-limited and you want to move its work onto a fresh account NOW (the same action the auto-scale-out takes; this is the manual lever).",
         "notWhen": "Just inspecting state — accounts:status. No fresh account is available (it will report no-fresh-account)."
+      }
+    },
+    {
+      "name": "accounts:set-session-override",
+      "http": {
+        "path": "/api/agent-tools/accounts/set-session-override",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set the owner's session-now account override the fleet honours when picking a pool account to spawn/deploy on (accounts-pool-tab P-004): `forcedAccounts` (allow-list — use ONLY these), `excludeAccounts` (skip these, e.g. a flaky/rate-limited account). Both empty ⇒ no restriction (today's behaviour). Applied as a fail-soft precedence layer BEFORE the headroom/drain selectors; an over-restrictive set falls back to the frame-default credential. `clear:true` wipes both. Returns {ok, override}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Steering account selection for the current session — focus the fleet on one account, or route around a flaky/limited one — without removing it from the pool.",
+        "notWhen": "Permanently removing an account — accounts:remove. Clearing a rate-limit penalty — accounts:reset-rate. Pausing the hive — hive:pause.",
+        "chaining": "accounts:set-session-override { excludeAccounts:[\"acct-b\"] } → bees stop spawning on acct-b this session. clear:true resets."
       }
     },
     {
@@ -184,7 +355,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Checking which accounts have headroom before a deploy, or why an account auto-scaled out."
@@ -243,7 +415,8 @@
         "queen",
         "documenter",
         "curator",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner to scope to one pane, harness to scope to one project, since_id to page forward.",
@@ -707,7 +880,7 @@
           "POST"
         ]
       },
-      "description": "The Queen autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (the Queen may decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. Behavior-neutral (always gated) until the owner arms the policy (P-092).",
+      "description": "The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. The policy is ARMED (all 13 categories at ceiling `critical`): it returns `auto` when the action is within ceiling + reversible + system-authority, and `gated` only for protected surfaces, authority=owner, or above-ceiling / graduation asks. With the owner FULL-AUTONOMY grant (QUEEN_FULL_AUTONOMY) ON, even that residue returns `auto`; OFF restores it. When the caller is the overwatch role it instead applies the overwatch envelope (B-06): nudge/observe/escalate are auto, structural is escalate-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -723,13 +896,14 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are the Queen (or a bee) deciding whether to auto-handle a queue item / answer a card without the owner. Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
+        "when": "You are the Queen (or a bee) deciding whether to auto-handle a queue item / answer a card without the owner — or the overwatch deciding whether to nudge/observe/escalate (auto) vs escalate a structural change (gated). Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",
         "notWhen": "To READ or render the whole policy use autonomy:policy_get. To CHANGE a ceiling use autonomy:policy_set (owner-authority). This tool DECIDES one action; it never mutates.",
-        "chaining": "hive:survey / improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue."
+        "chaining": "hive:survey / improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue. Overwatch: per anomaly suggestedAction → autonomy:decide → perform the `auto` ones, coord:escalate the `gated` ones."
       }
     },
     {
@@ -825,7 +999,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -1112,7 +1287,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Deciding WHICH blueprint shape fits a piece of work before creating a harness — the Pot operator's first stop (decomposable features → coding, investigation → research, parallel codemod → migration, a decision → vote/deliberate). Also the discovery surface for what launch blueprints exist.",
@@ -1144,7 +1320,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Authoring a brand-new blueprint shape from scratch (rare — usually you extend `coding`/`base`/`research`). Returns validated canonical YAML.",
@@ -1176,7 +1353,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "The usual way to make a new blueprint: inherit shared structure from any resolvable parent (a built-in, or a Cupboard-installed blueprint) and override only what differs (knobs, a few roles, a spine tweak). Cheap to author.",
@@ -1208,7 +1386,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Before persisting a blueprint you authored (with blueprint:create/extend) or to inspect a built-in. Always validate before writing .papercusp/blueprint.yaml or calling harness:create.",
@@ -1257,7 +1436,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -1453,6 +1633,37 @@
       }
     },
     {
+      "name": "capability:inspect",
+      "http": {
+        "path": "/api/agent-tools/capability/inspect",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run a READ-ONLY code verification (typecheck or test) to confirm a claim about the code before diagnosing. Fixed safe commands only (npx tsc --noEmit, npm run test:affected, npx vitest run); never an arbitrary shell command. Use this — not capability:bash — to verify.",
+      "capabilities": [
+        "capability:code-inspect"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "VERIFY a code claim before you report or diagnose: typecheck a package after a suspected type error, or run a package / test-file suite to confirm a failure actually reproduces. This is the sanctioned read-only exec for confined fleet agents (capability:bash is gated for them).",
+        "notWhen": "To READ a file use capability:read; to SEARCH use the Grep tool. To run an arbitrary or mutating command you need capability:bash (gated — escalate if you truly need it). This tool runs ONLY tsc --noEmit / tests, never a free-form command.",
+        "chaining": "capability:read / Grep (inspect) → capability:inspect (typecheck/test to CONFIRM) → report a VERIFIED diagnosis. For a long suite pass run_in_background:true and poll capability:bash_output."
+      }
+    },
+    {
       "name": "capability:read",
       "http": {
         "path": "/api/agent-tools/capability/read",
@@ -1538,7 +1749,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -1571,7 +1783,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -1633,7 +1846,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve.",
@@ -1665,7 +1879,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You have a conversation_id (from coord:ask, conversations:list, or an inbox notice) and want the full thread.",
@@ -1697,7 +1912,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "A specific conversation is one you want to track or contribute to. Posting/answering auto-joins you; call this to follow without posting, or to change your delivery mode.",
@@ -1729,7 +1945,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Browsing for open questions you could answer, or finding a conversation by topic/harness. For updates pushed to you, subscribe to a topic instead.",
@@ -1761,7 +1978,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Open-ended coordination with no single answer (\"how should we approach X?\"), or contributing to an existing thread. For a question that wants an answer, use coord:ask instead.",
@@ -1793,7 +2011,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "A conversation has concluded that there is a concrete, trackable problem — turn it into an issue so it can be claimed, prioritized, and promoted to a feature.",
@@ -1825,7 +2044,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again.",
@@ -1857,7 +2077,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "After acting on (or deliberately not acting on) a coord message — closes the loop for the sender.",
@@ -1888,7 +2109,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You have a question and want the fastest correct answer without needlessly interrupting a peer. Always include topics so a miss reaches the right people. For a harness-specific question pass harness.",
@@ -1920,7 +2142,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You need the owner's (human's) input on a decision and can wait briefly, but want to proceed (e.g. fall through to a vote) if they don't respond in time.",
@@ -1951,7 +2174,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Optional, at end-of-turn when idle — to record WHY you are idle (the note rides your wake turn) and tune your wake floor. You are wakeable regardless; arming is automatic at session start. Then END YOUR TURN.",
@@ -1983,7 +2207,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Starting a distinct piece of work, so other agents see what you have taken on. When the work is plan items, pass them as `items` — that claims your lane structurally instead of describing it in prose.",
@@ -2015,7 +2240,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "A consequential decision where the owner might already have an answer, but you want an automatic fallback to a vote and a curated escalation rather than blocking.",
@@ -2046,7 +2272,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Almost never directly — the event-reaction rules fire coord:emit automatically when a work_item completes/claims, a coordination-window opens/closes, etc. Call it by hand ONLY to emit a recognized-shape lifecycle event the rules do not yet cover.",
@@ -2079,6 +2306,7 @@
         "bee",
         "queen",
         "sentinel",
+        "overwatch",
         "merge-resolver",
         "release-fixer",
         "content-fixer"
@@ -2112,7 +2340,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Showing the human inbox; diagnostics; checking your own past escalations.",
@@ -2143,7 +2372,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.",
@@ -2174,7 +2404,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "A status surface (statusline, TUI bar, dashboard widget) needs the fleet's headline state in one round-trip, or you want the current contextual tips for an audience.",
@@ -2205,7 +2436,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Wrapping up your piece of a plan and naming who picks up next — or accepting a handoff someone made to you.",
@@ -2236,7 +2468,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Diagnostics — \"who handed what to whom?\" or \"what handoffs to me are still open?\".",
@@ -2267,7 +2500,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you.",
@@ -2298,7 +2532,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You (or the human via the inbox) want to message the agent that owns a specific work-item — start a durable, scoped thread with them about that item.",
@@ -2330,7 +2565,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Turn start — the OMP coordination extension calls this to show which plans changed since the agent last read. Also ad-hoc, to review recent plan activity.",
@@ -2345,7 +2581,7 @@
           "POST"
         ]
       },
-      "description": "List ACTIVE coordination agents (fresh heartbeat) and their declared intent. Stale sessions (heartbeat >10 min — almost certainly ended) are summarised, not listed, unless you pass include_stale. Optionally filter by workspace.",
+      "description": "List ACTIVE coordination agents (fresh heartbeat) and what they're doing. Defaults to your HIVE (the agents you actually coordinate with); pass scope=workspace|all for the wider admin/Queen view. Stale sessions (heartbeat >10 min) are summarised unless you pass include_stale.",
       "capabilities": [
         "coord:read"
       ],
@@ -2361,11 +2597,13 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
-        "when": "\"Who else is working right now, and on what?\" — before starting work that might overlap.",
-        "notWhen": "Checking whether a specific file is free — use locks:queue for that."
+        "when": "\"Who else is working right now, and on what?\" — before starting work that might overlap. Default scope is your Hive; use scope=workspace/all for the whole box.",
+        "notWhen": "Checking whether a specific file is free — use locks:queue for that. Re-reading the roster every turn to track peers — the [coord+N] lifecycle deltas already carry intent/claim/completion transitions; tail those instead (see chaining).",
+        "chaining": "Read-once + tail (presence-v2 P-008/D-006): this snapshot is byte-stable (P-009 — identity+state carry no churning timestamps, one roster as_of). Read it ONCE when you need the roster, then rely on the [coord+N] lifecycle deltas (intent/claim/completion) for peer transitions rather than re-reading. The liveness scalar (lastActiveSecAgo) is point-in-time at as_of. After a context compaction the roster baseline is re-injected automatically (P-010), so you never coordinate off a stale baseline."
       }
     },
     {
@@ -2392,7 +2630,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "The human (or an authorised agent acting on their behalf) has decided how to proceed on an open escalation.",
@@ -2407,7 +2646,7 @@
           "POST"
         ]
       },
-      "description": "Send a message to other coordination agents. `to` is a list of ownerIds; use [\"*\"] to broadcast, [\"human\"] to surface to the user. By default the message is INJECTED (lands in the recipient's inbox, seen on their next natural turn — cheap, no token cost). Pass `wake:true` to ALSO re-invoke a SLEEPING recipient now (deliver-and-wake) — targeted to exactly the addressees, never a broadcast. Returns the assigned msg_id.",
+      "description": "Send a message to other coordination agents. `to` is ownerIds; [\"*\"] broadcasts, [\"human\"] surfaces to the user. Default: INJECTED — lands in the recipient's inbox, seen next turn (cheap). `wake:'required'` ALSO re-invokes a sleeping recipient now; a miss (reached nobody) returns recipient_absent:true. `wake:'optimistic'` = silent best-effort wake over a durable backstop. Targeted to the addressees, never a broadcast. Returns msg_id.",
       "capabilities": [
         "coord:write"
       ],
@@ -2423,11 +2662,12 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
-        "when": "Sharing context with another agent — \"I just finished X, the next step is Y\", or asking a question, or handing off a piece of work. Use wake:true ONLY when the recipient is idle/asleep and must act now (a Queen placing work onto a sleeping bee); a running recipient already sees the inject mid-turn, so wake is wasted on it.",
-        "notWhen": "For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don't set wake:true for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in)."
+        "when": "Sharing context, asking a question, or handing off work. wake:'required' ONLY when the recipient is idle and MUST act now (a Queen waking a sleeping bee) — a miss returns recipient_absent. wake:'optimistic' when a durable backstop catches a miss (the Queen survey re-dispatches). A running recipient already sees the inject mid-turn — a wake is wasted on it.",
+        "notWhen": "For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don't set a wake for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in)."
       }
     },
     {
@@ -2454,7 +2694,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You want the full conversation around a coord message (replies, acks, resolutions).",
@@ -2486,6 +2727,7 @@
         "bee",
         "queen",
         "sentinel",
+        "overwatch",
         "voter",
         "advocate"
       ],
@@ -2518,7 +2760,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You face a genuinely uncertain, consequential choice between named options and want a diverse, anti-correlated read before committing — instead of deciding alone or escalating raw.",
@@ -2549,7 +2792,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Switching an agent (or the default) between auto and manual wake delivery — e.g. pausing a bee's auto-injected turns to review them first, or switching back.",
@@ -2580,7 +2824,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Reviewing a manual-mode agent's staged wakes from its pane — releasing the ones to deliver (optionally edited) and skipping the rest. Draining a backlog → release_all (one consolidated turn) or skip_all, never N individual releases.",
@@ -2611,7 +2856,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Turn start — the OMP coordination extension calls this to scope the inbox to new entries.",
@@ -2642,7 +2888,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Turn end — the OMP coordination extension records how far you read this turn.",
@@ -2673,7 +2920,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Debugging identity — \"what ownerId am I?\" before relying on lock or message behaviour.",
@@ -2863,7 +3111,7 @@
           "POST"
         ]
       },
-      "description": "Keyword search across plans of any registered harness by explicit slug. Scopes: title, now, items, decisions, prose. Read-only.",
+      "description": "Keyword search across plans of any registered harness by explicit slug. Scopes: slug, title, now, items, decisions, prose (a slug fragment finds the plan it names). Read-only.",
       "capabilities": [
         "plans:read"
       ],
@@ -3107,7 +3355,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3140,7 +3389,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3173,7 +3423,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Moving a cloud-configured harness onto a real frame so its agents run remotely (distinct IP, own Claude sub) while state federates to the local view.",
@@ -3205,7 +3456,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.",
@@ -3237,7 +3489,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Checking where a harness runs (local vs which cloud frame) and the frame's reachable host."
@@ -3267,7 +3520,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Done with a cloud harness (or to stop its billing). Teardown destroys the machine so it stops costing money.",
@@ -3298,7 +3552,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Done with a deployed Hive (or to stop all its billing). Frames are cattle — destroy + redeploy is the model."
@@ -3626,7 +3881,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "overwatch"
       ],
       "guidance": {
         "when": "Diagnose whether agent spawns / stateless LLM calls are being paced or paused by the rate-limit governor (e.g. \"why are runs slow / stalled?\"), or read the fleet cap / effective concurrency / usage% the top-bar shows.",
@@ -3672,7 +3928,7 @@
           "POST"
         ]
       },
-      "description": "Probe the dev services now (:3070 operator, :3055 vite, :4321 shop, :3350 scout, :8082 code-server, plus the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts) — up/down + status + latency. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a \"connection refused\".",
+      "description": "Probe the dev services now (:3070 operator, :3055 vite, :3350 scout, :8082 code-server, plus the Tauri desktop via its dev-bridge eval + IPC socket + recent error toasts) — up/down + status + latency. The desktop entry reports present:false when no desktop is running. Use before relying on a service or after a \"connection refused\".",
       "capabilities": [
         "intel:read"
       ],
@@ -4063,6 +4319,96 @@
       }
     },
     {
+      "name": "experiment:catalog",
+      "http": {
+        "path": "/api/agent-tools/experiment/catalog",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Discover the registered experiment tests (eval-battery Subjects) the self-learning loop can run. Each entry: id, kind (replay|component|whole-instance|whole-hive|drill), fidelityTier (offline=~$0 deterministic replay, the default screen; shadow; live=real agent spend), knobSlice (the knob-space addresses it can vary), metrics (deterministic signals + judge rubric dimensions), costClass. Read-only. Filter by kind/tier. Pair with experiment:run to invoke one.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "queen"
+      ],
+      "guidance": {
+        "when": "Choosing which test to run against a knob change — list the catalog to see what kinds exist, which tier each runs at (offline replay is the cheap default screen), and which knobs each can vary. Filter by kind/tier.",
+        "notWhen": "Running an experiment (experiment:run). Scoring one gym run’s deterministic guardrails (gym:signals). Subjective quality scoring (gym:judge).",
+        "chaining": "experiment:catalog → pick a testId + read its knobSlice → experiment:run with arms addressing only that slice."
+      }
+    },
+    {
+      "name": "experiment:results",
+      "http": {
+        "path": "/api/agent-tools/experiment/results",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List recent experiment runs (the experiment_runs ledger) for this workspace — battery, test, tier, winner, per-arm scores, total cost, and decision (proposed|applied|rejected). Read-only; newest-first; filter by testId. Closes the loop with experiment:run (which records here).",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "queen"
+      ],
+      "guidance": {
+        "when": "Reviewing how past experiments performed — which arms won, at what cost, and whether they were applied. Filter by testId to a single test kind.",
+        "notWhen": "Running a new experiment (experiment:run). Discovering test kinds (experiment:catalog).",
+        "chaining": "experiment:run → experiment:results (read back the recorded outcomes)."
+      }
+    },
+    {
+      "name": "experiment:run",
+      "http": {
+        "path": "/api/agent-tools/experiment/run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run an experiment: A/B a knob change against a battery via the eval-battery engine and get per-arm judge scores + the compareArms verdict. v1 runs the OFFLINE replay tier — re-run each synthetic case under each arm’s policy overlay and score outcome/process/divergence. Rides frontier:replay-harness (flag + governor budget; origin-tagged spend); refuses with NO spend if the replay flag is off or the budget is exhausted. Arms must address only the test’s knobSlice (experiment:catalog). A winner is a PROPOSAL — applying it rides commit→reproject + graduation, never this tool.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "queen"
+      ],
+      "guidance": {
+        "when": "Testing how a knob change performs before adopting it — screen a policy/prompt overlay against a battery on the cheap offline replay tier; the result ranks arms vs the baseline.",
+        "notWhen": "Discovery (experiment:catalog). Scoring one gym run (gym:judge/gym:signals). Applying a winner to live prompts — that rides commit→reproject + graduation (D-006), never here.",
+        "chaining": "experiment:catalog → pick testId + read knobSlice → experiment:run → (winner is a proposal)."
+      }
+    },
+    {
       "name": "features:get",
       "http": {
         "path": "/api/agent-tools/features/get",
@@ -4244,7 +4590,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4276,7 +4623,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4309,7 +4657,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4342,7 +4691,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4375,7 +4725,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You (the Queen) want to reclaim a bee slot: the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give the bee a chance to hand off cleanly.",
@@ -4407,7 +4758,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4496,7 +4848,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4560,7 +4913,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4593,7 +4947,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4744,7 +5099,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Spinning up a new managed harness (coding from a repo, or a repo-less research harness) configured by a blueprint. The agent-authorable path to a new harness.",
@@ -4775,7 +5131,8 @@
         "queen",
         "documenter",
         "curator",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4807,7 +5164,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Onboarding an existing code repository as a managed coding harness — you want the blueprint inferred from the repo (test command, stack, monorepo/frontend) rather than authored by hand.",
@@ -4857,7 +5215,8 @@
         "queen",
         "documenter",
         "curator",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4990,7 +5349,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Once per workspace after the config.json→PG cutover, to lift any pre-existing harness config.json instance content into the registry. Safe to re-run (idempotent).",
@@ -5274,7 +5634,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5307,7 +5668,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5340,7 +5702,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5373,7 +5736,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5406,7 +5770,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5439,7 +5804,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5472,7 +5838,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5505,7 +5872,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5538,13 +5906,47 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "You want one hive in depth: is the Queen scheduled to wake, who are the bees and how loaded, how much work is queued.",
         "notWhen": "A list of all hives — hive:list. The raw per-agent fleet view across the workspace — fleet:assignments.",
         "chaining": "hive:list to find the slug; hive:wake to fire the Queen now; hive:declare-wake to change the cadence; hive:dissolve to tear it down."
+      }
+    },
+    {
+      "name": "hive:get-steering",
+      "http": {
+        "path": "/api/agent-tools/hive/get-steering",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the current owner steering for the Hive — the focus `directive`, `eligiblePlans` (plans the Queen may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Queen reads on every wake. An un-steered Hive returns the default (no directive, no plan restriction, not paused). The READ twin of hive:set-steering.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Checking what the Queen is currently steered toward — before changing it, or to confirm a hive:set-steering write landed.",
+        "notWhen": "Changing steering — hive:set-steering. Reading the whole hive status — hive:status."
       }
     },
     {
@@ -5571,7 +5973,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5604,7 +6007,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5637,13 +6041,48 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "The user clicks Pause Hive / asks to freeze autonomous operation, or you need the colony quiet (incident, review, cost control).",
         "notWhen": "To stop ONE bee — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.",
         "chaining": "hive:pause { drainBees:true } for the harder stop → coord:wake-queue to review staged wakes → hive:start to resume."
+      }
+    },
+    {
+      "name": "hive:queen_efficiency",
+      "http": {
+        "path": "/api/agent-tools/hive/queen_efficiency",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Queen's per-wake prompt efficiency: cache-hit ratio (Win-1 frozen-prefix cache), avg turns/wake (Win-2 round-trip elimination), token + cost totals, and cachedWakes (the 'cache is real' signal, P-003). Scoped to a hive home, or workspace-wide when no harness is given. Read-only.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "To inspect the LIVE Queen's per-wake efficiency — is the frozen-prefix cache paying off (cacheHitRatio / cachedWakes) and is the precomputed brief cutting round-trips (avgTurns)? The B-06 measurement read.",
+        "notWhen": "For a SCENARIO run’s efficiency score — that is the hive-eval efficiency class (it scores these per run). This tool is the ad-hoc live-Queen read.",
+        "chaining": "hive:status for wake/placement state; hive:survey for the frontier."
       }
     },
     {
@@ -5670,13 +6109,48 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "The Queen/owner wants a peer Hive to take on a piece of work in its domain. Find the peer via discovery:hives, then hive:request_work, then events:await the returned answeredEvent.",
         "notWhen": "Asking a QUESTION (use hive:ask). Placing work on your OWN Swarm (work_items:* / fleet:*). Granting a peer to send work-requests INTO this Hive (that is the inbound hive:cross_grant).",
         "chaining": "discovery:hives (find the peer Hive pubkey) → hive:request_work { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding requests with hive:asks."
+      }
+    },
+    {
+      "name": "hive:set-steering",
+      "http": {
+        "path": "/api/agent-tools/hive/set-steering",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` (the plans she may pick up NOW — eligibility, DISTINCT from a plan's lifecycle status), `eligibleHives` (the placement SCOPE — hives/harnesses she may place into, → survey allowedHarnesses), `pauseNewWork` / `pausedUntil` (pause starting new work, immediately or until an epoch-ms timestamp). Writes the owner-steering:* hive_settings, refreshes the panel (sync), AND wakes the Queen so she honours the change immediately. `clear:true` wipes ALL steering back to the default (no restriction); omitted fields are left unchanged (a null/[] value clears that one field).",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Steering the Queen from the owner surface — focus her on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Queen tab is the UI for this.",
+        "notWhen": "Freezing the WHOLE hive (all autonomous wakes) — hive:pause. Per-plan lifecycle (draft/ready/shipped) — plans:*. Stopping ONE bee — fleet:drain / fleet:cancel.",
+        "chaining": "hive:set-steering { eligiblePlans:[...], directive:\"only these plans\" } → the Queen wakes + honours it next placement. hive:set-steering { pauseNewWork:true } → she drives existing work to terminal then idles. hive:get-steering reads the current state; clear:true resets."
       }
     },
     {
@@ -5703,7 +6177,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5736,7 +6211,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5768,7 +6244,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5801,7 +6278,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5834,7 +6312,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5881,7 +6360,7 @@
           "POST"
         ]
       },
-      "description": "Capture a papercusp improvement you discovered (a friction, a missing affordance, a bug in the tooling) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible later; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link to it instead) unless force. Pass `paths` when you know the files involved — it feeds the protected-path safety gate.",
+      "description": "Capture a papercusp improvement you discovered (a friction, a missing affordance, a bug in the tooling) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible later; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link to it instead) unless force. Pass `paths` when you know the files involved — it feeds the protected-path safety gate. Pass lane:\"observation\" for a turn-end-reflection PRE-IDEA — it files into a separate lane that NEVER enters the work queue (Scout-digest + the Observations pane only).",
       "capabilities": [
         "coord:write"
       ],
@@ -5898,6 +6377,7 @@
         "bee",
         "queen",
         "sentinel",
+        "overwatch",
         "scanner"
       ],
       "profile": "engineer",
@@ -5931,13 +6411,48 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Hive's ideas.",
         "notWhen": "You want one improvement in full — issues:get { id }. You want to file one — improvements:capture. You want to browse another area — topics:feed { topic }.",
         "chaining": "improvements:digest → issues:get / issues:claim on a queued item → fix it self/inline (or improvements:capture to add more)."
+      }
+    },
+    {
+      "name": "improvements:learning_loops",
+      "http": {
+        "path": "/api/agent-tools/improvements/learning_loops",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Inspect the self-learning loop routines: per workspace-singleton learning loop (calibration, scout, graduation, iq-battery, …) its routine state — firing / stale (active but not firing) / dark-by-design (frontier, unarmed) / should-be-on-but-dark (an always-on loop gone dark) / absent — plus the @singleton↔legacy double-state. Read-only — the dark-loop visibility surface so a built-but-never-armed loop does not rot unseen.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "To answer \"which learning loops are dark / wedged / never armed?\" — the standing health of the self-learning machinery (calibration sweep, scout, graduation, gym, iq-battery, …). Catches the recurring class: a loop seeded inactive behind a default-OFF flag that nobody armed, an always-on loop that wedged (stopped firing), or a @singleton↔legacy migration collision.",
+        "notWhen": "For the watchdog tick health + auto-implement dispatch ledger use improvements:watchdog-status. For the captured backlog use improvements:digest.",
+        "chaining": "improvements:learning_loops → (a dark frontier loop) the per-lane arming runbook; (a should-be-on-but-dark / stale loop) investigate the routine then improvements:capture."
       }
     },
     {
@@ -5964,7 +6479,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5997,7 +6513,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6030,7 +6547,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6063,7 +6581,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Operator inbox PASS — run FIRST each wake over the Decisions tier: re-tier an attention item after reading it (downgrade noise, escalate something a worker under-flagged, confirm/resolve a real decision), always recording the why in `note`. Leave the inbox clean before sleeping.",
@@ -6094,7 +6613,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6127,7 +6647,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6160,7 +6681,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6229,7 +6751,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6262,7 +6785,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6294,7 +6818,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6326,7 +6851,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6359,7 +6885,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6392,7 +6919,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6424,7 +6952,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6457,7 +6986,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6490,7 +7020,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6522,7 +7053,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6555,7 +7087,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6587,7 +7120,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6620,7 +7154,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6832,7 +7367,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -7252,12 +7788,12 @@
           "POST"
         ]
       },
-      "description": "Store a STABLE fact about the user into persistent memory. Use one of 4 kinds (user / feedback / project / reference). For transient state, use coord — not memory.",
+      "description": "Store a STABLE fact about the user into persistent memory, kept VERBATIM as written. Use one of 4 kinds (user / feedback / project / reference). Write ONE tight, self-contained fact per call. For transient state, use coord — not memory.",
       "capabilities": [
         "memory:write"
       ],
       "guidance": {
-        "when": "When the user says \"remember X\" / \"don't forget Y\" / \"next time…\" / \"from now on…\", OR when YOU notice an error you made that would recur without persistence. ALWAYS inform the user out loud (\"I'll remember that\"). For project-specific facts, pass harness_slug — the fact then surfaces for anyone working in that harness.",
+        "when": "When the user says \"remember X\" / \"don't forget Y\" / \"next time…\" / \"from now on…\", OR when YOU notice an error you made that would recur without persistence. ALWAYS inform the user out loud (\"I'll remember that\"). For project-specific facts, pass harness_slug — the fact then surfaces for anyone working in that harness. Write ONE self-contained fact per call, tightly phrased: it is stored EXACTLY as written (no server-side rewriting or condensing), so make it stand on its own, lead with the searchable terms/anchors (file paths, F-NNN, backticked symbols), and drop conversational preamble.",
         "notWhen": "Default scope is per-user. Do not pass harness_slug for personal preferences. For IN-FLIGHT / ephemeral state (what you are doing right now), use coord (coord:declare-intent / coord:send) — it is delta-delivered, not a semantic store.",
         "chaining": "After writing, the persona prompt will surface this entry on the next turn's pre-turn injection. No need to call memory:search to verify."
       }
@@ -7390,7 +7926,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -7459,7 +7996,8 @@
         "operator",
         "queen",
         "documenter",
-        "curator"
+        "curator",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8183,6 +8721,108 @@
       "profile": "engineer"
     },
     {
+      "name": "overwatch:declare-wake",
+      "http": {
+        "path": "/api/agent-tools/overwatch/declare-wake",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Declare the overwatch's next wake (REPLACE semantics): a time (`at` ISO / `inSeconds`), the configured cadence (no time given), or nothing (`mode:'none'` — sleep until the owner). Clamped to a wake floor. The overwatch's OWN channel — distinct from the Queen's hive:declare-wake; ALWAYS call this before ending a turn.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the overwatch ending a turn — ALWAYS declare your next wake. Use a SHORT inSeconds (60–180) while a drift is unresolved (verify the nudge landed), a LONGER one (600–1800) when the system is calm. Omit the time to use the configured cadence.",
+        "notWhen": "To schedule the Queen / colony — that is hive:declare-wake (a different channel you cannot and must not touch). To wake right now — the owner's overwatch:start does that.",
+        "chaining": "Follows your nudges/observations for the turn; this is the last loop step before your end-of-turn verb."
+      }
+    },
+    {
+      "name": "overwatch:pause",
+      "http": {
+        "path": "/api/agent-tools/overwatch/pause",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "PAUSE the overwatch (the autonomous system-health supervisor): persist overwatch_started=false (disarms the loop + liveness watchdog), clear its pending wake, and optionally send the live overwatch session a graceful stop cue. Resume with overwatch:start.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user clicks Pause Overwatch / asks to freeze the system-health supervisor (incident, review, cost control), or the overwatch is misbehaving and must be quieted.",
+        "notWhen": "To pause the Queen / colony — hive:pause (distinct loop). To pause one plan — plans:pause. Pausing does not kill a running overwatch turn; it finishes and nothing re-arms.",
+        "chaining": "overwatch:pause { drain:true } for the harder stop → overwatch:start to resume."
+      }
+    },
+    {
+      "name": "overwatch:start",
+      "http": {
+        "path": "/api/agent-tools/overwatch/start",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "START the overwatch (the autonomous system-health supervisor, a sibling to the Queen): persist overwatch_started=true, set its wake cadence, and wake it now. The loop (B-04) + liveness watchdog (B-09) hold \"a wake is always armed\" from here until overwatch:pause. Gated by the papercusp-overwatch flag — while the flag is OFF the bit/cadence are persisted (pre-armed) but no live wake fires.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user clicks Start Overwatch / asks to boot the system-health supervisor, or you are bringing a paused overwatch back to autonomous operation.",
+        "notWhen": "To start the Queen / colony — hive:start (distinct loop). To start one plan — plans:start. The overwatch nudges + observes; it never places work.",
+        "chaining": "overwatch:pause to suspend. The papercusp-overwatch flag (/admin/features) must be ON for the loop to actually run (B-04 gate)."
+      }
+    },
+    {
       "name": "papercusp:list_workspaces",
       "http": {
         "path": "/api/agent-tools/papercusp/list_workspaces",
@@ -8242,7 +8882,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "At the start of a session that should act as a named agent — e.g. you were told \"you are builder-1, go to your items\". Adopt the name, then plan_items:my_items.",
@@ -8274,7 +8915,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You are dividing your own plan work across your named agents — \"builder-1 takes P-001..P-003\".",
@@ -8306,7 +8948,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You are about to begin work on an item (yours via assignment, or pulled from the pool).",
@@ -8338,7 +8981,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You are picking up a plan item to work it — this replaces a bare plan_items:claim: every worked item gets a tracked work_item (no untracked self-item).",
@@ -8370,7 +9014,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Periodically while holding a claim — ideally once per completed turn (kind=\"activity\"), or kind=\"extend\" before a long uninterrupted op.",
@@ -8402,7 +9047,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You want to help on a shared plan owned by another user — join, then pull unassigned items.",
@@ -8434,7 +9080,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You are done helping on a shared plan.",
@@ -8466,7 +9113,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You were told to work on your assigned items — read them here, then claim the next idle one.",
@@ -8498,7 +9146,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You finished (or are pausing) work on an item you claimed and want to free the live grip.",
@@ -8530,7 +9179,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Deciding what to pick up, or auditing who holds what on a plan.",
@@ -8562,7 +9212,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "An assignment is no longer wanted — reassigning to nobody, or freeing an item back to the pool.",
@@ -8809,7 +9460,8 @@
         "queen",
         "documenter",
         "curator",
-        "promote"
+        "promote",
+        "overwatch"
       ],
       "guidance": {
         "when": "You have a slug from plans:list and need the plan contents.",
@@ -8839,7 +9491,8 @@
         "operator",
         "queen",
         "documenter",
-        "curator"
+        "curator",
+        "overwatch"
       ],
       "guidance": {
         "when": "You want to find items by status across all plans — \"what can I pick up\", \"what needs the human\", or filter one plan's items.",
@@ -8931,7 +9584,8 @@
         "operator",
         "queen",
         "documenter",
-        "curator"
+        "curator",
+        "overwatch"
       ],
       "guidance": {
         "when": "You need a directory of plans — \"what plans exist\", \"what plans are active\", or the entry point before plans:get.",
@@ -9026,6 +9680,7 @@
         "bee",
         "queen",
         "sentinel",
+        "overwatch",
         "promote"
       ],
       "profile": "engineer",
@@ -9225,7 +9880,7 @@
           "POST"
         ]
       },
-      "description": "Search across SU plans by keyword. Scopes: title, now, items, decisions, prose. Includes archived + legacy by default.",
+      "description": "Search across SU plans by keyword. Scopes: slug, title, now, items, decisions, prose. Includes archived + legacy by default. A slug (or slug fragment) finds the plan it names — not only plans that mention it.",
       "capabilities": [
         "plans:read"
       ],
@@ -9239,11 +9894,12 @@
         "operator",
         "queen",
         "documenter",
-        "curator"
+        "curator",
+        "overwatch"
       ],
       "guidance": {
-        "when": "You're looking for prior work, decisions, or items by topic and don't have a slug.",
-        "notWhen": "You already know the slug — use plans:get. For full prose recall across the project (chats, escalations), use search:fulltext.",
+        "when": "You're looking for prior work, decisions, or items by topic and don't have a slug — or you have a slug fragment and want the plan it names.",
+        "notWhen": "You already know the full exact slug — use plans:get (a direct PG key read). For full prose recall across the project (chats, escalations), use search:fulltext.",
         "chaining": "plans:search { query } → plans:get { slug } on the top hit."
       }
     },
@@ -9369,6 +10025,37 @@
         "when": "An item's importance changes — escalating a stuck or aging item, or correcting a level set wrong at creation.",
         "notWhen": "Setting importance when creating an item — that's plans:add-item's required arg. Changing lifecycle status — plans:set-status.",
         "chaining": "plans:items (sorted urgent→low) → plans:set-importance to re-rank what the human sees first."
+      }
+    },
+    {
+      "name": "plans:set-initiative",
+      "http": {
+        "path": "/api/agent-tools/plans/set-initiative",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set or clear a plan's `initiative` grouping label — a single free-text frontmatter field that groups related plans (surfaced as a filter facet in the plans list). Surgical frontmatter edit (other keys preserved), inside the plan lock, records a revision + refreshes the plans list. Pass `initiative: null` to clear. Refuses a legacy plan — convert it with plans:set-frontmatter first.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Grouping a set of related plans under one initiative label so they filter together in the plans list — or clearing/renaming that label.",
+        "notWhen": "Transferring ownership / co-owners — plans:transfer-owner. Converting a legacy (no-frontmatter) plan — plans:set-frontmatter. A whole-document raw edit — plans:set-content.",
+        "chaining": "plans:list to see existing initiative labels → plans:set-initiative per plan → plans:list to confirm the facet."
       }
     },
     {
@@ -9586,6 +10273,105 @@
         "when": "A revision from a plan-run session has no rationale and you want the \"why\" filled in — for the Revisions panel or a richer launch-context digest.",
         "notWhen": "The revision already has a rationale. The revision is a direct editor save or a git backfill (no conversation to summarise).",
         "chaining": "plans:revisions (spot a rationale-less row) → plans:summarize-revision { revisionId }."
+      }
+    },
+    {
+      "name": "plans:transfer-owner",
+      "http": {
+        "path": "/api/agent-tools/plans/transfer-owner",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Transfer a plan's ownership (set `owner`) and/or its `co_owners` list — the explicit, first-class handoff verb. Surgical frontmatter edit (other keys preserved), inside the plan lock, records a revision + refreshes the plans list. Pass `to` (new owner email) and/or `coOwners` (replaces the list; [] clears). Refuses a legacy plan — convert it with plans:set-frontmatter first.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Explicitly handing a plan to another user, or setting its co-owners, in a shared hive — so ownership is unambiguous instead of an opaque set-content edit.",
+        "notWhen": "Converting a legacy (no-frontmatter) plan — plans:set-frontmatter. A whole-document raw edit — plans:set-content. Flipping an item status — plans:set-status.",
+        "chaining": "plans:get { slug } to see the current owner first; plans:list to confirm the transfer landed on the rail."
+      }
+    },
+    {
+      "name": "platform:contribute",
+      "http": {
+        "path": "/api/agent-tools/platform/contribute",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Send a local improvement UPSTREAM from a platform-mode install. kind:'learning-pack' exports the self-hive's organic learnings + lists them on the Comb (lands PENDING — operator-moderated); kind:'pr' pushes the change to the USER'S FORK and opens a human-reviewed PR fork→canonical Papercusp (never a direct push). Root-only, reason-audited. By default it PREPARES but does not send: the live push/PR/publish fires ONLY with confirm:true AND credentials/remote present, else returns {ok, prepared:true, needs:[...]}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user explicitly wants to contribute a platform-mode improvement UPSTREAM to Papercusp — publish a learning-pack to the Comb, or open a fork→canonical PR. Requires platform:enable first (the self-hive must be standing).",
+        "notWhen": "Enabling platform mode / standing up the self-hive — platform:enable. Publishing a pack for an ARBITRARY (non-platform) hive — learning_packs:export + learning_packs:publish. Opening a PR for a normal harness feature — the orchestrator fork-PR hook.",
+        "chaining": "platform:enable (stand up the self-hive) → set the self-hive member's fork_remote (for kind:'pr') → platform:contribute (prepared) → review the plan/needs → platform:contribute { confirm:true } to send."
+      }
+    },
+    {
+      "name": "platform:enable",
+      "http": {
+        "path": "/api/agent-tools/platform/enable",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Opt INTO platform mode (\"Papercusp inside Papercusp\"): flip the PLATFORM_IMPROVEMENT_LOOPS knob on for this install, stand Papercusp's OWN repo up as a self-managed shared Hive (kind:'hive') via fetch-on-enable from the public repo, and arm the layer-3 platform-improvement loops (seeded DARK — arm each via the gym/routines UI). The self-hive inherits its own gym+scout loop. Root-only, reason-audited. Returns {ok, flagEnabled, selfHive, armedLoops, summary}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user explicitly opts into platform mode / \"Papercusp inside Papercusp\" / wants this install to improve Papercusp-the-platform itself (layer 3). One call stands up the self-hive + arms the loops.",
+        "notWhen": "Onboarding an ARBITRARY repo as a hive — hive:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a learning-pack) — platform:contribute (the separate, gated path).",
+        "chaining": "platform:enable → improvements:learning_loops to see the armed (dark) layer-3 loops → arm the watchdog via the routines admin → platform:contribute to send an improvement upstream."
       }
     },
     {
@@ -9858,7 +10644,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "Before working in a subsystem (e.g. `coordination-substrate`), to load the rationale behind it — why it is the way it is — without searching everything.",
@@ -9890,7 +10677,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "To backfill the rationale index (kind:\"all\") on a fresh DB, or force-resync one source after an out-of-band change. Routine maintenance is automatic.",
@@ -10093,7 +10881,8 @@
         "queen",
         "documenter",
         "curator",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "User references prose past the chat history budget (\"remember when we decided pricing\", \"the X discussion from last week\"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets.",
@@ -10141,7 +10930,8 @@
         "queen",
         "documenter",
         "curator",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "User asks about a concept by paraphrase rather than the exact keyword used in the recorded text. Examples: \"when did we talk about authentication strategy\" (could match \"login flow\", \"auth approach\", \"JWT decision\"). Prefer mode=hybrid for best recall.",
@@ -10173,7 +10963,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You want ANOTHER agent to run a specific tool command — applying a coord:glance tip to the queen, a UI 'run this on that agent' action, a queen placing a precise command (not prose) onto a bee.",
@@ -10306,7 +11097,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "No existing topic fits a relevance area you (and likely others) will want to follow. Keep the slug to a word or two; the description to one sentence.",
@@ -10337,7 +11129,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind.",
@@ -10369,7 +11162,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "At the start of work, to see the shared topic taxonomy before tagging/subscribing — and to prefer an existing topic over creating a near-duplicate (D-004).",
@@ -10401,7 +11195,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "topics:list shows two topics that mean the same thing — fold the lesser-used into the better one.",
@@ -10432,7 +11227,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet.",
@@ -10464,7 +11260,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "You want a feature/plan/issue/conversation to be visible to everyone following a relevance area — tag it with the topic.",
@@ -10496,11 +11293,81 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "A topic you followed is no longer relevant and its updates are noise.",
         "notWhen": "You want to mute briefly — set the subscription to mention mode via topics:subscribe instead of dropping it."
+      }
+    },
+    {
+      "name": "trust:add",
+      "http": {
+        "path": "/api/agent-tools/trust/add",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Add a GitHub user id to the owner's LOCAL trust list — a SECURITY GRANT: a VERIFIED-author remote work item from this user may then auto-run on the owner's install (across every hive the owner is in), bypassing per-item screening. Owner-scoped, local-only, never federated. Audited.",
+      "capabilities": [
+        "audit:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner deliberately trusts a GitHub user so their verified remote work auto-runs without screening. Pass the numeric github_user_id (matches hive_members.github_user_id).",
+        "notWhen": "To see who is trusted use trust:list; to revoke use trust:remove. This grants auto-run privilege — only the owner grants trust (an unverified or self-claimed author is never auto-admitted regardless).",
+        "chaining": "trust:list (who is trusted) → trust:add { githubUserId, note? }."
+      }
+    },
+    {
+      "name": "trust:list",
+      "http": {
+        "path": "/api/agent-tools/trust/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List the owner's trusted GitHub user ids — the LOCAL, owner-scoped trust list the admission gate consults so a VERIFIED trusted author's remote (federated) work may auto-run without per-item screening.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Show who the owner trusts to auto-run foreign/federated work — the owner-scoped, local-only trust list (shared-hive-trust-admission).",
+        "notWhen": "To grant or revoke trust use trust:add / trust:remove. This is read-only.",
+        "chaining": "trust:list → trust:add { githubUserId } / trust:remove { githubUserId }."
+      }
+    },
+    {
+      "name": "trust:remove",
+      "http": {
+        "path": "/api/agent-tools/trust/remove",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Remove a GitHub user id from the owner's LOCAL trust list — revokes the auto-run privilege; their verified remote work returns to per-item screening. Owner-scoped, local-only. Audited.",
+      "capabilities": [
+        "audit:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner revokes trust in a GitHub user (their remote work should no longer auto-run).",
+        "notWhen": "To grant trust use trust:add; to view the list use trust:list.",
+        "chaining": "trust:list → trust:remove { githubUserId }."
       }
     },
     {
@@ -10556,7 +11423,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "guidance": {
         "when": "A peer is doing the wrong thing / working on something now-obsolete / looping, and you need its current turn to STOP. Prefer cooperative (it wraps up cleanly + saves); use force only when it must stop mid-thinking and cooperative was ignored or there's no time.",
@@ -10825,6 +11693,40 @@
       }
     },
     {
+      "name": "work_items:amend",
+      "http": {
+        "path": "/api/agent-tools/work_items/amend",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record a structural decision on a plan-run node (split | drop | reapproach | expand | note) durably, in one call. The Queen/operator disposes; a bee proposes. A disruptive amend on an in-flight node is flagged NEEDS-COMPENSATION (coordinate, never silently yank). The record is the commit-before-dispatch truth — amend BEFORE dispatching the dependent work.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are making (or, as a bee, PROPOSING) a non-re-derivable structural change to a plan-run node — split it, drop/re-approach the approach, expand a deferred region. Record it here in ONE call before dispatching the dependent work; the durable record is the resumable truth.",
+        "notWhen": "A routine progress update / finding → work_items:comment. Re-prioritizing the frontier (re-derivable, costs nothing to lose) → no amend needed. Finishing a node → work_items:complete / set_state.",
+        "chaining": "work_items:get → work_items:amend { id, kind, rationale }. A bee PROPOSES (disposition=proposed); the Queen DISPOSES. requiresCompensation=true ⇒ a worker is mid-execution on the node — coordinate (coord:send) before/with the change."
+      }
+    },
+    {
       "name": "work_items:claim",
       "http": {
         "path": "/api/agent-tools/work_items/claim",
@@ -10848,7 +11750,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -10880,7 +11783,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -10913,7 +11817,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -10946,7 +11851,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -10979,7 +11885,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11011,7 +11918,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11044,13 +11952,48 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "You want to track a unit of work an agent will do. Pick the kind: bug (something broken), change (a desired one-off / DX ask), feature (a pipeline work-unit), research-task, or chunk (a sub-unit of a parent, pass `parent`).",
         "notWhen": "A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.",
         "chaining": "work_items:list (dedup) → work_items:create → work_items:claim when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run."
+      }
+    },
+    {
+      "name": "work_items:expand",
+      "http": {
+        "path": "/api/agent-tools/work_items/expand",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Expand a deferred-expansion node into child work_items in one call. The Queen/operator DISPOSES (children are created); a bee PROPOSES (recorded, the steerer ratifies). Each child carries payload.expanded_from = the parent id. Lets a plan-run start shallow and self-elaborate at the point of best context.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You have reached an \"expand-here\" node (or any node) that should now fan out into concrete child work_items — the decomposition you deferred until you had the context to make it well.",
+        "notWhen": "A flat structural note / re-approach → work_items:amend. A single follow-up → just create/convert one work_item. Re-prioritizing existing nodes → no expansion.",
+        "chaining": "work_items:get → work_items:expand { id, children:[{title, files?, brief?}] }. A bee PROPOSES (disposition=proposed, nothing created yet); the Queen DISPOSES (children created with payload.expanded_from = parent)."
       }
     },
     {
@@ -11077,7 +12020,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11108,7 +12052,8 @@
         "documenter",
         "curator",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11141,7 +12086,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11173,7 +12119,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11205,7 +12152,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11237,7 +12185,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11270,7 +12219,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11303,7 +12253,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11336,7 +12287,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11368,7 +12320,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11401,7 +12354,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11433,7 +12387,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11466,7 +12421,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11499,7 +12455,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11531,7 +12488,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {
@@ -11563,7 +12521,8 @@
         "curator",
         "bee",
         "queen",
-        "sentinel"
+        "sentinel",
+        "overwatch"
       ],
       "profile": "engineer",
       "guidance": {

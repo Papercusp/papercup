@@ -159,6 +159,8 @@ import './deploy/hive';
 import './accounts/accounts';
 // accounts-pool-tab-2026-06-15 P-002 — the experimental one-click OAuth account-link tools.
 import './accounts/link';
+// accounts-pool-tab-2026-06-15 P-004 — the owner's session-now account override tools.
+import './accounts/session-override';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';

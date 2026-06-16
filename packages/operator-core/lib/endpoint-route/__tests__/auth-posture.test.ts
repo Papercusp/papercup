@@ -112,6 +112,10 @@ const RULES: ReadonlyArray<{
       // (EI-338, "mirrors /register, /reset-rate") as its siblings here.
       { method: 'POST', path: '/admin/deploy-accounts/link-start', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/link-complete', auth: VTL },
+      // Session-now account override read/write (accounts-pool-tab P-004) — same
+      // cookie-less desktop-webview rationale (EI-338) as its deploy-accounts siblings.
+      { method: 'GET', path: '/admin/deploy-accounts/session-override', auth: VTL },
+      { method: 'POST', path: '/admin/deploy-accounts/session-override', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/remove', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/reset-rate', auth: VTL },
       // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the

@@ -57,7 +57,11 @@ migration / deliberate / …, built-ins at
 **work_items** (`kind`: `feature` F-NNN · `bug`/`change` · `research-task` ·
 `chunk`); its blueprint's spine routes work through specialist agents — the
 `coding` spine is scoper → architect → worker → validator → reviewer →
-documenter → curator — and humans approve at gates. Hand-offs are durable
+documenter → curator — and humans approve at gates. **The `hive` blueprint is the exception — it has
+NO spine: its Queen *places* ranked work onto generic `bee`s (a bee is NOT a
+scoper/architect/worker role). Don't apply coding-spine roles to a hive —
+[hive-vs-coding-blueprint](/internal/docs/agent-insights/hive-vs-coding-blueprint).**
+Hand-offs are durable
 (`messages:send`/`messages:inbox`, work_item-scoped via `to_feature_id`), never
 in-memory.
 
