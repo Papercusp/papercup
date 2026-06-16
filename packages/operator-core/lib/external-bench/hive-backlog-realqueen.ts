@@ -299,9 +299,18 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
             hiveHome: home,
             workspaceId: ws,
             kickoff:
-              `Impartial benchmark backlog (${req.suite}, ${members.length} tasks) is enrolled across this hive's ` +
-              `member harnesses, each holding ONE benchmark feature. Survey the frontier, place your bee fleet, ` +
-              `evict + re-place stuck bees, and drive every member's lone feature to a terminal state.`,
+              `Impartial benchmark backlog (${req.suite}, ${members.length} tasks) is enrolled across THIS hive's ` +
+              `member harnesses (slug prefix "${home}m…"), each holding EXACTLY ONE benchmark feature that ` +
+              `is a REAL, solvable SWE-bench-Pro task — NOT a phantom, duplicate, or "cursed"/breaker-tripped ` +
+              `item. These ${members.length} features ARE your work and they run THROUGH YOU: place a bee on every ` +
+              `one. Your ONLY job this run is placement — for each member feature in your frontier, place a bee ` +
+              `(free slot / graceful-evict+fresh / warm-inject), attach a brief, evict + re-place stuck/dead bees, ` +
+              `and keep placing until every member's lone feature has a live or terminal bee. Do NOT skip a feature ` +
+              `as "already solved elsewhere" (sibling rows are OTHER hives' tasks, not yours), do NOT declare a ` +
+              `future wake and go idle while any of your ${members.length} features is still unplaced, and do NOT ` +
+              `treat your own enrolled members as contamination. Ignore non-"${home}m" frontier items — they ` +
+              `belong to other hives. If an item looks blocked, place a bee anyway and let it report; you own ` +
+              `placement end-to-end.`,
           });
           while (ops.now() < deadline) {
             // Fire the placement-watchdog sweep ourselves (staging routines are off) so the Queen gets
@@ -329,9 +338,11 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
                   hiveHome: home,
                   workspaceId: ws,
                   reason:
-                    `${survey.frontierLen} benchmark feature(s) are still READY and unplaced with no live bee. ` +
-                    `Survey the frontier and place your bee fleet (fleet cap is the contention bound) so every ` +
-                    `member's lone feature gets a working bee.`,
+                    `${survey.frontierLen} of YOUR "${home}m…" benchmark feature(s) are still READY and ` +
+                    `unplaced with NO live bee — your prior session exited without placing them. These are REAL ` +
+                    `solvable tasks, not phantoms. PLACE A BEE on each one NOW (fleet cap is the contention bound). ` +
+                    `Do NOT skip them as "already solved"/"cursed"/"contamination" and do NOT declare a wake and ` +
+                    `idle — place every unplaced member feature this wake.`,
                 })
                 .catch(() => {});
             }

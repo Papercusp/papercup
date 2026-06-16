@@ -238,7 +238,9 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     // the Comb" is a link to /cupboard; the other two are buttons.
     await expect(dialog.getByRole('link', { name: /Browse the Comb/ })).toHaveAttribute('href', '/cupboard');
     await expect(dialog.getByRole('button', { name: /Hive invite/ })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: /Harness link/ })).toBeVisible();
+    // The legacy per-hive "Hive link" / "Harness link" join card is retired.
+    await expect(dialog.getByRole('button', { name: /Harness link/ })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: /Hive link/ })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: /I have a harness link/ })).toHaveCount(0);
   });
 

@@ -89,7 +89,7 @@ const ALL_CARDS: DecisionCard[] = [
     status: 'pending',
     harness: 'papercup-org',
     title: 'Plan-review notes not dismissed',
-    body: '8 harnesses carry accept-with-notes verdicts from the F-FIX-009 review — 3 missing assertions called out.',
+    body: '8 {pots} carry accept-with-notes verdicts from the F-FIX-009 review — 3 missing assertions called out.',
     recipient: 'papercup-org',
     autoFireSec: 23,
     directiveBody:
@@ -131,7 +131,7 @@ const ALL_CARDS: DecisionCard[] = [
     kind: 'directive',
     status: 'in-flight',
     harness: 'sheets',
-    title: 'Plan review · 8 harnesses · accept-with-notes',
+    title: 'Plan review · 8 {pots} · accept-with-notes',
     body: 'Auto-dispatched 4 min ago.',
     recipient: 'sheets',
   },
@@ -162,7 +162,7 @@ const ALL_CARDS: DecisionCard[] = [
     status: 'failed',
     harness: 'org-business',
     title: 'Re-scope org-business plan',
-    body: 'Dispatch returned: harness in stalled state, refused to start.',
+    body: 'Dispatch returned: {pot} in stalled state, refused to start.',
   },
 ];
 
@@ -220,7 +220,7 @@ const SCANS = [
 ];
 
 const STREAM: StreamLine[] = [
-  { ts: '0:08', text: 'scanning workspace · 8 harnesses' },
+  { ts: '0:08', text: 'scanning workspace · 8 {pots}' },
   { ts: '0:14', text: 'reading sheets/.papercusp/plan-review.md' },
   { ts: '0:22', text: 'reading sheets/features.json' },
   { ts: '0:31', text: 'classifier: F-HOME-001 → medium tier' },
@@ -263,6 +263,16 @@ const ACTIVITY_KIND_COLOR = {
   scan: '#22d3ee',
   error: '#ef4444',
 } as const;
+
+// ─── Lexicon placeholder resolution ────────────────────────────────────────
+// Module-level mock fixtures can't call the useLexicon() hook, so the
+// project-unit ("hive") occurrences are baked in as {pot}/{pots} placeholders
+// and resolved at each render site with the component's lexicon `t`.
+type Lexicon = ReturnType<typeof useLexicon>;
+const resolvePot = (s: string, t: Lexicon): string =>
+  s
+    .replace(/\{pots\}/g, t('pot', { plural: true, lower: true }))
+    .replace(/\{pot\}/g, t('pot', { lower: true }));
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
@@ -435,7 +445,7 @@ export default function OperatorMockPage(): JSX.Element {
                 {STREAM.map((line, i) => (
                   <div key={i} style={S.streamLine}>
                     <span style={S.streamTs}>{line.ts}</span>
-                    <span style={S.streamText}>{line.text}</span>
+                    <span style={S.streamText}>{resolvePot(line.text, t)}</span>
                   </div>
                 ))}
               </div>
@@ -487,6 +497,7 @@ export default function OperatorMockPage(): JSX.Element {
             {view === 'decisions' ? (
               <DecisionsView
                 cards={visibleDecisions}
+                lex={t}
                 paused={paused}
                 onDispatch={(card) => setConfirming(card)}
                 onDismiss={(card) => setDismissed(new Set([...dismissed, card.id]))}
@@ -499,6 +510,7 @@ export default function OperatorMockPage(): JSX.Element {
                 filter={activityFilter}
                 setFilter={setActivityFilter}
                 search={search}
+                lex={t}
                 inFlight={inFlight}
                 doneItems={doneItems}
               />
@@ -535,6 +547,7 @@ export default function OperatorMockPage(): JSX.Element {
 
 function DecisionsView({
   cards,
+  lex,
   paused,
   onDispatch,
   onDismiss,
@@ -543,6 +556,7 @@ function DecisionsView({
   gotoActivity,
 }: {
   cards: DecisionCard[];
+  lex: Lexicon;
   paused: boolean;
   onDispatch: (c: DecisionCard) => void;
   onDismiss: (c: DecisionCard) => void;
@@ -581,6 +595,7 @@ function DecisionsView({
         <DecisionCardView
           key={card.id}
           card={card}
+          lex={lex}
           onDispatch={() => onDispatch(card)}
           onDismiss={() => onDismiss(card)}
           onOpen={() => onOpen(card)}
@@ -593,12 +608,14 @@ function DecisionsView({
 
 function DecisionCardView({
   card,
+  lex,
   onDispatch,
   onDismiss,
   onOpen,
   onAck,
 }: {
   card: DecisionCard;
+  lex: Lexicon;
   onDispatch: () => void;
   onDismiss: () => void;
   onOpen: () => void;
@@ -622,8 +639,8 @@ function DecisionCardView({
             </span>
           )}
         </div>
-        <h2 style={S.cardTitle}>{card.title}</h2>
-        <p style={S.cardText}>{card.body}</p>
+        <h2 style={S.cardTitle}>{resolvePot(card.title, lex)}</h2>
+        <p style={S.cardText}>{resolvePot(card.body, lex)}</p>
 
         {card.directiveBody && (
           <div style={S.directiveSection}>
@@ -676,12 +693,14 @@ function ActivityView({
   filter,
   setFilter,
   search,
+  lex,
   inFlight,
   doneItems,
 }: {
   filter: ActivityFilter;
   setFilter: (f: ActivityFilter) => void;
   search: string;
+  lex: Lexicon;
   inFlight: DecisionCard[];
   doneItems: DecisionCard[];
 }): JSX.Element {
@@ -714,7 +733,7 @@ function ActivityView({
             {inFlight
               .filter((c) => !search || matchSearch(c, search))
               .map((c) => (
-                <ActivityCardRow key={c.id} card={c} />
+                <ActivityCardRow key={c.id} card={c} lex={lex} />
               ))}
           </Section>
         )}
@@ -724,7 +743,7 @@ function ActivityView({
             {doneItems
               .filter((c) => !search || matchSearch(c, search))
               .map((c) => (
-                <ActivityCardRow key={c.id} card={c} />
+                <ActivityCardRow key={c.id} card={c} lex={lex} />
               ))}
           </Section>
         )}
@@ -767,7 +786,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function ActivityCardRow({ card }: { card: DecisionCard }): JSX.Element {
+function ActivityCardRow({ card, lex }: { card: DecisionCard; lex: Lexicon }): JSX.Element {
   const kind = card.status === 'in-flight' ? 'in-flight' : card.status === 'failed' ? 'error' : 'done';
   const t = TIER_COPY[card.tier];
   return (
@@ -778,10 +797,10 @@ function ActivityCardRow({ card }: { card: DecisionCard }): JSX.Element {
       <div style={S.activityTextWrap}>
         <div style={S.activityText}>
           <span style={S.activityHarness}>{card.harness}</span>
-          {card.title}
+          {resolvePot(card.title, lex)}
           <span style={{ ...S.tierChipMini, background: t.chip, color: t.bar }}>{t.label}</span>
         </div>
-        <div style={S.activityDetail}>{card.body}</div>
+        <div style={S.activityDetail}>{resolvePot(card.body, lex)}</div>
       </div>
       <span style={S.activityTs}>
         {card.status === 'failed' ? <button style={S.retryBtn}>Retry</button> : null}
@@ -870,7 +889,7 @@ function DispatchConfirm({
         </div>
         <div style={S.modalSection}>
           <div style={S.modalLabel}>The {t('pot', { lower: true })} will receive:</div>
-          <div style={S.modalQuote}>"{card.directiveBody ?? card.title}"</div>
+          <div style={S.modalQuote}>"{resolvePot(card.directiveBody ?? card.title, t)}"</div>
         </div>
         <div style={S.modalSection}>
           <div style={S.modalLabel}>What happens next:</div>

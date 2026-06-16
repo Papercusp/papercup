@@ -89,9 +89,9 @@ describe('buildLaunchPlanOptions', () => {
       plan({ slug: 'p', harness: 'papercup' }),
       plan({ slug: 'no', harness: '' }),
     ];
-    const opts = buildLaunchPlanOptions(plans, 'papercup', false);
+    const opts = buildLaunchPlanOptions(plans, 'papercup', false, '(no hive)');
     const labels = (opts.slice(1) as Array<{ label: string }>).map((g) => g.label);
-    expect(labels).toEqual(['papercup', 'alpha', 'zeta', '(no harness)']);
+    expect(labels).toEqual(['papercup', 'alpha', 'zeta', '(no hive)']);
   });
 
   it('omits the active-first slot when the active harness has no plans', () => {

@@ -445,8 +445,8 @@ export default function AdvSessionsClient() {
   // groups are omitted.
   const [advActiveSlug] = useQueryState('slug', parseAsString);
   const launchPlanOptions = useMemo(
-    () => buildLaunchPlanOptions(planList.data?.plans ?? [], advActiveSlug, planList.loading),
-    [planList.data, planList.loading, advActiveSlug],
+    () => buildLaunchPlanOptions(planList.data?.plans ?? [], advActiveSlug, planList.loading, `(no ${t('pot', { lower: true })})`),
+    [planList.data, planList.loading, advActiveSlug, t],
   );
 
 
@@ -2432,6 +2432,7 @@ export function buildLaunchPlanOptions(
   plans: PlanListRow[],
   activeHarness: string | null | undefined,
   loading: boolean,
+  noHarnessLabel = '(unassigned)',
 ): import('@/app/harness/Select').SelectEntry[] {
   const placeholder = {
     value: PLAN_SELECT_PLACEHOLDER,
@@ -2474,7 +2475,7 @@ export function buildLaunchPlanOptions(
   ];
 
   const groups: import('@/app/harness/Select').SelectEntry[] = orderedKeys.map((key) => {
-    const label = key === NO_HARNESS_KEY ? '(no harness)' : key;
+    const label = key === NO_HARNESS_KEY ? noHarnessLabel : key;
     return {
       kind: 'group' as const,
       label,

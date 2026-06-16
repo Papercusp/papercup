@@ -1436,6 +1436,55 @@ claude -p "use a shell command to create file X containing Y" \
 # then check whether file X exists — exists = the tool ran, absent = denied.
 ```
 
+# CLAUDE_CONFIG_DIR isolates GLOBAL memory only — PROJECT memory still loads from cwd ($HOME = leak)
+
+> Claude Code has TWO memory-discovery paths. The per-session CLAUDE_CONFIG_DIR skip-link (psu P-002 / EI-155) governs only GLOBAL memory; PROJECT memory loads <cwd>/CLAUDE.md + <cwd>/.claude/CLAUDE.md from the cwd regardless. A session whose cwd is the owner's $HOME re-imports ~/CLAUDE.md + ~/.claude/CLAUDE.md as project files — the exact personal config the config-dir isolation thinks it removed. Fix — never launch an isolated agent in $HOME.
+
+## Two discovery paths, not one
+
+[Section titled “Two discovery paths, not one”](#two-discovery-paths-not-one)
+
+Claude Code loads instruction/memory files from **two independent places**, and only one of them follows `CLAUDE_CONFIG_DIR`:
+
+1. **GLOBAL (user) memory** — `$CLAUDE_CONFIG_DIR/CLAUDE.md` (default `~/.claude/CLAUDE.md`). A psu session points `CLAUDE_CONFIG_DIR` at a per-session symlink mirror that **skip-links the personal memory files** (`CLAUDE.md`/`AGENTS.md`/`CLAUDE.local.md`) — so the session loads no personal global memory. This is psu-isolation **P-002** / `interactive-claude-config.ts` (EI-155 builds the dir).
+2. **PROJECT memory** — `<cwd>/CLAUDE.md` and `<cwd>/.claude/CLAUDE.md`, loaded from the **working directory**, *not* from `CLAUDE_CONFIG_DIR`. Nothing about the config-dir mirror touches this path.
+
+Danger
+
+When a session’s **cwd is the owner’s `$HOME`**, the cwd-level project files **are** the owner’s personal config: `<cwd>/CLAUDE.md` = `~/CLAUDE.md` and `<cwd>/.claude/CLAUDE.md` = `~/.claude/CLAUDE.md` (on this box the personal `@AGENTS.md` memory rules). The session re-imports exactly the personal instructions P-002 skip-linked out of GLOBAL memory — via the PROJECT path the config-dir isolation never governed. Observed live (EI-202): a psu session at cwd `/home/marsh-office` carried both personal files despite a correct skip-linked config dir.
+
+## Why this fooled three implement attempts
+
+[Section titled “Why this fooled three implement attempts”](#why-this-fooled-three-implement-attempts)
+
+The `interactive-claude-config.ts` header documents a **“RESIDUAL: the cwd-discovered PROJECT CLAUDE.md still auto-loads… that’s benign (it’s the repo guide)”**. That is only true when cwd is the **repo** (a real project dir, ≥1 level below `$HOME`): the cwd-level file is the intended repo guide, and Claude’s upward walk does **not** reach `~/CLAUDE.md` from there. The `$HOME` case is the exception the “benign” note silently excludes — only at exactly `$HOME` do the personal `CLAUDE.md` / `.claude/CLAUDE.md` sit at cwd level. A fix that only hardens the config dir, or that relocates cwd to the repo root “to be safe,” misses it: the leak is the **cwd === $HOME** identity, nothing else.
+
+## The fix: never launch an isolated agent in $HOME
+
+[Section titled “The fix: never launch an isolated agent in $HOME”](#the-fix-never-launch-an-isolated-agent-in-home)
+
+A psu superuser session must not run with `cwd === $HOME`. The single server-side choke point is `bootstrap-su.ts` (plain `psu`, `--brain`, `--no-picker` all funnel through it). A no-harness launch *prefers* the launcher’s own `process.cwd()` (resume-friendliness), so it can be `$HOME`; `resolveSuLaunchCwd` (`packages/operator-core/lib/su-launch-cwd.ts`) relocates a `$HOME` cwd to `envelope.cwd` (the internal `~/.papercusp/…` workspace root, which carries no personal memory). Harness launches use the harness repo; `bootstrap-role` uses `spec.cwd` and never inherits the launcher cwd — so neither has the vector.
+
+```ts
+// no-harness $HOME → relocate; everything else (repo / sub-$HOME / internal) kept
+resolveSuLaunchCwd({ harnessSlug: null, callerCwd: home, envelopeCwd, home }) === envelopeCwd
+```
+
+The deterministic guard is **“the chosen launch cwd is never `$HOME`”** (`su-launch-cwd.test.ts` + the cwd-vector cases in `psu-prompt-isolation.test.ts`, P-005). A live “is the personal AGENTS.md absent from the loaded context?” assertion would need a real Claude launch; the cwd-never-`$HOME` proxy is what’s verifiable in unit tests.
+
+## What to remember
+
+[Section titled “What to remember”](#what-to-remember)
+
+* **Config-dir isolation ≠ full isolation.** It removes GLOBAL personal memory, not cwd PROJECT memory. Any “isolate the agent’s instructions” work must also control the **cwd**.
+* **`$HOME` is a poisoned cwd** for any isolated agent — its dotfiles and top-level `CLAUDE.md` become project context. Launch in a dedicated dir.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [`claude-file-memory-index-cap`](/internal/docs/agent-insights/claude-file-memory-index-cap/) — the other half of the claude-file memory model (the index projection + its cap).
+
 # claude-file memory: MEMORY.md is a capped projection — and over-cap it goes silently STALE
 
 > The session-start index has a ~24.4KB hard cap. The projector evicts oldest project entries to fit a 20KB soft cap, PHYSICALLY ARCHIVING them (they leave the searchable store) — and when durables alone exceed the hard cap it ABORTS, leaving MEMORY.md stale. Measured at 111/1k/10k by the memory bench's index-cap probe.
@@ -5050,6 +5099,51 @@ The misread conflates three true-but-unrelated facts: (a) the BEE forced session
 [Section titled “How to verify”](#how-to-verify)
 
 `grep -n 'randomUUID\|--session-id' spawn.ts invoke.ts` shows the fresh mint + `--session-id` create. `resumeCommandFor` (`--resume`) is reached only from `executeWake`, which is the await/inbox pump — not the hive routine/blueprint path. Don’t trust a prose claim that “the Queen resumes” without tracing the `fireLaunchBlueprint('hive') → invoke?bpkind=hive → --session-id` chain.
+
+# Re-keying a hyperbee harness onto a new swarm topic must be IN PLACE, never via reboot
+
+> A harness that goes shared (joins or publishes a hive after boot) must switch from its gh-repo topic to the hive-pubkey topic. Doing that with rebootHarness (close + re-boot the Corestore-backed substrate) silently breaks the OWNER's corestore replication-SERVING of its own log core — the re-keyed owner admits + connects to the joiner and knows its log length, but fires ZERO upload events, so the joiner downloads zero blocks (contig=0) and the feature never crosses. Re-key IN PLACE instead with handle.rekey / rekeyHarness — leave the old topic + join the new one while keeping the store, open cores, and replication streams ALIVE. The symptom is asymmetric — the joiner serves its log to the owner fine; only the owner-to-joiner direction is dead.
+
+When a harness “goes shared” at runtime — an owner **publishes** a hive, or a peer **joins** one — its substrate booted earlier (at host-bootstrap) on the `gh:<repo_id>` topic, before the hive identity existed. It must **re-key** onto the hive-pubkey topic so owner + joiner share a topic. The obvious primitive is `rebootHarness` (close the handle, boot fresh, re-resolve the binding). **That is wrong, and the failure is silent + asymmetric.**
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+The feature written on the owner (A) never lands in the joiner (B), even though every earlier step passes: same hive topic, `peer_connected` both ways, `announce_admitted` both ways with the **correct** log keys (`A.ownLog == B.admitted` and vice-versa). The packaged `two-instance-hive-from-repo-smoke.sh` shows `post-join-merge=FAIL` with everything else green.
+
+Instrument the replicas (`core.peers`, `core.contiguousLength`, and the `upload`/`download` events) and the asymmetry is stark:
+
+* **B → A works:** B’s own log fires `upload` for blocks 0..N; A’s replica of B’s log reaches `contig=N`. The joiner serves its log fine.
+* **A → B is dead:** B’s replica of A’s log has `peers=1` and knows the length, but `contig=0` — it downloads **nothing**. And **A fires ZERO `upload` events for its own log core.** The owner never serves.
+
+So it is not a missing session, a wrong topic, a bad key, or admission — it is that **the re-keyed OWNER does not upload its own writable log core to the joiner.**
+
+## Why reboot breaks it
+
+[Section titled “Why reboot breaks it”](#why-reboot-breaks-it)
+
+A↔B share ONE Hyperswarm socket (Hyperswarm dedupes per peer-pair), carrying ONE Protomux muxer that the **directory** swarm creates first (gossip) and the harness `corestore.replicate(socket)` then rides (`socket.userData`). When `rebootHarness` tears the Corestore-backed substrate down and re-creates it, the owner’s writable log core is re-opened against a session whose serving side never gets re-attached to that pre-existing external muxer. The owner can still *download* (it pulls B’s log) but never *uploads* its own. `keepStore` (keeping the Corestore cached across the reboot) is **not** enough — re-creating the handle/swarm/streams still drops the serving side.
+
+## The fix — re-key in place
+
+[Section titled “The fix — re-key in place”](#the-fix--re-key-in-place)
+
+Never reboot to re-key. Leave the old topic and join the new one on the **same live handle**, keeping the store + open cores + replication streams + merge loop untouched:
+
+* `boot.ts` exposes `handle.rekey(binding)` — closes the current `SwarmHandle` (leave old topic), then `joinForBinding(newBinding)` (join the new topic) with the SAME `store` / `ownLog` / `onAnnounce`. `swarm` is a live getter, not a boot-time snapshot.
+* `boot-all.ts` exposes `rekeyHarness(workspaceId, slug)` — re-resolves the binding via `defaultResolveSwarmBinding` (which calls `resolveHiveSwarmBinding` first, so a shared hive resolves the hive-pubkey topic) and calls `handle.rekey`. Falls back to `bootSingleHarness` when not yet booted.
+* The two “go shared” call sites use it: `join-hive.ts` step 2c (joiner) and `hive-publish-from-repo.ts` step 7 (owner).
+
+Because the streams are never torn down, the owner keeps serving its log core, and the new joiner’s block requests are answered immediately. `post-join-merge` flips to PASS (verified stable across repeated runs of the from-repo smoke).
+
+## The general lesson
+
+[Section titled “The general lesson”](#the-general-lesson)
+
+For any Corestore/Hypercore peer multiplexed over a **shared, externally-created muxer**, a topic change must be a swarm-level leave+join — **never** a teardown
+
+* re-create of the data layer. Tearing down the store drops the serving side of replication for cores that were open before the tear-down, and a fresh store cannot re-attach to the surviving muxer. Verify with `upload`/`download` core events + `contiguousLength`, not just `peers` and `length` — a peer can be connected, know the remote length, and still download zero blocks.
 
 # Hive-scoped federation (re-key from harness → Hive identity)
 

@@ -101,7 +101,8 @@ describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
     // Join group — the demoted underline affordances are gone; these are cards now.
     screen.getByText('Browse the Comb');
     screen.getByText('Hive invite');
-    screen.getByText('Hive link');
+    // The legacy per-hive "Hive link" join card is retired.
+    expect(screen.queryByText('Hive link')).toBeNull();
     // The renamed entry replaces the old "GitHub URL" card.
     expect(screen.queryByText('GitHub URL')).toBeNull();
     // No leftover demoted affordances.
@@ -149,15 +150,16 @@ describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
 // ── Legacy layout (flag off) — preserved byte-for-byte ──────────────────────
 
 describe('legacy picker layout (HIVE_FROM_GITHUB_URL off)', () => {
-  it('renders the legacy 4 cards under Local / Shared', () => {
+  it('renders the legacy cards under Local / Shared', () => {
     flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
     renderPicker();
     screen.getByText('New local directory');
     screen.getByText('Existing local repo');
     screen.getByText('GitHub URL');
-    screen.getByText('Hive link');
     screen.getByRole('heading', { name: 'Local' });
     screen.getByRole('heading', { name: 'Shared' });
+    // The legacy per-hive "Hive link" join card is retired.
+    expect(screen.queryByText('Hive link')).toBeNull();
     // None of the hive-native surfaces.
     expect(screen.queryByText('Search GitHub')).toBeNull();
     expect(screen.queryByText('Browse the Comb')).toBeNull();
@@ -350,14 +352,6 @@ describe('P-009 — Search GitHub entry', () => {
     // The create form inherits the picker fork (into-hive when a scope is set).
     const addBtn = screen.getByRole('button', { name: 'Add to acme' });
     expect(addBtn.getAttribute('aria-pressed')).toBe('true');
-  });
-
-  it('the Harness link card opens the EntryHarnessLinkForm', async () => {
-    const user = userEvent.setup();
-    renderPicker();
-    await user.click(screen.getByText('Hive link'));
-    expect(screen.queryByText('Coming soon')).toBeNull();
-    screen.getByPlaceholderText('papercusp://harness?topic=…&github=owner/repo&repo_id=…');
   });
 });
 

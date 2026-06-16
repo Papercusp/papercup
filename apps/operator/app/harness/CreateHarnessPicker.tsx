@@ -12,9 +12,9 @@
  * Entries are grouped around the hive model (comb-hive-native-sharing P-006):
  * a **Create** group (new local · existing local · search GitHub → create or
  * join a hive from any repo) and a **Join** group (browse the Comb · hive
- * invite · harness link). The whole hive-native layout is gated on
- * HIVE_FROM_GITHUB_URL — flag OFF keeps the legacy Local/Shared 4-card layout
- * (coming-soon GitHub stub + harness-link card). Every card carries a one-line
+ * invite). The whole hive-native layout is gated on
+ * HIVE_FROM_GITHUB_URL — flag OFF keeps the legacy Local/Shared layout
+ * (coming-soon GitHub stub). Every card carries a one-line
  * OUTCOME explainer (P-007) — what that entry produces.
  *
  * The "Search GitHub" entry is the P-009 search panel (EntryGithubSearchForm)
@@ -37,7 +37,6 @@ import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-i
 import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
-import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
 import { EntryGithubSearchForm } from './EntryGithubSearchForm';
 import { PublishHiveCard } from './PublishHiveCard';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
@@ -50,7 +49,6 @@ const ENTRY_STEPS = [
   'existing-local',
   'new-hive',
   'github-url',
-  'harness-link',
   'hive-invite',
   'share-offer',
 ] as const;
@@ -599,7 +597,7 @@ interface PickerSection {
 /**
  * Sections are built per-render: the hive-native Create/Join layout (P-006)
  * lights up on HIVE_FROM_GITHUB_URL; flag OFF keeps the legacy Local/Shared
- * 4-card layout (coming-soon GitHub stub + harness-link card). Labels are
+ * layout (coming-soon GitHub stub). Labels are
  * lexicon-bound; every card carries a one-line OUTCOME explainer (P-007).
  */
 function buildSections(opts: {
@@ -643,13 +641,6 @@ function buildSections(opts: {
             description: 'Clone a GitHub repository and register it. Requires GitHub auth.',
             icon: '🐙',
             comingSoon: true,
-          },
-          {
-            key: 'harness-link',
-            step: 'harness-link',
-            label: `${capitalize(hiveLower)} link`,
-            description: `Join a shared ${hiveLower} via a papercusp://harness?… invite link.`,
-            icon: '🔗',
           },
         ],
       },
@@ -703,13 +694,6 @@ function buildSections(opts: {
           label: `${capitalize(hiveLower)} invite`,
           description: `Paste a papercusp://hive invite link to join a private ${hiveLower}.`,
           icon: '✉️',
-        },
-        {
-          key: 'harness-link',
-          step: 'harness-link',
-          label: `${capitalize(hiveLower)} link`,
-          description: `Join a single shared ${hiveLower} via a papercusp://harness link.`,
-          icon: '🔗',
         },
       ],
     },
@@ -931,7 +915,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   const [createdHiveSlug, setCreatedHiveSlug] = useState<string | null>(null);
   // P-012 (hive-from-github-url): the hive-native Create/Join layout + the
   // GitHub search entry go live behind this flag; off = the legacy
-  // Local/Shared 4-card layout (coming-soon GitHub stub + harness-link card).
+  // Local/Shared layout (coming-soon GitHub stub).
   const githubUrlEnabled = useFlag(FLAGS.HIVE_FROM_GITHUB_URL);
   // The Comb term for the "Browse the Comb" Join card (P-006) — lexicon-bound
   // (t('cupboard') = "Comb" | "Cupboard"). The hive term still rides the
@@ -964,9 +948,8 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
 
   const goBack = () => setStep('picker');
 
-  // Entry 4 (harness-link) JOINS an existing shared harness — sharing
-  // it again makes no sense. For Entries 1/3 (new-local, existing-local)
-  // the harness is freshly local and may want to be shared.
+  // For Entries 1/3 (new-local, existing-local) the harness is freshly
+  // local and may want to be shared, so the share offer follows the create.
   const showShareOffer =
     step === 'share-offer' &&
     createdSlug !== null;
@@ -1008,16 +991,6 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
               // (and a hive auto-publishes per visibility) — skip the share offer.
               if (opts?.hive) onCreated?.(slug, { hive: opts.hive });
               else onCreated?.(slug);
-              handleClose();
-            }}
-          />
-        )}
-        {step === 'harness-link' && (
-          <EntryHarnessLinkForm
-            onBack={goBack}
-            onCreated={(slug) => {
-              // Harness-link join — skip the share offer (already shared upstream).
-              onCreated?.(slug);
               handleClose();
             }}
           />

@@ -716,6 +716,14 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       expect(topic2, 're-key must actually change the topic').not.toBe(topic1);
       expect(handleB.swarm?.topicHex, 'both peers must land on the SAME new topic').toBe(topic2);
 
+      // The peers had only ONE shared topic (no directory side-channel like
+      // production), so the re-key drops the sole link — wait for them to
+      // re-discover each other on the NEW topic before asserting federation.
+      await pollUntil(
+        async () => (handleA!.swarm?.connectionCount ?? 0) > 0 ? true : undefined,
+        { timeoutMs: 30_000, intervalMs: 250 },
+      );
+
       // A write AFTER the re-key must still federate to B on the NEW topic — this
       // is the regression: a reboot-based re-key left the owner unable to serve.
       await dbA.sql`
@@ -731,7 +739,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
           await Promise.all([handleA!.mergeNow(), handleB!.mergeNow()]);
           return await readFeature(dbB.sql, 'F-rekey-1');
         },
-        { timeoutMs: 25_000, intervalMs: 250 },
+        { timeoutMs: 45_000, intervalMs: 250 },
       );
       expect(
         landed,
@@ -743,6 +751,6 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         workspace_id: WORKSPACE_ID,
       });
     },
-    60_000,
+    120_000,
   );
 });

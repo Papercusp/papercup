@@ -258,7 +258,7 @@ export default function AgentSettingsPage() {
         </span>
       </h1>
       <p className="pc-settings-intro">
-        Which agent CLI the operator and harness drive. Two backends are
+        Which agent CLI the operator and {t('pot', { lower: true })} drive. Two backends are
         supported: <code>claude-code</code> (Anthropic <code>claude</code>)
         and <code>omp</code> (<a
           href="https://github.com/can1357/oh-my-pi"
@@ -317,7 +317,7 @@ export default function AgentSettingsPage() {
       <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
         <FormField
           label="Backend (sets AGENT_BACKEND)"
-          description="The CLI the orchestrator + harness drive. 'omp' is the default (routes through Meridian + Claude Max). 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."
+          description={"The CLI the orchestrator + " + t('pot', { lower: true }) + " drive. 'omp' is the default (routes through Meridian + Claude Max). 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."}
         >
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             {(['auto', 'claude-code', 'omp', 'codex'] as const).map((b) => (
@@ -369,7 +369,7 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Per-role model overrides (JSON)"
-          description={`Shape: { "<role>": "<model-id>" }. Roles: ${ROLE_HINTS.join(', ')}. Use the explicit provider/model form (e.g. "anthropic/claude-opus-4-7"). "operator" sets the chat brain — its default is pinned to Anthropic because the large converse prompt is unreliable on some providers; override at your own risk. Per-harness .papercusp/config.json values still win.`}
+          description={`Shape: { "<role>": "<model-id>" }. Roles: ${ROLE_HINTS.join(', ')}. Use the explicit provider/model form (e.g. "anthropic/claude-opus-4-7"). "operator" sets the chat brain — its default is pinned to Anthropic because the large converse prompt is unreliable on some providers; override at your own risk. Per-${t('pot', { lower: true })} .papercusp/config.json values still win.`}
         >
           <DraftTextarea
             rows={6}
