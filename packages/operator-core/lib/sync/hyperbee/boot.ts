@@ -487,6 +487,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // orchestrator's LWW advisory feature claim); the merge driver reads it
   // (+ admitted remote logs) into PG.
   const ownLog = await openOwnLog(store);
+  // EI-681 diag: surface the own-log key + storage root at boot so we can
+  // correlate it against what the PEER admitted (announce_admitted key=…). A
+  // mismatch ⇒ the peer admitted a STALE/forked log, not this boot's own log.
+  console.log(
+    `[ei681-diag] boot(${opts.harnessSlug}): ownLog=${ownLog.keyHex.slice(0, 8)} root=${(opts.workspaceRoot ?? '').slice(-24)}`,
+  );
 
   // Wire the per-table PG projection writers into the GLOBAL registry too —
   // some non-Model-B callers (CLI introspection, single-harness contexts) still
@@ -960,7 +966,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             logs
               .map(
                 (l) =>
-                  `${l.keyHex === ownLog.keyHex ? 'OWN' : l.keyHex.slice(0, 8)}:len${l.length}@cur${mergeCursor.positions.get(l.keyHex) ?? 0}`,
+                  `${l.keyHex === ownLog.keyHex ? `OWN(${l.keyHex.slice(0, 8)})` : l.keyHex.slice(0, 8)}:len${l.length}@cur${mergeCursor.positions.get(l.keyHex) ?? 0}`,
               )
               .join(' ') +
             ']',

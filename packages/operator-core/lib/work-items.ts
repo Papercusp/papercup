@@ -634,11 +634,22 @@ export function normalizeWorkItemState(
     todo: 'open',
     dropped: 'closed',
     deprecated: 'closed',
+    // The "active / in-flight" canonical lifecycle dialect (CLAUDE.md + the
+    // coord-lifecycle docs tell agents to set work-items in_progress/blocked/
+    // needs-human) collapses to the issue family's single not-yet-settled state
+    // `open` — the 3-state engineer_issues CHECK has no native in_flight state,
+    // so these would otherwise throw the structural refusal (EI-450).
+    'in_progress': 'open',
+    wip: 'open',
+    blocked: 'open',
     'needs-human': 'open',
   };
   const mapped = aliases[state] ?? state;
   if (ISSUE_FAMILY_STATES.includes(mapped)) return { ok: true, state: mapped };
-  return { ok: false, valid: [...ISSUE_FAMILY_STATES, 'done', 'dropped', 'todo', 'needs-human'] };
+  return {
+    ok: false,
+    valid: [...ISSUE_FAMILY_STATES, 'done', 'dropped', 'todo', 'in_progress', 'wip', 'blocked', 'needs-human'],
+  };
 }
 
 /** Lifecycle.setState — feature → status; issue → state. The requested state is
