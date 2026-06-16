@@ -548,6 +548,7 @@ export async function importAllPreservedRuns(
 async function invalidate(runId: string): Promise<void> {
   await notifySyncInvalidate('evals.benchRuns', {});
   await notifySyncInvalidate('evals.benchRun', { runId });
+  await notifySyncInvalidate('evals.benchRunLive', { runId });
 }
 
 function inferTaskSetId(taskCount: number): string {

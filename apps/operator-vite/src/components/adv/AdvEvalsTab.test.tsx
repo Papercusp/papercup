@@ -52,6 +52,10 @@ vi.mock('@/app/eval-viz', () => ({
   ValueCaptureCurve: ({ series }: { series: unknown[] }) => <div data-testid="viz-value" data-n={series.length} />,
   armLabel: (a: string) => a,
   armColor: () => '#000',
+  computeValiditySignals: () => [
+    { key: 'empty-diff', label: 'Non-empty diffs', status: 'warn', detail: 'some empty' },
+  ],
+  isRunValid: () => true,
 }));
 
 // ── Radix Select → a native <select> so onChange is testable. ──

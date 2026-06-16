@@ -24,3 +24,7 @@ export type { ValuePoint, ValueSeries, ValueCaptureCurveProps } from './ValueCap
 // Arm vocabulary (locked L1 + provisional fleet arms)
 export { ARM_IDS, armLabel, armColor } from './arms';
 export type { ArmId } from './arms';
+
+// Run validity signals — the integrity guarantee (P-009 / P-012 / D-003)
+export { computeValiditySignals, isRunValid, validityCaveats, SUBSET_STABLE_MIN, QUEEN_SURVIVAL_SEC } from './validity';
+export type { ValidityStatus, ValidityKey, ValiditySignal, ValidityLiveFleet, ValidityInput } from './validity';

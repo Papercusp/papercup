@@ -2677,6 +2677,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return detail ? [detail] : [];
     },
   },
+  // Live fleet state for an in-flight run (P-007/P-009) — the Queen's survival,
+  // bee status counts, opus-only model-leak check, cumulative spend + wall-clock,
+  // per-task progress, read from spawned_agents/agent_usage_samples scoped to the
+  // run's hive. The live monitor polls this (the fleet tables aren't bridged to
+  // SSE); a completed run returns the not-live shape (signals null).
+  'evals.benchRunLive': {
+    argsSchema: z.object({ runId: z.string() }),
+    resolve: async (args) => {
+      const { runId } = args as { runId: string };
+      const { getBenchRunLiveState } = await import('../external-bench/live-state');
+      const state = await getBenchRunLiveState(runId);
+      return state ? [state] : [];
+    },
+  },
   // accounts.pool — the Queen's Claude Max account pool as a live read-model for
   // the Accounts tab (accounts-pool-tab-2026-06-15 P-001). One row per pool
   // account: the union of accounts:list + accounts:status (id/label/credentialRef/

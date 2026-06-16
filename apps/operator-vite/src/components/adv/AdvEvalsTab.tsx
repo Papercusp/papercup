@@ -64,11 +64,15 @@ import {
   ValueCaptureCurve,
   armLabel,
   armColor,
+  computeValiditySignals,
+  isRunValid,
   type FrontierPoint,
   type ComparePerTaskRow,
   type ThroughputArm,
   type MastArmRates,
   type ValueSeries,
+  type ValiditySignal,
+  type ValidityLiveFleet,
 } from '@/app/eval-viz';
 
 // ── Arm vocabulary (LOCKED by P-011, su-4ac61) ───────────────────────────────
@@ -219,10 +223,28 @@ interface PreservedCoordRates {
 }
 interface PreservedRunDetail {
   id: string;
+  // Lifecycle + launch config (present on store-backed BenchRunDetail; optional so
+  // an imported run without them still renders).
+  status?: string;
+  config?: { cap?: number | null } | null;
   run: { arm: string; startedAt?: string; coordEvents?: Array<{ kind: string; agent?: string; taskId?: string | null; detail?: string }> };
   perTask: PreservedResolvedTask[];
   summary: PreservedRunSummary;
   coordRates: PreservedCoordRates;
+}
+
+// Live fleet state (evals.benchRunLive) — mirrors live-state.ts BenchRunLiveState.
+interface BenchRunLive {
+  runId: string;
+  status: string;
+  hiveSlug: string | null;
+  isLive: boolean;
+  queen: { alive: boolean | null; ageSec: number | null; reclaims: number | null; status: string | null };
+  bees: { total: number; placed: number; working: number; done: number; evicted: number; failed: number };
+  models: { opusOnly: boolean | null; nonOpusSamples: number | null; totalSamples: number | null; distinctModels: string[] };
+  spendUsd: number | null;
+  wallSec: number | null;
+  taskProgress: { todo: number; in_progress: number; collected: number; graded: number; error: number; total: number };
 }
 
 const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : `${Math.round(v * 100)}%`);
@@ -1098,6 +1120,82 @@ function LaunchRunView() {
   );
 }
 
+// ── Validity badges (P-009 / D-003) — the integrity guarantee, surfaced ───────
+const VALIDITY_COLOR: Record<string, string> = { pass: '#34d399', warn: '#fbbf24', fail: '#fb7185', unknown: '#7f9bb4' };
+function ValidityBadges({ signals }: { signals: ValiditySignal[] }) {
+  if (signals.length === 0) return null;
+  return (
+    <div className="pc-evals__badges" role="list" aria-label="Run validity" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, margin: '10px 0' }}>
+      {signals.map((sg) => {
+        const c = VALIDITY_COLOR[sg.status] ?? '#7f9bb4';
+        return (
+          <span
+            key={sg.key}
+            role="listitem"
+            title={sg.detail}
+            style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: `1px solid ${c}`, color: c, borderRadius: 999, padding: '2px 10px', fontSize: 12 }}
+          >
+            <span style={{ width: 7, height: 7, borderRadius: 999, background: c }} aria-hidden />
+            {sg.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Live fleet panel (P-007) — the manual PG checks made visual ──────────────
+function LiveFleetPanel({ live }: { live: BenchRunLive }) {
+  const q = live.queen;
+  const tp = live.taskProgress;
+  return (
+    <div className="pc-evals__live" aria-label="Live run state" style={{ margin: '8px 0 4px' }}>
+      <div className="pc-evals__sectionhead" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ width: 8, height: 8, borderRadius: 999, background: '#34d399', boxShadow: '0 0 6px #34d399' }} aria-hidden />
+        <h2>Live · {live.status}</h2>
+      </div>
+      <div className="pc-evals__scoreboard" aria-label="Live fleet stats">
+        <FleetStat
+          arm="hive-realqueen"
+          value={q.alive == null ? '—' : q.alive ? 'alive' : 'down'}
+          sub={q.ageSec == null ? 'queen' : `queen · ${q.ageSec}s · ${q.reclaims ?? 0} reclaim(s)`}
+          hint="The Queen's survival — a reclaimed/dead Queen is not a real-Queen run."
+        />
+        <FleetStat arm="hive-realqueen" value={`${live.bees.working}`} sub={`working · ${live.bees.done} done · ${live.bees.placed} placed`} hint={`Bees: ${live.bees.evicted} evicted, ${live.bees.failed} failed of ${live.bees.total}.`} />
+        <FleetStat arm="hive-realqueen" value={`${tp.graded + tp.collected}/${tp.total}`} sub={`progress · ${tp.in_progress} in-flight`} hint={`Per-task: ${tp.todo} todo, ${tp.in_progress} in-progress, ${tp.collected} collected, ${tp.graded} graded.`} />
+        <FleetStat arm="hive-realqueen" value={live.spendUsd == null ? '—' : fmtUsd(live.spendUsd)} sub={live.wallSec == null ? 'spend' : `spend · ${Math.round(live.wallSec / 60)}m wall`} hint={`Models: ${live.models.distinctModels.join(', ') || 'none yet'}.`} />
+      </div>
+    </div>
+  );
+}
+
+// ── Coordination timeline (P-008) — the Queen's orchestration, event by event ─
+const COORD_COLOR: Record<string, string> = {
+  placement: '#38bdf8', complete: '#34d399', rework: '#fbbf24', stranded_item: '#fb7185',
+  evicted: '#fb7185', spawn: '#a78bfa', handoff: '#a78bfa', claim: '#38bdf8', wake: '#eab308',
+};
+function CoordTimeline({ events }: { events: Array<{ kind: string; agent?: string; taskId?: string | null; detail?: string }> }) {
+  if (events.length === 0) return null;
+  return (
+    <div className="pc-evals__timeline" aria-label="Coordination timeline" style={{ marginTop: 10 }}>
+      <div className="pc-evals__sectionhead"><h2>Coordination timeline<span style={{ color: 'var(--fg-dim)', fontWeight: 400 }}> · {events.length} events</span></h2></div>
+      <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 320, overflowY: 'auto' }}>
+        {events.map((e, i) => {
+          const c = COORD_COLOR[e.kind] ?? '#7f9bb4';
+          return (
+            <li key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 2, background: c, flex: '0 0 auto', alignSelf: 'center' }} aria-hidden />
+              <span style={{ color: c, minWidth: 90 }}>{e.kind}</span>
+              {e.taskId ? <span style={{ color: 'var(--fg-dim)' }}>{shortInstance(e.taskId)}</span> : null}
+              {e.detail ? <span style={{ color: 'var(--fg-mute, #7f9bb4)' }}>{e.detail}</span> : null}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
 // ── Preserved / live runs view — the real graded snapshots, now via @papercusp/sync ──
 
 function PreservedRunsView() {
@@ -1124,6 +1222,19 @@ function PreservedRunsView() {
   });
   const detail = detailSync.data?.[0] ?? null;
   const detailErr = detailSync.error ? String(detailSync.error) : null;
+
+  // Live fleet state — polled while the selected run is active (the spawned_agents
+  // / agent_usage_samples tables aren't SSE-bridged). A completed run returns the
+  // not-live shape, so polling stops.
+  const selRun = runs.find((r) => r.id === selId);
+  const isActive = Boolean(selRun && ['pending', 'running', 'grading'].includes(selRun.status));
+  const liveSync = useSyncQuery<BenchRunLive>({
+    queryName: 'evals.benchRunLive',
+    args: { runId: selId ?? '' },
+    enabled: Boolean(selId),
+    pollIntervalMs: isActive ? 4000 : undefined,
+  });
+  const live = liveSync.data?.[0] ?? null;
 
   if (loading) return <p className="pc-evals__empty">Loading runs…</p>;
   if (listErr) {
@@ -1172,6 +1283,27 @@ function PreservedRunsView() {
       }]
     : [];
 
+  // Validity signals (P-009 / D-003) — computed from the run metadata + live fleet.
+  const validitySignals: ValiditySignal[] = detail
+    ? computeValiditySignals({
+        taskCount: detail.summary.taskCount,
+        nonEmptyDiffs: detail.summary.nonEmptyDiffs,
+        capValue: detail.config?.cap ?? null,
+        recovered: detail.summary.recovered,
+        seedCount: 1,
+        live: live
+          ? ({
+              queenAlive: live.queen.alive,
+              queenAgeSec: live.queen.ageSec,
+              queenReclaims: live.queen.reclaims,
+              nonOpusSamples: live.models.nonOpusSamples,
+              totalSamples: live.models.totalSamples,
+            } satisfies ValidityLiveFleet)
+          : null,
+      })
+    : [];
+  const runValid = isRunValid(validitySignals);
+
   const s = detail?.summary;
   return (
     <section className="pc-evals__section">
@@ -1195,6 +1327,18 @@ function PreservedRunsView() {
         <p className="pc-evals__empty">Loading the run…</p>
       ) : (
         <>
+          {/* Validity badges (P-009 / D-003) — the integrity guarantee, surfaced. */}
+          <ValidityBadges signals={validitySignals} />
+          {!runValid ? (
+            <div className="pc-evals__caveat" role="status" style={{ marginBottom: 10 }}>
+              ⚠ This run fails a validity check (a red badge above) — the number is shown for transparency but must
+              not be treated as a clean result, and the Compare view will refuse to render it as a valid delta.
+            </div>
+          ) : null}
+
+          {/* Live fleet panel (P-007) while the run is in flight. */}
+          {live?.isLive ? <LiveFleetPanel live={live} /> : null}
+
           {/* Honest caveats (impartial-benchmark-suite D-027): this is a single
               preserved arm, not strictly opus, empty diffs counted as unresolved,
               no valid no-Queen control yet, and an 11-task subset. */}
@@ -1274,6 +1418,9 @@ function PreservedRunsView() {
             caption="Objective coordination-failure rates counted from the run’s coordEvents trace (rework / stranded-item / conflicts), per task — no judge."
             emptyHint="No coordination events recorded for this run."
           />
+
+          {/* Coordination timeline (P-008) — the Queen's orchestration, event by event. */}
+          <CoordTimeline events={detail!.run.coordEvents ?? []} />
         </>
       )}
     </section>
