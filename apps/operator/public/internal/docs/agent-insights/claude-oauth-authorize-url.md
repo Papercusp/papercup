@@ -1,0 +1,54 @@
+# You CANNOT hand-build a Claude Max OAuth link — claude.ai needs claude-code's own handshake; use `claude setup-token`
+URL: /internal/docs/agent-insights/claude-oauth-authorize-url
+
+Linking a Claude Max account by having the owner click a hand-built claude.ai authorize URL does NOT work — claude.ai returns "Authorization failed Invalid request format" even for a URL byte-for-byte identical to what `claude setup-token` generates. claude.ai requires the claude-code client's own handshake, which a plain browser click can't reproduce. The ONLY working path is `claude setup-token` (the CLI does the handshake) → paste the sk-ant-oat token / .credentials.json. Stop re-attempting the in-app OAuth link.
+
+## The bottom line (this has burned ≥3 agents on `accounts-pool-tab-2026-06-15`)
+
+Do **not** try to let the owner "click a link and OAuth in the browser" to add a Claude
+Max account. It cannot work. claude.ai's authorize endpoint **requires the claude-code
+client's own handshake**; a hand-built URL opened in a normal browser is rejected with:
+
+> Authorization failed — Invalid request format
+
+This was already recorded in `deploy-accounts-register.ts` ("claude.ai's authorize endpoint
+rejects a hand-built OAuth URL (it needs claude-code's own client handshake), so the owner
+runs `claude setup-token`"). Agents keep ignoring it and rebuilding the in-app OAuth link.
+**Heed it.** The working path is below.
+
+## Proof it's not a URL-format problem
+
+We built the in-app link three ways (console params; then the GitHub-#29983 variant
+claude.ai + user:\* scopes + no code=true; then byte-for-byte the CLI's URL). The owner
+clicked a URL **identical** to what `claude setup-token` generates —
+
+```
+https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e
+  &response_type=code&redirect_uri=https://platform.claude.com/oauth/code/callback
+  &scope=user:inference&code_challenge=<S256>&code_challenge_method=S256&state=<rand>
+```
+
+— and STILL got "Invalid request format". Same params, different outcome ⇒ the difference
+is not the URL; it's that the CLI performs a client handshake (session/registration) that a
+standalone browser click of a copied URL does not. (How to re-capture the CLI's current URL,
+should you ever need to compare: `CLAUDE_CONFIG_DIR=/tmp/x claude setup-token` — but capturing
+it does NOT make it clickable-standalone.)
+
+## The working path — `claude setup-token` (what the UI defaults to)
+
+1. On a machine signed in as the TARGET Max account, run `claude setup-token` (it opens the
+   browser, does the handshake, you approve, it prints an `sk-ant-oat…` token).
+2. Paste that token (or a `.credentials.json` bundle) into Settings → Deploy Accounts →
+   "+ Link Max account" → **Paste a setup-token** (the default tab), or `accounts:register`
+   / `POST /api/admin/deploy-accounts/register`. credentialRef becomes `token:<path>` /
+   `file:<path>`; the raw token never reaches the browser.
+
+The in-app "Via browser (OAuth)" tab is kept but defaulted-off and labelled experimental —
+it will say "Invalid request format" against live claude.ai. Don't promote it without a new
+mechanism that does the claude-code handshake (not just a prettier URL).
+
+## Where it lives
+
+`account-link-store.ts` builds the (non-working-standalone) OAuth URL; `deploy-accounts-register.ts`
+is the working paste path. Both surfaced in Settings → Deploy Accounts + the /adv Accounts tab,
+both defaulting to the paste path. (accounts-pool-tab-2026-06-15 D-005/D-013/D-014/D-015.)

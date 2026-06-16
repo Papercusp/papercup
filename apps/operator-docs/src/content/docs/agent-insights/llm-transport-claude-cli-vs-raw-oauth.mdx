@@ -28,6 +28,17 @@ manages its own session/credential negotiation. The exact server-side
 accounting is opaque to us — treat this as an empirical, repeatable
 observation on this box, not a documented API contract.
 
+**Precise mechanism (sharpened 2026-06-16):** a large part of "raw OAuth 429s
+but the CLI works" is **system-block framing**, not just bucket contention. The
+`oauth-2025-04-20` beta grants the relaxed limiter only when the FIRST `system`
+block is exactly `You are Claude Code, Anthropic's official CLI for Claude.` as
+its own block — which the CLI does and a concatenating raw caller doesn't. A
+mis-framed request gets a **bogus** `rate_limit_error` (body `"Error"`, no
+`anthropic-ratelimit-*` headers) at 0.0 utilization. So the escape isn't only
+"use the CLI transport" — it's "frame the first system block correctly," which
+any transport can do. Full proof + the fix:
+[max-oauth-first-system-block-must-be-claude-code-identity](/internal/docs/agent-insights/max-oauth-first-system-block-must-be-claude-code-identity).
+
 ## How to apply
 
 - Building a **live-LLM test harness / eval lane**: drive it through a

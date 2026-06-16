@@ -1,0 +1,98 @@
+# Max OAuth 429s: the first system block must be EXACTLY the Claude Code identity
+URL: /internal/docs/agent-insights/max-oauth-first-system-block-must-be-claude-code-identity
+
+The precise mechanism behind 'raw-OAuth 429s but the claude CLI works': the oauth-2025-04-20 beta grants the normal rate limiter ONLY when the first system block is exactly 'You are Claude Code, Anthropic's official CLI for Claude.' as its OWN block. Concatenate it into a larger system string (or omit it) and the request is shunted to a strict limiter that returns a BOGUS rate_limit_error (body: 'Error', no anthropic-ratelimit-* headers) even at 0.0 budget utilization. Fix: send system as an array with the CC identity as its own first block.
+
+## The mistake this prevents
+
+Chasing a "Max account opus rate limit" that does not exist. While running the
+mini-swe-agent opus SWE-bench-Pro baseline through the inference gateway, opus
+requests 429'd \~86% of the time. I escalated through three theories — contended
+account pool → a dedicated quiet account → 4-way per-call account round-robin —
+and every one still landed **zero** successful opus calls. I nearly concluded
+"Claude Max opus simply can't sustain mini-swe's request pattern; use a funded
+API key." **That was wrong.** The owner's pushback ("Max accounts have lots of
+room, why wouldn't it run") forced the actual test.
+
+## The actual mechanism
+
+The Max OAuth beta (`anthropic-beta: oauth-2025-04-20`) routes a request to the
+**normal/relaxed limiter only when the FIRST `system` block is EXACTLY**
+`You are Claude Code, Anthropic's official CLI for Claude.` **as its own block.**
+If that identity is glued into a larger single `system` *string*
+(`"You are Claude Code…\n\n<your instructions>"`) — or absent — the request is
+shunted to a far stricter limiter that **rejects with a bogus
+`rate_limit_error`**, regardless of how much budget the account has.
+
+This is the same root cause behind
+[llm-429-check-the-transport-not-the-account](/internal/docs/agent-insights/llm-429-check-the-transport-not-the-account)
+and
+[llm-transport-claude-cli-vs-raw-oauth](/internal/docs/agent-insights/llm-transport-claude-cli-vs-raw-oauth):
+the `claude` CLI "just works" because it frames the system as an array with the
+CC identity as its own first block; a raw-OAuth / litellm / SDK caller that
+concatenates (or omits) it hits the strict limiter. The escape isn't *only*
+"switch to the CLI transport" — it's "frame the first system block correctly,"
+which any transport can do.
+
+## The proof (controlled probes through the gateway, one quiet account)
+
+| Probe | system                                    | model    | result                      |
+| ----- | ----------------------------------------- | -------- | --------------------------- |
+| A     | exactly the CC identity                   | haiku    | ✅ 200                       |
+| B     | exactly the CC identity                   | **opus** | ✅ 200 (opus is fine on Max) |
+| C     | `CC + "\n\n" + instructions` (one string) | opus     | ❌ **429** body `"Error"`    |
+| D     | array `[{CC}, {instructions}]`            | opus     | ✅ 200                       |
+| E     | exactly the CC identity + **large** input | opus     | ✅ 200, utilization **0.0**  |
+
+So: not the model (B), not request size (E), not budget (5h utilization `0.0`
+throughout) — only the **framing** (C vs D).
+
+## The tell — distinguish a framing-reject from a real rate limit
+
+A **framing reject** (fixable):
+
+* HTTP 429, body literally `{"type":"error","error":{"type":"rate_limit_error","message":"Error"}}`
+* **No** `anthropic-ratelimit-*` headers, **no** `retry-after`
+* Account budget is low/`0.0` utilization
+* Persists across accounts and quiet windows (because it's not about capacity)
+
+A **genuine rate limit** (wait / spread):
+
+* 429 carries `anthropic-ratelimit-*` headers + a `retry-after`
+* `anthropic-ratelimit-unified-5h-utilization` is high / `…-status: rejected`
+
+If you see the first shape, **stop adding accounts and stop waiting** — fix the
+first system block.
+
+## How to apply
+
+* **Any raw-OAuth / SDK / litellm call through the gateway on a Max token:** send
+  `system` as an **array** whose first element is exactly the CC identity:
+  `system: [{type:'text', text:'You are Claude Code, Anthropic\'s official CLI for Claude.'}, {type:'text', text:<rest>}]`.
+  A single string with the identity as a *prefix* is **not** enough.
+* **litellm specifically:** make the system message's `content` a **list** of
+  text blocks (not a concatenated string) — litellm forwards it as Anthropic
+  system blocks. Confirmed working end-to-end.
+* **Before debugging Max 429s at all:** read this page +
+  [the transport one](/internal/docs/agent-insights/llm-429-check-the-transport-not-the-account)
+  *first*. The symptom (persistent 429 with `$0`/low utilization) has a written
+  runbook — I burned hours not checking it.
+
+## Open follow-up (gateway-level fix)
+
+The inference gateway already injects the OAuth Bearer + the `oauth-2025-04-20`
+beta, so it is the natural place to **guarantee** the invariant the beta requires:
+normalize each `/v1/messages` request so the first `system` block is the CC
+identity (prepend a CC block unless it's already there; leave the `claude` CLI's
+already-correct framing untouched). That would fix this for *every* caller
+(mini-swe, the `anthropic-direct` raw path in `chat-stream.ts`, any future SDK
+caller) instead of each one re-discovering it. Cost: it makes the hot proxy path
+parse + re-serialize every request body, so it needs care + a test. Not yet done
+— flagged for owner decision.
+
+## Source
+
+This session (su-37e53), 2026-06-16 — mini-swe-agent opus baseline for
+`benchmark-evaluation-ui-2026-06-16`. Runner:
+`~/.papercusp/bench-results/minisweagent-11-2026-06-16/run_minisweagent.py`
+(`_with_cc_system_block`).
