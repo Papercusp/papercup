@@ -128,6 +128,34 @@ describe('recordAccountPenalty + window rolling', () => {
     p = recordAccountReset(p, 'a');
     expect(getAccount(p, 'a')!.rate).toEqual({ pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 });
   });
+
+  it('a 429 penalty PRESERVES the last-known observed budget (utilization survives)', () => {
+    // Regression: the rate object was rebuilt on every penalty WITHOUT the utilization fields, so an
+    // account's "% used" vanished the instant it got rate-limited — exactly when the Accounts tab
+    // should show it. The reading must survive the penalty (only pause/penalty are recomputed).
+    let p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.82, windowResetAt: T0 + 300 * MIN, utilization7d: 0.4 }, T0);
+    p = recordAccountPenalty(p, 'a', T0 + MIN, { pausedUntil: T0 + 10 * MIN });
+    const r = getAccount(p, 'a')!.rate;
+    expect(r.utilization).toBe(0.82);
+    expect(r.utilization7d).toBe(0.4);
+    expect(r.windowResetAt).toBe(T0 + 300 * MIN);
+    expect(r.utilizationAt).toBe(T0); // the observation time, untouched by the penalty
+    expect(r.penaltyCount).toBe(1); // pause/penalty still recorded
+    expect(r.pausedUntil).toBe(T0 + 10 * MIN);
+  });
+
+  it('recordAccountReset clears pause+penalty but PRESERVES the observed budget reading', () => {
+    let p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.91, utilization7d: 0.55 }, T0);
+    p = recordAccountPenalty(p, 'a', T0 + MIN, { pausedUntil: T0 + 10 * MIN });
+    p = recordAccountReset(p, 'a');
+    const r = getAccount(p, 'a')!.rate;
+    expect(r.pausedUntil).toBe(0);
+    expect(r.penaltyCount).toBe(0);
+    expect(r.windowStartedAt).toBe(0);
+    expect(r.utilization).toBe(0.91); // kept so the tab still renders "~91% used · as of …"
+    expect(r.utilization7d).toBe(0.55);
+    expect(r.utilizationAt).toBe(T0);
+  });
 });
 
 describe('isAvailable / isSustainedlyLimited', () => {

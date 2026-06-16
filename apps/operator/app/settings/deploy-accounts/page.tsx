@@ -58,11 +58,11 @@ export default function DeployAccountsPage() {
   // browser → paste the code (the link-start/link-complete round-trip); "token" = the proven
   // `claude setup-token` paste. OAuth is the default the owner reaches for; it's experimental
   // because claude.ai may reject a server-built authorize URL (D-005) — the token flow always works.
-  // Default to the PROVEN setup-token paste. The in-app OAuth link can't work for Claude Max:
-  // claude.ai rejects a hand-built authorize URL opened in a plain browser (it needs claude-code's
-  // own client handshake — confirmed 2026-06-16 by clicking a URL byte-identical to `claude
-  // setup-token`'s and still getting "Invalid request format"). See insight claude-oauth-authorize-url.
-  const [linkMode, setLinkMode] = useState<'oauth' | 'token'>('token');
+  // Default to the one-click browser login. It now runs the REAL `claude setup-token` CLI
+  // server-side (account-link-cli.ts) and relays its link, so claude.ai accepts it (the CLI does
+  // the client handshake a hand-built URL can't — accounts-pool-tab D-016). The setup-token paste
+  // tab stays as the manual fallback.
+  const [linkMode, setLinkMode] = useState<'oauth' | 'token'>('oauth');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [linkId, setLinkId] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -252,7 +252,7 @@ export default function DeployAccountsPage() {
                 setAddError(null);
               }}
             >
-              🔗 Via browser (OAuth — experimental, often rejected by claude.ai)
+              🔗 One-click (browser login)
             </button>
             <button
               type="button"
@@ -281,10 +281,10 @@ export default function DeployAccountsPage() {
             !authorizeUrl ? (
               <div className="pc-da__step">
                 <p className="pc-da__step-hint">
-                  2 · We'll generate a <strong>claude.ai authorize link</strong> for this account. Open it signed in as the
-                  TARGET Max account, approve, then paste the code claude.ai shows you. The token is written server-side and
-                  is never returned to the browser. <em>Experimental</em> — if claude.ai rejects the link, switch to “Paste a
-                  setup-token”.
+                  2 · We'll start a Claude login for this account and give you a link (this runs the real{' '}
+                  <code>claude setup-token</code> handshake on the server, so claude.ai accepts it). Open the link signed in
+                  as the <strong>TARGET Max account</strong>, approve, then paste the code claude shows you. The token is
+                  written server-side and never returned to the browser.
                 </p>
                 <button className="pc-da__btn pc-da__btn--primary" disabled={busy || !accountId} onClick={() => void startOAuth()}>
                   {busy ? 'Generating…' : 'Get authorize link'}

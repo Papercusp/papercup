@@ -30,8 +30,7 @@ import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
-import PlanChat from './PlanChat';
-import MessageOwnerThread from './MessageOwnerThread';
+import DiscussPanel from './DiscussPanel';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
 import { InputCard, type InputCardResponse } from '@/app/_components/chat/InputCard';
 import { QueueCardActions } from './QueueCardActions';
@@ -346,8 +345,7 @@ export default function PlanOtherList({
 }
 
 export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {
-  const [chatOpen, setChatOpen] = useState(false);
-  const [msgOwnerOpen, setMsgOwnerOpen] = useState(false);
+  const [discussOpen, setDiscussOpen] = useState(false);
   // D-027 follow-on (1): the inline Answer InputCard (conversation kind). State
   // resets per selection — PlansClient remounts OtherDetail with key={item.id}.
   const [answerOpen, setAnswerOpen] = useState(false);
@@ -375,10 +373,8 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
   // harness source view). (inbox-cards-unification P-020 / D-006.)
   const onResponse = async (resp: AskChoiceResponse) => {
     if (resp.action === 'navigate') {
-      if (resp.option_id === 'chat') {
-        setChatOpen(true);
-      } else if (resp.option_id === 'message-owner') {
-        setMsgOwnerOpen(true);
+      if (resp.option_id === 'discuss') {
+        setDiscussOpen(true);
       } else if (resp.option_id === 'answer') {
         // D-027 follow-on (1): reveal the inline Answer InputCard (conversation).
         setAnswerOpen((v) => !v);
@@ -500,8 +496,7 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
             onResponse={(r) => void onAnswerResponse(r)}
           />
         ) : null}
-        {msgOwnerOpen ? <MessageOwnerThread item={item} /> : null}
-        {chatOpen ? <PlanChat harnessSlug={item.harnessSlug} label={chatLabel} /> : null}
+        {discussOpen ? <DiscussPanel item={item} chatLabel={chatLabel} /> : null}
       </div>
     </aside>
   );

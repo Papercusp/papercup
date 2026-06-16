@@ -33,6 +33,14 @@ const CHAT: AttentionAction = { id: 'chat', label: 'Chat' };
 /** Open a work-item-scoped conversation with the item's owning agent (D-004).
  *  A navigate action (opens a thread sub-surface), present on every item. */
 const MESSAGE_OWNER: AttentionAction = { id: 'message-owner', label: 'Message owner' };
+/** Discuss — ONE action that replaces the old Chat + Message-owner pair on the
+ *  "Other" attention items (escalation/message/smoke/conversation). The UI panel
+ *  (DiscussPanel) routes it: reply to the ORIGINATING agent when it's a live,
+ *  addressable (non-system) agent, else open a fresh harness agent chat. Folds
+ *  two overlapping, confusingly-labelled buttons ("owner" actually meant the
+ *  raising agent, and for most escalations that agent is a dead/system identity
+ *  the message never reaches) into one intent. (queue-pending-accuracy P-004 ext-2 (A).) */
+const DISCUSS: AttentionAction = { id: 'discuss', label: 'Discuss' };
 
 /** First non-empty line, trimmed and truncated for a list-row title. */
 function clip(s: string | null | undefined, n = 120): string {
@@ -187,12 +195,8 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
     ownerLabel: e.fromLabel ?? e.from ?? null,
     ...untriaged(),
     // Resolve always (coord:resolve, with the escalation's named options).
-    // Chat opens a per-harness agent chat, so only offer it when the escalation
-    // carries a harness — workspace-level escalations have none and Chat would
-    // dead-end on "not attached to a harness". Message owner is always offered.
-    actions: e.harnessSlug
-      ? [{ id: 'resolve', label: 'Resolve', primary: true }, CHAT, MESSAGE_OWNER]
-      : [{ id: 'resolve', label: 'Resolve', primary: true }, MESSAGE_OWNER],
+    // Discuss routes to the escalating agent or a fresh harness chat (DiscussPanel).
+    actions: [{ id: 'resolve', label: 'Resolve', primary: true }, DISCUSS],
     ref: { kind: 'coord-escalation', msgId: e.msgId, options },
   };
 }
@@ -255,12 +259,8 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
     ownerAgentId: m.from ?? null,
     ownerLabel: m.fromLabel ?? m.from ?? null,
     ...untriaged(),
-    // Ack always; Chat only when the message carries a harness (workspace-level
-    // broadcasts have none, so a per-harness chat can't open). Message owner
-    // is always offered.
-    actions: m.harnessSlug
-      ? [{ id: 'ack', label: 'Acknowledge', primary: true }, CHAT, MESSAGE_OWNER]
-      : [{ id: 'ack', label: 'Acknowledge', primary: true }, MESSAGE_OWNER],
+    // Ack always; Discuss routes to the sender or a fresh harness chat (DiscussPanel).
+    actions: [{ id: 'ack', label: 'Acknowledge', primary: true }, DISCUSS],
     ref: { kind: 'coord-message', msgId: m.msgId },
   };
 }
@@ -292,7 +292,7 @@ export function smokeFailToAttention(s: SmokeFailInput): AttentionItem {
     ownerAgentId: null,
     ownerLabel: null,
     ...untriaged(),
-    actions: [{ id: 'view-log', label: 'View log', primary: true }, CHAT, MESSAGE_OWNER],
+    actions: [{ id: 'view-log', label: 'View log', primary: true }, DISCUSS],
     ref: { kind: 'smoke-fail', harnessSlug: s.harnessSlug },
   };
 }
@@ -523,9 +523,7 @@ export function conversationToAttention(c: ConversationInput): AttentionItem {
     // with the owner's text (conversations:resolve { accepted_answer }), which
     // captures it to the knowledge layer AND drops it from the Queue (the reader
     // surfaces only open, unanswered conversations).
-    actions: c.harnessSlug
-      ? [{ id: 'answer', label: 'Answer', primary: true }, CHAT, MESSAGE_OWNER]
-      : [{ id: 'answer', label: 'Answer', primary: true }, MESSAGE_OWNER],
+    actions: [{ id: 'answer', label: 'Answer', primary: true }, DISCUSS],
     ref: { kind: 'conversation', conversationId: c.conversationId },
   };
 }

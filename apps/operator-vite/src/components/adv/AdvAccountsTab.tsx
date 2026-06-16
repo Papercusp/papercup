@@ -551,7 +551,7 @@ export default function AdvAccountsTab() {
                       {a.rate.windowResetAt && a.rate.windowResetAt > now ? (
                         <span className="pc-advacct__muted"> · resets {fmtCountdown(a.rate.windowResetAt - now)}</span>
                       ) : null}
-                      {a.rate.utilizationAt ? <span className="pc-advacct__muted"> · {fmtAgo(a.rate.utilizationAt, now)}</span> : null}
+                      {a.rate.utilizationAt ? <span className="pc-advacct__muted"> · as of {fmtAgo(a.rate.utilizationAt, now)}</span> : null}
                     </dd>
                   </div>
                   <div>
@@ -561,6 +561,7 @@ export default function AdvAccountsTab() {
                       {a.rate.windowResetAt7d && a.rate.windowResetAt7d > now ? (
                         <span className="pc-advacct__muted"> · resets {fmtCountdown(a.rate.windowResetAt7d - now)}</span>
                       ) : null}
+                      {a.rate.utilizationAt ? <span className="pc-advacct__muted"> · as of {fmtAgo(a.rate.utilizationAt, now)}</span> : null}
                     </dd>
                   </div>
                   <div>
@@ -639,8 +640,9 @@ export default function AdvAccountsTab() {
       <footer className="pc-advacct__foot">
         <Link2 size={12} aria-hidden />
         <span>
-          Usage is the unified 5h + 7d utilization the inference gateway reads from Anthropic's response headers — accurate
-          while the gateway is actively serving the account; it may lag or read “—” while the account is idle.
+          Usage is the unified 5h + 7d utilization the inference gateway reads from Anthropic's response headers. It shows
+          the last observed value with an “as of” timestamp, so an idle or rate-limited account keeps its last-known % (it
+          reads “—” only before the account's first observed call).
         </span>
       </footer>
     </div>

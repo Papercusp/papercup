@@ -5,7 +5,7 @@
  * server-side (0600) → registerAccount. The TOKEN NEVER appears in the response (only the
  * registered account row). Body: { linkId, code } → { ok, account } | { ok:false, error }.
  */
-import { completeAccountLink } from '../../../deployment/account-link-store';
+import { completeCliLink } from '../../../deployment/account-link-cli';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -26,7 +26,7 @@ export default defineTool({
     if (!body?.linkId || !body?.code) {
       return Response.json({ ok: false, error: 'linkId and code required' }, { status: 400 });
     }
-    const r = await completeAccountLink({ linkId: String(body.linkId), code: String(body.code) });
+    const r = await completeCliLink({ linkId: String(body.linkId), code: String(body.code) });
     return Response.json(r, { status: r.ok ? 200 : 400 });
   },
 });

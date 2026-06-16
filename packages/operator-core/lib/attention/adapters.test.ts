@@ -171,7 +171,7 @@ describe('coordEscalationToAttention — severity → tier', () => {
     expect(a.needsHuman).toBe(true);
     expect(a.importance).toBe('urgent');
     expect(a.ownerAgentId).toBe('su-architect');
-    expect(a.actions.map((x) => x.id)).toEqual(['resolve', 'chat', 'message-owner']);
+    expect(a.actions.map((x) => x.id)).toEqual(['resolve', 'discuss']);
     if (a.ref.kind === 'coord-escalation') expect(a.ref.options).toHaveLength(2);
   });
 
@@ -181,7 +181,7 @@ describe('coordEscalationToAttention — severity → tier', () => {
     expect(a.needsHuman).toBe(true);
     expect(a.importance).toBe('high');
     // No harness → no Chat, but Message owner is always offered.
-    expect(a.actions.map((x) => x.id)).toEqual(['resolve', 'message-owner']);
+    expect(a.actions.map((x) => x.id)).toEqual(['resolve', 'discuss']);
   });
 
   it('advisory → alert (FYI, not a decision)', () => {
@@ -197,7 +197,7 @@ describe('coordMessageToAttention — structured classification (D-003)', () => 
     const a = coordMessageToAttention({ msgId: 'm-2', summary: 'apps/tui is GREEN again', harnessSlug: 'papercup' });
     expect(a.tier).toBe('activity');
     expect(a.needsHuman).toBe(false);
-    expect(a.actions.map((x) => x.id)).toEqual(['ack', 'chat', 'message-owner']);
+    expect(a.actions.map((x) => x.id)).toEqual(['ack', 'discuss']);
   });
 
   it('an auto lifecycle broadcast → activity (the over-flagging fix)', () => {
@@ -234,12 +234,12 @@ describe('smokeFailToAttention — alert tier', () => {
     expect(a.tier).toBe('alert');
     expect(a.needsHuman).toBe(false);
     expect(a.body).toContain('boot crashed');
-    expect(a.actions.map((x) => x.id)).toEqual(['view-log', 'chat', 'message-owner']);
+    expect(a.actions.map((x) => x.id)).toEqual(['view-log', 'discuss']);
   });
 });
 
 describe('unified shape invariants', () => {
-  it('every adapter: unique-prefixed id, ref kind matches, needsHuman===decision, untriaged default, message-owner present', () => {
+  it('every adapter: unique-prefixed id, ref kind matches, needsHuman===decision, untriaged default, a discuss/message-owner action present', () => {
     const items: AttentionItem[] = [
       planItemToAttention({ slug: 's', harnessSlug: null, id: 'P-001', text: 't', storedStatus: 'todo', effectiveStatus: 'todo', importance: 'normal' }),
       coordEscalationToAttention({ msgId: 'm', severity: 'question', summary: 's' }),
@@ -252,7 +252,7 @@ describe('unified shape invariants', () => {
       expect(it.actions.length).toBeGreaterThan(0);
       expect(it.needsHuman).toBe(it.tier === 'decision');
       expect(it.triageState).toBe('untriaged');
-      expect(it.actions.some((a) => a.id === 'message-owner')).toBe(true);
+      expect(it.actions.some((a) => a.id === 'message-owner' || a.id === 'discuss')).toBe(true);
     }
   });
 });
@@ -323,7 +323,7 @@ describe('P-100 — folded disposition channels (B-14 / D-011)', () => {
     expect(a.ownerAgentId).toBe('su-abc');
     expect(a.ref).toEqual({ kind: 'conversation', conversationId: 'CONV-7' });
     // Carries Message owner (it has an asking agent), unlike improvement/scout.
-    expect(a.actions.some((x) => x.id === 'message-owner')).toBe(true);
+    expect(a.actions.some((x) => x.id === 'discuss')).toBe(true);
     // D-027 follow-on (1): the primary action is now inline Answer (a navigate id
     // that reveals the InputCard → conversations:resolve), not navigate-to-source.
     expect(a.actions[0]).toMatchObject({ id: 'answer', primary: true });

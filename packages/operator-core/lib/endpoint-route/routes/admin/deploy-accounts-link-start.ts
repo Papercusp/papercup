@@ -7,7 +7,7 @@
  * paste) — this is the beta alternative (claude.ai acceptance owner-verified on wake).
  * Body: { accountId, label? } → { ok, authorizeUrl, linkId } | { ok:false, error }.
  */
-import { startAccountLink } from '../../../deployment/account-link-store';
+import { startCliLink } from '../../../deployment/account-link-cli';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -25,7 +25,7 @@ export default defineTool({
     } catch {
       return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
     }
-    const r = startAccountLink({ accountId: String(body?.accountId ?? ''), label: body?.label });
+    const r = await startCliLink({ accountId: String(body?.accountId ?? ''), label: body?.label });
     return Response.json(r, { status: r.ok ? 200 : 400 });
   },
 });

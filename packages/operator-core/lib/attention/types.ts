@@ -225,6 +225,9 @@ export function triageActionToState(a: TriageAction): Exclude<TriageState, 'untr
 export type AttentionActionId =
   | 'chat'
   | 'message-owner'
+  // queue-pending-accuracy P-004 ext-2 (A): one action that replaces chat +
+  // message-owner on the Other items; the UI routes it (DiscussPanel).
+  | 'discuss'
   | 'resolve'
   | 'mark-done'
   | 'answer'
