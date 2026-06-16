@@ -130,7 +130,7 @@ export interface SuTaskOutcome {
 export interface SuIndependentBacklogOps {
   now(): number;
   /** The fleet concurrency cap (= the global `maxSimultaneousAgents`). Read ONCE at run start. */
-  concurrencyCap(): number;
+  concurrencyCap(): number | Promise<number>;
   /** Clone the task repo @ base into a fresh scratch worktree (the per-agent isolated checkout). */
   prepareTask(input: { task: BenchTask; budget: GenerationBudget; workspaceId: string }): Promise<SuIndependentEnrolled>;
   /**
@@ -239,7 +239,7 @@ export function suIndependentBacklogDriver(
       };
 
       try {
-        const cap = Math.max(1, Math.floor(ops.concurrencyCap()) || 1);
+        const cap = Math.max(1, Math.floor(await ops.concurrencyCap()) || 1);
         const deadline = startedAtMs + fleetTimeoutMs;
         const backlog = req.backlog;
         let nextIndex = 0;
@@ -432,13 +432,13 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
   return {
     now: () => Date.now(),
 
-    concurrencyCap() {
+    async concurrencyCap() {
       // The SAME global maxSimultaneousAgents ceiling the hive arms draw from — read once at run start.
       // `spawnConcurrencyCeiling` is a synchronous read of the per-process cache; the caller is
-      // responsible for having set the intended cap in this process before the run. Lazy require (the
-      // established operator-core pattern for a sync read inside an async-bound seam) so the fake-driven
-      // test never pulls the fleet module.
-      const { spawnConcurrencyCeiling } = require('../fleet/operator-spawn') as typeof import('../fleet/operator-spawn');
+      // responsible for having set the intended cap in this process before the run. Lazy DYNAMIC IMPORT
+      // (ESM — `require` is undefined at runtime under tsx/node ESM; the prior `require()` was the
+      // "require is not defined" probe failure) so the fake-driven test never pulls the fleet module.
+      const { spawnConcurrencyCeiling } = await import('../fleet/operator-spawn');
       return spawnConcurrencyCeiling();
     },
 
