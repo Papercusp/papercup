@@ -397,6 +397,21 @@ export function runBootstrap(): void {
         console.warn('[bench-reaper] boot reap failed (non-fatal):', e instanceof Error ? e.message : e);
       }
 
+      // Backfill the preserved file-dir benchmark runs (~/.papercusp/bench-results/<id>/) into the
+      // operational store so the Evaluation UI's Compare view has runs to render. Idempotent
+      // (upsert by run id), cheap (a handful of dirs), and the ONLY thing that populates bench_runs
+      // for imported/reference runs — without it the store stays empty and Compare shows nothing.
+      // try/catch so a malformed run dir never wedges boot.
+      try {
+        const { importAllPreservedRuns } = await import('@papercusp/operator-core/lib/external-bench/run-store');
+        const { imported, skipped } = await importAllPreservedRuns();
+        if (imported.length > 0) {
+          console.warn(`[bench-import] imported ${imported.length} preserved run(s): ${imported.join(', ')}${skipped.length ? ` (skipped ${skipped.length})` : ''}`);
+        }
+      } catch (e) {
+        console.warn('[bench-import] boot import failed (non-fatal):', e instanceof Error ? e.message : e);
+      }
+
       // EI-368: a headless utility host (gym-operator) wants the migrations
       // above but neither the embedder warm-up (onnxruntime) nor the dogfood
       // substrate (holepunch natives) — both are in the Napi-abort suspect set
