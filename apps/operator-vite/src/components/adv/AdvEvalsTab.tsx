@@ -1136,6 +1136,23 @@ function LaunchRunView() {
   );
 }
 
+// Shared frost-styled action button + a browser file download (run management).
+const ACTION_BTN: CSSProperties = {
+  background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg-dim)',
+  borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer',
+};
+function downloadFile(name: string, content: string, mime: string): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ── Validity badges (P-009 / D-003) — the integrity guarantee, surfaced ───────
 const VALIDITY_COLOR: Record<string, string> = { pass: '#34d399', warn: '#fbbf24', fail: '#fb7185', unknown: '#7f9bb4' };
 function ValidityBadges({ signals }: { signals: ValiditySignal[] }) {
@@ -1353,7 +1370,7 @@ function CompareRunsView() {
           <Frontier points={frontierPoints} highlightArm={b!.arm ?? b!.summary.arm} caption="Each arm as a cost/accuracy point — up-and-left is better." emptyHint="No graded arms to plot." />
 
           <div className="pc-evals__sectionhead"><h2>Per-task A vs B</h2></div>
-          <Compare baseline={armLabel(a!.arm ?? a!.summary.arm)} treatment={armLabel(b!.arm ?? b!.summary.arm)} perTask={perTaskRows} format={(n) => (n == null ? '—' : n ? '✓' : '✗')} emptyHint="No shared tasks." />
+          <Compare baseline={armLabel(a!.arm ?? a!.summary.arm)} treatment={armLabel(b!.arm ?? b!.summary.arm)} perTask={perTaskRows} format={(n: number | null | undefined) => (n == null ? '—' : n ? '✓' : '✗')} emptyHint="No shared tasks." />
 
           {/* Honest-caveats panel (P-012 / D-003) — a delta is never cleaner than its caveats. */}
           <div className="pc-evals__sectionhead"><h2>Honest caveats<span style={{ color: 'var(--fg-dim)', fontWeight: 400 }}> · {caveats.length}</span></h2></div>
@@ -1412,23 +1429,72 @@ function PreservedRunsView() {
   });
   const live = liveSync.data?.[0] ?? null;
 
-  // Grade / re-grade trigger (P-010) — kicks the official grader; status streams
-  // back via the sync invalidation (grading → done).
+  // Run management (P-010 grade / P-013 export / P-014 delete + re-run).
   const [grading, setGrading] = useState(false);
-  const [gradeErr, setGradeErr] = useState<string | null>(null);
+  const [actionErr, setActionErr] = useState<string | null>(null);
+  // Setters to pre-fill the launch form for re-run-with-same-config (P-014).
+  const [, setEvalView] = useQueryState('evalView', parseAsString);
+  const [, setLaunchArm] = useQueryState('launchArm', parseAsString);
+  const [, setLaunchTaskSet] = useQueryState('launchTaskSet', parseAsString);
+  const [, setLaunchCap] = useQueryState('launchCap', parseAsString);
+
   async function gradeRun() {
     if (!selId) return;
     setGrading(true);
-    setGradeErr(null);
+    setActionErr(null);
     try {
       const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(selId)}/grade`, { method: 'POST' });
       const json = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !json.ok) setGradeErr(json.error || `grade failed (${res.status})`);
+      if (!res.ok || !json.ok) setActionErr(json.error || `grade failed (${res.status})`);
     } catch (e) {
-      setGradeErr(String(e));
+      setActionErr(String(e));
     } finally {
       setGrading(false);
     }
+  }
+
+  // Download the 3rd-party export bundle (P-013) — predictions.json + README.md.
+  async function exportRun() {
+    if (!selId) return;
+    setActionErr(null);
+    try {
+      const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(selId)}/export`);
+      const bundle = (await res.json()) as { ok?: boolean; error?: string; predictions?: unknown; readme?: string };
+      if (!res.ok || bundle.ok === false) {
+        setActionErr(bundle.error || `export failed (${res.status})`);
+        return;
+      }
+      downloadFile(`${selId}-predictions.json`, JSON.stringify(bundle.predictions ?? [], null, 2), 'application/json');
+      if (bundle.readme) downloadFile(`${selId}-README.md`, bundle.readme, 'text/markdown');
+    } catch (e) {
+      setActionErr(String(e));
+    }
+  }
+
+  // Delete a run (P-014). Snapshot stays on disk (re-importable).
+  async function deleteRun() {
+    if (!selId) return;
+    setActionErr(null);
+    try {
+      const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(selId)}`, { method: 'DELETE' });
+      const json = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !json.ok) {
+        setActionErr(json.error || `delete failed (${res.status})`);
+        return;
+      }
+      await setSelId(null);
+    } catch (e) {
+      setActionErr(String(e));
+    }
+  }
+
+  // Re-run with the same config (P-014) — pre-fill the launch form + switch to it.
+  async function rerunRun() {
+    if (!detail) return;
+    if (detail.arm) await setLaunchArm(detail.arm);
+    if (detail.taskSetId) await setLaunchTaskSet(detail.taskSetId);
+    if (detail.config?.cap != null) await setLaunchCap(String(detail.config.cap));
+    await setEvalView('launch');
   }
 
   if (loading) return <p className="pc-evals__empty">Loading runs…</p>;
@@ -1503,31 +1569,38 @@ function PreservedRunsView() {
   return (
     <section className="pc-evals__section">
       <div className="pc-evals__controlsright">
-        <label className="pc-evals__suitepick" title="The preserved benchmark run to view.">
+        <label className="pc-evals__suitepick" title="The benchmark run to view (live + preserved).">
           <Archive size={12} aria-hidden />
           <span className="pc-evals__suitelabel">run</span>
           <Select
             ariaLabel="Preserved run"
             value={selId || ''}
             onChange={(v: string) => void setSelId(v)}
-            triggerStyle={{ maxWidth: 280 }}
-            options={runs.map((r) => ({ value: r.id, label: `${r.id}${r.arm ? ` · ${armLabel(r.arm)}` : ''}` }))}
+            triggerStyle={{ maxWidth: 300 }}
+            options={runs.map((r) => ({
+              value: r.id,
+              label: `${r.id} · ${armLabel(r.arm)} · ${r.resolvedPct != null ? Math.round(r.resolvedPct * 100) + '%' : '—'} · ${r.status}`,
+            }))}
           />
         </label>
         {selId ? (
-          <button
-            type="button"
-            onClick={() => void gradeRun()}
-            disabled={grading || detail?.status === 'grading'}
-            aria-label="Grade this run with the official grader"
-            title="Run the official swe_bench_pro_eval over this run's diffs (re-gradeable)."
-            style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg-dim)', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: grading ? 'wait' : 'pointer' }}
-          >
-            {detail?.status === 'grading' || grading ? 'Grading…' : 'Grade'}
-          </button>
+          <>
+            <button type="button" onClick={() => void gradeRun()} disabled={grading || detail?.status === 'grading'} aria-label="Grade this run with the official grader" title="Run the official swe_bench_pro_eval over this run's diffs (re-gradeable)." style={ACTION_BTN}>
+              {detail?.status === 'grading' || grading ? 'Grading…' : 'Grade'}
+            </button>
+            <button type="button" onClick={() => void exportRun()} aria-label="Export this run for 3rd-party reproduction" title="Download predictions.json + a README with the exact public re-grade command." style={ACTION_BTN}>
+              Export
+            </button>
+            <button type="button" onClick={() => void rerunRun()} aria-label="Re-run with the same config" title="Pre-fill the launch form with this run's arm / task set / cap." style={ACTION_BTN}>
+              Re-run
+            </button>
+            <button type="button" onClick={() => void deleteRun()} aria-label="Delete this run" title="Remove the run from the store (the on-disk snapshot is kept, re-importable)." style={{ ...ACTION_BTN, color: '#fb7185', borderColor: '#fb7185' }}>
+              Delete
+            </button>
+          </>
         ) : null}
       </div>
-      {gradeErr ? <div className="pc-evals__caveat" role="alert">{gradeErr}</div> : null}
+      {actionErr ? <div className="pc-evals__caveat" role="alert">{actionErr}</div> : null}
 
       {detailErr ? (
         <EmptyCard icon={<Archive size={20} aria-hidden />} title="Couldn’t load this run" body={detailErr} />

@@ -19,6 +19,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { isSafeRunId } from '../../../external-bench/preserved-runs';
 import { launchBenchRun, cancelBenchRun } from '../../../external-bench/run-launcher';
 import { gradeBenchRun } from '../../../external-bench/grade-runner';
+import { deleteBenchRun } from '../../../external-bench/run-store';
+import { buildExportBundle } from '../../../external-bench/export-bundle';
 import { knownTaskSets } from '../../../external-bench/task-sets';
 
 // Per-task opus cost basis: the m3 real-Queen pass cost $33.98 over 11 tasks
@@ -138,4 +140,38 @@ const grade = defineTool({
   },
 });
 
-export default [launch, cancel, estimate, grade];
+const exportBundle = defineTool({
+  method: 'GET',
+  path: '/external-bench/runs/:id/export',
+  auth: 'loopback',
+  async handler(_req, ctx) {
+    const id = ctx.params.id as string;
+    if (!isSafeRunId(id)) {
+      return Response.json({ ok: false, error: 'invalid_run_id' }, { status: 400 });
+    }
+    const bundle = buildExportBundle(id);
+    if (!bundle) {
+      return Response.json({ ok: false, error: 'no_snapshot', id, hint: 'the run has no on-disk snapshot to export' }, { status: 404 });
+    }
+    return Response.json(bundle);
+  },
+});
+
+const remove = defineTool({
+  method: 'DELETE',
+  path: '/external-bench/runs/:id',
+  auth: 'loopback',
+  async handler(_req, ctx) {
+    const id = ctx.params.id as string;
+    if (!isSafeRunId(id)) {
+      return Response.json({ ok: false, error: 'invalid_run_id' }, { status: 400 });
+    }
+    const { deleted } = await deleteBenchRun(id);
+    if (!deleted) {
+      return Response.json({ ok: false, error: 'run_not_found', id }, { status: 404 });
+    }
+    return Response.json({ ok: true, deleted: true });
+  },
+});
+
+export default [launch, cancel, estimate, grade, exportBundle, remove];

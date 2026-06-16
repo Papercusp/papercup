@@ -444,6 +444,20 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
   };
 }
 
+/** Delete a run + its task/event rows (P-014 management). The file-dir snapshot
+ *  is left on disk (re-importable). Returns whether a row was removed. */
+export async function deleteBenchRun(runId: string, opts: DbScope = {}): Promise<{ deleted: boolean }> {
+  const { sql, ws } = resolveDb(opts);
+  const rows = await sql<{ id: string }[]>`
+    DELETE FROM harness_shared.bench_runs WHERE id = ${runId} AND workspace_id = ${ws} RETURNING id
+  `;
+  if (rows.length > 0) {
+    await notifySyncInvalidate('evals.benchRuns', {});
+    await notifySyncInvalidate('evals.benchRun', { runId });
+  }
+  return { deleted: rows.length > 0 };
+}
+
 // ───────────────────── file-dir import (one-way dir → store) ─────────────────────
 
 /** Import one preserved file-dir run into the store (source='import'). Idempotent. */
