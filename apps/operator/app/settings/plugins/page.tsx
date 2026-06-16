@@ -19,6 +19,7 @@ import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import RouteLink from '@/app/_components/RouteLink';
 import { makeAjvResolver } from '@/lib/forms';
+import { useLexicon } from '@/lib/useLexicon';
 import { ProvisionPanel } from './ProvisionPanel';
 import { Select } from '../../harness/Select';
 import { Checkbox } from '../../harness/Checkbox';
@@ -66,6 +67,7 @@ function pluginDirSlug(name: string): string {
 }
 
 export default function PluginSettingsPage() {
+  const t = useLexicon();
   const [plugins, setPlugins] = useState<InstalledPlugin[] | null>(null);
   const [harnesses, setHarnesses] = useState<HarnessRow[]>([]);
   const [enabledByHarness, setEnabledByHarness] = useState<Record<string, string[]>>({});
@@ -190,7 +192,7 @@ export default function PluginSettingsPage() {
     <div>
       <h1>Plugins</h1>
       <p className="pc-settings-intro">
-        Per-harness configuration for installed plugins. Reads/writes{' '}
+        Per-{t('pot')} configuration for installed plugins. Reads/writes{' '}
         <code>~/.papercusp/harnesses/&lt;slug&gt;/plugin-configs/</code>.
         See <RouteLink href="/settings/plugins/tools" style={{ color: 'var(--fg)' }}>tools contributed by plugins →</RouteLink>
       </p>

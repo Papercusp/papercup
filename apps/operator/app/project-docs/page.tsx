@@ -69,14 +69,14 @@ async function ProjectDocs({
     return <Empty title="Missing ?harness=<slug>" body={`Open this view via the ${term('pot', { lower: true })} Docs tab — it provides the slug.`} />;
   }
   const projectPath = await resolveProjectPath(slug);
-  if (!projectPath) return <Empty title={`Unknown harness "${slug}"`} body="No matching entry in the projects registry." />;
+  if (!projectPath) return <Empty title={`Unknown ${term('pot', { lower: true })} "${slug}"`} body="No matching entry in the projects registry." />;
 
   const docsRoot = join(projectPath, 'docs');
   if (!existsSync(docsRoot)) {
     return (
       <Empty
         title="No docs/ directory"
-        body={`This harness has no project-level documentation yet. Add markdown files under ${normalize(docsRoot)} to populate this tab.`}
+        body={`This ${term('pot', { lower: true })} has no project-level documentation yet. Add markdown files under ${normalize(docsRoot)} to populate this tab.`}
       />
     );
   }

@@ -25,6 +25,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Modal } from '@/app/harness/Modal';
+import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import {
   addPlanDecision,
@@ -97,6 +98,7 @@ export default function PlanActions({
   disabled,
   disabledReason,
 }: Props) {
+  const t = useLexicon();
   const [open, setOpen] = useState<Dialog>(null);
   const [launchingWorkbench, setLaunchingWorkbench] = useState(false);
   const [startPending, setStartPending] = useState(false);
@@ -313,10 +315,10 @@ export default function PlanActions({
         title={
           disabled
             ? disabledReason
-            : 'Promote todo/wip plan items to harness features via plans:promote'
+            : `Promote todo/wip plan items to ${t('pot', { lower: true })} features via plans:promote`
         }
       >
-        → Harness
+        → {t('pot')}
       </button>
       <button
         type="button"
@@ -369,7 +371,7 @@ export default function PlanActions({
         items={items}
         onSuccess={(count) => {
           setOpen(null);
-          toast.success(`Promoted ${count} feature${count === 1 ? '' : 's'} to harness. Worker will pick up shortly.`, { duration: 6000 });
+          toast.success(`Promoted ${count} feature${count === 1 ? '' : 's'} to ${t('pot', { lower: true })}. Worker will pick up shortly.`, { duration: 6000 });
           onChanged();
         }}
       />
@@ -792,6 +794,7 @@ function PromoteDialog({
   items: PlanItem[] | undefined;
   onSuccess: (count: number) => void;
 }) {
+  const t = useLexicon();
   const [harnessSlug, setHarnessSlug] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -2,6 +2,7 @@ import RouteLink from '../_components/RouteLink';
 
 import { SupportChatButton } from '../_components/SupportChatButton';
 import { SupportAgentPanel } from '../_components/SupportAgentPanel';
+import { term } from '@papercusp/operator-core/lib/lexicon';
 
 export const metadata = {
   title: 'Support · Papercusp',
@@ -12,7 +13,11 @@ interface FaqItem {
   a: React.ReactNode;
 }
 
-const FAQS: FaqItem[] = [
+// FAQ copy is built at render so the project term ("Pot"/"Hive") resolves
+// through the active brand pack (the-hive-lexicon) rather than freezing at
+// module-eval time.
+function buildFaqs(): FaqItem[] {
+  return [
   {
     q: "First-run says 'agent CLI not found'. What do I install?",
     a: (
@@ -32,7 +37,7 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
     ),
   },
   {
-    q: 'I added my API key but the harness still says it can\'t reach the LLM.',
+    q: `I added my API key but the ${term('pot', { lower: true })} still says it can't reach the LLM.`,
     a: (
       <>
         <p>
@@ -54,22 +59,22 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
     ),
   },
   {
-    q: 'My harness exited unexpectedly. How do I see what happened?',
+    q: `My ${term('pot', { lower: true })} exited unexpectedly. How do I see what happened?`,
     a: (
       <>
         <p>
-          The <em>brain</em> tab on the harness dashboard shows the last orchestrator decision and the cost-to-date. Two common exit causes:
+          The <em>brain</em> tab on the {term('pot')} dashboard shows the last orchestrator decision and the cost-to-date. Two common exit causes:
         </p>
         <ul>
           <li><strong>Cost cap hit</strong> — default <code>maxCostUsd: 10</code>. Raise in <code>~/.papercusp/projects/&lt;name&gt;/.papercusp/config.json</code> and re-run.</li>
           <li><strong>Validator rejection loop</strong> — same feature failing 3 attempts. The dashboard shows the failed feature in red; click it to see validator output and either refine the owning plan (its items / acceptance) or accept the proposal manually.</li>
         </ul>
-        <p>For deeper debugging, the embedded <em>pi</em> tab (omp terminal) lets you ask the harness questions directly.</p>
+        <p>For deeper debugging, the embedded <em>pi</em> tab (omp terminal) lets you ask the {term('pot', { lower: true })} questions directly.</p>
       </>
     ),
   },
   {
-    q: "Where do I publish my own harness template / plugin?",
+    q: `Where do I publish my own ${term('pot', { lower: true })} template / plugin?`,
     a: (
       <>
         <p>
@@ -115,9 +120,11 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
       </>
     ),
   },
-];
+  ];
+}
 
 export default function SupportPage() {
+  const FAQS = buildFaqs();
   return (
     <div className="pc-shell pc-support-shell" style={{ maxWidth: 820, margin: '0 auto', padding: '32px 28px' }}>
       <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 8 }}>Support</h1>

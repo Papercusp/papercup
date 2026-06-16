@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
+import { useLexicon } from '@/lib/useLexicon';
 import '@xterm/xterm/css/xterm.css';
 
 interface PtyHandle {
@@ -39,6 +40,7 @@ async function resolveHarnessSlug(): Promise<string | null> {
 }
 
 export default function TerminalTab(): JSX.Element {
+  const t = useLexicon();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<import('@xterm/xterm').Terminal | null>(null);
   const fitRef = useRef<import('@xterm/addon-fit').FitAddon | null>(null);
@@ -57,7 +59,7 @@ export default function TerminalTab(): JSX.Element {
 
     const slug = slugRef.current ?? await resolveHarnessSlug();
     if (!slug) {
-      setErrorMsg('no harness project found — install one from /dev/harnesses first');
+      setErrorMsg(`no ${t('pot', { lower: true })} project found — install one from /dev/harnesses first`);
       setStatus('error');
       return;
     }
@@ -172,7 +174,7 @@ export default function TerminalTab(): JSX.Element {
       source.close();
       try { term.dispose(); } catch { /* ignore */ }
     };
-  }, []);
+  }, [t]);
 
   // Auto-start on mount.
   useEffect(() => {
@@ -223,7 +225,7 @@ export default function TerminalTab(): JSX.Element {
           }}>{status}</span>
           {exitCode !== null && <> (exit code {exitCode})</>}
         </span>
-        {slugRef.current && <span>harness: {slugRef.current}</span>}
+        {slugRef.current && <span>{t('pot', { lower: true })}: {slugRef.current}</span>}
         {handleRef.current && <span>pid: {handleRef.current.pid}</span>}
         {errorMsg && <span style={{ color: 'var(--bad)' }}>error: {errorMsg}</span>}
         <button

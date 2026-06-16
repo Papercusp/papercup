@@ -288,6 +288,7 @@ export async function joinHiveAsView(
       insertHiveIfAbsent({ ...input, title: opts.title ?? opts.hiveId }));
   try {
     const pubkeyBase64 = await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null);
+    console.log(`[ei681-diag] join 2b: hiveId='${opts.hiveId}' hiveSlug(home)='${hiveSlug}' resolveHivePubkey=${pubkeyBase64 ? pubkeyBase64.slice(0, 12) + '…' : 'NULL'}`);
     if (pubkeyBase64) {
       await upsertHiveIdentity({
         workspaceId: opts.workspaceId,
@@ -295,8 +296,10 @@ export async function joinHiveAsView(
         pubkeyBase64,
         keychainId: `remote:${opts.hiveId}`,
       });
+      console.log(`[ei681-diag] join 2b: wrote hives identity home='${hiveSlug}'`);
     }
-  } catch {
+  } catch (e) {
+    console.log(`[ei681-diag] join 2b: identity write THREW: ${e instanceof Error ? e.message : e}`);
     /* identity-view write is best-effort; never fail the join over it */
   }
 
@@ -315,12 +318,16 @@ export async function joinHiveAsView(
       (await import('../sync/hyperbee/boot-all')).rebootHarness(ws, slug));
   for (const m of members) {
     if (!m.ok || !m.slug) continue;
+    console.log(`[ei681-diag] join 2c: rebooting member '${m.slug}' to re-key onto hive topic (hive_slug='${hiveSlug}')`);
     try {
       const p = rebootHarness(opts.workspaceId, m.slug);
       if (p && typeof (p as Promise<unknown>).catch === 'function') {
-        (p as Promise<unknown>).catch(() => {});
+        (p as Promise<unknown>).catch((e) =>
+          console.log(`[ei681-diag] join 2c: reboot('${m.slug}') REJECTED: ${e instanceof Error ? e.message : e}`),
+        );
       }
-    } catch {
+    } catch (e) {
+      console.log(`[ei681-diag] join 2c: reboot('${m.slug}') sync-threw: ${e instanceof Error ? e.message : e}`);
       /* a sync throw must never fail the join or skip a later member */
     }
   }

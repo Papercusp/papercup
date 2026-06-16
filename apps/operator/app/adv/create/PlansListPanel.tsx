@@ -19,6 +19,7 @@ import { ClipboardList, Eye, Inbox, Plus, Terminal } from 'lucide-react';
 import { toast } from 'sonner';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
+import { useLexicon } from '@/lib/useLexicon';
 import PlanFilters from '@/app/admin/plans/PlanFilters';
 import PlanBucketTabs from '@/app/admin/plans/PlanBucketTabs';
 import PlanRail from '@/app/admin/plans/PlanRail';
@@ -32,6 +33,7 @@ import {
 } from './use-create-data';
 
 export default function PlansListPanel(_props?: PanelComponentProps) {
+  const t = useLexicon();
   const scope = useCreateScope();
   const maps = usePlanListMaps(scope);
   const [view, setView] = useCreateView();
@@ -109,7 +111,7 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
           title={
             resolvedSlug
               ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
-              : 'Launch an agent session to draft a new plan (no active harness — agent will ask)'
+              : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`
           }
         >
           <Plus size={14} aria-hidden />
@@ -157,7 +159,7 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
         {maps.harnessOptions.length > 1 ? (
           <div className="pc-plans__harness-filter">
             <label className="pc-plans__harness-filter-label" htmlFor="pc-create-harness-filter">
-              Harness
+              {t('pot')}
             </label>
             <select
               id="pc-create-harness-filter"

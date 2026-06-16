@@ -16,6 +16,7 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 
 // ─── Types & mock data ─────────────────────────────────────────────────────
 
@@ -269,6 +270,7 @@ type View = 'decisions' | 'activity';
 type ActivityFilter = 'all' | 'in-flight' | 'done' | 'delegates' | 'scans';
 
 export default function OperatorMockPage(): JSX.Element {
+  const t = useLexicon();
   const [view, setView] = useState<View>('decisions');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>('all');
   const [harnessFilter, setHarnessFilter] = useState<string | null>(null);
@@ -393,8 +395,8 @@ export default function OperatorMockPage(): JSX.Element {
         <div style={S.bodyRow}>
           {/* Sidebar */}
           <aside style={S.sidebar}>
-            <div style={S.sectionHead}>Harnesses</div>
-            <div style={S.harnessHint}>Click to filter by harness.</div>
+            <div style={S.sectionHead}>{t('pot', { plural: true })}</div>
+            <div style={S.harnessHint}>Click to filter by {t('pot', { lower: true })}.</div>
             <div style={S.harnessList}>
               {harnessFilter && (
                 <button
@@ -858,6 +860,7 @@ function DispatchConfirm({
   onCancel: () => void;
   onConfirm: () => void;
 }): JSX.Element {
+  const t = useLexicon();
   return (
     <div style={S.modalBackdrop} onClick={onCancel}>
       <div style={S.modal} onClick={(e) => e.stopPropagation()}>
@@ -866,7 +869,7 @@ function DispatchConfirm({
           Send to <code style={S.code}>{card.recipient}</code>?
         </div>
         <div style={S.modalSection}>
-          <div style={S.modalLabel}>The harness will receive:</div>
+          <div style={S.modalLabel}>The {t('pot', { lower: true })} will receive:</div>
           <div style={S.modalQuote}>"{card.directiveBody ?? card.title}"</div>
         </div>
         <div style={S.modalSection}>

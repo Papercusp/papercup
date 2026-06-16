@@ -5,6 +5,7 @@ import { useQueryState, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useLexicon } from '@/lib/useLexicon';
 
 export interface Process {
   pid: number;
@@ -77,6 +78,7 @@ export interface KillModalState {
 }
 
 export default function ProcessesTab() {
+  const t = useLexicon();
   const [processes, setProcesses] = useState<Process[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -174,7 +176,7 @@ export default function ProcessesTab() {
           { key: 'pid', header: 'PID', width: 0.8, align: 'right', toCopyText: (r) => String(r.pid), render: ({ row }) => <span className="pc-dev-muted">{row.pid}</span> },
           { key: 'kind', header: 'Kind', width: 1, toCopyText: (r) => r.kind, render: ({ row }) => <span className="pc-dev-slug">{row.kind}</span> },
           { key: 'age', header: 'Age', width: 0.7, align: 'right', toCopyText: (r) => fmtAge(r.started_seconds_ago), render: ({ row }) => <span className="pc-dev-muted">{fmtAge(row.started_seconds_ago)}</span> },
-          { key: 'harness', header: 'Harness', width: 1.5, toCopyText: (r) => r.harness_slug ?? '', render: ({ row }) => <>{row.harness_slug ?? '—'}</> },
+          { key: 'harness', header: t('pot'), width: 1.5, toCopyText: (r) => r.harness_slug ?? '', render: ({ row }) => <>{row.harness_slug ?? '—'}</> },
           { key: 'ws', header: 'Workspace', width: 1.2, toCopyText: (r) => r.workspace_id ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.workspace_id ?? '—'}</span> },
           {
             key: 'cwd', header: 'CWD', width: 2,
@@ -229,6 +231,7 @@ export function KillModal({
   state: KillModalState;
   setState: (s: KillModalState | null) => void;
 }) {
+  const t = useLexicon();
   const { process: p } = state;
   const pidStr = String(p.pid);
   const canKill = state.confirmText === pidStr && !state.busy;
@@ -273,7 +276,7 @@ export function KillModal({
           <span className="pc-dev-slug">{p.kind}</span>
           <span>cwd</span>
           <span className="pc-dev-muted">{p.cwd ?? '—'}</span>
-          <span>harness</span>
+          <span>{t('pot', { lower: true })}</span>
           <span>{p.harness_slug ?? '—'}</span>
           <span>cmdline</span>
           <span className="pc-dev-query">{p.cmdline.slice(0, 200)}</span>

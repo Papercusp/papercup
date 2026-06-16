@@ -88,7 +88,9 @@ export const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: st
   { id: 'blocked', label: 'Blocked', hint: 'Items stuck on unresolved blockers or external waits.' },
   { id: 'coord-escalation', label: 'Escalations', hint: 'Agent escalations from the coord log — a decision is blocking progress.' },
   { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
-  { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
+  // {pot} is resolved to the active lexicon label ("Hive") at the QueuePanel
+  // render site — module-level consts can't call the useLexicon hook.
+  { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the {pot} app is broken.' },
   { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the inbox (chat stays conversation only).' },
   { id: 'improvement', label: 'Improvements', hint: 'Self-improvements the auto-implement loop routed to you for triage.' },
   { id: 'standing-approval', label: 'Approvals', hint: 'Standing-approval candidates — grant the operator auto-dispatch, or dismiss.' },

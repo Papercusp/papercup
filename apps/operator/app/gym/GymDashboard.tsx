@@ -19,6 +19,7 @@ import {
   useQueryState,
 } from 'nuqs';
 import { diffLines } from 'diff';
+import { useLexicon } from '@/lib/useLexicon';
 // The compare table is lifted to a shared eval-viz component (P-021 / BRIEF 10),
 // reused on the Evaluation surface; the gym renders the same one here.
 import { Compare } from '../eval-viz';
@@ -55,6 +56,7 @@ const card: React.CSSProperties = { border: '1px solid var(--border, #2a2a33)', 
 const mono: React.CSSProperties = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 };
 
 export default function GymDashboard() {
+  const t = useLexicon();
   const [slug, setSlug] = useQueryState('gymSlug', parseAsString.withDefault(''));
   const [tab, setTab] = useQueryState('gymTab', parseAsStringEnum<Tab>([...TABS]).withDefault('proposals'));
 
@@ -75,7 +77,7 @@ export default function GymDashboard() {
       <header style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>Harness Gym</h1>
         <label style={{ ...mono, display: 'flex', alignItems: 'center', gap: 6 }}>
-          harness
+          {t('pot', { lower: true })}
           <select value={slug} onChange={(e) => void setSlug(e.target.value)} data-testid="gym-harness-select" style={{ ...mono, background: '#0e0e12', color: 'inherit', border: '1px solid #2a2a33', borderRadius: 6, padding: '3px 6px' }}>
             <option value="">— select —</option>
             {harnesses.map((h) => (
@@ -107,7 +109,7 @@ export default function GymDashboard() {
       </nav>
 
       {!slug ? (
-        <div style={card} data-testid="gym-empty">Pick a harness to begin.</div>
+        <div style={card} data-testid="gym-empty">Pick a {t('pot', { lower: true })} to begin.</div>
       ) : (
         <main>
           {tab === 'proposals' && <ProposalsTab slug={slug} />}

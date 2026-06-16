@@ -5,6 +5,7 @@ import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface Entry {
   spawn_id: string;
@@ -81,6 +82,7 @@ const CTX = new URLSearchParams({
 });
 
 export default function SessionsTab({ workspaceIds, onRerun }: Props) {
+  const t = useLexicon();
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -218,7 +220,7 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
               { key: 'spawn', header: 'Spawn', width: 1.2, toCopyText: (r) => r.spawn_id, render: ({ row }) => <span className="pc-dev-slug" title={row.spawn_id}>{row.spawn_id.slice(0, 12)}…</span> },
               { key: 'started', header: 'Started', width: 1, toCopyText: (r) => r.started_at, render: ({ row }) => <span className="pc-dev-muted" title={row.started_at}>{fmtRelTime(row.started_at)}</span> },
               { key: 'ws', header: 'Workspace', width: 1, toCopyText: (r) => r.workspace_id, render: ({ row }) => <span className="pc-dev-muted">{row.workspace_id}</span> },
-              { key: 'harness', header: 'Harness', width: 1.2, toCopyText: (r) => r.harness_slug ?? '', render: ({ row }) => <>{row.harness_slug ?? '—'}</> },
+              { key: 'harness', header: t('pot'), width: 1.2, toCopyText: (r) => r.harness_slug ?? '', render: ({ row }) => <>{row.harness_slug ?? '—'}</> },
               { key: 'role', header: 'Role', width: 1, toCopyText: (r) => r.role ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.role ?? '—'}</span> },
               { key: 'tools', header: 'Tools', width: 0.6, align: 'right', toCopyText: (r) => String(r.tool_count), render: ({ row }) => <>{row.tool_count}</> },
               {

@@ -22,6 +22,7 @@ import { FLAGS } from '@papercusp/flags';
 import VideoGrid from '../voice-video/VideoGrid';
 import VoiceChannelPanel from '../voice-video/VoiceChannelPanel';
 import { panelRegistry, type PanelComponentProps } from '@/app/harness/dock/panel-registry';
+import { useLexicon } from '@/lib/useLexicon';
 
 const fill: React.CSSProperties = {
   width: '100%',
@@ -39,6 +40,8 @@ const mute: React.CSSProperties = {
 };
 
 export function WorkbenchVoicePanel({ params }: PanelComponentProps) {
+  // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
+  const t = useLexicon();
   const harnessSlug = typeof params.harnessSlug === 'string' ? params.harnessSlug : '';
   const videoOn = useFlag(FLAGS.VIDEO_CHANNELS);
   const voiceOn = useFlag(FLAGS.VOICE_CHANNELS);
@@ -70,11 +73,11 @@ export function WorkbenchVoicePanel({ params }: PanelComponentProps) {
             }}
           >
             <span style={mute}>
-              Video channel{harnessSlug ? ` · ${harnessSlug}` : ' · no shared harness'}
+              Video channel{harnessSlug ? ` · ${harnessSlug}` : ` · no shared ${t('pot', { lower: true })}`}
             </span>
             <span style={mute}>
               {videoOn
-                ? 'Select a shared harness to join its video channel'
+                ? `Select a shared ${t('pot', { lower: true })} to join its video channel`
                 : 'Enable papercusp-video-channels to turn on video'}
             </span>
           </div>

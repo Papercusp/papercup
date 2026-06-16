@@ -31,6 +31,7 @@ import PlanOtherList, { OtherDetail } from './PlanOtherList';
 import PlanItemPreview from './PlanItemPreview';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
+import { useLexicon } from '@/lib/useLexicon';
 import DecisionLog from '@/app/_components/DecisionLog';
 import QueueSummary from './QueueSummary';
 import { QUEUE_TABS, QUEEN_LOG_LAYERS } from './queue-authorizer';
@@ -155,6 +156,7 @@ const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
 
 export default function PlansClient() {
+  const t = useLexicon();
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — AdvShell owns
   // `?slug=` for the active harness (a global query param shared across
   // every /adv tab).
@@ -686,7 +688,7 @@ export default function PlansClient() {
             title={
               resolvedHarnessSlug
                 ? `Launch an agent session to draft a new plan in ${resolvedHarnessSlug}`
-                : 'Launch an agent session to draft a new plan (no active harness — agent will ask)'
+                : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`
             }
           >
             <Plus size={14} aria-hidden />
@@ -696,7 +698,7 @@ export default function PlansClient() {
             type="button"
             className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}
             onClick={goPlans}
-            title="Browse plans — open one to view/edit it. (Plan-status & harness filters stay applied.)"
+            title={`Browse plans — open one to view/edit it. (Plan-status & ${t('pot', { lower: true })} filters stay applied.)`}
           >
             <ClipboardList size={14} aria-hidden />
             Plans
@@ -727,7 +729,7 @@ export default function PlansClient() {
           {harnessOptions.length > 1 ? (
             <div className="pc-plans__harness-filter">
               <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
-                Harness
+                {t('pot')}
               </label>
               <select
                 id="pc-plans-harness-filter"

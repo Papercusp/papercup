@@ -76,7 +76,7 @@ export default function HarnessesTab({ workspaceIds }: Props) {
   return (
     <div className="pc-dev-tab-body">
       <header className="pc-dev-tab-header">
-        <h2>Harnesses</h2>
+        <h2>{t('pot', { plural: true })}</h2>
         <span className="pc-dev-muted">{rows.length} across selected workspaces</span>
       </header>
       {loading && <div className="pc-dev-muted">loading…</div>}

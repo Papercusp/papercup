@@ -92,7 +92,7 @@ function DogfoodSubstratePage() {
             <thead>
               <tr>
                 <th style={th}>Workspace</th>
-                <th style={th}>Harness</th>
+                <th style={th}>{t('pot')}</th>
                 <th style={th}>Health</th>
               </tr>
             </thead>
@@ -139,7 +139,7 @@ function DogfoodSubstratePage() {
             <ClaimAttemptTimelineClient slug={pickedSlug || rows[0].harnessSlug} limit={50} />
           ) : (
             <div style={{ padding: 12, fontSize: 12, color: 'var(--fg-dim, #888)' }}>
-              No harnesses booted — claim attempts only record under a booted substrate.
+              No {t('pot', { plural: true, lower: true })} booted — claim attempts only record under a booted substrate.
             </div>
           )}
         </section>

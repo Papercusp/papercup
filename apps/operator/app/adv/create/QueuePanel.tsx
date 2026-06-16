@@ -20,6 +20,7 @@
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
+import { useLexicon } from '@/lib/useLexicon';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanItemsList from '@/app/admin/plans/PlanItemsList';
 import PlanOtherList from '@/app/admin/plans/PlanOtherList';

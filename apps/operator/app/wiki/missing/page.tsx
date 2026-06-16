@@ -2,6 +2,7 @@ import RouteLink from '@/app/_components/RouteLink';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
+import { term } from '@papercusp/operator-core/lib/lexicon';
 
 const SEARCH_DIRS = ['.papercusp', '', '.claude/skills'] as const;
 
@@ -56,7 +57,7 @@ export default async function WikiMissingPage({
       <h1 className="pc-wiki-missing-title" style={{ fontSize: 22, fontWeight: 600, marginBottom: 8 }}>Wiki link not found</h1>
       <p className="pc-wiki-missing-copy" style={{ color: '#aaa', marginBottom: 16 }}>
         No file matched <code className="pc-wiki-missing-target" style={{ background: '#1a1d22', padding: '2px 6px', borderRadius: 3 }}>[[{target}]]</code>
-        {harness ? <> in harness <strong>{harness}</strong></> : null}.
+        {harness ? <> in {term('pot', { lower: true })} <strong>{harness}</strong></> : null}.
       </p>
 
       {top.length > 0 ? (
@@ -83,7 +84,7 @@ export default async function WikiMissingPage({
       )}
 
       <div className="pc-wiki-missing-back" style={{ marginTop: 32 }}>
-        <RouteLink href="/adv?tab=harnesses" className="pc-wiki-missing-link pc-wiki-missing-link--back" style={{ color: '#6ab0ff' }}>← Back to harness dashboard</RouteLink>
+        <RouteLink href="/adv?tab=harnesses" className="pc-wiki-missing-link pc-wiki-missing-link--back" style={{ color: '#6ab0ff' }}>← Back to {term('pot')} dashboard</RouteLink>
       </div>
     </div>
   );

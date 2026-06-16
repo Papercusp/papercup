@@ -15,8 +15,11 @@ import VideoGrid from '../voice-video/VideoGrid';
 import VoiceChannelPanel from '../voice-video/VoiceChannelPanel';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import { navigateClient } from '@papercusp/operator-core/lib/client-navigation';
+import { useLexicon } from '@/lib/useLexicon';
 
 export default function VoiceTab({ active }: { active: boolean }) {
+  // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
+  const t = useLexicon();
   const harnessSlug = useResolvedHarnessSlug();
   const videoOn = useFlag(FLAGS.VIDEO_CHANNELS);
   const voiceOn = useFlag(FLAGS.VOICE_CHANNELS);
@@ -45,7 +48,7 @@ export default function VoiceTab({ active }: { active: boolean }) {
           {videoOn
             ? harnessSlug
               ? ''
-              : 'Select a shared harness to join its peer channel.'
+              : `Select a shared ${t('pot', { lower: true })} to join its peer channel.`
             : voiceOn
               ? ''
               : 'Peer audio/video channels are flag-gated (papercusp-voice-channels / papercusp-video-channels) — flip them in /admin/features.'}
