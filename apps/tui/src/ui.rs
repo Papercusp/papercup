@@ -262,12 +262,21 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
     if !plans.is_empty() {
         state.select(Some(app.plan_sel.min(plans.len() - 1)));
     }
+    // Two-level pane nav (owner ask 2026-06-16): the focused pane wears the active
+    // border + a cursor/inside tag; ←/→ (or ↑/↓ browsing) switch list ↔ items.
+    let list_focused = app.plans_focus == crate::app::PlansFocus::List;
+    let items_focused = app.plans_focus == crate::app::PlansFocus::Items;
     let body_area = block_with_header(
         f,
         cols[0],
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(format!(" Plans ({}) ", plans.len()))),
+        Theme::block(
+            Line::from(format!(
+                " {}Plans ({}) ",
+                focus_cursor(list_focused, app.plans_entered),
+                plans.len()
+            )),
+            list_focused,
+        ),
         &format!("  {:<9}{}", "status", "slug"),
     );
     let list = List::new(items)
@@ -298,7 +307,8 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(" Detail "));
     f.render_widget(para, right[0]);
 
-    draw_plan_item_states(f, app, right[1]);
+    let item_cursor = items_focused.then_some(app.plan_items_sel);
+    draw_plan_item_states(f, app, right[1], items_focused, item_cursor);
 }
 
 /// Per-item assignment/claim/liveness for the selected plan (P-005a). Renders only
@@ -306,14 +316,22 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
 /// a prior selection never paints the wrong plan). The block title carries the
 /// harness's claim-liveness split (availability=LOCAL vs activity=SHARED); each row
 /// is one item's disposition glyph + id + who's on it + the claim's liveness + intent.
-fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
+fn draw_plan_item_states(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    focused: bool,
+    cursor: Option<usize>,
+) {
     let sel = app.selected_plan().map(|p| p.slug.as_str());
     let states = app
         .plan_item_states
         .as_ref()
         .filter(|s| Some(s.plan.as_str()) == sel);
+    let mut item_count = 0usize;
     let (title, items): (String, Vec<ListItem>) = match states {
         Some(s) => {
+            item_count = s.items.len();
             let mode = if s.harness_liveness_mode.is_empty() {
                 "—"
             } else {
@@ -329,26 +347,39 @@ fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
             // are discoverable from the pane they act on.
             (
                 format!(
-                    " Items ({}) · liveness: {mode} · :pickup/:release <item> ",
+                    " {}Items ({}) · liveness: {mode} · :pickup/:release <item> ",
+                    focus_cursor(focused, app.plans_entered),
                     s.items.len()
                 ),
                 rows,
             )
         }
-        None => (" Items ".to_string(), Vec::new()),
+        None => (
+            format!(" {}Items ", focus_cursor(focused, app.plans_entered)),
+            Vec::new(),
+        ),
     };
     let body_area = block_with_header(
         f,
         area,
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(title)),
+        Theme::block(Line::from(title), focused),
         &format!(
             "{:<2}{:<8}{:<10}{:<15}{:<7}{}",
             "", "item", "state", "who", "live", "intent"
         ),
     );
-    f.render_widget(List::new(items), body_area);
+    // The items here have NO header row in the list body (the column header is a
+    // separate band), so the cursor maps directly to the item index.
+    let mut state = ListState::default();
+    if let Some(c) = cursor {
+        if item_count > 0 {
+            state.select(Some(c.min(item_count - 1)));
+        }
+    }
+    let list = List::new(items)
+        .highlight_style(Theme::selected())
+        .highlight_symbol("▸ ");
+    f.render_stateful_widget(list, body_area, &mut state);
 }
 
 /// Focus-cursor prefix for pane titles (`▸ ` on the focused pane, empty
@@ -2752,22 +2783,29 @@ fn draw_fleet_detail(f: &mut Frame, app: &App) {
 /// plan-progress popup); otherwise the focused Fleet panel decides (mail /
 /// conversation / plan).
 fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
+    use crate::app::PlansFocus;
     use crate::fleet::FleetPanel;
-    if app.tab == crate::app::Tab::Plans {
-        let lines = match app.selected_plan() {
-            Some(p) => crate::fleet::plan_detail_lines_for(p),
-            None => vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))],
+    // Both Plans surfaces (in-app tab + dock plans-pane) reuse this popup. The
+    // focused pane decides the body: the LIST pane → the selected plan's full
+    // detail (owner ask 2026-06-15 #1); the ITEMS pane → the selected work item's
+    // detail (owner ask 2026-06-16).
+    if matches!(app.tab, crate::app::Tab::Plans | crate::app::Tab::PlansBoard) {
+        if app.plans_focus == PlansFocus::Items {
+            let lines = match app.selected_plan_item() {
+                Some(it) => crate::plans_board::item_detail_lines(it),
+                None => vec![Line::from(Span::styled("(no work item selected)", Theme::dim()))],
+            };
+            return (" work item · Esc close · j/k item · PgUp/Dn scroll ", lines);
+        }
+        let selected_plan = if app.tab == crate::app::Tab::PlansBoard {
+            let rows = crate::plans_board::board_rows(app);
+            rows.get(app.plans_board_sel.min(rows.len().saturating_sub(1)))
+                .map(|r| crate::fleet::plan_detail_lines_for(r.plan))
+        } else {
+            app.selected_plan().map(crate::fleet::plan_detail_lines_for)
         };
-        return (" plan · Esc close · j/k plan · PgUp/Dn scroll ", lines);
-    }
-    // The dock's plans-pane (the pinned plans status board) reuses this popup for
-    // the selected plan's full detail (owner ask 2026-06-15 #1).
-    if app.tab == crate::app::Tab::PlansBoard {
-        let rows = crate::plans_board::board_rows(app);
-        let lines = match rows.get(app.plans_board_sel.min(rows.len().saturating_sub(1))) {
-            Some(r) => crate::fleet::plan_detail_lines_for(r.plan),
-            None => vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))],
-        };
+        let lines = selected_plan
+            .unwrap_or_else(|| vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))]);
         return (" plan · Esc close · j/k plan · PgUp/Dn scroll ", lines);
     }
     match app.fleet.fleet_focus {

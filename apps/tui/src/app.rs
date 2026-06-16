@@ -3608,6 +3608,47 @@ impl App {
         }
     }
 
+    /// ↑/↓ on the in-app Plans tab (two-level nav, owner ask 2026-06-16): BROWSE
+    /// between the plans-list and work-items panes when not entered, else move
+    /// WITHIN the focused pane — the plans LIST moves `plan_sel` and refetches the
+    /// new plan's items (resetting the items cursor); the ITEMS pane moves
+    /// `plan_items_sel`. Clamped (no fall-through).
+    fn plans_tab_arrow(&mut self, delta: isize) -> Action {
+        if !self.plans_entered {
+            self.plans_focus = self.plans_focus.toggle();
+            return Action::Render;
+        }
+        match self.plans_focus {
+            PlansFocus::List => {
+                let len = self.visible_plans().len();
+                self.plan_sel = step_clamped(self.plan_sel, delta, len);
+                self.plan_items_sel = 0; // a new plan → its own items
+                self.publish_active_plan();
+                // Immediate fetch so the items pane updates promptly (the poller
+                // also keeps it fresh between keystrokes).
+                match self.selected_plan() {
+                    Some(p) => {
+                        let harness = p
+                            .harness
+                            .clone()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| self.harness.clone());
+                        Action::FetchPlanItemStates {
+                            harness,
+                            plan: p.slug.clone(),
+                        }
+                    }
+                    None => Action::Render,
+                }
+            }
+            PlansFocus::Items => {
+                let len = self.plans_items().len();
+                self.plan_items_sel = step_clamped(self.plan_items_sel, delta, len);
+                Action::Render
+            }
+        }
+    }
+
     /// Enter on the focused (entered) Plans pane: the plans LIST opens the plan
     /// detail popup; the ITEMS pane opens the selected work item's detail. Shared
     /// by `Tab::Plans` + `Tab::PlansBoard`. No-op on an empty list.
@@ -5188,6 +5229,12 @@ impl App {
                     self.pane_entered = false;
                     return Action::Render;
                 }
+                // On the in-app Plans tab, Esc first steps OUT of an entered pane
+                // back to pane-browsing (two-level nav, owner ask 2026-06-16).
+                if self.tab == Tab::Plans && self.plans_entered {
+                    self.plans_entered = false;
+                    return Action::Render;
+                }
                 // On the Memory tab, Esc first clears an active search back to
                 // the full list (D-006); else dismiss the transient toast.
                 if self.tab == Tab::Memory && self.memory_hits.is_some() {
@@ -5298,16 +5345,31 @@ impl App {
             // (pui-workbench-usability D-001): local pane focus / external-window
             // focus / resume an ended session / the [r]/[n]/[f] menu — never the
             // old silent focus-empty-pane no-op.
-            // Enter on the Plans tab opens the selected plan's detail popup
-            // (owner ask 2026-06-15 #1) — the same rich popup as the Fleet
-            // plan-progress panel, reusing the fleet-detail modal. No-op when no
-            // plan is in scope.
+            // Plans tab two-level pane nav (owner ask 2026-06-16, the Colony
+            // idiom): Enter DRILLS into the focused pane (plans list ↔ work
+            // items); once inside, Enter opens that row's detail popup. ←/→ (and
+            // ↑/↓ while browsing) switch the focused pane; ↑/↓ inside move within;
+            // Esc steps back out (handled in the Esc block).
             KeyCode::Enter if self.tab == Tab::Plans => {
-                if !self.visible_plans().is_empty() {
-                    self.fleet_detail_open = true;
-                    self.fleet_detail_scroll = 0;
+                if !self.plans_entered {
+                    self.plans_entered = true;
+                    Action::Render
+                } else {
+                    self.plans_open_focused_detail()
                 }
+            }
+            // ←/→ switch the focused pane (list ↔ items). Arrow-only here — `h`
+            // stays the global "return to Overview" key on the in-app tab strip
+            // (unlike the pinned plans-pane, which has no tab strip so binds h/l).
+            KeyCode::Left | KeyCode::Right if self.tab == Tab::Plans => {
+                self.plans_focus = self.plans_focus.toggle();
                 Action::Render
+            }
+            KeyCode::Char('j') | KeyCode::Down if self.tab == Tab::Plans => {
+                self.plans_tab_arrow(1)
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.tab == Tab::Plans => {
+                self.plans_tab_arrow(-1)
             }
             // Enter on the Fleet tab (two-level nav, owner ask 2026-06-15 #2): at
             // the pane-browsing level it DRILLS INTO the focused pane; once
@@ -5680,6 +5742,11 @@ impl App {
         // Leaving a multi-pane tab drops its entered-pane state so the next one
         // opens at the browsing level (two-level nav, owner ask 2026-06-15 #2).
         self.pane_entered = false;
+        // Same for the Plans master-detail surface (owner ask 2026-06-16): open
+        // at the plans-list pane, browsing level, items cursor reset.
+        self.plans_entered = false;
+        self.plans_focus = PlansFocus::List;
+        self.plan_items_sel = 0;
         if tab == Tab::Inbox {
             self.unseen_notifs = 0;
             self.toast = None;
@@ -6007,19 +6074,31 @@ impl App {
                 cur.saturating_sub(1)
             }
         };
-        // The Plans tab reuses this popup; j/k step its plan-list selection
-        // (`plan_sel`), so closing the popup leaves the list where you navigated.
+        // Both Plans surfaces reuse this popup; j/k step the FOCUSED pane's
+        // cursor (owner ask 2026-06-16) so closing it leaves the list where you
+        // navigated — the work-items list when the Items pane is focused, else
+        // the plan list.
         if self.tab == Tab::Plans {
-            let len = self.visible_plans().len();
-            self.plan_sel = step(self.plan_sel, delta, len);
+            if self.plans_focus == PlansFocus::Items {
+                let len = self.plans_items().len();
+                self.plan_items_sel = step(self.plan_items_sel, delta, len);
+            } else {
+                let len = self.visible_plans().len();
+                self.plan_sel = step(self.plan_sel, delta, len);
+                self.plan_items_sel = 0;
+            }
             return Action::Render;
         }
-        // The pinned plans-pane (Tab::PlansBoard) reuses it too — step its board
-        // cursor (owner ask 2026-06-15 #1; the dock's "plans" pane).
         if self.tab == Tab::PlansBoard {
+            if self.plans_focus == PlansFocus::Items {
+                let len = self.plans_items().len();
+                self.plan_items_sel = step(self.plan_items_sel, delta, len);
+                return Action::Render;
+            }
             let len = crate::plans_board::board_rows(self).len();
             self.plans_board_sel = step(self.plans_board_sel, delta, len);
-            return Action::Render;
+            self.plan_items_sel = 0;
+            return self.fetch_selected_board_item_states();
         }
         match self.fleet.fleet_focus {
             Inbox => {
@@ -7057,6 +7136,9 @@ mod tests {
         let mut a = App::new();
         a.update(key('3', KeyModifiers::NONE)); // leave the default Operator tab → Plans
         a.set_plans(vec![plan("a"), plan("b"), plan("c")]);
+        // Two-level nav (owner ask 2026-06-16): Enter drills into the plans-list
+        // pane, then j/k move the selection (clamped). Browsing j/k switch panes.
+        a.update(ev(KeyCode::Enter)); // → inside the list pane
         assert_eq!(a.plan_sel, 0);
         a.update(key('k', KeyModifiers::NONE)); // up at top → stays 0
         assert_eq!(a.plan_sel, 0);
@@ -7862,11 +7944,12 @@ mod tests {
         a.update(key('3', KeyModifiers::NONE)); // leave the default Operator tab → Plans
         a.set_panes(vec![pane("Logs", "p", "/r", &["sh"])]);
         // On the Plans tab, Enter never launches a plugin pane (that's Plugins-tab
-        // only). With no plans in scope it's an inert redraw — the detail popup
-        // (owner ask 2026-06-15 #1) only opens when there's a plan to describe.
+        // only). The first Enter just DRILLS into the focused pane (two-level nav,
+        // owner ask 2026-06-16); the detail popup only opens on a SECOND Enter and
+        // only when there's a row to describe (none here) — so it stays closed.
         let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert!(!matches!(act, Action::Launch(_)), "Enter must not launch on Plans: {act:?}");
-        assert!(!a.fleet_detail_open, "no plans in scope → popup stays closed");
+        assert!(!a.fleet_detail_open, "first Enter drills in, no popup yet");
     }
 
     #[test]
@@ -10672,54 +10755,121 @@ mod tests {
         assert!(!a.fleet_detail_open);
     }
 
+    /// One plan-item-states fixture for the Plans Items-pane tests.
+    fn item_states(plan: &str, ids: &[&str]) -> crate::models::PlanItemStates {
+        crate::models::PlanItemStates {
+            harness: "papercup".into(),
+            plan: plan.into(),
+            harness_liveness_mode: "availability".into(),
+            items: ids
+                .iter()
+                .map(|id| crate::models::PlanItemState {
+                    item_id: (*id).into(),
+                    item_status: Some("todo".into()),
+                    ..Default::default()
+                })
+                .collect(),
+        }
+    }
+
     #[test]
-    fn plans_tab_enter_opens_plan_detail_popup_and_steps() {
-        // Owner ask 2026-06-15 #1: the Plans tab gains the same Enter→detail
-        // popup as the Fleet plan-progress panel, reusing the fleet-detail modal.
+    fn plans_tab_two_level_nav_list_and_items_with_detail() {
+        // Owner ask 2026-06-16: the Plans tab gains Colony-style two-level nav —
+        // ←/→ switch the plans-list ↔ work-items panes, Enter drills in, ↑/↓ move
+        // within, Enter opens that row's detail popup, Esc steps back out.
+        use crate::app::PlansFocus;
         let mut a = App::new();
         a.tab = Tab::Plans;
         let mut p1 = plan("plan-x");
         p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
         a.set_plans(vec![p1, plan("plan-y")]);
-        assert!(!a.fleet_detail_open);
-        // Enter opens the popup for the selected (row 0) plan.
+        a.plan_item_states = Some(item_states("plan-x", &["P-001", "P-002", "P-003"]));
+        assert!(!a.plans_entered);
+        assert_eq!(a.plans_focus, PlansFocus::List);
+        // Enter drills into the focused (list) pane — no popup yet.
         a.update(ev(KeyCode::Enter));
-        assert!(a.fleet_detail_open);
-        assert_eq!(a.selected_plan().unwrap().slug, "plan-x");
-        // j steps the plan selection WITHIN the popup (modal); other keys swallowed.
+        assert!(a.plans_entered);
+        assert!(!a.fleet_detail_open);
+        // Inside the list: ↓ moves the plan selection.
         a.update(ev(KeyCode::Char('j')));
         assert_eq!(a.plan_sel, 1);
         assert_eq!(a.selected_plan().unwrap().slug, "plan-y");
-        a.update(ev(KeyCode::Char('x')));
+        // ←/→ (arrow-only on the in-app tab — `h` stays Overview) switches to the
+        // work-items pane at any level.
+        a.update(ev(KeyCode::Right));
+        assert_eq!(a.plans_focus, PlansFocus::Items);
+        // Re-select plan-x to get its loaded items.
+        a.update(ev(KeyCode::Left)); // back to list
+        a.update(ev(KeyCode::Char('k'))); // plan_sel → 0 (plan-x)
+        assert_eq!(a.plan_sel, 0);
+        a.plan_item_states = Some(item_states("plan-x", &["P-001", "P-002", "P-003"]));
+        a.update(ev(KeyCode::Right)); // → Items
+        assert_eq!(a.plans_focus, PlansFocus::Items);
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.plan_items_sel, 1);
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.plan_items_sel, 2);
+        a.update(ev(KeyCode::Char('j'))); // clamp at the last item
+        assert_eq!(a.plan_items_sel, 2);
+        // Enter opens the work-item detail popup; j steps within it.
+        a.update(ev(KeyCode::Enter));
         assert!(a.fleet_detail_open);
-        // Esc closes it.
-        a.update(ev(KeyCode::Esc));
+        assert_eq!(a.selected_plan_item().unwrap().item_id, "P-003");
+        a.update(ev(KeyCode::Char('k')));
+        assert_eq!(a.plan_items_sel, 1);
+        a.update(ev(KeyCode::Esc)); // close popup
         assert!(!a.fleet_detail_open);
+        // Esc steps out of the entered pane back to browsing.
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.plans_entered);
     }
 
     #[test]
-    fn plans_board_pane_enter_opens_plan_detail_popup_and_steps() {
-        // Owner ask 2026-06-15 #1: the dock's plans-pane (Tab::PlansBoard) — the
-        // "plans tab" the user actually sees — gains the Enter→detail popup,
-        // reusing the fleet-detail modal.
+    fn plans_board_two_level_nav_list_and_items_with_detail() {
+        // Owner ask 2026-06-16: the dock's plans-pane (Tab::PlansBoard) — the
+        // "plans tab" the user sees in the dock — gains the same two-level nav.
+        use crate::app::PlansFocus;
         let mut a = App::new();
         a.tab = Tab::PlansBoard;
         let mut p1 = plan("board-a");
         p1.item_counts = crate::models::ItemCounts { todo: 2, done: 1, ..Default::default() };
         a.set_plans(vec![p1, plan("board-b")]);
-        assert!(!a.fleet_detail_open);
-        // Enter (routed to plans_board_key) opens the popup.
+        assert_eq!(a.plans_focus, PlansFocus::List);
+        assert!(!a.plans_entered);
+        // ↑/↓ while browsing switch panes (list ↔ items).
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.plans_focus, PlansFocus::Items);
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.plans_focus, PlansFocus::List);
+        // Enter drills into the list pane (no popup yet).
         a.update(ev(KeyCode::Enter));
-        assert!(a.fleet_detail_open);
-        // j steps the board selection WITHIN the popup (modal); other keys swallowed.
+        assert!(a.plans_entered);
+        assert!(!a.fleet_detail_open);
+        // Inside the list: ↓ moves the board cursor.
         let before = a.plans_board_sel;
         a.update(ev(KeyCode::Char('j')));
         assert_eq!(a.plans_board_sel, before + 1);
-        a.update(ev(KeyCode::Char('x')));
+        // Enter opens the plan detail popup; Esc closes it.
+        a.update(ev(KeyCode::Enter));
         assert!(a.fleet_detail_open);
-        // Esc closes it.
         a.update(ev(KeyCode::Esc));
         assert!(!a.fleet_detail_open);
+        // ←/→ to the items pane; with the selected board plan's items loaded, ↓
+        // moves the work-item cursor and Enter opens the item detail.
+        let slug = a.selected_board_plan().unwrap().1;
+        a.plan_item_states = Some(item_states(&slug, &["P-001", "P-002"]));
+        a.update(ev(KeyCode::Char('l')));
+        assert_eq!(a.plans_focus, PlansFocus::Items);
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.plan_items_sel, 1);
+        a.update(ev(KeyCode::Enter));
+        assert!(a.fleet_detail_open);
+        assert_eq!(a.selected_plan_item().unwrap().item_id, "P-002");
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.fleet_detail_open);
+        // Esc steps out of the entered pane.
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.plans_entered);
     }
 
     #[test]

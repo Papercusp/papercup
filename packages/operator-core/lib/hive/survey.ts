@@ -141,24 +141,27 @@ export function inEligiblePlans(planSlug: string, f: ScopeFilter | undefined): b
 }
 
 /**
- * Frontier-row plan eligibility — the Phase-3 HARD filter (queen-steering-panel
- * D-004 → P-008). A frontier work-item passes iff one of:
+ * Frontier-row plan eligibility — the HARD filter (queen-steering-panel D-004 → P-008,
+ * tightened to a STRICT scope by owner directive 2026-06-16). A frontier work-item
+ * passes iff one of:
  *   - there is NO eligible-plans restriction (un-steered survey), OR
- *   - it carries NO source plan (standalone/unplanned work — a directly-filed
- *     feature, a benchmark item; gated by pause + allowedHarnesses, not the plan
- *     filter), OR
  *   - its source plan IS in the eligible set.
- * So a frontier item minted from a NON-eligible plan is dropped at the source —
- * the Queen no longer has to manually skip ineligible-plan items in the frontier.
- * Distinct from {@link inEligiblePlans} (the PLAN view, where every candidate
- * always carries a plan slug). (pure; no list ⇒ allow all)
+ * Under an eligible-plans restriction, a frontier item that carries NO source plan
+ * (standalone/unplanned — a directly-filed feature, a benchmark/sandbox item) OR one
+ * minted from a NON-eligible plan is DROPPED: "eligible plans" means ONLY those plans'
+ * work, nothing else. Previously unplanned work bypassed this filter; the owner wants
+ * eligibility to be a hard scope ("she should ONLY be picking up from eligible plans"),
+ * so unplanned work is now gated too. Clearing eligible-plans (empty) restores the
+ * full, unscoped frontier.
+ * Distinct from {@link inEligiblePlans} (the PLAN view, where every candidate always
+ * carries a plan slug). (pure; no list ⇒ allow all)
  */
 export function frontierInEligiblePlans(
   planSlug: string | null | undefined,
   f: ScopeFilter | undefined,
 ): boolean {
-  if (!f?.eligiblePlans || f.eligiblePlans.length === 0) return true;
-  if (!planSlug) return true; // unplanned work is not gated by the plan filter
+  if (!f?.eligiblePlans || f.eligiblePlans.length === 0) return true; // no restriction ⇒ all pass
+  if (!planSlug) return false; // under a restriction, unplanned work belongs to NO eligible plan ⇒ dropped
   return f.eligiblePlans.includes(planSlug);
 }
 

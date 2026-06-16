@@ -175,6 +175,57 @@ fn item_line(it: &PlanItemState) -> Line<'static> {
     ])
 }
 
+/// The detail-popup body for one plan work item (owner ask 2026-06-16, the
+/// Items pane's Enter) — id · status · disposition · who's on it (live claim ??
+/// durable assignee) · claim liveness mode + lease · declared intent. Shared by
+/// the in-app Plans tab and the dock plans-pane popups.
+pub(crate) fn item_detail_lines(it: &PlanItemState) -> Vec<Line<'static>> {
+    let mut out = vec![
+        Line::from(Span::styled(it.item_id.clone(), Theme::title())),
+        Line::from(vec![
+            Span::styled("status      ", Theme::dim()),
+            Span::raw(it.item_status.clone().unwrap_or_else(|| "—".to_string())),
+            Span::styled("   disposition  ", Theme::dim()),
+            Span::raw(if it.disposition.is_empty() {
+                "—".to_string()
+            } else {
+                it.disposition.clone()
+            }),
+        ]),
+    ];
+    let who = it
+        .claim_owner_name
+        .clone()
+        .or_else(|| it.claim_owner.clone())
+        .or_else(|| it.assignee_name.clone());
+    if let Some(w) = who.filter(|s| !s.is_empty()) {
+        out.push(Line::from(vec![
+            Span::styled("who         ", Theme::dim()),
+            Span::raw(w),
+        ]));
+    }
+    if let Some(m) = it.claim_liveness_mode.clone().filter(|s| !s.is_empty()) {
+        out.push(Line::from(vec![
+            Span::styled("liveness    ", Theme::dim()),
+            Span::raw(m),
+        ]));
+    }
+    if let Some(exp) = it.claim_expires_ts.clone().filter(|s| !s.is_empty()) {
+        out.push(Line::from(vec![
+            Span::styled("lease ends  ", Theme::dim()),
+            Span::raw(exp),
+        ]));
+    }
+    if let Some(intent) = it.claim_intent.clone().filter(|s| !s.is_empty()) {
+        out.push(Line::from(Span::styled("─".repeat(40), Theme::dim())));
+        out.push(Line::from(Span::styled("intent", Theme::info())));
+        for l in intent.lines() {
+            out.push(Line::from(l.to_string()));
+        }
+    }
+    out
+}
+
 /// RIGHT-top: the selected plan's full info — the fields the master list can't
 /// fit, plus the agents working it spelled out by name (owner ask).
 fn draw_plan_detail(f: &mut Frame, plan: &PlanSummary, agents: &[&RosterEntry], area: Rect) {
@@ -249,14 +300,27 @@ fn draw_plan_detail(f: &mut Frame, plan: &PlanSummary, agents: &[&RosterEntry], 
 
 /// RIGHT-bottom: the selected plan's work items + who's on each, from
 /// `plan_item_states`. Guarded on `states.plan == plan_slug` so a stale fetch
-/// from a prior selection never paints the wrong plan.
-fn draw_work_items(f: &mut Frame, app: &App, plan_slug: &str, area: Rect) {
+/// from a prior selection never paints the wrong plan. `focused` adds the active
+/// border + a highlighted cursor over the items (owner ask 2026-06-16); `cursor`
+/// is the selected item index when this pane is the focused/entered one.
+fn draw_work_items(
+    f: &mut Frame,
+    app: &App,
+    plan_slug: &str,
+    area: Rect,
+    focused: bool,
+    cursor: Option<usize>,
+) {
     let states = app
         .plan_item_states
         .as_ref()
         .filter(|s| s.plan == plan_slug);
+    // The header row sits at flat index 0, so the cursor's item maps to flat
+    // index `cursor + 1` (the highlight lands on a real item, never the header).
+    let mut item_count = 0usize;
     let (title, body): (String, Vec<ListItem>) = match states {
         Some(s) if !s.items.is_empty() => {
+            item_count = s.items.len();
             let mode = if s.harness_liveness_mode.is_empty() {
                 "—".to_string()
             } else {
@@ -282,10 +346,17 @@ fn draw_work_items(f: &mut Frame, app: &App, plan_slug: &str, area: Rect) {
             vec![ListItem::new(Line::from(Span::styled("  loading…", Theme::dim())))],
         ),
     };
-    f.render_widget(
-        List::new(body).block(Block::default().borders(Borders::ALL).title(title)),
-        area,
-    );
+    let mut state = ListState::default();
+    if let Some(c) = cursor {
+        if item_count > 0 {
+            state.select(Some(c.min(item_count - 1) + 1));
+        }
+    }
+    let list = List::new(body)
+        .block(Theme::block(Line::from(title), focused))
+        .highlight_style(Theme::selected())
+        .highlight_symbol("▸ ");
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
@@ -335,12 +406,20 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
             .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
             .split(outer[1]);
 
+        // Two-level pane nav (owner ask 2026-06-16): the focused pane wears the
+        // active border; ←/→ (or ↑/↓ browsing) switch list ↔ items, Enter drills
+        // in, ↑/↓ then move within.
+        let list_focused = app.plans_focus == crate::app::PlansFocus::List;
+        let items_focused = app.plans_focus == crate::app::PlansFocus::Items;
         let sel = app.plans_board_sel.min(rows.len() - 1);
         let items: Vec<ListItem> = rows.iter().map(|r| ListItem::new(row_line(r))).collect();
         let mut state = ListState::default();
         state.select(Some(sel));
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(format!(" Plans ({}) ", rows.len())))
+            .block(Theme::block(
+                Line::from(format!(" Plans ({}) ", rows.len())),
+                list_focused,
+            ))
             .highlight_style(Theme::selected())
             .highlight_symbol("▸ ");
         f.render_stateful_widget(list, cols[0], &mut state);
@@ -352,13 +431,23 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
             .split(cols[1]);
         let selected = &rows[sel];
         draw_plan_detail(f, selected.plan, &selected.agents, right[0]);
-        draw_work_items(f, app, &selected.plan.slug, right[1]);
+        let item_cursor = items_focused.then_some(app.plan_items_sel);
+        draw_work_items(f, app, &selected.plan.slug, right[1], items_focused, item_cursor);
     }
 
-    // Footer: keymap + glyph legend.
+    // Footer: the two-level nav legend (owner ask 2026-06-16) + glyph legend.
+    let nav = if app.plans_entered {
+        let pane = match app.plans_focus {
+            crate::app::PlansFocus::List => "plans",
+            crate::app::PlansFocus::Items => "work items",
+        };
+        format!(" ▸ {pane} · inside   ↑/↓ move · ⏎ open · Esc back · g refresh   ")
+    } else {
+        " ↑/↓ or ←/→ switch pane · ⏎ enter · g refresh   ".to_string()
+    };
     let footer = Line::from(vec![Span::styled(
         format!(
-            " j/k select · g refresh   {} working · {} in-progress {} not-started {} blocked {} needs-human",
+            "{nav}{} working · {} in-progress {} not-started {} blocked {} needs-human",
             glyph::liveness::LIVE,
             glyph::status::WIP,
             glyph::status::TODO,

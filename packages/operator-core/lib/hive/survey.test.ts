@@ -328,7 +328,7 @@ describe('surveyHive (P-012 regression)', () => {
   });
 
   // ── eligiblePlans HARD-filters the FRONTIER too (queen-steering-panel P-008) ──
-  it('eligiblePlans drops a FRONTIER row from an INELIGIBLE plan, keeps eligible + unplanned rows (P-008)', async () => {
+  it('eligiblePlans is a STRICT scope: keeps ONLY eligible-plan frontier rows, drops ineligible AND unplanned (owner 2026-06-16)', async () => {
     const survey = await surveyHive('default', 'papercup-hive', {
       scopeFilter: { eligiblePlans: ['keep-plan'] },
       deps: depsFor({
@@ -343,7 +343,7 @@ describe('surveyHive (P-012 regression)', () => {
     });
     const ids = survey.frontier.map((c) => c.id);
     expect(ids).toContain('WI-KEEP'); // minted from the eligible plan
-    expect(ids).toContain('WI-UNPLANNED'); // unplanned work is not gated by the plan filter
+    expect(ids).not.toContain('WI-UNPLANNED'); // unplanned work belongs to no eligible plan → dropped under a restriction
     expect(ids).not.toContain('WI-DROP'); // minted from a non-eligible plan → dropped at the source
   });
 
@@ -484,8 +484,11 @@ describe('frontierInEligiblePlans (queen-steering-panel P-008 — the frontier p
     expect(frontierInEligiblePlans('drop', { eligiblePlans: ['keep'] })).toBe(false);
   });
 
-  it('keeps an UNPLANNED row (null/undefined source plan) — not gated by the plan filter', () => {
-    expect(frontierInEligiblePlans(null, { eligiblePlans: ['keep'] })).toBe(true);
-    expect(frontierInEligiblePlans(undefined, { eligiblePlans: ['keep'] })).toBe(true);
+  it('DROPS an UNPLANNED row (null/undefined source plan) under a restriction — strict scope (owner 2026-06-16)', () => {
+    expect(frontierInEligiblePlans(null, { eligiblePlans: ['keep'] })).toBe(false);
+    expect(frontierInEligiblePlans(undefined, { eligiblePlans: ['keep'] })).toBe(false);
+    // ...but with NO restriction, unplanned work still passes:
+    expect(frontierInEligiblePlans(null, { eligiblePlans: [] })).toBe(true);
+    expect(frontierInEligiblePlans(undefined, {})).toBe(true);
   });
 });
