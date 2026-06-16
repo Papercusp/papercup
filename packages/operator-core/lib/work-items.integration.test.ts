@@ -162,6 +162,31 @@ describe('unified work_items surface (real PG)', () => {
     expect(featRows).toEqual([{ feature_id: 'WI-2', item_kind: 'feature' }]);
   });
 
+  it('stamps source_plan_slug on a feature-family row when minted from a plan (queen-steering-panel P-008)', async () => {
+    // A feature minted from a plan-item conversion carries its source plan slug, so the
+    // Queen's survey can HARD-filter the frontier by the owner's eligible-plans.
+    const planned = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'from a plan',
+      harness: 'papercup',
+      createdBy: 'agA',
+      sourcePlanSlug: 'queen-steering-panel-2026-06-15',
+    });
+    const [pRow] = await db.sql<{ source_plan_slug: string | null }[]>`
+      SELECT source_plan_slug FROM harness_shared.harness_features_consolidated WHERE feature_id = ${planned.id}`;
+    expect(pRow.source_plan_slug).toBe('queen-steering-panel-2026-06-15');
+
+    // An unplanned feature ⇒ NULL (no plan provenance; not gated by the plan filter).
+    const unplanned = await wi.createWorkItem({ kind: 'feature', title: 'no plan', harness: 'papercup', createdBy: 'agA' });
+    const [uRow] = await db.sql<{ source_plan_slug: string | null }[]>`
+      SELECT source_plan_slug FROM harness_shared.harness_features_consolidated WHERE feature_id = ${unplanned.id}`;
+    expect(uRow.source_plan_slug).toBeNull();
+
+    // Issue-family kinds ignore sourcePlanSlug (no frontier row / no such column) — must not throw.
+    const task = await wi.createWorkItem({ kind: 'task', title: 'issue task', harness: 'papercup', createdBy: 'agA', sourcePlanSlug: 'x' });
+    expect(task.family).toBe('issue');
+  });
+
   it('feature-family requires a harness', async () => {
     await expect(wi.createWorkItem({ kind: 'feature', title: 'x' })).rejects.toThrow(/requires a harness/);
   });

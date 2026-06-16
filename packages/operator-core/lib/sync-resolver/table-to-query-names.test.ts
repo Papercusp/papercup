@@ -35,6 +35,14 @@ describe('queryNamesForTriggerEvent', () => {
     );
   });
 
+  it('maps hive_settings → hive.steering (the federated steering-write refresh, queen-steering-panel C-1)', () => {
+    // A steering write lands in hive_settings (owner-steering:* keys); the capture
+    // trigger fires this event so a FEDERATED write from a peer Swarm refreshes the
+    // 👑 Queen tab's hive.steering query — the half hive:set-steering's explicit
+    // notifySyncInvalidate does NOT cover (a remote write never runs that handler).
+    expect(queryNamesForTriggerEvent('harness_shared.hive_settings.changed')).toEqual(['hive.steering']);
+  });
+
   it('handles *Consolidated tables', () => {
     expect(queryNamesForTriggerEvent('harness_shared.harness_features_consolidated.changed')).toEqual(
       expect.arrayContaining(['featuresConsolidated.bySlug', 'featuresConsolidated.byPlanSlug']),

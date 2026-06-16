@@ -328,6 +328,35 @@ export async function applyGradeMap(
   await rollupBenchRunMetrics(runId, opts);
 }
 
+/** On-completion write: stamp the run-level wall/peak/window + status, then
+ *  roll up metrics from the per-task rows. Per-task rows + events are expected to
+ *  already be persisted incrementally (durability hooks) — this finalizes. */
+export async function recordRunCompletion(
+  runId: string,
+  fin: {
+    peakConcurrentBees?: number | null;
+    wallMs?: number | null;
+    startedAtIso?: string | null;
+    runError?: string | null;
+  },
+  opts: DbScope = {},
+): Promise<void> {
+  const { sql, ws } = resolveDb(opts);
+  const status: BenchRunStatus = fin.runError ? 'error' : 'done';
+  await sql`
+    UPDATE harness_shared.bench_runs SET
+      peak_concurrent_bees = COALESCE(${fin.peakConcurrentBees ?? null}, peak_concurrent_bees),
+      wall_ms = COALESCE(${fin.wallMs ?? null}, wall_ms),
+      started_at = COALESCE(started_at, ${fin.startedAtIso ?? null}),
+      status = ${status},
+      run_error = ${fin.runError ?? null},
+      finished_at = now(),
+      updated_at = now()
+     WHERE id = ${runId} AND workspace_id = ${ws}
+  `;
+  await rollupBenchRunMetrics(runId, opts);
+}
+
 // ───────────────────────── reads ──────────────────────────
 
 export async function listBenchRuns(opts: DbScope = {}): Promise<BenchRunListEntry[]> {

@@ -662,3 +662,112 @@ updated: 2026-05-24
     expect(knownQueryNamesV2()).toContain('plansDrafts.bySlug');
   });
 });
+
+describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15 B-01 / CONTRACT C-1)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  // The decoded OwnerSteering default the resolver spreads on a per-hive read
+  // failure (owner-steering.ts DEFAULT_OWNER_STEERING).
+  const DEFAULT = {
+    directive: null as string | null,
+    eligiblePlans: [] as string[],
+    eligibleHives: [] as string[],
+    pauseNewWork: false,
+    pausedUntil: null as number | null,
+    modelTiers: null,
+    tierCeilings: null,
+  };
+
+  // Mock the three boundaries the resolver dynamic-imports: the hive list, the
+  // owner-steering decode, and the active-workspace accessor. (Specifiers resolve
+  // identically from this test file and index.ts — both live in sync-resolver/.)
+  function mockSteeringDeps(opts: {
+    hives: Array<{ slug: string }> | (() => Promise<never>);
+    getOwnerSteering: (ws: string, slug: string) => Promise<typeof DEFAULT>;
+  }) {
+    vi.doMock('../agent-tools/hive/_resolve', () => ({
+      listHives: vi.fn(typeof opts.hives === 'function' ? opts.hives : async () => opts.hives),
+    }));
+    vi.doMock('../owner-steering', () => ({
+      getOwnerSteering: vi.fn(opts.getOwnerSteering),
+      DEFAULT_OWNER_STEERING: DEFAULT,
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+  }
+  function unmockSteeringDeps() {
+    vi.doUnmock('../agent-tools/hive/_resolve');
+    vi.doUnmock('../owner-steering');
+    vi.doUnmock('../workspace-registry');
+  }
+
+  it('is registered in knownQueryNamesV2', () => {
+    expect(knownQueryNamesV2()).toContain('hive.steering');
+  });
+
+  it('returns one decoded steering row per hive ({ slug, ...OwnerSteering }), read under the active workspace', async () => {
+    const bySlug: Record<string, typeof DEFAULT> = {
+      'papercup-hive': { ...DEFAULT, directive: 'focus the backlog', eligiblePlans: ['plan-a'] },
+      'other-hive': { ...DEFAULT, pauseNewWork: true },
+    };
+    const getOwnerSteering = vi.fn(async (_ws: string, slug: string) => bySlug[slug] ?? DEFAULT);
+    vi.doMock('../agent-tools/hive/_resolve', () => ({
+      listHives: vi.fn(async () => [{ slug: 'papercup-hive' }, { slug: 'other-hive' }]),
+    }));
+    vi.doMock('../owner-steering', () => ({ getOwnerSteering, DEFAULT_OWNER_STEERING: DEFAULT }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+
+    const rows = (await r('hive.steering', {})) as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    // order preserved (Promise.all over the hive list), each row = slug + decoded steering
+    expect(rows[0]).toMatchObject({ slug: 'papercup-hive', directive: 'focus the backlog', eligiblePlans: ['plan-a'] });
+    expect(rows[1]).toMatchObject({ slug: 'other-hive', pauseNewWork: true });
+    // steering is read for EACH hive under the active workspace id
+    expect(getOwnerSteering.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ['ws-test', 'papercup-hive'],
+      ['ws-test', 'other-hive'],
+    ]);
+
+    vi.doUnmock('../agent-tools/hive/_resolve');
+    vi.doUnmock('../owner-steering');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  it('returns [] for an un-hived workspace (no hives)', async () => {
+    mockSteeringDeps({ hives: [], getOwnerSteering: async () => DEFAULT });
+    const { resolveNamedQueryV2: r } = await import('./index');
+    expect(await r('hive.steering', {})).toEqual([]);
+    unmockSteeringDeps();
+  });
+
+  it('degrades to [] when listHives throws (pre-migration / registry unavailable) — never a 500', async () => {
+    mockSteeringDeps({
+      hives: async () => {
+        throw new Error('hive registry unavailable');
+      },
+      getOwnerSteering: async () => DEFAULT,
+    });
+    const { resolveNamedQueryV2: r } = await import('./index');
+    expect((await r('hive.steering', {})) as unknown[]).toEqual([]);
+    unmockSteeringDeps();
+  });
+
+  it('a per-hive getOwnerSteering failure falls back to DEFAULT for THAT hive only (others still decode)', async () => {
+    mockSteeringDeps({
+      hives: [{ slug: 'good-hive' }, { slug: 'broken-hive' }],
+      getOwnerSteering: async (_ws, slug) => {
+        if (slug === 'broken-hive') throw new Error('hive_settings read failed');
+        return { ...DEFAULT, directive: 'ok' };
+      },
+    });
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('hive.steering', {})) as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ slug: 'good-hive', directive: 'ok' });
+    // the broken hive is NOT dropped — it appears decoded to the safe default
+    expect(rows[1]).toMatchObject({ slug: 'broken-hive', directive: null, eligiblePlans: [], pauseNewWork: false });
+    unmockSteeringDeps();
+  });
+});

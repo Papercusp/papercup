@@ -1,0 +1,191 @@
+// @vitest-environment node
+/**
+ * warm-inject-carry-seam.test.ts — Phase 0 seam pin + carry regression
+ * (bee-context-efficiency-2026-06-14 P-002 / WI-174).
+ *
+ * ## What this pins, and why
+ * A long-lived "bee" runs each placed task as a headless `claude -p` turn that
+ * EXITS on completion (line 387 PARKs a *live* session — only an exited one is
+ * resumed). The Queen's next WARM-INJECT of a NEW task re-invokes the drained
+ * bee through the wake-executor's resume seam:
+ *
+ *   executeWake → (exited, non-hive, claude) → Channel 2 "process gone → resume"
+ *     → resumeCommandFor → `claude --resume <sessionId> -p …`
+ *
+ * `--resume <sessionId>` re-targets the SAME conversation, so claude reloads the
+ * FULL prior-task transcript — the carry the plan measured: ~138K tokens/turn,
+ * 97.4% of a long-lived bee's prompt is re-read accumulated prior-task transcript
+ * (D-011). This is the exact `--resume` failure mode fresh-per-wake killed for the
+ * Queen and that Phase 1 brings to bees.
+ *
+ * ## The exact seam (so Phase 1 edits the RIGHT line)
+ * - `resumeCommandFor` (claude leg) — `wake-executor.ts` builds
+ *   `['--resume', sessionId, '-p', …]`. The carry mechanism: the SAME id.
+ * - `executeWake` routes an EXITED claude session there via the `resume-headless`
+ *   channel, AFTER the hive-Queen fresh-wake fork and BEFORE Channel 2.
+ * - Phase 1's fresh-context fork (D-018/D-021) inserts immediately after the
+ *   hive-Queen fork (wake-executor.ts:407): a NEW-task warm-inject of a drained
+ *   bee re-routes to a FRESH `--session-id` SPAWN (full bee-prompt re-assembly +
+ *   the hydration tail) instead of `--resume`-ing the grown transcript. It is
+ *   gated by `FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT` — DEFAULT OFF, so the legacy
+ *   `--resume` carry asserted below is what runs in production today.
+ *
+ * THESE assertions lock the CURRENT (flag-OFF) carry behavior. When Phase 1 lands
+ * and the flag flips ON, the warm-inject-of-a-drained-bee case MUST stop emitting
+ * `--resume <prior id>` and instead mint a fresh `--session-id` — i.e. this is the
+ * regression that proves Phase 1 changed THIS seam, not another. Within-task wakes
+ * (a live session — line 387 PARKs it) never reach the fork and are untouched
+ * (D-005): the resume seam is only ever reached for an exited process.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import { executeWake, resumeCommandFor, type ExecuteWakeDeps } from './wake-executor';
+import type { DeliveryWork, WakeOutcome } from './types';
+import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
+
+const BEE_OWNER = 's-bee-warm-1';
+const BEE_SESSION_ID = 'cafef00d-0000-4000-8000-000000000001';
+const BEE_CWD = '/repo/bee-task';
+
+/**
+ * A NEW-task warm-inject delivery to a DRAINED (process-exited) bee. place_batch
+ * stamps `Queen warm-inject: <task.id>` on the wake (D-018); the wake text IS the
+ * new task's delivery. The recorded pid is stale (the prior `-p` turn exited; the
+ * adv_sessions row is NOT marked ended — the bee is a drained idle waiter), so
+ * `deps.alive` returning false drives it down the resume seam.
+ */
+function warmInjectDelivery(over: Partial<DeliveryWork> = {}): DeliveryWork {
+  return {
+    id: 42,
+    workspaceId: 'papercusp-workspace',
+    awaitId: 7,
+    subscriberId: BEE_OWNER,
+    eventKey: `coord:inbox-wake:${BEE_OWNER}`,
+    payload: null,
+    summary: 'Queen warm-inject: WI-999',
+    status: 'delivering',
+    channel: null,
+    attempts: 1,
+    lastError: null,
+    nextAttemptAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    deliveredAt: null,
+    urgent: false,
+    minSleepSec: null,
+    coalescedCount: 1,
+    note: 'next task placed; drain into it',
+    wakeHandle: {
+      kind: 'adv-session',
+      advSessionId: 91,
+      agent: 'claude',
+      sessionId: BEE_SESSION_ID,
+      ompThreadId: null,
+      cwd: BEE_CWD,
+      pid: 999111, // stale (prior headless -p turn exited); deps.alive → false
+    },
+    ...over,
+  } as DeliveryWork;
+}
+
+/** Hermetic injected deps: the bee's prior `-p` process has EXITED (alive→false),
+ *  the row is a non-hive claude session (label null → resume path, not the
+ *  fresh-hive fork), no live psu-pty host. Mirrors the wake-executor.test.ts
+ *  exited-claude cell; every OS-touching rung is injected deterministic. */
+function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
+  return {
+    getSession: (async () => ({
+      pid: 999111,
+      endedAt: null,
+      agent: 'claude',
+      sessionId: BEE_SESSION_ID,
+      coordOwnerId: BEE_OWNER,
+      cwd: BEE_CWD,
+      label: null, // not a hive operator → Channel 2 resume, not hive-fresh-wake
+    })) as never,
+    findPty: (() => null) as never,
+    write: (() => true) as never,
+    spawnManagedPty: (() => ({ id: 'pty-x' })) as never,
+    spawnDetached: vi.fn(() => 4321),
+    presence: (async () => ({ stale: false, revoked: false })) as never,
+    alive: () => false, // the headless -p turn for the prior task exited
+    findPsuHost: (() => null) as never, // hermetic: no live psu-pty host
+    injectPsuHost: (async () => true) as never,
+    fireHiveWake: (async () => true) as never, // never reached (label null)
+    ...over,
+  };
+}
+
+describe('resumeCommandFor — the carry mechanism (claude resumes the SAME session)', () => {
+  it('re-targets the EXACT prior session id via --resume (continuous transcript) and mints NO fresh --session-id', () => {
+    const r = resumeCommandFor(
+      { agent: 'claude', sessionId: BEE_SESSION_ID, ompThreadId: null },
+      'next task: WI-999',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.bin).toBe('claude');
+
+    // --resume <sameId>: the conversation UUID is reused, so claude reloads the
+    // full prior-task transcript — the carry (D-011, 97.4% of the prompt).
+    const ri = r!.args.indexOf('--resume');
+    expect(ri).toBeGreaterThan(-1);
+    expect(r!.args[ri + 1]).toBe(BEE_SESSION_ID);
+    expect(r!.args).toContain('-p'); // headless one-turn
+
+    // NOT a fresh session: `--session-id <uuid>` is the fresh-spawn / fresh-per-wake
+    // flag (mutually exclusive with --resume; see native-session-id-roundtrip).
+    // Its ABSENCE is the carry invariant Phase 1 inverts.
+    expect(r!.args).not.toContain('--session-id');
+  });
+});
+
+describe('executeWake — warm-inject of a DRAINED bee re-invokes on the SAME session (the seam Phase 1 forks)', () => {
+  it('exited claude bee + NEW-task warm-inject → resume-headless carrying --resume <prior sessionId>, no fresh --session-id', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(warmInjectDelivery(), deps({ spawnDetached }));
+
+    // Routed through Channel 2 (process gone → resume), detached headless.
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+
+    const [bin, args, o] = spawnDetached.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { cwd: string; env: Record<string, string> },
+    ];
+    expect(bin).toBe('claude');
+
+    // THE CARRY: the same conversation id → the full prior-task transcript reloads.
+    const ri = args.indexOf('--resume');
+    expect(ri).toBeGreaterThan(-1);
+    expect(args[ri + 1]).toBe(BEE_SESSION_ID);
+    expect(args).toContain('-p');
+
+    // NOT a fresh session today — Phase 1 (flag ON) inverts exactly this line.
+    expect(args).not.toContain('--session-id');
+
+    // The carry rides the bee's STABLE coord identity (Phase 1 keeps the identity /
+    // slot / claims, changes only the session) and the bee's working dir.
+    expect(o.env.PAPERCUSP_SID).toBe(BEE_OWNER);
+    expect(o.cwd).toBe(BEE_CWD);
+  });
+
+  it('a LIVE bee session is PARKED, never resumed (D-005: within-task wakes never reach the fork)', async () => {
+    // pid alive + not one of our managed ptys → park; the resume seam (and the
+    // Phase 1 fork after line 407) is only ever reached for an EXITED process, so
+    // a mid-task wake can never trigger fresh-context re-invocation.
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      warmInjectDelivery(),
+      deps({ alive: () => true, findPty: (() => null) as never, spawnDetached }),
+    );
+    expect(out.kind).toBe('park');
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+});
+
+describe('Phase 1 gate — the fork is not yet live, so the carry above IS production behavior today', () => {
+  it('FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT defaults OFF — the legacy --resume carry is what runs', () => {
+    expect(FLAG_DEFAULTS[FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]).toBe(false);
+    // When this flips ON, the executeWake warm-inject case above MUST stop emitting
+    // `--resume <prior id>` and instead mint a fresh `--session-id` (the fork at
+    // wake-executor.ts:407) — the regression that proves Phase 1 edited this seam.
+  });
+});

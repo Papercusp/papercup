@@ -140,6 +140,28 @@ export function inEligiblePlans(planSlug: string, f: ScopeFilter | undefined): b
   return f.eligiblePlans.includes(planSlug);
 }
 
+/**
+ * Frontier-row plan eligibility — the Phase-3 HARD filter (queen-steering-panel
+ * D-004 → P-008). A frontier work-item passes iff one of:
+ *   - there is NO eligible-plans restriction (un-steered survey), OR
+ *   - it carries NO source plan (standalone/unplanned work — a directly-filed
+ *     feature, a benchmark item; gated by pause + allowedHarnesses, not the plan
+ *     filter), OR
+ *   - its source plan IS in the eligible set.
+ * So a frontier item minted from a NON-eligible plan is dropped at the source —
+ * the Queen no longer has to manually skip ineligible-plan items in the frontier.
+ * Distinct from {@link inEligiblePlans} (the PLAN view, where every candidate
+ * always carries a plan slug). (pure; no list ⇒ allow all)
+ */
+export function frontierInEligiblePlans(
+  planSlug: string | null | undefined,
+  f: ScopeFilter | undefined,
+): boolean {
+  if (!f?.eligiblePlans || f.eligiblePlans.length === 0) return true;
+  if (!planSlug) return true; // unplanned work is not gated by the plan filter
+  return f.eligiblePlans.includes(planSlug);
+}
+
 // ── Candidate builders (pure) ───────────────────────────────────────────────
 
 /** Hottest-open-item importance for a plan (done/dropped excluded), 'normal' floor. */
@@ -207,6 +229,11 @@ export interface FrontierRow {
   item_kind: string;
   created_ts: number | string | Date | null;
   feature_order: number | null;
+  /** Source plan slug (hfc.source_plan_slug) this frontier item was minted from,
+   *  or null for unplanned/standalone work. Lets the survey HARD-filter the frontier
+   *  by the owner's `eligiblePlans` (queen-steering-panel P-008). Optional so callers
+   *  that build a FrontierRow without provenance (e.g. placement-gather) still compile. */
+  plan_slug?: string | null;
 }
 
 /** An unplaced work-item row → a placement candidate (FRONTIER view). */
@@ -308,7 +335,8 @@ export async function fetchFrontierRows(
   limit = 50,
 ): Promise<FrontierRow[]> {
   const rows = await sql<FrontierRow[]>`
-    SELECT feature_id, harness_slug, title, item_kind, created_ts, feature_order
+    SELECT feature_id, harness_slug, title, item_kind, created_ts, feature_order,
+           source_plan_slug AS plan_slug
       FROM harness_shared.harness_features_consolidated
      WHERE workspace_id = ${workspaceId}
        AND item_kind IN ('feature', 'research-task', 'chunk')
@@ -466,15 +494,20 @@ export async function surveyHive(
   if (blockedCount > 0) {
     console.log(`[hive-survey] frontier: ${blockedCount} lane(s) held back by unsatisfied blocked_by; ${readyFrontierRowsAll.length} ready`);
   }
-  // queen-steering-panel C-2 — scope/pause enforcement (applied AFTER the
-  // readiness filter so it never resurrects a blocked lane): a PAUSE empties the
-  // frontier so the Queen places no NEW work (and instead drives existing
-  // placements to terminal, then idles); `allowedHarnesses` restricts the scope.
+  // queen-steering-panel C-2 + P-008 — scope/pause/plan enforcement (applied AFTER
+  // the readiness filter so it never resurrects a blocked lane): a PAUSE empties the
+  // frontier so the Queen places no NEW work (and instead drives existing placements
+  // to terminal, then idles); `allowedHarnesses` restricts the harness scope; and the
+  // P-008 plan HARD-filter drops any frontier row minted from a plan that is NOT in
+  // the owner's `eligiblePlans` (unplanned rows pass — they are not plan-gated). So
+  // "work on these plans only" is structurally binding at the frontier, not advisory.
   // Started-plan momentum is intentionally NOT paused — pause gates only new work.
   const paused = isNewWorkPaused(sf, now);
   const readyFrontierRows = paused
     ? []
-    : readyFrontierRowsAll.filter((r) => inAllowedHarness(r.harness_slug, sf));
+    : readyFrontierRowsAll.filter(
+        (r) => inAllowedHarness(r.harness_slug, sf) && frontierInEligiblePlans(r.plan_slug, sf),
+      );
   if (paused) {
     console.log(
       `[hive-survey] new-work PAUSED (scopeFilter) — frontier emptied (${readyFrontierRowsAll.length} ready item(s) withheld); Queen drives existing placements to terminal.`,

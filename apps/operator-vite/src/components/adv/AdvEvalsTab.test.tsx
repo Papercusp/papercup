@@ -184,6 +184,63 @@ describe('<AdvEvalsTab> shell + routing', () => {
   });
 });
 
+// The "Preserved runs" / live-runs subtab now reads the operational bench-run
+// store via the @papercusp/sync resolvers evals.benchRuns + evals.benchRun
+// (benchmark-evaluation-ui-2026-06-16 P-003), not the old REST evalApi.
+describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
+  const RUN_LIST = [
+    {
+      id: 'm3-realqueen-2026-06-16',
+      arm: 'hive-realqueen',
+      taskSetId: '11-task-pilot',
+      status: 'done',
+      source: 'import',
+      resolvedPct: 0.5,
+      costUsd: 33.98,
+      createdAt: '2026-06-16T04:00:00Z',
+    },
+  ];
+  const RUN_DETAIL = {
+    id: 'm3-realqueen-2026-06-16',
+    arm: 'hive-realqueen',
+    status: 'done',
+    run: { arm: 'hive-realqueen', startedAt: '2026-06-16T04:00:00Z', coordEvents: [{ kind: 'placement' }, { kind: 'complete' }] },
+    perTask: [
+      { instanceId: 'instance_a', resolved: true, costUsd: 5, turns: 1, diffBytes: 100 },
+      { instanceId: 'instance_b', resolved: false, costUsd: 2, turns: 1, diffBytes: 0 },
+    ],
+    summary: {
+      arm: 'hive-realqueen', gradedCount: 2, resolvedCount: 1, taskCount: 2, resolvedPct: 0.5,
+      costUsd: 7, tokensIn: 100, tokensOut: 200, wallMs: 0, peakConcurrentBees: 3,
+      nonEmptyDiffs: 1, coordEventCount: 2, recovered: true,
+    },
+    coordRates: {
+      duplicationRate: 0, coordinationBreakdownRate: 0, misalignmentRate: 0, redundantWorkRate: 0,
+      counts: { duplicate: 0, breakdown: 0, misalignment: 0, redundant: 0 }, coordinationActions: 2,
+    },
+  };
+
+  it('shows the empty card when the store has no runs', () => {
+    nuqsState.evalView = 'preserved';
+    render(<AdvEvalsTab />);
+    expect(screen.getByText('No preserved runs yet')).toBeTruthy();
+  });
+
+  it('renders the run picker + summary + per-task/coordination viz from the live store', () => {
+    nuqsState.evalView = 'preserved';
+    H.results['evals.benchRuns'] = { ...blank(), data: RUN_LIST };
+    H.results['evals.benchRun'] = { ...blank(), data: [RUN_DETAIL] };
+    render(<AdvEvalsTab />);
+    // The run picker is populated from evals.benchRuns.
+    expect(screen.getByLabelText('Preserved run')).toBeTruthy();
+    // The selected run's summary scoreboard renders from evals.benchRun.
+    expect(screen.getByLabelText(/hive-realqueen — preserved run summary/)).toBeTruthy();
+    // The per-task Compare + the single-arm throughput/MAST viz are fed from the detail.
+    expect(screen.getByTestId('viz-throughput')).toBeTruthy();
+    expect(screen.getByTestId('viz-mast')).toBeTruthy();
+  });
+});
+
 describe('<AdvEvalsTab> with suites loaded', () => {
   const SUITES = [
     { suite: 'swe-bench-pro', runId: 'run-1', taskCount: 12, armCount: 4, passAt1ByArm: { papercusp: 0.66 } },

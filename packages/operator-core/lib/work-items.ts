@@ -480,6 +480,17 @@ export interface CreateWorkItemInput {
    * the durable priority surfaces).
    */
   urgent?: boolean;
+  /**
+   * Source plan provenance (queen-steering-panel-2026-06-15 P-008): the plan slug
+   * this feature-family work-item was minted FROM — set at plan-item→work_item
+   * conversion (`convertPlanItem`). Written to the `source_plan_slug` column so the
+   * Queen's survey can HARD-filter the frontier by the owner's `eligible-plans`
+   * (surveyHive scopeFilter): a frontier item from a non-eligible plan is dropped at
+   * the source, making "work on these plans only" structurally binding rather than
+   * advisory. IGNORED for issue-family kinds (they hold no frontier row / no such
+   * column). Omit ⇒ unplanned/standalone work (source_plan_slug stays NULL).
+   */
+  sourcePlanSlug?: string | null;
 }
 
 /** Fire the urgent brain wake for an urgent enqueue (P-006). Lazy import +
@@ -535,15 +546,25 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     typeof input.workspaceId === 'string' && input.workspaceId.trim() && input.workspaceId !== '*'
       ? input.workspaceId.trim()
       : null;
+  // queen-steering-panel P-008: stamp the source plan slug so the Queen's survey can
+  // HARD-filter the frontier by owner eligible-plans. A trailing OPTIONAL column with
+  // the same positional-param shape as workspace_id (EI-728): both are appended after
+  // the fixed $1..$10, each getting the next placeholder.
+  const sourcePlanSlug =
+    typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim() ? input.sourcePlanSlug.trim() : null;
+  const extraCols: Array<[string, unknown]> = [];
+  if (explicitWs) extraCols.push(['workspace_id', explicitWs]);
+  if (sourcePlanSlug) extraCols.push(['source_plan_slug', sourcePlanSlug]);
+  let pn = 10;
+  const extraColSql = extraCols.map(([c]) => `, ${c}`).join('');
+  const extraValSql = extraCols.map(() => `, ${++pn}`).join('');
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_features_consolidated (
        harness_slug, feature_id, title, summary, status, attempts,
-       item_kind, payload, parent_id, needs_design, needs_human_review, ts, created_ts, updated_ts${
-         explicitWs ? ', workspace_id' : ''
-       }
+       item_kind, payload, parent_id, needs_design, needs_human_review, ts, created_ts, updated_ts${extraColSql}
      ) VALUES (
        $1, $2, $3, $4, 'todo', 0,
-       $5, $6::jsonb, $7, FALSE, FALSE, $8, $9, $10${explicitWs ? ', $11' : ''}
+       $5, $6::jsonb, $7, FALSE, FALSE, $8, $9, $10${extraValSql}
      )
      ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
     [
@@ -557,7 +578,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       now,
       now,
       now,
-      ...(explicitWs ? [explicitWs] : []),
+      ...extraCols.map(([, v]) => v),
     ],
   );
   const wi: WorkItem = {

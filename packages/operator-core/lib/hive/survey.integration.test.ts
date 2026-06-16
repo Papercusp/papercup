@@ -24,13 +24,13 @@ let db: FreshPgDb;
 async function seed(
   harness: string,
   id: string,
-  opts: { kind?: string; status?: string; takenBy?: string | null; createdTs?: number } = {},
+  opts: { kind?: string; status?: string; takenBy?: string | null; createdTs?: number; planSlug?: string | null } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, source_plan_slug)
     VALUES (${harness}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'todo'},
-            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0)`;
+            ${opts.takenBy ?? null}, 'default', ${opts.createdTs ?? 0}, 0, ${opts.planSlug ?? null})`;
 }
 
 beforeAll(async () => {
@@ -91,5 +91,14 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     for (let i = 0; i < 5; i++) await seed(MEMBER_A, `WI-${i}`, { createdTs: i });
     const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A], 3);
     expect(rows.map((r) => r.feature_id)).toEqual(['WI-0', 'WI-1', 'WI-2']);
+  });
+
+  it('surfaces source_plan_slug as plan_slug, for the eligible-plans HARD filter (queen-steering-panel P-008)', async () => {
+    await seed(MEMBER_A, 'WI-PLANNED', { createdTs: 1, planSlug: 'queen-steering-panel-2026-06-15' });
+    await seed(MEMBER_A, 'WI-UNPLANNED', { createdTs: 2 }); // no source plan
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
+    const byId = new Map(rows.map((r) => [r.feature_id, r.plan_slug]));
+    expect(byId.get('WI-PLANNED')).toBe('queen-steering-panel-2026-06-15');
+    expect(byId.get('WI-UNPLANNED')).toBeNull();
   });
 });

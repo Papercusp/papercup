@@ -163,18 +163,25 @@ export interface EvalRunRow {
 export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved'] as const;
 type EvalView = (typeof EVAL_VIEWS)[number];
 
-// ── Preserved runs (REST, not @papercusp/sync) ───────────────────────────────
-// The "Preserved runs" subtab reads the real preserved benchmark snapshots from
-// `~/.papercusp/bench-results/<id>/` via REST (`/api/external-bench/runs`),
-// mirroring the gym tab's `api()` pattern — NOT the PG-backed @papercusp/sync
-// resolvers the other subtabs use (those populate once a run is ingested into
-// `benchmark_run_result`). This is the honest, today-available data path: the
-// first preserved run is the M3 real-Queen SWE-bench Pro pass (6/11 resolved).
-// Shapes mirror packages/operator-core/lib/external-bench/preserved-runs.ts.
-interface PreservedRunListEntry {
+// ── Bench runs (live, via @papercusp/sync) ───────────────────────────────────
+// The "Runs" subtab reads the operational bench-run store (bench_runs /
+// bench_run_tasks / bench_run_events, migration 296) via the @papercusp/sync
+// resolvers `evals.benchRuns` (list) + `evals.benchRun` (detail) — SSE-primary on
+// desktop, so an in-flight run updates LIVE with no polling
+// (benchmark-evaluation-ui-2026-06-16 P-003 / D-001). Preserved file-dir runs are
+// imported one-way into the same store, so the m3 real-Queen pass (6/11 resolved)
+// shows up here alongside any live run. Detail rows carry the PreservedArmRun shape
+// (packages/operator-core/lib/external-bench/run-store.ts → getBenchRunDetail), so
+// the per-task / throughput / coordination renders below are unchanged.
+interface BenchRunListEntry {
   id: string;
-  arm: string | null;
-  mtimeMs: number;
+  arm: string;
+  taskSetId: string;
+  status: string;
+  source: string;
+  resolvedPct: number | null;
+  costUsd: number | null;
+  createdAt: string;
 }
 interface PreservedResolvedTask {
   instanceId: string;
@@ -216,12 +223,6 @@ interface PreservedRunDetail {
   perTask: PreservedResolvedTask[];
   summary: PreservedRunSummary;
   coordRates: PreservedCoordRates;
-}
-
-async function evalApi<T>(path: string): Promise<T> {
-  const res = await fetch(`/api/external-bench${path}`, { headers: { 'content-type': 'application/json' } });
-  if (!res.ok) throw new Error(`${path} → ${res.status}: ${await res.text().catch(() => '')}`);
-  return (await res.json()) as T;
 }
 
 const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : `${Math.round(v * 100)}%`);
@@ -849,43 +850,31 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
 // ── Preserved runs view (REST — the real graded snapshots on disk) ───────────
 
 function PreservedRunsView() {
-  // Reuse ?evalRun= as the selected preserved run id (it's the run-selection
-  // param; the sync views key on it too but only when a suite is active).
+  // ?evalRun= is the selected run id (shared with the sync views).
   const [selId, setSelId] = useQueryState('evalRun', parseAsString);
-  const [runs, setRuns] = useState<PreservedRunListEntry[]>([]);
-  const [listErr, setListErr] = useState<string | null>(null);
-  const [detail, setDetail] = useState<PreservedRunDetail | null>(null);
-  const [detailErr, setDetailErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
 
-  // Load the run list once; default-select the newest.
+  // Live run list (SSE-primary on desktop). Newest-first from the resolver.
+  const runsSync = useSyncQuery<BenchRunListEntry>({ queryName: 'evals.benchRuns', args: {} });
+  const runs = useMemo(() => (Array.isArray(runsSync.data) ? runsSync.data : []), [runsSync.data]);
+  const loading = runsSync.loading && runs.length === 0;
+  const listErr = runsSync.error ? String(runsSync.error) : null;
+
+  // Default-select the newest run once the list arrives.
   useEffect(() => {
-    let live = true;
-    setLoading(true);
-    evalApi<{ runs: PreservedRunListEntry[] }>('/runs')
-      .then((r) => {
-        if (!live) return;
-        setRuns(r.runs);
-        setListErr(null);
-        if (!selId && r.runs[0]) void setSelId(r.runs[0].id);
-      })
-      .catch((e) => { if (live) setListErr(String(e)); })
-      .finally(() => { if (live) setLoading(false); });
-    return () => { live = false; };
+    if (!selId && runs[0]) void setSelId(runs[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [runs.length]);
 
-  // Load the selected run's detail.
-  useEffect(() => {
-    if (!selId) { setDetail(null); return; }
-    let live = true;
-    evalApi<PreservedRunDetail>(`/runs/${encodeURIComponent(selId)}`)
-      .then((d) => { if (live) { setDetail(d); setDetailErr(null); } })
-      .catch((e) => { if (live) { setDetail(null); setDetailErr(String(e)); } });
-    return () => { live = false; };
-  }, [selId]);
+  // Live detail for the selected run (updates incrementally during a run).
+  const detailSync = useSyncQuery<PreservedRunDetail>({
+    queryName: 'evals.benchRun',
+    args: { runId: selId ?? '' },
+    enabled: Boolean(selId),
+  });
+  const detail = detailSync.data?.[0] ?? null;
+  const detailErr = detailSync.error ? String(detailSync.error) : null;
 
-  if (loading) return <p className="pc-evals__empty">Loading preserved runs…</p>;
+  if (loading) return <p className="pc-evals__empty">Loading runs…</p>;
   if (listErr) {
     return (
       <EmptyCard icon={<Archive size={20} aria-hidden />} title="Couldn’t load preserved runs" body={listErr} />

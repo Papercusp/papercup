@@ -266,6 +266,11 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
     summary: item.text ?? undefined,
     harness: opts.harnessSlug,
     payload: { plan_item: stamp, ...(effectiveBrief ? { brief: effectiveBrief } : {}) },
+    // queen-steering-panel P-008: stamp the source plan slug on the minted work-item
+    // so the Queen's survey can HARD-filter the frontier by the owner's eligible-plans
+    // (surveyHive scopeFilter). Feature-family kinds write the source_plan_slug column;
+    // issue-family kinds ignore it (no frontier row).
+    sourcePlanSlug: opts.planSlug,
     createdBy: opts.owner,
     // Issue-family kinds take the assignee at creation; feature-family is
     // claimed right after (no assignee column on insert).

@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import type { PlanIndexRow } from '../agent-tools/plans/source';
 import {
   filterReadyFrontier,
+  frontierInEligiblePlans,
   frontierRowToCandidate,
   planToCandidate,
   resolveHiveMembership,
@@ -57,6 +58,7 @@ const frontierRow = (over: Partial<FrontierRow>): FrontierRow => ({
   item_kind: 'feature',
   created_ts: daysAgo(1),
   feature_order: null,
+  plan_slug: null,
   ...over,
 });
 
@@ -325,6 +327,41 @@ describe('surveyHive (P-012 regression)', () => {
     expect(ids).not.toContain('drop-plan');
   });
 
+  // ── eligiblePlans HARD-filters the FRONTIER too (queen-steering-panel P-008) ──
+  it('eligiblePlans drops a FRONTIER row from an INELIGIBLE plan, keeps eligible + unplanned rows (P-008)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: { eligiblePlans: ['keep-plan'] },
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [
+          frontierRow({ feature_id: 'WI-KEEP', harness_slug: 'papercup', plan_slug: 'keep-plan' }),
+          frontierRow({ feature_id: 'WI-DROP', harness_slug: 'papercup', plan_slug: 'other-plan' }),
+          frontierRow({ feature_id: 'WI-UNPLANNED', harness_slug: 'papercup', plan_slug: null }),
+        ],
+      }),
+    });
+    const ids = survey.frontier.map((c) => c.id);
+    expect(ids).toContain('WI-KEEP'); // minted from the eligible plan
+    expect(ids).toContain('WI-UNPLANNED'); // unplanned work is not gated by the plan filter
+    expect(ids).not.toContain('WI-DROP'); // minted from a non-eligible plan → dropped at the source
+  });
+
+  it('no eligiblePlans restriction keeps every frontier row regardless of source plan (P-008 no-op)', async () => {
+    const survey = await surveyHive('default', 'papercup-hive', {
+      scopeFilter: {},
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async () => [
+          frontierRow({ feature_id: 'WI-1', harness_slug: 'papercup', plan_slug: 'any-plan' }),
+          frontierRow({ feature_id: 'WI-2', harness_slug: 'papercup', plan_slug: null }),
+        ],
+      }),
+    });
+    expect(survey.frontier.map((c) => c.id).sort()).toEqual(['WI-1', 'WI-2']);
+  });
+
   it('an empty/absent scopeFilter is a no-op (full survey)', async () => {
     const survey = await surveyHive('default', 'papercup-hive', {
       scopeFilter: {},
@@ -432,5 +469,23 @@ describe('filterReadyFrontier (W-01 / P-010 — the shared readiness, pure)', ()
     );
     // a/F-1 is blocked; b/F-1 has no blockers → only b's survives.
     expect(ready.map((r) => r.harness_slug)).toEqual(['b']);
+  });
+});
+
+describe('frontierInEligiblePlans (queen-steering-panel P-008 — the frontier plan HARD-filter, pure)', () => {
+  it('no eligible-plans list ⇒ keep everything (un-steered survey is unchanged)', () => {
+    expect(frontierInEligiblePlans('p', undefined)).toBe(true);
+    expect(frontierInEligiblePlans('p', {})).toBe(true);
+    expect(frontierInEligiblePlans('p', { eligiblePlans: [] })).toBe(true);
+  });
+
+  it('with a list: keeps a row from an eligible plan, drops a row from a non-eligible plan', () => {
+    expect(frontierInEligiblePlans('keep', { eligiblePlans: ['keep'] })).toBe(true);
+    expect(frontierInEligiblePlans('drop', { eligiblePlans: ['keep'] })).toBe(false);
+  });
+
+  it('keeps an UNPLANNED row (null/undefined source plan) — not gated by the plan filter', () => {
+    expect(frontierInEligiblePlans(null, { eligiblePlans: ['keep'] })).toBe(true);
+    expect(frontierInEligiblePlans(undefined, { eligiblePlans: ['keep'] })).toBe(true);
   });
 });
