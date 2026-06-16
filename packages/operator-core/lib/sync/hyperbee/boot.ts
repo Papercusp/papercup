@@ -1336,10 +1336,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // resolution failures don't fail the boot — the harness still works as a
   // single-peer substrate.
   let swarmHandle: SwarmHandle | null = null;
+  if (!opts.swarmBinding) {
+    console.log(`[ei681-diag] boot ${opts.harnessSlug}: NO swarmBinding → staying local-only (no topic join)`);
+  }
   if (opts.swarmBinding) {
     try {
       const swarm = opts.swarmOverride ?? (await getSharedSwarm());
       const topic = deriveSwarmTopic(opts.swarmBinding);
+      console.log(`[ei681-diag] boot ${opts.harnessSlug}: swarmBinding kind=${opts.swarmBinding.kind} → topic=${topic.toString('hex').slice(0, 16)}… (joining…)`);
       // Build OUR announce: bind our log core to our device identity. Throws
       // (→ caught below) when gh-auth / keychain can't resolve, keeping the
       // harness local-only rather than joining without an announce.

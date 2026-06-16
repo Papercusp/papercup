@@ -26,6 +26,15 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+// The form/JoinProgress now resolve user-facing wording through useLexicon,
+// which reads THE_HIVE via useFlag. Mock the hook so jsdom doesn't fire the
+// real flag bootstrap fetch (GET /api/flags/bootstrap) — that would otherwise
+// land as mockFetch's first call and shadow the join-link POST. Defaulting
+// true keeps THE_HIVE on, so t('pot') renders "Hive".
+vi.mock('@/lib/flag-hooks', () => ({
+  useFlag: () => true,
+}));
+
 const mockFetch = vi.fn<typeof fetch>();
 beforeEach(() => {
   mockFetch.mockReset();
@@ -71,7 +80,7 @@ async function submitJoin(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   // Preview screen
   await screen.findByRole('heading', { name: 'Confirm join' });
-  await user.click(screen.getByRole('button', { name: 'Join harness' }));
+  await user.click(screen.getByRole('button', { name: 'Join Hive' }));
 }
 
 // ── D-004a — POST body shape ───────────────────────────────────────────────

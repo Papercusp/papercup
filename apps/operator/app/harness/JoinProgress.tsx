@@ -83,8 +83,7 @@ function StatusIcon({ status }: { status: JoinStepStatus }) {
 
 // ─── step row ─────────────────────────────────────────────────────────────────
 
-function StepRow({ step }: { step: JoinStepState }) {
-  const meta = STEP_META[step.id];
+function StepRow({ step, meta }: { step: JoinStepState; meta: { label: string; detail: string } }) {
   const isActive = step.status === 'running';
   const isDimmed = step.status === 'pending' || step.status === 'phase_0_pending';
   const isPhase0 = step.status === 'phase_0_pending';
@@ -164,6 +163,8 @@ export interface JoinProgressProps {
 }
 
 export function JoinProgress({ steps, insightsPath, fatalError }: JoinProgressProps) {
+  const t = useLexicon();
+  const stepMeta = buildStepMeta(t);
   const stepMap: Partial<Record<JoinStepId, JoinStepState>> = {};
   for (const s of steps) stepMap[s.id] = s;
 
@@ -185,7 +186,7 @@ export function JoinProgress({ steps, insightsPath, fatalError }: JoinProgressPr
       >
         {STEP_ORDER.map((id) => {
           const step = stepMap[id] ?? { id, status: 'pending' as JoinStepStatus };
-          return <StepRow key={id} step={step} />;
+          return <StepRow key={id} step={step} meta={stepMeta[id]} />;
         })}
       </div>
 
@@ -220,7 +221,7 @@ export function JoinProgress({ steps, insightsPath, fatalError }: JoinProgressPr
               textDecoration: 'none',
             }}
           >
-            Open harness →
+            Open {t('pot')} →
           </a>
         </div>
       )}

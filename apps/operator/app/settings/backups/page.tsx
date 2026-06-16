@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
+import { useLexicon } from '@/lib/useLexicon';
 import type {
   BackupSettings,
   CadenceMode,
@@ -23,11 +24,13 @@ const RETENTION_PRESETS: Record<Exclude<RetentionPreset, 'custom'>, RetentionPol
   conservative: { keepLatest: 500, keepHourly: 96, keepDaily: 90,  keepWeekly: 26, keepMonthly: 36 },
 };
 
+// `post_run`'s label names the project-level unit, so it is resolved through
+// the lexicon at render (see `triggerLabel` below) rather than baked in here.
 const TRIGGER_LABELS: Record<SnapshotTriggerReason, string> = {
   manual:           'Manual snapshots',
   interval:         'Interval timer',
   pre_destructive:  'Before agent destructive ops',
-  post_run:         'After each harness run',
+  post_run:         'After each run',
   plugin_install:   'After plugin install',
   secret_change:    'After secret change',
   startup:          'On operator startup',
@@ -62,6 +65,13 @@ interface HealthInfo {
 }
 
 export default function BackupsSettingsPage() {
+  const lex = useLexicon();
+  // Resolve trigger labels at render so `post_run` can name the project unit
+  // through the lexicon (the rest are static, from TRIGGER_LABELS).
+  const triggerLabel = (reason: SnapshotTriggerReason): string =>
+    reason === 'post_run'
+      ? `After each ${lex('pot', { lower: true })} run`
+      : TRIGGER_LABELS[reason];
   const [settings, setSettings] = useState<BackupSettings | null>(null);
   const [stats, setStats] = useState<RepoStats | null>(null);
   const [health, setHealth] = useState<HealthInfo | null>(null);
@@ -263,7 +273,7 @@ export default function BackupsSettingsPage() {
                     set('eventTriggers', next);
                   }}
                 />
-                <span>{TRIGGER_LABELS[t]}</span>
+                <span>{triggerLabel(t)}</span>
               </label>
             ))}
           </fieldset>

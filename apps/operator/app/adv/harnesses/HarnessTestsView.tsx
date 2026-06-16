@@ -65,16 +65,16 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
   const tabs = useMemo(() => {
     const declared = tabsFromRegistry(domains);
     const ids = new Set(declared.map((t) => t.id));
-    return [...declared, ...UNIVERSAL_TESTING_TABS.filter((t) => !ids.has(t.id))];
-  }, [domains]);
+    return [...declared, ...universalTestingTabs.filter((t) => !ids.has(t.id))];
+  }, [domains, universalTestingTabs]);
   const dataSource = useMemo(() => makeHarnessTestingDataSource(slug, 'staging'), [slug]);
   // Reuse the SAME bespoke panels as /admin, plus the harness Acceptance panel.
   const customTabs = useMemo(
     () => ({
-      ...TESTING_CUSTOM_TABS,
+      ...testingCustomTabs,
       [ACCEPTANCE_DOMAIN_ID]: () => <AcceptancePanel slug={slug} />,
     }),
-    [slug],
+    [slug, testingCustomTabs],
   );
 
   return (

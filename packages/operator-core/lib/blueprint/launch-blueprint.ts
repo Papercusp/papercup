@@ -32,7 +32,7 @@ import { loopbackFetch, describeFetchError } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
-import { heartbeatSpawns, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
+import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 
 // The invoke route is a Hono API route on the operator's API port — derive the base from
@@ -334,6 +334,18 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
       childRole: role,
       runId,
       status: 'running',
+    });
+    // DURABLE QUEEN-LIVENESS (P-033, the real-Queen-reclaim fix). This launch is an
+    // IN-PROCESS `/invoke` handler (loopbackFetch below), not a spawned invoke-once
+    // child — so stamp the launch row with THIS operator process's pid + host. The
+    // P-011 reclaim sweep's liveness gate (isSpawnProcessAlive) treats a row whose
+    // pid === process.pid as alive-by-construction, so a long-running Queen wake is
+    // NEVER reaped while the operator host is up — independent of the heartbeat
+    // setInterval below, whose 60s beat starves past RECLAIM_STALE_MS(300s) under
+    // multi-task bench load (the 7-reclaim symptom). The setInterval stays as a
+    // belt-and-suspenders freshener; the pid match is the durable primary.
+    await recordSpawnPid(pg.sql, spawnId, process.pid).catch(() => {
+      /* best-effort — the heartbeat loop below still covers liveness if this misses */
     });
   } catch (e) {
     console.warn(

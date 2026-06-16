@@ -131,7 +131,7 @@ const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }>
   { id: 'blocked', label: 'Blocked', hint: 'Items stuck on unresolved blockers or external waits.' },
   { id: 'coord-escalation', label: 'Escalations', hint: 'Agent escalations from the coord log — a decision is blocking progress.' },
   { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
-  { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
+  { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the {pot} app is broken.' },
   { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the queue (chat stays conversation only).' },
   { id: 'improvement', label: 'Improvements', hint: 'Self-improvements the auto-implement loop routed to you for triage.' },
   { id: 'standing-approval', label: 'Approvals', hint: 'Standing-approval candidates — grant the operator auto-dispatch, or dismiss.' },
@@ -927,7 +927,7 @@ export default function PlansClient() {
                             className={`pc-queue__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
                             aria-pressed={active}
                             onClick={() => toggleItemStatus(f.id)}
-                            title={f.hint}
+                            title={f.hint.replace('{pot}', t('pot'))}
                           >
                             <span className="pc-queue__filter-label">{f.label}</span>
                             <span className="pc-queue__filter-count">

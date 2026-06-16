@@ -50,9 +50,27 @@ export async function recordSpawnPid(sql: Db, spawnId: string, pid: number): Pro
  * dead). Returns false on any non-Linux / unreadable case, so the caller falls
  * back to the heartbeat-stale reclaim — never a false "alive" that strands a
  * ceiling slot.
+ *
+ * IN-PROCESS LOOPBACK LAUNCHES (P-033, the real-Queen-reclaim fix). A
+ * kind:'hive' Queen wake (and overwatch loops) is NOT a spawned `invoke-once`
+ * child — it is an IN-PROCESS `/invoke` handler running inside the operator host
+ * itself (launch-blueprint.ts `defaultFire` → `loopbackFetch`). Its
+ * `spawned_agents` row records `pid = process.pid` (the operator host's own pid)
+ * so this sweep can prove liveness WITHOUT a fragile heartbeat `setInterval`
+ * (which starves under multi-task load → a live Queen reaped at ~310s, the P-033
+ * bench symptom). When the recorded pid IS this very process, it is definitionally
+ * alive — we are running this code in it — so the row is kept regardless of the
+ * (operator, not invoke-once) cmdline. Reuse-proof within a process lifetime; when
+ * the operator host dies and restarts with a NEW pid, the old pid no longer matches
+ * `process.pid` and the stale in-process row is reclaimed correctly.
  */
 export function isSpawnProcessAlive(pid: number): boolean {
-  if (process.platform !== 'linux' || !Number.isInteger(pid) || pid <= 1) return false;
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  // The recorded pid is THIS running operator process → an in-process loopback
+  // launch (Queen wake / overwatch). It is alive by construction (this code runs
+  // in it). Platform-agnostic and immune to PID reuse for the process's lifetime.
+  if (pid === process.pid) return true;
+  if (process.platform !== 'linux') return false;
   try {
     // cmdline is NUL-separated; the spawn is `node <tsx> .../invoke-once(.ts|.mjs)`.
     const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');

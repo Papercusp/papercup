@@ -15,6 +15,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Modal } from '../harness/Modal';
+import { useLexicon } from '@/lib/useLexicon';
 import { StructuredStreamView } from './StructuredStreamView';
 import {
   BRANCH_ACTION_EVENT_KINDS,
@@ -33,6 +34,7 @@ interface Props {
 }
 
 export default function BranchActionRunner({ slug, branch, name, existingRunId, onClose }: Props) {
+  const t = useLexicon();
   const [runId, setRunId] = useState<string | null>(existingRunId ?? null);
   const [status, setStatus] = useState<'starting' | 'streaming' | 'done' | 'failed' | 'error'>(
     existingRunId ? 'streaming' : 'starting',
@@ -147,7 +149,7 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
               Required keys missing
             </div>
             <div style={{ color: '#c9d1d9', marginBottom: 12 }}>
-              This action needs values that haven't been configured yet for this harness.
+              This action needs values that haven't been configured yet for this {t('pot', { lower: true })}.
             </div>
             <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
               {missingKeys.map((m) => (

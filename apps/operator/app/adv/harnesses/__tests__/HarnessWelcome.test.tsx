@@ -59,10 +59,10 @@ describe('HarnessWelcome gate', () => {
     noWork();
     renderWelcome();
     screen.getByTestId('harness-welcome');
-    screen.getByText('Welcome to your harness.');
+    screen.getByText('Welcome to your Hive.');
     expect(
       screen.getByText(
-        /Come up with ideas in the brainstorm tab, plan them in the plan tab\.\s*Start them, and then watch agents work on them in the harness tab\./,
+        /Come up with ideas in the brainstorm tab, plan them in the plan tab\.\s*Start them, and then watch agents work on them in the Hive tab\./,
       ),
     ).toBeTruthy();
   });

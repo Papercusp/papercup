@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { Controller } from 'react-hook-form';
 import { SettingsMarkdownEditor } from '../SettingsMarkdownEditor';
 import { useFormWith, SubmitButton } from '@/lib/forms';
+import { useLexicon } from '@/lib/useLexicon';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 // Form schema — both fields are free-form markdown, allowed to be empty.
@@ -40,6 +41,7 @@ const FILTER_MODES: FilterMode[] = ['all', 'user-typed', 'operator-proposed'];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export default function OperatorSettingsPage() {
+  const t = useLexicon();
   const [cfg, setCfg] = useState<OperatorConfig | null>(null);
   const [entries, setEntries] = useState<PreferenceEntry[]>([]);
   // User-meaningful list filter → URL via nuqs (visible to ui:get_state).
@@ -317,7 +319,7 @@ export default function OperatorSettingsPage() {
           </div>
           {stats.unconsumedFraction !== null && stats.unconsumedFraction > 0.25 && (
             <p style={{ fontSize: 12, color: 'var(--warn)', marginTop: 8 }}>
-              ⚠ Unconsumed fraction {`>`}25% — recipient harnesses are slow to consume Papercup directives.
+              ⚠ Unconsumed fraction {`>`}25% — recipient {t('pot', { plural: true })} are slow to consume Papercup directives.
               The v5 plan's Path-(a) (`dispatch_role`) escalation criterion is met; consider raising the issue
               with the substrate maintainers.
             </p>

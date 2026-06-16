@@ -28,6 +28,7 @@ import { useLexicon } from '@/lib/useLexicon';
 import { getBrowserWorkspaceId, resolveActiveWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 
 export default function WorkspaceSwitcher() {
+  const t = useLexicon();
   const [reg, setReg] = useState<WorkspaceRegistry | null>(null);
   const [open, setOpen] = useQueryState('wsSwitch', parseAsBoolean.withDefault(false));
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -197,7 +198,7 @@ export default function WorkspaceSwitcher() {
     }
     if (!await askConfirm({
       title: `Delete workspace "${ws.name}"?`,
-      body: 'Its database, harnesses, snapshots, and credentials are removed permanently. Type the workspace name to confirm.',
+      body: `Its database, ${t('pot', { plural: true })}, snapshots, and credentials are removed permanently. Type the workspace name to confirm.`,
       confirmLabel: 'Delete workspace',
       destructive: true,
       requireType: ws.name,

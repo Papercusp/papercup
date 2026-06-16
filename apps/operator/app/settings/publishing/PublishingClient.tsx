@@ -147,7 +147,7 @@ export default function PublishingClient() {
         </Collapsible.Trigger>
         <Collapsible.Content>
           <p>
-            Per-harness plugin config also accepts <code>byoCloudflareToken</code>{' '}
+            Per-{t('pot')} plugin config also accepts <code>byoCloudflareToken</code>{' '}
             and <code>byoCloudflareAccountId</code>. When both are set, the
             substrate publishes directly to your own Cloudflare account and{' '}
             <strong>does not</strong> contact <code>{creds?.publishHost ?? 'publish.papercuspai.com'}</code>.

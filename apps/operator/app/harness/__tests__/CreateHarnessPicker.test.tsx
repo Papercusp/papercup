@@ -101,7 +101,7 @@ describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
     // Join group — the demoted underline affordances are gone; these are cards now.
     screen.getByText('Browse the Comb');
     screen.getByText('Hive invite');
-    screen.getByText('Harness link');
+    screen.getByText('Hive link');
     // The renamed entry replaces the old "GitHub URL" card.
     expect(screen.queryByText('GitHub URL')).toBeNull();
     // No leftover demoted affordances.
@@ -137,7 +137,7 @@ describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
 
   it('shows the add-a-harness heading', () => {
     renderPicker();
-    screen.getByRole('heading', { name: 'Add a harness' });
+    screen.getByRole('heading', { name: 'Add a Hive' });
   });
 
   it('renders no Phase 1b badge in the picker (label removed)', () => {
@@ -155,7 +155,7 @@ describe('legacy picker layout (HIVE_FROM_GITHUB_URL off)', () => {
     screen.getByText('New local directory');
     screen.getByText('Existing local repo');
     screen.getByText('GitHub URL');
-    screen.getByText('Harness link');
+    screen.getByText('Hive link');
     screen.getByRole('heading', { name: 'Local' });
     screen.getByRole('heading', { name: 'Shared' });
     // None of the hive-native surfaces.
@@ -182,7 +182,7 @@ describe('Entry 1 — new local directory navigation', () => {
     renderPicker();
     await user.click(screen.getByText('New local directory'));
     await user.click(screen.getByText('← Back'));
-    screen.getByRole('heading', { name: 'Add a harness' });
+    screen.getByRole('heading', { name: 'Add a Hive' });
   });
 });
 
@@ -223,7 +223,7 @@ describe('P-012b — new-local happy path', () => {
     await user.type(screen.getAllByPlaceholderText('my-project')[0], 'my-proj');
     await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
     await user.type(screen.getAllByPlaceholderText('my-project')[1], 'my-proj');
-    await user.click(screen.getByRole('button', { name: 'Create harness' }));
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('my-proj'));
     expect(mockFetch).toHaveBeenCalledWith(
@@ -249,7 +249,7 @@ describe('P-012c — existing-local happy path', () => {
     await user.click(screen.getByText('Existing local repo'));
     await user.type(screen.getByPlaceholderText('my-project'), 'existing');
     await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/repos/existing');
-    await user.click(screen.getByRole('button', { name: 'Add harness' }));
+    await user.click(screen.getByRole('button', { name: 'Add Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('existing'));
   });
@@ -271,7 +271,7 @@ describe('P-012d — error messages', () => {
     await user.type(screen.getAllByPlaceholderText('my-project')[0], 'foo');
     await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
     await user.type(screen.getAllByPlaceholderText('my-project')[1], 'foo');
-    await user.click(screen.getByRole('button', { name: 'Create harness' }));
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     const alert = await waitFor(() => screen.getByRole('alert'));
     expect(alert.textContent).toContain('A directory with that name already exists');
@@ -289,7 +289,7 @@ describe('P-012d — error messages', () => {
     await user.click(screen.getByText('Existing local repo'));
     await user.type(screen.getByPlaceholderText('my-project'), 'foo');
     await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/bad/../path');
-    await user.click(screen.getByRole('button', { name: 'Add harness' }));
+    await user.click(screen.getByRole('button', { name: 'Add Hive' }));
 
     const alert = await waitFor(() => screen.getByRole('alert'));
     expect(alert.textContent).toContain('That path is invalid');
@@ -325,7 +325,7 @@ describe('P-009 — Search GitHub entry', () => {
     renderPicker();
     await user.click(screen.getByText('GitHub URL'));
     await user.click(screen.getByText('← Back'));
-    screen.getByRole('heading', { name: 'Add a harness' });
+    screen.getByRole('heading', { name: 'Add a Hive' });
   });
 
   it('pasting a URL in search short-circuits to the create form, prefilled', async () => {
@@ -355,7 +355,7 @@ describe('P-009 — Search GitHub entry', () => {
   it('the Harness link card opens the EntryHarnessLinkForm', async () => {
     const user = userEvent.setup();
     renderPicker();
-    await user.click(screen.getByText('Harness link'));
+    await user.click(screen.getByText('Hive link'));
     expect(screen.queryByText('Coming soon')).toBeNull();
     screen.getByPlaceholderText('papercusp://harness?topic=…&github=owner/repo&repo_id=…');
   });
@@ -467,7 +467,7 @@ describe('P-011 — add into hive stamps the membership', () => {
     await user.click(screen.getByText('Existing local repo'));
     await user.type(screen.getByPlaceholderText('my-project'), 'web');
     await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/tmp/web');
-    await user.click(screen.getByRole('button', { name: 'Add harness' }));
+    await user.click(screen.getByRole('button', { name: 'Add Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web', { hive: 'acme' }));
     expect(lastCreateBody()).toMatchObject({ slug: 'web', path: '/tmp/web', hive: 'acme' });
@@ -482,7 +482,7 @@ describe('P-011 — add into hive stamps the membership', () => {
     await user.click(screen.getByText('Existing local repo'));
     await user.type(screen.getByPlaceholderText('my-project'), 'solo');
     await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/tmp/solo');
-    await user.click(screen.getByRole('button', { name: 'Add harness' }));
+    await user.click(screen.getByRole('button', { name: 'Add Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('solo'));
     expect(lastCreateBody().hive).toBeUndefined();

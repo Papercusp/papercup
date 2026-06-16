@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import type { UseFormRegisterReturn } from 'react-hook-form';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface Profile {
   email?: string;
@@ -28,6 +29,7 @@ const ProfileSchema = z.object({
 type ProfileFormData = z.infer<typeof ProfileSchema>;
 
 export default function ProfilePage() {
+  const t = useLexicon();
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -111,7 +113,7 @@ export default function ProfilePage() {
           <input type="email" className="pc-input" placeholder="you@example.com" {...register('email')} />
         </FormField>
 
-        <FormField label="Display name" error={errors.display_name?.message} description="Shown next to your harness runs and proposals.">
+        <FormField label="Display name" error={errors.display_name?.message} description={`Shown next to your ${t('pot', { lower: true })} runs and proposals.`}>
           <input type="text" className="pc-input" placeholder="Avi" {...register('display_name')} />
         </FormField>
 
