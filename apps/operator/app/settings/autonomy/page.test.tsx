@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import type { ReactElement } from 'react';
+
+// The page renders RecentAutoDecisions → DecisionLog, which reads `?decision=<id>`
+// via nuqs; the tree needs a nuqs adapter.
+const render = (ui: ReactElement) => rtlRender(<NuqsTestingAdapter searchParams="">{ui}</NuqsTestingAdapter>);
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 

@@ -12,9 +12,10 @@
  *   - the fail-loud paths: unknown slug → THROW (no silent default), and a
  *     same-name collision across workspaces → THROW.
  *
- * The most load-bearing assertion (the HARD INVARIANT): papercup / wildcard /
- * empty STILL resolve to DEFAULT_WORKSPACE_ID. Flipping that without moving the
- * data 404s every papercup plan — it's gated part-B, out of scope here.
+ * The most load-bearing assertion: papercup / wildcard / empty resolve to
+ * PAPERCUSP_WORKSPACE_ID (WI-148 part-B flip, owner GO 2026-06-16, in LOCKSTEP
+ * with migration 295's 'default'→'papercusp-workspace' data move — either alone
+ * 404s every papercup plan).
  */
 import { describe, expect, it } from 'vitest';
 
@@ -23,8 +24,8 @@ import {
   fill_workspace_id_from_projects,
   type ProjectsWorkspaceLookup,
 } from '../source';
-import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { PAPERCUP_HARNESS_SLUG } from '../../../harness/register-papercup';
+import { PAPERCUSP_WORKSPACE_ID } from '../../../harness/papercusp-workspace';
 
 /** A lookup seam that returns a fixed match list and records the slug it saw. */
 function lookupReturning(...workspaceIds: string[]): {
@@ -39,28 +40,28 @@ function lookupReturning(...workspaceIds: string[]): {
   return { lookup, calls };
 }
 
-describe('resolvePlanScope — papercup-primary short-circuit (HARD INVARIANT)', () => {
-  it('no harness → papercup primary in the default workspace', async () => {
+describe('resolvePlanScope — papercup-primary short-circuit (WI-148 part-B)', () => {
+  it('no harness → papercup primary in PAPERCUSP_WORKSPACE_ID', async () => {
     const { lookup, calls } = lookupReturning('ws-should-not-be-used');
     const r = await resolvePlanScope({ lookup });
-    expect(r).toEqual({ workspaceId: DEFAULT_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
+    expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
     // The short-circuit never consults the projects table.
     expect(calls).toEqual([]);
   });
 
   it.each(['*', 'all', PAPERCUP_HARNESS_SLUG])(
-    'the %s sentinel → papercup primary in DEFAULT_WORKSPACE_ID (no projects lookup)',
+    'the %s sentinel → papercup primary in PAPERCUSP_WORKSPACE_ID (no projects lookup)',
     async (slug) => {
       const { lookup, calls } = lookupReturning('ws-should-not-be-used');
       const r = await resolvePlanScope({ harnessSlug: slug, lookup });
-      expect(r).toEqual({ workspaceId: DEFAULT_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
+      expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
       expect(calls).toEqual([]);
     },
   );
 
   it('a blank/whitespace harness is treated as "no harness"', async () => {
     const r = await resolvePlanScope({ harnessSlug: '   ' });
-    expect(r).toEqual({ workspaceId: DEFAULT_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
+    expect(r).toEqual({ workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: PAPERCUP_HARNESS_SLUG });
   });
 
   it('an explicit workspaceId rides through the papercup short-circuit', async () => {
@@ -107,13 +108,13 @@ describe('resolvePlanScope — fail-loud (NO silent default)', () => {
 
 describe('fill_workspace_id_from_projects', () => {
   it.each(['', '   ', '*', 'all', PAPERCUP_HARNESS_SLUG, undefined])(
-    'returns DEFAULT_WORKSPACE_ID for the papercup/wildcard scope %s (gated part-B)',
+    'returns PAPERCUSP_WORKSPACE_ID for the papercup/wildcard scope %s (WI-148 part-B)',
     async (slug) => {
       const { lookup, calls } = lookupReturning('ws-should-not-be-used');
       const ws = await fill_workspace_id_from_projects(slug, { lookup });
-      expect(ws).toBe(DEFAULT_WORKSPACE_ID);
-      // The papercup scope never consults the projects table — the gated flip
-      // to PAPERCUSP_WORKSPACE_ID is part B, out of scope.
+      expect(ws).toBe(PAPERCUSP_WORKSPACE_ID);
+      // The papercup scope never consults the projects table — it short-circuits
+      // to PAPERCUSP_WORKSPACE_ID (WI-148 part-B flip, lockstep with mig 295).
       expect(calls).toEqual([]);
     },
   );

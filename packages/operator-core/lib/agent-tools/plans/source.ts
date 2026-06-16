@@ -26,6 +26,7 @@ import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { resolveProject } from '../../harness-core';
 import { detectPapercupRoot, PAPERCUP_HARNESS_SLUG } from '../../harness/register-papercup';
+import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -201,13 +202,13 @@ async function lookupProjectWorkspaceIds(slug: string): Promise<string[]> {
  * half).
  *
  * Rules (fail-loud, no silent cross-workspace default):
- *   - papercup / empty / '*' / 'all' / PAPERCUP_HARNESS_SLUG → DEFAULT_WORKSPACE_ID.
- *     NOTE — GATED PART-B CUTOVER: papercup's plan/decision/revision data is all
- *     stored under workspace_id='default' today. The owner-gated "part B" flips
- *     this to PAPERCUSP_WORKSPACE_ID ('papercusp-workspace') *in lockstep with a
- *     data move*; flipping it here WITHOUT moving the rows 404s every papercup
- *     plan (including the live Queen's substrate). DO NOT change this branch
- *     until that data move ships. See WI-148.
+ *   - papercup / empty / '*' / 'all' / PAPERCUP_HARNESS_SLUG → PAPERCUSP_WORKSPACE_ID.
+ *     WI-148 PART-B CUTOVER (owner GO 2026-06-16): flipped from DEFAULT_WORKSPACE_ID
+ *     to PAPERCUSP_WORKSPACE_ID *in LOCKSTEP* with migration 295, which moves
+ *     papercup's plan/feature/issue rows 'default' → 'papercusp-workspace' in the
+ *     SAME release. The flip and the data move MUST ship together (either alone
+ *     404s every papercup read) — they apply atomically on the :3070 deploy
+ *     (migrations-before-serve + papercup-read path-verify → rollback). See WI-148.
  *   - a concrete other slug: look it up in harness_shared.projects.
  *       0 matches  → null (caller decides how to fail).
  *       1 match    → that workspace_id.
@@ -219,9 +220,9 @@ export async function fill_workspace_id_from_projects(
   opts: { lookup?: ProjectsWorkspaceLookup } = {},
 ): Promise<string | null> {
   const raw = harnessSlug?.trim();
-  // Gated part-B cutover point — see the doc-comment above. Keep returning
-  // DEFAULT_WORKSPACE_ID until the lockstep flip + data move ships.
-  if (isPapercupScope(raw)) return DEFAULT_WORKSPACE_ID;
+  // WI-148 part-B cutover (owner GO 2026-06-16): papercup → PAPERCUSP_WORKSPACE_ID,
+  // in lockstep with migration 295's data move (see the doc-comment above).
+  if (isPapercupScope(raw)) return PAPERCUSP_WORKSPACE_ID;
 
   const lookup = opts.lookup ?? lookupProjectWorkspaceIds;
   const matches = await lookup(raw!);
@@ -240,8 +241,8 @@ export async function fill_workspace_id_from_projects(
 /**
  * Resolve a `PlanSourceOpts` to the concrete (workspaceId, harnessSlug) PG key.
  * No harness / the SU wildcard `'*'` / `'all'` / the papercup slug → the
- * papercup primary harness in its workspace (DEFAULT_WORKSPACE_ID — the gated
- * part-B flip lives in `fill_workspace_id_from_projects`). A concrete other slug
+ * papercup primary harness in PAPERCUSP_WORKSPACE_ID (WI-148 part-B flip, in
+ * lockstep with migration 295 — see `fill_workspace_id_from_projects`). A concrete other slug
  * → that harness, whose workspace is resolved from the projects source of truth;
  * an unresolvable slug THROWS (no silent cross-workspace default — WI-148).
  */
@@ -250,11 +251,11 @@ export async function resolvePlanScope(
 ): Promise<{ workspaceId: string; harnessSlug: string }> {
   const raw = opts.harnessSlug?.trim();
   if (isPapercupScope(raw)) {
-    // Papercup / wildcard branch — UNCHANGED from pre-WI-148: honor an explicit
-    // workspaceId, else DEFAULT_WORKSPACE_ID. The gated part-B flip to
-    // PAPERCUSP_WORKSPACE_ID lives in fill_workspace_id_from_projects.
+    // Papercup / wildcard branch — WI-148 part-B (owner GO 2026-06-16): honor an
+    // explicit workspaceId, else PAPERCUSP_WORKSPACE_ID (flipped from
+    // DEFAULT_WORKSPACE_ID in lockstep with migration 295's data move).
     return {
-      workspaceId: opts.workspaceId ?? DEFAULT_WORKSPACE_ID,
+      workspaceId: opts.workspaceId ?? PAPERCUSP_WORKSPACE_ID,
       harnessSlug: PAPERCUP_HARNESS_SLUG,
     };
   }
