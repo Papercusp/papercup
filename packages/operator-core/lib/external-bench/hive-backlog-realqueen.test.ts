@@ -102,6 +102,7 @@ function fakeOps(record: string[], opts: { realQueenStarted?: () => void } = {})
     async survey() { record.push('survey'); return { frontierLen: polls === 0 ? 1 : 0, plansLen: 0 }; },
     async countInFlight() { record.push('countInFlight'); return polls === 0 ? 1 : 0; },
     async countLiveBees() { return polls === 0 ? 2 : 0; },
+    async countLiveQueens() { return polls === 0 ? 1 : 0; },
     async gatherForFifo({ members }) {
       record.push('gatherForFifo');
       const unplaced = members.filter((m) => m.beeId == null);
@@ -173,7 +174,8 @@ test('real-Queen arm: RE-WAKES the Queen when the frontier is ready but no bee i
     sleep: async () => { polls++; },
     async survey() { record.push('survey'); return { frontierLen: polls === 0 ? 1 : 0, plansLen: 0 }; },
     async countInFlight() { return 0; },
-    async countLiveBees() { return 0; }, // no bee ever live → the re-wake trigger
+    async countLiveBees() { return 0; }, // no bee ever live
+    async countLiveQueens() { return 0; }, // no Queen awake → the re-wake trigger
   };
   const driver = realQueenBacklogDriver(ops, { workspaceId: 'ws', pollIntervalMs: 0, fleetTimeoutMs: 60_000 });
   const res = await driver.run({
@@ -181,6 +183,53 @@ test('real-Queen arm: RE-WAKES the Queen when the frontier is ready but no bee i
   });
   assert.ok(record.includes('rewakeQueen'), 'a ready-but-unplaced frontier with no live bee re-wakes the Queen');
   assert.equal(res.runError, undefined);
+});
+
+test('real-Queen arm: RE-WAKES even when countInFlight reports the unplaced member as in-flight (the never-placed gap)', async () => {
+  // The :3170 reproduction (D-023 sibling): the Queen surveyed then EXITED WITHOUT PLACING. The member's
+  // feature is `todo` with zero bee spawns, so countInFlight's startup heuristic reports it as in-flight (1)
+  // FOREVER — the old `inFlight === 0` re-wake guard would never fire and the run would wedge until timeout.
+  // The fix keys re-wake on liveQueens===0 (nobody awake) + liveBees===0, NOT inFlight.
+  const record: string[] = [];
+  let polls = 0;
+  const base = fakeOps(record);
+  const ops: RealQueenBacklogOps = {
+    ...base,
+    now: () => polls * 1000,
+    sleep: async () => { polls++; },
+    async survey() { record.push('survey'); return { frontierLen: polls < 2 ? 1 : 0, plansLen: 0 }; },
+    async countInFlight() { return 1; },        // never-placed member reads as in-flight the whole time
+    async countLiveBees() { return 0; },         // no bee ever spawned
+    async countLiveQueens() { return 0; },       // Queen exited without placing → nobody is driving
+  };
+  const driver = realQueenBacklogDriver(ops, { workspaceId: 'ws', pollIntervalMs: 0, fleetTimeoutMs: 60_000 });
+  const res = await driver.run({
+    arm: HIVE_REALQUEEN_ARM, suite: 'swe-bench-pro', runId: 'rw-nevplaced', seed: 1, backlog: [task(0)], budget: { maxUsd: 1 },
+  });
+  assert.ok(record.includes('rewakeQueen'), 'a ready frontier with no live Queen/bee re-wakes even though countInFlight reports in-flight');
+  assert.equal(res.runError, undefined);
+});
+
+test('real-Queen arm: does NOT re-wake while a Queen is still awake (mid-survey, no bee yet)', async () => {
+  // The startup window: the Queen is awake and surveying but hasn't placed a bee yet (liveBees===0). The
+  // liveQueens===1 gate must SUPPRESS re-wake so we don't double-drive a working Queen.
+  const record: string[] = [];
+  let polls = 0;
+  const base = fakeOps(record);
+  const ops: RealQueenBacklogOps = {
+    ...base,
+    now: () => polls * 1000,
+    sleep: async () => { polls++; },
+    async survey() { record.push('survey'); return { frontierLen: polls < 2 ? 1 : 0, plansLen: 0 }; },
+    async countInFlight() { return 1; },
+    async countLiveBees() { return 0; },         // no bee yet
+    async countLiveQueens() { return polls < 2 ? 1 : 0; }, // Queen awake the first polls → no re-wake
+  };
+  const driver = realQueenBacklogDriver(ops, { workspaceId: 'ws', pollIntervalMs: 0, fleetTimeoutMs: 60_000 });
+  await driver.run({
+    arm: HIVE_REALQUEEN_ARM, suite: 'swe-bench-pro', runId: 'rw-awake', seed: 1, backlog: [task(0)], budget: { maxUsd: 1 },
+  });
+  assert.ok(!record.includes('rewakeQueen'), 'a Queen still awake (surveying) ⇒ no re-wake even with no bee yet');
 });
 
 test('real-Queen arm: does NOT re-wake while bees are live (she is already working)', async () => {
@@ -194,6 +243,7 @@ test('real-Queen arm: does NOT re-wake while bees are live (she is already worki
     async survey() { record.push('survey'); return { frontierLen: polls === 0 ? 1 : 0, plansLen: 0 }; },
     async countInFlight() { return polls === 0 ? 1 : 0; },
     async countLiveBees() { return polls === 0 ? 2 : 0; }, // bees live → NO re-wake
+    async countLiveQueens() { return 0; },
   };
   const driver = realQueenBacklogDriver(ops, { workspaceId: 'ws', pollIntervalMs: 0, fleetTimeoutMs: 60_000 });
   await driver.run({

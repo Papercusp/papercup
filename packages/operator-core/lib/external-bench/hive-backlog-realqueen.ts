@@ -175,6 +175,10 @@ export interface RealQueenBacklogOps {
   countInFlight(input: { hiveHome: string; members: RealQueenEnrolled[]; arm: string; workspaceId: string }): Promise<number>;
   /** Count live bees (for the peak-concurrency metric — sampled every poll, the fixed counter). */
   countLiveBees(input: { hiveHome: string; workspaceId: string }): Promise<number>;
+  /** Count this hive's currently-awake Queen launch rows (running/restarting). The re-wake gate: while a
+   *  Queen is awake she is surveying/placing — re-waking would double-drive; only when ZERO are awake and
+   *  ready frontier remains unplaced did her prior session exit without placing → a fresh wake is owed. */
+  countLiveQueens(input: { hiveHome: string; workspaceId: string }): Promise<number>;
   /** Free spawn headroom + the FIFO arm's gather (live bees) — only used by the FIFO scripted loop. */
   gatherForFifo(input: { hiveHome: string; members: RealQueenEnrolled[]; workspaceId: string }): Promise<{
     tasks: BatchPlacementInput['tasks'];
@@ -303,20 +307,23 @@ export function realQueenBacklogDriver(ops: RealQueenBacklogOps, opts: RealQueen
             // Fire the placement-watchdog sweep ourselves (staging routines are off) so the Queen gets
             // the real stuck-bee eviction → recovery-wake → re-placement backstop, scoped to this hive.
             await ops.reconcileWatchdog({ hiveHome: home, workspaceId: ws }).catch(() => {});
-            const [liveBees, inFlight, survey] = await Promise.all([
+            const [liveBees, liveQueens, inFlight, survey] = await Promise.all([
               ops.countLiveBees({ hiveHome: home, workspaceId: ws }),
+              ops.countLiveQueens({ hiveHome: home, workspaceId: ws }),
               ops.countInFlight({ hiveHome: home, members, arm: req.arm, workspaceId: ws }),
               ops.survey({ hiveHome: home, workspaceId: ws }),
             ]);
             peakConcurrentBees = Math.max(peakConcurrentBees, liveBees);
             // Drained when the Queen has nothing left: no ready frontier, no started plan, nothing in flight.
             if (survey.frontierLen === 0 && survey.plansLen === 0 && inFlight === 0) break;
-            // RE-WAKE the Queen when there is READY work she has not placed: a ready frontier remains but
-            // NO bee is live and NOTHING is in flight → her prior session exited without placing the rest
-            // (observed on :3170 with auto-routines off). Another urgent wake = another survey→place cycle,
-            // the nudge the routinesTick would deliver. While bees ARE live/in-flight we do NOT re-wake
-            // (she's already working) — the watchdog handles stuck/dead recovery. Best-effort.
-            if (survey.frontierLen > 0 && liveBees === 0 && inFlight === 0) {
+            // RE-WAKE the Queen when there is READY work that NOBODY is driving: a ready frontier remains,
+            // NO bee is live, and NO Queen is currently awake → her prior session exited without placing it
+            // (observed on :3170 with auto-routines off; her survey-then-exit leaves the member unplaced, and
+            // since no bee ever spawned for it the in-flight heuristic alone would wrongly read it as "in
+            // flight" forever and never re-wake — D-023 reclaim-under-load's sibling gap). The liveQueens===0
+            // gate is the correct "nobody is working" signal: while a Queen IS awake (mid-survey/placement)
+            // OR a bee is live we do NOT re-wake (the watchdog owns stuck/dead recovery). Best-effort.
+            if (survey.frontierLen > 0 && liveBees === 0 && liveQueens === 0) {
               await ops
                 .rewakeQueen({
                   hiveHome: home,
@@ -633,6 +640,20 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       const { gatherLiveBees } = await import('../fleet/placement-gather');
       const bees = await gatherLiveBees(ws);
       return bees.length;
+    },
+
+    async countLiveQueens() {
+      // This hive's awake Queen launch rows. A Queen wake records a `launch-%` spawned_agents row
+      // (child_role='queen') on the home harness; it flips terminal when her invoke turn returns. So
+      // running/restarting === "a Queen is mid-survey/placement right now" — the gate that distinguishes
+      // "she's still working, don't re-wake" from "her session ended unplaced, a fresh wake is owed".
+      const sql = await sqlClient();
+      const rows = await sql<{ n: string }[]>`
+        SELECT count(*)::text AS n
+          FROM harness_shared.spawned_agents
+         WHERE workspace_id = ${ws} AND harness_slug = ${homePrefix}
+           AND child_role = 'queen' AND status IN ('running','restarting')`;
+      return Number(rows[0]?.n ?? 0) || 0;
     },
 
     async gatherForFifo({ members }) {

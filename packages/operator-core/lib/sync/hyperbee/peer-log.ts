@@ -166,6 +166,13 @@ export async function openOwnLog(store: Corestore): Promise<OwnLog> {
   const core = getCore(store, { name: 'peer-log' });
   await core.ready();
   const keyHex = core.key.toString('hex');
+  // EI-681 diag: does THIS peer serve (upload) its own log blocks to a remote?
+  // If a re-keyed owner never fires 'upload' for its log core, its log isn't
+  // being served over the connection (the asymmetric-replication root).
+  (core as unknown as { on?: (ev: string, fn: (i: number) => void) => void }).on?.(
+    'upload',
+    (index: number) => console.log(`[ei681-diag] ownLog ${keyHex.slice(0, 8)} UPLOAD block ${index}`),
+  );
 
   return {
     async append(op: PeerLogOp): Promise<void> {
@@ -203,6 +210,13 @@ export async function openOwnLog(store: Corestore): Promise<OwnLog> {
 export async function openRemoteLog(store: Corestore, keyHex: string): Promise<RemoteLog> {
   const core = getCore(store, { key: Buffer.from(keyHex, 'hex') });
   await core.ready();
+  // EI-681 diag: does THIS peer actually receive (download) the remote's blocks?
+  // download events firing with contig advancing ⇒ replication healthy; silent
+  // download with peers>0 ⇒ the remote isn't serving (asymmetric-replication).
+  (core as unknown as { on?: (ev: string, fn: (i: number) => void) => void }).on?.(
+    'download',
+    (index: number) => console.log(`[ei681-diag] remoteLog ${keyHex.slice(0, 8)} DOWNLOAD block ${index}`),
+  );
 
   return {
     async get(i: number): Promise<PeerLogOp | null> {

@@ -322,6 +322,58 @@ describe('spawnAgentInHarness — harness resolution', () => {
   });
 });
 
+describe('spawnAgentInHarness — SU MCP slug remap (EI-429)', () => {
+  // The Queen sometimes passes its SU MCP server slug ("<project>-su", or the
+  // legacy "papercusp-su") as a spawn target instead of the registered project,
+  // so every such spawn was rejected — burning Queen turns (a whole turn fired 5
+  // bad-slug spawns). The central chokepoint deterministically remaps a KNOWN -su
+  // MCP slug to its project (strip the "-su" suffix; alias the legacy
+  // "papercusp-su" → the dogfood project "papercup") — never a silent normalize of
+  // an arbitrary wrong slug — so the spawn proceeds against the real project.
+  const PAPERCUP = { slug: 'papercup', path: '/tmp', hasState: true, hasSpec: false };
+  // null for the -su MCP slug, the real project for the stripped base.
+  const onlyResolves = (base: string) =>
+    vi.mocked(resolveProject).mockImplementation(
+      (async (s: string) => (s === base ? PAPERCUP : null)) as never,
+    );
+
+  it('remaps the "<project>-su" MCP slug to its project and spawns against it', async () => {
+    onlyResolves('papercup');
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'papercup-su', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    // the nursery row + child env carry the REMAPPED project slug, not the -su MCP slug
+    expect(res.harness).toBe('papercup');
+    expect(vi.mocked(recordSpawn).mock.calls[0][1]).toMatchObject({ harnessSlug: 'papercup' });
+    const [dir, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(dir).toBe('/tmp');
+    expect(env.HARNESS_SLUG).toBe('papercup');
+  });
+
+  it('aliases the legacy "papercusp-su" slug to the dogfood project "papercup"', async () => {
+    onlyResolves('papercup');
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'papercusp-su', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    expect(res.harness).toBe('papercup');
+  });
+
+  it('does NOT silently normalize an arbitrary wrong slug — a non -su typo still rejects', async () => {
+    vi.mocked(resolveProject).mockResolvedValue(null as never);
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'paprcup', role: 'scoper' });
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('"paprcup" is not a registered project');
+    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+
+  it('rejects a "<base>-su" slug whose stripped base is also unregistered (remap only when the project exists)', async () => {
+    // foo-su strips to foo, which is not a project → no remap, normal rejection.
+    vi.mocked(resolveProject).mockResolvedValue(null as never);
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'foo-su', role: 'scoper' });
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('"foo-su" is not a registered project');
+    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+});
+
 describe('spawnAgentInHarness — role + cap validation', () => {
   it('rejects an unknown role before touching the registry', async () => {
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'wizard' });
