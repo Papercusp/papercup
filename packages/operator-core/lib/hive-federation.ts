@@ -46,13 +46,11 @@ export async function resolveHiveSwarmBinding(
 ): Promise<SwarmBinding | null> {
   const hiveHomeSlug = await hiveHomeSlugForHarness(workspaceId, harnessSlug);
   if (!hiveHomeSlug) {
-    console.log(`[ei681-diag] resolveHiveSwarmBinding(${harnessSlug}): NULL — no hiveHomeSlug (not part of a hive)`);
     return null; // not part of a Hive
   }
 
   const hive = await getHiveBySlug(workspaceId, hiveHomeSlug);
   if (!hive) {
-    console.log(`[ei681-diag] resolveHiveSwarmBinding(${harnessSlug}): NULL — home='${hiveHomeSlug}' has NO hives identity row (getHiveBySlug null)`);
     return null; // Hive identity not resolvable (e.g. un-backfilled)
   }
 
@@ -70,12 +68,10 @@ export async function resolveHiveSwarmBinding(
   if (!isRemoteJoined) {
     const meta = await getOwnedHiveMeta(hiveHomeSlug, workspaceId);
     if (!meta || meta.visibility === 'private') {
-      console.log(`[ei681-diag] resolveHiveSwarmBinding(${harnessSlug}): NULL — home='${hiveHomeSlug}' OWNED but meta=${meta ? meta.visibility : 'none'} (not published)`);
       return null;
     }
   }
 
-  console.log(`[ei681-diag] resolveHiveSwarmBinding(${harnessSlug}): HIVE topic — home='${hiveHomeSlug}' remoteJoined=${isRemoteJoined} pubkey=${hive.pubkeyBase64.slice(0, 12)}…`);
   return { kind: 'hive', hive_pubkey: hive.pubkeyBase64 };
 }
 

@@ -426,14 +426,9 @@ export interface BootedHarnessHandle {
    */
   registerCloseHook(hook: () => void | Promise<void>): () => void;
   /** Cleanup. Idempotent. Runs close-hooks, then tears down swarm + merge
-   *  poller + Corestore.
-   *
-   *  `keepStore: true` tears down everything EXCEPT the Corestore — used by a
-   *  harness RE-KEY (rebootHarness) so the replication muxers pinned on the
-   *  shared swarm sockets survive and the re-boot reuses the same live store
-   *  (EI-681: a full store teardown kills block replication over existing
-   *  sockets, so the re-keyed peer admits but never replicates the other's log). */
-  close(opts?: { keepStore?: boolean }): Promise<void>;
+   *  poller + Corestore. (A re-key does NOT close — use `rekey()`, which leaves
+   *  the old topic + joins the new one with the store/cores/streams alive.) */
+  close(): Promise<void>;
 }
 
 export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
@@ -501,12 +496,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // orchestrator's LWW advisory feature claim); the merge driver reads it
   // (+ admitted remote logs) into PG.
   const ownLog = await openOwnLog(store);
-  // EI-681 diag: surface the own-log key + storage root at boot so we can
-  // correlate it against what the PEER admitted (announce_admitted key=…). A
-  // mismatch ⇒ the peer admitted a STALE/forked log, not this boot's own log.
-  console.log(
-    `[ei681-diag] boot(${opts.harnessSlug}): ownLog=${ownLog.keyHex.slice(0, 8)} root=${(opts.workspaceRoot ?? '').slice(-24)}`,
-  );
 
   // Wire the per-table PG projection writers into the GLOBAL registry too —
   // some non-Model-B callers (CLI introspection, single-harness contexts) still
@@ -971,22 +960,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         await seedCursorFromSnapshots(logs, mergeCursor);
       }
 
-      // EI-681 diag: surface the live merge log-set so we can see whether a
-      // rebooted handle's merge actually sees the admitted REMOTE log (vs only
-      // its own log). Only logs when a remote is present (logs.length > 1).
-      if (logs.length > 1) {
-        console.log(
-          `[ei681-diag] mergeOnePass(${opts.harnessSlug}): logs=${logs.length} [` +
-            logs
-              .map(
-                (l) =>
-                  `${l.keyHex === ownLog.keyHex ? `OWN(${l.keyHex.slice(0, 8)})` : l.keyHex.slice(0, 8)}:len${l.length}@cur${mergeCursor.positions.get(l.keyHex) ?? 0}`,
-              )
-              .join(' ') +
-            ']',
-        );
-      }
-
       // EI-79 steady-state skip (cursor form): nothing new past any log's
       // cursor → skip decode/fold/apply entirely. Lengths are post-update()
       // so growth is caught promptly; the cadenced refresh/reverify hooks
@@ -1047,9 +1020,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         result = await mergeAdmittedLogsIncremental(logs, mergeCursor, mergeOpts);
       }
       const { applied } = result;
-      if (applied > 0) {
-        console.log(`[ei681-diag] mergeOnePass(${opts.harnessSlug}): APPLIED ${applied} ops`);
-      }
 
       // P-005 (design A, flag-gated): compact the OWN log once it has grown past
       // the threshold since its last snapshot — append ONE additive snapshot op
@@ -1375,9 +1345,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // resolution failures don't fail the boot — the harness still works as a
   // single-peer substrate.
   let swarmHandle: SwarmHandle | null = null;
-  if (!opts.swarmBinding) {
-    console.log(`[ei681-diag] boot ${opts.harnessSlug}: NO swarmBinding → staying local-only (no topic join)`);
-  }
   // Join (or RE-KEY to) the swarm topic derived from `binding`, using THIS
   // boot's LIVE store + own log + onAnnounce. Extracted so `rekey()` can re-run
   // it against a NEW binding WITHOUT tearing down the store / open cores /
@@ -1390,7 +1357,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     try {
       const swarm = opts.swarmOverride ?? (await getSharedSwarm());
       const topic = deriveSwarmTopic(binding);
-      console.log(`[ei681-diag] boot ${opts.harnessSlug}: swarmBinding kind=${binding.kind} → topic=${topic.toString('hex').slice(0, 16)}… (joining…)`);
       // Build OUR announce: bind our log core to our device identity. Throws
       // (→ caught below) when gh-auth / keychain can't resolve, keeping the
       // harness local-only rather than joining without an announce.
@@ -1539,7 +1505,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         closeHooks.delete(hook);
       };
     },
-    async close(closeOpts?: { keepStore?: boolean }) {
+    async close() {
       stopped = true;
       // Run teardown hooks (e.g. the Stage-5 outbox drain stopper) FIRST, before
       // the store/swarm tear down — a drain mid-flight should stop appending to
@@ -1585,24 +1551,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (swarmHandle) {
         try { await swarmHandle.close(); } catch {}
       }
-      // EI-681 (re-key): a HARNESS RE-KEY (rebootHarness on the hive
-      // owner-publish + joiner paths) must NOT tear down the Corestore. The
-      // Corestore owns the replication muxer pinned on each shared swarm socket
-      // (`socket.userData`); closing it kills block replication over those
-      // sockets, and the freshly-booted store cannot re-attach to the existing
-      // muxer — so the re-keyed peer ADMITS the other's log (announce works) but
-      // receives ZERO blocks (the feature never crosses). `keepStore` leaves the
-      // store + its socket muxers intact so the re-boot reuses the SAME live
-      // store (cached by getHarnessStore) and replication continues seamlessly;
-      // it also preserves the own-log (a fresh store would re-open it at len 0,
-      // orphaning the peer's already-replicated copy).
-      //
-      // A FULL close (process shutdown / non-reboot teardown) still evicts via
-      // closeHarnessStore — NOT a bare store.close(), which would leave the dead
-      // instance cached and trip "Corestore is closed" on the next boot.
-      if (!closeOpts?.keepStore) {
-        try { await closeHarnessStore(storeOpts); } catch {}
-      }
+      // Close via closeHarnessStore (NOT a bare store.close()) so the closed
+      // Corestore is EVICTED from the getHarnessStore cache — a bare close would
+      // leave the dead instance cached and trip "Corestore is closed" on the next
+      // boot. (A re-key never reaches here: rekeyHarness/handle.rekey leave the
+      // old topic + join the new one WITHOUT closing the store — see boot-all.ts.)
+      try { await closeHarnessStore(storeOpts); } catch {}
       recordBootEvent(opts.workspaceId, opts.harnessSlug, 'close');
     },
   };

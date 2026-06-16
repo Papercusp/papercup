@@ -289,7 +289,6 @@ export async function joinHiveAsView(
       insertHiveIfAbsent({ ...input, title: opts.title ?? opts.hiveId }));
   try {
     const pubkeyBase64 = await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null);
-    console.log(`[ei681-diag] join 2b: hiveId='${opts.hiveId}' hiveSlug(home)='${hiveSlug}' resolveHivePubkey=${pubkeyBase64 ? pubkeyBase64.slice(0, 12) + '…' : 'NULL'}`);
     if (pubkeyBase64) {
       await upsertHiveIdentity({
         workspaceId: opts.workspaceId,
@@ -297,10 +296,8 @@ export async function joinHiveAsView(
         pubkeyBase64,
         keychainId: `remote:${opts.hiveId}`,
       });
-      console.log(`[ei681-diag] join 2b: wrote hives identity home='${hiveSlug}'`);
     }
-  } catch (e) {
-    console.log(`[ei681-diag] join 2b: identity write THREW: ${e instanceof Error ? e.message : e}`);
+  } catch {
     /* identity-view write is best-effort; never fail the join over it */
   }
 
@@ -320,12 +317,9 @@ export async function joinHiveAsView(
       (await import('../sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
   for (const m of members) {
     if (!m.ok || !m.slug) continue;
-    console.log(`[ei681-diag] join 2c: re-keying member '${m.slug}' onto hive topic in place (hive_slug='${hiveSlug}')`);
     try {
-      const result = await rekeyHarness(opts.workspaceId, m.slug);
-      console.log(`[ei681-diag] join 2c: rekey('${m.slug}') result=${JSON.stringify(result)}`);
-    } catch (e) {
-      console.log(`[ei681-diag] join 2c: rekey('${m.slug}') THREW: ${e instanceof Error ? e.message : e}`);
+      await rekeyHarness(opts.workspaceId, m.slug);
+    } catch {
       /* a re-key failure must NEVER fail an otherwise-successful join */
     }
   }

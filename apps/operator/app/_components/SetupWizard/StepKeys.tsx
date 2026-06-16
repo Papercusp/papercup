@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import RouteLink from '../RouteLink';
+import { useLexicon } from '@/lib/useLexicon';
 
 export function StepKeys() {
+  const t = useLexicon();
   const [loaded, setLoaded] = useState(false);
   const [openaiMasked, setOpenaiMasked] = useState<string | null>(null);
   const [openaiInput, setOpenaiInput] = useState('');
@@ -65,7 +67,7 @@ export function StepKeys() {
             tokens at the time of writing).
           </>
         }
-        unlocks="Semantic search in chat and harnesses, embeddings-backed memory recall."
+        unlocks={`Semantic search in chat and ${t('pot', { plural: true, lower: true })}, embeddings-backed memory recall.`}
         cost="Pennies per month for typical usage."
         howToGet={
           <>
@@ -157,7 +159,7 @@ export function StepKeys() {
       <KeyCard
         title="ElevenLabs — voice (optional)"
         description={<>Powers spoken voice modes. <strong>Skip this if you don't want voice.</strong></>}
-        unlocks="High-quality TTS for the operator and harness narration."
+        unlocks={`High-quality TTS for the operator and ${t('pot', { lower: true })} narration.`}
         cost={
           <ul className="pc-cost-modes">
             <li>

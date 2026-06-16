@@ -8,7 +8,7 @@
  * NOT a `*-su` wrapper.
  */
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
@@ -508,5 +508,17 @@ describe('bootstrap-su', () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', cwd: '/home/me/work' });
     const json = await res.json();
     expect(json.cwd).toBe('/proj/papercup');
+  });
+
+  it('EI-202: a no-harness launch whose caller cwd is $HOME is relocated off $HOME (prompt-isolation leak)', async () => {
+    // At $HOME the cwd-level CLAUDE.md / .claude/CLAUDE.md ARE the owner's personal
+    // config, which Claude auto-loads as PROJECT memory — bypassing the per-session
+    // CLAUDE_CONFIG_DIR skip-link (P-002). The launch must NOT run in $HOME; it
+    // relocates to the internal workspace root (the mocked envelope cwd, '/workspace').
+    const res = await callPost({ agent: 'claude', harness_slug: null, cwd: homedir() });
+    const json = await res.json();
+    expect(json.cwd).not.toBe(homedir());
+    expect(json.cwd).toBe('/workspace');
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/workspace' }));
   });
 });

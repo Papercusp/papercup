@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { renderSuPlaybook } from './desktop-install/papercusp-files';
+import { resolveSuLaunchCwd } from './su-launch-cwd';
 import { SU_AGENTS } from './su-agents';
 
 /** Walk up from cwd to the repo root (the dir carrying CLAUDE.md + the engineer
@@ -72,6 +73,34 @@ describe('psu prompt isolation — assembled engineer prompt (P-005, real playbo
       expect(r.text).not.toContain('<!-- PAPERCUSP-SU:');
     });
   }
+});
+
+/**
+ * EI-202 — the cwd-project-memory leak. P-002 skip-links the personal CLAUDE.md /
+ * AGENTS.md out of the per-session CLAUDE_CONFIG_DIR, but that governs only Claude's
+ * GLOBAL memory. Claude ALSO auto-loads PROJECT memory from the cwd
+ * (`<cwd>/CLAUDE.md` + `<cwd>/.claude/CLAUDE.md`). When a no-harness psu session's
+ * cwd is the owner's `$HOME`, those cwd-level files ARE the personal config (on this
+ * box `~/CLAUDE.md` = `@AGENTS.md`, `~/.claude/CLAUDE.md` = the memory rules) — the
+ * exact leak P-002 closes for global memory reopens via cwd. The launcher therefore
+ * must never run a psu session in `$HOME`; resolveSuLaunchCwd relocates it. (A live
+ * "is the personal AGENTS.md absent from the session?" assertion needs a real Claude
+ * launch; the deterministic proxy is "the chosen launch cwd is never $HOME".)
+ */
+describe('psu prompt isolation — a psu session never launches in $HOME (EI-202, cwd project memory)', () => {
+  const HOME = '/home/owner';
+  const INTERNAL = '/home/owner/.papercusp'; // envelope.cwd — under ~, never ~ itself
+
+  it('relocates a no-harness $HOME cwd so the owner personal CLAUDE.md is not the cwd project file', () => {
+    const cwd = resolveSuLaunchCwd({ harnessSlug: null, callerCwd: HOME, envelopeCwd: INTERNAL, home: HOME });
+    expect(cwd).not.toBe(HOME);
+    expect(cwd).toBe(INTERNAL);
+  });
+
+  it('a non-$HOME caller cwd (the repo root) is preserved — that guide is the intended P-001 project guide, not personal leakage', () => {
+    const repo = '/home/owner/papercupai-workspace/papercup';
+    expect(resolveSuLaunchCwd({ harnessSlug: null, callerCwd: repo, envelopeCwd: INTERNAL, home: HOME })).toBe(repo);
+  });
 });
 
 describe('psu prompt isolation — installer no longer enables OMP native memory (P-003)', () => {

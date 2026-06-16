@@ -369,7 +369,6 @@ export async function bootSingleHarness(
     await ensureSendSideWired(handle, opts.wireSendSide);
     return { workspaceId, harnessSlug, state: 'booted' };
   } catch (e) {
-    console.log(`[ei681-diag] bootSingleHarness(${harnessSlug}) FAILED: ${(e as Error)?.message ?? String(e)}`);
     return {
       workspaceId,
       harnessSlug,
@@ -530,16 +529,10 @@ export async function bootAllHarnessesForActiveWorkspace(
   };
 }
 
-/** Tear down a single handle. Idempotent.
- *
- * `keepStore: true` leaves the Corestore alive (still cached by
- * getHarnessStore) — used by `rebootHarness` for a harness RE-KEY so the
- * replication muxers on the shared swarm sockets survive the teardown and the
- * re-boot reuses the SAME live store (EI-681). */
+/** Tear down a single handle. Idempotent. */
 export async function closeBootedHarness(
   workspaceId: string,
   harnessSlug: string,
-  opts: { keepStore?: boolean } = {},
 ): Promise<boolean> {
   const k = key(workspaceId, harnessSlug);
   const handle = handles.get(k);
@@ -551,7 +544,7 @@ export async function closeBootedHarness(
   presenceWired.delete(k);
   wiringInflight.delete(k);
   try {
-    await handle.close({ keepStore: opts.keepStore });
+    await handle.close();
   } catch {
     // close errors are non-fatal; the handle is gone from the map
   }
@@ -589,13 +582,7 @@ export async function rebootHarness(
     resolveSwarmBinding?: SwarmBindingResolver;
   } = {},
 ): Promise<RebootHarnessResult> {
-  // EI-681: keep the Corestore alive across the re-key. A full store teardown
-  // kills block replication over the shared swarm sockets (the Corestore owns
-  // each socket's replication muxer) and the fresh store can't re-attach — so
-  // the re-keyed peer admits the other's log but replicates ZERO blocks. With
-  // keepStore the re-boot reuses the SAME live store (cached by getHarnessStore)
-  // and replication continues seamlessly onto the new topic.
-  const closed = await closeBootedHarness(workspaceId, harnessSlug, { keepStore: true });
+  const closed = await closeBootedHarness(workspaceId, harnessSlug);
   const boot = await bootSingleHarness(workspaceId, harnessSlug, opts);
   return { closed, boot };
 }

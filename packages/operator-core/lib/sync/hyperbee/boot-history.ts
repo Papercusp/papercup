@@ -105,19 +105,6 @@ export function recordBootEvent(
     kind,
     message,
   });
-  // EI-681 diag: surface admission/peer events to the console (FED_LOG) so the
-  // packaged-smoke can see whether a peer is admitted/rejected on the hive topic.
-  if (
-    kind === 'announce_admitted' ||
-    kind === 'announce_rejected' ||
-    kind === 'announce_error' ||
-    kind === 'peer_admitted' ||
-    kind === 'peer_rejected' ||
-    kind === 'peer_connected' ||
-    kind === 'swarm_join_failed'
-  ) {
-    console.log(`[ei681-diag] bootEvent ${harnessSlug}: ${kind}${message ? ' — ' + message : ''}`);
-  }
   while (buffer.length > cap) buffer.shift();
 }
 

@@ -2428,14 +2428,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // hive.controlState — the global Start/Pause-Hive control's read side
   // (start-hive-wake-orchestration P-006): per registered hive, the persisted
-  // started bit (P-004), the pending time wake, and the watchdog health signal.
-  // Live: hive:start / hive:pause fire
-  // `notifySyncInvalidate('hive.controlState', {})` after the state flip.
+  // started bit (P-004), the pending time wake, the watchdog health signal, and
+  // (queen-heartbeat-2026-06-16, owner-priority) the open placements the Queen is
+  // DRIVING — so a parked-but-alive Queen visibly shows she's running + what she
+  // owns (the owner's "I can't tell she's alive" frustration). Live: hive:start /
+  // hive:pause fire `notifySyncInvalidate('hive.controlState', {})`; the heartbeat
+  // UI also periodically refetches to keep lastWakeAt / the countdown fresh.
   'hive.controlState': {
     resolve: async () => {
       const { listHives } = await import('../agent-tools/hive/_resolve');
       const { getHiveStarted } = await import('../hive/started');
       const { recentWatchdogFires } = await import('../hive/watchdog');
+      const { summarizeOpenPlacements } = await import('../hive/placement-watchdog');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const ws = activeWorkspaceId();
       const hives = await listHives(ws).catch(() => []);
@@ -2446,6 +2450,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           nextFireAt: hv.wake?.nextFireAt ?? null,
           lastWakeAt: hv.wake?.lastWakeAt ?? null,
           watchdogFires24h: await recentWatchdogFires(ws, hv.slug).catch(() => 0),
+          placements: await summarizeOpenPlacements(ws, hv.slug).catch(() => ({
+            recovering: 0,
+            cursed: 0,
+            stranded: 0,
+            workingTracked: 0,
+            items: [] as Array<{ workItemId: string; status: string; failCount: number; harness: string | null }>,
+          })),
         })),
       );
     },

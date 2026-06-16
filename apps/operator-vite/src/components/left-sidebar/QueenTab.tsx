@@ -35,6 +35,7 @@ import { AlertTriangle, Crown, ListChecks, Network, Pause, Play, RotateCcw } fro
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
 import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
+import QueenHeartbeat from './QueenHeartbeat';
 
 /** One row of the `hive.steering` sync query (C-1, B-01 + round-2 eligibleHives). */
 export interface HiveSteeringRow {
@@ -233,6 +234,9 @@ export default function QueenTab({ active }: { active: boolean }) {
           <RotateCcw size={11} aria-hidden /> reset
         </button>
       </header>
+
+      {/* Queen heartbeat — is she alive? (owner-priority, queen-heartbeat-2026-06-16) */}
+      <QueenHeartbeat homeSlug={home} />
 
       {err && (
         <div className="pc-queen__err" role="alert">

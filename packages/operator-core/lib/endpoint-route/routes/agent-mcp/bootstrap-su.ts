@@ -31,6 +31,7 @@ import { launchContextDir, launchContextPathFor } from '../../../su-launch-conte
 import { buildLaunchSpec } from '../../../role-launch-spec';
 import { writeSuCodexHome } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
+import { resolveSuLaunchCwd } from '../../../su-launch-cwd';
 import {
   materializeCodexPrompts,
   materializeWorkspacePrompts,
@@ -378,7 +379,14 @@ const post = defineTool({
     // terminal) over the internal .papercusp dir — agents scope their
     // resumable sessions by cwd, so this makes `--resume` work from where
     // the user is. Recorded + returned + exec'd consistently.
-    const cwd = harnessSlug ? envelope.cwd : (callerCwd || envelope.cwd);
+    //
+    // EI-202 guard: never run a psu session in $HOME. At $HOME the cwd-level
+    // CLAUDE.md / .claude/CLAUDE.md ARE the owner's personal config, which
+    // Claude auto-loads as PROJECT memory — re-importing exactly the personal
+    // instructions P-002 skip-links out of the per-session CLAUDE_CONFIG_DIR
+    // (config-dir isolation governs GLOBAL memory only, not cwd project memory).
+    // resolveSuLaunchCwd relocates a $HOME cwd to envelope.cwd (never $HOME).
+    const cwd = resolveSuLaunchCwd({ harnessSlug, callerCwd, envelopeCwd: envelope.cwd });
 
     // Fetch the bound plan's `## Now` + title for the launch-context addendum
     // (best-effort — buildLaunchSpec composes the addendum from these).

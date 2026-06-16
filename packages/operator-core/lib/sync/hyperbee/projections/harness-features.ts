@@ -133,11 +133,7 @@ async function writeToPg(
   row: HarnessFeatureRow,
   provenance?: ProvenanceContext,
 ): Promise<void> {
-  if (row.harness_slug !== opts.harnessSlug) {
-    console.log(`[ei681-diag] writeToPg SKIP (slug mismatch): rowSlug='${row.harness_slug}' projSlug='${opts.harnessSlug}' feature=${row.feature_id} origin=${provenance?.origin ?? 'local'}`);
-    return;
-  }
-  console.log(`[ei681-diag] writeToPg APPLY: projSlug='${opts.harnessSlug}' feature=${row.feature_id} origin=${provenance?.origin ?? 'local'}`);
+  if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';

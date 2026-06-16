@@ -620,4 +620,129 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
     },
     60_000,
   );
+
+  // EI-681: a harness that "goes shared" must RE-KEY onto a new swarm topic (its
+  // gh:<repo_id> topic → the hive-pubkey topic). That re-key must be IN PLACE
+  // (handle.rekey: leave old topic + join new one, store/cores/streams ALIVE) —
+  // a full reboot broke the OWNER's corestore serving of its own log core so the
+  // feature never crossed. This proves a write AFTER an in-place re-key onto a
+  // NEW topic still federates A→B.
+  it(
+    'handle.rekey moves both peers to a NEW topic in place and a post-re-key write still federates A→B',
+    async () => {
+      const dbA: FreshPgDb = await createFreshPgDb('rekeyA');
+      cleanups.push(() => dbA.cleanup());
+      const dbB: FreshPgDb = await createFreshPgDb('rekeyB');
+      cleanups.push(() => dbB.cleanup());
+      await setupPeerSchema(dbA.sql);
+      await setupPeerSchema(dbB.sql);
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const idA = makeIdentityOverride('alice', 42, 'kc-alice');
+      const idB = makeIdentityOverride('bob', 7, 'kc-bob');
+      const swarmA = makeSwarm(testnet.bootstrap);
+      const swarmB = makeSwarm(testnet.bootstrap);
+      const rootA = makeWorkspaceRoot('rekey-A-');
+      const rootB = makeWorkspaceRoot('rekey-B-');
+
+      let handleA: BootedHarnessHandle | undefined;
+      let handleB: BootedHarnessHandle | undefined;
+      let applyA: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+      let applyB: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+
+      handleA = await bootHarnessSubstrate({
+        workspaceRoot: rootA,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: HARNESS_SLUG,
+        swarmBinding: BINDING,
+        swarmOverride: swarmA,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idB.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          applyA ??= buildPeerApply(dbA.sql, handleA!.ownLog.keyHex);
+          return applyA(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idA.override,
+      });
+      cleanups.push(async () => {
+        await handleA?.close();
+        await closeHarnessStore({ workspaceRoot: rootA, harnessSlug: HARNESS_SLUG });
+      });
+
+      handleB = await bootHarnessSubstrate({
+        workspaceRoot: rootB,
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: HARNESS_SLUG,
+        swarmBinding: BINDING,
+        swarmOverride: swarmB,
+        verifyBindingOverride: async (_pk, _login, userId) =>
+          userId === idA.userId ? 'verified' : 'fail',
+        applyOverride: (op) => {
+          applyB ??= buildPeerApply(dbB.sql, handleB!.ownLog.keyHex);
+          return applyB(op);
+        },
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idB.override,
+      });
+      cleanups.push(async () => {
+        await handleB?.close();
+        await closeHarnessStore({ workspaceRoot: rootB, harnessSlug: HARNESS_SLUG });
+      });
+
+      // Both booted onto the SAME initial topic.
+      const topic1 = handleA.swarm?.topicHex;
+      expect(topic1).toBeTruthy();
+      expect(handleB.swarm?.topicHex).toBe(topic1);
+
+      // ── RE-KEY both peers IN PLACE onto a DIFFERENT topic (gh binding). ──
+      const BINDING2 = { kind: 'gh' as const, github_repository_id: 987654321 };
+      await handleA.rekey(BINDING2);
+      await handleB.rekey(BINDING2);
+
+      const topic2 = handleA.swarm?.topicHex;
+      expect(topic2, 're-key must actually change the topic').not.toBe(topic1);
+      expect(handleB.swarm?.topicHex, 'both peers must land on the SAME new topic').toBe(topic2);
+
+      // A write AFTER the re-key must still federate to B on the NEW topic — this
+      // is the regression: a reboot-based re-key left the owner unable to serve.
+      await dbA.sql`
+        INSERT INTO harness_shared.harness_features_consolidated
+          (harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
+        VALUES (${HARNESS_SLUG}, 'F-rekey-1', 'Post-re-key feature', 'from A after re-key', 'todo', 0, 'local', 2001, 2001, 2001)
+      `;
+      const drained = await drainOutboxOnce(handleA, dbA.sql);
+      expect(drained, "A's F-rekey-1 was not drained to its log").toBeGreaterThanOrEqual(1);
+
+      const landed = await pollUntil(
+        async () => {
+          await Promise.all([handleA!.mergeNow(), handleB!.mergeNow()]);
+          return await readFeature(dbB.sql, 'F-rekey-1');
+        },
+        { timeoutMs: 25_000, intervalMs: 250 },
+      );
+      expect(
+        landed,
+        "F-rekey-1 (written after the in-place re-key) never reached B — the owner stopped serving its log across the re-key",
+      ).toBeTruthy();
+      expect(landed).toMatchObject({
+        feature_id: 'F-rekey-1',
+        origin: 'remote',
+        workspace_id: WORKSPACE_ID,
+      });
+    },
+    60_000,
+  );
 });

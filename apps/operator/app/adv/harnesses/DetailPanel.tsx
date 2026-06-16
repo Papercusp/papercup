@@ -5,6 +5,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { ArrowUpRight, MessageCircle } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
+import { useLexicon } from '@/lib/useLexicon';
 import { openFeatureChat } from '@papercusp/papercup-shared';
 import type { Issue, IssueNote } from '@papercusp/operator-core/lib/harness/issue-types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
@@ -97,6 +98,7 @@ function fmtAgo(ts: number | string): string {
  *     stays put while the user keeps clicking around.
  */
 export default function DetailPanel({ params, api }: PanelComponentProps) {
+  const t = useLexicon();
   const slug = (params.harnessSlug as string) || '';
   const pinnedId = (params.itemId as string) || null;
   const [urlSel, setUrlSel] = useQueryState('sel', parseAsString.withDefault(''));
@@ -219,7 +221,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }, [api, pinnedId, feature, issue, workItem, agent]);
 
   if (!slug) {
-    return <Empty>Pick a harness to inspect its work items.</Empty>;
+    return <Empty>Pick a {t('pot', { lower: true })} to inspect its work items.</Empty>;
   }
 
   if (!selectedId) {
