@@ -58,7 +58,7 @@ describe('ADV_TABS', () => {
     // ('overwatch' is no longer an /adv tab — the Overwatch surface moved to the
     // left sidebar next to Queen, P-008 / overwatch-role-2026-06-15 B-08.)
     expect(visibleAdvTabs(true).map((t) => t.id)).toEqual([
-      'overview', 'plans', 'harnesses', 'health', 'frames', 'conversations', 'learning', 'evals',
+      'overview', 'plans', 'harnesses', 'health', 'frames', 'conversations', 'learning', 'evals', 'accounts',
     ]);
     // A single pot shows the full strip. Strip order: Overview leads (the
     // default landing surface, Brief 23 / overview-dashboard-2026-06-05
@@ -66,7 +66,7 @@ describe('ADV_TABS', () => {
     expect(visibleAdvTabs(false)).toEqual([...ADV_TABS]);
     expect(ADV_TABS.map((t) => t.id)).toEqual([
       'overview', 'brainstorm', 'plans', 'harnesses', 'health', 'frames', 'git', 'testing', 'docs', 'insights',
-      'conversations', 'learning', 'evals', 'settings',
+      'conversations', 'learning', 'evals', 'accounts', 'settings',
     ]);
   });
 });
