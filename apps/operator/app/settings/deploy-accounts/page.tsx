@@ -237,40 +237,108 @@ export default function DeployAccountsPage() {
             </button>
           </div>
 
-          <label className="pc-da__field">
-            <span>1 · Account ID</span>
-            <input value={accountId} onChange={(e) => setAccountId(e.target.value)} placeholder="e.g. machine-2 or aviynw10" />
-          </label>
-
-          <div className="pc-da__step">
-            <span className="pc-da__step-label">2 · Mint a token for it</span>
-            <p className="pc-da__step-hint">
-              On a machine where you can sign in as that account, run this — the isolated config dir keeps the mint
-              off this box's own login:
-            </p>
-            <div className="pc-da__cmd">
-              <code>{command}</code>
-              <button type="button" className="pc-da__btn pc-da__btn--ghost pc-da__copy" onClick={() => void copyCommand()}>
-                {copied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-            <p className="pc-da__step-hint">
-              Sign in as the target account in the browser it opens; it prints a token (<code>sk-ant-oat…</code>).
-            </p>
+          <div className="pc-da__modes" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={linkMode === 'oauth'}
+              className={`pc-da__mode${linkMode === 'oauth' ? ' is-active' : ''}`}
+              onClick={() => {
+                setLinkMode('oauth');
+                setAddError(null);
+              }}
+            >
+              🔗 Via browser (OAuth)
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={linkMode === 'token'}
+              className={`pc-da__mode${linkMode === 'token' ? ' is-active' : ''}`}
+              onClick={() => {
+                setLinkMode('token');
+                setAddError(null);
+              }}
+            >
+              Paste a setup-token
+            </button>
           </div>
 
           <label className="pc-da__field">
-            <span>3 · Paste the token (or a .credentials.json bundle)</span>
-            <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={3} placeholder="sk-ant-oat01-…   or   {&quot;claudeAiOauth&quot;:{…}}" />
+            <span>1 · Account ID</span>
+            <input value={accountId} onChange={(e) => setAccountId(e.target.value)} placeholder="e.g. machine-2 or aviynw10" />
           </label>
           <label className="pc-da__field">
             <span>Label (optional)</span>
             <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Hetzner NYC" />
           </label>
 
-          <button className="pc-da__btn pc-da__btn--primary" disabled={busy || !accountId || !value.trim()} onClick={register}>
-            {busy ? 'Linking…' : 'Link account'}
-          </button>
+          {linkMode === 'oauth' ? (
+            !authorizeUrl ? (
+              <div className="pc-da__step">
+                <p className="pc-da__step-hint">
+                  2 · We'll generate a <strong>claude.ai authorize link</strong> for this account. Open it signed in as the
+                  TARGET Max account, approve, then paste the code claude.ai shows you. The token is written server-side and
+                  is never returned to the browser. <em>Experimental</em> — if claude.ai rejects the link, switch to “Paste a
+                  setup-token”.
+                </p>
+                <button className="pc-da__btn pc-da__btn--primary" disabled={busy || !accountId} onClick={() => void startOAuth()}>
+                  {busy ? 'Generating…' : 'Get authorize link'}
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="pc-da__step">
+                  <span className="pc-da__step-label">2 · Open &amp; approve (signed in as the target Max account)</span>
+                  <div className="pc-da__cmd">
+                    <a className="pc-da__authlink" href={authorizeUrl} target="_blank" rel="noreferrer">
+                      ↗ open the claude.ai authorize page
+                    </a>
+                    <button
+                      type="button"
+                      className="pc-da__btn pc-da__btn--ghost pc-da__copy"
+                      onClick={() => void navigator.clipboard?.writeText(authorizeUrl)}
+                    >
+                      Copy link
+                    </button>
+                  </div>
+                </div>
+                <label className="pc-da__field">
+                  <span>3 · Paste the code claude.ai shows you</span>
+                  <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="code#state" />
+                </label>
+                <button className="pc-da__btn pc-da__btn--primary" disabled={busy || !code.trim()} onClick={() => void completeOAuth()}>
+                  {busy ? 'Linking…' : 'Complete link'}
+                </button>
+              </>
+            )
+          ) : (
+            <>
+              <div className="pc-da__step">
+                <span className="pc-da__step-label">2 · Mint a token for it</span>
+                <p className="pc-da__step-hint">
+                  On a machine where you can sign in as that account, run this — the isolated config dir keeps the mint
+                  off this box's own login:
+                </p>
+                <div className="pc-da__cmd">
+                  <code>{command}</code>
+                  <button type="button" className="pc-da__btn pc-da__btn--ghost pc-da__copy" onClick={() => void copyCommand()}>
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <p className="pc-da__step-hint">
+                  Sign in as the target account in the browser it opens; it prints a token (<code>sk-ant-oat…</code>).
+                </p>
+              </div>
+              <label className="pc-da__field">
+                <span>3 · Paste the token (or a .credentials.json bundle)</span>
+                <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={3} placeholder="sk-ant-oat01-…   or   {&quot;claudeAiOauth&quot;:{…}}" />
+              </label>
+              <button className="pc-da__btn pc-da__btn--primary" disabled={busy || !accountId || !value.trim()} onClick={register}>
+                {busy ? 'Linking…' : 'Link account'}
+              </button>
+            </>
+          )}
           {addError && <p className="pc-da__error">⚠ {addError}</p>}
         </div>
       )}
@@ -356,6 +424,11 @@ export default function DeployAccountsPage() {
         .pc-da__btn--ghost { background: transparent; }
         .pc-da__wizard { border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 72%); border-radius: 12px; background: color-mix(in srgb, var(--bg), transparent 30%); padding: 14px; margin-bottom: 18px; max-width: 680px; }
         .pc-da__wizard-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .pc-da__modes { display: inline-flex; gap: 4px; padding: 3px; margin-bottom: 12px; border-radius: 9px; background: color-mix(in srgb, var(--bg-deeper), transparent 20%); }
+        .pc-da__mode { font-size: 12px; padding: 5px 12px; border-radius: 7px; border: none; background: transparent; color: var(--fg-dim); cursor: pointer; font-weight: 600; }
+        .pc-da__mode.is-active { background: color-mix(in srgb, var(--accent-strong), transparent 78%); color: var(--accent-cool); }
+        .pc-da__authlink { flex: 1; font-size: 13px; color: var(--accent-cool); text-decoration: none; font-weight: 650; }
+        .pc-da__authlink:hover { text-decoration: underline; }
         .pc-da__step { margin: 2px 0 12px; }
         .pc-da__step-label { font-size: 11px; color: color-mix(in srgb, var(--accent-soft), transparent 30%); font-weight: 650; }
         .pc-da__step-hint { margin: 6px 0; font-size: 12.5px; color: var(--fg-dim); line-height: 1.5; }
