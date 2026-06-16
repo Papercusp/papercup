@@ -8,8 +8,13 @@
 // invite href), the empty-inviteUrl fallback, the count-null "Discord" path,
 // the silent-on-failure path, and clean unmount-before-resolve (no leak warning,
 // which fail-on-console would catch).
+//
+// Real timers throughout: the component's 5-min re-poll setTimeout never fires
+// inside a test, and `waitFor` needs real timers to poll. We assert post-load
+// state via waitFor (success) and via a microtask flush + a no-DOM check
+// (guards/failures, where nothing ever renders so there's nothing to waitFor).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 
 import DiscordBadge from './DiscordBadge';
 
@@ -26,13 +31,20 @@ function stubFetch(impl: (url: string) => unknown) {
 }
 const ok = (body: DiscordData) => ({ ok: true, json: async () => body });
 
+/** Flush the load() chain: await fetch → (await res.json) → setState/schedule. */
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 beforeEach(() => {
-  vi.useFakeTimers();
+  vi.clearAllMocks();
 });
 afterEach(() => {
   cleanup();
-  vi.runOnlyPendingTimers();
-  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -86,21 +98,24 @@ describe('<DiscordBadge>', () => {
   it('renders nothing when the harness is not shared', async () => {
     const mock = stubFetch(() => ok({ isShared: false, discord: { guildId: 'g', inviteUrl: 'x' }, widget: null }));
     const { container } = render(<DiscordBadge slug="pot-d" />);
-    await waitFor(() => expect(mock).toHaveBeenCalled());
+    await flush();
+    expect(mock).toHaveBeenCalled();
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing when shared but discord is null', async () => {
     const mock = stubFetch(() => ok({ isShared: true, discord: null, widget: { presenceCount: 3, name: null } }));
     const { container } = render(<DiscordBadge slug="pot-e" />);
-    await waitFor(() => expect(mock).toHaveBeenCalled());
+    await flush();
+    expect(mock).toHaveBeenCalled();
     expect(container.innerHTML).toBe('');
   });
 
   it('stays silent (renders nothing) on a non-ok response', async () => {
     const mock = stubFetch(() => ({ ok: false, json: async () => ({}) }));
     const { container } = render(<DiscordBadge slug="pot-f" />);
-    await waitFor(() => expect(mock).toHaveBeenCalled());
+    await flush();
+    expect(mock).toHaveBeenCalled();
     expect(container.innerHTML).toBe('');
   });
 
@@ -109,7 +124,8 @@ describe('<DiscordBadge>', () => {
       throw new Error('offline');
     });
     const { container } = render(<DiscordBadge slug="pot-g" />);
-    await waitFor(() => expect(mock).toHaveBeenCalled());
+    await flush();
+    expect(mock).toHaveBeenCalled();
     expect(container.innerHTML).toBe('');
   });
 
@@ -135,8 +151,10 @@ describe('<DiscordBadge>', () => {
     unmount();
     // resolve the in-flight fetch AFTER unmount — the cancelled guard must
     // prevent a setState-after-unmount (fail-on-console catches the warning).
-    resolve({ ok: true, json: async () => ({ isShared: true, discord: { guildId: 'g', inviteUrl: 'x' }, widget: null }) });
-    await Promise.resolve();
-    await Promise.resolve();
+    await act(async () => {
+      resolve({ ok: true, json: async () => ({ isShared: true, discord: { guildId: 'g', inviteUrl: 'x' }, widget: null }) });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
   });
 });
