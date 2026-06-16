@@ -76,14 +76,14 @@ describe('TextInput', () => {
   });
 
   it('respects type prop for variants (email, number, etc.)', () => {
+    // rerender swaps the tree in the same root; calling cleanup() first would
+    // unmount it and make the next rerender throw "unmounted root".
     const { rerender } = render(<TextInput type="email" placeholder="Email" />);
     expect((screen.getByPlaceholderText('Email') as HTMLInputElement).type).toBe('email');
 
-    cleanup();
     rerender(<TextInput type="number" placeholder="Count" />);
     expect((screen.getByPlaceholderText('Count') as HTMLInputElement).type).toBe('number');
 
-    cleanup();
     rerender(<TextInput type="password" placeholder="Pass" />);
     expect((screen.getByPlaceholderText('Pass') as HTMLInputElement).type).toBe('password');
   });
@@ -187,7 +187,9 @@ describe('TextArea', () => {
     expect(textarea.required).toBe(true);
     expect(textarea.minLength).toBe(10);
     expect(textarea.maxLength).toBe(500);
-    expect(textarea.spellCheck).toBe(true);
+    // jsdom doesn't implement the `spellcheck` IDL getter; assert the reflected
+    // content attribute that React actually forwards from spellCheck="true".
+    expect(textarea.getAttribute('spellcheck')).toBe('true');
   });
 
   it('allows resize vertical by default', () => {

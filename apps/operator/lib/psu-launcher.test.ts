@@ -32,6 +32,7 @@ describe('psu-launcher arg parsing', () => {
       picker: true,
       resume: false,
       resumeId: null,
+      fork: false,
       agent: null,
       role: null,
       feature: null,
@@ -45,6 +46,7 @@ describe('psu-launcher arg parsing', () => {
       profile: null,
       yes: false,
       brain: false,
+      passthrough: [],
     });
   });
 
@@ -64,6 +66,7 @@ describe('psu-launcher arg parsing', () => {
       picker: false,
       resume: false,
       resumeId: null,
+      fork: false,
       agent: 'claude',
       role: null,
       feature: null,
@@ -77,6 +80,7 @@ describe('psu-launcher arg parsing', () => {
       profile: null,
       yes: false,
       brain: false,
+      passthrough: [],
     });
   });
 
@@ -113,6 +117,26 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs(['--resume=x']).yes).toBe(false);
   });
 
+  it('parses --fork / --fork-session (resume-time branch); defaults false', () => {
+    expect(parseArgs(['--resume=42', '--fork']).fork).toBe(true);
+    expect(parseArgs(['--resume=42', '--fork-session']).fork).toBe(true);
+    expect(parseArgs(['--resume=42']).fork).toBe(false);
+  });
+
+  it('collects everything after a literal `--` as verbatim passthrough', () => {
+    const a = parseArgs(['--resume=42', '--', '--add-dir', '/tmp', '--foo=bar']);
+    expect(a.resume).toBe(true);
+    expect(a.resumeId).toBe('42');
+    expect(a.passthrough).toEqual(['--add-dir', '/tmp', '--foo=bar']);
+  });
+
+  it('does NOT parse psu flags that appear after `--` — they are forwarded', () => {
+    // `--no-picker` past the `--` is the backend CLI's to interpret, not psu's.
+    const a = parseArgs(['--resume=42', '--', '--no-picker']);
+    expect(a.picker).toBe(true);
+    expect(a.passthrough).toEqual(['--no-picker']);
+  });
+
   it('resumeArgsFor maps each agent to its RAW CLI + resume args (P-042, no wrapper)', () => {
     expect(resumeArgsFor({ agent: 'claude', cwd: '/x' })).toEqual({
       bin: 'claude',
@@ -144,6 +168,21 @@ describe('psu-launcher arg parsing', () => {
     ]);
   });
 
+  it('resumeArgsFor appends --fork-session for a claude fork (branch, leave the original)', () => {
+    expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }, { fork: true }).args).toEqual([
+      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--fork-session',
+    ]);
+    // Fork also composes with the most-recent (--continue) resume.
+    expect(resumeArgsFor({ agent: 'claude' }, { fork: true }).args).toEqual([
+      '--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--fork-session',
+    ]);
+  });
+
+  it('resumeArgsFor refuses --fork for non-claude agents (omp/codex have no fork-session)', () => {
+    expect(() => resumeArgsFor({ agent: 'omp', ompThreadId: 't' }, { fork: true })).toThrow(/fork/i);
+    expect(() => resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { fork: true })).toThrow(/fork/i);
+  });
+
   it('resumeEnvFor: identity + workspace scope SURVIVE a tracked resume (psu-workspace-scoping fix)', () => {
     // coordOwnerId is re-exported as PAPERCUSP_SID (wake-executor semantics —
     // a fresh SID orphaned the old one's locks/awaits and detached the adv
@@ -163,6 +202,22 @@ describe('psu-launcher arg parsing', () => {
     expect(resumeEnvFor({ agent: 'omp' }, { mintSid: () => 'su-fresh' })).toEqual({
       PAPERCUSP_AGENT: 'omp',
       PAPERCUSP_SID: 'su-fresh',
+    });
+  });
+
+  it('resumeEnvFor: a FORK takes a fresh coord identity + no adv-row link (concurrent-safe)', () => {
+    // Even though the source IS a tracked row (coordOwnerId + id present), the fork
+    // must NOT inherit its SID or adv id — otherwise it would collide on the still-
+    // live original's locks/presence/wakes. Workspace scope still carries over.
+    expect(
+      resumeEnvFor(
+        { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' },
+        { mintSid: () => 'su-fork', fork: true },
+      ),
+    ).toEqual({
+      PAPERCUSP_AGENT: 'claude',
+      PAPERCUSP_SID: 'su-fork',
+      PAPERCUSP_WORKSPACE: 'ws1',
     });
   });
 

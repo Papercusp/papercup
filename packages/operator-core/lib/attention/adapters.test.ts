@@ -95,6 +95,10 @@ describe('P-013 — escalation severity folds into risk_tier', () => {
     expect(
       coordEscalationToAttention({ msgId: 'm-sys0', severity: 'blocker', summary: 's', from: 'system' }).tier,
     ).toBe('alert');
+    // D-006 ext 1: named automated infra bots (green-checkpoint CI) are operational too.
+    expect(
+      coordEscalationToAttention({ msgId: 'm-gc', severity: 'blocker', summary: 'green-checkpoint held', from: 'green-checkpoint' }).tier,
+    ).toBe('alert');
     // A system escalation that DOES carry a choice stays a decision.
     const sysChoice = coordEscalationToAttention({
       msgId: 'm-sys2',

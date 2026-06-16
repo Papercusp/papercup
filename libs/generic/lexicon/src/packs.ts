@@ -16,7 +16,11 @@
 import type { BrandPack, BrandPackId, TermKey } from './types';
 
 const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
-  pot: { one: 'Pot', other: 'Pots' },
+  // Owner directive 2026-06-16: "Pots are now Hives" — the top-level grouping is
+  // canonically a HIVE in the baseline UI now (members within it stay
+  // `harness`/"Harness"). The full bee theme (Colony/Sentinel/Queen/…) remains
+  // flag-gated behind `the-hive`; only this one term is promoted to baseline.
+  pot: { one: 'Hive', other: 'Hives' },
   fleet: { one: 'Fleet', other: 'Fleets' },
   operator: { one: 'Operator', other: 'Operators' },
   brain: { one: 'Brain', other: 'Brains' },

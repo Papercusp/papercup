@@ -142,6 +142,14 @@ jobs:
         continue-on-error: true
         run: npm run lint:generic-first
 
+      # Feature-gate guard (default-on-policy-enforcement 2026-06-16): a user-facing
+      # feature toggle must be a FLAGS entry (default-on enforced + /admin/features-
+      # flippable), NOT an ad-hoc process.env.PAPERCUSP_* boolean (which ships dark).
+      # GATING (--strict): a NEW un-classified boolean env gate fails the build —
+      # classify it as a FLAG, or add it to ALLOW in scripts/check-env-feature-gates.mjs.
+      - name: Env feature-gate lint (gating)
+        run: npm run lint:env-feature-gates:strict
+
       # @restart retirement guard: the shared libs were renamed @restart/* ->
       # @papercusp/* (papercusp-systems-abstraction-2026-05-29). GATING — fails
       # the build with a "use @papercusp/<name>" message if any @restart/* import

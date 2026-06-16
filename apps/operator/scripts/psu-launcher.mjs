@@ -61,8 +61,15 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, passthrough: [] };
+  // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
+  // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
+  // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
+  // launchResume); ordering past that is the caller's responsibility.
+  let rest = false;
   for (const a of argv) {
+    if (rest) { out.passthrough.push(a); continue; }
+    if (a === '--') { rest = true; continue; }
     if (a === '--no-picker') out.picker = false;
     // THE brain (native-terminal-desktop D-013): resume the canonical pinned
     // brain session exactly (no picker); when none is pinned (or it no longer
@@ -74,6 +81,14 @@ export function parseArgs(argv) {
     // session id (the claude --session-id UUID) — both match a tracked row.
     else if (a === '--resume') out.resume = true;
     else if (a.startsWith('--resume=')) { out.resume = true; out.resumeId = a.slice('--resume='.length) || null; }
+    // Fork the resumed session instead of appending to it (claude --fork-session):
+    // claude mints a NEW session id seeded with the original's history, leaving the
+    // original's id + transcript untouched. psu additionally hands the fork a FRESH
+    // coord identity (new PAPERCUSP_SID, no adv-row link — see resumeEnvFor) so it
+    // can run CONCURRENTLY with the still-live original without colliding on
+    // locks/presence/inbox-wake — the whole point of forking vs. a second --resume.
+    // claude-only; resume-only.
+    else if (a === '--fork' || a === '--fork-session') out.fork = true;
     else if (a === '--no-plan') out.noPlan = true;
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
     else if (a.startsWith('--role=')) out.role = a.slice('--role='.length);
@@ -266,14 +281,23 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
  * in the thread). codex re-supplies its bypass flags; its hooks/MCP live in the
  * CODEX_HOME the caller points at.
  */
-export function resumeArgsFor(session, { coordExtPath } = {}) {
+export function resumeArgsFor(session, { coordExtPath, fork = false } = {}) {
+  // --fork-session is a claude concept; omp/codex have no branch-the-session flag,
+  // and silently appending to the original would be the very clobber the user asked
+  // to avoid. Refuse loudly instead.
+  if (fork && session.agent !== 'claude') {
+    throw new Error(`--fork is only supported for claude sessions (${session.agent} has no fork-session)`);
+  }
   // `session.sessionId` is the agent's NATIVE session id (a UUID) when known —
   // set for store-found (untracked) sessions, so we resume that EXACT session.
   // Without it (tracked rows don't carry the native id) we fall back to the
   // agent's "most-recent-in-cwd" resume.
   if (session.agent === 'claude') {
     const resume = session.sessionId ? ['--resume', session.sessionId] : ['--continue'];
-    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'] };
+    // --fork-session: branch the resumed conversation into a NEW session id, leaving
+    // the original's id + transcript untouched (so the fork is safe to run alongside it).
+    const forkFlag = fork ? ['--fork-session'] : [];
+    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', ...forkFlag] };
   }
   if (session.agent === 'omp') {
     const args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
@@ -456,8 +480,21 @@ export function planValue(picked) {
  *     tool failed "no workspace transaction".
  * Untracked sessions (no adv row) have neither → fresh SID, no workspace;
  * the operator's SID→adv-row fallback can't help those either.
+ *
+ * `fork: true` INVERTS the identity rule on purpose: a fork is a genuinely new
+ * session, not a second body of the original, so it ALWAYS gets a fresh SID and
+ * NO adv-row link — that is what lets a fork run concurrently with the still-live
+ * original without colliding on its locks/presence/inbox-wake. Workspace scope
+ * still carries over (the fork stays in the same workspace).
  */
-export function resumeEnvFor(session, { mintSid = () => `su-${randomUUID()}` } = {}) {
+export function resumeEnvFor(session, { mintSid = () => `su-${randomUUID()}`, fork = false } = {}) {
+  if (fork) {
+    return {
+      PAPERCUSP_AGENT: session.agent,
+      PAPERCUSP_SID: mintSid(),
+      ...(session.workspaceId ? { PAPERCUSP_WORKSPACE: session.workspaceId } : {}),
+    };
+  }
   return {
     PAPERCUSP_AGENT: session.agent,
     PAPERCUSP_SID: session.coordOwnerId || mintSid(),
@@ -973,17 +1010,28 @@ function fmtAge(iso) {
  *  session as the pinned brain (Queen) — an AGENT, so it re-applies the
  *  native-scheduler lockout the human resume path deliberately skips
  *  (flags don't persist into resumes; every brain dock-open re-arms it). */
-function launchResume(session, { brain = false } = {}) {
+function launchResume(session, { brain = false, fork = false, passthrough = [] } = {}) {
+  // --fork is claude-only — refuse early with a clear message rather than letting
+  // resumeArgsFor throw a terse error (or, worse, appending to the original, which
+  // is the clobber --fork exists to avoid).
+  if (fork && session.agent !== 'claude') {
+    console.error(`psu: --fork is only supported for claude sessions — ${session.agent} has no fork-session. Re-run without --fork to resume in place.`);
+    process.exit(2);
+  }
   // omp re-loads the coordination extension per invocation; claude/codex don't
   // use -e. Stable path, only added when actually installed.
   const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
-  const { bin, args } = resumeArgsFor(session, { coordExtPath });
+  const { bin, args } = resumeArgsFor(session, { coordExtPath, fork });
   if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
+  // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
+  if (passthrough.length) args.push(...passthrough);
 
-  // Identity + workspace scope survive the resume (see resumeEnvFor).
+  // Identity + workspace scope survive the resume (see resumeEnvFor) — except a
+  // FORK, which deliberately takes a fresh coord identity + no adv-row link so it
+  // can run alongside the still-live original it branched from.
   const env = {
-    ...resumeEnvFor(session),
+    ...resumeEnvFor(session, { fork }),
     // Agent-session marker: the hook-level scheduler guard (bash gate / omp
     // coord-hook) only fires when this is set — never for the owner's own
     // sessions (native-scheduler-lockout D-003).
@@ -1009,7 +1057,7 @@ function launchResume(session, { brain = false } = {}) {
     env.CODEX_HOME = join(homedir(), '.papercusp', 'su-codex-homes', `session-${session.id}`);
   }
 
-  console.error(`psu: resuming ${session.agent} in ${session.cwd}  (${bin} ${args.join(' ')})`);
+  console.error(`psu: ${fork ? 'forking' : 'resuming'} ${session.agent} in ${session.cwd}  (${bin} ${args.join(' ')})`);
   runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
 }
 
@@ -1071,7 +1119,7 @@ async function resumeFlow(args = {}) {
         );
         process.exit(1);
       }
-      launchResume(tracked);
+      launchResume(tracked, { fork: args.fork, passthrough: args.passthrough });
       return;
     }
 
@@ -1090,7 +1138,7 @@ async function resumeFlow(args = {}) {
     // 3. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
     //    the papercusp-su tools) are NOT loaded. Require an explicit confirm.
     await confirmUntrackedResume(untracked, args);
-    launchResume(untracked);
+    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough });
     return;
   }
 
@@ -1120,7 +1168,7 @@ async function resumeFlow(args = {}) {
     message: 'Resume which session?',
     source: async (term) => filterRows(rows, term),
   });
-  launchResume(picked);
+  launchResume(picked, { fork: args.fork, passthrough: args.passthrough });
 }
 
 // `psu --brain` (native-terminal-desktop D-013): the desktop chat dock's
@@ -1266,6 +1314,11 @@ export function agentInvalidForRole(agent) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // --fork only has meaning when resuming an existing session — warn (don't fail)
+  // so a stray `psu --fork` on a fresh launch doesn't silently look honored.
+  if (args.fork && !args.resume) {
+    console.error('psu: --fork only applies with --resume (it branches an existing session); ignoring it for this fresh launch.');
+  }
   if (args.brain) {
     await brainFlow(args);
     return;
@@ -1351,7 +1404,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   });
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
   const extra = suWrapperExtraArgs(res.agent, { model: args.model, resumeSession: args.resumeSession });
-  const launchArgs = [...baseArgs, ...extra];
+  // Generic `--` passthrough, forwarded verbatim to the backend CLI after psu's flags.
+  const launchArgs = [...baseArgs, ...extra, ...(args.passthrough || [])];
   // The brain (Queen) is an AGENT riding the su launch machinery — it gets the
   // native-scheduler lockout the human su session deliberately keeps (D-003).
   if (brain && res.agent === 'claude') launchArgs.push(NATIVE_SCHEDULER_DENY_FLAG);

@@ -4,7 +4,7 @@ import { BRAND_PACKS, CLASSIC_PACK, THE_HIVE_PACK } from './packs';
 
 describe('resolveTerm', () => {
   it('resolves singular by default', () => {
-    expect(resolveTerm('classic', 'pot')).toBe('Pot');
+    expect(resolveTerm('classic', 'pot')).toBe('Hive');
     expect(resolveTerm('the-hive', 'pot')).toBe('Hive');
   });
 

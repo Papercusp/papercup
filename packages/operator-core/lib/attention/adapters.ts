@@ -135,8 +135,16 @@ export interface CoordEscalationInput {
  * auto-resolved by the reconciliation sweep; they never reach "waiting on you".
  * The shared classifier so the reader (tiering) and the reconcile sweep agree.
  */
+/** Named automated, non-human, non-agent INFRA emitters (CI / pipeline bots)
+ *  whose option-less escalations are operational status, not owner decisions.
+ *  `system[:…]` is matched by the prefix check; this set is for the named bots
+ *  (D-006 ext 1). Extend it as new infra emitters appear — never add an AGENT
+ *  alias (a bee's escalation can be a genuine ask). */
+const AUTOMATED_INFRA_EMITTERS = new Set<string>(['green-checkpoint']);
+
 export function isOperationalEscalation(from: string | null | undefined, hasOptions: boolean): boolean {
-  return !hasOptions && typeof from === 'string' && (from === 'system' || from.startsWith('system:'));
+  if (hasOptions || typeof from !== 'string') return false;
+  return from === 'system' || from.startsWith('system:') || AUTOMATED_INFRA_EMITTERS.has(from);
 }
 
 export function coordEscalationToAttention(e: CoordEscalationInput): AttentionItem {

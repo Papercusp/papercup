@@ -50,6 +50,13 @@ const ALLOW = new Set([
   'PAPERCUSP_RELOAD_PROMPTS', 'PAPERCUSP_ALLOW_DEV_RESTART', 'PAPERCUSP_ALLOW_REMOTE_ADMIN',
   'PAPERCUSP_REQUIRE_SPAWN_SIG', 'PAPERCUSP_MEM0_SESSION_EXTRACTION', 'PAPERCUSP_PERSIST_CHUNKS',
   'PAPERCUSP_WORKITEM_REDUNDANCY', 'PAPERCUSP_WORKITEM_CLAIM_LEASE',
+  // ── baseline (existing infra/dev/safety gates, classified as config 2026-06-16) ──
+  // All set by a launcher/CI/safety path, not user-facing features — env is correct.
+  'PAPERCUSP_AGENT_SESSION', 'PAPERCUSP_ALLOW_DB_MIGRATE', 'PAPERCUSP_ALLOW_NO_SANDBOX',
+  'PAPERCUSP_DISABLE_SANDBOX', 'PAPERCUSP_DBOS_INVOKE_DEBUG', 'PAPERCUSP_DEBUG_WORKSPACE',
+  'PAPERCUSP_DESKTOP_SCREEN_TRACKS', 'PAPERCUSP_DEV_PLUGIN_WATCH', 'PAPERCUSP_FAKE_LLM',
+  'PAPERCUSP_PROMPT_CACHE', 'PAPERCUSP_MEMORY_WATCHDOG', 'PAPERCUSP_PTY_FLOW_CONTROL',
+  'PAPERCUSP_ENABLE_RUST_REWRITES', // build-mode (Rust vs JS proxies), launcher-set — config, not a user feature
 ]);
 
 // Broad scan (git grep), precise filter in JS (easier than shell-escaping the boolean form).

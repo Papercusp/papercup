@@ -114,6 +114,8 @@
     "lint:no-sql-json": "node scripts/check-no-sql-json.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
+    "lint:env-feature-gates": "node scripts/check-env-feature-gates.mjs",
+    "lint:env-feature-gates:strict": "node scripts/check-env-feature-gates.mjs --strict",
     "lint:tsc": "node scripts/lint-tsc.mjs",
     "lint:migrations": "node scripts/lint-migrations.mjs",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",

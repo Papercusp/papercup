@@ -18,7 +18,7 @@
 
 import { Boxes, Home, Plus, Share2 } from 'lucide-react';
 import { useLexicon } from '@/lib/useLexicon';
-import type { HiveGroup } from './harness-hive-groups';
+import { HIVE_KIND, type HiveGroup } from './harness-hive-groups';
 
 export interface HiveWorkspaceCardsProps {
   /** One group per hive (root + members), from `groupByHive`. */
@@ -53,7 +53,15 @@ export default function HiveWorkspaceCards({ groups, onDrill, onCreate }: HiveWo
     <div className="pc-hive-cards" data-testid="hive-workspace-cards">
       <div className="pc-hive-cards__grid">
         {groups.map((g) => {
-          const memberCount = g.members.length;
+          // The hive HOME (`harness_kind:'hive'`) is the card itself — its name is
+          // the header. It must NOT also render as a member row, or a hive + its
+          // one harness read as two flat siblings. List only the real member
+          // harnesses; a LEGACY root (a real harness that's its own root) stays.
+          const rootIsHiveHome = g.root.harness_kind === HIVE_KIND;
+          const memberRows = rootIsHiveHome
+            ? g.members.filter((m) => m.slug !== g.root.slug)
+            : g.members;
+          const memberCount = memberRows.length;
           return (
             <section
               key={g.root.slug}
@@ -76,7 +84,7 @@ export default function HiveWorkspaceCards({ groups, onDrill, onCreate }: HiveWo
                 </span>
               </button>
               <ul className="pc-hive-cards__members" role="list">
-                {g.members.map((m) => {
+                {memberRows.map((m) => {
                   const isRoot = m.slug === g.root.slug;
                   const live = !!m.hasState;
                   return (

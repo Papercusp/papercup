@@ -206,11 +206,17 @@ Full guide (acceptable file uses, two-axes model, topology):
 Single source of truth for keys/defaults: `libs/flags/src/types.ts`; flip flags
 via `/admin/features`, not JSON or PostHog directly. Gate cuttable features from
 day one (`requireFlag` / `useFlag` / `gateApiRoute` / Hono middleware / MCP
-registration). **New flags DEFAULT TO ENABLED — finished work never ships
-dark.** Default-OFF only for genuinely incomplete/unsafe work or an explicit
-owner ask — and then surface the pending flip loudly in the plan's `## Now` +
-your completion report. Reference: `/internal/docs/posthog` +
-`/internal/docs/posthog/feature-flags`.
+registration) — **a feature toggle is a `FLAGS` entry, never an ad-hoc
+`process.env.PAPERCUSP_*` boolean** (an env gate ships dark, dodges the default-on
+guard, and can't be flipped at runtime; `lint:env-feature-gates` enforces this in
+CI — env stays for launch-time/test/dev config only). **New flags DEFAULT TO
+ENABLED — finished work never ships dark.** Default-OFF only for genuinely
+incomplete/unsafe work or an explicit owner ask — and then (a) add it to
+`KNOWN_DARK_FLAGS` in `libs/flags/src/production-defaults.test.ts` with a
+justification (CI fails otherwise), and (b) surface the pending flip loudly in the
+plan's `## Now` + your completion report. The dark allowlist carries a
+`DARK_FLAGS_REVIEW_BY` expiry, so a dark flag can't linger silently. Reference:
+`/internal/docs/posthog` + `/internal/docs/posthog/feature-flags`.
 
 ## Tests after editing
 
