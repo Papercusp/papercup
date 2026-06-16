@@ -241,6 +241,45 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
   });
 });
 
+// The Launch subtab (P-006) posts to the managed engine launcher; it reads the
+// active-run guard from evals.benchRuns + fetches a cost estimate.
+describe('<AdvEvalsTab> launch subtab (P-006)', () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).includes('/estimate')) {
+          return { ok: true, json: async () => ({ taskCount: 11, estCostUsd: 38.5, estWallMin: 36, perTaskUsd: 3.5, basis: 'm3' }) } as Response;
+        }
+        if (String(url).includes('/runs/launch')) {
+          expect(init?.method).toBe('POST');
+          return { ok: true, json: async () => ({ ok: true, runId: 'ui-hive-realqueen-123' }) } as Response;
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('renders the arm picker + a launch button when no run is in flight', async () => {
+    nuqsState.evalView = 'launch';
+    render(<AdvEvalsTab />);
+    expect(screen.getByLabelText('Benchmark arm')).toBeTruthy();
+    expect(screen.getByLabelText('Launch benchmark run')).toBeTruthy();
+    // The cost estimate (≥$20) requires an owner-confirm before launch is enabled.
+    await screen.findByLabelText('Approve this spend');
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('disables launch + shows the in-flight banner when a run is already running', () => {
+    nuqsState.evalView = 'launch';
+    H.results['evals.benchRuns'] = { ...blank(), data: [{ id: 'busy-1', status: 'running' }] };
+    render(<AdvEvalsTab />);
+    expect(screen.getByText(/A run is already in flight/)).toBeTruthy();
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe('<AdvEvalsTab> with suites loaded', () => {
   const SUITES = [
     { suite: 'swe-bench-pro', runId: 'run-1', taskCount: 12, armCount: 4, passAt1ByArm: { papercusp: 0.66 } },

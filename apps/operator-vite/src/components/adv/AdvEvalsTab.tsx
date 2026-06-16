@@ -49,10 +49,10 @@
  * Until those resolvers register + the first run lands, every query resolves to
  * `[]` and each subtab renders a clean empty state — this is the BRIEF 9 scaffold.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive } from 'lucide-react';
+import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive, Play } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
 // the @papercusp/sync read and feeds these props; the components read no data.
@@ -160,7 +160,7 @@ export interface EvalRunRow {
 // these directly, so the UI reads them straight into the charts (no mapper, no
 // recompute). The canonical metric source remains @papercusp/bench-metrics.
 
-export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved'] as const;
+export const EVAL_VIEWS = ['external', 'throughput', 'value', 'coordination', 'internal', 'report', 'preserved', 'launch'] as const;
 type EvalView = (typeof EVAL_VIEWS)[number];
 
 // ── Bench runs (live, via @papercusp/sync) ───────────────────────────────────
@@ -376,6 +376,16 @@ export default function AdvEvalsTab() {
             <Archive size={13} aria-hidden />
             <span>Preserved runs<em>real graded runs</em></span>
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'launch'}
+            className={`pc-evals__subtab${view === 'launch' ? ' is-active' : ''}`}
+            onClick={() => void setEvalView('launch')}
+          >
+            <Play size={13} aria-hidden />
+            <span>Launch<em>run a benchmark</em></span>
+          </button>
         </div>
         <div className="pc-evals__controlsright">
           {/* Suite picker — shared across views; hidden until suites exist. */}
@@ -423,6 +433,8 @@ export default function AdvEvalsTab() {
         <ReportView suite={activeSuite} runId={runId} />
       ) : view === 'preserved' ? (
         <PreservedRunsView />
+      ) : view === 'launch' ? (
+        <LaunchRunView />
       ) : (
         <ExternalBenchmarksView
           suite={activeSuite}
@@ -847,7 +859,246 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
   );
 }
 
-// ── Preserved runs view (REST — the real graded snapshots on disk) ───────────
+// ── Launch view (P-006) — trigger a real benchmark run from the UI ───────────
+// Posts to /api/external-bench/runs/launch (the managed engine launcher, D-002).
+// Selectors in nuqs; shows a cost+time ESTIMATE before launch + an owner-confirm
+// above a spend threshold (D-004); disabled while a run is in flight. opus is
+// pinned (fail-closed). The launch is gated server-side on papercusp-external-bench
+// (default OFF) — a 403 surfaces the "enable the flag" message honestly.
+const LAUNCH_ARMS = ['hive-realqueen', 'fifo-noqueen', 'mini-swe-agent'] as const;
+const LAUNCH_TASK_SETS = [
+  { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)' },
+  { id: 'swe-bench-pro-full', label: 'Full SWE-bench Pro (~731)' },
+  { id: 'custom', label: 'Custom instance ids' },
+] as const;
+const OWNER_CONFIRM_USD = 20;
+const fieldStyle: CSSProperties = {
+  background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg)',
+  borderRadius: 6, padding: '5px 8px', fontSize: 13, width: 90,
+};
+
+interface LaunchEstimate {
+  taskCount: number;
+  estCostUsd: number;
+  estWallMin: number;
+  perTaskUsd: number;
+  basis: string;
+}
+
+function LaunchRunView() {
+  const [armRaw, setArm] = useQueryState('launchArm', parseAsStringEnum([...LAUNCH_ARMS]).withDefault('hive-realqueen'));
+  const [taskSetRaw, setTaskSet] = useQueryState('launchTaskSet', parseAsStringEnum(LAUNCH_TASK_SETS.map((t) => t.id)).withDefault('11-task-pilot'));
+  const [capRaw, setCap] = useQueryState('launchCap', parseAsString);
+  const arm = armRaw ?? 'hive-realqueen';
+  const taskSet = taskSetRaw ?? '11-task-pilot';
+  const capNum = Math.max(1, Number(capRaw) || 5);
+
+  const [maxUsd, setMaxUsd] = useState('10');
+  const [customIds, setCustomIds] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<LaunchEstimate | null>(null);
+
+  const [, setEvalView] = useQueryState('evalView', parseAsString);
+  const [, setEvalRun] = useQueryState('evalRun', parseAsString);
+
+  // A run already in flight blocks a new launch (single-active-run, spend-safety).
+  const runsSync = useSyncQuery<{ id: string; status: string }>({ queryName: 'evals.benchRuns', args: {} });
+  const activeRun = useMemo(
+    () => (Array.isArray(runsSync.data) ? runsSync.data : []).find((r) => ['pending', 'running', 'grading'].includes(r.status)),
+    [runsSync.data],
+  );
+
+  // Cost+time estimate (D-004) — refetched as the task set / cap change.
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/external-bench/estimate?taskSetId=${encodeURIComponent(taskSet)}&cap=${capNum}`)
+      .then((r) => r.json())
+      .then((e: LaunchEstimate) => { if (live) setEstimate(e); })
+      .catch(() => { if (live) setEstimate(null); });
+    return () => { live = false; };
+  }, [taskSet, capNum]);
+
+  const needsConfirm = (estimate?.estCostUsd ?? 0) >= OWNER_CONFIRM_USD;
+  const customMissing = taskSet === 'custom' && customIds.trim().length === 0;
+  const canLaunch = !activeRun && !submitting && (!needsConfirm || confirmed) && !customMissing;
+
+  async function launch() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = {
+        arm,
+        taskSetId: taskSet,
+        cap: capNum,
+        model: 'opus',
+        maxUsdPerTask: Number(maxUsd) || undefined,
+      };
+      if (taskSet === 'custom') body.taskIds = customIds.split(',').map((s) => s.trim()).filter(Boolean);
+      const res = await fetch('/api/external-bench/runs/launch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = (await res.json()) as { ok?: boolean; runId?: string; error?: string };
+      if (!res.ok || !json.ok || !json.runId) {
+        setError(json.error || `launch failed (${res.status})`);
+        return;
+      }
+      await setEvalRun(json.runId);
+      await setEvalView('preserved');
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="pc-evals__section">
+      <p className="pc-evals__lede">
+        Launch a real SWE-bench Pro run through the managed bench engine. Spend-safe: the run dissolves its
+        hive on completion/cancel, and a crashed host’s run is reaped on restart (no orphan opus re-spin).
+      </p>
+
+      {activeRun ? (
+        <div className="pc-evals__caveat" role="status">
+          A run is already in flight (<code>{activeRun.id}</code>, {activeRun.status}). Cancel or let it finish
+          before launching another — one run at a time keeps spend bounded.
+        </div>
+      ) : null}
+
+      <div className="pc-launch__grid" style={{ display: 'grid', gap: 14, maxWidth: 560 }}>
+        <label className="pc-evals__suitepick">
+          <span className="pc-evals__suitelabel">arm</span>
+          <Select
+            ariaLabel="Benchmark arm"
+            value={arm}
+            onChange={(v: string) => void setArm(v as (typeof LAUNCH_ARMS)[number])}
+            options={LAUNCH_ARMS.map((a) => ({ value: a, label: armLabel(a) }))}
+          />
+        </label>
+
+        <label className="pc-evals__suitepick">
+          <span className="pc-evals__suitelabel">task set</span>
+          <Select
+            ariaLabel="Task set"
+            value={taskSet}
+            onChange={(v: string) => void setTaskSet(v as (typeof LAUNCH_TASK_SETS)[number]['id'])}
+            options={LAUNCH_TASK_SETS.map((t) => ({ value: t.id, label: t.label }))}
+          />
+        </label>
+
+        {taskSet === 'custom' ? (
+          <label className="pc-evals__suitepick" style={{ alignItems: 'flex-start' }}>
+            <span className="pc-evals__suitelabel">ids</span>
+            <input
+              aria-label="Custom instance ids (comma-separated)"
+              value={customIds}
+              onChange={(e) => setCustomIds(e.target.value)}
+              placeholder="instance_a, instance_b"
+              style={{ ...fieldStyle, width: 360 }}
+            />
+          </label>
+        ) : null}
+
+        <label className="pc-evals__suitepick">
+          <span className="pc-evals__suitelabel">model</span>
+          <span className="pc-evals__suitelabel" style={{ color: 'var(--fg)' }}>
+            opus <em style={{ color: 'var(--fg-dim)' }}>(fail-closed — never downgraded)</em>
+          </span>
+        </label>
+
+        <label className="pc-evals__suitepick">
+          <span className="pc-evals__suitelabel">fleet cap</span>
+          <input
+            aria-label="Fleet concurrency cap"
+            type="number"
+            min={1}
+            value={capRaw ?? '5'}
+            onChange={(e) => void setCap(e.target.value)}
+            style={fieldStyle}
+          />
+        </label>
+
+        <label className="pc-evals__suitepick">
+          <span className="pc-evals__suitelabel">$/task cap</span>
+          <input
+            aria-label="Per-task budget cap (USD)"
+            type="number"
+            min={0}
+            step={0.5}
+            value={maxUsd}
+            onChange={(e) => setMaxUsd(e.target.value)}
+            style={fieldStyle}
+          />
+        </label>
+      </div>
+
+      {estimate ? (
+        <div className="pc-evals__scoreboard" aria-label="Run cost estimate" style={{ marginTop: 16 }}>
+          <div className="pc-evals__stat">
+            <DollarSign size={12} aria-hidden />
+            <span className="pc-evals__statval">≈ ${estimate.estCostUsd.toFixed(2)}</span>
+            <span className="pc-evals__statlabel">est. cost</span>
+          </div>
+          <div className="pc-evals__stat">
+            <Gauge size={12} aria-hidden />
+            <span className="pc-evals__statval">~{estimate.estWallMin} min</span>
+            <span className="pc-evals__statlabel">est. wall (rough)</span>
+          </div>
+          <div className="pc-evals__stat">
+            <span className="pc-evals__statval">{estimate.taskCount}</span>
+            <span className="pc-evals__statlabel">tasks</span>
+          </div>
+        </div>
+      ) : null}
+
+      {needsConfirm ? (
+        <label className="pc-evals__confirm" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 14 }}>
+          <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} aria-label="Approve this spend" />
+          <span>
+            This run is estimated at <strong>≈ ${estimate?.estCostUsd.toFixed(2)}</strong> of opus — confirm you approve the spend.
+          </span>
+        </label>
+      ) : null}
+
+      {error ? (
+        <div className="pc-evals__caveat" role="alert" style={{ marginTop: 14 }}>
+          {error}
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 16 }}>
+        <button
+          type="button"
+          onClick={() => void launch()}
+          disabled={!canLaunch}
+          aria-label="Launch benchmark run"
+          style={{
+            background: canLaunch ? 'var(--accent, #eab308)' : 'var(--bg-2)',
+            color: canLaunch ? '#1a1a1a' : 'var(--fg-dim)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            padding: '8px 18px',
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: canLaunch ? 'pointer' : 'not-allowed',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <Play size={13} aria-hidden />
+          {submitting ? 'Launching…' : 'Launch run'}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// ── Preserved / live runs view — the real graded snapshots, now via @papercusp/sync ──
 
 function PreservedRunsView() {
   // ?evalRun= is the selected run id (shared with the sync views).

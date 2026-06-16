@@ -824,7 +824,15 @@ describe('audit regression — cross-owner release/heartbeat refused', () => {
 });
 
 describe('audit regression — pokeWorkspace grants waiter after holder TTL expiry', () => {
-  it('grants a queued waiter when the holder\'s lock has expired but no one called release', async () => {
+  it(
+    'grants a queued waiter when the holder\'s lock has expired but no one called release',
+    // EI-716 load-flake: this asserts a 1s-TTL holder→waiter grant TRANSITION, so under
+    // green-checkpoint load (embedded-PG :5632 contention) the PG round-trips race the 1s
+    // expiry → intermittent 'granted' vs 'waiting'. Deterministic at :5432 (60/60); retry a
+    // transient load miss instead of skip/quarantine (cross-hive-two-hive.test.ts convention)
+    // so coverage is preserved.
+    { retry: 3 },
+    async () => {
     const ws = nextWs();
     const sql = getTxPool();
     // Holder with 1s TTL

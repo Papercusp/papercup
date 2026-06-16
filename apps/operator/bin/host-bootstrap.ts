@@ -376,6 +376,27 @@ export function runBootstrap(): void {
       const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
       await applyPendingMigrationsAtBoot();
 
+      // [benchmark-evaluation-ui P-005 / D-022] Spend-safety reaper — AWAITED here,
+      // right after migrations and BEFORE the boot-gate flips (so it runs before
+      // the routines engine could re-arm an orphan's wake/git-sync). A UI-launched
+      // bench run in flight when a host CRASHED (SIGKILL bypasses its teardown
+      // finally) leaves an orphan hive whose routines would re-spin opus on this
+      // restart. Reap any run whose liveness heartbeat is stale (>180s): dissolve
+      // its hive (clears the Queen wake + DELETES the gym/scout learning-loop rows
+      // + drops the schema) and freeze its status. Heartbeat-gated so a run
+      // legitimately in flight in another LIVE host is untouched. The no-orphan
+      // case (the norm) is a single fast SELECT → ~0 boot cost. try/catch so a
+      // failure never wedges boot (the next restart retries).
+      try {
+        const { reapStaleBenchRuns } = await import('@papercusp/operator-core/lib/external-bench/run-launcher');
+        const { reaped } = await reapStaleBenchRuns();
+        if (reaped.length > 0) {
+          console.warn(`[bench-reaper] reaped ${reaped.length} stale bench run(s): ${reaped.join(', ')}`);
+        }
+      } catch (e) {
+        console.warn('[bench-reaper] boot reap failed (non-fatal):', e instanceof Error ? e.message : e);
+      }
+
       // EI-368: a headless utility host (gym-operator) wants the migrations
       // above but neither the embedder warm-up (onnxruntime) nor the dogfood
       // substrate (holepunch natives) — both are in the Napi-abort suspect set
@@ -388,22 +409,6 @@ export function runBootstrap(): void {
       // warmMemoryEmbedder swallows every error, so it can't affect boot.
       void import('@papercusp/operator-core/lib/memory/warm')
         .then(({ warmMemoryEmbedder }) => warmMemoryEmbedder())
-        .catch(() => {});
-
-      // [benchmark-evaluation-ui P-005 / D-022] Spend-safety reaper. A UI-launched
-      // bench run that was in flight when a host CRASHED (SIGKILL bypasses its
-      // teardown finally) leaves an orphan hive whose armed learning loops would
-      // re-spin opus on this restart. Reap any bench run whose liveness heartbeat
-      // has gone stale (>180s) — dissolve its hive (deactivating the learning
-      // loops) + freeze its status. Heartbeat-gated so a run legitimately running
-      // in another live host is untouched. Detached + best-effort: never wedges boot.
-      void import('@papercusp/operator-core/lib/external-bench/run-launcher')
-        .then(({ reapStaleBenchRuns }) => reapStaleBenchRuns())
-        .then((r) => {
-          if (r.reaped.length > 0) {
-            console.warn(`[bench-reaper] reaped ${r.reaped.length} stale bench run(s): ${r.reaped.join(', ')}`);
-          }
-        })
         .catch(() => {});
 
       // The dogfood PG schema + change-notify/capture triggers are defined
