@@ -5,6 +5,7 @@
  */
 import { removeAccount } from '../../../deployment/account-pool';
 import { updateAccountPool } from '../../../deployment/account-pool-store';
+import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -24,6 +25,8 @@ export default defineTool({
     }
     if (!body?.id) return Response.json({ ok: false, error: 'id required' }, { status: 400 });
     await updateAccountPool((p) => removeAccount(p, String(body.id)));
+    // Live UI reflection — the Accounts tab reads the accounts.pool sync query.
+    void notifySyncInvalidate('accounts.pool', {}).catch(() => {});
     return Response.json({ ok: true, removed: true });
   },
 });

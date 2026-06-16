@@ -2654,6 +2654,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return trace ? [trace] : [];
     },
   },
+  // accounts.pool — the Queen's Claude Max account pool as a live read-model for
+  // the Accounts tab (accounts-pool-tab-2026-06-15 P-001). One row per pool
+  // account: the union of accounts:list + accounts:status (id/label/credentialRef/
+  // boundTo/available/sustainedlyLimited/rate/liveBuckets) via accountStatus().
+  // accounts:reset-rate / register / remove / link-complete fire
+  // notifySyncInvalidate('accounts.pool') so the tab is live without polling.
+  'accounts.pool': {
+    argsSchema: z.object({ workspace: z.string().min(1).optional() }),
+    resolve: async (args) => {
+      const { workspace } = args as { workspace?: string };
+      const { accountStatus } = await import('../deployment/account-pool-store');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      return accountStatus(workspace ?? activeWorkspaceId());
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────

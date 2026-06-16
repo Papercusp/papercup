@@ -21,6 +21,7 @@ import { onGovernorPause, parseGovernorKey, snapshotGovernors } from '@papercusp
 import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
+  type AccountEgress,
   type AccountPool,
   type AccountRateState,
   type ScalePolicy,
@@ -306,6 +307,8 @@ export interface AccountStatusRow {
   available: boolean;
   sustainedlyLimited: boolean;
   rate: AccountRateState;
+  /** Per-account egress pin (proxy / local source IP), if the account is IP-routed. */
+  egress?: AccountEgress;
   /** Live governor buckets keyed to this account (present only if THIS process ran under it). */
   liveBuckets: { key: string; provider: string; modelClass: string; paused: boolean; pausedUntil: number }[];
 }
@@ -322,6 +325,7 @@ export async function accountStatus(ws?: string, now = Date.now()): Promise<Acco
     available: isAvailable(a, now),
     sustainedlyLimited: isSustainedlyLimited(a, now),
     rate: a.rate,
+    egress: a.egress,
     liveBuckets: live
       .filter((b) => b.accountId === a.id)
       .map((b) => ({

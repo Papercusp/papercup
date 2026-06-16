@@ -304,6 +304,7 @@ import adminDeployAccountsList from './admin/deploy-accounts-list';
 import adminDeployAccountsRegister from './admin/deploy-accounts-register';
 import adminInferenceGatewayStats from './admin/inference-gateway-stats';
 import adminDeployAccountsRemove from './admin/deploy-accounts-remove';
+import adminDeployAccountsReset from './admin/deploy-accounts-reset';
 import adminEmbedBackfill from './admin/embed-backfill';
 import adminExecuteAction from './admin/execute-action';
 import adminLlmTestsFindings from './admin/llm-tests-findings';
@@ -706,6 +707,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminDeployAccountsRegister as AnyRoute),
   ...flatten(adminInferenceGatewayStats as AnyRoute),
   ...flatten(adminDeployAccountsRemove as AnyRoute),
+  ...flatten(adminDeployAccountsReset as AnyRoute),
   ...flatten(adminEmbedBackfill as AnyRoute),
   ...flatten(adminExecuteAction as AnyRoute),
   ...flatten(adminLlmTestsFindings as AnyRoute),

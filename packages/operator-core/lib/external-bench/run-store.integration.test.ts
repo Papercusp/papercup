@@ -1,0 +1,226 @@
+/**
+ * Integration tests for the operational bench-run store (P-002) against a real
+ * (testcontainer) Postgres: migration 296 applies; the live write path
+ * (upsertBenchRun → tasks → events) is readable via getBenchRunDetail in the
+ * PreservedArmRun shape; the grade map + rollup fill graded/resolved counts; and
+ * the one-way file-dir → store import reproduces a preserved run as a row.
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import type { OrgSql } from './reproducibility/db';
+
+// The store fires notifySyncInvalidate on every write — that hits the global org
+// pool (no operator in a unit run). Stub it so the test exercises only the
+// injected sql.
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+
+import {
+  upsertBenchRun,
+  setBenchRunHive,
+  upsertBenchRunTask,
+  taskRowFromFleetResult,
+  appendBenchRunEvents,
+  setBenchRunStatus,
+  applyGradeMap,
+  listBenchRuns,
+  getBenchRunDetail,
+  importPreservedRunToStore,
+} from './run-store';
+import type { FleetTaskResult } from './hive-backlog';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
+const WS = 'bench-store-test-ws';
+
+function migrationSql(file: string): string {
+  return readFileSync(resolve(SQL_DIR, file), 'utf8')
+    .split('\n')
+    .filter((l) => !/^\s*\\/.test(l) && !/\bGRANT\b/.test(l) && !/^\s*(BEGIN|COMMIT);\s*$/.test(l))
+    .join('\n');
+}
+
+let db: FreshPgDb;
+let sql: OrgSql;
+let scope: { sql: OrgSql; workspaceId: string };
+
+beforeAll(async () => {
+  db = await createFreshPgDb('benchstore');
+  sql = db.sql as unknown as OrgSql;
+  await db.sql.unsafe(migrationSql('296-bench-run-operational-store.sql'));
+  await db.sql.unsafe(`
+    ALTER TABLE harness_shared.bench_runs       DISABLE ROW LEVEL SECURITY;
+    ALTER TABLE harness_shared.bench_run_tasks  DISABLE ROW LEVEL SECURITY;
+    ALTER TABLE harness_shared.bench_run_events DISABLE ROW LEVEL SECURITY;
+  `);
+  scope = { sql, workspaceId: WS };
+}, 120_000);
+
+afterAll(async () => {
+  await db?.cleanup();
+});
+
+function fleetResult(instanceId: string, diff: string, costUsd: number): FleetTaskResult {
+  return {
+    attempt: {
+      arm: 'hive-realqueen',
+      blueprintId: 'external-bench',
+      instanceId,
+      seed: '1',
+      diff,
+      tokensIn: 1000,
+      tokensOut: 5000,
+      costUsd,
+      turns: 3,
+      wallClockMs: 60_000,
+      trajectoryRef: '',
+      stopReason: 'done',
+    },
+    beeId: `bee-${instanceId}`,
+    placedAtMs: 1,
+    startedAtMs: 2,
+    finishedAtMs: 3,
+    disposition: 'spawn',
+  } as unknown as FleetTaskResult;
+}
+
+describe('bench run-store (live write + read)', () => {
+  it('writes a run + tasks + events and reads them back in the PreservedArmRun shape', async () => {
+    await upsertBenchRun(
+      { id: 'r1', arm: 'hive-realqueen', taskSetId: '11-task-pilot', model: 'opus', status: 'running', config: { cap: 5 } },
+      scope,
+    );
+    await setBenchRunHive('r1', 'hive-abc', scope);
+    // A live "todo" task, then two collected results.
+    await upsertBenchRunTask('r1', { instanceId: 'instance_a', taskStatus: 'in_progress', beeId: 'bee-a' }, scope);
+    await upsertBenchRunTask('r1', taskRowFromFleetResult(fleetResult('instance_a', 'diff a', 5.5)), scope);
+    await upsertBenchRunTask('r1', taskRowFromFleetResult(fleetResult('instance_b', '', 2.0)), scope);
+    await appendBenchRunEvents(
+      'r1',
+      [
+        { kind: 'placement', agent: 'bee-a', taskId: 'instance_a', detail: 'placed' },
+        { kind: 'complete', agent: 'bee-a', taskId: 'instance_a' },
+      ],
+      scope,
+    );
+
+    const detail = await getBenchRunDetail('r1', scope);
+    expect(detail).not.toBeNull();
+    expect(detail!.status).toBe('running');
+    expect(detail!.hiveSlug).toBe('hive-abc');
+    expect(detail!.arm).toBe('hive-realqueen');
+    expect(detail!.config).toEqual({ cap: 5 });
+    expect(detail!.perTask).toHaveLength(2);
+    expect(detail!.run.coordEvents).toHaveLength(2);
+    // The collected result is authoritative — its beeId overwrote the live placeholder.
+    const a = detail!.perTask.find((t) => t.instanceId === 'instance_a')!;
+    expect(a.beeId).toBe('bee-instance_a');
+    expect(a.costUsd).toBe(5.5);
+    expect(a.diffBytes).toBeGreaterThan(0);
+
+    // A later PARTIAL upsert (just a status flip, no metrics) must NOT wipe the
+    // collected fields — COALESCE preserves them.
+    await upsertBenchRunTask('r1', { instanceId: 'instance_a', taskStatus: 'collected' }, scope);
+    const after = await getBenchRunDetail('r1', scope);
+    const a2 = after!.perTask.find((t) => t.instanceId === 'instance_a')!;
+    expect(a2.beeId).toBe('bee-instance_a');
+    expect(a2.costUsd).toBe(5.5);
+    // Not graded yet → resolved null, summary has nothing graded.
+    expect(a.resolved).toBeNull();
+    expect(detail!.summary.gradedCount).toBe(0);
+    expect(detail!.summary.nonEmptyDiffs).toBe(1); // only instance_a had a diff
+    expect(detail!.coordRates).toBeTruthy();
+  });
+
+  it('applies a grade map + rolls up resolved/graded counts', async () => {
+    await applyGradeMap('r1', { instance_a: true, instance_b: false }, scope);
+    const detail = await getBenchRunDetail('r1', scope);
+    expect(detail!.gradedCount).toBe(2);
+    expect(detail!.resolvedCount).toBe(1);
+    expect(detail!.resolvedPct).toBeCloseTo(0.5);
+    expect(detail!.summary.resolvedPct).toBeCloseTo(0.5);
+    const a = detail!.perTask.find((t) => t.instanceId === 'instance_a')!;
+    expect(a.resolved).toBe(true);
+  });
+
+  it('transitions status + stamps finished_at', async () => {
+    await setBenchRunStatus('r1', 'done', {}, scope);
+    const detail = await getBenchRunDetail('r1', scope);
+    expect(detail!.status).toBe('done');
+    expect(detail!.finishedAt).not.toBeNull();
+  });
+
+  it('lists runs newest-first', async () => {
+    const runs = await listBenchRuns(scope);
+    expect(runs.some((r) => r.id === 'r1')).toBe(true);
+  });
+});
+
+describe('bench run-store (file-dir import)', () => {
+  let baseDir: string;
+  beforeAll(() => {
+    baseDir = mkdtempSync(join(tmpdir(), 'bench-import-'));
+    const runDir = join(baseDir, 'preserved-run');
+    mkdirSync(join(runDir, 'grade-hive-realqueen', 'out'), { recursive: true });
+    const armRun = {
+      arm: 'hive-realqueen',
+      runId: 'preserved-run-orig',
+      startedAt: '2026-06-16T04:47:56.836Z',
+      wallMs: 0,
+      peakConcurrentBees: 3,
+      taskCount: 2,
+      nonEmptyDiffs: 1,
+      totals: { costUsd: 7.5, tokensIn: 6000, tokensOut: 60000 },
+      perTask: [
+        { instanceId: 'instance_x', beeId: 'b1', disposition: 'spawn', stopReason: 'done', tokensIn: 3000, tokensOut: 30000, costUsd: 5, turns: 1, wallClockMs: 0, diffBytes: 100 },
+        { instanceId: 'instance_y', beeId: 'b2', disposition: 'spawn', stopReason: 'no-diff', tokensIn: 3000, tokensOut: 30000, costUsd: 2.5, turns: 1, wallClockMs: 0, diffBytes: 0 },
+      ],
+      coordEvents: [
+        { ts: 1, kind: 'placement', agent: 'b1', taskId: 'instance_x', detail: 'placed' },
+        { ts: 2, kind: 'complete', agent: 'b1', taskId: 'instance_x' },
+      ],
+      recovered: true,
+    };
+    writeFileSync(join(runDir, 'hive-realqueen.json'), JSON.stringify(armRun), 'utf8');
+    writeFileSync(
+      join(runDir, 'grade-hive-realqueen', 'out', 'eval_results.json'),
+      JSON.stringify({ instance_x: true, instance_y: false }),
+      'utf8',
+    );
+  });
+  afterAll(() => rmSync(baseDir, { recursive: true, force: true }));
+
+  it('imports a preserved file-dir run into the store with grader verdicts merged', async () => {
+    const res = await importPreservedRunToStore('preserved-run', { ...scope, baseDir });
+    expect(res.imported).toBe(true);
+
+    const detail = await getBenchRunDetail('preserved-run', scope);
+    expect(detail).not.toBeNull();
+    expect(detail!.source).toBe('import');
+    expect(detail!.status).toBe('done');
+    expect(detail!.arm).toBe('hive-realqueen');
+    expect(detail!.recovered).toBe(true);
+    expect(detail!.taskSetId).toBe('custom:2-task');
+    expect(detail!.perTask).toHaveLength(2);
+    expect(detail!.gradedCount).toBe(2);
+    expect(detail!.resolvedCount).toBe(1);
+    expect(detail!.resolvedPct).toBeCloseTo(0.5);
+    expect(detail!.run.coordEvents).toHaveLength(2);
+    const x = detail!.perTask.find((t) => t.instanceId === 'instance_x')!;
+    expect(x.resolved).toBe(true);
+    const y = detail!.perTask.find((t) => t.instanceId === 'instance_y')!;
+    expect(y.resolved).toBe(false);
+    expect(detail!.summary.costUsd).toBeCloseTo(7.5);
+  });
+
+  it('re-import is idempotent (same row, no dupes)', async () => {
+    await importPreservedRunToStore('preserved-run', { ...scope, baseDir });
+    const detail = await getBenchRunDetail('preserved-run', scope);
+    expect(detail!.perTask).toHaveLength(2);
+    expect(detail!.run.coordEvents).toHaveLength(2);
+  });
+});
