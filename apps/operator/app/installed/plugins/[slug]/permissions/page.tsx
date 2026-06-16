@@ -7,6 +7,7 @@ import RouteLink from '../../../../_components/RouteLink';
 import { Checkbox } from '../../../../harness/Checkbox';
 import { explainCapability, tierBadgeColor } from '@papercusp/operator-core/lib/capability-explain';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface ManifestResp {
   name: string;
@@ -23,6 +24,7 @@ export default function PluginPermissionsPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
+  const t = useLexicon();
   const [manifest, setManifest] = useState<ManifestResp | null>(null);
   const [harnesses, setHarnesses] = useState<ProjectRow[]>([]);
   // grants[harnessSlug] = Set<capability>
@@ -140,7 +142,7 @@ export default function PluginPermissionsPage({
       {explained.length === 0 ? (
         <div className="pc-card">This plugin declares no capabilities.</div>
       ) : harnesses.length === 0 ? (
-        <div className="pc-card">No harnesses registered. Create a harness first to manage grants.</div>
+        <div className="pc-card">No {t('pot', { plural: true, lower: true })} registered. Create a {t('pot', { lower: true })} first to manage grants.</div>
       ) : (() => {
         type CapRow = (typeof explained)[number];
         const columns: ColumnDef<CapRow>[] = [

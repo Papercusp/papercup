@@ -126,11 +126,11 @@ export default function InstalledHarnessesPage() {
     } catch (e: any) {
       if ((e as Error).name === 'AbortError') return;
       setError(String(e?.message ?? e));
-      toast.error(`failed to load harnesses: ${e?.message ?? e}`);
+      toast.error(`failed to load ${t('pot', { plural: true, lower: true })}: ${e?.message ?? e}`);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -146,10 +146,10 @@ export default function InstalledHarnessesPage() {
     <div className="pc-installed-ops-shell pc-installed-harnesses-shell" style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 24px' }}>
       <header className="pc-installed-ops-header pc-installed-harnesses-header" style={{ marginBottom: 24, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div>
-          <h1 style={{ margin: 0 }}>Harnesses</h1>
+          <h1 style={{ margin: 0 }}>{t('pot', { plural: true })}</h1>
           <p style={{ color: 'var(--fg-mute)', marginTop: 8 }}>
-            Locally-installed harnesses. Each is a project scaffolded into this workspace.
-            Click a harness to open it in mission control.
+            Locally-installed {t('pot', { plural: true, lower: true })}. Each is a project scaffolded into this workspace.
+            Click a {t('pot', { lower: true })} to open it in mission control.
           </p>
         </div>
         <button
@@ -158,7 +158,7 @@ export default function InstalledHarnessesPage() {
           onClick={() => setPickerOpen(true)}
           style={{ whiteSpace: 'nowrap', marginTop: 4 }}
         >
-          + Add harness
+          + Add {t('pot')}
         </button>
       </header>
       <CreateHarnessPicker
@@ -172,7 +172,7 @@ export default function InstalledHarnessesPage() {
 
       {data && data.projects.length === 0 && !loading && (
         <div className="pc-installed-ops-empty pc-installed-harnesses-empty" style={{ padding: 32, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
-          <p style={{ color: 'var(--fg-mute)' }}>No harnesses installed yet.</p>
+          <p style={{ color: 'var(--fg-mute)' }}>No {t('pot', { plural: true, lower: true })} installed yet.</p>
           <p>
             <RouteLink href="/cupboard" className="pc-button">Browse the {t('cupboard')}</RouteLink>
           </p>

@@ -10,6 +10,7 @@
 
 import { Suspense, useCallback, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useLexicon } from '@/lib/useLexicon';
 import dynamic from '@/lib/router-compat/dynamic';
 import WorkspacePicker from './_components/WorkspacePicker';
 import RightRail from './_components/RightRail';
@@ -47,6 +48,7 @@ const TAB_GROUPS: Array<{ label: string; tabs: Array<{ id: TabId; label: string;
     label: 'Operate',
     tabs: [
       { id: 'api', label: 'API', hint: 'invoke tools' },
+      // label resolved through the lexicon at render (see DevPage) → "Hives"
       { id: 'harnesses', label: 'Harnesses', hint: 'health matrix' },
       { id: 'sessions', label: 'Sessions', hint: 'spawn drilldown' },
       { id: 'routes', label: 'Routes', hint: 'HTTP traffic' },
@@ -77,6 +79,7 @@ const TAB_GROUPS: Array<{ label: string; tabs: Array<{ id: TabId; label: string;
 const DENSE_TABS = new Set<TabId>(['tables', 'sql', 'studio', 'backups', 'terminal']);
 
 export default function DevPage() {
+  const t = useLexicon();
   // Top-level /dev tab — URL-backed so agents can read it via ui:get_state
   // and switch panels via set_url. nuqs keeps the deep-link working
   // across reloads and lets agents navigate the dev console without
@@ -126,15 +129,17 @@ export default function DevPage() {
           {TAB_GROUPS.map((group) => (
             <section key={group.label} className="pc-dev-section pc-dev-nav-group">
               <div className="pc-dev-section-label">{group.label}</div>
-              {group.tabs.map((t) => (
+              {group.tabs.map((tab_) => (
                 <button
-                  key={t.id}
+                  key={tab_.id}
                   type="button"
-                  className={`pc-dev-tab ${tab === t.id ? 'is-active' : ''}`}
-                  onClick={() => setTab(t.id)}
+                  className={`pc-dev-tab ${tab === tab_.id ? 'is-active' : ''}`}
+                  onClick={() => setTab(tab_.id)}
                 >
-                  <span className="pc-dev-tab-label">{t.label}</span>
-                  <span className="pc-dev-tab-hint">{t.hint}</span>
+                  <span className="pc-dev-tab-label">
+                    {tab_.id === 'harnesses' ? t('pot', { plural: true }) : tab_.label}
+                  </span>
+                  <span className="pc-dev-tab-hint">{tab_.hint}</span>
                 </button>
               ))}
             </section>

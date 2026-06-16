@@ -356,7 +356,7 @@ export default function CupboardClient() {
               {t('cupboard')}
             </h1>
             <p style={{ fontFamily: FONTS.ui, fontSize: 13, lineHeight: 1.6, color: COLORS.textMuted, margin: '10px 0 0' }}>
-              Discover installable harnesses, blueprints, plugins, packs, and tools from the shared Papercusp registry.
+              Discover installable {t('pot', { plural: true, lower: true })}, blueprints, plugins, packs, and tools from the shared Papercusp registry.
             </p>
             {/* P-012: the in-UI "how sharing works" explainer (D-004). */}
             <div style={{ margin: '8px 0 0' }}>

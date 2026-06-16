@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useLexicon } from '@/lib/useLexicon';
 
 type AutoLoopFire = KPIs['autoloop']['recent_fires'][number];
 
@@ -46,8 +47,9 @@ function formatRel(iso: string): string {
 }
 
 function AutoLoopGrid({ fires }: { fires: AutoLoopFire[] }) {
+  const t = useLexicon();
   const columns: ColumnDef<AutoLoopFire>[] = useMemo(() => [
-    { key: 'harness', header: 'Harness', width: 2, render: ({ row }) => <span style={{ fontFamily: 'monospace' }}>{row.harness_slug}</span> },
+    { key: 'harness', header: t('pot'), width: 2, render: ({ row }) => <span style={{ fontFamily: 'monospace' }}>{row.harness_slug}</span> },
     { key: 'role', header: 'Role', width: 1, render: ({ row }) => <>{row.role}</> },
     { key: 'fired', header: 'Last fired', width: 1, render: ({ row }) => <>{formatRel(row.last_fired_at)}</> },
     {
@@ -69,7 +71,7 @@ function AutoLoopGrid({ fires }: { fires: AutoLoopFire[] }) {
         <span className={row.consecutive_errors > 0 ? 'pc-kpi-error-count active' : 'pc-kpi-error-count'} style={{ color: row.consecutive_errors > 0 ? 'tomato' : 'inherit' }}>{row.consecutive_errors}</span>
       ),
     },
-  ], []);
+  ], [t]);
 
   return (
     <div className="pc-kpi-autoloop-grid">
@@ -117,6 +119,7 @@ function BarRow({ label, value, max }: { label: string; value: number; max: numb
 }
 
 export default function KPIsPage() {
+  const t = useLexicon();
   const [data, setData] = useState<KPIs | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -177,7 +180,7 @@ export default function KPIsPage() {
 
       {/* Top stats */}
       <div className="pc-kpi-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 24 }}>
-        <StatCard label="Harnesses" value={data.totals.harnesses} />
+        <StatCard label={t('pot', { plural: true })} value={data.totals.harnesses} />
         <StatCard label="Projects" value={data.totals.projects} sub={Object.entries(data.totals.projects_by_status).map(([k, v]) => `${k}:${v}`).join(' ')} />
         <StatCard label="Messages 24h" value={data.totals.messages_24h.toLocaleString()} />
         <StatCard label="Actions 24h" value={data.totals.executed_actions_24h.toLocaleString()} />
@@ -212,7 +215,7 @@ export default function KPIsPage() {
             </div>
           </div>
 
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Parent harnesses</h2>
+          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Parent {t('pot', { plural: true })}</h2>
           <div className="pc-kpi-panel pc-kpi-parents-panel" style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8 }}>
             {data.parents.length === 0 && <div style={{ color: 'var(--fg-mute)' }}>No parent → child relationships yet.</div>}
             {data.parents.map((p) => (

@@ -18,6 +18,7 @@ import { Suspense } from 'react';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
 import Link from '@/lib/router-compat/link';
 import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
+import { term } from '@papercusp/operator-core/lib/lexicon';
 
 export const dynamic = 'force-dynamic';
 
@@ -65,7 +66,7 @@ async function ProjectDocs({
   const sp = await searchParams;
   const slug = sp.harness?.trim() ?? '';
   if (!slug) {
-    return <Empty title="Missing ?harness=<slug>" body="Open this view via the harness Docs tab — it provides the slug." />;
+    return <Empty title="Missing ?harness=<slug>" body={`Open this view via the ${term('pot', { lower: true })} Docs tab — it provides the slug.`} />;
   }
   const projectPath = await resolveProjectPath(slug);
   if (!projectPath) return <Empty title={`Unknown harness "${slug}"`} body="No matching entry in the projects registry." />;

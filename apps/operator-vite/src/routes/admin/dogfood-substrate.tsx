@@ -5,6 +5,7 @@ import { SubstrateSummaryCardClient } from '@/app/harness/insights/SubstrateSumm
 import { BootHistoryTableClient } from '@/app/harness/insights/BootHistoryTableClient';
 import { SubstrateHealthPill } from '@/app/harness/insights/SubstrateHealthPill';
 import { ClaimAttemptTimelineClient } from '@/app/harness/insights/ClaimAttemptTimelineClient';
+import { useLexicon } from '@/lib/useLexicon';
 
 /**
  * /admin/dogfood-substrate — Vite-side mirror of the SSR diagnostic
@@ -42,6 +43,8 @@ interface HealthResponse {
 }
 
 function DogfoodSubstratePage() {
+  // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
+  const t = useLexicon();
   const [resp, setResp] = useState<HealthResponse | null>(null);
   const [pickedSlug, setPickedSlug] = useState<string>('');
 
@@ -82,7 +85,7 @@ function DogfoodSubstratePage() {
 
         {rows.length === 0 ? (
           <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-dim, #888)' }} data-testid="dogfood-substrate-empty">
-            No shared harnesses booted yet.
+            No shared {t('pot', { plural: true, lower: true })} booted yet.
           </div>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }} data-testid="dogfood-substrate-table">

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface HarnessRow {
   slug: string;
@@ -33,6 +34,7 @@ export function fmtAge(seconds: number | null | undefined): string {
 }
 
 export default function HarnessesTab({ workspaceIds }: Props) {
+  const t = useLexicon();
   const [rows, setRows] = useState<HarnessRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

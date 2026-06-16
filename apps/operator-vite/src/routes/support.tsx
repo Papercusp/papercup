@@ -1,6 +1,8 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { SupportChatButton } from '@/app/_components/SupportChatButton';
 import { SupportAgentPanel } from '@/app/_components/SupportAgentPanel';
+import { useLexicon } from '@/lib/useLexicon';
+import { type BoundLexicon } from '@papercusp/lexicon';
 
 /**
  * /support — FAQ + chat. Translated from `apps/operator/app/support/page.tsx`.
@@ -19,7 +21,10 @@ interface FaqItem {
   a: React.ReactNode;
 }
 
-const FAQS: FaqItem[] = [
+// FAQ copy is built inside the page component so the brand lexicon resolver
+// (`t`) routes the project-meaning "harness" → "Hive" under the-hive flag.
+function buildFaqs(t: BoundLexicon): FaqItem[] {
+  return [
   {
     q: "First-run says 'agent CLI not found'. What do I install?",
     a: (
@@ -39,7 +44,7 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
     ),
   },
   {
-    q: 'I added my API key but the harness still says it can\'t reach the LLM.',
+    q: `I added my API key but the ${t('pot', { lower: true })} still says it can't reach the LLM.`,
     a: (
       <>
         <p>
@@ -61,22 +66,22 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
     ),
   },
   {
-    q: 'My harness exited unexpectedly. How do I see what happened?',
+    q: `My ${t('pot', { lower: true })} exited unexpectedly. How do I see what happened?`,
     a: (
       <>
         <p>
-          The <em>brain</em> tab on the harness dashboard shows the last orchestrator decision and the cost-to-date. Two common exit causes:
+          The <em>brain</em> tab on the {t('pot')} dashboard shows the last orchestrator decision and the cost-to-date. Two common exit causes:
         </p>
         <ul>
           <li><strong>Cost cap hit</strong> — default <code>maxCostUsd: 10</code>. Raise in <code>~/.papercusp/projects/&lt;name&gt;/.papercusp/config.json</code> and re-run.</li>
           <li><strong>Validator rejection loop</strong> — same feature failing 3 attempts. The dashboard shows the failed feature in red; click it to see validator output and either refine the owning plan (its items / acceptance criteria) or accept the proposal manually.</li>
         </ul>
-        <p>For deeper debugging, the embedded <em>pi</em> tab (omp terminal) lets you ask the harness questions directly.</p>
+        <p>For deeper debugging, the embedded <em>pi</em> tab (omp terminal) lets you ask the {t('pot', { lower: true })} questions directly.</p>
       </>
     ),
   },
   {
-    q: "Where do I publish my own harness template / plugin?",
+    q: `Where do I publish my own ${t('pot', { lower: true })} template / plugin?`,
     a: (
       <>
         <p>
@@ -122,9 +127,13 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
       </>
     ),
   },
-];
+  ];
+}
 
 function SupportPage() {
+  // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
+  const t = useLexicon();
+  const faqs = buildFaqs(t);
   return (
     <div className="pc-shell pc-support-shell" style={{ maxWidth: 820, margin: '0 auto', padding: '32px 28px' }}>
       <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 8 }}>Support</h1>
@@ -161,7 +170,7 @@ function SupportPage() {
 
       <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>Frequently asked</h2>
       <div className="pc-support-faqs">
-        {FAQS.map((f, i) => (
+        {faqs.map((f, i) => (
           <details
             key={i}
             className="pc-support-faq"

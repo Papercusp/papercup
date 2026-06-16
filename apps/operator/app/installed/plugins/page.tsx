@@ -8,6 +8,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface InstalledPluginRecord {
   name: string;
@@ -36,6 +37,7 @@ interface RuntimeStatusRow {
 }
 
 export default function InstalledPluginsPage() {
+  const t = useLexicon();
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
   const [enabledMap, setEnabledMap] = useState<Record<string, string[]>>({});
   const [updates, setUpdates] = useState<Record<string, UpdateRow>>({});
@@ -123,7 +125,7 @@ export default function InstalledPluginsPage() {
   async function uninstall(slug: string) {
     const ok = await askConfirm({
       title: `Remove ${slug}?`,
-      description: 'Plugin will be disabled in every harness it was enabled in.',
+      description: `Plugin will be disabled in every ${t('pot', { lower: true })} it was enabled in.`,
       confirmLabel: 'Remove',
       destructive: true,
     });

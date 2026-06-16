@@ -418,19 +418,19 @@ export default function AdvShell({
             {/* Sub-harness union is meaningless under "all" (everything is
                 already included), so the toggle only shows for a single pick. */}
             {!allMode && (
-              <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
+              <label className="pc-advshell__scope-toggle" title={`Include sub-${t('pot', { plural: true, lower: true })} in list views (plans, sessions). Editor views still focus a single ${t('pot')}.`}>
                 <input
                   type="checkbox"
                   checked={scopeMode === 'expanded'}
                   onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
                 />
-                <span>sub-harnesses</span>
+                <span>sub-{t('pot', { plural: true, lower: true })}</span>
               </label>
             )}
             <button
               type="button"
               className="pc-advshell__action pc-advshell__action--new"
-              title="Create or add a new harness"
+              title={`Create or add a new ${t('pot')}`}
               onClick={() => void setCreateOpen(true)}
             >
               <Plus size={13} aria-hidden /> New
@@ -983,7 +983,7 @@ export function buildHarnessSelectOptions(
   if (projects.length === 0) {
     return [{
       value: '__loading',
-      label: projectLoadError ? 'Failed to load harnesses' : 'Loading harnesses…',
+      label: projectLoadError ? `Failed to load ${potPlural}` : `Loading ${potPlural}…`,
       disabled: true,
     }];
   }

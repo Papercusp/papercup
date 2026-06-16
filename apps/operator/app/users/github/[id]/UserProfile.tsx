@@ -33,6 +33,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import { useLexicon } from '@/lib/useLexicon';
 import { ContributorBadgeRow } from '@/app/_components/ContributorBadge';
 import { LazyDetails } from '@/app/_components/LazyDetails';
 import { BindingStatusBadge, type BindingStatus } from '@/app/_components/BindingStatusBadge';
@@ -85,6 +86,7 @@ function fmtTime(ts: number): string {
 }
 
 export function UserProfile(props: { data: UserProfileData }): ReactNode {
+  const t = useLexicon();
   const u = props.data;
   return (
     <div style={PAGE_STYLE} data-testid="user-profile-page">
@@ -119,10 +121,10 @@ export function UserProfile(props: { data: UserProfileData }): ReactNode {
 
       {/* ── P-072b — Per-harness collapsible blocks ─────────────── */}
       <section style={SECTION_STYLE} data-testid="profile-section-harnesses">
-        <div style={SECTION_TITLE}>Harnesses</div>
+        <div style={SECTION_TITLE}>{t('pot', { plural: true })}</div>
         {u.harnesses.length === 0 && (
           <div style={{ color: 'var(--fg-dim)', fontSize: 14 }}>
-            No visible harnesses for this user.
+            No visible {t('pot', { plural: true, lower: true })} for this user.
           </div>
         )}
         {u.harnesses.map((h) => (
@@ -178,7 +180,7 @@ export function UserProfile(props: { data: UserProfileData }): ReactNode {
       {/* ── P-072d — Claimed harnesses footer ────────────────────── */}
       {u.claimed_harnesses.length > 0 && (
         <section style={SECTION_STYLE} data-testid="profile-section-claimed">
-          <div style={SECTION_TITLE}>Claimed harnesses</div>
+          <div style={SECTION_TITLE}>Claimed {t('pot', { plural: true })}</div>
           {u.claimed_harnesses.map((c) => (
             <div key={c.harness_slug} style={{ ...CARD_STYLE, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <a href={c.href} style={{ color: 'var(--fg)', textDecoration: 'none', fontWeight: 500 }}>

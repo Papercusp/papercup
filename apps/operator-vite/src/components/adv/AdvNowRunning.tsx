@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
 import { fetchPlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface AgentRun {
   runId: string;
@@ -99,6 +100,8 @@ export function waitingLabel(n: number): string {
  * Polls /api/harness/:slug/agents every 4 s for the run pills.
  */
 export default function AdvNowRunning({ slug }: Props) {
+  // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
+  const t = useLexicon();
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [starting, setStarting] = useState(false);
@@ -248,7 +251,7 @@ export default function AdvNowRunning({ slug }: Props) {
   const stateClass = isLoading ? 'is-checking' : effectivelyAlive ? 'is-active' : 'is-stopped';
 
   return (
-    <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label="Harness status">
+    <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label={`${t('pot')} status`}>
       {/* Active status indicator — only shown when running */}
       {effectivelyAlive && (
         <div className="pc-advshell__harness-status">
@@ -301,7 +304,7 @@ export default function AdvNowRunning({ slug }: Props) {
           type="button"
           className="pc-advshell__action pc-advshell__action--waiting"
           onClick={showWaitingPlans}
-          title="These plans are started but the harness isn't running — click to view them"
+          title={`These plans are started but the ${t('pot', { lower: true })} isn't running — click to view them`}
         >
           <AlertTriangle size={11} aria-hidden />
           {waitingLabel(waitingCount)}

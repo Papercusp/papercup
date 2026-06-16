@@ -6,6 +6,7 @@ import { registerWorkbenchPanels } from '@/app/harness/dock/workbench-panels';
 import { registerWorkbenchVoicePanel } from '../components/workbench/WorkbenchVoicePanel';
 import { registerWorkbenchHiveDirectoryPanel } from '../components/workbench/WorkbenchHiveDirectoryPanel';
 import { onDockApiBind, listPanels, setPanelParams } from '@/app/harness/dock/dock-actions';
+import { useLexicon } from '@/lib/useLexicon';
 
 /**
  * /workbench — the top-level desktop workbench
@@ -34,6 +35,8 @@ interface ProjectLite {
 }
 
 function WorkbenchPage() {
+  // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
+  const t = useLexicon();
   const [harness, setHarness] = useQueryState('harness', parseAsString.withDefault(''));
   const [projects, setProjects] = useState<ProjectLite[]>([]);
 
@@ -112,7 +115,7 @@ function WorkbenchPage() {
         <span style={{ color: 'var(--fg-mute, #888)' }}>app · peers · terminal (native sibling)</span>
         <div style={{ flex: 1 }} />
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ color: 'var(--fg-mute, #888)' }}>Harness</span>
+          <span style={{ color: 'var(--fg-mute, #888)' }}>{t('pot')}</span>
           <select
             value={harness}
             onChange={(e) => void setHarness(e.target.value)}
