@@ -45,8 +45,9 @@ describe('useLexicon', () => {
     setHive(false);
     render(<Probe />);
     expect(screen.getByTestId('pack').textContent).toBe('classic');
-    expect(screen.getByTestId('pot').textContent).toBe('Pot');
-    expect(screen.getByTestId('pots').textContent).toBe('Pots');
+    // Owner directive 2026-06-16: `pot` is canonically "Hive" in the baseline too.
+    expect(screen.getByTestId('pot').textContent).toBe('Hive');
+    expect(screen.getByTestId('pots').textContent).toBe('Hives');
     expect(screen.getByTestId('cupboard').textContent).toBe('Cupboard');
     expect(screen.getByTestId('operator-lower').textContent).toBe('operator');
   });
@@ -67,9 +68,11 @@ describe('useLexicon', () => {
   it('re-renders on a live flag flip (reactive, not render-time only)', () => {
     setHive(false);
     render(<Probe />);
-    expect(screen.getByTestId('pot').textContent).toBe('Pot');
+    // `pot` resolves to "Hive" in BOTH packs now, so assert on a term that still
+    // DIFFERS across packs (operator → sentinel) to prove the live reactivity.
+    expect(screen.getByTestId('operator-lower').textContent).toBe('operator');
     setHive(true); // SSE-style live flip
-    expect(screen.getByTestId('pot').textContent).toBe('Hive');
+    expect(screen.getByTestId('operator-lower').textContent).toBe('sentinel');
     expect(screen.getByTestId('pack').textContent).toBe('the-hive');
   });
 });

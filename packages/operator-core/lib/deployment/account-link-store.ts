@@ -33,7 +33,22 @@
 import { writeFile, mkdir, chmod } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { makeClaudeProvider, CLAUDE_OAUTH_DEFAULTS, type TokenResponse } from '../oauth/providers';
+import { makeClaudeProvider, CLAUDE_CODE_CLIENT_ID, pkceChallenge, type TokenResponse } from '../oauth/providers';
+
+/**
+ * The CURRENT Claude subscription-login OAuth flow (what `claude /login` does to mint a
+ * session token for inference), matched to the live claude CLI (v2.1.x) + GitHub
+ * anthropics/claude-code#29983. NOT the older console/setup-token params: a hand-built URL
+ * with `code=true` + the `org:create_api_key` scope + the `console.anthropic.com` redirect
+ * is rejected by claude.ai with "Invalid request format" (the endpoints migrated
+ * console.anthropic.com → platform.claude.com). Kept LOCAL to the link flow so the shared
+ * CLAUDE_OAUTH_DEFAULTS (which the inference-gateway's token-refresh uses) is untouched.
+ * (accounts-pool-tab-2026-06-15 D-013.)
+ */
+const CLAUDE_LOGIN_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
+const CLAUDE_LOGIN_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
+const CLAUDE_LOGIN_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
+const CLAUDE_LOGIN_SCOPES = ['user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers'];
 import type { ClaudeCredentialBundle } from '../inference-gateway/credential-store';
 import { registerAccount } from './account-pool';
 import { updateAccountPool, accountStatus, type AccountStatusRow } from './account-pool-store';
@@ -130,8 +145,18 @@ export function startAccountLink(input: StartAccountLinkInput): StartAccountLink
   const verifier = genVerifier();
   // State echoed by claude.ai in `code#state` — a random binding value, NOT the verifier.
   const state = b64url(randomBytes(16));
-  const provider = makeClaudeProvider({ codeVerifier: verifier });
-  const authorizeUrl = provider.buildAuthorizeUrl([...CLAUDE_OAUTH_DEFAULTS.scopes], state);
+  // Build the subscription-login authorize URL with the CURRENT params (see the constants
+  // above). NOT provider.buildAuthorizeUrl — that one hardcodes `code=true` + the stale
+  // console/api-key scopes that claude.ai rejects as "Invalid request format".
+  const u = new URL(CLAUDE_LOGIN_AUTHORIZE_URL);
+  u.searchParams.set('client_id', CLAUDE_CODE_CLIENT_ID);
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('redirect_uri', CLAUDE_LOGIN_REDIRECT_URI);
+  u.searchParams.set('scope', CLAUDE_LOGIN_SCOPES.join(' '));
+  u.searchParams.set('code_challenge', pkceChallenge(verifier));
+  u.searchParams.set('code_challenge_method', 'S256');
+  u.searchParams.set('state', state);
+  const authorizeUrl = u.toString();
   const linkId = signLinkId({
     accountId,
     label: input.label?.trim() || undefined,
@@ -197,7 +222,12 @@ export async function completeAccountLink(
   if (!verified.ok) return { ok: false, error: `invalid link (${verified.error}) — restart the add-account flow` };
   const { accountId, label, verifier } = verified.claims;
 
-  const exchangeCode = deps.exchangeCode ?? ((c, v) => makeClaudeProvider({ codeVerifier: v }).exchangeCode(c));
+  // Exchange against the SAME current endpoints the authorize URL used (platform.claude.com
+  // token + redirect must match what claude.ai authorized) — not the stale shared defaults.
+  const exchangeCode =
+    deps.exchangeCode ??
+    ((c, v) =>
+      makeClaudeProvider({ codeVerifier: v, tokenUrl: CLAUDE_LOGIN_TOKEN_URL, redirectUri: CLAUDE_LOGIN_REDIRECT_URI }).exchangeCode(c));
   const writeCredential = deps.writeCredential ?? defaultWriteCredential;
   const register =
     deps.register ??

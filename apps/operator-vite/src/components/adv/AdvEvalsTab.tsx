@@ -56,28 +56,25 @@ import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, Dol
 import { Select } from '@/app/harness/Select';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
 // the @papercusp/sync read and feeds these props; the components read no data.
-// Imported per-module (NOT via the @/app/eval-viz barrel): the rolldown prod
-// build drops the whole barrel subtree's chunk (EI-861), but direct file imports
-// bundle correctly.
-// EI-861 DIAGNOSTIC STUB (temporary): no apps/operator/app import at all.
-/* eslint-disable @typescript-eslint/no-explicit-any */
-const Frontier: any = () => null;
-const Compare: any = () => null;
-const ThroughputBars: any = () => null;
-const MastBreakdown: any = () => null;
-const ValueCaptureCurve: any = () => null;
-const armLabel = (a: string): string => a;
-const armColor = (_a: string): string => '#000';
-const computeValiditySignals = (_x: any): any[] => [];
-const isRunValid = (_s: any): boolean => true;
-const validityCaveats = (s: any[]): any[] => s;
-type FrontierPoint = any;
-type ComparePerTaskRow = any;
-type ThroughputArm = any;
-type MastArmRates = any;
-type ValueSeries = any;
-type ValiditySignal = any;
-type ValidityLiveFleet = any;
+import {
+  Frontier,
+  Compare,
+  ThroughputBars,
+  MastBreakdown,
+  ValueCaptureCurve,
+  armLabel,
+  armColor,
+  computeValiditySignals,
+  isRunValid,
+  validityCaveats,
+  type FrontierPoint,
+  type ComparePerTaskRow,
+  type ThroughputArm,
+  type MastArmRates,
+  type ValueSeries,
+  type ValiditySignal,
+  type ValidityLiveFleet,
+} from '@/app/eval-viz';
 
 // ── Arm vocabulary (LOCKED by P-011, su-4ac61) ───────────────────────────────
 // These exact strings key the schema, the Pareto/delta math, and the viz series.
