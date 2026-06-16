@@ -1,0 +1,144 @@
+/**
+ * Named benchmark task-set loader (benchmark-evaluation-ui-2026-06-16 P-004).
+ *
+ * Maps a task_set_id the launch form sends → the BenchTask[] the engine runs.
+ * The Row→BenchTask mapping mirrors the CLI launcher (_xbench_realqueen_compare.ts
+ * loadTasks) — same SWE-bench Pro JSONL shape, same grader-meta derivation — so a
+ * UI launch and a CLI launch produce identical tasks.
+ *
+ *   '11-task-pilot'      → the locked 11-task public SWE-bench Pro pilot (the m3 set).
+ *   'custom'             → the pilot set filtered to an explicit instance-id list.
+ *   'swe-bench-pro-full' → the full ~731-task set (NOT yet provisioned on disk —
+ *                          throws an honest error rather than silently running a
+ *                          partial set; wiring the full dataset is owner-gated).
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import type { BenchTask } from './types';
+
+/** A SWE-bench Pro task row as persisted in the pilot JSONL. */
+interface TaskRow {
+  instance_id: string;
+  repo?: string;
+  base_commit?: string;
+  problem_statement: string;
+  fail_to_pass?: string;
+  selected_test_files_to_run?: string;
+  language?: string;
+}
+
+/** The canonical 11-task pilot JSONL (env-overridable). */
+export function pilotTaskSetPath(): string {
+  return (
+    process.env.PAPERCUSP_BENCH_PILOT_JSONL ??
+    join(homedir(), '.papercusp', 'bench-results', 'm3-realqueen-2026-06-16', 'tasks-sample.jsonl')
+  );
+}
+
+/** Local repo checkout root the engine clones tasks under (env-overridable). */
+function reposRoot(): string {
+  return process.env.XBENCH_REPOS_ROOT ?? join(homedir(), '.papercusp', 'bench-repos');
+}
+
+/** Parse a Python-ish list literal ("['a', 'b']") → string[]. */
+function pyList(s: string | undefined): string[] {
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s.replace(/'/g, '"')) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Derive the official grader's dockerhub tag (mirrors the CLI launcher). */
+function dockerhubTag(instanceId: string, repo: string): string {
+  const [repoBase, repoNameRaw] = repo.toLowerCase().split('/');
+  let repoNameOnly = repoNameRaw;
+  let hsh = instanceId.replace(/^instance_/, '');
+  if (instanceId === 'instance_element-hq__element-web-ec0f940ef0e8e3b61078f145f34dc40d1938e6c5-vnan') {
+    repoNameOnly = 'element-web';
+  } else if (repo.toLowerCase().includes('element-hq') && repo.toLowerCase().includes('element-web')) {
+    repoNameOnly = 'element';
+    if (hsh.endsWith('-vnan')) hsh = hsh.slice(0, -5);
+  } else if (hsh.endsWith('-vnan')) {
+    hsh = hsh.slice(0, -5);
+  }
+  let tag = `${repoBase}.${repoNameOnly}-${hsh}`;
+  if (tag.length > 128) tag = tag.slice(0, 128);
+  return tag;
+}
+
+function shortName(instanceId: string): string {
+  return instanceId.replace(/^instance_/, '').replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60);
+}
+
+/** Map one JSONL row → a BenchTask (same shape the CLI builds). */
+export function rowToBenchTask(r: TaskRow): BenchTask {
+  return {
+    benchmark: 'swe-bench-pro',
+    instanceId: r.instance_id,
+    problemStatement: r.problem_statement,
+    repo: `${reposRoot()}/${shortName(r.instance_id)}`,
+    baseCommit: r.base_commit ?? '',
+    language: r.language,
+    graderMeta: {
+      dockerhub_tag: dockerhubTag(r.instance_id, r.repo ?? ''),
+      FAIL_TO_PASS: pyList(r.fail_to_pass),
+      PASS_TO_PASS: [],
+      testFiles: pyList(r.selected_test_files_to_run),
+    },
+  } satisfies BenchTask;
+}
+
+function readJsonl(path: string): TaskRow[] {
+  if (!existsSync(path)) {
+    throw new Error(`bench task set not found at ${path} — the corpus is not provisioned on this host`);
+  }
+  return readFileSync(path, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as TaskRow);
+}
+
+/** Load a named task set → BenchTask[]. */
+export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise<BenchTask[]> {
+  if (taskSetId === 'swe-bench-pro-full') {
+    return Promise.reject(
+      new Error(
+        'task set "swe-bench-pro-full" (~731 tasks) is not yet provisioned on this host — ' +
+          'wire the full SWE-bench Pro dataset before launching it (owner-gated). Use "11-task-pilot" or "custom".',
+      ),
+    );
+  }
+  const rows = readJsonl(pilotTaskSetPath());
+  let tasks = rows.map(rowToBenchTask);
+  if (taskSetId === 'custom') {
+    const want = new Set(taskIds ?? []);
+    if (want.size === 0) {
+      return Promise.reject(new Error('task set "custom" requires a non-empty taskIds list'));
+    }
+    tasks = tasks.filter((t) => want.has(t.instanceId));
+    if (tasks.length === 0) {
+      return Promise.reject(new Error('no tasks in the corpus matched the custom taskIds'));
+    }
+  }
+  return Promise.resolve(tasks);
+}
+
+/** The task sets the launch form offers (id + label + count when known). */
+export function knownTaskSets(): Array<{ id: string; label: string; count: number | null }> {
+  let pilotCount: number | null = null;
+  try {
+    pilotCount = readJsonl(pilotTaskSetPath()).length;
+  } catch {
+    pilotCount = null;
+  }
+  return [
+    { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)', count: pilotCount },
+    { id: 'swe-bench-pro-full', label: 'Full SWE-bench Pro (~731)', count: 731 },
+    { id: 'custom', label: 'Custom instance ids', count: null },
+  ];
+}

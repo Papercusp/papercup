@@ -138,6 +138,10 @@ function AddAccountPanel({ onClose }: { onClose: () => void }) {
   // proven (setup-token / bundle) path
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
+  // optional per-account egress (per-account IP routing) — advanced, applies to the setup-token path
+  const [showEgress, setShowEgress] = useState(false);
+  const [egressProxy, setEgressProxy] = useState('');
+  const [egressLocal, setEgressLocal] = useState('');
   // experimental OAuth path (su-81fe4 backend: link-start → { authorizeUrl, linkId }; link-complete { linkId, code })
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [linkId, setLinkId] = useState<string | null>(null);
@@ -152,10 +156,15 @@ function AddAccountPanel({ onClose }: { onClose: () => void }) {
     }
     setBusy(true);
     try {
+      const egress =
+        egressProxy.trim() || egressLocal.trim()
+          ? { proxyUrl: egressProxy.trim() || undefined, localAddress: egressLocal.trim() || undefined }
+          : undefined;
       const { ok, j } = await postJson('/api/admin/deploy-accounts/register', {
         accountId: id.trim(),
         label: label.trim() || undefined,
         value: value.trim(),
+        egress,
       });
       if (!ok || !j.ok) throw new Error(j.error || 'register failed');
       toast.success(`Added account ${id.trim()}`);
@@ -165,7 +174,7 @@ function AddAccountPanel({ onClose }: { onClose: () => void }) {
     } finally {
       setBusy(false);
     }
-  }, [id, label, value, onClose]);
+  }, [id, label, value, egressProxy, egressLocal, onClose]);
 
   const startOAuth = useCallback(async () => {
     if (!id.trim()) {
@@ -271,6 +280,31 @@ function AddAccountPanel({ onClose }: { onClose: () => void }) {
               spellCheck={false}
             />
           </label>
+          <button
+            type="button"
+            className="pc-advacct__expand"
+            aria-expanded={showEgress}
+            onClick={() => setShowEgress((v) => !v)}
+          >
+            {showEgress ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+            Egress / per-account IP (advanced)
+          </button>
+          {showEgress && (
+            <>
+              <p className="pc-advacct__hint">
+                Optional — route this account's upstream Claude traffic through its own IP (a dedicated proxy or a bound source
+                address), so per-account rate limits don't share an egress. Leave blank for the shared egress.
+              </p>
+              <label className="pc-advacct__field">
+                <span>Proxy URL</span>
+                <input value={egressProxy} onChange={(e) => setEgressProxy(e.target.value)} placeholder="http(s)/socks://…" spellCheck={false} autoComplete="off" />
+              </label>
+              <label className="pc-advacct__field">
+                <span>Local source IP</span>
+                <input value={egressLocal} onChange={(e) => setEgressLocal(e.target.value)} placeholder="e.g. 10.0.0.4" spellCheck={false} autoComplete="off" />
+              </label>
+            </>
+          )}
           <div className="pc-advacct__addactions">
             <button type="button" className="pc-advacct__btn pc-advacct__btn--primary" disabled={busy} onClick={() => void submitToken()}>
               {busy ? 'Adding…' : 'Add account'}
@@ -475,7 +509,7 @@ export default function AdvAccountsTab() {
                     <dd>
                       {util != null ? (
                         <>
-                          ~{Math.round(util * 100)}% used <span className="pc-advacct__approx">approx</span>
+                          ~{Math.round(util * 100)}% used <span className="pc-advacct__wtag">5h</span>
                           {a.rate.utilizationAt ? <span className="pc-advacct__muted"> · {fmtAgo(a.rate.utilizationAt, now)}</span> : null}
                         </>
                       ) : (
@@ -546,7 +580,10 @@ export default function AdvAccountsTab() {
 
       <footer className="pc-advacct__foot">
         <Link2 size={12} aria-hidden />
-        <span>Usage is a projection and may lag the account's real headroom (accurate header-derived numbers land with the gateway usage-accuracy fix).</span>
+        <span>
+          Usage is the unified-5h utilization the inference gateway reads from Anthropic's response headers — accurate while the
+          gateway is actively serving the account, may lag while idle. The 7-day window and session % aren't surfaced yet.
+        </span>
       </footer>
     </div>
   );

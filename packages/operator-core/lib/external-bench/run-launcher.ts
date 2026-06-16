@@ -115,7 +115,7 @@ export async function assertNoActiveRun(opts: DbScope = {}): Promise<void> {
 export async function launchBenchRun(
   input: LaunchBenchRunInput,
   deps: LaunchDeps = {},
-): Promise<{ runId: string }> {
+): Promise<{ runId: string; done: Promise<void> }> {
   const assertEnabled = deps.assertEnabled ?? (() => assertExternalBenchEnabled('system'));
   await assertEnabled();
 
@@ -189,11 +189,23 @@ export async function launchBenchRun(
     budget: { maxUsd: input.maxUsdPerTask ?? 10, maxTokens: input.maxTokensPerTask ?? 4_000_000 },
   };
 
-  // DETACHED — do not await. Always tears down in the finally (the fast path; the
-  // boot reaper is the SIGKILL-resilient backstop).
-  void executeDetached(active, req, run, dissolve, scope);
+  // DETACHED — the route does NOT await `done`. Always tears down in the finally
+  // (the fast path; the boot reaper is the SIGKILL-resilient backstop). `done` is
+  // returned so tests / advanced callers can await completion.
+  const done = executeDetached(active, req, run, dissolve, scope);
 
-  return { runId };
+  return { runId, done };
+}
+
+/** Heartbeat interval (ms) the live run bumps bench_runs.updated_at on, so the
+ *  boot reaper can tell a crashed host (stale heartbeat) from a run legitimately
+ *  in flight in ANOTHER live host (fresh heartbeat). */
+const HEARTBEAT_MS = 60_000;
+
+/** Bump a run's updated_at — the liveness heartbeat. */
+async function touchBenchRun(runId: string, opts: DbScope): Promise<void> {
+  const { sql, ws } = resolveDb(opts);
+  await sql`UPDATE harness_shared.bench_runs SET updated_at = now() WHERE id = ${runId} AND workspace_id = ${ws}`;
 }
 
 async function executeDetached(
@@ -204,6 +216,9 @@ async function executeDetached(
   scope: DbScope,
 ): Promise<void> {
   const { runId } = active;
+  // Liveness heartbeat — unref'd so it never keeps the process alive on its own.
+  const heartbeat = setInterval(() => void touchBenchRun(runId, scope).catch(() => {}), HEARTBEAT_MS);
+  if (typeof heartbeat.unref === 'function') heartbeat.unref();
   try {
     const result = await run(req);
     if (active.cancelled) return; // cancelBenchRun already froze the status
@@ -222,6 +237,7 @@ async function executeDetached(
       await setBenchRunStatus(runId, 'error', { runError: e instanceof Error ? e.message : String(e) }, scope).catch(() => {});
     }
   } finally {
+    clearInterval(heartbeat);
     // ALWAYS dissolve every hive this run minted — no orphan learning loop survives.
     for (const slug of active.hiveSlugs) {
       await dissolve(slug, active.workspaceId).catch(() => {});
@@ -265,18 +281,31 @@ export async function cancelBenchRun(
  * state by a crashed host (the finally never ran) is orphaned — its hive may
  * still carry an armed learning loop that re-spins opus on restart. Dissolve each
  * orphan's hive (deactivating its learning loops) and freeze its status to a
- * terminal state. Idempotent; call once at host boot. Returns the runs reaped.
+ * terminal state.
+ *
+ * HEARTBEAT-GATED: only runs whose liveness heartbeat (updated_at) is older than
+ * `staleAfterSec` are reaped — so a run legitimately in flight in ANOTHER live
+ * host (fresh heartbeat) is NOT killed by this host's boot sweep. Pass
+ * staleAfterSec=0 to reap every active run regardless (tests / a forced sweep).
+ * Idempotent; call once at host boot. Returns the runs reaped.
  */
 export async function reapStaleBenchRuns(
-  deps: { scope?: DbScope; dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void> } = {},
+  deps: {
+    scope?: DbScope;
+    dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void>;
+    staleAfterSec?: number;
+  } = {},
 ): Promise<{ reaped: string[] }> {
   const scope = deps.scope ?? {};
   const { sql, ws } = resolveDb(scope);
   const dissolve = deps.dissolve ?? dissolveBenchHive;
+  const staleAfterSec = deps.staleAfterSec ?? 180;
 
   const rows = await sql<{ id: string; hive_slug: string | null }[]>`
     SELECT id, hive_slug FROM harness_shared.bench_runs
-     WHERE workspace_id = ${ws} AND status = ANY(${ACTIVE_STATES as unknown as string[]})
+     WHERE workspace_id = ${ws}
+       AND status = ANY(${ACTIVE_STATES as unknown as string[]})
+       AND updated_at < now() - make_interval(secs => ${staleAfterSec})
   `;
   const reaped: string[] = [];
   for (const r of rows) {

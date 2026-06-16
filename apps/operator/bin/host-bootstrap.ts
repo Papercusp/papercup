@@ -390,6 +390,22 @@ export function runBootstrap(): void {
         .then(({ warmMemoryEmbedder }) => warmMemoryEmbedder())
         .catch(() => {});
 
+      // [benchmark-evaluation-ui P-005 / D-022] Spend-safety reaper. A UI-launched
+      // bench run that was in flight when a host CRASHED (SIGKILL bypasses its
+      // teardown finally) leaves an orphan hive whose armed learning loops would
+      // re-spin opus on this restart. Reap any bench run whose liveness heartbeat
+      // has gone stale (>180s) — dissolve its hive (deactivating the learning
+      // loops) + freeze its status. Heartbeat-gated so a run legitimately running
+      // in another live host is untouched. Detached + best-effort: never wedges boot.
+      void import('@papercusp/operator-core/lib/external-bench/run-launcher')
+        .then(({ reapStaleBenchRuns }) => reapStaleBenchRuns())
+        .then((r) => {
+          if (r.reaped.length > 0) {
+            console.warn(`[bench-reaper] reaped ${r.reaped.length} stale bench run(s): ${r.reaped.join(', ')}`);
+          }
+        })
+        .catch(() => {});
+
       // The dogfood PG schema + change-notify/capture triggers are defined
       // entirely by migrations (000-baseline + 107/108), now applied above (or
       // by the embedded-pg boot) — no runtime schema-ensure here. Flip the

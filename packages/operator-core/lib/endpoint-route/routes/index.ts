@@ -410,6 +410,7 @@ import marketplaceCatalog from './marketplace/catalog';
 import marketplaceSpawnable from './marketplace/spawnable';
 import gymControl from './gym/control';
 import externalBenchPreserved from './external-bench/preserved';
+import externalBenchLaunch from './external-bench/launch';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -817,4 +818,5 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   // /external-bench/runs literal is sorted before /external-bench/runs/:id by
   // the registrar's bySpecificity ordering, so the list isn't shadowed.
   ...flatten(externalBenchPreserved as unknown as AnyRoute[]),
+  ...flatten(externalBenchLaunch as unknown as AnyRoute[]),
 ];
