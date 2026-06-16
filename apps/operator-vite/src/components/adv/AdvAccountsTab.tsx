@@ -46,6 +46,7 @@ import {
   ExternalLink,
   Zap,
 } from 'lucide-react';
+import { useAccountOverride } from './use-account-override';
 import './AdvAccountsTab.css';
 
 // ── Row shape — mirrors AccountStatusRow (operator-core account-pool-store).
@@ -58,6 +59,8 @@ interface AccountRate {
   utilization?: number;
   windowResetAt?: number;
   utilizationAt?: number;
+  utilization7d?: number;
+  windowResetAt7d?: number;
 }
 interface PoolAccount {
   id: string;
@@ -97,13 +100,15 @@ function maskRef(ref: string): string {
   return scheme ? `${scheme}:…/${base}` : `…/${base}`;
 }
 
-/** "2h 13m" / "12m" / "45s" / "now" from a forward delta in ms. */
+/** "3d 5h" / "2h 13m" / "12m" / "45s" / "now" from a forward delta in ms. */
 function fmtCountdown(ms: number): string {
   if (ms <= 0) return 'now';
   const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
+  if (d > 0) return `${d}d ${h}h`;
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${sec}s`;
   return `${sec}s`;
@@ -399,49 +404,10 @@ export default function AdvAccountsTab() {
     }
   }, []);
 
-  // P-004: the owner's session-now account override (forced allow-list + exclude).
-  // Read once via GET; each write returns the new override (no refetch needed). The
-  // POST also invalidates accounts.pool, so the cards refresh. Fail-soft: a read error
-  // just shows no override (the no-restriction default).
-  const [override, setOverride] = useState<{ forcedAccounts: string[]; excludeAccounts: string[] } | null>(null);
-  const [overrideBusy, setOverrideBusy] = useState(false);
-  useEffect(() => {
-    let live = true;
-    void (async () => {
-      try {
-        const res = await fetch('/api/admin/deploy-accounts/session-override');
-        const j = (await res.json()) as { ok?: boolean; override?: { forcedAccounts: string[]; excludeAccounts: string[] } };
-        if (live && j?.ok && j.override) setOverride(j.override);
-      } catch {
-        /* fail-soft — no override shown */
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  const patchOverride = useCallback(async (patch: { forcedAccounts?: string[]; excludeAccounts?: string[]; clear?: boolean }) => {
-    setOverrideBusy(true);
-    try {
-      const { ok, j } = await postJson('/api/admin/deploy-accounts/session-override', patch);
-      if (!ok || !j.ok) throw new Error(j.error || 'override failed');
-      setOverride((j.override as { forcedAccounts: string[]; excludeAccounts: string[] }) ?? { forcedAccounts: [], excludeAccounts: [] });
-      toast.success(patch.clear ? 'Cleared the account override' : 'Updated the account override');
-    } catch (e) {
-      toast.error(`Override failed: ${errMsg(e)}`);
-    } finally {
-      setOverrideBusy(false);
-    }
-  }, []);
-
-  const forced = new Set(override?.forcedAccounts ?? []);
-  const excluded = new Set(override?.excludeAccounts ?? []);
-  const overrideActive = forced.size > 0 || excluded.size > 0;
-  const toggleForce = (id: string) =>
-    void patchOverride({ forcedAccounts: forced.has(id) ? [...forced].filter((x) => x !== id) : [...forced, id] });
-  const toggleExclude = (id: string) =>
-    void patchOverride({ excludeAccounts: excluded.has(id) ? [...excluded].filter((x) => x !== id) : [...excluded, id] });
+  // P-004: the owner's session-now account override (forced allow-list + exclude) — the
+  // shared hook (also used by the left-sidebar Accounts tab). Per-card Force/Exclude
+  // toggles below + the active-override banner above the grid.
+  const { overrideBusy, forced, excluded, overrideActive, toggleForce, toggleExclude, clearOverride } = useAccountOverride();
 
   return (
     <div className="pc-advacct">
@@ -484,7 +450,7 @@ export default function AdvAccountsTab() {
               </>
             )}
           </div>
-          <button type="button" className="pc-advacct__btn" disabled={overrideBusy} onClick={() => void patchOverride({ clear: true })}>
+          <button type="button" className="pc-advacct__btn" disabled={overrideBusy} onClick={clearOverride}>
             Clear override
           </button>
         </div>
@@ -511,6 +477,7 @@ export default function AdvAccountsTab() {
                 ? 'Available'
                 : 'Unavailable';
             const util = typeof a.rate.utilization === 'number' ? a.rate.utilization : null;
+            const util7d = typeof a.rate.utilization7d === 'number' ? a.rate.utilization7d : null;
             return (
               <li key={a.id} className={`pc-advacct__card pc-advacct__card--${statusKind}`}>
                 <div className="pc-advacct__cardhead">
@@ -578,26 +545,22 @@ export default function AdvAccountsTab() {
 
                 <dl className="pc-advacct__meta">
                   <div>
-                    <dt>Usage</dt>
+                    <dt>5h window</dt>
                     <dd>
-                      {util != null ? (
-                        <>
-                          ~{Math.round(util * 100)}% used <span className="pc-advacct__wtag">5h</span>
-                          {a.rate.utilizationAt ? <span className="pc-advacct__muted"> · {fmtAgo(a.rate.utilizationAt, now)}</span> : null}
-                        </>
-                      ) : (
-                        <span className="pc-advacct__muted">—</span>
-                      )}
+                      {util != null ? <>~{Math.round(util * 100)}% used</> : <span className="pc-advacct__muted">—</span>}
+                      {a.rate.windowResetAt && a.rate.windowResetAt > now ? (
+                        <span className="pc-advacct__muted"> · resets {fmtCountdown(a.rate.windowResetAt - now)}</span>
+                      ) : null}
+                      {a.rate.utilizationAt ? <span className="pc-advacct__muted"> · {fmtAgo(a.rate.utilizationAt, now)}</span> : null}
                     </dd>
                   </div>
                   <div>
-                    <dt>5h window</dt>
+                    <dt>7d window</dt>
                     <dd>
-                      {a.rate.windowResetAt && a.rate.windowResetAt > now ? (
-                        <>resets in {fmtCountdown(a.rate.windowResetAt - now)}</>
-                      ) : (
-                        <span className="pc-advacct__muted">—</span>
-                      )}
+                      {util7d != null ? <>~{Math.round(util7d * 100)}% used</> : <span className="pc-advacct__muted">—</span>}
+                      {a.rate.windowResetAt7d && a.rate.windowResetAt7d > now ? (
+                        <span className="pc-advacct__muted"> · resets {fmtCountdown(a.rate.windowResetAt7d - now)}</span>
+                      ) : null}
                     </dd>
                   </div>
                   <div>
@@ -676,8 +639,8 @@ export default function AdvAccountsTab() {
       <footer className="pc-advacct__foot">
         <Link2 size={12} aria-hidden />
         <span>
-          Usage is the unified-5h utilization the inference gateway reads from Anthropic's response headers — accurate while the
-          gateway is actively serving the account, may lag while idle. The 7-day window and session % aren't surfaced yet.
+          Usage is the unified 5h + 7d utilization the inference gateway reads from Anthropic's response headers — accurate
+          while the gateway is actively serving the account; it may lag or read “—” while the account is idle.
         </span>
       </footer>
     </div>

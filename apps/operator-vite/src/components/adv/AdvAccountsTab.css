@@ -212,17 +212,6 @@
   color: var(--fg, #e7e7ea);
   font-variant-numeric: tabular-nums;
 }
-.pc-advacct__wtag {
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-mute, #a6a6ad);
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
-  border-radius: 4px;
-  padding: 0 4px;
-  margin-left: 4px;
-  vertical-align: middle;
-}
 .pc-advacct__muted { color: var(--fg-mute, #6b7280); }
 
 .pc-advacct__bound {

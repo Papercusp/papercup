@@ -13,7 +13,7 @@
 import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool } from './account-failover';
-import { createInferenceGateway, parseUnifiedWindow, type InferenceGateway } from './gateway';
+import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type InferenceGateway } from './gateway';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
@@ -75,22 +75,51 @@ function makeWindowProjector(
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
 ): (headers: Record<string, string | undefined>, status: number, model: string, accountId: string) => void {
   const WRITE_MIN_MS = 30_000;
-  const last = new Map<string, { util: number; resetAt: number; at: number }>();
+  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number }>();
   return (headers, _status, _model, accountId) => {
     const w = parseUnifiedWindow(headers);
-    if (w.utilization === undefined && w.windowResetAt === undefined) return;
+    const w7 = parseUnified7dWindow(headers);
+    if (
+      w.utilization === undefined &&
+      w.windowResetAt === undefined &&
+      w7.utilization7d === undefined &&
+      w7.windowResetAt7d === undefined
+    )
+      return;
     const t = Date.now();
     const prev = last.get(accountId);
     const util = w.utilization ?? prev?.util ?? 0;
     const resetAt = w.windowResetAt ?? prev?.resetAt ?? 0;
+    const util7d = w7.utilization7d ?? prev?.util7d ?? 0;
+    const resetAt7d = w7.windowResetAt7d ?? prev?.resetAt7d ?? 0;
     if (prev && t - prev.at < WRITE_MIN_MS) return; // throttle
-    const significant = !prev || Math.abs(util - prev.util) >= 0.03 || resetAt !== prev.resetAt;
+    // Write on a meaningful move in EITHER window (≥0.03 utilization) or a reset roll.
+    const significant =
+      !prev ||
+      Math.abs(util - prev.util) >= 0.03 ||
+      resetAt !== prev.resetAt ||
+      Math.abs(util7d - prev.util7d) >= 0.03 ||
+      resetAt7d !== prev.resetAt7d;
     if (!significant) return;
-    last.set(accountId, { util, resetAt, at: t });
+    last.set(accountId, { util, resetAt, util7d, resetAt7d, at: t });
     void import('../deployment/account-pool-store')
       .then(({ updateAccountPool }) =>
         import('../deployment/account-pool').then(({ recordAccountWindow }) =>
-          updateAccountPool((p) => recordAccountWindow(p, accountId, { utilization: util, windowResetAt: resetAt || undefined }, t), ws),
+          updateAccountPool(
+            (p) =>
+              recordAccountWindow(
+                p,
+                accountId,
+                {
+                  utilization: util,
+                  windowResetAt: resetAt || undefined,
+                  utilization7d: util7d || undefined,
+                  windowResetAt7d: resetAt7d || undefined,
+                },
+                t,
+              ),
+            ws,
+          ),
         ),
       )
       .catch((e) => log('warn', `account window projection write failed for '${accountId}': ${(e as Error).message}`));

@@ -23,7 +23,7 @@ import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
-import { Users, AudioLines, Network, Crown, Eye, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Users, AudioLines, Network, Crown, Eye, KeyRound, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -35,6 +35,10 @@ const HivesTab = lazy(() => import('./HivesTab'));
 // Moved here from the /adv top tab strip as the LEFTMOST sidebar tab (owner
 // review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
 const QueenTab = lazy(() => import('./QueenTab'));
+// 🔑 Accounts — the owner's session-now account override (which Max accounts the fleet
+// may use right now), beside Queen as a sibling owner-steering lever (accounts-pool-tab
+// P-005; the owner's "Accounts tab in the LEFT SIDEBAR next to Queen").
+const AccountsTab = lazy(() => import('./AccountsTab'));
 // 👁 Overwatch — the autonomous supervisor's actionable panel (control + the
 // anomaly→action list). Moved here from the /adv strip next to Queen (owner ask
 // 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
@@ -43,6 +47,7 @@ const OverwatchTab = lazy(() => import('./OverwatchTab'));
 
 const TABS = [
   { id: 'queen', label: 'Queen', icon: Crown, render: (a: boolean) => <QueenTab active={a} /> },
+  { id: 'accounts', label: 'Accounts', icon: KeyRound, render: (a: boolean) => <AccountsTab active={a} /> },
   { id: 'overwatch', label: 'Overwatch', icon: Eye, render: (a: boolean) => <OverwatchTab active={a} /> },
   { id: 'swarm', label: 'Swarm', icon: Users, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: 'Peers', icon: AudioLines, render: (a: boolean) => <VoiceTab active={a} /> },
