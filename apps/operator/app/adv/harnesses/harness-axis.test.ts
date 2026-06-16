@@ -48,6 +48,22 @@ describe('hiveMembers', () => {
     ]);
   });
 
+  it('groups by formal hive_slug and SKIPS the kind:hive home (the group, not a member)', () => {
+    // shared-hive-federation: members link via `hive_slug`, and the home itself
+    // (`harness_kind:'hive'`) is the group — it must NOT appear as a member row,
+    // or a hive + its one harness read as two flat siblings.
+    const projects = [
+      p('demo-hive', { harness_kind: 'hive' }),
+      p('demo', { hive_slug: 'demo-hive' }),
+      p('demo-web', { hive_slug: 'demo-hive', harness_kind: 'sub' }),
+      p('unrelated', { hive_slug: 'other-hive' }),
+    ];
+    expect(hiveMembers(projects, 'demo-hive')).toEqual([
+      member('demo', false),
+      member('demo-web', false, { harness_kind: 'sub' }),
+    ]);
+  });
+
   it('omits an unregistered root but still lists its children', () => {
     const projects = [p('child-b', { parent_slug: 'ghost' }), p('child-a', { parent_slug: 'ghost' })];
     expect(hiveMembers(projects, 'ghost')).toEqual([member('child-a'), member('child-b')]);

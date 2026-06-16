@@ -72,6 +72,26 @@ describe('<HiveWorkspaceCards /> grid', () => {
     expect(alpha.querySelector('.pc-hive-cards__card-count')?.textContent).toBe('2');
   });
 
+  it('does NOT list the hive HOME (harness_kind:hive) as a member row — header only', () => {
+    // A formal hive home + one real member harness. The home is the card itself;
+    // listing it ALSO as a member row is what made a hive + its one harness read
+    // as two flat siblings (owner directive 2026-06-16).
+    const grps: HiveWorkspaceCardsProps['groups'] = [
+      group('demo-hive', [proj('demo-hive', { harness_kind: 'hive' }), proj('demo', { hasState: true })], {
+        harness_kind: 'hive',
+      }),
+    ];
+    render(<HiveWorkspaceCards groups={grps} onDrill={vi.fn()} />);
+    // the hive home is the card header…
+    expect(screen.getByTestId('hive-card-demo-hive')).toBeTruthy();
+    // …but NOT a member row
+    expect(screen.queryByTestId('hive-member-demo-hive')).toBeNull();
+    // the real harness IS a member row, and the count reflects members only (1)
+    expect(screen.getByTestId('hive-member-demo')).toBeTruthy();
+    const card = screen.getByTestId('hive-card-demo-hive');
+    expect(card.querySelector('.pc-hive-cards__card-count')?.textContent).toBe('1');
+  });
+
   it('shows the shared icon only on a shared root', () => {
     render(<HiveWorkspaceCards groups={groups} onDrill={vi.fn()} />);
     const alpha = screen.getByTestId('hive-card-alpha');

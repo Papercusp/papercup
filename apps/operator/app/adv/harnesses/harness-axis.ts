@@ -22,6 +22,8 @@
 export interface HarnessProjectLite {
   slug: string;
   parent_slug?: string | null;
+  /** Formal hive membership (shared-hive-federation): the home hive's slug. */
+  hive_slug?: string | null;
   harness_kind?: string | null;
   is_shared?: boolean;
 }
@@ -40,6 +42,13 @@ function parentOf(p: HarnessProjectLite): string | null {
   return p.parent_slug?.trim() || null;
 }
 
+/** The hive this project formally belongs to (shared-hive-federation), or null.
+ *  Formal `hive_slug` wins over the legacy `parent_slug` edge (mirrors the
+ *  server-side groupByHive precedence). */
+function hiveOf(p: HarnessProjectLite): string | null {
+  return p.hive_slug?.trim() || parentOf(p);
+}
+
 function toMember(p: HarnessProjectLite, isRoot: boolean): HiveMember {
   return {
     slug: p.slug,
@@ -50,10 +59,12 @@ function toMember(p: HarnessProjectLite, isRoot: boolean): HiveMember {
 }
 
 /**
- * The members of the hive rooted at `hiveSlug`, inferred from `parent_slug`
- * (Phase 1 / D-002): the root harness itself FIRST (only when it is a real
- * harness present in the registry), then its direct children
- * (`parent_slug === hiveSlug`) sorted by slug.
+ * The members of the hive rooted at `hiveSlug`. Membership precedence mirrors
+ * the server `groupByHive`: a child belongs to the hive when its formal
+ * `hive_slug` (shared-hive-federation) OR its legacy `parent_slug` equals
+ * `hiveSlug`. Order: the root harness itself FIRST (only when it is a real
+ * harness — a FORMAL `harness_kind:'hive'` home is the group, not a member, so
+ * it is skipped), then the children sorted by slug.
  *
  * A solo harness (no children) yields a single-member list `[root]` — the
  * rail renders collapsed and the dock is unchanged (zero regression).
@@ -69,13 +80,17 @@ export function hiveMembers(
   const seen = new Set<string>();
 
   const root = projects.find((p) => p.slug === hiveSlug);
-  if (root) {
+  // A FORMAL hive home (`harness_kind:'hive'`) is the GROUP itself, not a
+  // selectable member — list only its real member harnesses under it (so the
+  // dock/rail focus a real harness, not the empty hive entity). A LEGACY root (a
+  // real harness that is its own hive) stays a member: it has its own content.
+  if (root && root.harness_kind !== 'hive') {
     members.push(toMember(root, true));
     seen.add(root.slug);
   }
 
   const children = projects
-    .filter((p) => p.slug !== hiveSlug && parentOf(p) === hiveSlug)
+    .filter((p) => p.slug !== hiveSlug && hiveOf(p) === hiveSlug)
     .sort((a, b) => a.slug.localeCompare(b.slug));
   for (const child of children) {
     if (seen.has(child.slug)) continue;

@@ -57,13 +57,9 @@ export default function HarnessesWorkspace() {
   // `?scope=` is the shell's orthogonal scope axis; `all` is "All Pots". We
   // read it here to swap the single-hive dock for the hive-grouped workspace
   // cards (P-003 / D-003), and write it on drill-in to exit all-mode.
-  // Ungate the hive grouping (owner directive 2026-06-16): default to the
-  // hive-grouped overview ('all') so the Hive → member-harness nesting is
-  // visible by default, instead of a focused single view that hid the
-  // containment. Drill-in still writes scope=expanded for the focused dock.
   const [scopeMode, setScopeMode] = useQueryState(
     'scope',
-    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('all'),
+    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
   const [createOpen, setCreateOpen] = useState(false);
 
