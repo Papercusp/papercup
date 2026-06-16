@@ -54,6 +54,15 @@ export default function DeployAccountsPage() {
   const [addError, setAddError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Link mode (accounts-pool-tab-2026-06-15 P-002): "oauth" = click a link → authorize in the
+  // browser → paste the code (the link-start/link-complete round-trip); "token" = the proven
+  // `claude setup-token` paste. OAuth is the default the owner reaches for; it's experimental
+  // because claude.ai may reject a server-built authorize URL (D-005) — the token flow always works.
+  const [linkMode, setLinkMode] = useState<'oauth' | 'token'>('oauth');
+  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  const [linkId, setLinkId] = useState<string | null>(null);
+  const [code, setCode] = useState('');
+
   const refresh = useCallback(async () => {
     setLoadingList(true);
     setListError(null);
@@ -88,6 +97,9 @@ export default function DeployAccountsPage() {
     setLabel('');
     setValue('');
     setAddError(null);
+    setAuthorizeUrl(null);
+    setLinkId(null);
+    setCode('');
   }, [setAddOpen, setAccountId, setLabel]);
 
   const register = useCallback(async () => {
@@ -120,6 +132,62 @@ export default function DeployAccountsPage() {
       setBusy(false);
     }
   }, [accountId, label, value, resetForm, refresh]);
+
+  // OAuth mode step A: generate the claude.ai authorize URL (verifier kept server-side under linkId).
+  const startOAuth = useCallback(async () => {
+    setAddError(null);
+    if (!/^[A-Za-z0-9._-]+$/.test(accountId)) {
+      setAddError('Account ID must be A-Za-z0-9 . _ - (no spaces, no : or @).');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await fetch('/api/admin/deploy-accounts/link-start', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId, label: label || undefined }),
+      });
+      const j = await r.json();
+      if (r.status === 404) throw new Error('OAuth linking isn’t available on this build yet — use “Paste a setup-token”.');
+      if (!j.ok || !j.authorizeUrl || !j.linkId) throw new Error(j.error || 'could not start the OAuth link');
+      setAuthorizeUrl(j.authorizeUrl as string);
+      setLinkId(j.linkId as string);
+    } catch (e) {
+      setAddError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [accountId, label]);
+
+  // OAuth mode step B: exchange the pasted code → write credential → register (token stays server-side).
+  const completeOAuth = useCallback(async () => {
+    setAddError(null);
+    if (!linkId) {
+      setAddError('Generate the authorize link first.');
+      return;
+    }
+    if (!code.trim()) {
+      setAddError('Paste the code claude.ai showed you after you approved.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await fetch('/api/admin/deploy-accounts/link-complete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ linkId, code: code.trim() }),
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'link failed');
+      resetForm();
+      toast.success(`Max account "${accountId}" linked via OAuth`);
+      await refresh();
+    } catch (e) {
+      setAddError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [linkId, code, accountId, resetForm, refresh]);
 
   const remove = useCallback(
     async (id: string) => {

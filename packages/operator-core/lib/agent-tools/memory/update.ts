@@ -64,7 +64,24 @@ export default defineTool({
         content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
       };
     }
-    await backend.update(validation.data.id, { text: validation.data.content });
+    try {
+      await backend.update(validation.data.id, { text: validation.data.content });
+    } catch (err) {
+      // A well-formed id that names no existing memory is a clean negative
+      // result, not a tool failure — the mem0 backend THROWS ("Memory with
+      // ID … not found") for not-found, which escaped as a handler_error and
+      // tripped the repeated-tool-error:memory:update:structural watchdog
+      // (EI-486). Return a graceful {ok:false,error} instead, mirroring the
+      // not-found contract of work_items:set_state. Other backend failures
+      // (DB down, etc.) surface their message the same way rather than crashing.
+      const message = err instanceof Error ? err.message : String(err);
+      const error = /not\s*found/i.test(message)
+        ? `Memory with ID ${validation.data.id} not found`
+        : message;
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, error }) }],
+      };
+    }
     // Learning signal (learning-system-audit P-050): an agent-driven correction
     // feeds the extraction-adaptation loop (memory_feedback). Fire-and-forget.
     void import('../../memory/feedback')

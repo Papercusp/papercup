@@ -1,5 +1,17 @@
-import { describe, it, expect } from 'vitest';
-import { selectStaleEscalations, type StaleEscalationInput } from './reconcile-escalations';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const listMock = vi.fn();
+const resolveMock = vi.fn();
+vi.mock('../agent-tools/coordination/escalations', () => ({
+  listEscalations: (...a: unknown[]) => listMock(...a),
+  resolveEscalation: (...a: unknown[]) => resolveMock(...a),
+}));
+
+import {
+  selectStaleEscalations,
+  reconcileStaleEscalationsOnce,
+  type StaleEscalationInput,
+} from './reconcile-escalations';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_000_000 * DAY; // a fixed "now" far from epoch
@@ -54,5 +66,47 @@ describe('selectStaleEscalations (P-003/P-005)', () => {
       { nowMs: NOW, ttlMs: ttl },
     );
     expect(r.map((x) => x.msg_id)).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('reconcileStaleEscalationsOnce (P-003)', () => {
+  beforeEach(() => {
+    listMock.mockReset();
+    resolveMock.mockReset();
+    resolveMock.mockResolvedValue({ kind: 'escalation_resolved' });
+  });
+
+  it('resolves only the stale operational escalations and reports counts', async () => {
+    listMock.mockResolvedValue([
+      row({ msg_id: 'old1', ts: iso(10 * DAY) }), // stale operational → resolve
+      row({ msg_id: 'old2', ts: iso(20 * DAY) }), // stale operational → resolve
+      row({ msg_id: 'fresh', ts: iso(1 * DAY) }), // too fresh → keep
+      row({ msg_id: 'agent', from: 'bee-7', ts: iso(99 * DAY) }), // genuine → never
+    ]);
+    const r = await reconcileStaleEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
+    expect(r).toMatchObject({ scanned: 4, stale: 2, resolved: 2, truncated: false });
+    expect(resolveMock).toHaveBeenCalledTimes(2);
+    const resolvedIds = resolveMock.mock.calls.map((c) => (c[0] as { msg_id: string }).msg_id).sort();
+    expect(resolvedIds).toEqual(['old1', 'old2']);
+    // stamps the reconcile owner so the resolution is attributable in the ledger
+    expect((resolveMock.mock.calls[0][0] as { resolver: string }).resolver).toBe('system:attention-reconcile');
+  });
+
+  it('respects the batch limit and reports truncated=true', async () => {
+    listMock.mockResolvedValue([
+      row({ msg_id: 'a', ts: iso(10 * DAY) }),
+      row({ msg_id: 'b', ts: iso(20 * DAY) }),
+      row({ msg_id: 'c', ts: iso(30 * DAY) }),
+    ]);
+    const r = await reconcileStaleEscalationsOnce({ nowMs: NOW, ttlMs: ttl, limit: 2 });
+    expect(r).toMatchObject({ stale: 3, resolved: 2, truncated: true });
+    expect(resolveMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('is idempotent: an already-resolved escalation is not counted as resolved', async () => {
+    listMock.mockResolvedValue([row({ msg_id: 'gone', ts: iso(10 * DAY) })]);
+    resolveMock.mockResolvedValue('already_resolved');
+    const r = await reconcileStaleEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
+    expect(r).toMatchObject({ stale: 1, resolved: 0 });
   });
 });

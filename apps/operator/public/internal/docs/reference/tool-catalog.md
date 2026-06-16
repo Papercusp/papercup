@@ -11,14 +11,14 @@ A coarse, grouped map of the MCP tool surface — one row per tool group with it
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**409 MCP tools** across **79 groups**.
+**434 MCP tools** across **83 groups**.
 
 ## Groups
 
 | Group | Verbs | Names | Capabilities |
 |---|---|---|---|
 | `ablation` | 1 | `report` | `intel:read` |
-| `accounts` | 5 | `list` `register` `remove` `scale_out` `status` | `harness:read` `harness:write` |
+| `accounts` | 10 | `get-session-override` `link-complete` `link-start` `list` `register` `remove` `reset-rate` `scale_out` `set-session-override` `status` | `harness:read` `harness:write` |
 | `actions` | 1 | `recent` | `actions:read` |
 | `activity` | 2 | `recent` `report` | `activity:read` `activity:report` |
 | `agent_chats` | 6 | `archive` `chat` `create` `get` `list` `send_message` | `agent_chats:read` `agent_chats:write` `harness:read` |
@@ -33,7 +33,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `blueprint` | 4 | `catalog` `create` `extend` `validate` | `harness:read` `harness:write` |
 | `brainstorm` | 1 | `chat` | `harness:write` |
 | `calibration` | 1 | `summary` | `intel:read` |
-| `capability` | 8 | `bash` `bash_kill` `bash_output` `edit` `fetch` `git` `read` `write` | `capability:bash` `capability:fs-read` `capability:fs-write` `capability:git` `capability:net` |
+| `capability` | 9 | `bash` `bash_kill` `bash_output` `edit` `fetch` `git` `inspect` `read` `write` | `capability:bash` `capability:code-inspect` `capability:fs-read` `capability:fs-write` `capability:git` `capability:net` |
 | `change_ledger` | 2 | `calendar` `list` | `intel:read` |
 | `chat` | 1 | `ask_choice` | `chat:write` |
 | `conversations` | 7 | `answer` `get` `join` `list` `post` `promote` `resolve` | `coord:read` `coord:write` |
@@ -47,6 +47,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `discovery` | 2 | `hives` `set_hive` | `discovery:read` `discovery:write` |
 | `docs` | 3 | `get` `outline` `search` | `docs:read` |
 | `events` | 5 | `await` `cancel` `emit` `graph` `status` | `coord:read` `coord:write` `events:read` |
+| `experiment` | 3 | `catalog` `results` `run` | `harness:read` `harness:write` |
 | `features` | 5 | `get` `history` `list_related` `search` `tag_vocabulary` | `features:read` |
 | `flags` | 3 | `get` `list` `set` | `audit:write` `intel:read` |
 | `fleet` | 12 | `admit` `assignments` `bee_mail` `cancel` `drain` `governor` `place_batch` `sandbox_deps` `selected_bee` `spawn` `supervise` `tree` | `coord:read` `coord:write` `intel:read` `work_items:read` `work_items:write` |
@@ -55,9 +56,9 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `gym` | 2 | `judge` `signals` | `harness:read` |
 | `harness` | 13 | `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `migrate-config-json` `pending_reviews` `phase_path` `status` | `harness:read` `harness:write` |
 | `harness_docs` | 7 | `anchor` `ingest` `list` `record` `regenerate` `set_overlay` `verify` | `docs:read` `docs:write` |
-| `hive` | 18 | `ask` `asks` `beacon_consent` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `leave` `list` `pause` `request_work` `start` `status` `survey` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:read` `work_items:write` |
+| `hive` | 21 | `ask` `asks` `beacon_consent` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `get-steering` `leave` `list` `pause` `queen_efficiency` `request_work` `set-steering` `start` `status` `survey` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:read` `work_items:write` |
 | `hooks` | 1 | `known` | `roles:read` |
-| `improvements` | 5 | `capture` `digest` `resolve` `triage` `watchdog-status` | `coord:read` `coord:write` |
+| `improvements` | 6 | `capture` `digest` `learning_loops` `resolve` `triage` `watchdog-status` | `coord:read` `coord:write` |
 | `inbox` | 1 | `triage` | `coord:write` |
 | `instance` | 3 | `boot` `capture` `clone` | `harness:read` `harness:write` |
 | `intel` | 2 | `artifacts` `spawn_tree` | `intel:read` |
@@ -73,10 +74,12 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `omp` | 2 | `config` `sessions` | `omp:read` `omp:write` |
 | `operator` | 24 | `audit` `budget` `conv_voice` `converse` `credentials_status` `decisions` `dedup_check` `delegate` `multi_workspace` `notes` `nudge` `paused` `preferences` `preview_prompt` `rate_limit_config` `standing_approval_mark_shown` `standing_approvals_decide` `standing_approvals_list` `stats` `trigger_state` `voice_debug` `voice_prefs` `voice_spend_summary` `voice_utterance_log` | `operator:converse` `operator:delegate` `operator:read` `operator:write` `secrets:operator-credentials:read` |
 | `oracle` | 1 | `chat` | `harness:read` |
+| `overwatch` | 3 | `declare-wake` `pause` `start` | `coord:write` `harness:write` |
 | `papercusp` | 1 | `list_workspaces` | `workspaces:read` |
 | `pending_events` | 1 | `list` | `pending_events:read` |
 | `plan_items` | 11 | `adopt_name` `assign` `claim` `convert` `heartbeat` `join_group` `leave_group` `my_items` `release` `status` `unassign` | `coord:read` `coord:write` |
-| `plans` | 33 | `add-decision` `add-item` `apply-plan-block` `attention` `backfill-revisions` `edit` `export` `get` `items` `launch` `lint` `list` `new` `pause` `promote` `resume` `revision-diff` `revision-transcript` `revisions` `run-transcript` `runs` `search` `set-content` `set-content-chunk` `set-frontmatter` `set-importance` `set-now` `set-plan-status` `set-priority` `set-run-status` `set-status` `start` `summarize-revision` | `coord:write` `plans:read` `plans:write` |
+| `plans` | 35 | `add-decision` `add-item` `apply-plan-block` `attention` `backfill-revisions` `edit` `export` `get` `items` `launch` `lint` `list` `new` `pause` `promote` `resume` `revision-diff` `revision-transcript` `revisions` `run-transcript` `runs` `search` `set-content` `set-content-chunk` `set-frontmatter` `set-importance` `set-initiative` `set-now` `set-plan-status` `set-priority` `set-run-status` `set-status` `start` `summarize-revision` `transfer-owner` | `coord:write` `plans:read` `plans:write` |
+| `platform` | 2 | `contribute` `enable` | `harness:write` |
 | `plugins` | 4 | `fire_event` `invoke_action` `runtime_status` `tui_panes` | `plugins:read` `plugins:write` |
 | `processes` | 1 | `kill` | `processes:kill` |
 | `projects` | 4 | `get` `list` `spec_revision` `spec_revisions` | `projects:read` |
@@ -89,10 +92,11 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `substrate` | 2 | `revoke_contributor` `revoke_self_device` | `intel:write` |
 | `tasks` | 3 | `create` `get` `list` | `tasks:read` `tasks:write` |
 | `topics` | 7 | `create` `feed` `list` `merge` `subscribe` `tag` `unsubscribe` | `coord:read` `coord:write` |
+| `trust` | 3 | `add` `list` `remove` | `audit:write` `intel:read` |
 | `tui` | 1 | `dispatch` | `tui:dispatch` |
 | `turn` | 1 | `interrupt` | `turn:interrupt` |
 | `ui` | 3 | `dispatch` `get_state` `list_clients` | `ui:dispatch` `ui:read` |
 | `voice` | 5 | `agent` `channels` `join` `leave` `status` | `operator:read` `operator:write` |
 | `watch` | 1 | `create` | `coord:write` |
 | `wiki` | 1 | `backlinks` | `wiki:read` |
-| `work_items` | 23 | `claim` `claim_next` `claim_replica` `co_locate` `comment` `complete` `create` `get` `judge_redundancy` `link` `list` `observe` `promote` `record_replica_result` `redundancy_status` `release` `reorder` `search` `set_priority` `set_redundancy` `set_state` `subscribe` `tag` | `work_items:read` `work_items:write` |
+| `work_items` | 25 | `amend` `claim` `claim_next` `claim_replica` `co_locate` `comment` `complete` `create` `expand` `get` `judge_redundancy` `link` `list` `observe` `promote` `record_replica_result` `redundancy_status` `release` `reorder` `search` `set_priority` `set_redundancy` `set_state` `subscribe` `tag` | `work_items:read` `work_items:write` |

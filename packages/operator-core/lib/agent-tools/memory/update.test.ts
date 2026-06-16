@@ -102,6 +102,48 @@ describe('memory:update — UUID validation', () => {
     }
   });
 
+  it('returns a graceful {ok:false} when the backend throws not-found (EI-486)', async () => {
+    // mem0's update THROWS "Memory with ID … not found" for a well-formed but
+    // non-existent id. The handler must catch it and return a clean envelope —
+    // not let it escape as a handler_error (which trips the
+    // repeated-tool-error:memory:update:structural watchdog).
+    const b = fakeBackend();
+    const validId = '550e8400-e29b-41d4-a716-446655440000';
+    b.update.mockRejectedValue(new Error(`Memory with ID ${validId} not found`));
+    useBackend(b);
+
+    let res: Awaited<ReturnType<typeof update.handler>>;
+    await expect(
+      (async () => {
+        res = await update.handler(
+          { id: validId, content: 'new content' },
+          {} as unknown as Parameters<typeof update.handler>[1],
+        );
+      })(),
+    ).resolves.toBeUndefined(); // must NOT throw
+
+    const parsed = JSON.parse((res! as { content: { text: string }[] }).content[0].text);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain('not found');
+    expect(parsed.error).toContain(validId);
+  });
+
+  it('surfaces other backend errors gracefully without throwing', async () => {
+    const b = fakeBackend();
+    const validId = '550e8400-e29b-41d4-a716-446655440000';
+    b.update.mockRejectedValue(new Error('connection terminated unexpectedly'));
+    useBackend(b);
+
+    const res = await update.handler(
+      { id: validId, content: 'new content' },
+      {} as unknown as Parameters<typeof update.handler>[1],
+    );
+
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain('connection terminated');
+  });
+
   it('triggers sync invalidation on successful update', async () => {
     const b = fakeBackend();
     useBackend(b);
