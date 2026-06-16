@@ -18,7 +18,13 @@ vi.mock('@papercusp/db-org', async (importActual) => ({
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
 // Heartbeat the long-lived launch row (P-011 liveness fix) — the SPAWN_HEARTBEAT_INTERVAL_MS
 // is kept SMALL here so the interval fires within the test (the real 60s never would).
-vi.mock('../fleet/spawn-reclaim', () => ({ heartbeatSpawns: vi.fn(), SPAWN_HEARTBEAT_INTERVAL_MS: 10 }));
+// recordSpawnPid stamps the firing process's pid on the launch row so the P-033 reclaim
+// liveness gate keeps the Queen alive without relying on this heartbeat (durable primary).
+vi.mock('../fleet/spawn-reclaim', () => ({
+  heartbeatSpawns: vi.fn(),
+  recordSpawnPid: vi.fn(() => Promise.resolve()),
+  SPAWN_HEARTBEAT_INTERVAL_MS: 10,
+}));
 vi.mock('../loopback-fetch', async (importActual) => ({
   ...(await importActual<typeof import('../loopback-fetch')>()),
   loopbackFetch: vi.fn(),

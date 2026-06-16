@@ -30,6 +30,10 @@ import { removeHarnessFromWorkspace } from '../harness-membership';
 import { setHiveStarted } from '../hive/started';
 import { requestUrgentHiveWake } from '../hive/urgent-wake';
 import { clearHiveTimeWake } from '../hive/wake';
+import { cancelSubtree } from '../fleet/nursery';
+import { listFleetAssignments } from '../fleet/assignments';
+import { teardownHiveLearningLoop } from '../hive/provision-learning-loop';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { surveyHive } from '../hive/survey';
 import { syncFeatureBlockEdges } from '../dbos/feature-blockers-edges';
 import { liveAcceptancePorts } from './outcome-metrics';
@@ -267,12 +271,49 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
     },
 
     async dissolveHive({ hiveHome, workspaceId }) {
-      // The durable inverse of createHive (mirrors hive:dissolve's core, minus the bee-cancel — the
-      // drive already paused the hive, so its bees are terminal by teardown): stop re-waking,
-      // deregister, drop schema. Best-effort throughout (teardown must not mask the run's outcome).
+      // The FULL durable inverse of createHive — now mirrors hive:dissolve's core IN FULL (D-022 /
+      // P-033 spend-safety fix). The old teardown skipped the bee-cancel + learning-loop teardown on
+      // the assumption "the drive already paused the hive, so its bees are terminal" — but a
+      // rate-limit-killed launcher (or a stuck bee that outlived the pause) left LIVE bees AND the
+      // per-hive gymAutoloop/scoutRoutine learning loops behind, which re-spin opus AFTER teardown
+      // (the orphan re-spin this benchmark must never produce). We now cancel every live bee subtree,
+      // SIGTERM the local processes, and tear down the learning loops — the same closure hive:dissolve
+      // delivers. Best-effort throughout (teardown must not mask the run's outcome).
       await setHiveStarted(workspaceId, hiveHome, false).catch(() => {});
       const sql = sqlClient();
       await clearHiveTimeWake(sql, hiveHome).catch(() => {});
+
+      // Cancel every live bee in the hive (+ its subtree): mark cancelled, release claims/locks NOW,
+      // notify, and SIGTERM the running process so it stops making edits. Mirrors hive:dissolve step 2.
+      const actor: AgentIdentity = {
+        ownerId: `hive-eval-dissolve:${hiveHome}`,
+        ownerLabel: `hive-eval:dissolve:${hiveHome}`,
+        source: 'principal',
+        workspaceId,
+        userId: null,
+      };
+      try {
+        const rows = await listFleetAssignments({ workspaceId, harness: hiveHome });
+        const beeIds = [...new Set(rows.filter((r) => r.holderAlive && r.agentId).map((r) => r.agentId as string))];
+        const { abortLocalSpawn } = await import('../fleet/operator-spawn');
+        for (const beeId of beeIds) {
+          try {
+            const res = await cancelSubtree(sql, { workspaceId, rootSpawnId: beeId, reason: 'hive-eval:dissolveHive', actor });
+            for (const c of res.cancelled) abortLocalSpawn(c.spawnId);
+          } catch (e) {
+            console.warn(`[hive-eval] dissolve cancel bee ${beeId} failed: ${e instanceof Error ? e.message : e}`);
+          }
+        }
+      } catch (e) {
+        console.warn(`[hive-eval] dissolve bee-cancel sweep failed (${hiveHome}): ${e instanceof Error ? e.message : e}`);
+      }
+
+      // Tear down the per-hive learning loops (dark gym autoloop row + inactive scout routine + the
+      // gym:<hive>/scout:<hive> governor registrants) — the D-022 re-spin source. Best-effort.
+      await teardownHiveLearningLoop({ sql, workspaceId, hiveSlug: hiveHome }).catch((e) => {
+        console.warn(`[hive-eval] dissolve learning-loop teardown failed (${hiveHome}): ${e instanceof Error ? e.message : e}`);
+      });
+
       await removeHarnessFromWorkspace(workspaceId, hiveHome).catch(() => {});
       await dropHarnessSchema(hiveHome).catch(() => {});
     },

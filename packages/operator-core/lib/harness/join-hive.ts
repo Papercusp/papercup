@@ -320,15 +320,11 @@ export async function joinHiveAsView(
     if (!m.ok || !m.slug) continue;
     console.log(`[ei681-diag] join 2c: rebooting member '${m.slug}' to re-key onto hive topic (hive_slug='${hiveSlug}')`);
     try {
-      const p = rebootHarness(opts.workspaceId, m.slug);
-      if (p && typeof (p as Promise<unknown>).catch === 'function') {
-        (p as Promise<unknown>).catch((e) =>
-          console.log(`[ei681-diag] join 2c: reboot('${m.slug}') REJECTED: ${e instanceof Error ? e.message : e}`),
-        );
-      }
+      const result = await rebootHarness(opts.workspaceId, m.slug);
+      console.log(`[ei681-diag] join 2c: reboot('${m.slug}') result=${JSON.stringify(result)}`);
     } catch (e) {
-      console.log(`[ei681-diag] join 2c: reboot('${m.slug}') sync-threw: ${e instanceof Error ? e.message : e}`);
-      /* a sync throw must never fail the join or skip a later member */
+      console.log(`[ei681-diag] join 2c: reboot('${m.slug}') THREW: ${e instanceof Error ? e.message : e}`);
+      /* a reboot failure must NEVER fail an otherwise-successful join */
     }
   }
 

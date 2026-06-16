@@ -39,17 +39,19 @@ const STALE_FAKE = { ...STALE, isAlive: fakeAlive };
 let db: FreshPgDb;
 
 /** Insert a spawn row with an explicit heartbeat age (seconds ago) + status,
- *  optionally with a recorded pid + launcher host (EI-85). */
+ *  optionally with a recorded pid + launcher host (EI-85). `runId` overrides the
+ *  default `r-<id>` (P-033: a `launch-%` run_id selects the in-process-launch
+ *  liveness class). */
 async function insertSpawn(
   spawnId: string,
   status: string,
   heartbeatAgoSec: number,
-  rec: { pid?: number; host?: string } = {},
+  rec: { pid?: number; host?: string; runId?: string } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.spawned_agents
       (spawn_id, workspace_id, harness_slug, child_role, run_id, status, started_at, heartbeat_at, pid, launcher_host)
-    VALUES (${spawnId}, ${WS}, 'papercup', 'worker', ${'r-' + spawnId}, ${status},
+    VALUES (${spawnId}, ${WS}, 'papercup', 'worker', ${rec.runId ?? 'r-' + spawnId}, ${status},
             now() - interval '10 minutes', now() - ${heartbeatAgoSec}::int * interval '1 second',
             ${rec.pid ?? null}, ${rec.host ?? null})`;
 }
@@ -170,6 +172,52 @@ describe('reclaimOrphanedSpawns liveness gate (EI-85: host-died vs child-died)',
     expect(r.reclaimed).toBe(2);
     expect(r.spawnIds.sort()).toEqual(['dead', 'legacy']);
     expect(await statusOf('alive')).toBe('running');
+  });
+});
+
+/**
+ * P-033 (the real-Queen-reclaim fix): an in-process loopback LAUNCH row (Queen
+ * wake / overwatch — run_id `launch-%`, recorded with the firing process's pid)
+ * is kept alive while that firing process exists, via the REAL isSpawnProcessAlive
+ * (kind='launch' → plain /proc-existence, no invoke-once-cmdline requirement). This
+ * is what makes the Queen survive past RECLAIM_STALE_MS without a fragile heartbeat
+ * setInterval — the 7-reclaim bench symptom (a live Queen reaped at ~310s).
+ */
+describe('reclaimOrphanedSpawns: in-process LAUNCH rows (P-033 Queen-reclaim fix)', () => {
+  const ME = hostname();
+
+  it('keeps a stale launch row whose firing process (this test process) is still alive', async () => {
+    // run_id `launch-%` + pid = THIS process → isSpawnProcessAlive(pid,'launch') is
+    // alive-by-construction. The REAL liveness check (no injected fake) proves it.
+    await insertSpawn('queen-live', 'running', 10 * 60, { pid: process.pid, host: ME, runId: 'launch-1' });
+    const r = await reclaimOrphanedSpawns(db.sql, STALE); // STALE = REAL isSpawnProcessAlive
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('queen-live')).toBe('running');
+    // Heartbeat bumped → the next sweep also skips it without any setInterval.
+    const [row] = await db.sql<{ fresh: boolean }[]>`
+      SELECT heartbeat_at > now() - interval '30 seconds' AS fresh
+        FROM harness_shared.spawned_agents WHERE spawn_id = 'queen-live'`;
+    expect(row.fresh).toBe(true);
+  });
+
+  it('reclaims a stale launch row whose firing process is dead (a bogus high pid)', async () => {
+    await insertSpawn('queen-dead', 'running', 10 * 60, { pid: 2_147_480_000, host: ME, runId: 'launch-2' });
+    const r = await reclaimOrphanedSpawns(db.sql, STALE);
+    expect(r.reclaimed).toBe(1);
+    expect(await statusOf('queen-dead')).toBe('failed');
+  });
+
+  it('isSpawnProcessAlive(launch): this process is alive; a bee row (spawn) with the same pid needs invoke-once', () => {
+    expect(isSpawnProcessAlive(process.pid, 'launch')).toBe(true);
+    // process.pid === process.pid short-circuits to alive for BOTH kinds (we run in it).
+    expect(isSpawnProcessAlive(process.pid, 'spawn')).toBe(true);
+    // A DIFFERENT live pid: 'launch' accepts any live process; 'spawn' needs invoke-once.
+    // (the test runner's own parent pid is alive but is not an invoke-once child.)
+    const ppid = process.ppid;
+    if (ppid > 1 && ppid !== process.pid) {
+      expect(isSpawnProcessAlive(ppid, 'launch')).toBe(true);
+      expect(isSpawnProcessAlive(ppid, 'spawn')).toBe(false);
+    }
   });
 });
 

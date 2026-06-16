@@ -53,28 +53,35 @@ export async function recordSpawnPid(sql: Db, spawnId: string, pid: number): Pro
  *
  * IN-PROCESS LOOPBACK LAUNCHES (P-033, the real-Queen-reclaim fix). A
  * kind:'hive' Queen wake (and overwatch loops) is NOT a spawned `invoke-once`
- * child — it is an IN-PROCESS `/invoke` handler running inside the operator host
- * itself (launch-blueprint.ts `defaultFire` → `loopbackFetch`). Its
- * `spawned_agents` row records `pid = process.pid` (the operator host's own pid)
- * so this sweep can prove liveness WITHOUT a fragile heartbeat `setInterval`
- * (which starves under multi-task load → a live Queen reaped at ~310s, the P-033
- * bench symptom). When the recorded pid IS this very process, it is definitionally
- * alive — we are running this code in it — so the row is kept regardless of the
- * (operator, not invoke-once) cmdline. Reuse-proof within a process lifetime; when
- * the operator host dies and restarts with a NEW pid, the old pid no longer matches
- * `process.pid` and the stale in-process row is reclaimed correctly.
+ * child — it is an IN-PROCESS `/invoke` handler whose `defaultFire` row
+ * (launch-blueprint.ts → `loopbackFetch`) is recorded by the firing process with
+ * THAT process's pid (`recordSpawnPid(process.pid)`). The firing process is the
+ * long-lived operator host (or, for the bench, the long-lived launcher that holds
+ * the loopback connection open) — alive for the whole wake. So a launch row's
+ * liveness is "the firing PROCESS still exists", NOT "an invoke-once child still
+ * exists": this sweep proves it WITHOUT a fragile heartbeat `setInterval` (whose
+ * 60s beat starves past RECLAIM_STALE_MS(300s) under multi-task load → a live
+ * Queen reaped at ~310s, the 7-reclaim bench symptom). `launch` rows therefore use
+ * a plain /proc-existence check (any live process), `spawn` (bee) rows keep the
+ * strict invoke-once-cmdline PID-reuse hardening. A pid equal to THIS process is
+ * alive by construction (we run this code in it) regardless of kind — covers the
+ * reclaim running inside the very process that fired the launch.
+ *
+ * @param kind 'spawn' (default, an invoke-once bee child — strict cmdline check)
+ *             or 'launch' (an in-process loopback launch — /proc-existence check).
  */
-export function isSpawnProcessAlive(pid: number): boolean {
+export function isSpawnProcessAlive(pid: number, kind: 'spawn' | 'launch' = 'spawn'): boolean {
   if (!Number.isInteger(pid) || pid <= 1) return false;
-  // The recorded pid is THIS running operator process → an in-process loopback
-  // launch (Queen wake / overwatch). It is alive by construction (this code runs
-  // in it). Platform-agnostic and immune to PID reuse for the process's lifetime.
+  // The recorded pid IS this running process → alive by construction (this code
+  // runs in it). Platform-agnostic, immune to PID reuse for the process lifetime.
   if (pid === process.pid) return true;
   if (process.platform !== 'linux') return false;
   try {
-    // cmdline is NUL-separated; the spawn is `node <tsx> .../invoke-once(.ts|.mjs)`.
+    // cmdline is NUL-separated. For a bee the entrypoint names invoke-once (the
+    // reuse-hardening guard); for an in-process loopback launch the firing process
+    // is the operator host / bench launcher — any live process counts as alive.
     const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-    return cmdline.includes('invoke-once');
+    return kind === 'launch' ? cmdline.length > 0 : cmdline.includes('invoke-once');
   } catch {
     return false; // /proc/<pid> gone (dead) or unreadable → treat as dead
   }
@@ -184,22 +191,28 @@ export interface ReclaimResult {
  */
 export async function reclaimOrphanedSpawns(
   sql: Db,
-  opts: { staleMs?: number; isAlive?: (pid: number) => boolean } = {},
+  opts: { staleMs?: number; isAlive?: (pid: number, kind?: 'spawn' | 'launch') => boolean } = {},
 ): Promise<ReclaimResult> {
   const staleSec = Math.max(1, Math.round((opts.staleMs ?? RECLAIM_STALE_MS) / 1000));
   const isAlive = opts.isAlive ?? isSpawnProcessAlive; // injectable for tests
 
   // EI-85: a stale heartbeat no longer blindly reclaims. First gather the
   // candidates with their recorded pid + launcher host; a candidate that is
-  // SAME-HOST and whose child process is still alive (/proc) is NOT reclaimed —
-  // its host was only briefly paused, the child survived (e.g. spawned into its
-  // own systemd scope). Such rows get their heartbeat bumped so this host keeps
-  // them fresh. Everything else (child confirmed dead, no pid, or a different
-  // host we can't liveness-check) is reclaimed — with a reason that says which.
+  // SAME-HOST and whose process is still alive (/proc) is NOT reclaimed — its host
+  // was only briefly paused, the process survived (e.g. spawned into its own
+  // systemd scope, or — P-033 — an in-process loopback launch whose firing
+  // operator/launcher process is still up). Such rows get their heartbeat bumped so
+  // this host keeps them fresh. Everything else (process confirmed dead, no pid, or
+  // a different host we can't liveness-check) is reclaimed — with a reason saying which.
+  //
+  // `run_id` distinguishes the row CLASS for the liveness check (P-033): a
+  // `launch-%` run_id is a `defaultFire` in-process loopback launch (Queen wake /
+  // overwatch) → liveness = the firing process exists; otherwise it is an
+  // invoke-once bee spawn → liveness = the strict invoke-once-cmdline check.
   const candidates = await sql<
-    { spawn_id: string; workspace_id: string; pid: number | null; launcher_host: string | null }[]
+    { spawn_id: string; workspace_id: string; pid: number | null; launcher_host: string | null; run_id: string | null }[]
   >`
-    SELECT spawn_id, workspace_id, pid, launcher_host
+    SELECT spawn_id, workspace_id, pid, launcher_host, run_id
       FROM harness_shared.spawned_agents
      WHERE status IN ('running', 'restarting')
        AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'`;
@@ -213,8 +226,9 @@ export async function reclaimOrphanedSpawns(
   const hostGone: string[] = [];
   for (const c of candidates) {
     const sameHost = c.launcher_host != null && c.launcher_host === me;
+    const kind: 'spawn' | 'launch' = (c.run_id ?? '').startsWith('launch-') ? 'launch' : 'spawn';
     if (sameHost && c.pid != null) {
-      if (isAlive(c.pid)) alive.push(c.spawn_id);
+      if (isAlive(c.pid, kind)) alive.push(c.spawn_id);
       else deadChild.push(c.spawn_id);
     } else {
       // Different host (can't liveness-check), or a row predating pid recording.

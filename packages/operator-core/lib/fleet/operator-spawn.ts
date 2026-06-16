@@ -817,6 +817,19 @@ export async function spawnAgentInHarness(
     if (process.env.PAPERCUSP_FLEET_SANDBOX == null) {
       extraEnv.PAPERCUSP_FLEET_SANDBOX = '0';
     }
+    // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). Pin THIS bench bee to opus PER-SPAWN via
+    // PAPERCUSP_SPAWN_MODEL — the highest-precedence model channel (applyRoleModel / invoke.ts resolveModel
+    // read it FIRST, above the global AGENT_MODELS map + the committed role floor). This makes the opus
+    // requirement BENCH-SCOPED: only bees under the bench flag are pinned, so non-bench hives keep their
+    // normal haiku floor (no more GLOBAL AGENT_MODELS opus on :3170 affecting every hive). FAIL-CLOSED:
+    // the rate-limit governor WAITS on a paused opus bucket rather than substituting, and the model-tiers
+    // floor-clamp never downgrades below opus — a paused/throttled opus stalls the bench spawn, it never
+    // silently drops to sonnet/haiku (the provable-opus-only requirement). Skip only if a TIER already
+    // resolved an explicit per-spawn model (its floor-clamp already governs). Configurable via
+    // PAPERCUSP_XBENCH_MODEL (default opus:xhigh) so the pin is one knob, not scattered.
+    if (!spawnModelOverride) {
+      extraEnv.PAPERCUSP_SPAWN_MODEL = (process.env.PAPERCUSP_XBENCH_MODEL ?? 'opus:xhigh').trim();
+    }
   }
   // THE UMBILICAL (voice gap fix): thread the operator's durable `s-…` spawnId into
   // the child's env so invoke()/spawn-mcp bakes it as the signed MCP URL's STABLE

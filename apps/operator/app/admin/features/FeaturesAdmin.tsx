@@ -23,7 +23,7 @@ import type { BoundLexicon } from '@papercusp/lexicon';
 // Labels/blurbs are built at render through the lexicon (`t`) so the
 // project-meaning "harness" strings render as the active brand term ("Hive").
 // They are NOT module-level consts — a hook can't run at module scope.
-function flagLabels(t: BoundLexicon): Record<FlagKey, string> {
+function flagLabels(t: BoundLexicon): Partial<Record<FlagKey, string>> {
   return {
     [FLAGS.CLOUDFLARE_PUBLISH]: 'Cloudflare publishing',
     [FLAGS.HARNESS_PHASES]: `${t('pot')} phases`,
@@ -39,7 +39,7 @@ function flagLabels(t: BoundLexicon): Record<FlagKey, string> {
   };
 }
 
-function flagBlurbs(t: BoundLexicon): Record<FlagKey, string> {
+function flagBlurbs(t: BoundLexicon): Partial<Record<FlagKey, string>> {
   return {
     [FLAGS.CLOUDFLARE_PUBLISH]: 'Publish-to-Cloudflare flow. Cut for V1 ship.',
     [FLAGS.HARNESS_PHASES]: `Multi-phase ${t('pot')} (staging / testing / production). Cut for V1 ship.`,
@@ -164,7 +164,7 @@ export default function FeaturesAdmin() {
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
       await refresh();
     } catch (e) {
-      toast.error(`Failed to update ${labels[key]}`, { description: (e as Error).message });
+      toast.error(`Failed to update ${labels[key] ?? key}`, { description: (e as Error).message });
     } finally {
       setBusy(null);
     }
@@ -263,8 +263,8 @@ export default function FeaturesAdmin() {
         <div className="fa-flags">
           {ALL_FLAG_KEYS.map((key) => {
             const on = effective[key] ?? false;
-            const label = labels[key];
-            const blurb = blurbs[key];
+            const label = labels[key] ?? key;
+            const blurb = blurbs[key] ?? '';
             return (
               <div key={key} className={`fa-flag${!testingOn ? ' disabled' : ''}`}>
                 <div className="fa-flag-main">

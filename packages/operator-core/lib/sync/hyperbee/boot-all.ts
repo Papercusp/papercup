@@ -369,6 +369,7 @@ export async function bootSingleHarness(
     await ensureSendSideWired(handle, opts.wireSendSide);
     return { workspaceId, harnessSlug, state: 'booted' };
   } catch (e) {
+    console.log(`[ei681-diag] bootSingleHarness(${harnessSlug}) FAILED: ${(e as Error)?.message ?? String(e)}`);
     return {
       workspaceId,
       harnessSlug,

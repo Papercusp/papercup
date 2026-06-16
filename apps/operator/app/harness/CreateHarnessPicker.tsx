@@ -402,12 +402,12 @@ function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onS
       >
         <span style={{ marginRight: 6 }}>👑</span>
         Stands up a new {hiveLabel.toLowerCase()} home running the <strong style={{ color: 'var(--fg)' }}>pot</strong> blueprint —
-        a Queen that surveys the work frontier and places it onto a fleet of bees. You can add member harnesses into it afterward.
+        a Queen that surveys the work frontier and places it onto a fleet of bees. You can add members into it afterward.
       </div>
       <Label>
         <FieldLabel>{hiveLabel} slug</FieldLabel>
         <input ref={slugRef} type="text" placeholder="my-hive" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
-        <HintText>Lowercase, hyphens OK. The home harness slug for the new {hiveLabel.toLowerCase()}.</HintText>
+        <HintText>Lowercase, hyphens OK. The slug for the new {hiveLabel.toLowerCase()}.</HintText>
       </Label>
       {/* learning-packs P-006: the pack picker — the new hive starts with a
           default set of learnings; selectable away, editable afterward. */}
