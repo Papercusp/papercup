@@ -44,7 +44,14 @@ export const ARM_IDS: readonly ArmId[] = [
 ] as const;
 
 /** Benchmark family. Open string union — new suites add a literal here. */
-export type BenchSuite = 'swe-bench-pro' | 'terminal-bench' | 'harness-bench' | 'swe-evo' | 'swe-rebench' | (string & {});
+export type BenchSuite =
+  | 'swe-bench-pro'
+  | 'swe-bench-verified'
+  | 'terminal-bench'
+  | 'harness-bench'
+  | 'swe-evo'
+  | 'swe-rebench'
+  | (string & {});
 
 /** Grader modality (P-001 §1): offline diff-batch vs online in-container. */
 export type GraderModality = 'diff' | 'in-container';

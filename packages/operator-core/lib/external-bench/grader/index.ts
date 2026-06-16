@@ -17,12 +17,27 @@ import {
   type SweBenchProGraderDeps,
 } from './swe-bench-pro';
 import { makeSweLancerGrader, type SweLancerGraderConfig } from './swe-lancer';
+import {
+  makeSweBenchVerifiedGrader,
+  type SweBenchVerifiedGraderConfig,
+  type SweBenchVerifiedGraderDeps,
+} from './swe-bench-verified';
 
 export { makeFakeGrader } from './fake';
 export { makeSweBenchProGrader, parseSweBenchProReport } from './swe-bench-pro';
 export { makeSweLancerGrader, parseSweLancerReport } from './swe-lancer';
+export {
+  makeSweBenchVerifiedGrader,
+  parseSweBenchVerifiedReport,
+  assertVerifiedHarnessInstalled,
+} from './swe-bench-verified';
 export type { ProcExec, GraderFs, SweBenchProGraderConfig, SweBenchProGraderDeps } from './swe-bench-pro';
 export type { SweLancerGraderConfig, SweLancerGraderDeps } from './swe-lancer';
+export type {
+  SweBenchVerifiedGraderConfig,
+  SweBenchVerifiedGraderDeps,
+  SweBenchVerifiedReport,
+} from './swe-bench-verified';
 
 /** Live subprocess runner — `execFile` (no shell); resolves with streams + exit code, never rejects on exit≠0. */
 export const liveProcExec: ProcExec = (cmd, args, opts) =>
@@ -53,6 +68,7 @@ export const liveGraderFs: GraderFs = {
 
 export interface GraderRegistryConfig {
   sweBenchPro?: SweBenchProGraderConfig;
+  sweBenchVerified?: SweBenchVerifiedGraderConfig;
   sweLancer?: SweLancerGraderConfig;
 }
 
@@ -72,6 +88,14 @@ export function getOfficialGrader(
         exec: deps?.exec ?? liveProcExec,
         fs: deps?.fs ?? liveGraderFs,
       });
+    }
+    case 'swe-bench-verified': {
+      if (!cfg.sweBenchVerified)
+        throw new Error('getOfficialGrader: swe-bench-verified requires a SweBenchVerifiedGraderConfig');
+      return makeSweBenchVerifiedGrader(cfg.sweBenchVerified, {
+        exec: deps?.exec ?? liveProcExec,
+        fs: deps?.fs ?? liveGraderFs,
+      } satisfies SweBenchVerifiedGraderDeps);
     }
     case 'swe-lancer': {
       if (!cfg.sweLancer) throw new Error('getOfficialGrader: swe-lancer requires a SweLancerGraderConfig');

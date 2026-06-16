@@ -28,7 +28,13 @@
 /* -------------------------------------------------------------------------- */
 
 /** Which benchmark family a task belongs to (open string — new families add a literal). */
-export type BenchmarkFamily = 'swe-bench-pro' | 'terminal-bench' | 'harness-bench' | 'swe-lancer' | (string & {});
+export type BenchmarkFamily =
+  | 'swe-bench-pro'
+  | 'swe-bench-verified'
+  | 'terminal-bench'
+  | 'harness-bench'
+  | 'swe-lancer'
+  | (string & {});
 
 /**
  * One benchmark task, normalized across families. The arm only ever sees the
