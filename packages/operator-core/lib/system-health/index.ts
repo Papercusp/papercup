@@ -8,6 +8,7 @@ export * from './thresholds';
 export {
   computeSystemHealth,
   runSystemHealthTick,
+  preWarmSystemHealth,
   getSystemHealth,
   lastSystemHealth,
   _resetSystemHealthCache,

@@ -214,4 +214,19 @@ export async function startDbos(): Promise<void> {
   } catch (e) {
     console.warn('[plan-item-claim] failed to arm activity renewal:', e instanceof Error ? e.message : e);
   }
+
+  // Pre-warm the system-health cache so the FIRST Health/Overwatch tab open is
+  // instant instead of cold-computing the 15-collector aggregation (incl. the
+  // ~2.5s gateway probe) on the user's critical path (system-health-tab P-003
+  // follow-up — the cold-cache 2-3s load). The scheduled systemHealthTick keeps
+  // it warm thereafter; this closes the ~30s post-boot cold window. The pre-warm
+  // is itself fire-and-forget per workspace + SYSTEM_HEALTH_TAB-gated, so this
+  // returns immediately — best-effort, must not block/fail boot.
+  try {
+    const { preWarmSystemHealth } = await import('../system-health');
+    const warmed = await preWarmSystemHealth();
+    if (warmed > 0) console.log(`[system-health] boot pre-warm kicked off for ${warmed} workspace(s)`);
+  } catch (e) {
+    console.warn('[system-health] failed to arm boot pre-warm:', e instanceof Error ? e.message : e);
+  }
 }

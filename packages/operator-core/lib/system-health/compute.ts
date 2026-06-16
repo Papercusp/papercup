@@ -20,7 +20,7 @@
  * `health.snapshot` so an open tab stays SSE-live.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../workspace-registry';
+import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { notifySyncInvalidate } from '../sync-sse';
@@ -850,6 +850,35 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
   // no-op when no overwatch pane is subscribed.
   await notifySyncInvalidate('overwatch.snapshot', undefined).catch(() => {});
   return health;
+}
+
+/**
+ * Pre-warm the per-workspace cache once at boot — the cold-cache perf fix
+ * (system-health-tab-2026-06-15 P-003 follow-up). The scheduled DBOS tick
+ * (`systemHealthTick`, :10/:40) keeps the cache warm in steady state, but for the
+ * ~30s after a boot/deploy the cache is EMPTY, so the FIRST Health tab
+ * (`getSystemHealth`) or Overwatch pane (`getOverwatchSnapshot`) open
+ * cold-computes the 15-collector aggregation (incl. the ~2.5s gateway probe) ON
+ * the user's critical path (the 2-3s load the owner saw). Called once right after
+ * DBOS launch (bootstrap.ts): it kicks one tick per registered workspace
+ * FIRE-AND-FORGET (never blocks/fails boot) and is gated on the SAME
+ * `SYSTEM_HEALTH_TAB` flag as the scheduled tick + the read surface. Returns the
+ * number of workspaces whose warm-up was kicked off (0 when the flag is off).
+ *
+ * `tick` is injectable for unit testing; production passes the real
+ * `runSystemHealthTick`.
+ */
+export async function preWarmSystemHealth(
+  tick: (ws: string) => Promise<unknown> = runSystemHealthTick,
+): Promise<number> {
+  if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return 0;
+  const workspaces = readRegistry().workspaces.map((w) => w.id);
+  for (const ws of workspaces) {
+    void Promise.resolve(tick(ws)).catch((e) => {
+      console.warn(`[system-health] boot pre-warm failed for ${ws}: ${e instanceof Error ? e.message : e}`);
+    });
+  }
+  return workspaces.length;
 }
 
 /**
