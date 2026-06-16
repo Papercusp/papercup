@@ -232,6 +232,17 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT,
 ]);
 
+/**
+ * The dark allowlist must be RE-REVIEWED by this date. Past it, the review-by
+ * test below goes red — forcing the team to walk every dark flag and either flip
+ * the ones now ready to default-ON (remove them here) or consciously push this
+ * date out with a fresh look. This is the "expiry" that stops a dark flag
+ * lingering silently past the alpha default-on policy (owner ask, 2026-06-16).
+ * Treat a red here as "do the review," not "bump the date" — the bump is the
+ * LAST step, after flipping what's ready.
+ */
+const DARK_FLAGS_REVIEW_BY = '2026-07-15';
+
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {
   it('every flag defaults ON unless consciously allowlisted as dark', () => {
     const offenders = ALL_FLAG_KEYS.filter(
@@ -264,5 +275,20 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     for (const key of KNOWN_DARK_FLAGS) {
       expect(known.has(key), `KNOWN_DARK_FLAGS contains unregistered key "${key}"`).toBe(true);
     }
+  });
+
+  it('the dark allowlist is not past its review-by date (no silent lingering)', () => {
+    // The default-on policy only "sticks" if a dark flag can't sit forever. Past
+    // DARK_FLAGS_REVIEW_BY this fails — the team re-reviews EVERY dark flag, flips
+    // the ones now ready, and ONLY THEN pushes the date out for what must stay dark.
+    const reviewBy = Date.parse(DARK_FLAGS_REVIEW_BY);
+    expect(Number.isNaN(reviewBy), 'DARK_FLAGS_REVIEW_BY must be a valid ISO date').toBe(false);
+    expect(
+      Date.now() <= reviewBy,
+      `The KNOWN_DARK_FLAGS allowlist is past its review-by (${DARK_FLAGS_REVIEW_BY}). ` +
+        `Walk every dark flag in libs/flags/src/production-defaults.test.ts: flip the ones now ` +
+        `ready to default-ON (remove them here), then push DARK_FLAGS_REVIEW_BY out with a fresh ` +
+        `look. Don't just bump the date — the review is the point.`,
+    ).toBe(true);
   });
 });
