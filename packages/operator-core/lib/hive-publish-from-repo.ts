@@ -120,18 +120,19 @@ export interface PublishCreatedHiveDeps {
     harness_slug: string;
   }) => Promise<unknown>;
   /**
-   * EI-681: after publish, boot + swarm-join + start the outbox-drain loop for
-   * the local member harnesses that just went shared (the "go shared" reboot).
-   * The hyperbee substrate only boots once at host-bootstrap, and nothing
-   * re-boots a harness that becomes federation-active at RUNTIME — so an owner's
-   * published harness never joins the swarm or drains its outbox until a restart,
-   * and its features never federate out (the join side already handles this via
-   * stepBootFederate → bootSingleHarness). `rebootHarness` re-resolves the
-   * now-present binding, joins the derived topic, and wires send-side. Defaults
-   * to the real `rebootHarness`, lazily imported so this publish module never
-   * pulls the swarm stack at load. Best-effort + fire-and-forget.
+   * EI-681: after publish, re-key the local member harnesses that just went
+   * shared onto the Hive-pubkey topic (the "go shared" re-key). The hyperbee
+   * substrate only boots once at host-bootstrap, and nothing re-keys a harness
+   * that becomes federation-active at RUNTIME — so an owner's published harness
+   * never joins the Hive topic or drains its outbox until a restart, and its
+   * features never federate out (the join side handles this via join-hive 2c).
+   * `rekeyHarness` re-resolves the now-present binding and joins the Hive topic
+   * IN PLACE — NOT a reboot, because a reboot breaks the owner's corestore
+   * serving of its own log core (the owner would admit + connect but never UPLOAD
+   * its log → feature never crosses). Defaults to the real `rekeyHarness`, lazily
+   * imported so this publish module never pulls the swarm stack at load.
    */
-  rebootHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
+  rekeyHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
   /** Owned-meta read for republishHiveAfterMemberAdd. */
   getMeta?: (hiveId: string, workspaceId: string) => Promise<HiveDirectoryMeta | null>;
   now?: () => number;
@@ -438,31 +439,31 @@ async function publishListingForMeta(
     }
   }
 
-  // 7 — EI-681: the "go shared" REBOOT. The local member harnesses just got a
+  // 7 — EI-681: the "go shared" RE-KEY. The local member harnesses just got a
   //     binding (step 6) but their substrate was booted (if at all) before that
-  //     binding existed — so it joined no swarm topic and started no outbox
-  //     drain. Nothing else re-boots a runtime-shared harness (the substrate
-  //     boots once at host-bootstrap; the join side reboots via stepBootFederate,
-  //     but the OWNER/publish side had no equivalent). Without this, an owner's
-  //     published feature writes sit in `substrate_outbox` undrained and never
-  //     federate out until a restart. `rebootHarness` closes the stale handle,
-  //     re-resolves the now-present binding, joins the topic, and wires the
-  //     outbox drain. Reboot EXACTLY the harnesses step 6 just bound (same
-  //     `members` set + `onlyRepoIds` filter). Best-effort + fire-and-forget:
-  //     a reboot failure (or a sync throw) must NEVER fail or slow the publish.
+  //     binding existed — so it joined no Hive topic and started no outbox drain.
+  //     Nothing else re-keys a runtime-shared harness (the substrate boots once
+  //     at host-bootstrap; the join side re-keys via join-hive 2c, but the
+  //     OWNER/publish side had no equivalent). Without this, an owner's published
+  //     feature writes sit in `substrate_outbox` undrained and never federate out
+  //     until a restart. `rekeyHarness` re-resolves the now-present binding and
+  //     joins the Hive topic IN PLACE (not a reboot — a reboot breaks the owner's
+  //     corestore serving of its own log core). Re-key EXACTLY the harnesses step
+  //     6 just bound (same `members` set + `onlyRepoIds` filter). Best-effort +
+  //     fire-and-forget: a failure (or sync throw) must NEVER fail or slow publish.
   if (hiveTopicHex) {
-    const rebootHarness =
-      deps.rebootHarness ??
+    const rekeyHarness =
+      deps.rekeyHarness ??
       (async (ws: string, slug: string) =>
-        (await import('./sync/hyperbee/boot-all')).rebootHarness(ws, slug));
+        (await import('./sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
     for (const m of members) {
       if (typeof m.github_repository_id !== 'number' || !m.github_remote) continue;
       if (opts.onlyRepoIds && !opts.onlyRepoIds.includes(m.github_repository_id)) continue;
       try {
-        const p = rebootHarness(opts.workspaceId, m.slug) as Promise<unknown> | undefined;
+        const p = rekeyHarness(opts.workspaceId, m.slug) as Promise<unknown> | undefined;
         if (p && typeof p.catch === 'function') p.catch(() => {});
       } catch {
-        /* a sync throw from a reboot must never fail the publish or skip peers */
+        /* a sync throw from a re-key must never fail the publish or skip peers */
       }
     }
   }

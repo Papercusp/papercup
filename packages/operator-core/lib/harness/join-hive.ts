@@ -104,12 +104,13 @@ export interface JoinHiveDeps {
     pubkeyBase64: string;
     keychainId: string;
   }) => Promise<unknown>;
-  /** Reboot a joined member's substrate so it re-resolves its swarm binding
-   *  (default: boot-all's rebootHarness, lazily imported). EI-681 step 2c — the
-   *  per-member joins booted each substrate on the gh:<repo_id> topic BEFORE the
-   *  Hive identity/hive_slug existed; rebooting after materialization re-keys
-   *  them onto the OWNER's Hive-pubkey topic. Best-effort — never fails the join. */
-  rebootHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
+  /** Re-key a joined member's substrate IN PLACE so it re-resolves its swarm
+   *  binding (default: boot-all's rekeyHarness, lazily imported). EI-681 step 2c
+   *  — the per-member joins booted each substrate on the gh:<repo_id> topic
+   *  BEFORE the Hive identity/hive_slug existed; re-keying after materialization
+   *  moves them onto the OWNER's Hive-pubkey topic WITHOUT a reboot (a reboot
+   *  breaks the owner's corestore serving of its own log). Never fails the join. */
+  rekeyHarness?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
 }
 
 /** Resolve a discovered Hive's HIVE-identity pubkey from the local directory's
@@ -308,23 +309,24 @@ export async function joinHiveAsView(
   //      Hive identity existed (steps 2/2b), so resolveSwarmBinding resolved the
   //      gh:<repo_id> topic and the member sat on a DIFFERENT topic than the
   //      owner's Hive-pubkey topic → a write never federated. Now that the view +
-  //      identity are materialized, REBOOT each joined member so it re-resolves
-  //      onto the SAME Hive-pubkey topic the owner uses (the same primitive the
-  //      owner-publish path uses). Best-effort + fire-and-forget — a re-key
-  //      failure must NEVER fail an otherwise-successful join.
-  const rebootHarness =
-    deps.rebootHarness ??
+  //      identity are materialized, RE-KEY each joined member IN PLACE so it
+  //      re-resolves onto the SAME Hive-pubkey topic the owner uses — in place
+  //      (NOT a reboot), because a reboot breaks the owner's corestore serving of
+  //      its own log core. Best-effort — a re-key failure must NEVER fail an
+  //      otherwise-successful join.
+  const rekeyHarness =
+    deps.rekeyHarness ??
     (async (ws: string, slug: string) =>
-      (await import('../sync/hyperbee/boot-all')).rebootHarness(ws, slug));
+      (await import('../sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
   for (const m of members) {
     if (!m.ok || !m.slug) continue;
-    console.log(`[ei681-diag] join 2c: rebooting member '${m.slug}' to re-key onto hive topic (hive_slug='${hiveSlug}')`);
+    console.log(`[ei681-diag] join 2c: re-keying member '${m.slug}' onto hive topic in place (hive_slug='${hiveSlug}')`);
     try {
-      const result = await rebootHarness(opts.workspaceId, m.slug);
-      console.log(`[ei681-diag] join 2c: reboot('${m.slug}') result=${JSON.stringify(result)}`);
+      const result = await rekeyHarness(opts.workspaceId, m.slug);
+      console.log(`[ei681-diag] join 2c: rekey('${m.slug}') result=${JSON.stringify(result)}`);
     } catch (e) {
-      console.log(`[ei681-diag] join 2c: reboot('${m.slug}') THREW: ${e instanceof Error ? e.message : e}`);
-      /* a reboot failure must NEVER fail an otherwise-successful join */
+      console.log(`[ei681-diag] join 2c: rekey('${m.slug}') THREW: ${e instanceof Error ? e.message : e}`);
+      /* a re-key failure must NEVER fail an otherwise-successful join */
     }
   }
 

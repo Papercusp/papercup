@@ -600,6 +600,49 @@ export async function rebootHarness(
   return { closed, boot };
 }
 
+/**
+ * Re-key a BOOTED harness onto its freshly-resolved swarm binding IN PLACE —
+ * leave the old topic + join the new one while keeping the substrate's store /
+ * own log / admitted set / merge loop ALIVE. The "go shared" primitive for an
+ * already-running harness whose binding changed (it joined/published a hive, so
+ * its `gh:<repo_id>` topic must switch to the hive-pubkey topic).
+ *
+ * EI-681: PREFER this over `rebootHarness` for a re-key. A full reboot tears
+ * down + re-creates the Corestore-backed substrate, which disrupts the OWNER's
+ * corestore replication-SERVING of its own log core — the re-keyed owner admits
+ * + connects to the joiner but never UPLOADS its log, so the feature never
+ * crosses (confirmed via the two-instance hive-from-repo smoke: owner fires zero
+ * `upload` events post-reboot; re-key-in-place serves seamlessly). Re-key in
+ * place never tears down the replication streams.
+ *
+ * Falls back to a fresh `bootSingleHarness` when the harness isn't booted yet
+ * (which resolves + joins the new binding itself). Idempotent + safe-when-unbooted.
+ */
+export async function rekeyHarness(
+  workspaceId: string,
+  harnessSlug: string,
+  opts: {
+    workspaceRoot?: string;
+    resolveSwarmBinding?: SwarmBindingResolver;
+  } = {},
+): Promise<{ rekeyed: boolean; boot?: BootSingleResult }> {
+  const handle = handles.get(key(workspaceId, harnessSlug));
+  if (!handle) {
+    // Not booted yet → a fresh boot resolves + joins the new binding itself.
+    const boot = await bootSingleHarness(workspaceId, harnessSlug, opts);
+    return { rekeyed: false, boot };
+  }
+  const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
+  const binding = (await resolver(workspaceId, harnessSlug)) ?? null;
+  if (!binding) {
+    // No binding resolved (still private / unresolvable) — leave as-is rather
+    // than dropping the harness off its current topic.
+    return { rekeyed: false };
+  }
+  await handle.rekey(binding);
+  return { rekeyed: true };
+}
+
 /** Tear down every cached handle. For test cleanup + process shutdown. */
 export async function closeAllBootedHarnesses(): Promise<number> {
   const entries = Array.from(handles.entries());

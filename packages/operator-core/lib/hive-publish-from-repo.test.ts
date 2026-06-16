@@ -71,8 +71,8 @@ function fakes(over: Partial<PublishCreatedHiveDeps> = {}) {
     createLocalBinding: async (input) => {
       calls.localBindings.push(input as unknown as Record<string, unknown>);
     },
-    rebootHarness: async (ws, slug) => {
-      calls.rebooted.push({ ws, slug });
+    rekeyHarness: async (ws, slug) => {
+      calls.rekeyed.push({ ws, slug });
     },
     now: () => 1_700_000_000_000,
     randomSecret: () => INVITE_SECRET,
@@ -314,7 +314,7 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
     await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
     // members(): shop (id=100) reboots; docs (no repo id) is skipped (step 6
     // bound no row for it); shop-hive (the home, no github_remote) is not a member.
-    expect(calls.rebooted).toEqual([{ ws: 'ws', slug: 'shop' }]);
+    expect(calls.rekeyed).toEqual([{ ws: 'ws', slug: 'shop' }]);
   });
 
   it('republishHiveAfterMemberAdd: reboots ONLY the new member (onlyRepoIds scope)', async () => {
@@ -345,7 +345,7 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
       { workspaceId: 'ws', hiveSlug: 'shop-hive', onlyRepoIds: [200] },
       deps,
     );
-    expect(calls.rebooted).toEqual([{ ws: 'ws', slug: 'newrepo' }]);
+    expect(calls.rekeyed).toEqual([{ ws: 'ws', slug: 'newrepo' }]);
   });
 
   it('a reboot failure (sync throw or async reject) NEVER fails the publish, and never skips a later member', async () => {
@@ -366,7 +366,7 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
       deriveMemberRepos: async () => ['acme/shop#100', 'acme/extra#300'],
       // 'shop' throws SYNCHRONOUSLY (the harder case — a plain .catch can't
       // swallow it); 'extra' must still be rebooted and the publish must succeed.
-      rebootHarness: (_ws: string, slug: string) => {
+      rekeyHarness: (_ws: string, slug: string) => {
         if (slug === 'shop') throw new Error('boom (sync)');
         rebooted.push(slug);
         return Promise.resolve();
@@ -378,7 +378,7 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
   });
 
   it('async-rejecting reboot does not fail the publish', async () => {
-    const { deps } = fakes({ rebootHarness: async () => Promise.reject(new Error('reject')) });
+    const { deps } = fakes({ rekeyHarness: async () => Promise.reject(new Error('reject')) });
     const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
     expect(out.announced).toBe(true);
   });
@@ -386,6 +386,6 @@ describe('hive publish — go-shared reboot of local member harnesses (EI-681)',
   it('no joinable topic (no hive pubkey) → no reboots', async () => {
     const { deps, calls } = fakes({ loadPubkey: async () => null });
     await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
-    expect(calls.rebooted).toEqual([]);
+    expect(calls.rekeyed).toEqual([]);
   });
 });

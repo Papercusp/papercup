@@ -405,8 +405,16 @@ export interface BootedHarnessHandle {
    */
   reverifyAdmitted(): Promise<void>;
   /** Swarm handle. Null when this boot didn't join a swarm
-   *  (private harness OR swarmBinding omitted). */
-  swarm: SwarmHandle | null;
+   *  (private harness OR swarmBinding omitted). A live getter — `rekey()`
+   *  reassigns it, so always read the current value. */
+  readonly swarm: SwarmHandle | null;
+  /** Re-key onto a NEW swarm topic IN PLACE: leave the old topic, join the topic
+   *  derived from `binding`, keeping the store + own log + admitted set + merge
+   *  loop alive. The "go shared" primitive — used when a harness joins/publishes
+   *  a hive after boot and must switch from its gh:<repo_id> topic to the
+   *  hive-pubkey topic WITHOUT a reboot (EI-681: a reboot breaks the owner's
+   *  corestore replication-serving of its own log). No-op once closed. */
+  rekey(binding: SwarmBinding): Promise<void>;
   /**
    * Register a teardown hook run (once) on `close()`, BEFORE the swarm + store
    * tear down. The Stage-5 outbox wiring (boot-all.ts `wireOutboxForHarness`)
@@ -1370,11 +1378,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   if (!opts.swarmBinding) {
     console.log(`[ei681-diag] boot ${opts.harnessSlug}: NO swarmBinding → staying local-only (no topic join)`);
   }
-  if (opts.swarmBinding) {
+  // Join (or RE-KEY to) the swarm topic derived from `binding`, using THIS
+  // boot's LIVE store + own log + onAnnounce. Extracted so `rekey()` can re-run
+  // it against a NEW binding WITHOUT tearing down the store / open cores /
+  // replication streams / merge loop. EI-681: a full reboot (close + boot)
+  // disrupts the OWNER's corestore replication-SERVING of its own log core — the
+  // re-keyed owner admits the joiner + connects but never UPLOADS its log, so
+  // the feature never crosses. Re-keying in place leaves the replication streams
+  // intact, so serving continues seamlessly onto the new topic.
+  async function joinForBinding(binding: SwarmBinding): Promise<void> {
     try {
       const swarm = opts.swarmOverride ?? (await getSharedSwarm());
-      const topic = deriveSwarmTopic(opts.swarmBinding);
-      console.log(`[ei681-diag] boot ${opts.harnessSlug}: swarmBinding kind=${opts.swarmBinding.kind} → topic=${topic.toString('hex').slice(0, 16)}… (joining…)`);
+      const topic = deriveSwarmTopic(binding);
+      console.log(`[ei681-diag] boot ${opts.harnessSlug}: swarmBinding kind=${binding.kind} → topic=${topic.toString('hex').slice(0, 16)}… (joining…)`);
       // Build OUR announce: bind our log core to our device identity. Throws
       // (→ caught below) when gh-auth / keychain can't resolve, keeping the
       // harness local-only rather than joining without an announce.
@@ -1448,6 +1464,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
   }
 
+  if (opts.swarmBinding) {
+    await joinForBinding(opts.swarmBinding);
+  }
+
   recordBootEvent(opts.workspaceId, opts.harnessSlug, 'boot_ok');
 
   return {
@@ -1488,7 +1508,31 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     },
     revoke,
     reverifyAdmitted,
-    swarm: swarmHandle,
+    // A live getter (not a snapshot): `rekey()` reassigns the inner
+    // `swarmHandle`, so callers must observe the CURRENT topic, not the one
+    // captured at boot return.
+    get swarm(): SwarmHandle | null {
+      return swarmHandle;
+    },
+    async rekey(binding: SwarmBinding): Promise<void> {
+      // EI-681: re-key onto a NEW swarm topic IN PLACE — leave the old topic and
+      // join the new one while keeping the store + own log + admitted set + merge
+      // loop ALIVE. A full reboot (close + boot) disrupted the OWNER's corestore
+      // replication-serving of its own log core (it admitted + connected to the
+      // joiner but never UPLOADED its log → the feature never crossed). Re-keying
+      // in place never tears down the replication streams, so serving continues.
+      if (stopped) return;
+      const previous = swarmHandle;
+      swarmHandle = null;
+      if (previous) {
+        try {
+          await previous.close();
+        } catch {
+          // leaving the old topic is best-effort; the new join is what matters
+        }
+      }
+      await joinForBinding(binding);
+    },
     registerCloseHook(hook: () => void | Promise<void>): () => void {
       closeHooks.add(hook);
       return () => {
