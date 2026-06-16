@@ -30,7 +30,7 @@ export default defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { accountId?: string; label?: string; value?: string };
+    let body: { accountId?: string; label?: string; value?: string; egress?: { proxyUrl?: string; localAddress?: string } };
     try {
       body = await req.json();
     } catch {
@@ -38,6 +38,10 @@ export default defineTool({
     }
     const accountId = body?.accountId?.trim();
     const value = body?.value?.trim();
+    // Optional per-account egress (per-account IP routing) — only kept if a field is set.
+    const proxyUrl = body?.egress?.proxyUrl?.trim();
+    const localAddress = body?.egress?.localAddress?.trim();
+    const egress = proxyUrl || localAddress ? { proxyUrl: proxyUrl || undefined, localAddress: localAddress || undefined } : undefined;
     if (!accountId || !ID_RE.test(accountId)) {
       return Response.json({ ok: false, error: 'accountId required (allowed: A-Za-z0-9 . _ -)' }, { status: 400 });
     }

@@ -5,21 +5,46 @@
  * with its id/label, a masked credentialRef (path reference only — the token is
  * NEVER sent to the browser), availability + pause countdown + penalty count,
  * the bound member harnesses, per-account egress (if IP-pinned), and the projected
- * 5h-window usage. A per-account Reset clears a stale projected pause.
+ * 5h-window usage. Per-account Reset clears a stale projected pause; Remove drops
+ * the account (inline confirm). "Add account" links a new Max subscription.
+ *
+ * Add-account has two paths (P-002):
+ *   • PROVEN (default) — paste a `claude setup-token` (sk-ant-oat…) or a
+ *     `.credentials.json` bundle → POST /api/admin/deploy-accounts/register. The
+ *     token is written server-side under ~/.papercusp/deploy-credentials and only
+ *     referenced; it never round-trips through the browser.
+ *   • EXPERIMENTAL — server-mediated PKCE OAuth (su-81fe4's link-start/complete
+ *     backend). Generates a claude.ai authorize URL, owner approves + pastes the
+ *     code. Degrades gracefully ("not available yet") until that backend deploys.
  *
  * Read path: the `accounts.pool` sync query (resolver over accountStatus =
- * accounts:list ∪ accounts:status), live over SSE — no polling. Reset/Remove
- * fire `notifySyncInvalidate('accounts.pool')` server-side, so the card updates
- * itself. Linking new accounts via OAuth + remove live in P-002.
+ * accounts:list ∪ accounts:status), live over SSE — register/remove/reset/link
+ * fire `notifySyncInvalidate('accounts.pool')`, so cards update themselves.
  *
- * State discipline (CLAUDE.md): the selected/expanded account id is in the URL
- * (nuqs `?acct=`); only the per-row busy lifecycle is useState.
+ * State discipline (CLAUDE.md): the expanded account id + the add-panel open flag
+ * are in the URL (nuqs `?acct=`, `?add=`); only mid-edit form drafts + per-row busy
+ * lifecycle + the remove-confirm target are useState.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
-import { KeyRound, RotateCcw, ChevronDown, ChevronRight, Pause, CircleCheck, CircleSlash, Link2, Network } from 'lucide-react';
+import {
+  KeyRound,
+  RotateCcw,
+  ChevronDown,
+  ChevronRight,
+  Pause,
+  CircleCheck,
+  CircleSlash,
+  Link2,
+  Network,
+  Plus,
+  Trash2,
+  X,
+  Copy,
+  ExternalLink,
+} from 'lucide-react';
 import './AdvAccountsTab.css';
 
 // ── Row shape — mirrors AccountStatusRow (operator-core account-pool-store).
@@ -43,6 +68,23 @@ interface PoolAccount {
   rate: AccountRate;
   egress?: { proxyUrl?: string; localAddress?: string };
   liveBuckets: { key: string; provider: string; modelClass: string; paused: boolean; pausedUntil: number }[];
+}
+
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+async function postJson(path: string, body: Record<string, unknown>): Promise<{ status: number; ok: boolean; j: { ok?: boolean; error?: string; [k: string]: unknown } }> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let j: { ok?: boolean; error?: string; [k: string]: unknown } = {};
+  try {
+    j = (await res.json()) as typeof j;
+  } catch {
+    /* non-JSON response */
+  }
+  return { status: res.status, ok: res.ok, j };
 }
 
 /** Show the credential's scheme + filename only — never the home path, never the token. */
@@ -89,27 +131,236 @@ function useNow(intervalMs = 1000): number {
   return now;
 }
 
+function AddAccountPanel({ onClose }: { onClose: () => void }) {
+  const [mode, setMode] = useState<'token' | 'oauth'>('token');
+  const [id, setId] = useState('');
+  const [label, setLabel] = useState('');
+  // proven (setup-token / bundle) path
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  // experimental OAuth path (su-81fe4 backend: link-start → { authorizeUrl, linkId }; link-complete { linkId, code })
+  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  const [linkId, setLinkId] = useState<string | null>(null);
+  const [oauthUnavailable, setOauthUnavailable] = useState(false);
+  const [code, setCode] = useState('');
+  const [oauthBusy, setOauthBusy] = useState(false);
+
+  const submitToken = useCallback(async () => {
+    if (!id.trim() || !value.trim()) {
+      toast.error('Account id and the pasted value are required');
+      return;
+    }
+    setBusy(true);
+    try {
+      const { ok, j } = await postJson('/api/admin/deploy-accounts/register', {
+        accountId: id.trim(),
+        label: label.trim() || undefined,
+        value: value.trim(),
+      });
+      if (!ok || !j.ok) throw new Error(j.error || 'register failed');
+      toast.success(`Added account ${id.trim()}`);
+      onClose();
+    } catch (e) {
+      toast.error(`Add failed: ${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [id, label, value, onClose]);
+
+  const startOAuth = useCallback(async () => {
+    if (!id.trim()) {
+      toast.error('Account id is required');
+      return;
+    }
+    setOauthBusy(true);
+    try {
+      const { status, ok, j } = await postJson('/api/admin/deploy-accounts/link-start', {
+        accountId: id.trim(),
+        label: label.trim() || undefined,
+      });
+      if (status === 404) {
+        setOauthUnavailable(true);
+        return;
+      }
+      const url = typeof j.authorizeUrl === 'string' ? j.authorizeUrl : null;
+      const lid = typeof j.linkId === 'string' ? j.linkId : null;
+      if (!ok || !j.ok || !url || !lid) throw new Error(j.error || 'link-start failed');
+      setAuthorizeUrl(url);
+      setLinkId(lid);
+    } catch (e) {
+      toast.error(`Couldn't start OAuth link: ${errMsg(e)}`);
+    } finally {
+      setOauthBusy(false);
+    }
+  }, [id, label]);
+
+  const completeOAuth = useCallback(async () => {
+    if (!code.trim()) {
+      toast.error('Paste the code claude.ai gave you');
+      return;
+    }
+    if (!linkId) {
+      toast.error('Generate the authorize link first');
+      return;
+    }
+    setOauthBusy(true);
+    try {
+      const { ok, j } = await postJson('/api/admin/deploy-accounts/link-complete', { linkId, code: code.trim() });
+      if (!ok || !j.ok) throw new Error(j.error || 'link-complete failed');
+      toast.success('Account linked via OAuth');
+      onClose();
+    } catch (e) {
+      toast.error(`Link failed: ${errMsg(e)}`);
+    } finally {
+      setOauthBusy(false);
+    }
+  }, [code, linkId, onClose]);
+
+  return (
+    <div className="pc-advacct__addpanel">
+      <div className="pc-advacct__addhead">
+        <span>Link a Claude Max account</span>
+        <button type="button" className="pc-advacct__iconbtn" onClick={onClose} aria-label="Close">
+          <X size={14} aria-hidden />
+        </button>
+      </div>
+
+      <div className="pc-advacct__modetabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'token'}
+          className={`pc-advacct__modetab${mode === 'token' ? ' is-active' : ''}`}
+          onClick={() => setMode('token')}
+        >
+          Paste setup-token
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'oauth'}
+          className={`pc-advacct__modetab${mode === 'oauth' ? ' is-active' : ''}`}
+          onClick={() => setMode('oauth')}
+        >
+          Link via OAuth <span className="pc-advacct__beta">beta</span>
+        </button>
+      </div>
+
+      <label className="pc-advacct__field">
+        <span>Account id</span>
+        <input value={id} onChange={(e) => setId(e.target.value)} placeholder="e.g. aviynw11" spellCheck={false} autoComplete="off" />
+      </label>
+      <label className="pc-advacct__field">
+        <span>Label (optional)</span>
+        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. work Max" spellCheck={false} autoComplete="off" />
+      </label>
+
+      {mode === 'token' ? (
+        <>
+          <p className="pc-advacct__hint">
+            Run <code>claude setup-token</code> while logged into the TARGET Max account (or paste a <code>.credentials.json</code>{' '}
+            bundle), then paste the result below. It is written server-side and never echoed back to the browser.
+          </p>
+          <label className="pc-advacct__field">
+            <span>setup-token or .credentials.json</span>
+            <textarea
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              rows={3}
+              placeholder="sk-ant-oat… or {…}"
+              spellCheck={false}
+            />
+          </label>
+          <div className="pc-advacct__addactions">
+            <button type="button" className="pc-advacct__btn pc-advacct__btn--primary" disabled={busy} onClick={() => void submitToken()}>
+              {busy ? 'Adding…' : 'Add account'}
+            </button>
+          </div>
+        </>
+      ) : oauthUnavailable ? (
+        <p className="pc-advacct__hint pc-advacct__hint--warn">
+          OAuth linking isn't available on this build yet — the link-start backend hasn't deployed. Use “Paste setup-token” above.
+        </p>
+      ) : !authorizeUrl ? (
+        <>
+          <p className="pc-advacct__hint">
+            <strong>Experimental.</strong> Generates a claude.ai authorize link for the account id above. Whether claude.ai accepts a
+            server-built link still needs a one-time confirmation — if it doesn't, use “Paste setup-token”. The token stays server-side.
+          </p>
+          <div className="pc-advacct__addactions">
+            <button type="button" className="pc-advacct__btn pc-advacct__btn--primary" disabled={oauthBusy} onClick={() => void startOAuth()}>
+              {oauthBusy ? 'Generating…' : 'Get authorize link'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="pc-advacct__hint">1. Open this link logged into the TARGET Max account and approve:</p>
+          <div className="pc-advacct__urlrow">
+            <a href={authorizeUrl} target="_blank" rel="noreferrer" className="pc-advacct__authlink">
+              <ExternalLink size={12} aria-hidden /> open authorize page
+            </a>
+            <button
+              type="button"
+              className="pc-advacct__iconbtn"
+              title="Copy link"
+              onClick={() => {
+                void navigator.clipboard?.writeText(authorizeUrl);
+                toast.success('Authorize link copied');
+              }}
+            >
+              <Copy size={13} aria-hidden />
+            </button>
+          </div>
+          <p className="pc-advacct__hint">2. Paste the code claude.ai shows you:</p>
+          <label className="pc-advacct__field">
+            <span>code</span>
+            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="code#state" spellCheck={false} autoComplete="off" />
+          </label>
+          <div className="pc-advacct__addactions">
+            <button type="button" className="pc-advacct__btn pc-advacct__btn--primary" disabled={oauthBusy} onClick={() => void completeOAuth()}>
+              {oauthBusy ? 'Linking…' : 'Complete link'}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function AdvAccountsTab() {
   const { data: accounts, loading, error } = useSyncQuery<PoolAccount>({ queryName: 'accounts.pool' });
   const [selected, setSelected] = useQueryState('acct', parseAsString);
+  const [addOpen, setAddOpen] = useQueryState('add', parseAsBoolean.withDefault(false));
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [removePending, setRemovePending] = useState<string | null>(null);
+  const [removeBusyId, setRemoveBusyId] = useState<string | null>(null);
   const now = useNow();
 
   const resetRate = useCallback(async (id: string) => {
     setBusyId(id);
     try {
-      const res = await fetch('/api/admin/deploy-accounts/reset-rate', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id }),
-      });
-      const j = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !j.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      const { ok, j } = await postJson('/api/admin/deploy-accounts/reset-rate', { id });
+      if (!ok || !j.ok) throw new Error(j.error || 'reset failed');
       toast.success(`Reset rate state for ${id}`);
     } catch (e) {
-      toast.error(`Reset failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Reset failed: ${errMsg(e)}`);
     } finally {
       setBusyId(null);
+    }
+  }, []);
+
+  const removeAccount = useCallback(async (id: string) => {
+    setRemoveBusyId(id);
+    try {
+      const { ok, j } = await postJson('/api/admin/deploy-accounts/remove', { id });
+      if (!ok || !j.ok) throw new Error(j.error || 'remove failed');
+      toast.success(`Removed ${id} from the pool`);
+    } catch (e) {
+      toast.error(`Remove failed: ${errMsg(e)}`);
+    } finally {
+      setRemoveBusyId(null);
+      setRemovePending(null);
     }
   }, []);
 
@@ -120,6 +371,9 @@ export default function AdvAccountsTab() {
           <KeyRound size={16} aria-hidden />
           <h2 className="pc-advacct__title">Accounts</h2>
           <span className="pc-advacct__count">{accounts.length}</span>
+          <button type="button" className="pc-advacct__btn pc-advacct__addbtn" onClick={() => void setAddOpen(true)}>
+            <Plus size={13} aria-hidden /> Add account
+          </button>
         </div>
         <p className="pc-advacct__sub">
           The Queen's pool of Claude Max subscriptions. Each account has its own 5h / 7d rolling budget —
@@ -127,13 +381,15 @@ export default function AdvAccountsTab() {
         </p>
       </header>
 
+      {addOpen && <AddAccountPanel onClose={() => void setAddOpen(false)} />}
+
       {error ? (
         <div className="pc-advacct__empty pc-advacct__empty--err">Failed to load the account pool: {String(error.message ?? error)}</div>
       ) : loading && accounts.length === 0 ? (
         <div className="pc-advacct__empty">Loading the account pool…</div>
       ) : accounts.length === 0 ? (
         <div className="pc-advacct__empty">
-          No accounts in the pool yet. Register a Claude Max subscription to give the fleet inference headroom.
+          No accounts in the pool yet. Click “Add account” to link a Claude Max subscription and give the fleet inference headroom.
         </div>
       ) : (
         <ul className="pc-advacct__grid">
@@ -166,7 +422,36 @@ export default function AdvAccountsTab() {
                     <RotateCcw size={13} aria-hidden />
                     {busyId === a.id ? 'Resetting…' : 'Reset'}
                   </button>
+                  <button
+                    type="button"
+                    className="pc-advacct__iconbtn pc-advacct__iconbtn--danger"
+                    disabled={removeBusyId === a.id}
+                    onClick={() => setRemovePending(a.id)}
+                    title="Remove this account from the pool"
+                    aria-label={`Remove ${a.id}`}
+                  >
+                    <Trash2 size={13} aria-hidden />
+                  </button>
                 </div>
+
+                {removePending === a.id && (
+                  <div className="pc-advacct__confirm">
+                    <span>Remove <strong>{a.id}</strong> from the pool? (The credential file is left in place.)</span>
+                    <div className="pc-advacct__confirmbtns">
+                      <button
+                        type="button"
+                        className="pc-advacct__btn pc-advacct__btn--danger"
+                        disabled={removeBusyId === a.id}
+                        onClick={() => void removeAccount(a.id)}
+                      >
+                        {removeBusyId === a.id ? 'Removing…' : 'Remove'}
+                      </button>
+                      <button type="button" className="pc-advacct__btn" onClick={() => setRemovePending(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="pc-advacct__ref" title={`credentialRef: ${maskRef(a.credentialRef)} (path reference — the token never reaches the browser)`}>
                   <span className="pc-advacct__reflabel">cred</span>
@@ -261,7 +546,7 @@ export default function AdvAccountsTab() {
 
       <footer className="pc-advacct__foot">
         <Link2 size={12} aria-hidden />
-        <span>Usage is a projection and may lag the account's real headroom (accurate header-derived numbers land with the gateway usage-accuracy fix). Linking new accounts via OAuth is coming next.</span>
+        <span>Usage is a projection and may lag the account's real headroom (accurate header-derived numbers land with the gateway usage-accuracy fix).</span>
       </footer>
     </div>
   );

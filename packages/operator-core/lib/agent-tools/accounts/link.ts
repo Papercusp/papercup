@@ -1,0 +1,61 @@
+/**
+ * accounts:link-start / accounts:link-complete — the EXPERIMENTAL one-click OAuth
+ * add-account flow (accounts-pool-tab-2026-06-15 P-002; lead su-c7b4c, backend lane
+ * su-81fe4). The agent-surface twin of the /api/admin/deploy-accounts/link-* HTTP
+ * routes the SPA calls. Thin wrappers over deployment/account-link-store.
+ *
+ * The DEFAULT add-account path is the proven `claude setup-token` paste
+ * (accounts:register / deploy-accounts-register). This is the beta alternative,
+ * unverified against live claude.ai (owner confirms acceptance on wake — D-005).
+ */
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { COORD_ROLES } from '../coordination/roles';
+import { startAccountLink, completeAccountLink } from '../../deployment/account-link-store';
+
+const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
+
+export const accountsLinkStartTool = defineTool({
+  name: 'accounts:link-start',
+  profile: 'engineer',
+  description:
+    "EXPERIMENTAL one-click Max-account link (accounts-pool-tab P-002): returns a claude.ai OAuth authorize URL + an opaque single-use linkId. The owner opens the URL in a browser logged into the TARGET Max account, authorizes, then pastes the shown code into accounts:link-complete with this linkId. The PROVEN default is the `claude setup-token` paste (accounts:register); this is the beta alternative, NOT yet verified against live claude.ai. Returns {ok, authorizeUrl, linkId}.",
+  guidance: {
+    when: 'Linking a new Max subscription into the pool via the one-click OAuth beta (vs the setup-token paste). Pair with accounts:link-complete.',
+    notWhen: 'The reliable path — accounts:register with a `claude setup-token` (token:<path>) or a .credentials.json bundle. Inspecting the pool — accounts:list / accounts:status.',
+    chaining: 'accounts:link-start { id } → owner authorizes the URL → accounts:link-complete { linkId, code } → registered.',
+  },
+  capability: 'harness:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    id: z.string().min(1).describe('Stable account id (A-Za-z0-9 . _ - only)'),
+    label: z.string().min(1).optional().describe('Optional human label'),
+    workspace: z.string().min(1).optional().describe('Workspace id (defaults to the active workspace)'),
+  }),
+  async handler(args) {
+    return json(startAccountLink({ accountId: args.id, label: args.label }));
+  },
+});
+
+export const accountsLinkCompleteTool = defineTool({
+  name: 'accounts:link-complete',
+  profile: 'engineer',
+  description:
+    "Complete the EXPERIMENTAL one-click account link (accounts-pool-tab P-002): exchange the pasted claude.ai code (using the verifier carried in `linkId`) → write the credential server-side → register the account in the pool. The token NEVER appears in the response. Returns {ok, account} (the registered account row, no token).",
+  guidance: {
+    when: 'Finishing an accounts:link-start flow — paste the `code` claude.ai showed after the owner authorized, with the linkId from link-start.',
+    notWhen: 'Starting the flow — accounts:link-start. The reliable path — accounts:register.',
+  },
+  capability: 'harness:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    linkId: z.string().min(1).describe('The opaque linkId from accounts:link-start'),
+    code: z.string().min(1).describe('The code claude.ai showed after authorizing (may be `code#state`)'),
+    workspace: z.string().min(1).optional().describe('Workspace id (defaults to the active workspace)'),
+  }),
+  async handler(args) {
+    return json(await completeAccountLink({ linkId: args.linkId, code: args.code, workspace: args.workspace }));
+  },
+});

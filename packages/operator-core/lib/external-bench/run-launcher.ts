@@ -1,0 +1,300 @@
+/**
+ * UI-triggered bench run launcher + spend-safety teardown
+ * (benchmark-evaluation-ui-2026-06-16 P-004 / P-005, D-002).
+ *
+ * Launches a REAL bench-engine run from inside the operator host (NOT a /tmp CLI
+ * launcher): persist a bench_runs row (status=running) + return a run_id
+ * immediately, drive runHiveBacklog as a DETACHED promise, stream per-task +
+ * coordination rows into the operational store as bees collect, and finalize on
+ * completion.
+ *
+ * SPEND-SAFETY (closes impartial-benchmark-suite D-022 — the orphan-respin gap):
+ *   1. Every spawned hive's slug is persisted on the bench_runs row
+ *      (setBenchRunHive) the instant it is minted.
+ *   2. The detached run ALWAYS tears down in a finally — dissolveBenchHive (which
+ *      stops the Queen wake, cancels every bee subtree, and DELETES the
+ *      gym_autoloop_config + scout routine + learning-governor registrants via
+ *      teardownHiveLearningLoop) — so a completed/errored/cancelled run leaves no
+ *      armed learning loop to re-spin opus.
+ *   3. A boot-time reaper (reapStaleBenchRuns, wired into host boot) finds any run
+ *      left status=running/grading/pending by a CRASHED host (SIGKILL bypasses the
+ *      finally), dissolves its hive, and freezes its status — so a :3170 restart
+ *      can NEVER re-arm an orphan hive. This is the durable closure; the finally
+ *      is the fast path.
+ *
+ * The in-process `activeRuns` map holds only EPHEMERAL runtime handles (the cancel
+ * flag + the live hive slugs for a run executing in THIS process). The durable
+ * truth is bench_runs.status in PG — the reaper rebuilds safety from it on boot.
+ * (Not a "module-scoped state Map" in the storage-policy sense: a live promise +
+ * cancel flag cannot be serialized; PG is the source of truth.)
+ */
+import type { BenchTask } from './types';
+import type { HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
+import { runHiveBacklog } from './hive-backlog';
+import { bindRealQueenBacklogDriver, dissolveBenchHive } from './hive-backlog-realqueen';
+import { assertExternalBenchEnabled } from './gate';
+import { resolveDb, type DbScope } from './reproducibility/db';
+import {
+  upsertBenchRun,
+  setBenchRunHive,
+  upsertBenchRunTask,
+  taskRowFromFleetResult,
+  setBenchRunEvents,
+  setBenchRunStatus,
+  recordRunCompletion,
+  type BenchRunStatus,
+} from './run-store';
+import { loadBenchTaskSet } from './task-sets';
+
+/** A run actively executing in THIS host process (ephemeral; PG is durable truth). */
+interface ActiveRun {
+  runId: string;
+  workspaceId: string;
+  hiveSlugs: Set<string>;
+  cancelled: boolean;
+}
+const activeRuns = new Map<string, ActiveRun>();
+
+export interface LaunchBenchRunInput {
+  /** Single arm per run (a multi-arm compare launches one run per arm). */
+  arm: string;
+  /** '11-task-pilot' | 'swe-bench-pro-full' | 'custom'. */
+  taskSetId: string;
+  /** When taskSetId='custom', the explicit instance ids. */
+  taskIds?: string[];
+  suite?: string;
+  /** opus — fail-closed (never silently downgraded). */
+  model?: string;
+  /** Fleet concurrency cap (maxSimultaneousAgents). */
+  cap?: number;
+  /** Per-task spend cap (USD). */
+  maxUsdPerTask?: number;
+  /** Per-task token cap. */
+  maxTokensPerTask?: number;
+  /** Per-run spend ceiling (USD) — advisory, recorded in config. */
+  maxUsdPerRun?: number;
+}
+
+/** Test/host injection seam — defaults wire the real engine. */
+export interface LaunchDeps {
+  scope?: DbScope;
+  /** Run the backlog (default runHiveBacklog). */
+  run?: (req: HiveBacklogRunRequest) => Promise<HiveBacklogResult>;
+  /** Bind the real-Queen driver with the persister hooks (default bindRealQueenBacklogDriver). */
+  bindDriver?: typeof bindRealQueenBacklogDriver;
+  /** Dissolve a spawned hive (default dissolveBenchHive). */
+  dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void>;
+  /** Load the task set → BenchTask[] (default loadBenchTaskSet). */
+  loadBacklog?: (taskSetId: string, taskIds?: string[]) => Promise<BenchTask[]>;
+  /** Gate check (default assertExternalBenchEnabled). */
+  assertEnabled?: () => Promise<void>;
+  /** Deterministic run id (tests). Default embeds a timestamp. */
+  runId?: string;
+}
+
+const ACTIVE_STATES: BenchRunStatus[] = ['pending', 'running', 'grading'];
+
+/** Throw if a run is already in flight (single-active-run — the spend-safety + D-005 gate). */
+export async function assertNoActiveRun(opts: DbScope = {}): Promise<void> {
+  const { sql, ws } = resolveDb(opts);
+  const rows = await sql<{ id: string }[]>`
+    SELECT id FROM harness_shared.bench_runs
+     WHERE workspace_id = ${ws} AND status = ANY(${ACTIVE_STATES as unknown as string[]})
+     LIMIT 1
+  `;
+  if (rows.length > 0) {
+    throw new Error(`conflicting_run_active: run ${rows[0].id} is still in flight — cancel it before launching another`);
+  }
+}
+
+/**
+ * Launch a bench run. Persists status=running, kicks the engine DETACHED, and
+ * returns the run_id immediately. The caller (the launch route) does NOT await
+ * the run — it streams live via @papercusp/sync.
+ */
+export async function launchBenchRun(
+  input: LaunchBenchRunInput,
+  deps: LaunchDeps = {},
+): Promise<{ runId: string }> {
+  const assertEnabled = deps.assertEnabled ?? (() => assertExternalBenchEnabled('system'));
+  await assertEnabled();
+
+  const scope = deps.scope ?? {};
+  const { ws } = resolveDb(scope);
+  await assertNoActiveRun(scope);
+
+  const model = input.model ?? 'opus';
+  const suite = input.suite ?? 'swe-bench-pro';
+  const runId = deps.runId ?? `ui-${input.arm}-${Date.now()}`;
+  const loadBacklog = deps.loadBacklog ?? loadBenchTaskSet;
+  const run = deps.run ?? runHiveBacklog;
+  const bindDriver = deps.bindDriver ?? bindRealQueenBacklogDriver;
+  const dissolve = deps.dissolve ?? dissolveBenchHive;
+
+  const backlog = await loadBacklog(input.taskSetId, input.taskIds);
+
+  await upsertBenchRun(
+    {
+      id: runId,
+      arm: input.arm,
+      taskSetId: input.taskSetId,
+      suite,
+      model,
+      source: 'ui',
+      status: 'running',
+      taskCount: backlog.length,
+      config: {
+        arm: input.arm,
+        taskSetId: input.taskSetId,
+        taskIds: input.taskIds ?? null,
+        model,
+        cap: input.cap ?? null,
+        maxUsdPerTask: input.maxUsdPerTask ?? null,
+        maxTokensPerTask: input.maxTokensPerTask ?? null,
+        maxUsdPerRun: input.maxUsdPerRun ?? null,
+      },
+    },
+    scope,
+  );
+
+  // Seed per-task rows as todo so the live monitor shows the full task set up-front.
+  for (const t of backlog) {
+    await upsertBenchRunTask(runId, { instanceId: t.instanceId, taskStatus: 'todo' }, scope);
+  }
+
+  const active: ActiveRun = { runId, workspaceId: ws, hiveSlugs: new Set(), cancelled: false };
+  activeRuns.set(runId, active);
+
+  // Wire the persister durability hooks onto the real-Queen driver.
+  bindDriver({
+    workspaceId: ws,
+    onHiveCreated: (hiveHome: string) => {
+      active.hiveSlugs.add(hiveHome);
+      void setBenchRunHive(runId, hiveHome, scope).catch(() => {});
+    },
+    onEnrolled: (e) => {
+      void upsertBenchRunTask(runId, { instanceId: e.task.instanceId, taskStatus: 'in_progress' }, scope).catch(() => {});
+    },
+    onTaskCollected: (tr) => {
+      void upsertBenchRunTask(runId, taskRowFromFleetResult(tr), scope).catch(() => {});
+    },
+  });
+
+  const req: HiveBacklogRunRequest = {
+    arm: input.arm as HiveBacklogRunRequest['arm'],
+    suite: suite as HiveBacklogRunRequest['suite'],
+    runId,
+    seed: 1,
+    backlog,
+    budget: { maxUsd: input.maxUsdPerTask ?? 10, maxTokens: input.maxTokensPerTask ?? 4_000_000 },
+  };
+
+  // DETACHED — do not await. Always tears down in the finally (the fast path; the
+  // boot reaper is the SIGKILL-resilient backstop).
+  void executeDetached(active, req, run, dissolve, scope);
+
+  return { runId };
+}
+
+async function executeDetached(
+  active: ActiveRun,
+  req: HiveBacklogRunRequest,
+  run: (req: HiveBacklogRunRequest) => Promise<HiveBacklogResult>,
+  dissolve: (hiveSlug: string, workspaceId: string) => Promise<void>,
+  scope: DbScope,
+): Promise<void> {
+  const { runId } = active;
+  try {
+    const result = await run(req);
+    if (active.cancelled) return; // cancelBenchRun already froze the status
+    await setBenchRunEvents(runId, result.coordEvents ?? [], scope);
+    await recordRunCompletion(
+      runId,
+      {
+        peakConcurrentBees: result.peakConcurrentBees,
+        wallMs: Math.max(0, result.finishedAtMs - result.startedAtMs),
+        runError: result.runError ?? null,
+      },
+      scope,
+    );
+  } catch (e) {
+    if (!active.cancelled) {
+      await setBenchRunStatus(runId, 'error', { runError: e instanceof Error ? e.message : String(e) }, scope).catch(() => {});
+    }
+  } finally {
+    // ALWAYS dissolve every hive this run minted — no orphan learning loop survives.
+    for (const slug of active.hiveSlugs) {
+      await dissolve(slug, active.workspaceId).catch(() => {});
+    }
+    activeRuns.delete(runId);
+  }
+}
+
+/** Cancel an in-flight run: freeze status, dissolve its hive (stops spend). */
+export async function cancelBenchRun(
+  runId: string,
+  deps: { scope?: DbScope; dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void> } = {},
+): Promise<{ cancelled: boolean }> {
+  const scope = deps.scope ?? {};
+  const { sql, ws } = resolveDb(scope);
+  const dissolve = deps.dissolve ?? dissolveBenchHive;
+
+  const rows = await sql<{ status: string; hive_slug: string | null }[]>`
+    SELECT status, hive_slug FROM harness_shared.bench_runs
+     WHERE id = ${runId} AND workspace_id = ${ws} LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return { cancelled: false };
+
+  const active = activeRuns.get(runId);
+  if (active) active.cancelled = true;
+
+  // Freeze status FIRST so the detached completion handler won't overwrite it.
+  await setBenchRunStatus(runId, 'cancelled', { runError: 'cancelled by operator' }, scope);
+
+  // Dissolve every known hive (the in-flight set + the persisted slug).
+  const slugs = new Set<string>(active?.hiveSlugs ?? []);
+  if (row.hive_slug) slugs.add(row.hive_slug);
+  for (const slug of slugs) await dissolve(slug, ws).catch(() => {});
+
+  return { cancelled: true };
+}
+
+/**
+ * Boot-time reaper (P-005, the D-022 durable closure). Any run left in an active
+ * state by a crashed host (the finally never ran) is orphaned — its hive may
+ * still carry an armed learning loop that re-spins opus on restart. Dissolve each
+ * orphan's hive (deactivating its learning loops) and freeze its status to a
+ * terminal state. Idempotent; call once at host boot. Returns the runs reaped.
+ */
+export async function reapStaleBenchRuns(
+  deps: { scope?: DbScope; dissolve?: (hiveSlug: string, workspaceId: string) => Promise<void> } = {},
+): Promise<{ reaped: string[] }> {
+  const scope = deps.scope ?? {};
+  const { sql, ws } = resolveDb(scope);
+  const dissolve = deps.dissolve ?? dissolveBenchHive;
+
+  const rows = await sql<{ id: string; hive_slug: string | null }[]>`
+    SELECT id, hive_slug FROM harness_shared.bench_runs
+     WHERE workspace_id = ${ws} AND status = ANY(${ACTIVE_STATES as unknown as string[]})
+  `;
+  const reaped: string[] = [];
+  for (const r of rows) {
+    if (r.hive_slug) {
+      await dissolve(r.hive_slug, ws).catch(() => {});
+    }
+    await setBenchRunStatus(
+      r.id,
+      'error',
+      { runError: 'reaped: operator restarted while this run was in flight (spend-safety teardown)' },
+      scope,
+    ).catch(() => {});
+    reaped.push(r.id);
+  }
+  return { reaped };
+}
+
+/** Test-only — clear the in-process active-run registry between tests. */
+export function _resetActiveRunsForTests(): void {
+  activeRuns.clear();
+}

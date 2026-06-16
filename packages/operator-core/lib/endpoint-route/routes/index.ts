@@ -305,6 +305,9 @@ import adminDeployAccountsRegister from './admin/deploy-accounts-register';
 import adminInferenceGatewayStats from './admin/inference-gateway-stats';
 import adminDeployAccountsRemove from './admin/deploy-accounts-remove';
 import adminDeployAccountsReset from './admin/deploy-accounts-reset';
+// accounts-pool-tab-2026-06-15 P-002 — the experimental one-click OAuth account link.
+import adminDeployAccountsLinkStart from './admin/deploy-accounts-link-start';
+import adminDeployAccountsLinkComplete from './admin/deploy-accounts-link-complete';
 import adminEmbedBackfill from './admin/embed-backfill';
 import adminExecuteAction from './admin/execute-action';
 import adminLlmTestsFindings from './admin/llm-tests-findings';
@@ -708,6 +711,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminInferenceGatewayStats as AnyRoute),
   ...flatten(adminDeployAccountsRemove as AnyRoute),
   ...flatten(adminDeployAccountsReset as AnyRoute),
+  ...flatten(adminDeployAccountsLinkStart as AnyRoute),
+  ...flatten(adminDeployAccountsLinkComplete as AnyRoute),
   ...flatten(adminEmbedBackfill as AnyRoute),
   ...flatten(adminExecuteAction as AnyRoute),
   ...flatten(adminLlmTestsFindings as AnyRoute),

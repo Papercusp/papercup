@@ -343,6 +343,18 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     if (again.status === 'resumed') expect(again.workItem.id).toBe(r.workItem.id);
   });
 
+  it('queen-steering P-008: a feature-family conversion stamps source_plan_slug = the plan slug (frontier HARD-filter)', async () => {
+    // The whole point of P-008: the minted feature carries its SOURCE PLAN on the hfc
+    // row, so surveyHive's scopeFilter can drop it from the frontier when the plan is
+    // not in the owner's eligible-plans — "work on these plans only" becomes structural.
+    const r = await convert.convertPlanItem({ ...base, itemId: 'P-002', owner: 'sess-A', ownerName: 'builder-1', kind: 'feature' });
+    expect(r.status).toBe('converted');
+    if (r.status !== 'converted') return;
+    const [row] = await db.sql<{ source_plan_slug: string | null }[]>`
+      SELECT source_plan_slug FROM harness_shared.harness_features_consolidated WHERE feature_id = ${r.workItem.id}`;
+    expect(row.source_plan_slug).toBe(PLAN);
+  });
+
   it('a lapsed peer’s execution record is TAKEN OVER by the new lease holder (D-004 lapse → pool)', async () => {
     const first = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
     expect(first.status).toBe('converted');

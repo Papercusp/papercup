@@ -107,7 +107,13 @@ const RULES: ReadonlyArray<{
       // webview's HTTP-fallback path — admits unverified-loopback (see VTL).
       { method: 'GET',  path: '/admin/deploy-accounts', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/register', auth: VTL },
+      // One-click OAuth link start + completion (accounts-pool-tab-2026-06-15 P-002)
+      // — both routes declare VTL with the SAME cookie-less desktop-webview rationale
+      // (EI-338, "mirrors /register, /reset-rate") as its siblings here.
+      { method: 'POST', path: '/admin/deploy-accounts/link-start', auth: VTL },
+      { method: 'POST', path: '/admin/deploy-accounts/link-complete', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/remove', auth: VTL },
+      { method: 'POST', path: '/admin/deploy-accounts/reset-rate', auth: VTL },
       // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).
