@@ -218,6 +218,11 @@ export function recordAccountPenalty(
       if (a.id !== id) return a;
       const inWindow = a.rate.windowStartedAt > 0 && now - a.rate.windowStartedAt < policy.windowMs;
       const rate: AccountRateState = {
+        // Preserve the last-known observed budget (utilization*/windowResetAt*/utilizationAt): a 429
+        // penalty must NOT erase the usage reading, else the Accounts tab loses the "% used" the
+        // instant an account gets rate-limited — the exact moment you want to SEE it. Only the
+        // pause/penalty fields below are recomputed.
+        ...a.rate,
         pausedUntil: Math.max(a.rate.pausedUntil, opts.pausedUntil ?? 0),
         lastPenaltyAt: now,
         penaltyCount: inWindow ? a.rate.penaltyCount + 1 : 1,
@@ -228,10 +233,30 @@ export function recordAccountPenalty(
   };
 }
 
-/** Clear an account's pause + penalty window (e.g. on a confirmed reset). Pure. */
+/**
+ * Clear an account's pause + penalty window (e.g. on a confirmed reset). Pure.
+ * Preserves the last-known observed budget (utilization*/windowResetAt*/utilizationAt) — the reset
+ * clears the false-exhaustion pause/penalty, not the real usage reading, so the Accounts tab can
+ * still show "~X% used · as of …". Staleness is carried by `utilizationAt`, and the drain selector
+ * already discounts a stale reading, so keeping it is safe.
+ */
 export function recordAccountReset(pool: AccountPool, id: string): AccountPool {
   return {
-    accounts: pool.accounts.map((a) => (a.id === id ? { ...a, rate: freshRate() } : a)),
+    accounts: pool.accounts.map((a) =>
+      a.id === id
+        ? {
+            ...a,
+            rate: {
+              ...freshRate(),
+              utilization: a.rate.utilization,
+              windowResetAt: a.rate.windowResetAt,
+              utilization7d: a.rate.utilization7d,
+              windowResetAt7d: a.rate.windowResetAt7d,
+              utilizationAt: a.rate.utilizationAt,
+            },
+          }
+        : a,
+    ),
   };
 }
 
