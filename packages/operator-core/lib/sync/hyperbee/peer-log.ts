@@ -215,7 +215,16 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
       return (v as PeerLogOp | null) ?? null;
     },
     async update(): Promise<void> {
+      const before = core.length;
       await core.update({ wait: true });
+      // EI-681 diag: surface the remote core's live replication state — does this
+      // replica have a peer to pull from, and does update() advance the length?
+      // peers=0 ⇒ the core has NO replication session (admitted but not wired to
+      // the writer); len stuck with peers>0 ⇒ the writer isn't serving appends.
+      const peers = (core as unknown as { peers?: unknown[] }).peers?.length ?? -1;
+      console.log(
+        `[ei681-diag] remoteLog ${keyHex.slice(0, 8)} update: len ${before}→${core.length} peers=${peers} contig=${core.contiguousLength ?? -1}`,
+      );
     },
     prefetch(start: number, end: number): void {
       if (typeof core.download !== 'function') return;
