@@ -139,6 +139,26 @@ export function resolveTierSpec(opts: {
 }
 
 /**
+ * The EFFECTIVE tier config for a spawn: the owner's 👑-tab SESSION override
+ * (queen-steering-panel D-006) takes precedence over the workspace agent-config
+ * default, per field. A null / empty override leaves that field on the workspace
+ * default (precedence: session override > workspace default > committed default,
+ * the last via `resolveTierSpec`'s DEFAULT_MODEL_TIERS fallback). Pure.
+ */
+export function effectiveTierConfig(
+  workspace: { tiers?: readonly ModelTier[]; tierCeilings?: Record<string, string> } | null | undefined,
+  session: { modelTiers?: readonly ModelTier[] | null; tierCeilings?: Record<string, string> | null } | null | undefined,
+): { tiers?: readonly ModelTier[]; tierCeilings?: Record<string, string> } {
+  const sessionTiers = session?.modelTiers && session.modelTiers.length > 0 ? session.modelTiers : undefined;
+  const sessionCeilings =
+    session?.tierCeilings && Object.keys(session.tierCeilings).length > 0 ? session.tierCeilings : undefined;
+  return {
+    tiers: sessionTiers ?? workspace?.tiers,
+    tierCeilings: sessionCeilings ?? workspace?.tierCeilings,
+  };
+}
+
+/**
  * Render the LIVE tier menu as runtime-context lines for a placement
  * decider's launch prompt (queen/operator) — the channel that keeps her
  * rubric in sync with the user's ACTUAL menu (names, specs, and the

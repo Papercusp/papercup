@@ -11,7 +11,7 @@
  *     default would be the EI-7 class of bug); clamps never error.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveTierSpec, roleDefaultSpec, specModelId, tierMenuLines } from './model-tiers';
+import { effectiveTierConfig, resolveTierSpec, roleDefaultSpec, specModelId, tierMenuLines } from './model-tiers';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -179,5 +179,28 @@ describe('tierMenuLines — the queen-facing live menu (runtime context)', () =>
     expect(joined).toContain('- max (opus:xhigh)');
     expect(joined).toContain('trivial / mechanical');
     expect(joined).not.toContain('TIER CEILINGS');
+  });
+});
+
+describe('effectiveTierConfig — session override precedence (queen-steering D-006)', () => {
+  const wsTiers = [{ name: 'std', spec: 'sonnet' }];
+  const wsCeilings = { worker: 'std' };
+
+  it('a session model-tier override wins over the workspace default', () => {
+    const session = { modelTiers: [{ name: 'std', spec: 'opus:xhigh' }], tierCeilings: null };
+    const eff = effectiveTierConfig({ tiers: wsTiers, tierCeilings: wsCeilings }, session);
+    expect(eff.tiers).toEqual([{ name: 'std', spec: 'opus:xhigh' }]); // session
+    expect(eff.tierCeilings).toEqual(wsCeilings); // null override ⇒ workspace default
+  });
+
+  it('a null / empty override leaves each field on the workspace default', () => {
+    expect(effectiveTierConfig({ tiers: wsTiers, tierCeilings: wsCeilings }, null)).toEqual({ tiers: wsTiers, tierCeilings: wsCeilings });
+    expect(effectiveTierConfig({ tiers: wsTiers }, { modelTiers: [], tierCeilings: {} })).toEqual({ tiers: wsTiers, tierCeilings: undefined });
+  });
+
+  it('a session ceilings override wins independently of the tier menu', () => {
+    const eff = effectiveTierConfig({ tiers: wsTiers, tierCeilings: wsCeilings }, { modelTiers: null, tierCeilings: { worker: 'std', bee: 'std' } });
+    expect(eff.tiers).toEqual(wsTiers); // null menu override ⇒ workspace default
+    expect(eff.tierCeilings).toEqual({ worker: 'std', bee: 'std' }); // session
   });
 });

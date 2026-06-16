@@ -25,6 +25,7 @@
  * feature is purely additive — an un-steered Hive reads `DEFAULT_OWNER_STEERING`.
  */
 import type { Sql } from 'postgres';
+import type { ModelTier } from './agent-config-constants';
 import { listHiveSettings, setHiveSetting, deleteHiveSetting } from './hive-settings-store';
 
 /** The `hive_settings` keys the steering controls occupy (C-1). */
@@ -34,6 +35,12 @@ export const OWNER_STEERING_KEYS = {
   eligibleHives: 'owner-steering:eligible-hives',
   pauseNewWork: 'owner-steering:pause-new-work',
   pausedUntil: 'owner-steering:paused-until',
+  // queen-steering-panel D-006 (model-tier session override): a SESSION-NOW
+  // override of the workspace-default model tiers / per-role ceilings for the
+  // running fleet — preferred over agent-config at the spawn chokepoint. null /
+  // absent ⇒ use the workspace default (no override).
+  modelTiers: 'owner-steering:model-tiers',
+  tierCeilings: 'owner-steering:tier-ceilings',
 } as const;
 
 /**
@@ -54,6 +61,11 @@ export interface OwnerSteering {
   pauseNewWork: boolean;
   /** Epoch ms the pause auto-expires at, or null. A future value pauses like `pauseNewWork`. */
   pausedUntil: number | null;
+  /** SESSION override of the workspace model-tier MENU (weakest→strongest) for the
+   *  running fleet (D-006). null ⇒ no override (use the agent-config default). */
+  modelTiers?: ModelTier[] | null;
+  /** SESSION override of the per-role tier CEILINGS (D-006). null ⇒ no override. */
+  tierCeilings?: Record<string, string> | null;
 }
 
 export const DEFAULT_OWNER_STEERING: OwnerSteering = {
@@ -62,10 +74,32 @@ export const DEFAULT_OWNER_STEERING: OwnerSteering = {
   eligibleHives: [],
   pauseNewWork: false,
   pausedUntil: null,
+  modelTiers: null,
+  tierCeilings: null,
 };
 
 function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
+/** Decode a stored model-tier menu override, dropping malformed entries. null ⇒ no override. */
+function asModelTiers(v: unknown): ModelTier[] | null {
+  if (!Array.isArray(v)) return null;
+  const out = v.filter(
+    (x): x is ModelTier =>
+      !!x && typeof x === 'object' && typeof (x as ModelTier).name === 'string' && typeof (x as ModelTier).spec === 'string',
+  );
+  return out.length > 0 ? out : null;
+}
+
+/** Decode a stored per-role ceilings override (role→tier-name). null ⇒ no override. */
+function asCeilings(v: unknown): Record<string, string> | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out: Record<string, string> = {};
+  for (const [role, tier] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof tier === 'string' && tier.trim()) out[role] = tier;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function asFiniteNumber(v: unknown): number | null {
@@ -92,6 +126,8 @@ export async function getOwnerSteering(
     eligibleHives: asStringArray(byKey.get(OWNER_STEERING_KEYS.eligibleHives)),
     pauseNewWork: byKey.get(OWNER_STEERING_KEYS.pauseNewWork) === true,
     pausedUntil: asFiniteNumber(byKey.get(OWNER_STEERING_KEYS.pausedUntil)),
+    modelTiers: asModelTiers(byKey.get(OWNER_STEERING_KEYS.modelTiers)),
+    tierCeilings: asCeilings(byKey.get(OWNER_STEERING_KEYS.tierCeilings)),
   };
 }
 
@@ -102,6 +138,10 @@ export interface OwnerSteeringPatch {
   eligibleHives?: string[];
   pauseNewWork?: boolean;
   pausedUntil?: number | null;
+  /** Session model-tier menu override (D-006); null / [] clears it. */
+  modelTiers?: ModelTier[] | null;
+  /** Session per-role tier-ceilings override (D-006); null / {} clears it. */
+  tierCeilings?: Record<string, string> | null;
   /** Wipe ALL steering keys back to {@link DEFAULT_OWNER_STEERING}. */
   clear?: boolean;
 }
@@ -134,6 +174,12 @@ export async function setOwnerSteering(
   }
   if (patch.eligibleHives !== undefined) {
     writes.push([OWNER_STEERING_KEYS.eligibleHives, asStringArray(patch.eligibleHives)]);
+  }
+  if (patch.modelTiers !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.modelTiers, asModelTiers(patch.modelTiers)]);
+  }
+  if (patch.tierCeilings !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.tierCeilings, asCeilings(patch.tierCeilings)]);
   }
   if (patch.pauseNewWork !== undefined) {
     writes.push([OWNER_STEERING_KEYS.pauseNewWork, patch.pauseNewWork === true]);

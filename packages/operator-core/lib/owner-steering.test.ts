@@ -57,7 +57,30 @@ describe('getOwnerSteering — decode + defaults', () => {
       eligibleHives: [],
       pauseNewWork: true,
       pausedUntil: 1_900_000_000_000,
+      modelTiers: null,
+      tierCeilings: null,
     } satisfies OwnerSteering);
+  });
+
+  it('decodes a model-tier session override (D-006) + drops malformed tiers', async () => {
+    listHiveSettings.mockResolvedValue(
+      rows({
+        [OWNER_STEERING_KEYS.modelTiers]: [{ name: 'fast', spec: 'haiku' }, { name: 'bad' }, { spec: 'no-name' }],
+        [OWNER_STEERING_KEYS.tierCeilings]: { worker: 'opus', '': '', queen: 7 },
+      }),
+    );
+    const s = await getOwnerSteering('ws', 'hive');
+    expect(s.modelTiers).toEqual([{ name: 'fast', spec: 'haiku' }]);
+    expect(s.tierCeilings).toEqual({ worker: 'opus' });
+  });
+
+  it('writes the model-tier override when provided (D-006)', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    await setOwnerSteering('ws', 'hive', { modelTiers: [{ name: 'fast', spec: 'opus:xhigh' }] });
+    expect(setHiveSetting).toHaveBeenCalledWith(
+      { workspaceId: 'ws', hiveHomeSlug: 'hive', settingKey: OWNER_STEERING_KEYS.modelTiers, value: [{ name: 'fast', spec: 'opus:xhigh' }] },
+      undefined,
+    );
   });
 
   it('decodes eligibleHives (the placement scope, B-04 round-2)', async () => {

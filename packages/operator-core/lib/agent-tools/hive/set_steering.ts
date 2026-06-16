@@ -61,6 +61,23 @@ export default defineTool({
       .max(500)
       .optional()
       .describe('The placement SCOPE — hive/harness slugs the home Queen may place into (→ survey allowedHarnesses). [] = no restriction (default).'),
+    modelTiers: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(60),
+          spec: z.string().min(1).max(120),
+          backend: z.string().max(60).optional(),
+          when: z.string().max(500).optional(),
+        }),
+      )
+      .nullable()
+      .optional()
+      .describe('SESSION override of the model-tier menu (weakest→strongest) for the running fleet (D-006). null / [] clears it (use the workspace default).'),
+    tierCeilings: z
+      .record(z.string().max(60))
+      .nullable()
+      .optional()
+      .describe('SESSION override of the per-role tier ceilings (role→tier-name). null / {} clears it.'),
     pauseNewWork: z
       .boolean()
       .optional()
@@ -88,6 +105,8 @@ export default defineTool({
     if (args.directive !== undefined) patch.directive = args.directive;
     if (args.eligiblePlans !== undefined) patch.eligiblePlans = args.eligiblePlans;
     if (args.eligibleHives !== undefined) patch.eligibleHives = args.eligibleHives;
+    if (args.modelTiers !== undefined) patch.modelTiers = args.modelTiers;
+    if (args.tierCeilings !== undefined) patch.tierCeilings = args.tierCeilings;
     if (args.pauseNewWork !== undefined) patch.pauseNewWork = args.pauseNewWork;
     if (args.pausedUntil !== undefined) patch.pausedUntil = args.pausedUntil;
     if (args.clear !== undefined) patch.clear = args.clear;
