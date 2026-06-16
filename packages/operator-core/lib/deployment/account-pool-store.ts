@@ -36,7 +36,7 @@ import {
   unbindAccount,
 } from './account-pool';
 import {
-  getAccountSessionOverride,
+  getAccountOverride,
   applyAccountOverride,
   isOverrideEmpty,
   DEFAULT_ACCOUNT_OVERRIDE,
@@ -46,17 +46,14 @@ import {
 // ── P-004: the owner's session-now account override (fail-soft, no-op-when-unset) ──
 
 /**
- * Read the owner's session-now account override (P-004) for the workspace's home hive —
- * FAIL-SOFT: any error, or no home hive, returns the empty (no-restriction) override, so
- * the live spawn/deploy selectors can never wedge on a bad read. Whole-fleet: the override
- * lives on the home hive's hive_settings and applies regardless of the spawning harness.
+ * Read the owner's session-now account override (P-004) — FAIL-SOFT: any error returns the
+ * empty (no-restriction) override, so the live spawn/deploy selectors can never wedge on a
+ * bad read. Workspace-level (D-017): the override lives on a per-workspace pseudo-slug in
+ * hive_settings and applies regardless of the spawning harness (no home hive required).
  */
-async function readAccountOverride(ws: string | undefined, harness: string | undefined): Promise<AccountSessionOverride> {
+async function readAccountOverride(ws: string | undefined): Promise<AccountSessionOverride> {
   try {
-    const { resolveHiveHomeSlug } = await import('../hive/wake');
-    const hive = resolveHiveHomeSlug(harness ?? undefined);
-    if (!hive) return DEFAULT_ACCOUNT_OVERRIDE;
-    return await getAccountSessionOverride(ws ?? activeWorkspaceId(), hive);
+    return await getAccountOverride(ws ?? activeWorkspaceId());
   } catch {
     return DEFAULT_ACCOUNT_OVERRIDE;
   }
@@ -90,7 +87,7 @@ export async function selectSpawnAccount(
   // unset). A `forced` allow-list restricts the candidates; `exclude` skips some. An
   // over-restrictive override (no candidate survives) → undefined = the frame-default
   // credential, exactly as an empty pool behaves today.
-  const override = await readAccountOverride(ws, harness);
+  const override = await readAccountOverride(ws);
   if (!isOverrideEmpty(override)) {
     const allowed = applyAccountOverride(
       pool.accounts.map((a) => a.id),
@@ -158,7 +155,7 @@ export async function selectAccountForDeploy(
   // P-004: restrict deploy-time binding to the owner's session-now override (fail-soft,
   // no-op when unset). If the override leaves no candidate, `chosen` is undefined → the
   // deployment is returned unchanged (frame-default credential), exactly as an empty pool.
-  const override = await readAccountOverride(ws, slug);
+  const override = await readAccountOverride(ws);
   const candidatePool = isOverrideEmpty(override)
     ? pool
     : { accounts: pool.accounts.filter((a) => applyAccountOverride([a.id], override).length > 0) };

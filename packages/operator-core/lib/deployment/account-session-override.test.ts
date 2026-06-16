@@ -21,8 +21,11 @@ import {
   isOverrideEmpty,
   getAccountSessionOverride,
   setAccountSessionOverride,
+  getAccountOverride,
+  setAccountOverride,
   DEFAULT_ACCOUNT_OVERRIDE,
   ACCOUNT_OVERRIDE_KEYS,
+  ACCOUNT_OVERRIDE_SLUG,
 } from './account-session-override';
 
 function rows(map: Record<string, unknown>) {
@@ -96,5 +99,23 @@ describe('setAccountSessionOverride', () => {
     expect(deleteHiveSetting.mock.calls.map((c) => c[2])).toEqual(Object.values(ACCOUNT_OVERRIDE_KEYS));
     expect(setHiveSetting).not.toHaveBeenCalled();
     expect(out).toEqual(DEFAULT_ACCOUNT_OVERRIDE);
+  });
+});
+
+// The workspace-level wrappers (D-017): no home hive needed — they key under a stable
+// per-workspace pseudo-slug, so write/read always agree (fixes "no_home_harness").
+describe('getAccountOverride / setAccountOverride (workspace-level)', () => {
+  it('getAccountOverride reads under the per-workspace pseudo-slug', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    expect(await getAccountOverride('ws')).toEqual(DEFAULT_ACCOUNT_OVERRIDE);
+    expect(listHiveSettings).toHaveBeenCalledWith('ws', ACCOUNT_OVERRIDE_SLUG, undefined);
+  });
+  it('setAccountOverride writes under the SAME pseudo-slug the read uses', async () => {
+    listHiveSettings.mockResolvedValue([]);
+    await setAccountOverride('ws', { excludeAccounts: ['flaky'] });
+    expect(setHiveSetting).toHaveBeenCalledWith(
+      { workspaceId: 'ws', hiveHomeSlug: ACCOUNT_OVERRIDE_SLUG, settingKey: ACCOUNT_OVERRIDE_KEYS.excludeAccounts, value: ['flaky'] },
+      undefined,
+    );
   });
 });

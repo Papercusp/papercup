@@ -44,7 +44,7 @@
           "POST"
         ]
       },
-      "description": "Read the current owner session-now account override (forcedAccounts allow-list + excludeAccounts) the fleet honours when picking a pool account. An un-steered hive returns both empty (no restriction). The READ twin of accounts:set-session-override. Returns {ok, override}.",
+      "description": "Read the current owner session-now account override (forcedAccounts allow-list + excludeAccounts) the fleet honours when picking a pool account. An un-steered workspace returns both empty (no restriction). The READ twin of accounts:set-session-override. Returns {ok, override}.",
       "capabilities": [
         "harness:read"
       ],
@@ -77,7 +77,7 @@
           "POST"
         ]
       },
-      "description": "Complete the EXPERIMENTAL one-click account link (accounts-pool-tab P-002): exchange the pasted claude.ai code (using the verifier carried in `linkId`) → write the credential server-side → register the account in the pool. The token NEVER appears in the response. Returns {ok, account} (the registered account row, no token).",
+      "description": "Complete the one-click account link (accounts-pool-tab P-002): feed the pasted claude.ai code into the held `claude setup-token` process (keyed by linkId) → it mints the token → write it server-side + register the account. The token NEVER appears in the response. Returns {ok, account} (the registered account row, no token).",
       "capabilities": [
         "harness:write"
       ],
@@ -110,7 +110,7 @@
           "POST"
         ]
       },
-      "description": "EXPERIMENTAL one-click Max-account link (accounts-pool-tab P-002): returns a claude.ai OAuth authorize URL + an opaque single-use linkId. The owner opens the URL in a browser logged into the TARGET Max account, authorizes, then pastes the shown code into accounts:link-complete with this linkId. The PROVEN default is the `claude setup-token` paste (accounts:register); this is the beta alternative, NOT yet verified against live claude.ai. Returns {ok, authorizeUrl, linkId}.",
+      "description": "One-click Max-account link (accounts-pool-tab P-002): spawns the real `claude setup-token` CLI server-side and returns the claude.ai authorize URL IT prints + an opaque linkId for the held process. The owner opens the URL in a browser logged into the TARGET Max account, authorizes, then pastes the shown code into accounts:link-complete with this linkId. (Driving the real CLI is required — claude.ai rejects a hand-built URL.) accounts:register (setup-token paste) is the manual alternative. Returns {ok, authorizeUrl, linkId}.",
       "capabilities": [
         "harness:write"
       ],

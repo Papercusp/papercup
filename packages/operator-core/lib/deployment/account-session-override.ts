@@ -110,3 +110,21 @@ export async function setAccountSessionOverride(
   }
   return getAccountSessionOverride(workspaceId, hiveHomeSlug, sql);
 }
+
+/**
+ * The account override is WORKSPACE-LEVEL (the whole pool, whole fleet) — NOT per-hive. Keying it
+ * to a home hive (the original design) broke when no home hive is configured ("no_home_harness")
+ * and split the write key from the read key. We key it under a stable per-workspace pseudo-slug in
+ * hive_settings so it works with zero hives and write/read always agree (accounts-pool-tab D-017).
+ */
+export const ACCOUNT_OVERRIDE_SLUG = '__account-pool__';
+
+/** Read the workspace's account override (no hive needed). */
+export function getAccountOverride(workspaceId: string, sql?: Sql): Promise<AccountSessionOverride> {
+  return getAccountSessionOverride(workspaceId, ACCOUNT_OVERRIDE_SLUG, sql);
+}
+
+/** Write the workspace's account override (no hive needed). */
+export function setAccountOverride(workspaceId: string, patch: AccountSessionOverridePatch, sql?: Sql): Promise<AccountSessionOverride> {
+  return setAccountSessionOverride(workspaceId, ACCOUNT_OVERRIDE_SLUG, patch, sql);
+}

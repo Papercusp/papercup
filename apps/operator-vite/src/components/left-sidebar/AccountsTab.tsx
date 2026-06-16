@@ -18,10 +18,36 @@ interface PoolAccountLite {
   id: string;
   label?: string;
   available: boolean;
-  rate: { pausedUntil: number };
+  rate: {
+    pausedUntil: number;
+    /** Unified 5h rolling utilization (fraction; 1.0 = 100%). */
+    utilization?: number;
+    windowResetAt?: number;
+    /** Unified 7d (weekly) rolling utilization (fraction). */
+    utilization7d?: number;
+    windowResetAt7d?: number;
+  };
+}
+
+/** "~12%" from a 0..1+ fraction, or "—" when never observed. */
+function pct(u?: number): string {
+  return typeof u === 'number' ? `~${Math.round(u * 100)}%` : '—';
+}
+
+/** Compact forward countdown — "3d 5h" / "2h 13m" / "12m" / "now". */
+function fmtCountdown(ms: number): string {
+  if (ms <= 0) return 'now';
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }
 
 export default function AccountsTab({ active }: { active: boolean }) {
+  const now = Date.now();
   const { data: accounts, loading } = useSyncQuery<PoolAccountLite>({ queryName: 'accounts.pool', enabled: active });
   const { overrideBusy, forced, excluded, overrideActive, toggleForce, toggleExclude, clearOverride } = useAccountOverride();
 
@@ -48,31 +74,47 @@ export default function AccountsTab({ active }: { active: boolean }) {
           {accounts.map((a) => {
             const isForced = forced.has(a.id);
             const isExcluded = excluded.has(a.id);
+            const reset5h =
+              a.rate.windowResetAt && a.rate.windowResetAt > now ? ` · resets ${fmtCountdown(a.rate.windowResetAt - now)}` : '';
+            const reset7d =
+              a.rate.windowResetAt7d && a.rate.windowResetAt7d > now ? ` · resets ${fmtCountdown(a.rate.windowResetAt7d - now)}` : '';
             return (
               <li key={a.id} className="pclsb-acct__row">
-                <div className="pclsb-acct__name" title={a.id}>
-                  <span className="pclsb-acct__label">{a.label || a.id}</span>
-                  <span className="pclsb-acct__id">{a.id}</span>
+                <div className="pclsb-acct__top">
+                  <div className="pclsb-acct__name" title={a.id}>
+                    <span className="pclsb-acct__label">{a.label || a.id}</span>
+                    <span className="pclsb-acct__id">{a.id}</span>
+                  </div>
+                  <div className="pclsb-acct__btns">
+                    <button
+                      type="button"
+                      className={`pclsb-acct__b${isForced ? ' is-force' : ''}`}
+                      disabled={overrideBusy}
+                      onClick={() => toggleForce(a.id)}
+                      title={isForced ? 'Remove from the forced allow-list' : 'Force the fleet to use only this account'}
+                    >
+                      {isForced ? '✓ Force' : 'Force'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`pclsb-acct__b${isExcluded ? ' is-excl' : ''}`}
+                      disabled={overrideBusy}
+                      onClick={() => toggleExclude(a.id)}
+                      title={isExcluded ? 'Stop excluding this account' : 'Exclude this account from fleet selection'}
+                    >
+                      {isExcluded ? '✓ Excl' : 'Excl'}
+                    </button>
+                  </div>
                 </div>
-                <div className="pclsb-acct__btns">
-                  <button
-                    type="button"
-                    className={`pclsb-acct__b${isForced ? ' is-force' : ''}`}
-                    disabled={overrideBusy}
-                    onClick={() => toggleForce(a.id)}
-                    title={isForced ? 'Remove from the forced allow-list' : 'Force the fleet to use only this account'}
-                  >
-                    {isForced ? '✓ Force' : 'Force'}
-                  </button>
-                  <button
-                    type="button"
-                    className={`pclsb-acct__b${isExcluded ? ' is-excl' : ''}`}
-                    disabled={overrideBusy}
-                    onClick={() => toggleExclude(a.id)}
-                    title={isExcluded ? 'Stop excluding this account' : 'Exclude this account from fleet selection'}
-                  >
-                    {isExcluded ? '✓ Excl' : 'Excl'}
-                  </button>
+                <div className="pclsb-acct__usage">
+                  <span className="pclsb-acct__u" title={`5h rolling usage${reset5h}`}>
+                    5h <strong>{pct(a.rate.utilization)}</strong>
+                    {reset5h && <span className="pclsb-acct__umute">{reset5h}</span>}
+                  </span>
+                  <span className="pclsb-acct__u" title={`7d rolling usage${reset7d}`}>
+                    7d <strong>{pct(a.rate.utilization7d)}</strong>
+                    {reset7d && <span className="pclsb-acct__umute">{reset7d}</span>}
+                  </span>
                 </div>
               </li>
             );
@@ -99,9 +141,14 @@ const ACCT_CSS = `
 .pclsb-acct__clear:disabled { opacity: 0.55; cursor: default; }
 .pclsb-acct__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .pclsb-acct__row {
-  display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px;
+  display: flex; flex-direction: column; gap: 6px; padding: 7px 9px; border-radius: 8px;
   background: var(--bg-2, rgba(255, 255, 255, 0.035)); border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
 }
+.pclsb-acct__top { display: flex; align-items: center; gap: 8px; }
+.pclsb-acct__usage { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 10.5px; color: var(--fg-mute, #a6a6ad); }
+.pclsb-acct__u { white-space: nowrap; }
+.pclsb-acct__u strong { font-weight: 600; color: var(--fg, #e7e7ea); }
+.pclsb-acct__umute { color: var(--fg-mute, #8a8a91); }
 .pclsb-acct__name { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
 .pclsb-acct__label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pclsb-acct__id { font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-mute, #a6a6ad); }

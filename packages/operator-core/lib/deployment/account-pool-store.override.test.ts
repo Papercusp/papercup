@@ -6,8 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const readOperatorState = vi.fn();
-const getAccountSessionOverride = vi.fn();
-const resolveHiveHomeSlug = vi.fn<(h?: string | null) => string | null>();
+const getAccountOverride = vi.fn();
 
 vi.mock('../operator-state-pg', () => ({
   readOperatorState: (...a: unknown[]) => readOperatorState(...a),
@@ -15,9 +14,9 @@ vi.mock('../operator-state-pg', () => ({
 }));
 vi.mock('./account-session-override', async (orig) => ({
   ...(await orig<typeof import('./account-session-override')>()),
-  getAccountSessionOverride: (...a: [string, string]) => getAccountSessionOverride(...a),
+  // The override is now WORKSPACE-LEVEL (D-017) — readAccountOverride calls getAccountOverride(ws).
+  getAccountOverride: (...a: [string]) => getAccountOverride(...a),
 }));
-vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: (...a: [string?]) => resolveHiveHomeSlug(...a) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 
 import { selectSpawnAccount } from './account-pool-store';
@@ -28,8 +27,7 @@ function acct(id: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resolveHiveHomeSlug.mockReturnValue('home-hive');
-  getAccountSessionOverride.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
+  getAccountOverride.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -41,32 +39,25 @@ describe('selectSpawnAccount — P-004 override', () => {
 
   it('forced to one account PINS it (even though it is the sole candidate)', async () => {
     readOperatorState.mockResolvedValue({ accounts: [acct('a'), acct('b'), acct('c')] });
-    getAccountSessionOverride.mockResolvedValue({ forcedAccounts: ['b'], excludeAccounts: [] });
+    getAccountOverride.mockResolvedValue({ forcedAccounts: ['b'], excludeAccounts: [] });
     expect(await selectSpawnAccount('ws', 'h', undefined)).toBe('b');
   });
 
   it('exclude drops an account; the sole survivor is pinned', async () => {
     readOperatorState.mockResolvedValue({ accounts: [acct('a'), acct('b')] });
-    getAccountSessionOverride.mockResolvedValue({ forcedAccounts: [], excludeAccounts: ['a'] });
+    getAccountOverride.mockResolvedValue({ forcedAccounts: [], excludeAccounts: ['a'] });
     expect(await selectSpawnAccount('ws', 'h', undefined)).toBe('b');
   });
 
   it('over-restrictive override (no candidate) → undefined = frame-default credential (fail-soft)', async () => {
     readOperatorState.mockResolvedValue({ accounts: [acct('a'), acct('b')] });
-    getAccountSessionOverride.mockResolvedValue({ forcedAccounts: ['zzz'], excludeAccounts: [] });
+    getAccountOverride.mockResolvedValue({ forcedAccounts: ['zzz'], excludeAccounts: [] });
     expect(await selectSpawnAccount('ws', 'h', undefined)).toBeUndefined();
   });
 
   it('a failing override READ fails soft to today’s behaviour (≤1 account → undefined)', async () => {
     readOperatorState.mockResolvedValue({ accounts: [acct('a')] });
-    getAccountSessionOverride.mockRejectedValue(new Error('pg down'));
+    getAccountOverride.mockRejectedValue(new Error('pg down'));
     expect(await selectSpawnAccount('ws', 'h', undefined)).toBeUndefined();
-  });
-
-  it('no home hive → no override, today’s behaviour', async () => {
-    resolveHiveHomeSlug.mockReturnValue(null);
-    readOperatorState.mockResolvedValue({ accounts: [acct('a'), acct('b')] });
-    expect(['a', 'b']).toContain(await selectSpawnAccount('ws', 'h', undefined));
-    expect(getAccountSessionOverride).not.toHaveBeenCalled();
   });
 });
