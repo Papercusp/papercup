@@ -47,3 +47,40 @@ Hetzner for bench fleets until a retest clears it"
   clears.
 - Suggest also re-checking the triage routing: a gate/infra-environment item
   should not have been routed to the auto-implement runner.
+
+---
+
+## Re-dispatch (run 1781588418-worker, 2026-06-16) — root cause filed as EI-815
+
+EI-402 was dispatched to the auto-implement runner AGAIN despite the prior
+`needs-human` routing and its `gate` triage. That re-dispatch is itself the
+proof of the gap the prior log flagged (line 48-49). This run:
+
+1. Re-confirmed the two code legs are still fixed (latitude-driver.ts:53/175/177,
+   pinned by latitude-driver.test.ts) — nothing to change; re-resolved `needs-human`.
+2. Diagnosed WHY a gate-triaged item reaches the auto lane and filed it as a
+   distinct, actionable bug: **EI-815**.
+
+**EI-815 root cause:** `classifyImprovement`
+(`packages/operator-core/lib/harness/improvements/policy.ts:281`) derives the
+auto/human tier from `needsHuman` / kind / `infraEnvironmentHit`
+(watchdogKey signal-source OR infra paths) / protectedPathPatterns (needs
+`paths`) / protectedKeywords (title+body) — but **never consults
+`ideaLifecycle.triageDecision`**. EI-402 is a `kind=bug` organic item with no
+`watchdogKey`, no infra `paths`, and a title matching no protected keyword, so
+`infraEnvironmentHit()` returns null and it falls through to `tier=auto`.
+Compounding: triage `gate` does not set `payload.needsHuman`, so the tier-0
+gate doesn't catch it either.
+
+**Fix (EI-815, human-tier — touches the loop's own protected code):** either
+force `tier=human` in `classifyImprovement` when
+`ideaLifecycle.triageDecision ∈ {gate, reject}` (mirror the needsHuman gate),
+or have triage `gate`/`reject` set `payload.needsHuman=true`. Add a
+`policy.test.ts` case pinning that a gate-triaged kind=bug with no
+watchdogKey/paths classifies `tier=human`. I did NOT implement it — it lives in
+`harness/improvements/**`, a STOP/protected surface; captured instead.
+
+## Validator re-verify
+- Nothing to re-verify for EI-402 itself (no code changed this run).
+- EI-815 carries the repro + the precise classifier gap; it should be picked up
+  as a human-tier fix (the protected-path gate on its `paths` keeps it human).
