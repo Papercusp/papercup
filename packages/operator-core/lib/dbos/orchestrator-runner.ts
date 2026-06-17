@@ -317,7 +317,19 @@ export async function spawnInvokeOnce(
     const { backend, model } = resolveSpawnBackendModel(
       role, extraEnv.PAPERCUSP_SPAWN_MODEL, extraEnv.PAPERCUSP_SPAWN_BACKEND,
     );
-    const gov = governorForBackend(backend, model, undefined, process.env.PAPERCUSP_ACCOUNT_ID || undefined);
+    // account-aware-rate-governor-routing Phase 1: prefer the PER-SPAWN selected account (set in
+    // `extraEnv.PAPERCUSP_ACCOUNT_ID` by operator-spawn's selectSpawnAccount) over the parent
+    // operator's process env. A bee spawned from the MAIN operator has no PAPERCUSP_ACCOUNT_ID in
+    // process.env, so this used to fall onto the account-BLIND global `anthropic:opus` bucket — and
+    // one account's 429 then paused that bucket fleet-wide, the bee waited past maxWait, and failed
+    // ("rate-limit pause exceeded max wait") even with six idle accounts. Keying per-account makes an
+    // available account's bucket admit; the class only blocks when EVERY account is genuinely tapped.
+    const gov = governorForBackend(
+      backend,
+      model,
+      undefined,
+      extraEnv.PAPERCUSP_ACCOUNT_ID || process.env.PAPERCUSP_ACCOUNT_ID || undefined,
+    );
     // The back-edge EI-86 closes: classify the child's outcome and, on an account-wide stop
     // (429 / overload / usage-cap), PENALIZE the shared governor so the AIMD + the rate
     // read-model react to the DOMINANT (spawned claude-CLI) traffic class — not just the

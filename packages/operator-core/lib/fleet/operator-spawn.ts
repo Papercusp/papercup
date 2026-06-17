@@ -933,6 +933,13 @@ export async function spawnAgentInHarness(
     routeAccountId = await selectSpawnAccount(input.workspaceId, slug).catch(() => undefined);
   }
   Object.assign(extraEnv, gatewaySpawnEnv(gwOn, { accountId: routeAccountId }));
+  // account-aware-rate-governor-routing Phase 1: run the bee UNDER the selected account so the
+  // spawn-side governor (orchestrator-runner) keys its rate bucket PER-ACCOUNT
+  // (`anthropic:opus@<id>`) instead of the account-blind global `anthropic:opus`. Without this a
+  // single account's 429 pauses the class bucket and freezes EVERY opus spawn even while other
+  // accounts sit idle (owner's "rate-limit-with-headroom = routing bug"). selectSpawnAccount only
+  // ever returns an AVAILABLE account, so the keyed per-account bucket admits.
+  if (routeAccountId) extraEnv.PAPERCUSP_ACCOUNT_ID = routeAccountId;
 
   // Register an abort handle so fleet:cancel can stop the child (EI-40).
   const abort = new AbortController();
