@@ -108,6 +108,18 @@ describe('QueenTab nested steering tree', () => {
     expect((planA as HTMLInputElement).disabled).toBe(true);
   });
 
+  it('keeps a manually expanded hive open across parent rerenders', async () => {
+    const { rerender } = render(<QueenTab active={true} />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand hive' }).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Expand hive' })[1]);
+    expect(await screen.findByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
+
+    rerender(<QueenTab active={true} />);
+
+    expect(screen.getByRole('button', { name: 'Collapse hive' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
+  });
+
   it('narrowing a plan under a checked hive writes the explicit eligiblePlans', async () => {
     H.steeringResult = { data: [steering({ eligibleHives: ['pot-a'], eligiblePlans: [] })], loading: false, error: null, invalidate: vi.fn() };
     render(<QueenTab active={true} />);

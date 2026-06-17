@@ -99,6 +99,7 @@ function HiveNode({
 }) {
   const hasPlans = hive.plans.length > 0;
   const eligibleCount = hive.plans.filter((p) => p.checked).length;
+  const branchId = `pc-queen-tree-branch-${hive.slug.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
   return (
     <li className={`pc-queen__tree-hive${hive.checked ? ' pc-queen__tree-hive--on' : ''}`}>
       <div className="pc-queen__tree-hiverow">
@@ -108,6 +109,7 @@ function HiveNode({
           onClick={onToggleExpand}
           aria-label={expanded ? 'Collapse hive' : 'Expand hive'}
           aria-expanded={expanded}
+          aria-controls={hasPlans ? branchId : undefined}
           disabled={!hasPlans}
         >
           {hasPlans ? (expanded ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />) : <span className="pc-queen__tree-caret-spacer" />}
@@ -130,8 +132,12 @@ function HiveNode({
             : `${hive.plans.length} plan${hive.plans.length === 1 ? '' : 's'}`}
         </span>
       </div>
-      {expanded && hasPlans && (
-        <>
+      {hasPlans && (
+        <div
+          id={branchId}
+          className={`pc-queen__tree-branch${expanded ? ' pc-queen__tree-branch--open' : ''}`}
+          hidden={!expanded}
+        >
           {hive.checked && (
             <div className="pc-queen__tree-hiveactions">
               <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, true)} disabled={busy || hive.planMode === 'all'} aria-label={`Make every plan in ${hive.slug} eligible`}>all</button>
@@ -143,7 +149,7 @@ function HiveNode({
               <PlanRow key={p.slug} plan={p} hiveSlug={hive.slug} busy={busy || !hive.checked} onTogglePlan={onTogglePlan} />
             ))}
           </ul>
-        </>
+        </div>
       )}
     </li>
   );
@@ -245,7 +251,10 @@ export default function HiveSteeringTree({
 function TreeStyles() {
   return (
     <style>{`
-      .pc-queen__tree { max-height: 340px; }
+      .pc-queen__tree {
+        max-height: 340px; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable;
+        padding-right: 2px;
+      }
       .pc-queen__tree-hive { display: block; padding: 0; border: none; background: none; }
       .pc-queen__tree-hive + .pc-queen__tree-hive { margin-top: 3px; }
       .pc-queen__tree-hiverow {
@@ -270,8 +279,15 @@ function TreeStyles() {
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       .pc-queen__tree-hivemeta { flex-shrink: 0; font-size: 9px; color: var(--fg-mute, #7f9bb4); }
-      .pc-queen__tree-hiveactions { display: flex; gap: 5px; padding: 4px 7px 2px 28px; }
-      .pc-queen__tree-plans { margin: 2px 0 2px 0; padding-left: 21px; max-height: none; gap: 3px; }
+      .pc-queen__tree-branch {
+        margin: 3px 0 2px 8px; padding: 2px 0 2px 12px;
+        border-left: 1px solid color-mix(in srgb, var(--border-strong), transparent 52%);
+      }
+      .pc-queen__tree-branch[hidden] { display: none; }
+      .pc-queen__tree-hiveactions { display: flex; gap: 5px; padding: 2px 0 4px; }
+      .pc-queen__tree-plans {
+        margin: 0; padding-left: 0; max-height: none; overflow: visible; gap: 3px;
+      }
       .pc-queen__tree-plans--off { opacity: 0.55; }
       .pc-queen__tree-plan { padding: 4px 7px; }
       .pc-queen__tree-illegal {

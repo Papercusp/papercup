@@ -33,6 +33,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { BenchTask } from './types';
 import { gaiaTaskToBenchTask, loadGaiaValidation } from './gaia/dataset';
+import { gdpvalPilotSubset, gdpvalTaskToBenchTask, loadGdpvalTasks } from './gdpval/dataset';
 import { isSwarmBenchTaskSet, swarmbenchScenarios, swarmScenarioToBenchTask } from './swarmbench-backlog';
 
 /** A SWE-bench Pro task row as persisted in the pilot JSONL. */
@@ -550,6 +551,30 @@ function loadGaiaBenchTaskSet(taskSetId: string, taskIds?: string[]): BenchTask[
   return tasks;
 }
 
+/** The GDPval task-set ids this loader serves — the public openai/gdpval gold subset (deliverable-bundle
+ *  modality; rubric + expert reference deliverable carried in graderMeta). */
+export const GDPVAL_TASK_SET_IDS = ['gdpval-gold-220', 'gdpval-pilot', 'gdpval-custom'] as const;
+
+/** True iff `taskSetId` is a GDPval set (routes to {@link loadGdpvalBenchTaskSet}). */
+export function isGdpvalTaskSet(taskSetId: string): boolean {
+  return (GDPVAL_TASK_SET_IDS as readonly string[]).includes(taskSetId);
+}
+
+/** Load a GDPval task set → BenchTask[]. `gdpval-gold-220` is the full public subset; `gdpval-pilot` is one
+ *  task per occupation (~44, the cheap representative cross-section); `gdpval-custom` filters to taskIds. */
+function loadGdpvalBenchTaskSet(taskSetId: string, taskIds?: string[]): BenchTask[] {
+  let gdpval = loadGdpvalTasks();
+  if (taskSetId === 'gdpval-pilot') gdpval = gdpvalPilotSubset(gdpval);
+  let tasks = gdpval.map(gdpvalTaskToBenchTask);
+  if (taskSetId === 'gdpval-custom') {
+    const want = new Set(taskIds ?? []);
+    if (want.size === 0) throw new Error('task set "gdpval-custom" requires a non-empty taskIds list');
+    tasks = tasks.filter((t) => want.has(t.instanceId));
+    if (tasks.length === 0) throw new Error('no tasks in the GDPval corpus matched the custom taskIds');
+  }
+  return tasks;
+}
+
 export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise<BenchTask[]> {
   if (isVerifiedTaskSet(taskSetId)) {
     // Wrap so a synchronous validation throw surfaces as a rejected promise (the Pro branch convention).
@@ -594,6 +619,13 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
   }
   if (taskSetId === 'stratified-30') {
     return Promise.resolve(loadStratifiedTaskSet());
+  }
+  if (isGdpvalTaskSet(taskSetId)) {
+    try {
+      return Promise.resolve(loadGdpvalBenchTaskSet(taskSetId, taskIds));
+    } catch (e) {
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
   }
   if (isGaiaTaskSet(taskSetId)) {
     try {

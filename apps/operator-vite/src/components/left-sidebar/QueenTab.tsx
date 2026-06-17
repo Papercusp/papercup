@@ -77,6 +77,8 @@ const DEFAULT_STEERING: Omit<HiveSteeringRow, 'slug'> = {
   modelTiers: null,
 };
 
+const EMPTY_PLANS: readonly PlanListRow[] = [];
+
 type LiteProject = { slug: string; parent_slug?: string | null; harness_kind?: string | null };
 
 export interface SteerPlanRow {
@@ -236,8 +238,9 @@ export default function QueenTab({ active }: { active: boolean }) {
   }, [steeringQ.data]);
 
   const hiveOptions = useMemo(() => steerHiveOptions(projects), [projects]);
-  const candidates = selectSteerablePlans(plansQ.data?.plans ?? []);
-  const planRows = buildSteerRows(candidates, view.eligiblePlans);
+  const sourcePlans = plansQ.data?.plans ?? EMPTY_PLANS;
+  const candidates = useMemo(() => selectSteerablePlans(sourcePlans), [sourcePlans]);
+  const planRows = useMemo(() => buildSteerRows(candidates, view.eligiblePlans), [candidates, view.eligiblePlans]);
   const planRestricted = view.eligiblePlans.length > 0;
   const hiveRestricted = view.eligibleHives.length > 0;
   const pause = pauseStateLabel(view, Date.now());
