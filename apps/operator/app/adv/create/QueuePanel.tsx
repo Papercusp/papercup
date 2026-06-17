@@ -17,15 +17,19 @@
  * selection (?item / ?other) come from the shared hooks / list components.
  */
 
-import { parseAsStringEnum, useQueryState } from 'nuqs';
+import { useMemo } from 'react';
+import { parseAsArrayOf, parseAsBoolean, parseAsStringEnum, useQueryState } from 'nuqs';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
+import { Tooltip } from '@/app/harness/Tooltip';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanItemsList from '@/app/admin/plans/PlanItemsList';
 import PlanOtherList from '@/app/admin/plans/PlanOtherList';
+import QueueFilterBar from '@/app/admin/plans/QueueFilterBar';
 import QueueSummary from '@/app/admin/plans/QueueSummary';
 import { QUEUE_TABS, QUEEN_LOG_LAYERS } from '@/app/admin/plans/queue-authorizer';
+import type { AttentionKind } from '@/app/admin/plans/plans-api';
 import DecisionLog from '@/app/_components/DecisionLog';
 import {
   useCreateScope,
@@ -36,7 +40,19 @@ import {
   useItemPlanFilter,
   ITEM_FILTERS,
   ITEM_FILTER_LABEL,
+  type ItemStatusFilter,
 } from './use-create-data';
+
+const QUEUE_KIND_IDS = [
+  'coord-escalation',
+  'coord-message',
+  'smoke-fail',
+  'operator-report',
+  'improvement',
+  'standing-approval',
+  'conversation',
+  'scout-grade',
+] as const satisfies readonly AttentionKind[];
 
 export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
   const t = useLexicon();
@@ -57,60 +73,83 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
     'qlLayer',
     parseAsStringEnum<'disposition' | 'action'>(['disposition', 'action']).withDefault('disposition'),
   );
+  const [queueKinds, setQueueKinds] = useQueryState(
+    'qKinds',
+    parseAsArrayOf(parseAsStringEnum<AttentionKind>([...QUEUE_KIND_IDS])).withDefault([]),
+  );
+  const [qTodos, setQTodos] = useQueryState('qTodos', parseAsBoolean.withDefault(false));
+  const [qBlocked, setQBlocked] = useQueryState('qBlocked', parseAsBoolean.withDefault(false));
+  const [qFilterOpen, setQFilterOpen] = useQueryState('qFilter', parseAsBoolean.withDefault(false));
+
+  const queueStatusFilters = useMemo<ItemStatusFilter[]>(
+    () =>
+      queueAuthzView
+        ? ['needs-human', ...(qTodos ? ['todo' as const] : []), ...(qBlocked ? ['blocked' as const] : [])]
+        : istatus,
+    [queueAuthzView, qTodos, qBlocked, istatus],
+  );
 
   const queue = useQueueData({
-    istatus,
+    istatus: queueStatusFilters,
     pBuckets,
     planBucketBySlug: maps.planBucketBySlug,
     scope,
   });
 
-  const toggleItemStatus = (id: (typeof ITEM_FILTERS)[number]['id']) =>
+  const toggleItemStatus = (id: ItemStatusFilter) =>
     void setIstatus(istatus.includes(id) ? istatus.filter((x) => x !== id) : [...istatus, id]);
+  const toggleQueueKind = (kind: AttentionKind) =>
+    void setQueueKinds(queueKinds.includes(kind) ? queueKinds.filter((x) => x !== kind) : [...queueKinds, kind]);
 
-  const itemTitle = istatus.length
-    ? istatus.map((s) => ITEM_FILTER_LABEL[s]).join(' · ')
-    : 'All items';
+  const itemTitle = queueAuthzView
+    ? qTodos || qBlocked
+      ? 'Plan items'
+      : 'Needs Human'
+    : istatus.length
+      ? istatus.map((s) => ITEM_FILTER_LABEL[s]).join(' · ')
+      : 'All items';
 
   const showQueenLog = queueAuthzView && queueTab === 'queen-log';
+  const showOther = queueAuthzView || queue.showOther;
+  const showPlanItems = queueAuthzView || queue.showPlanItems;
 
   return (
     <div className="pc-queue__list" style={{ height: '100%', overflow: 'auto' }}>
       {/* B1 (P-006): two-halves summary + Pending|Queen's-log tabs (flag-gated). */}
       {queueAuthzView ? (
-        <>
+        <div className="pc-queue__masthead">
           <QueueSummary waitingOnYou={queue.tierCounts.decision} />
           <nav className="pc-queue__tabs" aria-label="Queue tab">
             {QUEUE_TABS.map((tb) => (
-              <button
-                key={tb.id}
-                type="button"
-                className={`pc-queue__tab${queueTab === tb.id ? ' is-active' : ''}`}
-                aria-pressed={queueTab === tb.id}
-                onClick={() => void setQueueTab(tb.id)}
-                title={tb.hint}
-              >
-                {tb.label}
-              </button>
+              <Tooltip key={tb.id} label={tb.hint} side="bottom">
+                <button
+                  type="button"
+                  className={`pc-queue__tab${queueTab === tb.id ? ' is-active' : ''}`}
+                  aria-pressed={queueTab === tb.id}
+                  onClick={() => void setQueueTab(tb.id)}
+                >
+                  {tb.label}
+                </button>
+              </Tooltip>
             ))}
           </nav>
-        </>
+        </div>
       ) : null}
 
       {showQueenLog ? (
         <section className="pc-queue__queenlog" aria-label="Queen's decision log">
           <nav className="pc-queue__tabs pc-queue__layer-toggle" aria-label="Decision log layer">
             {QUEEN_LOG_LAYERS.map((l) => (
-              <button
-                key={l.id}
-                type="button"
-                className={`pc-queue__tab${qlLayer === l.id ? ' is-active' : ''}`}
-                aria-pressed={qlLayer === l.id}
-                onClick={() => void setQlLayer(l.id)}
-                title={l.hint}
-              >
-                {l.label}
-              </button>
+              <Tooltip key={l.id} label={l.hint} side="bottom">
+                <button
+                  type="button"
+                  className={`pc-queue__tab${qlLayer === l.id ? ' is-active' : ''}`}
+                  aria-pressed={qlLayer === l.id}
+                  onClick={() => void setQlLayer(l.id)}
+                >
+                  {l.label}
+                </button>
+              </Tooltip>
             ))}
           </nav>
           <DecisionLog
@@ -128,40 +167,56 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
         </section>
       ) : (
         <>
-          <nav className="pc-queue__filters" aria-label="Queue item filters">
-            {ITEM_FILTERS.map((f) => {
-              const active = istatus.includes(f.id);
-              return (
-                <button
-                  key={f.id}
-                  type="button"
-                  className={`pc-queue__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
-                  aria-pressed={active}
-                  onClick={() => toggleItemStatus(f.id)}
-                  title={f.hint.replace('{pot}', t('pot'))}
-                >
-                  <span className="pc-queue__filter-label">{f.label}</span>
-                  <span className="pc-queue__filter-count">
-                    {queue.loading ? '…' : queue.itemStatusCounts[f.id]}
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
+          {queueAuthzView ? (
+            <QueueFilterBar
+              kinds={queueKinds}
+              onToggleKind={toggleQueueKind}
+              counts={queue.itemStatusCounts}
+              showTodos={qTodos}
+              showBlocked={qBlocked}
+              onToggleTodos={() => void setQTodos(!qTodos)}
+              onToggleBlocked={() => void setQBlocked(!qBlocked)}
+              todoCount={queue.itemStatusCounts.todo ?? 0}
+              blockedCount={queue.itemStatusCounts.blocked ?? 0}
+              open={qFilterOpen}
+              onOpenChange={(open) => void setQFilterOpen(open)}
+            />
+          ) : (
+            <nav className="pc-queue__filters" aria-label="Queue item filters">
+              {ITEM_FILTERS.map((f) => {
+                const active = istatus.includes(f.id);
+                return (
+                  <Tooltip key={f.id} label={f.hint.replace('{pot}', t('pot'))} side="bottom">
+                    <button
+                      type="button"
+                      className={`pc-queue__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
+                      aria-pressed={active}
+                      onClick={() => toggleItemStatus(f.id)}
+                    >
+                      <span className="pc-queue__filter-label">{f.label}</span>
+                      <span className="pc-queue__filter-count">
+                        {queue.loading ? '…' : queue.itemStatusCounts[f.id]}
+                      </span>
+                    </button>
+                  </Tooltip>
+                );
+              })}
+            </nav>
+          )}
           <div className="pc-items__listpane">
-            {queue.showOther ? (
+            {showOther ? (
               <PlanOtherList
                 groups={queue.otherGroups}
                 loading={queue.attentionRaw.loading}
                 error={queue.attentionRaw.error}
                 refresh={queue.attentionRaw.refresh}
-                title="Other"
-                kinds={queue.otherFacets}
+                title={queueAuthzView ? 'Pending' : 'Other'}
+                kinds={queueAuthzView ? queueKinds : queue.otherFacets}
                 planFilters={itemPlans}
                 groupByAuthorizer={queueAuthzView}
               />
             ) : null}
-            {queue.showPlanItems ? (
+            {showPlanItems ? (
               <PlanItemsList
                 items={queue.filteredItems}
                 loading={queue.loading}

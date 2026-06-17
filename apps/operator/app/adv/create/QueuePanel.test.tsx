@@ -16,6 +16,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactNode } from 'react';
 
@@ -52,7 +53,19 @@ const QUEUE_DATA = {
   otherItems: [],
   otherGroups: [],
   attentionRaw: { loading: false, error: null, refresh: vi.fn() },
-  itemStatusCounts: {},
+  itemStatusCounts: {
+    'needs-human': 3,
+    todo: 5,
+    blocked: 2,
+    'coord-escalation': 1,
+    'coord-message': 0,
+    'smoke-fail': 0,
+    'operator-report': 0,
+    improvement: 0,
+    'standing-approval': 0,
+    conversation: 0,
+    'scout-grade': 0,
+  },
   tierCounts: { decision: 3, handled: 0, alert: 1, activity: 2 },
   queueTotal: 6,
   showOther: true,
@@ -82,7 +95,9 @@ import QueuePanel from './QueuePanel';
 function renderAt(search: string) {
   const onUrlUpdate = vi.fn();
   const Wrapper = ({ children }: { children: ReactNode }) =>
-    withNuqsTestingAdapter({ searchParams: search, onUrlUpdate })({ children });
+    withNuqsTestingAdapter({ searchParams: search, onUrlUpdate })({
+      children: <TooltipProvider delayDuration={0}>{children}</TooltipProvider>,
+    });
   const utils = render(<QueuePanel />, { wrapper: Wrapper });
   return { ...utils, onUrlUpdate };
 }
@@ -136,6 +151,16 @@ describe('QueuePanel', () => {
     await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
     const last = onUrlUpdate.mock.calls.at(-1)![0];
     expect(last.searchParams.get('qlLayer')).toBe('action');
+  });
+
+  it('flag ON: uses the compact shared filter and writes ?qKinds from the collapsed panel', async () => {
+    const { onUrlUpdate } = renderAt('');
+    expect(screen.queryByRole('button', { name: 'Needs Human' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /filter/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Escalations, 1/i }));
+    await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+    const last = onUrlUpdate.mock.calls.at(-1)![0];
+    expect(last.searchParams.get('qKinds')).toBe('coord-escalation');
   });
 
   it('toggling an item-status filter writes ?istatus (flag OFF / pending list)', async () => {

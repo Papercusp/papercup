@@ -16,6 +16,7 @@
 
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { SlidersHorizontal, ChevronDown } from 'lucide-react';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { TIER_LABEL, type AttentionKind, type AttentionTier } from './plans-api';
 
 /** The kind facet inside the Filter — the non-plan-item attention kinds.
@@ -79,14 +80,11 @@ export default function QueueFilterBar({
           </button>
         </Collapsible.Trigger>
         {tier !== 'all' && onClearTier ? (
-          <button
-            type="button"
-            className="pc-queue__tierchip"
-            onClick={onClearTier}
-            title="A linked-in view filtered the Queue to this tier — click to clear."
-          >
-            {TIER_LABEL[tier]} ✕
-          </button>
+          <Tooltip label="A linked-in view filtered the Queue to this tier. Click to clear." side="bottom">
+            <button type="button" className="pc-queue__tierchip" onClick={onClearTier}>
+              {TIER_LABEL[tier]} ✕
+            </button>
+          </Tooltip>
         ) : null}
       </div>
       <Collapsible.Content className="pc-queue__filterpanel">
@@ -94,42 +92,51 @@ export default function QueueFilterBar({
           <span className="pc-queue__filterlabel">Kinds</span>
           {QUEUE_KIND_CHIPS.map((c) => {
             const active = kinds.includes(c.id);
+            const count = counts[c.id] ?? 0;
             return (
               <button
                 key={c.id}
                 type="button"
                 className={`pc-queue__filter${active ? ' is-active' : ''}`}
                 aria-pressed={active}
+                aria-label={`${c.label}, ${count}`}
                 onClick={() => onToggleKind(c.id)}
               >
                 <span className="pc-queue__filter-label">{c.label}</span>
-                <span className="pc-queue__filter-count">{counts[c.id] ?? 0}</span>
+                <span className="pc-queue__filter-count">{count}</span>
               </button>
             );
           })}
         </div>
         <div className="pc-queue__filtergroup">
           <span className="pc-queue__filterlabel">Backlog</span>
-          <button
-            type="button"
-            className={`pc-queue__filter${showTodos ? ' is-active' : ''}`}
-            aria-pressed={showTodos}
-            onClick={onToggleTodos}
-            title="Show the agent-pickable todo backlog (off by default — the Queue defaults to what needs attention)."
+          <Tooltip
+            label="Show the agent-pickable todo backlog. The default Queue stays focused on pending attention."
+            side="bottom"
           >
-            <span className="pc-queue__filter-label">Pickable todos</span>
-            <span className="pc-queue__filter-count">{todoCount}</span>
-          </button>
-          <button
-            type="button"
-            className={`pc-queue__filter${showBlocked ? ' is-active' : ''}`}
-            aria-pressed={showBlocked}
-            onClick={onToggleBlocked}
-            title="Show blocked plan items."
-          >
-            <span className="pc-queue__filter-label">Blocked</span>
-            <span className="pc-queue__filter-count">{blockedCount}</span>
-          </button>
+            <button
+              type="button"
+              className={`pc-queue__filter${showTodos ? ' is-active' : ''}`}
+              aria-pressed={showTodos}
+              aria-label={`Pickable todos, ${todoCount}`}
+              onClick={onToggleTodos}
+            >
+              <span className="pc-queue__filter-label">Pickable todos</span>
+              <span className="pc-queue__filter-count">{todoCount}</span>
+            </button>
+          </Tooltip>
+          <Tooltip label="Show blocked plan items." side="bottom">
+            <button
+              type="button"
+              className={`pc-queue__filter${showBlocked ? ' is-active' : ''}`}
+              aria-pressed={showBlocked}
+              aria-label={`Blocked, ${blockedCount}`}
+              onClick={onToggleBlocked}
+            >
+              <span className="pc-queue__filter-label">Blocked</span>
+              <span className="pc-queue__filter-count">{blockedCount}</span>
+            </button>
+          </Tooltip>
         </div>
       </Collapsible.Content>
     </Collapsible.Root>

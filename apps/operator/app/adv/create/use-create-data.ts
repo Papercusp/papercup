@@ -269,6 +269,10 @@ export interface QueueData {
   showOther: boolean;
   showPlanItems: boolean;
   otherFacets: OtherKind[];
+  /** Opt-in pickable-work backlog (actionable todos + blocked), gated by the
+   *  Filter's qTodos/qBlocked toggles; deduped. Rendered as its own collapsed
+   *  "Backlog" section under the authorizer buckets (queue redesign). */
+  backlogItems: PlanItemRow[];
 }
 
 /** Plan-item status category → inbox tier (mirrors PlansClient.tierOfPlanCategory):
