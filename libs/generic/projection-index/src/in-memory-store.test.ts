@@ -92,4 +92,48 @@ describe('InMemoryProjectionStore', () => {
     s.clear();
     expect(s.size()).toBe(0);
   });
+
+  // PI1 (PINNED — non-bug): the ref encoding uses a NUL separator, so two
+  // contributions whose key/entryId fields differ only across a space boundary do
+  // NOT overwrite each other in the Map. Both must persist as distinct rows.
+  it('space-boundary keys persist as distinct rows (no silent overwrite)', async () => {
+    const s = new InMemoryProjectionStore<E>();
+    await s.applyDelta('s1', {
+      put: [row('s1', 'topic a', 'd1'), row('s1', 'topic', 'a d1')],
+      delete: [],
+    });
+    expect(s.size()).toBe(2);
+    expect((await s.byKey('topic a')).map((r) => r.entryId)).toEqual(['d1']);
+    expect((await s.byKey('topic')).map((r) => r.entryId)).toEqual(['a d1']);
+  });
+
+  // PI2 (PINNED): limit clamps to >=0, so 0 and negatives both yield [].
+  it('byKey limit clamps non-positive values to an empty result', async () => {
+    const s = new InMemoryProjectionStore<E>();
+    await s.applyDelta('s1', {
+      put: [row('s1', 'k', 'a', { sortKey: 1 }), row('s1', 'k', 'b', { sortKey: 2 })],
+      delete: [],
+    });
+    expect(await s.byKey('k', { limit: 0 })).toEqual([]);
+    expect(await s.byKey('k', { limit: -3 })).toEqual([]);
+    // sanity: a positive limit still returns rows (clamp is non-positive only)
+    expect((await s.byKey('k', { limit: 1 })).map((r) => r.entryId)).toEqual(['a']);
+  });
+
+  // PI2 (PINNED — documented caller error): a key mixing number and string sortKeys
+  // has no well-defined cross-type order; JS `<`/`>` coerce, so the result is
+  // deterministic-but-arbitrary. Callers must supply a homogeneous sortKey per key
+  // (per the Contribution.sortKey contract). This pins that it does not throw and
+  // is stable, NOT that the cross-type order is meaningful.
+  it('mixed-type sortKey within a key does not throw and is stable (caller error)', async () => {
+    const s = new InMemoryProjectionStore<E>();
+    await s.applyDelta('s1', {
+      put: [row('s1', 'k', 'num', { sortKey: 2 }), row('s1', 'k', 'str', { sortKey: 'apple' })],
+      delete: [],
+    });
+    const first = (await s.byKey('k', { order: 'asc' })).map((r) => r.entryId);
+    const second = (await s.byKey('k', { order: 'asc' })).map((r) => r.entryId);
+    expect(first).toEqual(second); // deterministic across calls
+    expect(first.sort()).toEqual(['num', 'str']); // both present, none dropped
+  });
 });

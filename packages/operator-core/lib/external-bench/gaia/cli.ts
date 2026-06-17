@@ -21,10 +21,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { gatewayBaseUrl } from '../competitor-live';
+import { existsSync } from 'node:fs';
 import {
   buildGaiaDownloadCommand,
+  gaiaHfTokenFile,
   gaiaLevelCounts,
+  gaiaValidationDir,
   loadGaiaValidation,
+  resolveHfToken,
   stratifiedGaiaSubset,
   type GaiaTask,
 } from './dataset';

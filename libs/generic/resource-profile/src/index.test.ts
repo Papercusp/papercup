@@ -215,6 +215,18 @@ describe('non-finite cores never poison the profile (RP1 — was a real defect)'
       expect(Number.isFinite(cap)).toBe(true);
     }
   });
+
+  it('a non-finite freeMemBytes is absorbed by the clamp guard, not the cap', () => {
+    // freeMemBytes:NaN -> Math.max(0,NaN)=NaN -> floor(NaN/0.5)=NaN ->
+    // Math.min(agentsByCore, NaN)=NaN reaches clamp(). Without the clamp
+    // Number.isFinite guard the agent cap would come back NaN even though cores
+    // is a healthy 16; the guard pins it to the floor of 1.
+    const p = deriveResourceProfile(
+      signals({ cores: 16, freeMemBytes: NaN }),
+    );
+    expect(Number.isFinite(p.maxSimultaneousAgents)).toBe(true);
+    expect(p.maxSimultaneousAgents).toBe(1);
+  });
 });
 
 describe('cores + freeMem normalization (RP2)', () => {

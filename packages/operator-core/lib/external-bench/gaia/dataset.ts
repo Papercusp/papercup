@@ -31,6 +31,27 @@ import { isAbsolute, join } from 'node:path';
 import type { BenchTask } from '../types';
 import { coerceLevel, type GaiaLevel } from '../grader/gaia';
 
+/** The drop-file an owner can write a gated-HF token into to unblock provisioning (env-overridable). */
+export function gaiaHfTokenFile(): string {
+  return process.env.PAPERCUSP_GAIA_HF_TOKEN_FILE ?? join(homedir(), '.papercusp', 'gaia-hf-token');
+}
+
+/**
+ * Resolve a gated-HF token from (in order): `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` env, then the drop-file
+ * {@link gaiaHfTokenFile} (a token pasted into `~/.papercusp/gaia-hf-token`). Returns null when none is set.
+ * This is the single unblock point for the GAIA gated dataset — an owner sets the env OR drops the file.
+ */
+export function resolveHfToken(): string | null {
+  const env = (process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN || '').trim();
+  if (env) return env;
+  const file = gaiaHfTokenFile();
+  if (existsSync(file)) {
+    const tok = readFileSync(file, 'utf8').trim();
+    if (tok) return tok;
+  }
+  return null;
+}
+
 /** A GAIA task, normalized from a `metadata.jsonl` row. */
 export interface GaiaTask {
   taskId: string;

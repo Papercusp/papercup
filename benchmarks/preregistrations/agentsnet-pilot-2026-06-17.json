@@ -5,7 +5,7 @@
   "suites": [
     "agentsnet"
   ],
-  "createdAt": "2026-06-17T06:53:03.180Z",
+  "createdAt": "2026-06-17T07:25:47.105Z",
   "config": {
     "suite": "agentsnet",
     "arm": "baseline-b-native",

@@ -133,7 +133,13 @@ function clamp(n: number, lo: number, hi: number): number {
  * | httpWorkers          | 1 (no cluster yet)                                   |   1   |    1    |
  */
 export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile {
-  const cores = Math.max(1, Math.floor(signals.cores));
+  // Normalize cores to a finite >=1 integer. A non-finite signal (NaN from a
+  // failed detect, ±Infinity) would otherwise flow through Math.floor unchanged
+  // — NaN poisons every cap and the host class, +Infinity misclassifies as
+  // 'server' and persists a non-finite signals.cores — so it falls back to a
+  // single core (the smallest-host default).
+  const rawCores = Math.floor(signals.cores);
+  const cores = Number.isFinite(rawCores) ? Math.max(1, rawCores) : 1;
   const { embeddedPg, hostRole } = signals;
   const freeGib = Math.max(0, signals.freeMemBytes) / GIB;
 

@@ -38,24 +38,40 @@ export function useAccountOverride() {
     };
   }, []);
 
-  const patchOverride = useCallback(async (patch: { forcedAccounts?: string[]; excludeAccounts?: string[]; clear?: boolean }) => {
-    setOverrideBusy(true);
-    try {
-      const res = await fetch('/api/admin/deploy-accounts/session-override', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      const j = (await res.json()) as { ok?: boolean; error?: string; override?: AccountOverride };
-      if (!res.ok || !j.ok) throw new Error(j.error || 'override failed');
-      setOverride(j.override ?? { forcedAccounts: [], excludeAccounts: [] });
-      toast.success(patch.clear ? 'Cleared the account override' : 'Updated the account override');
-    } catch (e) {
-      toast.error(`Override failed: ${errMsg(e)}`);
-    } finally {
-      setOverrideBusy(false);
-    }
-  }, []);
+  // Optimistic by design: the desktop ships on the SSE transport, where
+  // @papercusp/sync's useSyncMutate has no Zero client and so can't apply
+  // optimistically (its optimistic path is WebSocket/Zero-only, and Zero is
+  // retired) — it would degrade to this same REST POST. So we apply the predicted
+  // override locally for INSTANT feedback, then reconcile with the server's
+  // authoritative response (or roll back on failure). The accounts.pool sync
+  // query still refreshes the cards over SSE when the server invalidates.
+  const patchOverride = useCallback(
+    async (
+      patch: { forcedAccounts?: string[]; excludeAccounts?: string[]; clear?: boolean },
+      optimistic?: AccountOverride,
+    ) => {
+      const prev = override;
+      if (optimistic) setOverride(optimistic); // instant — don't wait on the round-trip
+      setOverrideBusy(true);
+      try {
+        const res = await fetch('/api/admin/deploy-accounts/session-override', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+        const j = (await res.json()) as { ok?: boolean; error?: string; override?: AccountOverride };
+        if (!res.ok || !j.ok) throw new Error(j.error || 'override failed');
+        setOverride(j.override ?? { forcedAccounts: [], excludeAccounts: [] }); // reconcile with server truth
+        if (patch.clear) toast.success('Cleared the account override');
+      } catch (e) {
+        if (optimistic) setOverride(prev); // roll back the optimistic apply
+        toast.error(`Override failed: ${errMsg(e)}`);
+      } finally {
+        setOverrideBusy(false);
+      }
+    },
+    [override],
+  );
 
   const forced = useMemo(() => new Set(override?.forcedAccounts ?? []), [override]);
   const excluded = useMemo(() => new Set(override?.excludeAccounts ?? []), [override]);

@@ -12,7 +12,6 @@ import {
   GitBranch,
   GraduationCap,
   HeartPulse,
-  KeyRound,
   LayoutDashboard,
   Lightbulb,
   ListChecks,
@@ -37,7 +36,7 @@ import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals', 'accounts'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -86,10 +85,6 @@ export const ADV_TABS: ReadonlyArray<{
   // D-007). Workspace-scoped (aggregates external benchmark runs across the whole
   // workspace, not one pot), so it also lives in WORKSPACE_TAB_IDS below.
   { id: 'evals', label: 'Evaluation', icon: Trophy, accent: '#eab308', accentRgb: '234, 179, 8' },
-  // Accounts — the Queen's Claude Max account pool (view + link/remove via OAuth)
-  // (accounts-pool-tab-2026-06-15). Workspace-scoped (one pool per workspace, not
-  // per pot), so it also lives in WORKSPACE_TAB_IDS and stays visible under "All Pots".
-  { id: 'accounts', label: 'Accounts', icon: KeyRound, accent: '#8b5cf6', accentRgb: '139, 92, 246' },
   { id: 'settings', label: 'Settings', icon: Settings, accent: '#f97316', accentRgb: '249, 115, 22' },
 ] as const;
 
@@ -120,9 +115,6 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   // Evaluation aggregates external-benchmark runs (all arms × suites) across the
   // whole workspace — it is not a per-pot view (impartial-benchmark-suite D-007).
   'evals',
-  // Accounts — the Claude Max account pool is one-per-workspace, not per-pot
-  // (accounts-pool-tab-2026-06-15 P-001).
-  'accounts',
 ]);
 
 /** The tab strip for a scope: full strip for a single pot, workspace-level subset under "All Pots". */

@@ -14,6 +14,7 @@ import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
 import ThemeSelector from './ThemeSelector';
+import BrandSwitcher from './BrandSwitcher';
 import UserPicker from './UserPicker';
 import AutoLoginWelcomeToast from './AutoLoginWelcomeToast';
 import UpdateChip from './UpdateChip';
@@ -211,6 +212,7 @@ export default function ChromeShell() {
           <NotificationCenter />
           <RecentActionsCenter />
           <ThemeSelector />
+          <BrandSwitcher />
           <WorkspaceSwitcher />
           <UserPicker />
         </nav>
