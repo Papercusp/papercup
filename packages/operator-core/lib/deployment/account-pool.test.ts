@@ -309,6 +309,16 @@ describe('selectAccountByDrain (D-003 budget-draining selector)', () => {
     expect(selectAccountByDrain(p, T0)!.id).toBe('b');
   });
 
+  it('7d-aware: avoids a 5h-fresh but 7d-near-cap account (the aviynw2 trap), preferring both-window headroom', () => {
+    let p = poolOf('a', 'b');
+    // a = aviynw2: 5h-fresh (0.09) but 7d near the WEEKLY cap (0.96) → effective fullness 0.96.
+    p = recordAccountWindow(p, 'a', { utilization: 0.09, utilization7d: 0.96 }, T0);
+    // b = aviynw6: headroom in BOTH windows (5h 0.49, 7d 0.39) → effective fullness 0.49 → preferred.
+    p = recordAccountWindow(p, 'b', { utilization: 0.49, utilization7d: 0.39 }, T0);
+    // 5h-only ranking would (wrongly) pick 'a' (0.09 < 0.49); 7d-aware picks 'b'.
+    expect(selectAccountByDrain(p, T0)!.id).toBe('b');
+  });
+
   it('ignores stale utilization (older than the staleness horizon) → treats it as most-available', () => {
     let p = poolOf('a', 'b');
     // a's high utilization is stale → treated as 0; b's is fresh at 0.5 → a wins as "emptier"

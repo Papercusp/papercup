@@ -70,11 +70,20 @@ export async function resolveRecipients(
   to: readonly string[],
   workspaceId?: string | null,
 ): Promise<RecipientResolution> {
-  const presence = await listPresence({ workspaceId });
-  return resolveRecipientsAgainst(
-    to,
-    presence.map((p) => p.ownerId),
-  );
+  let knownOwnerIds: string[];
+  try {
+    knownOwnerIds = (await listPresence({ workspaceId })).map((p) => p.ownerId);
+  } catch {
+    knownOwnerIds = []; // roster unavailable → fail open below
+  }
+  // No roster to validate against (empty / unavailable — tests, a fresh box, a
+  // federated-only recipient) → DON'T reject; pass everything through. The hard
+  // unknown-recipient error only fires when we actually HAVE a roster to check,
+  // so an absent roster never turns a legitimate send into a false failure.
+  if (knownOwnerIds.length === 0) {
+    return { resolved: [...to], unknown: [], ambiguous: [] };
+  }
+  return resolveRecipientsAgainst(to, knownOwnerIds);
 }
 
 /** PURE best-effort core: rewrite each entry to its FULL ownerId when a unique

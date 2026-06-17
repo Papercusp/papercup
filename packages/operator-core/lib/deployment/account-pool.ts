@@ -430,13 +430,38 @@ export function drainUtil(a: ClaudeAccount, now: number): number {
 }
 
 /**
+ * The account's 7d-window (WEEKLY) utilization, or 0 when never observed / stale. On Claude Max the
+ * 7d window is a HARDER constraint than the 5h: an account can read 5h-fresh yet sit near its weekly
+ * cap, so routing fresh load by 5h-util alone hammers it into the 7d limit (the "aviynw2 trap":
+ * 5h-util 0.09 but 7d-util 0.96 → a routed bee 429s on the weekly window). Shares `utilizationAt`
+ * freshness with `drainUtil` (recordAccountWindow writes both together).
+ */
+export function drainUtil7d(a: ClaudeAccount, now: number): number {
+  const r = a.rate;
+  if (r.utilization7d === undefined) return 0;
+  if (r.utilizationAt !== undefined && now - r.utilizationAt > DRAIN_UTIL_STALE_MS) return 0;
+  return r.utilization7d;
+}
+
+/**
+ * Effective fullness for routing/ranking: the TIGHTER of the 5h and 7d windows. Ranking + gating by
+ * this prefers BOTH-window headroom, so a 5h-fresh-but-7d-near-cap account is correctly deprioritized
+ * in favor of an account with real headroom in both windows (7d-aware-account-selection-2026-06-17).
+ */
+export function effectiveDrainUtil(a: ClaudeAccount, now: number): number {
+  return Math.max(drainUtil(a, now), drainUtil7d(a, now));
+}
+
+/**
  * Is this account effectively FULL for fresh load — paused, or its (fresh) unified-5h utilization at/
  * above `DRAIN_FULL_UTIL`? Used to (a) LAZILY re-pin a soft cache-affinity pin off a near-cap account
  * (D-002) and (b) decide the account-aware class pause: the opus class only pauses globally when EVERY
  * account is full (mirrors the gateway failover — "only when ALL are exhausted does egress pause").
  */
 export function accountFull(a: ClaudeAccount, now: number): boolean {
-  return !isAvailable(a, now) || drainUtil(a, now) >= DRAIN_FULL_UTIL;
+  // 7d-aware: full when EITHER window is at/over cap (effectiveDrainUtil = max(5h, 7d)), so a
+  // 5h-fresh-but-weekly-capped account is not treated as fresh capacity.
+  return !isAvailable(a, now) || effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL;
 }
 
 /**
@@ -476,9 +501,11 @@ export function selectAccountByDrain(pool: AccountPool, now: number, opts: Selec
 
   const urgent = (a: ClaudeAccount): boolean => {
     const reset = a.rate.windowResetAt;
-    return reset !== undefined && reset - now > 0 && reset - now <= DRAIN_URGENT_RESET_MS && drainUtil(a, now) < DRAIN_FULL_UTIL;
+    return reset !== undefined && reset - now > 0 && reset - now <= DRAIN_URGENT_RESET_MS && effectiveDrainUtil(a, now) < DRAIN_FULL_UTIL;
   };
-  const rank = (a: ClaudeAccount): number[] => [urgent(a) ? 0 : 1, drainUtil(a, now), a.rate.lastPenaltyAt, a.addedAt];
+  // 7d-aware rank: order by the TIGHTER window (max 5h/7d util) so selection prefers both-window
+  // headroom (aviynw6) over a 5h-fresh-but-7d-near-cap account (aviynw2) — 7d-aware-account-selection.
+  const rank = (a: ClaudeAccount): number[] => [urgent(a) ? 0 : 1, effectiveDrainUtil(a, now), a.rate.lastPenaltyAt, a.addedAt];
   return [...candidates].sort((x, y) => {
     const rx = rank(x);
     const ry = rank(y);
