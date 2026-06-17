@@ -87,6 +87,14 @@ export default function HarnessesWorkspace() {
   // focused member the dock should render. Pure logic in ./harness-axis so
   // it's unit-tested + shared with the member rail (P-002).
   const members = useMemo(() => hiveMembers(projects, slug || null), [projects, slug]);
+  // Whether the active `?slug=` resolves to a live kind:'hive' home — gates the
+  // CreateHarnessPicker's into-hive "Add to <hive>" fork. The URL param outlives
+  // the entity, so a removed hive or a non-hive harness must NOT enable into-hive
+  // (submitting it posts intoHive=<slug> → backend `hive_not_found`).
+  const activeIsHive = useMemo(
+    () => projects.some((p) => p.slug === slug && p.harness_kind === 'hive'),
+    [projects, slug],
+  );
   const focusedMember = useMemo(
     () => resolveFocusedMember({ members, urlHarness: harness }),
     [members, harness],
@@ -242,7 +250,7 @@ export default function HarnessesWorkspace() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={handleCreated}
-        hiveScope={slug || null}
+        hiveScope={activeIsHive ? slug : null}
         hiveLabel={hiveLabel}
       />
 

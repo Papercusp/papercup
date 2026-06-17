@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
-import { wsLocalKey, getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
+import { wsLocalKey, getBrowserWorkspaceId, resolveActiveWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { Select, type SelectEntry, type SelectOption } from '@/app/harness/Select';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
+import { listWorkspaces } from '@papercusp/operator-core/lib/workspaces-tauri';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
@@ -247,6 +248,9 @@ export default function AdvShell({
   );
   const [projects, setProjects] = useState<HarnessProjectLite[]>([]);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+  // Workspace display name for the selector's root-group header — resolved from
+  // the workspace registry below (falls back to the raw id until it lands).
+  const [workspaceLabel, setWorkspaceLabel] = useState<string>(() => getBrowserWorkspaceId());
   // Create-harness flow. The dialog open-state is URL-backed (nuqs) so it
   // survives refresh and is agent-controllable; `refreshNonce` re-runs the
   // project fetch once a harness is created so the selector picks it up.
@@ -304,6 +308,26 @@ export default function AdvShell({
       cancelled = true;
     };
   }, [activeSlug, setActiveSlug, setScopeMode, refreshNonce]);
+
+  // Resolve the workspace's display NAME for the selector's root-group header
+  // (one cheap registry read; the raw id stays as the fallback). Mirrors how
+  // WorkspaceSwitcher resolves the active workspace.
+  useEffect(() => {
+    let cancelled = false;
+    listWorkspaces()
+      .then((reg) => {
+        if (cancelled) return;
+        const activeId = resolveActiveWorkspaceId(reg, getBrowserWorkspaceId());
+        const name = reg?.workspaces?.find((w) => w.id === activeId)?.name;
+        if (name) setWorkspaceLabel(name);
+      })
+      .catch(() => {
+        /* keep the id fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // "All harnesses" mode: list views (Plans, Sessions) span the whole
   // workspace. The single-harness widgets (Share, now-running, Discord)
@@ -429,7 +453,7 @@ export default function AdvShell({
               disabled={projects.length === 0}
               ariaLabel={`Select ${t('pot')}`}
               placeholder={projectLoadError ? `Failed to load ${t('pot', { plural: true })}` : `Select ${t('pot')}`}
-              options={buildHarnessSelectOptions(projects, projectLoadError, t('pot', { plural: true }), getBrowserWorkspaceId())}
+              options={buildHarnessSelectOptions(projects, projectLoadError, t('pot', { plural: true }), workspaceLabel)}
               triggerClassName="pc-advshell__select-trigger"
             />
             {/* Sub-harness union is meaningless under "all" (everything is
@@ -548,7 +572,16 @@ export default function AdvShell({
         // the into-hive "Add to <hive>" mode. Restore it when scoped to a single
         // hive — mirrors how the share modal below already takes activeSlug.
         // all-mode has no scope ⇒ null ⇒ New-hive/Standalone only.
-        hiveScope={!allMode ? (activeSlug ?? null) : null}
+        //
+        // Gate on activeIsHive, NOT just a non-null activeSlug: the `?slug=` URL
+        // param outlives the entity, so a removed hive (slug no longer in
+        // `projects`) or a non-hive active harness would still enable the "Add to
+        // <X>" fork. Submitting that posts `intoHive=<X>`, which the backend
+        // rejects as `hive_not_found` ("The selected hive wasn't found — it may
+        // have been removed"), blocking the headline new-hive create from a stale
+        // scope. activeIsHive already requires activeProject to exist AND be
+        // kind:'hive' (line ~318), exactly the backend's into-hive precondition.
+        hiveScope={activeIsHive ? activeSlug : null}
         onCreated={(slug: string, opts?: { hive?: string }) => {
           setRefreshNonce((n) => n + 1);
           if (opts?.hive && opts.hive === activeSlug) {

@@ -92,12 +92,14 @@ vi.mock('@/app/harness/CreateHarnessPicker', () => ({
   CreateHarnessPicker: ({
     open,
     onCreated,
+    hiveScope,
   }: {
     open: boolean;
     onCreated: (slug: string) => void;
+    hiveScope?: string | null;
   }) =>
     open ? (
-      <div data-testid="create-picker">
+      <div data-testid="create-picker" data-hive-scope={hiveScope ?? ''}>
         <button type="button" onClick={() => onCreated('fresh-pot')}>
           simulate-created
         </button>
@@ -417,5 +419,28 @@ describe('AdvShell — Discord-parity shortcuts', () => {
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('conversations'));
     act(() => shortcutHandlers.get('harness.create')!());
     await waitFor(() => expect(nuqsSetters.create).toHaveBeenCalledWith(true));
+  });
+});
+
+describe('AdvShell — CreateHarnessPicker into-hive scope gating', () => {
+  // Regression: `?slug=` outlives the entity, so a removed hive or a non-hive
+  // active harness must NOT be handed to the picker as `hiveScope` — doing so
+  // defaulted the picker to the into-hive "Add to <X>" fork, and submitting
+  // posted `intoHive=<X>`, which the backend rejects as `hive_not_found`
+  // ("The selected hive wasn't found"), blocking a plain new-hive create.
+  it('passes the active slug as hiveScope only when it is a live kind:hive home', async () => {
+    nuqsState.slug = 'pot-a'; // PROJECTS: harness_kind:'hive'
+    nuqsState.create = true;
+    await renderShell();
+    expect(screen.getByTestId('create-picker').getAttribute('data-hive-scope')).toBe('pot-a');
+  });
+
+  it('does NOT pass a non-hive active harness as hiveScope (→ null, new-hive default)', async () => {
+    nuqsState.slug = 'pot-b'; // PROJECTS: a real project but NOT a hive
+    nuqsState.create = true;
+    await renderShell();
+    // Gated to '' (null) — the picker defaults to new-hive, so submitting cannot
+    // post intoHive=pot-b and trip the backend hive_not_found.
+    expect(screen.getByTestId('create-picker').getAttribute('data-hive-scope')).toBe('');
   });
 });
