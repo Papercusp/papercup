@@ -25,6 +25,7 @@ interface RunRow {
   launchedAt: number;
   costUsd: number;
   workItems: { total: number; passed: number; failed: number; open: number };
+  resultSummary: Record<string, unknown> | null;
 }
 interface Rollup {
   total: number;
@@ -96,6 +97,25 @@ export default function RunsPanel({ slug, planTitle, currentContentHash }: Props
   const chrono = useMemo(() => [...runs].reverse(), [runs]);
   const durationSeries = useMemo(() => chrono.map((r) => r.durationMs ?? 0), [chrono]);
   const costSeries = useMemo(() => chrono.map((r) => r.costUsd ?? 0), [chrono]);
+  // P-025: domain-metric series from each run's result_summary (numeric top-level keys).
+  const metricSeries = useMemo(() => {
+    const keys = new Set<string>();
+    for (const r of chrono) {
+      if (r.resultSummary) for (const [k, v] of Object.entries(r.resultSummary)) if (typeof v === 'number' && Number.isFinite(v)) keys.add(k);
+    }
+    return [...keys].sort().map((key) => {
+      const values = chrono.map((r) => {
+        const v = r.resultSummary?.[key];
+        return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+      });
+      let last: number | null = null;
+      for (let i = chrono.length - 1; i >= 0; i--) {
+        const v = chrono[i].resultSummary?.[key];
+        if (typeof v === 'number' && Number.isFinite(v)) { last = v; break; }
+      }
+      return { key, values, last };
+    });
+  }, [chrono]);
   // Health strip: last 24 outcomes, newest on the right.
   const strip = useMemo(() => [...runs].slice(0, 24).reverse(), [runs]);
 
@@ -148,6 +168,22 @@ export default function RunsPanel({ slug, planTitle, currentContentHash }: Props
           <div>
             <div style={{ fontSize: 11, color: 'var(--fg-mute, #7f9bb4)' }}>Cost trend</div>
             <Sparkline values={costSeries} color="var(--warn, #fbbf24)" />
+          </div>
+        </div>
+      )}
+
+      {/* P-025: domain-metric series a routine published via result_summary */}
+      {metricSeries.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: 'var(--fg-mute, #7f9bb4)', marginBottom: 6 }}>Domain metrics (result_summary)</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+            {metricSeries.map((m) => (
+              <div key={m.key} style={{ padding: 8, border: '1px solid var(--border, rgba(125,211,252,0.15))', borderRadius: 6, background: 'var(--bg-1, #0b1220)' }}>
+                <div style={{ fontSize: 11, color: 'var(--fg-dim, #b9d4e8)' }}>{m.key}</div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>{m.last ?? '—'}</div>
+                <Sparkline values={m.values} color="var(--good, #34d399)" width={150} height={24} />
+              </div>
+            ))}
           </div>
         </div>
       )}

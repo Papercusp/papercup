@@ -38,6 +38,7 @@ async function main(): Promise<void> {
   const weighting = (arg('weighting', 'invsqrt') as HorizonWeighting);
   const bootstrap = Number(arg('bootstrap', '1000'));
   const out = arg('out');
+  const account = arg('account');
   const dryRun = hasFlag('dry-run');
   const customIds = arg('task-ids')?.split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -45,7 +46,7 @@ async function main(): Promise<void> {
   if (maxTasks && tasks.length > maxTasks) tasks = tasks.slice(0, maxTasks);
 
   const baselined = tasks.filter((t) => t.graderMeta?.['horizonEligible'] === true).length;
-  console.log(`METR HCAST run — task-set=${taskSet}  tasks=${tasks.length} (${baselined} horizon-eligible)  arms=${arms.join(',')}  samples=${samples}  model=${model}  gateway=${metrGatewayBaseUrl()}`);
+  console.log(`METR HCAST run — task-set=${taskSet}  tasks=${tasks.length} (${baselined} horizon-eligible)  arms=${arms.join(',')}  samples=${samples}  model=${model}  gateway=${metrGatewayBaseUrl()}${account ? `  account=${account}` : ''}`);
   console.log(`Tasks: ${tasks.map((t) => t.instanceId).join(', ')}`);
 
   if (dryRun) {
@@ -53,7 +54,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const modelCall = gatewayModelCall({ model });
+  const modelCall = gatewayModelCall({ model, ...(account ? { accountId: account } : {}) });
   const { resultsByArm, report } = await runMetrHcastSuite({
     tasks,
     arms,

@@ -293,6 +293,9 @@ export interface PlanRunSummary extends PlanRunRow {
   /** Σ plan_run_turns cost (interactive runs). Scheduled-run EXECUTION cost lives in
    *  the work-items, attributed separately (P-013). */
   costUsd: number;
+  /** Domain metrics a routine published for this run (result_summary jsonb) — the
+   *  series source for the Runs-tab metric charts (P-025). Null when none published. */
+  resultSummary: Record<string, unknown> | null;
 }
 
 /** Aggregate over a template's runs — the Runs-tab summary header (P-023). */
@@ -364,11 +367,13 @@ export async function listPlanRuns(
         wi_total: number | string;
         wi_passed: number | string;
         wi_failed: number | string;
+        result_summary: unknown;
       })[]
     >`
       SELECT r.id, r.plan_slug, r.plan_content_hash, r.session_id, r.note,
              r.launched_by, r.launched_at, r.status, r.title, r.updated_at,
              r.run_type, r.trigger, r.outcome, r.finished_at, r.run_seq, r.instance_plan_slug,
+             r.result_summary,
              (SELECT COUNT(*) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id) AS turn_count,
              (SELECT COALESCE(SUM(t.cost_usd), 0) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id) AS cost_usd,
              (SELECT COUNT(*) FROM harness_shared.harness_features_consolidated w
@@ -392,6 +397,7 @@ export async function listPlanRuns(
         turnCount: Number(r.turn_count),
         costUsd: Number(r.cost_usd),
         workItems: { total, passed, failed, open: Math.max(0, total - passed - failed) },
+        resultSummary: (r.result_summary as Record<string, unknown> | null) ?? null,
       };
     });
   });

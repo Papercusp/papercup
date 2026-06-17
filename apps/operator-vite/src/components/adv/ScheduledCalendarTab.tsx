@@ -17,6 +17,7 @@ import interactionPlugin from '@fullcalendar/interaction';
 import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import ScheduledRoutinesPane from './ScheduledRoutinesPane';
 import './scheduled-calendar.css';
 
 type CalView = 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay';
@@ -109,6 +110,9 @@ export default function ScheduledCalendarTab() {
         {loading && <span>· loading…</span>}
       </div>
       <div className="pc-sched-cal__body">
+        <aside className="pc-sched-cal__routines">
+          <ScheduledRoutinesPane onSelect={(slug) => void setSelected(slug)} />
+        </aside>
         <div className="pc-sched-cal__main">
           <FullCalendar
             ref={calRef}

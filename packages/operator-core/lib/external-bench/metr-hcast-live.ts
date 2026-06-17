@@ -488,13 +488,15 @@ export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
   const model = cfg.model ?? 'claude-opus-4-8';
   const baseURL = cfg.baseUrl ?? metrGatewayBaseUrl();
   const apiKey = cfg.apiKey ?? process.env.ANTHROPIC_API_KEY ?? 'sk-papercusp-gateway';
+  const accountId = cfg.accountId ?? process.env.PAPERCUSP_METR_ACCOUNT;
+  const defaultHeaders = accountId ? { [GATEWAY_ACCOUNT_HEADER]: accountId } : undefined;
   let clientP: Promise<{ messages: { create(body: Record<string, unknown>): Promise<AnthropicMessageResponse> } }> | null = null;
   const client = async () => {
     if (!clientP) {
       clientP = (async () => {
-        if (cfg.anthropicCtor) return new cfg.anthropicCtor({ apiKey, baseURL });
-        const mod = (await import('@anthropic-ai/sdk')) as unknown as { default: new (o: { apiKey: string; baseURL: string }) => { messages: { create(b: Record<string, unknown>): Promise<AnthropicMessageResponse> } } };
-        return new mod.default({ apiKey, baseURL });
+        if (cfg.anthropicCtor) return new cfg.anthropicCtor({ apiKey, baseURL, ...(defaultHeaders ? { defaultHeaders } : {}) });
+        const mod = (await import('@anthropic-ai/sdk')) as unknown as { default: new (o: { apiKey: string; baseURL: string; defaultHeaders?: Record<string, string> }) => { messages: { create(b: Record<string, unknown>): Promise<AnthropicMessageResponse> } } };
+        return new mod.default({ apiKey, baseURL, ...(defaultHeaders ? { defaultHeaders } : {}) });
       })();
     }
     return clientP;

@@ -69,6 +69,12 @@ const MAX_TASKS = process.env.XBENCH_MAX_TASKS ? Number(process.env.XBENCH_MAX_T
 const ONLY_IID = process.env.XBENCH_ONLY_IID || undefined; // run EXACTLY one instance_id (cheap probe).
 const CAP = Number(process.env.XBENCH_CAP ?? 5); // contention cap (in-process pool size).
 
+// The D-004-B su-arm loopback-fetches the operator host for fleet:place_batch (su-independent-backlog.ts
+// placeFifoBatch) — the module header above is STALE on this point (it predates D-004-B's hive-routing).
+// operatorApiBase() defaults to the GREEN release :3070, which LAGS staging; the benchmark must run against
+// the STAGING operator (:3170) where the latest bench code + fixes live. Default it here (override-able).
+process.env.PAPERCUSP_OPERATOR_BASE ??= 'http://localhost:3170';
+
 // TEARDOWN-ON-EXIT. UNLIKE the realqueen launcher there is NO hive to dissolve — the su-arm is HIVE-LESS
 // (su-independent-backlog.ts: "NO createHive, NO startRealQueen … NO collectCoordEvents"). The only thing
 // the driver creates per task is a scratch clone, and the driver ALREADY tears each one down inside its
