@@ -52,14 +52,15 @@ describe('resolveBrainHiveSlug — interactive brain hive scope (P-002)', () => 
 describe('resolveBrainPin — the GET brain-pin flag branch (P-003)', () => {
   test('flag ON (fresh-context) → null pin, so psu --brain takes the fresh mint-launch path', async () => {
     mockFlag.mockResolvedValue(true);
-    expect(await resolveBrainPin()).toBeNull();
+    expect(await resolveBrainPin('ws')).toBeNull();
     expect(mockBrainSession).not.toHaveBeenCalled(); // never reads the D-013 pin under the flag
   });
 
   test('flag OFF → the persistent D-013 pinned session (unchanged resume behavior)', async () => {
     mockFlag.mockResolvedValue(false);
     mockBrainSession.mockResolvedValue('pinned-native-uuid');
-    expect(await resolveBrainPin()).toBe('pinned-native-uuid');
+    expect(await resolveBrainPin('ws')).toBe('pinned-native-uuid');
+    expect(mockBrainSession).toHaveBeenCalledWith('ws'); // EI-908: reads the workspace-scoped pin
   });
 });
 

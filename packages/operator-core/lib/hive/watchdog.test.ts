@@ -161,6 +161,10 @@ describe('armFallbackHiveWake (D-004: a default sleep, never an immediate re-inv
     resolveBrainOwner.mockResolvedValue('s-brain');
     const res = await armFallbackHiveWake({ workspaceId: WS, installSlug: SLUG, source: 'tick', reason: 'r' });
     expect(res.outcome).toBe('staged');
+    // EI-908 regression: the brain pin is workspace-scoped — the backstop MUST
+    // resolve the owner against THIS hive's workspace, not an unscoped () call
+    // (which resolved against `undefined` → always null → nothing staged).
+    expect(resolveBrainOwner).toHaveBeenCalledWith(WS);
     expect(wakeRecipients).toHaveBeenCalledWith(['s-brain'], expect.objectContaining({ source: 'hive-watchdog:tick' }));
     expect(declareHiveTimeWake).not.toHaveBeenCalled();
     expect(fires).toHaveLength(1);

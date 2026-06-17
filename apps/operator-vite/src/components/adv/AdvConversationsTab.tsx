@@ -1368,6 +1368,10 @@ function AgentChatsView() {
           <RichGrid<AgentChatRow>
             inline
             disableCopySupport
+            // The rail was a flat list of cards with no header. RichGrid always
+            // renders its sticky header row, so hide it to keep the prior look.
+            // (grid-core gap: no `hideHeader` prop — noted in the U1 report.)
+            headerStyle={{ display: 'none' }}
             columns={columns}
             getRowId={(c) => c.id}
             virtualMode={{

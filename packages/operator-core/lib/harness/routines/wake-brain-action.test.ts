@@ -25,7 +25,9 @@ const run = (over: Record<string, unknown> = {}) => getSystemAction('wake-brain'
 
 let sql: ReturnType<typeof vi.fn>;
 beforeEach(() => {
-  sql = vi.fn(async () => [{ coord_owner_id: 'owner-x' }]);
+  // EI-908: resolveBrainOwner now gates on a fresh coord_presence heartbeat — a
+  // genuinely-live brain reports a recent one, so model that for the live-wake path.
+  sql = vi.fn(async () => [{ coord_owner_id: 'owner-x', heartbeat_at: new Date() }]);
   vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
   vi.mocked(getFlag).mockResolvedValue(true as never);
   vi.mocked(getBrainSession).mockResolvedValue('brain-uuid' as never);

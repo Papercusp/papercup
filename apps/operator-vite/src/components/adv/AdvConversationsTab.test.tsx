@@ -130,6 +130,33 @@ let mockResult: Record<string, unknown> = {
 };
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => mockResult }));
 
+// @tanstack/react-virtual: the agent-chats rail (U1) renders through a
+// virtualized RichGrid (virtualMode). jsdom has no layout engine, so the REAL
+// virtualizer sees a zero-height scroll container and yields no virtual items —
+// the rail renders nothing and the row text can't be found. Mock useVirtualizer
+// to yield one VirtualItem per row so the full window mounts under test. This
+// mirrors grid-core's own RichGrid.virtual.test.tsx, which feeds a stub
+// virtualizer rather than faking DOM geometry (jsdom can't drive the real one).
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: ({ count }: { count: number }) => {
+    const ROW = 64;
+    const items = Array.from({ length: count }, (_, index) => ({
+      index,
+      key: `vrow-${index}`,
+      start: index * ROW,
+      end: index * ROW + ROW,
+      size: ROW,
+      lane: 0,
+    }));
+    return {
+      getVirtualItems: () => items,
+      getTotalSize: () => count * ROW,
+      measureElement: () => {},
+      measure: () => {},
+    };
+  },
+}));
+
 // WI-125: a LIVE agent chat embeds the real interactive <ChatPanel>; stub it so
 // these tests assert the tab's live-vs-archived routing, not ChatPanel itself
 // (it has its own data needs + suite).

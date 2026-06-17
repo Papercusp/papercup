@@ -214,7 +214,11 @@ export async function armFallbackHiveWake(opts: {
     const { getDefaultWakeMode } = await import('../agent-tools/coordination/wake-mode');
     if ((await getDefaultWakeMode()) === 'manual') {
       const { resolveBrainOwner } = await import('../harness/routines/wake-brain-action');
-      const owner = await resolveBrainOwner().catch(() => null);
+      // EI-908: the brain pin is workspace-scoped — thread this hive's workspace
+      // through so the manual-mode liveness backstop resolves the RIGHT pinned
+      // brain (an unscoped call resolved owner against `undefined` → always null
+      // → the backstop silently staged nothing).
+      const owner = await resolveBrainOwner(workspaceId).catch(() => null);
       if (!owner) {
         const reason = `${opts.reason} (wake-mode manual, no pinned brain — nothing staged)`;
         await recordFire({ workspaceId, installSlug, source, reason, wakeAt: null, demand: opts.demand });

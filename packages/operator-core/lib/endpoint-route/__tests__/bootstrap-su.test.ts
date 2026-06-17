@@ -98,11 +98,11 @@ vi.mock('../../superuser-token', () => ({
   readSuperuserToken: () => 'TESTBEARER',
 }));
 // D-013 brain pin: mock the PG-backed pointer so brain launches don't need a DB.
-const setBrainSessionMock = vi.fn(async (_id: string) => {});
+// EI-908: setBrainSession is workspace-scoped — (workspaceId, nativeSessionId).
+const setBrainSessionMock = vi.fn(async (_ws: string, _id: string) => {});
 const getBrainSessionMock = vi.fn(async (): Promise<string | null> => null);
 vi.mock('../../brain-pin', () => ({
-  BRAIN_SESSION_KEY: 'brain_session_id',
-  setBrainSession: (...a: unknown[]) => setBrainSessionMock(...(a as [string])),
+  setBrainSession: (...a: unknown[]) => setBrainSessionMock(...(a as [string, string])),
   getBrainSession: () => getBrainSessionMock(),
 }));
 // queen-interactive-brain-fresh-context P-003: GET /brain (and the POST brief
@@ -334,8 +334,9 @@ describe('bootstrap-su', () => {
     const json = await res.json();
     expect(json.status).toBe('ok');
     // The pin IS the forced --session-id uuid — set server-side pre-exec.
+    // EI-908: pinned under the launch's workspace-scoped key (workspace, uuid).
     expect(setBrainSessionMock).toHaveBeenCalledTimes(1);
-    expect(setBrainSessionMock).toHaveBeenCalledWith(json.nativeSessionId);
+    expect(setBrainSessionMock).toHaveBeenCalledWith(expect.any(String), json.nativeSessionId);
     expect(json.nativeSessionId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
@@ -361,11 +362,12 @@ describe('bootstrap-su', () => {
 
   it('D-013: GET /brain returns the pin (null until one is set)', async () => {
     const empty = await (await callBrainGet()).json();
-    expect(empty).toEqual({ brainSessionId: null });
+    // EI-908: the response echoes the resolved workspace (active = 'default' here).
+    expect(empty).toEqual({ brainSessionId: null, workspace: 'default' });
 
     getBrainSessionMock.mockResolvedValueOnce('11111111-2222-3333-4444-555555555555');
     const pinned = await (await callBrainGet()).json();
-    expect(pinned).toEqual({ brainSessionId: '11111111-2222-3333-4444-555555555555' });
+    expect(pinned).toEqual({ brainSessionId: '11111111-2222-3333-4444-555555555555', workspace: 'default' });
   });
 
   it('D-013/P-003: GET /brain reports no pin when fresh-context is ON (psu --brain mints fresh)', async () => {
@@ -374,7 +376,7 @@ describe('bootstrap-su', () => {
     getFlagMock.mockResolvedValueOnce(true);
     getBrainSessionMock.mockResolvedValueOnce('11111111-2222-3333-4444-555555555555');
     const res = await (await callBrainGet()).json();
-    expect(res).toEqual({ brainSessionId: null });
+    expect(res).toEqual({ brainSessionId: null, workspace: 'default' });
     expect(getBrainSessionMock).not.toHaveBeenCalled();
   });
 
