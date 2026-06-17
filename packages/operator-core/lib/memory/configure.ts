@@ -57,8 +57,9 @@ const dynamicImport = new Function(
   'return import(specifier)',
 ) as <T>(specifier: string) => Promise<T>;
 
-/** Resolve the OpenAI key: operator credentials first, env fallback. */
-async function resolveOpenAiKey(): Promise<string> {
+/** Resolve the OpenAI key: operator credentials first, env fallback.
+ *  Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
+export async function resolveOpenAiKey(): Promise<string> {
   let key = process.env.OPENAI_API_KEY ?? '';
   try {
     const creds = await readCredentials();
@@ -120,8 +121,9 @@ export function buildOpenAiEmbedder(apiKey: string): EmbedFn {
   };
 }
 
-/** Is the local transformers package installed? */
-async function localAvailable(): Promise<boolean> {
+/** Is the local transformers package installed?
+ *  Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
+export async function localAvailable(): Promise<boolean> {
   try {
     await dynamicImport(TRANSFORMERS_PACKAGE);
     return true;
@@ -130,7 +132,9 @@ async function localAvailable(): Promise<boolean> {
   }
 }
 
-async function readEmbedderPreference(): Promise<'auto' | 'openai' | 'local' | 'disabled'> {
+/** Read the live embedder preference (env override → persisted voice pref →
+ *  'auto'). Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
+export async function readEmbedderPreference(): Promise<'auto' | 'openai' | 'local' | 'disabled'> {
   // Env override first (memory-backend-improve-and-hybrid P-004b): lets the
   // bench force one leg (e.g. PAPERCUSP_MEMORY_EMBEDDER=local to measure the
   // BGE-ONNX leg) without flipping the live operator preference in PG.

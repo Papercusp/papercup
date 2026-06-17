@@ -29,6 +29,7 @@ import { parseAsBoolean, useQueryState } from 'nuqs';
 import { Hexagon, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
+import { getFlagSnapshot, setFlagPayload } from '@papercusp/flags/client';
 import { useFlag } from '@/lib/flag-hooks';
 import { Tooltip } from '../harness/Tooltip';
 
@@ -94,16 +95,25 @@ export default function BrandSwitcher() {
     setOpen(false);
     if (id === activeId || busy) return;
     setBusy(true);
+    const enabled = id === 'the-hive';
+    // Optimistic flip: push the new flag value into the client store NOW so every
+    // `useFlag(THE_HIVE)` consumer (lexicon, wordmark, HiveThemeBridge) re-renders
+    // immediately, instead of waiting on POST → flag-bus → SSE → bootstrap-refetch.
+    // Snapshot the prior payload so a failed write can roll the local flip back.
+    const prev = getFlagSnapshot();
+    setFlagPayload({ ...prev, flags: { ...prev.flags, [FLAGS.THE_HIVE]: enabled } });
     try {
       const res = await fetch('/api/flags/set', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ key: FLAGS.THE_HIVE, enabled: id === 'the-hive' }),
+        body: JSON.stringify({ key: FLAGS.THE_HIVE, enabled }),
       });
       const j = await res.json();
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
-      // useFlag updates reactively via SSE → HiveThemeBridge + useLexicon re-apply.
+      // Persisted. The SSE `flag_changed` → loadFlags() refetch reconciles to the
+      // server truth (same value) — no flicker — and propagates to other clients.
     } catch (e) {
+      setFlagPayload(prev); // roll back the optimistic flip
       toast.error('Couldn’t switch branding', { description: (e as Error).message });
     } finally {
       setBusy(false);

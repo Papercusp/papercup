@@ -3,7 +3,10 @@
  * The concurrency sampler + the bounded pool are the work-surface-agnostic core every driver shares.
  */
 import { describe, expect, it } from 'vitest';
-import { makeConcurrencySampler, runConcurrencyPool } from './hive-backlog-utilities';
+import { makeConcurrencySampler, makePoolBacklogDriver, runConcurrencyPool } from './hive-backlog-utilities';
+import type { CoordEvent } from '@papercusp/bench-metrics';
+import type { FleetTaskResult, HiveBacklogRunRequest } from './hive-backlog';
+import type { BenchTask } from './types';
 
 describe('makeConcurrencySampler', () => {
   it('tracks live occupancy, inline peak, and projects the timeline', () => {
@@ -98,5 +101,64 @@ describe('runConcurrencyPool', () => {
       onResult: (r) => { banked.push(r); },
     });
     expect(banked.sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+});
+
+describe('makePoolBacklogDriver — the generic non-diff pool driver shell (tau2 / metr-hcast reuse)', () => {
+  const task = (id: string): BenchTask => ({ benchmark: 'x', instanceId: id, problemStatement: id, graderMeta: {} });
+  const fleetResult = (id: string, seed: string): FleetTaskResult => ({
+    attempt: { arm: 'a', blueprintId: 'b', instanceId: id, seed, diff: '', tokensIn: 1, tokensOut: 1, costUsd: 0, turns: 1, wallClockMs: 1, trajectoryRef: '', stopReason: 'done' },
+    beeId: `bee-${id}`,
+    placedAtMs: 0,
+    startedAtMs: 0,
+    finishedAtMs: 1,
+    disposition: 'spawn',
+  });
+  const req = (backlog: BenchTask[]): HiveBacklogRunRequest => ({ arm: 'su-independent', suite: 'tau2', runId: 'r1', seed: 0, backlog, budget: {} });
+
+  it('emits a canonical HiveBacklogResult from an injected per-task work fn', async () => {
+    const driver = makePoolBacklogDriver({
+      now: () => Date.now(),
+      concurrencyCap: () => 2,
+      sampleIntervalMs: 1,
+      perTask: async ({ task, seed }) => fleetResult(task.instanceId, seed),
+    });
+    const res = await driver.run(req([task('t1'), task('t2'), task('t3')]));
+    expect(res.arm).toBe('su-independent');
+    expect(res.suite).toBe('tau2');
+    expect(res.runError).toBeUndefined();
+    expect(res.taskResults.map((t) => t.attempt.instanceId).sort()).toEqual(['t1', 't2', 't3']);
+    expect(res.concurrencyTimeline).toBeDefined();
+    expect(res.taskResults[0].attempt.seed).toBe('0'); // the run seed threaded to perTask
+  });
+
+  it('never throws — a perTask that returns its own error result is just collected', async () => {
+    const driver = makePoolBacklogDriver({
+      now: () => Date.now(),
+      concurrencyCap: () => 1,
+      sampleIntervalMs: 1,
+      // perTask is never-throw by contract; here it returns an "error" FleetTaskResult for one task.
+      perTask: async ({ task, seed }) => {
+        const r = fleetResult(task.instanceId, seed);
+        if (task.instanceId === 't2') r.attempt.stopReason = 'error';
+        return r;
+      },
+    });
+    const res = await driver.run(req([task('t1'), task('t2')]));
+    expect(res.taskResults).toHaveLength(2);
+    expect(res.taskResults.find((t) => t.attempt.instanceId === 't2')!.attempt.stopReason).toBe('error');
+  });
+
+  it('threads collectCoordEvents into the result (hive arms emit placements)', async () => {
+    const events: CoordEvent[] = [{ kind: 'placement', tMs: 0 } as unknown as CoordEvent];
+    const driver = makePoolBacklogDriver({
+      now: () => Date.now(),
+      concurrencyCap: () => 1,
+      sampleIntervalMs: 1,
+      perTask: async ({ task, seed }) => fleetResult(task.instanceId, seed),
+      collectCoordEvents: () => events,
+    });
+    const res = await driver.run(req([task('t1')]));
+    expect(res.coordEvents).toHaveLength(1);
   });
 });

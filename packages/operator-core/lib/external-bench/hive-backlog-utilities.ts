@@ -10,7 +10,15 @@
  * work-surface-AGNOSTIC pieces out so all drivers build on ONE implementation, and the suite-specific bit is
  * just the injected per-task ops. Pure (only `now()` injected) → unit-testable without docker/fleet.
  */
-import type { ConcurrencyTimeline } from './hive-backlog';
+import type { CoordEvent, FleetArmId } from '@papercusp/bench-metrics';
+import type {
+  ConcurrencyTimeline,
+  FleetTaskResult,
+  HiveBacklogDriver,
+  HiveBacklogResult,
+  HiveBacklogRunRequest,
+} from './hive-backlog';
+import type { BenchTask, GenerationBudget } from './types';
 
 /**
  * Live-concurrency accounting for a backlog pool. `live` is the ground-truth occupancy (++ when a task's
@@ -118,4 +126,99 @@ export async function runConcurrencyPool<R>(input: {
   const poolSize = Math.max(1, Math.min(cap, backlogLength || 1));
   await Promise.all(Array.from({ length: poolSize }, () => worker()));
   return { results, timedOut };
+}
+
+/** The injected per-task work for {@link makePoolBacklogDriver}: run ONE backlog task → one canonical
+ *  {@link FleetTaskResult}. MUST NOT throw (the never-throw generation contract — return an error result
+ *  instead). The whole call is bracketed as the task's live window for the concurrency timeline. */
+export type PoolPerTask = (input: {
+  task: BenchTask;
+  index: number;
+  arm: FleetArmId;
+  seed: string;
+  budget: GenerationBudget;
+}) => Promise<FleetTaskResult>;
+
+/** Deps for {@link makePoolBacklogDriver}. */
+export interface PoolBacklogDeps {
+  now: () => number;
+  concurrencyCap: () => number | Promise<number>;
+  /** The per-task work (the only suite-specific bit). */
+  perTask: PoolPerTask;
+  fleetTimeoutMs?: number;
+  sampleIntervalMs?: number;
+  /** Optional run-level coordination trace (hive arms emit placements; pool/independent arms → []). */
+  collectCoordEvents?: () => CoordEvent[] | Promise<CoordEvent[]>;
+  /** Fired the instant each task settles → durability (a partial/killed run still banks its rows). */
+  onResult?: (r: FleetTaskResult) => void | Promise<void>;
+}
+
+/**
+ * Build a generic POOL-topology {@link HiveBacklogDriver} — the whole shell every non-diff (M2 / interactive)
+ * fleet-arm shares: the {@link ConcurrencySampler} + the bounded never-throw {@link runConcurrencyPool} +
+ * the canonical {@link HiveBacklogResult} projection. A suite supplies ONLY its {@link PoolPerTask} (e.g.
+ * METR HCAST: prepare container → driveArm → score; tau2: run the agent↔sim conversation → reward-score).
+ * `req.arm` selects which agent loop the suite's perTask runs; the orchestration is identical → causal
+ * arm isolation. Never throws (a per-task failure lands its error FleetTaskResult; a run-level failure →
+ * a partial result carrying `runError`).
+ */
+export function makePoolBacklogDriver(deps: PoolBacklogDeps): HiveBacklogDriver {
+  const fleetTimeoutMs = deps.fleetTimeoutMs ?? DEFAULT_FLEET_TIMEOUT_MS;
+  const sampleIntervalMs = deps.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
+
+  return {
+    async run(req: HiveBacklogRunRequest): Promise<HiveBacklogResult> {
+      const startedAtMs = deps.now();
+      const occupancy = makeConcurrencySampler(startedAtMs, deps.now);
+      occupancy.sample();
+      const timer = setInterval(() => occupancy.sample(), Math.max(1, sampleIntervalMs));
+      if (typeof timer.unref === 'function') timer.unref();
+
+      const taskResults: FleetTaskResult[] = [];
+      let cap = 1;
+      try {
+        cap = Math.max(1, Math.floor(await deps.concurrencyCap()) || 1);
+      } catch {
+        cap = 1;
+      }
+
+      const finalize = (runError?: string, coordEvents: CoordEvent[] = []): HiveBacklogResult => {
+        clearInterval(timer);
+        occupancy.sample();
+        return {
+          arm: req.arm,
+          suite: req.suite,
+          runId: req.runId,
+          seed: req.seed,
+          startedAtMs,
+          finishedAtMs: deps.now(),
+          peakConcurrentBees: occupancy.peak(),
+          taskResults,
+          coordEvents,
+          concurrencyTimeline: occupancy.finalize(),
+          ...(runError ? { runError } : {}),
+        };
+      };
+
+      try {
+        const { timedOut } = await runConcurrencyPool<FleetTaskResult>({
+          backlogLength: req.backlog.length,
+          cap,
+          now: deps.now,
+          deadlineMs: startedAtMs + fleetTimeoutMs,
+          onEntered: () => occupancy.enter(),
+          onExited: () => occupancy.exit(),
+          perTask: (i) => deps.perTask({ task: req.backlog[i], index: i, arm: req.arm, seed: String(req.seed), budget: req.budget }),
+          onResult: async (r) => {
+            taskResults.push(r);
+            await Promise.resolve(deps.onResult?.(r)).catch(() => {});
+          },
+        });
+        const coordEvents = (await deps.collectCoordEvents?.()) ?? [];
+        return finalize(timedOut ? `run wall-clock timeout after ${fleetTimeoutMs}ms (backlog not fully drained)` : undefined, coordEvents);
+      } catch (e) {
+        return finalize(e instanceof Error ? e.message : String(e));
+      }
+    },
+  };
 }

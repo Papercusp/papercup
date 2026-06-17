@@ -32,6 +32,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { BenchTask } from './types';
+import { gaiaTaskToBenchTask, loadGaiaValidation } from './gaia/dataset';
 
 /** A SWE-bench Pro task row as persisted in the pilot JSONL. */
 interface TaskRow {
@@ -520,6 +521,34 @@ export function loadStratifiedTaskSet(): BenchTask[] {
 }
 
 /** Load a named task set → BenchTask[]. */
+/* ------------------------------- GAIA ------------------------------- */
+
+/** The GAIA task-set ids this loader serves — all reuse the provisioned validation corpus + the standalone
+ *  gaia/dataset loader; `benchmark:'gaia'`, gold answer carried in graderMeta (qa modality). */
+export const GAIA_TASK_SET_IDS = ['gaia-validation', 'gaia-l1', 'gaia-l2', 'gaia-l3', 'gaia-custom'] as const;
+
+/** True iff `taskSetId` is a GAIA set (routes to {@link loadGaiaBenchTaskSet}). */
+export function isGaiaTaskSet(taskSetId: string): boolean {
+  return (GAIA_TASK_SET_IDS as readonly string[]).includes(taskSetId);
+}
+
+/** Load a GAIA task set → BenchTask[] (graderMeta carries the gold answer + level). `gaia-l3` is the L3
+ *  subset (the hive-vs-su comparison set); `gaia-validation` is all 165; `gaia-custom` filters to taskIds. */
+function loadGaiaBenchTaskSet(taskSetId: string, taskIds?: string[]): BenchTask[] {
+  let gaia = loadGaiaValidation();
+  if (taskSetId === 'gaia-l1') gaia = gaia.filter((t) => t.level === 1);
+  else if (taskSetId === 'gaia-l2') gaia = gaia.filter((t) => t.level === 2);
+  else if (taskSetId === 'gaia-l3') gaia = gaia.filter((t) => t.level === 3);
+  let tasks = gaia.map(gaiaTaskToBenchTask);
+  if (taskSetId === 'gaia-custom') {
+    const want = new Set(taskIds ?? []);
+    if (want.size === 0) throw new Error('task set "gaia-custom" requires a non-empty taskIds list');
+    tasks = tasks.filter((t) => want.has(t.instanceId));
+    if (tasks.length === 0) throw new Error('no tasks in the GAIA corpus matched the custom taskIds');
+  }
+  return tasks;
+}
+
 export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise<BenchTask[]> {
   if (isVerifiedTaskSet(taskSetId)) {
     // Wrap so a synchronous validation throw surfaces as a rejected promise (the Pro branch convention).
@@ -553,6 +582,13 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
   }
   if (taskSetId === 'stratified-30') {
     return Promise.resolve(loadStratifiedTaskSet());
+  }
+  if (isGaiaTaskSet(taskSetId)) {
+    try {
+      return Promise.resolve(loadGaiaBenchTaskSet(taskSetId, taskIds));
+    } catch (e) {
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
   }
   const rows = readJsonl(pilotTaskSetPath());
   let tasks = rows.map(rowToBenchTask);

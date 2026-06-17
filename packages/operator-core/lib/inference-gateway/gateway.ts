@@ -37,11 +37,14 @@ type FetchInit = RequestInit & { dispatcher?: UndiciDispatcher };
 
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-retry-after
-/** A header-less ("bare") upstream 429 carries no window/retry signal. The account IS rate-limited
- *  right now, so pace it for this SHORT bounded backoff AND fail over — rotating off a momentarily-
- *  limited account instead of 429-looping it (the aviynw10 stuck-loop, 2026-06-17). Short so the
- *  account rejoins quickly; long enough to give other accounts the turn. */
-const BARE_429_FAILOVER_BACKOFF_MS = 60 * 1000;
+/** A header-less ("bare") upstream 429 carries no window/retry signal — but it comes with
+ *  `x-should-retry: true`, i.e. a SHORT transient burst-throttle (capacity exists), NOT quota
+ *  exhaustion (which sets retry-after / unified-window headers + x-should-retry:false). So pace the
+ *  account for this short bounded backoff AND fail over — rotating off the momentarily-limited
+ *  account instead of 429-looping it (the aviynw10 stuck-loop, 2026-06-17). Tuned to the observed
+ *  transient-throttle duration: long enough to let it clear, short enough not to over-bench an
+ *  account that's already recovered (which would thin the pool under broad concurrent contention). */
+const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget

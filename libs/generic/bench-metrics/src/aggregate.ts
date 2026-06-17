@@ -41,6 +41,9 @@ export interface AggregateOpts {
   bootstrapSeed?: number;
   /** Bootstrap resamples. Default 10000. */
   bootstrapIterations?: number;
+  /** The treatment arm the deltas are computed against. Default 'papercusp' (SWE
+   *  pilot); other benchmarks name their own (e.g. 'hive' for tau2's hive-vs-su). */
+  treatmentArm?: ArmId;
 }
 
 const DEFAULT_KS = [1, 3];
@@ -173,18 +176,20 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   const frontierArms = new Set(costAccuracyFrontier(rawPoints).map((p) => p.arm));
   const frontier: ParetoPoint[] = rawPoints.map((p) => ({ ...p, onFrontier: frontierArms.has(p.arm) }));
 
-  // Papercusp − each baseline.
+  // treatment − each baseline. The treatment arm defaults to 'papercusp' (the
+  // SWE pilot); other benchmarks (tau2 etc.) name their own via opts.treatmentArm.
+  const treatmentArm = opts.treatmentArm ?? PAPERCUSP;
   const byArm = new Map(arms.map((a) => [a.arm, a]));
-  const treatment = byArm.get(PAPERCUSP);
+  const treatment = byArm.get(treatmentArm);
   const deltas: ArmDelta[] = [];
   if (treatment) {
-    const tPoint = rawPoints.find((p) => p.arm === PAPERCUSP)!;
+    const tPoint = rawPoints.find((p) => p.arm === treatmentArm)!;
     for (const a of arms) {
-      if (a.arm === PAPERCUSP) continue;
+      if (a.arm === treatmentArm) continue;
       const bPoint = rawPoints.find((p) => p.arm === a.arm)!;
       deltas.push({
         suite,
-        treatment: PAPERCUSP,
+        treatment: treatmentArm,
         baseline: a.arm,
         accuracyDelta: treatment.passAt1 - a.passAt1,
         costRatio:

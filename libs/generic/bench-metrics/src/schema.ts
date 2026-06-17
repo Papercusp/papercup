@@ -80,8 +80,10 @@ export type BenchSuite =
   | (string & {});
 
 /** Grader modality (P-001 §1): offline diff-batch · online in-container · qa (a single FINAL ANSWER string,
- *  quasi-exact-match graded — GAIA; plan benchmark-suite-gaia-2026-06-17). */
-export type GraderModality = 'diff' | 'in-container' | 'qa';
+ *  quasi-exact-match graded — GAIA; plan benchmark-suite-gaia-2026-06-17) · interactive (a synchronous
+ *  per-turn agent↔simulator loop graded by a reward-model — tau2-bench / the-agent-company; the agent↔sim
+ *  DRIVE lives in the runner layer (external-bench), this lib only scores the result). */
+export type GraderModality = 'diff' | 'in-container' | 'qa' | 'interactive';
 
 /**
  * Normalized grader outcome. `error`/`timeout` are INFRA failures, distinct

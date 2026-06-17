@@ -25,15 +25,10 @@
  * backlog placement (worktree members) is NOT reachable for container tasks without a spine work-surface
  * change; this driver's 'hive' version is the in-container coordination arm, labelled as such.
  */
-import type { CoordEvent, FleetArmId } from '@papercusp/bench-metrics';
-import type { HiveBacklogDriver, HiveBacklogResult, HiveBacklogRunRequest, FleetTaskResult } from './hive-backlog';
+import type { FleetArmId } from '@papercusp/bench-metrics';
+import type { HiveBacklogDriver, HiveBacklogResult, FleetTaskResult } from './hive-backlog';
 import { runOneMetrHcastTask, type MetrHcastRunnerOps, type MetrHcastTaskResult } from './metr-hcast-runner';
-import {
-  DEFAULT_FLEET_TIMEOUT_MS,
-  DEFAULT_SAMPLE_INTERVAL_MS,
-  makeConcurrencySampler,
-  runConcurrencyPool,
-} from './hive-backlog-utilities';
+import { makePoolBacklogDriver } from './hive-backlog-utilities';
 
 /** The two METR HCAST fleet-arm versions (reuse the SWE-bench vocab so cross-suite comparison is apples-to-apples). */
 export const METR_HCAST_SU_INDEPENDENT_ARM: FleetArmId = 'su-independent';
@@ -83,74 +78,23 @@ function toFleetTaskResult(r: MetrHcastTaskResult, placedAtMs: number, startedAt
  */
 export function metrHcastBacklogDriver(ops: MetrHcastRunnerOps, opts: MetrHcastBacklogOpts = {}): HiveBacklogDriver {
   const ws = opts.workspaceId ?? 'metr-hcast';
-  const fleetTimeoutMs = opts.fleetTimeoutMs ?? DEFAULT_FLEET_TIMEOUT_MS;
-  const sampleIntervalMs = opts.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
-
-  return {
-    async run(req: HiveBacklogRunRequest): Promise<HiveBacklogResult> {
-      const startedAtMs = ops.now();
-      const sampler = makeConcurrencySampler(startedAtMs, ops.now);
-      sampler.sample();
-      const timer = setInterval(() => sampler.sample(), Math.max(1, sampleIntervalMs));
-      if (typeof timer.unref === 'function') timer.unref();
-
-      let cap = 1;
-      try {
-        cap = Math.max(1, Math.floor(await ops.concurrencyCap()) || 1);
-      } catch {
-        cap = 1;
-      }
-
-      const fleetResults: FleetTaskResult[] = [];
-      const coordEvents: CoordEvent[] = [];
-      const seed = String(req.seed);
-
-      const finalize = (runError?: string): HiveBacklogResult => {
-        clearInterval(timer);
-        sampler.sample();
-        return {
-          arm: req.arm,
-          suite: req.suite,
-          runId: req.runId,
-          seed: req.seed,
-          startedAtMs,
-          finishedAtMs: ops.now(),
-          peakConcurrentBees: sampler.peak(),
-          taskResults: fleetResults,
-          coordEvents,
-          concurrencyTimeline: sampler.finalize(),
-          ...(runError ? { runError } : {}),
-        };
-      };
-
-      try {
-        const { timedOut } = await runConcurrencyPool<FleetTaskResult>({
-          backlogLength: req.backlog.length,
-          cap,
-          now: ops.now,
-          deadlineMs: startedAtMs + fleetTimeoutMs,
-          onEntered: () => sampler.enter(),
-          onExited: () => sampler.exit(),
-          perTask: async (i): Promise<FleetTaskResult> => {
-            const task = req.backlog[i];
-            const placedAtMs = ops.now();
-            const startedAt = ops.now();
-            // runOneMetrHcastTask is itself never-throw (prepare/drive/score/teardown, infra → resolved=null).
-            const r = await runOneMetrHcastTask(ops, { task, arm: metrHcastArmIdForFleetArm(req.arm), budget: req.budget, seed, workspaceId: ws });
-            const finishedAt = ops.now();
-            await Promise.resolve(opts.onTaskCollected?.(r)).catch(() => {});
-            return toFleetTaskResult(r, placedAtMs, startedAt, finishedAt);
-          },
-          onResult: (r) => {
-            fleetResults.push(r);
-          },
-        });
-        return finalize(timedOut ? `run wall-clock timeout after ${fleetTimeoutMs}ms (backlog not fully drained)` : undefined);
-      } catch (e) {
-        return finalize(e instanceof Error ? e.message : String(e));
-      }
+  // The generic shell ({@link makePoolBacklogDriver}) owns the sampler + pool + canonical-output projection;
+  // metr-hcast supplies ONLY its per-task work (prepare container → driveArm → score → FleetTaskResult).
+  return makePoolBacklogDriver({
+    now: ops.now,
+    concurrencyCap: () => ops.concurrencyCap(),
+    fleetTimeoutMs: opts.fleetTimeoutMs,
+    sampleIntervalMs: opts.sampleIntervalMs,
+    perTask: async ({ task, arm, seed, budget }): Promise<FleetTaskResult> => {
+      const placedAtMs = ops.now();
+      const startedAt = ops.now();
+      // runOneMetrHcastTask is itself never-throw (prepare/drive/score/teardown, infra → resolved=null).
+      const r = await runOneMetrHcastTask(ops, { task, arm: metrHcastArmIdForFleetArm(arm), budget, seed, workspaceId: ws });
+      const finishedAt = ops.now();
+      await Promise.resolve(opts.onTaskCollected?.(r)).catch(() => {});
+      return toFleetTaskResult(r, placedAtMs, startedAt, finishedAt);
     },
-  };
+  });
 }
 
 /**

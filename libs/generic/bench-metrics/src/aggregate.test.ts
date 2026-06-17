@@ -122,4 +122,18 @@ describe('buildSuiteReport', () => {
   it('throws on empty input', () => {
     expect(() => buildSuiteReport([])).toThrow(/no rows/);
   });
+
+  it('rides a non-SWE benchmark: open arm vocab + interactive modality + custom treatmentArm', () => {
+    // tau2-style: a 'hive' arm vs a 'su' arm on an interactive suite, treatment = 'hive'.
+    const rows = [
+      mk({ suite: 'tau2-bench', modality: 'interactive', arm: 'hive', taskId: 't1', resolved: true, graderStatus: 'passed' }),
+      mk({ suite: 'tau2-bench', modality: 'interactive', arm: 'hive', taskId: 't2', resolved: true, graderStatus: 'passed' }),
+      mk({ suite: 'tau2-bench', modality: 'interactive', arm: 'su', taskId: 't1', resolved: true, graderStatus: 'passed' }),
+      mk({ suite: 'tau2-bench', modality: 'interactive', arm: 'su', taskId: 't2', resolved: false, graderStatus: 'failed' }),
+    ];
+    const report = buildSuiteReport(rows, { treatmentArm: 'hive' });
+    const d = report.deltas.find((x) => x.baseline === 'su')!;
+    expect(d.treatment).toBe('hive');
+    expect(d.accuracyDelta).toBeCloseTo(1 - 0.5, 6); // hive 1.0 − su 0.5
+  });
 });
