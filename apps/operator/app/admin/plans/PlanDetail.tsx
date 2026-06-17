@@ -36,6 +36,7 @@ import RevisionsPanel from './RevisionsPanel';
 import RevisionDiffModal from './RevisionDiffModal';
 import RevisionConversationModal from './RevisionConversationModal';
 import AgentsPanel from './AgentsPanel';
+import RunsPanel from './RunsPanel';
 import PlanConflictModal from './PlanConflictModal';
 import PlanStatusPopover, {
   resolveItemId,
@@ -109,7 +110,7 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
   // `tab=plans` → AdvShell saw an invalid id and fell back to brainstorm.
   const [tab, setTab] = useQueryState(
     'ptab',
-    parseAsStringEnum(['editor', 'revisions', 'agents']).withDefault('editor'),
+    parseAsStringEnum(['editor', 'revisions', 'agents', 'runs']).withDefault('editor'),
   );
   const [itemView, setItemView] = useQueryState(
     'itemView',
@@ -501,6 +502,9 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
           currentContentHash={data.contentHash}
         />
       ) : null}
+      {tab === 'runs' ? (
+        <RunsPanel slug={data.slug} planTitle={title} currentContentHash={data.contentHash} />
+      ) : null}
       <PlanConflictModal
         open={conflict !== null}
         currentContent={conflict ?? ''}
@@ -688,7 +692,7 @@ function DetailShell({
   );
 }
 
-type PlanDetailTab = 'editor' | 'revisions' | 'agents';
+type PlanDetailTab = 'editor' | 'revisions' | 'agents' | 'runs';
 
 /**
  * Top-level tab strip — P-020/P-021. Switches between the editor, the
@@ -720,6 +724,13 @@ function PlanTabStrip({
         active={tab}
         onTab={onTab}
         label="Agents"
+        hint={editing ? 'unsaved edits' : undefined}
+      />
+      <TabButton
+        tab="runs"
+        active={tab}
+        onTab={onTab}
+        label="Runs"
         hint={editing ? 'unsaved edits' : undefined}
       />
     </div>

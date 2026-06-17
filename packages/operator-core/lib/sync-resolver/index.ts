@@ -1646,6 +1646,32 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── plans.runs — the Runs tab's per-template run history + rollup (scheduled-recurring-plans P-022/P-024) ──
+  //
+  // The enriched run history for one template (outcome, duration, trigger, work-item
+  // rollup, cost) + the computed rollup (success rate, median duration, regression
+  // flags) for the summary header. Returns a 1-element array [{ runs, rollup }] (cf.
+  // learning.apiary). Read-only — the routine tick settles outcomes; this does not
+  // reconcile (no side effects on a UI read). Best-effort: a read error degrades to
+  // empty so the tab shows its empty state.
+  'plans.runs': {
+    argsSchema: z.object({
+      planSlug: z.string().min(1),
+      harnessSlug: z.string().max(200).optional(),
+    }),
+    resolve: async (args) => {
+      const a = args as { planSlug: string; harnessSlug?: string };
+      try {
+        const { listPlanRuns, computePlanRunRollup } = await import('../agent-tools/plans/runs');
+        const runs = await listPlanRuns(a.planSlug, a.harnessSlug ? { harnessSlug: a.harnessSlug } : {});
+        return [{ runs, rollup: computePlanRunRollup(runs) }];
+      } catch (err) {
+        console.warn('[plans.runs] read failed:', err instanceof Error ? err.message : err);
+        return [{ runs: [], rollup: null }];
+      }
+    },
+  },
+
   // ── learning.apiary — the Learning tab's Benchmark view (operator-learning-tab P-007) ──
   //
   // The apiary / IQ-battery scoreboard: one summary row per benchmark generation

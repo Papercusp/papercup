@@ -123,7 +123,7 @@ export function dockerTaskStandardOps(deps: DockerOpsDeps = {}): Pick<MetrHcastR
   const python = deps.python ?? 'python';
   const taskhelper = deps.taskhelper ?? taskhelperPath();
   const opTimeoutMs = deps.opTimeoutMs ?? 300_000;
-  const nameSuffix = deps.nameSuffix ?? (() => `${Date.now ? '' : ''}${(containerCounter += 1)}`);
+  const nameSuffix = deps.nameSuffix ?? (() => `${process.pid}-${(containerCounter += 1)}`);
 
   const runTaskhelper = async (containerId: string, family: string, task: string, op: string, extra: string[] = []): Promise<unknown> => {
     const r = await exec(docker, ['exec', '-w', '/root', containerId, python, 'taskhelper.py', family, task, op, ...extra], { timeoutMs: opTimeoutMs });
@@ -441,15 +441,35 @@ export function hiveDriveArm(deps: ArmDriverDeps): MetrHcastRunnerOps['driveArm'
   };
 }
 
+/** The gateway header that pins a request to a specific pool account (mirrors inference-gateway ACCOUNT_HEADER). */
+export const GATEWAY_ACCOUNT_HEADER = 'x-papercusp-account';
+
 /** Config for {@link gatewayModelCall}. */
 export interface GatewayModelCfg {
   model?: string;
   baseUrl?: string;
   apiKey?: string;
+  /** Pin this arm's calls to a specific pool account (cache-affinity + contention isolation from concurrent
+   *  benches). Sent as the `x-papercusp-account` header the gateway routes on. Env override: PAPERCUSP_METR_ACCOUNT. */
+  accountId?: string;
+  /** Retries on a transient 429/529/overloaded from the gateway (shared with concurrent benches). Default 4. */
+  maxRetries?: number;
+  /** Base backoff (ms) for transient retries (exponential: base·2^attempt). Default 2000. */
+  retryBaseMs?: number;
+  /** Sleep seam (injected in tests so retries don't actually wait). */
+  sleep?: (ms: number) => Promise<void>;
   /** Anthropic SDK import (injected for tests; defaults to a lazy dynamic import of @anthropic-ai/sdk). */
-  anthropicCtor?: new (opts: { apiKey: string; baseURL: string }) => {
+  anthropicCtor?: new (opts: { apiKey: string; baseURL: string; defaultHeaders?: Record<string, string> }) => {
     messages: { create(body: Record<string, unknown>): Promise<AnthropicMessageResponse> };
   };
+}
+
+/** A transient gateway error (429 rate-limit / 529 overloaded) worth retrying — distinct from a real failure. */
+function isTransientGatewayError(e: unknown): boolean {
+  const status = (e as { status?: number })?.status;
+  if (status === 429 || status === 529 || status === 503) return true;
+  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  return msg.includes('rate_limit') || msg.includes('overloaded') || msg.includes('429') || msg.includes('529');
 }
 
 /** The minimal slice of the Anthropic Messages response we read. */
@@ -480,9 +500,29 @@ export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
     return clientP;
   };
 
+  const maxRetries = cfg.maxRetries ?? 4;
+  const retryBaseMs = cfg.retryBaseMs ?? 2000;
+  const sleep = cfg.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
   return async ({ system, messages, tools, maxTokens }) => {
     const c = await client();
-    const resp = await c.messages.create({ model, max_tokens: maxTokens, system, messages, tools });
+    let resp: AnthropicMessageResponse | undefined;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        resp = await c.messages.create({ model, max_tokens: maxTokens, system, messages, tools });
+        break;
+      } catch (e) {
+        lastErr = e;
+        // Retry only transient gateway contention (429/529/overloaded — the shared bench gateway is busy).
+        if (attempt < maxRetries && isTransientGatewayError(e)) {
+          await sleep(retryBaseMs * 2 ** attempt);
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!resp) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
     const content = resp.content ?? [];
     const toolCalls = content
       .filter((b) => b.type === 'tool_use')

@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   dockerTaskStandardOps,
+  gatewayModelCall,
   hiveDriveArm,
   parseTaskhelperResult,
   singleOpusDriveArm,
@@ -160,6 +161,69 @@ describe('singleOpusDriveArm', () => {
     const r = await drive({ task: task(), env, arm: 'baseline-a-ablation', budget: {}, seed: '0', workspaceId: 'w' });
     expect(r.submission).toBe('3');
     expect(r.telemetry.stopReason).toBe('done');
+  });
+});
+
+describe('gatewayModelCall — transient-retry', () => {
+  const okResp = { content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn', usage: { input_tokens: 5, output_tokens: 2 } };
+
+  it('retries a 429 then succeeds (rides out concurrent-bench gateway contention)', async () => {
+    let calls = 0;
+    const ctor = class {
+      messages = {
+        create: vi.fn(async () => {
+          calls += 1;
+          if (calls < 3) {
+            const e = new Error('rate_limit_error 429') as Error & { status: number };
+            e.status = 429;
+            throw e;
+          }
+          return okResp;
+        }),
+      };
+    };
+    const mc = gatewayModelCall({ anthropicCtor: ctor as never, sleep: async () => {}, maxRetries: 4 });
+    const r = await mc({ system: 's', messages: [], tools: [], maxTokens: 100 });
+    expect(calls).toBe(3); // 2 failures + 1 success
+    expect(r.text).toBe('hi');
+    expect(r.usage.inputTokens).toBe(5);
+  });
+
+  it('does NOT retry a non-transient error (e.g. 400)', async () => {
+    let calls = 0;
+    const ctor = class {
+      messages = {
+        create: vi.fn(async () => {
+          calls += 1;
+          const e = new Error('invalid_request 400') as Error & { status: number };
+          e.status = 400;
+          throw e;
+        }),
+      };
+    };
+    const mc = gatewayModelCall({ anthropicCtor: ctor as never, sleep: async () => {}, maxRetries: 4 });
+    await expect(mc({ system: 's', messages: [], tools: [], maxTokens: 100 })).rejects.toThrow(/400/);
+    expect(calls).toBe(1); // no retry
+  });
+
+  it('parses tool_use blocks into toolCalls', async () => {
+    const ctor = class {
+      messages = {
+        create: vi.fn(async () => ({
+          content: [
+            { type: 'text', text: 'let me run a command' },
+            { type: 'tool_use', id: 'tu1', name: 'bash', input: { command: 'ls' } },
+          ],
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 10, output_tokens: 4 },
+        })),
+      };
+    };
+    const mc = gatewayModelCall({ anthropicCtor: ctor as never, sleep: async () => {} });
+    const r = await mc({ system: 's', messages: [], tools: [], maxTokens: 100 });
+    expect(r.toolCalls).toEqual([{ id: 'tu1', name: 'bash', input: { command: 'ls' } }]);
+    expect(r.text).toBe('let me run a command');
+    expect(r.assistantBlocks).toHaveLength(2);
   });
 });
 
