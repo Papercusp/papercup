@@ -70,3 +70,38 @@ If the fresh binary behaves correctly, the running dock is stale — the fix is 
 
 The dock's `psu` panes are unaffected by a pui change — only the `pui`-subcommand
 panes (colony/plans/mail/work/wake/network) carry it.
+
+## Related gotcha: zellij eats ↑/↓ in the stacked dock (only ←/→ reach the pane)
+
+Symptom: in the **Colony** pane's browse mode, `←/→` switch the internal panes
+but `↑/↓` do nothing — even though pui's reducer handles browse `↑/↓` identically
+(verified in a plain `pui hud`, no zellij).
+
+Cause: the dock's chat group is a vertical **`stacked=true`** group
+(`sentinel / colony / wakes`), and zellij 0.44 reserves plain `↑/↓` to move focus
+*between* stacked panes — a built-in, NOT a keybind (it fires even with the user's
+`clear-defaults=true` config that binds arrows only in `pane`/`move` modes). So
+`↑/↓` never reach the focused pane's program; `←/→` have no vertical-stack meaning
+so they pass through. The dock's stack scroll is already `Alt+↑/↓`, so plain `↑/↓`
+were meant for the pane all along.
+
+Fix (in `layout.rs::chat_dock_kdl`, the dock's layout-level `keybinds`): forward
+`↑/↓` to the focused pane with zellij's `Write` action —
+
+```
+keybinds { normal {
+    bind "up"   { Write 27 91 65; }   // ESC[A → cursor-up to the pane
+    bind "down" { Write 27 91 66; }   // ESC[B → cursor-down to the pane
+} }
+```
+
+A bound key beats the stack's built-in grab, and `Write <bytes>` sends raw bytes
+to the focused pane (crossterm reads `ESC[A`/`ESC[B` as Up/Down). Use **lowercase**
+zellij key names (`"up"`, not `"Up"` — capitalized names silently don't match).
+Requires a **dock relaunch** to regenerate `~/.papercusp/pui-chat-dock.kdl`.
+
+Repro caveat: a detached `tmux → zellij --new-session-with-layout` does NOT deliver
+`tmux send-keys` into the inner zellij pane's program (even plain chars don't echo
+to a `cat` pane) — so you cannot validate in-zellij key routing that way. Verify
+the *reducer* in a plain `pui hud` (no zellij), confirm the `Write` keybind parses
+(the session starts), and confirm the live behavior in the real dock after relaunch.

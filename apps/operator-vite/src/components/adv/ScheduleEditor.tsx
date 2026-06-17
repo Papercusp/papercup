@@ -235,6 +235,7 @@ function defaultStart(seedDate?: string): string {
 export default function ScheduleEditor({
   planSlug,
   planTitle,
+  harness,
   seedDate,
   seedMode,
   initial,
@@ -244,6 +245,9 @@ export default function ScheduleEditor({
 }: {
   planSlug: string;
   planTitle?: string | null;
+  /** The plan's harness — threaded to the write tools so a non-primary-harness plan
+   *  targets the right pot (D-020). Omit ⇒ the write resolves the primary harness. */
+  harness?: string;
   /** ISO date the editor opens on (from a calendar dateClick); seeds one-shot + dtstart. */
   seedDate?: string;
   /** Force initial mode (a day-click seeds 'one-shot'). */
@@ -298,11 +302,14 @@ export default function ScheduleEditor({
     }
   };
 
+  const hArg = harness ? { harness } : {};
+
   const onSave = async () => {
     const payload = buildSchedulePayload(form);
     const ok = await doWrite(() =>
       runScheduleTool('plans:set-schedule', {
         slug: planSlug,
+        ...hArg,
         schedule: payload.schedule,
         scheduledAt: payload.scheduledAt,
         expiresAt: payload.expiresAt,
@@ -312,12 +319,12 @@ export default function ScheduleEditor({
   };
 
   const onClear = async () => {
-    const ok = await doWrite(() => runScheduleTool('plans:set-schedule', { slug: planSlug, schedule: null, scheduledAt: null }));
+    const ok = await doWrite(() => runScheduleTool('plans:set-schedule', { slug: planSlug, ...hArg, schedule: null, scheduledAt: null }));
     if (ok) onClose();
   };
 
   const onArmToggle = async () => {
-    await doWrite(() => runScheduleTool(isArmed ? 'plans:disarm-schedule' : 'plans:arm-schedule', { slug: planSlug }));
+    await doWrite(() => runScheduleTool(isArmed ? 'plans:disarm-schedule' : 'plans:arm-schedule', { slug: planSlug, ...hArg }));
   };
 
   return (

@@ -7,7 +7,13 @@
  * (`OperatorWordmarkLockup`), the page title + favicon + forced theme
  * (`HiveThemeBridge`) — all of which key off the single `THE_HIVE` flag. So this
  * control just toggles that flag (POST /api/flags/set, the same write the
- * /admin/features page uses); the reactive `useFlag` (SSE) re-renders everything.
+ * /admin/features page uses). It flips the flag in the client store
+ * OPTIMISTICALLY so the reactive `useFlag` (lexicon + wordmark + HiveThemeBridge)
+ * re-renders INSTANTLY, then the server write + SSE `flag_changed` reconcile it
+ * (rolling back the local flip on failure). Without the optimistic apply the
+ * switch waited on the whole POST → flag-bus → SSE → bootstrap-refetch round-trip
+ * — which lags badly (and looks like "nothing happened") through the dev Vite SSE
+ * proxy. Same pattern as the Force/Excl optimism (use-account-override).
  *
  * NOTE — branding is a WORKSPACE-GLOBAL flag (unlike the per-user color theme), so
  * switching here changes the brand for the whole install. And turning Hive ON forces

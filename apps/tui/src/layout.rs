@@ -382,9 +382,21 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
 // program here (it's the zoom toggle) — but Shift+Tab is a separate bind, so
 // Claude's permission-mode toggle is unaffected; only plain-Tab prompt
 // completion in the chat panes is given up.
+//
+// ↑/↓ → the focused PANE, not the stack (owner ask 2026-06-17): the chat group
+// is a vertical `stacked=true` group (sentinel/colony/wakes), and zellij 0.44
+// reserves plain ↑/↓ to move focus BETWEEN stacked panes — so they never reach
+// the focused pane's program (e.g. the Colony pane's two-level pane nav, which
+// is why only ←/→ worked there). The dock's stack scroll is `Alt+↑/↓` (the agent
+// stack nav), so plain ↑/↓ belong to the pane: re-bind them to `Write` the CSI
+// cursor-up/down sequences (ESC[A / ESC[B) straight to the focused pane. This
+// also makes ↑/↓ reach the psu/claude chat panes for history/scroll. ←/→ already
+// reach the pane (no vertical-stack meaning), so they're left alone.
 keybinds {{
     normal {{
         bind "Tab" {{ ToggleFocusFullscreen; }}
+        bind "up" {{ Write 27 91 65; }}
+        bind "down" {{ Write 27 91 66; }}
     }}
 }}
 layout {{
@@ -1041,6 +1053,26 @@ mod tests {
             kdl.find("keybinds {").unwrap() < kdl.find("layout {").unwrap(),
             "keybinds must precede layout",
         );
+    }
+
+    #[test]
+    fn chat_dock_forwards_up_down_arrows_to_the_focused_pane() {
+        // owner ask 2026-06-17: the chat group is a vertical `stacked=true` group,
+        // and zellij reserves plain ↑/↓ to move between stacked panes — so they
+        // never reach the focused pane's program (the Colony pane's two-level
+        // pane nav). Re-bind ↑/↓ to Write the CSI cursor sequences to the pane;
+        // the stack scroll stays on Alt+↑/↓.
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default());
+        assert!(
+            kdl.contains("bind \"up\" { Write 27 91 65; }"),
+            "↑→pane (ESC[A) forward bind missing: {kdl}",
+        );
+        assert!(
+            kdl.contains("bind \"down\" { Write 27 91 66; }"),
+            "↓→pane (ESC[B) forward bind missing: {kdl}",
+        );
+        // The chat group is genuinely stacked (the reason the forward is needed).
+        assert!(kdl.contains("stacked=true"), "chat group should be stacked");
     }
 
     #[test]

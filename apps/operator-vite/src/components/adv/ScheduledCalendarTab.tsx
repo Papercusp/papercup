@@ -38,6 +38,8 @@ interface ScheduledOccurrenceRow {
 interface EditorState {
   slug: string;
   title: string | null;
+  /** The plan's harness — threaded to the write tools for non-primary pots (D-020). */
+  harness?: string;
   /** ISO date the editor seeds on (from a day-click → one-shot). */
   seedDate?: string;
   seedMode?: ScheduleMode;
@@ -165,6 +167,7 @@ export default function ScheduledCalendarTab() {
       setEditor({
         slug: selected,
         title: row?.title ?? selected,
+        harness: row?.harnessSlug,
         seedDate: arg.date.toISOString(),
         seedMode: 'one-shot',
         isArmed: row?.scheduleActive ?? false,
@@ -185,9 +188,11 @@ export default function ScheduledCalendarTab() {
         arg.revert();
         return;
       }
+      const hArg = o.harnessSlug ? { harness: o.harnessSlug } : {};
       if (o.kind === 'one-shot') {
         const r = await runScheduleTool('plans:set-schedule', {
           slug: o.templateSlug,
+          ...hArg,
           schedule: null,
           scheduledAt: newStart.toISOString(),
         });
@@ -201,7 +206,7 @@ export default function ScheduledCalendarTab() {
       const cur = scheduleBySlug.get(o.templateSlug);
       if (!cur?.schedule?.rrule) {
         arg.revert();
-        setEditor({ slug: o.templateSlug, title: o.title, isArmed: o.scheduleActive });
+        setEditor({ slug: o.templateSlug, title: o.title, harness: o.harnessSlug, isArmed: o.scheduleActive });
         return;
       }
       const oldIso = new Date(o.occurrenceMs).toISOString();
@@ -212,6 +217,7 @@ export default function ScheduledCalendarTab() {
       };
       const r = await runScheduleTool('plans:set-schedule', {
         slug: o.templateSlug,
+        ...hArg,
         schedule: next,
         expiresAt: cur.expiresAt,
         tzid: cur.tzid,
@@ -350,6 +356,7 @@ export default function ScheduledCalendarTab() {
             <ScheduleEditor
               planSlug={editor.slug}
               planTitle={editor.title}
+              harness={editor.harness}
               seedDate={editor.seedDate}
               seedMode={editor.seedMode}
               initial={scheduleBySlug.get(editor.slug) ?? null}

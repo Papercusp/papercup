@@ -9321,6 +9321,27 @@ If the fresh binary behaves correctly, the running dock is stale — the fix is 
 
 The dock’s `psu` panes are unaffected by a pui change — only the `pui`-subcommand panes (colony/plans/mail/work/wake/network) carry it.
 
+## Related gotcha: zellij eats ↑/↓ in the stacked dock (only ←/→ reach the pane)
+
+[Section titled “Related gotcha: zellij eats ↑/↓ in the stacked dock (only ←/→ reach the pane)”](#related-gotcha-zellij-eats--in-the-stacked-dock-only--reach-the-pane)
+
+Symptom: in the **Colony** pane’s browse mode, `←/→` switch the internal panes but `↑/↓` do nothing — even though pui’s reducer handles browse `↑/↓` identically (verified in a plain `pui hud`, no zellij).
+
+Cause: the dock’s chat group is a vertical **`stacked=true`** group (`sentinel / colony / wakes`), and zellij 0.44 reserves plain `↑/↓` to move focus *between* stacked panes — a built-in, NOT a keybind (it fires even with the user’s `clear-defaults=true` config that binds arrows only in `pane`/`move` modes). So `↑/↓` never reach the focused pane’s program; `←/→` have no vertical-stack meaning so they pass through. The dock’s stack scroll is already `Alt+↑/↓`, so plain `↑/↓` were meant for the pane all along.
+
+Fix (in `layout.rs::chat_dock_kdl`, the dock’s layout-level `keybinds`): forward `↑/↓` to the focused pane with zellij’s `Write` action —
+
+```plaintext
+keybinds { normal {
+    bind "up"   { Write 27 91 65; }   // ESC[A → cursor-up to the pane
+    bind "down" { Write 27 91 66; }   // ESC[B → cursor-down to the pane
+} }
+```
+
+A bound key beats the stack’s built-in grab, and `Write <bytes>` sends raw bytes to the focused pane (crossterm reads `ESC[A`/`ESC[B` as Up/Down). Use **lowercase** zellij key names (`"up"`, not `"Up"` — capitalized names silently don’t match). Requires a **dock relaunch** to regenerate `~/.papercusp/pui-chat-dock.kdl`.
+
+Repro caveat: a detached `tmux → zellij --new-session-with-layout` does NOT deliver `tmux send-keys` into the inner zellij pane’s program (even plain chars don’t echo to a `cat` pane) — so you cannot validate in-zellij key routing that way. Verify the *reducer* in a plain `pui hud` (no zellij), confirm the `Write` keybind parses (the session starts), and confirm the live behavior in the real dock after relaunch.
+
 # pui headless smoke: scratch zellij session, CR-not-LF keys, restore ViewState
 
 > How to drive the pui TUI end-to-end without touching the user's workbench — and the three traps (tips dialog, \n vs \r, shared ViewState owner row)
@@ -9601,6 +9622,51 @@ If those three had each re-implemented the 4-clause AND, drift would be inevitab
 Tip
 
 A good `decideX` function: takes data, returns a discriminated union, has no async, has no side effects, has tests that exercise every variant. If your function fails any of those, push the impurity further out into the runtime.
+
+# Queen fires but no-ops (19-80ms runs) — DBOS routine/step context breaks her spawn
+
+> The autonomous Queen wakes on cadence but her runs complete in tens of milliseconds and place no work, because on the green :3070 operator the hive autoloop fires her from inside a DBOS step/transaction.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The autonomous Queen (the `hive` autoloop) fires every \~30 min, but `harness_shared.spawned_agents` rows with `child_role='queen'` show `duration_ms` of 19-80 ms with `status='done'` (a real Queen turn is \~20 s). The fleet stays empty — no work-items created, no bees placed — and `hive:status` shows `fires24h` ≈ 48-52 (pure 30-min watchdog fallback, never a demand wake).
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+On the **green `:3070` operator** the env carries `PAPERCUSP_DBOS_ROUTINES=1` and, unlike staging, **no** `PAPERCUSP_DBOS_AUTOLOOP=0` / `PAPERCUSP_BACKGROUND_WORKERS=0` guard. So the hive autoloop runs *inside a DBOS step/transaction*, and when it fires the Queen via `durableSpawnFire` (`launch-blueprint.ts` → `defaultFire`), DBOS rejects it:
+
+```plaintext
+[durable-spawn] could not enqueue durable fire (papercup-hive/queen); falling
+back to fire-and-forget: Invalid call to a `workflow` function from within a
+`step` or `transaction`
+[blueprint-run] papercup-hive: fired launch blueprint 'hive' (role queen)
+[invoke papercup-hive] hive turn finished with no next wake armed
+```
+
+The durable enqueue fails → falls back to fire-and-forget → and the turn “finishes” in the same second (the 19-80 ms no-op), arming no next wake. So the Queen never actually runs an LLM turn: she places nothing and is not the gateway’s fault (it reproduces with the gateway healthy).
+
+## Confirm it
+
+[Section titled “Confirm it”](#confirm-it)
+
+```plaintext
+journalctl --user -u papercup-dev-api --since "30 min ago" \
+  | grep -E "durable-spawn|hive turn finished"
+```
+
+The `workflow function from within a step` line + a same-second `hive turn finished with no next wake armed` is the signature. Cross-check `spawned_agents` `child_role='queen'` rows with `duration_ms < 100`.
+
+## Fix directions
+
+[Section titled “Fix directions”](#fix-directions)
+
+1. **Proper fix:** fire the Queen **outside** the autoloop’s DBOS step — defer the launch until after the step commits, or use a DBOS-step-safe enqueue (`DBOS.startWorkflow` from the right context) instead of calling a workflow function from inside the step.
+2. Make the fire-and-forget fallback actually run the turn — today it no-ops under the broken context, so even the fallback doesn’t recover the Queen.
+3. **Config workaround (not a real fix):** guard the autoloop off under DBOS on `:3070` (set `PAPERCUSP_DBOS_AUTOLOOP=0` like staging). Needs a `:3070` restart and has side effects.
 
 # The Queue "waiting on you" count must be a projection, not a pile (operational escalations are alerts)
 
