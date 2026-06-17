@@ -66,6 +66,29 @@ account. Tell: `/healthz` `upstream429` climbs while `failovers` stays flat, the
 never changes, and the 429 body is the bare `message:"Error"` form. **`x-should-retry: true` ⇒ this
 is not a wall — retry / fail over, don't conclude exhaustion.**
 
+**4. The PERSISTED penalty false-pause (a transient 429 → a 16-HOUR fleet-wide lockout).** The worst
+one, and it SURVIVES RESTARTS. The governor's pause lives in `harness_shared.agent_rate_budget` (one row
+per `bucket_key`, `paused_until` epoch-ms — `agent-governor-pg-store.ts`), SHARED by every operator + gym
+process. When a `429` is classified `accountWide && !retryable` (the usage-cap path in
+`resilience/retry.ts`), the handler calls `governor.penalize({ resetAt })` with `resetAt` = the
+account's **rolling-window** reset (Claude Max 5h/**7d**). `recordPenalty` honored that reset FULLY
+(no `maxPauseMs`), so a single transient 429 pinned the **account-blind** `anthropic:opus` (+ `sonnet` +
+`haiku`) bucket to a reset boundary **~16 h out** — locking the WHOLE fleet out of opus with **rpm 0/45,
+$0, zero in-flight**, while `api.anthropic.com` direct-probes returned **200** (5h util 0.48 *allowed*,
+7d 0.79 *allowed*). The tells: `dev:rate_governor_status` shows `paused:true` with `pausedUntil` a round
+hour many hours out + `usage.calls 0 / $0`; the pause is identical across `:3070` and `:3170` (it's the
+shared PG row); and a process restart does **NOT** clear it (the row reloads on boot — this is why
+"restart the gateway" alone failed on 2026-06-17). A **rolling-utilization** window recovers
+continuously, so sitting on its multi-hour reset is always wrong — `recordHeaders` already re-probes a
+rejected unified window at `ROLLING_WINDOW_REPROBE_MS` (2 min); `penalize()` was the gap. **Fixed**
+(`resilience/governor.ts`): `penalize()` auto-caps the pause at `ROLLING_WINDOW_REPROBE_MS` for a
+subscription account (detected via `state.unified`), and bakes that cap into `opts` so the cross-process
+PG write inherits it (the persisted row never carries `unified`, so an in-memory-only cap would still
+write 16 h). **To CLEAR a live one** (no verb does it — `accounts:reset-rate` explicitly skips live
+governor buckets, and they otherwise self-expire only at `paused_until`):
+`UPDATE harness_shared.agent_rate_budget SET paused_until = 0, pace_delay_ms = 0 WHERE paused_until > <now_ms>`
+— scoped to the future-paused rows; the next `acquire` reads it fresh, fleet-wide, no restart needed.
+
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
 - **`dev:rate_governor_status`** — is the paused bucket the **global** `anthropic:opus`
