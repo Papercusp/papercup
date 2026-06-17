@@ -8,7 +8,7 @@
  * OR next_fire_at <= now())` guard means exactly one racing tick wins the claim;
  * a loser sees zero rows updated and skips.
  *
- * A cron-kind routine WITHOUT a cron expression is a ONE-SHOT (a self-declared
+ * A cron-kind routine with neither a cron nor an rrule expression is a ONE-SHOT (a self-declared
  * wake at an explicit `next_fire_at` — the pot's `pot-wake` routine,
  * autoloop-pot-operator-rebuild D-002): claiming it DEACTIVATES it. Setting
  * `next_fire_at = NULL` while leaving it active would make it due again on the
@@ -16,11 +16,15 @@
  */
 import type { Sql } from 'postgres';
 import type { RoutineRow } from '@papercusp/db-org';
-import { computeNextFireAt } from './cron';
+import { computeNextFire } from './schedule-next';
 
 export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<boolean> {
-  const cron = routine.triggerConfig?.cron;
-  if (!cron) {
+  const cfg = routine.triggerConfig;
+  // Recurrence = a cron OR an rrule (scheduled-recurring-plans P-007). No
+  // recurrence at all ⇒ a ONE-SHOT (a self-declared wake at an explicit
+  // next_fire_at): claiming it DEACTIVATES it.
+  const hasRecurrence = !!(cfg && (cfg.cron || cfg.rrule));
+  if (!hasRecurrence) {
     const rows = await sql<{ id: string }[]>`
       UPDATE harness_shared.routines
          SET last_fired_at = now(),
@@ -34,7 +38,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
     `;
     return rows.length > 0;
   }
-  const next = computeNextFireAt(cron, new Date());
+  const next = computeNextFire(cfg, new Date());
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.routines
        SET last_fired_at = now(),

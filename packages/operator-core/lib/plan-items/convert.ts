@@ -88,6 +88,17 @@ export interface ConvertPlanItemOpts {
    *  decisions bearing on this item. The flag read lives at the caller (the tool
    *  layer) so this core stays unit-testable without flag mocking. */
   compileBriefIfMissing?: boolean;
+  /** Scheduled-plan run scope (scheduled-recurring-plans D-016). When set, this
+   *  conversion is one fire of a recurring plan: the work item groups under the
+   *  TEMPLATE slug (source_plan_slug) and carries the run in payload.plan_run, so
+   *  runs stay distinct (the `implements` edge already keys on the instance plan
+   *  slug) while the Queen frontier filter + template grouping work unchanged. */
+  planRun?: {
+    runId: number;
+    runSeq?: number;
+    instancePlanSlug?: string;
+    templateSlug: string;
+  };
   owner: string;
   ownerLabel?: string | null;
   ownerName?: string | null;
@@ -265,12 +276,18 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
     title,
     summary: item.text ?? undefined,
     harness: opts.harnessSlug,
-    payload: { plan_item: stamp, ...(effectiveBrief ? { brief: effectiveBrief } : {}) },
+    payload: {
+      plan_item: stamp,
+      ...(opts.planRun ? { plan_run: opts.planRun } : {}),
+      ...(effectiveBrief ? { brief: effectiveBrief } : {}),
+    },
     // queen-steering-panel P-008: stamp the source plan slug on the minted work-item
     // so the Queen's survey can HARD-filter the frontier by the owner's eligible-plans
     // (surveyHive scopeFilter). Feature-family kinds write the source_plan_slug column;
-    // issue-family kinds ignore it (no frontier row).
-    sourcePlanSlug: opts.planSlug,
+    // issue-family kinds ignore it (no frontier row). Scheduled-run work items group
+    // under the TEMPLATE slug (the stable plan identity) so that filter works
+    // unchanged; the specific run rides payload.plan_run (scheduled-recurring-plans D-016).
+    sourcePlanSlug: opts.planRun?.templateSlug ?? opts.planSlug,
     createdBy: opts.owner,
     // Issue-family kinds take the assignee at creation; feature-family is
     // claimed right after (no assignee column on insert).
