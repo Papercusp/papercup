@@ -386,8 +386,14 @@ export function coordAskTool(sandbox: RunSandbox): CapabilityTool<CoordAskArgs, 
 /* All-tool factories, grouped by capability (the materializer consumes these) */
 /* -------------------------------------------------------------------------- */
 
-/** A factory binding one tool to a sandbox — what the profile materializer calls. */
-export type CapabilityToolFactory = (sandbox: RunSandbox) => CapabilityTool;
+/**
+ * A factory binding one tool to a sandbox — what the profile materializer calls. The
+ * `never` arg makes a specific-arg tool factory (e.g. `(s) => CapabilityTool<MemoryRememberArgs>`)
+ * assignable here (the contravariant `invoke(args: never)` accepts any concrete arg type);
+ * the materializer hands the resulting tools to a turn-generator that calls `invoke` with
+ * runtime-validated args.
+ */
+export type CapabilityToolFactory = (sandbox: RunSandbox) => CapabilityTool<never, unknown>;
 
 /** Every tool factory for one capability. The profile materializer picks by capability. */
 export const CAPABILITY_TOOL_FACTORIES: Record<string, CapabilityToolFactory[]> = {

@@ -35,12 +35,11 @@ function noopHiveOps(): SandboxHiveOps {
 /** A run-tool that records every call so the test asserts the verb + scope. */
 function recordingRunTool(): RunTool & { calls: Array<{ name: string; args: Record<string, unknown> }> } {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
-  const fn = (async (name, args) => {
+  const fn: RunTool = async (name, args) => {
     calls.push({ name, args });
     return { ok: true, payload: { ok: true } } satisfies RunToolResult;
-  }) as RunTool & { calls: typeof calls };
-  fn.calls = calls;
-  return fn;
+  };
+  return Object.assign(fn, { calls });
 }
 
 async function openWith(runTool: RunTool, hiveSlug: string): Promise<RunSandbox> {
