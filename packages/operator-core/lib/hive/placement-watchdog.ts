@@ -41,7 +41,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
-import { openEscalation } from '../agent-tools/coordination/escalations';
+import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { listStartedHives } from './started';
 
@@ -498,6 +498,11 @@ export async function reconcileOneHive(
           break;
         case 'completed':
           if (existing?.status !== 'completed') {
+            // EI-972 — suppress any cursed-placement escalation for this item since
+            // it has now reached a terminal state and is no longer cursed.
+            if (existing?.escalation_msg_id) {
+              await suppressCursedEscalation(existing.escalation_msg_id, unitId);
+            }
             await upsertPlacement(sql, {
               ...base,
               status: 'completed',
@@ -703,6 +708,24 @@ async function escalateCursedPlacement(unitId: string, harness: string | null, f
   } catch (e) {
     console.warn(`[hive-placement-watchdog] cursed escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`);
     return null;
+  }
+}
+
+/** EI-972 — suppress/auto-resolve a cursed-placement escalation when the work
+ *  item reaches a terminal state (passed, resolved, etc.). Best-effort; never throws. */
+async function suppressCursedEscalation(escalationMsgId: string, unitId: string): Promise<void> {
+  if (!escalationMsgId) return;
+  try {
+    await resolveEscalation({
+      msg_id: escalationMsgId,
+      choice: 'item-now-terminal',
+      resolver: WATCHDOG_OWNER,
+      note: `auto-resolved: work-item ${unitId} reached terminal state, cursed advisory is no longer relevant`,
+    });
+  } catch (e) {
+    console.warn(
+      `[hive-placement-watchdog] suppressing cursed escalation failed for ${unitId}: ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
