@@ -130,3 +130,27 @@ export function runBestOfNPilotTask(config: BestOfNConfig, deps: BestOfNPilotDep
   });
   return runBestOfNOnce({ ...config, verifierKind: config.verifierKind ?? 'apply-check' }, ports);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Exports for external consumption (P-009 pilot driver integration).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export {
+  type BestOfNConfig,
+  type BestOfNRunOutput,
+  DEFAULT_BEST_OF_N,
+  BASELINE_C_ARM_ID,
+  type VerifierResult,
+  defaultVerifierScore,
+  type BestOfNArmMeta,
+  runBestOfNOnce,
+} from './baseline-best-of-n';
+
+export {
+  type VisibleTask,
+  toVisibleTask,
+  makeVisibleTestVerifier,
+  makeLiveBestOfNPorts,
+  type LiveBestOfNDeps,
+  type VisibleTestVerifierOps,
+} from './baseline-best-of-n-live';

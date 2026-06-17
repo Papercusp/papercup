@@ -21,6 +21,7 @@ import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem, type PlanStatus } from './parser';
 import { hashPlanContent } from './content-hash';
+import type { Sql } from 'postgres';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
@@ -579,6 +580,44 @@ export async function listPlanIndexRows(
     const { content: _content, ...rest } = rowFromDb({ ...r, content: '' } as PlanDbRow);
     return rest;
   });
+}
+
+/**
+ * Author a plan's SCHEDULE — the operational schedule columns (scheduled-recurring-plans
+ * D-004/D-016, P-014), distinct from the markdown blob (like the op_* columns). Writes
+ * `schedule` (jsonb), `scheduled_at`, `expires_at`, `tzid`. Does NOT arm the schedule
+ * (`schedule_active` is left untouched — arming is the autonomy-gated flow, Phase 3).
+ * Pass `schedule: null` to clear a recurrence (un-schedule). `sql` is a test seam (an
+ * admin client); production uses `withWorkspace`. Returns true iff a plan row matched.
+ */
+export async function setPlanSchedule(
+  opts: PlanSourceOpts & {
+    slug: string;
+    schedule?: PlanSchedule | null;
+    scheduledAt?: string | null;
+    expiresAt?: string | null;
+    tzid?: string | null;
+    sql?: Sql;
+  },
+): Promise<boolean> {
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const scheduleJson = opts.schedule ? JSON.stringify(opts.schedule) : null;
+  const run = (tx: Sql) =>
+    tx<{ plan_slug: string }[]>`
+      UPDATE harness_shared.harness_plans
+         SET schedule = ${scheduleJson}::text::jsonb,
+             scheduled_at = ${opts.scheduledAt ?? null}::timestamptz,
+             expires_at = ${opts.expiresAt ?? null}::timestamptz,
+             tzid = ${opts.tzid ?? null},
+             updated_at = now()
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND plan_slug = ${opts.slug}
+      RETURNING plan_slug
+    `;
+  const rows = opts.sql
+    ? await run(opts.sql)
+    : await withWorkspace(workspaceId, (tx) => run(tx as unknown as Sql));
+  return rows.length > 0;
 }
 
 /**

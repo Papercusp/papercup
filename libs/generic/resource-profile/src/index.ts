@@ -25,6 +25,8 @@
  * connections, DBOS, file descriptors) can absorb.
  */
 
+import { createRequire } from 'node:module';
+
 /** Coarse host bucket, derived from effective core count. Drives nothing on its
  *  own — it's a label for diagnostics + a cheap switch consumers can branch on. */
 export type HostClass = 'laptop' | 'workstation' | 'server';
@@ -171,9 +173,12 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
  * (assume a dedicated DB unless told otherwise) and `hostRole: 'full'`.
  */
 export function detectResourceSignals(overrides?: ResourceProfileConfig): ResourceSignals {
-  // Lazy require so the pure derivation + types are usable in a non-Node bundle.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const os = require('node:os') as typeof import('node:os');
+  // Lazy-load node:os via createRequire so node:os stays OUT of the static import
+  // graph (the pure derivation + types remain usable in a non-Node bundle) while
+  // still working under ESM: this package is "type": "module", so a bare CJS
+  // `require` is undefined in the ES module scope and crashed every tsx/ESM
+  // consumer of getResourceProfile (e.g. the external-bench launchers).
+  const os = createRequire(import.meta.url)('node:os') as typeof import('node:os');
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
   return {
     cores,

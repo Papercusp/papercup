@@ -5,7 +5,7 @@
  * asserting exact wall-clock instants, so they pass regardless of the runner tz.
  */
 import { describe, it, expect } from 'vitest';
-import { computeNextFire, computeNextFireFromRrule, type ScheduleTrigger } from './schedule-next';
+import { computeNextFire, computeNextFireFromRrule, validateRrule, type ScheduleTrigger } from './schedule-next';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -97,5 +97,24 @@ describe('computeNextFire (dispatcher)', () => {
     expect(computeNextFire(null, new Date())).toBeNull();
     expect(computeNextFire(undefined, new Date())).toBeNull();
     expect(computeNextFire({}, new Date())).toBeNull();
+  });
+});
+
+describe('validateRrule', () => {
+  it('accepts a well-formed rrule', () => {
+    expect(validateRrule('FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR')).toEqual({ ok: true });
+    expect(validateRrule('FREQ=DAILY;INTERVAL=2')).toEqual({ ok: true });
+    expect(validateRrule('FREQ=MONTHLY;BYDAY=2TU')).toEqual({ ok: true });
+  });
+
+  it('rejects empty / whitespace', () => {
+    expect(validateRrule('').ok).toBe(false);
+    expect(validateRrule('   ').ok).toBe(false);
+  });
+
+  it('rejects an rrule with no FREQ', () => {
+    const r = validateRrule('BYDAY=MO');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/FREQ/);
   });
 });

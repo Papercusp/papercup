@@ -705,8 +705,10 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       // Route FIFO bee spawns through :3170 host (same path as Queen's fleet:place_batch)
       // instead of in-process executeBatch. This ensures bees get the env + work-item
       // claim that hive bees get via the operator host (D-020 fix).
+      // NOTE: The staging operator (:3170) is the Queen's host on the integration tree.
+      // Using :3170 ensures FIFO control bees get the full invoke environment + work-item
+      // claim layer that hive-realqueen bees get from the same host.
       const { loopbackFetch, readJsonBody } = await import('../loopback-fetch');
-      const { operatorApiBase } = await import('../operator-api-base');
 
       // Extract task IDs from the plan decisions (tasks that will be placed in FIFO order)
       const taskIds = plan.decisions
@@ -720,8 +722,9 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       // Infer the target harness from the first unplaced member (they all have external-bench blueprint)
       const targetHarness = members.find((m) => m.beeId == null)?.member ?? homePrefix;
 
-      // Invoke fleet:place_batch on :3170 with the FIFO-ordered tasks
-      const toolUrl = `${operatorApiBase()}/api/agent-mcp/run-tool`;
+      // Invoke fleet:place_batch on :3170 (staging operator host) with the FIFO-ordered tasks
+      const stagingOperatorBase = 'http://localhost:3170';
+      const toolUrl = `${stagingOperatorBase}/api/agent-mcp/run-tool`;
       const res = await loopbackFetch(toolUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -731,7 +734,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
             tasks: taskIds,
             harness: targetHarness,
             brief: BENCH_BEE_DIRECTIVE,
-            tier: null,
+            tier: 'max', // Enforce opus-strict per brief (max tier = opus:xhigh)
             workspace: ws,
             dry_run: false,
           },

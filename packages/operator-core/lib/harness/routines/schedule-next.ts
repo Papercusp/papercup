@@ -82,3 +82,23 @@ export function computeNextFire(cfg: ScheduleTrigger | null | undefined, from: D
   if (cfg.cron) return computeNextFireAt(cfg.cron, from);
   return null;
 }
+
+/**
+ * Validate an authored RRULE string before it's stored (P-014). Checks it parses
+ * and carries a FREQ (the one required RRULE part); a parse error or a missing FREQ
+ * is rejected with a reason. Does NOT require a future occurrence — an exhausted
+ * COUNT/UNTIL is an expiry concern, not an authoring error.
+ */
+export function validateRrule(rrule: string): { ok: true } | { ok: false; error: string } {
+  if (!rrule || !rrule.trim()) return { ok: false, error: 'empty rrule' };
+  try {
+    const opts = RRule.parseString(rrule);
+    if (opts.freq === undefined || opts.freq === null) {
+      return { ok: false, error: 'rrule missing FREQ' };
+    }
+    new RRule(opts); // construct to surface an invalid option combination
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'invalid rrule' };
+  }
+}
