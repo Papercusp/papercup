@@ -96,3 +96,52 @@ test('aggregateVotes — no votes → null winner, 0 margin', () => {
   assert.equal(r.margin, 0);
   assert.equal(r.mean_conf, 0);
 });
+
+test('parsePost — a bare `veto:` line in free-text does NOT forge an advocate (strict fenced-only)', () => {
+  // SECURITY (source contract): only a fenced ```advocate block is an advocate.
+  // A voter's free-text (or a quoted "veto: true") must NOT forge a veto that
+  // suppresses the real advocate and flips the gate's advocate_veto.
+  const r = parsePost({ author_id: 'sneaky', body: 'I think we should veto: true here.\noption: no' }, ['yes', 'no']);
+  assert.equal(r.advocate, null); // no advocate forged from free-text
+  assert.equal(r.vote?.option, 'no'); // it is only a vote
+});
+
+test('parsePost — advocate veto:false / absent veto key → not vetoing', () => {
+  const a = parsePost({ author_id: 'a', body: '```advocate\nveto: false\nobjection: minor nit\n```' }).advocate;
+  assert.equal(a?.veto, false);
+  const b = parsePost({ author_id: 'b', body: '```advocate\nobjection: just noting\n```' }).advocate;
+  assert.equal(b?.veto, false); // absent veto key defaults to false
+  assert.equal(b?.objection, 'just noting');
+});
+
+test('parsePost — advocate veto yes/1 variants → true (case-insensitive)', () => {
+  assert.equal(parsePost({ author_id: 'a', body: '```advocate\nveto: YES\n```' }).advocate?.veto, true);
+  assert.equal(parsePost({ author_id: 'a', body: '```advocate\nveto: 1\n```' }).advocate?.veto, true);
+});
+
+test('parsePost — advocate with no objection key falls back to the whole block', () => {
+  const a = parsePost({ author_id: 'a', body: '```advocate\nveto: true\n```' }).advocate;
+  assert.equal(a?.veto, true);
+  assert.equal(a?.objection, 'veto: true'); // whole (trimmed) block when no objection: key
+});
+
+test('aggregateVotes — first advocate wins; later advocate blocks are ignored', () => {
+  const r = aggregateVotes({
+    posts: [
+      { author_id: 'a1', body: '```advocate\nveto: true\nobjection: first\n```' },
+      { author_id: 'a2', body: '```advocate\nveto: false\nobjection: second\n```' },
+    ],
+  });
+  assert.equal(r.advocate_veto, true); // first (veto:true) wins
+  assert.equal(r.objection, 'first');
+  assert.equal(r.advocate?.author_id, 'a1');
+});
+
+test('aggregateVotes — a tie yields margin 0 (no clear lead)', () => {
+  const r = aggregateVotes({
+    method: 'majority',
+    posts: [votePost('yes', 1, 'v1'), votePost('no', 1, 'v2')],
+  });
+  assert.equal(r.margin, 0); // 1 vs 1 → (1-1)/2 = 0
+  assert.deepEqual(r.tally, { yes: 1, no: 1 });
+});

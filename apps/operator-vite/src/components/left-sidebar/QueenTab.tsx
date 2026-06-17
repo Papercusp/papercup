@@ -261,10 +261,14 @@ export default function QueenTab({ active }: { active: boolean }) {
   // hivePlans / planToHive depend only on candidate harnesses (stale eligibles are
   // always unassigned), so the toggle structural map is stable.
   const planIndex = useMemo(() => indexPlansByHive(hiveOptions, treePlans), [hiveOptions, treePlans]);
+  const steerableHiveOptions = useMemo(
+    () => hiveOptions.filter((h) => (planIndex.hivePlans.get(h.value)?.length ?? 0) > 0),
+    [hiveOptions, planIndex],
+  );
   const steeringSelection: SteeringSelection = { eligibleHives: view.eligibleHives, eligiblePlans: view.eligiblePlans };
   const steeringTree = useMemo(
-    () => buildSteeringTree(hiveOptions, treePlans, { eligibleHives: view.eligibleHives, eligiblePlans: view.eligiblePlans }),
-    [hiveOptions, treePlans, view.eligibleHives, view.eligiblePlans],
+    () => buildSteeringTree(steerableHiveOptions, treePlans, { eligibleHives: view.eligibleHives, eligiblePlans: view.eligiblePlans }),
+    [steerableHiveOptions, treePlans, view.eligibleHives, view.eligiblePlans],
   );
   const illegalCount = detectIllegalEligiblePlans(steeringSelection, planIndex.planToHive).length;
 
@@ -355,7 +359,11 @@ export default function QueenTab({ active }: { active: boolean }) {
   // clicks accumulate), then optimistic-write BOTH lists in click order.
   const liveSelection = (): SteeringSelection => {
     const l = live();
-    return { eligibleHives: l.eligibleHives, eligiblePlans: l.eligiblePlans };
+    const visibleHives = new Set(steerableHiveOptions.map((h) => h.value));
+    return {
+      eligibleHives: l.eligibleHives.filter((h) => visibleHives.has(h)),
+      eligiblePlans: l.eligiblePlans,
+    };
   };
   const applySteering = (next: SteeringSelection) => {
     overlay({ eligibleHives: next.eligibleHives, eligiblePlans: next.eligiblePlans });
@@ -368,7 +376,7 @@ export default function QueenTab({ active }: { active: boolean }) {
   const treeSetHivePlans = (hiveSlug: string, on: boolean) =>
     applySteering(treeSetHivePlansFn(liveSelection(), hiveSlug, on, planIndex.hivePlans, planIndex.planToHive));
   const treeSetAllHives = (on: boolean) =>
-    applySteering(treeSetAllHivesFn(liveSelection(), on, hiveOptions, planIndex.planToHive));
+    applySteering(treeSetAllHivesFn(liveSelection(), on, steerableHiveOptions, planIndex.planToHive));
 
   return (
     <TooltipPrimitive.Provider delayDuration={250}>

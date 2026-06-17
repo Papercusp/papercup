@@ -203,7 +203,7 @@ export default function HiveSteeringTree({
       {loading ? (
         <div className="pc-queen__placeholder">Loading hives + plans…</div>
       ) : tree.hives.length === 0 ? (
-        <div className="pc-queen__placeholder">No hives.</div>
+        <div className="pc-queen__placeholder">No hives with plans.</div>
       ) : (
         <ul className="pc-queen__plans pc-queen__tree">
           {tree.hives.map((hive) => (

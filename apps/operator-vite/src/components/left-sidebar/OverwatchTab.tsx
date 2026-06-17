@@ -21,10 +21,11 @@
  * dark/empty state defensively.
  */
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, Eye, Pause, Play } from 'lucide-react';
+import { Activity, AlertTriangle, Clock3, Eye, Pause, Play, ShieldCheck } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import type {
   Anomaly,
@@ -120,6 +121,10 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   const stateLabel = running ? 'Running' : preArmed ? 'Pre-armed' : 'Paused';
   const cadenceMin = control ? Math.round(control.cadenceSec / 60) : null;
   const slug = control?.hiveSlug ?? brief?.hiveSlug ?? null;
+  const anomalyCount = brief?.anomalies.length ?? 0;
+  const critCount = brief?.anomalies.filter((a) => a.severity === 'critical').length ?? 0;
+  const lastWake = ageLabel(control?.staleForMs ?? null);
+  const nextWake = control?.armed ? whenLabel(control.nextWakeAt) : 'not armed';
 
   const toggle = async () => {
     setBusy(true);
@@ -136,72 +141,108 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   return (
     <TooltipPrimitive.Provider delayDuration={250}>
       <div className="pc-owsb">
-      {/* Control / status header — status + START/PAUSE toggle (mirrors QueenTab) */}
-      <header className="pc-owsb__bar" data-tone={tone}>
-        <span className={`pc-owsb__dot pc-owsb__dot--${tone}`} aria-hidden />
-        <Eye size={14} aria-hidden />
-        <span className="pc-owsb__title">{stateLabel}</span>
-        {slug && (
-          <Tooltip label="Supervised hive">
-            <span className="pc-owsb__hive">{slug}</span>
+        {/* Control / status header — status + START/PAUSE toggle (mirrors QueenTab) */}
+        <header className="pc-owsb__bar" data-tone={tone}>
+          <div className="pc-owsb__identity">
+            <span className={`pc-owsb__dot pc-owsb__dot--${tone}`} aria-hidden />
+            <Eye size={14} aria-hidden />
+            <span className="pc-owsb__state">
+              <span className="pc-owsb__title">{stateLabel}</span>
+              <span className="pc-owsb__subtitle">Supervisor loop</span>
+            </span>
+          </div>
+          {slug && (
+            <Tooltip label="Supervised hive">
+              <span className="pc-owsb__hive">{slug}</span>
+            </Tooltip>
+          )}
+          <Tooltip label={isStarted ? 'Pause the overwatch supervisor (overwatch:pause)' : 'Start the overwatch supervisor (overwatch:start)'}>
+            <button
+              type="button"
+              className="pc-owsb__toggle"
+              data-on={isStarted}
+              disabled={busy}
+              onClick={() => void toggle()}
+              aria-label={isStarted ? 'Pause overwatch' : 'Start overwatch'}
+            >
+              {busy ? (
+                '...'
+              ) : isStarted ? (
+                <>
+                  <Pause size={11} aria-hidden /> Pause
+                </>
+              ) : (
+                <>
+                  <Play size={11} aria-hidden /> Start
+                </>
+              )}
+            </button>
           </Tooltip>
+        </header>
+
+        <div className="pc-owsb__metrics" aria-label="Overwatch telemetry">
+          <Metric icon={<Activity size={11} aria-hidden />} label="Cadence" value={cadenceMin != null ? `${cadenceMin}m` : 'unknown'} />
+          <Metric icon={<Clock3 size={11} aria-hidden />} label="Next" value={nextWake} />
+          <Metric icon={<Clock3 size={11} aria-hidden />} label="Last" value={lastWake} tooltip="Last overwatch wake" />
+          <Metric
+            icon={anomalyCount === 0 ? <ShieldCheck size={11} aria-hidden /> : <AlertTriangle size={11} aria-hidden />}
+            label="Signals"
+            value={brief ? (anomalyCount === 0 ? 'clear' : `${critCount}/${anomalyCount} critical`) : 'paused'}
+            tone={brief ? (critCount > 0 ? 'bad' : anomalyCount > 0 ? 'warn' : 'good') : 'mute'}
+          />
+        </div>
+
+        {ctrlErr && <div className="pc-owsb__err">Control failed - {ctrlErr}</div>}
+        {preArmed && (
+          <div className="pc-owsb__hint">
+            Started, but the <strong>papercusp-overwatch</strong> flag is OFF - pre-armed, not looping. Flip it on at /admin/features.
+          </div>
         )}
-        <Tooltip label={isStarted ? 'Pause the overwatch supervisor (overwatch:pause)' : 'Start the overwatch supervisor (overwatch:start)'}>
-          <button
-            type="button"
-            className="pc-owsb__toggle"
-            data-on={isStarted}
-            disabled={busy}
-            onClick={() => void toggle()}
-            style={slug ? undefined : { marginLeft: 'auto' }}
-            aria-label={isStarted ? 'Pause overwatch' : 'Start overwatch'}
-          >
-            {busy ? (
-              '…'
-            ) : isStarted ? (
-              <>
-                <Pause size={11} aria-hidden /> Pause
-              </>
-            ) : (
-              <>
-                <Play size={11} aria-hidden /> Start
-              </>
-            )}
-          </button>
-        </Tooltip>
-      </header>
-      <div className="pc-owsb__meta">
-        {cadenceMin != null && <span>cadence {cadenceMin}m</span>}
-        <span>{control?.armed ? `next ${whenLabel(control.nextWakeAt)}` : 'no wake armed'}</span>
-        <Tooltip label="Last overwatch wake">
-          <span>woke {ageLabel(control?.staleForMs ?? null)}</span>
-        </Tooltip>
-      </div>
 
-      {ctrlErr && <div className="pc-owsb__err">Control failed — {ctrlErr}</div>}
-      {preArmed && (
-        <div className="pc-owsb__hint">
-          Started, but the <strong>papercusp-overwatch</strong> flag is OFF — pre-armed, not looping. Flip it on at /admin/features.
+        {brief ? (
+          <OverwatchAnomalies brief={brief} sevFilter={sevFilter} setSevFilter={setSevFilter} />
+        ) : (
+          <section className="pc-owsb__section pc-owsb__section--empty">
+            <div className="pc-owsb__empty-title">Supervisor paused</div>
+            <div className="pc-owsb__placeholder">
+              Start it above to resume system-health supervision. Full health remains on the <strong>Health</strong> tab.
+            </div>
+          </section>
+        )}
+
+        <div className="pc-owsb__footnote">
+          Full system health lives on the <strong>Health</strong> tab. This panel is for supervisor actions.
         </div>
-      )}
 
-      {brief ? (
-        <OverwatchAnomalies brief={brief} sevFilter={sevFilter} setSevFilter={setSevFilter} />
-      ) : (
-        <div className="pc-owsb__placeholder">
-          Overwatch is paused — no live brief. Start it above to resume system-health
-          supervision; full health is always on the <strong>Health</strong> tab.
-        </div>
-      )}
-
-      <div className="pc-owsb__footnote">
-        Full system health → the <strong>Health</strong> tab. This panel is the supervisor's actions.
-      </div>
-
-      <OverwatchStyles />
+        <OverwatchStyles />
       </div>
     </TooltipPrimitive.Provider>
   );
+}
+
+function Metric({
+  icon,
+  label,
+  value,
+  tone = 'mute',
+  tooltip,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  tone?: 'good' | 'warn' | 'bad' | 'mute';
+  tooltip?: string;
+}) {
+  const content = (
+    <span className={`pc-owsb__metric pc-owsb__metric--${tone}`}>
+      <span className="pc-owsb__metric-icon">{icon}</span>
+      <span className="pc-owsb__metric-copy">
+        <span className="pc-owsb__metric-label">{label}</span>
+        <span className="pc-owsb__metric-value">{value}</span>
+      </span>
+    </span>
+  );
+  return tooltip ? <Tooltip label={tooltip}>{content}</Tooltip> : content;
 }
 
 function OverwatchAnomalies({
@@ -266,15 +307,19 @@ function AnomalyRow({ anomaly }: { anomaly: Anomaly }) {
   return (
     <li className={`pc-owsb__anom pc-owsb__anom--${tone}`}>
       <div className="pc-owsb__anom-head">
-        <span className={`pc-owsb__sev pc-owsb__sev--${tone}`}>{anomaly.severity}</span>
-        <span className="pc-owsb__kind" title={anomaly.subject}>{anomaly.kind}</span>
-        <span className={`pc-owsb__verb pc-owsb__verb--${act.type}`}>
-          {ACTION_VERB[act.type]}
-          {act.target ? ` ${act.target}` : ''}
+        <span className="pc-owsb__anom-main">
+          <span className={`pc-owsb__sev pc-owsb__sev--${tone}`}>{anomaly.severity}</span>
+          <span className="pc-owsb__kind" title={anomaly.subject}>{anomaly.kind}</span>
         </span>
+        <span className="pc-owsb__subject">{anomaly.subject}</span>
       </div>
       <div className="pc-owsb__anom-detail">{anomaly.detail}</div>
-      {act.message && <div className="pc-owsb__anom-msg">“{act.message}”</div>}
+      <div className="pc-owsb__action">
+        <span className={`pc-owsb__verb pc-owsb__verb--${act.type}`}>
+          {ACTION_VERB[act.type]}{act.target ? ` ${act.target}` : ''}
+        </span>
+        {act.message && <span className="pc-owsb__anom-msg">{act.message}</span>}
+      </div>
     </li>
   );
 }
@@ -282,27 +327,30 @@ function AnomalyRow({ anomaly }: { anomaly: Anomaly }) {
 function OverwatchStyles() {
   return (
     <style>{`
-      .pc-owsb { display: flex; flex-direction: column; gap: 9px; padding: 10px 10px 16px; min-height: 0; }
+      .pc-owsb { display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 16px; min-height: 0; }
       .pc-owsb--empty { padding-top: 24px; }
       .pc-owsb__placeholder { color: var(--fg-mute, #7f9bb4); font-size: 11.5px; line-height: 1.4; padding: 8px 2px; }
 
       .pc-owsb__bar {
-        display: flex; align-items: center; gap: 7px; padding: 7px 10px; border-radius: 9px;
+        display: flex; align-items: center; gap: 7px; padding: 8px 9px; border-radius: 9px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); background: var(--bg-2, rgba(255, 255, 255, 0.04));
       }
       .pc-owsb__bar[data-tone='good'] { border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.06); }
       .pc-owsb__bar[data-tone='warn'] { border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.06); }
       .pc-owsb__bar svg { color: var(--fg-dim, #b9d4e8); }
+      .pc-owsb__identity { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+      .pc-owsb__state { display: flex; flex-direction: column; min-width: 0; line-height: 1.1; }
       .pc-owsb__title { font-size: 12px; font-weight: 760; letter-spacing: 0.03em; text-transform: uppercase; color: var(--fg, #e7f7ff); }
+      .pc-owsb__subtitle { font-size: 9.5px; color: var(--fg-mute, #7f9bb4); letter-spacing: 0; margin-top: 2px; }
       .pc-owsb__hive {
-        margin-left: auto; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-mute, #7f9bb4);
+        font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-mute, #7f9bb4);
         padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 86px; flex-shrink: 1;
       }
       .pc-owsb__toggle {
-        margin-left: 6px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; flex-shrink: 0;
+        display: inline-flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; flex-shrink: 0;
         font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
-        padding: 3px 9px; border-radius: 999px; color: var(--fg, #e7f7ff);
+        min-width: 62px; padding: 4px 9px; border-radius: 999px; color: var(--fg, #e7f7ff);
         border: 1px solid rgba(125, 211, 252, 0.3); background: rgba(255, 255, 255, 0.05);
       }
       .pc-owsb__toggle:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
@@ -314,9 +362,27 @@ function OverwatchStyles() {
       .pc-owsb__dot--good { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
       .pc-owsb__dot--warn { background: #fbbf24; box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
       .pc-owsb__dot--mute { background: #475569; }
-      .pc-owsb__meta {
-        display: flex; flex-wrap: wrap; gap: 3px 10px; padding: 0 2px;
-        font-size: 10px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums;
+      .pc-owsb__metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+      .pc-owsb__metric {
+        min-width: 0; display: flex; align-items: center; gap: 6px; padding: 6px 7px; border-radius: 8px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); background: rgba(255, 255, 255, 0.025);
+      }
+      .pc-owsb__metric-icon { display: inline-flex; align-items: center; justify-content: center; color: var(--fg-mute, #7f9bb4); flex-shrink: 0; }
+      .pc-owsb__metric-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+      .pc-owsb__metric-label { font-size: 8.5px; font-weight: 760; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); }
+      .pc-owsb__metric-value {
+        font-size: 10.5px; font-weight: 720; color: var(--fg-dim, #b9d4e8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        font-variant-numeric: tabular-nums;
+      }
+      .pc-owsb__metric--good { border-color: rgba(52, 211, 153, 0.28); background: rgba(52, 211, 153, 0.055); }
+      .pc-owsb__metric--good .pc-owsb__metric-value, .pc-owsb__metric--good .pc-owsb__metric-icon { color: #6ee7b7; }
+      .pc-owsb__metric--warn { border-color: rgba(251, 191, 36, 0.3); background: rgba(251, 191, 36, 0.06); }
+      .pc-owsb__metric--warn .pc-owsb__metric-value, .pc-owsb__metric--warn .pc-owsb__metric-icon { color: #fcd34d; }
+      .pc-owsb__metric--bad { border-color: rgba(244, 63, 94, 0.34); background: rgba(244, 63, 94, 0.065); }
+      .pc-owsb__metric--bad .pc-owsb__metric-value, .pc-owsb__metric--bad .pc-owsb__metric-icon { color: #fca5a5; }
+      .pc-owsb__metric--mute .pc-owsb__metric-value { color: var(--fg-dim, #b9d4e8); }
+      .pc-owsb__empty-title {
+        font-size: 10.5px; font-weight: 760; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg, #e7f7ff);
       }
       .pc-owsb__err {
         font-size: 10.5px; line-height: 1.35; color: #fca5a5; padding: 6px 9px; border-radius: 8px;

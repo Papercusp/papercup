@@ -95,3 +95,48 @@ describe('bestCompactFormat', () => {
     expect(bestCompactFormat(new Set<ResultFormat>(['json']))).toBe('json');
   });
 });
+
+// Structural edge cases driven by RAW JSON-Schema (shapes zod doesn't readily
+// emit: open objects, tuple/boolean items, type-union arrays). These guard the
+// CSV-eligibility decision — CSV requires a CLOSED, enumerable, all-scalar
+// column set, so anything that breaks that promise must fall back to {json,toon}.
+describe('analyzeSchema — structural edge cases (raw JSON-Schema)', () => {
+  const caps = (s: Record<string, unknown>) => [...analyzeSchema(s).capabilities].sort();
+
+  it('an OPEN object (additionalProperties:true) is NOT csv-eligible — unknown columns', () => {
+    const open = { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: true } };
+    expect(caps(open)).toEqual(['json', 'toon']);
+  });
+
+  it('additionalProperties as a SCHEMA (not just true) is also not csv-eligible', () => {
+    const open = { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: { type: 'string' } } };
+    expect(caps(open)).toEqual(['json', 'toon']);
+  });
+
+  it('additionalProperties:false keeps a flat object csv-eligible', () => {
+    const closed = { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false } };
+    expect(caps(closed)).toContain('csv');
+  });
+
+  it('an array of empty-property objects is not flat → {json,toon}', () => {
+    expect(caps({ type: 'array', items: { type: 'object', properties: {} } })).toEqual(['json', 'toon']);
+  });
+
+  it('tuple-form items (items is an array of positional schemas) → {json,toon}', () => {
+    expect(caps({ type: 'array', items: [{ type: 'string' }, { type: 'number' }] })).toEqual(['json', 'toon']);
+  });
+
+  it('boolean items (items: true) → {json,toon}, never csv', () => {
+    expect(caps({ type: 'array', items: true })).toEqual(['json', 'toon']);
+  });
+
+  it('a type-union array (type:["array","null"]) is still treated as an array', () => {
+    const u = { type: ['array', 'null'], items: { type: 'object', properties: { id: { type: 'string' }, n: { type: 'number' } } } };
+    expect(caps(u)).toContain('csv');
+  });
+
+  it('a nullable-via-type-array scalar column (type:["number","null"]) is still a flat column', () => {
+    const s = { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, x: { type: ['number', 'null'] } } } };
+    expect(caps(s)).toContain('csv');
+  });
+});

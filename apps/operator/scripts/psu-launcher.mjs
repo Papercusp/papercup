@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -61,14 +61,18 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, passthrough: [] };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, addDir: [], passthrough: [] };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
   // launchResume); ordering past that is the caller's responsibility.
   let rest = false;
+  let pendingAddDir = false;
   for (const a of argv) {
     if (rest) { out.passthrough.push(a); continue; }
+    // `--add-dir <dir>` (space form) — the previous token armed this; take the
+    // value verbatim (even if it looks like a flag, it's the dir the user meant).
+    if (pendingAddDir) { pendingAddDir = false; out.addDir.push(a); continue; }
     if (a === '--') { rest = true; continue; }
     if (a === '--no-picker') out.picker = false;
     // THE brain (native-terminal-desktop D-013): resume the canonical pinned
@@ -105,6 +109,13 @@ export function parseArgs(argv) {
     // P-023: su playbook profile (engineer|power) — assembled per-launch now,
     // so it's a launch flag, not a per-install choice. Default (server-side) engineer.
     else if (a.startsWith('--profile=')) out.profile = a.slice('--profile='.length);
+    // First-class `--add-dir <dir>` / `--add-dir=<dir>` (repeatable): the most-asked
+    // backend passthrough, lifted out of the generic `--` for discoverability +
+    // backend-aware placement. Maps to claude's + codex's native `--add-dir` (omp
+    // has none → warned + skipped at launch). Both space + `=` forms; values are
+    // forwarded verbatim. See addDirArgs for the per-backend flag mapping.
+    else if (a === '--add-dir') pendingAddDir = true;
+    else if (a.startsWith('--add-dir=')) { const v = a.slice('--add-dir='.length); if (v) out.addDir.push(v); }
     // Skip the confirm when resuming an UNTRACKED (non-psu) session (for scripts).
     else if (a === '--yes' || a === '-y') out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
@@ -133,6 +144,24 @@ export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
     else if (agent === 'codex') args.push('resume', resumeSession);
   }
   return args;
+}
+
+/**
+ * Map psu's repeated `--add-dir <dir>` onto each backend's native flag. claude
+ * AND codex both expose `--add-dir` (extra tool-accessible directories); omp has
+ * no equivalent → [] (the launch path warns so the user isn't surprised). Pure —
+ * exported for tests.
+ *
+ * Emits the single-`=` token form (`--add-dir=<dir>`), NOT the space form: claude's
+ * `--add-dir` is VARIADIC, so a space-form value at the end of the argv would
+ * greedily swallow whatever followed (e.g. a `--` passthrough token). The `=` form
+ * binds exactly one value per occurrence — the same greed-guard reason
+ * NATIVE_SCHEDULER_DENY_FLAG is one `=` token. clap (codex) accepts `=` too.
+ */
+export function addDirArgs(agent, dirs = []) {
+  if (!dirs.length) return [];
+  if (agent === 'claude' || agent === 'codex') return dirs.map((d) => `--add-dir=${d}`);
+  return [];
 }
 
 /**
@@ -281,7 +310,7 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
  * in the thread). codex re-supplies its bypass flags; its hooks/MCP live in the
  * CODEX_HOME the caller points at.
  */
-export function resumeArgsFor(session, { coordExtPath, fork = false } = {}) {
+export function resumeArgsFor(session, { coordExtPath, fork = false, forkSessionId = null, addDir = [] } = {}) {
   // --fork-session is a claude concept; omp/codex have no branch-the-session flag,
   // and silently appending to the original would be the very clobber the user asked
   // to avoid. Refuse loudly instead.
@@ -296,8 +325,15 @@ export function resumeArgsFor(session, { coordExtPath, fork = false } = {}) {
     const resume = session.sessionId ? ['--resume', session.sessionId] : ['--continue'];
     // --fork-session: branch the resumed conversation into a NEW session id, leaving
     // the original's id + transcript untouched (so the fork is safe to run alongside it).
-    const forkFlag = fork ? ['--fork-session'] : [];
-    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', ...forkFlag] };
+    // `--session-id <forkSessionId>` FORCES that new id to one psu pre-minted (a
+    // tracked fork — launchTrackedFork) so the fork is resumable from the picker, not
+    // only by raw uuid. The plain `--session-id`/`--resume` conflict is LIFTED by
+    // --fork-session (verified: claude accepts the trio), so only emit the forced id
+    // alongside --fork-session.
+    const forkFlag = fork
+      ? ['--fork-session', ...(forkSessionId ? ['--session-id', forkSessionId] : [])]
+      : [];
+    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', ...forkFlag, ...addDirArgs('claude', addDir)] };
   }
   if (session.agent === 'omp') {
     const args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
@@ -306,11 +342,12 @@ export function resumeArgsFor(session, { coordExtPath, fork = false } = {}) {
     return { bin: 'omp', args };
   }
   if (session.agent === 'codex') {
-    // Bypass flags BEFORE the `resume` subcommand (top-level). CODEX_HOME (the
-    // session's home) is set by the caller. `resume <uuid>` (UUIDs take
-    // precedence) for an exact session; `resume --last` otherwise.
+    // Bypass flags + any --add-dir BEFORE the `resume` subcommand (all top-level
+    // codex options). CODEX_HOME (the session's home) is set by the caller.
+    // `resume <uuid>` (UUIDs take precedence) for an exact session; `resume --last`
+    // otherwise.
     const resume = session.sessionId ? ['resume', session.sessionId] : ['resume', '--last'];
-    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', ...resume] };
+    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', ...addDirArgs('codex', addDir), ...resume] };
   }
   throw new Error(`resumeArgsFor: unknown agent: ${session.agent}`);
 }
