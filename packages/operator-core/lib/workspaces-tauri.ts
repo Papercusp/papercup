@@ -106,7 +106,12 @@ export async function switchWorkspace(id: string, opts?: { resetTo?: string }): 
     await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
   }
   if (typeof window !== 'undefined') {
-    navigateClient(resolveWorkspaceSwitchTarget(id, opts));
+    // Force a hard navigation: the window must reload so the operator host
+    // re-injects `__PAPERCUSP_WS__` for the new workspace. A soft SPA nav would
+    // change the URL's `?ws=` but leave getBrowserWorkspaceId() (which prefers
+    // the injected global) on the old workspace — the switch would silently
+    // no-op and the window keeps showing the workspace it was already in.
+    navigateClient(resolveWorkspaceSwitchTarget(id, opts), { hard: true });
   }
 }
 

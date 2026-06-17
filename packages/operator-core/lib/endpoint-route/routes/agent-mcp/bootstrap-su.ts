@@ -109,6 +109,13 @@ export interface BootstrapSuResult {
    * by the launcher, never sent over HTTP.
    */
   envelopeEnv: Record<string, string>;
+  /**
+   * psu-account-chooser P-002: a human-readable note about the `--account` request
+   * — confirmed pin ("pinned to account X …") or the fail-soft reason it was skipped
+   * ("--account X ignored: …"). null when no account was requested. The launcher
+   * prints it so the user always knows whether the pin took effect.
+   */
+  accountNotice?: string | null;
 }
 
 const options = defineTool({
@@ -205,6 +212,51 @@ export async function resolveBrainPin(workspaceId: string): Promise<string | nul
   if (await getFlag(FLAGS.QUEEN_BRAIN_FRESH, 'system')) return null;
   const { getBrainSession } = await import('../../../brain-pin');
   return getBrainSession(workspaceId);
+}
+
+/**
+ * psu-account-chooser P-002: the env patch that pins an interactive psu session to a
+ * chosen pool `account`. Mirrors the fleet's gateway routing (operator-spawn →
+ * gatewaySpawnEnv) but with an EXPLICIT, validated account instead of the drain
+ * selector. Fail-soft (D-002): gateway off / unknown / disallowed account → no env
+ * patch + a human `notice` the launcher prints, never an error. Honors the
+ * session-override allow/exclude (D-003). Exported so the gating unit-tests without
+ * the POST handler.
+ */
+export async function resolveAccountPin(
+  workspaceId: string,
+  requested: string | null | undefined,
+): Promise<{ env: Record<string, string>; notice: string | null }> {
+  const id = requested?.trim();
+  if (!id) return { env: {}, notice: null };
+  const fail = (why: string) => ({
+    env: {} as Record<string, string>,
+    notice: `--account ${id} ignored: ${why} — using the default credential.`,
+  });
+  try {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) {
+      return fail('the inference gateway is off (INFERENCE_GATEWAY)');
+    }
+    const { loadAccountPool } = await import('../../../deployment/account-pool-store');
+    const pool = await loadAccountPool(workspaceId);
+    const ids = new Set((pool.accounts ?? []).map((a: { id: string }) => a.id));
+    if (!ids.has(id)) return fail(`'${id}' is not in the account pool (see accounts:list)`);
+    const { getAccountOverride } = await import('../../../deployment/account-session-override');
+    const ov = await getAccountOverride(workspaceId);
+    if (ov.excludeAccounts.includes(id)) return fail('it is in the session-override exclude list');
+    if (ov.forcedAccounts.length > 0 && !ov.forcedAccounts.includes(id)) {
+      return fail('it is outside the session-override allow-list (forcedAccounts)');
+    }
+    const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
+    return {
+      env: { ...gatewaySpawnEnv(true, { accountId: id }), PAPERCUSP_ACCOUNT_ID: id },
+      notice: `pinned to account ${id} (routed through the inference gateway).`,
+    };
+  } catch (e: any) {
+    return fail(`account resolution failed (${e?.message ?? e})`);
+  }
 }
 
 const brainGet = defineTool({
@@ -325,6 +377,11 @@ const post = defineTool({
        *  has (`--session-id`). `psu --brain` reads it back for an exact
        *  picker-free resume. */
       brain?: boolean;
+      /** psu-account-chooser P-002: pin this interactive session to a specific pool
+       *  account. Routed through the gateway (gatewaySpawnEnv) when INFERENCE_GATEWAY
+       *  is on + the id is a valid, allowed pool account; fail-soft to the default
+       *  credential + an `accountNotice` otherwise. */
+      account?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -575,6 +632,12 @@ const post = defineTool({
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
     };
 
+    // psu-account-chooser P-002: when the launch carries an explicit `account`, fold
+    // the gateway-pin env into the envelope (fail-soft — a skipped pin just adds a
+    // notice the launcher prints, never an error).
+    const accountPin = await resolveAccountPin(workspace, body.account);
+    Object.assign(envelopeEnv, accountPin.env);
+
     const result: BootstrapSuResult = {
       status: 'ok',
       sessionId,
@@ -588,6 +651,7 @@ const post = defineTool({
       codexHome,
       coordExtPath,
       envelopeEnv,
+      accountNotice: accountPin.notice,
     };
     return jsonRes(result);
   },

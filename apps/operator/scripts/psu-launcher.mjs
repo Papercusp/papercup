@@ -61,18 +61,22 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, addDir: [], passthrough: [] };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false, account: null, addDir: [], passthrough: [] };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
   // launchResume); ordering past that is the caller's responsibility.
   let rest = false;
   let pendingAddDir = false;
+  let pendingAccount = false;
   for (const a of argv) {
     if (rest) { out.passthrough.push(a); continue; }
     // `--add-dir <dir>` (space form) — the previous token armed this; take the
     // value verbatim (even if it looks like a flag, it's the dir the user meant).
     if (pendingAddDir) { pendingAddDir = false; out.addDir.push(a); continue; }
+    // `--account <id>` (space form) — the previous token armed this; take the
+    // value verbatim (an account id never starts with `--`).
+    if (pendingAccount) { pendingAccount = false; out.account = a; continue; }
     if (a === '--') { rest = true; continue; }
     if (a === '--no-picker') out.picker = false;
     // THE brain (native-terminal-desktop D-013): resume the canonical pinned
@@ -116,6 +120,13 @@ export function parseArgs(argv) {
     // forwarded verbatim. See addDirArgs for the per-backend flag mapping.
     else if (a === '--add-dir') pendingAddDir = true;
     else if (a.startsWith('--add-dir=')) { const v = a.slice('--add-dir='.length); if (v) out.addDir.push(v); }
+    // psu-account-chooser P-001: pin this session to a specific pool account
+    // (`psu --account aviynw6` or `--account=aviynw6`). Threaded to bootstrap-su,
+    // which routes the session through the inference-gateway pinned to it
+    // (gatewaySpawnEnv); fail-soft to the default credential when the gateway is
+    // off or the id is unknown/disallowed.
+    else if (a === '--account') pendingAccount = true;
+    else if (a.startsWith('--account=')) out.account = a.slice('--account='.length);
     // Skip the confirm when resuming an UNTRACKED (non-psu) session (for scripts).
     else if (a === '--yes' || a === '-y') out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
@@ -1524,6 +1535,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // Omitted → server defaults to engineer.
       ...(args.profile ? { profile: args.profile } : {}),
       ...(brain ? { brain: true } : {}),
+      // psu-account-chooser P-001: pin this session to a pool account. The server
+      // validates it (pool membership + session-override allow-list) and, when the
+      // gateway is on, folds gatewaySpawnEnv into the launch envelope; fail-soft.
+      ...(args.account ? { account: args.account } : {}),
       // Our cwd — the server uses it for a no-harness launch (so the
       // agent's cwd-scoped session resume works from the user's terminal,
       // not the internal .papercusp dir). Ignored for harness launches.
@@ -1538,6 +1553,9 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     `psu: ${res.agent} (su${brain ? ' · BRAIN pinned' : ''})  ·  ${res.planSlug ? `plan ${res.planSlug}` : 'no plan'}  ·  session ${res.sessionId ?? '?'}`,
   );
   console.error(`psu: cwd ${res.cwd}  —  resume this session by running the agent's resume command from here`);
+  // psu-account-chooser: surface whether the `--account` pin took effect (or the
+  // fail-soft reason it was skipped) so the user is never silently unpinned.
+  if (res.accountNotice) console.error(`psu: account — ${res.accountNotice}`);
 
   // P-020: exec the RAW backend (not a *-su wrapper) with the engineer
   // playbook (res.promptFile) + flags. MCP + lock hooks are user-level for
