@@ -52,20 +52,24 @@ print(f"Pool size (excluding pilots): {len(pool)}")
 # Set seed for reproducibility
 random.seed(SEED)
 
-# Select 50 tasks (39 random + 11 pilots)
-random_50 = random.sample(pool, 39)
-subset_50 = pilot_ids + random_50
-random.shuffle(subset_50)  # Shuffle so pilots aren't grouped
+# Select tasks ensuring superset property: 11 pilots ⊂ 50 ⊂ 150
+# Start with all 11 pilots (guaranteed in all subsets)
+# Add 39 random tasks to get 50 total
+# Add 100 more random tasks to get 150 total
+random_50_pool = random.sample(pool, 139)
 
-# Select 150 tasks (139 random + 11 pilots)
-random_150 = random.sample(pool, 139)
-subset_150 = pilot_ids + random_150
-random.shuffle(subset_150)  # Shuffle so pilots aren't grouped
+# subset_50: 11 pilots + 39 random (first 39 from the random pool)
+subset_50 = pilot_ids + random_50_pool[:39]
+random.shuffle(subset_50)  # Shuffle to avoid grouping pilots
 
-# Verify superset property
-missing_from_50_in_150 = set(subset_50) - set(subset_150)
-if missing_from_50_in_150:
-    print(f"WARNING: {len(missing_from_50_in_150)} tasks in 50 not in 150. Breaking superset property!")
+# subset_150: 11 pilots + 139 random (all from the random pool)
+subset_150 = pilot_ids + random_50_pool
+random.shuffle(subset_150)  # Shuffle to avoid grouping pilots
+
+# Verify superset property: all tasks in 50 should be in 150
+missing_from_150 = set(subset_50) - set(subset_150)
+if missing_from_150:
+    print(f"ERROR: {len(missing_from_150)} tasks in 50 not in 150. Breaking superset property!")
 else:
     print(f"✓ Superset property verified: all 50 tasks are in the 150 subset")
 
@@ -78,6 +82,7 @@ subset_150_path.write_text("\n".join(subset_150) + "\n")
 
 print(f"\nWrote {len(subset_50)} tasks to {subset_50_path}")
 print(f"Wrote {len(subset_150)} tasks to {subset_150_path}")
-print(f"\nSelection method: RANDOM (uniform sampling)")
+print(f"\nSelection method: RANDOM (uniform sampling from pool)")
 print(f"Random seed: {SEED}")
 print(f"Superset property: 11 pilot ⊂ 50 ⊂ 150 ⊂ 731")
+print(f"  (subset-50 = first 50 tasks from shuffled subset-150)")

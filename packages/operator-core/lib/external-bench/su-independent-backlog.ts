@@ -1,44 +1,38 @@
 /**
  * su-independent-backlog.ts — the INDEPENDENT-su-agents backlog driver
- * (benchmark-arms-su-vs-queen-expansion-2026-06-16 / P-001).
+ * (benchmark-arms-su-vs-queen-expansion-2026-06-16 / P-001 / D-004-B: FIFO control-spawn routing).
  *
  * WHY THIS EXISTS. The two hive arms ({@link ./hive-backlog-realqueen.ts}) answer "how much does the
  * Queen's live placement/eviction/re-placement buy over no orchestration?" — both boot ONE hive over
  * the whole backlog and differ only in the Queen treatment. Neither is the honest "what does our
  * su/worker AGENT, standing alone, score on this benchmark?" pole. THIS driver is that pole: it runs
  * N INDEPENDENT agents, each solving EXACTLY ONE SWE-bench-Pro task end-to-end, with **NO Queen and
- * NO hive coordination** — no Queen wake, no placement-watchdog, no `hive_placements` ledger, no
+ * NO hive ORCHESTRATION** — no Queen wake, no placement-watchdog, no `hive_placements` ledger, no
  * survey/re-wake loop. It is the simplest of the three drivers: a bounded concurrency POOL of
- * independent per-task agents.
+ * independent per-task agents routed through shared hive infrastructure (the :3170 operator host).
  *
  * THE COMPARISON LANDSCAPE (all three share clone/diff/grader/model — D-004 fairness):
- *   - 'su-independent' (this) — N independent su/worker agents, one task each, NO coordination.
- *                               The honest "our agent system, no orchestration" pole.
+ *   - 'su-independent' (this) — N independent su/worker agents, one task each, NO Queen orchestration.
+ *                               Routes through :3170 hive infrastructure for proper env + work-item wiring.
  *   - 'hive-realqueen'        — ONE hive, the REAL Queen places/evicts/re-places/briefs/adaptive-wakes.
  *   - 'mini-swe-agent'        — the reference standard harness (external, same model + same tasks).
  *
- * ── THE PER-TASK SPINE-DRIVE (the spawn primitive — D-001) ─────────────────────────────────────────
- * Each independent agent is driven by `instantiateBenchHarness('external-bench', task, checkout, budget)`
- * (./run-loop.ts → the LIVE {@link ../external-bench/bench-harness-live.ts liveBenchHarnessDriver}). That
- * is the PROVEN, queen-less per-task primitive: it CREATEs a throwaway harness over the cloned repo, FEEDs
- * the problem_statement as one feature, DRIVEs the full `external-bench` coding spine (director → scoper →
- * architect → worker → validator → reviewer …) to DONE via `spawnInvokeOnce` — THE governed agent-spawn
- * chokepoint that wraps `buildRoleLaunchSpec`/the role-launch path — sums cost from `agent_usage_samples`,
- * and tears down. We deliberately reuse it verbatim rather than re-driving `buildRoleLaunchSpec` by hand:
- * the prompt's own steer ("if spawnInvokeOnce already wraps this cleanly, prefer it") holds — the
- * bench-harness driver IS that clean wrapper, and reusing it keeps this arm byte-identical to the L1
- * papercusp arm's generation half (same spine, same clone/diff/cost), so the only delta across arms is
- * the ORCHESTRATION layer above it (none here; a Queen there).
+ * ── THE PER-TASK SPINE-DRIVE (the spawn primitive — D-001 / D-004-B) ──────────────────────────────────
+ * CRITICAL FIX (D-004-B): control bees MUST route through :3170 so they receive proper environment
+ * variables (AGENT_MODELS, PAPERCUSP_XBENCH_BEE_DIRECTIVE) and wire to work-item claims (fleet coordination).
+ * Each independent agent is: (1) enrolled as a temporary member harness with a seeded feature, (2) spawned
+ * via FIFO batch through the shared hive (placeFifoBatch), (3) collected when finished. This maintains
+ * independence (per-task isolation, no Queen placement) while routing through hive infrastructure so bees
+ * get the environment + work-item binding they need to succeed. The shared temporary hive is created at
+ * run start, member harnesses are enrolled per task, and the hive is torn down at run end.
  *
  * ── CONCURRENCY (the pool — D-002) ──────────────────────────────────────────────────────────────────
  * Up to `cap` agents run at once where `cap = spawnConcurrencyCeiling()` — the SAME global
  * `maxSimultaneousAgents` ceiling the hive arms draw from (`../fleet/operator-spawn`), read at run start.
  * We do NOT exceed it. As each task finishes the pool pulls the next backlog task, so a backlog larger
  * than the cap drains in waves of ≤cap concurrent agents (the same saturation discipline the hive arms
- * run under — fairness). The cap is a per-process module cache; the caller is responsible for setting
- * `maxSimultaneousAgents` to the intended value in THIS process before the run (the same `operator:
- * rate_limit_config` PUT the realqueen launcher does — there is no separate :3170 host here because the
- * independent agents spawn IN this process via `spawnInvokeOnce`, not via a Queen's loopback `fleet:spawn`).
+ * run under — fairness). The hive's FIFO placement respects the cap automatically; the caller is
+ * responsible for setting `maxSimultaneousAgents` to the intended value in THIS process before the run.
  *
  * ── ACTUAL-CONCURRENCY TRACKING (load-bearing — P-003) ──────────────────────────────────────────────
  * Besides the scalar `peakConcurrentBees`, the driver records a {@link ConcurrencyTimeline}: a background
@@ -46,7 +40,7 @@
  * `{tMs, live}`; at run end we compute `avgConcurrent`/`peakConcurrent` and attach it to the result. This
  * answers "how many independent agents actually ran at once, on average" — not just the peak — so the
  * report can show whether the pool was saturated or starved. The occupancy counter is the ground truth
- * (incremented at task start, decremented at task end), so the sample is exact, not a PG estimate.
+ * (incremented at task's first spawn start, decremented at task's finish).
  *
  * ── FAIRNESS (D-004): opus 4.8 @ xhigh ──────────────────────────────────────────────────────────────
  * The `external-bench` spine drives the PIPELINE roles (worker/validator/reviewer/director/scoper/
@@ -56,16 +50,15 @@
  *   AGENT_MODELS='{"director":"opus:xhigh","scoper":"opus:xhigh","architect":"opus:xhigh",
  *                  "worker":"opus:xhigh","validator":"opus:xhigh","reviewer":"opus:xhigh",
  *                  "documenter":"opus:xhigh","bee":"opus:xhigh"}'
- * plus `AGENT_CMD="claude -p"` (the `opus` alias). The bench-harness drive pins the claude-code backend
- * + waives the fleet sandbox per-spawn already (bench-harness-live.ts); the opus model pin is the
- * caller's because it must reach every spawned role. VERIFY `agent_usage_samples.model = claude-opus-4-8`
- * on a 1-task probe before any big spend (same protocol as the hive arms). Same clone/diff/grader as
- * every arm — the only independent variable across arms is the orchestration layer.
+ * plus `AGENT_CMD="claude -p"` (the `opus` alias). The opus model pin is the CALLER's responsibility
+ * (it must reach every spawned role). VERIFY `agent_usage_samples.model = claude-opus-4-8` on a 1-task
+ * probe before any big spend. Same clone/diff/grader as every arm — the only independent variable across
+ * arms is the orchestration layer.
  *
  * GOVERNOR / SPEND: binding this spends nothing; the real LLM spend is the per-task agents on the gated
  * launch. The driver bounds spend with a per-task iso-budget (`req.budget`, enforced inside the
- * bench-harness drive) and a whole-run wall-clock ceiling; on timeout/error it stops pulling new tasks,
- * collects whatever finished, and cleans up every checkout. NEVER throws (the generation-failure
+ * external-bench spine-drive) and a whole-run wall-clock ceiling; on timeout/error it stops pulling new
+ * tasks, collects whatever finished, and cleans up every checkout. NEVER throws (the generation-failure
  * contract — a failure returns a {@link HiveBacklogResult} with `runError` + the partial `taskResults`).
  */
 import type { FleetArmId } from '@papercusp/bench-metrics';
@@ -119,32 +112,55 @@ export interface SuTaskOutcome {
 }
 
 /**
- * The injected IO seam. Every side effect is ONE method so the boot→spawn→collect→teardown ordering,
- * the concurrency-pool semantics, the timeline sampling, and the never-throw contract all unit-test
- * with fakes (NO git/PG/LLM, NO live spawns). The real binding ({@link suIndependentBacklogOps})
- * wires cloneTaskRepo / the bench-harness spine-drive / extractDiff via lazy dynamic imports.
+ * The injected IO seam. Every side effect is ONE method so the boot→hive-create→spawn→collect→teardown
+ * ordering, the concurrency-pool semantics, the timeline sampling, and the never-throw contract all
+ * unit-test with fakes (NO git/PG/LLM, NO live spawns). The real binding ({@link suIndependentBacklogOps})
+ * wires hive lifecycle / the FIFO spawn seam / diff extraction via lazy dynamic imports.
  *
- * NOTE the deliberate ABSENCE of any queen/hive/placement methods — that is the whole point of this
- * arm. There is no `createHive`, no `startRealQueen`, no `reconcileWatchdog`, no `collectCoordEvents`.
+ * ARCHITECTURE (D-004-B): Unlike the original design, this arm NOW maintains a temporary shared hive
+ * over the whole run. Each task: enrolls as a member harness → spawns via FIFO through :3170 → collects
+ * the result → tears down the member. This maintains per-task independence (no Queen orchestration) while
+ * routing through hive infrastructure so bees receive proper environment variables and work-item claims.
  */
 export interface SuIndependentBacklogOps {
   now(): number;
   /** The fleet concurrency cap (= the global `maxSimultaneousAgents`). Read ONCE at run start. */
   concurrencyCap(): number | Promise<number>;
+  /** Create a temporary shared hive for the whole run (ONE hive, enrolled members per task). */
+  createHive(input: { runId: string; workspaceId: string }): Promise<{ hiveSlug: string }>;
   /** Clone the task repo @ base into a fresh scratch worktree (the per-agent isolated checkout). */
   prepareTask(input: { task: BenchTask; budget: GenerationBudget; workspaceId: string }): Promise<SuIndependentEnrolled>;
   /**
-   * Run ONE independent agent over the prepared checkout to a terminal state, then extract its diff +
-   * cost. This is the whole per-task lifecycle (spin a throwaway `external-bench` harness → drive the
-   * spine to DONE under `budget` via the governed spawn chokepoint → sum cost → extract diff). The
-   * concurrency pool calls this for up to `cap` tasks at once. Should NOT throw on a generation failure
-   * — return an outcome whose telemetry carries `stopReason:'error'` + `generationError` (the
-   * bench-harness drive already honors this); a genuine infra throw is caught by the driver → a partial
-   * result for this task.
+   * Enroll a prepared task as a temporary member harness in the hive with a seeded feature.
+   * Returns the member harness slug so it can be spawned via placeFifoBatch.
    */
-  runOneTask(input: { enrolled: SuIndependentEnrolled; budget: GenerationBudget; seed: string; workspaceId: string }): Promise<SuTaskOutcome>;
+  enrollTask(input: {
+    task: BenchTask;
+    enrolled: SuIndependentEnrolled;
+    hiveSlug: string;
+    workspaceId: string;
+  }): Promise<{ memberSlug: string }>;
+  /**
+   * Spawn ONE enrolled member harness via FIFO through the hive (routes through :3170, proper env).
+   * Returns the spawn_id so the result can be collected.
+   */
+  placeFifoBatch(input: { hiveSlug: string; memberSlug: string; workspaceId: string }): Promise<{ spawnId: string }>;
+  /**
+   * Collect the result from a spawned member: extract its diff + cost from agent_usage_samples.
+   * The spawn must have reached a terminal state.
+   */
+  collectTask(input: {
+    task: BenchTask;
+    spawnId: string;
+    enrolled: SuIndependentEnrolled;
+    workspaceId: string;
+  }): Promise<SuTaskOutcome>;
+  /** Remove ONE member harness enrollment (best-effort). */
+  teardownMember(input: { memberSlug: string; workspaceId: string }): Promise<void>;
   /** Remove ONE task's scratch checkout (best-effort — the per-agent worktree). */
   teardownTask(input: { enrolled: SuIndependentEnrolled; workspaceId: string }): Promise<void>;
+  /** Dissolve the temporary shared hive (best-effort). */
+  dissolveHive(input: { hiveSlug: string; workspaceId: string }): Promise<void>;
 }
 
 export interface SuIndependentBacklogOpts {
@@ -168,8 +184,9 @@ export interface SuIndependentBacklogOpts {
 /**
  * The LIVE {@link HiveBacklogDriver} over the injected {@link SuIndependentBacklogOps}. Runs the backlog
  * through a bounded concurrency POOL of independent per-task agents (size = the fleet cap), records the
- * live-concurrency timeline, and collects per-task diff/cost. NO queen, NO hive, NO placement. Never
- * throws (the generation-failure contract — a failure yields a result with `runError` + partials).
+ * live-concurrency timeline, and collects per-task diff/cost. NO Queen orchestration; routes through
+ * shared hive infrastructure (D-004-B) for proper environment + work-item wiring. Never throws (the
+ * generation-failure contract — a failure yields a result with `runError` + partials).
  */
 export function suIndependentBacklogDriver(
   ops: SuIndependentBacklogOps,
@@ -184,7 +201,7 @@ export function suIndependentBacklogDriver(
       const startedAtMs = ops.now();
 
       // ── live-concurrency accounting ──────────────────────────────────────────────────────────────
-      // `live` is the ground-truth pool occupancy (++ at a task's first spine spawn, -- at its finish).
+      // `live` is the ground-truth pool occupancy (++ at a task's first FIFO spawn, -- at its finish).
       // The sampler reads it on a fixed cadence into `samples`; peak is tracked inline so the scalar
       // `peakConcurrentBees` stays populated even when the run is shorter than one sample interval.
       let live = 0;
@@ -204,6 +221,7 @@ export function suIndependentBacklogDriver(
 
       const taskResults: FleetTaskResult[] = [];
       const enrolledAll: SuIndependentEnrolled[] = [];
+      const memberSlugs: string[] = [];
 
       // The concurrency sampler runs on a real timer (unref'd so it never keeps the process alive). The
       // injected `ops.now()` lets the unit test drive logical time; the timer cadence is wall-clock, so a
@@ -232,13 +250,23 @@ export function suIndependentBacklogDriver(
           finishedAtMs: ops.now(),
           peakConcurrentBees: peak,
           taskResults,
-          coordEvents: [], // an independent-agent arm has NO coordination trace — by design.
+          coordEvents: [], // an independent-agent arm has NO Queen coordination trace — by design.
           concurrencyTimeline,
           ...(runError ? { runError } : {}),
         };
       };
 
+      let hiveSlug: string | null = null;
       try {
+        // CREATE the temporary shared hive that will host all member enrollments for this run.
+        let hiveCreated: { hiveSlug: string };
+        try {
+          hiveCreated = await ops.createHive({ runId: req.runId, workspaceId: ws });
+          hiveSlug = hiveCreated.hiveSlug;
+        } catch (e) {
+          return finalize(`createHive failed: ${msg(e)}`);
+        }
+
         const cap = Math.max(1, Math.floor(await ops.concurrencyCap()) || 1);
         const deadline = startedAtMs + fleetTimeoutMs;
         const backlog = req.backlog;
@@ -246,11 +274,10 @@ export function suIndependentBacklogDriver(
         let timedOut = false;
 
         // ── the concurrency POOL ───────────────────────────────────────────────────────────────────
-        // `cap` worker loops each pull the next un-started backlog task, prepare+run+collect it, then
-        // loop for the next — so at most `cap` agents are live at once and the backlog drains in waves
-        // of ≤cap. A worker stops pulling when the backlog is exhausted OR the wall-clock deadline passed
-        // (the run-bound; a task already in flight finishes, we just stop STARTING new ones). The shared
-        // `nextIndex` cursor is mutated synchronously between `await`s — single-threaded JS, so no lock.
+        // `cap` worker loops each pull the next un-started backlog task, prepare+enroll+spawn+collect it,
+        // then loop for the next — so at most `cap` agents are live at once and the backlog drains in waves
+        // of ≤cap. A worker stops pulling when the backlog is exhausted OR the wall-clock deadline passed.
+        // The shared `nextIndex` cursor is mutated synchronously between `await`s — single-threaded JS.
         const worker = async (): Promise<void> => {
           for (;;) {
             if (ops.now() >= deadline) {
@@ -276,23 +303,51 @@ export function suIndependentBacklogDriver(
             enrolledAll.push(enrolled);
             await fireHook(opts.onEnrolled, enrolled);
 
-            // RUN one independent agent over the checkout (++/-- the occupancy counter around it so the
-            // timeline reflects exactly the spine-drive window). The drive itself never throws a
-            // generation failure (it maps to telemetry.stopReason='error'); a genuine infra throw lands
-            // an error result for this task. TEARDOWN the checkout either way.
+            // ENROLL the task as a temporary member harness in the hive.
+            let memberEnrolled: { memberSlug: string };
+            try {
+              memberEnrolled = await ops.enrollTask({ task, enrolled, hiveSlug: hiveSlug!, workspaceId: ws });
+              memberSlugs.push(memberEnrolled.memberSlug);
+            } catch (e) {
+              taskResults.push(
+                errorTaskResult(req.arm, task, String(req.seed), `enrollTask failed: ${msg(e)}`),
+              );
+              await ops.teardownTask({ enrolled, workspaceId: ws }).catch(() => {});
+              continue;
+            }
+
+            // SPAWN the enrolled member via FIFO through the hive (routes through :3170, proper env).
+            // ++/-- the occupancy counter around the spawn window so the timeline reflects exactly when
+            // the agent is live. The spawn itself never throws a generation failure (it maps to
+            // telemetry.stopReason='error'); a genuine infra throw lands an error result for this task.
+            let spawnPlaced: { spawnId: string };
+            try {
+              spawnPlaced = await ops.placeFifoBatch({ hiveSlug: hiveSlug!, memberSlug: memberEnrolled.memberSlug, workspaceId: ws });
+            } catch (e) {
+              taskResults.push(
+                errorTaskResult(req.arm, task, String(req.seed), `placeFifoBatch failed: ${msg(e)}`),
+              );
+              await ops.teardownMember({ memberSlug: memberEnrolled.memberSlug, workspaceId: ws }).catch(() => {});
+              await ops.teardownTask({ enrolled, workspaceId: ws }).catch(() => {});
+              continue;
+            }
+
+            // COLLECT the result from the spawned bee (it waits for the spawn to terminate).
             enter();
             enrolled.startedAtMs = ops.now();
             let result: FleetTaskResult;
             try {
-              const outcome = await ops.runOneTask({ enrolled, budget: req.budget, seed: String(req.seed), workspaceId: ws });
+              const outcome = await ops.collectTask({ task, spawnId: spawnPlaced.spawnId, enrolled, workspaceId: ws });
               enrolled.finishedAtMs = ops.now();
               enrolled.agentId = outcome.agentId;
               result = taskResultFromOutcome(req.arm, enrolled, String(req.seed), outcome);
             } catch (e) {
               enrolled.finishedAtMs = ops.now();
-              result = errorTaskResult(req.arm, task, String(req.seed), `runOneTask failed: ${msg(e)}`, enrolled);
+              result = errorTaskResult(req.arm, task, String(req.seed), `collectTask failed: ${msg(e)}`, enrolled);
             } finally {
               exit();
+              // Clean up both the member enrollment and the checkout worktree.
+              await ops.teardownMember({ memberSlug: memberEnrolled.memberSlug, workspaceId: ws }).catch(() => {});
               await ops.teardownTask({ enrolled, workspaceId: ws }).catch(() => {});
             }
             taskResults.push(result);
@@ -302,8 +357,7 @@ export function suIndependentBacklogDriver(
 
         // Spawn min(cap, backlog) worker loops and await them all. Each task is collected as it finishes
         // (inside the loop), so the durability hooks fire incrementally — a mid-run kill keeps the
-        // already-collected diffs. There is no separate collect phase (unlike the hive arms, whose collect
-        // is serial AFTER drain): an independent agent's diff is extracted the instant it terminates.
+        // already-collected diffs.
         const poolSize = Math.max(1, Math.min(cap, backlog.length || 1));
         await Promise.all(Array.from({ length: poolSize }, () => worker()));
 
@@ -313,6 +367,9 @@ export function suIndependentBacklogDriver(
         // and return the partial result with runError. Never throw.
         for (const en of enrolledAll) await ops.teardownTask({ enrolled: en, workspaceId: ws }).catch(() => {});
         return finalize(msg(e));
+      } finally {
+        // ALWAYS dissolve the shared hive on run completion, whether succeeded or failed.
+        if (hiveSlug) await ops.dissolveHive({ hiveSlug, workspaceId: ws }).catch(() => {});
       }
     },
   };
@@ -413,33 +470,76 @@ export function bindSuIndependentBacklogDriver(
 }
 
 /* -------------------------------------------------------------------------- */
-/* The REAL binding — clone + the bench-harness spine-drive + diff, NO hive.   */
+/* The REAL binding — hive lifecycle + FIFO spawn + diff extraction (D-004-B)  */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The REAL machinery binding. Each task: clone @ base → drive ONE independent agent over the
- * `external-bench` spine to DONE → extract its diff. Lazy dynamic imports keep the module import-light
- * so the fake-driven test never loads git/PG/the bench-harness live ops.
+ * The REAL machinery binding (D-004-B). Each task: clone @ base → enroll as member harness → spawn
+ * via FIFO through :3170 → collect result (wait for spawn + extract diff). The shared temporary hive
+ * is created once per run and dissolved at the end. Reuses the liveHiveOps seam from the realqueen arm
+ * (same harness/feature infrastructure; just no Queen orchestration). Lazy dynamic imports keep the
+ * module import-light so the fake-driven test never loads git/PG/the hive/fleet ops.
  *
- * The spine-drive runs through the bench-harness LIVE driver ({@link ../external-bench/bench-harness-live.ts
- * liveBenchHarnessDriver} via `instantiateBenchHarness`), which already pins the claude-code backend +
- * waives the fleet sandbox per-spawn. The opus model pin (AGENT_MODELS pipeline-roles=opus:xhigh) is the
- * CALLER's responsibility (it must reach every spawned role) — documented in the file header.
+ * KEY ENVIRONMENTAL: control bees receive PAPERCUSP_XBENCH_BEE_DIRECTIVE + AGENT_MODELS (the opus
+ * override) set on :3170's env (.env.local), so they self-claim work-items + use the correct models.
+ * This binding sets both in THIS launcher's env so in-process operations see them (though the actual
+ * bees spawn via :3170 loopback, so the :3170 env is what matters for the bees).
  */
 export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndependentBacklogOps {
   const ws = opts.workspaceId;
+
+  // Ensure the environment variables are set for the directive + model pinning (D-020 fix).
+  const BENCH_BEE_DIRECTIVE = [
+    'You are placed on a single-task benchmark member harness. This member holds EXACTLY ONE feature work-item —',
+    'the benchmark problem to solve. Claim it (`work_items:claim_next` for this harness, or',
+    '`fleet:assignments { agent: <your spawn id> }` then `work_items:get` for the detail), read its full',
+    'problem_statement, and IMPLEMENT the change directly in this repository as real code edits (a working',
+    'unified diff against the checked-out base). Write the actual source fix — do not just plan or describe.',
+    'When complete and the repo builds, mark the work-item complete (`work_items:complete`). You are NOT',
+    'taskless — the assigned feature IS your task; do not exit FAILED for "no work". There is no',
+    'validator/reviewer downstream; you own the fix end to end.',
+  ].join(' ');
+
+  if (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE == null) process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = BENCH_BEE_DIRECTIVE;
+  if (process.env.PAPERCUSP_FLEET_SANDBOX == null) process.env.PAPERCUSP_FLEET_SANDBOX = '0';
+  if (process.env.PAPERCUSP_SPAWN_BACKEND == null) process.env.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
+  if (process.env.AGENT_CMD == null && process.env.CLAUDE == null) process.env.AGENT_CMD = 'claude -p';
+
+  // Build the hive slug prefix for tracking (like realQueenBacklogOps does).
+  let hivePrefix = '';
+  const instanceByFeatureId = new Map<string, string>();
+  const memberSlugToFeatureId = new Map<string, string>();
+
+  const sqlClient = async () => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    return getOrgPg().sql;
+  };
+
+  const liveOps = async () => {
+    const { liveHiveOps } = await import('../hive-eval/live-ops');
+    return liveHiveOps({ workspaceId: ws });
+  };
+
+  const memberSlugForTask = (prefix: string, instanceId: string): string => `${prefix}-${instanceId.substring(0, 20)}`;
+  const featureIdForTask = (instanceId: string): string => `xbench-${instanceId}`;
 
   return {
     now: () => Date.now(),
 
     async concurrencyCap() {
-      // The SAME global maxSimultaneousAgents ceiling the hive arms draw from — read once at run start.
-      // `spawnConcurrencyCeiling` is a synchronous read of the per-process cache; the caller is
-      // responsible for having set the intended cap in this process before the run. Lazy DYNAMIC IMPORT
-      // (ESM — `require` is undefined at runtime under tsx/node ESM; the prior `require()` was the
-      // "require is not defined" probe failure) so the fake-driven test never pulls the fleet module.
       const { spawnConcurrencyCeiling } = await import('../fleet/operator-spawn');
       return spawnConcurrencyCeiling();
+    },
+
+    async createHive({ runId, workspaceId }) {
+      // Create a temporary shared hive for this run (ONE hive, multiple member enrollments per task).
+      // The hive is created LOCALLY; the FIFO spawn routes through :3170 so bees get proper env + work-items.
+      const { nanoid } = await import('nanoid');
+      hivePrefix = `xbench-su-${nanoid(6)}`;
+
+      const ops = await liveOps();
+      await ops.createHive({ slug: hivePrefix, workspaceId: ws });
+      return { hiveSlug: hivePrefix };
     },
 
     async prepareTask({ task }) {
@@ -456,43 +556,163 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       return enrolled;
     },
 
-    async runOneTask({ enrolled, budget }) {
-      // Drive ONE independent agent over the full `external-bench` spine to DONE via the bench-harness
-      // LIVE driver. We bind it lazily HERE (idempotent — re-binding the same live ops is harmless) so a
-      // su-independent run doesn't require the caller to also wire bindLiveBenchHarness; the bench-harness
-      // driver owns the throwaway-harness create/feed/drive/cost/teardown for THIS task in-process.
-      const [{ bindLiveBenchHarness }, { instantiateBenchHarness }, { extractDiff }] = await Promise.all([
-        import('./bench-harness-live'),
-        import('./run-loop'),
-        import('./clone'),
-      ]);
-      bindLiveBenchHarness({ workspaceId: ws });
+    async enrollTask({ task, enrolled, hiveSlug, workspaceId }) {
+      // Enroll the task as a temporary member harness in the hive with a seeded feature.
+      // Mirrors the realqueenBacklogOps.enrollTask pattern.
+      const member = memberSlugForTask(hivePrefix, task.instanceId);
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      const { stringify: stringifyYaml } = await import('yaml');
 
-      const run = await instantiateBenchHarness(SPINE_BLUEPRINT, enrolled.task, enrolled.checkout, budget);
-      // Extract the diff from the worktree the agent edited (grader test-files + .papercusp/ excluded).
-      let diff = '';
-      try {
-        diff = await extractDiff(enrolled.checkout, enrolled.task);
-      } catch (e) {
-        // A diff-extract failure is a generation-side infra failure for THIS task — surface it on the
-        // telemetry rather than throwing (so the task still collects, just with stopReason carried).
-        return {
-          diff: '',
-          telemetry: { ...run.telemetry, stopReason: 'error', generationError: `extractDiff failed: ${msg(e)}` },
-          agentId: trajectoryAgentId(run.telemetry.trajectoryRef, enrolled.task.instanceId),
-        };
+      // Write the member's .papercusp/blueprint.yaml (extends external-bench).
+      const bpDir = join(enrolled.checkout.dir, '.papercusp');
+      await mkdir(bpDir, { recursive: true });
+      await writeFile(
+        join(bpDir, 'blueprint.yaml'),
+        stringifyYaml({ id: member, extends: 'external-bench' }, { lineWidth: 100 }),
+        'utf8',
+      );
+
+      // Register the member with the hive.
+      const ops = await liveOps();
+      await ops.registerMember({ member, clonePath: enrolled.checkout.dir, hiveHome: hiveSlug, workspaceId });
+
+      // Seed the single feature (the problem statement).
+      const featureId = featureIdForTask(task.instanceId);
+      await ops.seedFeature({
+        member,
+        featureId,
+        title: task.problemStatement.slice(0, 200),
+        spec: task.problemStatement,
+        workspaceId: ws,
+      });
+
+      // Pin the feature's workspace_id (fill_ws_features trigger derives default; placed bee claims visible ones only).
+      const sql = await sqlClient();
+      await sql`
+        UPDATE harness_shared.harness_features_consolidated
+           SET workspace_id = ${ws}, updated_ts = ${Date.now()}
+         WHERE harness_slug = ${member} AND feature_id = ${featureId}`;
+
+      instanceByFeatureId.set(featureId, task.instanceId);
+      memberSlugToFeatureId.set(member, featureId);
+      return { memberSlug: member };
+    },
+
+    async placeFifoBatch({ hiveSlug, memberSlug, workspaceId }) {
+      // Spawn the enrolled member via fleet:place_batch through :3170 (routes to proper env + work-items).
+      // Mirrors the realqueenBacklogOps.placeFifoBatch loopback-fetch pattern.
+      const { loopbackFetch, readJsonBody } = await import('../loopback-fetch');
+      const { operatorApiBase } = await import('../operator-api-base');
+
+      const featureId = memberSlugToFeatureId.get(memberSlug);
+      if (!featureId) throw new Error(`Cannot find feature id for member ${memberSlug}`);
+
+      const toolUrl = `${operatorApiBase()}/api/agent-mcp/run-tool`;
+      const res = await loopbackFetch(toolUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'fleet:place_batch',
+          args: {
+            tasks: [featureId],
+            harness: memberSlug,
+            brief: process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '',
+            tier: null,
+            workspace: ws,
+            dry_run: false,
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const errorBody = await res.text().catch(() => '');
+        throw new Error(`fleet:place_batch failed: HTTP ${res.status} ${errorBody}`);
       }
+
+      const toolResult = await readJsonBody<{
+        ok: boolean;
+        result?: { placements: Array<{ task: string; action: string; spawn_id?: string | null; bee?: string }> };
+        error?: string;
+      }>(res, toolUrl);
+
+      if (!toolResult.ok) throw new Error(`fleet:place_batch error: ${toolResult.error}`);
+
+      const placements = toolResult.result?.placements ?? [];
+      const placement = placements[0];
+      if (!placement || !placement.spawn_id) throw new Error(`fleet:place_batch returned no spawn for ${memberSlug}`);
+
+      return { spawnId: placement.spawn_id };
+    },
+
+    async collectTask({ task, spawnId, enrolled, workspaceId }) {
+      // Collect the result from the spawned bee: extract diff + sum cost from agent_usage_samples + feature status.
+      // Mirrors realqueenBacklogOps.collectTask pattern.
+      const { extractDiff } = await import('./clone');
+      const { readMemberUsage, readMemberBeeSpawns, stopReasonForFeatureStatus } = await import('./hive-backlog-live');
+      const sql = await sqlClient();
+
+      // Extract the diff from the worktree.
+      let diff = '';
+      let generationError: string | undefined;
+      try {
+        diff = await extractDiff(enrolled.checkout, task);
+      } catch (e) {
+        generationError = `extractDiff failed: ${e instanceof Error ? e.message : String(e)}`;
+      }
+
+      // Read cost + bee spawn info from the member harness.
+      const member = memberSlugForTask(hivePrefix, task.instanceId);
+      const featureId = memberSlugToFeatureId.get(member) ?? featureIdForTask(task.instanceId);
+      const cost = await readMemberUsage(sql, member, ws).catch(() => ({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 }));
+      const spawnRows = await readMemberBeeSpawns(sql, member, ws).catch(() => []);
+
+      // Read the feature's terminal status.
+      const featRows = await sql<{ status: string }[]>`
+        SELECT status FROM harness_shared.harness_features_consolidated
+         WHERE workspace_id = ${ws} AND harness_slug = ${member} AND feature_id = ${featureId}
+         LIMIT 1`;
+      const featureStatus = featRows[0]?.status ?? null;
+      const stopReason = stopReasonForFeatureStatus(featureStatus, generationError);
+
+      // Build the telemetry from the actual spawn data.
+      const firstSpawn = spawnRows[0];
+      const agentId = spawnId;
+      const startedAtMs = firstSpawn?.startedAtMs ?? enrolled.startedAtMs ?? Date.now();
+      const finishedAtMs = firstSpawn?.finishedAtMs ?? enrolled.finishedAtMs ?? Date.now();
+      const wallClockMs = Math.max(0, finishedAtMs - startedAtMs);
+
       return {
         diff,
-        telemetry: run.telemetry,
-        agentId: trajectoryAgentId(run.telemetry.trajectoryRef, enrolled.task.instanceId),
+        telemetry: {
+          tokensIn: cost.tokensIn,
+          tokensOut: cost.tokensOut,
+          costUsd: cost.costUsd,
+          turns: cost.turns,
+          wallClockMs,
+          trajectoryRef: `xbench-su-independent://${member}`,
+          stopReason,
+          ...(generationError ? { generationError } : {}),
+        },
+        agentId,
       };
     },
 
+    async teardownMember({ memberSlug, workspaceId }) {
+      // Drop the member harness enrollment (best-effort).
+      const ops = await liveOps();
+      await ops.dropMember({ member: memberSlug, workspaceId }).catch(() => {});
+    },
+
     async teardownTask({ enrolled }) {
-      // The bench-harness driver already unregisters + drops the throwaway harness schema; we own the
-      // clone (the caller of cloneTaskRepo). Best-effort.
+      // Tear down the task's scratch checkout (best-effort).
       await enrolled.checkout.cleanup().catch(() => {});
+    },
+
+    async dissolveHive({ hiveSlug, workspaceId }) {
+      // Dissolve the temporary shared hive (best-effort).
+      const ops = await liveOps();
+      await ops.dissolveHive({ hiveHome: hiveSlug, workspaceId }).catch(() => {});
     },
   };
 }

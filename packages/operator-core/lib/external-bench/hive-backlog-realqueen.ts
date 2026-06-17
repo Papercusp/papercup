@@ -701,27 +701,68 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       };
     },
 
-    async placeFifoBatch({ plan }) {
-      const { executeBatch } = await import('../agent-tools/fleet/place_batch');
-      const actor: AgentIdentity = {
-        ownerId: homePrefix,
-        ownerLabel: `xbench-fifo:${homePrefix}`,
-        source: 'principal',
-        workspaceId: ws,
-        userId: null,
-      };
-      const { getSpawnHeadroom } = await import('../fleet/operator-spawn');
-      const { headroom } = await getSpawnHeadroom(ws);
-      const exec = await executeBatch({
-        plan,
-        headroom,
-        brief: BENCH_BEE_DIRECTIVE,
-        tier: null,
-        actor,
-        role: 'operator',
-        workspaceId: ws,
+    async placeFifoBatch({ plan, members }) {
+      // Route FIFO bee spawns through :3170 host (same path as Queen's fleet:place_batch)
+      // instead of in-process executeBatch. This ensures bees get the env + work-item
+      // claim that hive bees get via the operator host (D-020 fix).
+      const { loopbackFetch, readJsonBody } = await import('../loopback-fetch');
+      const { operatorApiBase } = await import('../operator-api-base');
+
+      // Extract task IDs from the plan decisions (tasks that will be placed in FIFO order)
+      const taskIds = plan.decisions
+        .filter((d) => d.disposition !== 'unplaced')
+        .map((d) => d.task.id);
+
+      if (taskIds.length === 0) {
+        return { placements: [] };
+      }
+
+      // Infer the target harness from the first unplaced member (they all have external-bench blueprint)
+      const targetHarness = members.find((m) => m.beeId == null)?.member ?? homePrefix;
+
+      // Invoke fleet:place_batch on :3170 with the FIFO-ordered tasks
+      const toolUrl = `${operatorApiBase()}/api/agent-mcp/run-tool`;
+      const res = await loopbackFetch(toolUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'fleet:place_batch',
+          args: {
+            tasks: taskIds,
+            harness: targetHarness,
+            brief: BENCH_BEE_DIRECTIVE,
+            tier: null,
+            workspace: ws,
+            dry_run: false,
+          },
+        }),
       });
+
+      if (!res.ok) {
+        const errorBody = await res.text().catch(() => '');
+        throw new Error(`fleet:place_batch failed: HTTP ${res.status} ${errorBody}`);
+      }
+
+      const toolResult = await readJsonBody<{
+        ok: boolean;
+        result?: {
+          placements: Array<{
+            task: string;
+            action: string;
+            spawn_id?: string | null;
+            bee?: string;
+          }>;
+        };
+        error?: string;
+      }>(res, toolUrl);
+
+      if (!toolResult.ok) {
+        throw new Error(`fleet:place_batch error: ${toolResult.error}`);
+      }
+
+      // Convert tool result to the expected placement format
       const placements: { instanceId: string; beeId: string; disposition: 'spawn' | 'warm-inject' }[] = [];
+      const exec = toolResult.result ?? { placements: [] };
       for (const p of exec.placements) {
         const featureId = p.task;
         const instanceId = instanceByFeatureId.get(featureId) ?? featureId;

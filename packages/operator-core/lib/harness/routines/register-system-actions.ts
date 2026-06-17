@@ -184,6 +184,9 @@
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
+// scheduled-recurring-plans-2026-06-16 P-007: `system:plan-run` — one fire of a
+// scheduled plan (instance plan → plan_runs row → run-scoped frontier work_items).
+import './plan-run-action';
 // overwatch-role-2026-06-15 B-04 (C-3): the `system:overwatch-launch` action the
 // one-shot `overwatch-wake` routine fires — computes the OverwatchBrief + launches
 // role=overwatch. Importing it here also registers the B-07 wake-bridge waker at
