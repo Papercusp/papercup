@@ -945,7 +945,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
               {
                 v: 'public' as const,
                 label: 'Public',
-                hint: `Anyone on the network can discover this ${hiveLower}; contributors' GitHub identities are visible.`,
+                hint: `Anyone on the network can discover this ${hiveLower}; contributors' GitHub identities, including your own, are visible.`,
               },
               {
                 v: 'invite' as const,

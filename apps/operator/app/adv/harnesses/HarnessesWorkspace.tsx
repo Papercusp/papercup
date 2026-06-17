@@ -5,6 +5,7 @@ import { Plus } from 'lucide-react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import { useLexicon } from '@/lib/useLexicon';
+import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
 import HarnessWelcome from './HarnessWelcome';
@@ -47,6 +48,7 @@ export interface AdvProjectEntry {
  */
 export default function HarnessesWorkspace() {
   const t = useLexicon();
+  const workspaceLabel = useWorkspaceLabel();
   // `?slug=` is the HIVE / root scope (owned by the shell selector). The new
   // `?harness=` axis is the MEMBER focus within that hive — which member's
   // dock is open. Nullable: unset means "use the hive's default member"
@@ -172,6 +174,7 @@ export default function HarnessesWorkspace() {
         // stale single-harness dock the tab used to keep showing.
         <HiveWorkspaceCards
           groups={groups}
+          workspaceLabel={workspaceLabel}
           onDrill={(hive, member) => void drillIntoMember(hive, member)}
           onCreate={() => setCreateOpen(true)}
         />

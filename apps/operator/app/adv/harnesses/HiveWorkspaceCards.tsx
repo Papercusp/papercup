@@ -23,13 +23,15 @@ import { HIVE_KIND, type HiveGroup } from './harness-hive-groups';
 export interface HiveWorkspaceCardsProps {
   /** One group per hive (root + members), from `groupByHive`. */
   groups: readonly HiveGroup[];
+  /** The active workspace's display name — the root header above the hive cards (mirrors the selector tree). */
+  workspaceLabel?: string;
   /** Drill into a member — caller writes `?slug=`(hive) + `?harness=`(member) and exits all-mode. */
   onDrill: (hiveSlug: string, memberSlug: string) => void;
   /** Open the create flow from the empty state. */
   onCreate?: () => void;
 }
 
-export default function HiveWorkspaceCards({ groups, onDrill, onCreate }: HiveWorkspaceCardsProps) {
+export default function HiveWorkspaceCards({ groups, workspaceLabel, onDrill, onCreate }: HiveWorkspaceCardsProps) {
   const t = useLexicon();
   const hiveLabel = t('pot');
   const hivesLabel = t('pot', { plural: true });
@@ -51,6 +53,13 @@ export default function HiveWorkspaceCards({ groups, onDrill, onCreate }: HiveWo
 
   return (
     <div className="pc-hive-cards" data-testid="hive-workspace-cards">
+      {workspaceLabel && (
+        <div className="pc-hive-cards__ws-header" title={`Workspace: ${workspaceLabel}`}>
+          <Boxes size={13} aria-hidden />
+          <span className="pc-hive-cards__ws-name">{workspaceLabel}</span>
+          <span className="pc-hive-cards__ws-count">{groups.length} {hivesLabel.toLowerCase()}</span>
+        </div>
+      )}
       <div className="pc-hive-cards__grid">
         {groups.map((g) => {
           // The hive HOME (`harness_kind:'hive'`) is the card itself — its name is
@@ -155,6 +164,33 @@ function CardStyles() {
         cursor: pointer;
       }
       .pc-hive-cards__create:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 65%); }
+      .pc-hive-cards__ws-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+        color: var(--fg-mute, #7f9bb4);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .pc-hive-cards__ws-name {
+        color: var(--fg, #e7f7ff);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pc-hive-cards__ws-count {
+        margin-left: auto;
+        font-weight: 600;
+        text-transform: none;
+        letter-spacing: 0;
+        color: var(--fg-mute, #7f9bb4);
+        font-variant-numeric: tabular-nums;
+      }
       .pc-hive-cards__grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));

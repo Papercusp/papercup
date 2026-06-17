@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
-import { wsLocalKey, getBrowserWorkspaceId, resolveActiveWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import { Select, type SelectEntry, type SelectOption } from '@/app/harness/Select';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
-import { listWorkspaces } from '@papercusp/operator-core/lib/workspaces-tauri';
+import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
@@ -248,9 +248,9 @@ export default function AdvShell({
   );
   const [projects, setProjects] = useState<HarnessProjectLite[]>([]);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
-  // Workspace display name for the selector's root-group header — resolved from
-  // the workspace registry below (falls back to the raw id until it lands).
-  const [workspaceLabel, setWorkspaceLabel] = useState<string>(() => getBrowserWorkspaceId());
+  // Workspace display name for the selector's root-group header (falls back to
+  // the raw id until the registry read lands).
+  const workspaceLabel = useWorkspaceLabel();
   // Create-harness flow. The dialog open-state is URL-backed (nuqs) so it
   // survives refresh and is agent-controllable; `refreshNonce` re-runs the
   // project fetch once a harness is created so the selector picks it up.
@@ -308,26 +308,6 @@ export default function AdvShell({
       cancelled = true;
     };
   }, [activeSlug, setActiveSlug, setScopeMode, refreshNonce]);
-
-  // Resolve the workspace's display NAME for the selector's root-group header
-  // (one cheap registry read; the raw id stays as the fallback). Mirrors how
-  // WorkspaceSwitcher resolves the active workspace.
-  useEffect(() => {
-    let cancelled = false;
-    listWorkspaces()
-      .then((reg) => {
-        if (cancelled) return;
-        const activeId = resolveActiveWorkspaceId(reg, getBrowserWorkspaceId());
-        const name = reg?.workspaces?.find((w) => w.id === activeId)?.name;
-        if (name) setWorkspaceLabel(name);
-      })
-      .catch(() => {
-        /* keep the id fallback */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // "All harnesses" mode: list views (Plans, Sessions) span the whole
   // workspace. The single-harness widgets (Share, now-running, Discord)
