@@ -64,13 +64,16 @@ async function seedIssue(o: {
   watchdogKey?: string | null;
   createdAtMs?: number;
 }): Promise<void> {
+  // ::text::jsonb (createIssue's own idiom): casting a JSON string straight to
+  // ::jsonb double-encodes it into a jsonb STRING scalar, so `payload ? 'key'`
+  // never matches — the text hop forces it to parse as a jsonb OBJECT.
   const payload = o.watchdogKey ? JSON.stringify({ watchdogKey: o.watchdogKey }) : null;
   const createdIso = new Date(o.createdAtMs ?? BET_CREATED_MS - 5 * DAY_MS).toISOString();
   await db.adminSql`
     INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, title, state, payload, created_at, updated_at)
     VALUES (${WS}, ${o.id}, ${'seed ' + o.id}, ${o.state ?? 'open'},
-            ${payload}::jsonb, ${createdIso}, ${createdIso})
+            ${payload}::text::jsonb, ${createdIso}, ${createdIso})
     ON CONFLICT (workspace_id, issue_id) DO UPDATE
       SET state = EXCLUDED.state, payload = EXCLUDED.payload, created_at = EXCLUDED.created_at
   `;

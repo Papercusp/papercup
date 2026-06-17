@@ -111,10 +111,15 @@ describe('operator:decisions', () => {
     const { generated } = await import('@papercusp/db-org');
     const { default: tool } = await import('./decisions');
     await tool.handler({}, MAKE_CTX());
-    const tsCol = generated.operatorDecisionsInHarnessShared.ts;
-    // identity checks only — drizzle column objects are self-referential, so a
-    // deep `toEqual` against one would recurse forever.
-    expect(cap.descArg).toBe(tsCol);
-    expect((cap.orderByArg as { __desc: unknown }).__desc).toBe(tsCol);
+    // desc() was called with the operator_decisions view's `ts` column (newest-
+    // first is the tool's contract). Compare by the column's `name` — drizzle
+    // column objects are self-referential, so a reference/deep compare that fails
+    // would recurse forever building the diff.
+    const tsName = (generated.operatorDecisionsInHarnessShared.ts as { name: string }).name;
+    expect(cap.descArg).toBeDefined();
+    expect((cap.descArg as { name: string }).name).toBe(tsName);
+    // and desc()'s wrapped return is exactly what orderBy received (identity of the
+    // captured arg, no column re-import involved):
+    expect((cap.orderByArg as { __desc: unknown }).__desc).toBe(cap.descArg);
   });
 });

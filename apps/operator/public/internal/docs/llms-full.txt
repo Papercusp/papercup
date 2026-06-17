@@ -4297,6 +4297,67 @@ The Hetzner creds + leak-audit recipe are the same as the other deployment E2Es 
 
 `computeFullLoopVerdict` counts starvation against completion EVIDENCE, not reporters. A killed authority’s `wi-done` records federate before it dies and are real completions visible in every survivor’s converged projection — but the dead Swarm never reports a `result`. So `starvedItems` unions reported completions with the Queen’s turn-2 `sawDone` projection; only an item with no evidence anywhere starved. (The residual — a dead-reporter completion racing a survivor’s fail-open re-claim, double-completing invisibly to this verdict — is exactly what production’s P-012 cross-swarm double-completion detector is for.)
 
+# GAIA: a BYO-agent benchmark, and the Max-OAuth '429' that is really a framing reject
+
+> GAIA ships NO harness — you build the agent (web/code/file/vision) + a quasi-exact-match grader and self-grade the validation split. Two traps: (1) the dataset is HF-gated (needs a token whose account accepted the terms); (2) your raw @anthropic-ai/sdk agent gets a BOGUS 429 (body literally 'Error') through the inference gateway unless the FIRST system block is exactly the Claude Code identity. The fix + how to tell a framing-reject from a real rate-limit.
+
+## What this saves you
+
+[Section titled “What this saves you”](#what-this-saves-you)
+
+You are wiring **GAIA** (`benchmark-suite-gaia-2026-06-17`) or any other BYO-agent research/tool benchmark that runs a raw `@anthropic-ai/sdk` ReAct loop through Papercusp’s inference gateway. Two non-obvious things will eat your evening; both are one-liners once you know them.
+
+## GAIA ships no harness — the build is an agent + a tiny string grader
+
+[Section titled “GAIA ships no harness — the build is an agent + a tiny string grader”](#gaia-ships-no-harness--the-build-is-an-agent--a-tiny-string-grader)
+
+Unlike SWE-bench (apply a diff → run tests) or TheAgentCompany (run an in-container `eval.py`), GAIA is **just Q\&A data + a string scorer**. So the deliverable is:
+
+1. **The grader** (`external-bench/grader/gaia.ts`) — a faithful port of the upstream `question_scorer`: gold-is-a-number → strip `$%,` + numeric compare; gold-has-`,`/`;` → per-element list compare (string elements keep punctuation — `remove_punct=False`); else → lowercase / strip whitespace / strip punctuation. Extract the model answer from the **last** `FINAL ANSWER:` line. Binary per task; aggregate per-level L1/L2/L3 + overall. This is the easy, well-specified half — get it byte-faithful and your number is leaderboard-comparable.
+2. **The agent** (`external-bench/gaia/{agent,tools-live,agent-live,run}.ts`) — opus-4.8 in a tool-use loop with `web_search` (Brave), `fetch_url`, `run_python`, `read_file`, and vision (image attachments as image blocks). The bulk of the work, and **reusable** across other research/tool suites. Keep the loop pure (inject the LLM + tools) so it unit-tests with fakes; the live bindings are a thin layer.
+
+The **FINAL ANSWER normalization is load-bearing** — a correct-but-misformatted answer FAILS the exact-match grader, and that formatting slice is a large share of failures. Report `formatFailRate` separately so you can tell formatting failures from reasoning failures.
+
+## Trap 1 — the dataset is HF-gated
+
+[Section titled “Trap 1 — the dataset is HF-gated”](#trap-1--the-dataset-is-hf-gated)
+
+`gaia-benchmark/GAIA` is gated (CC-BY-4.0 + no-reshare). A raw resolve 401s. You need an `HF_TOKEN` whose HF account **accepted the terms** at [huggingface.co/datasets/gaia-benchmark/GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA). Provision the validation split with `huggingface_hub.snapshot_download(..., allow_patterns=["2023/validation/*"])` (the layout is `2023/validation/{metadata.jsonl, <attachments>}`). There is no way to accept the terms from an agent — it is an owner action. Don’t route around it with an ungated community mirror (license + the plan both say use the gated source).
+
+## Trap 2 — the Max-OAuth gateway ‘429’ is usually a FRAMING REJECT, not capacity
+
+[Section titled “Trap 2 — the Max-OAuth gateway ‘429’ is usually a FRAMING REJECT, not capacity”](#trap-2--the-max-oauth-gateway-429-is-usually-a-framing-reject-not-capacity)
+
+Your live agent calls the gateway and every request comes back:
+
+```json
+{"type":"error","error":{"type":"rate_limit_error","message":"Error"},"request_id":"req_…"}
+```
+
+This looks like you are out of Opus capacity. **It is not.** On a Claude-Max OAuth token, a raw-SDK caller whose **first `system` block is not exactly** `You are Claude Code, Anthropic's official CLI for Claude.` (as its OWN block) gets a **bogus 429** regardless of budget. (Same root cause documented for the LangChain path in [vendoring-a-langchain-benchmark-through-the-gateway](/internal/docs/agent-insights/vendoring-a-langchain-benchmark-through-the-gateway) and [max-oauth-first-system-block-must-be-claude-code-identity](/internal/docs/agent-insights/max-oauth-first-system-block-must-be-claude-code-identity) — it bites the **raw `@anthropic-ai/sdk` TS path identically**, not just LangChain.)
+
+**Tell a framing reject from a real rate-limit by the body:** a framing reject’s `message` is literally `"Error"` and carries **no** `anthropic-ratelimit-*` headers; a genuine 429 has a full message + reset headers (then it is actually budget — pin a fresh account).
+
+**The fix** — send `system` as an array of blocks, identity first:
+
+```ts
+const system = [
+  { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." },
+  { type: 'text', text: gaiaSystemPrompt },
+];
+await client.messages.create({ model: 'claude-opus-4-8', system, messages, tools, max_tokens, thinking });
+```
+
+In `gaia/agent-live.ts` this is `CLAUDE_CODE_IDENTITY`, prepended by default whenever a gateway `baseUrl` is set (off for a direct Anthropic key). With this fix the live chain (gateway → opus-4.8 @ xhigh extended thinking → tools → FINAL ANSWER → grader) works end-to-end — a 2-task synthetic smoke went from 0/2 (both bogus-429) to 100% (`Paris`; `Tungsten → 74` via `web_search`) at \~$0.09.
+
+Other gateway details that carry over: `xhigh` = extended thinking at `budget_tokens` with `max_tokens > budget_tokens`; let the SDK retry (`maxRetries: 8`) ride out transient 529s; pin a fresh pool account with the `x-papercusp-account` header if the active one is fleet-exhausted.
+
+## Source
+
+[Section titled “Source”](#source)
+
+`benchmark-suite-gaia-2026-06-17` (su-aef77), 2026-06-17. Files: `packages/operator-core/lib/external-bench/{grader/gaia.ts,gaia/*}`; runbook `apps/operator/docs/gaia-suite-runbook-2026-06-17.md`.
+
 # Generalizing a Papercusp lib into a borrowable one — the host-seam pattern
 
 > How to take a lib that's tied to Papercusp and make it project-agnostic without changing the operator's behavior: the package names no project, the host injects domain values through a configure*()/props seam, and the operator maps its domain onto that seam at the boundary. Includes the soft-coupling checklist (schema/db names, fs paths, env vars, global keys, domain vocab in public types, generated-output banners — the ones grep misses), the cross-repo contract gotcha, and the borrowable-libs catalog + regroup tooling.
@@ -6981,6 +7042,65 @@ To exercise just the storage layer **without** an LLM, drive `CanonicalVectorSto
 
 * [`live-pg-regression-sentinel`](/internal/docs/agent-insights/live-pg-regression-sentinel/) — the broader “verify against live PG, not just unit tests” pattern.
 * [`embedded-pg-discovery`](/internal/docs/agent-insights/embedded-pg-discovery/) — PG URL resolution + the native fallback.
+
+# METR HCAST time-horizon bench — run it via taskhelper.py, not the private Inspect bridge
+
+> The official inspect-metr-task-bridge (mtb) won't install (6 private METR PyPI deps). Drive the pre-built task images directly with the Task Standard's public taskhelper.py. Plus the human-time-baseline join and the two-arm horizon-lift framing.
+
+The METR HCAST / time-horizon suite (`suite='metr-hcast'`, plan `benchmark-suite-metr-hcast-2026-06-17`) measures a **50%/80%-task-completion time horizon** — the human-expert task LENGTH at which an arm succeeds 50%/80% of the time — and reports the **hive-vs-single-opus horizon LIFT**. Integration lives under `packages/operator-core/lib/external-bench/metr-hcast-*` + the horizon math in `libs/generic/bench-metrics/src/horizon.ts`.
+
+## The load-bearing gotcha: the official Inspect bridge won’t install
+
+[Section titled “The load-bearing gotcha: the official Inspect bridge won’t install”](#the-load-bearing-gotcha-the-official-inspect-bridge-wont-install)
+
+METR’s README says to run tasks via the **Inspect Task Bridge** (`inspect-metr-task-bridge`, the `mtb` package). **It cannot install on a public box** — its `pyproject` pins six METR-internal packages that are not on public PyPI: `metr-task-artifacts`, `metr-task-assets`, `metr-task-aux-vm-helpers`, `metr-task-legacy-verifier`, `metr-task-protected-scoring`, `metr-task-standard`. `pip install` dies on `metr-task-artifacts`. (`inspect_ai` itself installs fine.)
+
+**Drive the task images directly with the Task Standard’s own `drivers/taskhelper.py`** — the public, dependency-free script the bridge merely wraps (vendored in `~/.papercusp/bench-harnesses/metr/task-standard`). That is what `dockerTaskStandardOps` (metr-hcast-live.ts) does.
+
+### The container recipe (validated end-to-end)
+
+[Section titled “The container recipe (validated end-to-end)”](#the-container-recipe-validated-end-to-end)
+
+Pre-built images: `registry-1.docker.io/metrevals/public-tasks:<family>-<version>` (\~4 GB, anonymous Docker Hub pull). They ship the `TaskFamily` at `/root/<family>.py` + the unprivileged `agent` user (uid 1000) but **NOT** `taskhelper.py` — copy it in.
+
+```bash
+docker run -d --name c --entrypoint sh "$IMG" -c 'tail -f /dev/null'
+docker cp task-standard/drivers/taskhelper.py c:/root/taskhelper.py
+docker exec -w /root c python taskhelper.py <FAMILY> <TASK> start    # sets up + chowns /home/agent
+docker exec -w /root c python taskhelper.py <FAMILY> <TASK> setup    # → {instructions, ...}
+#   ...agent works inside as `agent` user, produces a submission string...
+docker exec -w /root c python taskhelper.py <FAMILY> <TASK> score -s "<submission>"   # → float
+docker rm -f c
+```
+
+Output is the line `SEP_MUfKWkpuVDn9E` then a JSON result (`parseTaskhelperResult`). `score()` returns a float (binary tasks: `0.0`/`1.0`); `resolved = score >= threshold` (default `1.0`).
+
+## The human-time baselines: join the open tasks to runs.jsonl
+
+[Section titled “The human-time baselines: join the open tasks to runs.jsonl”](#the-human-time-baselines-join-the-open-tasks-to-runsjsonl)
+
+The horizon fit needs a human-time baseline per task. The open `metr/public-tasks` repo ships **31 runnable tasks (10 families)** but the structured baselines live in `metr/eval-analysis-public/reports/time-horizon-1-*/data/raw/runs.jsonl` (field `human_minutes`, keyed by `task_id = <family>/<task>`). Joining the two yields only **18 horizon-eligible tasks** (16 `baseline` + 2 `estimate`), spanning \~2–95 min — the other 13 (clone\_game, complex\_payments, cowthello, crossword, several variants) are newer dangerous-capability families absent from METR’s released horizon dataset. The vendoring step writes `~/.papercusp/bench-results/metr-hcast/tasks.jsonl` with `horizonEligible`.
+
+## The math + the honest framing (don’t skip)
+
+[Section titled “The math + the honest framing (don’t skip)”](#the-math--the-honest-framing-dont-skip)
+
+`fitHorizon` (bench-metrics) is a faithful port of METR’s reference (`eval-analysis-public/src/horizon`): **weighted logistic regression of success on `log2(human_minutes)`, horizon = `2^((logit(q) − intercept)/coef)`**, reg `1e-5`, hierarchical-bootstrap CIs. The golden test reproduces METR’s published Claude 3.7 Sonnet \~50–60 min horizon (we get p50 ≈ 63 min on their data).
+
+**The absolute horizon on \~18 short tasks is illustrative-only — NOT leaderboard-comparable** (METR’s real fit spans seconds→8 h over \~170 tasks). The **defensible headline is the LIFT**: treatment (hive, `papercusp`) vs baseline (single-opus, `baseline-a-ablation`) on the SAME tasks cancels much of the subset bias (plan D-002). `buildMetrHcastReport` emits three mandatory caveats — surface them.
+
+## Running it (host-gated)
+
+[Section titled “Running it (host-gated)”](#running-it-host-gated)
+
+```bash
+npx tsx packages/operator-core/lib/external-bench/_xbench_metr_hcast.ts \
+  --task-set metr-hcast-horizon --arms baseline-a-ablation,papercusp \
+  --samples 5 --account <quiet-acct> --concurrency 2 \
+  --out ~/.papercusp/bench-results/metr-hcast/run.json
+```
+
+**Gateway contention is the operational gotcha.** Each arm routes opus-4.8 through the gateway; under concurrent benches (tau2 / agentsnet / the fleet) the shared accounts **429 globally** — every account on both `:8788` and `:8799` returned the same synthetic `rate_limit_error`. `gatewayModelCall` retries transient 429s and supports `--account <id>` (the `x-papercusp-account` header) to pin a quiet account, but a clean multi-sample run still needs a genuinely quiet opus window. The 429→`infra-failed` fairness path (excluded from the fit, never a capability fail) is the same discipline as the rest of external-bench.
 
 # Migrating a bespoke loop to a deterministic / hybrid blueprint
 
@@ -10088,6 +10208,66 @@ A PENDING row whose `executor_id` no longer exists is the wedge. Cross-check `ha
 * A misfiring routine loop is stopped with `UPDATE harness_shared.routines SET active=false WHERE name='<name>'`.
 * If you change routine CLAIM/fire semantics on `main`, remember the live ticker is green’s until a deploy — your fix is not protecting production rows yet.
 
+# `import { RRule } from 'rrule'` crashes DBOS boot (CJS-in-ESM)
+
+> A static named import of the CommonJS `rrule` package throws at module load under the ESM/tsx operator host — taking down the whole routinesTick (git-sync, green-checkpoint, deploys, scheduled plans). Use createRequire. vitest does NOT catch this.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+The operator boots (HTTP `/api/health` responds, MCP works) but the **entire DBOS background system is silently dead**: no `routinesTick`, so **git-sync stops committing**, **green-checkpoint / release-trigger stop** (deploys freeze, `main` goes stale), scheduled-plan fires stop, and `fleet:place_batch` 500s. The boot log has the tell:
+
+```plaintext
+[endpoint-ipc] failed to start: .../harness/routines/schedule-next.ts:14
+import { RRule, RRuleSet } from 'rrule';
+SyntaxError: The requested module 'rrule' does not provide an export named 'RRule'
+[dbos] boot failed (non-fatal): The requested module 'rrule' does not provide an export named 'RRule'
+```
+
+`[dbos] boot failed (non-fatal)` is the line that matters — “non-fatal” means the HTTP host stays up, so health/MCP look fine while every routine-driven subsystem is down. On 2026-06-17 this took prod (`:3070`) down for \~2h and stranded \~650 files of fleet work uncommitted (git-sync is itself a routine, so it died too).
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+`rrule` is a **CommonJS** package. Under the operator’s ESM/tsx host, a CJS module’s classes are exposed on the **default export**, not as statically-detectable named exports — so `import { RRule, RRuleSet } from 'rrule'` throws `does not provide an export named 'RRule'` **at module load**. Any module that statically imports the offender (here `claim.ts → schedule-next.ts`) fails to load, and because `routinesTick`’s import graph reaches it, the whole tick fails to register.
+
+vitest does NOT catch this
+
+The named import passes the unit + integration suites (vitest’s CJS interop resolves the named export) and the SPA build (Vite handles CJS). It only throws under **tsx**, which is what the operator runs. So a green test run + green deploy can still ship a DBOS-killing regression. Verify a backend `rrule` (or any CJS-only dep) consumer with a real tsx import, not just vitest.
+
+## Fix — load CJS deps via createRequire
+
+[Section titled “Fix — load CJS deps via createRequire”](#fix--load-cjs-deps-via-createrequire)
+
+```ts
+import { createRequire } from 'node:module';
+// rrule is CJS: its classes are on the default export, NOT statically-detectable
+// named exports under ESM/tsx. createRequire resolves them at runtime.
+const { RRule, RRuleSet } = createRequire(import.meta.url)('rrule') as typeof import('rrule');
+```
+
+This is the repo’s ESM-safe CJS pattern (cf. `libs/generic/resource-profile`). The `as typeof import('rrule')` keeps the static types. **Frontend** code (operator-vite) can keep the named import — Vite bundles CJS fine; this is a **backend/tsx-only** trap.
+
+## Verify before you ship a backend CJS consumer
+
+[Section titled “Verify before you ship a backend CJS consumer”](#verify-before-you-ship-a-backend-cjs-consumer)
+
+```bash
+npx tsx -e "import('./packages/operator-core/lib/.../your-module.ts').then(m => console.log('loaded', !!m))"
+```
+
+If it prints `loaded`, the module loads under the runtime the operator uses. A passing `vitest run` alone does not prove this.
+
+## Recovery, if it already shipped
+
+[Section titled “Recovery, if it already shipped”](#recovery-if-it-already-shipped)
+
+The deadlock: git-sync (dead) can’t commit the fix; the routine tick (dead) can’t deploy it. Break it manually — minimal one-file commit of the fix + push `staging`, then the **sanctioned incident path** `tsx apps/operator/lib/release/deploy-cli.ts --deploy-commit <sha> --execute` (needs `PAPERCUSP_ALLOW_DEV_RESTART=1` to permit the restart). Once `:3070` reboots on the fix, DBOS relaunches and git-sync sweeps the backlog normally.
+
+See also [Scheduled plans](/internal/docs/spec/scheduled-plans) (the routine this import feeds) and the design [libraries](/internal/docs/design/libraries) note.
+
 # Which schedulers deliberately stay OFF DBOS (and why)
 
 > The audit (dbos-scheduler-consolidation-2026-06-03) moved every portable periodic job onto DBOS scheduled workflows. This is the catalog of the loops that deliberately did NOT move, with the one-line reason for each — so the next agent doesn't try to "finish the migration" by porting something that can't or shouldn't be a DBOS cron.
@@ -12916,6 +13096,78 @@ If your decoration logic depends on the rendered DOM (cross-element walking, reg
 * [react-fiber-walk-for-imperative-instances](./react-fiber-walk-for-imperative-instances) — reaching the vditor instance from outside the wrapper.
 * `apps/operator/app/admin/plans/plan-renderers-ir.ts` — production use (status-pill decoration).
 * `apps/operator/app/admin/plans/plan-renderers-ir.test.ts` — unit coverage on the selective-override + walk-stop contract.
+
+# Running a vendored LangChain/LLM benchmark with opus through the inference gateway
+
+> How to vendor an external Python LangChain benchmark (AgentsNet, SwarmBench, …) and route claude-opus-4-8 through Papercusp's localhost inference gateway as the per-agent model: the gateway is an ANTHROPIC /v1/messages OAuth proxy (NOT OpenAI-compatible), so use model_provider='anthropic' + ANTHROPIC_BASE_URL; the first system block must be the Claude Code identity; xhigh = extended thinking 32k; pin a fresh account to dodge fleet exhaustion; plus the numpy/regex/langchain-1.x vendoring gotchas.
+
+## What this saves you
+
+[Section titled “What this saves you”](#what-this-saves-you)
+
+The “coordination-native” benchmark plans (AgentsNet, SwarmBench, …) all vendor a third-party Python harness that picks its per-agent LLM via LangChain’s `init_chat_model(model_name, model_provider)`, and want **claude-opus-4-8 @ xhigh** routed through our localhost inference gateway. The brief usually says “register the gateway as an **OpenAI-compatible** MODEL\_PROVIDER.” That is **wrong** and will cost you an afternoon. Here is the recipe that works (proven end-to-end on AgentsNet, `benchmark-suite-agentsnet-2026-06-17`).
+
+## The gateway is an Anthropic proxy, not OpenAI-compatible
+
+[Section titled “The gateway is an Anthropic proxy, not OpenAI-compatible”](#the-gateway-is-an-anthropic-proxy-not-openai-compatible)
+
+`packages/operator-core/lib/inference-gateway/gateway.ts` only proxies `/v1/*` and specially parses `/v1/messages` — it is the **Anthropic Messages API**. There is no `/v1/chat/completions`. So route the LangChain client as **anthropic**, not openai:
+
+* `MODEL_PROVIDER["claude-opus-4-8"] = "anthropic"`
+* `ANTHROPIC_BASE_URL = http://127.0.0.1:8788` (or `base_url=` kwarg to `ChatAnthropic`)
+* `ANTHROPIC_API_KEY = <anything>` — the gateway **strips** the client’s auth and reinjects the real Claude-Max OAuth bearer + the `oauth-2025-04-20` beta. The key only needs to be SET.
+* model id `claude-opus-4-8` (the price table prefix-resolves it; the `claude` CLI’s “4-8 silently runs 4-7” gotcha is a CLI-alias thing — the RAW API passes the id verbatim, so it’s correct here).
+
+## The first system block MUST be the Claude Code identity
+
+[Section titled “The first system block MUST be the Claude Code identity”](#the-first-system-block-must-be-the-claude-code-identity)
+
+On a Max-OAuth token, a raw-SDK caller whose first `system` block is not **exactly** `You are Claude Code, Anthropic's official CLI for Claude.` (as its OWN block) gets a **bogus 429** (`rate_limit_error`) regardless of budget — see [max-oauth-first-system-block-must-be-claude-code-identity](/internal/docs/agent-insights/max-oauth-first-system-block-must-be-claude-code-identity). With `langchain-anthropic`, send the system message as a **list of content blocks** with the CC identity first:
+
+```python
+SystemMessage(content=[
+    {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+    {"type": "text", "text": <the benchmark's real system prompt>},
+])
+```
+
+Tell a framing-reject from a real rate-limit: the framing reject’s body is literally `"Error"` with no `anthropic-ratelimit-*` headers; a genuine 429 carries a full message + a `request_id` + reset headers (then it’s budget, not framing).
+
+## xhigh = extended thinking at 32k
+
+[Section titled “xhigh = extended thinking at 32k”](#xhigh--extended-thinking-at-32k)
+
+There is no “effort” param on the raw API. `xhigh` is realized as extended thinking at `budget_tokens=32000` (matches `external-bench/competitor-live.ts` `DEFAULT_THINKING_BUDGET_TOKENS`), with `max_tokens > budget_tokens` (`32000 + 16384`). **Gotcha:** with thinking on, `ChatAnthropic` returns `AIMessage.content` as a **list of blocks** (thinking + text). If the harness’s parsers expect a string, flatten it (drop thinking/redacted\_thinking, keep text) at the single model-call chokepoint. For plain multi-turn chat (no tool\_use) you do NOT need to preserve thinking blocks across turns, so flattening is safe.
+
+## Dodge fleet exhaustion: pin a fresh account
+
+[Section titled “Dodge fleet exhaustion: pin a fresh account”](#dodge-fleet-exhaustion-pin-a-fresh-account)
+
+The shared gateway’s active account is often the fleet-exhausted one (`unified 5h utilization: 1.0, rejected: true` in `GET :8788/stats`). Pin your benchmark to a fresh pool account with the **`x-papercusp-account: <id>`** header (`accounts:status` shows per-account utilization; pick one at \~0%). With `langchain-anthropic`: `default_headers={"x-papercusp-account": "<id>"}`. The gateway selects that account (`gateway.ts` `pool.select`) and strips the header upstream.
+
+## Resilience for overload (529)
+
+[Section titled “Resilience for overload (529)”](#resilience-for-overload-529)
+
+Anthropic returns transient **529 OverloadedError** under load. Let the **Anthropic SDK’s own retry** handle it (`max_retries=8` — it honors `Retry-After` and backs off); don’t set it to 0. A long benchmark then rides out overload windows. Pace concurrency with a client rate limiter and run each (size,task) as a separate invocation so one bad window can’t lose the whole run.
+
+## Vendoring gotchas (Python)
+
+[Section titled “Vendoring gotchas (Python)”](#vendoring-gotchas-python)
+
+* **`numpy==1.26.4`** has no wheels for py3.13/3.14 → use **py3.11** (`uv venv --python 3.11`, mirroring the existing bench harnesses).
+* The README’s pip list **omits `regex`** even though the code `import regex`s it.
+* A repo written pre-langchain-1.x uses `from langchain.schema import …` / `langchain.prompts` — these moved to **`langchain_core.messages` / `langchain_core.prompts`** in 1.x. `init_chat_model` stays at `langchain.chat_models`.
+* `init_chat_model(model)` will `KeyError` if the harness keys a per-model rate-limiter dict on the model name — add a default fallback entry.
+* `langchain-anthropic` may need an explicit install even when listed (verify `from langchain_anthropic import ChatAnthropic`).
+
+Keep all this behind one env flag (e.g. `AGENTSNET_GATEWAY=1`) in a small support module so the vendored diff stays auditable and re-vendorable.
+
+## Source
+
+[Section titled “Source”](#source)
+
+`benchmark-suite-agentsnet-2026-06-17` (su-8cbc8), 2026-06-17. Support module: `~/.papercusp/bench-harnesses/agentsnet/papercusp_gateway.py`.
 
 # Per-row verification signals belong ON the row, not in a parallel escalations table
 
