@@ -104,18 +104,33 @@ export async function storeMcpResult(args: {
   result: StoredMcpResult;
 }): Promise<void> {
   const { sql } = getOrgPg();
-  // jsonb bound as text::jsonb — the operator's postgres-js client throws
-  // on bare-object jsonb params (agent-insights/postgres-js-jsonb-binding).
-  const resultJson = JSON.stringify(args.result);
   // Size gate: skip storing pathologically large results (operator-scalability P1-2
   // / app-wide-load-traps F-A1). The store is synchronous on the event loop; large
-  // results block long enough to drop MCP/SSE connections. Skipping the row forgoes
+  // results block long enough to drop MCP/SSE connections. Estimate size BEFORE
+  // stringify to avoid the expensive JSON.stringify call on large content — reuse
+  // the already-serialized text in content.text fields. Skipping the row forgoes
   // replay for that ONE huge result while the write itself still committed — best-
   // effort by contract, safe.
-  if (resultJson.length > REPLAY_STORE_MAX_BYTES) {
+  let estimatedSize = 200; // baseline for metadata (_meta, isError, wrapper)
+  if (Array.isArray(args.result.content)) {
+    for (const item of args.result.content) {
+      if (item && typeof item === 'object') {
+        // Content items are {type: 'text', text: <serialized>}. Reuse the text
+        // length instead of re-serializing it.
+        const text = (item as { text?: unknown }).text;
+        if (typeof text === 'string') {
+          estimatedSize += text.length;
+        }
+      }
+    }
+  }
+  if (estimatedSize > REPLAY_STORE_MAX_BYTES) {
     maybeSweep();
     return;
   }
+  // jsonb bound as text::jsonb — the operator's postgres-js client throws
+  // on bare-object jsonb params (agent-insights/postgres-js-jsonb-binding).
+  const resultJson = JSON.stringify(args.result);
   // First write wins: if a concurrent same-key call already stored, keep
   // the original (both executed in that pathological case; the FIRST
   // stored result is the one every later replay sees — stable).

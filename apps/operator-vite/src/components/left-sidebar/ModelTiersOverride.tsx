@@ -142,41 +142,6 @@ export default function ModelTiersOverride({
           reset all to workspace default
         </button>
       )}
-      <ModelTiersStyles />
     </section>
-  );
-}
-
-function ModelTiersStyles() {
-  return (
-    <style>{`
-      .pc-mt { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-      .pc-mt__row {
-        display: flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 7px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.12)); background: rgba(255, 255, 255, 0.02);
-      }
-      .pc-mt__row--on { border-color: rgba(99, 102, 241, 0.45); background: rgba(99, 102, 241, 0.08); }
-      .pc-mt__name {
-        flex-shrink: 0; width: 58px; font-size: 10.5px; font-weight: 700; color: var(--fg, #e7f7ff);
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      .pc-mt__spec {
-        flex: 1; min-width: 0; font: inherit; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        padding: 3px 6px; border-radius: 5px; color: var(--fg, #e7f7ff);
-        background: var(--bg, #07101d); border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.28));
-      }
-      .pc-mt__spec:focus { outline: none; border-color: rgba(99, 102, 241, 0.6); }
-      .pc-mt__spec:disabled { opacity: 0.6; }
-      .pc-mt__badge {
-        flex-shrink: 0; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
-        padding: 1px 5px; border-radius: 999px; color: var(--fg-mute, #7f9bb4); border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
-      }
-      .pc-mt__badge--on { color: #c7d2fe; border-color: rgba(99, 102, 241, 0.5); background: rgba(99, 102, 241, 0.14); }
-      .pc-mt__reset {
-        flex-shrink: 0; font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 5px; cursor: pointer;
-        color: var(--fg-dim, #b9d4e8); background: var(--bg-3, rgba(255, 255, 255, 0.05)); border: 1px solid var(--border, rgba(125, 211, 252, 0.22));
-      }
-      .pc-mt__reset:hover:not(:disabled) { color: var(--fg, #e7f7ff); }
-    `}</style>
   );
 }

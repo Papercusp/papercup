@@ -142,52 +142,7 @@ export default function QueenHeartbeat({ homeSlug }: { homeSlug?: string }) {
             <span className="pc-qh__pchip pc-qh__pchip--idle">no open placements</span>
           </div>
         ) : null}
-        <HeartbeatStyles />
       </section>
     </TooltipPrimitive.Provider>
-  );
-}
-
-function HeartbeatStyles() {
-  return (
-    <style>{`
-      .pc-qh {
-        display: flex; flex-direction: column; gap: 5px; padding: 9px 10px; border-radius: 10px;
-        border: 1px solid var(--qh-accent, rgba(125, 211, 252, 0.2)); background: var(--bg-2, rgba(255, 255, 255, 0.04));
-      }
-      .pc-qh--live { --qh-accent: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.09); }
-      .pc-qh--ok { --qh-accent: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.055); }
-      .pc-qh--warn { --qh-accent: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.08); }
-      .pc-qh--mute { --qh-accent: rgba(125, 211, 252, 0.18); }
-      .pc-qh__top { display: flex; align-items: center; gap: 7px; }
-      .pc-qh__top svg { color: #fbbf24; }
-      .pc-qh__dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-      .pc-qh__dot--live { background: #34d399; box-shadow: 0 0 7px rgba(52, 211, 153, 0.8); }
-      .pc-qh__dot--ok { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.6); }
-      .pc-qh__dot--warn { background: #fbbf24; box-shadow: 0 0 6px rgba(251, 191, 36, 0.7); }
-      .pc-qh__dot--mute { background: #475569; }
-      .pc-qh__dot--pulse { animation: pc-qh-pulse 1.7s ease-in-out infinite; }
-      @keyframes pc-qh-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.82); } }
-      .pc-qh__state { font-size: 11.5px; font-weight: 760; letter-spacing: 0.02em; color: var(--fg, #e7f7ff); }
-      .pc-qh__slug {
-        margin-left: auto; font-size: 9.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        color: var(--fg-mute, #7f9bb4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px;
-      }
-      .pc-qh__wakes { display: flex; gap: 10px; flex-wrap: wrap; }
-      .pc-qh__woke, .pc-qh__next { font-size: 10.5px; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
-      .pc-qh__next { color: var(--fg-mute, #7f9bb4); }
-      .pc-qh__placements { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
-      .pc-qh__pchip {
-        font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 1px 7px; border-radius: 999px;
-        color: var(--fg-dim, #b9d4e8); border: 1px solid var(--border, rgba(125, 211, 252, 0.22)); background: rgba(255, 255, 255, 0.03);
-      }
-      .pc-qh__pchip--warn { color: #fcd34d; border-color: rgba(251, 191, 36, 0.5); }
-      .pc-qh__pchip--bad { color: #fca5a5; border-color: rgba(244, 63, 94, 0.5); }
-      .pc-qh__pchip--idle { color: var(--fg-mute, #7f9bb4); opacity: 0.8; }
-      .pc-qh__wi {
-        font-size: 9px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        color: #fcd34d; padding: 1px 6px; border-radius: 5px; background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.35);
-      }
-    `}</style>
   );
 }
