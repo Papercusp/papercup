@@ -31,6 +31,15 @@ export const LEFT_SIDEBAR_CSS = `
   border-right: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
   box-shadow: 14px 0 38px rgba(0, 0, 0, 0.28);
 }
+.pclsb[data-tab="accounts"] {
+  --pclsb-current-accent: #a78bfa;
+}
+.pclsb[data-tab="queen"] {
+  --pclsb-current-accent: var(--warn, #fbbf24);
+}
+.pclsb[data-tab="overwatch"] {
+  --pclsb-current-accent: #f87171;
+}
 .pclsb[data-tab="swarm"] {
   --pclsb-current-accent: var(--good, #4ade80);
 }
@@ -105,18 +114,28 @@ body.has-left-sidebar .pc-header {
   outline: 1px solid color-mix(in oklab, var(--pclsb-tab-accent), transparent 18%);
   outline-offset: -2px;
 }
-.pclsb__rail-btn--swarm,
-.pclsb__tab--swarm {
-  --pclsb-tab-accent: var(--good, #4ade80);
+.pclsb__rail-btn--accounts,
+.pclsb__tab--accounts {
+  --pclsb-tab-accent: #a78bfa;
+}
+.pclsb__rail-btn--queen,
+.pclsb__tab--queen,
+.pclsb__rail-btn--hives,
+.pclsb__tab--hives {
+  --pclsb-tab-accent: var(--warn, #fbbf24);
+}
+.pclsb__rail-btn--overwatch,
+.pclsb__tab--overwatch {
+  --pclsb-tab-accent: #f87171;
 }
 .pclsb__rail-btn--voice,
 .pclsb__tab--voice,
 .pclsb__rail-btn--expand {
   --pclsb-tab-accent: var(--accent, #38bdf8);
 }
-.pclsb__rail-btn--hives,
-.pclsb__tab--hives {
-  --pclsb-tab-accent: var(--warn, #fbbf24);
+.pclsb__rail-btn--swarm,
+.pclsb__tab--swarm {
+  --pclsb-tab-accent: var(--good, #4ade80);
 }
 
 /* Header */
@@ -164,48 +183,72 @@ body.has-left-sidebar .pc-header {
   color: var(--fg, #e7f7ff);
 }
 
-/* Tab strip — the Swarm / Voice / Hives switcher (mirrors the pui main pane). */
+/* Tab strip — owner and fleet surfaces as compact accented tabs. */
 .pclsb__tabs {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 5px;
+  padding: 8px 9px 7px;
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: color-mix(in srgb, var(--bg-deep, #050d18), transparent 18%);
 }
 .pclsb__tab {
   --pclsb-tab-accent: var(--accent, #38bdf8);
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   min-width: 0;
-  min-height: 34px;
-  padding: 6px 8px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in oklab, var(--pclsb-tab-accent), transparent 72%);
-  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 94%);
+  min-height: 32px;
+  padding: 7px 7px 6px;
+  overflow: hidden;
+  border-radius: 8px 8px 6px 6px;
+  border: 1px solid color-mix(in oklab, var(--pclsb-tab-accent), transparent 70%);
+  border-bottom-color: color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.18)), transparent 12%);
+  background: color-mix(in oklab, var(--pclsb-tab-accent), var(--bg-2, #0b1220) 92%);
   color: var(--fg-dim, #b9d4e8);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 720;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
+.pclsb__tab::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 18%);
+}
 .pclsb__tab:hover {
-  border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 40%);
-  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 86%);
+  border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 44%);
+  background: color-mix(in oklab, var(--pclsb-tab-accent), var(--bg-2, #0b1220) 84%);
   color: var(--fg, #e7f7ff);
 }
 .pclsb__tab.is-active {
-  border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 24%);
-  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 76%);
+  border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 28%);
+  border-bottom-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 36%);
+  background: color-mix(in oklab, var(--pclsb-tab-accent), var(--bg-2, #0b1220) 76%);
   color: var(--fg, #e7f7ff);
 }
+.pclsb__tab.is-active::before {
+  height: 4px;
+  background: var(--pclsb-tab-accent);
+}
 .pclsb__tab-icon {
+  position: relative;
   display: inline-flex;
-  color: currentColor;
-  opacity: 0.92;
+  color: var(--pclsb-tab-accent);
+  opacity: 0.96;
+}
+.pclsb__tab-label {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Active panel body */

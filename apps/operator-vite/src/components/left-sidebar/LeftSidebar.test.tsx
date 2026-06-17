@@ -10,7 +10,7 @@
  * atomic useQueryStates write is exercised end-to-end.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 const H = vi.hoisted(() => ({ overwatchOn: false, pathname: '/adv' }));
@@ -21,8 +21,9 @@ vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test:${k}`,
 }));
-// Stub the 5 lazy tab panels with trivial markers — their own surfaces are tested
+// Stub the lazy tab panels with trivial markers — their own surfaces are tested
 // separately (QueenTab / OverwatchTab / SwarmTab / VoiceTab / HivesTab).
+vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-accounts" /> }));
 vi.mock('./QueenTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
 vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwatch" /> }));
 vi.mock('./SwarmTab', () => ({ default: () => <div data-testid="panel-swarm" /> }));
@@ -64,6 +65,12 @@ describe('<LeftSidebar> shell', () => {
     expect(rail.getAttribute('data-collapsed')).toBe('false');
     expect(rail.getAttribute('data-tab')).toBe('queen');
     expect(await screen.findByTestId('panel-queen')).toBeTruthy();
+  });
+
+  it('orders Accounts as the leftmost tab before Queen', () => {
+    renderRail();
+    const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
+    expect(tabs.map((x) => x.textContent?.trim()).slice(0, 2)).toEqual(['Accounts', 'Queen']);
   });
 
   it('deep-links a tab from ?lst= and mounts only that panel', async () => {

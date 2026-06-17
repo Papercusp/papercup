@@ -31,14 +31,14 @@ import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 const SwarmTab = lazy(() => import('./SwarmTab'));
 const VoiceTab = lazy(() => import('./VoiceTab'));
 const HivesTab = lazy(() => import('./HivesTab'));
-// 👑 Queen steering — the owner's focus/pause controls for the autonomous Queen.
-// Moved here from the /adv top tab strip as the LEFTMOST sidebar tab (owner
-// review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
-const QueenTab = lazy(() => import('./QueenTab'));
 // 🔑 Accounts — the owner's session-now account override (which Max accounts the fleet
 // may use right now), beside Queen as a sibling owner-steering lever (accounts-pool-tab
-// P-005; the owner's "Accounts tab in the LEFT SIDEBAR next to Queen").
+// P-005; promoted to the LEFTMOST sidebar tab by owner request 2026-06-17).
 const AccountsTab = lazy(() => import('./AccountsTab'));
+// 👑 Queen steering — the owner's focus/pause controls for the autonomous Queen.
+// Moved here from the /adv top tab strip as an owner-steering tab (owner
+// review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
+const QueenTab = lazy(() => import('./QueenTab'));
 // 👁 Overwatch — the autonomous supervisor's actionable panel (control + the
 // anomaly→action list). Moved here from the /adv strip next to Queen (owner ask
 // 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
@@ -46,8 +46,8 @@ const AccountsTab = lazy(() => import('./AccountsTab'));
 const OverwatchTab = lazy(() => import('./OverwatchTab'));
 
 const TABS = [
-  { id: 'queen', label: 'Queen', icon: Crown, render: (a: boolean) => <QueenTab active={a} /> },
   { id: 'accounts', label: 'Accounts', icon: KeyRound, render: (a: boolean) => <AccountsTab active={a} /> },
+  { id: 'queen', label: 'Queen', icon: Crown, render: (a: boolean) => <QueenTab active={a} /> },
   { id: 'overwatch', label: 'Overwatch', icon: Eye, render: (a: boolean) => <OverwatchTab active={a} /> },
   { id: 'swarm', label: 'Swarm', icon: Users, render: (a: boolean) => <SwarmTab active={a} /> },
   { id: 'voice', label: 'Peers', icon: AudioLines, render: (a: boolean) => <VoiceTab active={a} /> },
@@ -267,7 +267,7 @@ export default function LeftSidebar() {
                       <span className="pclsb__tab-icon">
                         <Icon size={14} aria-hidden="true" />
                       </span>
-                      {x.id === 'swarm' ? t('fleet') : x.label}
+                      <span className="pclsb__tab-label">{x.id === 'swarm' ? t('fleet') : x.label}</span>
                     </button>
                   );
                 })}
