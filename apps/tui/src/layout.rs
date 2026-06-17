@@ -226,25 +226,14 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 /// Pane DISPLAY names route through the active Hive lexicon (`lex`): the
 /// operator pane is the `operator` term (Queen). The pinned-pane ARGS
 /// (`network-pane`, `wake-pane`, …) are internal identifiers and never change.
-/// `brain_argv` is the brain pane's command; its first element is the command,
-/// the rest are quoted args. Pure (no I/O) so it is unit-tested.
-/// (hive-agent-tabs P-014 retired the `pui chat-pane` flag-off dock shape — the
-/// queen-split layout is the only dock now.)
-pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> String {
-    let (brain_cmd, brain_args) = brain_argv
-        .split_first()
-        .map(|(c, rest)| (c.as_str(), rest))
-        .unwrap_or(("psu", &[]));
-    let args_line = if brain_args.is_empty() {
-        String::new()
-    } else {
-        let quoted = brain_args
-            .iter()
-            .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!("\n            args {quoted}")
-    };
+/// `_brain_argv` (the interactive `psu --brain` command) is retained for a future
+/// "take control" action; the ♛ queen + 👁 overwatch dock panes now render the
+/// READ-ONLY shared transcript view (`pui brain-view`, queen-overwatch-live-
+/// visibility D-003) so every instance shows the SAME live agent and survives a
+/// shell exit, instead of a per-window interactive shell. Pure (no I/O) so it is
+/// unit-tested. (hive-agent-tabs P-014 retired the `pui chat-pane` flag-off dock
+/// shape — the queen-split layout is the only dock now.)
+pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> String {
     // Lexicon-resolved, kdl-safe pane display names ("chat" is fixed). Under
     // the-hive pack: operator → sentinel, brain → queen (owner naming, 2026-06-07;
     // operator renamed "Sentinel Bee"→"Sentinel" 2026-06-09 — hive-agent-tabs P-003).
@@ -319,12 +308,13 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
         format!(
             r#"    pane split_direction="horizontal" {{
         pane name="👁 overwatch" size="22%" {{
-            command "psu"
-            args "--no-picker" "--agent=claude" "--role=overwatch"
+            command "pui"
+            args "brain-view" "--overwatch"
         }}
         pane name="♛ queen" split_direction="vertical" size="46%" {{
             pane name="{brain_name}" {{
-                command "{brain_cmd}"{args_line}
+                command "pui"
+                args "brain-view" "--queen"
             }}
             pane split_direction="horizontal" size="38%" {{
                 pane name="♛✉ prompt" {{
@@ -847,8 +837,9 @@ mod tests {
         assert!(kdl.contains("name=\"♛ brain\""));
         assert!(kdl.contains("stacked=true"));
         assert!(kdl.contains("expanded=true"));
-        assert!(kdl.contains("command \"psu\""));
-        assert!(kdl.contains("args \"--resume\""));
+        assert!(kdl.contains("command \"psu\"")); // the sentinel (operator chat)
+        // D-003: the brain pane is now the read-only transcript view, not psu --resume.
+        assert!(kdl.contains("args \"brain-view\" \"--queen\""));
         // The retired pane modes + old single-tab panes are GONE — tab
         // surfaces live in the pui app, not zellij (chat-pane/watch-pane
         // retired by P-014).
@@ -970,14 +961,12 @@ mod tests {
         assert!(on.contains("--role=operator")); // `=` form — psu drops `--role operator`
         assert!(!on.contains("args \"--role\" \"operator\"")); // never the dropped space form
         assert!(!on.contains("args \"chat-pane\""));
-        // Owner directive 2026-06-11: every dock agent chat is a LIVE TUI — the
-        // queen is the real `psu --brain` session, and the overwatch pane above
-        // her is a third psu session (so THREE psu commands: overwatch + sentinel
-        // + brain), with her wake board (`pui wake-pane --queen`) in a
-        // pane directly beside it inside the `♛ queen` split container. The
-        // one-pane `pui agent-pane` variant was reverted (it could only render
-        // the WRONG conversation — the sentinel's).
-        assert_eq!(on.matches("command \"psu\"").count(), 3); // overwatch + sentinel + brain
+        // queen-overwatch-live-visibility D-003: the ♛ queen + 👁 overwatch panes
+        // now render the READ-ONLY shared transcript view (`pui brain-view`), so the
+        // ONLY psu session in the dock is the sentinel (operator chat). That is what
+        // lets every desktop instance show the SAME live queen/overwatch and survive
+        // a shell exit. The one-pane `pui agent-pane` variant stays reverted.
+        assert_eq!(on.matches("command \"psu\"").count(), 1); // sentinel only (queen+overwatch are pui brain-view)
         assert!(!on.contains("agent-pane"), "the reverted one-pane variant must not return: {on}");
         assert!(on.contains("name=\"♛ queen\" split_direction=\"vertical\""), "queen split container: {on}");
         // The queen's side column is the FOUR stacked data boards (dock 4-pane
@@ -1001,9 +990,10 @@ mod tests {
         assert!(on.contains("args \"dock-driver\""));
         assert!(on.contains("args \"wake-pane\"\n")); // the fleet-wide pane (bare wake-pane)
         assert!(on.contains("name=\"⏸ wakes\""));
-        // queen prompt/wakes/mail/work + driver + fleet-wakes + the network tab's
-        // network-pane + the plans tab's plans-pane (P-007 + plans board) = 8.
-        assert_eq!(on.matches("command \"pui\"").count(), 8);
+        // queen transcript-view + overwatch transcript-view (D-003) + queen
+        // prompt/wakes/mail/work + driver + fleet-wakes + the network tab's
+        // network-pane + the plans tab's plans-pane = 10.
+        assert_eq!(on.matches("command \"pui\"").count(), 10);
         assert!(on.contains("args \"network-pane\""));
         assert!(on.contains("args \"plans-pane\""));
         // Order: brain precedes her side column; the queen container precedes
@@ -1026,8 +1016,8 @@ mod tests {
         // space-separated --role, exactly like the sentinel's --role=operator).
         assert!(kdl.contains("name=\"👁 overwatch\""), "overwatch pane missing: {kdl}");
         assert!(
-            kdl.contains("args \"--no-picker\" \"--agent=claude\" \"--role=overwatch\""),
-            "overwatch launch args: {kdl}",
+            kdl.contains("args \"brain-view\" \"--overwatch\""),
+            "overwatch read-only view args (D-003): {kdl}",
         );
         assert!(!kdl.contains("args \"--role\" \"overwatch\""), "never the dropped space form");
         // It is ABOVE the queen: the overwatch pane precedes the ♛ queen split.
@@ -1093,7 +1083,12 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_brain_argv_threads_extra_args() {
+    fn chat_dock_queen_pane_is_read_only_brain_view() {
+        // queen-overwatch-live-visibility D-003: the queen pane no longer threads
+        // brain_argv (it is NOT an interactive `psu --brain` resume) — it renders the
+        // READ-ONLY shared transcript view so every instance shows the SAME live queen
+        // and survives shell exit. brain_argv is retained for a future "take control"
+        // action but is NOT threaded into the default dock pane.
         let kdl = chat_dock_kdl(
             &[
                 "psu".to_string(),
@@ -1102,7 +1097,11 @@ mod tests {
             ],
             &Lexicon::default(),
         );
-        assert!(kdl.contains("args \"--resume\" \"abc-123\""));
+        assert!(kdl.contains("args \"brain-view\" \"--queen\""));
+        assert!(
+            !kdl.contains("abc-123"),
+            "brain_argv must NOT be threaded into the read-only pane: {kdl}"
+        );
     }
 
     #[test]

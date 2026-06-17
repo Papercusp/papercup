@@ -219,17 +219,21 @@ export interface ReconcileDbClient {
 }
 
 /**
- * Reconcile a feature's status on an unblocked DONE: `validating` → `passed`.
+ * Reconcile a feature's status on an unblocked DONE: non-terminal in-flight states → `passed`.
  *
  * The validator agent OWNS the validating→passed PG write (validator.md "Status
  * update"), but an LLM can simply omit it — live on frame 138838461 (2026-06-09,
  * work-on-frame run #3): the validator printed "round 1: passed — 3 pass, 0 fail"
  * and exited without writing, leaving the feature `validating` forever while the
  * pipeline finalized DONE. An unblocked DONE is the pipeline's own terminal
- * verdict, so the finalizer closes the loop deterministically — but ONLY from
- * `validating` (the worker→validator handoff state awaiting that verdict write);
- * any other status (failing/todo/passed/…) is left untouched, so a hallucinated
- * DONE over a recorded failure can never force-pass.
+ * verdict, so the finalizer closes the loop deterministically.
+ *
+ * Root cause fix (hiveloop-coding-harness-bees-2026-06-17): when a coding harness
+ * bee finishes and the pipeline skips the validator step (goes worker → DONE), the
+ * feature is still in `in_progress`, not `validating`. The reconciler now handles
+ * both `validating` and `in_progress` → `passed`. Terminal-failure states
+ * (failing/deprecated) are left untouched so a hallucinated DONE over a recorded
+ * failure can never force-pass.
  *
  * Returns true when the flip was applied.
  */
@@ -242,14 +246,18 @@ export async function reconcileDoneStatus(
   const existing = (await dbc
     .prepare('SELECT status FROM harness_shared.harness_features_consolidated WHERE harness_slug = ? AND feature_id = ?')
     .get(harnessSlug, featureId)) as { status?: string } | undefined;
-  if (existing?.status !== 'validating') return false;
+  const status = existing?.status;
+  // Only reconcile in-flight states that should transition to passed on an unblocked
+  // DONE. Skip terminal states (failing, passed, deprecated) so we never force-pass
+  // a recorded failure.
+  if (status !== 'validating' && status !== 'in_progress') return false;
   await dbc
     .prepare(
-      "UPDATE harness_shared.harness_features_consolidated SET status = 'passed', updated_ts = ? WHERE harness_slug = ? AND feature_id = ? AND status = 'validating'",
+      "UPDATE harness_shared.harness_features_consolidated SET status = 'passed', updated_ts = ? WHERE harness_slug = ? AND feature_id = ? AND (status = 'validating' OR status = 'in_progress')",
     )
     .run(Date.now(), harnessSlug, featureId);
   log(
-    `[dbos-finalize] ${harnessSlug}/${featureId} status reconciled validating→passed (validator omitted the PG write)`,
+    `[dbos-finalize] ${harnessSlug}/${featureId} status reconciled ${status}→passed (validator omitted the PG write or skipped entirely)`,
   );
   return true;
 }

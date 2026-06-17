@@ -17,7 +17,7 @@ vi.mock('@papercusp/agent-mcp', () => ({
 // impl (set in beforeEach) returns each flag's real default, so the other getFlag
 // callers in operator-spawn (WEDGE_AUTO_REAP / SPAWN_HANDOFF_HYDRATION) behave exactly
 // as they did under the real getFlag's no-PostHog fallback — behavior-preserving.
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(), onFlagChange: vi.fn() }));
 vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 vi.mock('../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));

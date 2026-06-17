@@ -27,6 +27,7 @@ mod lexicon;
 mod models;
 mod mux;
 mod network;
+mod brain_view;
 mod notify;
 mod operator_voice_bus;
 mod plans_board;
@@ -34,6 +35,7 @@ mod reap;
 mod session_panes;
 mod sse;
 mod theme;
+mod transcript;
 mod tutorial;
 mod ui;
 mod voice;
@@ -82,6 +84,16 @@ async fn main() -> Result<()> {
         Some("reap") => {
             reap::reap_stale(&layout::session_name("reap"));
             return Ok(());
+        }
+        // Read-only live transcript view of the autonomous Queen / Overwatch
+        // (queen-overwatch-live-visibility D-003): the dock's ♛ queen / 👁 overwatch
+        // panes. Tails the ONE shared session transcript so every desktop instance
+        // shows the SAME live agent + survives shell exit (not a per-window psu shell).
+        Some("brain-view") => {
+            return brain_view::run(brain_view::Scope::from_arg(
+                std::env::args().nth(2).as_deref(),
+            ))
+            .await;
         }
         Some("hud") => {}
         // Dock pane modes — fall through to the normal run loop. The old

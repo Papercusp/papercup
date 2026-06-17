@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { _resetCardCorrelatorForTests, _resetStateChannelForTests } from '@papercusp/agent-mcp';
 
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(), onFlagChange: vi.fn() }));
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { configureCoordLog, resetCoordLog } from '../coordination/log';

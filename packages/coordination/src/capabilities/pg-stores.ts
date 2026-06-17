@@ -40,6 +40,11 @@ export interface PgCapabilityStoreOptions {
   ensureSchema: () => Promise<void>;
   /** Coordination scope (parity with the sibling coord_* stores). Default 'default'. */
   workspaceId?: string;
+  /** Per-call workspace resolver (workspace-data-isolation-leaks F-C1 / engineer-issues
+   *  per-workspace). When provided AND non-empty, OVERRIDES `workspaceId` on every
+   *  read/write — so a shared store can scope to the request's active workspace. Falls
+   *  back to `workspaceId` / 'default'. Additive: unused unless passed. */
+  getWorkspaceId?: () => string;
 }
 
 /** Normalize a timestamptz (Date under postgres-js, or a string) to ISO. */
@@ -178,9 +183,11 @@ function toTopicRow(r: TopicRowDb): TopicRow {
 }
 
 export class PgTopicStore implements TopicStore {
-  private readonly ws: string;
-  constructor(private readonly opts: PgCapabilityStoreOptions) {
-    this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  constructor(private readonly opts: PgCapabilityStoreOptions) {}
+  /** The workspace scope NOW (F-C1): the per-call resolver when set + non-empty,
+   *  else the construction-time fallback. A getter so `${this.ws}` stays dynamic. */
+  private get ws(): string {
+    return this.opts.getWorkspaceId?.()?.trim() || (this.opts.workspaceId ?? DEFAULT_COORD_WORKSPACE);
   }
 
   async create(input: CreateTopicInput): Promise<TopicRow> {
@@ -272,9 +279,11 @@ function toSubRow(r: SubRowDb): SubscriptionRow {
 }
 
 export class PgEntitySubscriptionStore implements SubscribableStore {
-  private readonly ws: string;
-  constructor(private readonly opts: PgCapabilityStoreOptions) {
-    this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  constructor(private readonly opts: PgCapabilityStoreOptions) {}
+  /** The workspace scope NOW (F-C1): the per-call resolver when set + non-empty,
+   *  else the construction-time fallback. A getter so `${this.ws}` stays dynamic. */
+  private get ws(): string {
+    return this.opts.getWorkspaceId?.()?.trim() || (this.opts.workspaceId ?? DEFAULT_COORD_WORKSPACE);
   }
 
   async subscribe(input: SubscribeInput): Promise<SubscriptionRow> {
@@ -354,9 +363,11 @@ function toLinkRow(r: LinkRowDb): LinkRow {
 }
 
 export class PgLinkStore implements LinkableStore {
-  private readonly ws: string;
-  constructor(private readonly opts: PgCapabilityStoreOptions) {
-    this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  constructor(private readonly opts: PgCapabilityStoreOptions) {}
+  /** The workspace scope NOW (F-C1): the per-call resolver when set + non-empty,
+   *  else the construction-time fallback. A getter so `${this.ws}` stays dynamic. */
+  private get ws(): string {
+    return this.opts.getWorkspaceId?.()?.trim() || (this.opts.workspaceId ?? DEFAULT_COORD_WORKSPACE);
   }
 
   async link(src: ObjectRef, dst: ObjectRef, rel: string, opts: { created_by?: string; created_ts: string }): Promise<void> {
@@ -489,9 +500,11 @@ function toThreadRow(r: ThreadRowDb): ThreadRow {
 }
 
 export class PgThreadStore implements ThreadableStore {
-  private readonly ws: string;
-  constructor(private readonly opts: PgCapabilityStoreOptions) {
-    this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  constructor(private readonly opts: PgCapabilityStoreOptions) {}
+  /** The workspace scope NOW (F-C1): the per-call resolver when set + non-empty,
+   *  else the construction-time fallback. A getter so `${this.ws}` stays dynamic. */
+  private get ws(): string {
+    return this.opts.getWorkspaceId?.()?.trim() || (this.opts.workspaceId ?? DEFAULT_COORD_WORKSPACE);
   }
 
   async getOrCreateThread(

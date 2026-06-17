@@ -140,3 +140,11 @@ mod tests {
         assert_eq!((m.role.as_str(), m.content.as_str()), ("user", "hello queen"));
 
         // Assistant: text blocks concatenated; thinking + tool_use skipped.
+        let a = parse_transcript_line(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"It landed green."}]}}"#,
+        )
+        .expect("assistant msg");
+        assert_eq!(a.role.as_str(), "assistant");
+        assert!(a.content.contains("It landed green."));
+    }
+}

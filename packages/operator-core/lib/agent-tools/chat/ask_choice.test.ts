@@ -17,7 +17,7 @@ import {
 // the bee-interception path is deterministic; an unconfigured vi.fn() returns
 // undefined (falsy) ⇒ the legacy un-intercepted path, which every pre-existing
 // test below depends on.
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(), onFlagChange: vi.fn() }));
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { configureCoordLog, resetCoordLog } from '../coordination/log';

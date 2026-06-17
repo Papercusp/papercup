@@ -17,6 +17,7 @@
  *                           roster baseline (P-010).
  */
 
+import { activeWorkspaceId } from '../../workspace-registry';
 import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
@@ -89,7 +90,10 @@ export async function resolvePresenceScope(
     if (!hiveFilter) scopeNote = 'caller has no Hive (SU/operator or unmapped harness) — fell back to workspace scope';
   }
   // all → no filters; hive+resolved → workspace+hive; hive-without-a-hive / workspace → workspace only.
-  const wsId = scope === 'all' ? null : callerWs;
+  // F-M2 (workspace-data-isolation-leaks): a non-'all' scope with no caller workspace
+  // used to fall through to wsId=null (= ALL workspaces' roster). Default to the active
+  // workspace instead, so only an EXPLICIT scope:'all' is cross-workspace.
+  const wsId = scope === 'all' ? null : (callerWs ?? activeWorkspaceId());
   const hiveId = scope === 'hive' ? hiveFilter : null;
   return { scope, wsId, hiveId, scopeNote };
 }

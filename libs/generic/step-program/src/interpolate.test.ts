@@ -57,3 +57,25 @@ test('does not mutate the input', () => {
   assert.equal(args.a, '{{ tally.winner }}');
   assert.equal(out.a, 'yes');
 });
+
+test('whole-string placeholder preserves FALSY values (0, false, empty string)', () => {
+  // A naive `value ?? ''` / falsy-check would corrupt these — pin that 0 stays 0.
+  assert.equal(interpolate('{{ a }}', { a: 0 }), 0);
+  assert.equal(interpolate('{{ a }}', { a: false }), false);
+  assert.equal(interpolate('{{ a }}', { a: '' }), '');
+});
+
+test('bracket-index paths resolve in interpolation', () => {
+  assert.equal(interpolate('{{ items[1] }}', { items: ['a', 'b', 'c'] }), 'b');
+  assert.deepEqual(interpolate('{{ rows[0].cells }}', { rows: [{ cells: [1, 2] }] }), [1, 2]);
+});
+
+test('mixed string JSON-stringifies object/array placeholder values', () => {
+  assert.equal(interpolate('opts: {{ o }}', { o: { a: 1 } }), 'opts: {"a":1}');
+  assert.equal(interpolate('list: {{ xs }}', { xs: [1, 2] }), 'list: [1,2]');
+});
+
+test('mixed string substitutes MULTIPLE placeholders (missing → empty)', () => {
+  assert.equal(interpolate('{{ a }} vs {{ b }}', { a: 'X', b: 'Y' }), 'X vs Y');
+  assert.equal(interpolate('{{ a }}/{{ missing }}', { a: 'X' }), 'X/');
+});

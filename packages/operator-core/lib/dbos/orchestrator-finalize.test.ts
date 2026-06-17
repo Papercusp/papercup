@@ -5,6 +5,8 @@ import {
   needsHumanGateUrl,
   parseAcceptanceVerdict,
   DEFAULT_FINALIZE_RECIPE,
+  reconcileDoneStatus,
+  type ReconcileDbClient,
 } from './orchestrator-finalize';
 
 describe('needsHumanGateUrl — harness-scoped needs-human DONE gate (P-008 gate fix)', () => {
@@ -254,7 +256,7 @@ describe('reconcileDoneStatus (validator omitted the validating→passed write)'
         return {
           get: () => (state.status === undefined ? undefined : { status: state.status }),
           run: () => {
-            if (sql.includes("SET status = 'passed'") && state.status === 'validating') {
+            if (sql.includes("SET status = 'passed'") && (state.status === 'validating' || state.status === 'in_progress')) {
               state.status = 'passed';
               state.updates++;
             }
@@ -288,9 +290,19 @@ describe('reconcileDoneStatus (validator omitted the validating→passed write)'
     }
   });
 
-  test('any other status is untouched — a hallucinated DONE can never force-pass', async () => {
+  test('flips in_progress → passed (hiveloop-coding-harness-bees-2026-06-17 fix)', async () => {
     const { reconcileDoneStatus } = await import('./orchestrator-finalize');
-    for (const status of ['failing', 'todo', 'in_progress', 'passed', undefined] as const) {
+    const dbc = fakeDbc('in_progress');
+    const logs: string[] = [];
+    const flipped = await reconcileDoneStatus('h', 'F-001', dbc, (m) => logs.push(m));
+    expect(flipped).toBe(true);
+    expect(dbc.state.status).toBe('passed');
+    expect(logs.some((m) => m.includes('reconciled in_progress→passed'))).toBe(true);
+  });
+
+  test('terminal-failure states are untouched — a hallucinated DONE can never force-pass', async () => {
+    const { reconcileDoneStatus } = await import('./orchestrator-finalize');
+    for (const status of ['failing', 'todo', 'passed', undefined] as const) {
       const dbc = fakeDbc(status);
       const flipped = await reconcileDoneStatus('h', 'F-001', dbc);
       expect(flipped).toBe(false);

@@ -11,6 +11,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import {
@@ -64,7 +65,12 @@ export default defineTool({
     } catch {
       actorWorkspace = null;
     }
-    const workspaceId = args.workspace ?? actorWorkspace;
+    // F-M1 (workspace-data-isolation-leaks): when neither an explicit workspace nor
+    // a resolved identity is present, default to the ACTIVE workspace rather than
+    // null (= ALL workspaces), so a bare loopback caller no longer reads every
+    // workspace's fleet state. The data layer still ORs in GLOBAL + the plan-store
+    // DEFAULT_WORKSPACE_ID scope (EI-295), so claim rows are preserved.
+    const workspaceId = args.workspace ?? actorWorkspace ?? activeWorkspaceId();
     const rows = await listFleetAssignments({
       workspaceId,
       agent: args.agent,

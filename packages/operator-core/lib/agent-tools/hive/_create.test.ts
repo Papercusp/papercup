@@ -72,7 +72,7 @@ beforeEach(() => {
   }));
   // learning-packs P-005: the seed step is mocked (its own behavior is pinned in
   // lib/learning-packs/seed.test.ts); the flag gate resolves ON deterministically.
-  vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => true }));
+  vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => true, onFlagChange: () => () => {} }));
   vi.doMock('../../learning-packs/load-packs', () => ({
     loadLearningPack: async () => ({
       pack: {

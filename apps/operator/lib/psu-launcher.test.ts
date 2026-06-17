@@ -46,6 +46,7 @@ describe('psu-launcher arg parsing', () => {
       profile: null,
       yes: false,
       brain: false,
+      addDir: [],
       passthrough: [],
     });
   });
@@ -80,6 +81,7 @@ describe('psu-launcher arg parsing', () => {
       profile: null,
       yes: false,
       brain: false,
+      addDir: [],
       passthrough: [],
     });
   });

@@ -69,7 +69,7 @@ function planItem(over: Partial<AttentionItem> = {}): AttentionItem {
 }
 
 function group(items: AttentionItem[]): AttentionGroup {
-  return { key: 'g', kind: 'plan', planSlug: null, harnessSlug: 'h', title: 'grp', items };
+  return { key: 'g', kind: 'plan', planSlug: null, harnessSlug: 'h', title: 'grp', items, maxImportance: 'normal' };
 }
 
 const BASE = {

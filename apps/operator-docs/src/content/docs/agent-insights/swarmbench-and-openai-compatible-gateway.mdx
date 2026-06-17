@@ -50,6 +50,26 @@ Vendored at `~/.papercusp/bench-harnesses/swarmbench` (RUC-GSAI/YuLan-SwarmIntel
   `swarmbench` (the expensive full 5-task × 10-agent × 100-round sweep, gated). Scores are CONTINUOUS, not
   pass/fail — the headline is the mean score + the arm delta, never a pass-rate.
 
+## Running it: two mandatory robustness fixes + the contention asymmetry
+
+Live full-sweep findings (plan D-001) — applicable to ANY in-sim, multi-round opus harness:
+
+- **Bound the per-agent retry + add a no-op fallback.** SwarmBench's upstream `Agent.decision` is
+  `while True: try: to_action(brain.generate()) except: retry` — an UNBOUNDED retry that HANGS the whole sim
+  under gateway rate-limiting. The brain must catch, retry a few times, then return a safe `ACTION: STAY`
+  (degrade, don't deadlock).
+- **Lower the OpenAI client call timeout.** `framework/llm.py` hardcodes `timeout=3600` — a non-responsive
+  (saturated) gateway then hangs *one hour per call*, stalling the sim. Set ~90s so a hung call fails fast →
+  retry → STAY → the round proceeds.
+- **The decentralized arm is gateway-starved under fleet contention.** The `su-independent` arm fires **N
+  concurrent calls/round** (10 agents × 100 rounds); against a gateway the SWE-Pro xbench fleet has
+  saturated, rounds stall and it banks ~0 real scenarios while flooding the shared gateway. The `hive` queen
+  (**1 aggregated-local call/round**) is gateway-efficient and completed 15/15 with real data. **So run the
+  call-heavy decentralized arm in a QUIET gateway window (low fleet load), not concurrently with the fleet.**
+  This is an infra asymmetry (centralized = fewer calls = robust to shared rate limits), not a
+  SwarmBench-intrinsic result — label it as such. Queen-arm scores from the real run: Flocking 5.0±0.58
+  (genuine coordination), Pursuit 0.67, Foraging/Synchronization/Transport 0.
+
 ## The honest framing (don't skip)
 
 SwarmBench is coordination-NATIVE (the score *is* collaboration quality; a single agent can't shortcut it) and

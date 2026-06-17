@@ -28,6 +28,13 @@ vi.mock('nuqs', () => ({
     ];
   },
   parseAsString: {},
+  parseAsInteger: {},
+  parseAsStringEnum: () => ({ withDefault: () => ({}) }),
+}));
+
+// The decision.ledger sync query is irrelevant to ?item/?other routing — stub it.
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ data: [] }),
 }));
 
 vi.mock('./use-create-data', () => ({

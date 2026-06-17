@@ -84,7 +84,10 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
   const queueStatusFilters = useMemo<ItemStatusFilter[]>(
     () =>
       queueAuthzView
-        ? ['needs-human', ...(qTodos ? ['todo' as const] : []), ...(qBlocked ? ['blocked' as const] : [])]
+        ? // Single authorizer list: needs-human plan-items render in PlanOtherList's
+          // "Needs you" bucket (includePlanItems), so PlanItemsList carries ONLY the
+          // opt-in backlog (todos/blocked) — not needs-human (else double-shown).
+          [...(qTodos ? ['todo' as const] : []), ...(qBlocked ? ['blocked' as const] : [])]
         : istatus,
     [queueAuthzView, qTodos, qBlocked, istatus],
   );
@@ -102,16 +105,16 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
     void setQueueKinds(queueKinds.includes(kind) ? queueKinds.filter((x) => x !== kind) : [...queueKinds, kind]);
 
   const itemTitle = queueAuthzView
-    ? qTodos || qBlocked
-      ? 'Plan items'
-      : 'Needs Human'
+    ? 'Backlog — pickable work'
     : istatus.length
       ? istatus.map((s) => ITEM_FILTER_LABEL[s]).join(' · ')
       : 'All items';
 
   const showQueenLog = queueAuthzView && queueTab === 'queen-log';
   const showOther = queueAuthzView || queue.showOther;
-  const showPlanItems = queueAuthzView || queue.showPlanItems;
+  // In the authorizer view the unified list owns needs-human; PlanItemsList only
+  // appears for the opt-in backlog (todos/blocked toggled in the Filter).
+  const showPlanItems = queueAuthzView ? qTodos || qBlocked : queue.showPlanItems;
 
   return (
     <div className="pc-queue__list" style={{ height: '100%', overflow: 'auto' }}>
@@ -214,6 +217,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
                 kinds={queueAuthzView ? queueKinds : queue.otherFacets}
                 planFilters={itemPlans}
                 groupByAuthorizer={queueAuthzView}
+                includePlanItems={queueAuthzView}
               />
             ) : null}
             {showPlanItems ? (
