@@ -11,7 +11,6 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 const saveOwnedHiveMeta = vi.fn<(...a: any[]) => Promise<void>>(async () => {});
 vi.mock('./hive-directory-meta', () => ({ saveOwnedHiveMeta: (...a: any[]) => saveOwnedHiveMeta(...a) }));
 
@@ -29,7 +28,6 @@ vi.mock('./hive-directory-boot', () => ({ ensureHiveDirectoryWired: (...a: any[]
 
 const republishHiveAfterMemberAdd = vi.fn<(...a: any[]) => any>();
 vi.mock('./hive-publish-from-repo', () => ({ republishHiveAfterMemberAdd: (...a: any[]) => republishHiveAfterMemberAdd(...a) }));
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 import { setHiveListing } from './hive-set-listing';
 

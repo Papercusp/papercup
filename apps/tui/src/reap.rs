@@ -92,50 +92,6 @@ pub fn reap_stale(own: &str) {
     }
 }
 
-/// Is `name` a LIVE (not EXITED) zellij session right now? Used by the singleton
-/// dock to decide attach-vs-create (bug 2026-06-17).
-pub fn session_is_live(name: &str) -> bool {
-    let Ok(out) = Command::new("zellij")
-        .args(["list-sessions", "--no-formatting"])
-        .output()
-    else {
-        return false;
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .any(|l| l.split_whitespace().next() == Some(name) && !l.contains("EXITED"))
-}
-
-/// Prepare the box for launching the SINGLETON dock (`pui-dock`): sweep dead
-/// PID-keyed husks (workbench leftovers + any pre-singleton `pui-dock-<pid>`
-/// sessions), then delete an EXITED husk of the singleton itself so a fresh
-/// `--session pui-dock --new-session-with-layout` can reuse the canonical name.
-/// NEVER touches a LIVE singleton — it must outlive any one client (other desktop
-/// windows may be attached). Call before deciding attach-vs-create.
-pub fn reap_for_dock(dock_session: &str) {
-    let Ok(out) = Command::new("zellij")
-        .args(["list-sessions", "--no-formatting"])
-        .output()
-    else {
-        return;
-    };
-    let list = String::from_utf8_lossy(&out.stdout);
-    // Sweep dead PID-owned sessions. The singleton has no pid tail, so
-    // `owner_pid` returns None and `plan` never includes it — it is safe.
-    for action in plan(&list, pid_alive) {
-        match action {
-            Action::Delete(n) => zellij(&["delete-session", &n]),
-            Action::KillAndDelete(n) => kill_and_delete(&n),
-        }
-    }
-    // Clear an EXITED husk of the singleton so the create path can reuse the name.
-    if list.lines().any(|l| {
-        l.split_whitespace().next() == Some(dock_session) && l.contains("EXITED")
-    }) {
-        zellij(&["delete-session", dock_session]);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

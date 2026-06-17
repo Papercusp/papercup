@@ -17,7 +17,7 @@
  * The pilot/run verbs spend Opus (owner-gated: gateway capacity + $). They write predictions JSONL + a
  * report under ~/.papercusp/bench-results/gaia/runs/<ts>/.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { gatewayBaseUrl } from '../competitor-live';
@@ -151,30 +151,40 @@ async function selfcheck(): Promise<void> {
   log('\nSelf-check done. (Agent loop + LLM mapping are unit-tested; pilot/run additionally need a provisioned corpus + gateway capacity.)');
 }
 
-function writeRun(result: GaiaRunResult, label: string): string {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const dir = join(homedir(), '.papercusp', 'bench-results', 'gaia', 'runs', `${label}-${stamp}`);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'predictions.jsonl'), predictionsToJsonl(result.predictions));
-  writeFileSync(join(dir, 'report.json'), JSON.stringify({ report: result.report, totals: result.totals }, null, 2));
-  return dir;
-}
-
 async function runTasks(tasks: GaiaTask[], label: string): Promise<GaiaRunResult> {
   const concurrency = Number(arg('--concurrency', '4'));
   const accountId = arg('--account');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dir = join(homedir(), '.papercusp', 'bench-results', 'gaia', 'runs', `${label}-${stamp}`);
+  mkdirSync(dir, { recursive: true });
+  const partialPath = join(dir, 'predictions.partial.jsonl');
+
   // RESUME: reuse prior predictions from a --resume <dir> (skips already-answered tasks → no re-spend).
+  // Accepts either a finished predictions.jsonl or a crashed run's predictions.partial.jsonl.
   const resumeDir = arg('--resume');
   let priorPredictions: GaiaRunResult['predictions'] | undefined;
-  if (resumeDir && existsSync(join(resumeDir, 'predictions.jsonl'))) {
-    priorPredictions = parsePredictionsJsonl(readFileSync(join(resumeDir, 'predictions.jsonl'), 'utf8'));
-    log(`Resuming: ${priorPredictions.length} prior predictions from ${resumeDir}`);
+  if (resumeDir) {
+    const fin = join(resumeDir, 'predictions.jsonl');
+    const part = join(resumeDir, 'predictions.partial.jsonl');
+    const src = existsSync(fin) ? fin : existsSync(part) ? part : null;
+    if (src) {
+      priorPredictions = parsePredictionsJsonl(readFileSync(src, 'utf8'));
+      log(`Resuming: ${priorPredictions.length} prior predictions from ${src}`);
+    }
   }
-  log(`Running ${tasks.length} GAIA tasks (${JSON.stringify(gaiaLevelCounts(tasks))}) @ concurrency ${concurrency}…`);
+  log(`Running ${tasks.length} GAIA tasks (${JSON.stringify(gaiaLevelCounts(tasks))}) @ concurrency ${concurrency} → ${dir}`);
   const llm = makeLiveGaiaLlm({ accountId });
   const runAgent = makeLiveRunAgent({ llm });
-  const result = await runGaiaSuite(tasks, { runAgent }, { concurrency, priorPredictions });
-  const dir = writeRun(result, label);
+  // CHECKPOINT: append each freshly-completed record so a crash mid-run loses at most the in-flight tasks.
+  let done = 0;
+  const onRecord = (rec: GaiaRunResult['predictions'][number]) => {
+    appendFileSync(partialPath, JSON.stringify(rec) + '\n');
+    done++;
+    if (done % 10 === 0) log(`  …${done} tasks completed`);
+  };
+  const result = await runGaiaSuite(tasks, { runAgent }, { concurrency, priorPredictions, onRecord });
+  writeFileSync(join(dir, 'predictions.jsonl'), predictionsToJsonl(result.predictions));
+  writeFileSync(join(dir, 'report.json'), JSON.stringify({ report: result.report, totals: result.totals }, null, 2));
   log('\n' + formatGaiaReportLine(result));
   log(`reused ${result.totals.reused} prior · wrote predictions + report to ${dir}`);
   return result;

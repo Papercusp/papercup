@@ -96,18 +96,25 @@ describe('gaia agent-live — fromAnthropicResponse', () => {
 });
 
 describe('gaia agent-live — makeLiveGaiaLlm', () => {
+  /** A fake streaming client: messages.stream(params).finalMessage() resolves the canned message. */
+  function streamClient(message: unknown) {
+    const stream = vi.fn((_params: unknown) => ({ finalMessage: async () => message }));
+    return { client: { messages: { stream } } as never, stream };
+  }
+
   it('forces max_tokens above the thinking budget and leads with the Claude Code identity block (gateway)', async () => {
-    const create = vi.fn(async () => ({
+    const { client, stream } = streamClient({
       content: [{ type: 'text', text: 'FINAL ANSWER: ok' }],
       stop_reason: 'end_turn',
       usage: { input_tokens: 5, output_tokens: 2 },
-    }));
+    });
     // baseUrl defaults to the gateway → identity prepend is on.
-    const llm = makeLiveGaiaLlm({ client: { messages: { create } } as never, thinking: true, thinkingBudgetTokens: 16000 });
+    const llm = makeLiveGaiaLlm({ client, thinking: true, thinkingBudgetTokens: 16000 });
     const r = await llm({ system: 'GAIA prompt', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], tools: [], maxTokens: 8192 });
     expect(r.content[0]).toEqual({ type: 'text', text: 'FINAL ANSWER: ok' });
-    expect(create).toHaveBeenCalledWith(
+    expect(stream).toHaveBeenCalledWith(
       expect.objectContaining({
+        stream: true,
         max_tokens: 16000 + 8192, // bumped above the budget
         thinking: { type: 'enabled', budget_tokens: 16000 },
         // The first system block MUST be the Claude Code identity (else a bogus 429 on the Max-OAuth gateway).
@@ -120,24 +127,24 @@ describe('gaia agent-live — makeLiveGaiaLlm', () => {
   });
 
   it('omits thinking when disabled and honors the caller maxTokens', async () => {
-    const create = vi.fn(async () => ({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }));
-    const llm = makeLiveGaiaLlm({ client: { messages: { create } } as never, thinking: false });
+    const { client, stream } = streamClient({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
+    const llm = makeLiveGaiaLlm({ client, thinking: false });
     await llm({ system: 's', messages: [], tools: [], maxTokens: 4096 });
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 4096 }));
-    expect(create).not.toHaveBeenCalledWith(expect.objectContaining({ thinking: expect.anything() }));
+    expect(stream).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 4096 }));
+    expect(stream).not.toHaveBeenCalledWith(expect.objectContaining({ thinking: expect.anything() }));
   });
 
   it('does NOT prepend the identity in direct mode (baseUrl=null)', async () => {
-    const create = vi.fn(async () => ({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }));
-    const llm = makeLiveGaiaLlm({ client: { messages: { create } } as never, baseUrl: null, thinking: false });
+    const { client, stream } = streamClient({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
+    const llm = makeLiveGaiaLlm({ client, baseUrl: null, thinking: false });
     await llm({ system: 'plain', messages: [], tools: [], maxTokens: 4096 });
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({ system: 'plain' }));
+    expect(stream).toHaveBeenCalledWith(expect.objectContaining({ system: 'plain' }));
   });
 
   it('can force the identity off even on the gateway', async () => {
-    const create = vi.fn(async () => ({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }));
-    const llm = makeLiveGaiaLlm({ client: { messages: { create } } as never, claudeCodeIdentity: false, thinking: false });
+    const { client, stream } = streamClient({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
+    const llm = makeLiveGaiaLlm({ client, claudeCodeIdentity: false, thinking: false });
     await llm({ system: 'plain', messages: [], tools: [], maxTokens: 4096 });
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({ system: 'plain' }));
+    expect(stream).toHaveBeenCalledWith(expect.objectContaining({ system: 'plain' }));
   });
 });

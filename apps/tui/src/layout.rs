@@ -150,27 +150,6 @@ pub fn session_name(kind: &str) -> String {
     format!("pui-{kind}-{}", std::process::id())
 }
 
-/// The canonical SINGLETON dock session. Unlike the PID-keyed workbench
-/// (`pui-wb-<pid>`), the desktop chat dock is ONE shared session that every
-/// desktop app instance attaches to — so they all render the SAME live Queen
-/// (zellij multiplexes multiple attached clients onto one session). The old
-/// PID-keyed `pui-dock-<pid>` + always-new-session forked a separate Queen per
-/// launch, leaving the open app stranded on a stale dock the owner could not see
-/// the live Queen in (bug 2026-06-17). A stable name + attach-or-create fixes it.
-/// It has NO pid tail, so [`crate::reap::owner_pid`] returns `None` and the
-/// reaper never kills it — it must outlive any one client.
-pub const DOCK_SESSION: &str = "pui-dock";
-
-/// Argv to ATTACH an existing zellij session as another client — used for the
-/// singleton dock so every desktop window shares the one live Queen session.
-pub fn attach_argv(session: &str) -> Vec<String> {
-    vec![
-        "zellij".to_string(),
-        "attach".to_string(),
-        session.to_string(),
-    ]
-}
-
 /// Argv to start a zellij session with the workbench layout. The session is
 /// explicitly named (see [`session_name`]) so exits/crashes can be reaped
 /// instead of leaking an auto-named detached server. The `options` subcommand

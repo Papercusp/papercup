@@ -260,26 +260,22 @@ async fn run_chat_dock() -> Result<()> {
         Err(_) => lexicon::Lexicon::default(),
     };
     let path = layout::materialize_chat_dock(&brain_argv, &lex)?;
-    // SINGLETON dock (bug 2026-06-17): the desktop chat dock is ONE canonical
-    // `pui-dock` session that EVERY desktop app instance attaches to, so they all
-    // render the SAME live Queen (zellij multiplexes attached clients onto one
-    // session). The old PID-keyed `pui-dock-<pid>` + always-new-session forked a
-    // separate Queen per launch, leaving the open app stranded on a stale dock —
-    // the owner could not see the live Queen. Sweep dead PID-keyed husks (+ an
-    // EXITED singleton husk), then ATTACH if the singleton is already live, else
-    // CREATE it with the layout. Do NOT kill on exit: other clients / the next
-    // launch re-attach to the same live Queen (the singleton must outlive a
-    // single client). This also dissolves the EI-186 leak — relaunches now attach
-    // instead of forking a second server.
-    let session = layout::DOCK_SESSION;
-    reap::reap_for_dock(session);
-    let argv = if reap::session_is_live(session) {
-        layout::attach_argv(session)
-    } else {
-        layout::launch_argv(&path.to_string_lossy(), session)
-    };
+    // PER-WINDOW dock (owner decision 2026-06-17): each desktop window runs its OWN
+    // PID-keyed dock session, sized to that window — no zellij multi-client black
+    // bars, and full interactive TUI for the reactive interactive panes
+    // (`session_panes.rs` muxes a LOCAL workbench pane per window; sharing ONE
+    // zellij session across windows would share their INPUT). The queen/overwatch
+    // panes are read-only views of the SHARED BACKEND roster, so every window shows
+    // identical live queen data WITHOUT sharing the zellij session — the "same queen
+    // everywhere" comes from the roster, not a shared session. EI-186: reap stale
+    // leftovers (the desktop relaunches this dock constantly — each relaunch used to
+    // leak a detached server) and kill our own when zellij returns.
+    let session = layout::session_name("dock");
+    reap::reap_stale(&session);
+    let argv = layout::launch_argv(&path.to_string_lossy(), &session);
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;
+    reap::kill_and_delete(&session);
     std::process::exit(status.code().unwrap_or(0));
 }
 

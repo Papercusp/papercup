@@ -116,8 +116,9 @@ export interface LiveGaiaLlmConfig {
    * fleet-exhausted active account. Pick a low-utilization id from `accounts:status`. Gateway-only.
    */
   accountId?: string;
-  /** Inject a client (tests). */
-  client?: Pick<Anthropic, 'messages'>;
+  /** Inject a client (tests). Needs a `messages.stream(params).finalMessage()` (the SDK requires streaming for
+   *  long requests — non-streaming create() is rejected once max_tokens could exceed the 10-min cap). */
+  client?: { messages: { stream: (params: Anthropic.MessageCreateParamsStreaming) => { finalMessage: () => Promise<Anthropic.Message> } } };
 }
 
 /**
@@ -149,15 +150,18 @@ export function makeLiveGaiaLlm(cfg: LiveGaiaLlmConfig = {}): LlmFn {
     const system: Anthropic.MessageCreateParams['system'] = useIdentity
       ? [{ type: 'text', text: CLAUDE_CODE_IDENTITY }, { type: 'text', text: req.system }]
       : req.system;
-    const params: Anthropic.MessageCreateParamsNonStreaming = {
+    const params: Anthropic.MessageCreateParamsStreaming = {
       model,
       max_tokens: maxTokens,
       system,
       messages: toAnthropicMessages(req.messages),
       tools: toAnthropicTools(req.tools),
+      stream: true,
       ...(useThinking ? { thinking: { type: 'enabled', budget_tokens: thinkingBudget } } : {}),
     };
-    const res = await client.messages.create(params);
-    return fromAnthropicResponse(res as Anthropic.Message);
+    // STREAM (not create): the SDK rejects a non-streaming request whose max_tokens could exceed the 10-min
+    // wall — extended thinking pushes us over it. `.finalMessage()` accumulates the stream into the full Message.
+    const res = await client.messages.stream(params).finalMessage();
+    return fromAnthropicResponse(res);
   };
 }

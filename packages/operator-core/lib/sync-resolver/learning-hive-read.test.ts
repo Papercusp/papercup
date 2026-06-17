@@ -3,9 +3,12 @@
  * no PG/FS. Pins the pack/organic split, pristine-vs-modified detection, the
  * per-pack rollups, and the unavailable degradation.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readHiveLearnings } from './learning-hive-read';
 import type { LearningPack } from '../learning-packs/pack-format';
+
+// The LP-6 cross-check exercises planPackUpgrade, which reads getMemoryBackend.
+vi.mock('../memory/backend', () => ({ getMemoryBackend: vi.fn() }));
 
 const pack: LearningPack = {
   manifest: { id: 'papercusp-default', title: 'T', description: 'd', version: '1.0.0' },
@@ -68,5 +71,53 @@ describe('readHiveLearnings', () => {
       loadPack: async () => null,
     });
     expect(snap).toMatchObject({ hive: 'h', rows: [], packs: [], organicCount: 0, unavailable: true });
+  });
+
+  it('LP-6: a mixed-version pool reports the FIRST-SEEN packVersion (order-dependent rollup)', async () => {
+    // Two rows of the same pack carry different pack_version stamps (a partial
+    // upgrade). The rollup's packVersion is `mine.find(r => r.packVersion)` —
+    // first by pool order. This pins that contract so a reordering regression
+    // is caught; planPackUpgrade (below) is the source of truth for the FULL set.
+    const v1 = { source: 'pack', pack_id: 'papercusp-default', pack_version: '1.0.0', pack_item_id: 'a' };
+    const v2 = { source: 'pack', pack_id: 'papercusp-default', pack_version: '2.0.0', pack_item_id: 'b' };
+    const snap = await readHiveLearnings('h', deps([
+      { id: 'm1', text: 'A — body a', metadata: v1 }, // first → 1.0.0
+      { id: 'm2', text: 'B — body b', metadata: v2 },
+    ]));
+    expect(snap.packs[0]).toMatchObject({ packId: 'papercusp-default', packVersion: '1.0.0', present: 2 });
+
+    // Reversed pool order → first-seen flips to 2.0.0 (documents the dependence).
+    const snapRev = await readHiveLearnings('h', deps([
+      { id: 'm2', text: 'B — body b', metadata: v2 }, // first → 2.0.0
+      { id: 'm1', text: 'A — body a', metadata: v1 },
+    ]));
+    expect(snapRev.packs[0].packVersion).toBe('2.0.0');
+  });
+});
+
+describe('LP-6: cross-check — planPackUpgrade captures the FULL version set the rollup collapses', async () => {
+  const { planPackUpgrade } = await import('../learning-packs/manage');
+  const { getMemoryBackend } = await import('../memory/backend');
+
+  it('installedVersions lists EVERY distinct pack_version in the pool (not just first-seen)', async () => {
+    const pool = [
+      { id: 'm1', text: 'A — body a', scope: 'hive:h', metadata: { source: 'pack', pack_id: 'papercusp-default', pack_version: '1.0.0', pack_item_id: 'a' } },
+      { id: 'm2', text: 'B — body b', scope: 'hive:h', metadata: { source: 'pack', pack_id: 'papercusp-default', pack_version: '2.0.0', pack_item_id: 'b' } },
+    ];
+    const backend = {
+      name: 'fake',
+      available: async () => ({ ok: true as const }),
+      list: async () => pool,
+      search: async () => [],
+    };
+    vi.mocked(getMemoryBackend).mockReturnValue(backend as unknown as ReturnType<typeof getMemoryBackend>);
+    const plan = await planPackUpgrade(
+      { hiveSlug: 'h', pack },
+      { backend: backend as never, judge: async () => ({ conflicts: [] }) },
+    );
+    // The rollup keeps only first-seen; the upgrade planner keeps the whole set.
+    expect(plan.installedVersions.sort()).toEqual(['1.0.0', '2.0.0']);
+    // 'c' (the only item with no present row) is the adoptable set.
+    expect(plan.newItems.items.map((i) => i.itemId)).toEqual(['c']);
   });
 });

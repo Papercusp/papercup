@@ -77,15 +77,27 @@ export function useAccountOverride() {
   const excluded = useMemo(() => new Set(override?.excludeAccounts ?? []), [override]);
   const overrideActive = forced.size > 0 || excluded.size > 0;
 
+  // Each toggle computes the FULL predicted override (the changed axis + the untouched
+  // one) and passes it as the optimistic value, so the lever flips instantly; the POST
+  // still carries only the changed field (the server merges + echoes the truth back).
   const toggleForce = useCallback(
-    (id: string) => void patchOverride({ forcedAccounts: forced.has(id) ? [...forced].filter((x) => x !== id) : [...forced, id] }),
-    [forced, patchOverride],
+    (id: string) => {
+      const nextForced = forced.has(id) ? [...forced].filter((x) => x !== id) : [...forced, id];
+      void patchOverride({ forcedAccounts: nextForced }, { forcedAccounts: nextForced, excludeAccounts: [...excluded] });
+    },
+    [forced, excluded, patchOverride],
   );
   const toggleExclude = useCallback(
-    (id: string) => void patchOverride({ excludeAccounts: excluded.has(id) ? [...excluded].filter((x) => x !== id) : [...excluded, id] }),
-    [excluded, patchOverride],
+    (id: string) => {
+      const nextExcluded = excluded.has(id) ? [...excluded].filter((x) => x !== id) : [...excluded, id];
+      void patchOverride({ excludeAccounts: nextExcluded }, { forcedAccounts: [...forced], excludeAccounts: nextExcluded });
+    },
+    [forced, excluded, patchOverride],
   );
-  const clearOverride = useCallback(() => void patchOverride({ clear: true }), [patchOverride]);
+  const clearOverride = useCallback(
+    () => void patchOverride({ clear: true }, { forcedAccounts: [], excludeAccounts: [] }),
+    [patchOverride],
+  );
 
   return { override, overrideBusy, forced, excluded, overrideActive, toggleForce, toggleExclude, clearOverride, patchOverride };
 }

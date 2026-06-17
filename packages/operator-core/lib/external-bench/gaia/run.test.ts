@@ -144,6 +144,17 @@ describe('gaia run — resume (priorPredictions)', () => {
     expect(out.predictions.find((p) => p.task_id === 'a')?.tokensIn).toBe(50);
   });
 
+  it('streams onRecord for each freshly-run task (checkpoint) but not for reused ones', async () => {
+    const tasks = [task('a', 1, 'Paris'), task('b', 2, '42')];
+    const seen: string[] = [];
+    const prior = [{ task_id: 'a', model_answer: 'Paris', reasoning_trace: '', level: 1 as const, stopReason: 'done' as const, turns: 1, toolCalls: 0, tokensIn: 1, tokensOut: 1 }];
+    await runGaiaSuite(tasks, { runAgent: async (t) => result(t.taskId, { answer: '42' }) }, {
+      priorPredictions: prior,
+      onRecord: (rec) => seen.push(rec.task_id),
+    });
+    expect(seen).toEqual(['b']); // only the freshly-run task, not the reused 'a'
+  });
+
   it('parsePredictionsJsonl round-trips predictionsToJsonl and tolerates junk', () => {
     const recs = [{ task_id: 'a', model_answer: 'x', reasoning_trace: '', level: 1 as const, stopReason: 'done' as const, turns: 1, toolCalls: 0, tokensIn: 1, tokensOut: 1 }];
     const parsed = parsePredictionsJsonl(predictionsToJsonl(recs) + '\n{bad json}\n');

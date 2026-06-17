@@ -307,6 +307,71 @@ describe('sweepHiveConflicts', () => {
     expect(res.pairs[0]).toMatchObject({ summary: 'tabs vs spaces' });
     expect([res.pairs[0].aId, res.pairs[0].bId].sort()).toEqual(['r1', 'r2']);
   });
+
+  it('LP-5: caps the scan at SWEEP_MAX_ROWS (200) and reports capped:true on a bigger pool', async () => {
+    const pool: Entry[] = Array.from({ length: 201 }, (_, i) => ({
+      id: `r${i}`,
+      text: `fact ${i}`,
+      scope: 'hive:h',
+      metadata: {},
+    }));
+    const { backend } = fakeBackend({ pool });
+    backend.search = vi.fn(async () => []); // no neighbors → no pairs
+    const res = await import('./manage').then((m) =>
+      m.sweepHiveConflicts({ hiveSlug: 'h' }, { backend: backend as never, judge: noConflictJudge }),
+    );
+    expect(res.scanned).toBe(200); // only the first 200 are searched
+    expect(res.capped).toBe(true); // 201 > 200 ⇒ tail skipped, loud partial
+    // The 201st row (r200) is never searched.
+    const searched = backend.search.mock.calls.map((c) => c[0]);
+    expect(searched).not.toContain('fact 200');
+  });
+
+  it("LP-5: a conflict partner OUTSIDE the scanned cap shows bText '(not in this pool)'", async () => {
+    // Row r0 (in-cap) conflicts with 'outsider' whose row is beyond the cap, so
+    // byId.get(outsider) is undefined ⇒ the placeholder text.
+    const pool: Entry[] = Array.from({ length: 201 }, (_, i) => ({
+      id: i === 0 ? 'r0' : `r${i}`,
+      text: `fact ${i}`,
+      scope: 'hive:h',
+      metadata: {},
+    }));
+    const { backend } = fakeBackend({ pool });
+    backend.search = vi.fn(async (q: string) =>
+      q === 'fact 0' ? [{ id: 'outsider', text: 'beyond the cap', scope: 'hive:h', score: 0.8 }] : [],
+    );
+    const judge = vi.fn(async (input: { newText: string }) =>
+      input.newText === 'fact 0'
+        ? { conflicts: [{ memory_id: 'outsider', summary: 'clashes with a row past the cap' }] }
+        : { conflicts: [] },
+    );
+    const res = await import('./manage').then((m) =>
+      m.sweepHiveConflicts({ hiveSlug: 'h' }, { backend: backend as never, judge }),
+    );
+    expect(res.capped).toBe(true);
+    const pair = res.pairs.find((p) => p.aId === 'r0');
+    expect(pair).toBeTruthy();
+    expect(pair!.bId).toBe('outsider');
+    expect(pair!.bText).toBe('(not in this pool)');
+  });
+
+  it('LP-5: a per-row search/judge throw degrades that row to [] (sweep is hygiene, never load-bearing)', async () => {
+    const pool: Entry[] = [
+      { id: 'r1', text: 'always use tabs', scope: 'hive:h', metadata: {} },
+      { id: 'r2', text: 'boom row', scope: 'hive:h', metadata: {} },
+    ];
+    const { backend } = fakeBackend({ pool });
+    backend.search = vi.fn(async (q: string) => {
+      if (q === 'boom row') throw new Error('pg blip on this row');
+      return [];
+    });
+    const res = await import('./manage').then((m) =>
+      m.sweepHiveConflicts({ hiveSlug: 'h' }, { backend: backend as never, judge: noConflictJudge }),
+    );
+    // The throw on r2 doesn't abort the sweep; r1 still scans, no pairs surface.
+    expect(res.scanned).toBe(2);
+    expect(res.pairs).toEqual([]);
+  });
 });
 
 describe('enable/disable + upgrade plan', () => {

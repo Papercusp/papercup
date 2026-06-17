@@ -77,6 +77,28 @@ export interface GaiaRunConfig {
    * ARE re-run (a retry might do better). This makes a long 165-task run crash-resumable.
    */
   priorPredictions?: GaiaPredictionRecord[];
+  /**
+   * CHECKPOINT: called with each freshly-run task's record AS IT COMPLETES (not for reused ones). A caller
+   * appends it to a partial predictions.jsonl so a crash mid-run loses at most the in-flight tasks — pairs with
+   * {@link priorPredictions} for crash-safe long runs.
+   */
+  onRecord?: (record: GaiaPredictionRecord) => void;
+}
+
+/** Build the predictions record for one freshly-run task. */
+function buildRecord(task: GaiaTask, r: GaiaAgentResult, maxTraceChars: number): GaiaPredictionRecord {
+  return {
+    task_id: task.taskId,
+    model_answer: r.finalAnswer ?? '',
+    reasoning_trace: renderTrace(r, maxTraceChars),
+    level: task.level,
+    stopReason: r.stopReason,
+    turns: r.turns,
+    toolCalls: r.toolCalls,
+    tokensIn: r.tokensIn,
+    tokensOut: r.tokensOut,
+    ...(r.error ? { error: r.error } : {}),
+  };
 }
 
 /** Bounded-concurrency map preserving input order. */
@@ -126,8 +148,14 @@ export async function runGaiaSuite(
     if (p.stopReason !== 'error' && p.model_answer !== '') prior.set(p.task_id, p);
   }
   const toRun = tasks.filter((t) => !prior.has(t.taskId));
-  const ran = await mapLimit(toRun, concurrency, (task) => deps.runAgent(task));
-  const ranById = new Map<string, GaiaAgentResult>(toRun.map((t, i) => [t.taskId, ran[i]]));
+  // Build each fresh task's record AS IT COMPLETES (so onRecord can checkpoint incrementally).
+  const built = await mapLimit(toRun, concurrency, async (task) => {
+    const r = await deps.runAgent(task);
+    const record = buildRecord(task, r, maxTraceChars);
+    config.onRecord?.(record);
+    return { task, r, record };
+  });
+  const builtById = new Map(built.map((b) => [b.task.taskId, b]));
 
   const predictions: GaiaPredictionRecord[] = [];
   const gradeInputs: GaiaPrediction[] = [];
@@ -146,25 +174,12 @@ export async function runGaiaSuite(
       gradeInputs.push({ taskId: task.taskId, modelAnswer: priorRec.model_answer, gold: task.finalAnswer, level: task.level });
       continue;
     }
-    const r = ranById.get(task.taskId)!;
+    const { r, record } = builtById.get(task.taskId)!;
     tokensIn += r.tokensIn;
     tokensOut += r.tokensOut;
     const isInfra = r.stopReason === 'error';
     if (isInfra) infraErrors++;
-
-    predictions.push({
-      task_id: task.taskId,
-      model_answer: r.finalAnswer ?? '',
-      reasoning_trace: renderTrace(r, maxTraceChars),
-      level: task.level,
-      stopReason: r.stopReason,
-      turns: r.turns,
-      toolCalls: r.toolCalls,
-      tokensIn: r.tokensIn,
-      tokensOut: r.tokensOut,
-      ...(r.error ? { error: r.error } : {}),
-    });
-
+    predictions.push(record);
     gradeInputs.push({
       taskId: task.taskId,
       rawOutput: r.rawOutput,
