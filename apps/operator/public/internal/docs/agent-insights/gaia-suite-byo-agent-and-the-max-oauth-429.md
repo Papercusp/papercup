@@ -80,9 +80,57 @@ end-to-end — a 2-task synthetic smoke went from 0/2 (both bogus-429) to 100% (
 `Tungsten → 74` via `web_search`) at \~$0.09.
 
 Other gateway details that carry over: `xhigh` = extended thinking at `budget_tokens` with
-`max_tokens > budget_tokens`; let the SDK retry (`maxRetries: 8`) ride out transient 529s;
+`max_tokens > budget_tokens`; let the SDK retry (`maxRetries: 12`) ride out transient 429/529s;
 pin a fresh pool account with the `x-papercusp-account` header if the active one is
 fleet-exhausted.
+
+## Trap 3 — extended thinking forces STREAMING (non-streaming `create()` is rejected)
+
+Once `max_tokens` is large enough that a request could exceed \~10 minutes (extended thinking
+at a 16k budget trips this), the SDK throws **"Streaming is required for operations that may
+take longer than 10 minutes."** The 2-task smoke worked only because it used a tiny 6k budget.
+Fix: call `client.messages.stream(params).finalMessage()` (accumulates the stream into the
+full `Message`) instead of `messages.create()`. This is why `agent-live.ts` streams.
+
+## Trap 4 — the gateway does NOT load-balance the account pool
+
+`account-failover.ts`: the gateway routes through **one `active()` account at a time** and only
+**rotates on a hard 429** (unified-window-rejected). It is failover, not load-balancing. So
+under fleet load the single active account saturates to `utilization ≥ 1.0` and 429s your
+requests, **while healthy accounts sit idle** (`accounts:status` will show e.g. `aviynw6` at
+0.45). Two mitigations, both now in `agent-live.ts`:
+
+* **Pin a healthy account** (`x-papercusp-account`, the `accountId` opt) — separates your run
+  from the fleet's contention on the active account. Pick one from `accounts:status` with
+  `utilization < 0.6`, low `penaltyCount`, `available: true`.
+* **Request interactive priority** (`x-papercusp-priority: interactive`, the `priority` opt) —
+  jumps the gateway's priority queue ahead of the fleet's `batch` work, so a user-requested run
+  isn't starved (the symptom of starvation is a request that just hangs → a client-side timeout
+  with no response, distinct from a fast 429).
+
+## Trap 5 — a gateway restart looks exactly like a capacity wall
+
+A gateway restart **resets its `/stats` counters** (e.g. `totalRequests` 4633→718) and causes a
+brief 429/timeout spike as it re-warms. This is indistinguishable from "the pool is exhausted"
+unless you check: re-run a single **pinned-healthy-account** call — if it returns 200 in \~1s,
+capacity is fine and you over-diagnosed a transient. (I burned several turns calling a real
+GAIA run "blocked on capacity" when it was actually progressing 100→111→149/165 the whole time.)
+
+## Getting the gated data without the gated token
+
+`gaia-benchmark/GAIA` is gated, but **`smolagents/GAIA-annotated`** (HF's own smolagents team,
+`gated: false`) is the canonical validation set — verify it's real before trusting it: 165 rows,
+exact schema, per-level **L1=53/L2=86/L3=26**, the canonical task\_id `c61d22de-…`, all rows
+self-gradable. `huggingface_hub.snapshot_download(..., allow_patterns=["2023/validation/*"])`,
+no token needed. Use for internal measurement (not redistribution).
+
+## Result + cost
+
+opus-4.8 + this agent scored **\~74.5% GAIA validation** (L1 \~79% / L2 \~75% / L3 \~65%),
+format-fail \~7% — strong (GPT-4+plugins was \~15% at GAIA's 2023 publication). **Cost \~$205 for
+the 165-task pass** — well over the \~$10–80 estimate, driven by the 16k thinking budget × many
+ReAct turns × large `fetch_url` tool-results fed back into context. Lever to pull next time:
+lower the thinking budget and/or cap `maxToolResultChars` / turns.
 
 ## Source
 

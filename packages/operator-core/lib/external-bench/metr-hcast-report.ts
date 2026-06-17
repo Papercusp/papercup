@@ -80,13 +80,19 @@ export function toHorizonTasks(results: readonly MetrHcastTaskResult[]): {
   baselinedTasksSeen: number;
 } {
   // Group by instanceId.
-  const byTask = new Map<string, { resolved: number[]; humanMinutes: number | null; family: string }>();
+  const byTask = new Map<string, { scores: number[]; humanMinutes: number | null; family: string }>();
   for (const r of results) {
     const id = r.attempt.instanceId;
     const fam = (typeof r.attempt.armMeta?.['family'] === 'string' ? (r.attempt.armMeta['family'] as string) : id.split('__')[0]);
-    const g = byTask.get(id) ?? { resolved: [], humanMinutes: r.humanMinutes, family: fam };
-    // Only scored rows (resolved !== null) count toward the success rate; infra-null rows are excluded.
-    if (r.grade.resolved !== null) g.resolved.push(r.grade.resolved ? 1 : 0);
+    const g = byTask.get(id) ?? { scores: [], humanMinutes: r.humanMinutes, family: fam };
+    // Only SCORED rows (resolved !== null) count; infra-null rows are excluded (METR discipline). Use the
+    // task's CONTINUOUS score in [0,1] (METR's logistic fits fractional success) — for binary tasks this
+    // equals resolved, but for partial-credit tasks (e.g. symbolic_regression) it preserves partial credit
+    // instead of binarizing at 1.0 and throwing the signal away.
+    if (r.grade.resolved !== null) {
+      const s = r.grade.score != null ? Math.min(1, Math.max(0, r.grade.score)) : r.grade.resolved ? 1 : 0;
+      g.scores.push(s);
+    }
     if (r.humanMinutes != null) g.humanMinutes = r.humanMinutes;
     byTask.set(id, g);
   }
@@ -96,8 +102,8 @@ export function toHorizonTasks(results: readonly MetrHcastTaskResult[]): {
   for (const [taskId, g] of byTask) {
     if (g.humanMinutes == null) continue; // no human-time baseline → can't contribute to the horizon fit
     baselinedTasksSeen += 1;
-    if (g.resolved.length === 0) continue; // all attempts infra-failed → no scored signal, drop from the fit
-    const successRate = g.resolved.reduce((a, b) => a + b, 0) / g.resolved.length;
+    if (g.scores.length === 0) continue; // all attempts infra-failed → no scored signal, drop from the fit
+    const successRate = g.scores.reduce((a, b) => a + b, 0) / g.scores.length;
     tasks.push({ taskId, humanMinutes: g.humanMinutes, successRate, family: g.family });
   }
   return { tasks, baselinedTasksSeen };

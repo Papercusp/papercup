@@ -5,6 +5,7 @@ import {
   predictionsToJsonl,
   renderTrace,
   runGaiaSuite,
+  toSubmissionJsonl,
   type GaiaRunDeps,
 } from './run';
 import type { GaiaAgentResult } from './agent';
@@ -153,6 +154,15 @@ describe('gaia run — resume (priorPredictions)', () => {
       onRecord: (rec) => seen.push(rec.task_id),
     });
     expect(seen).toEqual(['b']); // only the freshly-run task, not the reused 'a'
+  });
+
+  it('toSubmissionJsonl emits only the leaderboard fields (task_id, model_answer, reasoning_trace)', () => {
+    const jsonl = toSubmissionJsonl([
+      { task_id: 'a', model_answer: 'Paris', reasoning_trace: 'trace', level: 1, stopReason: 'done', turns: 2, toolCalls: 1, tokensIn: 99, tokensOut: 9 },
+    ]);
+    const obj = JSON.parse(jsonl.trim());
+    expect(obj).toEqual({ task_id: 'a', model_answer: 'Paris', reasoning_trace: 'trace' });
+    expect(Object.keys(obj)).not.toContain('tokensIn'); // telemetry stripped
   });
 
   it('parsePredictionsJsonl round-trips predictionsToJsonl and tolerates junk', () => {

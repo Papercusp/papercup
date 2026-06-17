@@ -41,6 +41,8 @@ async function main(): Promise<void> {
   const bootstrap = Number(arg('bootstrap', '1000'));
   const out = arg('out');
   const account = arg('account');
+  const effort = arg('effort', 'default')!; // 'xhigh' → extended thinking (the plan's opus-4.8 @ xhigh)
+  const thinkingBudget = effort === 'xhigh' ? Number(arg('thinking-budget', '16000')) : 0;
   const dryRun = hasFlag('dry-run');
   const accumulate = hasFlag('accumulate');
   // Accumulation dir = alongside --out (default the metr-hcast results dir).
@@ -51,7 +53,7 @@ async function main(): Promise<void> {
   if (maxTasks && tasks.length > maxTasks) tasks = tasks.slice(0, maxTasks);
 
   const baselined = tasks.filter((t) => t.graderMeta?.['horizonEligible'] === true).length;
-  console.log(`METR HCAST run — task-set=${taskSet}  tasks=${tasks.length} (${baselined} horizon-eligible)  arms=${arms.join(',')}  samples=${samples}  model=${model}  gateway=${metrGatewayBaseUrl()}${account ? `  account=${account}` : ''}`);
+  console.log(`METR HCAST run — task-set=${taskSet}  tasks=${tasks.length} (${baselined} horizon-eligible)  arms=${arms.join(',')}  samples=${samples}  model=${model}  effort=${effort}${thinkingBudget ? `(thinking ${thinkingBudget})` : ''}  gateway=${metrGatewayBaseUrl()}${account ? `  account=${account}` : ''}`);
   console.log(`Tasks: ${tasks.map((t) => t.instanceId).join(', ')}`);
 
   if (dryRun) {
@@ -59,7 +61,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const modelCall = gatewayModelCall({ model, ...(account ? { accountId: account } : {}) });
+  const modelCall = gatewayModelCall({ model, ...(account ? { accountId: account } : {}), ...(thinkingBudget > 0 ? { thinkingBudget } : {}) });
   // In accumulate mode: fold in rows banked by earlier partial runs, and append each new row as it settles.
   const prior = accumulate ? loadAccumulatedResults(accumBase) : {};
   if (accumulate) {

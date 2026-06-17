@@ -467,6 +467,9 @@ export interface GatewayModelCfg {
   retryBaseMs?: number;
   /** Per-request timeout (ms) — the shared gateway hangs under load, so fail fast + retry rather than block. Default 90000. */
   requestTimeoutMs?: number;
+  /** Extended-thinking budget (tokens) = the plan's "opus-4.8 @ xhigh" elicitation. >0 enables thinking;
+   *  max_tokens is forced above it. Default 0 (off). xhigh ≈ 16000 (matches the gaia/competitor arms). */
+  thinkingBudget?: number;
   /** Sleep seam (injected in tests so retries don't actually wait). */
   sleep?: (ms: number) => Promise<void>;
   /** Anthropic SDK import (injected for tests; defaults to a lazy dynamic import of @anthropic-ai/sdk). */
@@ -548,6 +551,7 @@ export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
 
   const maxRetries = cfg.maxRetries ?? 8;
   const retryBaseMs = cfg.retryBaseMs ?? 3000;
+  const thinkingBudget = cfg.thinkingBudget ?? 0;
   const sleep = cfg.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   return async ({ system, messages, tools, maxTokens }) => {
@@ -558,11 +562,21 @@ export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
       { type: 'text', text: CLAUDE_CODE_IDENTITY },
       { type: 'text', text: system },
     ];
+    // xhigh elicitation: enable extended thinking; max_tokens MUST exceed the thinking budget.
+    const thinking = thinkingBudget > 0 ? { type: 'enabled' as const, budget_tokens: thinkingBudget } : undefined;
+    const effectiveMaxTokens = thinking ? Math.max(maxTokens, thinkingBudget + 4096) : maxTokens;
     let resp: AnthropicMessageResponse | undefined;
     let lastErr: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        resp = await c.messages.create({ model, max_tokens: maxTokens, system: framedSystem, messages, tools });
+        resp = await c.messages.create({
+          model,
+          max_tokens: effectiveMaxTokens,
+          system: framedSystem,
+          messages,
+          tools,
+          ...(thinking ? { thinking } : {}),
+        });
         break;
       } catch (e) {
         lastErr = e;

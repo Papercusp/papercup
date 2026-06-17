@@ -74,6 +74,13 @@ describe('toHorizonTasks', () => {
     expect(tasks.find((t) => t.taskId === 'f__c')).toBeUndefined(); // no baseline dropped
     expect(baselinedTasksSeen).toBe(2); // f__a + f__b have baselines (f__c does not)
   });
+
+  it('uses the CONTINUOUS task score (partial credit), not binarized resolved', () => {
+    // A partial-credit task: resolved=false (score < 1.0 threshold) but score=0.9 → success should be 0.9, not 0.
+    const results = [result('sr__1', 47, false, 0.9), { ...result('sr__1', 47, false, 0.7), attempt: { ...result('sr__1', 47, false, 0.7).attempt, seed: '1' } }];
+    const { tasks } = toHorizonTasks(results);
+    expect(tasks[0].successRate).toBeCloseTo(0.8, 6); // mean(0.9, 0.7) — partial credit preserved
+  });
 });
 
 describe('buildMetrHcastReport', () => {

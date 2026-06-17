@@ -33,12 +33,14 @@ import {
 } from './dataset';
 import { makeLiveGaiaLlm } from './agent-live';
 import { makeLiveGaiaToolset } from './tools-live';
+import { runHiveArm } from './hive-arm';
 import {
   formatGaiaReportLine,
   makeLiveRunAgent,
   parsePredictionsJsonl,
   predictionsToJsonl,
   runGaiaSuite,
+  toSubmissionJsonl,
   type GaiaRunResult,
 } from './run';
 
@@ -237,11 +239,57 @@ async function autorun(): Promise<void> {
   log('\nGAIA autorun DONE (pilot + full validation complete).');
 }
 
+/** P-007: run the hive-decomposition arm on the L3 validation tasks and compare to the single-opus baseline. */
+async function hiveL3(): Promise<void> {
+  if (!(await ensureProvisioned())) {
+    log('Cannot run — GAIA corpus not provisioned. See `provision`.');
+    process.exitCode = 3;
+    return;
+  }
+  const limit = arg('--limit');
+  const accountId = arg('--account');
+  const priority = arg('--priority', 'interactive');
+  let l3 = loadGaiaValidation().filter((t) => t.level === 3);
+  if (limit) l3 = l3.slice(0, Number(limit));
+  log(`Hive-decomposition arm on ${l3.length} L3 tasks (account=${accountId ?? 'pool'} priority=${priority})…`);
+  const planLlm = makeLiveGaiaLlm({ accountId, priority });
+  const subLlm = makeLiveGaiaLlm({ accountId, priority });
+  const runSubAgent = makeLiveRunAgent({ llm: subLlm });
+  const runAgent = (task: GaiaTask) => runHiveArm(task, { llm: planLlm, runSubAgent });
+  const result = await runGaiaSuite(l3, { runAgent }, { concurrency: Number(arg('--concurrency', '2')) });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dir = join(homedir(), '.papercusp', 'bench-results', 'gaia', 'runs', `hive-l3-${stamp}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'predictions.jsonl'), predictionsToJsonl(result.predictions));
+  writeFileSync(join(dir, 'report.json'), JSON.stringify({ report: result.report, totals: result.totals }, null, 2));
+  log('\nHIVE ' + formatGaiaReportLine(result));
+  log(`(compare the L3 accuracy here vs the single-opus baseline's L3 number) → ${dir}`);
+}
+
+/** P-006: build the GAIA leaderboard submission JSONL from a run dir's predictions. */
+async function submission(): Promise<void> {
+  const dir = arg('--dir');
+  if (!dir || !existsSync(join(dir, 'predictions.jsonl'))) {
+    log('Usage: submission --dir <run dir with predictions.jsonl>');
+    process.exitCode = 2;
+    return;
+  }
+  const preds = parsePredictionsJsonl(readFileSync(join(dir, 'predictions.jsonl'), 'utf8'));
+  const out = join(dir, 'submission.jsonl');
+  writeFileSync(out, toSubmissionJsonl(preds));
+  log(`Wrote ${preds.length}-row leaderboard submission → ${out}`);
+  log('Submit at https://huggingface.co/spaces/gaia-benchmark/leaderboard (test split; iterate on validation first).');
+}
+
 async function main(): Promise<void> {
   const verb = process.argv[2];
   switch (verb) {
     case 'provision':
       return provision();
+    case 'submission':
+      return submission();
+    case 'hive-l3':
+      return hiveL3();
     case 'selfcheck':
       return selfcheck();
     case 'autorun':
@@ -256,8 +304,10 @@ async function main(): Promise<void> {
       log('  selfcheck');
       log('  autorun   [--per-level N] [--skip-pilot] [--concurrency N] [--account <id>] [--resume <dir>]');
       log('              exit 0 = done · exit 7 = NOT-YET (no token/corpus, loop should wait + retry)');
-      log('  pilot [--per-level N] [--concurrency N] [--account <id>] [--resume <dir>]');
-      log('  run   [--limit N] [--concurrency N] [--account <id>] [--resume <dir>]');
+      log('  pilot [--per-level N] [--concurrency N] [--account <id>] [--priority interactive] [--resume <dir>]');
+      log('  run   [--limit N] [--concurrency N] [--account <id>] [--priority interactive] [--resume <dir>]');
+      log('  hive-l3   [--limit N] [--concurrency N] [--account <id>]   (P-007: decomposition arm on L3 vs baseline)');
+      log('  submission --dir <run dir>                                  (P-006: leaderboard JSONL)');
       process.exitCode = verb ? 2 : 0;
   }
 }

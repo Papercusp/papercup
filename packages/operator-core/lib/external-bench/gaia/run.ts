@@ -222,6 +222,20 @@ export function predictionsToJsonl(predictions: GaiaPredictionRecord[]): string 
   return predictions.map((p) => JSON.stringify(p)).join('\n') + '\n';
 }
 
+/**
+ * Serialize predictions → the GAIA leaderboard submission JSONL (P-006). The Gradio Space ingests exactly
+ * `{ task_id, model_answer, reasoning_trace }` per line — our internal telemetry fields are dropped. Used for
+ * the TEST-set submission; the validation run is self-graded and never submitted. `model_answer` is the
+ * extracted FINAL ANSWER (empty string when the agent produced no FINAL ANSWER line).
+ */
+export function toSubmissionJsonl(predictions: GaiaPredictionRecord[]): string {
+  return (
+    predictions
+      .map((p) => JSON.stringify({ task_id: p.task_id, model_answer: p.model_answer, reasoning_trace: p.reasoning_trace }))
+      .join('\n') + '\n'
+  );
+}
+
 /** A one-line human summary of a run report. */
 export function formatGaiaReportLine(result: GaiaRunResult): string {
   const r = result.report;
