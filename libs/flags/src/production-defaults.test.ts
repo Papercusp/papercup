@@ -30,6 +30,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   FLAGS.TESTING, // cut for V1
 
   // ── Genuinely incomplete/unsafe work (per the FLAG_DEFAULTS comments) ──
+  // git-sync-dx-hardening-2026-06-17 P-004: derived per-agent commit attribution rewrites
+  // the git-sync COMMIT hot path. OFF = today's single `git add -A` commit (byte-identical);
+  // owner flips after reviewing the flag-ON commit behavior. Safe to ship dark.
+  FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION,
   // domain-generic-agent-personas-2026-06-17 P-006: su-as-blueprint-role persona path —
   // unverified spawn-path change; OFF = today's renderSuPlaybook. Owner flips post live smoke.
   FLAGS.SU_BLUEPRINT_PERSONA,

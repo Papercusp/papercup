@@ -496,6 +496,13 @@ export const FLAGS = {
   // escalation, no fixer dispatch) — the instant off-switch if the guard ever
   // mis-quarantines real work on the shared commit path, without waiting for a deploy.
   GIT_SYNC_CONTENT_GUARD: "papercusp-git-sync-content-guard",
+  // git-sync-dx-hardening-2026-06-17 P-004: DERIVED commit attribution — when ON, git-sync
+  // groups dirty files by the agent who declared them (coord:declare-intent / lock holder)
+  // and makes per-agent commits with the intent message + a Co-Authored-By trailer (catch-all
+  // commit for the unattributable remainder), restoring git blame/bisect/review for humans.
+  // DEFAULT OFF: it rewrites the commit hot path; OFF = today's single `git add -A` commit,
+  // byte-identical. No new agent ceremony (attribution is DERIVED). Owner flips post-review.
+  GIT_SYNC_DERIVED_ATTRIBUTION: "papercusp-git-sync-derived-attribution",
   // plan-federation-regrain-2026-06-13 P-005/P-006: per-PART plan federation —
   // kills the whole-document LWW clobber where two peers editing DIFFERENT plan
   // items lose one edit (D-009). DEFAULT-OFF: an UNVERIFIED cutover that needs a
@@ -1018,6 +1025,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // it ON (getFlag falls back to this default), so the safety stays on when PostHog is
   // unreachable — the opposite of a closed gate.
   [FLAGS.GIT_SYNC_CONTENT_GUARD]: true,
+  // DEFAULT OFF (git-sync-dx-hardening P-004) — rewrites the commit hot path (per-agent
+  // attributed commits). OFF = today's single `git add -A` commit, byte-identical. Owner
+  // flips post-review (also listed in KNOWN_DARK_FLAGS).
+  [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION]: false,
   // DEFAULT OFF (P-142 / D-003) — genuinely incomplete-until-ramped: the operator-hosted
   // worker:chunk-loop is the coding HOT PATH and ships dark, then dark-launch → 25/50/100
   // ramp → retire (worker-chunk-loop-operator-hosted-2026-06-14). OFF = the subprocess
