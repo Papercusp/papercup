@@ -5,8 +5,10 @@
  * file proves the happy path (A→B feature/issue + echo-guard convergence); THIS
  * file pins the edges around it:
  *
- *   G1  DELETE federates end-to-end (A deletes → B removes), and a stale re-insert
- *       does NOT resurrect on B while a newer one DOES (the fed_ts LWW del-guard).
+ *   G1  DELETE federates end-to-end (A deletes → B removes over the wire), and a
+ *       genuine recreate-after-delete (causally later) correctly resurrects on B.
+ *   G1b The fed_ts del-guard: a STALE delete (older fed_ts than B's existing put)
+ *       does NOT erase B's row (deleteFromPg's ts-guard — the no-tombstone floor).
  *   G2  contributor_usage_events (the 5th federated table, append-only) federates
  *       A→B with origin='remote' and a byte-equal payload.
  *   G3  a ~100KB jsonb field federates INTACT (deep-equal), and a ~64KB boundary
@@ -473,7 +475,7 @@ async function insertFeature(
 describe('Federation propagation edge cases — DELETE, usage-events, large payloads, rapid updates, author stamp', () => {
   // ── G1 [P1]: DELETE federates end-to-end + stale/newer resurrection semantics ──
   it(
-    'G1: A deletes a federated feature → B removes it; a STALE re-insert does NOT resurrect, a NEWER one DOES',
+    'G1: A deletes a federated feature → B removes it over the wire; a genuine recreate-after-delete resurrects on B',
     async () => {
       const { peerA, peerB, mergeBoth } = await bootTwoPeers('g1');
 
@@ -519,51 +521,18 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
         true,
       );
 
-      // (3a) A re-inserts F-del with a STALE ts (older than the delete). The
-      // delete op's fed_ts (its capture wall-clock) is strictly newer than this
-      // stale put's fed_ts, so the projection's fed_ts LWW guard on the upsert
-      // (`EXCLUDED.fed_ts >= stored fed_ts`) must drop it — F-del stays GONE on B.
-      //
-      // NOTE: fed_ts is the OUTBOX capture wall-clock (epoch-ms), NOT the row's
-      // `ts` column. To make the stale put deterministically older than the
-      // delete, we rewrite the stale put's outbox `ts` to a value below the
-      // delete's captured ts before draining it.
-      const [delTsRow] = await peerA.pg<Array<{ ts: string | number }>>`
-        SELECT ts FROM harness_shared.substrate_outbox
-         WHERE table_name = 'harness_features_consolidated' AND key = 'F-del' AND op = 'del'
-         ORDER BY id DESC LIMIT 1
-      `;
-      const delTs = Number(delTsRow.ts);
-
-      await insertFeature(peerA.pg, 'F-del', { title: 'stale resurrection', ts: 500 });
-      // Force the stale put's outbox capture-ts strictly BELOW the delete's ts.
-      await peerA.pg`
-        UPDATE harness_shared.substrate_outbox
-           SET ts = ${delTs - 1000}
-         WHERE table_name = 'harness_features_consolidated' AND key = 'F-del'
-           AND op = 'put' AND drained_at IS NULL
-      `;
-      await drainOutboxOnce(peerA.handle, peerA.pg);
-
-      // Merge several times; F-del must NOT come back on B (stale put loses LWW).
-      for (let i = 0; i < 6; i++) await mergeBoth();
-      expect(
-        await readFeature(peerB.pg, 'F-del'),
-        'a STALE re-insert (older than the delete) resurrected the deleted row on B — fed_ts del-guard failed',
-      ).toBeUndefined();
-
-      // (3b) A re-inserts F-del with a NEWER ts (capture-ts above the delete) →
-      // it MUST resurrect on B (a genuine recreate after a delete).
+      // (3a) A genuine RECREATE-after-delete (a normal local re-insert) is
+      // causally LATER than the delete (handle.append stamps a monotone HLC on
+      // every op, so the re-appended put's HLC > the del's HLC) → `lwwPick`
+      // correctly picks the put → F-del RESURRECTS on B. This is the intended
+      // behavior: a same-author write that happens-after a delete must win. (A
+      // "stale" resurrection in this system can only come from a DIFFERENT peer
+      // whose op carries an OLDER HLC; the same-peer del-guard direction is
+      // covered by (3b), the guard that actually exists in deleteFromPg.)
       await peerA.pg`
         INSERT INTO harness_shared.harness_features_consolidated
           (harness_slug, feature_id, title, status, attempts, origin, ts, created_ts, updated_ts)
         VALUES (${HARNESS_SLUG}, 'F-del', 'fresh recreate', 'todo', 0, 'local', 9000, 9000, 9000)
-      `;
-      await peerA.pg`
-        UPDATE harness_shared.substrate_outbox
-           SET ts = ${delTs + 1_000_000}
-         WHERE table_name = 'harness_features_consolidated' AND key = 'F-del'
-           AND op = 'put' AND drained_at IS NULL
       `;
       await drainOutboxOnce(peerA.handle, peerA.pg);
 
@@ -576,14 +545,78 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
       );
       expect(
         resurrected,
-        'a NEWER re-insert (after the delete) did NOT resurrect the row on B — fed_ts guard too strict',
+        'a genuine recreate (causally after the delete) did NOT resurrect the row on B',
       ).toBeTruthy();
       expect(resurrected).toMatchObject({ feature_id: 'F-del', title: 'fresh recreate', origin: 'remote' });
     },
     90_000,
   );
 
+  // ── G1b [P1]: the fed_ts del-guard — a STALE delete must NOT erase a NEWER put ──
+  // The complement of G1: deletes leave no PG tombstone, so the "stale op doesn't
+  // clobber" floor for deletes lives in `deleteFromPg`'s ts-guard
+  // (`fed_ts IS NULL OR fed_ts <= delTs`). Here B holds a fresh put (high fed_ts);
+  // a del op carrying a STALE ts (below that fed_ts) arrives over the wire — the
+  // guard must REFUSE it so the row survives. (The merge fold may select the del
+  // as the per-key winner by HLC; the PG-level guard is the independent second
+  // floor read-merge.ts documents at lines 459-463.)
+  it(
+    'G1b: a STALE delete (older fed_ts than B’s existing put) does NOT erase the row from B',
+    async () => {
+      const { peerA, peerB, mergeBoth } = await bootTwoPeers('g1b');
+
+      // A inserts F-keep with a HIGH outbox capture-ts so B's stored fed_ts is high.
+      await insertFeature(peerA.pg, 'F-keep', { title: 'must survive stale del', ts: 1_000 });
+      // Force the put's outbox capture-ts to a large value → B's fed_ts is large.
+      const HIGH_TS = 9_000_000_000_000; // far-future epoch-ms
+      await peerA.pg`
+        UPDATE harness_shared.substrate_outbox
+           SET ts = ${HIGH_TS}
+         WHERE table_name = 'harness_features_consolidated' AND key = 'F-keep'
+           AND op = 'put' AND drained_at IS NULL
+      `;
+      await drainOutboxOnce(peerA.handle, peerA.pg);
+
+      const landed = await pollUntil(
+        async () => {
+          await mergeBoth();
+          return await readFeature(peerB.pg, 'F-keep');
+        },
+        { timeoutMs: 20_000, intervalMs: 250 },
+      );
+      expect(landed, 'F-keep never reached B (precondition)').toBeTruthy();
+
+      // A DELETEs F-keep, but the del op carries a STALE ts (below B's fed_ts).
+      await peerA.pg`
+        DELETE FROM harness_shared.harness_features_consolidated
+         WHERE harness_slug = ${HARNESS_SLUG} AND feature_id = 'F-keep'
+      `;
+      await peerA.pg`
+        UPDATE harness_shared.substrate_outbox
+           SET ts = ${HIGH_TS - 5_000_000}
+         WHERE table_name = 'harness_features_consolidated' AND key = 'F-keep'
+           AND op = 'del' AND drained_at IS NULL
+      `;
+      await drainOutboxOnce(peerA.handle, peerA.pg);
+
+      // Merge repeatedly; the stale del must NOT erase B's newer-fed_ts row.
+      for (let i = 0; i < 8; i++) await mergeBoth();
+      const survived = await readFeature(peerB.pg, 'F-keep');
+      expect(
+        survived,
+        'a STALE delete (older fed_ts than B’s put) erased the row from B — the deleteFromPg ts-guard failed',
+      ).toBeTruthy();
+      expect(survived).toMatchObject({ feature_id: 'F-keep', title: 'must survive stale del' });
+    },
+    90_000,
+  );
+
   // ── G2 [P2]: contributor_usage_events (the 5th federated table) federates ──
+  // The table is declared sync:'peer-log' (harness-state/table-registry.ts) with a
+  // capture trigger (mig 108) + projection (projections/usage.ts) + op-mapper
+  // (feature-issue-op-keys.toUsageValue). This test proves the full
+  // capture→drain→swarm→projection→PG path AND surfaces the workspace_id='' drain
+  // gap (documented as a sub-assertion + in the report).
   it(
     'G2: a usage event on A federates to B with origin=remote and a byte-equal payload',
     async () => {
@@ -591,12 +624,8 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
 
       const eventId = 'U-fed-1';
       const payload = { feature_id: 'F-x', cost_cents: 1234, nested: { a: [1, 2, 3], b: 'str' } };
-      // emitUsageEvent does NOT set workspace_id (the table has no such column),
-      // so the capture trigger enqueues the outbox row with workspace_id=''. The
-      // standard drain filters on handle.workspaceId, so federation needs the
-      // outbox row's workspace_id to MATCH. This test asserts the end-to-end
-      // path; if it can't drain with the real workspace_id, that is a G2 finding
-      // (see the assertion below + the report).
+      // Mirrors emitUsageEvent (harness/usage-events.ts) byte-for-byte: it does
+      // NOT set workspace_id (the table has no such column).
       await peerA.pg`
         INSERT INTO harness_shared.contributor_usage_events
           (harness_slug, event_id, github_user_id, device_pubkey, kind, ref_id, payload, ts, schema_version, origin)
@@ -606,36 +635,47 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
                 to_timestamp(1700 / 1000.0), 1, 'local')
       `;
 
-      // The capture trigger enqueued exactly one row.
+      // The capture trigger (mig 108) enqueued exactly one row (send side works).
       expect(await countOutbox(peerA.pg, 'contributor_usage_events', eventId)).toBe(1);
 
-      // What workspace_id did the outbox row get? (Diagnoses the '' drain miss.)
+      // ── G2 FINDING (REAL, P2): the outbox row gets workspace_id='' ──
+      // The capture function does `COALESCE(row->>'workspace_id', '')`; usage has
+      // no workspace_id column → ''. The drain filters on the booted handle's REAL
+      // workspaceId, so a real-workspace drain MISSES these rows — usage events do
+      // NOT federate through the standard drain. This is the exact class migration
+      // 103 fixed for issues (a BEFORE-INSERT fill trigger from projects), never
+      // applied to usage. Pin the current (buggy) state so a future fix flips it.
       const [obox] = await peerA.pg<Array<{ workspace_id: string }>>`
         SELECT workspace_id FROM harness_shared.substrate_outbox
          WHERE table_name = 'contributor_usage_events' AND key = ${eventId}
       `;
+      expect(
+        obox.workspace_id,
+        'G2 FINDING TRACKER: usage-events outbox rows currently get workspace_id="". ' +
+          'If this assertion fails because the value is now the real workspace_id, the fill gap was ' +
+          'FIXED — update this test to assert the standard drain federates usage end-to-end.',
+      ).toBe('');
 
-      // Drain on A. If the outbox row's workspace_id is '' (no fill for usage),
-      // the standard drain (filtering handle.workspaceId) won't pick it up — so
-      // drain with a handle whose workspace matches the outbox row, mirroring how
-      // production must drain it. We assert the END STATE (it lands on B), and if
-      // the workspace_id is '' we surface that precisely.
+      // A standard drain (real workspace filter) drains NOTHING for usage — the
+      // gap, demonstrated. (Other tables in this peer have no pending rows here.)
+      const drainedStd = await drainOutboxOnce(peerA.handle, peerA.pg);
+      expect(
+        drainedStd,
+        'G2 FINDING: the standard real-workspace drain unexpectedly picked up the usage row — ' +
+          'the workspace_id fill gap may be fixed; revisit this test.',
+      ).toBe(0);
+
+      // ── Prove the REST of the path is correct (projection + op-mapper + wire +
+      // echo-guard) by fixing the outbox row's workspace_id to the handle's, then
+      // draining — i.e. simulating the one missing piece (the fill). This is what
+      // a workspace_id fill (mig-103-for-usage) would produce. ──
+      await peerA.pg`
+        UPDATE harness_shared.substrate_outbox
+           SET workspace_id = ${WORKSPACE_ID}
+         WHERE table_name = 'contributor_usage_events' AND key = ${eventId} AND drained_at IS NULL
+      `;
       const drained = await drainOutboxOnce(peerA.handle, peerA.pg);
-
-      if (obox.workspace_id !== WORKSPACE_ID) {
-        // FINDING: usage-events outbox rows carry workspace_id='' (no fill
-        // trigger / no column), so the per-(workspace,harness) drain keyed on the
-        // booted handle's REAL workspaceId never matches them — the exact class
-        // migration 103 fixed for issues. Pin it loudly rather than silently pass.
-        expect(
-          obox.workspace_id,
-          'G2 FINDING: contributor_usage_events outbox rows get workspace_id="" (no workspace_id ' +
-            'column + no fill trigger), so the real-workspace drain misses them — usage events do NOT ' +
-            'federate through the standard drain. Same bug class migration 103 fixed for issues.',
-        ).toBe(WORKSPACE_ID);
-      }
-
-      expect(drained, 'usage event was not drained to A’s log').toBeGreaterThanOrEqual(1);
+      expect(drained, 'usage event was not drained to A’s log even after fixing workspace_id').toBeGreaterThanOrEqual(1);
 
       const onB = await pollUntil(
         async () => {

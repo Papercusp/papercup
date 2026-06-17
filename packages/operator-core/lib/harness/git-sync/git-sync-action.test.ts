@@ -524,6 +524,9 @@ describe('P-010/P-012 merge-conflict path', () => {
     // escalation row: kind + every conflicted scope/file, UNIQUE per harness+phase
     const ups = escalationUpserts();
     expect(ups).toHaveLength(1);
+    // G23: on a conflict the row is genuinely INSERTed into harness_escalations
+    // (not merely a metadata patch) — the resolver's read path keys off this row.
+    expect(ups[0].text).toContain('INSERT INTO harness_shared.harness_escalations');
     expect(ups[0].body).toMatchObject({
       kind: 'git-sync-conflict',
       harness_slug: 'papercup',

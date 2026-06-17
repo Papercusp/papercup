@@ -111,14 +111,30 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
-  it('commits locally but does not push when push:false', async () => {
+  // G20: the joiner-side push:false runtime invariant — a dirty tree COMMITS
+  // locally but origin/main must be byte-for-byte UNCHANGED. Asserts via the
+  // origin tip SHA (not just the commit-subject log) and proves the fresh local
+  // commit is genuinely absent from origin.
+  it('commits locally but does not push when push:false (origin/main SHA unchanged)', async () => {
     writeFileSync(join(repo, 'local.txt'), 'x\n');
-    const before = originLog();
+    const originTipBefore = git(originDir, 'rev-parse', 'main');
+    const localTipBefore = git(repo, 'rev-parse', 'HEAD');
+
     const out = await runGitSync('test', { repoPath: repo, config: { push: false, pushSubmodules: false } });
+
     expect(out.status).toBe('synced');
     if (out.status === 'synced') expect(out.pushed).toEqual([]);
-    expect(originLog()).toBe(before); // origin untouched
-    expect(git(repo, 'log', '--format=%s', '-1')).toMatch(/auto-commit test/); // committed locally
+
+    // a NEW local commit exists (HEAD advanced) and carries the auto-commit subject
+    const localTipAfter = git(repo, 'rev-parse', 'HEAD');
+    expect(localTipAfter).not.toBe(localTipBefore);
+    expect(git(repo, 'log', '--format=%s', '-1')).toMatch(/auto-commit test/);
+
+    // origin/main is UNCHANGED — same tip SHA, and the commit-subject log is identical
+    expect(git(originDir, 'rev-parse', 'main')).toBe(originTipBefore);
+    expect(originLog()).not.toMatch(/auto-commit test/);
+    // and the bare origin does NOT have the fresh local commit object reachable on main
+    expect(() => git(originDir, 'merge-base', '--is-ancestor', localTipAfter, 'main')).toThrow();
   });
 
   it('on a divergent conflict: aborts to a CLEAN tree and reports conflicted files', async () => {
