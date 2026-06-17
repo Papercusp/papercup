@@ -305,9 +305,10 @@ test('fails over to a second account when the active one hits its 5h budget (EI-
   gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
   port = await gw.listen(0);
 
-  // First request → account A → real 5h-rejected 429 → triggers failover to B.
+  // First request → account A's real 5h-rejected 429 → the gateway INTERNALLY fails over to B and
+  // returns B's 200, so the caller never sees the 429 (the resilient internal-retry behavior).
   const first = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(first.status, 429, 'A returns its real 5h-rejected 429');
+  assert.equal(first.status, 200, "internal failover A→B → B's 200, not A's 429");
   assert.equal(pool.active().accountId, 'B', 'gateway failed over to B');
 
   // Next request → account B (fresh bucket) → 200, egressing on B's token.

@@ -16,7 +16,7 @@
  * ← GET/POST /api/admin/deploy-accounts/session-override (hive_settings-backed),
  * applied OPTIMISTICALLY in useAccountOverride so the levers flip instantly.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { Link } from '@tanstack/react-router';
 import { toast } from 'sonner';
@@ -29,6 +29,7 @@ import {
   CircleSlash,
   Network,
   Settings as SettingsIcon,
+  KeyRound,
 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useAccountOverride } from '../adv/use-account-override';
@@ -89,6 +90,18 @@ function pct(u?: number): string {
   return typeof u === 'number' ? `~${Math.round(u * 100)}%` : '—';
 }
 
+function usagePctValue(u?: number): number {
+  if (typeof u !== 'number' || !Number.isFinite(u)) return 0;
+  return Math.max(0, Math.min(100, Math.round(u * 100)));
+}
+
+function usageTone(u?: number): 'quiet' | 'ok' | 'warn' | 'hot' {
+  if (typeof u !== 'number') return 'quiet';
+  if (u >= 0.9) return 'hot';
+  if (u >= 0.7) return 'warn';
+  return 'ok';
+}
+
 /** Compact forward countdown — "3d 5h" / "2h 13m" / "12m" / "now". */
 function fmtCountdown(ms: number): string {
   if (ms <= 0) return 'now';
@@ -114,6 +127,23 @@ function fmtAgo(at: number, now: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+function UsageMeter({ label, value, reset }: { label: string; value?: number; reset?: string }) {
+  const width = usagePctValue(value);
+  const tone = usageTone(value);
+  return (
+    <div className={`pclsb-acct__meter pclsb-acct__meter--${tone}`} aria-label={`${label} usage ${pct(value)}${reset}`}>
+      <div className="pclsb-acct__meterhead">
+        <span>{label}</span>
+        <strong>{pct(value)}</strong>
+      </div>
+      <div className="pclsb-acct__bar" aria-hidden>
+        <span style={{ width: `${width}%` }} />
+      </div>
+      {reset ? <span className="pclsb-acct__meterreset">{reset.replace(/^ · /, '')}</span> : null}
+    </div>
+  );
+}
+
 /** A 1s-ticking clock for live countdowns; only runs while the tab is active. */
 function useNow(enabled: boolean, intervalMs = 1000): number {
   const [now, setNow] = useState(() => Date.now());
@@ -132,6 +162,18 @@ export default function AccountsTab({ active }: { active: boolean }) {
   // Which card is expanded (accordion). URL state so it's agent-driveable + survives reload.
   const [expanded, setExpanded] = useQueryState('acct', parseAsString);
   const [resetBusyId, setResetBusyId] = useState<string | null>(null);
+  const poolSummary = useMemo(() => {
+    const rows = accounts ?? [];
+    const paused = rows.filter((a) => a.rate.pausedUntil > now).length;
+    return {
+      total: rows.length,
+      available: rows.filter((a) => a.available && a.rate.pausedUntil <= now).length,
+      paused,
+      limited: rows.filter((a) => a.sustainedlyLimited).length,
+      forced: forced.size,
+      excluded: excluded.size,
+    };
+  }, [accounts, excluded.size, forced.size, now]);
 
   const resetRate = useCallback(async (id: string) => {
     setResetBusyId(id);
@@ -149,22 +191,51 @@ export default function AccountsTab({ active }: { active: boolean }) {
   return (
     <div className="pclsb-acct">
       <style>{ACCT_CSS}</style>
-      <p className="pclsb-acct__intro">
-        The Queen's pool of Max accounts. Limit which the fleet may spawn/deploy on <strong>right now</strong>:{' '}
-        <em>Force</em> = allow-list only these; <em>Excl</em> = skip these. No selection = whole pool.
-      </p>
+      <header className="pclsb-acct__hero">
+        <div>
+          <span className="pclsb-acct__eyebrow">spawn account pool</span>
+          <p>Steer which Max accounts the fleet may use right now.</p>
+        </div>
+        <KeyRound size={16} aria-hidden />
+      </header>
+
+      <div className="pclsb-acct__summary" aria-label="Account pool summary">
+        <div>
+          <span>available</span>
+          <strong>{poolSummary.available}/{poolSummary.total}</strong>
+        </div>
+        <div>
+          <span>paused</span>
+          <strong>{poolSummary.paused}</strong>
+        </div>
+        <div>
+          <span>limited</span>
+          <strong>{poolSummary.limited}</strong>
+        </div>
+        <div>
+          <span>steered</span>
+          <strong>{poolSummary.forced || poolSummary.excluded ? `${poolSummary.forced}/${poolSummary.excluded}` : 'off'}</strong>
+        </div>
+      </div>
+
+      <div className="pclsb-acct__rule" role="note">
+        <span><strong>Force</strong> allow-lists accounts.</span>
+        <span><strong>Excl</strong> skips accounts.</span>
+        <span>No selection uses the whole pool.</span>
+      </div>
 
       {overrideActive && (
         <div className="pclsb-acct__ovr" role="status">
           <div className="pclsb-acct__ovrtext">
+            <strong>Session steering active</strong>
             {forced.size > 0 && (
               <>
-                Only: {[...forced].map((id) => <span key={id} className="pclsb-acct__chip is-force">{id}</span>)}{' '}
+                <span>Only</span> {[...forced].map((id) => <span key={id} className="pclsb-acct__chip is-force">{id}</span>)}{' '}
               </>
             )}
             {excluded.size > 0 && (
               <>
-                Excl: {[...excluded].map((id) => <span key={id} className="pclsb-acct__chip is-excl">{id}</span>)}
+                <span>Exclude</span> {[...excluded].map((id) => <span key={id} className="pclsb-acct__chip is-excl">{id}</span>)}
               </>
             )}
           </div>
@@ -197,26 +268,29 @@ export default function AccountsTab({ active }: { active: boolean }) {
             const reset7d =
               a.rate.windowResetAt7d && a.rate.windowResetAt7d > now ? ` · resets ${fmtCountdown(a.rate.windowResetAt7d - now)}` : '';
             return (
-              <li key={a.id} className={`pclsb-acct__row pclsb-acct__row--${statusKind}`}>
+              <li key={a.id} className={`pclsb-acct__row pclsb-acct__row--${statusKind}${isForced ? ' is-forced' : ''}${isExcluded ? ' is-excluded' : ''}`}>
                 <div className="pclsb-acct__top">
-                  <span className={`pclsb-acct__dot pclsb-acct__dot--${statusKind}`} aria-hidden title={statusLabel} />
                   <button
                     type="button"
                     className="pclsb-acct__name"
-                    title={isOpen ? 'Collapse' : 'Expand for details'}
                     aria-expanded={isOpen}
                     onClick={() => void setExpanded(isOpen ? null : a.id)}
                   >
-                    <span className="pclsb-acct__label">{a.label || a.id}</span>
+                    <span className="pclsb-acct__labelrow">
+                      <span className={`pclsb-acct__dot pclsb-acct__dot--${statusKind}`} aria-hidden />
+                      <span className="pclsb-acct__label">{a.label || a.id}</span>
+                    </span>
                     <span className="pclsb-acct__id">{a.id}</span>
                   </button>
+                  <span className={`pclsb-acct__statuspill pclsb-acct__statuspill--${statusKind}`}>{statusLabel}</span>
                   <div className="pclsb-acct__btns">
                     <button
                       type="button"
                       className={`pclsb-acct__b${isForced ? ' is-force' : ''}`}
                       disabled={overrideBusy}
+                      aria-pressed={isForced}
+                      aria-label={isForced ? `Stop forcing ${a.id}` : `Force only ${a.id}`}
                       onClick={() => toggleForce(a.id)}
-                      title={isForced ? 'Remove from the forced allow-list' : 'Force the fleet to use only this account'}
                     >
                       {isForced ? '✓ Force' : 'Force'}
                     </button>
@@ -224,8 +298,9 @@ export default function AccountsTab({ active }: { active: boolean }) {
                       type="button"
                       className={`pclsb-acct__b${isExcluded ? ' is-excl' : ''}`}
                       disabled={overrideBusy}
+                      aria-pressed={isExcluded}
+                      aria-label={isExcluded ? `Stop excluding ${a.id}` : `Exclude ${a.id}`}
                       onClick={() => toggleExclude(a.id)}
-                      title={isExcluded ? 'Stop excluding this account' : 'Exclude this account from fleet selection'}
                     >
                       {isExcluded ? '✓ Excl' : 'Excl'}
                     </button>
@@ -242,15 +317,11 @@ export default function AccountsTab({ active }: { active: boolean }) {
                 </div>
 
                 <div className="pclsb-acct__usage">
-                  <span className="pclsb-acct__u" title={`5h rolling usage${reset5h}`}>
-                    5h <strong>{pct(a.rate.utilization)}</strong>
-                    {reset5h && <span className="pclsb-acct__umute">{reset5h}</span>}
-                  </span>
-                  <span className="pclsb-acct__u" title={`7d rolling usage${reset7d}`}>
-                    7d <strong>{pct(a.rate.utilization7d)}</strong>
-                    {reset7d && <span className="pclsb-acct__umute">{reset7d}</span>}
-                  </span>
+                  <UsageMeter label="5h" value={a.rate.utilization} reset={reset5h} />
+                  <UsageMeter label="7d" value={a.rate.utilization7d} reset={reset7d} />
                   {paused && <span className="pclsb-acct__chip is-excl">paused</span>}
+                  {isForced && <span className="pclsb-acct__chip is-force">forced</span>}
+                  {isExcluded && <span className="pclsb-acct__chip is-excl">excluded</span>}
                   {a.sustainedlyLimited && <span className="pclsb-acct__chip is-excl">limited</span>}
                   {a.rate.penaltyCount > 0 && (
                     <span className="pclsb-acct__chip">{a.rate.penaltyCount} penalt{a.rate.penaltyCount === 1 ? 'y' : 'ies'}</span>
@@ -293,7 +364,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
                       </div>
                       <div>
                         <dt>Cred</dt>
-                        <dd title={maskRef(a.credentialRef)}><code className="pclsb-acct__cred">{maskRef(a.credentialRef)}</code></dd>
+                        <dd><code className="pclsb-acct__cred">{maskRef(a.credentialRef)}</code></dd>
                       </div>
                       {a.egress && (a.egress.proxyUrl || a.egress.localAddress) ? (
                         <div>
@@ -321,7 +392,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
                       className="pclsb-acct__reset"
                       disabled={resetBusyId === a.id}
                       onClick={() => void resetRate(a.id)}
-                      title="Clear this account's projected pause / penalty state (does not touch the credential)"
+                      aria-label={`Clear projected pause and penalty state for ${a.id}`}
                     >
                       <RotateCcw size={11} aria-hidden /> {resetBusyId === a.id ? 'Resetting…' : 'Reset rate state'}
                     </button>
@@ -346,14 +417,34 @@ export default function AccountsTab({ active }: { active: boolean }) {
 
 const ACCT_CSS = `
 .pclsb-acct { display: flex; flex-direction: column; gap: 10px; padding: 12px 12px 16px; font-size: 12.5px; color: var(--fg, #e7e7ea); }
-.pclsb-acct__intro { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--fg-mute, #a6a6ad); }
-.pclsb-acct__intro em { font-style: normal; color: var(--fg, #e7e7ea); }
+.pclsb-acct__hero {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px 11px; border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)) 88%, var(--accent, #8b5cf6) 12%);
+  border: 1px solid color-mix(in srgb, var(--accent, #8b5cf6) 24%, var(--border, rgba(255, 255, 255, 0.12)));
+}
+.pclsb-acct__hero svg { flex: 0 0 auto; color: var(--accent, #8b5cf6); margin-top: 2px; }
+.pclsb-acct__hero p { margin: 3px 0 0; font-size: 11.5px; line-height: 1.4; color: var(--fg-mute, #a6a6ad); }
+.pclsb-acct__eyebrow { display: block; font-size: 9.5px; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg, #e7e7ea); }
+.pclsb-acct__summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.pclsb-acct__summary > div {
+  min-width: 0; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  background: var(--bg-2, rgba(255, 255, 255, 0.035));
+}
+.pclsb-acct__summary span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; font-weight: 720; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-mute, #8a8a91); }
+.pclsb-acct__summary strong { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; line-height: 1.1; color: var(--fg, #e7e7ea); font-variant-numeric: tabular-nums; }
+.pclsb-acct__rule {
+  display: grid; gap: 3px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.035)) 82%, transparent);
+  font-size: 10.5px; line-height: 1.35; color: var(--fg-mute, #a6a6ad);
+}
+.pclsb-acct__rule strong { color: var(--fg, #e7e7ea); font-weight: 700; }
 .pclsb-acct__ovr { display: flex; align-items: flex-start; gap: 8px; padding: 7px 9px; border-radius: 8px;
   background: color-mix(in srgb, var(--accent, #8b5cf6) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #8b5cf6) 35%, transparent); }
-.pclsb-acct__ovrtext { flex: 1 1 auto; min-width: 0; font-size: 10.5px; line-height: 1.7; color: var(--fg-mute, #a6a6ad); }
+.pclsb-acct__ovrtext { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font-size: 10.5px; line-height: 1.6; color: var(--fg-mute, #a6a6ad); }
+.pclsb-acct__ovrtext > strong { flex-basis: 100%; color: var(--fg, #e7e7ea); font-size: 11px; }
 .pclsb-acct__clear {
   flex: 0 0 auto; align-self: center; font-size: 11px; padding: 3px 9px; border-radius: 7px; cursor: pointer;
-  color: var(--accent, #8b5cf6); background: transparent; border: 1px solid var(--accent, #8b5cf6);
+  color: var(--accent, #8b5cf6); background: color-mix(in srgb, var(--accent, #8b5cf6) 8%, transparent); border: 1px solid var(--accent, #8b5cf6);
 }
 .pclsb-acct__clear:disabled { opacity: 0.55; cursor: default; }
 .pclsb-acct__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -363,19 +454,30 @@ const ACCT_CSS = `
 }
 .pclsb-acct__row--paused { border-color: color-mix(in srgb, var(--warn, #fbbf24) 35%, transparent); }
 .pclsb-acct__row--off { opacity: 0.82; }
-.pclsb-acct__top { display: flex; align-items: center; gap: 7px; }
+.pclsb-acct__row.is-forced { border-color: color-mix(in srgb, var(--accent, #8b5cf6) 42%, transparent); }
+.pclsb-acct__row.is-excluded { border-color: color-mix(in srgb, var(--warn, #fbbf24) 42%, transparent); }
+.pclsb-acct__top { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px 8px; }
 .pclsb-acct__dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--fg-mute, #8a8a91); }
 .pclsb-acct__dot--ok { background: var(--good, #34d399); }
 .pclsb-acct__dot--paused { background: var(--warn, #fbbf24); }
 .pclsb-acct__dot--off { background: var(--bad, #f87171); }
 .pclsb-acct__name { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; align-items: flex-start;
   background: transparent; border: none; cursor: pointer; text-align: left; padding: 0; color: inherit; font: inherit; }
+.pclsb-acct__labelrow { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
 .pclsb-acct__label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .pclsb-acct__id { font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-mute, #a6a6ad); }
-.pclsb-acct__btns { display: flex; gap: 4px; flex: 0 0 auto; align-items: center; }
+.pclsb-acct__statuspill {
+  justify-self: end; display: inline-flex; align-items: center; max-width: 116px; min-height: 21px; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12)); background: var(--bg-3, rgba(255, 255, 255, 0.06));
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9.5px; font-weight: 700; color: var(--fg-mute, #c2c2c9);
+}
+.pclsb-acct__statuspill--ok { color: var(--good, #34d399); border-color: color-mix(in srgb, var(--good, #34d399) 38%, transparent); background: color-mix(in srgb, var(--good, #34d399) 10%, transparent); }
+.pclsb-acct__statuspill--paused { color: var(--warn, #fbbf24); border-color: color-mix(in srgb, var(--warn, #fbbf24) 38%, transparent); background: color-mix(in srgb, var(--warn, #fbbf24) 10%, transparent); }
+.pclsb-acct__statuspill--off { color: var(--bad, #f87171); border-color: color-mix(in srgb, var(--bad, #f87171) 38%, transparent); background: color-mix(in srgb, var(--bad, #f87171) 10%, transparent); }
+.pclsb-acct__btns { grid-column: 1 / -1; display: flex; gap: 4px; flex: 0 0 auto; align-items: center; justify-content: flex-end; }
 .pclsb-acct__b {
   font-size: 10.5px; padding: 2px 7px; border-radius: 6px; cursor: pointer; color: var(--fg-mute, #c2c2c9);
-  background: transparent; border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
+  background: var(--bg-2, rgba(255, 255, 255, 0.035)); border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
 }
 .pclsb-acct__b:hover:not(:disabled) { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
 .pclsb-acct__b:disabled { opacity: 0.55; cursor: default; }
@@ -384,9 +486,20 @@ const ACCT_CSS = `
 .pclsb-acct__expand { display: inline-flex; align-items: center; justify-content: center; padding: 2px; border-radius: 5px;
   background: transparent; border: none; cursor: pointer; color: var(--fg-mute, #a6a6ad); }
 .pclsb-acct__expand:hover { color: var(--fg, #e7e7ea); }
-.pclsb-acct__usage { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 10.5px; color: var(--fg-mute, #a6a6ad); }
-.pclsb-acct__u { white-space: nowrap; }
-.pclsb-acct__u strong { font-weight: 600; color: var(--fg, #e7e7ea); }
+.pclsb-acct__usage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 6px; font-size: 10.5px; color: var(--fg-mute, #a6a6ad); }
+.pclsb-acct__meter {
+  min-width: 0; display: grid; gap: 3px; padding: 6px 7px; border-radius: 7px; border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.035)) 88%, transparent);
+}
+.pclsb-acct__meterhead { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 9.5px; color: var(--fg-mute, #8a8a91); }
+.pclsb-acct__meterhead span { font-weight: 720; letter-spacing: 0.05em; text-transform: uppercase; }
+.pclsb-acct__meterhead strong { color: var(--fg, #e7e7ea); font-variant-numeric: tabular-nums; }
+.pclsb-acct__bar { height: 4px; overflow: hidden; border-radius: 999px; background: var(--bg-3, rgba(255, 255, 255, 0.07)); }
+.pclsb-acct__bar span { display: block; height: 100%; border-radius: inherit; background: var(--fg-mute, #8a8a91); }
+.pclsb-acct__meter--ok .pclsb-acct__bar span { background: var(--good, #34d399); }
+.pclsb-acct__meter--warn .pclsb-acct__bar span { background: var(--warn, #fbbf24); }
+.pclsb-acct__meter--hot .pclsb-acct__bar span { background: var(--bad, #f87171); }
+.pclsb-acct__meterreset { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute, #8a8a91); font-size: 9px; }
 .pclsb-acct__umute { color: var(--fg-mute, #8a8a91); }
 .pclsb-acct__chip { display: inline-flex; padding: 1px 6px; border-radius: 999px; font-size: 9.5px; font-weight: 600;
   background: var(--bg-3, rgba(255, 255, 255, 0.06)); color: var(--fg-mute, #c2c2c9); border: 1px solid var(--border, rgba(255, 255, 255, 0.1)); }
@@ -417,4 +530,9 @@ const ACCT_CSS = `
   text-decoration: none; align-self: flex-start; }
 .pclsb-acct__manage:hover { text-decoration: underline; }
 .pclsb-acct__foot { margin: 0; font-size: 10.5px; line-height: 1.4; color: var(--fg-mute, #8a8a91); border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); padding-top: 10px; }
+@media (max-width: 300px) {
+  .pclsb-acct__summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pclsb-acct__usage { grid-template-columns: 1fr; }
+  .pclsb-acct__statuspill { justify-self: start; grid-column: 1 / -1; max-width: 100%; }
+}
 `;

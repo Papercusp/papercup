@@ -54,10 +54,18 @@ const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
 const USAGE_LIMIT_PEEK_BYTES = 64 * 1024;
 /** When a usage/session-limit message carries no parseable reset, pause the capped account this long. */
 const USAGE_LIMIT_DEFAULT_PAUSE_MS = 60 * 60 * 1000;
-/** Bounded INTERNAL failover: how many accounts the gateway walks past usage-limited ones on a SINGLE
- *  request before giving up. The bee treats a usage_limit as a no-retry wall, so the gateway must route
- *  around a session-capped account itself and return a GOOD response — not forward the limit. */
-const USAGE_LIMIT_MAX_FAILOVER_ATTEMPTS = 5;
+/** Bounded INTERNAL retry: how many upstream attempts the gateway makes on a SINGLE client request,
+ *  walking past usage-capped / transiently-throttled accounts before giving up and forwarding the error.
+ *  The gateway absorbs transient throttles itself so a bee's SMALL CLI retry budget never exhausts (the
+ *  observed $0 fail: "Server is temporarily limiting requests · Rate limited" → bee exits rc=1 in ~10s),
+ *  and routes around a usage cap (which the bee won't retry at all). */
+const INTERNAL_RETRY_MAX_ATTEMPTS = 6;
+/** Short backoff before retrying a TRANSIENT 429 on a freshly-rotated account (the throttle is
+ *  account-specific, so a different account usually sidesteps it; the pause just avoids a hot loop). */
+const TRANSIENT_429_BACKOFF_MS = 400;
+/** Backoff before retrying a 529 (SERVER overload — not account budget, so we don't penalize/rotate the
+ *  account; just wait briefly for the upstream to recover). */
+const OVERLOAD_529_BACKOFF_MS = 1000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
@@ -473,73 +481,91 @@ export function createInferenceGateway(deps: GatewayDeps) {
         gov.recordResponse(hobj);
         deps.onResponse?.(hobj, up.status, model, active.accountId);
 
-        // When the active account is usage/session-capped, this is set to its reset → pause + rotate.
-        let usageCapResetAt: number | undefined;
-        // A peeked NON-200 body (so it can be FORWARDED if we end up not failing over). Successful 200
+        // A peeked NON-200 body, kept so it can be FORWARDED if we end up not retrying. Successful 200
         // streams are NEVER peeked — the hot path keeps zero added latency + no false-positive risk.
         let peekedHead: Buffer | null = null;
         let peekedRest: Readable | null = null;
+        // When set, the gateway re-attempts (usually on a rotated account) before responding — absorbing
+        // a transient throttle / routing past a usage cap so the bee never sees the error.
+        let internalRetry: { rotate: boolean; backoffMs: number; exhaustResetAt: number } | null = null;
 
         if (up.status === 429 || up.status === 529) {
           upstream429++;
           const reset = parseRateReset(hobj);
           const unifiedRejected = gov.snapshot().unified?.rejected === true;
-          // A BARE 429: rate_limit_error with NO window headers (no unified util, no retry-after/reset).
-          // Without handling, the gateway 429-LOOPED the same momentarily-limited account (the aviynw10
-          // stuck-loop, 2026-06-17). Treat it as a SHORT bounded account limit: pace briefly + fail over.
+          // A BARE 429: rate_limit_error with NO window headers — a transient burst throttle (the
+          // aviynw10 stuck-loop, 2026-06-17). A 429 may ALSO be a hard usage/session CAP — the BODY names
+          // it ("hit your session limit"); util can be 0 on a capped account (a DIFFERENT meter than the
+          // rolling window), so only the body reveals it. Peek the tiny error body to tell them apart.
           const bare429 =
             up.status === 429 && !unifiedRejected && reset.retryAfterMs === undefined && reset.resetAt === undefined;
-          // A 429 may ALSO be a hard usage/session CAP — the BODY names it ("hit your session limit").
-          // Peek the tiny error body to tell a transient throttle (retry) from a cap (long pause +
-          // INTERNAL failover, since the bee won't retry a usage_limit). util can be 0 on a capped
-          // account (the cap is a DIFFERENT meter than the rolling window), so headers don't reveal it.
-          let usageResetAt: number | undefined;
+          let usageCapResetAt: number | undefined;
           if (up.body) {
             const peek = await peekBody(up.body, USAGE_LIMIT_PEEK_BYTES);
             peekedHead = peek.head;
             peekedRest = peek.rest;
             const text = peek.head.toString('utf8');
             if (classifyHttpError({ status: undefined, message: text }, 'anthropic').class === 'usage_limit') {
-              usageResetAt = parseUsageResetMs(text) ?? undefined;
-              usageCapResetAt = usageResetAt ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS;
+              usageCapResetAt = parseUsageResetMs(text) ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS;
             }
           }
-          if (usageCapResetAt !== undefined) {
-            // Hard cap on THIS account → pause it to its reset (so the pin yields to liveness + the
-            // selector skips it) before the internal failover below routes the request elsewhere.
+          if (up.status === 529) {
+            // SERVER overload — NOT account budget; don't penalize/rotate the account, just back off + retry.
+            internalRetry = { rotate: false, backoffMs: OVERLOAD_529_BACKOFF_MS, exhaustResetAt: 0 };
+          } else if (usageCapResetAt !== undefined) {
+            // Hard cap on THIS account → pause it to its reset (the pin yields to liveness + the selector
+            // skips it), then rotate + retry immediately (the bee classifies usage_limit as a no-retry wall).
             gov.penalize({ resetAt: usageCapResetAt });
-          } else if (up.status === 429 && !unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
-            gov.penalize(reset);
-          } else if (bare429) {
-            gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
-          }
-          // Rotate the pool's active() off an exhausted/throttled account so the NEXT request (the bee's
-          // own retry for a transient 429) lands on a healthy one. Skipped for a usage cap — that gets
-          // the INTERNAL retry below (the bee won't retry it itself).
-          if (usageCapResetAt === undefined && (unifiedRejected || bare429)) {
-            const resetAt = reset.resetAt ?? Date.now() + (bare429 ? BARE_429_FAILOVER_BACKOFF_MS : 5 * 60 * 60 * 1000);
-            const next = pool.onExhausted(active.accountId, resetAt);
-            if (next && next.accountId !== active.accountId) failovers++;
+            internalRetry = { rotate: true, backoffMs: 0, exhaustResetAt: usageCapResetAt };
+          } else {
+            // A transient/bare/unified-window 429 — account-specific. Pace this account, then rotate to a
+            // fresh one + retry after a short backoff (a different account usually sidesteps the throttle),
+            // so the bee's SMALL CLI retry budget never exhausts ("Server is temporarily limiting requests"
+            // → $0 rc=1). NB: a unified rolling-window rejection already had its BOUNDED re-probe pause set
+            // by recordResponse — do NOT penalize to the full multi-hour reset (the stale-pause bug).
+            let exhaustResetAt: number;
+            if (!unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
+              gov.penalize(reset);
+              exhaustResetAt = reset.resetAt ?? Date.now() + Math.min(reset.retryAfterMs ?? BARE_429_FAILOVER_BACKOFF_MS, 5 * 60 * 1000);
+            } else if (bare429) {
+              gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
+              exhaustResetAt = Date.now() + BARE_429_FAILOVER_BACKOFF_MS;
+            } else {
+              exhaustResetAt = reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000; // unifiedRejected: bounded pause already set
+            }
+            internalRetry = { rotate: true, backoffMs: TRANSIENT_429_BACKOFF_MS, exhaustResetAt };
           }
         } else if (up.status === 401) {
           active.invalidateToken?.();
         }
 
-        // INTERNAL failover for a usage/session cap: rotate to a healthy account + re-fetch so the bee
-        // gets a GOOD response (it treats a usage_limit as a no-retry wall). Bounded; if no healthy
-        // account remains we fall through and forward the cap (genuinely out of capacity).
-        if (usageCapResetAt !== undefined && attempt < USAGE_LIMIT_MAX_FAILOVER_ATTEMPTS - 1) {
-          const next = pool.onExhausted(active.accountId, usageCapResetAt);
-          if (next && next.accountId !== active.accountId) {
-            failovers++;
-            peekedRest?.destroy(); // discard the capped account's body
-            active = next;
-            gov = governorForAccount(model, active.accountId);
+        // Bounded INTERNAL retry: absorb a transient throttle / route past a usage cap so the bee gets a
+        // GOOD response instead of exhausting its own small CLI retry budget (or hitting a no-retry wall).
+        // If no fresh account remains to rotate to, stop + forward the error (genuinely out of capacity).
+        if (internalRetry && attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1) {
+          let proceed = true;
+          if (internalRetry.rotate) {
+            const next = pool.onExhausted(active.accountId, internalRetry.exhaustResetAt);
+            if (next && next.accountId !== active.accountId) {
+              failovers++;
+              active = next;
+              gov = governorForAccount(model, active.accountId);
+            } else {
+              proceed = false; // no other account to try → don't spin on the same one; forward the error.
+            }
+          }
+          if (proceed) {
+            peekedRest?.destroy(); // discard the throttled/capped account's body
             attempt++;
-            log('warn', `inference-gateway: usage/session cap on account → failover to '${active.accountId}' (attempt ${attempt})`);
+            if (internalRetry.backoffMs > 0) {
+              await new Promise<void>((r) => {
+                const t = setTimeout(r, internalRetry!.backoffMs);
+                t.unref?.();
+              });
+            }
+            log('warn', `inference-gateway: upstream ${up.status} → internal retry ${attempt} on '${active.accountId}'`);
             continue;
           }
-          // no failover target — forward the cap response below.
         }
 
         const outHeaders: Record<string, string> = {};

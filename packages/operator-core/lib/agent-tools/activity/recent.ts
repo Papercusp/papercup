@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): reads recent activity to sense drift.
 const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
@@ -68,6 +69,10 @@ export default defineTool({
     const limit = args.limit ?? DEFAULT_LIMIT;
     const sinceId = args.since_id != null ? Number(args.since_id) : null;
     const { sql } = getOrgPg();
+    // F-B5 (workspace-data-isolation-leaks): agent_activity has workspace_id but
+    // RLS is off + getOrgPg() bypasses it, so scope the feed to the active
+    // workspace explicitly (else B's activity:recent returns A's agent activity).
+    const ws = activeWorkspaceId();
 
     // since_id present → forward-paging (oldest-first, the catch-up order a stream
     // consumer wants); absent → most-recent-first.
@@ -77,6 +82,7 @@ export default defineTool({
                  phase, tool_use_id, summary, status, detail, cwd, created_at
           FROM harness_shared.agent_activity
           WHERE id > ${sinceId}
+            AND workspace_id = ${ws}
             AND (${args.owner ?? null}::text IS NULL OR owner_id = ${args.owner ?? null})
             AND (${args.harness ?? null}::text IS NULL OR harness_slug = ${args.harness ?? null})
             AND (${args.agent ?? null}::text IS NULL OR agent = ${args.agent ?? null})
@@ -92,7 +98,8 @@ export default defineTool({
           SELECT id::text AS id, owner_id, agent, session_id, harness_slug, kind, tool_name,
                  phase, tool_use_id, summary, status, detail, cwd, created_at
           FROM harness_shared.agent_activity
-          WHERE (${args.owner ?? null}::text IS NULL OR owner_id = ${args.owner ?? null})
+          WHERE workspace_id = ${ws}
+            AND (${args.owner ?? null}::text IS NULL OR owner_id = ${args.owner ?? null})
             AND (${args.harness ?? null}::text IS NULL OR harness_slug = ${args.harness ?? null})
             AND (${args.agent ?? null}::text IS NULL OR agent = ${args.agent ?? null})
             AND (${args.kind ?? null}::text IS NULL OR kind = ${args.kind ?? null})

@@ -336,7 +336,8 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       SELECT ${sql.unsafe(FEATURE_COLS)}
         FROM harness_shared.harness_features_consolidated
        WHERE item_kind IN ('feature', 'research-task', 'chunk')
-         AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`workspace_id = ${ws}`}
+         AND workspace_id = ${ws}
+         AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
          AND ${filter.assignee ? sql`taken_by = ${filter.assignee}` : sql`TRUE`}
@@ -380,10 +381,14 @@ export async function getWorkItem(id: string, harness?: string): Promise<WorkIte
   if (issue) return issueToWorkItem(issue);
 
   const { sql } = getOrgPg();
+  // F-B3 (workspace-data-isolation-leaks): a bare WI/F id is unique only within a
+  // (workspace, harness), not globally — scope to the active workspace so an id
+  // collision across workspaces can't return the wrong row (getOrgPg bypasses RLS).
   const rows = await sql<FeatureRowDb[]>`
     SELECT ${sql.unsafe(FEATURE_COLS)}
       FROM harness_shared.harness_features_consolidated
      WHERE feature_id = ${id}
+       AND workspace_id = ${activeWorkspaceId()}
        AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
      ORDER BY updated_ts DESC NULLS LAST
      LIMIT 1`;
@@ -434,7 +439,8 @@ export async function searchWorkItems(query: string, opts: { harness?: string; k
         FROM harness_shared.harness_features_consolidated
        WHERE item_kind IN ('feature', 'research-task', 'chunk')
          AND _search @@ websearch_to_tsquery('english', ${query})
-         AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`workspace_id = ${activeWorkspaceId()}`}
+         AND workspace_id = ${activeWorkspaceId()}
+         AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`TRUE`}
          AND ${opts.kind && familyOf(opts.kind) === 'feature' ? sql`item_kind = ${opts.kind}` : sql`TRUE`}
        ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
        LIMIT ${limit}`;

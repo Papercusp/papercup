@@ -109,11 +109,15 @@ export interface ReviewsListData {
 
 export async function listPendingReviews(slug: string, phase: Phase): Promise<ReviewsListData> {
   const { db } = getOrgPg();
+  // F-B2 (workspace-data-isolation-leaks): getOrgPg() bypasses RLS, so scope the
+  // pending-reviews read to the active workspace explicitly (else a same-named
+  // harness in another workspace leaks its reviews here).
+  const { activeWorkspaceId } = await import('./workspace-registry');
   const t = generated.pendingReviewsInHarnessShared;
   const rows = await db
     .select({ payload: t.payload, review_id: t.reviewId, resolved: t.resolved, ts: t.ts })
     .from(t)
-    .where(and(eq(t.harnessSlug, slug), eq(t.phase, phase), eq(t.resolved, false)))
+    .where(and(eq(t.workspaceId, activeWorkspaceId()), eq(t.harnessSlug, slug), eq(t.phase, phase), eq(t.resolved, false)))
     .orderBy(desc(t.ts));
   return {
     reviews: (rows as PendingReviewRow[]).map((r) => ({ ...r.payload, id: r.review_id, resolved: r.resolved, ts: r.ts })),
@@ -307,6 +311,10 @@ export async function getWaveProgress(
 ): Promise<HarnessReadResult<WaveProgressData>> {
   try {
     const { sql } = getOrgPg();
+    // F-B1 (workspace-data-isolation-leaks): getOrgPg() bypasses RLS — scope to
+    // the active workspace so wave counts don't aggregate a same-named harness
+    // across workspaces.
+    const { activeWorkspaceId } = await import('./workspace-registry');
     const rows = await sql<{
       wave: string | null;
       status: string;
@@ -314,7 +322,8 @@ export async function getWaveProgress(
     }[]>`
       SELECT wave, status, created_ts
         FROM harness_shared.harness_features_consolidated
-       WHERE harness_slug     = ${harnessSlug}
+       WHERE workspace_id     = ${activeWorkspaceId()}
+         AND harness_slug     = ${harnessSlug}
          AND source_plan_slug = ${planSlug}
        ORDER BY created_ts ASC NULLS LAST
     `;

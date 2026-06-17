@@ -564,18 +564,6 @@ export default function PlansClient() {
     [leaveGuard, setJump, setPane, setSlug, setTab, setView],
   );
 
-  // Toggle an item-status filter. Clears the open plan so the (re)filtered
-  // list is what shows.
-  const toggleItemStatus = useCallback(
-    (id: ItemStatusFilter) => {
-      if (!leaveGuard()) return;
-      setSlug(null);
-      const has = istatus.includes(id);
-      void setIstatus(has ? istatus.filter((x) => x !== id) : [...istatus, id]);
-    },
-    [leaveGuard, setSlug, istatus, setIstatus],
-  );
-
   // "Queue" — jump to the items view with item-status filters cleared
   // (active plan-status / harness filters stay). Closes any open plan +
   // search + per-plan rail selection so the full cross-plan Queue shows.
@@ -999,6 +987,120 @@ export default function PlansClient() {
         )}
       </main>
     </div>
+  );
+}
+
+/* ── Queue Filter ─────────────────────────────────────────────────── */
+
+/** The kind facet inside the Queue's collapsed Filter — the non-plan-item
+ *  attention kinds. Plan-items always show in the buckets, so they're not here. */
+const QUEUE_KIND_CHIPS: readonly AttentionKind[] = [...OTHER_KIND_IDS];
+
+/**
+ * QueueFilterBar — the Queue's single, collapsed Filter (queue redesign): one
+ * "Filter" trigger (with an active-count badge) replaces the old always-on tier
+ * bar + 11-chip row. Expanded, it offers per-kind narrowing of the Other items
+ * plus the two opt-in backlog toggles (pickable todos / blocked). When a
+ * cross-app deep-link set a tier (?inboxTier from the overview tiles) a
+ * clear-chip surfaces it, so the filtered state is never a mystery.
+ */
+function QueueFilterBar({
+  kinds,
+  onToggleKind,
+  counts,
+  showTodos,
+  showBlocked,
+  onToggleTodos,
+  onToggleBlocked,
+  todoCount,
+  blockedCount,
+  tierFilter,
+  onClearTier,
+  open,
+  onOpenChange,
+}: {
+  kinds: AttentionKind[];
+  onToggleKind: (k: AttentionKind) => void;
+  counts: Record<string, number>;
+  showTodos: boolean;
+  showBlocked: boolean;
+  onToggleTodos: () => void;
+  onToggleBlocked: () => void;
+  todoCount: number;
+  blockedCount: number;
+  tierFilter: QueueTierFilter;
+  onClearTier: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const activeCount =
+    kinds.length + (showTodos ? 1 : 0) + (showBlocked ? 1 : 0) + (tierFilter !== 'all' ? 1 : 0);
+  return (
+    <Collapsible.Root className="pc-queue__filterbar" open={open} onOpenChange={onOpenChange}>
+      <div className="pc-queue__filterhead">
+        <Collapsible.Trigger asChild>
+          <button type="button" className="pc-queue__filtertoggle" aria-expanded={open}>
+            <SlidersHorizontal size={13} aria-hidden />
+            <span>Filter</span>
+            {activeCount > 0 ? <span className="pc-queue__filteractive">{activeCount}</span> : null}
+            <ChevronDown size={13} aria-hidden className="pc-queue__filterchev" />
+          </button>
+        </Collapsible.Trigger>
+        {tierFilter !== 'all' ? (
+          <button
+            type="button"
+            className="pc-queue__tierchip"
+            onClick={onClearTier}
+            title="A linked-in view filtered the Queue to this tier — click to clear."
+          >
+            {TIER_LABEL[tierFilter]} ✕
+          </button>
+        ) : null}
+      </div>
+      <Collapsible.Content className="pc-queue__filterpanel">
+        <div className="pc-queue__filtergroup">
+          <span className="pc-queue__filterlabel">Kinds</span>
+          {QUEUE_KIND_CHIPS.map((k) => {
+            const active = kinds.includes(k);
+            return (
+              <button
+                key={k}
+                type="button"
+                className={`pc-queue__filter${active ? ' is-active' : ''}`}
+                aria-pressed={active}
+                onClick={() => onToggleKind(k)}
+              >
+                <span className="pc-queue__filter-label">{ITEM_FILTER_LABEL[k as ItemStatusFilter]}</span>
+                <span className="pc-queue__filter-count">{counts[k] ?? 0}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="pc-queue__filtergroup">
+          <span className="pc-queue__filterlabel">Backlog</span>
+          <button
+            type="button"
+            className={`pc-queue__filter${showTodos ? ' is-active' : ''}`}
+            aria-pressed={showTodos}
+            onClick={onToggleTodos}
+            title="Show the agent-pickable todo backlog (off by default — the Queue defaults to what needs attention)."
+          >
+            <span className="pc-queue__filter-label">Pickable todos</span>
+            <span className="pc-queue__filter-count">{todoCount}</span>
+          </button>
+          <button
+            type="button"
+            className={`pc-queue__filter${showBlocked ? ' is-active' : ''}`}
+            aria-pressed={showBlocked}
+            onClick={onToggleBlocked}
+            title="Show blocked plan items."
+          >
+            <span className="pc-queue__filter-label">Blocked</span>
+            <span className="pc-queue__filter-count">{blockedCount}</span>
+          </button>
+        </div>
+      </Collapsible.Content>
+    </Collapsible.Root>
   );
 }
 

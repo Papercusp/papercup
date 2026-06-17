@@ -208,6 +208,18 @@ export interface RealQueenBacklogOpts {
   fleetTimeoutMs?: number;
   pollIntervalMs?: number;
   /**
+   * GAIA arm seam (plan benchmark-suite-gaia-2026-06-17). When present, the REAL ops binding
+   * ({@link realQueenBacklogOps}) runs the GAIA general-assistant path instead of the SWE-bench coding
+   * path — the SAME THREE SWAPS the su-independent driver makes (su-independent-backlog.ts): GAIA
+   * scratch-dir clone (no repo), member blueprint `gaia-agent` + the question/answer.txt brief, and
+   * `answer.txt` extraction into {@link ArmAttempt.answer} (diff:''). The Queen's
+   * placement/eviction/re-placement/adaptive-wake treatment is entirely unchanged — only the bee UNIT
+   * (research-assistant vs coding spine) + the work-product readout (answer.txt vs git diff) swap.
+   * ADDITIVE: absent → today's unchanged SWE-bench behavior. The driver itself is GAIA-agnostic (the swap
+   * is wholly inside the injected ops); the `answer` field flows through {@link collectTask}.
+   */
+  gaia?: GaiaArmSeamConfig;
+  /**
    * DURABILITY hooks (P-033, the rate-limit-kill-resilience fix). The launcher writes per-task diffs +
    * an enrollment manifest INCREMENTALLY through these so a process killed mid-run (the Anthropic API
    * intermittently throttles + kills helpers) does NOT lose the bees' already-produced work — the
@@ -224,6 +236,13 @@ export interface RealQueenBacklogOpts {
   onEnrolled?: (enrolled: RealQueenEnrolled) => void | Promise<void>;
   onTaskCollected?: (result: FleetTaskResult) => void | Promise<void>;
   onHiveCreated?: (hiveHome: string) => void | Promise<void>;
+}
+
+/** GAIA arm config — a presence flag is enough today; reserved for future per-arm GAIA tuning. Mirrors the
+ *  su-independent driver's {@link import('./su-independent-backlog').GaiaArmSeamConfig}. */
+export interface GaiaArmSeamConfig {
+  /** Must be true to engage the GAIA path. */
+  enabled: true;
 }
 
 /**
@@ -497,6 +516,15 @@ function featureIdForTask(instanceId: string): string {
 export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklogOps {
   const ws = opts.workspaceId;
 
+  // GAIA seam (plan benchmark-suite-gaia-2026-06-17): when engaged, swap clone → GAIA scratch dir, member
+  // blueprint → `gaia-agent`, the feature spec → the question + answer.txt instruction, and the work-product
+  // readout → `answer.txt` (the THREE SWAPS, mirroring suIndependentBacklogOps). Everything else — the Queen
+  // wake/place/evict/re-place/adaptive-wake drive, the hive_placements coord trace, the readMemberUsage cost
+  // read, the never-throw contract — is unchanged. Per-task briefs are stored by instanceId so the Queen's
+  // situational placement still rides the right per-task directive (she ALSO attaches her own overlay).
+  const gaiaMode = opts.gaia?.enabled === true;
+  const gaiaBriefByInstance = new Map<string, string>();
+
   if (process.env.PAPERCUSP_FLEET_SANDBOX == null) process.env.PAPERCUSP_FLEET_SANDBOX = '0';
   if (process.env.PAPERCUSP_SPAWN_BACKEND == null) process.env.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
   if (process.env.AGENT_CMD == null && process.env.CLAUDE == null) process.env.AGENT_CMD = 'claude -p';
@@ -509,7 +537,33 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
   // real-Queen arm this var MUST also be on :3170's env (set in apps/operator/.env.local). We set it here so
   // the FIFO arm's IN-PROCESS executeBatch spawns (which run in this launcher) also carry it, and as the
   // single source of the directive text.
-  if (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE == null) process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = BENCH_BEE_DIRECTIVE;
+  // The STANDING directive every placed bee inherits (spawnAgentInHarness appends PAPERCUSP_XBENCH_BEE_DIRECTIVE
+  // to each bee's brief). The default is the coding directive ("produce a working unified diff"); for the GAIA
+  // arm that is WRONG — the GAIA bee researches + writes answer.txt, NOT code. So in gaiaMode set the standing
+  // directive to the GAIA self-sufficiency instruction (claim your lone feature → research → write answer.txt →
+  // DONE), keeping the same "you own it end-to-end, don't exit taskless" contract that makes a Queen-placed bee
+  // actually DO the work (the D-020 fix). The per-task QUESTION still rides the seeded feature spec (gaiaBrief).
+  const GAIA_BENCH_BEE_DIRECTIVE = [
+    'You are placed on a single-task GAIA benchmark member harness. This member holds EXACTLY ONE feature',
+    'work-item — a GAIA general-assistant question to answer. Claim it (`work_items:claim_next` for this',
+    'harness, or `fleet:assignments { agent: <your spawn id> }` then `work_items:get` for the detail), read its',
+    'full problem_statement (the question + any attached file staged in your cwd), and RESEARCH the answer with',
+    'your native web_search / fetch / bash(python) / file tools — chase every hop, verify facts from the actual',
+    'sources. When done, write ONLY your final answer to a file named "answer.txt" in your current working',
+    'directory (use the Write tool), in the GAIA normalized format (a number OR as few words as possible OR a',
+    'comma-separated list; no thousands-commas, no units/articles/abbreviations unless asked). You may end the',
+    'file with a line "FINAL ANSWER: <answer>". That file is your ENTIRE submission — nothing else is graded.',
+    'When answer.txt is written, mark the work-item complete (`work_items:complete`) and emit DONE. You are NOT',
+    'taskless — the assigned question IS your task; do not exit FAILED for "no work", and do not exit without',
+    'writing answer.txt (if genuinely uncertain, still write your single best exact answer). You own it end to end.',
+  ].join(' ');
+  if (gaiaMode) {
+    // Override unconditionally for GAIA — the default coding directive would mis-instruct the bee. (Set on this
+    // launcher process AND, load-bearing, on the :3170 host env that services the Queen's fleet:spawn.)
+    process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = GAIA_BENCH_BEE_DIRECTIVE;
+  } else if (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE == null) {
+    process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = BENCH_BEE_DIRECTIVE;
+  }
 
   let homePrefix = scratchSlug('xbq');
   const instanceByFeatureId = new Map<string, string>();
@@ -536,18 +590,37 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
     },
 
     async enrollTask({ hiveHome, task }) {
-      const { cloneTaskRepo } = await import('./clone');
-      const checkout = await cloneTaskRepo(task);
+      // GAIA SWAP 1: no repo to clone — a scratch git dir with the optional attachment staged in (gaiaCloneTask).
+      // SWE-bench path is unchanged (cloneTaskRepo @ base).
+      let checkout;
+      if (gaiaMode) {
+        const { gaiaCloneTask } = await import('./gaia-backlog-support');
+        checkout = await gaiaCloneTask(task);
+      } else {
+        const { cloneTaskRepo } = await import('./clone');
+        checkout = await cloneTaskRepo(task);
+      }
       try {
         const member = memberSlugForTask(homePrefix, task.instanceId);
         const { mkdir, writeFile } = await import('node:fs/promises');
         const { join } = await import('node:path');
         const { stringify: stringifyYaml } = await import('yaml');
+
+        // GAIA SWAP 2 (blueprint + spec): the member runs the general-assistant `gaia-agent` blueprint, NOT the
+        // coding spine `external-bench`, and its seeded feature spec is the question + answer.txt instruction.
+        let memberBlueprint = 'external-bench';
+        let featureSpec = task.problemStatement;
+        if (gaiaMode) {
+          const { GAIA_MEMBER_BLUEPRINT, gaiaBrief } = await import('./gaia-backlog-support');
+          memberBlueprint = GAIA_MEMBER_BLUEPRINT;
+          featureSpec = gaiaBrief(task); // the question + the answer.txt instruction (the work-item brief)
+          gaiaBriefByInstance.set(task.instanceId, featureSpec);
+        }
         const bpDir = join(checkout.dir, '.papercusp');
         await mkdir(bpDir, { recursive: true });
         await writeFile(
           join(bpDir, 'blueprint.yaml'),
-          stringifyYaml({ id: member, extends: 'external-bench' }, { lineWidth: 100 }),
+          stringifyYaml({ id: member, extends: memberBlueprint }, { lineWidth: 100 }),
           'utf8',
         );
 
@@ -559,7 +632,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
           member,
           featureId,
           title: task.problemStatement.slice(0, 200),
-          spec: task.problemStatement,
+          spec: featureSpec,
           workspaceId: ws,
         });
         // Pin the feature's workspace_id (the fill_ws_features trigger derives `default` for a throwaway
@@ -733,7 +806,10 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
           args: {
             tasks: taskIds,
             harness: targetHarness,
-            brief: BENCH_BEE_DIRECTIVE,
+            // In gaiaMode the standing env directive was overridden to the GAIA self-sufficiency instruction
+            // (research → write answer.txt); the per-task question rides the seeded feature spec. For the
+            // SWE-bench path this is the coding BENCH_BEE_DIRECTIVE (env == constant). FIFO arm only.
+            brief: gaiaMode ? (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '') : BENCH_BEE_DIRECTIVE,
             tier: 'max', // Enforce opus-strict per brief (max tier = opus:xhigh)
             workspace: ws,
             dry_run: false,
@@ -785,13 +861,21 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
 
     async collectTask({ enrolled, arm, seed }): Promise<FleetTaskResult> {
       const member = enrolled.member;
+      // GAIA SWAP 3: read `answer.txt` (the qa answer the bee wrote) instead of the git diff. The cost read
+      // (readMemberUsage) + feature-status → stopReason are unchanged.
       let diff = '';
+      let answer: string | undefined;
       let generationError: string | undefined;
-      try {
-        const { extractDiff } = await import('./clone');
-        diff = await extractDiff(enrolled.checkout, enrolled.task);
-      } catch (e) {
-        generationError = `extractDiff failed: ${e instanceof Error ? e.message : String(e)}`;
+      if (gaiaMode) {
+        const { extractGaiaAnswer } = await import('./gaia-backlog-support');
+        answer = await extractGaiaAnswer(enrolled.checkout); // never throws; '' when no answer.txt
+      } else {
+        try {
+          const { extractDiff } = await import('./clone');
+          diff = await extractDiff(enrolled.checkout, enrolled.task);
+        } catch (e) {
+          generationError = `extractDiff failed: ${e instanceof Error ? e.message : String(e)}`;
+        }
       }
 
       const sql = await sqlClient();
@@ -811,10 +895,11 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
 
       const attempt: ArmAttempt = {
         arm,
-        blueprintId: 'external-bench',
+        blueprintId: gaiaMode ? 'gaia-agent' : 'external-bench',
         instanceId: enrolled.task.instanceId,
         seed,
         diff,
+        ...(answer != null ? { answer } : {}),
         tokensIn: cost.tokensIn,
         tokensOut: cost.tokensOut,
         costUsd: cost.costUsd,
