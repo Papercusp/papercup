@@ -113,22 +113,36 @@ need_node_modules() {
     force) return 0 ;;
     auto)
       # Copy when the release tree has no root node_modules yet, the root
-      # lockfile differs (deps changed), OR the workspace package set changed.
-      # The last case is the subtle one: a newly-added @papercusp/@papercup
-      # workspace package gets a node_modules symlink that the ROOT package-lock
-      # does NOT always reflect, so the lockfile-only heuristic skipped the copy
-      # and the release operator boot-crashed with "Cannot find module
-      # @papercusp/<new-pkg>" (release-gate-ready-branch cutover, 2026-06-05).
+      # lockfile differs (deps changed), OR the package set changed (scoped or non-scoped).
+      # Scoped case (2026-06-05): a newly-added @papercusp/@papercup workspace package
+      # gets a node_modules symlink the ROOT package-lock does NOT always reflect,
+      # so the lockfile-only heuristic skipped the copy → "Cannot find module" crash.
+      # Non-scoped case (EI-935): a newly-added non-scoped dep (e.g. lodash) is
+      # missed by the scoped-package check and may not be detected by lockfile
+      # comparison if the release tree's package-lock.json is missing or stale.
       [ -d "$RELEASE_ROOT/node_modules" ] || return 0
+      # Check scoped packages (@papercusp, @papercup).
       for scope in @papercusp @papercup; do
         if ! diff -q <(ls -1 "$INTEGRATION_ROOT/node_modules/$scope" 2>/dev/null | sort) \
                      <(ls -1 "$RELEASE_ROOT/node_modules/$scope" 2>/dev/null | sort) >/dev/null 2>&1; then
           return 0
         fi
       done
+      # Check non-scoped root packages (anything in node_modules/ that is NOT a scope, .bin, etc).
+      # Filter out scoped dirs (@*), special files/dirs (.bin, .package-lock.json, .modules.yaml, etc).
+      if ! diff -q <(ls -1 "$INTEGRATION_ROOT/node_modules" 2>/dev/null | grep -v '^@' | grep -v '^\.' | sort) \
+                   <(ls -1 "$RELEASE_ROOT/node_modules" 2>/dev/null | grep -v '^@' | grep -v '^\.' | sort) >/dev/null 2>&1; then
+        return 0
+      fi
+      # Fall back to lockfile comparison. Both files must exist; if either is missing,
+      # we assume they differ and copy (fail-safe: worse to copy unnecessarily than skip).
       if [ -f "$INTEGRATION_ROOT/package-lock.json" ] && [ -f "$RELEASE_ROOT/package-lock.json" ]; then
         ! cmp -s "$INTEGRATION_ROOT/package-lock.json" "$RELEASE_ROOT/package-lock.json"
         return $?
+      fi
+      # If the lockfile comparison can't run, assume they differ and copy (fail-safe).
+      if [ -f "$INTEGRATION_ROOT/package-lock.json" ]; then
+        return 0
       fi
       return 1 ;;
     *) echo "[setup-release] bad --node-modules mode: $NODE_MODULES_MODE" >&2; exit 2 ;;

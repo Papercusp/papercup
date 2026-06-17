@@ -501,19 +501,53 @@ export async function getPlanRow(
 ): Promise<PlanRow | null> {
   if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    return tx<PlanDbRow[]>`
-      SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
-             title, status, created, updated, owner, initiative, supersedes, superseded_by,
-             op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
-             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-         AND plan_slug = ${slug}
-    `;
-  });
-  return rows[0] ? rowFromDb(rows[0]) : null;
+  try {
+    const rows = await withWorkspace(workspaceId, async (tx) => {
+      return tx<PlanDbRow[]>`
+        SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+               title, status, created, updated, owner, initiative, supersedes, superseded_by,
+               op_status, op_started_at, op_updated_at, current_wave, op_priority,
+               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+           AND plan_slug = ${slug}
+      `;
+    });
+    return rows[0] ? rowFromDb(rows[0]) : null;
+  } catch (err: unknown) {
+    // Fallback for databases where migration 299 hasn't been applied yet
+    // (schedule columns don't exist). Gracefully default them to null/false.
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
+      const rows = await withWorkspace(workspaceId, async (tx) => {
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq'>[]>`
+          SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+                 title, status, created, updated, owner, initiative, supersedes, superseded_by,
+                 op_status, op_started_at, op_updated_at, current_wave, op_priority,
+                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+             AND plan_slug = ${slug}
+        `;
+      });
+      if (!rows[0]) return null;
+      return rowFromDb({
+        ...rows[0],
+        schedule: null,
+        schedule_active: false,
+        scheduled_at: null,
+        expires_at: null,
+        tzid: null,
+        template_slug: null,
+        run_seq: null,
+      } as PlanDbRow);
+    }
+    throw err;
+  }
 }
 
 /** All plan rows for a harness (PG), live + optionally archived. The archived
@@ -522,21 +556,56 @@ export async function listPlanRows(
   opts: PlanSourceOpts & { includeArchived?: boolean } = {},
 ): Promise<PlanRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-    return tx<PlanDbRow[]>`
-      SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
-             title, status, created, updated, owner, initiative, supersedes, superseded_by,
-             op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
-             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-       ${archivedFilter}
-       ORDER BY plan_slug ASC
-    `;
-  });
-  return rows.map(rowFromDb);
+  try {
+    const rows = await withWorkspace(workspaceId, async (tx) => {
+      const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+      return tx<PlanDbRow[]>`
+        SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+               title, status, created, updated, owner, initiative, supersedes, superseded_by,
+               op_status, op_started_at, op_updated_at, current_wave, op_priority,
+               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         ${archivedFilter}
+         ORDER BY plan_slug ASC
+      `;
+    });
+    return rows.map(rowFromDb);
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
+      const rows = await withWorkspace(workspaceId, async (tx) => {
+        const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq'>[]>`
+          SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+                 title, status, created, updated, owner, initiative, supersedes, superseded_by,
+                 op_status, op_started_at, op_updated_at, current_wave, op_priority,
+                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+           ${archivedFilter}
+           ORDER BY plan_slug ASC
+        `;
+      });
+      return rows.map((r) =>
+        rowFromDb({
+          ...r,
+          schedule: null,
+          schedule_active: false,
+          scheduled_at: null,
+          expires_at: null,
+          tzid: null,
+          template_slug: null,
+          run_seq: null,
+        } as PlanDbRow),
+      );
+    }
+    throw err;
+  }
 }
 
 /** A plan row WITHOUT the content blob — the derived/frontmatter projection
@@ -560,32 +629,75 @@ export async function listPlanIndexRows(
   } = {},
 ): Promise<PlanIndexRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-    const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
-    // Hide per-run instance plans (Option C, D-003) by default — they are reached
-    // via the template's Runs history, not the main plan directory.
-    const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
-    const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
-    return tx<Array<Omit<PlanDbRow, 'content'>>>`
-      SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
-             title, status, created, updated, owner, initiative, supersedes, superseded_by,
-             op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
-             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-       ${archivedFilter}
-       ${statusFilter}
-       ${instanceFilter}
-       ORDER BY plan_slug ASC
-       ${limitClause}
-    `;
-  });
-  return rows.map((r) => {
-    const { content: _content, ...rest } = rowFromDb({ ...r, content: '' } as PlanDbRow);
-    return rest;
-  });
+  try {
+    const rows = await withWorkspace(workspaceId, async (tx) => {
+      const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+      const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
+      // Hide per-run instance plans (Option C, D-003) by default — they are reached
+      // via the template's Runs history, not the main plan directory.
+      const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
+      const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+      return tx<Array<Omit<PlanDbRow, 'content'>>>`
+        SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
+               title, status, created, updated, owner, initiative, supersedes, superseded_by,
+               op_status, op_started_at, op_updated_at, current_wave, op_priority,
+               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         ${archivedFilter}
+         ${statusFilter}
+         ${instanceFilter}
+         ORDER BY plan_slug ASC
+         ${limitClause}
+      `;
+    });
+    return rows.map((r) => {
+      const { content: _content, ...rest } = rowFromDb({ ...r, content: '' } as PlanDbRow);
+      return rest;
+    });
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
+      const rows = await withWorkspace(workspaceId, async (tx) => {
+        const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+        const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
+        const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
+        const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+        return tx<Array<Omit<PlanDbRow, 'content'>>>`
+          SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
+                 title, status, created, updated, owner, initiative, supersedes, superseded_by,
+                 op_status, op_started_at, op_updated_at, current_wave, op_priority,
+                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+           ${archivedFilter}
+           ${statusFilter}
+           ${instanceFilter}
+           ORDER BY plan_slug ASC
+           ${limitClause}
+        `;
+      });
+      return rows.map((r) => {
+        const { content: _content, ...rest } = rowFromDb({
+          ...r,
+          content: '',
+          schedule: null,
+          schedule_active: false,
+          scheduled_at: null,
+          expires_at: null,
+          tzid: null,
+          template_slug: null,
+          run_seq: null,
+        } as PlanDbRow);
+        return rest;
+      });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -611,30 +723,73 @@ export async function listPlanIndexRowsForWorkspace(
   },
 ): Promise<PlanIndexRow[]> {
   const { workspaceId } = opts;
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-    const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
-    const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
-    const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
-    return tx<Array<Omit<PlanDbRow, 'content'>>>`
-      SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
-             title, status, created, updated, owner, initiative, supersedes, superseded_by,
-             op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
-             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId}
-       ${archivedFilter}
-       ${statusFilter}
-       ${instanceFilter}
-       ORDER BY harness_slug ASC, plan_slug ASC
-       ${limitClause}
-    `;
-  });
-  return rows.map((r) => {
-    const { content: _content, ...rest } = rowFromDb({ ...r, content: '' } as PlanDbRow);
-    return rest;
-  });
+  try {
+    const rows = await withWorkspace(workspaceId, async (tx) => {
+      const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+      const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
+      const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
+      const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+      return tx<Array<Omit<PlanDbRow, 'content'>>>`
+        SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
+               title, status, created, updated, owner, initiative, supersedes, superseded_by,
+               op_status, op_started_at, op_updated_at, current_wave, op_priority,
+               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${workspaceId}
+         ${archivedFilter}
+         ${statusFilter}
+         ${instanceFilter}
+         ORDER BY harness_slug ASC, plan_slug ASC
+         ${limitClause}
+      `;
+    });
+    return rows.map((r) => {
+      const { content: _content, ...rest } = rowFromDb({ ...r, content: '' } as PlanDbRow);
+      return rest;
+    });
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
+      const rows = await withWorkspace(workspaceId, async (tx) => {
+        const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+        const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
+        const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
+        const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+        return tx<Array<Omit<PlanDbRow, 'content'>>>`
+          SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
+                 title, status, created, updated, owner, initiative, supersedes, superseded_by,
+                 op_status, op_started_at, op_updated_at, current_wave, op_priority,
+                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId}
+           ${archivedFilter}
+           ${statusFilter}
+           ${instanceFilter}
+           ORDER BY harness_slug ASC, plan_slug ASC
+           ${limitClause}
+        `;
+      });
+      return rows.map((r) => {
+        const { content: _content, ...rest } = rowFromDb({
+          ...r,
+          content: '',
+          schedule: null,
+          schedule_active: false,
+          scheduled_at: null,
+          expires_at: null,
+          tzid: null,
+          template_slug: null,
+          run_seq: null,
+        } as PlanDbRow);
+        return rest;
+      });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -723,24 +878,65 @@ export async function listPlanRowsMatchingAnyToken(
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const limit = opts.limit && opts.limit > 0 ? opts.limit : 200;
   const patterns = tokens.map((t) => `%${escapeLike(t)}%`);
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-    return tx<PlanDbRow[]>`
-      SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
-             title, status, created, updated, owner, initiative, supersedes, superseded_by,
-             op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
-             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-       ${archivedFilter}
-         AND (content ILIKE ANY(${patterns}::text[]) OR plan_slug ILIKE ANY(${patterns}::text[]))
-       ORDER BY plan_slug ASC
-       LIMIT ${limit + 1}
-    `;
-  });
-  const truncated = rows.length > limit;
-  return { rows: (truncated ? rows.slice(0, limit) : rows).map(rowFromDb), truncated };
+  try {
+    const rows = await withWorkspace(workspaceId, async (tx) => {
+      const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+      return tx<PlanDbRow[]>`
+        SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+               title, status, created, updated, owner, initiative, supersedes, superseded_by,
+               op_status, op_started_at, op_updated_at, current_wave, op_priority,
+               archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+               schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         ${archivedFilter}
+           AND (content ILIKE ANY(${patterns}::text[]) OR plan_slug ILIKE ANY(${patterns}::text[]))
+         ORDER BY plan_slug ASC
+         LIMIT ${limit + 1}
+      `;
+    });
+    const truncated = rows.length > limit;
+    return { rows: (truncated ? rows.slice(0, limit) : rows).map(rowFromDb), truncated };
+  } catch (err: unknown) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
+      const rows = await withWorkspace(workspaceId, async (tx) => {
+        const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq'>[]>`
+          SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+                 title, status, created, updated, owner, initiative, supersedes, superseded_by,
+                 op_status, op_started_at, op_updated_at, current_wave, op_priority,
+                 archived, is_legacy, updated_at, items, decisions, now_state, now_next
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+           ${archivedFilter}
+             AND (content ILIKE ANY(${patterns}::text[]) OR plan_slug ILIKE ANY(${patterns}::text[]))
+           ORDER BY plan_slug ASC
+           LIMIT ${limit + 1}
+        `;
+      });
+      const truncated = rows.length > limit;
+      return {
+        rows: (truncated ? rows.slice(0, limit) : rows).map((r) =>
+          rowFromDb({
+            ...r,
+            schedule: null,
+            schedule_active: false,
+            scheduled_at: null,
+            expires_at: null,
+            tzid: null,
+            template_slug: null,
+            run_seq: null,
+          } as PlanDbRow),
+        ),
+        truncated,
+      };
+    }
+    throw err;
+  }
 }
 
 /**
