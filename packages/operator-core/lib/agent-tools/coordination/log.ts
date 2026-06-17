@@ -16,12 +16,44 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { PgCoordLog, DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { CoordEventLog } from '@papercusp/coordination/event-log';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { systemDistinctId } from '../../flag-distinct-id';
+
+// workspace-data-isolation-leaks-2026-06-17 F-C1: scope the coord plane to the
+// ACTIVE workspace instead of the single shared `default` partition — flag-gated
+// (papercusp-coord-per-workspace, default OFF, a reversible kill-switch). The
+// PgCoordLog resolver must be SYNC, so cache the flag (machine-global) refreshed on
+// an initial read + every flag change — exactly the lexicon/configure.ts pattern.
+// While the cache is unloaded it reads false ⇒ 'default' (today's behavior, safe).
+let coordPerWorkspaceOn = false;
+async function refreshCoordPerWorkspace(): Promise<void> {
+  try {
+    coordPerWorkspaceOn = await getFlag(FLAGS.COORD_PER_WORKSPACE, systemDistinctId());
+  } catch {
+    coordPerWorkspaceOn = false;
+  }
+}
+void refreshCoordPerWorkspace();
+onFlagChange((key) => {
+  if (key === null || key === FLAGS.COORD_PER_WORKSPACE) void refreshCoordPerWorkspace();
+});
+
+/** The coord scope to use NOW (F-C1): the request's active workspace when the
+ *  flag is ON, else the legacy shared `default` partition. */
+export function coordScopeWorkspace(): string {
+  return coordPerWorkspaceOn ? activeWorkspaceId() : DEFAULT_COORD_WORKSPACE;
+}
 
 function makeDefaultLog(): CoordEventLog {
   return new PgCoordLog({
     getSql: () => getOrgPg().sql,
     // Tables are defined by the migration baseline now; the host seam is a no-op.
     ensureSchema: async () => {},
+    // F-C1: resolve the workspace per call (flag-gated) so one operator coordLog
+    // scopes coord to the request's workspace instead of one shared partition.
+    getWorkspaceId: () => coordScopeWorkspace(),
   });
 }
 

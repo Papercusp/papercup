@@ -23,8 +23,8 @@
  * rail — as the DEFAULT-OPEN, leftmost tab. Rendered only while active.
  *
  * Data (CONTRACT C-1, su-81fe / B-01 + the round-2 `eligibleHives` extension):
- *  - hive set ← `/api/harness/projects/lite` (the SAME set the main AdvShell
- *    selector shows — buildHarnessSelectOptions).
+ *  - hive set ← `harnessProjects.lite` via useSyncQuery (the SAME set the main
+ *    AdvShell selector shows — buildHarnessSelectOptions).
  *  - steering ← `hive.steering` via useSyncQuery (the home hive's row).
  *  - writes   → `hive:set-steering` via /api/agent-mcp/run-tool (invalidates
  *    `hive.steering` + wakes the Queen).
@@ -187,10 +187,10 @@ function countLabel(count: number, noun: string): string {
 
 export default function QueenTab({ active }: { active: boolean }) {
   const steeringQ = useSyncQuery<HiveSteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000 });
+  const projectsQ = useSyncQuery<LiteProject>({ queryName: 'harnessProjects.lite', args: {}, staleTime: 60_000, enabled: active });
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
   const navigate = useNavigate();
 
-  const [projects, setProjects] = useState<LiteProject[]>([]);
   const [saving, setSaving] = useState(false);
   // Optimistic overlay over the server steering row (owner bug 2026-06-16). The
   // REF is the synchronous source of truth for back-to-back toggles (React state
@@ -203,20 +203,7 @@ export default function QueenTab({ active }: { active: boolean }) {
   const [err, setErr] = useState<string | null>(null);
   const [pauseMins, setPauseMins] = useState('30');
 
-  useEffect(() => {
-    if (!active) return;
-    let cancel = false;
-    fetch('/api/harness/projects/lite', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => {
-        if (!cancel) setProjects(Array.isArray(d?.projects) ? d.projects : []);
-      })
-      .catch(() => {});
-    return () => {
-      cancel = true;
-    };
-  }, [active]);
-
+  const projects = projectsQ.data ?? [];
   const rows = (steeringQ.data ?? []) as HiveSteeringRow[];
   const home = resolveHomeHive(projects, rows);
   const current: HiveSteeringRow = rows.find((r) => r.slug === home) ?? { slug: home, ...DEFAULT_STEERING };

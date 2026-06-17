@@ -17,11 +17,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 
 const H = vi.hoisted(() => ({
   steeringResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
+  projectsResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
   plansResult: { data: { plans: [] as unknown[] }, loading: false, error: null as unknown },
   fetchMock: vi.fn(),
 }));
 
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.steeringResult }));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: (opts: { queryName: string }) =>
+    opts.queryName === 'harnessProjects.lite' ? H.projectsResult : H.steeringResult,
+}));
 vi.mock('@/app/admin/plans/plans-api', () => ({ usePlanList: () => H.plansResult }));
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }));
 vi.mock('../adv/ScheduledRoutinesPane', () => ({ default: () => <div data-testid="sched-routines-pane" /> }));
@@ -62,9 +66,9 @@ const wroteRunTool = () => H.fetchMock.mock.calls.some((c) => String((c as unkno
 
 beforeEach(() => {
   H.steeringResult = { data: [steering()], loading: false, error: null, invalidate: vi.fn() };
+  H.projectsResult = { data: PROJECTS, loading: false, error: null, invalidate: vi.fn() };
   H.plansResult = { data: { plans: PLANS }, loading: false, error: null };
   H.fetchMock = vi.fn(async (url: string) => {
-    if (String(url).includes('/projects/lite')) return { ok: true, json: async () => ({ projects: PROJECTS }) };
     return { ok: true, json: async () => ({ ok: true, result: { content: [{ text: '{"ok":true}' }] } }) };
   });
   vi.stubGlobal('fetch', H.fetchMock);
@@ -80,6 +84,7 @@ describe('QueenTab nested steering tree', () => {
     expect(screen.getByText('Steering scope')).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' })).toBeTruthy());
     expect(screen.getByRole('checkbox', { name: 'Toggle hive papercup-hive' })).toBeTruthy();
+    expect(H.fetchMock.mock.calls.some((c) => String((c as unknown[])[0]).includes('/projects/lite'))).toBe(false);
     // The legacy flat section titles are gone.
     expect(screen.queryByText('Eligible hives')).toBeNull();
     expect(screen.queryByText('Eligible plans')).toBeNull();
@@ -116,6 +121,19 @@ describe('QueenTab nested steering tree', () => {
 
     rerender(<QueenTab active={true} />);
 
+    expect(screen.getByRole('button', { name: 'Collapse hive' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
+  });
+
+  it('keeps an expanded hive open when its scope checkbox is toggled', async () => {
+    render(<QueenTab active={true} />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand hive' }).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Expand hive' })[1]);
+    expect(await screen.findByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' }));
+
+    await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(screen.getByRole('button', { name: 'Collapse hive' }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
   });

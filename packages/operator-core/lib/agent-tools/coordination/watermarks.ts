@@ -19,6 +19,7 @@ import {
   type WatermarkStore,
 } from '@papercusp/coordination/watermark-store';
 import { emptyWatermark, type Watermark } from '@papercusp/coordination/core';
+import { coordScopeWorkspace } from './log';
 
 export { emptyWatermark };
 export type { Watermark };
@@ -28,6 +29,9 @@ function makeDefaultStore(): WatermarkStore {
     getSql: () => getOrgPg().sql,
     // Tables are defined by the migration baseline now; the host seam is a no-op.
     ensureSchema: async () => {},
+    // F-C1: flip watermarks to per-workspace in lockstep with PgCoordLog (the same
+    // flag-gated resolver), so read-positions track the active workspace's partition.
+    getWorkspaceId: () => coordScopeWorkspace(),
   });
 }
 

@@ -230,6 +230,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // legacy `--resume`, behavior-neutral; flip ON after the P-006 live verification. (Pre-existing
   // dark flag that was missing from this allowlist — added here to green the gate.)
   FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT,
+  // workspace-data-isolation-leaks-2026-06-17 F-C1: per-workspace coordination cutover.
+  // DELIBERATE dark ship (NOT alpha default-on) — flipping it cuts the LIVE fleet's
+  // coordination (messages/handoffs/escalations/plan-events) over from the shared
+  // `default` partition to per-workspace partitions. Ships as a reversible kill-switch
+  // the owner flips ON (OFF = today's behavior, byte-identical; old `default` history
+  // preserved so OFF fully restores it). Verify on :3170 (bees receive inboxes, Queen
+  // surveys, escalations route) before promoting.
+  FLAGS.COORD_PER_WORKSPACE,
 ]);
 
 /**

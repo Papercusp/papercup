@@ -15,6 +15,7 @@
  * + the serialized optimistic write. Reuses the parent's `.pc-queen__*` tokens.
  */
 import { useMemo, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { AlertTriangle, ChevronDown, ChevronRight, ListChecks } from 'lucide-react';
 import { Checkbox } from '@/app/harness/Checkbox';
 import type { SteeringTree, TreeHive, TreePlan } from './hive-steering-tree';
@@ -84,7 +85,7 @@ function HiveNode({
   hive,
   expanded,
   busy,
-  onToggleExpand,
+  onOpenChange,
   onToggleHive,
   onTogglePlan,
   onSetHivePlans,
@@ -92,65 +93,61 @@ function HiveNode({
   hive: TreeHive;
   expanded: boolean;
   busy: boolean;
-  onToggleExpand: () => void;
+  onOpenChange: (open: boolean) => void;
   onToggleHive: HiveSteeringTreeProps['onToggleHive'];
   onTogglePlan: HiveSteeringTreeProps['onTogglePlan'];
   onSetHivePlans: HiveSteeringTreeProps['onSetHivePlans'];
 }) {
   const hasPlans = hive.plans.length > 0;
   const eligibleCount = hive.plans.filter((p) => p.checked).length;
-  const branchId = `pc-queen-tree-branch-${hive.slug.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
   return (
     <li className={`pc-queen__tree-hive${hive.checked ? ' pc-queen__tree-hive--on' : ''}`}>
-      <div className="pc-queen__tree-hiverow">
-        <button
-          type="button"
-          className="pc-queen__tree-caret"
-          onClick={onToggleExpand}
-          aria-label={expanded ? 'Collapse hive' : 'Expand hive'}
-          aria-expanded={expanded}
-          aria-controls={hasPlans ? branchId : undefined}
-          disabled={!hasPlans}
-        >
-          {hasPlans ? (expanded ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />) : <span className="pc-queen__tree-caret-spacer" />}
-        </button>
-        <div className="pc-queen__planlabel pc-queen__tree-hivelabel">
-          <TriCheckbox
-            checked={hive.checked}
-            indeterminate={hive.planMode === 'some'}
-            disabled={busy}
-            onChange={() => onToggleHive(hive.slug)}
-            ariaLabel={`Toggle hive ${hive.slug}`}
-          />
-          <span className="pc-queen__tree-hivename" title={hive.slug}>{hive.label.trim()}</span>
+      <Collapsible.Root open={hasPlans ? expanded : false} onOpenChange={(open) => hasPlans && onOpenChange(open)}>
+        <div className="pc-queen__tree-hiverow">
+          <Collapsible.Trigger asChild>
+            <button
+              type="button"
+              className="pc-queen__tree-caret"
+              aria-label={expanded ? 'Collapse hive' : 'Expand hive'}
+              disabled={!hasPlans}
+            >
+              {hasPlans ? (expanded ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />) : <span className="pc-queen__tree-caret-spacer" />}
+            </button>
+          </Collapsible.Trigger>
+          <div className="pc-queen__planlabel pc-queen__tree-hivelabel">
+            <TriCheckbox
+              checked={hive.checked}
+              indeterminate={hive.planMode === 'some'}
+              disabled={busy}
+              onChange={() => onToggleHive(hive.slug)}
+              ariaLabel={`Toggle hive ${hive.slug}`}
+            />
+            <span className="pc-queen__tree-hivename" title={hive.slug}>{hive.label.trim()}</span>
+          </div>
+          <span className="pc-queen__tree-hivemeta">
+            {hive.checked
+              ? hive.planMode === 'all'
+                ? hasPlans ? 'all plans' : 'in scope'
+                : `${eligibleCount}/${hive.plans.length}`
+              : `${hive.plans.length} plan${hive.plans.length === 1 ? '' : 's'}`}
+          </span>
         </div>
-        <span className="pc-queen__tree-hivemeta">
-          {hive.checked
-            ? hive.planMode === 'all'
-              ? hasPlans ? 'all plans' : 'in scope'
-              : `${eligibleCount}/${hive.plans.length}`
-            : `${hive.plans.length} plan${hive.plans.length === 1 ? '' : 's'}`}
-        </span>
-      </div>
-      {hasPlans && (
-        <div
-          id={branchId}
-          className={`pc-queen__tree-branch${expanded ? ' pc-queen__tree-branch--open' : ''}`}
-          hidden={!expanded}
-        >
-          {hive.checked && (
-            <div className="pc-queen__tree-hiveactions">
-              <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, true)} disabled={busy || hive.planMode === 'all'} aria-label={`Make every plan in ${hive.slug} eligible`}>all</button>
-              <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, false)} disabled={busy} aria-label={`Remove ${hive.slug} from scope`}>none</button>
-            </div>
-          )}
-          <ul className={`pc-queen__plans pc-queen__tree-plans${hive.checked ? '' : ' pc-queen__tree-plans--off'}`}>
-            {hive.plans.map((p) => (
-              <PlanRow key={p.slug} plan={p} hiveSlug={hive.slug} busy={busy || !hive.checked} onTogglePlan={onTogglePlan} />
-            ))}
-          </ul>
-        </div>
-      )}
+        {hasPlans && (
+          <Collapsible.Content className="pc-queen__tree-branch">
+            {hive.checked && (
+              <div className="pc-queen__tree-hiveactions">
+                <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, true)} disabled={busy || hive.planMode === 'all'} aria-label={`Make every plan in ${hive.slug} eligible`}>all</button>
+                <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, false)} disabled={busy} aria-label={`Remove ${hive.slug} from scope`}>none</button>
+              </div>
+            )}
+            <ul className={`pc-queen__plans pc-queen__tree-plans${hive.checked ? '' : ' pc-queen__tree-plans--off'}`}>
+              {hive.plans.map((p) => (
+                <PlanRow key={p.slug} plan={p} hiveSlug={hive.slug} busy={busy || !hive.checked} onTogglePlan={onTogglePlan} />
+              ))}
+            </ul>
+          </Collapsible.Content>
+        )}
+      </Collapsible.Root>
     </li>
   );
 }
@@ -173,8 +170,8 @@ export default function HiveSteeringTree({
   );
   const [manualExpanded, setManualExpanded] = useState<Record<string, boolean>>({});
   const isExpanded = (slug: string) => manualExpanded[slug] ?? defaultExpanded.has(slug);
-  const toggleExpand = (slug: string) =>
-    setManualExpanded((m) => ({ ...m, [slug]: !(m[slug] ?? defaultExpanded.has(slug)) }));
+  const setExpanded = (slug: string, open: boolean) =>
+    setManualExpanded((m) => ({ ...m, [slug]: open }));
 
   const anyHiveChecked = tree.hives.some((h) => h.checked);
   const restricted = anyHiveChecked;
@@ -215,7 +212,7 @@ export default function HiveSteeringTree({
               hive={hive}
               expanded={isExpanded(hive.slug)}
               busy={busy}
-              onToggleExpand={() => toggleExpand(hive.slug)}
+              onOpenChange={(open) => setExpanded(hive.slug, open)}
               onToggleHive={onToggleHive}
               onTogglePlan={onTogglePlan}
               onSetHivePlans={onSetHivePlans}
@@ -261,7 +258,7 @@ function TreeStyles() {
         display: flex; align-items: center; gap: 5px; padding: 5px 7px; border-radius: 7px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); background: var(--bg-2, rgba(255, 255, 255, 0.04));
       }
-      .pc-queen__tree-hive--on > .pc-queen__tree-hiverow {
+      .pc-queen__tree-hive--on .pc-queen__tree-hiverow {
         border-color: color-mix(in srgb, var(--queen-accent, var(--warn, #fbbf24)), transparent 56%);
         background: color-mix(in srgb, var(--queen-accent, var(--warn, #fbbf24)), transparent 92%);
       }
@@ -283,7 +280,6 @@ function TreeStyles() {
         margin: 3px 0 2px 8px; padding: 2px 0 2px 12px;
         border-left: 1px solid color-mix(in srgb, var(--border-strong), transparent 52%);
       }
-      .pc-queen__tree-branch[hidden] { display: none; }
       .pc-queen__tree-hiveactions { display: flex; gap: 5px; padding: 2px 0 4px; }
       .pc-queen__tree-plans {
         margin: 0; padding-left: 0; max-height: none; overflow: visible; gap: 3px;

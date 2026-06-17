@@ -14,11 +14,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 
 const H = vi.hoisted(() => ({
   steeringResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
+  projectsResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
   plansResult: { data: { plans: [] as unknown[] }, loading: false, error: null as unknown },
   fetchMock: vi.fn(),
 }));
 
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.steeringResult }));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: (opts: { queryName: string }) =>
+    opts.queryName === 'harnessProjects.lite' ? H.projectsResult : H.steeringResult,
+}));
 vi.mock('@/app/admin/plans/plans-api', () => ({ usePlanList: () => H.plansResult }));
 // QueenTab's "Scheduled routines" pane (P-026) deep-links to the Calendar via the
 // TSR navigate hook; the panel renders outside a RouterProvider in this unit test.
@@ -65,9 +69,9 @@ const wroteRunTool = () => H.fetchMock.mock.calls.some((c) => String((c as unkno
 
 beforeEach(() => {
   H.steeringResult = { data: [steering()], loading: false, error: null, invalidate: vi.fn() };
+  H.projectsResult = { data: PROJECTS, loading: false, error: null, invalidate: vi.fn() };
   H.plansResult = { data: { plans: PLANS }, loading: false, error: null };
   H.fetchMock = vi.fn(async (url: string) => {
-    if (String(url).includes('/projects/lite')) return { ok: true, json: async () => ({ projects: PROJECTS }) };
     return { ok: true, json: async () => ({ ok: true, result: { content: [{ text: '{"ok":true}' }] } }) };
   });
   vi.stubGlobal('fetch', H.fetchMock);
@@ -106,11 +110,12 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
     expect(screen.getByText('1 tier override')).toBeTruthy();
   });
 
-  it('renders the eligible-hives checkboxes from /api/harness/projects/lite', async () => {
+  it('renders the eligible-hives checkboxes from harnessProjects.lite sync data', async () => {
     render(<QueenTab active={true} />);
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'pot-a' })).toBeTruthy());
     expect(screen.getByRole('checkbox', { name: 'papercup-hive' })).toBeTruthy();
     expect(screen.getByRole('checkbox', { name: 'pot-b' })).toBeTruthy();
+    expect(H.fetchMock.mock.calls.some((c) => String((c as unknown[])[0]).includes('/projects/lite'))).toBe(false);
   });
 
   it('toggling a hive writes eligibleHives + the home hive', async () => {

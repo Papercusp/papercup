@@ -57,6 +57,16 @@ export interface PgCoordLogOptions {
    * surface methods carry no identity. Defaults to `'default'`.
    */
   workspaceId?: string;
+  /**
+   * Per-call workspace resolver (workspace-data-isolation-leaks-2026-06-17 F-C1).
+   * When provided AND it returns a non-empty value, it OVERRIDES the fixed
+   * `workspaceId` on every read/write — so the operator's single coordLog can
+   * scope coord to the REQUEST's active workspace instead of one shared
+   * partition. Falls back to `workspaceId` / 'default' when it returns empty.
+   * Bound as a resolver (not a construction value) because one operator process
+   * serves every workspace.
+   */
+  getWorkspaceId?: () => string;
 }
 
 /**
@@ -128,10 +138,22 @@ export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
 }
 
 export class PgCoordLog implements CoordEventLog {
-  private readonly ws: string;
+  /** Construction-time fallback scope; the per-call resolver (F-C1) overrides it. */
+  private readonly fallbackWs: string;
 
   constructor(private readonly opts: PgCoordLogOptions) {
-    this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+    this.fallbackWs = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  }
+
+  /**
+   * The coordination workspace to scope to NOW (F-C1): the per-call
+   * `getWorkspaceId` resolver when set + non-empty, else the construction-time
+   * fallback. Resolved per use because one operator coordLog serves every
+   * workspace — binding it once would pin all coord to a single partition.
+   */
+  private resolveWs(): string {
+    const dyn = this.opts.getWorkspaceId?.();
+    return dyn && dyn.trim() ? dyn : this.fallbackWs;
   }
 
   /**
@@ -142,7 +164,7 @@ export class PgCoordLog implements CoordEventLog {
    * `'default'`. (operator-core readAckedMsgIds relies on this.)
    */
   get workspaceId(): string {
-    return this.ws;
+    return this.resolveWs();
   }
 
   /**
@@ -167,7 +189,7 @@ export class PgCoordLog implements CoordEventLog {
     // postgres-js-jsonb-binding.
     await sql`
       INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
-      VALUES (${this.ws}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null})
+      VALUES (${this.resolveWs()}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null})
     `;
   }
 
@@ -178,7 +200,7 @@ export class PgCoordLog implements CoordEventLog {
     // we read everything (the interface explicitly allows ignoring it).
     const rows = await sql<{ body: unknown }[]>`
       SELECT body FROM harness_shared.coord_event_log
-       WHERE workspace_id = ${this.ws} AND surface = ${surface}
+       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
        ORDER BY id ASC
     `;
     return rows.map((r) => parseBody(r.body));
@@ -189,7 +211,7 @@ export class PgCoordLog implements CoordEventLog {
     const sql = this.opts.getSql();
     await sql`
       INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
-      VALUES (${this.ws}, ${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::text::jsonb, ${record.harness_slug ?? null})
+      VALUES (${this.resolveWs()}, ${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::text::jsonb, ${record.harness_slug ?? null})
       ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
       DO UPDATE SET body = EXCLUDED.body, ts = now(), harness_slug = EXCLUDED.harness_slug
     `;
@@ -200,7 +222,7 @@ export class PgCoordLog implements CoordEventLog {
     const sql = this.opts.getSql();
     const rows = await sql<{ body: unknown }[]>`
       SELECT body FROM harness_shared.coord_event_log
-       WHERE workspace_id = ${this.ws} AND surface = ${surface}
+       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
        ORDER BY id ASC
     `;
     return rows.map((r) => parseBody(r.body));
@@ -211,7 +233,7 @@ export class PgCoordLog implements CoordEventLog {
     const sql = this.opts.getSql();
     const rows = await sql<{ body: unknown }[]>`
       SELECT body FROM harness_shared.coord_event_log
-       WHERE workspace_id = ${this.ws} AND surface = ${surface} AND msg_id = ${msgId}
+       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface} AND msg_id = ${msgId}
        LIMIT 1
     `;
     return rows.length > 0 ? parseBody(rows[0].body) : null;

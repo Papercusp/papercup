@@ -649,51 +649,62 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
         : process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '';
 
       const toolUrl = `${operatorApiBase()}/api/agent-mcp/run-tool`;
-      const res = await loopbackFetch(toolUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'fleet:place_batch',
-          args: {
-            tasks: [featureId],
-            harness: memberSlug,
-            brief,
-            tier: 'max', // opus:xhigh — strict per D-004 fairness
-            min_inject_affinity: 100, // never warm-inject — the independent arm needs a FRESH isolated spawn
-            workspace: ws,
-            dry_run: false,
-          },
-        }),
-      });
-
-      if (!res.ok) {
-        const errorBody = await res.text().catch(() => '');
-        throw new Error(`fleet:place_batch failed: HTTP ${res.status} ${errorBody}`);
-      }
-
-      // run-tool wraps a tool's MCP return as { ok, result: { content: [{ text: "<json>" }] } };
-      // unwrap to the tool payload { ok, surveyed, placements, summary }. Tolerate a flat result too.
-      const toolResult = await readJsonBody<{ ok: boolean; result?: unknown; error?: string }>(res, toolUrl);
-      if (!toolResult.ok) throw new Error(`fleet:place_batch error: ${toolResult.error}`);
-      const wrapped = toolResult.result as { content?: Array<{ text?: string }> } | undefined;
-      let payload: { placements?: Array<{ action?: string; spawn_id?: string | null; bee?: string }> } =
-        (toolResult.result as Record<string, unknown>) ?? {};
-      const text = wrapped?.content?.[0]?.text;
-      if (typeof text === 'string') {
+      // RETRY (2026-06-17): under concurrent enrollment (cap>1), place_batch can fire before :3170's
+      // in-memory harness registry has caught up to enrollTask's `registerMember` (a cross-process
+      // consistency race) → "harness X is not a registered harness" / no-spawn. The single-bee probe
+      // never raced; cap=8 produced a wave of these. Retry with a short backoff so the registry catches
+      // up. Idempotent: a member with min_inject_affinity:100 + its lone feature only ever fresh-spawns
+      // ONE bee, and a successful spawn returns immediately (so a retry only happens when none was placed).
+      let lastErr = '';
+      for (let attempt = 0; attempt < 6; attempt++) {
         try {
-          payload = JSON.parse(text);
-        } catch {
-          /* keep the flat result */
+          const res = await loopbackFetch(toolUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: 'fleet:place_batch',
+              args: {
+                tasks: [featureId],
+                harness: memberSlug,
+                brief,
+                tier: 'max', // opus:xhigh — strict per D-004 fairness
+                min_inject_affinity: 100, // never warm-inject — the independent arm needs a FRESH isolated spawn
+                workspace: ws,
+                dry_run: false,
+              },
+            }),
+          });
+          if (!res.ok) {
+            lastErr = `HTTP ${res.status} ${await res.text().catch(() => '')}`;
+          } else {
+            // run-tool wraps a tool's MCP return as { ok, result: { content: [{ text: "<json>" }] } };
+            // unwrap to the tool payload { ok, surveyed, placements, summary }. Tolerate a flat result too.
+            const toolResult = await readJsonBody<{ ok: boolean; result?: unknown; error?: string }>(res, toolUrl);
+            if (!toolResult.ok) {
+              lastErr = `tool error: ${toolResult.error}`;
+            } else {
+              const wrapped = toolResult.result as { content?: Array<{ text?: string }> } | undefined;
+              let payload: { placements?: Array<{ action?: string; spawn_id?: string | null; bee?: string }> } =
+                (toolResult.result as Record<string, unknown>) ?? {};
+              const text = wrapped?.content?.[0]?.text;
+              if (typeof text === 'string') {
+                try {
+                  payload = JSON.parse(text);
+                } catch {
+                  /* keep the flat result */
+                }
+              }
+              const placement = (payload.placements ?? [])[0];
+              if (placement && placement.spawn_id) return { spawnId: placement.spawn_id };
+              lastErr = `no spawn (action=${placement?.action ?? 'none'})`;
+            }
+          }
+        } catch (e) {
+          lastErr = e instanceof Error ? e.message : String(e);
         }
+        if (attempt < 5) await new Promise<void>((r) => { const t = setTimeout(r, 3000); t.unref?.(); });
       }
-      const placement = (payload.placements ?? [])[0];
-      if (!placement || !placement.spawn_id) {
-        throw new Error(
-          `fleet:place_batch returned no spawn for ${memberSlug} (action=${placement?.action ?? 'none'})`,
-        );
-      }
-
-      return { spawnId: placement.spawn_id };
+      throw new Error(`fleet:place_batch failed for ${memberSlug} after retries — last: ${lastErr}`);
     },
 
     async collectTask({ task, spawnId, enrolled, workspaceId }) {

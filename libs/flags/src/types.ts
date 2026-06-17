@@ -643,6 +643,15 @@ export const FLAGS = {
   // persisted (eligibleHives, eligiblePlans) shape (D-001); OFF renders the legacy
   // two flat sections as the fallback.
   STEERING_HIVE_TREE: "papercusp-steering-hive-tree",
+  // workspace-data-isolation-leaks-2026-06-17 (F-C1): scope the coordination plane
+  // (messages / handoffs / escalations / plan-events via coord_event_log + watermarks)
+  // to the ACTIVE workspace instead of the single shared `default` partition. DEFAULT
+  // OFF — DELIBERATE (not the alpha default-on policy): flipping it cuts the live fleet's
+  // coordination over to per-workspace partitions, so it ships as a reversible kill-switch
+  // the owner flips ON (OFF = today's `default`-pinned behavior, byte-identical; the old
+  // `default` history is preserved, so flipping OFF fully restores it). Listed in
+  // KNOWN_DARK_FLAGS.
+  COORD_PER_WORKSPACE: "papercusp-coord-per-workspace",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -678,6 +687,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT ON (alpha flags-default-on) — a complete presentation switch: the nested
   // hive→plan steering picker over the unchanged persisted shape. OFF = legacy flat lists.
   [FLAGS.STEERING_HIVE_TREE]: true,
+  // DEFAULT OFF (deliberate, NOT alpha default-on) — the per-workspace coordination
+  // cutover (F-C1) is a reversible kill-switch the owner flips ON; OFF = today's
+  // `default`-pinned coord, byte-identical. Listed in KNOWN_DARK_FLAGS.
+  [FLAGS.COORD_PER_WORKSPACE]: false,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,

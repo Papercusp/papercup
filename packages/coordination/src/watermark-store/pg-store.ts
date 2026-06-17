@@ -32,6 +32,10 @@ export interface PgWatermarkStoreOptions {
   ensureSchema: () => Promise<void>;
   /** Coordination scope (parity with coord_presence.workspace_id). Default 'default'. */
   workspaceId?: string;
+  /** Per-call workspace resolver (workspace-data-isolation-leaks F-C1) — overrides
+   *  `workspaceId` per use when set + non-empty, so watermarks flip to per-workspace
+   *  in lockstep with PgCoordLog. Falls back to `workspaceId` / 'default'. */
+  getWorkspaceId?: () => string;
 }
 
 /**
@@ -66,10 +70,17 @@ export async function ensureCoordWatermarksTable(sql: Sql): Promise<void> {
 }
 
 export class PgWatermarkStore implements WatermarkStore {
-  private readonly ws: string;
+  private readonly fallbackWs: string;
 
   constructor(private readonly opts: PgWatermarkStoreOptions) {
-    this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+    this.fallbackWs = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  }
+
+  /** The workspace scope NOW (F-C1): the per-call resolver when set + non-empty,
+   *  else the construction-time fallback. */
+  private resolveWs(): string {
+    const dyn = this.opts.getWorkspaceId?.();
+    return dyn && dyn.trim() ? dyn : this.fallbackWs;
   }
 
   async read(ownerId: string): Promise<Watermark> {
@@ -77,7 +88,7 @@ export class PgWatermarkStore implements WatermarkStore {
     const sql = this.opts.getSql();
     const rows = await sql<{ surfaces: unknown }[]>`
       SELECT surfaces FROM harness_shared.coord_watermarks
-       WHERE workspace_id = ${this.ws} AND owner_id = ${ownerId}
+       WHERE workspace_id = ${this.resolveWs()} AND owner_id = ${ownerId}
        LIMIT 1
     `;
     return rows.length > 0 ? parseSurfaces(rows[0].surfaces) : emptyWatermark();
@@ -89,7 +100,7 @@ export class PgWatermarkStore implements WatermarkStore {
     const next = mergeWatermark(await this.read(ownerId), patch);
     await sql`
       INSERT INTO harness_shared.coord_watermarks (workspace_id, owner_id, surfaces, updated_at)
-      VALUES (${this.ws}, ${ownerId}, ${JSON.stringify(next)}::text::jsonb, now())
+      VALUES (${this.resolveWs()}, ${ownerId}, ${JSON.stringify(next)}::text::jsonb, now())
       ON CONFLICT (workspace_id, owner_id)
       DO UPDATE SET surfaces = EXCLUDED.surfaces, updated_at = now()
     `;
