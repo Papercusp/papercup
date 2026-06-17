@@ -169,7 +169,7 @@ export interface BenchReportBundle {
    * Benchmark-specific data the shared sections don't cover, rendered by a small per-suite block in
    * the viewer. Examples: AgentsNet { graph, perNodeMessages, perTaskScore }; PaperBench { rubricTree,
    * replicationScoreBreakdown }; TheAgentCompany { checkpoints, npcConversations, serviceState };
-   * METR { horizonFit, taskTimeVsSuccess }; SWE-bench { /* covered by rollout failToPass */ }.
+   * METR { horizonFit, taskTimeVsSuccess }; SWE-bench needs none (covered by rollout failToPass).
    */
   suiteData?: Record<string, unknown>;
 }
