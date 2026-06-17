@@ -127,3 +127,67 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1', workspaceId: 'other-ws' })).toBe('theirs');
   });
 });
+
+// C6 [P3] — concurrency under contention + the cross-workspace PK isolation guarantee.
+// The store is a single UPSERT keyed by (workspace_id, harness_slug, work_item_id). Two bees
+// (a re-woken one + a successor, or two surfaces of the same bee) can race a write to the SAME
+// checkpoint; the ON CONFLICT DO UPDATE must leave EXACTLY ONE coherent row — one writer's full
+// value, never an interleaved/corrupted blob, never two rows. And because the PK leads with
+// workspace_id, a write/clear in one workspace must NEVER perturb the same (harness, workItem)
+// in another — the multi-workspace install isolation (operator_multi_workspace) rides on this.
+describe('work-item checkpoint store (C6) — concurrent writes + cross-workspace PK isolation', () => {
+  async function rowsFor(workItemId: string): Promise<{ workspace_id: string; checkpoint: string }[]> {
+    return db.sql<{ workspace_id: string; checkpoint: string }[]>`
+      SELECT workspace_id, checkpoint FROM harness_shared.work_item_checkpoints
+       WHERE harness_slug = ${HARNESS} AND work_item_id = ${workItemId} ORDER BY workspace_id`;
+  }
+
+  it('two CONCURRENT writes to the same checkpoint → exactly ONE row, value is ONE writer (never corrupted/interleaved)', async () => {
+    // Fire N distinct, individually-coherent writers at the same key simultaneously. The UPSERT
+    // serializes them; the survivor must be ONE of the inputs verbatim — no row gets a spliced blob.
+    const writers = Array.from({ length: 12 }, (_, i) => `writer-${i}-${'='.repeat(i)}|coherent-snapshot`);
+    await Promise.all(
+      writers.map((cp) => setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-RACE' }, cp)),
+    );
+    const rows = await rowsFor('WI-RACE');
+    expect(rows).toHaveLength(1); // exactly one row survives — the PK held under contention
+    expect(writers).toContain(rows[0].checkpoint); // it's one writer's WHOLE value, not a merge
+    // The read path agrees with the stored row (no torn read).
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-RACE' })).toBe(rows[0].checkpoint);
+  });
+
+  it('a concurrent write vs clear converges to a single definite state (one row, or none) — never two rows', async () => {
+    // A successor writing while a predecessor clears (eviction) is a legitimate race. Whichever
+    // lands last wins; either way the table holds 0-or-1 row for the key — never a duplicate.
+    await Promise.all([
+      setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-RC' }, 'successor wrote this'),
+      setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-RC' }, ''), // clear
+      setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-RC' }, 'and another'),
+    ]);
+    const rows = await rowsFor('WI-RC');
+    expect(rows.length).toBeLessThanOrEqual(1); // 0 (clear won) or 1 (a write won) — never 2
+    if (rows.length === 1) {
+      expect(['successor wrote this', 'and another']).toContain(rows[0].checkpoint);
+    }
+  });
+
+  it('cross-workspace PK isolation: a write/clear in WS-A leaves the SAME (harness, workItem) in WS-B untouched', async () => {
+    // Same harness + same work-item id in two workspaces are DISTINCT rows (PK leads with workspace_id).
+    await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' }, 'A-state');
+    await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-b' }, 'B-state');
+    expect(await rowsFor('WI-ISO')).toEqual([
+      { workspace_id: 'ws-a', checkpoint: 'A-state' },
+      { workspace_id: 'ws-b', checkpoint: 'B-state' },
+    ]);
+
+    // Re-WRITE in WS-A → WS-B is unchanged.
+    await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' }, 'A-state-2');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-b' })).toBe('B-state');
+
+    // CLEAR in WS-A (delete that row) → WS-B's row is still present + intact.
+    expect(await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' }, null)).toBeNull();
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' })).toBeNull();
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-b' })).toBe('B-state');
+    expect(await rowsFor('WI-ISO')).toEqual([{ workspace_id: 'ws-b', checkpoint: 'B-state' }]);
+  });
+});

@@ -103,9 +103,13 @@ until that category graduates; the owner arms directly (D-010 / D-017).
 ## The master flag
 
 The whole execution path is gated by the `papercusp-scheduled-plans` flag, which ships
-**default-OFF** (a deliberate exception to the alpha default-on policy: autonomous
-recurring spend/action ships dark until proven). With it off, `system:plan-run` no-ops
-and `plans:arm-schedule` refuses.
+**default-ON** (D-019). The autonomy gate — not the flag — is the real safety boundary:
+arming a schedule routes through the `schedule-arm` category (seeded `never-auto`), so
+nothing fires autonomously until the owner arms it or that category graduates. The flag
+exists as a kill switch: with it off, `system:plan-run` no-ops and `plans:arm-schedule`
+refuses. (It ships ON rather than dark because the deployed flag registry doesn't yet
+know the key, so a post-deploy MCP flip isn't possible — the in-code default is the only
+lever, and the autonomy gate already holds the line.)
 
 ## Where it lives
 

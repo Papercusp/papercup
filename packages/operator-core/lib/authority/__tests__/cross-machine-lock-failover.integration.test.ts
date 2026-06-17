@@ -187,6 +187,51 @@ describe('cross-machine lock E2E: failover mid-hold + fencing (two instances, on
     expect(res.value.epoch).toBe(2);
   });
 
+  it('fences out a deposed authority\'s stale-epoch re-assert at the new authority (B1, D-006)', async () => {
+    // Y (epoch 2) optimistically granted Q to OWNER_B during the rebuild window
+    // (the previous test). Now a LATE heartbeat for OWNER_A on Q — whose hold
+    // would have been minted under the deposed X's epoch 1 — races to Y.
+    // Unfenced, the reconstructor would clobber Y's epoch-2 truth (B holds Q);
+    // with the fence the stale-epoch assert is DROPPED.
+    const staleAssert = await routeToAuthority<{ ok: boolean; applied: boolean; rebuilt: boolean }>(
+      rig.harness,
+      {
+        local: async () => ({ ok: false, applied: false, rebuilt: false }),
+        remote: {
+          kind: 'lock.assert',
+          payload: { path: PATH_Q, owner: OWNER_A, ttlMs: ASSERT_TTL_MS, epoch: 1 },
+          decode: (raw) => raw as { ok: boolean; applied: boolean; rebuilt: boolean },
+        },
+      },
+      rig.requesterAuthorityDeps(),
+    );
+    expect(staleAssert.via).toBe('remote-authority');
+    expect(staleAssert.value.ok).toBe(true);
+    expect(staleAssert.value.applied).toBe(false); // fenced out — not folded in
+    // The reconstructor did NOT learn a held lock for Q under OWNER_A: a current
+    // contender for Q is therefore NOT refused on the strength of the stale assert.
+    expect(rig.Y.reconstructor?.isHeldByOther(PATH_Q, 'someone-else', rig.clock)).toBe(false);
+
+    // A CURRENT-epoch (epoch 2) re-assert from the live holder IS folded in.
+    const freshAssert = await routeToAuthority<{ ok: boolean; applied: boolean }>(
+      rig.harness,
+      {
+        local: async () => ({ ok: false, applied: false }),
+        remote: {
+          kind: 'lock.assert',
+          payload: { path: PATH_Q, owner: OWNER_B, ttlMs: ASSERT_TTL_MS, epoch: 2 },
+          decode: (raw) => raw as { ok: boolean; applied: boolean },
+        },
+      },
+      rig.requesterAuthorityDeps(),
+    );
+    expect(freshAssert.value.applied).toBe(true);
+    expect(rig.Y.reconstructor?.isHeldByOther(PATH_Q, 'someone-else', rig.clock)).toBe(true);
+    // Clean up so the next test's release/acquire on PATH_P is unaffected.
+    rig.Y.reconstructor?.assert(PATH_Q, OWNER_B, 0, rig.clock, 2);
+    rig.Y.reconstructor?.prune(rig.clock + 1);
+  });
+
   it('release at the new authority frees the contender after the rebuild window', async () => {
     rig.clock += 1_500; // past the 1s heartbeat interval → reconstruction complete
     rig.beatAllButX();

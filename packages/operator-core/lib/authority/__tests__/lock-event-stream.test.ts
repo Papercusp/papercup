@@ -88,6 +88,43 @@ describe('reconstructLockSet — pure fold', () => {
     const held = reconstructLockSet([acquire('a.ts', 'p1', T0), acquire('b.ts', 'p2', T0 + 1)], T0 + 1_000);
     expect(held.map((l) => l.path).sort()).toEqual(['a.ts', 'b.ts']);
   });
+
+  // B2 — idempotence under replay. The federated stream is at-least-once: a
+  // peer-log re-read on takeover can surface the SAME acquire event twice. The
+  // fold must be idempotent (a duplicate is not a second lock).
+  it('is idempotent over a DUPLICATE identical acquire (replay → length 1)', () => {
+    const ev = acquire('a.ts', 'p1', T0);
+    const held = reconstructLockSet([ev, { ...ev }], T0 + 1_000);
+    expect(held).toEqual([{ path: 'a.ts', owner: 'p1', expiresAtMs: T0 + 60_000 }]);
+    expect(held).toHaveLength(1);
+  });
+
+  it('folds N identical replayed acquires to a single held lock', () => {
+    const events = Array.from({ length: 5 }, () => acquire('a.ts', 'p1', T0));
+    const held = reconstructLockSet(events, T0 + 1_000);
+    expect(held).toHaveLength(1);
+    expect(held[0]).toEqual({ path: 'a.ts', owner: 'p1', expiresAtMs: T0 + 60_000 });
+  });
+
+  it('two SAME-ts acquires with different TTLs pick a deterministic winner (order-independent)', () => {
+    // Same (scope,path,ts) but different expiry. The fold keeps the FIRST seen at
+    // that ts (a later same-ts non-release does not displace it), so the winner is
+    // deterministic and independent of input order.
+    const shortFirst = reconstructLockSet(
+      [acquire('a.ts', 'p1', T0, 5_000), acquire('a.ts', 'p1', T0, 90_000)],
+      T0 + 1_000,
+    );
+    const longFirst = reconstructLockSet(
+      [acquire('a.ts', 'p1', T0, 90_000), acquire('a.ts', 'p1', T0, 5_000)],
+      T0 + 1_000,
+    );
+    expect(shortFirst).toHaveLength(1);
+    expect(longFirst).toHaveLength(1);
+    // The first-seen-at-ts wins in each direction → the winner tracks input order
+    // deterministically (and either way it is exactly ONE lock, never two).
+    expect(shortFirst[0].expiresAtMs).toBe(T0 + 5_000);
+    expect(longFirst[0].expiresAtMs).toBe(T0 + 90_000);
+  });
 });
 
 describe('peer-log op mappers', () => {

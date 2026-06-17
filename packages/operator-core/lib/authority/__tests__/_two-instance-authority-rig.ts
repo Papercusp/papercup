@@ -91,6 +91,9 @@ export class RigInstance {
       this.reconstructor = new LockSetReconstructor({
         becameAuthorityAtMs: r.electedAtMs,
         heartbeatMs: this.rig.timing.heartbeatMs,
+        // Fence the reconstructor with the epoch this authority was elected under
+        // so a deposed authority's stale-epoch re-assert is dropped (B1, D-006).
+        epoch: r.epoch,
       });
     }
     return r;
@@ -145,9 +148,15 @@ export class RigInstance {
       // this over the same transport seam; the op kind is rig-local for now —
       // logged in the coverage matrix as the heartbeat-wiring residual.
       'lock.assert': async (payload) => {
-        const p = payload as { path: string; owner: string; ttlMs: number };
-        this.reconstructor?.assert(p.path, p.owner, p.ttlMs, this.rig.clock);
-        return { ok: true, rebuilt: this.reconstructor?.isRebuilt(this.rig.clock) ?? false };
+        const p = payload as { path: string; owner: string; ttlMs: number; epoch?: number };
+        // The re-assert carries the epoch the holder's grant was minted under;
+        // the reconstructor fences out a stale-epoch assert (B1, D-006).
+        const applied = this.reconstructor?.assert(p.path, p.owner, p.ttlMs, this.rig.clock, p.epoch) ?? false;
+        return {
+          ok: true,
+          applied,
+          rebuilt: this.reconstructor?.isRebuilt(this.rig.clock) ?? false,
+        };
       },
     };
   }

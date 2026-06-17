@@ -62,6 +62,52 @@ describe('LockSetReconstructor — handover', () => {
   });
 });
 
+describe('LockSetReconstructor — stale-epoch heartbeat fencing (B1, D-006 split-brain)', () => {
+  // A reconstructor elected under epoch 2 (the new authority after a handover).
+  function makeFenced(epoch: number) {
+    return new LockSetReconstructor({ becameAuthorityAtMs: T0, heartbeatMs: HB, epoch });
+  }
+
+  it('rejects a re-assertion stamped with an OLDER epoch (deposed authority split-brain)', () => {
+    const r = makeFenced(2);
+    // Y (epoch 2) optimistically re-granted P to peer-2 during the fail-open gap.
+    expect(r.assert('apps/p.ts', 'peer-2', 60_000, T0 + 100, 2)).toBe(true);
+    // A LATE heartbeat for peer-1, whose hold was granted by the deposed X under
+    // epoch 1, races in. Unfenced, this would clobber the current-epoch truth.
+    const applied = r.assert('apps/p.ts', 'peer-1', 60_000, T0 + 200, 1);
+    expect(applied).toBe(false); // fenced out — the stale-epoch assert is dropped
+    // The lock set still reflects the CURRENT-epoch holder (peer-2), not the stale one.
+    expect(r.current(T0 + 300).find((l) => l.path === 'apps/p.ts')?.owner).toBe('peer-2');
+    expect(r.isHeldByOther('apps/p.ts', 'peer-2', T0 + 300)).toBe(false); // peer-2 still owns it
+    expect(r.isHeldByOther('apps/p.ts', 'peer-1', T0 + 300)).toBe(true);  // peer-1 is a contender
+  });
+
+  it('accepts a CURRENT-epoch re-assertion (the live holder keeps its lock)', () => {
+    const r = makeFenced(2);
+    expect(r.assert('apps/a.ts', 'peer-1', 60_000, T0 + 100, 2)).toBe(true);
+    expect(r.current(T0 + 200).find((l) => l.path === 'apps/a.ts')?.owner).toBe('peer-1');
+  });
+
+  it('accepts a NEWER epoch (defensive: never fence out a fresher-than-mine assert)', () => {
+    const r = makeFenced(2);
+    expect(r.assert('apps/a.ts', 'peer-9', 60_000, T0 + 100, 3)).toBe(true);
+  });
+
+  it('is unfenced when no epoch is configured — every assert applies (single-box default)', () => {
+    const r = make(); // no epoch
+    expect(r.assert('apps/a.ts', 'peer-1', 60_000, T0 + 100, 1)).toBe(true);
+    expect(r.assert('apps/a.ts', 'peer-2', 60_000, T0 + 200, 999)).toBe(true);
+    expect(r.assert('apps/a.ts', 'peer-3', 60_000, T0 + 300)).toBe(true); // no epoch at all
+  });
+
+  it('is unfenced for an assert that omits its epoch even when the reconstructor IS fenced', () => {
+    // Back-compat: the legacy heartbeat that does not carry an epoch is still
+    // accepted (the fence only fires on a PROVABLY-older epoch).
+    const r = makeFenced(2);
+    expect(r.assert('apps/a.ts', 'peer-1', 60_000, T0 + 100)).toBe(true);
+  });
+});
+
 describe('LockSetReconstructor — instant handover via the lock-event stream (P-015)', () => {
   it('hydrates the lock set instantly and is rebuilt immediately (no fail-open gap)', () => {
     const r = make();

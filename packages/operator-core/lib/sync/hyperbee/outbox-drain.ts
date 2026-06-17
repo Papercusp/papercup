@@ -92,6 +92,13 @@ export interface DrainOptions {
    *  BEFORE drained_at (at-least-once: a failure re-runs; the insert is
    *  idempotent). Omitted → no fan-out (federation-only, the pre-Phase-2 behavior). */
   fanout?: OutboxFanoutFn;
+  /** Test seam: override the inline-GC batch size (`OUTBOX_GC_BATCH`). Lets a
+   *  test exercise the batched/bounded loop + early-break without seeding 100k+
+   *  rows. Production omits it. */
+  _gcBatch?: number;
+  /** Test seam: override the inline-GC max-batches bound (`OUTBOX_GC_MAX_BATCHES`).
+   *  Production omits it. */
+  _gcMaxBatches?: number;
 }
 
 interface OutboxDbRow {
@@ -130,8 +137,10 @@ export async function drainOutboxOnce(
   // survives the memory-watchdog recycle (~every 12 min); the drain loop
   // re-runs until the backlog clears.
   // Best-effort: a GC failure must not block the drain, so swallow it.
+  const gcBatch = opts._gcBatch ?? OUTBOX_GC_BATCH;
+  const gcMaxBatches = opts._gcMaxBatches ?? OUTBOX_GC_MAX_BATCHES;
   try {
-    for (let i = 0; i < OUTBOX_GC_MAX_BATCHES; i++) {
+    for (let i = 0; i < gcMaxBatches; i++) {
       const gc = await pg`
         WITH del AS (
           SELECT id
@@ -140,13 +149,13 @@ export async function drainOutboxOnce(
              AND harness_slug = ${handle.harnessSlug}
              AND drained_at IS NOT NULL
              AND drained_at < ${now - OUTBOX_GC_AGE_MS}
-           LIMIT ${OUTBOX_GC_BATCH}
+           LIMIT ${gcBatch}
         )
         DELETE FROM harness_shared.substrate_outbox o
          USING del
          WHERE o.id = del.id`;
       // Fewer than a full batch removed → backlog cleared for now.
-      if ((gc.count ?? 0) < OUTBOX_GC_BATCH) break;
+      if ((gc.count ?? 0) < gcBatch) break;
     }
   } catch {
     // GC is non-fatal observability; continue to the actual drain.

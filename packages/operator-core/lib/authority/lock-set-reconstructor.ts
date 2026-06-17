@@ -50,12 +50,25 @@ export interface LockSetReconstructorOpts {
   /** One heartbeat interval — the window within which holders re-assert. The set
    *  is considered rebuilt once this has elapsed. */
   heartbeatMs: number;
+  /**
+   * The monotonic FENCING epoch this authority was elected under (the same token
+   * a grant minted now carries; see {@link ./hardened-authority}). When set, a
+   * heartbeat re-assertion ({@link LockSetReconstructor.assert}) carrying an OLDER
+   * epoch is FENCED OUT — a deposed authority's holder cannot re-assert a hold
+   * minted under a stale grant over the new authority's lock set (the split-brain
+   * the grant fence already blocks, now closed on the reconstructor leg too).
+   * Omit (or 0) to keep the unfenced behaviour — every assert is accepted (the
+   * single-box / no-federation default, where there is no prior epoch to fence).
+   */
+  epoch?: number;
 }
 
 export class LockSetReconstructor {
   private readonly locks = new Map<string, HeldLock>();
   private readonly startMs: number;
   private readonly heartbeatMs: number;
+  /** The fencing epoch this authority was elected under; 0 = unfenced. */
+  private readonly epoch: number;
   /** True once the set was seeded instantly from the lock-event stream (P-015):
    *  the set is then authoritative immediately, bypassing the heartbeat wait. */
   private hydrated = false;
@@ -63,6 +76,7 @@ export class LockSetReconstructor {
   constructor(opts: LockSetReconstructorOpts) {
     this.startMs = opts.becameAuthorityAtMs;
     this.heartbeatMs = opts.heartbeatMs;
+    this.epoch = opts.epoch ?? 0;
   }
 
   /**
@@ -90,11 +104,25 @@ export class LockSetReconstructor {
     return seeded;
   }
 
-  /** A holder re-asserts its lock (a heartbeat RPC). Last assertion per path wins
-   *  (a holder owns the path; a re-assert refreshes the TTL). */
-  assert(path: string, owner: string, ttlMs: number, nowMs: number): void {
-    if (!path || !owner) return;
+  /**
+   * A holder re-asserts its lock (a heartbeat RPC). Last assertion per path wins
+   * (a holder owns the path; a re-assert refreshes the TTL).
+   *
+   * FENCING (D-006, the split-brain close): when this reconstructor carries an
+   * `epoch` AND the caller passes the `assertEpoch` the holder's grant was minted
+   * under, a re-assertion stamped with an OLDER epoch is REJECTED — a no-op. That
+   * stops a deposed authority's holder (whose hold was granted under a stale
+   * epoch) from clobbering the current-epoch lock set during the split-brain
+   * window. Returns true if the assertion was applied, false if it was fenced out.
+   * An omitted `assertEpoch` (or an unfenced reconstructor) is always applied — the
+   * unfenced default, preserved for the single-box / no-federation path.
+   */
+  assert(path: string, owner: string, ttlMs: number, nowMs: number, assertEpoch?: number): boolean {
+    if (!path || !owner) return false;
+    // Fence: a stale-epoch re-assert from a deposed authority's holder is dropped.
+    if (this.epoch > 0 && assertEpoch !== undefined && assertEpoch < this.epoch) return false;
     this.locks.set(path, { path, owner, expiresAtMs: nowMs + ttlMs });
+    return true;
   }
 
   /** Drop assertions that have aged out (the holder stopped re-asserting). */
