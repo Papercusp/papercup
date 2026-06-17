@@ -18,12 +18,18 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from './workspace-registry';
 
 export type UserPrefsPayload = Record<string, unknown>;
 
+// workspace-data-isolation-leaks-2026-06-17 (owner D-001): user overrides are
+// PER-WORKSPACE — keyed (user_id, workspace_id) (migration 304). A user's
+// voice/budget/language override in one workspace no longer bleeds into another;
+// a workspace with no override still falls through to the workspace-level pref.
+
 /**
- * Read user-scoped preferences (the override layer). Returns {} when
- * the user has no row yet (read on the user_id = null path).
+ * Read user-scoped preferences (the override layer) for the ACTIVE workspace.
+ * Returns {} when the user has no row yet (read on the user_id = null path).
  */
 export async function loadUserPreferences(userId: string | null): Promise<UserPrefsPayload> {
   if (!userId) return {};
@@ -31,7 +37,7 @@ export async function loadUserPreferences(userId: string | null): Promise<UserPr
   const rows = await sql<{ payload: UserPrefsPayload }[]>`
     SELECT payload
       FROM harness_shared.user_preferences
-     WHERE user_id = ${userId}
+     WHERE user_id = ${userId} AND workspace_id = ${activeWorkspaceId()}
      LIMIT 1
   `;
   return rows[0]?.payload ?? {};
@@ -42,10 +48,11 @@ export async function saveUserPreferences(
   patch: UserPrefsPayload,
 ): Promise<UserPrefsPayload> {
   const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
   const rows = await sql<{ payload: UserPrefsPayload }[]>`
-    INSERT INTO harness_shared.user_preferences (user_id, payload, updated_at)
-    VALUES (${userId}, ${JSON.stringify(patch)}::text::jsonb, now())
-    ON CONFLICT (user_id) DO UPDATE
+    INSERT INTO harness_shared.user_preferences (user_id, workspace_id, payload, updated_at)
+    VALUES (${userId}, ${ws}, ${JSON.stringify(patch)}::text::jsonb, now())
+    ON CONFLICT (user_id, workspace_id) DO UPDATE
       SET payload = harness_shared.user_preferences.payload || EXCLUDED.payload,
           updated_at = now()
     RETURNING payload
@@ -54,8 +61,8 @@ export async function saveUserPreferences(
 }
 
 /**
- * Clear a single key from user-scoped prefs (falls back to workspace
- * pref on next read).
+ * Clear a single key from user-scoped prefs for the active workspace (falls back
+ * to the workspace-level pref on next read).
  */
 export async function clearUserPreferenceKey(userId: string, key: string): Promise<void> {
   const { sql } = getOrgPg();
@@ -63,7 +70,7 @@ export async function clearUserPreferenceKey(userId: string, key: string): Promi
     UPDATE harness_shared.user_preferences
        SET payload = payload - ${key},
            updated_at = now()
-     WHERE user_id = ${userId}
+     WHERE user_id = ${userId} AND workspace_id = ${activeWorkspaceId()}
   `;
 }
 

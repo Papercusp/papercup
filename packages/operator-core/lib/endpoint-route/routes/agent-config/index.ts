@@ -21,6 +21,7 @@ import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, par
 import { DEFAULT_MODEL_TIERS } from '../../../agent-config-constants';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
+import { notifySyncInvalidate } from '../../../sync-sse';
 
 export default [
   defineTool({
@@ -103,6 +104,7 @@ export default [
         );
       }
       await writeAgentConfig(next);
+      void notifySyncInvalidate('agentConfig.modelTiersBaseline', {}).catch(() => {});
       return Response.json({
         config: next,
         binaries: detectBinaries(),

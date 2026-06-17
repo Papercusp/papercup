@@ -710,7 +710,7 @@ export default function PlansClient() {
   };
 
   return (
-    <div className="pc-plans" data-pc-build="qfix2">
+    <div className="pc-plans">
       <aside className="pc-plans__rail">
         <div className="pc-plans__rail-actions">
           <NewPlanButton
@@ -865,7 +865,7 @@ export default function PlansClient() {
                     onToggleStale={() => void setSStale(!sStale)}
                   />
                 ) : view === 'queue' ? (
-                  <div className="pc-queue__list" data-authz={String(queueAuthzView)} data-qtab={queueTab ?? 'null'} data-seldec={selectedDecision ? String(selectedDecision.id) : 'none'}>
+                  <div className="pc-queue__list">
                     {/* B1 (P-006): the two-halves summary + the Pending|Queen's-log
                         segmented control — only in the redesigned Queue (flag-gated). */}
                     {queueAuthzView ? (

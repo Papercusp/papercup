@@ -18,9 +18,15 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ sql: null as any }));
+const h = vi.hoisted(() => ({ sql: null as any, ws: 'ws-default' }));
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+// workspace-data-isolation-leaks F / owner D-001: user prefs are now per
+// (user_id, workspace_id) — control the active workspace per case.
+vi.mock('./workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
+  return { ...actual, activeWorkspaceId: () => h.ws };
+});
 
 const { loadUserPreferences, saveUserPreferences, clearUserPreferenceKey } =
   await import('./user-preferences');
@@ -88,6 +94,20 @@ describe('user_preferences store (real PG)', () => {
     await saveUserPreferences(b, { agentLanguage: 'de' });
     expect((await loadUserPreferences(a)).agentLanguage).toBe('en');
     expect((await loadUserPreferences(b)).agentLanguage).toBe('de');
+  });
+
+  it('is scoped per WORKSPACE — the SAME user is isolated across workspaces (owner D-001)', async () => {
+    const uid = await seedUser();
+    h.ws = 'ws-a';
+    await saveUserPreferences(uid, { agentLanguage: 'en' });
+    h.ws = 'ws-b';
+    await saveUserPreferences(uid, { agentLanguage: 'de' });
+    // Each workspace sees only its own override; no cross-workspace bleed.
+    h.ws = 'ws-a';
+    expect((await loadUserPreferences(uid)).agentLanguage).toBe('en');
+    h.ws = 'ws-b';
+    expect((await loadUserPreferences(uid)).agentLanguage).toBe('de');
+    h.ws = 'ws-default';
   });
 
   it('clearUserPreferenceKey removes one key and leaves the rest', async () => {

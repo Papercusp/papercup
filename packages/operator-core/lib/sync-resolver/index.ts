@@ -2811,6 +2811,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return accountStatus(workspace ?? activeWorkspaceId());
     },
   },
+  // agentConfig.modelTiersBaseline — the effective workspace model-tier menu
+  // for the Queen sidebar's session override editor. Settings writes invalidate
+  // this query, so the sidebar tracks workspace-tier edits without raw fetches.
+  'agentConfig.modelTiersBaseline': {
+    argsSchema: z.object({}),
+    resolve: async () => {
+      const [{ readAgentConfig }, { DEFAULT_MODEL_TIERS }] = await Promise.all([
+        import('../agent-config'),
+        import('../agent-config-constants'),
+      ]);
+      const cfg = await readAgentConfig();
+      return (cfg.tiers && cfg.tiers.length > 0 ? cfg.tiers : DEFAULT_MODEL_TIERS) as unknown[];
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────

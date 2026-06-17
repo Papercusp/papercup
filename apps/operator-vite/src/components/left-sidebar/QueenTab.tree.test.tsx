@@ -18,13 +18,17 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 const H = vi.hoisted(() => ({
   steeringResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
   projectsResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
+  modelTiersResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
   plansResult: { data: { plans: [] as unknown[] }, loading: false, error: null as unknown },
   fetchMock: vi.fn(),
 }));
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: (opts: { queryName: string }) =>
-    opts.queryName === 'harnessProjects.lite' ? H.projectsResult : H.steeringResult,
+  useSyncQuery: (opts: { queryName: string }) => {
+    if (opts.queryName === 'harnessProjects.lite') return H.projectsResult;
+    if (opts.queryName === 'agentConfig.modelTiersBaseline') return H.modelTiersResult;
+    return H.steeringResult;
+  },
 }));
 vi.mock('@/app/admin/plans/plans-api', () => ({ usePlanList: () => H.plansResult }));
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }));
@@ -67,6 +71,7 @@ const wroteRunTool = () => H.fetchMock.mock.calls.some((c) => String((c as unkno
 beforeEach(() => {
   H.steeringResult = { data: [steering()], loading: false, error: null, invalidate: vi.fn() };
   H.projectsResult = { data: PROJECTS, loading: false, error: null, invalidate: vi.fn() };
+  H.modelTiersResult = { data: [{ name: 'fast', spec: 'haiku' }, { name: 'std', spec: 'sonnet' }], loading: false, error: null, invalidate: vi.fn() };
   H.plansResult = { data: { plans: PLANS }, loading: false, error: null };
   H.fetchMock = vi.fn(async (url: string) => {
     return { ok: true, json: async () => ({ ok: true, result: { content: [{ text: '{"ok":true}' }] } }) };

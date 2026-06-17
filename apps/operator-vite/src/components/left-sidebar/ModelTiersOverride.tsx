@@ -16,14 +16,15 @@
  * Settings — it does not fit the narrow Colony rail. Here the owner overrides each
  * tier's MODEL SPEC (the session-y lever); the tier set + names track Settings.
  *
- * Reads the workspace baseline from /api/agent-config; the session override
- * arrives via the `hive.steering` row (`modelTiers`); writes via the parent's
- * `onWrite` (→ `hive:set-steering { modelTiers }`).
+ * Reads the workspace baseline from `agentConfig.modelTiersBaseline`; the
+ * session override arrives via the `hive.steering` row (`modelTiers`); writes
+ * via the parent's `onWrite` (→ `hive:set-steering { modelTiers }`).
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 // type-only (erased at build): a VALUE import of operator-core constants doesn't
 // resolve in the operator-vite vitest env, so the workspace-default tiers come
-// from the server (/api/agent-config → defaultTiers) instead of a client import.
+// from the sync resolver instead of a client import.
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 
 /** The effective spec for a tier: the session override if set, else the baseline. Pure. */
@@ -68,28 +69,9 @@ export default function ModelTiersOverride({
   onWrite: (modelTiers: ModelTier[] | null) => void;
   busy: boolean;
 }) {
-  const [baseline, setBaseline] = useState<ModelTier[]>([]);
+  const baselineQ = useSyncQuery<ModelTier>({ queryName: 'agentConfig.modelTiersBaseline', args: {}, staleTime: 60_000 });
+  const baseline = baselineQ.data ?? [];
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    let cancel = false;
-    fetch('/api/agent-config', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => {
-        if (cancel) return;
-        const tiers = d?.config?.tiers;
-        // config.tiers when the workspace has customized them, else the server's
-        // committed default menu (defaultTiers) — the EFFECTIVE workspace baseline.
-        const fallback = Array.isArray(d?.defaultTiers) ? (d.defaultTiers as ModelTier[]) : [];
-        setBaseline(Array.isArray(tiers) && tiers.length > 0 ? tiers : fallback);
-      })
-      .catch(() => {
-        /* leave baseline empty → the loading placeholder */
-      });
-    return () => {
-      cancel = true;
-    };
-  }, []);
 
   const overriding = (override?.length ?? 0) > 0;
 

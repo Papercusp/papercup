@@ -77,6 +77,19 @@ export default function PreviewPanel(_props?: Partial<PanelComponentProps>) {
     [attention.data],
   );
 
+  // Queen's-log tab: the selected decision's full detail (3-pane parity), checked
+  // first so a stale ?item/?other from the Pending tab can't shadow it.
+  if (queueAuthzView && queueTab === 'queen-log') {
+    return (
+      <aside className="pc-items__detail">
+        {selectedDecision ? (
+          <DecisionDetail row={selectedDecision} />
+        ) : (
+          <div className="pc-items__detail-empty">Select a decision to see its full detail.</div>
+        )}
+      </aside>
+    );
+  }
   if (queueItemSel) {
     const idx = queueItemSel.indexOf('::');
     const pSlug = idx === -1 ? null : queueItemSel.slice(0, idx);
