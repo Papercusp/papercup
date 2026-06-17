@@ -32,7 +32,11 @@ export type RunGit = (args: string[], cwd: string) => Promise<{ code: number; st
 /** Spawn `git <args>` in `cwd`, capturing exit code + output (never throws). */
 const defaultRunGit: RunGit = (args, cwd) =>
   new Promise((resolve) => {
-    const child = spawn('git', args, { cwd });
+    // P-011 (git-sync-dx-hardening): pin a C/English locale so git's human-readable
+    // output (push-rejection markers like "[rejected]" / "non-fast-forward", merge text)
+    // is DETERMINISTIC regardless of the host's LANG — the non-FF detection + other output
+    // parsing is then reliable at the root, rather than depending on the operator's locale.
+    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => (stdout += String(d)));
@@ -280,10 +284,17 @@ async function syncOneRepo(
   // commits to the wrong branch and fail every tick with no clear cause. origin/HEAD
   // resolves the right branch; o.defaultBranch is only the last resort when even that is
   // unknown (and is now passed per-repo: 'main' for submodules, cfg.branch for the super).
-  const branch =
-    (await currentBranch(runGit, repoPath)) ??
-    (await remoteDefaultBranch(runGit, repoPath, remote)) ??
-    o.defaultBranch;
+  // P-011: HEAD's branch → the remote default (origin/HEAD) → the per-repo last-resort
+  // default. If we reach the last resort the branch is a GUESS — make it LOUD (a wrong
+  // guess would otherwise surface only as an opaque "push failed" escalation).
+  const resolvedBranch =
+    (await currentBranch(runGit, repoPath)) ?? (await remoteDefaultBranch(runGit, repoPath, remote));
+  const branch = resolvedBranch ?? o.defaultBranch;
+  if (!resolvedBranch) {
+    o.log(
+      `[git-sync] ${repoPath}: could not resolve a branch from HEAD or ${remote}/HEAD — falling back to '${o.defaultBranch}' (a wrong guess will fail the push; P-011)`,
+    );
+  }
 
   let committedLocal = false;
   let oversized: OversizedFile[] = [];
