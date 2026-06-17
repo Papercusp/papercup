@@ -29,8 +29,50 @@ vi.mock('../git-sync/pipeline-events', () => ({
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
 import './release-actions';
-import { shouldAutoServe, shouldBackOff, type AutoServePlan, type DeployEventRow } from './release-actions';
+import {
+  shouldAutoServe,
+  shouldBackOff,
+  gateStallEscalationBody,
+  type AutoServePlan,
+  type DeployEventRow,
+} from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
+
+describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
+  it('builds a green-checkpoint-stall body with streak, age, capped candidate + failing tests', () => {
+    const body = JSON.parse(
+      gateStallEscalationBody({
+        installSlug: 'papercup',
+        consecutiveReds: 4,
+        heldHrs: 7,
+        candidate: 'abcdef1234567890',
+        failingTests: Array.from({ length: 25 }, (_, i) => `t${i}`),
+        nowMs: 1_700_000_000_000,
+      }),
+    );
+    expect(body.kind).toBe('green-checkpoint-stall');
+    expect(body.harness_slug).toBe('papercup');
+    expect(body.consecutiveReds).toBe(4);
+    expect(body.heldHrs).toBe(7);
+    expect(body.candidate).toBe('abcdef123456'); // 12-char cap
+    expect(body.failingTests).toHaveLength(20); // capped at 20
+    expect(body.emitted_at).toBe(1_700_000_000_000);
+    expect(body.detail).toContain('4 checkpoint(s)');
+    expect(body.detail).toContain('~7h');
+    expect(body.detail).toContain('Failing: t0, t1, t2, t3, t4 (+15 more)');
+  });
+
+  it('omits the age + failing-test clauses when there is no green history / no tests', () => {
+    const body = JSON.parse(
+      gateStallEscalationBody({ installSlug: 'x', consecutiveReds: 3, heldHrs: null, nowMs: 1 }),
+    );
+    expect(body.heldHrs).toBeNull();
+    expect(body.candidate).toBeNull();
+    expect(body.failingTests).toEqual([]);
+    expect(body.detail).not.toContain('since the last green');
+    expect(body.detail).not.toContain('Failing:');
+  });
+});
 
 /** Must match DEPLOY_PLAN_MARKER in deploy-cli.ts / release-actions.ts (P-008). */
 const DEPLOY_PLAN_MARKER = '__DEPLOY_PLAN__';

@@ -143,6 +143,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     detail.green = parsed.green ?? null;
     if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
     if (parsed.from) detail.from = parsed.from.slice(0, 12);
+    // P-003 (git-sync-dx-hardening): persist the failing-test reason in the
+    // append-only event so WHY the gate was red survives the per-tick metadata
+    // overwrite (capped — the full list also goes to the release-fixer).
+    if (parsed.failingTests?.length) detail.failingTests = parsed.failingTests.slice(0, 20);
   } else {
     // No parseable result marker (crash before print / non-zero exit) → 'error'.
     detail.code = r.code;
@@ -169,7 +173,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // LOUDER urgent alert when the gate has been HELD too long (the "stuck for a
   // while" signal, distinct from the per-candidate notification). Runs for every
   // verdict so it resets on green; fail-safe.
-  await trackGateStall(ctx, status, candidate).catch((e) =>
+  await trackGateStall(ctx, status, candidate, failingTests).catch((e) =>
     console.warn(`[green-checkpoint] stall tracking failed: ${e instanceof Error ? e.message : e}`),
   );
 
@@ -186,13 +190,50 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
 const STALL_REDS = 3;
 const STALL_AGE_MS = 6 * 60 * 60 * 1000;
 
+// P-003 (git-sync-dx-hardening): a stalled gate gets a DURABLE escalation row
+// (every other pipeline failure has one) — its own phase so it never clobbers
+// the git-sync conflict/error rows.
+const GATE_STALL_PHASE = 'green-checkpoint-stall';
+const GATE_STALL_KIND = 'green-checkpoint-stall';
+
+/** Pure: the `harness_escalations` body for a green-checkpoint stall (testable). */
+export function gateStallEscalationBody(opts: {
+  installSlug: string;
+  consecutiveReds: number;
+  heldHrs: number | null;
+  candidate?: string | null;
+  failingTests?: string[];
+  nowMs: number;
+}): string {
+  const tests = (opts.failingTests ?? []).slice(0, 20);
+  return JSON.stringify({
+    kind: GATE_STALL_KIND,
+    harness_slug: opts.installSlug,
+    consecutiveReds: opts.consecutiveReds,
+    heldHrs: opts.heldHrs,
+    candidate: opts.candidate ? opts.candidate.slice(0, 12) : null,
+    failingTests: tests,
+    emitted_at: opts.nowMs,
+    detail: `green-checkpoint has held main for ${opts.consecutiveReds} checkpoint(s)${
+      opts.heldHrs != null ? ` (~${opts.heldHrs}h since the last green)` : ''
+    }; staging changes are NOT reaching the release.${
+      tests.length ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.` : ''
+    }`,
+  });
+}
+
 /**
  * P-004: track green-checkpoint gate health in the routine metadata (`gate_health`)
  * and fire ONE urgent stall alert when the red streak / age crosses the threshold
  * (transition-only via `stallAlerted`). The data also surfaces on the Git tab via
  * gitPipelineSnapshot().gate. Fail-safe — the routine tick never depends on it.
  */
-async function trackGateStall(ctx: SystemActionCtx, status: string, candidate?: string): Promise<void> {
+async function trackGateStall(
+  ctx: SystemActionCtx,
+  status: string,
+  candidate?: string,
+  failingTests?: string[],
+): Promise<void> {
   const isGreen = status === 'advanced' || status === 'up-to-date';
   // P-006: every non-green verdict counts toward the stall streak — INCLUDING 'error'
   // (a green-checkpoint script crash, the 25-min timeout, or unparseable JSON). The old
@@ -210,6 +251,16 @@ async function trackGateStall(ctx: SystemActionCtx, status: string, candidate?: 
   let next: Record<string, unknown>;
   if (isGreen) {
     next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false };
+    // P-003: clear the durable stall escalation on the green transition (idempotent).
+    try {
+      await sql.unsafe(
+        `UPDATE harness_shared.harness_escalations SET escalation = NULL, mtime_ms = $2
+          WHERE harness_slug = $1 AND phase = $3 AND escalation IS NOT NULL`,
+        [ctx.installSlug, Date.now(), GATE_STALL_PHASE],
+      );
+    } catch (e) {
+      console.warn(`[green-checkpoint] stall escalation clear failed: ${e instanceof Error ? e.message : e}`);
+    }
   } else {
     const consecutiveReds = (gh.consecutiveReds ?? 0) + 1;
     const firstRedAt = gh.firstRedAt ?? Date.now();
@@ -219,9 +270,9 @@ async function trackGateStall(ctx: SystemActionCtx, status: string, candidate?: 
     const stalledByAge = lastGreenAt != null && Date.now() - lastGreenAt > STALL_AGE_MS;
     if ((stalledByCount || stalledByAge) && !stallAlerted) {
       stallAlerted = true;
+      const heldHrs = lastGreenAt ? Math.round((Date.now() - lastGreenAt) / 3_600_000) : null;
       try {
         const { notifyAttention } = await import('../../attention-notify');
-        const heldHrs = lastGreenAt ? Math.round((Date.now() - lastGreenAt) / 3_600_000) : null;
         await notifyAttention({
           kind: 'intervention',
           title: 'Release pipeline STALLED — main frozen',
@@ -232,6 +283,33 @@ async function trackGateStall(ctx: SystemActionCtx, status: string, candidate?: 
         });
       } catch (e) {
         console.warn(`[green-checkpoint] stall alert failed: ${e instanceof Error ? e.message : e}`);
+      }
+      // P-003: ALSO write a durable harness_escalations row — the silent-stall
+      // gap (every other pipeline failure escalates; this one only notified +
+      // overwrote metadata). Its own phase, idempotent upsert; fail-safe.
+      try {
+        await sql.unsafe(
+          `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (harness_slug, phase)
+           DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
+          [
+            ctx.installSlug,
+            GATE_STALL_PHASE,
+            gateStallEscalationBody({
+              installSlug: ctx.installSlug,
+              consecutiveReds,
+              heldHrs,
+              candidate,
+              failingTests,
+              nowMs: Date.now(),
+            }),
+            Date.now(),
+            ctx.workspaceId,
+          ],
+        );
+      } catch (e) {
+        console.warn(`[green-checkpoint] stall escalation write failed: ${e instanceof Error ? e.message : e}`);
       }
     }
     next = { consecutiveReds, lastGreenAt, firstRedAt, stallAlerted };

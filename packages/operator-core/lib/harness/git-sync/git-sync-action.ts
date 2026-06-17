@@ -225,10 +225,23 @@ async function acquireLocks(cd: string, slug: string, resources: string[], acqui
   return { state: 'acquired' };
 }
 
+/** The /invoke timeout for a merge-resolver run: it drains+takes the git-sync
+ *  lock (≤120s) then merges, all within this ceiling. Used BOTH as the invoke
+ *  `timeoutMs` AND as the floor the in-flight TTL must clear — one source of
+ *  truth so the two can never drift apart. */
+const RESOLVER_INVOKE_TIMEOUT_MS = 900_000;
+/** Margin past the invoke timeout before a 'dispatched' marker is presumed stale —
+ *  covers settle-recording latency + clock skew. */
+const RESOLVER_INFLIGHT_MARGIN_MS = 5 * 60_000;
 /** How long a 'dispatched' resolver is presumed to still be running before we'd
- *  re-dispatch (P-010). MUST exceed the invoke timeoutMs below (900s) so a still-running
- *  resolver is never double-dispatched on the next conflict tick. */
-const RESOLVER_INFLIGHT_MS = 20 * 60_000;
+ *  re-dispatch (P-010). DERIVED from the invoke timeout (+ margin) so it ALWAYS
+ *  exceeds it — a still-running resolver is never double-dispatched on the next
+ *  conflict tick (git-sync-dx-hardening P-009: the audit's "TTL ≤ timeout" would
+ *  have INVERTED this invariant and double-dispatched; the real fix is making the
+ *  two constants one derivation, not free-floating magic numbers). Instance-tagging
+ *  already re-dispatches a restart-orphaned run immediately; this TTL is only the
+ *  backstop for a same-process run whose settle-recording never fires. */
+const RESOLVER_INFLIGHT_MS = RESOLVER_INVOKE_TIMEOUT_MS + RESOLVER_INFLIGHT_MARGIN_MS;
 
 /**
  * This operator process incarnation (P-006). The merge-resolver dispatch is a
@@ -471,10 +484,10 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
       extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary })],
       // P-010: a real multi-file merge by a higher-effort model needs well beyond the
       // route's 90s default. The invoke-route ceiling is 1200s (the old "~300s ceiling"
-      // comment was stale). Give it 900s: it drains+takes the git-sync lock (≤120s) first,
-      // then merges. RESOLVER_INFLIGHT_MS (20 min) exceeds this so we never re-dispatch a
-      // still-running resolver.
-      timeoutMs: 900_000,
+      // comment was stale). It drains+takes the git-sync lock (≤120s) first, then merges;
+      // RESOLVER_INFLIGHT_MS is DERIVED from this (+5min margin) so it always exceeds it
+      // and we never re-dispatch a still-running resolver.
+      timeoutMs: RESOLVER_INVOKE_TIMEOUT_MS,
     }),
   })
     .then(async (res) => {

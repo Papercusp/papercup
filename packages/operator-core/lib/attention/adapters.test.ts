@@ -20,6 +20,7 @@ import {
   standingApprovalToAttention,
   conversationToAttention,
   scoutGradeToAttention,
+  isOperationalEscalation,
 } from './adapters';
 import { isAutonomyCategory } from '../autonomy/categories';
 
@@ -410,5 +411,28 @@ describe('P-100 — every Queue item carries its autonomy category (B-14 / D-009
     expect(a.tier).toBe('decision');
     expect(a.needsHuman).toBe(true);
     expect(a.category).toBe('plan-governance'); // the new axis rides alongside, changing nothing
+  });
+});
+
+describe('isOperationalEscalation — operational status vs a genuine owner ask (D-006)', () => {
+  it('an OPTION-LESS escalation from system / system:* / a named infra emitter is operational', () => {
+    expect(isOperationalEscalation('system', false)).toBe(true);
+    expect(isOperationalEscalation('system:green-checkpoint', false)).toBe(true);
+    expect(isOperationalEscalation('green-checkpoint', false)).toBe(true); // named AUTOMATED_INFRA_EMITTER
+  });
+
+  it('an escalation WITH options is a genuine ask — never operational, even from system', () => {
+    expect(isOperationalEscalation('system', true)).toBe(false);
+    expect(isOperationalEscalation('green-checkpoint', true)).toBe(false);
+  });
+
+  it('an AGENT/bee escalation is never auto-classified operational (its ask may be genuine)', () => {
+    expect(isOperationalEscalation('worker-3', false)).toBe(false);
+    expect(isOperationalEscalation('some-bee', false)).toBe(false);
+  });
+
+  it('a null/undefined/non-string sender is not operational (never throws)', () => {
+    expect(isOperationalEscalation(null, false)).toBe(false);
+    expect(isOperationalEscalation(undefined, false)).toBe(false);
   });
 });

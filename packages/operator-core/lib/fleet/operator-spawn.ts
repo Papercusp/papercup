@@ -46,6 +46,7 @@ import {
   SPAWN_HEARTBEAT_INTERVAL_MS,
 } from './spawn-reclaim';
 import { wakeParentOnChildDeath } from './parent-wake';
+import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 
 /**
@@ -962,8 +963,28 @@ export async function spawnAgentInHarness(
     // P-008: per-chunk stream signal, persisted by the heartbeat tick.
     onOutputActivity: () => noteSpawnOutput(spawnId),
   })
-    .then((r) => {
+    .then(async (r) => {
       finalStatus = abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed');
+      // WI-222: post-bee-exit work-item completion safety net. A bee placed on a
+      // feature that claimed it (→ in_progress), implemented + committed, and exited
+      // rc=0 WITHOUT landing work_items:complete leaves the feature non-terminal — the
+      // placement-watchdog then re-places the dead-holder/non-terminal unit until the
+      // cursed breaker trips. The DBOS pipeline closes this loop on its terminal DONE
+      // (reconcileDoneStatus), but that path never runs for hive members, so settle it
+      // here with the SAME conservative guard (in_progress/validating → passed only;
+      // never force-pass todo/failing/deprecated). The predicate no-ops every non-bee /
+      // crashed / cancelled / featureless exit; the call is best-effort (never throws).
+      await maybeReconcileBeeCompletion(
+        {
+          role,
+          exitCode: r.exitCode,
+          aborted: abort.signal.aborted,
+          featureId: input.featureId,
+          harnessSlug: slug,
+          workspaceId: input.workspaceId,
+        },
+        { log: (m) => console.log(`[operator-spawn] ${spawnId} ${m}`) },
+      );
       return finishSpawn(sql, {
         spawnId,
         workspaceId: input.workspaceId,
