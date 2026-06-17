@@ -16,74 +16,60 @@
  * idempotent — it re-wakes a live brain or no-ops when none is live.
  *
  * EI-908: the brain pin is now workspace-scoped, so this reads its OWN
- * workspace's pin (a demo instance's pin can't be mistaken for the desktop's),
- * AND a liveness guard prefers re-pinning over waking a dormant ghost: if the
- * pinned session has no live `coord_presence` heartbeat it is treated as dead,
- * the stale pin is cleared so the next `psu --brain` mints fresh, and the tick
- * no-ops rather than waking a foreign/dead owner.
+ * workspace's pin (a demo instance's pin can't be mistaken for the desktop's).
+ *
+ * EI-908 (dormant-brain revival): this routine MUST fire the inbox-wake for a
+ * DORMANT brain — that is its whole purpose (see the header contract above and
+ * the title of the bug: "fires but never re-invokes the dormant brain"). An
+ * earlier liveness guard here gated on a fresh `coord_presence` heartbeat and,
+ * when stale, CLEARED the pin and no-op'd. That defeated the routine: an
+ * idle-but-alive brain's heartbeat only fires on tool boundaries, so a brain
+ * dormant past STALE_MS (10m) — exactly the case the cadence exists to revive —
+ * was treated as dead, the durable dock pin destroyed, and no wake fired. The
+ * guard also duplicated, badly, liveness logic the wake-executor already owns:
+ * the await-event pump is the single liveness authority and is liveness-ADAPTIVE
+ * (live managed pty → inject; live psu-host socket → inject in place; process
+ * exited → headless `claude --resume <uuid> -p` spawned DETACHED, server-side,
+ * no shell; uninjectable → park + inbox nudge; gone → drop) AND owner-scoped
+ * (never cross-injects a foreign session, EI-151). So firing the inbox-wake
+ * revives the brain in every state without any launch machinery the cron lacks.
+ * resolveBrainOwner therefore just resolves the pinned session to its coord
+ * owner and lets the executor decide delivery — no heartbeat gate, no pin clear.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { getBrainSession, clearBrainSession } from '../../brain-pin';
+import { getBrainSession } from '../../brain-pin';
 import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
-import { STALE_MS } from '../../liveness';
 
 export const WAKE_BRAIN_ACTION = 'wake-brain';
 
 /**
- * Resolve the pinned brain session's live coord owner id (the inbox-wake target)
- * for `workspaceId`: the brain pin holds the brain's NATIVE session uuid
+ * Resolve the pinned brain session's coord owner id (the inbox-wake target) for
+ * `workspaceId`: the brain pin holds the brain's NATIVE session uuid
  * (brain-pin.ts), and `adv_sessions.session_id` carries that same uuid (mig 115)
  * joined to the session's `coord_owner_id`.
  *
- * EI-908 liveness guard: the owner is only returned when its `coord_presence`
- * heartbeat is fresher than STALE_MS (i.e. the session is genuinely live).
- * A pinned-but-dormant session (no presence row, or a heartbeat older than
- * STALE_MS) means the brain died — we CLEAR the stale pin (so the next
- * `psu --brain` mints a fresh re-pinning launch instead of resuming the dead
- * session) and return null. Returns null when no brain is pinned for the
- * workspace, the pinned session isn't tracked, or it is dormant. Exported for
- * unit testing.
+ * Liveness is NOT gated here (EI-908): the wake-executor is the single
+ * liveness-adaptive authority (inject a live session / resume a dead one
+ * headless server-side / park an uninjectable one), so we return the owner
+ * whenever the pin resolves to a tracked session and let the executor decide
+ * how to deliver. Returns null only when no brain is pinned for the workspace
+ * or the pinned session isn't tracked yet (no adv row — nothing to wake; the
+ * launcher's own resolve handles a never-started pin). Exported for unit testing.
  */
 export async function resolveBrainOwner(workspaceId: string): Promise<string | null> {
   const brainSessionId = await getBrainSession(workspaceId);
   if (!brainSessionId) return null;
   const { sql } = getOrgPg();
-  // Join coord_presence so we get the owner AND its heartbeat in one shot. A
-  // tracked adv row with no presence row yields a null heartbeat → treated as
-  // dormant (the session never came up, or its presence was reaped).
   const rows = await sql`
-    SELECT s.coord_owner_id AS coord_owner_id,
-           p.heartbeat_at   AS heartbeat_at
+    SELECT s.coord_owner_id AS coord_owner_id
     FROM harness_shared.adv_sessions s
-    LEFT JOIN harness_shared.coord_presence p ON p.owner_id = s.coord_owner_id
     WHERE s.session_id = ${brainSessionId} AND s.coord_owner_id IS NOT NULL
     ORDER BY s.started_at DESC
     LIMIT 1
   `;
-  const row = rows[0] as { coord_owner_id?: string; heartbeat_at?: string | Date | null } | undefined;
-  const owner = row?.coord_owner_id ?? null;
-  if (!owner) {
-    // Pinned but not tracked at all (no adv row): not a confirmed-dead session,
-    // just nothing to wake — leave the pin (the launcher's own resolve handles it).
-    return null;
-  }
-
-  const heartbeatMs = row?.heartbeat_at ? new Date(row.heartbeat_at).getTime() : NaN;
-  const live = Number.isFinite(heartbeatMs) && Date.now() - heartbeatMs < STALE_MS;
-  if (!live) {
-    // Dormant/stale ghost: the pinned session is dead. Clear the stale pin so
-    // the next launch re-pins a fresh brain rather than resuming the corpse,
-    // and no-op this tick (don't wake a dead/foreign owner). Best-effort —
-    // a clear failure must not throw the routine.
-    try {
-      await clearBrainSession(workspaceId);
-    } catch {
-      // swallow — the next live tick / launcher resolve will retry
-    }
-    return null;
-  }
-  return owner;
+  const row = rows[0] as { coord_owner_id?: string } | undefined;
+  return row?.coord_owner_id ?? null;
 }
 
 registerSystemAction(WAKE_BRAIN_ACTION, async (ctx: SystemActionCtx) => {

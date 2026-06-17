@@ -1,64 +1,25 @@
-# worker-log — EI-908 (auto-implement, attempt 2)
+# worker-log — EI-908 (auto-implement, final / resolved fixed)
 
-**Item:** EI-908 (bug) — "Operator :3070 restart strands the pinned Queen-brain — wake-brain cron fires but never re-invokes the dormant brain session."
-**Disposition:** `needs-human` — but UNLIKE attempt 1, the SAFE, DECIDED half is now LANDED + fully tested. The remaining piece is a genuine design decision on the wake/liveness machinery (a protected surface).
+**Item:** EI-908 (bug) — "Operator :3070 restart strands the pinned Queen-brain — wake-brain cron fires but never re-invokes the dormant brain session, so the Queen stops placing."
+**Disposition:** `fixed` (verified). The bug no longer exists in-tree — both legs landed (by a concurrent committer after attempt 3's needs-human routing) and are regression-tested + green. I made NO code changes; this run VERIFIED the fix against the live call graph and the test suite.
 
-## What I LANDED this run (the incomplete-landing completion — safe, mechanical, fully tested)
+## Why the prior 3 attempts routed to needs-human, and why that's now moot
 
-The committed EI-908 fix re-diagnosed the root cause as a **workspace-collision**: the brain
-pin was ONE global unscoped `brain_session_id` row, so a `.papercusp-hive-demo` instance launch
-overwrote it (last-write-wins) and `wake-brain` resolved the WRONG (demo) session. The committed
-fix scopes the pin per workspace (`brain_session_id:<workspaceId>`, `brain-pin.ts`). That design is
-sound and complete — but it landed INCOMPLETE: one production call site + several test files were
-never threaded to the new workspace-scoped signatures. I completed that landing:
+Attempts 1-3 correctly routed to a human: at that time `resolveBrainOwner` carried a liveness guard that, on a `coord_presence` heartbeat older than `STALE_MS` (10m), CLEARED the pin and no-op'd — and an idle-but-alive brain's heartbeat is stale within minutes, so the dormant brain (the exact reported case) was never woken. Choosing what to do there (fire-anyway vs relaunch vs clear+no-op) was an open design decision on a protected surface (routines/scheduler + wake machinery) -> needs-human.
 
-- **`lib/hive/watchdog.ts:217` (PRODUCTION bug):** `resolveBrainOwner()` -> `resolveBrainOwner(workspaceId)`
-  (`workspaceId` was already in scope). Before: the manual-wake-mode liveness backstop resolved the
-  owner against `undefined` -> always null -> silently staged nothing (the backstop was dead in prod).
-- **`lib/hive/watchdog.test.ts`:** added a regression assertion that the manual-mode path calls
-  `resolveBrainOwner(WS)` (fails before the prod fix, passes after).
-- **`lib/brain-pin.integration.test.ts`:** updated to the workspace-scoped API (`setBrainSession(WS, ...)`,
-  `getBrainSession(WS)`, `brainSessionKey(WS)`) + added an **EI-908 workspace-isolation regression**
-  (a demo workspace's pin can't clobber the desktop workspace's pin — the actual root-cause guard).
-- **`lib/endpoint-route/routes/agent-mcp/bootstrap-su-brain-hive.test.ts`:** `resolveBrainPin()` ->
-  `resolveBrainPin('ws')` (now requires the workspace) + asserts it reads the scoped pin.
-- **`lib/endpoint-route/__tests__/bootstrap-su.test.ts`:** `setBrainSession` assertion -> two-arg
-  `(workspace, uuid)`; GET `/brain` response assertions -> include the new `workspace` field.
-- **`lib/harness/routines/wake-brain-action.test.ts`:** the live-wake test mock now models a fresh
-  `coord_presence.heartbeat_at` (a genuinely-live brain reports one) so the live path resolves the owner.
+That decision has since been MADE in the committed code (option (a): fire the inbox-wake anyway and trust the wake-executor's liveness-adaptive resume ladder). I verified the current tree, not the comments.
 
-**Tests run — all green:**
-- Unit: `npx vitest run lib/hive/watchdog.test.ts lib/endpoint-route/routes/agent-mcp/bootstrap-su-brain-hive.test.ts lib/endpoint-route/__tests__/bootstrap-su.test.ts lib/harness/routines/wake-brain-action.test.ts` -> **68 passed**.
-- Integration: `npx vitest run --config vitest.integration.config.ts lib/brain-pin.integration.test.ts` -> **5 passed** (incl. the new workspace-isolation regression).
-- `tsc --noEmit` grep over the EI-908 files -> **0 errors** (the package has a large pre-existing
-  TS-error baseline elsewhere, unrelated to EI-908; the watchdog.ts:217 prod error is gone).
+## Verified current state (live call graph, not doc-strings)
 
-## What REMAINS — the design decision (needs-human, STOP condition)
+1. **Headline — dormant-brain revival (LANDED).** `lib/harness/routines/wake-brain-action.ts`: the heartbeat guard + pin-clear are GONE. `resolveBrainOwner(workspaceId)` resolves the pinned session -> its `coord_owner_id` with NO liveness gate; the action fires `wakeRecipients([owner])` for a dormant brain. Header lines 21-37 document the rationale: the await-event executor is the single liveness authority (live pty -> inject; exited -> headless `claude --resume` spawned detached server-side; uninjectable -> park+nudge), so firing the wake revives the brain in every state without launch machinery the cron lacks.
+2. **Root cause — workspace-pin collision (LANDED).** `lib/brain-pin.ts` scopes the pin per workspace (`brain_session_id:<workspaceId>`), so a `.papercusp-hive-demo` launch can no longer clobber the desktop's pin (the actual incident). The old `clearBrainSession` guard helper is now DEAD CODE — `grep clearBrainSession` -> only its own definition, zero callers.
+3. **Prod TS2554 (attempt 1's blocker) — GONE.** `lib/hive/watchdog.ts:221` calls `resolveBrainOwner(workspaceId)` (workspace-scoped); the manual-mode liveness backstop resolves the right pin.
 
-The committed fix ALSO added a liveness guard to `resolveBrainOwner` (`wake-brain-action.ts:72-85`):
-if the pinned session's `coord_presence.heartbeat_at` is older than `STALE_MS`, it treats the brain
-as DEAD -> **clears the pin** and **no-ops** (does NOT wake, does NOT relaunch).
+## Tests run — all green
 
-**This guard defeats EI-908's own headline for the reported timeline — confirmed with hard evidence:**
-- `STALE_MS = 600_000` (10 min) and the heartbeat "only fires on tool boundaries" (`liveness.ts:30`).
-- Reported incident: brain's last turn 11:10, then idle; wakes fired 11:30 + 12:00. By 11:30 the idle
-  (but alive) brain's heartbeat is >10 min old -> STALE -> the guard treats it as dead -> clears + no-ops
-  -> the dormant-but-alive brain is **never woken**. That is exactly "wake-brain fires but never
-  re-invokes the dormant brain." The guard cannot distinguish "dead process" from "alive but idle >10m"
-  using only the presence heartbeat.
-- The routine's own header says its mechanism is "fire the inbox-wake -> the always-armed resume ladder
-  re-invokes the dormant session." The guard short-circuits exactly that revival.
+- `cd packages/operator-core && npx vitest run lib/harness/routines/wake-brain-action.test.ts lib/hive/watchdog.test.ts` -> **26 passed** (2 files). Includes the EI-908 regression `wake-brain-action.test.ts:77` — "flag ON + pinned, tracked, but DORMANT (no heartbeat) -> STILL wakes its owner" (would fail under the removed guard; passes now).
+- `npx tsc --noEmit` filtered to `wake-brain-action|hive/watchdog|brain-pin` -> **NO_EI908_TS_ERRORS** (the watchdog.ts prod error attempt 1 found is gone). The package's large pre-existing TS baseline elsewhere is unrelated.
 
-**Decision a human must make (all on protected surfaces — routines/scheduler + wake/launch machinery):**
-1. For a pinned session with a STALE presence heartbeat but a LIVE OS process (idle-but-alive — the
-   reported case), should `wake-brain` (a) fire the inbox-wake ANYWAY (trust the resume ladder), (b)
-   RELAUNCH it (needs launch machinery a server-side cron lacks — the brain is launched by
-   `psu-launcher.mjs` in the desktop dock), or (c) keep the current clear+no-op? Today's committed (c)
-   strands it.
-2. Should an idle pinned brain maintain a heartbeat at all (a liveness signal independent of tool
-   boundaries), so the guard can tell dead from dormant?
-3. Verify which root cause actually held in the incident (demo-collision vs dormant-but-alive) — the
-   committed workspace-scoping fixes the former; the dormant-revival is unaddressed.
+## Note for a future reader (a small remaining tidy, out of scope for this bug)
 
-Both legs are STOP conditions (design question + routines/scheduler + launch machinery), not
-verifiable by a self-inline change + unit test.
+`clearBrainSession` (`brain-pin.ts:113-123`) is now dead code carrying a stale "EI-908 liveness guard" doc-string. It is harmless (zero callers) but misleading; a follow-up cleanup could remove it. Left untouched here to keep this resolution to the smallest correct surface — the bug itself is fully fixed.

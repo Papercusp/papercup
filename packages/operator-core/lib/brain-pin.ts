@@ -109,15 +109,3 @@ async function migrateLegacyPin(workspaceId: string): Promise<string | null> {
   `;
   return (moved[0] as { value?: string } | undefined)?.value?.trim() || null;
 }
-
-/**
- * Clear the pinned brain for `workspaceId` (EI-908 liveness guard): used when
- * the pinned session is detected dormant/stale so the NEXT `psu --brain` mints
- * a fresh re-pinning launch instead of resuming the dead session.
- */
-export async function clearBrainSession(workspaceId: string): Promise<void> {
-  const { sql } = getOrgPg();
-  await sql`
-    DELETE FROM harness_shared.operator_settings WHERE key = ${brainSessionKey(workspaceId)}
-  `;
-}

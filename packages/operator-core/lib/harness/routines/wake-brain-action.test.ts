@@ -25,9 +25,10 @@ const run = (over: Record<string, unknown> = {}) => getSystemAction('wake-brain'
 
 let sql: ReturnType<typeof vi.fn>;
 beforeEach(() => {
-  // EI-908: resolveBrainOwner now gates on a fresh coord_presence heartbeat — a
-  // genuinely-live brain reports a recent one, so model that for the live-wake path.
-  sql = vi.fn(async () => [{ coord_owner_id: 'owner-x', heartbeat_at: new Date() }]);
+  // EI-908: resolveBrainOwner resolves the pinned session to its coord owner and
+  // does NOT gate on a heartbeat (the wake-executor is the liveness authority).
+  // A tracked pin yields the owner regardless of liveness.
+  sql = vi.fn(async () => [{ coord_owner_id: 'owner-x' }]);
   vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
   vi.mocked(getFlag).mockResolvedValue(true as never);
   vi.mocked(getBrainSession).mockResolvedValue('brain-uuid' as never);
@@ -64,6 +65,22 @@ describe('system:wake-brain (hive-agent-tabs P-005 / D-006)', () => {
     vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
     await run();
     expect(wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  // EI-908 regression: a DORMANT brain (idle/stale — its heartbeat only fires on
+  // tool boundaries, so an idle session is "stale" within minutes) is exactly the
+  // case the cadence exists to revive. The prior liveness guard treated it as dead
+  // → cleared the pin + no-op'd → "fires but never re-invokes the dormant brain".
+  // It must now STILL fire the wake; the wake-executor decides delivery (inject a
+  // live session / resume a dead one headless server-side). The adv row carrying
+  // no presence/heartbeat at all is the strongest form of "dormant".
+  it('flag ON + pinned, tracked, but DORMANT (no heartbeat) → STILL wakes its owner', async () => {
+    sql = vi.fn(async () => [{ coord_owner_id: 'owner-x' }]);
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    await run();
+    expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    const [recipients] = vi.mocked(wakeRecipients).mock.calls[0] as [string[], Record<string, unknown>];
+    expect(recipients).toEqual(['owner-x']);
   });
 
   it('uses payloadTemplate.kickoff as the wake summary when provided', async () => {
