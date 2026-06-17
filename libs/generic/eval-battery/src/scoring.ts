@@ -62,6 +62,15 @@ export function rubricHash(r: BatteryRubric): string {
 
 /** The reward: the weight-normalized aggregate of the three dimension scores. */
 export function composite(scores: JudgeDimensionScores, weights: DimensionWeights): number {
+  // A reward weight is never negative: the composite is a convex combination of
+  // per-dimension scores, which only stays inside the [MIN_SCORE, MAX_SCORE] range
+  // when every weight is >= 0. A negative weight would let a positive weight-sum
+  // pass the `sum <= 0` guard yet produce an out-of-range reward (e.g. weights
+  // {5,-1,-1} sum to 3 but yield 50/3 > MAX_SCORE), silently corrupting the
+  // optimization signal. Reject it up front.
+  if (weights.d1 < 0 || weights.d2 < 0 || weights.d3 < 0) {
+    throw new Error('composite: weights must be non-negative');
+  }
   const sum = weights.d1 + weights.d2 + weights.d3;
   if (sum <= 0) throw new Error('composite: weights must sum to a positive number');
   return (scores.d1 * weights.d1 + scores.d2 * weights.d2 + scores.d3 * weights.d3) / sum;
@@ -88,8 +97,12 @@ export function parseJudgeOutput(raw: unknown): ParsedJudgeOutput {
   const scores = {} as JudgeDimensionScores;
   for (const dim of dims) {
     const v = o[dim];
-    if (typeof v !== 'number' || Number.isNaN(v)) {
-      throw new Error(`judge output dimension "${dim}" must be a number, got: ${JSON.stringify(v)}`);
+    // Reject any non-finite score: NaN AND ±Infinity are garbage. Without the
+    // finiteness check, clampScore(Infinity) === MAX_SCORE and
+    // clampScore(-Infinity) === MIN_SCORE, so a non-finite judge output would
+    // silently masquerade as a perfect / zero score instead of being rejected.
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new Error(`judge output dimension "${dim}" must be a finite number, got: ${JSON.stringify(v)}`);
     }
     scores[dim] = clampScore(v);
   }

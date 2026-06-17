@@ -70,7 +70,7 @@ describe('<AdvHarnessPanelPage> routing', () => {
     nuqsState.scope = 'all';
     nuqsState.slug = 'pot-a';
     render(<AdvHarnessPanelPage panel="brainstorm" />);
-    expect(screen.getByText(/is a per-pot view — pick a single Pot above/)).toBeTruthy();
+    expect(screen.getByText(/is a per-pot view — pick a Pot from the dropdown above/)).toBeTruthy();
     expect(screen.queryByTestId('brainstorm')).toBeNull();
   });
 

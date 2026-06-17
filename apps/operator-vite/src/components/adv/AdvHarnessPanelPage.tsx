@@ -131,16 +131,16 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
     parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
 
-  // "All Pots" has no single target, and these panels are inherently
-  // per-pot (one brainstorm canvas, one PR list, one git repo, one docs
-  // tree). AdvShell hides the per-pot tabs and snaps to Overview under
-  // all-mode, so this state only renders transiently / on a deep link —
-  // keep it as the graceful fallback instead of fetching /harness/all/….
+  // "All Pots" has no single target, and these panels are inherently per-pot
+  // (one brainstorm canvas, one PR list, one git repo, one docs tree). AdvShell
+  // now keeps the active per-pot tab PINNED under all-mode (no snap-back to
+  // Overview), so this is the steady-state "pick a hive from the dropdown"
+  // prompt for that view (owner ask 2026-06-17).
   if (scopeMode === 'all') {
     return (
       <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
         <div className="pc-adv-harness-panel__empty">
-          {ADV_HARNESS_PANEL_LABELS[panel]} is a per-{t('pot', { lower: true })} view — pick a single {t('pot')} above.
+          {ADV_HARNESS_PANEL_LABELS[panel]} is a per-{t('pot', { lower: true })} view — pick a {t('pot')} from the dropdown above.
         </div>
         <style>{PANEL_FILL_CSS}</style>
       </section>

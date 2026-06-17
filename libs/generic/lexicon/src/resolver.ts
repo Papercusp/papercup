@@ -25,7 +25,12 @@ function pickForm(
   forms: { one: string; other: string },
   opts: TermOptions | undefined,
 ): string {
-  if (opts?.count !== undefined) {
+  // A finite count selects singular (|count| === 1) vs plural. A non-finite
+  // count (NaN / ±Infinity — almost always a caller bug like `count={len}` where
+  // `len` came out NaN) is NOT a meaningful "everything else" plural: it falls
+  // through to the `plural` flag so an explicit `plural: false` is still honored,
+  // rather than silently forcing the plural form regardless of intent.
+  if (opts?.count !== undefined && Number.isFinite(opts.count)) {
     return Math.abs(opts.count) === 1 ? forms.one : forms.other;
   }
   return opts?.plural ? forms.other : forms.one;

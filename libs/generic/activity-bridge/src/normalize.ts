@@ -47,7 +47,14 @@ const SUMMARY_CLIP = 72;
 /** Collapse whitespace + clip to `n` chars with an ellipsis. */
 export function clip(s: unknown, n: number): string {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
-  return t.length <= n ? t : t.slice(0, n - 1) + '…';
+  if (t.length <= n) return t;
+  // n <= 0 has no room for content; n === 1 has room only for the ellipsis. A
+  // naive `slice(0, n - 1)` would use a negative end index here (dropping the
+  // LAST char and yielding a result LONGER than `n`), so guard it explicitly —
+  // the result must never exceed `n`.
+  if (n <= 0) return '';
+  if (n === 1) return '…';
+  return t.slice(0, n - 1) + '…';
 }
 
 /** Last path segment, tolerant of trailing slashes + windows separators. */

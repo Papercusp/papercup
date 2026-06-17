@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
-import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { wsLocalKey, getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
@@ -23,7 +23,8 @@ import {
   TrendingUp,
   Trophy,
 } from 'lucide-react';
-import { Select } from '@/app/harness/Select';
+import { Select, type SelectEntry, type SelectOption } from '@/app/harness/Select';
+import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
@@ -127,8 +128,10 @@ type HarnessProjectLite = {
   path?: string;
   hasState?: boolean;
   hasSpec?: boolean;
-  // P-012: lite payload now surfaces parent_slug + harness_kind so the
-  // selector can render a tree without paying for /projects.
+  // P-012: lite payload surfaces hive_slug (authoritative Hive membership,
+  // shared-hive-federation) + parent_slug (legacy) + harness_kind so the
+  // selector renders the Hive tree without paying for /projects.
+  hive_slug?: string | null;
   parent_slug?: string | null;
   harness_kind?: string | null;
   // Whether the harness has been shared (a `.papercusp/shared.json` exists).
@@ -324,13 +327,18 @@ export default function AdvShell({
   // Health is flag-gated (SYSTEM_HEALTH_TAB, default ON): hide its strip entry
   // when off (the kill-switch — the resolver/tick also no-op).
   const healthOn = useFlag(FLAGS.SYSTEM_HEALTH_TAB);
-  const visibleTabs = visibleAdvTabs(allMode).filter((tab) => tab.id !== 'health' || healthOn);
-  // If the active tab just went invisible (scope flipped to "All Pots", or a
-  // per-pot deep link landed in all-mode), snap to Overview so the strip and
-  // the content pane stay consistent.
-  useEffect(() => {
-    if (allMode && !WORKSPACE_TAB_IDS.has(activeTab)) void setActiveTab('overview');
-  }, [allMode, activeTab, setActiveTab]);
+  const baseVisibleTabs = visibleAdvTabs(allMode).filter((tab) => tab.id !== 'health' || healthOn);
+  // Under "All Pots" the per-pot tabs are normally hidden from the strip. But if
+  // the user flips to "All" while parked ON a per-pot tab, KEEP that tab pinned +
+  // highlighted (instead of snapping to Overview) so its body can show the
+  // "pick a {pot} from the dropdown" prompt — restoring the empty-state the old
+  // snap-back used to swallow (owner ask 2026-06-17). Appended only when the
+  // active tab isn't already a workspace tab in the strip.
+  const activeTabDef = ADV_TABS.find((tab) => tab.id === activeTab);
+  const visibleTabs =
+    allMode && activeTabDef && !baseVisibleTabs.some((tab) => tab.id === activeTab)
+      ? [...baseVisibleTabs, activeTabDef]
+      : baseVisibleTabs;
 
   // ── Discord-parity keyboard handlers (discord-shortcuts 2026-06-06) ──────
   // Alt+↑/↓ cycles the visible tab strip (Discord's prev/next channel);
@@ -421,7 +429,7 @@ export default function AdvShell({
               disabled={projects.length === 0}
               ariaLabel={`Select ${t('pot')}`}
               placeholder={projectLoadError ? `Failed to load ${t('pot', { plural: true })}` : `Select ${t('pot')}`}
-              options={buildHarnessSelectOptions(projects, projectLoadError, t('pot', { plural: true }))}
+              options={buildHarnessSelectOptions(projects, projectLoadError, t('pot', { plural: true }), getBrowserWorkspaceId())}
               triggerClassName="pc-advshell__select-trigger"
             />
             {/* Sub-harness union is meaningless under "all" (everything is
@@ -972,23 +980,28 @@ export default function AdvShell({
 }
 
 /**
- * Build the harness selector option list as a tree: an "All harnesses"
- * row first, then roots alphabetically, each child (where parent_slug →
- * root) listed under it with a leading "  ↳ " marker. Concrete picks
- * remain single-slug; the scope toggle decides whether downstream
- * consumers UNION across the subtree, and the "All harnesses" row flips
- * ?scope=all. Per `plans-newbutton-and-subharness-scope-2026-05-25` P-014.
+ * Build the selector option list as a Workspace → Hive → member tree
+ * (workspace-hive-ui-2026-06-17): an "All harnesses" row first, then a single
+ * group whose label is the WORKSPACE (a non-selectable root header), holding
+ * each Hive (depth 0) with its member harnesses indented beneath it ("  ↳ ").
+ *
+ * Membership is the AUTHORITATIVE Hive grouping — `groupByHive` over `hive_slug`
+ * (the shared-hive-federation field), with the legacy `parent_slug` as fallback.
+ * The old build keyed off bare `parent_slug`, which almost no Hive carries, so
+ * everything rendered flat. Concrete picks stay single-slug; the scope toggle
+ * decides subtree UNION, and the "All harnesses" row flips ?scope=all.
  *
  * Exported for unit tests.
  */
 export function buildHarnessSelectOptions(
   projects: HarnessProjectLite[],
   projectLoadError: string | null,
-  // The plural label for the top-level grouping ("Pots" | "Hives"), resolved
-  // by the active brand pack. Defaults to the classic label so callers/tests
-  // that don't thread the lexicon stay unchanged.
+  // The plural label for the "All …" row ("Pots" | "Hives"), from the brand pack.
+  // Defaults to the classic label so callers/tests that don't thread it are unchanged.
   potPlural = 'Pots',
-): Array<{ value: string; label: string; disabled?: boolean }> {
+  // The workspace root-group header. Defaults to a generic label.
+  workspaceLabel = 'Workspace',
+): SelectEntry[] {
   if (projects.length === 0) {
     return [{
       value: '__loading',
@@ -997,50 +1010,21 @@ export function buildHarnessSelectOptions(
     }];
   }
 
-  const childrenByParent = new Map<string, HarnessProjectLite[]>();
-  const roots: HarnessProjectLite[] = [];
-  for (const p of projects) {
-    const parent = p.parent_slug?.trim() || null;
-    if (!parent) {
-      roots.push(p);
-    } else {
-      let bucket = childrenByParent.get(parent);
-      if (!bucket) {
-        bucket = [];
-        childrenByParent.set(parent, bucket);
-      }
-      bucket.push(p);
+  // Authoritative Hive grouping (hive_slug → home, parent_slug fallback; a
+  // kind:'hive' home is its own root). groupByHive sorts roots + members.
+  const tree: SelectOption[] = [];
+  for (const group of groupByHive(projects)) {
+    tree.push({ value: group.root.slug, label: group.root.slug });
+    for (const member of group.members) {
+      if (member.slug === group.root.slug) continue;
+      tree.push({ value: member.slug, label: `  ↳ ${member.slug}` });
     }
-  }
-  // Orphans (parent_slug set but parent not in registry) — render as
-  // roots so they're still pickable.
-  for (const p of projects) {
-    const parent = p.parent_slug?.trim() || null;
-    if (parent && !projects.some((q) => q.slug === parent) && !roots.includes(p)) {
-      roots.push(p);
-    }
-  }
-  roots.sort((a, b) => a.slug.localeCompare(b.slug));
-  for (const list of childrenByParent.values()) {
-    list.sort((a, b) => a.slug.localeCompare(b.slug));
   }
 
-  // "All harnesses" always leads the list (when there's anything to span).
-  // Selecting it flips ?scope=all rather than ?slug= — see AdvShell.onChange.
-  const out: Array<{ value: string; label: string; disabled?: boolean }> = [
+  // "All …" leads (flips ?scope=all); the workspace is the non-selectable root
+  // header above the Hive → member tree.
+  return [
     { value: ALL_HARNESSES_OPTION, label: `All ${potPlural}` },
+    { kind: 'group', label: workspaceLabel, options: tree },
   ];
-  const visited = new Set<string>();
-  function emit(node: HarnessProjectLite, depth: number): void {
-    if (visited.has(node.slug)) return;
-    visited.add(node.slug);
-    const indent = depth === 0 ? '' : '  '.repeat(depth) + '↳ ';
-    out.push({ value: node.slug, label: indent + node.slug });
-    const kids = childrenByParent.get(node.slug);
-    if (kids && depth < 4) {
-      for (const k of kids) emit(k, depth + 1);
-    }
-  }
-  for (const r of roots) emit(r, 0);
-  return out;
 }

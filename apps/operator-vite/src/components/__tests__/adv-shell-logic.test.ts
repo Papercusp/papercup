@@ -21,6 +21,7 @@ import {
   visibleAdvTabs,
   tabOverflowState,
 } from '../adv/AdvShell';
+import type { SelectEntry, SelectGroup, SelectOption } from '@/app/harness/Select';
 
 // ─── ADV_TABS structural invariants ──────────────────────────────────────────
 
@@ -75,94 +76,105 @@ describe('ADV_TABS', () => {
 // ─── buildHarnessSelectOptions ────────────────────────────────────────────────
 
 describe('buildHarnessSelectOptions', () => {
+  // The builder returns SelectEntry[]: the "All …" row, then a workspace group
+  // wrapping the authoritative Hive → member tree (workspace-hive-ui-2026-06-17).
+  const lead = (o: SelectEntry[]) => o[0] as SelectOption; // the "All …" row
+  const ws = (o: SelectEntry[]) => o[1] as SelectGroup; // the workspace group
+  const tree = (o: SelectEntry[]) => ws(o).options; // hives + indented members
+
   it('returns a loading placeholder when projects is empty (no error)', () => {
     const opts = buildHarnessSelectOptions([], null);
     expect(opts).toHaveLength(1);
-    expect(opts[0].value).toBe('__loading');
-    expect(opts[0].label).toContain('Loading');
-    expect(opts[0].disabled).toBe(true);
+    expect(lead(opts).value).toBe('__loading');
+    expect(String(lead(opts).label)).toContain('Loading');
+    expect(lead(opts).disabled).toBe(true);
   });
 
   it('returns an error placeholder when projects is empty and there is an error', () => {
     const opts = buildHarnessSelectOptions([], 'network error');
-    expect(opts[0].label).toContain('Failed');
-    expect(opts[0].disabled).toBe(true);
+    expect(String(lead(opts).label)).toContain('Failed');
+    expect(lead(opts).disabled).toBe(true);
   });
 
   it('always leads with "All Pots" when projects exist', () => {
     const opts = buildHarnessSelectOptions([{ slug: 'sheets' }], null);
-    expect(opts[0].label).toBe('All Pots');
+    expect(lead(opts).label).toBe('All Pots');
   });
 
   it('routes the leading-option label through the brand lexicon (the-hive)', () => {
     // The component threads t('pot', { plural: true }); classic = "Pots" (the
     // default above), the-hive = "Hives" (P-005 / the-hive-lexicon).
     const opts = buildHarnessSelectOptions([{ slug: 'sheets' }], null, 'Hives');
-    expect(opts[0].label).toBe('All Hives');
+    expect(lead(opts).label).toBe('All Hives');
   });
 
-  it('flat list: root harnesses appear after "All harnesses", sorted', () => {
+  it('wraps the Hive tree in a non-selectable workspace group header', () => {
+    const opts = buildHarnessSelectOptions([{ slug: 'a' }], null, 'Pots', 'my-workspace');
+    expect(opts).toHaveLength(2);
+    expect(ws(opts).kind).toBe('group');
+    expect(ws(opts).label).toBe('my-workspace');
+  });
+
+  it('lists root harnesses inside the workspace group, sorted', () => {
     const opts = buildHarnessSelectOptions(
       [{ slug: 'zebra' }, { slug: 'alpha' }, { slug: 'mango' }],
       null,
     );
-    const slugs = opts.slice(1).map((o) => o.value);
-    expect(slugs).toEqual(['alpha', 'mango', 'zebra']);
+    expect(tree(opts).map((o) => o.value)).toEqual(['alpha', 'mango', 'zebra']);
   });
 
-  it('renders child harnesses indented under parent', () => {
+  it('renders member harnesses indented under their Hive (authoritative hive_slug)', () => {
     const opts = buildHarnessSelectOptions(
       [
-        { slug: 'org' },
-        { slug: 'org-rd', parent_slug: 'org' },
-        { slug: 'org-marketing', parent_slug: 'org' },
+        { slug: 'org', harness_kind: 'hive' },
+        { slug: 'org-rd', hive_slug: 'org' },
+        { slug: 'org-marketing', hive_slug: 'org' },
       ],
       null,
     );
-    // org → then children indented
-    const labels = opts.map((o) => o.label);
+    const labels = tree(opts).map((o) => String(o.label));
     const orgIdx = labels.findIndex((l) => l === 'org');
-    const rdIdx  = labels.findIndex((l) => l.includes('org-rd'));
-    const mkIdx  = labels.findIndex((l) => l.includes('org-marketing'));
+    const rdIdx = labels.findIndex((l) => l.includes('org-rd'));
+    const mkIdx = labels.findIndex((l) => l.includes('org-marketing'));
     expect(orgIdx).toBeLessThan(rdIdx);
     expect(orgIdx).toBeLessThan(mkIdx);
-    // Children are indented (label starts with spaces + ↳)
-    expect(opts[rdIdx].label).toMatch(/^\s+↳/);
+    // Members are indented (label carries the ↳ marker)
+    expect(String(tree(opts)[rdIdx].label)).toMatch(/↳/);
   });
 
-  it('children are sorted within the same parent', () => {
+  it('falls back to legacy parent_slug when no hive_slug is present', () => {
+    const opts = buildHarnessSelectOptions(
+      [{ slug: 'org' }, { slug: 'org-rd', parent_slug: 'org' }],
+      null,
+    );
+    const child = tree(opts).find((o) => String(o.label).includes('org-rd'));
+    expect(String(child?.label)).toMatch(/↳/);
+  });
+
+  it('sorts members within the same Hive', () => {
     const opts = buildHarnessSelectOptions(
       [
-        { slug: 'org' },
-        { slug: 'org-z', parent_slug: 'org' },
-        { slug: 'org-a', parent_slug: 'org' },
+        { slug: 'org', harness_kind: 'hive' },
+        { slug: 'org-z', hive_slug: 'org' },
+        { slug: 'org-a', hive_slug: 'org' },
       ],
       null,
     );
-    const children = opts.filter((o) => o.label.includes('↳'));
+    const children = tree(opts).filter((o) => String(o.label).includes('↳'));
     expect(children[0].value).toBe('org-a');
     expect(children[1].value).toBe('org-z');
   });
 
-  it('orphans (parent_slug not in registry) appear as root entries', () => {
-    const opts = buildHarnessSelectOptions(
-      [{ slug: 'orphan', parent_slug: 'missing-parent' }],
-      null,
-    );
-    const slugs = opts.slice(1).map((o) => o.value);
-    expect(slugs).toContain('orphan');
-    // Orphan has no indent (it's treated as a root)
-    const orphanOpt = opts.find((o) => o.value === 'orphan');
-    expect(orphanOpt?.label).not.toMatch(/^\s+↳/);
+  it('renders an orphan (membership points outside the registry) as a root', () => {
+    const opts = buildHarnessSelectOptions([{ slug: 'orphan', hive_slug: 'missing-home' }], null);
+    const orphan = tree(opts).find((o) => o.value === 'orphan');
+    expect(orphan).toBeTruthy();
+    expect(String(orphan?.label)).not.toMatch(/↳/);
   });
 
-  it('does not duplicate entries when both root and child have the same slug', () => {
-    // Degenerate: a harness appears twice — the visited set prevents re-emission.
-    const opts = buildHarnessSelectOptions(
-      [{ slug: 'dup' }, { slug: 'dup', parent_slug: 'dup' }],
-      null,
-    );
-    const dupCount = opts.filter((o) => o.value === 'dup').length;
+  it('does not duplicate entries when a slug appears twice', () => {
+    const opts = buildHarnessSelectOptions([{ slug: 'dup' }, { slug: 'dup', parent_slug: 'dup' }], null);
+    const dupCount = tree(opts).filter((o) => o.value === 'dup').length;
     expect(dupCount).toBeLessThanOrEqual(1);
   });
 });

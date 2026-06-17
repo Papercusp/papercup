@@ -242,4 +242,37 @@ describe('docs:search handler', () => {
     expect(mod.default.args.safeParse({ query: 'a' }).success).toBe(false);
     expect(mod.default.args.safeParse({ query: 'ab' }).success).toBe(true);
   });
+
+  // ── CH3: the result-limit guard. The engine truncates to `limit` hits
+  //    (searchDocs slices to args.limit), so the tool must bound it: default 8,
+  //    floor 1, hard cap 20 — an unbounded limit can't drag the whole corpus.
+  describe('result limit (CH3)', () => {
+    it('defaults limit to 8 when unspecified', async () => {
+      const mod = await import('../search');
+      const parsed = mod.default.args.safeParse({ query: 'auth' });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) expect(parsed.data.limit).toBe(8);
+    });
+
+    it('accepts the boundary 1 and 20 but rejects 0 and >20', async () => {
+      const mod = await import('../search');
+      expect(mod.default.args.safeParse({ query: 'auth', limit: 1 }).success).toBe(true);
+      expect(mod.default.args.safeParse({ query: 'auth', limit: 20 }).success).toBe(true);
+      expect(mod.default.args.safeParse({ query: 'auth', limit: 0 }).success).toBe(false);
+      expect(mod.default.args.safeParse({ query: 'auth', limit: 21 }).success).toBe(false);
+      expect(mod.default.args.safeParse({ query: 'auth', limit: 5000 }).success).toBe(false);
+    });
+
+    it('threads the validated limit through to the engine (truncation cap)', async () => {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      const tool = (await import('../search')).default;
+      await tool.handler({ query: 'auth flow', limit: 3 } as never, { harnessSlug: 'sheets' } as never);
+      // searchDocs(adapter, args, ctx) — args carries the bounded limit.
+      expect(searchDocs).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 3 }),
+        expect.anything(),
+      );
+    });
+  });
 });

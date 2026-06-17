@@ -24,10 +24,46 @@ describe('resolveTerm', () => {
     expect(resolveTerm('the-hive', 'pot', { count: 1, plural: true })).toBe('Hive');
   });
 
+  it('treats a fractional 1.0 count as singular (|count| === 1)', () => {
+    // 1.0 === 1 in JS, so this is the singular branch, not a surprise plural.
+    expect(resolveTerm('the-hive', 'contributor', { count: 1.0 })).toBe('Bee');
+    expect(resolveTerm('the-hive', 'contributor', { count: -1.0 })).toBe('Bee');
+  });
+
+  // --- Gap 13 (FIXED): a non-finite count falls through to the `plural` flag ---
+  // NaN / ±Infinity is a caller bug, not a meaningful "everything else" plural.
+  // After the fix it no longer forces plural; the `plural` flag decides, so an
+  // explicit `plural: false` is honored instead of being silently overridden.
+  it('falls through to the plural flag when count is NaN', () => {
+    expect(resolveTerm('the-hive', 'contributor', { count: NaN })).toBe('Bee'); // plural defaults false → singular
+    expect(resolveTerm('the-hive', 'contributor', { count: NaN, plural: true })).toBe('Bees');
+    expect(resolveTerm('the-hive', 'contributor', { count: NaN, plural: false })).toBe('Bee');
+  });
+
+  it('falls through to the plural flag when count is ±Infinity', () => {
+    expect(resolveTerm('the-hive', 'contributor', { count: Infinity })).toBe('Bee');
+    expect(resolveTerm('the-hive', 'contributor', { count: Infinity, plural: true })).toBe('Bees');
+    expect(resolveTerm('the-hive', 'contributor', { count: -Infinity, plural: true })).toBe('Bees');
+  });
+
   it('lowercases multi-word labels word-by-word', () => {
     expect(resolveTerm('the-hive', 'substrate', { lower: true })).toBe('hive mind');
     // (operator is now single-word "Sentinel" — substrate covers the multi-word case;
     //  renamed from "Sentinel Bee", hive-agent-tabs P-003.)
+  });
+
+  // --- Gap 14 (PIN): form × case compose on the only multi-word term ---
+  // applyCase is a whole-string toLowerCase(); for "Hive Mind" that happens to
+  // equal the documented word-by-word result. Pin the composition so a future
+  // change to either pickForm or applyCase can't silently drift.
+  it('composes plural + lower on the multi-word substrate term', () => {
+    expect(resolveTerm('the-hive', 'substrate', { plural: true, lower: true })).toBe('hive minds');
+  });
+
+  it('count-driven plural agrees with the plural flag under lower-casing', () => {
+    expect(resolveTerm('the-hive', 'substrate', { count: 2, lower: true })).toBe('hive minds');
+    // singular lower for completeness
+    expect(resolveTerm('the-hive', 'substrate', { count: 1, lower: true })).toBe('hive mind');
   });
 
   it('accepts an explicit BrandPack object', () => {

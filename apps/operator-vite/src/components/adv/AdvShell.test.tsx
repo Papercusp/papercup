@@ -9,7 +9,7 @@
 // (AdvNowRunning, Select, CreateHarnessPicker, PublishHiveCard) are stubbed;
 // the pure exports (buildHarnessSelectOptions, visibleAdvTabs, ADV_TABS shape)
 // are pinned in __tests__/adv-shell-logic.test.ts. Asserts:
-//   - the full vs workspace-level tab strip + the all-mode snap-back,
+//   - the full vs workspace-level tab strip + the all-mode pinned-tab behavior,
 //   - the persisted-selection restore precedence (URL slug > persisted >
 //     All), written SEQUENTIALLY (slug then scope),
 //   - selector changes: concrete pick persists + exits all-mode first; the
@@ -56,7 +56,11 @@ vi.mock('@/app/harness/Select', () => ({
   }: {
     value: string;
     onChange: (v: string) => void;
-    options: Array<{ value: string; label: string; disabled?: boolean }>;
+    // SelectEntry[] — flat options OR { kind:'group', label, options } groups.
+    options: Array<
+      | { value: string; label: string; disabled?: boolean }
+      | { kind: 'group'; label: string; options: Array<{ value: string; label: string; disabled?: boolean }> }
+    >;
     ariaLabel?: string;
     disabled?: boolean;
   }) => (
@@ -66,11 +70,21 @@ vi.mock('@/app/harness/Select', () => ({
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
     >
-      {options.map((o) => (
-        <option key={o.value} value={o.value} disabled={o.disabled}>
-          {o.label}
-        </option>
-      ))}
+      {options.map((o, i) =>
+        'kind' in o && o.kind === 'group' ? (
+          <optgroup key={`g-${i}`} label={o.label}>
+            {o.options.map((opt) => (
+              <option key={opt.value} value={opt.value} disabled={opt.disabled}>
+                {opt.label}
+              </option>
+            ))}
+          </optgroup>
+        ) : (
+          <option key={o.value} value={o.value} disabled={o.disabled}>
+            {o.label}
+          </option>
+        ),
+      )}
     </select>
   ),
 }));
@@ -251,11 +265,14 @@ describe('AdvShell — strip + header', () => {
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');
   });
 
-  it('snaps a per-pot tab back to Overview when the scope is All', async () => {
+  it('keeps a per-pot tab pinned (no snap to Overview) under All scope so it can prompt to pick a hive', async () => {
     nuqsState.scope = 'all';
     nuqsState.tab = 'docs';
     await renderShell();
-    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('overview'));
+    // No snap-back: the active per-pot tab is NOT rewritten to Overview…
+    expect(nuqsSetters.tab).not.toHaveBeenCalledWith('overview');
+    // …and it stays pinned + visible in the strip (its body shows the pick-a-hive prompt).
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'docs' })).toBeTruthy());
   });
 
   it('selecting a tab trigger writes the tab to the URL', async () => {

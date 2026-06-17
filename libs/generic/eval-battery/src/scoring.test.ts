@@ -66,6 +66,34 @@ describe('composite (the reward)', () => {
   it('throws when weights do not sum to a positive number', () => {
     expect(() => composite({ d1: 1, d2: 1, d3: 1 }, { d1: 0, d2: 0, d3: 0 })).toThrow();
   });
+
+  // --- Gap 11 (FIXED): negative weights break the convex-combination invariant ---
+  // A reward weight is never negative. Before the fix, mixed-sign weights whose
+  // sum is positive slipped past the `sum <= 0` guard and produced an
+  // out-of-[0,10] reward, silently corrupting the optimization signal.
+  it('throws when any weight is negative (the would-be-16.67 out-of-range case)', () => {
+    // {5,-1,-1} sums to 3 (> 0, so the old guard passed) but yields 50/3 ≈ 16.67.
+    expect(() => composite({ d1: 10, d2: 0, d3: 0 }, { d1: 5, d2: -1, d3: -1 })).toThrow(
+      /weights must be non-negative/,
+    );
+  });
+
+  it('throws on a single negative weight even when the others dominate', () => {
+    expect(() => composite({ d1: 5, d2: 5, d3: 5 }, { d1: 1, d2: 1, d3: -0.5 })).toThrow(
+      /non-negative/,
+    );
+  });
+
+  it('still accepts a zero weight as long as another is positive (boundary)', () => {
+    // 0 is a valid weight (drops a dimension); only < 0 is rejected.
+    expect(composite({ d1: 8, d2: 2, d3: 99 }, { d1: 1, d2: 1, d3: 0 })).toBeCloseTo(5, 6);
+  });
+
+  it('keeps every non-negative-weight result inside [0, 10] (convexity holds)', () => {
+    // Extremes: all-min and all-max stay at the dimension bounds.
+    expect(composite({ d1: 0, d2: 0, d3: 0 }, { d1: 0.5, d2: 0.25, d3: 0.25 })).toBe(0);
+    expect(composite({ d1: 10, d2: 10, d3: 10 }, { d1: 3, d2: 1, d3: 6 })).toBeCloseTo(10, 6);
+  });
 });
 
 describe('parseJudgeOutput', () => {
@@ -96,5 +124,33 @@ describe('parseJudgeOutput', () => {
   it('throws on non-object input', () => {
     expect(() => parseJudgeOutput(null)).toThrow();
     expect(() => parseJudgeOutput('not json')).toThrow();
+  });
+
+  // --- Gap 12 (FIXED): reject non-finite scores, not just NaN ---
+  // Before the fix only NaN was caught; ±Infinity slipped through and
+  // clampScore turned it into a silent perfect (10) / zero (0) score.
+  it('throws on a +Infinity dimension (would silently clamp to a perfect 10)', () => {
+    expect(() => parseJudgeOutput({ d1: Infinity, d2: 5, d3: 5, rationale: 'x' })).toThrow(
+      /must be a finite number/,
+    );
+  });
+
+  it('throws on a -Infinity dimension (would silently clamp to a zero 0)', () => {
+    expect(() => parseJudgeOutput({ d1: 5, d2: -Infinity, d3: 5, rationale: 'x' })).toThrow(
+      /must be a finite number/,
+    );
+  });
+
+  it('still throws on NaN (the original guard) and reports the offending field', () => {
+    expect(() => parseJudgeOutput({ d1: NaN, d2: 5, d3: 5, rationale: 'x' })).toThrow(/"d1"/);
+  });
+
+  it('still accepts ordinary finite scores after the finiteness tightening', () => {
+    expect(parseJudgeOutput({ d1: 0, d2: 10, d3: 5.5, rationale: 'ok' })).toEqual({
+      d1: 0,
+      d2: 10,
+      d3: 5.5,
+      rationale: 'ok',
+    });
   });
 });

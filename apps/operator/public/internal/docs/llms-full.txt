@@ -9689,6 +9689,60 @@ The first AIMD cut halved `eff` on every `penalize()` call. Under a fleet, ONE 4
 * Read-model: `packages/operator-core/lib/fleet-rate-status.ts`, served by `dev:rate_governor_status` + `GET /api/operator/rate-limit-config`.
 * Acceptance proof: `turn-robustness.fault-injection.test.ts` (“ACCEPTANCE P-022”) — one agent’s 429 parks the shared bucket for every caller.
 
+# "We hit the rate limit" is usually account-routing, not real capacity
+
+> Papercusp runs LLM inference over a POOL of many Anthropic accounts behind an inference gateway with a per-account rate governor, so a true usage/quota wall is rare. Agents keep mis-reading a routing/config fault as exhaustion ('we hit the account limit', 'session limit', 'exceeded max wait', a 429) and give up. The two faults that masquerade as a limit: (1) the account-aware routing is gated behind INFERENCE_GATEWAY + INFERENCE_GATEWAY_MULTI_ACCOUNT flags — OFF → spawned bees get no PAPERCUSP_ACCOUNT_ID → the governor keys the account-BLIND global anthropic:opus bucket → one account's 429 pauses it fleet-wide even with 6 idle accounts ('rate-limit pause exceeded max wait', exit 1, ~30ms, $0); (2) the gateway pools only some accounts — selectSpawnAccount pins a bee to a healthy account via x-papercusp-account, but if that account isn't in the gateway's pool the header is ignored and it falls back to its exhausted active() account, so the bee HANGS at $0. Verify with dev:rate_governor_status / accounts:status / the bee's /proc env / the gateway /healthz before concluding a limit.
+
+## The mistake this prevents
+
+[Section titled “The mistake this prevents”](#the-mistake-this-prevents)
+
+Agents (including capable ones) repeatedly conclude **“we’ve hit the account / session / usage limit”** the moment they see a `429`, a `rate_limit_error`, `"You've hit your session limit"`, or `agent governor: rate-limit pause exceeded max wait` — and then give up, throttle, wait hours for a “reset”, or report the fleet as capacity-gated. **Almost always there is idle capacity sitting on other accounts and the real cause is a routing/config fault.** This was hit twice in one overnight session: an owner pushed back with *“we have so many accounts, there is no way we’re actually capacity-gated”* — and was right.
+
+## What’s actually true (the multi-account system)
+
+[Section titled “What’s actually true (the multi-account system)”](#whats-actually-true-the-multi-account-system)
+
+Papercusp routes **all** model calls through an **inference gateway** backed by a **pool of many Anthropic accounts** (several Max subscriptions + a funded API key). A **rate governor** paces and tracks **each account separately** (`anthropic:opus@<id>` buckets, not just a global `anthropic:opus`). Aggregate capacity far exceeds any single account’s limit, so a genuine quota wall is rare. A spawned bee is supposed to be pinned to an available account (`selectSpawnAccount` → `PAPERCUSP_ACCOUNT_ID` → `x-papercusp-account` header) and the governor keys that account’s bucket.
+
+## The two faults that masquerade as a limit
+
+[Section titled “The two faults that masquerade as a limit”](#the-two-faults-that-masquerade-as-a-limit)
+
+**1. Account-blind governor (the routing is flag-gated OFF).** In `operator-spawn.ts`, `selectSpawnAccount` only runs when **both** `FLAGS.INFERENCE_GATEWAY` **and** `FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT` are on — and both default to `false`. With them off, a spawned bee gets **no** `PAPERCUSP_ACCOUNT_ID`, so the spawn governor (`orchestrator-runner.ts`) keys the **account-blind global `anthropic:opus` bucket**. One account’s 429 then pauses that bucket **fleet-wide**, and every opus spawn fails `agent governor: rate-limit pause exceeded max wait` (exit 1, \~30 ms, **$0**) **even with six idle accounts.** Tell: `spawned_agents.error_message` is the governor string, the spawn dies in tens of ms, and `dev:rate_governor_status` shows the **global** `anthropic:opus` bucket paused while `anthropic:opus@<someaccount>` is not.
+
+**2. The gateway pools only some accounts.** Even with the flags on, `selectSpawnAccount` pins the bee to a **healthy** account (e.g. `aviynw10`) via `x-papercusp-account`, **but the gateway only routes to accounts in its own pool.** If the pinned account isn’t pooled, the header is unknown → the gateway **falls back to its single `active()` account** — which may be exhausted (`/healthz` → `unified.rejected: true`, high `upstream429`). The bee’s request then **hangs at $0** (alive, `status=running`, no model call) instead of failing fast. Tell: the bee is alive but has **zero** `agent_usage_samples`, and the gateway `/healthz` `accountId` ≠ the bee’s pinned `PAPERCUSP_ACCOUNT_ID`.
+
+## The diagnostic recipe (do this BEFORE concluding a limit)
+
+[Section titled “The diagnostic recipe (do this BEFORE concluding a limit)”](#the-diagnostic-recipe-do-this-before-concluding-a-limit)
+
+* **`dev:rate_governor_status`** — is the paused bucket the **global** `anthropic:opus` (fault #1) or a specific `@account`? Are other `@account` buckets unpaused?
+* **`accounts:status`** — which accounts have headroom (`utilization`, `pausedUntil:0`, `sustainedlyLimited:false`)? If several are idle, you are **not** capacity-gated.
+* **`harness_shared.spawned_agents.error_message`** for the failing spawn — `exceeded max wait` (governor, fault #1) vs `account 'X' paced/paused` vs `session limit`.
+* **The bee’s `/proc/<pid>/environ`** — `PAPERCUSP_ACCOUNT_ID`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS: x-papercusp-account` — which account/gateway did it **actually** use?
+* **The gateway `/healthz`** (`:8788`) — its `accountId` + `unified.rejected`: is it stuck serving one exhausted account?
+
+## The fix levers
+
+[Section titled “The fix levers”](#the-fix-levers)
+
+* **Flags ON:** `papercusp-inference-gateway` + `papercusp-inference-gateway-multi-account` must both be enabled for per-account routing + per-account governor keying (fixes #1).
+* **Pool all accounts in the gateway** (not just 1–2) so the `x-papercusp-account` header can route to any of them and it never falls back to one exhausted account (fixes #2).
+
+## If you BUILD on the LLM
+
+[Section titled “If you BUILD on the LLM”](#if-you-build-on-the-llm)
+
+Build it **on the account-routing system** — route through the inference gateway / account pool and let it spread load across accounts. **Never hardcode a single credential or assume one account**; that is precisely how you manufacture a true rate/usage limit out of a system that has plenty of headroom.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* \[\[llm-429-check-the-transport-not-the-account]] — the sibling flavor: a path-specific bucket (raw-OAuth vs claude-code CLI) in the llm-testing lane.
+* The shared **`ACCOUNT_ROUTING_NOTE`** clause (orchestrator `prompt-build.ts`, re-exported to operator-core’s `renderAccountRoutingNote`) now primes **every** agent prompt — the spawned-bee base, the operator-launched-role base, and the su playbooks — with this.
+
 # Reaching an imperative library instance via React fiber walk
 
 > How to read a useRef-held instance (vditor, monaco, etc.) from a webview eval when the component doesn't expose it on window.
@@ -12130,6 +12184,64 @@ In the catch, suppress the warn for the **expected** pre-baseline missing-table 
 This is also better in production: a missing table pre-baseline (the feature is owner-gated / not yet armed) is the **normal empty state**, not a log-worthy error. The structural test then stays clean without having to special-case your query.
 
 See `learning.hiveEvalTrend` in `sync-resolver/index.ts` for the live example, and the [adding-a-sync-query](/internal/docs/agent-insights/adding-a-sync-query) insight for the resolver-entry recipe it pairs with.
+
+# τ²-bench (and any LiteLLM harness) through the gateway: the four traps beyond CC-framing
+
+> Vendoring Sierra's tau2-bench onto opus via the inference-gateway needs LiteLLM's anthropic/ provider (NOT openai — the gateway is an Anthropic /v1/messages passthrough), and four fixes the CC-framing insights don't cover: route the harness's INTERNAL judge LLMs too (they hardcode gpt-4.1 → OpenAI auth error), drop `temperature` (opus-4-8 rejects it), add real exponential backoff for 529 Overloaded waves, and default empty tool-args to {}. opus-4-8 tolerates dropped thinking blocks, so reasoning_effort works in a multi-turn tool harness with no extra patch.
+
+## What this saves you
+
+[Section titled “What this saves you”](#what-this-saves-you)
+
+You are vendoring **τ²-bench** (`benchmark-suite-tau2-bench-2026-06-17`) — or any external **LiteLLM-based** benchmark/agent harness — and routing it onto **opus** through Papercusp’s inference-gateway. The CC-framing trap is already documented in [gaia-suite-byo-agent-and-the-max-oauth-429](/internal/docs/agent-insights/gaia-suite-byo-agent-and-the-max-oauth-429) and [vendoring-a-langchain-benchmark-through-the-gateway](/internal/docs/agent-insights/vendoring-a-langchain-benchmark-through-the-gateway). This page is the **delta for a LiteLLM harness with an internal LLM judge** (the tau2 shape). Five things break a naive integration; only the first overlaps the existing insights.
+
+## The gateway is an Anthropic passthrough — use LiteLLM’s `anthropic/` provider
+
+[Section titled “The gateway is an Anthropic passthrough — use LiteLLM’s anthropic/ provider”](#the-gateway-is-an-anthropic-passthrough--use-litellms-anthropic-provider)
+
+`packages/operator-core/lib/inference-gateway/gateway.ts` is a transparent **`/v1/messages`** reverse-proxy to `api.anthropic.com` with Max-OAuth injection. It is **NOT OpenAI-compatible** (a plan that says “OpenAI-compatible base\_url” is wrong). So in LiteLLM:
+
+```plaintext
+model      = "anthropic/claude-opus-4-8"          # forces the anthropic provider → POSTs {api_base}/v1/messages
+api_base   = "http://127.0.0.1:8799"               # the QUIET gateway (account aviynw6); :8788 is the busy fleet
+api_key    = "anything"                             # gateway strips x-api-key/authorization, injects the real Bearer
+```
+
+Pointing LiteLLM’s *openai* provider at the gateway fails (it POSTs `/v1/chat/completions`, which the gateway forwards to a non-existent Anthropic route).
+
+## The five fixes (all env-gated in the vendored copy so stock behavior is unchanged)
+
+[Section titled “The five fixes (all env-gated in the vendored copy so stock behavior is unchanged)”](#the-five-fixes-all-env-gated-in-the-vendored-copy-so-stock-behavior-is-unchanged)
+
+1. **CC-framing** — first `system` block must be exactly `You are Claude Code, Anthropic's official CLI for Claude.` or you get a strict-bucket **429** that looks like a rate-limit but is a framing reject. (See the GAIA insight. tau2: prepend it in `utils/llm_utils.generate()`.)
+
+2. **Route the harness’s INTERNAL judge/secondary LLMs too.** This is the trap unique to a grader harness: tau2’s **NL-assertion grader**, env-interface, and eval-user-sim default to a hardcoded `gpt-4.1` (`config.py` `DEFAULT_LLM_NL_ASSERTIONS` etc.). Even with `--agent-llm`/`--user-llm` pointed at opus, grading fires `gpt-4.1` → LiteLLM **OpenAI** provider → `AuthenticationError: … OPENAI_API_KEY` (this deployment has no OpenAI key) → the whole task is scored `infrastructure_error`. Fix: override those config constants to the gateway model + api\_base too. **General lesson: grep the harness for EVERY default model id, not just the agent/user ones.**
+
+3. **Drop `temperature`.** `claude-opus-4-8` returns `invalid_request_error: \`temperature\` is deprecated for this model`. Set `litellm.drop\_params = True`(and/or strip`temperature\` for opus models). The model uses its own default sampling.
+
+4. **Real exponential backoff for 529 `overloaded_error`.** api.anthropic.com intermittently throws **529 Overloaded** in bursts. LiteLLM `num_retries` retries too fast/short to ride out a multi-minute overload window, so a turn fails and the task is `infrastructure_error`. Wrap the `completion()` call in a backoff loop (\~8 attempts, base 4s, cap 90s) and set `num_retries=0` so your loop is the sole authority. (tau2’s own `get_metrics_df` filters `infrastructure_error` out of pass^k — so a few that still fail are excluded, not scored as capability fails.)
+
+5. **Default empty tool-args to `{}`.** opus-4-8 (esp. with extended thinking) sometimes returns `""` for a no-arg tool call; `json.loads("")` → `Expecting value: line 1 column 1` fails the task. Use `json.loads(args or "{}")`.
+
+## Extended thinking (”@ xhigh”) works with NO extra patch
+
+[Section titled “Extended thinking (”@ xhigh”) works with NO extra patch”](#extended-thinking--xhigh-works-with-no-extra-patch)
+
+`reasoning_effort="high"` is accepted by opus-4-8 and round-trips through a **multi-turn tool** conversation even though tau2 reconstructs assistant messages from `content`+`tool_calls` and **drops the thinking blocks** — opus-4-8 *tolerates* missing prior thinking blocks mid-tool-use (it does not 400 “thinking blocks required” the way some setups do). So you can run the agent at high reasoning without patching message reconstruction. Bump `max_tokens` (≥16k) to leave room for the thinking budget. Apply reasoning to the **agent only** (the system-under-test); leave the user-simulator at default (it’s the environment).
+
+## Telltales
+
+[Section titled “Telltales”](#telltales)
+
+| Symptom                                                            | Cause                            | Fix    |
+| ------------------------------------------------------------------ | -------------------------------- | ------ |
+| `infrastructure_error`, turns=0, OpenAI `OPENAI_API_KEY` error     | internal judge → OpenAI provider | fix #2 |
+| `invalid_request_error: temperature is deprecated`                 | opus-4-8 rejects temperature     | fix #3 |
+| bursts of `InternalServerError … overloaded_error` then task retry | 529 wave, retries too short      | fix #4 |
+| `Expecting value: line 1 column 1 (char 0)`                        | empty tool-call args             | fix #5 |
+| strict-bucket 429 with a tiny body                                 | CC-framing missing               | fix #1 |
+
+Vendored copy + runner: `~/.papercusp/bench-harnesses/tau2-bench` (`pc_run.sh`, `pc_suite.sh`, `pc_metrics.py`; all patches tagged `papercusp patch (benchmark-suite-tau2-bench-2026-06-17)`).
 
 # "Couldn't find callback id" console flood = stale IPC Channels, not event listeners
 
