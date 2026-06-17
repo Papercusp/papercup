@@ -14,6 +14,8 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { getPlanRow } from './source';
 import { armPlanSchedule } from '../../harness/routines/arm-plan-schedule';
 
@@ -44,6 +46,9 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    if (!(await getFlag(FLAGS.SCHEDULED_PLANS, 'system'))) {
+      return errOut('feature_disabled', args.slug, 'the papercusp-scheduled-plans flag is off');
+    }
     const opts = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
     const plan = await getPlanRow(args.slug, opts);
     if (!plan) return errOut('not_found', args.slug);

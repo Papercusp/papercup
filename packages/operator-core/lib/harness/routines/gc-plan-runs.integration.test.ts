@@ -25,12 +25,12 @@ afterAll(async () => {
   await org?.cleanup();
 });
 beforeEach(async () => {
+  // plan_run_turns has an FK to plan_runs(id) with no cascade — delete turns FIRST.
+  await sql`DELETE FROM harness_shared.plan_run_turns WHERE plan_run_id IN (
+    SELECT id FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS})`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS}`;
   await sql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${HARNESS}`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE harness_slug = ${HARNESS} AND workspace_id = ${WS}`;
-  // plan_run_turns FK to plan_runs(id); the plan_runs delete above cascades? No FK cascade — clear explicitly.
-  await sql`DELETE FROM harness_shared.plan_run_turns WHERE plan_run_id IN (
-    SELECT id FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS})`;
 });
 
 async function seedFullRun(launchedAt: number): Promise<number> {

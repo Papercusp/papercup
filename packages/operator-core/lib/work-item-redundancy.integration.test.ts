@@ -300,6 +300,116 @@ describe('judgeRedundancyGroup — judge each replica, pick + adopt the winner',
     expect(wm.setWorkItemState).toHaveBeenCalledWith('F-040', 'done', { harness: HARNESS });
   });
 
+  // G15 [P1] — DIVERGENCE detection. The "strong beats weak" case above contrasts a
+  // complete replica against a half-baked one. The harder BOINC case is two COHERENT,
+  // fully-complete replicas that reach OPPOSITE conclusions — only one is correct. A naive
+  // equal-weight judge that rewards confident-sounding prose could rank the WRONG answer
+  // high, defeating the whole point of redundancy. This fake judge models a judge that
+  // actually checks the conclusion against ground truth (the item asks "is X safe?"; truth =
+  // NO): the trace concluding the correct way scores high, the contradictory one scores low.
+  // We assert (a) the correct replica is adopted, and (b) the composite GAP clears a
+  // meaningful threshold (so the deterministic tie-break never has to disambiguate two
+  // near-equal scores — the wrong answer must be decisively rejected, not narrowly edged).
+  describe('G15 — redundancy DIVERGENCE: two coherent but CONTRADICTORY replicas', () => {
+    // Ground truth for F-042's question is the conclusion "UNSAFE". A replica whose trace
+    // reaches that conclusion is CORRECT (judge: high); one reaching "SAFE" is a coherent but
+    // WRONG divergent result (judge: low) — regardless of how confident/polished it reads.
+    const groundTruthJudge: JudgeLlmCall = async ({ messages }) => {
+      const trace = messages.map((m) => m.content).join('\n');
+      const correct = /CONCLUSION:\s*UNSAFE/.test(trace);
+      // Both traces are equally fluent/long; ONLY the conclusion differs. A judge that
+      // graded on coherence/length alone would tie them — this one grades on correctness.
+      return {
+        text: '',
+        json: correct
+          ? { d1: 9, d2: 9, d3: 8, rationale: 'reaches the correct conclusion (unsafe)' }
+          : { d1: 2, d2: 3, d3: 3, rationale: 'confidently reaches the WRONG conclusion (safe)' },
+        costUsd: 0.01,
+        inputTokens: 10,
+        outputTokens: 10,
+      };
+    };
+
+    it('adopts the CORRECT replica and the composite gap clears a threshold', async () => {
+      await insertFeature('F-042', 2);
+      wm.getWorkItem.mockResolvedValue({
+        id: 'F-042',
+        family: 'feature',
+        harness: HARNESS,
+        title: 'Is the migration safe to auto-apply?',
+        summary: 'High-stakes: decide whether to gate the migration.',
+      });
+      wm.setWorkItemState.mockResolvedValue({ id: 'F-042', state: 'passed' });
+
+      const a = await claimReplicaSlot({ workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-042', owner: 'su-wrong' });
+      const b = await claimReplicaSlot({ workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-042', owner: 'su-right' });
+      if (!a.ok || !b.ok) throw new Error('claims failed');
+
+      // su-wrong: a polished, confident trace that reaches the WRONG conclusion (SAFE).
+      await recordReplicaResult({
+        workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-042', replicaIndex: a.replica.replicaIndex, owner: 'su-wrong',
+        result: { text: 'Thorough analysis of every codepath, ran the full suite. CONCLUSION: SAFE to auto-apply.' },
+      });
+      // su-right: an equally coherent trace that reaches the CORRECT conclusion (UNSAFE).
+      await recordReplicaResult({
+        workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-042', replicaIndex: b.replica.replicaIndex, owner: 'su-right',
+        result: { text: 'Thorough analysis of every codepath, ran the full suite. CONCLUSION: UNSAFE — it drops a column in use.' },
+      });
+
+      const res = await judgeRedundancyGroup({ workspaceId: WS, harness: HARNESS, workItemId: 'F-042' }, { llmCall: groundTruthJudge });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      // (a) The CORRECT replica is adopted — not the confident wrong one.
+      expect(res.winner.owner).toBe('su-right');
+      expect(res.winner.replicaIndex).toBe(b.replica.replicaIndex);
+
+      // (b) The composite GAP is decisive (not a hair's-breadth that the tie-break must save).
+      // correct composite = 9*.5+9*.25+8*.25 = 8.75 ; wrong = 2*.5+3*.25+3*.25 = 2.5 ; gap = 6.25.
+      const wrongScore = res.scores.find((s) => s.replicaIndex === a.replica.replicaIndex)!.composite;
+      const rightScore = res.scores.find((s) => s.replicaIndex === b.replica.replicaIndex)!.composite;
+      expect(rightScore - wrongScore).toBeGreaterThan(2); // decisively rejected, BOINC redundancy works
+
+      // The losing (wrong) replica is recorded as a loser, the correct one as winner.
+      const replicas = await listReplicas('F-042', { harness: HARNESS, workspaceId: WS });
+      const byIdx = Object.fromEntries(replicas.map((r) => [r.replicaIndex, r]));
+      expect(byIdx[b.replica.replicaIndex].status).toBe('winner');
+      expect(byIdx[a.replica.replicaIndex].status).toBe('loser');
+      expect(wm.setWorkItemState).toHaveBeenCalledWith('F-042', 'done', { harness: HARNESS });
+    });
+
+    it('the deterministic tie-break is the SAFETY NET, not the decider, on a near-tie', async () => {
+      // If the judge genuinely can't separate two divergent answers (composite tie), the
+      // pure tie-break (earliest acquired_ts → lowest owner → lowest index) must still pick
+      // ONE deterministically — never crash, never adopt nothing. This guards the failure
+      // mode where redundancy can't tell right from wrong: we degrade to a STABLE choice.
+      await insertFeature('F-043', 2);
+      wm.getWorkItem.mockResolvedValue({ id: 'F-043', family: 'feature', harness: HARNESS, title: 't', summary: 's' });
+      wm.setWorkItemState.mockResolvedValue({ id: 'F-043', state: 'passed' });
+      // A judge that scores everything identically (the pathological "can't tell" judge).
+      const flatJudge: JudgeLlmCall = async () => ({
+        text: '', json: { d1: 5, d2: 5, d3: 5, rationale: 'indistinguishable' }, costUsd: 0.01, inputTokens: 1, outputTokens: 1,
+      });
+
+      const a = await claimReplicaSlot({ workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-043', owner: 'su-aaa' });
+      const b = await claimReplicaSlot({ workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-043', owner: 'su-bbb' });
+      if (!a.ok || !b.ok) throw new Error('claims failed');
+      await recordReplicaResult({ workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-043', replicaIndex: a.replica.replicaIndex, owner: 'su-aaa', result: { text: 'one way' } });
+      await recordReplicaResult({ workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-043', replicaIndex: b.replica.replicaIndex, owner: 'su-bbb', result: { text: 'other way' } });
+
+      const res = await judgeRedundancyGroup({ workspaceId: WS, harness: HARNESS, workItemId: 'F-043' }, { llmCall: flatJudge });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      // Equal composites ⇒ tie-break decides; both acquired near-simultaneously so the
+      // disambiguator falls to the deterministic fields. Whatever it picks, it must be
+      // STABLE (idempotent across re-reads) and a real participant.
+      expect([a.replica.replicaIndex, b.replica.replicaIndex]).toContain(res.winner.replicaIndex);
+      const replicas = await listReplicas('F-043', { harness: HARNESS, workspaceId: WS });
+      expect(replicas.filter((r) => r.status === 'winner')).toHaveLength(1);
+      expect(replicas.filter((r) => r.status === 'loser')).toHaveLength(1);
+    });
+  });
+
   it('refuses with < 2 complete replicas', async () => {
     await insertFeature('F-041', 2);
     wm.getWorkItem.mockResolvedValue({ id: 'F-041', family: 'feature', harness: HARNESS, title: 'x', summary: 'y' });

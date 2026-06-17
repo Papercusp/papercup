@@ -46,6 +46,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // captured improvements only begins once the owner flips it (capture +
   // triage run regardless).
   FLAGS.IMPROVEMENT_AUTO_IMPLEMENT,
+  // scheduled-recurring-plans-2026-06-16 (P-028): the scheduled-plan execution path
+  // (system:plan-run + arming) ships dark — autonomous recurring spend/action on a
+  // cadence, not yet live-proven. Per-plan arming is autonomy-gated; this is the global
+  // master switch. Owner flips it after the first proven run; pending flip in the plan's ## Now.
+  FLAGS.SCHEDULED_PLANS,
   // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
   // reaper ENDS adv_session rows — DARK until proven on the fleet. OFF ⇒ a no-op;
   // the routine is also seeded INACTIVE. Bring-up: --active --dry-run, then flip.

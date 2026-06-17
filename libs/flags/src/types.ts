@@ -584,6 +584,13 @@ export const FLAGS = {
   // observes-not-ideas, no thrash, cross-monitors the Queen). The owner flips it ON
   // after that proof — surfaced loudly in the plan's ## Now + every lane report.
   OVERWATCH: "papercusp-overwatch",
+  // scheduled-recurring-plans-2026-06-16 (P-028): the global master switch for the
+  // scheduled-plan EXECUTION path — the system:plan-run action + arming. DEFAULT OFF
+  // (DELIBERATE, NOT the alpha default-on policy): autonomous recurring spend + action
+  // on a cadence, not yet live-proven; ships dark until the owner flips it. Per-plan
+  // arming is separately autonomy-gated (the schedule-arm category). Pending flip
+  // surfaced in the plan's ## Now + every lane report.
+  SCHEDULED_PLANS: "papercusp-scheduled-plans",
   // impartial-benchmark-suite-2026-06-15 (P-005/BRIEF 3): gates the EXTERNAL-BENCH
   // grader adapter + the `external-bench:run` op — the runner that clones a public
   // benchmark task, spins a throwaway coding harness, extracts the diff, and grades
@@ -968,6 +975,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the role registration (B-01), the wake-loop/routine (B-04), and the UI pane
   // (B-08). Pending flip surfaced in the plan's ## Now + every lane report.
   [FLAGS.OVERWATCH]: false,
+  // DEFAULT OFF — DELIBERATE (scheduled-recurring-plans-2026-06-16 P-028): the
+  // scheduled-plan execution path (system:plan-run + arming) ships dark — autonomous
+  // recurring spend/action until the owner flips it. Per-plan arming is autonomy-gated.
+  [FLAGS.SCHEDULED_PLANS]: false,
   // DEFAULT OFF — DELIBERATE (see the flag note): the external-bench grader adapter
   // is incomplete (M2 unbuilt) + infra-heavy (Docker/GB image pulls); ships dark
   // until the P-009 pilot proves it. Owner flips ON after — pending flip surfaced.

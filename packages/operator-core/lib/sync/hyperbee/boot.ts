@@ -913,6 +913,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     try {
       // Queued admissions land first so THIS pass merges them (P-022).
       await drainAdmissionQueue();
+
+      // ── Revocation refresh BEFORE collecting the merge set (G7 fix) ──
+      // A published revocation that has propagated to this peer's loader (e.g.
+      // A's revoked_pubkeys row federated to B's PG) must drop the revoked
+      // peer's log from `admitted` *before* this pass reads it — otherwise a
+      // peer revoked in the SAME cycle as it appends new ops gets ONE final
+      // merge of those ops (the refresh used to run only AFTER the merge body,
+      // so a `changed` pass ingested the revoked-era ops before the drop). This
+      // mirrors the ordering `revoke()` already uses: delete from `admitted`,
+      // THEN merge. The cursor-reset check below sees the removed log and
+      // re-folds the survivors without it. Fail-open per D-002 (a load error is
+      // caught inside applyRevocationRefresh's caller contract — it runs under
+      // the merge lock here, same as before).
+      await applyRevocationRefresh();
+
       const logs: AdmittedLog[] = [];
       for (const log of admitted.values()) {
         // Refresh remote logs so `length` reflects the writer's appends.
@@ -972,7 +987,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
       if (!changed) {
-        await applyRevocationRefresh();
+        // applyRevocationRefresh already ran at the top of this pass (G7 fix);
+        // only the slow-cadence channel-2 reverify remains for the idle tick.
         await maybeReverifyAdmitted();
         return 0;
       }
@@ -1048,16 +1064,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
 
-      // ── Merge-refresh (D-002): ALWAYS run inside the serialized merge block
-      // (merging=true) so it cannot race a concurrent merge pass. This collapses
-      // the former test/production asymmetry: the refresh now runs under the lock
-      // on every mergeNow() call regardless of whether an override is in use.
-      // `applyRevocationRefresh` calls `loadRevoked` (which may call the real PG
-      // loader in production) then synchronously drops any newly-revoked peers from
-      // admitted/pubkeyToLogKey/pendingPeers — no re-entrancy into mergeNow.
-      // (A peer it drops vanishes from `admitted`; the cursor-reset check at the
-      // top of the NEXT pass sees the removal and re-folds without it.)
-      await applyRevocationRefresh();
+      // ── Merge-refresh (D-002): the revocation refresh now runs at the TOP of
+      // the pass (G7 fix) — BEFORE the merge set is collected — so a peer revoked
+      // via the published list is dropped before its log is read, never getting a
+      // final merge of its revoked-era ops. (It used to run only here, after the
+      // merge body, which let a `changed` pass ingest those ops before the drop.)
+      // Kept inside the serialized merge block, under the merging lock, exactly as
+      // before; no re-entrancy into mergeNow.
 
       // ── Channel-2 re-verify (rev-v2 Component A): run inside the same
       // serialized merge block so it cannot race a concurrent merge mutating

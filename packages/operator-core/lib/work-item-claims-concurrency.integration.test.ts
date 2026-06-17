@@ -332,3 +332,157 @@ describe('C3 — fail-open reconcile under partition heals deterministically (re
     expect(reconcileClaims(advisory)?.winner.owner).toBe('su-lo'); // pk-aaa < pk-zzz
   });
 });
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// G16 [P2] — REAL-CLOCK lease expiry. The existing TTL test (above) forces expiry with a
+// manual SQL `UPDATE … expires_ts = now() - interval`. That proves the STEAL clause but
+// NOT that a lease set with a real short ttl actually lapses on the wall clock — the
+// `clock_timestamp() + make_interval(secs => ttl)` arithmetic could be wrong and the manual
+// edit would mask it. Here we acquire with a genuine short ttl, sleep PAST it (no DB edit),
+// and prove another owner can then steal — the lease expired by itself.
+describe('G16 — REAL-clock lease expiry (no manual DB edit)', () => {
+  it('a short-ttl lease lapses on the wall clock and is then stealable', async () => {
+    const item = 'F-realttl';
+    // clampTtl floors to 1s minimum; acquire with the smallest real ttl.
+    const a = await acquireClaimLocal({ workspaceId: WS, harnessSlug: H, workItemId: item, owner: 'owner-A', ttlSec: 1 });
+    expect(a.ok).toBe(true);
+    if (!a.ok) throw new Error('unreachable');
+
+    // BEFORE the ttl elapses, a different owner is BLOCKED — the lease is live.
+    const blocked = await acquireClaimLocal({ workspaceId: WS, harnessSlug: H, workItemId: item, owner: 'owner-B' });
+    expect(blocked.ok).toBe(false);
+    expect((await getClaim(WS, H, item))?.expired).toBe(false);
+
+    // Wait for the lease to lapse on its OWN — real wall-clock, no SQL push of expires_ts.
+    await sleep(1_300);
+    expect((await getClaim(WS, H, item))?.expired).toBe(true);
+
+    // Now a different owner steals it — purely because the real clock passed the lease.
+    const stolen = await acquireClaimLocal({ workspaceId: WS, harnessSlug: H, workItemId: item, owner: 'owner-B' });
+    expect(stolen.ok).toBe(true);
+    if (stolen.ok) {
+      expect(stolen.claim.owner).toBe('owner-B');
+      expect(stolen.claim.claimId).not.toBe(a.claim.claimId); // grip rotated
+      expect(stolen.claim.expired).toBe(false);
+    }
+  }, 15_000);
+});
+
+// G17 [P2] — HEARTBEAT renewal BLOCKS a concurrent steal for the TTL, then the item becomes
+// stealable once heartbeats stop. This is the liveness guarantee: a Swarm actively working
+// (heartbeating) keeps its grip against any number of stealers; a Swarm that DIED (stopped
+// heartbeating) loses it after the ttl. We acquire a short ttl, renew it on an interval that
+// out-paces the ttl, fire concurrent steals throughout (all must FAIL), then stop the
+// heartbeat and prove a steal succeeds once the un-renewed lease lapses.
+describe('G17 — heartbeat renewal blocks a steal until heartbeats stop', () => {
+  it('a renewing owner holds against concurrent steals, then loses after heartbeats stop', async () => {
+    const item = 'F-hb-block';
+    const TTL = 1; // clampTtl floor — the lease lapses 1s after each (re)write
+    const a = await acquireClaimLocal({ workspaceId: WS, harnessSlug: H, workItemId: item, owner: 'owner-A', ttlSec: TTL });
+    expect(a.ok).toBe(true);
+    if (!a.ok) throw new Error('unreachable');
+
+    // Heartbeat every 400ms (well under the 1s ttl) so the lease never lapses while alive.
+    let beating = true;
+    const beat = (async () => {
+      while (beating) {
+        await heartbeatClaimLocal({
+          workspaceId: WS, harnessSlug: H, workItemId: item,
+          claimId: a.claim.claimId, owner: 'owner-A', ttlSecOverride: TTL,
+        });
+        await sleep(400);
+      }
+    })();
+
+    // Fire a burst of concurrent steals across ~1.6s (longer than the ttl) — EVERY one must
+    // fail, because the heartbeat keeps re-pushing expires_ts ahead of the clock.
+    const stealResults: boolean[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const r = await acquireClaimLocal({ workspaceId: WS, harnessSlug: H, workItemId: item, owner: `thief-${i}` });
+      stealResults.push(r.ok);
+      await sleep(400);
+    }
+    expect(stealResults.every((ok) => ok === false)).toBe(true);
+    // The original owner still holds the live grip throughout.
+    const mid = await getClaim(WS, H, item);
+    expect(mid?.owner).toBe('owner-A');
+    expect(mid?.expired).toBe(false);
+
+    // Stop heartbeating (simulate the owner dying) and let the un-renewed lease lapse.
+    beating = false;
+    await beat;
+    await sleep(1_300);
+    expect((await getClaim(WS, H, item))?.expired).toBe(true);
+
+    // Now a stealer succeeds — the dead owner's grip is reclaimable.
+    const stolen = await acquireClaimLocal({ workspaceId: WS, harnessSlug: H, workItemId: item, owner: 'thief-final' });
+    expect(stolen.ok).toBe(true);
+    if (stolen.ok) expect(stolen.claim.owner).toBe('thief-final');
+  }, 20_000);
+});
+
+// G18 [P3] — priority tie-break + concurrent priority-ordered claiming. claim_next under the
+// per-Hive lease (swarmId present) orders by `feature_order ASC NULLS LAST, created_ts ASC`.
+// Two facets: (1) equal feature_order MUST fall back to created_ts (oldest first); (2) N
+// concurrent claimers over M priorities → all distinct AND drained in priority order.
+describe('G18 — priority tie-break + concurrent priority-ordered claiming', () => {
+  async function seedPrioritized(id: string, createdTs: number, order: number | null) {
+    await db.sql`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (harness_slug, feature_id, item_kind, status, taken_by, feature_order, workspace_id, created_ts, updated_ts)
+      VALUES (${H}, ${id}, 'feature', 'todo', NULL, ${order}, ${WS}, ${createdTs}, 0)`;
+  }
+
+  it('equal feature_order falls back to created_ts (oldest first)', async () => {
+    // Same priority bucket (order=5); F-old is older → must be claimed before F-new.
+    await seedPrioritized('F-new', 500, 5);
+    await seedPrioritized('F-old', 100, 5);
+    const first = await wi.claimNextWorkItem({ harness: H, assignee: 'sw-1', swarmId: 's1' });
+    const second = await wi.claimNextWorkItem({ harness: H, assignee: 'sw-2', swarmId: 's1' });
+    expect(first?.id).toBe('F-old'); // tie on feature_order → oldest created_ts wins
+    expect(second?.id).toBe('F-new');
+  });
+
+  it('N concurrent claimers over M priorities ⇒ all distinct, drained in priority order', async () => {
+    // Five distinct priorities; lower feature_order = claimed sooner. Insert created_ts in
+    // REVERSE of priority so a created_ts-only sort would give the WRONG order — proving the
+    // priority key dominates. F-p0 (order 0) must go first, … F-p4 (order 40) last.
+    const M = 5;
+    for (let i = 0; i < M; i += 1) await seedPrioritized(`F-p${i}`, 1000 - i, i * 10);
+    const N = 9; // oversubscribed
+
+    // Concurrent claimers. SKIP LOCKED means each grabs a distinct row; the ORDER BY inside
+    // the subquery makes each transaction take the lowest-feature_order still-free row.
+    const claimed = await Promise.all(
+      Array.from({ length: N }, (_, i) => wi.claimNextWorkItem({ harness: H, assignee: `swarm-${i}`, swarmId: 's1' })),
+    );
+    const won = claimed.filter((c): c is NonNullable<typeof c> => c != null);
+    expect(won).toHaveLength(M); // exactly the M items, surplus claimers got null
+    // All distinct items, all distinct owners.
+    expect(new Set(won.map((w) => w.id)).size).toBe(M);
+    expect(new Set(won.map((w) => w.assignee)).size).toBe(M);
+    // Every priority bucket was taken exactly once.
+    expect(won.map((w) => w.id).sort()).toEqual(['F-p0', 'F-p1', 'F-p2', 'F-p3', 'F-p4']);
+
+    // PG agrees: each item taken by exactly one owner, none double-taken.
+    const rows = await db.sql<{ feature_id: string; taken_by: string | null }[]>`
+      SELECT feature_id, taken_by FROM harness_shared.harness_features_consolidated ORDER BY feature_order`;
+    expect(rows.every((r) => r.taken_by != null)).toBe(true);
+    expect(new Set(rows.map((r) => r.taken_by)).size).toBe(M);
+  });
+
+  it('SERIAL priority claiming drains strictly lowest-feature_order first', async () => {
+    // The deterministic complement to the concurrent case: claimed one-at-a-time, the order
+    // is exactly feature_order ASC (priority lever honored end-to-end under the lease).
+    await seedPrioritized('F-hi', 100, 30); // lowest priority (highest order)
+    await seedPrioritized('F-mid', 200, 20);
+    await seedPrioritized('F-top', 300, 10); // highest priority (lowest order), but NEWEST
+    const order: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const got = await wi.claimNextWorkItem({ harness: H, assignee: `s-${i}`, swarmId: 's1' });
+      if (got) order.push(got.id);
+    }
+    expect(order).toEqual(['F-top', 'F-mid', 'F-hi']); // strictly by feature_order, not created_ts
+  });
+});

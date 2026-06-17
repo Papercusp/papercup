@@ -37,7 +37,7 @@ import { buildHarnessPlansProjection, type HarnessPlanRow } from '../projections
 import { buildHarnessPlanPartsProjection, type PlanPartWireRow } from '../projections/harness-plan-parts';
 import { PgPlanPartsStore } from '../../../plan-parts/store';
 import { capturePlanParts } from '../../../plan-parts/federation';
-import { hashPlanContent, splitPlanIntoParts } from '@papercusp/plan-parser';
+import { hashPlanContent, splitPlanIntoParts, type FederatedPart } from '@papercusp/plan-parser';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -189,6 +189,9 @@ function peer(sql: postgres.Sql, flagOn: boolean) {
   // Apply a single part op as a remote peer would.
   const recvPart = (row: PlanPartWireRow, ts: number) =>
     parts.writeToPg(row, { authorPubkey: 'REMOTE', origin: 'remote', ts });
+  // Apply a part DELETE (tombstone) op as a remote peer would. `key` is the
+  // hyperbee key == `<plan_slug>/<part_key>`; `delTs` is the del op's wire ts.
+  const recvDelete = (key: string, delTs: number) => parts.deleteFromPg(key, delTs);
   // Find a seeded part's wire row by item id (key/body derived from the store).
   const partRowFor = async (planSlug: string, idToken: string): Promise<PlanPartWireRow> => {
     const all = await store.getParts(planSlug);
@@ -199,7 +202,7 @@ function peer(sql: postgres.Sql, flagOn: boolean) {
     }
     throw new Error(`no item part for ${idToken}`);
   };
-  return { sql, store, plans, parts, getPlan, outboxCount, recvWholeBlob, recvPart, partRowFor };
+  return { sql, store, plans, parts, getPlan, outboxCount, recvWholeBlob, recvPart, recvDelete, partRowFor };
 }
 
 describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no clobber)', () => {
@@ -368,5 +371,224 @@ describe('plan-part federation cutover — TWO-INSTANCE convergence (separate PG
     expect(cb).toContain('one-A');
     expect(cb).toContain('two-B');
     expect(ca).toBe(cb); // byte-identical convergence across two separate databases
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G11 [P1] — part-deletion (tombstone) lifecycle. On the PG store a tombstone is
+// SOFT (a flag + fed_ts, not a DELETE) so a late op for a removed key is still
+// LWW-ordered: a STALE older edit loses to the tombstone (stays deleted) while a
+// NEWER edit wins (resurrects). Tombstones never appear in recomposed content.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('plan-part federation — G11 part-deletion (tombstone) lifecycle (real PG, flag ON)', () => {
+  let db: FreshPgDb;
+  let p: ReturnType<typeof peer>;
+
+  beforeAll(async () => {
+    db = await createFreshPgDb('plan_part_g11');
+    await setupSchema(db.sql);
+    p = peer(db.sql, true); // flag ON — recompose drives harness_plans
+  }, 60_000);
+  afterAll(async () => { await db?.cleanup(); });
+
+  beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
+    await db.sql`DELETE FROM harness_shared.harness_plans`;
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+  });
+
+  // Seed a two-item plan + its parts; clear the capture echo from the backfill.
+  async function seed(): Promise<void> {
+    const c0 = planMarkdown('one', 'two');
+    await p.recvWholeBlob(c0, 100);
+    await capturePlanParts(p.store, SLUG, c0, 100, 'seed');
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+  }
+  const delKey = `${SLUG}/item:P-001`;
+
+  it('a deleted part stays deleted against a STALE older edit; tombstone absent from recomposed content', async () => {
+    await seed();
+    // Delete P-001 at ts=300.
+    await p.recvDelete(delKey, 300);
+    let content = (await p.getPlan())!.content;
+    expect(content).not.toContain('P-001'); // (c) tombstone absent from recompose
+    expect(content).toContain('P-002');     // sibling untouched
+
+    // A STALE edit (ts=250 < 300) for the SAME key arrives → must LOSE to the tombstone.
+    const p1 = { harness_slug: H, plan_slug: SLUG, part_key: 'item:P-001', kind: 'item' as const, body: '- **P-001** `todo` STALE-EDIT', ordinal: 1, tombstone: false };
+    await p.recvPart(p1, 250);
+
+    // Store: the tombstone still wins (soft tombstone, LWW by fed_ts).
+    const tomb = (await p.store.getParts(SLUG)).get('item:P-001');
+    expect(tomb?.tombstone).toBe(true);
+    content = (await p.getPlan())!.content;
+    expect(content).not.toContain('STALE-EDIT'); // (a) stays deleted
+    expect(content).not.toContain('P-001');
+  });
+
+  it('a NEWER edit resurrects a deleted part', async () => {
+    await seed();
+    await p.recvDelete(delKey, 300);
+    expect((await p.getPlan())!.content).not.toContain('P-001');
+
+    // A NEWER edit (ts=350 > 300) for the SAME key arrives → must WIN, resurrecting it.
+    const p1 = { harness_slug: H, plan_slug: SLUG, part_key: 'item:P-001', kind: 'item' as const, body: '- **P-001** `done` RESURRECTED', ordinal: 1, tombstone: false };
+    await p.recvPart(p1, 350);
+
+    const live = (await p.store.getParts(SLUG)).get('item:P-001');
+    expect(live?.tombstone).toBeUndefined(); // (b) no longer a tombstone
+    const content = (await p.getPlan())!.content;
+    expect(content).toContain('RESURRECTED');
+    expect(content).toContain('P-002');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G12 [P2] — per-part LWW tie-break on EQUAL fedTs. The PG store's ON CONFLICT
+// guard tie-breaks identical fed_ts by lexical `author` (z>a), COALESCE'ing NULL
+// to '' so a named author beats NULL and NULL never beats anything. Exercised
+// directly against PgPlanPartsStore.upsertPart on real PG.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('plan-part federation — G12 equal-fedTs author tie-break (real PG store)', () => {
+  let db: FreshPgDb;
+  let store: PgPlanPartsStore;
+
+  beforeAll(async () => {
+    db = await createFreshPgDb('plan_part_g12');
+    await setupSchema(db.sql);
+    store = new PgPlanPartsStore(db.sql, WS, H);
+  }, 60_000);
+  afterAll(async () => { await db?.cleanup(); });
+  beforeEach(async () => { await db.sql`DELETE FROM harness_shared.harness_plan_parts`; });
+
+  const mk = (author: string | undefined, body: string): FederatedPart => ({
+    key: 'item:P-001', kind: 'item', text: body, order: 0, fedTs: 500,
+    ...(author !== undefined ? { author } : {}),
+  });
+  const bodyOf = async () => (await store.getParts('g12')).get('item:P-001')?.text;
+  const authorOf = async () => (await store.getParts('g12')).get('item:P-001')?.author;
+
+  it('equal fedTs, different author: higher author (z) wins — apply a-then-z', async () => {
+    await store.upsertPart('g12', mk('a', 'from-a'));
+    await store.upsertPart('g12', mk('z', 'from-z'));
+    expect(await bodyOf()).toBe('from-z'); // z > a → z wins
+  });
+
+  it('equal fedTs, different author: higher author (z) wins — apply z-then-a (order-independent)', async () => {
+    await store.upsertPart('g12', mk('z', 'from-z'));
+    await store.upsertPart('g12', mk('a', 'from-a')); // a < z → loses the tie, dropped
+    expect(await bodyOf()).toBe('from-z'); // z still wins regardless of apply order
+  });
+
+  it('equal fedTs, NULL author vs named: named wins (COALESCE default) — both orders', async () => {
+    // named-then-NULL: NULL ('') is not > named, so it loses.
+    await store.upsertPart('g12', mk('m', 'from-named'));
+    await store.upsertPart('g12', mk(undefined, 'from-null'));
+    expect(await bodyOf()).toBe('from-named');
+    expect(await authorOf()).toBe('m');
+
+    await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
+    // NULL-then-named: named ('m') > NULL ('') so it wins.
+    await store.upsertPart('g12', mk(undefined, 'from-null'));
+    await store.upsertPart('g12', mk('m', 'from-named'));
+    expect(await bodyOf()).toBe('from-named');
+    expect(await authorOf()).toBe('m');
+  });
+
+  it('equal fedTs, NULL author vs NULL author: tie is NOT won (COALESCE("","") not strictly >), first write stands', async () => {
+    await store.upsertPart('g12', mk(undefined, 'first-null'));
+    await store.upsertPart('g12', mk(undefined, 'second-null')); // '' > '' is false → dropped
+    expect(await bodyOf()).toBe('first-null');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G13 [P2] — whole-blob → part-edit → stale-whole-blob ordering. With the flag ON
+// the whole-blob path is bootstrap-only; a later whole-blob op must be REJECTED by
+// the clobber gate (INSERT … DO NOTHING) while the per-part recompose remains the
+// sole content writer. Final content reflects the part edit, never the stale blob.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('plan-part federation — G13 whole-blob / part-edit / stale-whole-blob ordering (real PG, flag ON)', () => {
+  let db: FreshPgDb;
+  let p: ReturnType<typeof peer>;
+
+  beforeAll(async () => {
+    db = await createFreshPgDb('plan_part_g13');
+    await setupSchema(db.sql);
+    p = peer(db.sql, true); // flag ON
+  }, 60_000);
+  afterAll(async () => { await db?.cleanup(); });
+  beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
+    await db.sql`DELETE FROM harness_shared.harness_plans`;
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+  });
+
+  it('whole-blob bootstrap → newer whole-blob rejected by gate → part edit applies; never the rejected blob', async () => {
+    const c0 = planMarkdown('one', 'two');
+    await p.recvWholeBlob(c0, 100); // bootstrap (INSERT)
+    await capturePlanParts(p.store, SLUG, c0, 100, 'seed');
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+
+    // A whole-blob op at ts=150 must be REJECTED by the clobber gate (DO NOTHING).
+    await p.recvWholeBlob(planMarkdown('BLOB-150-one', 'BLOB-150-two'), 150);
+    expect((await p.getPlan())!.content).toBe(c0); // gate held — blob did not clobber
+
+    // A per-part edit at ts=200 applies via the recompose (the sole content writer).
+    const p1 = await p.partRowFor(SLUG, 'P-001');
+    await p.recvPart({ ...p1, body: '- **P-001** `done` part-edit-200' }, 200);
+
+    const content = (await p.getPlan())!.content;
+    expect(content).toContain('part-edit-200'); // the part edit is reflected
+    expect(content).not.toContain('BLOB-150'); // the ts=150 blob never appears
+    expect(content).toContain('two');          // P-002 untouched (merge, not clobber)
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G14 [P3] — recompose no-op skip. `content_hash IS DISTINCT FROM` skips a recompose
+// whose merged output is byte-identical to what's stored: applying the SAME part op
+// twice must NOT bump `version` or emit a second `substrate_outbox` row. A broken
+// hash compare would churn the version → a federation loop.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('plan-part federation — G14 recompose no-op skip (real PG, flag ON)', () => {
+  let db: FreshPgDb;
+  let p: ReturnType<typeof peer>;
+
+  beforeAll(async () => {
+    db = await createFreshPgDb('plan_part_g14');
+    await setupSchema(db.sql);
+    p = peer(db.sql, true); // flag ON
+  }, 60_000);
+  afterAll(async () => { await db?.cleanup(); });
+  beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
+    await db.sql`DELETE FROM harness_shared.harness_plans`;
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+  });
+
+  it('applying the SAME part op twice leaves version unchanged and emits no new outbox row', async () => {
+    const c0 = planMarkdown('one', 'two');
+    await p.recvWholeBlob(c0, 100); // bootstrap
+    await capturePlanParts(p.store, SLUG, c0, 100, 'seed');
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+
+    const p1 = await p.partRowFor(SLUG, 'P-001');
+    const edit = { ...p1, body: '- **P-001** `done` edited-once' };
+
+    // First apply: the recompose changes content → version bumps once.
+    await p.recvPart(edit, 200);
+    const v1 = (await p.getPlan())!.version;
+    const outbox1 = await p.outboxCount();
+
+    // Second apply of the IDENTICAL op (same body, newer ts): the part LWW upsert
+    // changes nothing material; the recompose output hashes identically → the
+    // `content_hash IS DISTINCT FROM` guard skips the UPDATE. No version churn.
+    await p.recvPart(edit, 300);
+    const v2 = (await p.getPlan())!.version;
+    const outbox2 = await p.outboxCount();
+
+    expect(v2).toBe(v1); // version did NOT churn on the no-op recompose
+    expect(outbox2).toBe(outbox1); // no spurious capture → no federation loop
   });
 });

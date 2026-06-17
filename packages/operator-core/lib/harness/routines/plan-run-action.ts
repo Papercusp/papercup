@@ -22,6 +22,8 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
 
@@ -166,6 +168,11 @@ export async function handlePlanRun(ctx: SystemActionCtx): Promise<void> {
     return;
   }
   try {
+    // P-028 master switch: the scheduled-plan execution path ships dark.
+    if (!(await getFlag(FLAGS.SCHEDULED_PLANS, 'system'))) {
+      console.log('[plan-run] papercusp-scheduled-plans flag off — skip');
+      return;
+    }
     const { sql } = getOrgPg();
     await runScheduledPlanFire(sql, {
       installSlug: ctx.installSlug,

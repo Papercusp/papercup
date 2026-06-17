@@ -48,6 +48,15 @@ describe('mapPlanRunRow', () => {
       status: 'idle',
       title: 'advance phase 3',
       updatedAt: 1_716_000_005_000,
+      // Run-metadata columns (plan-run lifecycle extension) — absent in this
+      // legacy rawRow fixture, so the mapper emits their defaults.
+      runType: 'interactive',
+      trigger: null,
+      outcome: null,
+      finishedAt: null,
+      runSeq: null,
+      instancePlanSlug: null,
+      durationMs: null,
     });
   });
 
