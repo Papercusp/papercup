@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { uiCrossWorkspaceBlock } from './_workspace-guard';
 
 function parseUrl(raw: string): { pathname: string; params: Record<string, string>; hash: string | null } {
   try {
@@ -47,6 +48,11 @@ export default defineTool({
           text: 'client_id_required: no client_id passed and ctx.uiClientId is unset (the agent was not spawned from a browser tab). Call ui:list_clients to pick a tab.',
         }],
       };
+    }
+    // F-M7: refuse to read a UI client owned by another workspace (flag-gated).
+    const block = await uiCrossWorkspaceBlock(clientId);
+    if (block) {
+      return { isError: true, content: [{ type: 'text', text: block }] };
     }
     const { sql } = getOrgPg();
     const rows = await sql<Array<{ url: string; title: string | null; workspace_id: string | null; last_seen_at: Date | string; opened_at: Date | string }>>`

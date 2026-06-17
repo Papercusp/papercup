@@ -669,6 +669,12 @@ export const FLAGS = {
   // fold workspace_id into the routine id, to let same-slug routines fully COEXIST
   // across workspaces) is a separate staged migration. Listed in KNOWN_DARK_FLAGS.
   ROUTINES_PER_WORKSPACE: "papercusp-routines-per-workspace",
+  // workspace-data-isolation-leaks-2026-06-17 F-M7: when ON, ui:dispatch / ui:get_state /
+  // tui:dispatch reject a target ui_client that belongs to a DIFFERENT workspace than the
+  // caller's active one (ui_intents keys on client_id with no workspace column; ui_clients
+  // carries workspace_id). These tools are SU-only, so this is a guard rail (low exploitability).
+  // DEFAULT OFF — reversible; OFF = today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS.
+  UI_WORKSPACE_GUARD: "papercusp-ui-workspace-guard",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -714,6 +720,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (deliberate) — routines per-workspace ON CONFLICT (phase 1), reversible
   // kill-switch; OFF = today's ON CONFLICT (install_slug,name), byte-identical. KNOWN_DARK_FLAGS.
   [FLAGS.ROUTINES_PER_WORKSPACE]: false,
+  // DEFAULT OFF (deliberate) — ui:dispatch/get_state cross-workspace guard, reversible;
+  // OFF = today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS.
+  [FLAGS.UI_WORKSPACE_GUARD]: false,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,

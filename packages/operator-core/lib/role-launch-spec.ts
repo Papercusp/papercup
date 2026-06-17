@@ -209,6 +209,23 @@ export async function buildRoleLaunchSpec(
         (await getPromptOverride(input.workspaceId, harnessSlug, input.role)) ?? undefined;
     } catch { /* store unavailable → assembler falls back to config.json */ }
 
+    // Hive-INSTANCE prompt override (domain-generic-agent-personas-2026-06-17 P-003 /
+    // D-003): a Hive instance specializes its roles' personas via hive_settings
+    // (federated, keyed by the home-Hive slug). Resolve the harness's home Hive and
+    // APPEND its override after the workspace/config override — it SPECIALIZES the
+    // persona (rides buildPrompt's "specialization" section), never replaces it. This
+    // is the per-instance layer on top of the blueprint→ancestors→base file chain
+    // (the reusable blueprint persona stays a file + generic). Best-effort.
+    try {
+      const { hiveHomeSlugForHarness } = await import('./hive-federation');
+      const hiveSlug = await hiveHomeSlugForHarness(input.workspaceId, harnessSlug);
+      if (hiveSlug) {
+        const { getHiveInstancePromptOverride } = await import('./hive-settings-store');
+        const inst = await getHiveInstancePromptOverride(input.workspaceId, hiveSlug, input.role);
+        if (inst) promptOverrideText = promptOverrideText ? `${promptOverrideText}\n\n${inst}` : inst;
+      }
+    } catch { /* best-effort: a resolve/store miss leaves the override untouched */ }
+
     // 1. Prompt (chat mode — a human drives this session). Same shared
     //    assembler the orchestrator's prompt path + operator brains use, but
     //    with the in-process projectDir so it skips the blind lookup.

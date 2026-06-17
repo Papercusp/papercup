@@ -245,6 +245,9 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // workspace-data-isolation-leaks-2026-06-17 F-E1 (phase 1): routines per-workspace ON CONFLICT.
   // DELIBERATE dark ship — reversible; OFF = today's ON CONFLICT (install_slug,name), byte-identical.
   FLAGS.ROUTINES_PER_WORKSPACE,
+  // workspace-data-isolation-leaks-2026-06-17 F-M7: ui:dispatch/get_state cross-workspace guard
+  // (SU-only surface). DELIBERATE dark ship — reversible; OFF = today's behavior, byte-identical.
+  FLAGS.UI_WORKSPACE_GUARD,
 ]);
 
 /**

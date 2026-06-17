@@ -24,6 +24,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { uiCrossWorkspaceBlock } from './_workspace-guard';
 
 const POLL_MS = 100;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -60,6 +61,11 @@ export default defineTool({
           text: 'client_id_required: pass client_id or invoke from a tab-spawned context (ctx.uiClientId).',
         }],
       };
+    }
+    // F-M7: refuse to dispatch into a UI client owned by another workspace (flag-gated).
+    const block = await uiCrossWorkspaceBlock(clientId);
+    if (block) {
+      return { isError: true, content: [{ type: 'text', text: block }] };
     }
     const timeoutMs = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
     const intentArgs = args.args ?? {};

@@ -11,8 +11,12 @@ import { createOrgTestDb } from '../test/_org-test-db';
 import { insertHiveIfAbsent } from './hive-store';
 import {
   deleteHiveSetting,
+  getHiveInstancePromptOverride,
   getHiveSetting,
+  listHiveInstancePromptOverrides,
   listHiveSettings,
+  promptOverrideSettingKey,
+  setHiveInstancePromptOverride,
   setHiveSetting,
 } from './hive-settings-store';
 import { buildHiveSettingsProjection } from './sync/hyperbee/projections/hive-settings';
@@ -46,6 +50,32 @@ describe('hive_settings (real PG, migration 186)', () => {
     expect(await deleteHiveSetting('ws', 'myhive', 'tier', sql)).toBe(true);
     expect(await getHiveSetting('ws', 'myhive', 'tier', sql)).toBeNull();
     expect(await deleteHiveSetting('ws', 'myhive', 'tier', sql)).toBe(false); // idempotent
+  });
+
+  it('hive-instance prompt overrides round-trip + list by role (P-003)', async () => {
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'bee', sql)).toBeNull();
+
+    await setHiveInstancePromptOverride('ws', 'myhive', 'bee', 'You are a Papercusp bee.', sql);
+    await setHiveInstancePromptOverride('ws', 'myhive', 'su', 'You are a Papercusp engineer.', sql);
+
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'bee', sql)).toBe('You are a Papercusp bee.');
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'su', sql)).toBe('You are a Papercusp engineer.');
+
+    // stored under the promptOverride.<role> key (federates like any other hive setting)
+    expect((await getHiveSetting('ws', 'myhive', promptOverrideSettingKey('bee'), sql))?.value).toBe(
+      'You are a Papercusp bee.',
+    );
+
+    // list returns role -> markdown, filtered to the prompt-override prefix (ignores other settings)
+    await setHiveSetting({ workspaceId: 'ws', hiveHomeSlug: 'myhive', settingKey: 'tier', value: 'auto' }, sql);
+    expect(await listHiveInstancePromptOverrides('ws', 'myhive', sql)).toEqual({
+      bee: 'You are a Papercusp bee.',
+      su: 'You are a Papercusp engineer.',
+    });
+
+    // upsert overwrites
+    await setHiveInstancePromptOverride('ws', 'myhive', 'bee', 'Updated bee persona.', sql);
+    expect(await getHiveInstancePromptOverride('ws', 'myhive', 'bee', sql)).toBe('Updated bee persona.');
   });
 
   it('refuses a setting for a non-existent Hive (logical scope, no hard FK)', async () => {
