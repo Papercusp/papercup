@@ -11,6 +11,7 @@ import {
   releasePendingWake,
   clearPendingWakes,
   hasPendingWakeFromSource,
+  BOARD_READ_LIMIT,
 } from './pending-wakes';
 
 // A fake `sql` backing an in-memory pending_wakes table, routing by query text.
@@ -22,6 +23,14 @@ function fakeStore() {
   let nextId = 1;
   let nowTick = 0;
   const sql = vi.fn((strings: TemplateStringsArray, ...vals: unknown[]) => {
+    // Faithful to postgres-js: binding `undefined` throws this EXACT error
+    // (`UNDEFINED_VALUE: Undefined values are not allowed`). The real driver
+    // rejects it at serialization; the previous forgiving fake stored it
+    // silently, which is exactly why an `undefined`-binding regression
+    // (EI-943) could ship unseen. Reproduce the strictness here.
+    for (const v of vals) {
+      if (v === undefined) throw new Error('UNDEFINED_VALUE: Undefined values are not allowed');
+    }
     const q = strings.join('§');
     if (q.includes('INSERT INTO harness_shared.pending_wakes')) {
       const [owner, summary, payload, source, ws] = vals;
@@ -70,20 +79,24 @@ function fakeStore() {
       );
       return Promise.resolve(hit ? [{ '?column?': 1 }] : []);
     }
-    // SELECT list — owner-filtered when a value is bound, the whole table
-    // (list-all, owner-then-id order) when none is.
-    if (vals.length === 0) {
-      return Promise.resolve(
-        [...rows].sort((a, b) =>
+    // Per-owner SELECT list (listPendingWakes): owner-filtered, id order.
+    if (q.includes('WHERE owner_id')) {
+      return Promise.resolve(rows.filter((r) => r.owner_id === vals[0]));
+    }
+    // Fleet-wide board (listAllPendingWakes): no owner filter, owner-then-id
+    // order, bounded by a trailing LIMIT bind (BOARD_READ_LIMIT, EI-943).
+    const limit = typeof vals[vals.length - 1] === 'number' ? Number(vals[vals.length - 1]) : rows.length;
+    return Promise.resolve(
+      [...rows]
+        .sort((a, b) =>
           a.owner_id === b.owner_id
             ? Number(a.id) - Number(b.id)
             : String(a.owner_id) < String(b.owner_id)
               ? -1
               : 1,
-        ),
-      );
-    }
-    return Promise.resolve(rows.filter((r) => r.owner_id === vals[0]));
+        )
+        .slice(0, limit),
+    );
   });
   return { sql, rows };
 }
@@ -172,5 +185,56 @@ describe('pending-wakes staging coalescing (EI-312)', () => {
     expect(await clearPendingWakes('s-1')).toBe(2);
     expect(await countPendingWakes('s-1')).toBe(0);
     expect(await countPendingWakes('s-2')).toBe(1);
+  });
+});
+
+// EI-943: coord:wake-queue returned `UNDEFINED_VALUE: Undefined values are not
+// allowed` — a postgres-js error thrown when `undefined` reaches a query binding —
+// AND timed out (60s) on the agent-less board read (`{action:list}`) against a
+// bloated table. The fake `sql` above is now strict (throws the exact driver error
+// on any `undefined` bind), so these assert the binding-safety + bounded-read
+// invariants the mock-heavy wake-queue.test.ts cannot see.
+describe('pending-wakes binding safety + bounded board read (EI-943)', () => {
+  it('the agent-less board read binds no undefined and is bounded to BOARD_READ_LIMIT', async () => {
+    // More owners than the board cap — the read must not return the whole table.
+    for (let i = 0; i < BOARD_READ_LIMIT + 25; i++) {
+      await stagePendingWake({ ownerId: `s-${String(i).padStart(4, '0')}`, summary: 'x' });
+    }
+    const all = await listAllPendingWakes();
+    expect(all.length).toBe(BOARD_READ_LIMIT); // not BOARD_READ_LIMIT + 25 — the scan is bounded
+    // A bound `undefined` would have thrown UNDEFINED_VALUE inside the fake; reaching
+    // here proves the board query binds only the (numeric) LIMIT.
+  });
+
+  it('a full stage → list → release round-trip binds zero undefined values', async () => {
+    // Sparse input (no summary / source / payload / workspace) is the historical
+    // trigger: every absent field must coalesce to NULL at the binding, never undefined.
+    await expect(stagePendingWake({ ownerId: 's-sparse' })).resolves.toBeUndefined();
+    const list = await listPendingWakes('s-sparse');
+    expect(list).toHaveLength(1);
+    expect(list[0].summary).toBeNull();
+    expect(list[0].source).toBeNull();
+    await expect(releasePendingWake(list[0].id)).resolves.toBeUndefined();
+    await expect(countPendingWakes('s-sparse')).resolves.toBe(0);
+    await expect(listAllPendingWakes()).resolves.toEqual([]);
+  });
+
+  it('a missing owner id fails fast and clearly, never as an opaque postgres bind error', async () => {
+    // The real failure mode: a caller hands `undefined` where an owner id is required.
+    // It must throw a self-attributing error naming the function — NOT the cryptic
+    // `UNDEFINED_VALUE` the watchdog could only guess at.
+    const bad = undefined as unknown as string;
+    await expect(listPendingWakes(bad)).rejects.toThrow(/listPendingWakes: ownerId is required/);
+    await expect(clearPendingWakes(bad)).rejects.toThrow(/clearPendingWakes: ownerId is required/);
+    await expect(countPendingWakes(bad)).rejects.toThrow(/countPendingWakes: ownerId is required/);
+    await expect(stagePendingWake({ ownerId: bad })).rejects.toThrow(
+      /stagePendingWake: ownerId is required/,
+    );
+    await expect(hasPendingWakeFromSource(bad, 'x:')).rejects.toThrow(
+      /hasPendingWakeFromSource: ownerId is required/,
+    );
+    await expect(releasePendingWake(undefined as unknown as number)).rejects.toThrow(
+      /releasePendingWake: id must be a finite number/,
+    );
   });
 });

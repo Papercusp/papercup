@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781675912072-ad197df1",
+  "feature_id": "F-FIX-035",
+  "field": "__created",
+  "id": 948,
+  "new_value": "{\"id\":\"F-FIX-035\",\"title\":\"Checkpoint/release node_modules goes stale on new NON-scoped deps → green-checkpoint + deploy crash with \\\"Cannot find package X\\\"\",\"sourceIssueId\":\"EI-935\"}",
+  "old_value": "null",
+  "ts": 1781677461583
+}

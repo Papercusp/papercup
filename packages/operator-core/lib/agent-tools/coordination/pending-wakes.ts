@@ -44,6 +44,35 @@ export interface PendingWake {
 }
 
 /**
+ * Bound the fleet-wide board read (`coord:wake-queue {action:list}` agent-less, the
+ * `pui` wake-pane's poll) so a bloated / un-swept queue can never turn it into an
+ * unbounded full-table scan — the failure mode that produced repeated 60s tool
+ * timeouts on a debris-laden `pending_wakes`. Far above the depth-invariant alarm
+ * (DEFAULT_THRESHOLDS.wakeQueueDepthMax = 50, coord-invariant-actions.ts), so every
+ * realistic review queue is still returned whole; the depth monitor + the
+ * dead-owner sweep (EI-314) are the real backstops for genuine growth.
+ */
+export const BOARD_READ_LIMIT = 500;
+
+/**
+ * Fail FAST and CLEAR on a missing owner id at a per-owner queue op, instead of
+ * letting `undefined` reach a postgres binding as the opaque
+ * `UNDEFINED_VALUE: Undefined values are not allowed` (EI-943 — the watchdog could
+ * only see the cryptic driver error, never the offending call site). Every per-owner
+ * op REQUIRES a concrete owner id; the agent-less board read (listAllPendingWakes) is
+ * the only legitimate no-owner read and never goes through here.
+ */
+function assertOwnerId(ownerId: string, fn: string): void {
+  if (typeof ownerId !== 'string' || ownerId.length === 0) {
+    throw new Error(
+      `pending-wakes.${fn}: ownerId is required (got ${
+        ownerId === undefined ? 'undefined' : JSON.stringify(ownerId)
+      })`,
+    );
+  }
+}
+
+/**
  * Stage a wake for a manual-mode agent (the P-007 gate calls this instead of firing).
  *
  * EI-312: identical (owner, source, summary, workspace) re-fires COALESCE into the
@@ -53,6 +82,7 @@ export interface PendingWake {
  * wake storm against a paused agent reads as "watchdog ×11", not 11 queue rows.
  */
 export async function stagePendingWake(input: StageWakeInput): Promise<void> {
+  assertOwnerId(input.ownerId, 'stagePendingWake');
   const { sql } = getOrgPg();
   const payloadJson = input.payload != null ? JSON.stringify(input.payload) : null;
   await sql`
@@ -75,6 +105,7 @@ export async function stagePendingWake(input: StageWakeInput): Promise<void> {
 
 /** An agent's staged wakes, oldest-first (the pane lists them in order). */
 export async function listPendingWakes(ownerId: string): Promise<PendingWake[]> {
+  assertOwnerId(ownerId, 'listPendingWakes');
   const { sql } = getOrgPg();
   const rows = await sql`
     SELECT id, owner_id, summary, payload, source, workspace_id, created_at, count, last_seen_at
@@ -107,6 +138,7 @@ export async function listAllPendingWakes(): Promise<PendingWake[]> {
     SELECT id, owner_id, summary, payload, source, workspace_id, created_at, count, last_seen_at
     FROM harness_shared.pending_wakes
     ORDER BY owner_id ASC, id ASC
+    LIMIT ${BOARD_READ_LIMIT}
   `;
   return (rows as Array<Record<string, unknown>>).map((r) => ({
     id: Number(r.id),
@@ -123,6 +155,7 @@ export async function listAllPendingWakes(): Promise<PendingWake[]> {
 
 /** How many wakes are staged for an agent (the pane's pending-count badge). */
 export async function countPendingWakes(ownerId: string): Promise<number> {
+  assertOwnerId(ownerId, 'countPendingWakes');
   const { sql } = getOrgPg();
   const rows = await sql`SELECT count(*)::int AS n FROM harness_shared.pending_wakes WHERE owner_id = ${ownerId}`;
   return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
@@ -158,6 +191,7 @@ export async function hasPendingWakeFromSource(
   ownerId: string,
   sourcePrefix: string,
 ): Promise<boolean> {
+  assertOwnerId(ownerId, 'hasPendingWakeFromSource');
   const { sql } = getOrgPg();
   const rows = await sql`
     SELECT 1 FROM harness_shared.pending_wakes
@@ -169,6 +203,13 @@ export async function hasPendingWakeFromSource(
 
 /** Drop one staged wake (after the owner releases / skips it). */
 export async function releasePendingWake(id: number): Promise<void> {
+  if (typeof id !== 'number' || !Number.isFinite(id)) {
+    throw new Error(
+      `pending-wakes.releasePendingWake: id must be a finite number (got ${
+        id === undefined ? 'undefined' : JSON.stringify(id)
+      })`,
+    );
+  }
   const { sql } = getOrgPg();
   await sql`DELETE FROM harness_shared.pending_wakes WHERE id = ${id}`;
   pushWakeBoard();
@@ -176,6 +217,7 @@ export async function releasePendingWake(id: number): Promise<void> {
 
 /** Drop ALL of an agent's staged wakes (release_all / skip_all). Returns rows dropped. */
 export async function clearPendingWakes(ownerId: string): Promise<number> {
+  assertOwnerId(ownerId, 'clearPendingWakes');
   const { sql } = getOrgPg();
   const rows = await sql`
     DELETE FROM harness_shared.pending_wakes WHERE owner_id = ${ownerId} RETURNING id

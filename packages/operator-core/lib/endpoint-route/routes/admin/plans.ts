@@ -268,6 +268,8 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       }
       if (verb === 'launch' || verb === 'resume') {
         void notifySyncInvalidate('plans.runs', { slug }).catch(() => {});
+        // The Runs-tab history+rollup query keys on { planSlug } (plans.runHistory).
+        void notifySyncInvalidate('plans.runHistory', { planSlug: slug }).catch(() => {});
       }
       if (verb === 'promote') {
         // Promote creates features — invalidate featuresConsolidated so the

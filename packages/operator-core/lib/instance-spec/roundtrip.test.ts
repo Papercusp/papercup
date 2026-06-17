@@ -21,6 +21,17 @@ vi.mock('../harness-registry', () => ({
     projects.length = 0;
     projects.push(...reg.projects);
   },
+  // harness:create now routes its insert through mutateHarnessRegistry for an
+  // atomic read-check-write (audit P-006 / EI-82). Mirror load→mutate→save on
+  // the same in-memory store so the round-trip stays PG-free.
+  mutateHarnessRegistry: async (
+    mutator: (reg: { projects: Array<Record<string, unknown>> }) => { projects: Array<Record<string, unknown>> },
+  ) => {
+    const next = mutator({ projects: projects.map((p) => ({ ...p })) });
+    projects.length = 0;
+    projects.push(...next.projects);
+    return next;
+  },
 }));
 vi.mock('../scaffold-harness-schema', () => ({ scaffoldHarnessSchema: async () => {} }));
 vi.mock('../blueprint/materialize-triggers', () => ({ materializeBlueprintTriggers: async () => [] }));

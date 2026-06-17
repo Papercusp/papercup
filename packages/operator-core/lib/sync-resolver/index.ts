@@ -1646,15 +1646,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── plans.runs — the Runs tab's per-template run history + rollup (scheduled-recurring-plans P-022/P-024) ──
+  // ── plans.runHistory — the Runs tab's per-template run history + rollup (scheduled-recurring-plans P-022/P-024) ──
   //
-  // The enriched run history for one template (outcome, duration, trigger, work-item
-  // rollup, cost) + the computed rollup (success rate, median duration, regression
-  // flags) for the summary header. Returns a 1-element array [{ runs, rollup }] (cf.
-  // learning.apiary). Read-only — the routine tick settles outcomes; this does not
-  // reconcile (no side effects on a UI read). Best-effort: a read error degrades to
-  // empty so the tab shows its empty state.
-  'plans.runs': {
+  // Distinct from `plans.runs` (the Agents-tab flat PlanRun[] keyed on { slug }):
+  // this is the enriched run history for one template (outcome, duration, trigger,
+  // work-item rollup, cost) + the computed rollup (success rate, median duration,
+  // regression flags) for the summary header, keyed on { planSlug }. Returns a
+  // 1-element array [{ runs, rollup }] (cf. learning.apiary). Read-only — the routine
+  // tick settles outcomes; this does not reconcile (no side effects on a UI read).
+  // Best-effort: a read error degrades to empty so the tab shows its empty state.
+  'plans.runHistory': {
     argsSchema: z.object({
       planSlug: z.string().min(1),
       harnessSlug: z.string().max(200).optional(),

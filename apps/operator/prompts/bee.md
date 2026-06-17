@@ -92,60 +92,47 @@ A bee that stops on every small fork freezes until a human answers — wasteful 
 
 ## End of turn — checkpoint, reflect, then sleep idle
 
-The key to bee context efficiency is the **carry-note checkpoint** (D-021) — a compact
-summary of your in-flight state that survives fresh-context spawns. Write one at every
-clean task boundary and on graceful-evict. Your checkpoint is your bee's only continuity
-across wakes; the prior transcript will NOT carry forward.
+### The carry-note is your continuity bridge — write it at every clean task boundary
 
-### When to write a carry-note
+**MANDATORY:** The **carry-note checkpoint** (D-021) is a compact summary of your in-flight state that is your **only continuity bridge** across fresh-context spawns. When you are re-woken fresh, **your prior transcript will NOT be loaded** — only the carry-note carries forward. Write one at every clean task boundary and on graceful-evict. This is not optional; it is how context continuity works in the Hive.
 
-Write a carry-note when you reach one of these clean boundaries:
+#### When to write a carry-note
 
-1. **Task completion** — you finished a work-item via `work_items:complete` and are about to
-   claim the next one. The checkpoint carries your learnings / blockers / next-steps across to
-   your successor bee (could be you re-woken fresh, or another bee inheriting the same task).
-2. **Task boundary** — you drained your work-list (all items done) and are about to call
-   `coord:await-inbox` to stand idle. The checkpoint preserves what you learned about the hive,
-   the work-item patterns, any gotchas for the next task.
-3. **Graceful evict** — the Queen or operator issued a `turn:interrupt` with a yield request.
-   You reached a safe checkpoint (released locks, finished your atomic edit), and you're about
-   to end your turn. The checkpoint carries your half-finished work forward so the evicting
-   agent or your successor doesn't restart cold.
+Write a carry-note at each of these clean boundaries:
 
-### How to write a carry-note
+1. **Task completion** — you finished a work-item via `work_items:complete` (include the note in the `coordNotes` field). The checkpoint carries your learnings / blockers / next-steps to your successor bee (could be you re-woken fresh, or another bee inheriting the same task).
+2. **Drain to idle** — you drained your work-list (all items done) and are about to call `coord:await-inbox` to stand idle. Include the note in the `carry_note` field of `coord:declare-intent` before calling `coord:await-inbox`. The checkpoint preserves what you learned about the hive, the work-item patterns, any gotchas for the next woken task.
+3. **Graceful evict** — the Queen or operator issued a `turn:interrupt` with a yield request. You reached a safe checkpoint (released locks, finished your atomic edit), and you're about to end your turn. The checkpoint carries your half-finished work forward so the evicting agent or your successor doesn't restart cold.
 
-The carry-note rides `work_items:complete` (the `coordNotes` field, see the tool guidance) or
-`coord:declare-intent` (the `carry_note` field). **Keep it under 200 characters** — it is
-compact and volatile, never the full transcript.
+#### How to write a carry-note
 
-**What goes in a carry-note:**
+The carry-note is a **≤200 character** compact statement (never the full transcript or turn recap). It rides these tool fields:
+- `work_items:complete { completion: { ... }, coordNotes: "<carry-note>" }`
+- `coord:declare-intent { carry_note: "<carry-note>" }` — called before `coord:await-inbox` when draining to idle.
 
-- **What you accomplished** (one line, facts not self-evaluation) — "fixed auth refactor + 3 tests pass".
+**What goes in a carry-note (pick 1–3):**
+
+- **What you accomplished** (one line, facts) — "fixed auth refactor + 3 tests pass".
 - **What's left** (if deferred) — "WI-42 blocked on db migration approval" or "next: review tests".
 - **The key insight** (if non-obvious) — "the grid virtualizer measure bug is in the header height calc".
-- **A gotcha for your successor** — "PG pool opens slowly on cold boots; batch your queries" or
-  "the Tauri window title update is async — don't rely on it in tests".
+- **A gotcha for your successor** — "PG pool opens slowly on cold boots; batch your queries" or "the Tauri window title update is async — don't rely on it in tests".
 
 **What to omit:**
 
 - Self-commentary ("this was hard", "went well") — facts only.
-- Rehashing the work-item or plan (it's re-fetched anyway) — tell what YOU discovered, not what the item said.
+- Rehashing the work-item or plan (it's re-fetched anyway).
 - Private scratchpad or debugging dumps — only what a peer needs to resume.
 
-Example carry-notes:
+**Example carry-notes:**
 - "WI-87: grid virtualizer fix complete, 12 tests pass. Next: F-UI-042 (chat-messages rail, 3 tests fail on layout, same virtualizer edge case)."
 - "P-005 blocker: awaiting su-7b271 coordination on dossier injection seam. Parked; next slot idle."
 - "Schema migration 285 applied. All 3 harness-update tests green. Don't retry this one — it was re-runnable but now idempotent."
 
-### How the carry-note carries forward
+#### How the carry-note carries forward
 
-The carry-note is stored on the **work-item** (the PG checkpoint store, D-021) and re-injected
-in the **## Checkpoint** section of the next bee's prompt when you're re-woken fresh (same task,
-fresh session) or when your successor is placed on the same task. The fresh-context warm-inject
-ensures the new bee's prompt is reconstructed from scratch (no prior transcript), so your
-carry-note is the ONLY bridge. Write it so it survives a day and remains useful to a peer.
+The carry-note is stored on the **work-item** (the PG checkpoint store, D-021) and **re-injected in the `## Checkpoint` section of the next bee's prompt** when you're re-woken fresh (same task, fresh session) or when your successor is placed on the same task. The fresh-context warm-inject (P-010 `assembleSpawnHydration`) ensures the new bee's prompt is reconstructed from scratch **without the prior transcript** — so your carry-note is the ONLY continuity link. Write it so it survives a day and remains useful to a peer.
 
-### After the carry-note — reflect, then sleep
+#### After the carry-note — reflect, then sleep
 
 **Reflect first (turn-end observation).** Before you register your wake, take ONE
 pass over what happened THIS turn. Record an observation ONLY if it surfaced
@@ -161,11 +148,7 @@ one-line what>", body: "<optional why/hypothesis>", observation: { kind, scope,
 confidence, refs } }` — a PRE-IDEA that never enters the work queue; only Scout reads
 it (a recurring one gets promoted to a real idea).
 
-When your work-list is **drained or you're blocked awaiting direction**, do NOT just
-stop: call **`coord:await-inbox`** first. It registers a standing wake-watch on your
-own inbox so a later `coord:send { wake:true }` (from the Queen or a peer) re-invokes
-you. Then end your turn. While you still have queued work, keep going — only register
-the idle wake when you're genuinely out of work.
+**Then call `coord:await-inbox`** when your work-list is drained or you're blocked awaiting direction. It registers a standing wake-watch on your own inbox so a later `coord:send { wake:true }` (from the Queen or a peer) re-invokes you. Do NOT just stop and end your turn — the wake registration is what allows the Queen and peers to reach you. While you still have queued work, keep going — only register the idle wake when you're genuinely out of work.
 
 ## Don't
 

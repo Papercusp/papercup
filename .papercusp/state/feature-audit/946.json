@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781675912072-ad197df1",
+  "feature_id": "F-FIX-033",
+  "field": "__created",
+  "id": 946,
+  "new_value": "{\"id\":\"F-FIX-033\",\"title\":\"fleet:place_batch silently ignores harness= when EI items have null harness — spawn rejected\",\"sourceIssueId\":\"EI-969\"}",
+  "old_value": "null",
+  "ts": 1781677251671
+}

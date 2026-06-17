@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781675912072-ad197df1",
+  "feature_id": "F-FIX-037",
+  "field": "__created",
+  "id": 950,
+  "new_value": "{\"id\":\"F-FIX-037\",\"title\":\"coord invariant: handoffs stuck pending past 12h\",\"sourceIssueId\":\"EI-930\"}",
+  "old_value": "null",
+  "ts": 1781677534994
+}

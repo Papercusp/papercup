@@ -26,6 +26,7 @@
   --fg: #e7f7ff;
   --fg-dim: #b9d4e8;
   --fg-mute: #7f9bb4;
+  --border-muted: rgba(125, 211, 252, 0.08); /** #7dd3fc @ 0.08 — faintest step (table row dividers) */
   --border: rgba(125, 211, 252, 0.15); /** #7dd3fc @ 0.15 */
   --border-strong: rgba(125, 211, 252, 0.32); /** #7dd3fc @ 0.32 */
   --accent-ink: #051827; /** Text color on accent backgrounds */

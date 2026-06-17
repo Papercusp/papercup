@@ -91,7 +91,7 @@ export async function refreshCandidates(): Promise<StandingCandidate[]> {
 
   // Filter out (capability, target) pairs the user has already approved.
   const approved = new Set(
-    loadPreferences().standingApprovals.map((a) => `${a.capability}::${a.targetHarness}`),
+    (await loadPreferences()).standingApprovals.map((a) => `${a.capability}::${a.targetHarness}`),
   );
 
   // Preserve firstShownAt across recomputations: if the same

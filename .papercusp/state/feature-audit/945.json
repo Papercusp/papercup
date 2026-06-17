@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781675912072-ad197df1",
+  "feature_id": "F-FIX-032",
+  "field": "__created",
+  "id": 945,
+  "new_value": "{\"id\":\"F-FIX-032\",\"title\":\"Cursed-advisory watchdog should suppress escalations when the work item has already passed\",\"sourceIssueId\":\"EI-972\"}",
+  "old_value": "null",
+  "ts": 1781677247999
+}

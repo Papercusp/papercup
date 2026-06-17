@@ -6,7 +6,7 @@
  *   2. rollup     — the summary header (success rate / median duration / cost / regression),
  *   3. drill-down — a run table → RunDetailPanel (reused) on ?run=<id>.
  * Plus duration + cost trend sparklines (P-025; result_summary domain-metric series is a
- * follow-on once listPlanRuns surfaces result_summary). Reads the plans.runs sync query
+ * follow-on once listPlanRuns surfaces result_summary). Reads the plans.runHistory sync query
  * (enriched rows + server-computed rollup). nuqs ?run= drives the drill-down.
  */
 import { useMemo } from 'react';
@@ -86,7 +86,7 @@ function Sparkline({ values, color, width = 160, height = 28 }: { values: number
 export default function RunsPanel({ slug, planTitle, currentContentHash }: Props) {
   const [, setRun] = useQueryState('run', parseAsInteger);
   const { data, loading } = useSyncQuery<{ runs: RunRow[]; rollup: Rollup | null }>({
-    queryName: 'plans.runs',
+    queryName: 'plans.runHistory',
     args: { planSlug: slug },
   });
   const payload = data?.[0] ?? { runs: [], rollup: null };

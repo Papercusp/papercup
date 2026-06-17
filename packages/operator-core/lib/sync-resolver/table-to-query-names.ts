@@ -66,7 +66,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
     'plans.search',
   ],
   'harness_shared.plan_revisions': ['plans.revisions'],
-  'harness_shared.plan_runs': ['plans.runs'],
+  // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the
+  // Runs-tab history+rollup (plans.runHistory, { planSlug }) — a row write busts both.
+  'harness_shared.plan_runs': ['plans.runs', 'plans.runHistory'],
   'harness_shared.harness_brainstorm': ['harnessBrainstorm.byHarness'],
   'harness_shared.pending_reviews': ['pendingReviews.byHarness'],
   'harness_shared.harness_pending_issues': ['harnessPendingIssues.byHarness'],

@@ -12,12 +12,21 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { gatewayBaseUrl } from '../competitor-live';
+import { ACCOUNT_HEADER } from '../../inference-gateway/gateway';
 import type { AssistantBlock, GaiaToolSpec, LlmFn, LlmMessage, LlmTurnRequest, LlmTurnResponse } from './agent';
 
 /** Fairness default: every arm runs claude-opus-4-8 via the gateway (matches DEFAULT_COMPETITOR_MODEL). */
 export const DEFAULT_GAIA_MODEL = 'claude-opus-4-8';
 /** xhigh-effort realization = extended thinking at this budget (matches competitor-live). */
 export const DEFAULT_THINKING_BUDGET_TOKENS = 16000;
+/**
+ * THE LOAD-BEARING gateway requirement: on a Claude-Max OAuth token the inference gateway proxies to, a raw-SDK
+ * caller whose FIRST `system` block is not EXACTLY this string (as its OWN block) gets a BOGUS 429
+ * (`rate_limit_error`, body literally `"Error"`, no `anthropic-ratelimit-*` headers) regardless of budget.
+ * So every gateway call must lead with the Claude Code identity block. See the insight
+ * `max-oauth-first-system-block-must-be-claude-code-identity` / `vendoring-a-langchain-benchmark-through-the-gateway`.
+ */
+export const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /* -------------------------------------------------------------------------- */
 /* Pure request mapping (our types → Anthropic params)                         */
@@ -94,8 +103,19 @@ export interface LiveGaiaLlmConfig {
   thinking?: boolean;
   /** Thinking budget tokens when enabled (default {@link DEFAULT_THINKING_BUDGET_TOKENS}). */
   thinkingBudgetTokens?: number;
-  /** SDK max retries (default 4) — absorbs gateway 429/contention transparently. */
+  /** SDK max retries (default 8) — absorbs gateway 429/529 overload transparently (honors Retry-After). */
   maxRetries?: number;
+  /**
+   * Prepend the {@link CLAUDE_CODE_IDENTITY} block as the first system block — REQUIRED on the Max-OAuth
+   * gateway (else a bogus 429). Defaults ON when routing through the gateway (baseUrl set), OFF for a direct
+   * Anthropic key (baseUrl === null), where the spoof identity is unnecessary.
+   */
+  claudeCodeIdentity?: boolean;
+  /**
+   * Pin this run to a specific gateway pool account (the `x-papercusp-account` header) to dodge a
+   * fleet-exhausted active account. Pick a low-utilization id from `accounts:status`. Gateway-only.
+   */
+  accountId?: string;
   /** Inject a client (tests). */
   client?: Pick<Anthropic, 'messages'>;
 }
@@ -111,16 +131,28 @@ export function makeLiveGaiaLlm(cfg: LiveGaiaLlmConfig = {}): LlmFn {
   const apiKey = process.env[cfg.apiKeyEnv ?? 'ANTHROPIC_API_KEY'] ?? 'sk-gateway-routed';
   const useThinking = cfg.thinking ?? true;
   const thinkingBudget = cfg.thinkingBudgetTokens ?? DEFAULT_THINKING_BUDGET_TOKENS;
+  const throughGateway = baseURL !== undefined; // a set baseUrl ⇒ the OAuth gateway
+  const useIdentity = cfg.claudeCodeIdentity ?? throughGateway;
   const client =
-    cfg.client ?? new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}), maxRetries: cfg.maxRetries ?? 4 });
+    cfg.client ??
+    new Anthropic({
+      apiKey,
+      ...(baseURL ? { baseURL } : {}),
+      maxRetries: cfg.maxRetries ?? 8,
+      ...(cfg.accountId ? { defaultHeaders: { [ACCOUNT_HEADER]: cfg.accountId } } : {}),
+    });
 
   return async (req: LlmTurnRequest): Promise<LlmTurnResponse> => {
     // Extended thinking requires max_tokens > budget_tokens; honor the caller's floor but guarantee validity.
-    const maxTokens = useThinking ? Math.max(req.maxTokens, thinkingBudget + 4096) : req.maxTokens;
+    const maxTokens = useThinking ? Math.max(req.maxTokens, thinkingBudget + 8192) : req.maxTokens;
+    // The first system block MUST be the Claude Code identity on the Max-OAuth gateway (else a bogus 429).
+    const system: Anthropic.MessageCreateParams['system'] = useIdentity
+      ? [{ type: 'text', text: CLAUDE_CODE_IDENTITY }, { type: 'text', text: req.system }]
+      : req.system;
     const params: Anthropic.MessageCreateParamsNonStreaming = {
       model,
       max_tokens: maxTokens,
-      system: req.system,
+      system,
       messages: toAnthropicMessages(req.messages),
       tools: toAnthropicTools(req.tools),
       ...(useThinking ? { thinking: { type: 'enabled', budget_tokens: thinkingBudget } } : {}),

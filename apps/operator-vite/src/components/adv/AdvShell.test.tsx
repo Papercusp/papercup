@@ -245,7 +245,7 @@ describe('AdvShell — strip + header', () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.getAttribute('title'));
-    expect(tabs).toEqual(['Overview', 'Create', 'Working', 'Health', 'Frames', 'Conversations', 'Learning', 'Evaluation', 'Accounts']);
+    expect(tabs).toEqual(['Overview', 'Create', 'Calendar', 'Working', 'Health', 'Frames', 'Conversations', 'Learning', 'Evaluation', 'Accounts']);
     expect(screen.queryByText('sub-pots')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');
