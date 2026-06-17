@@ -48,6 +48,22 @@ describe('autonomy:record_disposition tool', () => {
     mockRecord.mockResolvedValue(4242 as Awaited<ReturnType<typeof recordDecisionDisposition>>);
   });
 
+  // Gap 14: the activeWorkspaceId fallback for '*' / no principal — decide.ts
+  // asserts this; record_disposition.ts (handler line 87-88) must too, so the
+  // disposition row lands in the active workspace, not under the wildcard.
+  it('resolves a concrete principal workspace; falls back to active for "*" / no principal', async () => {
+    await callTool({ action: 'plans:add-item', disposition: 'act' }, { principal: { workspaceId: 'ws-prin' } });
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-prin' }));
+
+    mockRecord.mockClear();
+    await callTool({ action: 'plans:add-item', disposition: 'act' }, { principal: { workspaceId: '*' } });
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-active' }));
+
+    mockRecord.mockClear();
+    await callTool({ action: 'plans:add-item', disposition: 'act' }, {});
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-active' }));
+  });
+
   it('re-resolves the gate from the action axes (the same inputs as autonomy:decide)', async () => {
     await callTool({ action: 'plans:add-item', disposition: 'defer', riskTier: 'low' });
     expect(mockResolve).toHaveBeenCalledWith({ action: 'plans:add-item', riskTier: 'low' }, { sentinel: 'deps' });

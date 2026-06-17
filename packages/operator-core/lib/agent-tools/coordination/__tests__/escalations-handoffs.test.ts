@@ -102,6 +102,35 @@ describe('escalations', () => {
     expect(round?.resolved?.choice).toBe('first');
   });
 
+  it('first-write-wins: a second resolve writes NOTHING — exactly one escalation_resolved event (P1-12)', async () => {
+    const A = id('A');
+    const e = await openEscalation(A, { severity: 'question', summary: 'approve or deny?' });
+
+    // First resolve commits 'approve'.
+    const first = await resolveEscalation({ msg_id: e.msg_id, choice: 'approve' });
+    if (typeof first === 'string') throw new Error(`expected record, got ${first}`);
+    expect(first.resolved?.choice).toBe('approve');
+
+    // Second resolve with the OPPOSITE choice is short-circuited to
+    // 'already_resolved' BEFORE any write (escalations.ts:114) — append-only
+    // first-write-wins, so a racing/duplicate decision can't flip the outcome.
+    expect(
+      await resolveEscalation({ msg_id: e.msg_id, choice: 'deny' }),
+    ).toBe('already_resolved');
+
+    // The folded read still shows the FIRST decision.
+    const round = await getEscalation(e.msg_id);
+    expect(round?.resolved?.choice).toBe('approve');
+
+    // And the log carries exactly ONE escalation_resolved sibling — the rejected
+    // second resolve appended no event (the write is skipped, not deduped).
+    const resolvedEvents = (await coordLog.readEvents('escalations')).filter(
+      (r) => r.kind === 'escalation_resolved' && r.related_msg_id === e.msg_id,
+    );
+    expect(resolvedEvents).toHaveLength(1);
+    expect(resolvedEvents[0]?.choice).toBe('approve');
+  });
+
   it('resolveEscalation appends an escalation_resolved sibling and leaves the open record immutable', async () => {
     const A = id('A');
     const e = await openEscalation(A, { severity: 'blocker', summary: 'need a call' });

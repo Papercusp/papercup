@@ -62,6 +62,41 @@ describe('LockSetReconstructor — handover', () => {
   });
 });
 
+describe('LockSetReconstructor — empty-set failover (B5, zero held locks)', () => {
+  it('a takeover with NO locks to reconstruct stays fail-open until the heartbeat interval, then is rebuilt', () => {
+    const r = make();
+    // hydrate from an empty event stream (no replica / nothing federated) → no-op.
+    expect(r.hydrateFromEvents([], T0)).toBe(false);
+    // The set is empty AND not yet authoritative — every read is fail-open.
+    expect(r.current(T0).length).toBe(0);
+    expect(r.isRebuilt(T0)).toBe(false);
+    expect(r.shouldFailOpen(T0)).toBe(true);
+    // Still fail-open right up to the edge of one heartbeat interval…
+    expect(r.isRebuilt(T0 + HB - 1)).toBe(false);
+    expect(r.shouldFailOpen(T0 + HB - 1)).toBe(true);
+    // …then authoritative once the interval has fully elapsed (every live holder
+    // had its chance to re-assert; an empty set is now a TRUSTED empty set).
+    expect(r.isRebuilt(T0 + HB)).toBe(true);
+    expect(r.shouldFailOpen(T0 + HB)).toBe(false);
+    // And it is STILL empty — nothing was held, so nothing blocks post-rebuild.
+    expect(r.current(T0 + HB).length).toBe(0);
+    expect(r.isHeldByOther('apps/anything.ts', 'whoever', T0 + HB)).toBe(false);
+  });
+
+  it('a single heartbeat during the empty-set gap seeds the set without flipping isRebuilt early', () => {
+    const r = make();
+    expect(r.hydrateFromEvents([], T0)).toBe(false);
+    // A holder re-asserts mid-gap. The lock is now tracked…
+    r.assert('apps/a.ts', 'peer-1', 60_000, T0 + 100);
+    expect(r.isHeldByOther('apps/a.ts', 'peer-2', T0 + 200)).toBe(true);
+    // …but a heartbeat does NOT mark the set authoritative — only the full
+    // interval (or an instant hydrate) does. Still fail-open until then.
+    expect(r.isRebuilt(T0 + 200)).toBe(false);
+    expect(r.shouldFailOpen(T0 + 200)).toBe(true);
+    expect(r.isRebuilt(T0 + HB)).toBe(true);
+  });
+});
+
 describe('LockSetReconstructor — stale-epoch heartbeat fencing (B1, D-006 split-brain)', () => {
   // A reconstructor elected under epoch 2 (the new authority after a handover).
   function makeFenced(epoch: number) {

@@ -53,37 +53,59 @@ const NEGATIVE_TTL_MS = 15_000;
 /** LRU bound — pi sessions accumulate one entry each (EI-79 contributor). */
 const CACHE_MAX = 512;
 
-type CacheEntry = { principal: Principal | null; expiresAt: number };
-const CACHE = new Map<string, CacheEntry>();
+type LruEntry<V> = { value: V; expiresAt: number };
 
-function cacheKey(workspaceId: string, slug: string): string {
-  return `${workspaceId}:${slug}`;
-}
-
-function cacheGet(ck: string): CacheEntry | undefined {
-  const entry = CACHE.get(ck);
+/**
+ * Shared TTL+LRU read: an expired entry is deleted + reported as a miss;
+ * otherwise its recency is refreshed (Map iterates in insertion order, so
+ * re-inserting moves the entry to the tail and eviction always takes the head).
+ * The wrapper (not the bare value) lets a cached `null` negative result be
+ * distinguished from a miss.
+ */
+function lruGet<V>(map: Map<string, LruEntry<V>>, key: string): LruEntry<V> | undefined {
+  const entry = map.get(key);
   if (!entry) return undefined;
   if (Date.now() >= entry.expiresAt) {
-    CACHE.delete(ck);
+    map.delete(key);
     return undefined;
   }
-  // Refresh LRU recency — Map iterates in insertion order, so re-inserting
-  // moves the entry to the tail and eviction below always takes the head.
-  CACHE.delete(ck);
-  CACHE.set(ck, entry);
+  map.delete(key);
+  map.set(key, entry);
   return entry;
 }
 
-function cacheSet(ck: string, principal: Principal | null): void {
-  if (!CACHE.has(ck) && CACHE.size >= CACHE_MAX) {
-    const oldest = CACHE.keys().next().value;
-    if (oldest !== undefined) CACHE.delete(oldest);
+/**
+ * Shared TTL+LRU write: evict the insertion-order head at the cap. A falsy value
+ * (a negative result — revoked / missing / out-of-scope) takes the shorter
+ * negative TTL so a just-provisioned principal racing a probe isn't masked long.
+ */
+function lruSet<V>(map: Map<string, LruEntry<V>>, key: string, value: V): void {
+  if (!map.has(key) && map.size >= CACHE_MAX) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
   }
-  CACHE.delete(ck);
-  CACHE.set(ck, {
-    principal,
-    expiresAt: Date.now() + (principal ? CACHE_TTL_MS : NEGATIVE_TTL_MS),
-  });
+  map.delete(key);
+  map.set(key, { value, expiresAt: Date.now() + (value ? CACHE_TTL_MS : NEGATIVE_TTL_MS) });
+}
+
+/** (workspace_id, principal_slug) → resolved Principal capabilities. */
+const CACHE = new Map<string, LruEntry<Principal | null>>();
+
+/**
+ * bearer-hash → token_index identity (kind/slug/workspace). The token→identity
+ * mapping is immutable for a live token (tokens are minted once; revocation is a
+ * row delete), so caching it lifts the per-call admin SELECT off the hot path
+ * (operator-scalability-event-loop-2026-06-16 P1-3) without weakening
+ * revocation: authorization still flows through the capability load below, which
+ * is itself TTL- + NOTIFY-bounded. Keyed by the bearer's sha256, never the raw
+ * secret. A miss / out-of-scope kind is cached negatively (shorter TTL) so a
+ * bad bearer hammering the server doesn't re-run the SELECT every call.
+ */
+type TokenIdentity = { kind: 'system' | 'pi'; slug: string; workspaceId: string };
+const TOKEN_INDEX_CACHE = new Map<string, LruEntry<TokenIdentity | null>>();
+
+function cacheKey(workspaceId: string, slug: string): string {
+  return `${workspaceId}:${slug}`;
 }
 
 let listenerStarted = false;
@@ -114,6 +136,7 @@ function ensureInvalidationListener(): void {
         // fall through to the safe fallback
       }
       CACHE.clear();
+      TOKEN_INDEX_CACHE.clear();
     })
     .catch((err: unknown) => {
       listenerStarted = false; // retry on a later resolve
@@ -131,8 +154,18 @@ function bearerHash(bearer: string): string {
   return createHash('sha256').update(bearer).digest('hex');
 }
 
-export async function resolveBearer(bearer: string): Promise<Principal | null> {
-  if (!bearer) return null;
+/**
+ * Resolve a bearer to its token_index identity, served from TOKEN_INDEX_CACHE
+ * (keyed by bearer hash). A missing row OR an out-of-scope kind (harness bearers
+ * aren't admitted as direct MCP callers in v1) is cached as a negative result.
+ */
+async function resolveTokenIdentity(
+  bearer: string,
+  bearerHashHex: string,
+): Promise<TokenIdentity | null> {
+  const hit = lruGet(TOKEN_INDEX_CACHE, bearerHashHex);
+  if (hit) return hit.value;
+
   // token_index lookup is admin-context — needs to read across workspaces
   // to find which workspace this bearer belongs to. RLS bypass is handled
   // at the role level: harness_admin has BYPASSRLS (per
@@ -153,24 +186,43 @@ export async function resolveBearer(bearer: string): Promise<Principal | null> {
      WHERE token = ${bearer}
      LIMIT 1
   `;
-  if (!rows.length) return null;
-  const { kind, harness_slug: slug, workspace_id: workspaceId } = rows[0];
-  if (kind !== 'system' && kind !== 'pi') {
-    // Harness bearers are out of scope for v1.
+  const row = rows[0];
+  if (!row || (row.kind !== 'system' && row.kind !== 'pi')) {
+    // Missing row, or a harness bearer (out of scope for v1) — cache negatively.
+    lruSet(TOKEN_INDEX_CACHE, bearerHashHex, null);
     return null;
   }
+  const identity: TokenIdentity = {
+    kind: row.kind,
+    slug: row.harness_slug,
+    workspaceId: row.workspace_id,
+  };
+  lruSet(TOKEN_INDEX_CACHE, bearerHashHex, identity);
+  return identity;
+}
+
+export async function resolveBearer(bearer: string): Promise<Principal | null> {
+  if (!bearer) return null;
+
+  // bearer → token_index identity, served from a per-bearer-hash cache (the
+  // identity is immutable for a live token — see TOKEN_INDEX_CACHE). The hash is
+  // also the capability-load credential, so compute it once here.
+  const bh = bearerHash(bearer);
+  const identity = await resolveTokenIdentity(bearer, bh);
+  if (!identity) return null;
+  const { kind, slug, workspaceId } = identity;
 
   ensureInvalidationListener();
 
   // Cache check — negative entries (ended sessions etc.) are cached too, so a
   // dead bearer hammering the server doesn't re-load capabilities every call.
   const ck = cacheKey(workspaceId, slug);
-  const cached = cacheGet(ck);
-  if (cached) return cached.principal;
+  const cached = lruGet(CACHE, ck);
+  if (cached) return cached.value;
 
-  const capabilities = await loadCapabilities(workspaceId, kind, slug, bearerHash(bearer));
+  const capabilities = await loadCapabilities(workspaceId, kind, slug, bh);
   if (!capabilities) {
-    cacheSet(ck, null);
+    lruSet(CACHE, ck, null);
     return null;
   }
 
@@ -187,7 +239,7 @@ export async function resolveBearer(bearer: string): Promise<Principal | null> {
     trust: 'trusted',
     ...(roles ? { roles } : {}),
   };
-  cacheSet(ck, principal);
+  lruSet(CACHE, ck, principal);
   return principal;
 }
 
@@ -238,6 +290,7 @@ export function invalidate(workspaceId: string, slug: string): void {
 /** Test-only. */
 export function _resetAuthCacheForTests(): void {
   CACHE.clear();
+  TOKEN_INDEX_CACHE.clear();
   listenerStarted = false;
   listenerWarned = false;
 }

@@ -89,9 +89,11 @@ describe('learning_packs:publish tool', () => {
     expect(mockCoords).not.toHaveBeenCalled();
   });
 
-  it('returns repo_coords_unresolvable when the repo has no resolvable GitHub origin', async () => {
+  it('returns repo_coords_unresolvable WITH the fix-it hint and never reaches the publish core (null coords)', async () => {
     mockCoords.mockResolvedValue(null as never);
-    expect(body(await call(publishTool, PUBLISH_ARGS))).toMatchObject({ ok: false, error: 'repo_coords_unresolvable' });
+    const res = body(await call(publishTool, PUBLISH_ARGS));
+    expect(res).toMatchObject({ ok: false, error: 'repo_coords_unresolvable' });
+    expect(res.hint).toMatch(/git repo with a GitHub origin/i);
     expect(mockPublish).not.toHaveBeenCalled();
   });
 
@@ -115,5 +117,15 @@ describe('learning_packs:publish tool', () => {
     );
     expect(res).toMatchObject({ ok: true, listingId: 'listing-1', review_status: 'pending' });
     expect(res.hint).toMatch(/PENDING/);
+  });
+
+  it('suppresses the PENDING hint when the listing comes back already non-pending (e.g. approved)', async () => {
+    mockPublish.mockResolvedValue({
+      ok: true,
+      data: { id: 'listing-2', review_status: 'approved' },
+    } as unknown as Awaited<ReturnType<typeof publishListingToCupboard>>);
+    const res = body(await call(publishTool, PUBLISH_ARGS));
+    expect(res).toMatchObject({ ok: true, listingId: 'listing-2', review_status: 'approved' });
+    expect(res.hint).toBeUndefined();
   });
 });

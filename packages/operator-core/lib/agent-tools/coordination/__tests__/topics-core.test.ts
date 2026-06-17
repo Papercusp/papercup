@@ -89,6 +89,46 @@ describe('mergeTopicsCore', () => {
     expect(onTarget.map((s) => s.subscriber_id)).toEqual(['agentA']);
     expect(onTarget[0].delivery_mode).toBe('digest'); // mode preserved
   });
+
+  // P2-18a: a self-merge (from === into) is a no-op short-circuit — it must not
+  // touch the alias graph or re-subscribe anyone (re-pointing a subscriber from
+  // X onto X, then unsubscribing X, would orphan them).
+  it('a self-merge is a no-op: {moved:0}, no alias, no subscription churn', async () => {
+    const stores = makeStores();
+    await stores.topics.create({ slug: 'x', description: 'solo', created_ts: TS });
+    await stores.subscriptions.subscribe({ subscriber_id: 'agentA', target_kind: 'topic', target_ref: 'x', delivery_mode: 'digest', created_ts: TS });
+
+    const res = await mergeTopicsCore(stores, { from: 'x', into: 'x', nowIso: TS });
+    expect(res).toEqual({ moved: 0 });
+
+    // No alias was written (x still resolves to itself), and agentA is untouched.
+    expect(await stores.topics.resolve('x')).toBe('x');
+    const onX = await stores.subscriptions.listTargetSubscribers('topic', 'x');
+    expect(onX.map((s) => s.subscriber_id)).toEqual(['agentA']);
+    expect(onX[0].delivery_mode).toBe('digest');
+  });
+
+  // P2-18b: a subscriber already on BOTH the old slug and the target must end
+  // with ONE subscription on the target (the re-subscribe upserts, not
+  // duplicates), preserving the digest mode — so the merged feed reaches them
+  // exactly once, never twice.
+  it('a subscriber on BOTH old + new ends with a single (deduped) subscription on the target', async () => {
+    const stores = makeStores();
+    await stores.topics.create({ slug: 'fed', description: 'dup', created_ts: TS });
+    await stores.topics.create({ slug: 'federation', description: 'canonical', created_ts: TS });
+    // agentA follows BOTH — fed in digest, federation already in digest too.
+    await stores.subscriptions.subscribe({ subscriber_id: 'agentA', target_kind: 'topic', target_ref: 'fed', delivery_mode: 'digest', created_ts: TS });
+    await stores.subscriptions.subscribe({ subscriber_id: 'agentA', target_kind: 'topic', target_ref: 'federation', delivery_mode: 'digest', created_ts: TS });
+
+    const res = await mergeTopicsCore(stores, { from: 'fed', into: 'federation', nowIso: TS });
+    expect(res.moved).toBe(1);
+
+    // The old slug is drained; the target carries agentA exactly ONCE.
+    expect(await stores.subscriptions.listTargetSubscribers('topic', 'fed')).toEqual([]);
+    const onTarget = await stores.subscriptions.listTargetSubscribers('topic', 'federation');
+    expect(onTarget.map((s) => s.subscriber_id)).toEqual(['agentA']); // not ['agentA','agentA']
+    expect(onTarget[0].delivery_mode).toBe('digest'); // mode preserved
+  });
 });
 
 describe('delivery-mode gating (D-006)', () => {

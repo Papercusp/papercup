@@ -3,7 +3,8 @@
  * (accounts-pool-tab-2026-06-15 P-002 / D-016). It drives the REAL `claude setup-token`
  * CLI in a pty, because claude.ai rejects a hand-built authorize URL clicked in a plain
  * browser — it requires claude-code's own client handshake (see insight
- * claude-oauth-authorize-url; the hand-built account-link-store.ts is the dead-end it
+ * claude-oauth-authorize-url; the hand-built authorize-URL approach — formerly
+ * account-link-store.ts, since removed as orphaned dead code — was the dead-end it
  * replaces). The CLI is the client; we just relay its link + feed the owner's code back.
  *
  * Flow (the button does what an agent used to do by hand):

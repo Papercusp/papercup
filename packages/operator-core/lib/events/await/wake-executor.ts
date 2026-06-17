@@ -92,13 +92,32 @@ export function codexHomeForAdvSession(advSessionId: number): string {
   return codexHomeForSessionKey(advSessionId);
 }
 
+/** Whether a (possibly coalesced) delivery payload carries a timeout fire.
+ *  A plain timeout fire is `{ timeout: true }` (engine.ts sweeper). A COALESCED
+ *  wake replaces that headline with `{ coalesced, count, events, latest }`
+ *  (engine.ts coalesceDeliveries), so the raw `payload.timeout` is gone — look
+ *  inside the union (the latest fire AND any folded event) or the marker would be
+ *  silently dropped and the agent told the event FIRED when it actually TIMED OUT. */
+function payloadIsTimeout(payload: unknown): boolean {
+  if (payload == null || typeof payload !== 'object') return false;
+  const p = payload as {
+    timeout?: boolean;
+    latest?: { payload?: { timeout?: boolean } };
+    events?: { payload?: { timeout?: boolean } }[];
+  };
+  if (p.timeout === true) return true;
+  if (p.latest?.payload?.timeout === true) return true;
+  if (Array.isArray(p.events) && p.events.some((e) => e?.payload?.timeout === true)) return true;
+  return false;
+}
+
 /** Compose the single-line wake turn injected/submitted into the woken session. */
 export function wakeTurnText(d: DeliveryWork): string {
   const note = d.note ? ` (your note: ${d.note})` : '';
   const summary = d.summary ? ` — ${d.summary}` : '';
   const payload =
     d.payload != null ? ` payload: ${JSON.stringify(d.payload).slice(0, 400)}` : '';
-  const timeout = (d.payload as { timeout?: boolean } | null)?.timeout
+  const timeout = payloadIsTimeout(d.payload)
     ? ' [TIMEOUT — the event did NOT fire before your deadline]'
     : '';
   return (

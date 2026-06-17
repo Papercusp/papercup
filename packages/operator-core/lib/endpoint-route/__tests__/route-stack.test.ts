@@ -99,6 +99,82 @@ describe('auth step', () => {
   });
 });
 
+/**
+ * Gap 5 — the `?token=` → `Authorization: Bearer` lift (route-stack.ts
+ * `authHeaders`). SECURITY-sensitive: a query token may only become a
+ * bearer credential when the route's `auth.tokenIn` includes `'query'`,
+ * and it must never override an Authorization header the caller already
+ * set. The stub `requirePrincipal` echoes the resolved `Authorization`
+ * header it was handed back through the principal's slug, so the handler
+ * can assert exactly what the resolvers would have seen.
+ */
+describe('auth step — ?token= → bearer lift (Gap 5, security)', () => {
+  /** Echo whatever Authorization header the auth step resolved. */
+  function echoAuthHeader() {
+    vi.mocked(requirePrincipal).mockImplementation(async (headers) => ({
+      kind: 'system',
+      slug: headers.get('authorization') ?? '<none>',
+      workspaceId: 'w',
+      authMethod: 'process-internal',
+      trust: 'trusted',
+      capabilities: new Set<string>(),
+    }));
+  }
+
+  it('(a) lifts ?token= into a bearer when tokenIn includes "query"', async () => {
+    echoAuthHeader();
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/q-auth', auth: { kind: ['system'], tokenIn: ['query'] },
+      handler: (_req, ctx) => Response.json({ seen: ctx.principal?.slug }),
+    }));
+    const res = await app.request('/q-auth?token=qtok');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ seen: 'Bearer qtok' });
+  });
+
+  it('(b) NEVER overrides an existing Authorization header with ?token=', async () => {
+    echoAuthHeader();
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/q-auth', auth: { kind: ['system'], tokenIn: ['query'] },
+      handler: (_req, ctx) => Response.json({ seen: ctx.principal?.slug }),
+    }));
+    // A real header is present AND a ?token= is supplied: the header wins.
+    const res = await app.request('/q-auth?token=qtok', {
+      headers: { authorization: 'Bearer real-header-token' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ seen: 'Bearer real-header-token' });
+  });
+
+  it('(c) IGNORES ?token= entirely when tokenIn is absent (no bearer smuggling)', async () => {
+    echoAuthHeader();
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/h-only', auth: { kind: ['system'] },
+      handler: (_req, ctx) => Response.json({ seen: ctx.principal?.slug }),
+    }));
+    // No tokenIn → ?token= must NOT be promoted to a bearer. The resolver
+    // sees no Authorization header at all.
+    const res = await app.request('/h-only?token=qtok');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ seen: '<none>' });
+  });
+
+  it('(c2) IGNORES ?token= when tokenIn is ["header"] only', async () => {
+    echoAuthHeader();
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/h-explicit', auth: { kind: ['system'], tokenIn: ['header'] },
+      handler: (_req, ctx) => Response.json({ seen: ctx.principal?.slug }),
+    }));
+    const res = await app.request('/h-explicit?token=qtok');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ seen: '<none>' });
+  });
+});
+
 describe('auth step — loopback tier (auth-tier rollout Wave 1)', () => {
   const lbRoute = () => defineTool({
     method: 'POST', path: '/lb', auth: 'loopback',
@@ -139,6 +215,32 @@ describe('auth step — loopback tier (auth-tier rollout Wave 1)', () => {
     const app = freshApp();
     registerRoute(app, lbRoute());
     const res = await app.request('http://evil.example.com/lb', { method: 'POST' });
+    expect(res.status).toBe(200);
+  });
+
+  it('Gap 6: flag-layer error fails CLOSED — loopback route still 403s a remote Host', async () => {
+    // The flag resolver throws (PG down, import failure, …). The route
+    // declares itself loopback-only; `endpointAuthTiersEnabled` must treat
+    // an unreachable flag layer as "enabled" so the declared tier holds.
+    vi.mocked(getFlag).mockRejectedValue(new Error('flag layer unreachable'));
+    const app = freshApp();
+    let handlerRan = false;
+    registerRoute(app, defineTool({
+      method: 'POST', path: '/lb', auth: 'loopback',
+      handler: () => { handlerRan = true; return Response.json({}); },
+    }));
+    const res = await app.request('http://evil.example.com/lb', { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(handlerRan).toBe(false);
+  });
+
+  it('Gap 6: flag-layer error still admits a loopback Host (fail-closed, not fail-broken)', async () => {
+    // Fail-CLOSED means "enforce the loopback gate", not "reject everything":
+    // a genuinely-loopback caller must still get through.
+    vi.mocked(getFlag).mockRejectedValue(new Error('flag layer unreachable'));
+    const app = freshApp();
+    registerRoute(app, lbRoute());
+    const res = await app.request('/lb', { method: 'POST' });
     expect(res.status).toBe(200);
   });
 
@@ -204,6 +306,45 @@ describe('input step', () => {
     }));
     const res = await app.request('/q?limit=7');
     expect(await res.json()).toEqual({ limit: 7 });
+  });
+
+  // ── Gap 13: GET query coercion footgun. searchParams are ALL strings;
+  //    the route-stack does not coerce, so a non-coercing schema 400s. ──
+  it('Gap 13: a GET z.number() schema 400s on ?n=5 (string, not coerced)', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/n', auth: 'public',
+      input: z.object({ n: z.number() }),
+      handler: (_req, ctx) => Response.json({ n: ctx.input.n }),
+    }));
+    const res = await app.request('/n?n=5');
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe('invalid_input');
+  });
+
+  it('Gap 13: z.coerce.number() passes ?n=5 → 200 with n===5 (number)', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/n', auth: 'public',
+      input: z.object({ n: z.coerce.number() }),
+      handler: (_req, ctx) => Response.json({ n: ctx.input.n, isNumber: typeof ctx.input.n === 'number' }),
+    }));
+    const res = await app.request('/n?n=5');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ n: 5, isNumber: true });
+  });
+
+  it('Gap 13: a repeated query key is last-wins (Object.fromEntries)', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/dup', auth: 'public',
+      input: z.object({ x: z.string() }),
+      handler: (_req, ctx) => Response.json({ x: ctx.input.x }),
+    }));
+    const res = await app.request('/dup?x=1&x=2');
+    expect(res.status).toBe(200);
+    // Object.fromEntries(searchParams) keeps the LAST value for a repeated key.
+    expect(await res.json()).toEqual({ x: '2' });
   });
 
   it('handler gets undefined input when no schema declared', async () => {

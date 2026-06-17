@@ -12,7 +12,7 @@ import { listChats } from '../../agent-chats-data';
 export default defineTool({
   name: 'agent_chats:list',
   description:
-    'List multi-turn chat sessions for a harness slug (active by default; pass includeArchived=true to see all). Bounded: limit clamped 1..100, default 100; page older chats with offset.',
+    'List multi-turn chat sessions for a harness slug (active by default; pass includeArchived=true to see all). Bounded: limit clamped 1..100, default 100; page older chats with offset. Rows are summaries (turn_count, tokens, cost, timestamps) WITHOUT the transcript body — use agent_chats:get for a chat\'s turns.',
   capability: 'agent_chats:read',
   guidance: {
     when: 'User asks "what chats have I had with X?", "show me the conversations on sheets", or you need a chatId before resuming via ui:dispatch.',

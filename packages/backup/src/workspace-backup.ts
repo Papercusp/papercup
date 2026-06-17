@@ -577,7 +577,10 @@ export class WorkspaceBackup {
     // we snapshot today). For multi-source workspaces, the caller must
     // pass `liveTarget` explicitly.
     const liveTarget = resolve(opts.liveTarget ?? root);
-    if (!liveTarget.startsWith(root)) {
+    // Prefix check must include a path separator — a bare startsWith(root) would
+    // let a SIBLING like `<root>-evil` pass. Allow liveTarget === root (the
+    // default; multi-source workspaces pass an explicit sub-path under root).
+    if (liveTarget !== root && !liveTarget.startsWith(root + '/')) {
       throw new Error(`refusing to promote: ${liveTarget} escapes workspace`);
     }
     // P-012: the broken-dir name must be DETERMINISTIC for a crash-resume to
@@ -639,7 +642,7 @@ export class WorkspaceBackup {
     const steps = backupStepRunner();
     const root = resolve(this.workspaceRoot);
     const broken = resolve(opts.brokenPath);
-    if (!broken.startsWith(root)) {
+    if (broken !== root && !broken.startsWith(root + '/')) {
       throw new Error(`refusing to rollback: ${broken} is outside workspace`);
     }
     // Resolve the live target. Prefer the deterministic meta sidecar that
@@ -659,7 +662,7 @@ export class WorkspaceBackup {
       }
       liveTarget = join(dirname(broken), m[2]!);
     }
-    if (!liveTarget.startsWith(root)) {
+    if (liveTarget !== root && !liveTarget.startsWith(root + '/')) {
       throw new Error(`refusing to rollback: resolved live ${liveTarget} escapes workspace`);
     }
     const tag = sanitizeOpTag(opts.opId ?? new Date().toISOString().replace(/[:.]/g, '-'));
@@ -961,8 +964,11 @@ function sanitizeOpTag(s: string): string {
 /**
  * Kopia's `snapshot create --json` emits one JSON object per source on
  * success. We back up one source per call, so we expect one object.
+ *
+ * Exported for unit testing (Gap 3): the parser is pure and is the only
+ * place the bytesAdded/bytesTotal fallback chain + missing-id guard live.
  */
-function parseKopiaSnapshotJson(stdout: string): {
+export function parseKopiaSnapshotJson(stdout: string): {
   snapshotId: string;
   bytesAdded: number;
   bytesTotal: number;

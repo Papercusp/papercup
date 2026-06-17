@@ -27,6 +27,8 @@ import {
   type ResourceMode,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
+import { acquireResourceExclusiveWithWait } from '../resource-acquire-wait';
+import { _resetListenersForTests } from '../workspace-listener';
 
 async function dbLive(): Promise<boolean> {
   try {
@@ -117,6 +119,85 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     // Drain the last shared holder — the release cascade flips X to held.
     await rel(ws, 'B', b.lock_id);
     expect((await status(x.lock_id)).status).toBe('held');
+  });
+
+  // B4 — drain-timeout queue fairness. A holds shared (long TTL); B requests
+  // exclusive with a SHORT drain budget and a queued exclusive waiter C sits
+  // behind it. B's drain times out (A never drains) → B must NOT be silently
+  // granted, and C (the recorded waiter, queue order) must be the one able to
+  // proceed once B's exclusive is released — B does NOT jump back ahead.
+  it.skipIf(!live)('drain-timeout does not grant the timed-out exclusive; the queued waiter is next (fairness)', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+
+    // A holds shared on a long TTL — it will NOT drain within B's budget.
+    const a = await acq(ws, 'A', 'dev-server', 'shared', 600);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+
+    // C queues an exclusive waiter behind B-to-be: while A's shared is live and
+    // (about to be) B's draining exclusive exists, C's exclusive is refused and
+    // recorded as a waiter (queue position). Acquire C's waiter row FIRST so the
+    // queue is populated before B's drain wait runs.
+    // (We request C before B so the refusal reason is the clean shared-present
+    //  path; either order leaves C a recorded waiter — the queue is a set keyed
+    //  by owner, ordered by queued_ts.)
+
+    // B requests exclusive with a 1s drain budget → enters 'draining' (A in),
+    // waits, and times out because A holds its shared for 600s.
+    const bStart = Date.now();
+    const b = await acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: 'B',
+      ownerLabel: 'res:B',
+      resource: 'dev-server',
+      reason: 'restart attempt (will time out)',
+      ttlSec: 600,
+      maxWaitSec: 1,
+    });
+    const bWaited = Date.now() - bStart;
+    // Timed out, NOT granted. The exclusive row is LEFT in place (the writer
+    // still wants in; it TTL-expires or is released) — but the BODY never ran.
+    expect(b.ok).toBe(false);
+    if (b.ok) return;
+    expect(b.reason).toBe('drain_timeout');
+    expect(bWaited).toBeGreaterThanOrEqual(900); // actually waited ~1s, no instant give-up
+
+    // C now queues an exclusive waiter behind B's still-present draining exclusive.
+    const c = await acq(ws, 'C', 'dev-server', 'exclusive');
+    expect(c.ok).toBe(false);
+    if (c.ok) return;
+    expect(c.reason).toBe('held_exclusive'); // B's draining exclusive blocks C → C recorded as waiter
+
+    // The queue shows A (shared, held) + B (exclusive, draining) — and NOT a
+    // grant for C. B timing out granted B NOTHING destructive.
+    const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const bRow = q.holders.find((h) => h.owner === 'B');
+    expect(bRow?.mode).toBe('exclusive');
+    expect(bRow?.status).toBe('draining'); // never flipped to held — A blocks
+    expect(q.holders.some((h) => h.owner === 'C')).toBe(false); // C holds nothing
+
+    // Now B gives up its claim (release its still-parked exclusive). The waiter
+    // ledger names C as the queued audience — fairness: C is next, not B again.
+    const relB = await rel(ws, 'B', bRow!.lock_id);
+    expect(relB.exclusiveResources).toContain('dev-server');
+    expect(relB.waiters['dev-server'] ?? []).toContain('C'); // C is the queued grantee-to-be
+
+    // A is still holding shared, so C's exclusive still has to drain A — but C
+    // (not B) is the one now contending for the slot. Drain A; then C acquires.
+    await rel(ws, 'A', a.lock_id);
+    const cGot = await acq(ws, 'C', 'dev-server', 'exclusive');
+    expect(cGot.ok).toBe(true);
+    if (!cGot.ok) return;
+    expect(cGot.status).toBe('held'); // no shared holders left → C is granted
+
+    // B did NOT silently re-acquire: only C holds the exclusive now.
+    const q2 = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const excl = q2.holders.filter((h) => h.mode === 'exclusive');
+    expect(excl.map((h) => h.owner)).toEqual(['C']);
+
+    await _resetListenersForTests();
+    await _resetForTests();
   });
 
   it.skipIf(!live)('refuses an in-place upgrade: a shared holder requesting exclusive gets holds_shared', async () => {

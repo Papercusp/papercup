@@ -170,7 +170,7 @@ export interface PumpStats {
  * newest is the headline; its summary/payload carry the union ("here are the N things
  * that fired while you slept"). The siblings settle as `coalesced` (no extra turns).
  */
-function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
+export function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
   const headline = group[group.length - 1];
   if (group.length === 1) return headline;
   const keys = group.map((d) => d.eventKey);
@@ -231,10 +231,15 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       group.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
       // Floor: the most eager (smallest declared) min_sleep in the group sets the cadence;
-      // urgent on any delivery bypasses it (decideWake handles both).
-      const minSleepMs =
-        1000 *
-        Math.min(...group.map((d) => (d.minSleepSec != null && d.minSleepSec > 0 ? d.minSleepSec : 0)));
+      // urgent on any delivery bypasses it (decideWake handles both). Only the POSITIVE
+      // floors count — a co-incident floor-less one-shot (min_sleep=0) must NOT nullify a
+      // standing watch's floor (`Math.min(…, 0)` → 0 would disable throttling and let the
+      // one-shot's tick defeat the standing wake's cost discipline). No positive floor in
+      // the group → 0 (no throttle), the genuine one-shot-grant default.
+      const positiveFloors = group
+        .map((d) => d.minSleepSec)
+        .filter((s): s is number => s != null && s > 0);
+      const minSleepMs = positiveFloors.length > 0 ? 1000 * Math.min(...positiveFloors) : 0;
       const decision = decideWake({
         lastWokenAt: lastWoken.get(subscriberId) ?? null,
         pending: group.map((d) => ({ at: Date.parse(d.createdAt), payload: d, urgent: d.urgent })),

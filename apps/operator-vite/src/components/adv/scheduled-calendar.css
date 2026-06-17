@@ -1,0 +1,143 @@
+/*
+ * Theme FullCalendar to the operator's semantic tokens (scheduled-recurring-plans
+ * P-018). FullCalendar exposes its own `--fc-*` custom properties; we map them to
+ * our `--bg/--fg/--border/--accent` semantic scale so the calendar re-skins with
+ * every theme (frost / black / custom) — never a hardcoded brand color (the theme
+ * contract). Event status colors reuse the semantic --good/--warn/--bad.
+ */
+.pc-sched-cal {
+  --fc-border-color: var(--border, rgba(125, 211, 252, 0.15));
+  --fc-page-bg-color: var(--bg, #07101d);
+  --fc-neutral-bg-color: var(--bg-1, #0b1220);
+  --fc-neutral-text-color: var(--fg-dim, #b9d4e8);
+  --fc-today-bg-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 90%);
+  --fc-button-bg-color: var(--bg-2, rgba(255, 255, 255, 0.045));
+  --fc-button-border-color: var(--border, rgba(125, 211, 252, 0.15));
+  --fc-button-text-color: var(--fg, #e7f7ff);
+  --fc-button-hover-bg-color: var(--bg-3, rgba(255, 255, 255, 0.075));
+  --fc-button-hover-border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+  --fc-button-active-bg-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+  --fc-button-active-border-color: var(--accent, #38bdf8);
+  --fc-event-bg-color: var(--bg-raised, #112235);
+  --fc-event-border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+  --fc-event-text-color: var(--fg, #e7f7ff);
+  --fc-highlight-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 85%);
+  --fc-list-event-hover-bg-color: var(--bg-2, rgba(255, 255, 255, 0.045));
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--fg, #e7f7ff);
+}
+
+.pc-sched-cal__body {
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
+.pc-sched-cal__main {
+  flex: 1;
+  min-width: 0;
+  /* FullCalendar's default font is larger than the operator's dense chrome. */
+  font-size: 12px;
+}
+.pc-sched-cal__main .fc .fc-toolbar-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg, #e7f7ff);
+}
+.pc-sched-cal__main .fc .fc-col-header-cell-cushion,
+.pc-sched-cal__main .fc .fc-daygrid-day-number {
+  color: var(--fg-dim, #b9d4e8);
+  text-decoration: none;
+}
+.pc-sched-cal__main .fc-theme-standard .fc-scrollgrid {
+  border-color: var(--border, rgba(125, 211, 252, 0.15));
+}
+
+/* Event chips — armed vs paused, colored by last-run outcome. */
+.pc-sched-event {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 2px;
+  font-size: 11px;
+}
+.pc-sched-event--paused {
+  opacity: 0.55;
+  border-style: dashed !important;
+}
+.pc-sched-event--oneshot {
+  font-style: italic;
+}
+.pc-sched-event--success {
+  --fc-event-border-color: var(--good, #34d399);
+  border-left: 3px solid var(--good, #34d399) !important;
+}
+.pc-sched-event--failed {
+  --fc-event-border-color: var(--bad, #fb7185);
+  border-left: 3px solid var(--bad, #fb7185) !important;
+}
+.pc-sched-event--partial,
+.pc-sched-event--timed-out {
+  --fc-event-border-color: var(--warn, #fbbf24);
+  border-left: 3px solid var(--warn, #fbbf24) !important;
+}
+
+/* Right-hand selected-plan inspector. */
+.pc-sched-cal__aside {
+  width: 280px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+  border-radius: 8px;
+  background: var(--bg-1, #0b1220);
+  padding: 12px;
+}
+.pc-sched-cal__aside h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg, #e7f7ff);
+}
+.pc-sched-cal__aside dl {
+  margin: 0 0 12px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  font-size: 11px;
+}
+.pc-sched-cal__aside dt {
+  color: var(--fg-mute, #7f9bb4);
+}
+.pc-sched-cal__aside dd {
+  margin: 0;
+  color: var(--fg-dim, #b9d4e8);
+}
+.pc-sched-cal__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--fg-mute, #7f9bb4);
+  padding: 6px 2px;
+}
+.pc-sched-cal__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.pc-sched-cal__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.pc-sched-cal__empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-mute, #7f9bb4);
+  font-size: 12px;
+}

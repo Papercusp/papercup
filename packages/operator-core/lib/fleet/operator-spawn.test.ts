@@ -51,6 +51,8 @@ import {
   spawnConcurrencyCeiling,
   spawnSlotEventKey,
   findBriefPlaceholder,
+  selectWedgeReapCandidates,
+  WEDGE_REAP_SILENT_MS,
 } from './operator-spawn';
 
 // `/tmp` exists on disk, so the project-dir existence check passes without fixtures.
@@ -635,5 +637,56 @@ describe('over-ceiling slot-wait — queue + await, never a silent drop (D-004)'
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
     expect(res.ok).toBe(true);
     expect(res.awaitEvent ?? null).toBeNull();
+  });
+});
+
+/**
+ * Gap 13 — selectWedgeReapCandidates (operator-spawn.ts:190-202): the PURE candidate
+ * filter for the wedge reaper. A local spawn is a candidate iff it is TRACKED (this
+ * host holds its abort handle), NOT already mid-reap (inFlight), has OBSERVED output
+ * (at > 0 — absence of signal is never a wedge), and has been stream-silent past the
+ * threshold (now - at > silentMs). The four exclusion arms each get a row.
+ */
+describe('selectWedgeReapCandidates — pure wedge-reaper filter (Gap 13 / P-010)', () => {
+  const NOW = 10_000_000_000; // fixed clock
+  const silentMs = 30 * 60_000; // 30 min
+  const tracked = (...ids: string[]) => new Set(ids);
+
+  it('returns ONLY the silent-old tracked spawn, excluding in-flight / never-output / recent', () => {
+    const output = new Map<string, { at: number }>([
+      ['silent-old', { at: NOW - silentMs - 1 }],   // tracked, silent past threshold → REAPED
+      ['silent-in-flight', { at: NOW - silentMs - 1 }], // silent-old BUT already mid-reap → excluded
+      ['never-output', { at: 0 }],                   // at:0 (no observed output) → excluded
+      ['recent', { at: NOW - 60_000 }],              // moved 1 min ago, not silent → excluded
+    ]);
+    const out = selectWedgeReapCandidates(
+      output,
+      tracked('silent-old', 'silent-in-flight', 'never-output', 'recent'),
+      new Set(['silent-in-flight']), // inFlight
+      NOW,
+      silentMs,
+    );
+    expect(out).toEqual(['silent-old']);
+  });
+
+  it('excludes a spawn this host does NOT track even when its stream is silent-old', () => {
+    const output = new Map<string, { at: number }>([['foreign', { at: NOW - silentMs - 1 }]]);
+    // tracked set is empty → the host holds no abort handle → not its verdict to make.
+    expect(selectWedgeReapCandidates(output, new Set(), new Set(), NOW, silentMs)).toEqual([]);
+  });
+
+  it('boundary: exactly-at-threshold is NOT silent enough (strict >), one ms past IS', () => {
+    const atThreshold = new Map<string, { at: number }>([['x', { at: NOW - silentMs }]]);
+    expect(selectWedgeReapCandidates(atThreshold, tracked('x'), new Set(), NOW, silentMs)).toEqual([]);
+    const pastThreshold = new Map<string, { at: number }>([['x', { at: NOW - silentMs - 1 }]]);
+    expect(selectWedgeReapCandidates(pastThreshold, tracked('x'), new Set(), NOW, silentMs)).toEqual(['x']);
+  });
+
+  it('defaults silentMs to WEDGE_REAP_SILENT_MS when omitted', () => {
+    const output = new Map<string, { at: number }>([
+      ['old', { at: NOW - WEDGE_REAP_SILENT_MS - 1 }],
+      ['fresh', { at: NOW - WEDGE_REAP_SILENT_MS + 60_000 }],
+    ]);
+    expect(selectWedgeReapCandidates(output, tracked('old', 'fresh'), new Set(), NOW)).toEqual(['old']);
   });
 });

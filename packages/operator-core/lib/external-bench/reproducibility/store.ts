@@ -40,6 +40,7 @@ function rowToTaskRunResult(r: any): TaskRunResult {
     arm: r.arm,
     seed: Number(r.seed),
     resolved: r.resolved === null || r.resolved === undefined ? null : Boolean(r.resolved),
+    score: numOrNull(r.score),
     graderStatus: r.grader_status,
     graderFamily: r.grader_family,
     graderVersion: r.grader_version,

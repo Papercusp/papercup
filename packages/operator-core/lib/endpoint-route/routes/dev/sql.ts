@@ -26,6 +26,88 @@ const STATEMENT_TIMEOUT_MS = 10_000;
 const MAX_ROWS_RETURNED = 1000;
 const ALLOWED_LEADING = new Set(['SELECT', 'WITH', 'EXPLAIN', 'SHOW', 'TABLE', 'VALUES']);
 
+/**
+ * Data-modifying keywords that must never appear as bare tokens inside an
+ * otherwise-allowed read-only statement. The leading-keyword gate alone is
+ * NOT enough: PostgreSQL lets a data-modifying statement hide behind an
+ * allowed leader, most notably a data-modifying CTE
+ * (`WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x` — leader is the
+ * accepted `WITH`, but the DELETE still runs). `EXPLAIN ANALYZE <mutation>`
+ * and a `TABLE`/`VALUES`/`SELECT` body that splices a writable CTE are the
+ * same class of bypass. We strip strings / comments / dollar-quotes first,
+ * so these only match real SQL keywords, never a literal or identifier.
+ */
+const FORBIDDEN_INNER = ['INSERT', 'UPDATE', 'DELETE', 'MERGE', 'DROP', 'TRUNCATE', 'ALTER', 'CREATE', 'GRANT', 'REVOKE'];
+const FORBIDDEN_INNER_RE = new RegExp(`\\b(?:${FORBIDDEN_INNER.join('|')})\\b`, 'i');
+
+/**
+ * Strip the parts of a statement that can legitimately contain
+ * SQL-keyword-looking text — single-quoted strings, double-quoted
+ * identifiers, dollar-quoted strings, and `--` / block comments — so the
+ * residue is the bare SQL skeleton safe to keyword-scan. Mirrors the
+ * quoting rules `splitStatements` already understands.
+ */
+function stripNoise(sql: string): string {
+  let out = '';
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const c = sql[i];
+    if (c === '-' && sql[i + 1] === '-') {
+      while (i < n && sql[i] !== '\n') i++;
+      out += ' ';
+      continue;
+    }
+    if (c === '/' && sql[i + 1] === '*') {
+      i += 2;
+      while (i + 1 < n && !(sql[i] === '*' && sql[i + 1] === '/')) i++;
+      i += 2;
+      out += ' ';
+      continue;
+    }
+    if (c === "'") {
+      i++;
+      while (i < n) {
+        if (sql[i] === "'" && sql[i + 1] === "'") { i += 2; continue; }
+        if (sql[i] === "'") { i++; break; }
+        i++;
+      }
+      out += ' ';
+      continue;
+    }
+    if (c === '"') {
+      i++;
+      while (i < n && sql[i] !== '"') i++;
+      if (i < n) i++;
+      out += ' ';
+      continue;
+    }
+    if (c === '$') {
+      const tagMatch = sql.slice(i).match(/^\$([A-Za-z_][A-Za-z0-9_]*)?\$/);
+      if (tagMatch) {
+        const tag = tagMatch[0];
+        i += tag.length;
+        const close = sql.indexOf(tag, i);
+        i = close === -1 ? n : close + tag.length;
+        out += ' ';
+        continue;
+      }
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * True if a statement contains a data-modifying / DDL keyword once strings,
+ * comments and dollar-quotes are stripped. Catches data-modifying CTEs and
+ * any other mutation smuggled behind an allowed leading keyword.
+ */
+function isDataModifying(sql: string): boolean {
+  return FORBIDDEN_INNER_RE.test(stripNoise(sql));
+}
+
 function leadingKeyword(sql: string): string | null {
   let i = 0;
   const n = sql.length;
@@ -99,6 +181,13 @@ class ReadOnlyRollback extends Error {
   constructor() { super('__readonly_rollback'); this.name = 'ReadOnlyRollback'; }
 }
 
+/**
+ * Test seam — these allowlist primitives are the actual security boundary, so
+ * the adversarial suite drives them directly (see dev.test.ts). Not part of
+ * the route's public surface; do not import from app code.
+ */
+export const __test__ = { leadingKeyword, splitStatements, isDataModifying, stripNoise };
+
 export default defineTool({
   method: 'POST',
   path: '/dev/sql',
@@ -120,6 +209,16 @@ export default defineTool({
       if (!kw || !ALLOWED_LEADING.has(kw)) {
         return Response.json(
           { error: `rejected: ${kw ?? '?'} statements are not allowed (read-only playground; SELECT/WITH/EXPLAIN/SHOW/TABLE/VALUES only)` },
+          { status: 400 },
+        );
+      }
+      // The leading keyword can be an allowed read-only verb while the body
+      // still mutates — a data-modifying CTE (`WITH x AS (DELETE …) SELECT …`)
+      // being the canonical bypass. Reject any statement whose skeleton (no
+      // strings / comments / dollar-quotes) carries a write/DDL keyword.
+      if (isDataModifying(s)) {
+        return Response.json(
+          { error: `rejected: data-modifying statement detected (read-only playground; a data-modifying CTE or write hidden behind ${kw} is not allowed)` },
           { status: 400 },
         );
       }

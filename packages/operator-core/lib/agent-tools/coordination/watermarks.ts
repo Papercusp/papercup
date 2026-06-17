@@ -59,6 +59,17 @@ export async function readWatermark(ownerId: string): Promise<Watermark> {
  * Merge `patch` into the agent's watermark and persist it. Omitted fields
  * keep their current value; `subscriptions_fired` is *replaced* when
  * supplied, not appended — the caller owns dedup.
+ *
+ * Deliberately NOT monotonic (P1-11): the ts cursors are last-write-wins, so a
+ * patch carrying an EARLIER ts moves the cursor BACKWARD. This is by design,
+ * not a regression bug — the watermark protocol is *at-least-once, never a
+ * skip* (see watermark-crash-restart.integration.test.ts): a consumer that
+ * ends consumption mid-(same-ts)-group commits the previous DISTINCT ts,
+ * rolling the cursor back so the unconsumed siblings are re-seen on restart. A
+ * `max(current, patch)` clamp here would break that safe-commit recovery and
+ * turn a documented re-delivery into a SKIP. Ordering safety against truly
+ * out-of-order stale writes is the caller's (turn-end-only commit; the OMP
+ * coord extension only ever advances).
  */
 export async function writeWatermark(
   ownerId: string,

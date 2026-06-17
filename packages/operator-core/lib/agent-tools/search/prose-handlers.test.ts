@@ -116,6 +116,32 @@ describe('search:fulltext — scope normalization', () => {
     expect(payloadOf(res as never).scope).toEqual(['brainstorm', 'decisions']);
     expect(ftCalls[0].sourceNames).toEqual(['brainstorm', 'decisions']);
   });
+
+  // GAP 12 — scope edge: `!args.scope?.length` (an empty array, distinct from
+  // absent/`['all']`) is the third path through the normalization at
+  // fulltext.ts:53-56. It must expand to the same 4 defaults, not collapse to
+  // "no sources".
+  it('scope:[] (empty array) → the 4 defaults reach the engine (not zero sources)', async () => {
+    const tool = (await import('./fulltext')).default;
+    const res = await tool.handler({ query: 'x', scope: [] } as never, CTX() as never);
+    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+    expect(ftCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+  });
+
+  // GAP 12 — a scope naming only sources that don't exist in SEARCH_SOURCES →
+  // `.filter(scope.includes)` yields zero sources. The engine is still called
+  // (with []), returns no hits, and the handler returns results:[] without
+  // throwing. (`['all']` is special-cased to the defaults, so the test uses a
+  // non-'all' unknown scope value the enum-bypassing `as never` cast allows.)
+  it('a scope matching no source → zero sources → results:[], no throw', async () => {
+    const tool = (await import('./fulltext')).default;
+    const res = await tool.handler({ query: 'x', scope: ['nonexistent-source'] } as never, CTX() as never);
+    expect(ftCalls[0].sourceNames).toEqual([]); // nothing reaches the engine
+    const p = payloadOf(res as never);
+    expect(p.results).toEqual([]);
+    expect(p.total_hits).toBe(0);
+    expect(p.scope).toEqual(['nonexistent-source']);
+  });
 });
 
 describe('search:fulltext — limit + workspaceId defaulting', () => {
@@ -203,6 +229,27 @@ describe('search:semantic — mode + scope defaulting', () => {
     const tool = (await import('./semantic')).default;
     await tool.handler({ query: 'x' } as never, CTX() as never);
     expect(hybridCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+  });
+
+  // GAP 12 — semantic.ts shares the same `scope?.includes('all') || !scope?.length`
+  // normalization (semantic.ts:59-62). Empty array → the 4 defaults.
+  it('scope:[] (empty array) → the 4 defaults reach the engine', async () => {
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler({ query: 'x', scope: [] } as never, CTX() as never);
+    expect(hybridCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+  });
+
+  // GAP 12 — a scope matching no source → zero sources → results:[], no throw.
+  it('a scope matching no source → zero sources → results:[], no throw', async () => {
+    buildQueryEmbedder.mockResolvedValueOnce(null);
+    hybridResult = { results: [], totalHits: 0, embedderAvailable: false };
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler({ query: 'x', scope: ['nope'] } as never, CTX() as never);
+    expect(hybridCalls[0].sourceNames).toEqual([]);
+    const p = payloadOf(res as never);
+    expect(p.results).toEqual([]);
+    expect(p.total_hits).toBe(0);
   });
 });
 

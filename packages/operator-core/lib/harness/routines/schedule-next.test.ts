@@ -5,7 +5,7 @@
  * asserting exact wall-clock instants, so they pass regardless of the runner tz.
  */
 import { describe, it, expect } from 'vitest';
-import { computeNextFire, computeNextFireFromRrule, validateRrule, frequencyWarning, type ScheduleTrigger } from './schedule-next';
+import { computeNextFire, computeNextFireFromRrule, expandOccurrences, validateRrule, frequencyWarning, type ScheduleTrigger } from './schedule-next';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -97,6 +97,61 @@ describe('computeNextFire (dispatcher)', () => {
     expect(computeNextFire(null, new Date())).toBeNull();
     expect(computeNextFire(undefined, new Date())).toBeNull();
     expect(computeNextFire({}, new Date())).toBeNull();
+  });
+});
+
+describe('expandOccurrences (calendar-window expansion)', () => {
+  it('returns every daily occurrence within an inclusive window', () => {
+    const cfg: ScheduleTrigger = { rrule: 'FREQ=DAILY', dtstart: '2026-06-01T09:00:00.000Z' };
+    const start = new Date('2026-06-10T00:00:00.000Z');
+    const end = new Date('2026-06-16T23:59:59.000Z');
+    const occ = expandOccurrences(cfg, start, end);
+    // Jun 10–16 inclusive = 7 daily fires.
+    expect(occ).toHaveLength(7);
+    for (const d of occ) {
+      expect(d.getTime()).toBeGreaterThanOrEqual(start.getTime());
+      expect(d.getTime()).toBeLessThanOrEqual(end.getTime());
+    }
+    // strictly ascending
+    for (let i = 1; i < occ.length; i++) expect(occ[i].getTime()).toBeGreaterThan(occ[i - 1].getTime());
+  });
+
+  it('honors EXDATE within the window', () => {
+    const base: ScheduleTrigger = { rrule: 'FREQ=DAILY', dtstart: '2026-06-01T12:00:00.000Z' };
+    const start = new Date('2026-06-10T00:00:00.000Z');
+    const end = new Date('2026-06-12T23:59:59.000Z');
+    const before = expandOccurrences(base, start, end);
+    expect(before).toHaveLength(3);
+    const withEx: ScheduleTrigger = { ...base, exdate: [before[1].toISOString()] };
+    const after = expandOccurrences(withEx, start, end);
+    expect(after).toHaveLength(2);
+    expect(after.map((d) => d.getTime())).not.toContain(before[1].getTime());
+  });
+
+  it('expands a cron schedule by stepping (range with inclusive bounds)', () => {
+    const cfg: ScheduleTrigger = { cron: '0 9 * * *' }; // 09:00 daily
+    const start = new Date('2026-06-10T00:00:00.000Z');
+    const end = new Date('2026-06-14T23:59:59.000Z');
+    const occ = expandOccurrences(cfg, start, end);
+    expect(occ.length).toBe(5); // Jun 10–14
+    for (let i = 1; i < occ.length; i++) expect(occ[i].getTime()).toBeGreaterThan(occ[i - 1].getTime());
+  });
+
+  it('returns [] for no recurrence / inverted range / unparseable rule', () => {
+    const win = [new Date('2026-06-10T00:00:00Z'), new Date('2026-06-16T00:00:00Z')] as const;
+    expect(expandOccurrences(null, ...win)).toEqual([]);
+    expect(expandOccurrences({}, ...win)).toEqual([]);
+    expect(expandOccurrences({ rrule: 'NOPE' }, ...win)).toEqual([]);
+    // inverted range
+    expect(expandOccurrences({ rrule: 'FREQ=DAILY' }, win[1], win[0])).toEqual([]);
+  });
+
+  it('caps a pathological sub-minute cadence at `limit`', () => {
+    const cfg: ScheduleTrigger = { rrule: 'FREQ=MINUTELY', dtstart: '2026-06-10T00:00:00.000Z' };
+    const start = new Date('2026-06-10T00:00:00.000Z');
+    const end = new Date('2026-06-20T00:00:00.000Z'); // ~14400 minutes
+    const occ = expandOccurrences(cfg, start, end, 50);
+    expect(occ).toHaveLength(50);
   });
 });
 

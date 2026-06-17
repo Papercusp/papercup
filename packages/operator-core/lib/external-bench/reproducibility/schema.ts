@@ -127,6 +127,12 @@ export interface EmitRolloutInput {
     structuredOutput?: unknown;
     /** Verbatim grader output → rollout.raw_grader_output. */
     rawOutput?: string | null;
+    /**
+     * Continuous partial-credit score in [0,1] for rubric/checkpoint/coordination suites
+     * (TheAgentCompany, PaperBench, AgentsNet) → run_result.score. NULL for boolean-resolved
+     * suites (SWE-bench family) where `resolved` is the score.
+     */
+    score?: number | null;
   };
   provenance?: {
     configSnapshot?: Record<string, unknown> | null;

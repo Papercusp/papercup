@@ -93,7 +93,7 @@ describe('revocation prior-row semantics (behavior-pin, A6)', () => {
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: async () => 'verified',
       applyOverride: async (op) => {
-        if (op.table === 'mb_a6_table') {
+        if (op.table === 'mb_a6_table' && op.hbKey) {
           // Idempotent LWW upsert keyed by hbKey — the projection's real shape.
           table.set(op.hbKey, op.value as { id: string });
         }

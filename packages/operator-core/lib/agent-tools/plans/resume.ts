@@ -140,10 +140,33 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
     });
   }
 
-  // 4. Mark the run running + re-stamp its content hash (D-010:
-  //    archived runs reactivate on resume — markPlanRunResumed sets
-  //    `running` regardless of prior status).
-  await markPlanRunResumed(input.runId, bundle.contentHash);
+  // 4. Claim the run: mark it running + re-stamp its content hash (D-010:
+  //    archived/idle/failed/done runs reactivate on resume). The claim is
+  //    ATOMIC (P1-1) — `markPlanRunResumed` only flips a run that is NOT
+  //    already `running`. A run already `running` is mid-turn: resuming it
+  //    would spawn a SECOND `executePlanAgentTurn` on the same session,
+  //    duplicating work and racing two turns onto one transcript. Refuse it
+  //    with a busy result instead of kicking a duplicate turn.
+  const { claimed } = await markPlanRunResumed(input.runId, bundle.contentHash);
+  if (!claimed) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            error: 'run_busy',
+            runId: input.runId,
+            planSlug: run.planSlug,
+            status: 'running',
+            message:
+              `Plan run ${input.runId} is already running — a turn is in ` +
+              'flight. Wait for it to settle (plans:runs), then resume.',
+          }),
+        },
+      ],
+    };
+  }
   ctx.emit('run_resumed', { runId: input.runId, sessionId: run.sessionId });
 
   // 5. Run the continuation turn — stream + persist turns + settle

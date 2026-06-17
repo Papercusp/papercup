@@ -360,6 +360,7 @@ defineTestDomain({
         'packages/operator-core/lib/agent-tools/docs/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/flags/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/harness/**/*.test.ts',
+        'packages/operator-core/lib/agent-tools/harness_docs/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/hooks/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/memory/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/messages/**/*.test.ts',

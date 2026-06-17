@@ -79,6 +79,18 @@ export interface ResourceProfile {
   /** Embedding batch size — how many items to embed per call. Bigger hosts push
    *  bigger batches for throughput; small hosts keep latency/memory down. */
   readonly embedBatchSize: number;
+  /** RECOMMENDED placement of the shared background machinery (DBOS pipelines,
+   *  the routines engine, periodic timers, drains) given this host's capacity.
+   *  `true` ⇒ keep it IN the serving process — the desktop default: splitting buys
+   *  nothing on a small single-user box and just costs a second process. `false` ⇒
+   *  a host big enough to warrant moving background work to its OWN process so it
+   *  can't steal the request loop. Derived purely from capacity — split only on a
+   *  server-class host with a dedicated (native) Postgres; a laptop/workstation, or
+   *  ANY host whose PG is embedded on the same box, keeps it in-process. (P3-1 of
+   *  operator-scalability-event-loop reads this; on the desktop the split is a
+   *  no-op. Independent of {@link ResourceSignals.hostRole}, which is what THIS
+   *  process is *configured* to do; this is what the *hardware* recommends.) */
+  readonly backgroundInProcess: boolean;
   /** HTTP worker processes. **1 until a cluster actually exists** — wiring this
    *  >1 is a separate change (the app is single-process today). */
   readonly httpWorkers: number;
@@ -112,6 +124,7 @@ function clamp(n: number, lo: number, hi: number): number {
  * | pgPoolMax            | maxSimultaneousAgents + dbosQueueConcurrency + 4      |   4   |   64    |
  * | serializationWorkers | cores - 2  (0 ⇒ inline; only earned past ~4 cores)   |   0   |    8    |
  * | embedBatchSize       | 32 * 2^hostClassTier (laptop 32 / wkstn 64 / srv 128)|  16   |  256    |
+ * | backgroundInProcess  | false only on a server-class host w/ native PG; else true | — | — |
  * | httpWorkers          | 1 (no cluster yet)                                   |   1   |    1    |
  */
 export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile {
@@ -146,6 +159,13 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   const tier = hostClass === 'laptop' ? 0 : hostClass === 'workstation' ? 1 : 2;
   const embedBatchSize = clamp(32 * 2 ** tier, 16, 256);
 
+  // Background placement: keep it in-process everywhere EXCEPT a server-class host
+  // with a dedicated (native) PG, where a real multi-tenant box has the headroom +
+  // the motivation to give background work its own process. A laptop/workstation,
+  // or any host whose PG is embedded on the same box (the desktop), keeps it
+  // in-process — the split would buy nothing and cost a second process.
+  const backgroundInProcess = !(hostClass === 'server' && !embeddedPg);
+
   // No cluster yet — pinned to 1 (floor === ceiling).
   const httpWorkers = clamp(1, 1, 1);
 
@@ -157,6 +177,7 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
     pgPoolMax,
     serializationWorkers,
     embedBatchSize,
+    backgroundInProcess,
     httpWorkers,
     processCount: httpWorkers,
   };

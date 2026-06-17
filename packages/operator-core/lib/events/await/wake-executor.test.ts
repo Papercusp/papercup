@@ -143,6 +143,60 @@ describe('wakeTurnText', () => {
     expect(t).toContain('TIMEOUT');
     expect(t).toContain('did NOT fire');
   });
+
+  // GAP 1 (likely bug): a timeout-fire payload `{timeout:true}` coalesced with a
+  // sibling has its headline payload replaced by `{coalesced,count,events,latest}`
+  // (coalesceDeliveries) — the top-level `timeout` marker is GONE. wakeTurnText
+  // must still surface [TIMEOUT] by looking inside the union, or the woken agent is
+  // told the event FIRED when it actually TIMED OUT.
+  it('coalesced timeout wake STILL emits [TIMEOUT] (GAP 1: the marker survives coalescing)', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    // The newest (headline) delivery is the timeout fire; an earlier sibling is a
+    // normal event fire — exactly the engine.ts sweeper + pump interleaving.
+    const sibling = work({ id: 30, eventKey: 'lock:grant:t-1', payload: null, createdAt: new Date(1000).toISOString() });
+    const timeoutHeadline = work({
+      id: 31,
+      eventKey: 'plan-run:finished:9',
+      payload: { timeout: true },
+      summary: 'await deadline passed without the event firing',
+      createdAt: new Date(2000).toISOString(),
+    });
+    const coalesced = coalesceDeliveries([sibling, timeoutHeadline]);
+    // The headline payload IS the union now — proves the raw `.timeout` is buried.
+    expect((coalesced.payload as { coalesced?: boolean }).coalesced).toBe(true);
+    expect((coalesced.payload as { timeout?: boolean }).timeout).toBeUndefined();
+    // ...yet the wake turn still warns the agent the event TIMED OUT.
+    const t = wakeTurnText(coalesced);
+    expect(t).toMatch(/TIMEOUT/);
+    expect(t).toContain('did NOT fire');
+  });
+
+  it('coalesced timeout in a FOLDED sibling (not the headline) also surfaces [TIMEOUT]', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    // The timeout is the OLDER fire; the newest is a normal event → the marker
+    // lives only in `events[]`, not in `latest`. Still must surface.
+    const timeoutSibling = work({ id: 40, payload: { timeout: true }, createdAt: new Date(1000).toISOString() });
+    const eventHeadline = work({ id: 41, payload: { ok: true }, createdAt: new Date(2000).toISOString() });
+    const t = wakeTurnText(coalesceDeliveries([timeoutSibling, eventHeadline]));
+    expect(t).toMatch(/TIMEOUT/);
+  });
+
+  it('a coalesced group with NO timeout does not emit a spurious [TIMEOUT]', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const a = work({ id: 50, payload: { ok: true }, createdAt: new Date(1000).toISOString() });
+    const b = work({ id: 51, payload: { ok: true }, createdAt: new Date(2000).toISOString() });
+    const t = wakeTurnText(coalesceDeliveries([a, b]));
+    expect(t).not.toContain('TIMEOUT');
+  });
+
+  it('single-delivery timeout path still works (no coalescing)', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    // group.length === 1 → coalesceDeliveries returns the headline unchanged, so
+    // the plain `{timeout:true}` path is untouched by the GAP 1 fix.
+    const single = coalesceDeliveries([work({ id: 60, payload: { timeout: true } })]);
+    expect((single.payload as { timeout?: boolean }).timeout).toBe(true);
+    expect(wakeTurnText(single)).toMatch(/TIMEOUT/);
+  });
 });
 
 describe('resumeCommandFor', () => {
@@ -494,6 +548,109 @@ describe('executeWake — the liveness ladder', () => {
       }),
     );
     expect(out).toMatchObject({ kind: 'error' });
+  });
+});
+
+describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('claude resume with a coord owner + on-disk config dir → CLAUDE_CONFIG_DIR + MCP_TIMEOUT + PAPERCUSP_AGENT_SESSION + fleet token', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: pjoin } = await import('node:path');
+    const claudeRoot = mkdtempSync(pjoin(tmpdir(), 'wake-claude-cfg-'));
+    const tokenDir = mkdtempSync(pjoin(tmpdir(), 'wake-claude-token-'));
+    const prevCfg = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    const prevTok = process.env.PAPERCUSP_CLAUDE_TOKEN_PATH;
+    process.env.PAPERCUSP_SESSION_CLAUDE_DIR = claudeRoot;
+    process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = pjoin(tokenDir, 'claude-token');
+    try {
+      // The persistent per-session config dir the resume leg remounts (D-010).
+      mkdirSync(pjoin(claudeRoot, 'su-owner-9'), { recursive: true });
+      // A minted fleet setup-token so CLAUDE_CODE_OAUTH_TOKEN is exported (P-003).
+      writeFileSync(pjoin(tokenDir, 'claude-token'), 'sk-ant-oat01-test-token\n');
+
+      const spawnDetached = vi.fn(() => 4321);
+      const out = await executeWake(
+        work({ wakeHandle: advHandle() }),
+        deps({
+          alive: vi.fn(() => false), // exited → resume
+          getSession: vi.fn(async () => session({ agent: 'claude', coordOwnerId: 'su-owner-9' })) as never,
+          spawnDetached,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      const [, , o] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
+      // Base wake env (always present on a resume).
+      expect(o.env.PAPERCUSP_SID).toBe('su-abc');
+      expect(o.env.PAPERCUSP_AGENT_SESSION).toBe('1');
+      expect(o.env.MCP_TIMEOUT).toBeTruthy();
+      expect(o.env.PAPERCUSP_WAKE_DELIVERY_ID).toBe('7');
+      // claude-specific: config-dir remount + fleet token.
+      expect(o.env.CLAUDE_CONFIG_DIR).toBe(pjoin(claudeRoot, 'su-owner-9'));
+      expect(o.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-test-token');
+      // No codex home leaks onto a claude resume.
+      expect(o.env.CODEX_HOME).toBeUndefined();
+    } finally {
+      if (prevCfg === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+      else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = prevCfg;
+      if (prevTok === undefined) delete process.env.PAPERCUSP_CLAUDE_TOKEN_PATH;
+      else process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = prevTok;
+      rmSync(claudeRoot, { recursive: true, force: true });
+      rmSync(tokenDir, { recursive: true, force: true });
+    }
+  });
+
+  it('codex resume → CODEX_HOME present, but CLAUDE_CONFIG_DIR + CLAUDE_CODE_OAUTH_TOKEN ABSENT (no claude env leaks)', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: pjoin } = await import('node:path');
+    // Point the claude config root + token at tmp roots WITHOUT provisioning this
+    // owner's subdir/token — so even though coordOwnerId is set, neither claude
+    // env is applied (the fleet token is claude-only; CLAUDE_CONFIG_DIR needs the
+    // dir on disk). Hermetic: never reads the real ~/.papercusp.
+    const claudeRoot = mkdtempSync(pjoin(tmpdir(), 'wake-codex-noclaude-'));
+    const tokenDir = mkdtempSync(pjoin(tmpdir(), 'wake-codex-notoken-'));
+    const prevCfg = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    const prevTok = process.env.PAPERCUSP_CLAUDE_TOKEN_PATH;
+    process.env.PAPERCUSP_SESSION_CLAUDE_DIR = claudeRoot;
+    process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = pjoin(tokenDir, 'absent-token');
+    // A claude token exists on disk — proving codex STILL doesn't pick it up.
+    writeFileSync(pjoin(tokenDir, 'absent-token'), 'sk-ant-oat01-should-not-be-used\n');
+    try {
+      const spawnDetached = vi.fn(() => 5555);
+      const out = await executeWake(
+        // adv-session 42 has a codex home on disk (the suite fixture) → uuid recovered.
+        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+        deps({
+          alive: vi.fn(() => false),
+          // coordOwnerId set to prove it does NOT pull a claude config dir for codex.
+          getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null, coordOwnerId: 'su-owner-9' })) as never,
+          spawnDetached,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      const [bin, , o] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
+      expect(bin).toBe('codex');
+      // codex-specific: its per-session home is exported.
+      expect(o.env.CODEX_HOME).toBe(join(CODEX_HOMES_DIR, 'session-42'));
+      // The claude-only env is NOT applied to a codex resume (the fleet token is a
+      // claude-OAuth concept, keyed off `resumeAgent==='claude'`; CLAUDE_CONFIG_DIR
+      // needs the owner's dir on disk, which we deliberately did NOT create).
+      expect(o.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(o.env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      // Base wake env still present.
+      expect(o.env.PAPERCUSP_AGENT_SESSION).toBe('1');
+      expect(o.env.MCP_TIMEOUT).toBeTruthy();
+    } finally {
+      if (prevCfg === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+      else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = prevCfg;
+      if (prevTok === undefined) delete process.env.PAPERCUSP_CLAUDE_TOKEN_PATH;
+      else process.env.PAPERCUSP_CLAUDE_TOKEN_PATH = prevTok;
+      rmSync(claudeRoot, { recursive: true, force: true });
+      rmSync(tokenDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -22,6 +22,23 @@ export { passAtK, passHatK, meanPassAtK } from './pass-k';
 export { wilsonInterval, bootstrapMeanCI, meanStderr, type Interval } from './intervals';
 export { dominates, paretoFrontier, costAccuracyFrontier, type Direction } from './pareto';
 
+// METR-style time-horizon fit (plan benchmark-suite-metr-hcast-2026-06-17 / P-006).
+export {
+  computeTaskWeights,
+  fitHorizonLogistic,
+  fitHorizon,
+  horizonMinutesAtQuantile,
+  horizonLift,
+  type HorizonTask,
+  type HorizonWeighting,
+  type HorizonFit,
+  type HorizonFitOpts,
+  type HorizonPoint,
+  type HorizonResult,
+  type HorizonCIOpts,
+  type HorizonLift,
+} from './horizon';
+
 // Benchmark cost layer.
 export {
   PRICE_TABLE_V1,

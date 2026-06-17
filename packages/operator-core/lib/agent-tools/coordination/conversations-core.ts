@@ -224,9 +224,14 @@ async function appendPost(
   conversationId: string,
   body: string,
   opts: { isAnswer: boolean; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
   const conv = await deps.conversations.get(conversationId);
   if (!conv) return { error: 'not_found' };
+  // A terminal conversation no longer takes posts (P1-17): a resolved question
+  // is answered, and a promoted one continues on its issue thread — appending
+  // here would silently land a post nobody is watching the conversation for.
+  if (conv.state === 'resolved') return { error: 'resolved' };
+  if (conv.state === 'closed') return { error: 'closed' };
   const now = deps.nowIso();
 
   const existing = await deps.threads.getThreadByParent(convRef(conversationId));
@@ -257,7 +262,7 @@ export function postReplyCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
   return appendPost(deps, identity, input.conversation_id, input.body, { isAnswer: false, mentions: input.mentions });
 }
 
@@ -265,7 +270,7 @@ export function answerQuestionCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
   return appendPost(deps, identity, input.conversation_id, input.body, { isAnswer: true, mentions: input.mentions });
 }
 
@@ -288,9 +293,15 @@ export async function resolveConversationCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: ResolveInput,
-): Promise<ResolveResult | { error: 'not_found' } | { error: 'no_answer' }> {
+): Promise<ResolveResult | { error: 'not_found' } | { error: 'no_answer' } | { error: 'already_resolved' }> {
   const conv = await deps.conversations.get(input.conversation_id);
   if (!conv) return { error: 'not_found' };
+  // Re-resolving is rejected (P1-17): without this guard a SECOND resolve re-ran
+  // capture and OVERWROTE the accepted answer with the new one — silently
+  // corrupting the record the first resolver captured. The accepted answer is
+  // immutable once set; a genuine correction is a fresh conversation, not a
+  // re-resolve. (A promoted-closed conversation is likewise terminal.)
+  if (conv.state === 'resolved' || conv.state === 'closed') return { error: 'already_resolved' };
   const now = deps.nowIso();
 
   let answer = input.accepted_answer?.trim();

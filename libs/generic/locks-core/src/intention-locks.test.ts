@@ -134,4 +134,43 @@ describe('conflict detection (multi-granularity)', () => {
     // …but another owner attempting the same escalation conflicts.
     expect(findConflicts(ownIx, ownHarnessX, 'B').length).toBeGreaterThan(0);
   });
+
+  // B3 — the positive self-escalation case, isolated. A holds ONLY IX on root
+  // (a bare intention, no descendant leaf) and escalates that same node IX→X.
+  // X-vs-IX is incompatible in the matrix, so a NAIVE node-pairwise check would
+  // self-conflict; the owner-exclusion in findConflicts must make it grantable.
+  it('A escalating its OWN IX→X on the SAME node does NOT self-conflict (acquire succeeds)', () => {
+    const ownRootIx: HeldNodeLock[] = [{ node: ROOT_NODE, mode: 'IX', owner: 'A' }];
+    const requestRootX = lockSetFor('', 'X'); // [{ node: ROOT_NODE, mode: 'X' }]
+    // Sanity: the matrix itself says IX and X on one node are incompatible…
+    expect(compatible('IX', 'X')).toBe(false);
+    // …yet A's escalation over its OWN IX is grantable (no conflicts at all).
+    const conflicts = findConflicts(ownRootIx, requestRootX, 'A');
+    expect(conflicts).toEqual([]); // empty ⇒ acquirable
+    // And no reported conflict ever names A's own lock as the blocker.
+    expect(conflicts.every((c) => c.held_owner !== 'A')).toBe(true);
+  });
+
+  it('B cannot escalate over A\'s root IX (the negative twin — exclusion is owner-scoped)', () => {
+    const aRootIx: HeldNodeLock[] = [{ node: ROOT_NODE, mode: 'IX', owner: 'A' }];
+    const requestRootX = lockSetFor('', 'X');
+    const conflicts = findConflicts(aRootIx, requestRootX, 'B');
+    expect(conflicts).toEqual([
+      { node: ROOT_NODE, requested_mode: 'X', held_mode: 'IX', held_owner: 'A' },
+    ]);
+  });
+
+  it('self-escalation is unaffected by ANOTHER owner\'s compatible IX on the same node', () => {
+    // A and B both hold IX on root (IX/IX is compatible). A escalating IX→X must
+    // still conflict with B\'s IX (X-vs-IX), but never with its OWN IX.
+    const held: HeldNodeLock[] = [
+      { node: ROOT_NODE, mode: 'IX', owner: 'A' },
+      { node: ROOT_NODE, mode: 'IX', owner: 'B' },
+    ];
+    const conflicts = findConflicts(held, lockSetFor('', 'X'), 'A');
+    expect(conflicts).toEqual([
+      { node: ROOT_NODE, requested_mode: 'X', held_mode: 'IX', held_owner: 'B' },
+    ]);
+    expect(conflicts.every((c) => c.held_owner !== 'A')).toBe(true); // A's own lock excluded
+  });
 });

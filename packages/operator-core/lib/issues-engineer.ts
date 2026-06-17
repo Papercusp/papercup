@@ -373,14 +373,20 @@ export async function updateIssue(id: string, patch: UpdateIssuePatch): Promise<
   return issue;
 }
 
-/** Claimable.claim — assign the issue. Stamps assigned_at: the implement lane's
- *  stale-claim reclaim (plan-implement.ts inFlight) ages claims off it — a claim
- *  without assigned_at reads as in-flight FOREVER and wedges the auto lane. */
+/** Claimable.claim — assign the issue. ATOMIC compare-and-claim (matches the
+ *  feature-family path in work-items.ts claimWorkItem): the UPDATE only succeeds
+ *  when the issue is UNCLAIMED or already held by THIS assignee (idempotent re-claim).
+ *  A competing claim on an already-held issue gets null — exactly one agent wins,
+ *  instead of a last-write-wins overwrite that silently stole a live grip. Stamps
+ *  assigned_at: the implement lane's stale-claim reclaim (plan-implement.ts inFlight)
+ *  ages claims off it — a claim without assigned_at reads as in-flight FOREVER and
+ *  wedges the auto lane. */
 export async function claimIssue(id: string, assignee: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local'
      WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
+       AND (assignee IS NULL OR assignee = '' OR assignee = ${assignee})
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);

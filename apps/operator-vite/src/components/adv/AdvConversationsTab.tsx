@@ -120,6 +120,20 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+// Stable row-chrome callbacks for the inline RichGrid lists (U1). Hoisted so
+// their identity is constant across renders — RichGrid's `memo(BodyRow)` does a
+// shallow prop compare, so an inline `getRowBg={() => …}` / `rowProps={() => ({…})}`
+// would hand every row a fresh callback/object on each parent render and force
+// ALL visible rows to re-render (e.g. on a selection toggle or an SSE invalidation
+// that left a given row's data untouched). With stable references only the rows
+// whose own data / selection actually changed re-render. The cards are
+// fully class-styled, so the grid's own striping/border chrome is neutralized.
+const gridTransparentBg = (): string => 'transparent';
+const RAIL_ROW_PROPS = { style: { borderBottom: 'none', paddingBottom: 6 } } as const;
+const STREAM_ROW_PROPS = { style: { borderBottom: 'none', paddingBottom: 5 } } as const;
+const railRowProps = () => RAIL_ROW_PROPS;
+const streamRowProps = () => STREAM_ROW_PROPS;
+
 // ─── View switch ─────────────────────────────────────────────────────
 const CONV_VIEWS = ['threads', 'deliberations', 'agentchats', 'messages', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
@@ -326,6 +340,16 @@ function ToCell({ to, broadcast }: { to: string[]; broadcast: boolean }) {
   return <span className="pc-advfeed__to">→ {to.length ? to.join(', ') : '∅'}</span>;
 }
 
+// U1 (operator-vite-ui-consolidation): the day-grouped feed is flattened into a
+// single virtual row stream — a `day` separator row followed by its `item` rows —
+// so the whole thing rides one @papercusp/grid-core RichGrid (virtualMode) instead
+// of nested `.map()`s. RichGrid stays flat (no grouping primitive); the day
+// separator is just another row the cell renderer special-cases. Variable-height
+// rows (multi-line summaries, click-expanded detail) are handled by `measureAll`.
+type FeedEntry =
+  | { kind: 'day'; id: string; day: string }
+  | { kind: 'item'; id: string; row: FeedRow; replies: FeedRow[] };
+
 function FeedView() {
   // All filters in nuqs.
   const [kinds, setKinds] = useQueryState('fkind', parseAsArrayOf(parseAsString).withDefault([]));
@@ -449,6 +473,71 @@ function FeedView() {
     void setPlan('');
     void setQ('');
   };
+
+  // Flatten the day groups (already day-separated, newest-first) into one virtual
+  // row stream: each day contributes a `day` separator row then its root `item`
+  // rows. The reply chain rides on the item as `replies` and shows inside the
+  // expanded detail. RichGrid virtualizes this flat list.
+  const feedEntries = useMemo<FeedEntry[]>(() => {
+    const out: FeedEntry[] = [];
+    for (const g of grouped) {
+      out.push({ kind: 'day', id: `day:${g.day}`, day: g.day });
+      for (const r of g.rows) {
+        out.push({ kind: 'item', id: `item:${r.msg_id}`, row: r, replies: childrenOf.get(r.msg_id) ?? [] });
+      }
+    }
+    return out;
+  }, [grouped, childrenOf]);
+
+  // The stream is the scroll container; RichGrid renders inline inside it.
+  const streamRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: feedEntries.length,
+    getScrollElement: () => streamRef.current,
+    // A collapsed event row is ~one line; day separators are shorter and an
+    // expanded row much taller. `measureAll` measures each real height, so the
+    // estimate is only the pre-measure guess that keeps the scrollbar sane.
+    estimateSize: () => 44,
+    overscan: 12,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [feedEntries, rowVirtualizer]);
+
+  // Expanded-row state = the nuqs `?fmsg=` scalar, fed in as RichGrid's selection
+  // set (keyed by the entry id). The cell reads `isSelected` as "is open", so a
+  // toggle only re-renders the two affected rows; `measureAll` re-measures the
+  // newly-grown row. setOpenMsg uses the functional updater so the column set can
+  // stay identity-stable (no `openMsg` in its deps) and per-row memo survives.
+  const openSet = useMemo(() => new Set(openMsg ? [`item:${openMsg}`] : []), [openMsg]);
+  const columns = useMemo<ColumnDef<FeedEntry>[]>(
+    () => [
+      {
+        key: 'event',
+        header: '',
+        headerText: '',
+        width: 1,
+        toCopyText: (e) => (e.kind === 'item' ? e.row.summary ?? '' : dayLabel(e.day)),
+        cellStyle: { display: 'block', padding: 0, overflow: 'visible' },
+        render: ({ row: entry, isSelected }) =>
+          entry.kind === 'day' ? (
+            <div className="pc-advfeed__daysep">
+              <span>{dayLabel(entry.day)}</span>
+            </div>
+          ) : (
+            <FeedItem
+              row={entry.row}
+              children={entry.replies}
+              open={isSelected}
+              onToggle={() => void setOpenMsg((p) => (p === entry.row.msg_id ? null : entry.row.msg_id))}
+              onPlanClick={(slug) => void setPlan(slug)}
+              onAgentClick={(a) => void setAgent(a)}
+            />
+          ),
+      },
+    ],
+    [setOpenMsg, setPlan, setAgent],
+  );
 
   return (
     <div className="pc-advfeed">
@@ -586,7 +675,7 @@ function FeedView() {
       </div>
 
       {/* The stream */}
-      <div className="pc-advfeed__stream">
+      <div className="pc-advfeed__stream" ref={streamRef}>
         {head.loading && allRows.length === 0 ? (
           <LoadingRows rows={6} label="Loading the coordination feed" />
         ) : head.error ? (
@@ -597,24 +686,22 @@ function FeedView() {
             <span>Clear a filter or broaden the search to return activity.</span>
           </div>
         ) : (
-          grouped.map((g) => (
-            <div key={g.day} className="pc-advfeed__daygroup">
-              <div className="pc-advfeed__daysep">
-                <span>{dayLabel(g.day)}</span>
-              </div>
-              {g.rows.map((r) => (
-                <FeedItem
-                  key={r.msg_id}
-                  row={r}
-                  children={childrenOf.get(r.msg_id) ?? []}
-                  open={openMsg === r.msg_id}
-                  onToggle={() => void setOpenMsg(openMsg === r.msg_id ? null : r.msg_id)}
-                  onPlanClick={(slug) => void setPlan(slug)}
-                  onAgentClick={(a) => void setAgent(a)}
-                />
-              ))}
-            </div>
-          ))
+          <RichGrid<FeedEntry>
+            inline
+            disableCopySupport
+            headerStyle={{ display: 'none' }}
+            columns={columns}
+            getRowId={(e) => e.id}
+            virtualMode={{
+              virtualizer: rowVirtualizer,
+              totalRows: feedEntries.length,
+              rowAt: (i) => feedEntries[i],
+              measureAll: true,
+            }}
+            selectedRowIds={openSet}
+            getRowBg={gridTransparentBg}
+            rowProps={streamRowProps}
+          />
         )}
         {hasOlder && roots.length > 0 && (
           <button type="button" className="pc-advfeed__loadolder" onClick={loadOlder} disabled={head.fetching}>
@@ -873,9 +960,60 @@ function ThreadsView() {
 
   const canPromote = !!detail && detail.state !== 'closed' && !detail.promoted_issue_id;
 
+  // U1 (operator-vite-ui-consolidation): the threads rail renders through the
+  // shared, virtualized @papercusp/grid-core RichGrid — the same inline-virtualMode
+  // template the agent-chats rail uses. `measureAll` is on because a thread row's
+  // height varies (the optional topic-tag line wraps), so the virtualizer measures
+  // real heights instead of trusting one estimate.
+  const railScrollRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: visible.length,
+    getScrollElement: () => railScrollRef.current,
+    estimateSize: () => 76,
+    overscan: 10,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [visible, rowVirtualizer]);
+  const selectedSet = useMemo(() => new Set(sel ? [sel] : []), [sel]);
+  const columns = useMemo<ColumnDef<ConvRow>[]>(
+    () => [
+      {
+        key: 'thread',
+        header: '',
+        headerText: '',
+        width: 1,
+        toCopyText: (c) => c.title ?? c.id,
+        cellStyle: { display: 'block', padding: 0, overflow: 'visible' },
+        render: ({ row: c, isSelected }) => (
+          <div className={`pc-coord__row${isSelected ? ' is-active' : ''}`}>
+            <span className="pc-advconv__threadtop">
+              <span className={`pc-coord__kind pc-coord__kind--${c.kind}`}>{c.kind}</span>
+              <span className={`pc-advconv__statepill pc-advconv__statepill--${c.state}`}>{c.state}</span>
+              <span className="pc-advconv__rowdate">{dateStamp(c.created_ts)}</span>
+            </span>
+            <span className="pc-coord__row-title">{c.title ?? c.id}</span>
+            <span className="pc-coord__row-meta">
+              {c.harness_slug ? c.harness_slug : 'workspace'}
+              {c.promoted_issue_id ? ` · → ${c.promoted_issue_id}` : ''}
+            </span>
+            {(c.topics ?? []).length > 0 && (
+              <span className="pc-advconv__rowtags">
+                {(c.topics ?? []).map((t) => (
+                  <span key={t} className="pc-coord__tag">#{t}</span>
+                ))}
+              </span>
+            )}
+          </div>
+        ),
+      },
+    ],
+    [],
+  );
+
   return (
     <div className="pc-coord__split pc-advconv__threads">
-      <aside className="pc-coord__rail">
+      <aside className="pc-coord__rail" ref={railScrollRef}>
         <div className="pc-advconv__railhead">
           <span>Question &amp; discussion threads</span>
           <strong>{loading ? '…' : visible.length}</strong>
@@ -925,27 +1063,23 @@ function ThreadsView() {
             <span>Change the state, kind, or topic filter to widen the thread rail.</span>
           </div>
         ) : (
-          visible.map((c) => (
-            <button key={c.id} type="button" className={`pc-coord__row${sel === c.id ? ' is-active' : ''}`} onClick={() => void setSel(c.id)}>
-              <span className="pc-advconv__threadtop">
-                <span className={`pc-coord__kind pc-coord__kind--${c.kind}`}>{c.kind}</span>
-                <span className={`pc-advconv__statepill pc-advconv__statepill--${c.state}`}>{c.state}</span>
-                <span className="pc-advconv__rowdate">{dateStamp(c.created_ts)}</span>
-              </span>
-              <span className="pc-coord__row-title">{c.title ?? c.id}</span>
-              <span className="pc-coord__row-meta">
-                {c.harness_slug ? c.harness_slug : 'workspace'}
-                {c.promoted_issue_id ? ` · → ${c.promoted_issue_id}` : ''}
-              </span>
-              {(c.topics ?? []).length > 0 && (
-                <span className="pc-advconv__rowtags">
-                  {(c.topics ?? []).map((t) => (
-                    <span key={t} className="pc-coord__tag">#{t}</span>
-                  ))}
-                </span>
-              )}
-            </button>
-          ))
+          <RichGrid<ConvRow>
+            inline
+            disableCopySupport
+            headerStyle={{ display: 'none' }}
+            columns={columns}
+            getRowId={(c) => c.id}
+            virtualMode={{
+              virtualizer: rowVirtualizer,
+              totalRows: visible.length,
+              rowAt: (i) => visible[i],
+              measureAll: true,
+            }}
+            selectedRowIds={selectedSet}
+            onRowClick={(c) => void setSel(c.id)}
+            getRowBg={gridTransparentBg}
+            rowProps={railRowProps}
+          />
         )}
       </aside>
       <section className="pc-coord__detail">
@@ -1115,9 +1249,51 @@ function DeliberationsView() {
     })();
   }, [sel]);
 
+  // U1 (operator-vite-ui-consolidation): the deliberations rail renders through
+  // the shared, virtualized @papercusp/grid-core RichGrid (the agent-chats
+  // inline-virtualMode template). `measureAll` keeps offsets exact as titles wrap.
+  const railScrollRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: list.length,
+    getScrollElement: () => railScrollRef.current,
+    estimateSize: () => 70,
+    overscan: 10,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [list, rowVirtualizer]);
+  const selectedSet = useMemo(() => new Set(sel ? [sel] : []), [sel]);
+  const columns = useMemo<ColumnDef<ThreadRow>[]>(
+    () => [
+      {
+        key: 'thread',
+        header: '',
+        headerText: '',
+        width: 1,
+        toCopyText: (t) => t.title ?? t.thread_id,
+        cellStyle: { display: 'block', padding: 0, overflow: 'visible' },
+        render: ({ row: t, isSelected }) => (
+          <div className={`pc-coord__row${isSelected ? ' is-active' : ''}`}>
+            <span className="pc-advconv__threadtop">
+              <span className="pc-coord__kind">{t.parent_kind ?? 'thread'}</span>
+              {t.parent_ref ? <span className="pc-advconv__statepill">{t.parent_ref}</span> : null}
+              <span className="pc-advconv__rowdate">{fmtTs(t.last_post_at ?? t.created_at)}</span>
+            </span>
+            <span className="pc-coord__row-title">{t.title ?? t.thread_id}</span>
+            <span className="pc-coord__row-meta">
+              {t.harness_slug ?? 'workspace'} · {t.post_count} post{t.post_count === 1 ? '' : 's'}
+              {t.created_by ? ` · ${t.created_by}` : ''}
+            </span>
+          </div>
+        ),
+      },
+    ],
+    [],
+  );
+
   return (
     <div className="pc-coord__split pc-advconv__threads">
-      <aside className="pc-coord__rail">
+      <aside className="pc-coord__rail" ref={railScrollRef}>
         <div className="pc-advconv__railhead">
           <span>Deliberation threads</span>
           <strong>{loading ? '…' : list.length}</strong>
@@ -1135,20 +1311,23 @@ function DeliberationsView() {
             <span>No coord:thread / deliberate / vote discussions recorded.</span>
           </div>
         ) : (
-          list.map((t) => (
-            <button key={t.thread_id} type="button" className={`pc-coord__row${sel === t.thread_id ? ' is-active' : ''}`} onClick={() => void setSel(t.thread_id)}>
-              <span className="pc-advconv__threadtop">
-                <span className="pc-coord__kind">{t.parent_kind ?? 'thread'}</span>
-                {t.parent_ref ? <span className="pc-advconv__statepill">{t.parent_ref}</span> : null}
-                <span className="pc-advconv__rowdate">{fmtTs(t.last_post_at ?? t.created_at)}</span>
-              </span>
-              <span className="pc-coord__row-title">{t.title ?? t.thread_id}</span>
-              <span className="pc-coord__row-meta">
-                {t.harness_slug ?? 'workspace'} · {t.post_count} post{t.post_count === 1 ? '' : 's'}
-                {t.created_by ? ` · ${t.created_by}` : ''}
-              </span>
-            </button>
-          ))
+          <RichGrid<ThreadRow>
+            inline
+            disableCopySupport
+            headerStyle={{ display: 'none' }}
+            columns={columns}
+            getRowId={(t) => t.thread_id}
+            virtualMode={{
+              virtualizer: rowVirtualizer,
+              totalRows: list.length,
+              rowAt: (i) => list[i],
+              measureAll: true,
+            }}
+            selectedRowIds={selectedSet}
+            onRowClick={(t) => void setSel(t.thread_id)}
+            getRowBg={gridTransparentBg}
+            rowProps={railRowProps}
+          />
         )}
       </aside>
       <section className="pc-coord__detail">
@@ -1387,11 +1566,10 @@ function AgentChatsView() {
             // .pc-coord__row). Neutralize RichGrid's own per-row chrome
             // (striping bg + bottom border) so only the original styling shows;
             // the 6px inter-card gap the flex rail used becomes per-row bottom
-            // padding since virtual rows are positioned edge-to-edge.
-            getRowBg={() => 'transparent'}
-            rowProps={() => ({
-              style: { borderBottom: 'none', paddingBottom: 6 },
-            })}
+            // padding since virtual rows are positioned edge-to-edge. Stable
+            // hoisted refs so memo(BodyRow) skips untouched rows (see top of file).
+            getRowBg={gridTransparentBg}
+            rowProps={railRowProps}
           />
         )}
       </aside>
@@ -1497,6 +1675,85 @@ function MessagesView() {
     void reload();
   }, [reload]);
 
+  // U1 (operator-vite-ui-consolidation): the messages stream (up to 500 rows)
+  // renders through the shared, virtualized @papercusp/grid-core RichGrid instead
+  // of a raw `.map()`. The stream itself is the scroll container; `measureAll`
+  // keeps virtual offsets exact as a row grows when click-expanded. Open state is
+  // the nuqs `?msg=` scalar, fed in as the selection set so only the toggled rows
+  // re-render (and the cell's `isSelected` drives the `.is-open` styling).
+  const streamRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: list.length,
+    getScrollElement: () => streamRef.current,
+    estimateSize: () => 40,
+    overscan: 12,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [list, rowVirtualizer]);
+  const openSet = useMemo(() => new Set(open ? [open] : []), [open]);
+  const columns = useMemo<ColumnDef<MsgRow>[]>(
+    () => [
+      {
+        key: 'message',
+        header: '',
+        headerText: '',
+        width: 1,
+        toCopyText: (m) => m.subject ?? m.body ?? '',
+        cellStyle: { display: 'block', padding: 0, overflow: 'visible' },
+        render: ({ row: m, isSelected: isOpen }) => {
+          const hasDetail = !!m.body || !!m.from_feature_id || !!m.to_feature_id || !!m.harness_slug;
+          return (
+            <div className={`pc-advfeed__item${isOpen ? ' is-open' : ''}`}>
+              <div className="pc-advfeed__row">
+                <span className="pc-advfeed__time" title={m.created_at}>{fmtTs(m.created_at)}</span>
+                <span className="pc-advfeed__badge">{m.kind}</span>
+                <span className="pc-advfeed__route">
+                  <span className="pc-advfeed__from">{m.from_slug}</span>
+                  <span className="pc-advfeed__to">→ {m.to_slug ?? m.to_role ?? '∅'}</span>
+                </span>
+                <button
+                  type="button"
+                  className="pc-advfeed__summary"
+                  onClick={() => void setOpen((p) => (p === m.id ? null : m.id))}
+                  aria-expanded={isOpen}
+                  title={hasDetail ? 'Expand' : undefined}
+                >
+                  {m.subject || m.body || <em className="pc-advfeed__nosum">(no subject)</em>}
+                </button>
+                {m.status && <span className="pc-advconv__statepill">{m.status}</span>}
+                <span className="pc-advfeed__rel">{fmtRel(m.created_at)}</span>
+              </div>
+              {isOpen && hasDetail && (
+                <div className="pc-advfeed__detail">
+                  {m.body && (
+                    <div className="pc-advfeed__bodycard">
+                      <strong>Body</strong>
+                      <p className="pc-advfeed__body">{m.body}</p>
+                    </div>
+                  )}
+                  {(m.from_feature_id || m.to_feature_id) && (
+                    <div className="pc-advfeed__kv">
+                      <strong>work-item</strong>
+                      <span>{m.from_feature_id ?? '—'} → {m.to_feature_id ?? '—'}</span>
+                    </div>
+                  )}
+                  {m.harness_slug && (
+                    <div className="pc-advfeed__kv">
+                      <strong>harness</strong>
+                      <span>{m.harness_slug}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        },
+      },
+    ],
+    [setOpen],
+  );
+
   return (
     <div className="pc-advfeed">
       <div className="pc-advfeed__filters">
@@ -1513,7 +1770,7 @@ function MessagesView() {
           </div>
         </div>
       </div>
-      <div className="pc-advfeed__stream">
+      <div className="pc-advfeed__stream" ref={streamRef}>
         {loading && list.length === 0 ? (
           <LoadingRows rows={6} label="Loading messages" />
         ) : error && list.length === 0 ? (
@@ -1524,48 +1781,22 @@ function MessagesView() {
             <span>No agent-to-agent messages recorded.</span>
           </div>
         ) : (
-          list.map((m) => {
-            const hasDetail = !!m.body || !!m.from_feature_id || !!m.to_feature_id || !!m.harness_slug;
-            return (
-              <div key={m.id} className={`pc-advfeed__item${open === m.id ? ' is-open' : ''}`}>
-                <div className="pc-advfeed__row">
-                  <span className="pc-advfeed__time" title={m.created_at}>{fmtTs(m.created_at)}</span>
-                  <span className="pc-advfeed__badge">{m.kind}</span>
-                  <span className="pc-advfeed__route">
-                    <span className="pc-advfeed__from">{m.from_slug}</span>
-                    <span className="pc-advfeed__to">→ {m.to_slug ?? m.to_role ?? '∅'}</span>
-                  </span>
-                  <button type="button" className="pc-advfeed__summary" onClick={() => void setOpen(open === m.id ? null : m.id)} aria-expanded={open === m.id} title={hasDetail ? 'Expand' : undefined}>
-                    {m.subject || m.body || <em className="pc-advfeed__nosum">(no subject)</em>}
-                  </button>
-                  {m.status && <span className="pc-advconv__statepill">{m.status}</span>}
-                  <span className="pc-advfeed__rel">{fmtRel(m.created_at)}</span>
-                </div>
-                {open === m.id && hasDetail && (
-                  <div className="pc-advfeed__detail">
-                    {m.body && (
-                      <div className="pc-advfeed__bodycard">
-                        <strong>Body</strong>
-                        <p className="pc-advfeed__body">{m.body}</p>
-                      </div>
-                    )}
-                    {(m.from_feature_id || m.to_feature_id) && (
-                      <div className="pc-advfeed__kv">
-                        <strong>work-item</strong>
-                        <span>{m.from_feature_id ?? '—'} → {m.to_feature_id ?? '—'}</span>
-                      </div>
-                    )}
-                    {m.harness_slug && (
-                      <div className="pc-advfeed__kv">
-                        <strong>harness</strong>
-                        <span>{m.harness_slug}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })
+          <RichGrid<MsgRow>
+            inline
+            disableCopySupport
+            headerStyle={{ display: 'none' }}
+            columns={columns}
+            getRowId={(m) => m.id}
+            virtualMode={{
+              virtualizer: rowVirtualizer,
+              totalRows: list.length,
+              rowAt: (i) => list[i],
+              measureAll: true,
+            }}
+            selectedRowIds={openSet}
+            getRowBg={gridTransparentBg}
+            rowProps={streamRowProps}
+          />
         )}
       </div>
     </div>

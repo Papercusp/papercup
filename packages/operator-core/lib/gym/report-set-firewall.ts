@@ -106,6 +106,20 @@ export const REPORT_ON_SUITES: readonly BenchSet[] = Object.freeze([
     title: 'Harness-Bench (arXiv 2605.27922 — fixes task/budget/timeout/grader, varies the harness)',
     rationale: 'Harness-isolation air cover; run Papercusp through it if P-001 shows onboarding is tractable. Never a gym tuning target.',
   },
+  {
+    id: 'metr-hcast',
+    usage: 'report-on',
+    title: 'METR HCAST / time-horizon (arXiv:2503.14499 + 2503.17354; ~31 open Task-Standard tasks)',
+    rationale:
+      'Long-horizon-autonomy headline: a derived 50%/80%-time-horizon fit + the hive-vs-single-opus LIFT. Third-party-authored + self-grading (each task ships its own score()) → never a gym tuning target (D-005). Absolute horizon on the open subset is illustrative-only; the LIFT is the defensible signal (plan benchmark-suite-metr-hcast-2026-06-17 D-002).',
+  },
+  {
+    id: 'agentsnet',
+    usage: 'report-on',
+    title: 'AgentsNet (coordination-native multi-agent; arXiv:2507.08616)',
+    rationale:
+      'The DIRECT coordination dimension: one opus agent per graph node, local-neighbor-only message passing, five distributed-computing tasks (coloring/consensus/leader-election/matching/vertex-cover) with deterministic get_score(). Reported on as a model-coordination number (optionally carried over our substrate, route B); NEVER a gym tuning target — D-002: it is decentralized/local-only, so our global-view queen would cheat it (plan benchmark-suite-agentsnet-2026-06-17).',
+  },
 ]);
 
 /**

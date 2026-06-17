@@ -29,7 +29,7 @@
  * + harness-core.resolveProject are mocked (per-harness legacy client / project
  * registry are out of scope for the unified-surface contract).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -99,6 +99,7 @@ const { default: tagTool } = await import('./tag');
 const { default: subscribeTool } = await import('./subscribe');
 const { default: commentTool } = await import('./comment');
 const { default: promoteTool } = await import('./promote');
+const { default: expandTool } = await import('./expand');
 
 // A superuser engineer ctx: resolveAgentIdentity reads uiClientId as the ownerId.
 const CTX = { isSuperuser: true, uiClientId: 'su-tester', workspaceId: 'default' } as never;
@@ -386,5 +387,104 @@ describe('work_items:* tool surface — error envelopes (real PG)', () => {
     const res = await call(linkTool, { id, rel: 'blocks', target_id: 'WI-404' });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/target work_item 'WI-404' not found/);
+  });
+});
+
+// C1 [P2] — work_items:expand engine behavior (expand.ts:52-96 + plan-expansion.ts).
+// The plan-expansion CORE is unit-tested (plan-expansion.test.ts); this exercises the TOOL
+// against real PG: child harness inheritance when `harness` is omitted, expanding a SETTLED
+// parent, and re-expand idempotency through the durable `payload.expanded_from` stamp.
+// CTX has no role:'bee' → authoritative ⇒ DISPOSED (children are actually created).
+// The tool is behind papercusp-deferred-expansion (default ON); we force it ON explicitly so the
+// test is robust to the production-default flipping.
+describe('C1 — work_items:expand (tool, real PG)', () => {
+  let restoreFlag: (() => void) | null = null;
+  beforeEach(async () => {
+    const [{ setFlagOverridesForTest }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/test'),
+      import('@papercusp/flags'),
+    ]);
+    setFlagOverridesForTest({ [FLAGS.DEFERRED_EXPANSION]: true });
+    restoreFlag = () => setFlagOverridesForTest(null);
+  });
+  afterEach(() => restoreFlag?.());
+
+  /** Rows in engineer_issues whose payload.expanded_from = parentId (the durable parentage). */
+  async function expandedChildrenOf(parentId: string): Promise<{ issue_id: string; title: string; scope: string }[]> {
+    return db.sql<{ issue_id: string; title: string; scope: string }[]>`
+      SELECT issue_id, title, scope FROM harness_shared.engineer_issues
+       WHERE payload ->> 'expanded_from' = ${parentId} ORDER BY issue_id`;
+  }
+
+  it('children INHERIT the parent harness when `harness` is omitted; carry payload.expanded_from', async () => {
+    // A feature parent on `papercup`. Expand WITHOUT passing harness → children inherit `papercup`.
+    const parent = await call(createTool, { kind: 'feature', title: 'expand-here', harness: 'papercup' });
+    const parentId = (parent.workItem as Record<string, unknown>).id as string;
+
+    const res = await call(expandTool, { id: parentId, children: [{ title: 'child A' }, { title: 'child B', brief: 'do B' }] });
+    expect(res.ok).toBe(true);
+    expect(res.disposition).toBe('disposed'); // authoritative ctx ⇒ children created
+    expect(res.created).toHaveLength(2);
+
+    const kids = await expandedChildrenOf(parentId);
+    expect(kids.map((k) => k.title).sort()).toEqual(['child A', 'child B']);
+    // Inherited harness: stored as scope 'harness:papercup' on the issue-family child row.
+    expect(kids.every((k) => k.scope === 'harness:papercup')).toBe(true);
+    // The child is navigable back to the parent via getWorkItem(child).payload.expanded_from.
+    const childGot = await call(getTool, { id: kids[0].issue_id });
+    expect(((childGot.workItem as Record<string, unknown>).payload as Record<string, unknown>).expanded_from).toBe(parentId);
+  });
+
+  it('expanding a SETTLED parent still proceeds (no "cannot expand settled" guard exists) and children inherit harness', async () => {
+    // BRIEF premise was "expand a passed parent → error OR child inherits". expand.ts has NO
+    // settled-parent guard: it expands ANY node regardless of state. We assert the ACTUAL
+    // behavior — a settled (passed) parent is expandable, and its children still inherit harness.
+    const parent = await call(createTool, { kind: 'feature', title: 'settled parent', harness: 'papercup' });
+    const parentId = (parent.workItem as Record<string, unknown>).id as string;
+    const settled = await call(setStateTool, { id: parentId, state: 'passed', harness: 'papercup' });
+    expect((settled.workItem as Record<string, unknown>).state).toBe('passed');
+
+    const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }] });
+    expect(res.ok).toBe(true); // expansion is NOT blocked by the parent being settled
+    expect(res.disposition).toBe('disposed');
+    const kids = await expandedChildrenOf(parentId);
+    expect(kids.map((k) => k.title)).toEqual(['late child']);
+    expect(kids[0].scope).toBe('harness:papercup');
+  });
+
+  it('re-expanding the SAME children is NOT idempotent — each call creates a fresh set (no dedup across calls)', async () => {
+    // plan-expansion dedups WITHIN a single call (case-insensitive title), but expand.ts has no
+    // cross-CALL dedup: the durable record is the comment + the new children. Re-expanding the
+    // same titles emits a SECOND set of children, each still stamped expanded_from=parent. We
+    // assert that documented behavior (the brief floated "idempotent" as a possibility; the
+    // engine is not — and that is the contract this test pins so a future change is deliberate).
+    const parent = await call(createTool, { kind: 'feature', title: 'twice-expanded', harness: 'papercup' });
+    const parentId = (parent.workItem as Record<string, unknown>).id as string;
+
+    const first = await call(expandTool, { id: parentId, children: [{ title: 'dup-child' }] });
+    expect(first.created).toHaveLength(1);
+    const second = await call(expandTool, { id: parentId, children: [{ title: 'dup-child' }] });
+    expect(second.created).toHaveLength(1);
+
+    const kids = await expandedChildrenOf(parentId);
+    expect(kids).toHaveLength(2); // two distinct child rows, same title — re-expand is additive
+    expect(new Set(kids.map((k) => k.issue_id)).size).toBe(2); // distinct ids
+    expect(kids.every((k) => k.title === 'dup-child')).toBe(true);
+  });
+
+  it('WITHIN one call, duplicate + empty child titles are dropped (plan-expansion dedup)', async () => {
+    const parent = await call(createTool, { kind: 'feature', title: 'dedup parent', harness: 'papercup' });
+    const parentId = (parent.workItem as Record<string, unknown>).id as string;
+    const res = await call(expandTool, { id: parentId, children: [{ title: 'Keep' }, { title: 'keep' }, { title: 'Other' }] });
+    expect(res.ok).toBe(true);
+    expect(res.created).toHaveLength(2); // 'keep' (dup of 'Keep') dropped
+    const kids = await expandedChildrenOf(parentId);
+    expect(kids.map((k) => k.title).sort()).toEqual(['Keep', 'Other']);
+  });
+
+  it('a missing parent → not-found envelope (never creates orphan children)', async () => {
+    const res = await call(expandTool, { id: 'WI-404', children: [{ title: 'x' }] });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/work_item 'WI-404' not found/);
   });
 });

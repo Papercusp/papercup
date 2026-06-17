@@ -134,6 +134,55 @@ export async function loadHarnessRegistry(workspaceId?: string): Promise<Harness
 }
 
 /**
+ * The registry's uniqueness invariant: `slug` is the primary key. Every
+ * insert path guards with `projects.some(p => p.slug === …)` and every update
+ * path replaces in place (`projects.map`), so a duplicate slug is always a
+ * caller bug — and a duplicate makes the ubiquitous downstream
+ * `projects.find(p => p.slug === …)` non-deterministic (which row wins depends
+ * on array order). This is the single store-layer guard that enforces the
+ * invariant at the write boundary regardless of caller discipline: collapse to
+ * one entry per slug, LAST-write-wins (matching the upsert-replace intent), and
+ * `onCollapse` surfaces the bug so it's traceable rather than silent. A
+ * duplicate-free input is returned UNCHANGED (same reference) — the common case
+ * pays nothing.
+ *
+ * Pure + exported so it's unit-testable without PG.
+ */
+export function dedupeProjectsBySlug(
+  projects: ProjectEntry[],
+  onCollapse?: (slug: string) => void,
+): ProjectEntry[] {
+  // Fast path: scan for any dup before allocating.
+  const seen = new Set<string>();
+  let hasDup = false;
+  for (const p of projects) {
+    if (seen.has(p.slug)) {
+      hasDup = true;
+      break;
+    }
+    seen.add(p.slug);
+  }
+  if (!hasDup) return projects;
+
+  // Last-write-wins: keep the LAST entry per slug, preserving first-seen order
+  // of the surviving rows.
+  const lastIndex = new Map<string, number>();
+  projects.forEach((p, i) => lastIndex.set(p.slug, i));
+  const collapsed: ProjectEntry[] = [];
+  const emitted = new Set<string>();
+  projects.forEach((p, i) => {
+    if (lastIndex.get(p.slug) !== i) {
+      onCollapse?.(p.slug);
+      return; // a later entry for this slug wins
+    }
+    if (emitted.has(p.slug)) return;
+    emitted.add(p.slug);
+    collapsed.push(p);
+  });
+  return collapsed;
+}
+
+/**
  * The set of `harness:<slug>` improvement/work scopes belonging to one Hive
  * (per-hive-learning-loops P-040, D-008 — the Hive is the tenancy unit). A Hive
  * is identified by its HOME slug; its members are the home itself plus every
@@ -192,8 +241,16 @@ export async function saveHarnessRegistry(
   workspaceId?: string,
   opts: SaveRegistryOptions = {},
 ): Promise<void> {
-  const next = reg.projects ?? [];
   const ws = workspaceId ?? activeWorkspaceId();
+  // Uniqueness invariant (store-layer guard): collapse any accidental
+  // duplicate slug last-write-wins before persisting, so a buggy caller can
+  // never leave the row with two entries sharing a slug (which would make
+  // downstream find(p=>p.slug===…) non-deterministic). A clean input is
+  // unchanged; a collapse is logged so the offending caller is traceable.
+  const next = dedupeProjectsBySlug(reg.projects ?? [], (slug) =>
+    // eslint-disable-next-line no-console
+    console.warn(`[harness-registry] saveHarnessRegistry collapsed duplicate slug '${slug}' (workspace '${ws}')`),
+  );
   const prev = await readOperatorState<HarnessRegistry>('harness_registry', workspaceId);
   const prevCount = prev?.projects?.length ?? 0;
 
@@ -280,8 +337,14 @@ export async function mutateHarnessRegistry(
       };
       prevCount = current.projects.length;
       const mutated = mutator(current);
-      const nextProjects = mutated.projects ?? [];
-      nextCount = nextProjects.length;
+      // Uniqueness invariant (store-layer guard): collapse any accidental
+      // duplicate slug last-write-wins inside the tx, so the committed row is
+      // always one entry per slug regardless of the mutator's discipline.
+      const dedupedProjects = dedupeProjectsBySlug(mutated.projects ?? [], (slug) =>
+        // eslint-disable-next-line no-console
+        console.warn(`[harness-registry] mutateHarnessRegistry collapsed duplicate slug '${slug}' (workspace '${ws}')`),
+      );
+      nextCount = dedupedProjects.length;
       if (nextCount === 0 && prevCount > 0 && !opts.allowEmpty) {
         // Throwing rolls the FOR UPDATE transaction back.
         throw new Error(
@@ -290,7 +353,7 @@ export async function mutateHarnessRegistry(
             `(project delete / installed prune) should pass it.`,
         );
       }
-      return mutated;
+      return { ...mutated, projects: dedupedProjects };
     },
     workspaceId,
   );

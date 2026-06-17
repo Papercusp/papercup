@@ -1,0 +1,214 @@
+/**
+ * GAIA run orchestration (plan `benchmark-suite-gaia-2026-06-17`, P-004/P-005). Drives a set of
+ * {@link GaiaTask}s through the agent, self-grades each with the quasi-exact-match {@link gradeGaia}, and
+ * produces a predictions JSONL `{ task_id, model_answer, reasoning_trace }` + a per-level (L1/L2/L3) +
+ * overall accuracy report.
+ *
+ * The orchestration (bounded concurrency, prediction assembly, infra-error exclusion, grading, aggregation,
+ * cost accounting, JSONL emission) is PURE w.r.t. infra — the per-task agent run ({@link GaiaRunDeps.runAgent})
+ * is INJECTED, so a fake makes the whole pipeline unit-testable with no LLM/web spend. {@link makeLiveRunAgent}
+ * wires the live per-task run (stage attachment → live toolset + LLM → {@link runGaiaAgent} → cleanup).
+ */
+import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { gradeGaia, type GaiaLevel, type GaiaPrediction, type GaiaReport } from '../grader/gaia';
+import { runGaiaAgent, type GaiaAgentConfig, type GaiaAgentResult, type GaiaAgentStopReason, type LlmFn } from './agent';
+import type { GaiaTask } from './dataset';
+import { makeLiveGaiaToolset, type LiveToolsConfig } from './tools-live';
+
+/** A predictions-JSONL record (the GAIA convention `{task_id, model_answer, reasoning_trace}` + telemetry). */
+export interface GaiaPredictionRecord {
+  task_id: string;
+  /** The extracted FINAL ANSWER (empty string when the model never emitted one — a formatting failure). */
+  model_answer: string;
+  /** Compact reasoning trace (the tool-use trajectory) for debugging / publication. */
+  reasoning_trace: string;
+  level: GaiaLevel;
+  stopReason: GaiaAgentStopReason;
+  turns: number;
+  toolCalls: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** Present when the run hit an infra error (stopReason==='error'). */
+  error?: string;
+}
+
+/** Roll-up totals across the run (token + ballpark $ accounting). */
+export interface GaiaRunTotals {
+  tasks: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** Ballpark $ from {@link OPUS_PRICE} — informational; the canonical cost layer (bench-metrics priceRun) owns the real number. */
+  estCostUsd: number;
+  wallClockMs: number;
+  /** Tasks excluded from accuracy because the agent hit an infra error (stopReason==='error'). */
+  infraErrors: number;
+}
+
+export interface GaiaRunResult {
+  predictions: GaiaPredictionRecord[];
+  report: GaiaReport;
+  totals: GaiaRunTotals;
+}
+
+/** Ballpark opus-4.8 price ($/token) for the informational `estCostUsd` only. */
+export const OPUS_PRICE = { inPerTok: 15 / 1_000_000, outPerTok: 75 / 1_000_000 } as const;
+
+export interface GaiaRunDeps {
+  /** Run the agent for one task → its result. Injected (fake in tests; {@link makeLiveRunAgent} in prod). */
+  runAgent: (task: GaiaTask) => Promise<GaiaAgentResult>;
+  now?: () => number;
+}
+
+export interface GaiaRunConfig {
+  /** Bounded task concurrency (default 4). */
+  concurrency?: number;
+  /** Exclude infra-error (stopReason==='error') tasks from the scored denominator (default true; SWE-bench discipline). */
+  excludeInfraErrors?: boolean;
+  /** Max chars of trajectory packed into `reasoning_trace` (default 4000). */
+  maxTraceChars?: number;
+}
+
+/** Bounded-concurrency map preserving input order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length || 1)) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/** Render an agent trajectory into a compact reasoning trace string. */
+export function renderTrace(result: GaiaAgentResult, maxChars: number): string {
+  const lines = result.trajectory.map((s) => {
+    const tag = s.tool ? `${s.kind}:${s.tool}` : s.kind;
+    return `[${s.turn}] ${tag}: ${s.summary}`;
+  });
+  const joined = lines.join('\n');
+  return joined.length <= maxChars ? joined : `${joined.slice(0, maxChars)}… [trace truncated]`;
+}
+
+/**
+ * Run a GAIA task set end-to-end and self-grade. Per-task agent failures (infra errors) degrade to an
+ * excluded row (surfaced, not scored as a capability fail) when `excludeInfraErrors` (default). Returns the
+ * predictions, the per-level + overall {@link GaiaReport}, and roll-up totals.
+ */
+export async function runGaiaSuite(
+  tasks: GaiaTask[],
+  deps: GaiaRunDeps,
+  config: GaiaRunConfig = {},
+): Promise<GaiaRunResult> {
+  const concurrency = config.concurrency ?? 4;
+  const excludeInfra = config.excludeInfraErrors ?? true;
+  const maxTraceChars = config.maxTraceChars ?? 4000;
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+
+  const results = await mapLimit(tasks, concurrency, (task) => deps.runAgent(task));
+
+  const predictions: GaiaPredictionRecord[] = [];
+  const gradeInputs: GaiaPrediction[] = [];
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let infraErrors = 0;
+
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    const r = results[i];
+    tokensIn += r.tokensIn;
+    tokensOut += r.tokensOut;
+    const isInfra = r.stopReason === 'error';
+    if (isInfra) infraErrors++;
+
+    predictions.push({
+      task_id: task.taskId,
+      model_answer: r.finalAnswer ?? '',
+      reasoning_trace: renderTrace(r, maxTraceChars),
+      level: task.level,
+      stopReason: r.stopReason,
+      turns: r.turns,
+      toolCalls: r.toolCalls,
+      tokensIn: r.tokensIn,
+      tokensOut: r.tokensOut,
+      ...(r.error ? { error: r.error } : {}),
+    });
+
+    gradeInputs.push({
+      taskId: task.taskId,
+      rawOutput: r.rawOutput,
+      gold: task.finalAnswer,
+      level: task.level,
+      ...(isInfra && excludeInfra ? { excludeReason: `infra: ${r.error ?? r.stopReason}` } : {}),
+    });
+  }
+
+  const report = gradeGaia(gradeInputs);
+  const totals: GaiaRunTotals = {
+    tasks: tasks.length,
+    tokensIn,
+    tokensOut,
+    estCostUsd: tokensIn * OPUS_PRICE.inPerTok + tokensOut * OPUS_PRICE.outPerTok,
+    wallClockMs: now() - startedAt,
+    infraErrors,
+  };
+  return { predictions, report, totals };
+}
+
+/** Serialize predictions → a JSONL string (one record per line). */
+export function predictionsToJsonl(predictions: GaiaPredictionRecord[]): string {
+  return predictions.map((p) => JSON.stringify(p)).join('\n') + '\n';
+}
+
+/** A one-line human summary of a run report. */
+export function formatGaiaReportLine(result: GaiaRunResult): string {
+  const r = result.report;
+  const byLevel = r.byLevel.map((b) => `L${b.level} ${(b.accuracy * 100).toFixed(1)}% (${b.resolved}/${b.scored})`).join(' · ');
+  return (
+    `GAIA: overall ${(r.overallAccuracy * 100).toFixed(1)}% (${r.resolved}/${r.scored}) · ${byLevel} · ` +
+    `format-fail ${(r.formatFailRate * 100).toFixed(1)}% · excluded ${r.excluded} · infra-err ${result.totals.infraErrors} · ` +
+    `~$${result.totals.estCostUsd.toFixed(2)}`
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Live per-task run wiring                                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface LiveRunAgentOptions {
+  /** The shared live LLM (one gateway client across all tasks). */
+  llm: LlmFn;
+  /** Per-task agent config (turns / budget). */
+  agentConfig?: GaiaAgentConfig;
+  /** Live tools config overrides (Brave key, python bin, timeouts); scratchDir is set per task. */
+  toolsConfig?: Omit<LiveToolsConfig, 'scratchDir'>;
+  /** Scratch root for per-task working dirs (default OS temp). */
+  workRoot?: string;
+}
+
+/**
+ * Build the live per-task `runAgent`: for each task it makes a scratch dir, STAGES the attachment into it
+ * (so `read_file`/`run_python` see it by name), wires the live toolset + image reader, runs the agent loop,
+ * and cleans up. A staging/cleanup failure never throws out (the loop already degrades infra errors).
+ */
+export function makeLiveRunAgent(opts: LiveRunAgentOptions): (task: GaiaTask) => Promise<GaiaAgentResult> {
+  return async (task: GaiaTask): Promise<GaiaAgentResult> => {
+    const scratch = await mkdtemp(join(opts.workRoot ?? tmpdir(), 'gaia-task-'));
+    try {
+      if (task.fileName && task.filePath) {
+        await cp(task.filePath, join(scratch, task.fileName)).catch(() => {});
+      }
+      const tools = makeLiveGaiaToolset({ ...(opts.toolsConfig ?? {}), scratchDir: scratch });
+      const readImageBase64 = async (fp: string): Promise<string> => (await readFile(fp)).toString('base64');
+      return await runGaiaAgent(task, { llm: opts.llm, tools, readImageBase64 }, opts.agentConfig);
+    } finally {
+      await rm(scratch, { recursive: true, force: true }).catch(() => {});
+    }
+  };
+}

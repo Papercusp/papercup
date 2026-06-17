@@ -5,10 +5,13 @@
  * Number token/cost coercion, bigint epoch-ms → ISO timestamp coercion
  * (migration 116), null defaults). known-roles is mocked.
  *
- * Plus listChats LIMIT/OFFSET bounding (F-C1): the query is always bounded —
- * default 100, clamped to 1..100, offset for paging — so the forever-growing
- * agent_chats table can't be SELECT *'d in full. db-org is mocked to capture
- * the SQL + bound args.
+ * Plus listChats LIMIT/OFFSET bounding + column projection (F-C1): the query
+ * is always bounded — default 100, clamped to 1..100, offset for paging — AND
+ * projects only the needed columns (NO `SELECT *`, no `transcript` jsonb body;
+ * just `jsonb_array_length(...) AS turn_count`) so the forever-growing
+ * agent_chats table can't be SELECT *'d in full and a 100-row page doesn't drag
+ * every transcript body over the wire. db-org is mocked to capture the SQL +
+ * bound args; rowToChatSummary maps the projected row.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,7 +31,13 @@ vi.mock('@papercusp/db-org', () => ({
   }),
 }));
 
-import { isValidChatRole, rowToChat, listChats, LIST_CHATS_DEFAULT_LIMIT } from './agent-chats-data';
+import {
+  isValidChatRole,
+  rowToChat,
+  rowToChatSummary,
+  listChats,
+  LIST_CHATS_DEFAULT_LIMIT,
+} from './agent-chats-data';
 
 describe('isValidChatRole', () => {
   it('accepts a known role', () => {
@@ -89,6 +98,37 @@ describe('rowToChat', () => {
   });
 });
 
+describe('rowToChatSummary', () => {
+  it('coerces bigint/number turn_count + totals and never carries a transcript', () => {
+    const s = rowToChatSummary({
+      id: 'c1',
+      role: 'worker',
+      feature_id: 'F-1',
+      title: 'Chat',
+      turn_count: 12n,
+      total_input_tokens: 100,
+      total_output_tokens: 50n,
+      total_cost_usd_cents: 7n,
+      created_at: 1_700_000_000_000,
+      updated_at: 1_700_000_000_000,
+      archived_at: null,
+    });
+    expect(s.turn_count).toBe(12);
+    expect(s.total_input_tokens).toBe(100);
+    expect(s.total_output_tokens).toBe(50);
+    expect(s).not.toHaveProperty('transcript');
+    expect(s.created_at).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(s.archived_at).toBeNull();
+  });
+
+  it('defaults a missing turn_count to 0', () => {
+    const s = rowToChatSummary({ id: 'c2', role: 'scoper', created_at: 'c', updated_at: 'u' });
+    expect(s.turn_count).toBe(0);
+    expect(s.feature_id).toBeNull();
+    expect(s.title).toBeNull();
+  });
+});
+
 describe('listChats — bounded query (F-C1)', () => {
   afterEach(() => {
     allMock.mockClear();
@@ -101,6 +141,43 @@ describe('listChats — bounded query (F-C1)', () => {
     expect(lastSql).toContain('LIMIT ? OFFSET ?');
     expect(lastSql).toContain('WHERE archived_at IS NULL'); // active-only by default
     expect(allMock).toHaveBeenCalledWith(LIST_CHATS_DEFAULT_LIMIT, 0);
+  });
+
+  it('projects columns (no SELECT *, no transcript body — turn_count instead)', async () => {
+    await listChats({ slug: 'foo' });
+    expect(lastSql).not.toContain('SELECT *');
+    // the heavy jsonb body is replaced by its length
+    expect(lastSql).toContain('jsonb_array_length');
+    expect(lastSql).toContain('AS turn_count');
+    // `transcript` is referenced exactly ONCE — inside the length expression,
+    // never selected as a bare body column.
+    expect((lastSql.match(/transcript/g) ?? []).length).toBe(1);
+    expect(lastSql).toContain('COALESCE(transcript');
+  });
+
+  it('maps projected rows via rowToChatSummary (turn_count, no transcript field)', async () => {
+    allMock.mockResolvedValueOnce([
+      {
+        id: 'c1',
+        role: 'worker',
+        feature_id: 'F-1',
+        title: 'Chat',
+        turn_count: 4n,
+        total_input_tokens: 10n,
+        total_output_tokens: 5n,
+        total_cost_usd_cents: 2n,
+        created_at: 1_700_000_000_000,
+        updated_at: 1_700_000_000_000,
+        archived_at: null,
+      },
+    ]);
+    const r = await listChats({ slug: 'foo' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const [chat] = r.data.chats;
+    expect(chat.turn_count).toBe(4);
+    expect(chat).not.toHaveProperty('transcript');
+    expect(chat.total_input_tokens).toBe(10);
   });
 
   it('clamps limit above 100 down to 100', async () => {

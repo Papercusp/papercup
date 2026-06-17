@@ -15,11 +15,26 @@
  *   npx vitest run lib/agent-tools/coordination/__tests__/messages.test.ts
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 
-import { configureCoordLog, resetCoordLog } from '../log';
+// Mock the PG-backed audience-host so a `@plan:`/`@topic:` selector expands
+// through the REAL pure `expandAudience` (../audience) but against in-memory
+// resolvers — no getOrgPg() / listPresence(). An unknown plan/topic has no
+// subscribers and no active presence → resolves to [] (the zero-recipient case
+// P2-15 exercises). audienceMode stays 'scoped' so selectors are honoured, not
+// collapsed to broadcast.
+vi.mock('../audience-host', () => ({
+  hostAudienceResolvers: {
+    listTargetSubscribers: async () => [],
+    listActivePresence: async () => [],
+    listTaggedTopics: async () => [],
+  },
+  audienceMode: () => 'scoped' as const,
+}));
+
+import { configureCoordLog, resetCoordLog, coordLog } from '../log';
 import { appendAck, readInbox, readOutbox, readThread, sendMessage } from '../messages';
 import type { AgentIdentity } from '../identity';
 
@@ -144,5 +159,68 @@ describe('appendAck + readThread', () => {
       reply.msg_id,
       ack.msg_id,
     ]);
+  });
+});
+
+describe('sendMessage zero-recipient — selector that expands to nobody (P2-15)', () => {
+  it('a @plan: selector with no watchers persists the row as delivered-to-0, NOT a broadcast', async () => {
+    const A = fakeIdentity('A');
+    // @plan:no-such-plan has no subscribers and no active presence (mocked
+    // resolvers) → expandAudience returns [] → envelope.to is [].
+    const sent = await sendMessage(A, { to: ['@plan:no-such-plan'], summary: 'orphan' });
+
+    // The envelope is delivered to NOBODY (to:[]) — and crucially NOT collapsed
+    // to ['*']: a typo'd/empty audience must never fan out to everyone (audience
+    // D-004 — distinguishes "delivered to 0" from a broadcast).
+    expect(sent.to).toEqual([]);
+    expect(sent.summary).toBe('orphan');
+
+    // No error: a zero-recipient send is a valid no-op delivery, not a failure.
+    // (sendMessage resolved a CoordEnvelope without throwing.)
+    expect(sent.kind).toBe('message');
+
+    // The coord-log row STILL exists (D-004: an audience that resolves to nobody
+    // still persists the row) — the raw message surface carries it.
+    const rawLines = await coordLog.readLines('messages');
+    const persisted = rawLines.find((l) => l.msg_id === sent.msg_id);
+    expect(persisted).toBeDefined();
+    expect(persisted?.to).toEqual([]);
+
+    // No inbox delivery anywhere — no concrete owner was addressed.
+    expect(await readInbox('B')).toEqual([]);
+    expect(await readInbox('*')).toEqual([]);
+
+    // ...but the SENDER's outbox includes it (from === A), so it isn't lost.
+    const outboxA = await readOutbox('A');
+    expect(outboxA.map((m) => m.msg_id)).toContain(sent.msg_id);
+  });
+});
+
+describe('appendAck double-ack — dedup-or-not contract (P3-16)', () => {
+  it('acking the same message twice appends TWO ack records (append-only, no dedup)', async () => {
+    const A = fakeIdentity('A');
+    const Bob = fakeIdentity('Bob');
+    const m = await sendMessage(A, { to: ['Bob'], summary: 'please ack' });
+
+    const ack1 = await appendAck(Bob, m.msg_id, A.ownerId);
+    const ack2 = await appendAck(Bob, m.msg_id, A.ownerId);
+
+    // appendAck is NOT idempotent: each call appends a distinct ack envelope —
+    // there is no read-fold collapsing duplicate acks the way handoffs/escalations
+    // collapse their resolutions, so the contract here is two raw records.
+    expect(ack1.msg_id).not.toBe(ack2.msg_id);
+    expect(ack1.kind).toBe('ack');
+    expect(ack2.kind).toBe('ack');
+
+    // The thread rooted at the original message carries BOTH acks alongside it.
+    const thread = await readThread(m.msg_id);
+    const acks = thread.filter((t) => t.kind === 'ack' && t.related_msg_id === m.msg_id);
+    expect(acks).toHaveLength(2);
+    expect(acks.map((a) => a.msg_id).sort()).toEqual([ack1.msg_id, ack2.msg_id].sort());
+
+    // The sender's inbox render also surfaces both ack envelopes (no inbox-side
+    // dedup) — pinning that the double-ack is visible, not silently swallowed.
+    const inboxA = await readInbox('A');
+    expect(inboxA.filter((x) => x.kind === 'ack')).toHaveLength(2);
   });
 });

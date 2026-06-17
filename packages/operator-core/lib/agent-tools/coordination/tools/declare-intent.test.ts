@@ -161,4 +161,23 @@ describe('coord:declare-intent lane validation (EI-356)', () => {
     expect(res.ok).toBe(false);
     expect(String(res.error)).toMatch(/current_plan_slug/);
   });
+
+  it('the items-without-plan guard writes NOTHING — no presence row, no lane reconcile (P2-14)', async () => {
+    // The guard short-circuits at handler top (declare-intent.ts:78-91) BEFORE
+    // writePresence / reconcileDeclaredClaims, so a malformed call leaves no
+    // presence or lane-claim side effect — it isn't a half-applied declaration.
+    const res = parse(await tool.handler({ intent: 'work', items: ['P-001'] }, ctx));
+    expect(res.ok).toBe(false);
+    expect(res.isError ?? undefined).toBeUndefined(); // parse() reads only the text body
+    expect(String(res.error)).toMatch(/items requires current_plan_slug/);
+    expect(writePresence).not.toHaveBeenCalled();
+    expect(reconcileDeclaredClaims).not.toHaveBeenCalled();
+  });
+
+  it('the guard sets isError:true on the tool result (P2-14)', async () => {
+    const raw = (await tool.handler({ intent: 'work', items: ['P-001'] }, ctx)) as unknown as {
+      isError?: boolean;
+    };
+    expect(raw.isError).toBe(true);
+  });
 });

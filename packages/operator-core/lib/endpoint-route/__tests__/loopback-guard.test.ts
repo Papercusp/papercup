@@ -39,6 +39,28 @@ describe('isLoopbackHost', () => {
       expect(isLoopbackHost(h)).toBe(false);
     }
   });
+
+  // Gap 14 — host-spoof resistance. A suffix-prepend like `127.0.0.1.evil.com`
+  // points at evil.com (the DNS label after the final dot wins), NOT loopback;
+  // the guard MUST reject it. A pass here would be a critical auth-bypass:
+  // backup-restore / flag-mutation reachable off-box by forging the Host.
+  it('rejects suffix-spoofed loopback hosts (e.g. 127.0.0.1.evil.com)', () => {
+    const spoofs: Array<[string | null, boolean]> = [
+      ['127.0.0.1', true],            // bare loopback ipv4
+      ['localhost', true],            // bare loopback name
+      ['[::1]', true],                // bracketed ipv6 loopback, no port
+      ['[::1]:3070', true],           // bracketed ipv6 loopback, with port
+      ['127.0.0.1.evil.com', false],  // SPOOF: loopback as a prefix label
+      ['127.0.0.1.evil.com:3070', false], // SPOOF + port
+      ['localhost.evil.com', false],  // SPOOF: name prefix
+      ['evil.com', false],            // plain remote
+      [null, false],                  // missing Host
+      ['', false],                    // empty Host
+    ];
+    for (const [host, expected] of spoofs) {
+      expect(isLoopbackHost(host), `host=${JSON.stringify(host)}`).toBe(expected);
+    }
+  });
 });
 
 describe('requireLoopbackOr403', () => {

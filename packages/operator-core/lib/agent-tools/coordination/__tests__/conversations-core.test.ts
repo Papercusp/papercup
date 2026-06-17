@@ -474,6 +474,89 @@ describe('join / leave', () => {
     expect(sinkBox.inbox.lurker).toBeUndefined();
     expect(sinkBox.inbox.asker).toHaveLength(1);
   });
+
+  // P2-19: join is an UPSERT — a re-join (different mode + ttl) must NOT spawn a
+  // second subscription row; it re-points the existing one (the InMemory double
+  // mirrors PgEntitySubscriptionStore's active-row upsert). Only fresh-join was
+  // covered before.
+  it('re-joining updates the single subscription in place (mode + ttl) instead of adding a row', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q', topics: ['area'] });
+
+    const first = await joinConversationCore(deps, ident('rejoiner'), { conversation_id: opened.conversation.id });
+    expect(first).toEqual({ ok: true, mode: 'full' });
+    let rows = await subs.listSubscriptions('rejoiner');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].delivery_mode).toBe('full');
+    expect(rows[0].expires_ts).toBeNull();
+
+    // Re-join in digest with a TTL — same target, so it upserts the one row.
+    const second = await joinConversationCore(deps, ident('rejoiner'), {
+      conversation_id: opened.conversation.id,
+      mode: 'digest',
+      ttl_sec: 3600,
+    });
+    expect(second).toEqual({ ok: true, mode: 'digest' });
+
+    rows = await subs.listSubscriptions('rejoiner');
+    expect(rows).toHaveLength(1); // ONE row, not two
+    expect(rows[0].delivery_mode).toBe('digest'); // mode flipped
+    expect(rows[0].expires_ts).toBe('2030-01-01T01:00:00.000Z'); // TTL applied (T0 + 3600s)
+  });
+});
+
+// P1-17: a conversation in a terminal state (resolved / promoted-closed) must
+// not silently re-run capture or take more posts. Before the guard, a SECOND
+// resolve re-ran capture and OVERWROTE the accepted answer (a real corruption
+// bug), and a post landed on a resolved row as if it were live.
+describe('terminal-state guards (P1-17)', () => {
+  it('a second resolve is rejected (already_resolved): capture runs ONCE, the accepted answer stays A', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q', topics: ['area'] });
+    const first = await resolveConversationCore(deps, ident('asker'), {
+      conversation_id: opened.conversation.id,
+      accepted_answer: 'answer A',
+    });
+    if ('error' in first) throw new Error(first.error);
+    expect(captureCalls).toHaveLength(1);
+    expect(first.conversation.accepted_answer).toBe('answer A');
+
+    const second = await resolveConversationCore(deps, ident('asker'), {
+      conversation_id: opened.conversation.id,
+      accepted_answer: 'answer B',
+    });
+    expect(second).toEqual({ error: 'already_resolved' });
+
+    // Capture was NOT re-run, and the original accepted answer survives.
+    expect(captureCalls).toHaveLength(1);
+    const row = await store.get(opened.conversation.id);
+    expect(row?.accepted_answer).toBe('answer A');
+    expect(row?.state).toBe('resolved');
+  });
+
+  it('a reply onto a resolved conversation is rejected (resolved) — the thread does not grow', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q', topics: ['area'] });
+    await resolveConversationCore(deps, ident('asker'), { conversation_id: opened.conversation.id, accepted_answer: 'done' });
+
+    const thread = await threads.getThreadByParent({ kind: 'conversation', ref: opened.conversation.id });
+    const before = thread ? (await threads.listPosts(thread.thread_id)).length : 0;
+
+    const res = await postReplyCore(deps, ident('latecomer'), { conversation_id: opened.conversation.id, body: 'late reply' });
+    expect(res).toEqual({ error: 'resolved' });
+
+    // No post appended, state unchanged.
+    const after = thread ? (await threads.listPosts(thread.thread_id)).length : 0;
+    expect(after).toBe(before);
+    expect((await store.get(opened.conversation.id))?.state).toBe('resolved');
+  });
+
+  it('an answer onto a promoted (closed) conversation is rejected (closed)', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), { kind: 'discussion', body: 'b', topics: ['area'] });
+    const promoted = await promoteConversationCore(deps, ident('asker'), { conversation_id: opened.conversation.id });
+    if ('error' in promoted) throw new Error(promoted.error);
+    expect((await store.get(opened.conversation.id))?.state).toBe('closed');
+
+    const res = await answerQuestionCore(deps, ident('latecomer'), { conversation_id: opened.conversation.id, body: 'too late' });
+    expect(res).toEqual({ error: 'closed' });
+  });
 });
 
 describe('listConversationsWithTopicsCore', () => {

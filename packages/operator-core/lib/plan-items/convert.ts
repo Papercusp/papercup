@@ -154,6 +154,61 @@ export async function findImplementingWorkItem(
 }
 
 /**
+ * Backstop resolver for the conversion idempotency check — finds a work_item
+ * minted for this plan item via the `payload.plan_item` STAMP rather than the
+ * `implements` edge.
+ *
+ * The edge (findImplementingWorkItem) is the primary idempotency key, but it is a
+ * separate coord_links row that can be deleted out-of-band (a link prune, a manual
+ * substrate edit) while the work_item itself survives. Without this fallback a
+ * re-pickup would then sail past step 2 and mint a SECOND work_item for the same
+ * plan item — two execution records, the orphaned first one invisible to the
+ * resume path (it violates the re-pick-resumes contract; convert.ts module header
+ * §2). Every convert stamps `payload.plan_item = { plan_slug, item_id, harness_slug }`
+ * on BOTH families (feature: harness_features_consolidated.payload; issue:
+ * engineer_issues.payload), so the stamp is the durable second source of truth.
+ * Newest-first so a resume picks the most recent record.
+ */
+export async function findConvertedWorkItemByStamp(
+  planSlug: string,
+  itemId: string,
+  harnessSlug: string,
+): Promise<WorkItem | null> {
+  const { sql } = getOrgPg();
+  // `payload` is jsonb on both tables, but createWorkItem binds it as JSON.stringify(obj)
+  // under a `$::jsonb` cast — which postgres-js stores as a jsonb STRING SCALAR, not an
+  // object (agent-insights/postgres-js-jsonb-binding). So `payload->'plan_item'` is null
+  // unless we first unwrap the scalar. `pj` normalizes BOTH shapes: a string scalar is
+  // re-parsed via `(p #>> '{}')::jsonb`; a real object passes through. The stamp is
+  // identical across families — match plan_slug + item_id (harness is in scope).
+  const pj = (col: string) =>
+    sql`(CASE WHEN jsonb_typeof(${sql.unsafe(col)}) = 'string'
+              THEN (${sql.unsafe(col)} #>> '{}')::jsonb ELSE ${sql.unsafe(col)} END)`;
+  const stampMatch = (col: string) =>
+    sql`${pj(col)}->'plan_item'->>'plan_slug' = ${planSlug}
+    AND ${pj(col)}->'plan_item'->>'item_id' = ${itemId}`;
+  const featureRows = await sql<{ feature_id: string; harness_slug: string }[]>`
+    SELECT feature_id, harness_slug
+      FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${harnessSlug} AND payload IS NOT NULL AND ${stampMatch('payload')}
+     ORDER BY updated_ts DESC NULLS LAST`;
+  for (const r of featureRows) {
+    const wi = await getWorkItem(r.feature_id, r.harness_slug);
+    if (wi) return wi;
+  }
+  const issueRows = await sql<{ issue_id: string }[]>`
+    SELECT issue_id
+      FROM harness_shared.engineer_issues
+     WHERE payload IS NOT NULL AND ${stampMatch('payload')}
+     ORDER BY updated_at DESC NULLS LAST`;
+  for (const r of issueRows) {
+    const wi = await getWorkItem(r.issue_id);
+    if (wi) return wi;
+  }
+  return null;
+}
+
+/**
  * Every plan-item ref ('<plan>#<item>') that has a work_item `implements` edge —
  * i.e. has been CONVERTED (picked up for execution). The decision↔execution
  * boundary's queryable truth (queen-autonomy-policy B-14 / P-104 · D-013): the
@@ -233,7 +288,15 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   const planItem = { plan: opts.planSlug, item: opts.itemId, status: item.status, text: item.text };
 
   // ── 2. Resume an existing non-terminal execution record, if any ───────────
-  const existing = await findImplementingWorkItem(opts.planSlug, opts.itemId);
+  // Primary key: the `implements` edge. Fallback: the durable `payload.plan_item`
+  // STAMP — covers an edge deleted out-of-band, so a re-pickup never SILENTLY mints
+  // a second work_item for the same plan item (the re-pick-resumes contract; §2).
+  let existing = await findImplementingWorkItem(opts.planSlug, opts.itemId);
+  let edgeMissing = false;
+  if (!existing) {
+    existing = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug);
+    edgeMissing = existing !== null; // found by stamp ⇒ the edge was gone, re-link below.
+  }
   if (existing && !TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
     let resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? undefined });
     if (!resumed) {
@@ -241,6 +304,17 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
       // authority — we hold it, so take the execution record over.
       await releaseWorkItem(existing.id, { harness: existing.harness ?? undefined });
       resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? undefined });
+    }
+    // Self-heal the missing idempotency edge so subsequent reads (the Queue's
+    // listConvertedPlanItemRefs, detail views) and the next resume see it again.
+    if (edgeMissing) {
+      const wiForLink = resumed ?? existing;
+      await linkWorkItem(
+        wiForLink.id,
+        { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, opts.itemId) },
+        IMPLEMENTS_REL,
+        { harness: wiForLink.harness ?? undefined, by: opts.owner },
+      );
     }
     return {
       status: 'resumed',

@@ -19,7 +19,6 @@ import { spawn } from 'node:child_process';
 import { join, basename } from 'node:path';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import postgres from 'postgres';
 import {
   configGet,
   resolvePhase,
@@ -35,7 +34,7 @@ import { readEffectiveHarnessConfig } from '../harness-effective-config';
 import { loadBlueprintFromFile, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { resolveProject } from '../harness-core';
 import { activeWorkspaceId } from '../workspace-registry';
-import { getHarnessAdminUrl } from '../embedded-pg-discovery';
+import { adminClientForHarness } from './admin-pg-cache';
 import { harnessPackageDir } from '../harness-paths';
 import { buildInvokeOnce } from '../harness-invoke-once';
 import { getFlag } from '@papercusp/flags/server';
@@ -655,43 +654,6 @@ function harnessOutputKind(
   }
 }
 
-// Audit P-036: the debugger gate runs on every pipeline invocation past the
-// attempt threshold — opening (and tearing down) a fresh postgres() pool each
-// time burned a connection slot + startup round-trips per spawn. Cache one
-// admin client per (url, harness) instead. Deliberately NOT getHarnessPg():
-// that helper is app-role and RLS-subject, so without a withWorkspace
-// transaction the attempts read would silently return zero rows and the gate
-// would never fire; this hook's contract is admin-role + per-harness
-// search_path. Keyed by URL too so an embedded-pg discovery change (new port
-// after a desktop restart) builds a fresh client instead of pinning the old.
-const DEBUGGER_PG_CACHE_MAX = 8;
-const debuggerPgCache = new Map<string, ReturnType<typeof postgres>>();
-function debuggerPgFor(harnessSlug: string): ReturnType<typeof postgres> {
-  const url = getHarnessAdminUrl();
-  const key = `${url}|${harnessSlug}`;
-  const hit = debuggerPgCache.get(key);
-  if (hit) {
-    // Re-insert to refresh LRU recency.
-    debuggerPgCache.delete(key);
-    debuggerPgCache.set(key, hit);
-    return hit;
-  }
-  if (debuggerPgCache.size >= DEBUGGER_PG_CACHE_MAX) {
-    const oldest = debuggerPgCache.entries().next().value;
-    if (oldest) {
-      debuggerPgCache.delete(oldest[0]);
-      void oldest[1].end({ timeout: 2 }).catch(() => {});
-    }
-  }
-  const pg = postgres(url, {
-    max: 1,
-    connect_timeout: 5,
-    connection: { search_path: `harness_${harnessSlug},harness_shared,public` },
-  });
-  debuggerPgCache.set(key, pg);
-  return pg;
-}
-
 const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, workspaceId }) => {
   const project = await resolveProject(harnessSlug, workspaceId);
   if (!project) return { fired: false };
@@ -709,7 +671,11 @@ const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, 
   const cfgThreshold = configGet<number | undefined>(cfg, 'debugger.threshold', undefined);
   const threshold = Number(cfgThreshold ?? harnessBlueprintKnobs(projectDir)?.debuggerThreshold ?? 3);
 
-  const pg = debuggerPgFor(harnessSlug);
+  // Audit P-036: the debugger gate runs on every pipeline invocation past the
+  // attempt threshold — opening a fresh pool each time burned a connection slot +
+  // startup round-trips per spawn. Reuse the shared admin-client LRU instead (one
+  // client per (url, harness), shared with the orchestrator dispatch loop).
+  const pg = adminClientForHarness(harnessSlug);
   try {
     const attRows = await pg<Array<{ attempts: number | bigint | null }>>`
       SELECT attempts FROM harness_features

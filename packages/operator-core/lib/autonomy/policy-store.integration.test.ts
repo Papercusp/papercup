@@ -129,6 +129,39 @@ describe('setAutonomyPolicy', () => {
     expect(read.graduatedLevel).toBe('low');
   });
 
+  it('a SEPARATE-call lowered ceiling RE-CLAMPS a prior graduated level back down (owner-authority walk-back, D-005)', async () => {
+    // Gap 2: the single-call clamp is covered above. This is the dangerous
+    // SEPARATE-call path — the owner first grants headroom + a graduated level,
+    // then later LOWERS the ceiling alone (no graduatedLevel in the second call).
+    // A stale graduated level surviving above the new ceiling would let the Queen
+    // auto-decide PAST current owner authority (D-005) — a real safety bug.
+    const r1 = await setAutonomyPolicy(
+      db.adminSql,
+      WS,
+      { category: 'inbox-triage', ceiling: 'high', graduatedLevel: 'moderate', reason: 'walk-back: grant' },
+      'tester',
+    );
+    expect(r1.ceiling).toBe('high');
+    expect(r1.graduatedLevel).toBe('moderate');
+    expect(effectiveCeiling(r1)).toBe('moderate');
+
+    // Lower the ceiling alone — graduatedLevel omitted (it must re-clamp, not persist stale).
+    const r2 = await setAutonomyPolicy(
+      db.adminSql,
+      WS,
+      { category: 'inbox-triage', ceiling: 'low', reason: 'walk-back: lower ceiling' },
+      'tester',
+    );
+    expect(r2.ceiling).toBe('low');
+    expect(r2.graduatedLevel).toBe('low'); // re-clamped from 'moderate' down to the new cap
+    expect(effectiveCeiling(r2)).toBe('low'); // autonomy never exceeds current owner authority
+
+    // Re-READ from PG — the persisted row must also be re-clamped, not just the return value.
+    const read = await getAutonomyCategoryPolicy(db.adminSql, WS, 'inbox-triage');
+    expect(read.graduatedLevel).toBe('low');
+    expect(effectiveCeiling(read)).toBe('low');
+  });
+
   it('locked ⇒ effective ceiling none regardless of the stored ceiling', async () => {
     const r = await setAutonomyPolicy(
       db.adminSql,

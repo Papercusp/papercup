@@ -75,3 +75,60 @@ describe('writeWatermark', () => {
     expect(ret).toEqual(await readWatermark('agent-a'));
   });
 });
+
+describe('writeWatermark ts-cursor ordering (P1-11 — at-least-once, NOT clamped)', () => {
+  // P1-11 investigated whether writeWatermark should be MONOTONIC (clamp each ts
+  // cursor to max(current, patch)) to stop re-delivery. It must NOT: the
+  // watermark protocol is *at-least-once, never a skip* — a consumer that ends
+  // consumption mid-(same-ts)-group commits the previous DISTINCT ts, which
+  // ROLLS THE CURSOR BACK so the unconsumed siblings are re-seen on restart
+  // (the documented safe-commit recovery, watermark-crash-restart.integration).
+  // A max-clamp here would turn that deliberate re-delivery into a SKIP. So the
+  // cursor is plain last-write-wins and a backward write is honoured; these
+  // tests pin that contract so a future "add a monotonic guard" change has to
+  // confront the at-least-once recovery it would break.
+  const T1 = '2026-05-20T10:00:00.000Z';
+  const T2 = '2026-05-20T12:00:00.000Z';
+
+  it('a later ts advances the cursor (the normal forward turn-end commit)', async () => {
+    await writeWatermark('agent-a', { messages_since_ts: T1 });
+    const ret = await writeWatermark('agent-a', { messages_since_ts: T2 });
+    expect(ret.messages_since_ts).toBe(T2);
+    expect((await readWatermark('agent-a')).messages_since_ts).toBe(T2);
+  });
+
+  it('an EARLIER ts rolls the cursor back — the safe-commit at-least-once recovery', async () => {
+    await writeWatermark('agent-a', { messages_since_ts: T2 });
+    const ret = await writeWatermark('agent-a', { messages_since_ts: T1 });
+    // Honoured, not clamped: re-delivery of the T1..T2 window is at-least-once
+    // by design (never a skip), so the persisted cursor is the rolled-back T1.
+    expect(ret.messages_since_ts).toBe(T1);
+    expect((await readWatermark('agent-a')).messages_since_ts).toBe(T1);
+  });
+
+  it('every ts cursor is independently last-write-wins (backward rolls all three)', async () => {
+    await writeWatermark('agent-a', {
+      messages_since_ts: T2,
+      escalations_since_ts: T2,
+      plan_events_since_ts: T2,
+    });
+    await writeWatermark('agent-a', {
+      messages_since_ts: T1,
+      escalations_since_ts: T1,
+      plan_events_since_ts: T1,
+    });
+    const wm = await readWatermark('agent-a');
+    expect(wm.messages_since_ts).toBe(T1);
+    expect(wm.escalations_since_ts).toBe(T1);
+    expect(wm.plan_events_since_ts).toBe(T1);
+  });
+
+  it('a non-cursor-only write (subscriptions_fired) leaves an established ts cursor untouched', async () => {
+    await writeWatermark('agent-a', { messages_since_ts: T2 });
+    // Omitted ts fields keep their value — a subscriptions_fired write must not
+    // reset messages_since_ts to ''.
+    const ret = await writeWatermark('agent-a', { subscriptions_fired: ['m1'] });
+    expect(ret.messages_since_ts).toBe(T2);
+    expect(ret.subscriptions_fired).toEqual(['m1']);
+  });
+});

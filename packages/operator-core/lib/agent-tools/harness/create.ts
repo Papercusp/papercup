@@ -112,7 +112,7 @@ export default defineTool({
       message: 'pass `blueprintId` or `blueprint`',
     }),
   async handler(args) {
-    const { loadHarnessRegistry, saveHarnessRegistry } = await import('../../harness-registry');
+    const { loadHarnessRegistry, mutateHarnessRegistry } = await import('../../harness-registry');
 
     const reg = await loadHarnessRegistry();
     if (reg.projects.some((p) => p.slug === args.slug)) return fail({ error: 'slug already exists' });
@@ -313,8 +313,25 @@ export default defineTool({
       ...(deployment.target !== 'local' ? { deployment } : {}),
       ...instanceFields,
     };
-    reg.projects.push(newEntry);
-    await saveHarnessRegistry(reg);
+    // Atomic insert (audit P-006 / EI-82): the top-of-handler dup check is a
+    // pure TOCTOU window — a concurrent create/register/hive:join could land
+    // this slug (or revert our write) between that read and the save. Mirror
+    // the sibling HTTP route (POST /harness/projects, projects.ts:312-328):
+    // route the write through `mutateHarnessRegistry` so it runs inside the
+    // operator-state row's FOR UPDATE tx (concurrent mutations serialize, each
+    // sees the prior commit), and RE-CHECK the slug inside the mutation so a
+    // dup that appeared after our read is rejected instead of duplicated. A
+    // plain loadHarnessRegistry()→push→saveHarnessRegistry() is the lost-update
+    // race that drops one of two concurrent creates with no error.
+    let dupRace = false;
+    await mutateHarnessRegistry((cur) => {
+      if (cur.projects.some((p) => p.slug === args.slug)) {
+        dupRace = true;
+        return cur;
+      }
+      return { ...cur, projects: [...cur.projects, newEntry] };
+    });
+    if (dupRace) return fail({ error: 'slug already exists' });
     let provisioning: { ok: true } | { ok: false; error: string };
     try {
       const { scaffoldHarnessSchema } = await import('../../scaffold-harness-schema');

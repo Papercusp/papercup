@@ -135,6 +135,144 @@ describe('per-family state normalization (EI-24)', () => {
   });
 });
 
+// C2 [P2] — invalid-state rejection is ASYMMETRIC across the families (work-items.ts:679 →
+// normalizeWorkItemState). The issue family has a 3-state CHECK (engineer_issues), so an
+// unmappable state is a TYPED engine-level refusal that LISTS the valid issue set. The feature
+// family's hfc.status carries NO CHECK (the pipeline owns that vocabulary), so an arbitrary state
+// passes THROUGH un-rejected — there is no feature "valid set" to list. (The brief's premise that
+// a feature also throws is incorrect for this engine; the test asserts the ACTUAL asymmetry, which
+// is the more important contract: the two families behave differently, and the issue error names
+// the issue states.)
+describe('C2 — setWorkItemState invalid-state rejection (per-family asymmetry)', () => {
+  it('issue-family rejects an unmappable state with a TYPED error LISTING the issue valid-set', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    let caught: Error | null = null;
+    try {
+      await wi.setWorkItemState(bug.id, 'validating'); // a feature-only state — invalid for an issue
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught).not.toBeNull();
+    // The message names the issue family's native + accepted-alias set (not a raw PG CHECK error).
+    expect(caught!.message).toMatch(/cannot take state 'validating'/);
+    expect(caught!.message).toMatch(/valid: open, resolved, closed, done, dropped, todo, in_progress, wip, blocked, needs-human/);
+    expect(caught!.message).not.toMatch(/engineer_issues_state_check/); // never leaks the PG constraint
+  });
+
+  it('feature-family does NOT reject an arbitrary state — hfc.status has no CHECK; it passes through', async () => {
+    // The pipeline owns the feature vocabulary (no DB CHECK), so a never-seen status is accepted
+    // verbatim. This is the OTHER half of the asymmetry: the issue refusal above has no feature analog.
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    const after = await wi.setWorkItemState(feat.id, 'some-novel-pipeline-phase', { harness: 'papercup' });
+    expect(after?.state).toBe('some-novel-pipeline-phase');
+    expect((await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].status)
+      .toBe('some-novel-pipeline-phase');
+  });
+
+  it('the two families’ responses to the SAME invalid state DIFFER (issue throws; feature accepts)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    await expect(wi.setWorkItemState(bug.id, 'gibberish')).rejects.toThrow(/cannot take state 'gibberish'/);
+    await expect(wi.setWorkItemState(feat.id, 'gibberish', { harness: 'papercup' })).resolves.toMatchObject({ state: 'gibberish' });
+  });
+});
+
+// C3 [P2] — link cycles / cross-kind direction / duplicate-edge idempotency (work-items.ts:1145).
+// The lifecycle test covers non-blocks rels; this covers the structural edge cases the link
+// store must tolerate: a mutual blocks pair, a feature→issue blocks direction, and a repeated
+// identical edge (must not multiply).
+describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempotency', () => {
+  it('a mutual blocks CYCLE (F-1 blocks F-2 AND F-2 blocks F-1) is permitted as two distinct edges', async () => {
+    // The link store records edges; it does not (and need not) run cycle detection — a cycle is
+    // two independent directed edges. We assert it is accepted cleanly (no throw) and BOTH edges exist.
+    const f1 = await wi.createWorkItem({ kind: 'feature', title: 'f1', harness: 'papercup', createdBy: 'agA' });
+    const f2 = await wi.createWorkItem({ kind: 'feature', title: 'f2', harness: 'papercup', createdBy: 'agA' });
+    const r1 = (await wi.resolveWorkItemRef(f1.id, 'papercup'))!;
+    const r2 = (await wi.resolveWorkItemRef(f2.id, 'papercup'))!;
+
+    expect(await wi.linkWorkItem(f1.id, r2, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
+    expect(await wi.linkWorkItem(f2.id, r1, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
+
+    const out1 = await links.listOut({ kind: 'feature', ref: `papercup#${f1.id}` });
+    const out2 = await links.listOut({ kind: 'feature', ref: `papercup#${f2.id}` });
+    expect(out1.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'feature', ref: `papercup#${f2.id}` });
+    expect(out2.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'feature', ref: `papercup#${f1.id}` });
+  });
+
+  it('cross-kind direction: a FEATURE blocks an ISSUE (feature→issue) is supported', async () => {
+    // The lifecycle test covers bug(issue)→feature; here is the OPPOSITE direction (feature→issue),
+    // which rides the feature-family link path (links.link, not linkIssue).
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'feat', harness: 'papercup', createdBy: 'agA' });
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'bug', harness: 'papercup', createdBy: 'agA' });
+    const bugRef = (await wi.resolveWorkItemRef(bug.id))!;
+    expect(bugRef).toEqual({ kind: 'issue', ref: bug.id });
+
+    expect(await wi.linkWorkItem(feat.id, bugRef, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
+    const out = await links.listOut({ kind: 'feature', ref: `papercup#${feat.id}` });
+    expect(out.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'issue', ref: bug.id });
+  });
+
+  it('the SAME edge linked twice is IDEMPOTENT — exactly one edge, not a duplicate', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'src', harness: 'papercup', createdBy: 'agA' });
+    const other = await wi.createWorkItem({ kind: 'bug', title: 'dst', harness: 'papercup', createdBy: 'agA' });
+    const dst = { kind: 'issue', ref: other.id } as const;
+
+    expect(await wi.linkWorkItem(bug.id, dst, 'blocks', { by: 'agA' })).toEqual({ ok: true });
+    expect(await wi.linkWorkItem(bug.id, dst, 'blocks', { by: 'agA' })).toEqual({ ok: true }); // re-link
+    const blocks = (await links.listOut({ kind: 'issue', ref: bug.id })).filter((l) => l.rel === 'blocks');
+    expect(blocks).toHaveLength(1); // upserted, not duplicated
+  });
+});
+
+// C4 [P2] — observe/claim consistency (work-items.ts:862 observeWorkItem reports {available,claimedBy}).
+// The single-item observe must stay coherent with the atomic claim across a full take→contend→
+// release→re-take cycle: exactly one holder at a time, observe always reflecting the live holder.
+describe('C4 — observeWorkItem claimability consistency with claim/release', () => {
+  it('observe tracks the live holder across claim → contend → release → re-claim', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'contended', harness: 'papercup', createdBy: 'agA' });
+
+    // Fresh: available, no holder.
+    let obs = await wi.observeWorkItem(bug.id);
+    expect(obs).toMatchObject({ available: true, claimedBy: null });
+
+    // A claims → observe reflects A; not available.
+    expect((await wi.claimWorkItem(bug.id, 'A'))?.assignee).toBe('A');
+    obs = await wi.observeWorkItem(bug.id);
+    expect(obs).toMatchObject({ available: false, claimedBy: 'A' });
+
+    // B's claim on the held item FAILS (atomic compare-and-claim — one winner), observe still A.
+    expect(await wi.claimWorkItem(bug.id, 'B')).toBeNull();
+    expect((await wi.observeWorkItem(bug.id))).toMatchObject({ available: false, claimedBy: 'A' });
+
+    // A releases → available again, no holder.
+    expect((await wi.releaseWorkItem(bug.id))?.assignee).toBeNull();
+    expect(await wi.observeWorkItem(bug.id)).toMatchObject({ available: true, claimedBy: null });
+
+    // B now claims successfully → observe reflects B.
+    expect((await wi.claimWorkItem(bug.id, 'B'))?.assignee).toBe('B');
+    expect(await wi.observeWorkItem(bug.id)).toMatchObject({ available: false, claimedBy: 'B' });
+  });
+
+  it('observing a missing work-item → null', async () => {
+    expect(await wi.observeWorkItem('WI-404')).toBeNull();
+  });
+
+  // Bug fix (issues-engineer.claimIssue): the unified claim is atomic compare-and-claim for the
+  // ISSUE family too — previously claimIssue did an unconditional `SET assignee` (last-write-wins),
+  // so a second claimer silently STOLE a live grip, breaking the claimWorkItem contract ("exactly
+  // one agent wins"). The feature-family atomic claim is covered in work-items-claim.integration;
+  // this locks the same guarantee for the issue family the unified surface now also promises.
+  it('issue-family claim is atomic: a held bug refuses a competing claim; same-assignee re-claim is idempotent', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'contended bug', harness: 'papercup', createdBy: 'agA' });
+    expect((await wi.claimWorkItem(bug.id, 'A'))?.assignee).toBe('A');
+    // A different agent CANNOT steal the held bug — the claim is refused (null), holder unchanged.
+    expect(await wi.claimWorkItem(bug.id, 'B')).toBeNull();
+    expect((await db.sql`SELECT assignee FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].assignee).toBe('A');
+    // The holder re-claiming its own bug is idempotent (not a refusal).
+    expect((await wi.claimWorkItem(bug.id, 'A'))?.assignee).toBe('A');
+  });
+});
+
 describe('unified work_items surface (real PG)', () => {
   it('create dispatches by kind + mints kind-INDEPENDENT WI ids (D-002/D-008)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'shop freezes', summary: 'in firefox', severity: 'major', harness: 'papercup', createdBy: 'agA' });

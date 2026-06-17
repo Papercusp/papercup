@@ -26,6 +26,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
+import { FEATURE_FAMILY_KINDS } from '../../work-items';
 
 /** launched_by label for a scheduled run's plan_runs row. */
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
@@ -65,9 +66,9 @@ export async function runScheduledPlanFire(
 
   // 1. The template plan.
   const tpl = await sql<
-    Array<{ content: string; content_hash: string; title: string | null; items: unknown }>
+    Array<{ content: string; content_hash: string; title: string | null; items: unknown; schedule: { executorKind?: string } | null }>
   >`
-    SELECT content, content_hash, title, items
+    SELECT content, content_hash, title, items, schedule
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
        AND plan_slug = ${templateSlug}
@@ -77,6 +78,11 @@ export async function runScheduledPlanFire(
     return null;
   }
   const template = tpl[0];
+  // Executor kind (D-006/P-009): a non-coding plan mints a lighter frontier kind
+  // ('research-task' → research spine) instead of the coding-spine 'feature' default.
+  // Authored on schedule.executorKind; validated against the feature-family kinds.
+  const rawKind = template.schedule?.executorKind;
+  const itemKind = rawKind && (FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind) ? rawKind : 'feature';
 
   // 2. Replay-stable run token = the routine's last_fired_at (set at claim, stable on replay).
   const rt = await sql<Array<{ last_fired_at: Date | null }>>`
@@ -145,9 +151,9 @@ export async function runScheduledPlanFire(
       `INSERT INTO harness_shared.harness_features_consolidated
          (harness_slug, feature_id, title, summary, status, attempts, item_kind, payload,
           needs_human_review, workspace_id, ts, created_ts, updated_ts, source_plan_slug)
-       VALUES ($1,$2,$3,$4,'todo',0,'feature',$5::text::jsonb,FALSE,$6,$7,$7,$7,$8)
+       VALUES ($1,$2,$3,$4,'todo',0,$9,$5::text::jsonb,FALSE,$6,$7,$7,$7,$8)
        ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
-      [installSlug, featureId, title, it.text ?? null, payload, workspaceId, now, templateSlug],
+      [installSlug, featureId, title, it.text ?? null, payload, workspaceId, now, templateSlug, itemKind],
     );
     minted += 1;
   }

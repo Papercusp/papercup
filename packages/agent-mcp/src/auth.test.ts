@@ -14,13 +14,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let tokenIndexRows: Array<Record<string, unknown>> = [];
 let principalRows: Array<Record<string, unknown>> = [];
 let withWorkspaceCalls = 0;
+// Counts calls to the `sql` tagged template — in resolveBearer that is exactly
+// the token_index SELECT (capability loads go through withWorkspace's tx, and
+// sql.listen doesn't invoke the base fn), so this measures token_index lookups.
+let sqlCalls = 0;
 // Captured by the mock's sql.listen — lets tests fire NOTIFY payloads.
 let listenChannel: string | null = null;
 let listenCallback: ((payload: string) => void) | null = null;
 
 vi.mock('@papercusp/db-org', () => {
   // tagged-template: sql`...` → sql(strings, ...values)
-  const sql = Object.assign((..._args: unknown[]) => Promise.resolve(tokenIndexRows), {
+  const sql = Object.assign((..._args: unknown[]) => {
+    sqlCalls++;
+    return Promise.resolve(tokenIndexRows);
+  }, {
     listen: (channel: string, cb: (payload: string) => void) => {
       listenChannel = channel;
       listenCallback = cb;
@@ -53,6 +60,7 @@ beforeEach(() => {
   tokenIndexRows = [];
   principalRows = [];
   withWorkspaceCalls = 0;
+  sqlCalls = 0;
   listenChannel = null;
   listenCallback = null;
 });
@@ -168,6 +176,68 @@ describe('resolveBearer', () => {
     expect(withWorkspaceCalls).toBe(1);
     expect(await resolveBearer(bearer)).toBeNull();
     expect(withWorkspaceCalls).toBe(1); // negative entry served from cache
+  });
+
+  describe('token_index identity cache (P1-3 — lifts the per-call admin SELECT off the hot path)', () => {
+    it('serves the token_index identity from cache even after the principal cache is invalidated', async () => {
+      const bearer = 'system-bearer-token-abcdef';
+      tokenIndexRows = [
+        { token: bearer, kind: 'system', harness_slug: 'system:operator', workspace_id: 'ws1' },
+      ];
+      principalRows = [{ bearer_hash: hashOf(bearer), capabilities: ['*'] }];
+
+      expect(await resolveBearer(bearer)).not.toBeNull();
+      const afterFirst = sqlCalls;
+      expect(afterFirst).toBe(1); // the one token_index SELECT
+
+      // Evict the principal (capability) cache — capabilities must re-load, but
+      // the immutable token→identity mapping must NOT trigger a second SELECT.
+      invalidate('ws1', 'system:operator');
+      expect(await resolveBearer(bearer)).not.toBeNull();
+      expect(withWorkspaceCalls).toBe(2); // capabilities re-loaded
+      expect(sqlCalls).toBe(afterFirst); // token_index served from cache
+    });
+
+    it('negatively caches an unknown bearer (no repeat token_index SELECT within the negative TTL)', async () => {
+      tokenIndexRows = [];
+      expect(await resolveBearer('nope-token')).toBeNull();
+      expect(sqlCalls).toBe(1);
+      // Second probe of the same dead bearer is served from the negative cache.
+      expect(await resolveBearer('nope-token')).toBeNull();
+      expect(sqlCalls).toBe(1);
+    });
+
+    it('negatively caches a kind=harness bearer (out of scope) without re-querying', async () => {
+      tokenIndexRows = [
+        { token: 'h', kind: 'harness', harness_slug: 'papercup', workspace_id: 'ws1' },
+      ];
+      expect(await resolveBearer('h')).toBeNull();
+      expect(sqlCalls).toBe(1);
+      expect(await resolveBearer('h')).toBeNull();
+      expect(sqlCalls).toBe(1); // out-of-scope kind cached negatively
+      expect(withWorkspaceCalls).toBe(0); // never reached capability load
+    });
+
+    it('re-queries token_index after the identity cache TTL elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        const bearer = 'system-bearer-token-abcdef';
+        tokenIndexRows = [
+          { token: bearer, kind: 'system', harness_slug: 'system:operator', workspace_id: 'ws1' },
+        ];
+        principalRows = [{ bearer_hash: hashOf(bearer), capabilities: ['*'] }];
+
+        expect(await resolveBearer(bearer)).not.toBeNull();
+        expect(sqlCalls).toBe(1);
+
+        // Past the positive TTL: both the identity and the principal cache expire.
+        vi.advanceTimersByTime(_authCacheTuning.ttlMs + 1);
+        expect(await resolveBearer(bearer)).not.toBeNull();
+        expect(sqlCalls).toBe(2); // identity re-queried
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('TTL expiry', () => {

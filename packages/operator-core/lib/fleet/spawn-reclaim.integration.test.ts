@@ -8,6 +8,7 @@
  * heartbeatSpawns bumps the lease for live spawns.
  */
 import { hostname } from 'node:os';
+import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { reclaimOrphanedSpawns, heartbeatSpawns, recordSpawnPid, isSpawnProcessAlive } from './spawn-reclaim';
@@ -218,6 +219,62 @@ describe('reclaimOrphanedSpawns: in-process LAUNCH rows (P-033 Queen-reclaim fix
       expect(isSpawnProcessAlive(ppid, 'launch')).toBe(true);
       expect(isSpawnProcessAlive(ppid, 'spawn')).toBe(false);
     }
+  });
+});
+
+/**
+ * Gap 12 (PID-reuse hardening, spawn-reclaim.ts:73-88): a `spawn` (bee) row records
+ * the invoke-once child's pid; the reclaim sweep proves liveness by reading
+ * /proc/<pid>/cmdline and requiring it to NAME `invoke-once`. The slot a dead bee
+ * held must NOT be kept alive by a *reused* pid now running something else — so a
+ * REAL live process whose cmdline lacks invoke-once must read DEAD for kind:'spawn',
+ * yet ALIVE for kind:'launch' (any live process). We spawn a real `sleep` child (its
+ * cmdline is `sleep\030\0` — definitely no invoke-once) to make the same live pid
+ * read DEAD-as-bee but alive-as-launch deterministically against the REAL liveness
+ * check, with no injected fake. (process.pid can't be used — it short-circuits to
+ * alive for both kinds; a reused pid is, by definition, NOT this process.)
+ */
+describe('reclaimOrphanedSpawns: spawn-kind PID-reuse (Gap 12, real /proc cmdline check)', () => {
+  const ME = hostname();
+  let proc: ChildProcess;
+  let livePid: number;
+
+  beforeAll(async () => {
+    proc = spawnChild('sleep', ['120'], { stdio: 'ignore' });
+    livePid = proc.pid!;
+    // Give /proc a tick to expose the child's cmdline.
+    await new Promise((r) => setTimeout(r, 150));
+  });
+  afterAll(() => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } });
+
+  it('a stale spawn-kind row on a REUSED live pid (cmdline lacks invoke-once) reads DEAD → reclaimed', async () => {
+    // run_id `r-%` (not launch-%) → kind:'spawn' → strict invoke-once-cmdline check.
+    // The pid is a real, alive `sleep` — but it is NOT an invoke-once bee, so the
+    // PID-reuse guard reads it dead and the orphaned slot is freed.
+    await insertSpawn('reused-bee', 'running', 10 * 60, { pid: livePid, host: ME, runId: 'r-reused-bee' });
+    const r = await reclaimOrphanedSpawns(db.sql, STALE); // STALE = REAL isSpawnProcessAlive
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['reused-bee']);
+    expect(await statusOf('reused-bee')).toBe('failed');
+    const [row] = await db.sql<{ error_message: string }[]>`
+      SELECT error_message FROM harness_shared.spawned_agents WHERE spawn_id = 'reused-bee'`;
+    // Same-host + pid present → the "confirmed dead" reason (not host-presumed-dead).
+    expect(row.error_message).toMatch(/child process \(pid .*\) confirmed dead/);
+  });
+
+  it('contrast: the SAME live pid as a launch-kind row reads ALIVE → kept (not reclaimed)', async () => {
+    // run_id `launch-%` → kind:'launch' → plain /proc-existence; any live process counts.
+    await insertSpawn('queen-on-reused', 'running', 10 * 60, { pid: livePid, host: ME, runId: 'launch-reused' });
+    const r = await reclaimOrphanedSpawns(db.sql, STALE);
+    expect(r.reclaimed).toBe(0);
+    expect(await statusOf('queen-on-reused')).toBe('running');
+  });
+
+  it('isSpawnProcessAlive on the real reused pid directly: DEAD as spawn, ALIVE as launch', () => {
+    expect(livePid).toBeGreaterThan(1);
+    expect(livePid).not.toBe(process.pid);
+    expect(isSpawnProcessAlive(livePid, 'spawn')).toBe(false); // cmdline lacks invoke-once
+    expect(isSpawnProcessAlive(livePid, 'launch')).toBe(true); // any live process
   });
 });
 

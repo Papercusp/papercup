@@ -109,6 +109,19 @@ describe('run-status sweep thresholds (P-016)', () => {
     // window must sit comfortably beyond it to avoid false positives.
     expect(PLAN_RUN_ORPHAN_FAIL_MS).toBeGreaterThan(15 * 60_000);
   });
+
+  it('leaves a generous margin above the 600s turn timeout (P3-5)', () => {
+    // plans:launch / plans:resume both run with `timeoutSec: 600` — the
+    // longest a single legitimate turn can hold a `running` row before it
+    // settles. The sweep's orphan-fail window must sit strictly above that
+    // ceiling PLUS a safety buffer, or a slow-but-alive turn would be
+    // mistaken for an orphaned (dead-process) run and force-failed mid-turn.
+    const TURN_TIMEOUT_MS = 600 * 1_000; // tool `timeoutSec: 600`
+    const SAFETY_BUFFER_MS = 5 * 60_000; // generous slack over the timeout
+    expect(PLAN_RUN_ORPHAN_FAIL_MS).toBeGreaterThan(TURN_TIMEOUT_MS + SAFETY_BUFFER_MS);
+    // Document the actual margin: 1800s window − 600s timeout = 1200s of slack.
+    expect(PLAN_RUN_ORPHAN_FAIL_MS - TURN_TIMEOUT_MS).toBe(20 * 60_000);
+  });
 });
 
 describe('clampTranscriptLimit (P-008)', () => {

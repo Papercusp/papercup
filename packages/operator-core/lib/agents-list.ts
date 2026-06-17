@@ -47,6 +47,37 @@ const __agentsCache: AgentsCacheEntry = (() => {
   return g[__agentsCacheKey]!;
 })();
 
+/**
+ * Bounded-concurrency map — caps in-flight work at `limit`, preserving input
+ * order. Used so the no-slug agent walk doesn't fan out to ~70 simultaneous
+ * loopback round-trips (F-C2 of app-wide-load-traps): an unbounded
+ * `Promise.all` over every registered harness opened them all at once, each
+ * triggering an `agent_chats:list` query. Mirrors the worker-pool helper in
+ * external-bench/competitor-live.ts.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return out;
+}
+
+/** Max simultaneous loopback fetches in the no-slug fan-out (F-C2). */
+const AGENTS_FANOUT_CONCURRENCY = 8;
+
 async function fetchOneSlug(slug: string, base: string): Promise<AgentRow[]> {
   const cr = await loopbackFetch(`${base}/api/harness/${encodeURIComponent(slug)}/agent-chats`).catch(() => null);
   if (!cr || !cr.ok) return [];
@@ -73,8 +104,13 @@ async function computeAllAgents(base: string): Promise<AgentRow[]> {
   // `SyntaxError: Unexpected end of JSON input` that fatal-exited :3070 (EI-20).
   const projData = await readJsonBody<{ projects?: Array<{ slug: string }> }>(projR);
   const slugs = (projData.projects ?? []).map((p) => p.slug);
-  // Parallelize: was a serial for-loop doing 70 round-trips back-to-back.
-  const perSlug = await Promise.all(slugs.map((s) => fetchOneSlug(s, base)));
+  // Bounded fan-out (F-C2): was a serial for-loop (70 round-trips back-to-back),
+  // then an unbounded `Promise.all` (70 simultaneous loopback fetches, each
+  // running an agent_chats:list query). Cap at AGENTS_FANOUT_CONCURRENCY so a
+  // big registry can't saturate the event loop / PG pool in one burst.
+  const perSlug = await mapWithConcurrency(slugs, AGENTS_FANOUT_CONCURRENCY, (s) =>
+    fetchOneSlug(s, base),
+  );
   return perSlug.flat();
 }
 

@@ -44,8 +44,18 @@ export async function captureWakeHandleForOwner(
     cwd: session.cwd,
     pid: session.pid,
   };
+  // Which clients the wake executor can re-invoke after the process exits:
+  //   - claude  → `--resume <nativeUUID>` (needs the native session id; D-003);
+  //   - omp     → `-r <threadId>`;
+  //   - codex   → `exec resume <uuid>` (the executor recovers the conversation
+  //               UUID from the per-session CODEX_HOME rollout, so a row whose
+  //               sessionId is already stamped is resumable too — codex was
+  //               wrongly excluded here and a tracked codex session got the
+  //               "NOT safely resumable" note despite executeWake resuming it).
   const resumable =
-    (session.agent === 'claude' && session.sessionId) || (session.agent === 'omp' && session.ompThreadId);
+    (session.agent === 'claude' && session.sessionId) ||
+    (session.agent === 'omp' && session.ompThreadId) ||
+    (session.agent === 'codex' && session.sessionId);
   return {
     handle,
     note: resumable

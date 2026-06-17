@@ -53,6 +53,11 @@ beforeEach(() => {
       projects: [{ slug: 'my-hive', path: '/h', harness_kind: 'hive' }],
     }),
     saveHarnessRegistry: async () => {},
+    // create.ts routes its registry insert through mutateHarnessRegistry (the
+    // atomic write, audit P-006). Run the mutator so the create proceeds.
+    mutateHarnessRegistry: async (
+      m: (r: { projects: unknown[] }) => { projects: unknown[] },
+    ) => m({ projects: [{ slug: 'my-hive', path: '/h', harness_kind: 'hive' }] }),
   }));
   vi.doMock('../../../scaffold-harness-schema', () => ({
     scaffoldHarnessSchema: async () => {},

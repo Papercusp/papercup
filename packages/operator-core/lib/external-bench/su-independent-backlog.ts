@@ -600,8 +600,16 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
     },
 
     async placeFifoBatch({ hiveSlug, memberSlug, workspaceId }) {
-      // Spawn the enrolled member via fleet:place_batch through :3170 (routes to proper env + work-items).
-      // Mirrors the realqueenBacklogOps.placeFifoBatch loopback-fetch pattern.
+      // The su-independent arm needs ONE fresh dedicated spawn per task. It places via
+      // **fleet:place_batch** (the palette-eligible placement tool — fleet:spawn is NOT runnable
+      // through the run-tool palette: 403 not_palette_eligible) but FORCES a fresh spawn — never a
+      // warm-inject onto an existing fleet bee — with `min_inject_affinity: 100` (the max; no bee
+      // clears it, so every task fresh-spawns). The run-tool response wraps the tool payload in
+      // `result.content[0].text` (a JSON string), NOT a flat `result.placements` — the old code read
+      // the flat path, always got undefined, and threw "returned no spawn" even though place_batch
+      // HAD spawned (realqueen tolerates this because its collectTask polls feature status; we hard-
+      // depend on the spawn_id). Parse the wrapper. Route via PAPERCUSP_OPERATOR_BASE=http://localhost:3170
+      // (STAGING — where bench code + fixes live; the default :3070 is the GREEN release and lags).
       const { loopbackFetch, readJsonBody } = await import('../loopback-fetch');
       const { operatorApiBase } = await import('../operator-api-base');
 
@@ -618,7 +626,8 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
             tasks: [featureId],
             harness: memberSlug,
             brief: process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '',
-            tier: null,
+            tier: 'max', // opus:xhigh — strict per D-004 fairness
+            min_inject_affinity: 100, // never warm-inject — the independent arm needs a FRESH isolated spawn
             workspace: ws,
             dry_run: false,
           },
@@ -630,17 +639,27 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
         throw new Error(`fleet:place_batch failed: HTTP ${res.status} ${errorBody}`);
       }
 
-      const toolResult = await readJsonBody<{
-        ok: boolean;
-        result?: { placements: Array<{ task: string; action: string; spawn_id?: string | null; bee?: string }> };
-        error?: string;
-      }>(res, toolUrl);
-
+      // run-tool wraps a tool's MCP return as { ok, result: { content: [{ text: "<json>" }] } };
+      // unwrap to the tool payload { ok, surveyed, placements, summary }. Tolerate a flat result too.
+      const toolResult = await readJsonBody<{ ok: boolean; result?: unknown; error?: string }>(res, toolUrl);
       if (!toolResult.ok) throw new Error(`fleet:place_batch error: ${toolResult.error}`);
-
-      const placements = toolResult.result?.placements ?? [];
-      const placement = placements[0];
-      if (!placement || !placement.spawn_id) throw new Error(`fleet:place_batch returned no spawn for ${memberSlug}`);
+      const wrapped = toolResult.result as { content?: Array<{ text?: string }> } | undefined;
+      let payload: { placements?: Array<{ action?: string; spawn_id?: string | null; bee?: string }> } =
+        (toolResult.result as Record<string, unknown>) ?? {};
+      const text = wrapped?.content?.[0]?.text;
+      if (typeof text === 'string') {
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          /* keep the flat result */
+        }
+      }
+      const placement = (payload.placements ?? [])[0];
+      if (!placement || !placement.spawn_id) {
+        throw new Error(
+          `fleet:place_batch returned no spawn for ${memberSlug} (action=${placement?.action ?? 'none'})`,
+        );
+      }
 
       return { spawnId: placement.spawn_id };
     },

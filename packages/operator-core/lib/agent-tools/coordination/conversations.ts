@@ -110,21 +110,21 @@ export function openConversation(identity: AgentIdentity, input: OpenConversatio
 export function postReply(
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
   return postReplyCore(deps, identity, input);
 }
 
 export function answerQuestion(
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
   return answerQuestionCore(deps, identity, input);
 }
 
 export async function resolveConversation(
   identity: AgentIdentity,
   input: ResolveInput,
-): Promise<ResolveResult | { error: 'not_found' } | { error: 'no_answer' }> {
+): Promise<ResolveResult | { error: 'not_found' } | { error: 'no_answer' } | { error: 'already_resolved' }> {
   const result = await resolveConversationCore(deps, identity, input);
   // await-event-primitive-2026-06-05 P-011 (D-006 #3): ask-answered is an
   // awaitable event — a SLEEPING asker is woken when its question resolves

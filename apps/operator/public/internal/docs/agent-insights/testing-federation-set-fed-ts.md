@@ -40,12 +40,58 @@ on both peers in a few seconds (verified live, two `.deb` instances). The real
 app never hits this — its write path goes through the projection, which stamps
 `fed_ts`. Only direct-PG test harnesses need to remember it.
 
+## Companion gotcha: editing a remote-origin row needs `origin='local'`
+
+The same "mimic the app's local-write stamp" rule has a second half. The
+capture trigger (`capture_substrate_outbox_trg`) has an **echo-loop guard** so
+the projection's own remote-apply writes don't re-federate:
+
+```sql
+-- in the trigger function:
+IF COALESCE(NEW.origin, 'local') <> 'local' THEN
+  RETURN NEW;   -- skip: this is a remote-origin write (an echo), don't enqueue
+END IF;
+```
+
+A row that arrived via federation lands on the receiver with `origin='remote'`.
+If your test then **edits that received row** (e.g. peer B claims a work item
+peer A created — moving it `todo → in-progress`) with a raw `UPDATE` that leaves
+`origin` alone, the trigger sees `origin='remote'`, treats your genuine local
+edit as an echo, and **never federates it back**. The visible symptom: the edit
+sticks locally but never reaches the other peer — looks like a one-way /
+broken-claim bug.
+
+The fix: set `origin='local'` (alongside `fed_ts`) on every direct-PG edit that
+represents a real local mutation:
+
+```sql
+UPDATE harness_shared.harness_features_consolidated
+  SET status='in-progress', origin='local',          -- both matter
+      ts=$1, updated_ts=$1, fed_ts=$1
+  WHERE feature_id=$2;
+```
+
+With `origin='local'` the claim propagates peer→peer in a few seconds (and the
+receiver re-stamps it back to `origin='remote'` on its side — that asymmetry is
+correct). The real app sets `origin='local'` on every local write for you; only
+direct-PG harnesses editing a received row need to remember it. Verified live on
+two `.deb` instances: work item A→B backlog, then claim B→A, both \~4s.
+
 ## Also worth knowing
 
-* Exactly two record types federate (carry `capture_substrate_outbox_trg`):
-  `harness_features_consolidated` and `harness_issues_consolidated`. The other
-  `*_consolidated` tables (messages, agent\_chats, supervisor\_notes, …) are
-  local-only by design — don't expect them to cross.
+* The federated set is the tables carrying `capture_substrate_outbox_trg`, not
+  just the consolidated ones. Confirmed live (2026-06-16): `harness_features_consolidated`,
+  `harness_issues_consolidated`, **`harness_plans`** (plan sharing), and
+  **`plan_item_assignments`** (collaborative-plan item assignments) all cross.
+  The other `*_consolidated` tables (messages, agent\_chats, supervisor\_notes, …)
+  and most `plan_*` / `work_item_*` tables (`harness_plan_parts`,
+  `plan_item_claims`, `work_item_claims`, …) are local-only by design — don't
+  expect them to cross. Check `pg_trigger` for the table before assuming.
+* `harness_plans` carries a `version` column that is a **local CAS counter**
+  (INSERT sets `0`, `ON CONFLICT DO UPDATE SET version = version + 1`), so it
+  legitimately differs across peers even when the plan's `content` /
+  `content_hash` are byte-identical. Compare `content_hash`, not `version`, to
+  judge plan convergence.
 * `author_pubkey` is empty on the author's own local row and stamped with the
   author's device pubkey on the receiver (provenance, P-002) — that asymmetry is
   correct, not a mismatch.

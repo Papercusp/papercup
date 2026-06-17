@@ -54,6 +54,10 @@ describe('deriveResourceProfile — laptop (small, embedded PG)', () => {
     expect(p.httpWorkers).toBe(1);
     expect(p.processCount).toBe(1);
   });
+
+  it('keeps background work in-process on the desktop', () => {
+    expect(p.backgroundInProcess).toBe(true);
+  });
 });
 
 describe('deriveResourceProfile — true 2-core minimum hits every floor', () => {
@@ -112,6 +116,31 @@ describe('deriveResourceProfile — server (128 cores, native PG)', () => {
   it('still pins httpWorkers to 1 (no cluster yet)', () => {
     expect(p.httpWorkers).toBe(1);
     expect(p.processCount).toBe(1);
+  });
+
+  it('recommends splitting background work to its own process', () => {
+    expect(p.backgroundInProcess).toBe(false);
+  });
+});
+
+describe('backgroundInProcess — split only on a server with dedicated PG', () => {
+  it('keeps background in-process on a laptop (native or embedded PG)', () => {
+    expect(deriveResourceProfile(signals({ cores: 4, embeddedPg: false })).backgroundInProcess).toBe(true);
+    expect(deriveResourceProfile(signals({ cores: 4, embeddedPg: true })).backgroundInProcess).toBe(true);
+  });
+
+  it('keeps background in-process on a workstation', () => {
+    expect(deriveResourceProfile(signals({ cores: 16, embeddedPg: false })).backgroundInProcess).toBe(true);
+  });
+
+  it('splits background out ONLY on a server-class host with a dedicated (native) PG', () => {
+    expect(deriveResourceProfile(signals({ cores: 128, embeddedPg: false })).backgroundInProcess).toBe(false);
+  });
+
+  it('keeps background in-process on a big box whose PG is embedded on the same machine', () => {
+    // server-class cores but an embedded PG sharing the box → no split (the DB is
+    // already competing for the same resources; a second process worsens that).
+    expect(deriveResourceProfile(signals({ cores: 128, embeddedPg: true })).backgroundInProcess).toBe(true);
   });
 });
 

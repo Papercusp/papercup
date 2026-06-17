@@ -6,6 +6,7 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import {
   BookOpen,
   Boxes,
+  CalendarClock,
   Check,
   FlaskConical,
   GitBranch,
@@ -36,7 +37,7 @@ import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames', 'evals', 'accounts'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals', 'accounts'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -56,6 +57,11 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: '#818cf8', accentRgb: '129, 140, 248' },
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
+  // Calendar — the schedulable time-surface for scheduled/recurring plans
+  // (scheduled-recurring-plans-2026-06-16 P-019). Next to Create (D-001: no separate
+  // routines tab — plans are just optionally-scheduled). Workspace-scoped (aggregates
+  // every pot's scheduled plans), so it also lives in WORKSPACE_TAB_IDS.
+  { id: 'calendar', label: 'Calendar', icon: CalendarClock, accent: '#2dd4bf', accentRgb: '45, 212, 191' },
   // Label "Working" (owner ask 2026-06-11, was "Progress"): the tab is the
   // live-work view (work items / agents / runs for the selected project). The
   // tab ID stays 'harnesses' — it's serialized in URLs (?tab=harnesses), deep
@@ -97,6 +103,9 @@ export const ADV_TABS: ReadonlyArray<{
 export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'overview',
   'plans',
+  // Calendar aggregates every pot's scheduled-plan occurrences, not one pot
+  // (scheduled-recurring-plans-2026-06-16 P-019), so it stays visible under "All Pots".
+  'calendar',
   'harnesses',
   // Health aggregates the whole running system (Queen / bees / tokens / infra),
   // not a single pot — so it stays visible under "All Pots" (system-health-tab).

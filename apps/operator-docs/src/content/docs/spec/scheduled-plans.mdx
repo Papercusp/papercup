@@ -72,7 +72,9 @@ avoided surgery on the `work_items` union view + INSTEAD-OF trigger.
 ## Authoring & lifecycle tools
 
 - `plans:set-schedule` — author/edit/clear the schedule columns (validates the RRULE;
-  warns on a sub-15-min cadence). Does NOT arm.
+  warns on a sub-15-min cadence). Does NOT arm. Carries `executorKind` (D-006): the
+  frontier `item_kind` each run mints — default `feature` (coding spine), or `research-task`
+  for a lighter non-coding executor.
 - `plans:arm-schedule` / `plans:disarm-schedule` — arm (start firing) / pause. Arming is
   autonomy-gated (below). Disarming keeps the authored schedule.
 - `plans:run-now` — fire one run by hand (trigger=`manual`), independent of cadence.
@@ -95,7 +97,10 @@ until that category graduates; the owner arms directly (D-010 / D-017).
   auto-disarmed (the disarmed state is the notification).
 - **Cost** (D-012 / D-018) — a per-plan `costCapCents` is stored + a frequency warning at
   author time; aggregate spend is bounded by the existing global/per-plugin budget caps.
-  Hard per-plan pause-on-breach is a tracked follow-on (needs cost attribution).
+  Hard per-run pause-on-breach is implemented (D-018): a settled run's spend is attributed
+  (work_items → `spawned_agents` → `agent_usage_samples`, SUM `cost_usd`) and a run whose
+  cost exceeds `costCapCents` auto-disarms the schedule — the cost sibling of the
+  failure-streak pause, both run in `reconcileAndGovern` (routine tick + `plans:runs` read).
 - **Retention** (D-015) — the `plan_runs` ledger is kept forever; each old run's heavy
   artifacts (instance plan, transcript, work items) are GC'd past the last-N / older-than-T
   bound.

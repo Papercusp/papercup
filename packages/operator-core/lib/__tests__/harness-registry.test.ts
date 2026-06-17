@@ -38,7 +38,7 @@ vi.mock('@papercusp/db-org', () => ({
   }),
 }));
 
-import { mutateHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
+import { dedupeProjectsBySlug, mutateHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 
 beforeEach(() => {
   prevState = null;
@@ -159,5 +159,88 @@ describe('mutateHarnessRegistry — atomic RMW (audit P-006 / EI-82)', () => {
     expect(prevState!.hiveControlFrames).toBeTruthy();
     expect(prevState!.hiveDirectoryMeta).toBeTruthy();
     expect(prevState!.projects).toHaveLength(2);
+  });
+});
+
+/**
+ * Gap 2 — registry slug-uniqueness invariant (the store-layer guard).
+ * `slug` is the registry's primary key: every insert path guards with
+ * `some(p=>p.slug===…)` and every update replaces in place, so a duplicate
+ * slug is always a caller bug — and one makes the ubiquitous downstream
+ * `find(p=>p.slug===…)` non-deterministic. `dedupeProjectsBySlug` enforces the
+ * invariant at the write boundary (last-write-wins) so a buggy/future caller
+ * can never persist two rows for one slug.
+ */
+describe('dedupeProjectsBySlug — uniqueness invariant (pure)', () => {
+  it('returns the SAME reference when there is no duplicate (common case pays nothing)', () => {
+    const input = [{ slug: 'a', path: '/a' }, { slug: 'b', path: '/b' }];
+    expect(dedupeProjectsBySlug(input)).toBe(input);
+  });
+
+  it('collapses a duplicate slug LAST-WRITE-WINS, preserving surviving order', () => {
+    const out = dedupeProjectsBySlug([
+      { slug: 'a', path: '/old-a' },
+      { slug: 'b', path: '/b' },
+      { slug: 'a', path: '/new-a' },
+    ]);
+    expect(out).toEqual([
+      // 'a' survives at its LAST position with the LAST value; 'b' keeps its slot.
+      { slug: 'b', path: '/b' },
+      { slug: 'a', path: '/new-a' },
+    ]);
+  });
+
+  it('reports each collapsed slug via onCollapse', () => {
+    const collapsed: string[] = [];
+    dedupeProjectsBySlug(
+      [{ slug: 'a', path: '/1' }, { slug: 'a', path: '/2' }, { slug: 'a', path: '/3' }],
+      (s) => collapsed.push(s),
+    );
+    // Two earlier 'a' rows are collapsed (the last wins).
+    expect(collapsed).toEqual(['a', 'a']);
+  });
+});
+
+describe('registry write paths enforce slug uniqueness', () => {
+  it('saveHarnessRegistry dedupes a duplicate slug before persisting (last wins) + warns', async () => {
+    // The collapse is a caller-bug signal — it logs. Assert the warning
+    // explicitly (the suite fails on unexpected console output otherwise).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    prevState = { projects: [{ slug: 'a', path: '/a' }] };
+    await saveHarnessRegistry({
+      projects: [{ slug: 'a', path: '/a' }, { slug: 'a', path: '/dup' }],
+    });
+    expect(writes).toHaveLength(1);
+    expect(writes[0].payload.projects).toEqual([{ slug: 'a', path: '/dup' }]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("collapsed duplicate slug 'a'"));
+    warn.mockRestore();
+  });
+
+  it('mutateHarnessRegistry dedupes a duplicate slug the mutator returned (last wins, in-tx) + warns', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    prevState = { projects: [{ slug: 'a', path: '/a' }] };
+    // A buggy mutator that appends a second {slug:'a'} instead of guarding.
+    await mutateHarnessRegistry((reg) => ({
+      ...reg,
+      projects: [...reg.projects, { slug: 'a', path: '/dup' }],
+    }));
+    expect(prevState!.projects).toEqual([{ slug: 'a', path: '/dup' }]);
+    // Count is unchanged (1 → 1 after collapse), so no spurious audit row.
+    expect(auditParams).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("collapsed duplicate slug 'a'"));
+    warn.mockRestore();
+  });
+
+  it('mutateHarnessRegistry still grows the registry for a genuinely new slug', async () => {
+    prevState = { projects: [{ slug: 'a', path: '/a' }] };
+    await mutateHarnessRegistry((reg) => ({
+      ...reg,
+      projects: [...reg.projects, { slug: 'b', path: '/b' }],
+    }));
+    expect(prevState!.projects).toEqual([
+      { slug: 'a', path: '/a' },
+      { slug: 'b', path: '/b' },
+    ]);
+    expect(auditParams).toHaveLength(1);
   });
 });

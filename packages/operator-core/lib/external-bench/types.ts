@@ -40,6 +40,21 @@ export type BenchmarkFamily =
   // GradeResult.score + the the-agent-company / paperbench graders.
   | 'the-agent-company'
   | 'paperbench'
+  // METR HCAST / time-horizon (plan benchmark-suite-metr-hcast-2026-06-17). M2 in-container, but
+  // each task brings its OWN Docker image + its OWN score() (the Task Standard) — we don't author a
+  // verifier. Headline is a derived run-level horizon LIFT (single-opus vs hive), not a per-task %.
+  | 'metr-hcast'
+  // AgentsNet (plan benchmark-suite-agentsnet-2026-06-17). Coordination-native: one opus
+  // agent per graph node, neighbor-only message passing, deterministic get_score(). The
+  // continuous coordination score in [0,1] rides GradeResult.score; the official BINARY
+  // headline = (score === 1). D-002: a model-coordination number (not queen orchestration).
+  | 'agentsnet'
+  // Broad general-assistant / research suite (plan benchmark-suite-gaia-2026-06-17). GAIA ships no harness:
+  // it is Q&A data + a quasi-exact-match string scorer (grader/gaia.ts), graded BINARY per task (resolved),
+  // with per-level L1/L2/L3 + overall accuracy. Its submission is a final-answer STRING (not a diff or a
+  // mutated container), so it self-grades through the standalone gaia/ pipeline (grader/gaia.ts + gaia/run.ts),
+  // not the diff/in-container OfficialGrader registry.
+  | 'gaia'
   | (string & {});
 
 /**

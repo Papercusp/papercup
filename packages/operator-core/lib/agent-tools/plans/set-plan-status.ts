@@ -183,17 +183,23 @@ export default defineTool({
         before: result.value.oldStatus,
         after: args.status,
       });
-      // Cross-store invariant: a plan that just went terminal (shipped /
-      // superseded) can no longer be operationally started/paused. Reset its
-      // op_status (on the harness_plans row) so the "N waiting" badge +
-      // Running bucket stop counting it. Best-effort — plans:list self-heals a
-      // stale row on read if this misses.
-      if (isTerminalPlanStatus(args.status)) {
-        try {
-          await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
-        } catch {
-          /* recovered by reconcileStartStatus on the next plans:list read */
-        }
+    }
+
+    // Cross-store invariant (P1-2): a plan AT a terminal status (shipped /
+    // superseded) can never be operationally started/paused. Reset its
+    // op_status (on the harness_plans row) so the "N waiting" badge + Running
+    // bucket stop counting it. This runs on EVERY successful terminal set —
+    // including the terminal-NOOP (changed:false), where the frontmatter is
+    // already terminal but a started+terminal op-row could still persist (e.g.
+    // a raw .md edit set the status, or an earlier clear was missed). Scoping
+    // it to `changed` left that violating row uncleared. Idempotent + best-
+    // effort: clearStartedForTerminalPlan only touches an active (started/
+    // paused) row, and plans:list self-heals on read if this misses.
+    if (result.value.ok && isTerminalPlanStatus(args.status)) {
+      try {
+        await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+      } catch {
+        /* recovered by reconcileStartStatus on the next plans:list read */
       }
     }
 

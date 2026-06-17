@@ -63,6 +63,10 @@ beforeEach(() => {
   vi.doMock('../../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: [] }),
     saveHarnessRegistry: async () => {},
+    // create.ts routes its registry insert through mutateHarnessRegistry (the
+    // atomic write, audit P-006). Run the mutator so the create proceeds.
+    mutateHarnessRegistry: async (m: (r: { projects: unknown[] }) => { projects: unknown[] }) =>
+      m({ projects: [] }),
   }));
 });
 afterEach(() => {

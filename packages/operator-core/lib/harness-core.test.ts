@@ -5,8 +5,11 @@
  * coercion, claims JSON parse, and boolean normalization). The fs/PG-backed
  * functions in this module are out of scope here.
  */
-import { describe, expect, it } from 'vitest';
-import { isHarnessDriverCmdline, harnessDir, rowToFeature } from './harness-core';
+import { describe, expect, it, afterAll } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { isHarnessDriverCmdline, harnessDir, rowToFeature, tailFile } from './harness-core';
 
 describe('isHarnessDriverCmdline', () => {
   it('matches the legacy bash drivers', () => {
@@ -62,4 +65,44 @@ describe('rowToFeature', () => {
     expect(f.summary).toBeUndefined();
     expect(f.needs_human_review).toBe(false); // falsy → false
   });
+});
+
+/**
+ * tailFile is the bounded-read primitive F-B2 (app-wide-load-traps) swapped the
+ * live-log SSE onto, replacing `readFileSync(entire file).slice(start)`. These
+ * pin its contract: a small file is returned whole; a large file returns ONLY the
+ * last `maxBytes` (never allocating the whole file); a missing/empty file is ''.
+ */
+describe('tailFile', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tailfile-'));
+  const write = (name: string, body: string) => {
+    const p = join(dir, name);
+    writeFileSync(p, body);
+    return p;
+  };
+
+  it('returns the whole file when it is smaller than maxBytes', () => {
+    const p = write('small.log', 'hello world\n');
+    expect(tailFile(p, 64 * 1024)).toBe('hello world\n');
+  });
+
+  it('returns only the last maxBytes of a larger file', () => {
+    // 10 KiB of filler then a known marker; tail of 1 KiB must include the marker
+    // and exclude the filler head.
+    const filler = 'x'.repeat(10 * 1024);
+    const marker = 'THE-TAIL-MARKER';
+    const p = write('big.log', filler + marker);
+    const tail = tailFile(p, 1024);
+    expect(tail.length).toBe(1024); // bounded to maxBytes, not the 10 KiB file
+    expect(tail.endsWith(marker)).toBe(true); // grabbed the actual tail
+    // Exactly the last 1024 bytes: (1024 - marker) filler bytes + the marker.
+    expect(tail).toBe('x'.repeat(1024 - marker.length) + marker);
+  });
+
+  it('returns an empty string for an empty or missing file', () => {
+    expect(tailFile(write('empty.log', ''), 1024)).toBe('');
+    expect(tailFile(join(dir, 'nope.log'), 1024)).toBe('');
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
 });

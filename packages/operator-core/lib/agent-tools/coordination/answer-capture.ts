@@ -68,6 +68,14 @@ export async function captureResolvedAnswer(input: CaptureInput): Promise<Captur
     return { target: 'none', ok: true, detail: 'capture skipped by resolver' };
   }
 
+  // A blank question would write a malformed `Q: \nA: …` entry whose empty
+  // question stem can never match a future semantic search — worse than not
+  // capturing at all. Skip it (best-effort: the answer still lives on the
+  // conversation row, so nothing is lost).
+  if (!input.question.trim()) {
+    return { target: 'mem0_blank_question', ok: false, detail: 'blank question; nothing to index — answer kept on the conversation row only' };
+  }
+
   // target === 'mem0' (the persistent memory store, whichever backend serves it)
   const backend = getMemoryBackend();
   let available = false;

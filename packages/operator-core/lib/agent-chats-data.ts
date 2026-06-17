@@ -62,6 +62,31 @@ export interface ChatRow {
   archived_at: string | null;
 }
 
+/**
+ * A list-row projection of ChatRow that OMITS the heavy `transcript` jsonb
+ * body — a forever-growing per-chat blob — and carries only its length as
+ * `turn_count`. The list never needs the bodies: the MCP `agent_chats:list`
+ * tool directs transcript reads to `agent_chats:get`, and the cross-harness
+ * fan-out in agents-list only reads role + updated_at. Selecting `turn_count`
+ * server-side instead of every full transcript is the F-C1 "select needed
+ * columns" fix (it mirrors the admin comms rollup's
+ * `jsonb_array_length(transcript) AS turns`), and it matters most under the
+ * F-C2 fan-out where this list is hit once per harness.
+ */
+export interface ChatSummary {
+  id: string;
+  role: string;
+  feature_id: string | null;
+  title: string | null;
+  turn_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd_cents: number;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+}
+
 export interface FeatureLockState {
   taken_by: string | null;
   taken_at: string | null;
@@ -129,6 +154,26 @@ export function rowToChat(r: Record<string, unknown>): ChatRow {
   };
 }
 
+/** Map a projected list row (no transcript body, a `turn_count` instead) to a
+ *  ChatSummary. Reuses the same bigint/epoch-ms coercions as rowToChat. */
+export function rowToChatSummary(r: Record<string, unknown>): ChatSummary {
+  const toNum = (v: unknown): number =>
+    typeof v === 'bigint' ? Number(v) : ((v as number | undefined) ?? 0);
+  return {
+    id: r.id as string,
+    role: r.role as string,
+    feature_id: (r.feature_id as string | null) ?? null,
+    title: (r.title as string | null) ?? null,
+    turn_count: toNum(r.turn_count),
+    total_input_tokens: toNum(r.total_input_tokens),
+    total_output_tokens: toNum(r.total_output_tokens),
+    total_cost_usd_cents: toNum(r.total_cost_usd_cents),
+    created_at: msToIso(r.created_at),
+    updated_at: msToIso(r.updated_at),
+    archived_at: msToIsoNullable(r.archived_at),
+  };
+}
+
 export async function readFeatureLockState(
   slug: string,
   featureId: string,
@@ -162,6 +207,14 @@ export async function readFeatureLockState(
 export const LIST_CHATS_DEFAULT_LIMIT = 100;
 export const LIST_CHATS_MAX_LIMIT = 100;
 
+/** Columns listChats projects — everything EXCEPT the heavy `transcript` jsonb
+ *  body, which is replaced by its length (`turn_count`). See ChatSummary. */
+const LIST_CHATS_COLUMNS =
+  'id, role, feature_id, title, ' +
+  'total_input_tokens, total_output_tokens, total_cost_usd_cents, ' +
+  'created_at, updated_at, archived_at, ' +
+  "jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turn_count";
+
 export interface ListChatsInput {
   slug: string;
   includeArchived?: boolean;
@@ -171,7 +224,7 @@ export interface ListChatsInput {
   offset?: number;
 }
 
-export async function listChats(input: ListChatsInput): Promise<Result<{ chats: ChatRow[] }>> {
+export async function listChats(input: ListChatsInput): Promise<Result<{ chats: ChatSummary[] }>> {
   try {
     const db = dbForSlug(input.slug);
     const limit = Math.min(
@@ -180,10 +233,10 @@ export async function listChats(input: ListChatsInput): Promise<Result<{ chats: 
     );
     const offset = Math.max(0, Math.trunc(input.offset ?? 0));
     const sql = input.includeArchived
-      ? 'SELECT * FROM agent_chats ORDER BY updated_at DESC LIMIT ? OFFSET ?'
-      : 'SELECT * FROM agent_chats WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?';
+      ? `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+      : `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
     const rows = (await db.prepare(sql).all(limit, offset)) as Array<Record<string, unknown>>;
-    return { ok: true, data: { chats: rows.map(rowToChat) } };
+    return { ok: true, data: { chats: rows.map(rowToChatSummary) } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to list chats: ${(e as Error).message}` };
   }

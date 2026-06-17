@@ -323,6 +323,17 @@ describe('AdvConversationsTab — simplified design', () => {
     render(<AdvConversationsTab />);
     expect(screen.getByText(/Load older/i)).toBeTruthy();
   });
+
+  // U1 (operator-vite-ui-consolidation): the feed is flattened into a single
+  // virtualized RichGrid stream where each day contributes a separator row before
+  // its events. All snapshot rows are minutes old → one "Today" separator.
+  it('renders a day separator row in the virtualized activity stream', () => {
+    nuqsState.conv = 'feed';
+    render(<AdvConversationsTab />);
+    expect(screen.getByText('Today')).toBeTruthy();
+    // The events still render beneath it (the flatten preserved the items).
+    expect(screen.getByText('fleet-wide: staging is green')).toBeTruthy();
+  });
 });
 
 // ─── The unified communication views (every type, not just coord threads) ──────
@@ -510,6 +521,36 @@ describe('AdvConversationsTab — unified communication views', () => {
     render(<AdvConversationsTab />);
     expect(await screen.findByText('hello there')).toBeTruthy();
     expect(screen.queryByTestId('advconv-live-chat')).toBeNull();
+  });
+
+  // U1 (operator-vite-ui-consolidation): the threads + deliberations rails now
+  // render through the shared virtualized RichGrid (the agent-chats template).
+  // This pins that a populated thread rail surfaces its row — title, state pill,
+  // and the variable-height topic-tag line — through the grid cell.
+  it('Threads view lists conversations through the virtualized rail', async () => {
+    nuqsState.conv = 'threads';
+    stubComms({
+      '/coordination/conversations/list': {
+        conversations: [
+          {
+            id: 'c-1',
+            kind: 'question',
+            state: 'open',
+            scope: 'harness',
+            harness_slug: 'papercup',
+            title: 'why does the watchdog recycle the host?',
+            asker_id: 'oracle',
+            topics: ['infra'],
+            created_ts: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+    render(<AdvConversationsTab />);
+    expect(await screen.findByText('why does the watchdog recycle the host?')).toBeTruthy();
+    // the topic tag (the variable-height part of the row) renders in the cell —
+    // `#infra` shows up both as the rail's topic-filter chip and the in-row tag.
+    expect(screen.getAllByText('#infra').length).toBeGreaterThan(0);
   });
 
   it('Messages view lists work-item agent messages', async () => {

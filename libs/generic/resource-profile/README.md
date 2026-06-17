@@ -21,6 +21,7 @@ p.dbosQueueConcurrency;  // background queue depth
 p.pgPoolMax;             // PG pool size
 p.serializationWorkers;  // 0 ⇒ run inline
 p.embedBatchSize;
+p.backgroundInProcess;   // true ⇒ keep background work in the serving process (desktop default)
 p.httpWorkers;           // 1 until a cluster exists
 p.hostClass;             // 'laptop' | 'workstation' | 'server'
 ```
@@ -38,6 +39,7 @@ pod on a 128-core node sees 2), **not** `os.cpus().length`. RAM from
 | `pgPoolMax`             | `maxSimultaneousAgents + dbosQueueConcurrency + 4`            | 4 | 64 |
 | `serializationWorkers`  | `cores - 2` (**0 ⇒ inline**)                                  | 0 | 8 |
 | `embedBatchSize`        | `32 * 2^tier` (laptop 32 / workstation 64 / server 128)       | 16 | 256 |
+| `backgroundInProcess`   | `false` only on a server-class host with a dedicated (native) PG; else `true` | — | — |
 | `httpWorkers` / `processCount` | `1` (no cluster yet — floor === ceiling)               | 1 | 1 |
 | `hostClass`             | `cores <= 4` laptop · `<= 16` workstation · else server       | — | — |
 

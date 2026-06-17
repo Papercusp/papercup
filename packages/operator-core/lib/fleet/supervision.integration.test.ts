@@ -179,4 +179,27 @@ describe('supervision — superviseCrash decision (D-002, real PG)', () => {
     expect(lockCalls).toHaveLength(1);
     expect(lockCalls[0].map((t) => t.owner).sort()).toEqual(['own-child', 'own-root']);
   });
+
+  it('no-actor escalate path returns the noop escalation without throwing (Gap 11)', async () => {
+    // buildSupervisor's escalate defaults to a NOOP (`{ msg_id: 'noop' }`) when there
+    // is no actor and no override — the read-only entry points (recordRestartIntensity
+    // / restartSet) reach it. Drive a crash-loop with NO actor + NO escalate override
+    // (lockReleaser injected only so the teardown does not hit real lock tables): the
+    // escalate branch must still tear the subtree down and return cleanly, not throw on
+    // a missing escalation effect.
+    await spawn('lone', { owner: 'own-lone' });
+    await db.sql`UPDATE harness_shared.spawned_agents SET restart_count=${DEFAULT_MAX_RESTARTS}, restart_window_start=now() WHERE spawn_id='lone'`;
+
+    const res = await superviseCrash(db.sql, {
+      // actor is required by the type, but the no-actor noop default is the path under test.
+      workspaceId: WS, spawnId: 'lone', actor: undefined as unknown as AgentIdentity,
+      reason: 'exit 1', lockReleaser: spyReleaser,
+    });
+
+    expect(res.action).toBe('escalate');
+    expect(res.escalationId).toBe('noop'); // the no-actor default escalate effect
+    expect((await getSpawn(db.sql, WS, 'lone'))?.status).toBe('failed');
+    // No human escalation spy fired (we used the real noop, not spyEscalate).
+    expect(escalations).toHaveLength(0);
+  });
 });

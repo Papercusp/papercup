@@ -66,7 +66,9 @@ describe('gym↔report-set firewall — set-level disjointness (P-012)', () => {
     // the firewall and the results schema can never silently drift apart.
     expect([...reportOnSetIds()].sort()).toEqual(
       [
+        'agentsnet',
         'harness-bench',
+        'metr-hcast',
         'roadmapbench',
         'swe-bench-live',
         'swe-bench-pro',

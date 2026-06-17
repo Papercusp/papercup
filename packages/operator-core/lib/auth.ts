@@ -18,9 +18,29 @@
 
 import { randomBytes } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { TtlMap } from './ttl-map';
 
 export const SESSION_COOKIE = 'papercusp_session';
 export const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/**
+ * Per-token debounce for the best-effort `last_seen_at` write. last_seen_at only
+ * feeds the coarse login-time session sweep ("actively used" = last_seen_at past
+ * created_at + 1 min) — nothing latency-sensitive — yet it was written on EVERY
+ * cookie-authed request, adding a second PG round-trip to the hot read path
+ * (operator-scalability-event-loop-2026-06-16 P1-3). A bounded TtlMap whose
+ * entry-presence means "written within the window" collapses that to at most one
+ * write per token per window; the first hit (no entry) always writes, so a fresh
+ * session is still marked active immediately. Bounded so the thousands of
+ * single-use desktop tokens can't grow it without limit.
+ */
+export const LAST_SEEN_DEBOUNCE_MS = 60_000;
+const lastSeenWritten = new TtlMap<true>({ ttlMs: LAST_SEEN_DEBOUNCE_MS, maxEntries: 4096 });
+
+/** Test-only — clear the last_seen_at debounce so cases don't bleed into each other. */
+export function _resetLastSeenDebounceForTests(): void {
+  lastSeenWritten.clear();
+}
 
 export interface User {
   id: string;
@@ -113,12 +133,17 @@ export async function getSessionUser(headers?: Headers): Promise<User | null> {
   if (rows.length === 0) return null;
 
   const row = rows[0];
-  // Best-effort last_seen_at update; failure is non-fatal
-  await sql`
-    UPDATE harness_shared.user_sessions
-       SET last_seen_at = now()
-     WHERE token = ${token}
-  `.catch(() => { /* non-fatal */ });
+  // Best-effort last_seen_at update; failure is non-fatal. Debounced per token
+  // (see lastSeenWritten) so an active session refreshes at most once per window
+  // instead of issuing a PG round-trip on every authed request.
+  if (lastSeenWritten.get(token) === undefined) {
+    lastSeenWritten.set(token, true);
+    await sql`
+      UPDATE harness_shared.user_sessions
+         SET last_seen_at = now()
+       WHERE token = ${token}
+    `.catch(() => { /* non-fatal */ });
+  }
 
   return {
     id: row.id,

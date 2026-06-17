@@ -255,19 +255,31 @@ export async function getPlanRun(runId: number): Promise<PlanRunRow | null> {
  * plan (the bundle is re-sent as the system prompt every spawn), so
  * `plan_content_hash` always means "the plan as the run last saw it" —
  * which keeps P-023's stale-version badge honest.
+ *
+ * P1-1 (resume-race guard): the claim is ATOMIC — the UPDATE only flips
+ * a run that is NOT already `running` (`WHERE status <> 'running'`), and
+ * returns `{ claimed }` reflecting whether THIS call won the transition.
+ * Two concurrent resumes on the same run therefore serialize on the row:
+ * exactly one sees `claimed: true` and kicks the turn; the loser sees
+ * `claimed: false` and must reject rather than spawn a duplicate turn.
+ * An archived/idle/failed/done run still reactivates (D-010) — only an
+ * already-`running` run is refused.
  */
 export async function markPlanRunResumed(
   runId: number,
   planContentHash: string,
-): Promise<void> {
-  await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-    await tx`
+): Promise<{ claimed: boolean }> {
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const rows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_runs
       SET status = 'running',
           plan_content_hash = ${planContentHash},
           updated_at = ${Date.now()}
       WHERE id = ${runId}
+        AND status <> 'running'
+      RETURNING id
     `;
+    return { claimed: rows.length > 0 };
   });
 }
 

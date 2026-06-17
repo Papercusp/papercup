@@ -56,6 +56,19 @@ export type BenchSuite =
   // Score) rather than a boolean diff pass — see TaskRunResult.score.
   | 'the-agent-company'
   | 'paperbench'
+  // METR HCAST / time-horizon suite (plan benchmark-suite-metr-hcast-2026-06-17). The per-task
+  // pass/fail rides the normal fields; the HEADLINE is a derived run-level metric (a logistic
+  // 50%/80%-time-horizon fit + the two-arm hive-vs-single-opus LIFT — see @papercusp/bench-metrics
+  // horizon.ts). The absolute horizon on the ~31-task open subset is illustrative-only (D-002).
+  | 'metr-hcast'
+  // GAIA — broad general-assistant / research suite (plan benchmark-suite-gaia-2026-06-17). BINARY
+  // quasi-exact-match per task (resolved); the suite headline is per-level L1/L2/L3 + overall accuracy
+  // (pass@1), with `score` left null (resolved IS the score, like the SWE-bench family).
+  | 'gaia'
+  // AgentsNet coordination benchmark (plan benchmark-suite-agentsnet-2026-06-17): per-node
+  // opus, neighbor-only message passing, deterministic get_score() → continuous [0,1]
+  // coordination score on TaskRunResult.score; official BINARY headline = (score === 1).
+  | 'agentsnet'
   | (string & {});
 
 /** Grader modality (P-001 §1): offline diff-batch vs online in-container. */

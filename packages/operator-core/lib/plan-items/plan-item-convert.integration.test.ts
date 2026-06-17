@@ -383,6 +383,68 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     expect(second.status).toBe('converted');
     if (second.status === 'converted') expect(second.workItem.id).not.toBe(first.workItem.id);
   });
+
+  // ── P2-10: idempotency must survive a deleted `implements` edge ─────────────
+  // The edge (findImplementingWorkItem) is the PRIMARY idempotency key, but it is a
+  // separate coord_links row. If it is deleted out-of-band (a link prune, a manual
+  // substrate edit) while the non-terminal work_item survives, a re-pickup used to
+  // sail past step 2 and SILENTLY mint a SECOND work_item — two execution records for
+  // one plan item, the orphaned first one invisible to resume. The fix adds a backstop
+  // resolver keyed on the durable `payload.plan_item` STAMP (findConvertedWorkItemByStamp),
+  // so the re-pickup RESUMES the existing record and self-heals the missing edge.
+  it('P2-10: edge deleted out-of-band → re-pickup RESUMES via the payload stamp, does NOT mint a duplicate (task family)', async () => {
+    const first = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
+    expect(first.status).toBe('converted');
+    if (first.status !== 'converted') return;
+
+    // The idempotency edge is pruned while the work_item (and its lease) survive.
+    await db.sql`DELETE FROM harness_shared.coord_links WHERE rel = ${convert.IMPLEMENTS_REL}`;
+    expect(await implementsEdges()).toHaveLength(0);
+
+    const again = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
+    expect(again.status).toBe('resumed'); // NOT 'converted' — no fresh mint
+    if (again.status !== 'resumed') return;
+    expect(again.workItem.id).toBe(first.workItem.id); // the SAME execution record
+
+    // Exactly ONE work_item exists — no duplicate row.
+    const rows = await db.sql`SELECT issue_id FROM harness_shared.engineer_issues`;
+    expect(rows).toHaveLength(1);
+    // The edge is self-healed so the Queue read (listConvertedPlanItemRefs) and the
+    // next resume see it again.
+    const edges = await implementsEdges();
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({ src_kind: 'issue', src_ref: first.workItem.id, dst_ref: `${PLAN}#P-001` });
+  });
+
+  it('P2-10: stamp backstop also covers the feature family (no duplicate hfc row)', async () => {
+    const first = await convert.convertPlanItem({ ...base, itemId: 'P-002', owner: 'sess-A', ownerName: 'builder-1', kind: 'feature' });
+    expect(first.status).toBe('converted');
+    if (first.status !== 'converted') return;
+
+    await db.sql`DELETE FROM harness_shared.coord_links WHERE rel = ${convert.IMPLEMENTS_REL}`;
+
+    const again = await convert.convertPlanItem({ ...base, itemId: 'P-002', owner: 'sess-A', ownerName: 'builder-1', kind: 'feature' });
+    expect(again.status).toBe('resumed');
+    if (again.status === 'resumed') expect(again.workItem.id).toBe(first.workItem.id);
+
+    const feats = await db.sql`SELECT feature_id FROM harness_shared.harness_features_consolidated`;
+    expect(feats).toHaveLength(1); // no second feature minted
+  });
+
+  it('P2-10: a TERMINAL record with a deleted edge still mints fresh (the stamp backstop excludes terminals)', async () => {
+    // The backstop must NOT resurrect a completed execution record — re-pickup of a
+    // re-opened plan item should mint a new work_item, exactly as the edge-present path does.
+    const first = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
+    expect(first.status).toBe('converted');
+    if (first.status !== 'converted') return;
+    await wi.setWorkItemState(first.workItem.id, 'resolved');
+    await db.sql`DELETE FROM harness_shared.plan_item_claims WHERE item_id = 'P-001'`;
+    await db.sql`DELETE FROM harness_shared.coord_links WHERE rel = ${convert.IMPLEMENTS_REL}`;
+
+    const second = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-B' });
+    expect(second.status).toBe('converted'); // fresh mint, not a resume of the terminal record
+    if (second.status === 'converted') expect(second.workItem.id).not.toBe(first.workItem.id);
+  });
 });
 
 /**

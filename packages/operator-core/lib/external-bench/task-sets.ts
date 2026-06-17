@@ -375,6 +375,129 @@ export function isTheAgentCompanyTaskSet(taskSetId: string): boolean {
   return (TAC_TASK_SET_IDS as readonly string[]).includes(taskSetId);
 }
 
+/* --------------------------------- METR HCAST --------------------------------- */
+
+/** The full METR HCAST corpus JSONL (env-overridable) — written by the P-001 vendoring step. */
+export function metrHcastTaskSetPath(): string {
+  return (
+    process.env.PAPERCUSP_BENCH_METR_HCAST_JSONL ??
+    join(homedir(), '.papercusp', 'bench-results', 'metr-hcast', 'tasks.jsonl')
+  );
+}
+
+/** The METR HCAST pilot-subset JSONL (the cheapest horizon-eligible tasks), env-overridable. */
+export function metrHcastPilotTaskSetPath(): string {
+  return (
+    process.env.PAPERCUSP_BENCH_METR_HCAST_PILOT_JSONL ??
+    join(homedir(), '.papercusp', 'bench-results', 'metr-hcast', 'pilot.jsonl')
+  );
+}
+
+/**
+ * One METR HCAST task row (plan benchmark-suite-metr-hcast-2026-06-17 P-001), as written to
+ * `~/.papercusp/bench-results/metr-hcast/{tasks,pilot}.jsonl` by the vendoring step. METR HCAST is an
+ * M2 in-container suite where EACH task brings its own Task-Standard Docker image + its own `score()` —
+ * we don't author a verifier. There is no git repo/base commit; the runner pulls `image`, drives the arm
+ * inside the container as the unprivileged `agent` user, then scores via the Task Standard's taskhelper.py
+ * (D-001/taskhelper: the public path, since the private `mtb` bridge won't install). `humanMinutes` is the
+ * human-expert baseline that powers the HORIZON fit — carried in graderMeta (NOT arm-facing: the arm must
+ * never see the difficulty). `horizonEligible` flags the 18 tasks with a released human-time baseline.
+ */
+interface MetrHcastTaskRow {
+  /** Stable instance id, `<family>__<task>` (slash-free). */
+  instanceId: string;
+  /** Original METR task id `<family>/<task>`. */
+  taskId?: string;
+  /** Task family (the importable TaskFamily module name), e.g. 'local_research'. */
+  family: string;
+  /** Task variant / sample id within the family, e.g. 'atari_epochs' (the taskhelper TASK_NAME). */
+  task: string;
+  sampleId?: string;
+  /** The TaskFamily version (the image tag suffix). */
+  version?: string;
+  /** Pre-built Task-Standard Docker image, `metrevals/public-tasks:<family>-<version>`. */
+  image: string;
+  /** Short descriptor; the real brief comes from taskhelper `setup` (get_instructions) at run time. */
+  problemStatement?: string;
+  /** Human-expert completion time (minutes) — the horizon-fit difficulty axis. null when no baseline. */
+  humanMinutes?: number | null;
+  /** Provenance of `humanMinutes`: 'baseline' | 'qa' | 'estimate' (increasing → decreasing reliability). */
+  humanSource?: string | null;
+  /** True iff a released human-time baseline exists → this task contributes to the horizon fit. */
+  horizonEligible?: boolean;
+}
+
+/** Map one METR HCAST row → a BenchTask. `in-container`: no repo/baseCommit; the runner pulls `image` and
+ *  drives taskhelper. `family`/`task`/`sampleId` (the taskhelper args), the `humanMinutes` baseline, and
+ *  `horizonEligible` all ride graderMeta so the runner + the horizon report can read them; the ARM never
+ *  sees graderMeta (un-gameable — and crucially the arm cannot see the human-time baseline). */
+export function metrHcastRowToBenchTask(r: MetrHcastTaskRow): BenchTask {
+  return {
+    benchmark: 'metr-hcast',
+    instanceId: r.instanceId,
+    problemStatement: r.problemStatement ?? `METR HCAST task ${r.instanceId} (instructions via taskhelper setup)`,
+    graderMeta: {
+      image: r.image,
+      family: r.family,
+      task: r.task,
+      sampleId: r.sampleId ?? r.task,
+      ...(r.taskId ? { taskId: r.taskId } : {}),
+      ...(r.version ? { version: r.version } : {}),
+      humanMinutes: r.humanMinutes ?? null,
+      humanSource: r.humanSource ?? null,
+      horizonEligible: r.horizonEligible ?? r.humanMinutes != null,
+    },
+  } satisfies BenchTask;
+}
+
+function readMetrHcastJsonl(path: string): MetrHcastTaskRow[] {
+  if (!existsSync(path)) {
+    throw new Error(
+      `METR HCAST task set not found at ${path} — vendor the corpus (plan ` +
+        `benchmark-suite-metr-hcast-2026-06-17 P-001) before launching it.`,
+    );
+  }
+  return readFileSync(path, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as MetrHcastTaskRow);
+}
+
+/**
+ * Load a METR HCAST task set → BenchTask[]. `metr-hcast-pilot` reads the cheapest horizon-eligible subset;
+ * `metr-hcast` the full ~31 runnable tasks; `metr-hcast-horizon` the 18 horizon-eligible (baseline-carrying)
+ * tasks only — the set the horizon FIT should run over; `metr-hcast-custom` filters the full set to `taskIds`.
+ */
+export function loadMetrHcastTaskSet(taskSetId: string, taskIds?: string[]): BenchTask[] {
+  const path = taskSetId === 'metr-hcast-pilot' ? metrHcastPilotTaskSetPath() : metrHcastTaskSetPath();
+  let tasks = readMetrHcastJsonl(path).map(metrHcastRowToBenchTask);
+  if (taskSetId === 'metr-hcast-horizon') {
+    tasks = tasks.filter((t) => t.graderMeta?.['horizonEligible'] === true);
+    if (tasks.length === 0) throw new Error('no horizon-eligible METR HCAST tasks (none carry a human-time baseline)');
+  }
+  if (taskSetId === 'metr-hcast-custom') {
+    const want = new Set(taskIds ?? []);
+    if (want.size === 0) throw new Error('task set "metr-hcast-custom" requires a non-empty taskIds list');
+    tasks = tasks.filter((t) => want.has(t.instanceId));
+    if (tasks.length === 0) throw new Error('no tasks in the METR HCAST corpus matched the custom taskIds');
+  }
+  return tasks;
+}
+
+/** The METR HCAST task-set ids this loader serves. */
+export const METR_HCAST_TASK_SET_IDS = [
+  'metr-hcast-pilot',
+  'metr-hcast',
+  'metr-hcast-horizon',
+  'metr-hcast-custom',
+] as const;
+
+/** True iff `taskSetId` is a METR HCAST set (routes to {@link loadMetrHcastTaskSet}). */
+export function isMetrHcastTaskSet(taskSetId: string): boolean {
+  return (METR_HCAST_TASK_SET_IDS as readonly string[]).includes(taskSetId);
+}
+
 /** The tiers.json shape (instance_id → tier + difficulty diagnostics). */
 type TierEntry = { tier: 'easy' | 'medium' | 'hard'; score?: number };
 
@@ -409,6 +532,13 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
   if (isTheAgentCompanyTaskSet(taskSetId)) {
     try {
       return Promise.resolve(loadTheAgentCompanyTaskSet(taskSetId, taskIds));
+    } catch (e) {
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
+  if (isMetrHcastTaskSet(taskSetId)) {
+    try {
+      return Promise.resolve(loadMetrHcastTaskSet(taskSetId, taskIds));
     } catch (e) {
       return Promise.reject(e instanceof Error ? e : new Error(String(e)));
     }
@@ -490,6 +620,22 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
   } catch {
     tacPilotCount = null;
   }
+  let metrCount: number | null = null;
+  let metrHorizonCount: number | null = null;
+  try {
+    const rows = readMetrHcastJsonl(metrHcastTaskSetPath());
+    metrCount = rows.length;
+    metrHorizonCount = rows.filter((r) => (r.horizonEligible ?? r.humanMinutes != null)).length;
+  } catch {
+    metrCount = null;
+    metrHorizonCount = null;
+  }
+  let metrPilotCount: number | null = null;
+  try {
+    metrPilotCount = readMetrHcastJsonl(metrHcastPilotTaskSetPath()).length;
+  } catch {
+    metrPilotCount = null;
+  }
   return [
     { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)', count: pilotCount },
     {
@@ -506,6 +652,9 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
       count: tacPilotCount,
     },
     { id: 'the-agent-company', label: 'TheAgentCompany full (175 professional tasks)', count: tacCount },
+    { id: 'metr-hcast-pilot', label: 'METR HCAST pilot (cheapest horizon-eligible)', count: metrPilotCount },
+    { id: 'metr-hcast-horizon', label: 'METR HCAST horizon set (baseline-carrying)', count: metrHorizonCount },
+    { id: 'metr-hcast', label: 'METR HCAST full (~31 open Task-Standard tasks)', count: metrCount },
     { id: 'custom', label: 'Custom instance ids', count: null },
   ];
 }

@@ -14,6 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthorityOp } from './authority';
+import type { WorkItemReplicaAuthority } from './work-item-replica-authority';
 
 vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
@@ -39,14 +40,18 @@ interface RouteCall {
 }
 function recordingAuthority() {
   const calls: RouteCall[] = [];
-  const authority = {
-    isSelf: vi.fn(async () => false), // a "remote authority" — would RPC, so op.local() is never run here
-    route: vi.fn(async <T>(scopeKey: string, op: AuthorityOp<T>): Promise<T> => {
+  const routeSpy = vi.fn();
+  // Typed as the real interface so the generic route() signature is honored (vi.fn alone
+  // erases the <T> generic and won't satisfy WorkItemReplicaAuthority).
+  const authority: WorkItemReplicaAuthority = {
+    isSelf: async () => false, // a "remote authority" — would RPC, so op.local() is never run here
+    route: async <T>(scopeKey: string, op: AuthorityOp<T>): Promise<T> => {
+      routeSpy(scopeKey, op);
       calls.push({ scopeKey, remoteKind: op.remote?.kind });
       return { ok: true, routed: true } as unknown as T; // canned — no op.local(), no DB
-    }),
+    },
   };
-  return { authority, calls };
+  return { authority, calls, routeSpy };
 }
 
 const WS = 'default';
@@ -65,7 +70,7 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
   });
 
   it('setWorkItemReplicaAuthority installs the router; a claim op routes THROUGH it with the hive scope', async () => {
-    const { authority, calls } = recordingAuthority();
+    const { authority, calls, routeSpy } = recordingAuthority();
     setWorkItemReplicaAuthority(authority);
     expect(getWorkItemReplicaAuthority()).toBe(authority);
 
@@ -73,7 +78,7 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
       workspaceId: WS, harnessSlug: HARNESS, workItemId: 'WI-1', owner: 'su-a', hiveSlug: 'hive-x',
     });
     // The op was routed through the installed authority (not run locally).
-    expect(authority.route).toHaveBeenCalledTimes(1);
+    expect(routeSpy).toHaveBeenCalledTimes(1);
     expect(res).toMatchObject({ ok: true, routed: true });
 
     // Scope key = the Hive home (the per-Hive authority), and the op carries the claim-slot kind.
@@ -89,7 +94,7 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
   });
 
   it('every replica op kind routes through the installed authority with the matching op kind', async () => {
-    const { authority, calls } = recordingAuthority();
+    const { authority, calls, routeSpy } = recordingAuthority();
     setWorkItemReplicaAuthority(authority);
     const scope = { workspaceId: WS, harnessSlug: HARNESS, workItemId: 'WI-3', hiveSlug: 'hive-y' };
 
@@ -104,7 +109,7 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
     );
 
     const K = redundancy.WORK_ITEM_REPLICA_OP_KINDS;
-    expect(authority.route).toHaveBeenCalledTimes(6);
+    expect(routeSpy).toHaveBeenCalledTimes(6);
     expect(calls.map((c) => c.remoteKind)).toEqual([
       K.claimSlot, K.heartbeat, K.recordResult, K.release, K.list, K.judge,
     ]);
@@ -113,7 +118,7 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
   });
 
   it('resetWorkItemReplicaAuthority restores the LOCAL authority (an installed router no longer sees ops)', async () => {
-    const { authority } = recordingAuthority();
+    const { authority, routeSpy } = recordingAuthority();
     setWorkItemReplicaAuthority(authority);
     resetWorkItemReplicaAuthority();
     expect(getWorkItemReplicaAuthority()).toBeInstanceOf(LocalWorkItemReplicaAuthority);
@@ -122,6 +127,6 @@ describe('replica-authority routing seam (EI-266) — install / route / reset', 
     // We assert ONLY that the recording authority is bypassed (the local read would need PG, so
     // we don't await its result here — the routing seam, not the SQL, is the unit under test).
     void redundancy.listReplicas('WI-4', { harness: HARNESS, workspaceId: WS }).catch(() => {});
-    expect(authority.route).not.toHaveBeenCalled();
+    expect(routeSpy).not.toHaveBeenCalled();
   });
 });

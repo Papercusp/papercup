@@ -64,4 +64,19 @@ describe('tryConsumeSpawnCredit (P-009 pre-alloc budget, real PG)', () => {
     expect(spawnBudgetScopeKey('abc')).toBe('spawn-budget:abc');
     expect(spawnBudgetScopeKey('abc')).not.toBe(spawnBudgetScopeKey('xyz'));
   });
+
+  // Gap 3 — concurrent debit must NOT over-grant. The SELECT … FOR UPDATE serializes the
+  // read-then-decrement, so N racing consumers against a pool of K credits hand out EXACTLY
+  // K trues; the rest see false and the pool floors at 0 (never negative). A failure here is a
+  // real race bug in the FOR UPDATE gate, not a flaky test.
+  it('8 concurrent consumers against 3 credits grant EXACTLY 3 (FOR UPDATE serializes; never negative)', async () => {
+    const scope = spawnBudgetScopeKey('race-stream');
+    await seedCredits(scope, 3);
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => tryConsumeSpawnCredit(db.sql, { workspaceId: WS, scopeKey: scope })),
+    );
+    expect(results.filter((r) => r === true)).toHaveLength(3);
+    expect(results.filter((r) => r === false)).toHaveLength(5);
+    expect(await creditsOf(scope)).toBe(0); // floored, never below zero
+  });
 });

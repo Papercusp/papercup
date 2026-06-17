@@ -73,6 +73,11 @@ beforeEach(() => {
   vi.doMock('../../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: [] }),
     saveHarnessRegistry: async () => {},
+    // create.ts routes its registry write through mutateHarnessRegistry (the
+    // atomic insert, audit P-006). Every case here returns before the write,
+    // but the mock must still export it so the dynamic import resolves.
+    mutateHarnessRegistry: async (m: (r: { projects: unknown[] }) => { projects: unknown[] }) =>
+      m({ projects: [] }),
   }));
 });
 afterEach(() => {

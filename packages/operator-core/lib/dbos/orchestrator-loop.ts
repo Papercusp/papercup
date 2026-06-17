@@ -81,6 +81,7 @@ import { convertOpenIssuesToFeatures } from '../promote-issue';
 import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
 import type { Issue } from '../harness/issue-types';
 import { ensureFeaturePipeline } from './orchestrator-start';
+import { adminClientForHarness } from './admin-pg-cache';
 import {
   workItemClaimLeaseEnabled,
   leaseFeatureForExecutor,
@@ -589,11 +590,13 @@ export async function dispatchOneHarness(
   if (!harnessDispatchesLocally(placementProject)) {
     return { harness: slug, started: [] };
   }
-  const pg = postgres(adminUrl, {
-    max: 1,
-    connect_timeout: 5,
-    connection: { search_path: `harness_${slug},harness_shared,public` },
-  });
+  // P4-1 (operator-scalability-event-loop) / F-B1 (app-wide-load-traps): reuse a
+  // cached admin client per (url, harness) rather than opening + ending a fresh
+  // postgres(max:1) pool every 30s tick AND every pipeline settle — the per-tick
+  // pool churn this plan targets. Same LRU the debugger gate uses (admin-pg-cache),
+  // so dispatch + debugger share ONE connection per harness. The client is owned by
+  // the cache, NOT this call — do not `.end()` it in `finally`.
+  const pg = adminClientForHarness(slug, adminUrl);
   try {
     // P-011: auto-promote qualifying open issues → F-FIX features BEFORE the
     // feature read, so a freshly-minted fix is eligible this same tick. Its own
@@ -686,8 +689,6 @@ export async function dispatchOneHarness(
       err instanceof Error ? err.message : err,
     );
     return { harness: slug, started: [] };
-  } finally {
-    await pg.end({ timeout: 2 }).catch(() => {});
   }
 }
 

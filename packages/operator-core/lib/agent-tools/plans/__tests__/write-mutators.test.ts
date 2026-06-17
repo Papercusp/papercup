@@ -441,6 +441,35 @@ describe('item id allocation + append', () => {
     expect(second.newBody.indexOf('- **P-100**')).toBeLessThan(second.newBody.indexOf('- **P-101**'));
   });
 
+  it('appends to a phase whose name is "Phase (legacy)" — punctuation right after "Phase" still matches (P2-9)', () => {
+    // add-item.ts:105 applies the `\b` word-boundary only when the phase name ends in a
+    // word char; a phase like "Phase (legacy)" ends in `)`, so the boundary is dropped
+    // and the bare-name regex must still match. Pre-fix, the unconditional `\b` after
+    // "Phase (legacy)" could never match (no word char follows `)`), so every add forked
+    // a fresh duplicate `## Phase (legacy)` section.
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Phase (legacy)
+
+- **P-001** \`todo\` first
+`;
+    const first = appendItemToBody(doc, 'Phase (legacy)', buildItemLine('P-002', 'item one', []));
+    expect(first.createdPhase).toBe(false); // appended into the existing section, not created
+    const second = appendItemToBody(first.newBody, 'Phase (legacy)', buildItemLine('P-003', 'item two', []));
+    expect(second.createdPhase).toBe(false);
+    // Exactly one heading — both items live in the SAME section, no duplicate fork.
+    expect(second.newBody.match(/^## Phase \(legacy\)$/gm) ?? []).toHaveLength(1);
+    expect(second.newBody).toContain('- **P-002** `todo` item one');
+    expect(second.newBody).toContain('- **P-003** `todo` item two');
+    expect(second.newBody.indexOf('- **P-002**')).toBeLessThan(second.newBody.indexOf('- **P-003**'));
+  });
+
   it('still refuses a prefix match on word-ending phases ("Phase 1" must not match "Phase 1b")', () => {
     const doc = BASE.replace('## Phase 1 — Tooling', '## Phase 1b — Tooling');
     const hit = appendItemToBody(doc, 'Phase 1b', buildItemLine('P-102', 'Prefix guard', []));

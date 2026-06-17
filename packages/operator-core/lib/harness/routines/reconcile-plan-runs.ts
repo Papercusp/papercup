@@ -17,6 +17,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { disarmPlanSchedule } from './arm-plan-schedule';
+import { autoPauseOnCostBreach } from './plan-run-cost';
 
 /** Work-item states that count as a finished execution. */
 const TERMINAL = ['passed', 'done', 'resolved', 'closed', 'deprecated', 'dropped', 'failed'];
@@ -121,7 +122,12 @@ export async function autoPauseOnFailureStreak(opts: {
 
 /**
  * One settle+govern pass for the routine tick / plans:runs read: reconcile completions,
- * then auto-pause any template whose freshly-failed run completes a failure streak (P-012).
+ * then auto-pause a template on either guardrail —
+ *   - cost breach (P-013 / D-018): a freshly-settled run (any outcome) whose attributed
+ *     spend exceeds the per-plan costCapCents; and
+ *   - failure streak (P-012 / D-011): a freshly-failed run completing K consecutive fails.
+ * Cost is checked first (a successful-but-expensive run still pauses); a template paused on
+ * cost is not re-checked for the streak.
  */
 export async function reconcileAndGovern(
   opts: { sql?: Sql; harnessSlug?: string; failureStreakK?: number } = {},
@@ -130,6 +136,18 @@ export async function reconcileAndGovern(
   const { settled } = await reconcileScheduledPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
   const paused: string[] = [];
   for (const s of settled) {
+    // Cost-breach pause — independent of outcome (a successful run can be too expensive).
+    const c = await autoPauseOnCostBreach({
+      sql: db,
+      harnessSlug: s.harnessSlug,
+      planSlug: s.planSlug,
+      runId: s.runId,
+    });
+    if (c.paused) {
+      paused.push(s.planSlug);
+      continue; // already disarmed — don't double-process the streak
+    }
+    // Failure-streak pause — failed runs only.
     if (s.outcome !== 'failed') continue;
     const r = await autoPauseOnFailureStreak({
       sql: db,

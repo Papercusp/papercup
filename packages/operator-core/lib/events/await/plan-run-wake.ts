@@ -25,7 +25,13 @@ export async function resumePlanRunForWake(input: {
   const bundle = await buildPlanContextBundle(run.planSlug, {});
   if (!bundle) return { ok: false, error: `plan ${run.planSlug} not found for run ${input.runId}` };
 
-  await markPlanRunResumed(input.runId, bundle.contentHash);
+  // P1-1 (resume-race guard): claim the run atomically. A run already
+  // `running` is mid-turn — waking it again would spawn a DUPLICATE turn on
+  // the same session. Only the winner of the atomic flip fires the turn.
+  const { claimed } = await markPlanRunResumed(input.runId, bundle.contentHash);
+  if (!claimed) {
+    return { ok: false, error: `plan run ${input.runId} is already running — wake skipped` };
+  }
 
   void executePlanAgentTurn({
     runId: input.runId,

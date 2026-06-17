@@ -7,6 +7,7 @@ import LearningTab from '../../components/adv/LearningTab';
 import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
 import AdvAccountsTab from '../../components/adv/AdvAccountsTab';
+import ScheduledCalendarTab from '../../components/adv/ScheduledCalendarTab';
 import HealthTab from '../../components/adv/HealthTab';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
@@ -42,6 +43,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'frames') return 'Frames';
   if (tab === 'evals') return 'Evaluation';
   if (tab === 'accounts') return 'Accounts';
+  if (tab === 'calendar') return 'Calendar';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
     return ADV_HARNESS_PANEL_LABELS[tab as keyof typeof ADV_HARNESS_PANEL_LABELS];
   }
@@ -73,6 +75,10 @@ function renderAdvTab(tab: AdvTabId) {
       // Accounts — the Queen's Claude Max account pool: view each account's
       // headroom + link/remove via OAuth (accounts-pool-tab-2026-06-15).
       return <AdvAccountsTab />;
+    case 'calendar':
+      // Calendar — the schedulable time-surface: FullCalendar over the
+      // backend-computed scheduled-plan occurrences (scheduled-recurring-plans P-018/P-019).
+      return <ScheduledCalendarTab />;
     case 'brainstorm':
     case 'prs':
     case 'insights':

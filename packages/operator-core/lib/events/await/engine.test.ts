@@ -172,6 +172,42 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats.delivered).toBe(0);
   });
 
+  it('GAP 2: a co-incident floor-less one-shot does NOT nullify a standing min_sleep floor', async () => {
+    // su-a woke 10s ago. Two deliveries land THIS tick for it: a standing watch
+    // with min_sleep=60 AND a floor-less one-shot grant (min_sleep=0). The group
+    // floor must be the standing 60s — NOT 0 — so the whole group DEFERS (still
+    // inside the 60s window). The bug: `Math.min(60, 0)` → 0 disabled the floor,
+    // so the coincident one-shot's tick woke the standing watch early (cost
+    // discipline defeated). Neither is urgent.
+    h.store.lastWokenAtForSubscribers.mockResolvedValueOnce(new Map([['su-a', Date.now() - 10_000]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 70, subscriberId: 'su-a', minSleepSec: 60, createdAt: new Date(1000).toISOString() }),
+      workRow({ id: 71, subscriberId: 'su-a', minSleepSec: 0, createdAt: new Date(2000).toISOString() }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    // The standing floor holds: no turn, the whole group defers.
+    expect(h.executeWake).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDeferred).toHaveBeenCalledWith(70, expect.any(Number));
+    expect(h.store.markDeliveryDeferred).toHaveBeenCalledWith(71, expect.any(Number));
+    expect(stats.deferred).toBe(2);
+    expect(stats.delivered).toBe(0);
+  });
+
+  it('GAP 2: past the floor window, the standing + one-shot group wakes (coalesced, one turn)', async () => {
+    // Same shape but su-a last woke 120s ago — beyond the 60s floor → it wakes,
+    // and the two due deliveries coalesce into ONE turn (the fix preserves the
+    // positive floor without breaking the normal wake-when-allowed path).
+    h.store.lastWokenAtForSubscribers.mockResolvedValueOnce(new Map([['su-a', Date.now() - 120_000]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 72, subscriberId: 'su-a', minSleepSec: 60, createdAt: new Date(1000).toISOString() }),
+      workRow({ id: 73, subscriberId: 'su-a', minSleepSec: 0, createdAt: new Date(2000).toISOString() }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(stats.delivered).toBe(1);
+    expect(stats.deferred).toBe(0);
+  });
+
   it('urgent bypasses the floor: an urgent wake fires even inside the min_sleep window', async () => {
     h.store.lastWokenAtForSubscribers.mockResolvedValueOnce(new Map([['su-a', Date.now() - 1_000]]));
     h.store.claimDueDeliveries.mockResolvedValueOnce([

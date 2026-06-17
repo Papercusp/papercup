@@ -191,4 +191,19 @@ describe('captureResolvedAnswer', () => {
     await captureResolvedAnswer(baseInput({ question: '  spaced q  ', answer: '\tspaced a\n' }));
     expect(b.remember.mock.calls[0][0]).toBe('Q: spaced q\nA: spaced a');
   });
+
+  // P2-20: a malformed/blank question must not yield a "Q: \nA: …" entry with a
+  // dangling blank question stem. Capture is best-effort, so a blank question is
+  // SKIPPED (ok:false, backend untouched) — the accepted answer still lives on
+  // the conversation row, so nothing is lost.
+  it('a blank question is skipped (ok:false) without writing a blank-Q entry — answer stays on the row', async () => {
+    const b = fakeBackend();
+    getMemoryBackend.mockReturnValue(b);
+    const res = await captureResolvedAnswer(baseInput({ question: '   \n  ', answer: 'fix' }));
+
+    expect(res.ok).toBe(false);
+    expect(res.target).toBe('mem0_blank_question');
+    // Best-effort: the backend was never asked to persist a malformed entry.
+    expect(b.remember).not.toHaveBeenCalled();
+  });
 });
