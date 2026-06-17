@@ -60,7 +60,18 @@ export default defineTool({
           return txt({ error: `harness '${slug}' is not registered in any workspace; create it first` });
         }
         const srcReg = await loadHarnessRegistry(members[0]);
-        const entry = srcReg.projects.find((p) => p.slug === slug)!;
+        const entry = srcReg.projects.find((p) => p.slug === slug);
+        // Guard the re-read: workspacesForHarness reported members[0] as a
+        // carrier, but a concurrent move/remove can drop the slug from that
+        // registry between the two reads. Without this guard the `find` misses,
+        // `entry` is undefined, and it would flow into addHarnessToWorkspace —
+        // pushing a corrupt/undefined entry into the destination registry (or
+        // throwing deep in the mutation path). Fail cleanly instead.
+        if (!entry) {
+          return txt({
+            error: `harness '${slug}' vanished from workspace '${members[0]}' (concurrent move/remove); retry`,
+          });
+        }
         return txt({ ok: true, result: await addHarnessToWorkspace(args.toWorkspace, entry) });
       }
       case 'remove': {

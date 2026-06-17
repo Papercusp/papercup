@@ -36,10 +36,17 @@ export default defineTool({
     }
     const docId = args.docId.trim().replace(/^\.?\//, '');
     const overlay = args.overlay.trim() === '' ? null : args.overlay;
-    // Ensure a record exists (overlaying a doc that was never recorded — e.g. an
-    // unanchored manual file — creates a minimal manual record first).
     const existing = await getDocRecord(scope.slug, docId);
+    // Clearing an overlay that was never set is a no-op: don't materialize a
+    // spurious manual/untracked tracking record just to "clear" a nonexistent
+    // overlay (that would convert an untracked-FS doc into a tracked record with
+    // no overlay, no subject, no purpose). Only when ADDING an overlay do we
+    // ensure a record exists (overlaying a doc that was never recorded — e.g. an
+    // unanchored manual file — creates a minimal manual record first).
     if (!existing) {
+      if (overlay === null) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, docId, source: undefined, hasOverlay: false }) }] };
+      }
       await upsertDocRecord({ harnessSlug: scope.slug, docId, source: 'manual', subjectRef: [], anchorPaths: [], status: 'untracked' });
     }
     await setDocOverlay(scope.slug, docId, overlay);

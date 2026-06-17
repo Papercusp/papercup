@@ -181,3 +181,70 @@ describe('coord:declare-intent lane validation (EI-356)', () => {
     expect(raw.isError).toBe(true);
   });
 });
+
+describe('coord:declare-intent conflict surfacing (the DOUBLE-PLACEMENT invariant)', () => {
+  // The MCP contract: "a claim_conflict means a live peer holds it — coordinate,
+  // don't take it." reconcileDeclaredClaims REPORTS a contested item rather than
+  // throwing; the handler must still succeed (presence written, the rest of the
+  // lane claimed) and surface `claims.conflicts` VERBATIM so the caller can re-lane.
+  // The EI-356 suite above only ever sees the mock's default `conflicts:[]`, so
+  // the handler's behavior WHEN A CONFLICT IS RETURNED was asserted nowhere — this
+  // pins it.
+  it('a reported conflict does NOT fail the call: presence still writes, the rest of the lane still claims, conflict surfaced verbatim', async () => {
+    getPlanRow.mockResolvedValue(rowWithItems(['P-001', 'P-002']));
+    reconcileDeclaredClaims.mockResolvedValueOnce({
+      claimed: ['P-001'],
+      conflicts: [{ item: 'P-002', reason: 'claimed by su · peer — coordinate', holder: 'su-peer' }],
+      released: [],
+      alreadyHeld: [],
+    } as never);
+
+    const res = parse(
+      await tool.handler(
+        { intent: 'work', current_plan_slug: 'my-plan', items: ['P-001', 'P-002'] },
+        ctx,
+      ),
+    );
+
+    expect(res.ok).toBe(true); // a contested item is REPORTED, never thrown
+    expect(writePresence).toHaveBeenCalledTimes(1); // presence still written
+    const claims = res.claims as Record<string, unknown>;
+    expect(claims.claimed).toEqual(['P-001']); // the uncontested item still claims
+    // the conflict is carried through the envelope BYTE-FOR-BYTE (reason + holder intact)
+    expect(claims.conflicts).toEqual([
+      { item: 'P-002', reason: 'claimed by su · peer — coordinate', holder: 'su-peer' },
+    ]);
+    expect(claims.unknown).toBeUndefined(); // every declared id parsed — no unknown leg
+  });
+
+  it('a mixed unknown-id + conflict lane: conflict surfaced verbatim AND unknown reported alongside', async () => {
+    // P-001 claims, P-002 conflicts (live peer), P-099 is not a plan item.
+    getPlanRow.mockResolvedValue(rowWithItems(['P-001', 'P-002']));
+    reconcileDeclaredClaims.mockResolvedValueOnce({
+      claimed: ['P-001'],
+      conflicts: [{ item: 'P-002', reason: 'claimed by su · peer — coordinate', holder: 'su-peer' }],
+      released: [],
+      alreadyHeld: [],
+    } as never);
+
+    const res = parse(
+      await tool.handler(
+        { intent: 'work', current_plan_slug: 'my-plan', items: ['P-001', 'P-002', 'P-099'] },
+        ctx,
+      ),
+    );
+
+    expect(res.ok).toBe(true);
+    expect(writePresence).toHaveBeenCalledTimes(1);
+    // only the KNOWN ids reach reconcile — the unknown id is filtered before the claim seam
+    expect(reconcileDeclaredClaims.mock.calls[0][0].items).toEqual(['P-001', 'P-002']);
+    const claims = res.claims as Record<string, unknown>;
+    expect(claims.claimed).toEqual(['P-001']);
+    expect(claims.conflicts).toEqual([
+      { item: 'P-002', reason: 'claimed by su · peer — coordinate', holder: 'su-peer' },
+    ]);
+    // the unknown leg is spread on TOP of the reconcile result — both survive
+    expect(claims.unknown).toEqual(['P-099']);
+    expect(String(claims.hint)).toMatch(/item_not_found/);
+  });
+});

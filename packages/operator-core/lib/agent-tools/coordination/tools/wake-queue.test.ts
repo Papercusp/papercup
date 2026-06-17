@@ -172,3 +172,78 @@ describe('coord:wake-queue single release with a coalesced row', () => {
     expect(emitted.summary).toBe('plain');
   });
 });
+
+describe('coord:wake-queue cross-agent isolation (C6) — release + skip are scoped to the agent\'s own queue', () => {
+  // release ALREADY scopes via listPendingWakes(agent).find — an id absent from
+  // THIS agent's queue is not-found, never an emit, never a releasePendingWake.
+  it('release of an id NOT in the agent\'s queue is not-found (no emit, no delete)', async () => {
+    // su-q owns id 1; the caller asks to release id 99 (another agent's wake).
+    listPendingWakes.mockResolvedValue([pw({ id: 1, ownerId: 'su-q', summary: 'mine' })]);
+    const res = await wakeQueue.handler(parse({ agent: 'su-q', action: 'release', id: 99 }), ctx);
+    expect(out(res)).toMatchObject({ ok: false, reason: 'not-found', id: 99 });
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(releasePendingWake).not.toHaveBeenCalled();
+    // The membership read was scoped to the asking agent.
+    expect(listPendingWakes).toHaveBeenCalledWith('su-q');
+  });
+
+  // skip USED to delete by bare id with NO membership check — a caller could skip
+  // another agent's staged wake by raw id (cross-agent isolation gap). The fix
+  // mirrors release: an id absent from the agent's own queue is not-found, never
+  // a raw releasePendingWake. This is the teeth on that fix.
+  it('skip of an id NOT in the agent\'s queue is not-found — never deletes a foreign wake', async () => {
+    // su-a's queue holds only id 1; the caller (acting on su-a) asks to skip id 7,
+    // which belongs to su-b. The membership check must reject it untouched.
+    listPendingWakes.mockResolvedValue([pw({ id: 1, ownerId: 'su-a', summary: 'su-a only' })]);
+    const res = await wakeQueue.handler(parse({ agent: 'su-a', action: 'skip', id: 7 }), ctx);
+    expect(out(res)).toMatchObject({ ok: false, reason: 'not-found', id: 7 });
+    // The bare-id delete is NEVER reached for a foreign id.
+    expect(releasePendingWake).not.toHaveBeenCalled();
+    expect(listPendingWakes).toHaveBeenCalledWith('su-a');
+  });
+
+  it('skip of an id IN the agent\'s own queue deletes exactly that row', async () => {
+    listPendingWakes.mockResolvedValue([
+      pw({ id: 3, ownerId: 'su-a', summary: 'a' }),
+      pw({ id: 4, ownerId: 'su-a', summary: 'b' }),
+    ]);
+    const res = await wakeQueue.handler(parse({ agent: 'su-a', action: 'skip', id: 4 }), ctx);
+    expect(out(res)).toMatchObject({ ok: true, skipped: 4 });
+    expect(releasePendingWake).toHaveBeenCalledTimes(1);
+    expect(releasePendingWake).toHaveBeenCalledWith(4);
+    // skip never delivers.
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('coord:wake-queue release_all — a string payload survives the coalesce union (C6c)', () => {
+  it('keeps a single staged string payload verbatim', async () => {
+    // A lone staged wake whose payload is a bare string must pass through the
+    // single-item fast path untouched (not be coerced into the union envelope).
+    listPendingWakes.mockResolvedValue([pw({ id: 1, summary: 'note', payload: 'just a string' })]);
+    clearPendingWakes.mockResolvedValue(1);
+    await wakeQueue.handler(parse({ agent: 'su-q', action: 'release_all' }), ctx);
+    const emitted = emitAwaitedEvent.mock.calls[0][0] as Record<string, unknown>;
+    expect(emitted.payload).toBe('just a string');
+  });
+
+  it('carries a string payload through the multi-wake union (latest.payload + per-wake)', async () => {
+    listPendingWakes.mockResolvedValue([
+      pw({ id: 1, summary: 'first', payload: { a: 1 } }),
+      pw({ id: 2, summary: 'second', payload: 'tail string' }),
+    ]);
+    clearPendingWakes.mockResolvedValue(2);
+    await wakeQueue.handler(parse({ agent: 'su-q', action: 'release_all' }), ctx);
+    const emitted = emitAwaitedEvent.mock.calls[0][0] as Record<string, unknown>;
+    const payload = emitted.payload as {
+      coalesced: boolean;
+      latest: { payload: unknown };
+      wakes: Array<{ payload: unknown }>;
+    };
+    expect(payload.coalesced).toBe(true);
+    // Newest row (the string) is the headline.
+    expect(payload.latest.payload).toBe('tail string');
+    // Both payloads (object + string) survive in the per-wake union.
+    expect(payload.wakes.map((w) => w.payload)).toEqual([{ a: 1 }, 'tail string']);
+  });
+});

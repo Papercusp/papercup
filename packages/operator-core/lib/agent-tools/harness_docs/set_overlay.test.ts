@@ -72,6 +72,24 @@ describe('harness_docs:set_overlay tool', () => {
     expect(res).toMatchObject({ ok: true, docId: 'features/F-1.md', source: 'augmented', hasOverlay: true });
   });
 
+  it('no existing record + empty overlay (clear) → NO-OP: no upsert, no setDocOverlay (no spurious record)', async () => {
+    // D2 regression: clearing an overlay that was never set used to materialize a
+    // minimal manual/untracked record (and clear a nonexistent overlay) — turning an
+    // untracked-FS doc into a purposeless tracking record. The clear is now a no-op.
+    mockGet.mockResolvedValueOnce(null); // existence check → no record
+    const res = body(await callTool({ docId: 'features/F-1.md', overlay: '' }));
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockSetOverlay).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ ok: true, docId: 'features/F-1.md', hasOverlay: false });
+  });
+
+  it('no existing record + whitespace-only overlay (clear) → also a NO-OP', async () => {
+    mockGet.mockResolvedValueOnce(null);
+    body(await callTool({ docId: 'features/F-1.md', overlay: '  \n ' }));
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockSetOverlay).not.toHaveBeenCalled();
+  });
+
   it('existing record → does NOT upsert a minimal record', async () => {
     mockGet.mockResolvedValueOnce(rec({ source: 'generated', generatedFromSha: 'sha' }));
     mockGet.mockResolvedValueOnce(rec({ source: 'augmented', overlay: 'why', generatedFromSha: 'sha' }));

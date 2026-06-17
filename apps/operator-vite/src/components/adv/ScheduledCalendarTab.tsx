@@ -53,6 +53,26 @@ interface PlanListLite {
   harness: string;
 }
 
+/** A plan's raw authored schedule (plans.schedule row) — drives editor pre-fill + per-occurrence drag (D-020). */
+interface PlanScheduleRow {
+  templateSlug: string;
+  title: string | null;
+  harnessSlug: string;
+  schedule: {
+    kind?: string;
+    rrule?: string;
+    dtstart?: string;
+    tzid?: string;
+    rdate?: string[];
+    exdate?: string[];
+    cron?: string;
+  } | null;
+  scheduledAt: string | null;
+  expiresAt: string | null;
+  tzid: string | null;
+  scheduleActive: boolean;
+}
+
 const VIEW_VALUES: CalView[] = ['dayGridMonth', 'timeGridWeek', 'timeGridDay'];
 
 export default function ScheduledCalendarTab() {
@@ -78,7 +98,18 @@ export default function ScheduledCalendarTab() {
   // picker — pick an unscheduled plan to give it a first schedule.
   const { data: planListData } = useSyncQuery<PlanListLite>({ queryName: 'plans.list', args: {} });
   const planList = useMemo(() => (Array.isArray(planListData) ? planListData : []), [planListData]);
-  const afterWrite = useCallback(() => void invalidate?.(), [invalidate]);
+  // Each scheduled plan's RAW schedule (rrule/scheduledAt/exdate/rdate) — editor
+  // pre-fill + the per-occurrence EXDATE/RDATE drag read this (D-020).
+  const { data: schedData, invalidate: invalidateSchedules } = useSyncQuery<PlanScheduleRow>({ queryName: 'plans.schedule', args: {} });
+  const scheduleBySlug = useMemo(() => {
+    const m = new Map<string, PlanScheduleRow>();
+    for (const s of schedData ?? []) m.set(s.templateSlug, s);
+    return m;
+  }, [schedData]);
+  const afterWrite = useCallback(() => {
+    void invalidate?.();
+    void invalidateSchedules?.();
+  }, [invalidate, invalidateSchedules]);
 
   const events: EventInput[] = useMemo(
     () =>
@@ -162,12 +193,33 @@ export default function ScheduledCalendarTab() {
         });
         if (!r.ok) arg.revert();
         else afterWrite();
-      } else {
+        return;
+      }
+      // Recurring occurrence → edit-THIS-occurrence: exclude the original fire
+      // (EXDATE) and pin the dragged one (RDATE). Needs the source RRULE; if we
+      // don't have it, fall back to opening the editor (edit-all).
+      const cur = scheduleBySlug.get(o.templateSlug);
+      if (!cur?.schedule?.rrule) {
         arg.revert();
         setEditor({ slug: o.templateSlug, title: o.title, isArmed: o.scheduleActive });
+        return;
       }
+      const oldIso = new Date(o.occurrenceMs).toISOString();
+      const next = {
+        ...cur.schedule,
+        exdate: [...(cur.schedule.exdate ?? []), oldIso],
+        rdate: [...(cur.schedule.rdate ?? []), newStart.toISOString()],
+      };
+      const r = await runScheduleTool('plans:set-schedule', {
+        slug: o.templateSlug,
+        schedule: next,
+        expiresAt: cur.expiresAt,
+        tzid: cur.tzid,
+      });
+      if (!r.ok) arg.revert();
+      else afterWrite();
     },
-    [afterWrite],
+    [afterWrite, scheduleBySlug],
   );
 
   const selectedPlan = useMemo(() => {
@@ -300,6 +352,7 @@ export default function ScheduledCalendarTab() {
               planTitle={editor.title}
               seedDate={editor.seedDate}
               seedMode={editor.seedMode}
+              initial={scheduleBySlug.get(editor.slug) ?? null}
               isArmed={editor.isArmed}
               onClose={() => setEditor(null)}
               onSaved={afterWrite}

@@ -115,6 +115,90 @@ export function describeForm(f: RecurrenceForm): string {
   return `Repeats ${every}${days}${ends}.`;
 }
 
+/** The raw authored schedule the editor pre-fills from (the plans.schedule row shape). */
+export interface RawSchedule {
+  schedule: {
+    kind?: string;
+    rrule?: string;
+    dtstart?: string;
+    tzid?: string;
+    rdate?: string[];
+    exdate?: string[];
+    cron?: string;
+  } | null;
+  scheduledAt: string | null;
+  expiresAt: string | null;
+  tzid: string | null;
+}
+
+/** Parse an RRULE string back into the editor's form fields (inverse of buildSchedulePayload). */
+export function parseRrule(rrule: string): { freq: Freq; interval: number; weekdays: string[] } {
+  const map: Record<string, string> = {};
+  for (const part of rrule.split(';')) {
+    const [k, v] = part.split('=');
+    if (k && v) map[k.trim().toUpperCase()] = v.trim();
+  }
+  const freq = (['DAILY', 'WEEKLY', 'MONTHLY'].includes(map.FREQ) ? map.FREQ : 'WEEKLY') as Freq;
+  const interval = Math.max(1, parseInt(map.INTERVAL ?? '1', 10) || 1);
+  const weekdays = map.BYDAY
+    ? map.BYDAY.split(',').map((s) => s.trim().toUpperCase()).filter((s) => WEEKDAYS.some((d) => d.id === s))
+    : [];
+  return { freq, interval, weekdays };
+}
+
+/** ISO → 'YYYY-MM-DD' for the <input type="date"> "until" field. */
+function isoToDateInput(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Pure: the editor's initial form. An explicit seedMode (a day-click → one-shot)
+ * wins; otherwise pre-fill from the plan's current schedule when present; else a
+ * fresh recurring default.
+ */
+export function deriveInitialForm(opts: {
+  initial?: RawSchedule | null;
+  seedDate?: string;
+  seedMode?: ScheduleMode;
+  tzid: string;
+}): RecurrenceForm {
+  const { initial, seedDate, seedMode, tzid } = opts;
+  const seedLocal = defaultStart(seedDate);
+  const fresh: RecurrenceForm = {
+    mode: seedMode ?? 'recurring',
+    oneShotAt: seedLocal,
+    freq: 'WEEKLY',
+    interval: 1,
+    weekdays: [],
+    startAt: seedLocal,
+    until: '',
+    tzid,
+  };
+  // A day-click forces one-shot; don't override it with the existing recurrence.
+  if (seedMode || !initial) return fresh;
+  if (initial.scheduledAt) {
+    return { ...fresh, mode: 'one-shot', oneShotAt: defaultStart(initial.scheduledAt), tzid: initial.tzid ?? tzid };
+  }
+  if (initial.schedule?.rrule) {
+    const p = parseRrule(initial.schedule.rrule);
+    return {
+      ...fresh,
+      mode: 'recurring',
+      freq: p.freq,
+      interval: p.interval,
+      weekdays: p.weekdays,
+      startAt: defaultStart(initial.schedule.dtstart ?? undefined),
+      until: isoToDateInput(initial.expiresAt),
+      tzid: initial.tzid ?? initial.schedule.tzid ?? tzid,
+    };
+  }
+  return fresh;
+}
+
 export async function runScheduleTool(name: string, args: Record<string, unknown>): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
@@ -153,6 +237,7 @@ export default function ScheduleEditor({
   planTitle,
   seedDate,
   seedMode,
+  initial,
   isArmed,
   onClose,
   onSaved,
@@ -163,6 +248,8 @@ export default function ScheduleEditor({
   seedDate?: string;
   /** Force initial mode (a day-click seeds 'one-shot'). */
   seedMode?: ScheduleMode;
+  /** The plan's current schedule (plans.schedule row) — pre-fills the form for editing. */
+  initial?: RawSchedule | null;
   /** Current armed state, if known — drives the Arm/Pause toggle label. */
   isArmed?: boolean;
   onClose: () => void;
@@ -176,18 +263,12 @@ export default function ScheduleEditor({
       return 'UTC';
     }
   }, []);
-  const seedLocal = useMemo(() => defaultStart(seedDate), [seedDate]);
 
-  const [form, setForm] = useState<RecurrenceForm>({
-    mode: seedMode ?? 'recurring',
-    oneShotAt: seedLocal,
-    freq: 'WEEKLY',
-    interval: 1,
-    weekdays: [],
-    startAt: seedLocal,
-    until: '',
-    tzid,
-  });
+  // Pre-fill from the plan's current schedule when editing (deriveInitialForm); a
+  // day-click's seedMode forces a fresh one-shot. Initial form computed once.
+  const [form, setForm] = useState<RecurrenceForm>(() =>
+    deriveInitialForm({ initial, seedDate, seedMode, tzid }),
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 

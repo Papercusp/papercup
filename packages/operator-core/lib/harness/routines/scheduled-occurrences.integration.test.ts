@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { gatherScheduledOccurrences } from './scheduled-occurrences';
+import { gatherScheduledOccurrences, listPlanSchedules } from './scheduled-occurrences';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -139,5 +139,37 @@ describe('gatherScheduledOccurrences', () => {
 
   it('returns [] for an empty workspace window', async () => {
     expect(await gather()).toEqual([]);
+  });
+});
+
+describe('listPlanSchedules (D-020 — raw schedule read for the editor)', () => {
+  it('returns one row per scheduled plan with the raw schedule, window-independent', async () => {
+    await insertPlan({
+      slug: 'rec',
+      schedule: { kind: 'rrule', rrule: 'FREQ=WEEKLY;INTERVAL=2', dtstart: '2026-06-01T09:00:00.000Z' },
+      scheduleActive: true,
+      expiresAt: '2026-12-31T00:00:00.000Z',
+    });
+    // A one-shot FAR outside any calendar occurrence window still surfaces here.
+    await insertPlan({ slug: 'one-shot-future', scheduledAt: '2027-03-01T10:00:00.000Z' });
+
+    const rows = await listPlanSchedules(sql, { workspaceId: WS });
+    expect(rows.map((r) => r.templateSlug).sort()).toEqual(['one-shot-future', 'rec']);
+
+    const rec = rows.find((r) => r.templateSlug === 'rec')!;
+    expect(rec.schedule).toMatchObject({ kind: 'rrule', rrule: 'FREQ=WEEKLY;INTERVAL=2' });
+    expect(rec.scheduleActive).toBe(true);
+    expect(rec.expiresAt).toBe('2026-12-31T00:00:00.000Z');
+    expect(rec.scheduledAt).toBeNull();
+
+    const os = rows.find((r) => r.templateSlug === 'one-shot-future')!;
+    expect(os.schedule).toBeNull();
+    expect(os.scheduledAt).toBe('2027-03-01T10:00:00.000Z');
+    expect(os.scheduleActive).toBe(false);
+  });
+
+  it('excludes instance plans and returns [] when nothing is scheduled', async () => {
+    await insertPlan({ slug: 'tmpl@run-1', schedule: { kind: 'rrule', rrule: 'FREQ=DAILY' }, templateSlug: 'tmpl' });
+    expect(await listPlanSchedules(sql, { workspaceId: WS })).toEqual([]);
   });
 });

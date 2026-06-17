@@ -82,6 +82,17 @@ describe('sweepDeadOwnerPendingWakes (EI-314)', () => {
     expect(await remainingOwners()).toEqual(['su-justnow']);
   });
 
+  // The 4th quadrant of {old,recent}×{live,lapsed}: recent + live. Both guards
+  // protect it (under the age grace AND a fresh heartbeat) — doubly safe, never
+  // reaped. Completes the EI-314 matrix: only old+lapsed (quadrant a) is GC'd.
+  it('KEEPS a RECENT wake for a LIVE owner (both guards protect it)', async () => {
+    await seedWake('su-fresh', 5); // 5 min old, < 60m grace
+    await seedPresence('su-fresh', 1); // heartbeat 1 min ago → alive
+    const swept = await sweepDeadOwnerPendingWakes({ liveGraceMin: 60 });
+    expect(swept).toBe(0);
+    expect(await remainingOwners()).toEqual(['su-fresh']);
+  });
+
   it('mixed fleet: sweeps only the dead-owner old wakes, returns the count', async () => {
     await seedWake('su-ended-1', 200);
     await seedWake('su-ended-2', 200);

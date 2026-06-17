@@ -5,7 +5,7 @@
  * write path depends on; assert it tz-independently (structure + RRULE string).
  */
 import { describe, expect, it } from 'vitest';
-import { buildSchedulePayload, describeForm, type RecurrenceForm } from './ScheduleEditor';
+import { buildSchedulePayload, describeForm, deriveInitialForm, parseRrule, type RecurrenceForm, type RawSchedule } from './ScheduleEditor';
 
 const BASE: RecurrenceForm = {
   mode: 'recurring',
@@ -74,5 +74,63 @@ describe('describeForm', () => {
 
   it('summarises a one-shot', () => {
     expect(describeForm({ ...BASE, mode: 'one-shot' })).toContain('Fires once');
+  });
+});
+
+describe('parseRrule (D-020 pre-fill)', () => {
+  it('round-trips a weekly BYDAY rule', () => {
+    expect(parseRrule('FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE')).toEqual({ freq: 'WEEKLY', interval: 2, weekdays: ['MO', 'WE'] });
+  });
+  it('parses daily/monthly without BYDAY', () => {
+    expect(parseRrule('FREQ=DAILY;INTERVAL=3')).toEqual({ freq: 'DAILY', interval: 3, weekdays: [] });
+    expect(parseRrule('FREQ=MONTHLY')).toEqual({ freq: 'MONTHLY', interval: 1, weekdays: [] });
+  });
+  it('drops invalid BYDAY tokens and defaults a missing/garbage FREQ', () => {
+    expect(parseRrule('FREQ=WEEKLY;BYDAY=MO,XX,FR')).toEqual({ freq: 'WEEKLY', interval: 1, weekdays: ['MO', 'FR'] });
+    expect(parseRrule('nonsense')).toEqual({ freq: 'WEEKLY', interval: 1, weekdays: [] });
+  });
+  it('is the inverse of buildSchedulePayload for the supported subset', () => {
+    const built = buildSchedulePayload({ ...BASE, freq: 'WEEKLY', interval: 2, weekdays: ['MO', 'WE'] });
+    expect(parseRrule(built.schedule!.rrule)).toEqual({ freq: 'WEEKLY', interval: 2, weekdays: ['MO', 'WE'] });
+  });
+});
+
+describe('deriveInitialForm (D-020 pre-fill)', () => {
+  const TZ = 'America/New_York';
+  it('no initial ⇒ fresh recurring default', () => {
+    expect(deriveInitialForm({ tzid: TZ }).mode).toBe('recurring');
+  });
+  it('initial one-shot ⇒ one-shot mode', () => {
+    const initial: RawSchedule = { schedule: null, scheduledAt: '2026-07-01T13:30:00.000Z', expiresAt: null, tzid: TZ };
+    const f = deriveInitialForm({ initial, tzid: TZ });
+    expect(f.mode).toBe('one-shot');
+    expect(f.oneShotAt).toBeTruthy();
+  });
+  it('initial recurrence ⇒ pre-filled freq/interval/weekdays', () => {
+    // Round-trip expiresAt through the production untilToIso (inside buildSchedulePayload)
+    // so the `until` date is tz-independent — a raw midnight-UTC instant would resolve to
+    // the prior local day in behind-UTC zones (that's correct behaviour, not a bug).
+    const built = buildSchedulePayload({ ...BASE, freq: 'WEEKLY', interval: 2, weekdays: ['TU', 'TH'], until: '2026-12-31' });
+    const initial: RawSchedule = {
+      schedule: { kind: 'rrule', rrule: built.schedule!.rrule, dtstart: built.schedule!.dtstart },
+      scheduledAt: null,
+      expiresAt: built.expiresAt,
+      tzid: TZ,
+    };
+    const f = deriveInitialForm({ initial, tzid: TZ });
+    expect(f.mode).toBe('recurring');
+    expect(f.freq).toBe('WEEKLY');
+    expect(f.interval).toBe(2);
+    expect(f.weekdays).toEqual(['TU', 'TH']);
+    expect(f.until).toBe('2026-12-31');
+  });
+  it('an explicit seedMode (day-click) overrides the existing schedule', () => {
+    const initial: RawSchedule = {
+      schedule: { kind: 'rrule', rrule: 'FREQ=WEEKLY' },
+      scheduledAt: null,
+      expiresAt: null,
+      tzid: TZ,
+    };
+    expect(deriveInitialForm({ initial, seedMode: 'one-shot', tzid: TZ }).mode).toBe('one-shot');
   });
 });

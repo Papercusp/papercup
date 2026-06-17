@@ -81,4 +81,28 @@ describe('coord:resolve handler', () => {
     expect(body.error).toBe('already_resolved');
     expect(unblockLinkedCard).not.toHaveBeenCalled();
   });
+
+  // P1 (unify-agent-spawn-chokepoint P-005/P-006): a new_subagent spawn-approval
+  // escalation (meta.spawnRequest=true) is brain-only. coord:resolve never passes
+  // allowSpawnRequest, so the gate must SURFACE requires_spawn_approve as an
+  // isError envelope routing the brain to new_subagent:approve — NOT throw, NOT
+  // resolve, NOT unblock. This is "only the brain approves spawns" enforced at the
+  // tool layer rather than by prompt convention.
+  it('SURFACES requires_spawn_approve (not thrown) on a spawnRequest escalation, leaving it open + un-unblocked', async () => {
+    const e = await openEscalation(HUMAN, {
+      severity: 'question',
+      summary: 'spawn a sub-agent?',
+      meta: { spawnRequest: true },
+    });
+
+    // The call resolves to an envelope (does not throw).
+    const res = await run({ msg_id: e.msg_id, choice: 'approve' });
+    const body = parse(res);
+    expect(res.isError).toBe(true);
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe('requires_spawn_approve');
+    expect(body.detail).toContain('new_subagent:approve');
+    // The brain-gated routing means NO side effects fired.
+    expect(unblockLinkedCard).not.toHaveBeenCalled();
+  });
 });

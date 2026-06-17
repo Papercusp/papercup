@@ -74,6 +74,22 @@ describe('addHarnessToWorkspace', () => {
     expect(registries.default.find((p) => p.slug === 'restart')?.path).toBe('/home/u/Restart');
   });
 
+  it('M2: re-adding with a DIVERGENT path keeps the stale entry (slug-only compare) — does not refresh path and does not save', async () => {
+    // FLAG (M2, P3): addHarnessToWorkspace compares by SLUG only
+    // (harness-membership.ts:55), so a re-add carrying a corrected/changed
+    // `path` is reported as an unchanged no-op and the OLD path is retained.
+    // If a harness's on-disk link is ever relocated, the operator cannot
+    // refresh the registry path through this op — it silently keeps the stale
+    // one. Pinned as current behavior; flag if "refresh the entry on re-add"
+    // is the desired semantics.
+    const r = await addHarnessToWorkspace('default', entry('restart', '/home/u/Restart-RELOCATED'));
+    expect(r.changed).toBe(false);
+    // Stale path retained, NOT refreshed to the divergent one.
+    expect(registries.default.find((p) => p.slug === 'restart')?.path).toBe('/home/u/Restart');
+    // No write happened — the divergence is not persisted.
+    expect(saveCalls).toHaveLength(0);
+  });
+
   it('adds the first harness to an empty workspace', async () => {
     const r = await addHarnessToWorkspace('scratch', entry('x', '/home/u/x'));
     expect(r.changed).toBe(true);

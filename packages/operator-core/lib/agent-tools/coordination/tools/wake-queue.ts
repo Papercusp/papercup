@@ -168,6 +168,19 @@ export default defineTool({
       };
     }
     if (args.action === 'skip') {
+      // Scope the raw-id delete to THIS agent's own queue — `releasePendingWake`
+      // deletes by bare id, so without this membership check a caller could skip
+      // ANOTHER agent's staged wake by raw id (cross-agent isolation gap). Mirror
+      // `release`'s membership match: a foreign / unknown id is `not-found`, never
+      // a silent delete.
+      const target = (await listPendingWakes(args.agent)).find((p) => p.id === args.id);
+      if (!target) {
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify({ ok: false, reason: 'not-found', id: args.id }) },
+          ],
+        };
+      }
       await releasePendingWake(args.id);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, skipped: args.id }) }],
