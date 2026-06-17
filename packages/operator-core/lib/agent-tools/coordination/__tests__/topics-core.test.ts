@@ -129,6 +129,65 @@ describe('mergeTopicsCore', () => {
     expect(onTarget.map((s) => s.subscriber_id)).toEqual(['agentA']); // not ['agentA','agentA']
     expect(onTarget[0].delivery_mode).toBe('digest'); // mode preserved
   });
+
+  // T3 (pinned, not a bug): when a subscriber already follows the TARGET in a
+  // DIFFERENT mode than the merged slug, the re-subscribe upserts — so the
+  // FROM-side mode WINS (overwrites the target's existing mode). And `moved`
+  // counts the re-point per FROM subscriber even though no NEW row was created
+  // (the subscriber was already on the target). Pinned so a future change to the
+  // collision policy (e.g. keep most-verbose, or don't double-count) is conscious.
+  it('on a mode collision the from-side mode wins, and `moved` counts the already-on-target subscriber', async () => {
+    const stores = makeStores();
+    await stores.topics.create({ slug: 'fed', description: 'dup', created_ts: TS });
+    await stores.topics.create({ slug: 'federation', description: 'canonical', created_ts: TS });
+    // agentA follows fed in FULL but already follows federation in MENTION.
+    await stores.subscriptions.subscribe({ subscriber_id: 'agentA', target_kind: 'topic', target_ref: 'fed', delivery_mode: 'full', created_ts: TS });
+    await stores.subscriptions.subscribe({ subscriber_id: 'agentA', target_kind: 'topic', target_ref: 'federation', delivery_mode: 'mention', created_ts: TS });
+
+    const res = await mergeTopicsCore(stores, { from: 'fed', into: 'federation', nowIso: TS });
+    // Counts the move even though agentA was already on the target.
+    expect(res.moved).toBe(1);
+
+    const onTarget = await stores.subscriptions.listTargetSubscribers('topic', 'federation');
+    expect(onTarget.map((s) => s.subscriber_id)).toEqual(['agentA']);
+    // The from-side mode (full) overwrote the target's prior mention.
+    expect(onTarget[0].delivery_mode).toBe('full');
+  });
+
+  // T2 (the chained-merge stranding bug): when `into` is ITSELF already merged
+  // (into c), re-pointing the `from` subscribers onto `into` VERBATIM lands them
+  // on a dead, list()-excluded slug. The fan-out
+  // (resolveObjectSubscribers) keys delivery on the CANONICAL resolved tag slug,
+  // never on a subscriber's raw target_ref — so a subscriber stranded on the
+  // merged middle slug `b` is silently dropped from c's feed forever. The merge
+  // must resolve `into` to its canonical head before re-pointing.
+  it('re-points subscribers onto the CANONICAL head when `into` is itself already merged (no stranding)', async () => {
+    const stores = makeStores();
+    await stores.topics.create({ slug: 'a', description: 'a', created_ts: TS });
+    await stores.topics.create({ slug: 'b', description: 'b', created_ts: TS });
+    await stores.topics.create({ slug: 'c', description: 'c', created_ts: TS });
+    // b is already merged into c.
+    await mergeTopicsCore(stores, { from: 'b', into: 'c', nowIso: TS });
+    // agentA follows a.
+    await stores.subscriptions.subscribe({ subscriber_id: 'agentA', target_kind: 'topic', target_ref: 'a', delivery_mode: 'full', created_ts: TS });
+
+    // Now merge a into b — but b is dead, so agentA must land on canonical c.
+    const res = await mergeTopicsCore(stores, { from: 'a', into: 'b', nowIso: TS });
+    expect(res.moved).toBe(1);
+
+    // agentA ends on the live canonical c, NOT on the dead middle slug b.
+    expect(await stores.subscriptions.listTargetSubscribers('topic', 'a')).toEqual([]);
+    expect(await stores.subscriptions.listTargetSubscribers('topic', 'b')).toEqual([]); // not stranded here
+    const onC = await stores.subscriptions.listTargetSubscribers('topic', 'c');
+    expect(onC.map((s) => s.subscriber_id)).toEqual(['agentA']);
+    expect(onC[0].delivery_mode).toBe('full'); // mode preserved
+
+    // And c IS a live topic the subscriber can see (list excludes a and b).
+    const live = (await stores.topics.list()).map((t) => t.slug);
+    expect(live).toContain('c');
+    expect(live).not.toContain('a');
+    expect(live).not.toContain('b');
+  });
 });
 
 describe('delivery-mode gating (D-006)', () => {

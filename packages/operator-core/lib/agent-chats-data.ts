@@ -323,11 +323,15 @@ export interface ArchiveChatInput {
 export async function archiveChat(input: ArchiveChatInput): Promise<Result<{ ok: true }>> {
   try {
     const db = dbForSlug(input.slug);
-    const pre = (await db
-      .prepare('SELECT role, feature_id FROM agent_chats WHERE id = ?')
-      .get(input.chatId)) as
-      | { role: string; feature_id: string | null }
-      | undefined;
+    // NB: archive does NOT touch any feature lock. Feature locks live in
+    // harness_features.taken_by (acquired/released by the work-item /
+    // orchestrator claim path), not on the chat — getChat/createChat only
+    // *read* lock state via readFeatureLockState. A chat is just a
+    // conversation transcript; archiving it sets archived_at and nothing
+    // else. (A `SELECT role, feature_id … AS pre` once lived here to drive
+    // the experts "flipExpertEngaged off" side-effect; that wiring was
+    // removed in the experts-rip-out refactor and the orphaned SELECT — a
+    // wasted round-trip — is removed here too.)
     const nowMs = Date.now();
     await db
       .prepare('UPDATE agent_chats SET archived_at = ?, updated_at = ? WHERE id = ?')

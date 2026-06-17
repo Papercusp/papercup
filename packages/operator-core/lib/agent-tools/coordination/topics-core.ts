@@ -136,13 +136,23 @@ export async function mergeTopicsCore(
 ): Promise<MergeTopicsResult> {
   if (args.from === args.into) return { moved: 0 };
   await stores.topics.merge(args.from, args.into);
+  // Re-point onto the CANONICAL head, not `into` verbatim: if `into` was itself
+  // already merged (into c), parking subscribers on the dead middle slug would
+  // strand them — list() excludes it and the fan-out keys delivery on the
+  // resolved tag slug (resolveObjectSubscribers), never on a raw target_ref, so
+  // they'd silently lose the feed. resolve() follows the chain to the live slug.
+  // (A self-pointing chain — e.g. into===from after a cycle — resolves back to
+  // `from`; the from===canonical guard then skips the no-op re-subscribe so we
+  // don't unsubscribe-then-orphan the very subscribers we just moved.)
+  const canonical = await stores.topics.resolve(args.into);
+  if (canonical === args.from) return { moved: 0 };
   const subs = await stores.subscriptions.listTargetSubscribers('topic', args.from);
   let moved = 0;
   for (const s of subs) {
     await stores.subscriptions.subscribe({
       subscriber_id: s.subscriber_id,
       target_kind: 'topic',
-      target_ref: args.into,
+      target_ref: canonical,
       delivery_mode: s.delivery_mode,
       created_ts: args.nowIso,
     });

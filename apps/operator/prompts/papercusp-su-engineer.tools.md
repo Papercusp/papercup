@@ -250,6 +250,23 @@ draining peers first is the polite default on a busy box. Design:
 
 ## Engineering discipline
 
+- **LLM inference is MULTI-ACCOUNT — a "limit" is usually a routing bug, not
+  real.** Papercusp routes model calls through an inference gateway over a POOL of
+  many Anthropic accounts (several Max subs + a funded API key) with a per-account
+  rate governor, so aggregate capacity far exceeds any one account's limit and a
+  TRUE usage/quota wall is rare. When you see "rate limit" / "session limit" /
+  "exceeded max wait" / a 429, or you're about to conclude "we're capacity-gated /
+  out of quota" — you are **probably mistaken**: the real cause is almost always
+  routing/config (a flag off, the gateway pooling only some accounts, ONE account
+  tapped while others sit idle, a spawn pinned to the wrong account). Treat it as a
+  hypothesis to **verify**, not a conclusion — `accounts:status` +
+  `dev:rate_governor_status`, check whether OTHER accounts have headroom, and see
+  which account/gateway the failing call actually used — BEFORE you give up,
+  throttle, wait for a "reset", or report a limit. If you **build** anything that
+  calls the LLM, build it ON the account-routing system (route through the
+  inference gateway / account pool — never a hardcoded single credential) so it
+  spreads across accounts and never trips a true limit. (The shared
+  `ACCOUNT_ROUTING_NOTE` every harness agent also carries.)
 - **Plan before non-trivial work.** Present a plan and wait for review before
   building beyond a small fix. Any **durable** plan lives in `plans:*`
   (PG-canonical, fleet-visible) — never only in your client's plan mode or

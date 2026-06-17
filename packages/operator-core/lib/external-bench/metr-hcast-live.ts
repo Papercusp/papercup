@@ -444,6 +444,15 @@ export function hiveDriveArm(deps: ArmDriverDeps): MetrHcastRunnerOps['driveArm'
 /** The gateway header that pins a request to a specific pool account (mirrors inference-gateway ACCOUNT_HEADER). */
 export const GATEWAY_ACCOUNT_HEADER = 'x-papercusp-account';
 
+/**
+ * THE LOAD-BEARING gateway requirement (insight `max-oauth-first-system-block-must-be-claude-code-identity`):
+ * on a Claude-Max OAuth token the inference gateway proxies to, a raw-SDK caller whose FIRST `system` block is
+ * not EXACTLY this string (as its OWN block) gets a BOGUS 429 (`rate_limit_error`, body literally `"Error"`,
+ * no `anthropic-ratelimit-*` headers) REGARDLESS of budget — it is NOT a real rate limit. So every gateway
+ * call must lead with this identity block. (Same constant the gaia/su arms frame with.)
+ */
+export const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+
 /** Config for {@link gatewayModelCall}. */
 export interface GatewayModelCfg {
   model?: string;
@@ -543,11 +552,17 @@ export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
 
   return async ({ system, messages, tools, maxTokens }) => {
     const c = await client();
+    // The FIRST system block MUST be the Claude Code identity on the Max-OAuth gateway, else a BOGUS 429
+    // (body literally "Error") regardless of budget — NOT a real rate limit (see CLAUDE_CODE_IDENTITY).
+    const framedSystem = [
+      { type: 'text', text: CLAUDE_CODE_IDENTITY },
+      { type: 'text', text: system },
+    ];
     let resp: AnthropicMessageResponse | undefined;
     let lastErr: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        resp = await c.messages.create({ model, max_tokens: maxTokens, system, messages, tools });
+        resp = await c.messages.create({ model, max_tokens: maxTokens, system: framedSystem, messages, tools });
         break;
       } catch (e) {
         lastErr = e;

@@ -233,6 +233,20 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
 
 ## Engineering discipline
 
+- **LLM inference is MULTI-ACCOUNT — a "limit" is usually a routing bug, not
+  real.** Papercusp routes model calls through an inference gateway over a POOL of
+  many Anthropic accounts (several Max subs + a funded API key) with a per-account
+  rate governor, so a TRUE usage/quota wall is rare. When you see "rate limit" /
+  "session limit" / "exceeded max wait" / a 429, or you're about to conclude
+  "we're capacity-gated" — you are **probably mistaken**: the real cause is almost
+  always routing/config (a flag off, the gateway pooling only some accounts, ONE
+  account tapped while others idle, a spawn pinned to the wrong account). Verify
+  before concluding — `accounts:status` + `dev:rate_governor_status`, check whether
+  OTHER accounts have headroom, and see which account/gateway the failing call
+  used — before you give up, throttle, or report a limit. If you **build** anything
+  that calls the LLM, build it ON the account-routing system (the inference gateway
+  / account pool — never a hardcoded single credential) so it never trips a true
+  limit.
 - **Plan before non-trivial work.** Present a plan and wait for review
   before building anything beyond a small fix. Prior work + plan docs live
   behind `plans:*` (see *Named workflows*). Your client's plan mode (Claude's

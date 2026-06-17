@@ -80,6 +80,73 @@ export function describeTopicStoreConformance(
       expect(await store.resolve(a)).toBe(b);
       expect(await store.resolve(b)).toBe(b);
     });
+
+    // T1(a): a multi-hop chain resolves transitively to the live head, and EVERY
+    // merged slug in the chain drops out of list() (only the canonical head is
+    // live). merge() is a blind alias write — resolve() is the only thing that
+    // follows the chain, so both stores must walk it identically.
+    it('resolve walks a 2-hop chain to the canonical head; list excludes every merged slug', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const a = uid();
+      const b = uid();
+      const c = uid();
+      const ts = '2026-01-01T00:00:00.000Z';
+      await store.create({ slug: a, description: 'a', created_ts: ts });
+      await store.create({ slug: b, description: 'b', created_ts: ts });
+      await store.create({ slug: c, description: 'c', created_ts: ts });
+      await store.merge(a, b); // a → b
+      await store.merge(b, c); // b → c, so a → b → c
+      expect(await store.resolve(a)).toBe(c);
+      expect(await store.resolve(b)).toBe(c);
+      expect(await store.resolve(c)).toBe(c);
+      const live = (await store.list()).map((t) => t.slug);
+      expect(live).toContain(c);
+      expect(live).not.toContain(a);
+      expect(live).not.toContain(b);
+      // includeMerged surfaces the whole chain.
+      expect((await store.list({ includeMerged: true })).map((t) => t.slug)).toEqual(
+        expect.arrayContaining([a, b, c]),
+      );
+    });
+
+    // T1(b): merge() is a blind UPDATE — it does NOT reject a cycle-creating
+    // alias (merge(a,b); merge(b,a) leaves a↔b pointing at each other). resolve()
+    // must still TERMINATE (its `seen` cycle-guard breaks the walk) and return a
+    // DETERMINISTIC value. PINNED: the guard breaks when the walk revisits the
+    // START slug, so resolve(x) returns x itself for each member of a 2-cycle.
+    it('resolve terminates + is deterministic on a merge-created cycle (pinned: returns the start slug)', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const a = uid();
+      const b = uid();
+      const ts = '2026-01-01T00:00:00.000Z';
+      await store.create({ slug: a, description: 'a', created_ts: ts });
+      await store.create({ slug: b, description: 'b', created_ts: ts });
+      await store.merge(a, b);
+      await store.merge(b, a); // cycle: a → b → a
+      // Terminates (no hang/throw) AND is deterministic: the start slug.
+      expect(await store.resolve(a)).toBe(a);
+      expect(await store.resolve(b)).toBe(b);
+    });
+
+    // T1(c): a chain deeper than the 16-iteration cap stops AT the cap without
+    // throwing or hanging. PINNED: a 17-merge chain (t0 → … → t17) walked from t0
+    // halts after 16 hops at t16 (the cap-truncated head), NOT the true terminal
+    // t17. The cap is a safety bound, not a correctness guarantee for pathological
+    // depths — pinned so a change to it is a conscious one.
+    it('resolve stops at the 16-iteration cap on an over-deep chain without throwing (pinned: t16)', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const ts = '2026-01-01T00:00:00.000Z';
+      const slugs = Array.from({ length: 18 }, () => uid()); // s0 … s17
+      for (const s of slugs) await store.create({ slug: s, description: 's', created_ts: ts });
+      for (let i = 0; i < 17; i++) await store.merge(slugs[i], slugs[i + 1]); // s0 → … → s17
+      // 16-iter cap: from s0 we walk s0→s1→…→s16 (16 hops) then stop AT s16.
+      expect(await store.resolve(slugs[0])).toBe(slugs[16]);
+      // Resolving nearer the head still reaches the true terminal (within the cap).
+      expect(await store.resolve(slugs[2])).toBe(slugs[17]);
+    });
   });
 }
 

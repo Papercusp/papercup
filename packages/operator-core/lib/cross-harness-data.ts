@@ -12,7 +12,25 @@
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
+// A harness slug feeds a schema IDENTIFIER into `sql.unsafe` below (`${schema}.
+// messages`), so it MUST be validated before interpolation — postgres-js does
+// no escaping for `.unsafe` string concatenation. Harness slugs are [a-z0-9_-]
+// (migration 044's `'harness_' || lower(replace(slug,'-','_'))`); the sibling
+// agent-mcp `messages:inbox` tool guards the SAME vector with this regex (audit
+// P-029). A dot would survive into the identifier (postgres-js splits dotted
+// identifiers into qualified parts), so dots are rejected too.
+const SLUG_RE = /^[a-z0-9_-]+$/i;
+
+/**
+ * Map a harness slug to its PG schema name (`harness_<lower-slug, hyphens→
+ * underscores>`). Throws on a slug that isn't a single safe identifier segment
+ * — the schema name is interpolated raw into `sql.unsafe`, so an unvalidated
+ * slug would be a SQL-injection vector (mirrors `messages:inbox`'s guard).
+ */
 export function slugToSchema(slug: string): string {
+  if (!SLUG_RE.test(slug)) {
+    throw new Error(`invalid harness slug ${JSON.stringify(slug)}`);
+  }
   return 'harness_' + slug.replace(/-/g, '_').toLowerCase();
 }
 

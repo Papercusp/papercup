@@ -78,4 +78,65 @@ describe('user-trust-list — owner trust CRUD (migration 276)', () => {
        WHERE action = 'trust:add' AND subject = '314' AND workspace_id = ${WS_A} LIMIT 1`;
     expect(audit).toMatchObject({ action: 'trust:add', subject: '314', actor: 'su-auditor', workspace_id: WS_A });
   });
+
+  // TR2 — empty-workspace guards. listTrustedUsers('') short-circuits WITHOUT
+  // touching PG (user-trust-list.ts:38); add/remove REJECT (:61, :80). The empty
+  // string is the "no resolved workspace" sentinel — an unscoped write here would
+  // be a cross-workspace trust leak, so it must hard-fail, never silently widen.
+  it('empty-workspace guards: list → [] without PG; add/remove reject /no workspace/', async () => {
+    expect(await listTrustedUsers('')).toEqual([]);
+    await expect(addTrustedUser('', { githubUserId: 1, actor: 'su-test', nowMs: 1 })).rejects.toThrow(/no workspace/);
+    await expect(removeTrustedUser('', 1, 'su-test')).rejects.toThrow(/no workspace/);
+  });
+
+  // TR2 — the SECURITY-CRITICAL fire-safe audit (user-trust-list.ts:111). The
+  // trust INSERT has already COMMITTED by the time the audit row is written; a
+  // failed audit write must therefore NEVER fail the grant (else a transient
+  // audit-table problem would silently break the trust system). We make ONLY the
+  // audit_log INSERT throw (the trust INSERT still hits real PG) and assert the
+  // grant both RESOLVES with the trusted row AND is durably present.
+  it('a FAILED audit write does NOT fail the (already committed) grant — the row survives', async () => {
+    const realSql = db.adminSql;
+    // A callable tagged-template proxy over the real admin handle: throw only for
+    // the audit_log INSERT; delegate every other query (incl. the trust INSERT)
+    // verbatim. Object.assign carries postgres-js's own methods (.begin etc.) so
+    // the handle stays otherwise intact.
+    const failingAuditSql = Object.assign(
+      (strings: TemplateStringsArray, ...values: unknown[]) => {
+        if (Array.isArray(strings) && strings.join('').includes('audit_log')) {
+          throw new Error('audit table is down');
+        }
+        return (realSql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(strings, ...values);
+      },
+      realSql,
+    ) as unknown as postgres.Sql;
+
+    h.sql = failingAuditSql;
+    // The fire-safe path warns instead of throwing; capture the warning explicitly
+    // (vitest-fail-on-console would otherwise fail the run, and the warn IS the
+    // documented swallow — capturing it proves the catch arm actually ran). We
+    // replace console.warn directly (not vi.spyOn, which layers over the
+    // fail-on-console interceptor) and record the args ourselves.
+    const warnings: unknown[][] = [];
+    const origWarn = console.warn;
+    console.warn = (...a: unknown[]) => void warnings.push(a);
+    let trusted: Awaited<ReturnType<typeof addTrustedUser>>;
+    try {
+      // Must NOT throw even though the audit INSERT throws inside recordTrustAudit.
+      trusted = await addTrustedUser(WS_A, { githubUserId: 4242, note: 'survives', actor: 'su-test', nowMs: 7000 });
+    } finally {
+      h.sql = realSql; // restore for assertions + later tests
+      console.warn = origWarn;
+    }
+    expect(trusted).toEqual({ githubUserId: 4242, note: 'survives', createdTs: 7000 });
+    // The catch arm ran (audit failure was swallowed, not propagated).
+    expect(warnings).toContainEqual(['[trust] audit write failed:', 'audit table is down']);
+    // The grant is durably present despite the audit failure.
+    expect((await listTrustedUsers(WS_A)).some((u) => u.githubUserId === 4242)).toBe(true);
+    // ...and no audit row was written for it (proving the injection actually hit).
+    const auditRows = await realSql`
+      SELECT 1 FROM harness_shared.audit_log
+       WHERE action = 'trust:add' AND subject = '4242' AND workspace_id = ${WS_A}`;
+    expect(auditRows.length).toBe(0);
+  });
 });

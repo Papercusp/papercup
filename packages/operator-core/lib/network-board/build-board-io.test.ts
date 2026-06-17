@@ -86,3 +86,110 @@ describe('buildNetworkBoard — directed grants (B-05 integration)', () => {
     expect(rows.find((r) => r.key === 'pk')!.grants).toEqual({ in: [], out: ['work-request'] });
   });
 });
+
+// ── NB1: readAsksByPeer bucketing (private fn, reached only via buildNetworkBoard).
+//    Each outbound ask row is bucketed by its `state`: queued|sent → pending,
+//    answered → answered, declined|expired → NEITHER (build-board.ts:208-210).
+//    The summary lands on the tier-4 row whose pubkey matches the ask's
+//    peerPubkey; a store throw yields an empty map (no `asks` on any row).
+//    The pure assembler test only feeds asksByPeer pre-built — this is the only
+//    coverage of the buckets + the per-peer aggregation + the throw fallback.
+function mockSourcesWithAsks(askRows: unknown[] | (() => never)) {
+  // Two foreign peers so per-peer aggregation (not a global tally) is observable.
+  const foreign = (pubkey: string) => ({ ...FOREIGN, hiveId: `hid-${pubkey}`, hivePubkey: pubkey });
+  vi.doMock('../agent-tools/hive/_resolve', () => ({
+    listHives: vi.fn(async () => []),
+    liveAgentCountByHarness: vi.fn(() => new Map()),
+  }));
+  vi.doMock('../fleet/assignments', () => ({ listFleetAssignments: vi.fn(async () => []) }));
+  vi.doMock('../agent-tools/coordination/federated-presence', () => ({
+    listFederatedPresence: vi.fn(async () => []),
+  }));
+  vi.doMock('../hive-directory-deps', () => ({
+    getHiveDirectory: () => ({ listDiscoveredHives: () => [foreign('pkA'), foreign('pkB')] }),
+  }));
+  vi.doMock('../cross-hive-grants', () => ({
+    loadDirectedCrossHiveGrants: vi.fn(async () => ({ in: [], out: [] })),
+  }));
+  const listCalls: Array<{ direction?: string }> = [];
+  vi.doMock('../cross-hive-asks-pg', () => ({
+    PgCrossHiveAsks: class {
+      async list(opts: { direction?: string }) {
+        listCalls.push(opts);
+        if (typeof askRows === 'function') return askRows();
+        return askRows;
+      }
+    },
+  }));
+  vi.doMock('../hive/wake', () => ({ resolveHiveHomeSlug: () => 'home' }));
+  vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
+  return listCalls;
+}
+
+describe('buildNetworkBoard — readAsksByPeer bucketing (NB1)', () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  const ask = (peerPubkey: string, state: string) => ({ peerPubkey, state });
+
+  it('buckets queued|sent → pending, answered → answered, declined|expired → neither, per peer', async () => {
+    mockSourcesWithAsks([
+      // peer A: all five states once each → pending 2 (queued+sent), answered 1,
+      // declined+expired contribute to NEITHER bucket.
+      ask('pkA', 'queued'),
+      ask('pkA', 'sent'),
+      ask('pkA', 'answered'),
+      ask('pkA', 'declined'),
+      ask('pkA', 'expired'),
+      // peer B: two answered + one queued → pending 1, answered 2 (separate tally).
+      ask('pkB', 'answered'),
+      ask('pkB', 'answered'),
+      ask('pkB', 'queued'),
+    ]);
+    const { buildNetworkBoard } = await import('./build-board');
+    const rows = await buildNetworkBoard({ workspaceId: 'ws' });
+
+    const a = rows.find((r) => r.key === 'pkA')!;
+    const b = rows.find((r) => r.key === 'pkB')!;
+    expect(a.asks).toEqual({ pending: 2, answered: 1 }); // declined+expired excluded
+    expect(b.asks).toEqual({ pending: 1, answered: 2 });
+  });
+
+  it('reads only the OUTBOUND direction from the ask ledger', async () => {
+    const listCalls = mockSourcesWithAsks([ask('pkA', 'queued')]);
+    const { buildNetworkBoard } = await import('./build-board');
+    await buildNetworkBoard({ workspaceId: 'ws' });
+    expect(listCalls).toEqual([{ direction: 'out' }]);
+  });
+
+  it('omits asks on a peer with only declined/expired rows (no zero-noise summary)', async () => {
+    mockSourcesWithAsks([ask('pkA', 'declined'), ask('pkA', 'expired')]);
+    const { buildNetworkBoard } = await import('./build-board');
+    const rows = await buildNetworkBoard({ workspaceId: 'ws' });
+    // peer A is in the map (it had rows) but both resolved-not-answered →
+    // pending 0 / answered 0. The summary object still attaches (the row had
+    // ledger rows); both counts are 0 — pinning the bucket math, not omission.
+    expect(rows.find((r) => r.key === 'pkA')!.asks).toEqual({ pending: 0, answered: 0 });
+  });
+
+  it('a peer with NO ledger rows carries no asks summary', async () => {
+    mockSourcesWithAsks([ask('pkA', 'queued')]); // only pkA has rows
+    const { buildNetworkBoard } = await import('./build-board');
+    const rows = await buildNetworkBoard({ workspaceId: 'ws' });
+    expect(rows.find((r) => r.key === 'pkB')!.asks).toBeUndefined();
+  });
+
+  it('a store throw yields an empty map → no peer carries asks (board still renders)', async () => {
+    mockSourcesWithAsks(() => {
+      throw new Error('ledger unavailable');
+    });
+    const { buildNetworkBoard } = await import('./build-board');
+    const rows = await buildNetworkBoard({ workspaceId: 'ws' });
+    // Both tier-4 peers still render; neither carries an asks summary.
+    expect(rows.filter((r) => r.tier === 4)).toHaveLength(2);
+    expect(rows.every((r) => r.asks === undefined)).toBe(true);
+  });
+});

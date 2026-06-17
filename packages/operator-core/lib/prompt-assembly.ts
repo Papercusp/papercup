@@ -49,6 +49,7 @@ import { renderCoordLegend } from './coord-schema';
 import { renderFrictionTripwire } from './harness/improvements/friction-markers';
 import { renderYieldPolicy } from './turn-yield-policy';
 import { renderTestingStandard } from './testing-standard-policy';
+import { renderAccountRoutingNote } from './account-routing-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -412,6 +413,17 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (yieldPolicy) {
     parts.push(yieldPolicy);
     sections.push({ name: 'yield-policy', chars: yieldPolicy.length });
+  }
+
+  // Multi-account inference note — the SHARED base every operator-launched role
+  // inherits, mirroring the spawned-bee base. Kills the recurring mis-diagnosis of a
+  // routing/config fault as a true capacity limit ("we hit the account limit") and
+  // steers LLM-building work onto the account-routing system. Sourced from the one
+  // ACCOUNT_ROUTING_NOTE constant (orchestrator) so the bases + su playbooks can't desync.
+  const accountNote = renderAccountRoutingNote();
+  if (accountNote) {
+    parts.push(accountNote);
+    sections.push({ name: 'account-routing-note', chars: accountNote.length });
   }
 
   // Testing standard (the "write tests the project way" clause) — the SHARED base
