@@ -27,6 +27,7 @@ import {
   type TheAgentCompanyGraderConfig,
   type TheAgentCompanyGraderDeps,
 } from './the-agent-company';
+import { makeGaiaGrader, type GaiaGraderConfig } from './gaia-official';
 
 export { makeFakeGrader } from './fake';
 export { makeSweBenchProGrader, parseSweBenchProReport } from './swe-bench-pro';
@@ -49,6 +50,7 @@ export {
   computeTacScore,
   extractTacCheckpoints,
 } from './the-agent-company';
+export { makeGaiaGrader, type GaiaGraderConfig } from './gaia-official';
 export type {
   TheAgentCompanyGraderConfig,
   TheAgentCompanyGraderDeps,
@@ -89,6 +91,7 @@ export interface GraderRegistryConfig {
   sweBenchVerified?: SweBenchVerifiedGraderConfig;
   sweLancer?: SweLancerGraderConfig;
   theAgentCompany?: TheAgentCompanyGraderConfig;
+  gaia?: GaiaGraderConfig;
 }
 
 /**
@@ -130,6 +133,10 @@ export function getOfficialGrader(
         exec: deps?.exec ?? liveProcExec,
         fs: deps?.fs ?? liveGraderFs,
       } satisfies TheAgentCompanyGraderDeps);
+    }
+    case 'gaia': {
+      if (!cfg.gaia) throw new Error('getOfficialGrader: gaia requires a GaiaGraderConfig');
+      return makeGaiaGrader(cfg.gaia);
     }
     case 'terminal-bench':
     case 'harness-bench':

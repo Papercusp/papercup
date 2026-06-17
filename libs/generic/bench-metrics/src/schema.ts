@@ -29,12 +29,20 @@
  *    recomputable by a third party from the stored tokens + the table.
  */
 
-/** The four comparison arms — LOCKED vocabulary; the delta math keys on these. */
+/**
+ * Comparison arm. The four SWE-pilot arms below are the canonical, documented
+ * vocabulary the delta math keys on; the union is OPEN ((string & {})) so OTHER
+ * benchmarks (tau2-bench, the-agent-company, …) ride the same schema + dual-arm
+ * report with their own arm ids (e.g. 'hive' | 'su' | 'baseline-opus') — name
+ * the treatment via `buildSuiteReport`'s `treatmentArm` opt. Same open-enum
+ * pattern as `BenchSuite` / `FleetArmId`.
+ */
 export type ArmId =
   | 'papercusp' //            the treatment: full multi-agent spine + coordination substrate
   | 'baseline-a-ablation' //  single-worker ablation (identical tools/model/infra/budget)
   | 'baseline-b-native' //    native harness (Claude Code on the same model) — the headline baseline
-  | 'baseline-c-bestofn'; //  best-of-N + test-verifier at matched token budget
+  | 'baseline-c-bestofn' //   best-of-N + test-verifier at matched token budget
+  | (string & {}); //         other benchmarks' arms (interactive/breadth suites)
 
 export const ARM_IDS: readonly ArmId[] = [
   'papercusp',
@@ -71,8 +79,9 @@ export type BenchSuite =
   | 'agentsnet'
   | (string & {});
 
-/** Grader modality (P-001 §1): offline diff-batch vs online in-container. */
-export type GraderModality = 'diff' | 'in-container';
+/** Grader modality (P-001 §1): offline diff-batch · online in-container · qa (a single FINAL ANSWER string,
+ *  quasi-exact-match graded — GAIA; plan benchmark-suite-gaia-2026-06-17). */
+export type GraderModality = 'diff' | 'in-container' | 'qa';
 
 /**
  * Normalized grader outcome. `error`/`timeout` are INFRA failures, distinct

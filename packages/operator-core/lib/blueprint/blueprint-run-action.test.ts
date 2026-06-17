@@ -109,32 +109,24 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     expect(spawn.body.extra).toContain('BLUEPRINT_ID=scan');
   });
 
-  it('payload.timeoutMs threads through to the launch fire (a scan needs >> the 90s route default)', async () => {
-    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
-    setLaunchBlueprintFire((input) => {
-      fired.push(input);
-    });
-
-    await handleBlueprintRun(
+  it('payload.timeoutMs threads through to the durable launch body (a scan needs >> the 90s route default)', async () => {
+    const result = (await handleBlueprintRun(
       ctx({ payloadTemplate: { blueprintId: 'scan', kickoff: 'sweep now', timeoutMs: 900_000 } }),
-    );
+    )) as SystemActionResult | undefined;
 
-    expect(fired).toHaveLength(1);
-    expect(fired[0]).toMatchObject({ blueprintId: 'scan', role: 'scanner', timeoutMs: 900_000 });
+    expect(result?.durableSpawns).toHaveLength(1);
+    const spawn = result!.durableSpawns![0];
+    expect(spawn.spawnRecord?.childRole).toBe('scanner');
+    expect(spawn.body.timeoutMs).toBe(900_000);
   });
 
-  it('a missing/garbage payload.timeoutMs is omitted from the fire (route default applies)', async () => {
-    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
-    setLaunchBlueprintFire((input) => {
-      fired.push(input);
-    });
-
-    await handleBlueprintRun(
+  it('a missing/garbage payload.timeoutMs is omitted from the durable launch body (route default applies)', async () => {
+    const result = (await handleBlueprintRun(
       ctx({ payloadTemplate: { blueprintId: 'scan', kickoff: 'sweep', timeoutMs: 'soon' } }),
-    );
+    )) as SystemActionResult | undefined;
 
-    expect(fired).toHaveLength(1);
-    expect(fired[0].timeoutMs).toBeUndefined();
+    expect(result?.durableSpawns).toHaveLength(1);
+    expect(result!.durableSpawns![0].body.timeoutMs).toBeUndefined();
   });
 
   it('payload.blueprintId for a PROGRAM-mode blueprint runs its deterministic program inline (P-011)', async () => {

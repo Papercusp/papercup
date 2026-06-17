@@ -298,7 +298,11 @@ async function ctxFor(slug: string): Promise<SystemActionCtx> {
   return { installSlug: slug, workspaceId: WS, triggerConfig: cfgOf(row), payloadTemplate: null };
 }
 
-const tick = async (slug: string): Promise<void> => action()(await ctxFor(slug));
+const tick = async (slug: string): Promise<void> => {
+  // The shared SystemAction handler type is `Promise<void | SystemActionResult>`
+  // (some actions return durableSpawns) — await + discard so this stays Promise<void>.
+  await action()(await ctxFor(slug));
+};
 
 /** Poll the routine's `last_resolver` until the dispatch observe-loop settles. */
 async function waitForResolverSettle(slug: string, status: 'ok' | 'failed' | 'error'): Promise<Row> {

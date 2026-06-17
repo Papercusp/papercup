@@ -198,6 +198,12 @@ export interface ArmAttempt {
 
   /** Unified diff base..HEAD, grader test-files excluded; "" when the arm produced no change (M1). */
   diff: string;
+  /**
+   * The agent's final answer STRING — the Q&A-modality output (GAIA: the `FINAL ANSWER` text the arm wrote).
+   * Carried alongside `diff` (which is "" for a qa-modality arm) so the same ArmAttempt shape serves both the
+   * diff arms (SWE-bench) and the answer arms (GAIA). Absent for diff/in-container arms. See {@link qaSubmission}.
+   */
+  answer?: string;
 
   // ---- cost accounting (coordination overhead INCLUDED — fairness #2) ----
   tokensIn: number;
@@ -243,11 +249,23 @@ export type ArmSubmission =
       instanceId: string;
       envRef: string;
       prefix: string;
+    }
+  | {
+      modality: 'qa'; // M3 (GAIA) — a single FINAL ANSWER string, quasi-exact-match graded (no diff, no env)
+      instanceId: string;
+      /** The agent's final answer text the grader scores against the gold answer. */
+      answer: string;
+      prefix: string;
     };
 
 /** Build the M1 predictions record for an attempt (the shape `swe_bench_pro_eval.py` ingests). */
 export function diffSubmission(attempt: ArmAttempt): ArmSubmission {
   return { modality: 'diff', instanceId: attempt.instanceId, patch: attempt.diff, prefix: attempt.seed };
+}
+
+/** Build the M3 (qa) submission for an attempt — the GAIA arm hands its FINAL ANSWER string to the grader. */
+export function qaSubmission(attempt: ArmAttempt): ArmSubmission {
+  return { modality: 'qa', instanceId: attempt.instanceId, answer: attempt.answer ?? '', prefix: attempt.seed };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -299,7 +317,7 @@ export interface GradeResult {
  */
 export interface OfficialGrader {
   family: BenchmarkFamily;
-  modality: 'diff' | 'in-container';
+  modality: 'diff' | 'in-container' | 'qa';
   /** Grade a batch. `tasks` carries each instance's {@link BenchTask.graderMeta}; matched by instanceId. */
   grade(submissions: ArmSubmission[], tasks: BenchTask[]): Promise<GradeResult[]>;
 }

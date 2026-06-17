@@ -29,6 +29,7 @@ import PlanDetail from './PlanDetail';
 import PlanItemsList from './PlanItemsList';
 import PlanOtherList, { OtherDetail } from './PlanOtherList';
 import PlanItemPreview from './PlanItemPreview';
+import NewPlanButton from './NewPlanButton';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
