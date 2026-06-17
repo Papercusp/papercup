@@ -11,7 +11,7 @@
  *     default would be the EI-7 class of bug); clamps never error.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { effectiveTierConfig, resolveTierSpec, roleDefaultSpec, specModelId, tierMenuLines } from './model-tiers';
+import { effectiveTierConfig, resolveTierSpec, roleDefaultSpec, roleHomeTier, resolveRoleOwnModelSpec, specModelId, tierMenuLines } from './model-tiers';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -202,5 +202,45 @@ describe('effectiveTierConfig — session override precedence (queen-steering D-
     const eff = effectiveTierConfig({ tiers: wsTiers, tierCeilings: wsCeilings }, { modelTiers: null, tierCeilings: { worker: 'std', bee: 'std' } });
     expect(eff.tiers).toEqual(wsTiers); // null menu override ⇒ workspace default
     expect(eff.tierCeilings).toEqual({ worker: 'std', bee: 'std' }); // session
+  });
+});
+
+describe('roleHomeTier — the default-menu tier a role runs at', () => {
+  it('maps a committed default spec to its default-menu tier name', () => {
+    expect(roleHomeTier('queen')).toBe('standard'); // sonnet → standard
+    expect(roleHomeTier('worker')).toBe('standard'); // sonnet → standard
+    expect(roleHomeTier('bee')).toBe('quick'); // haiku → quick
+  });
+  it('undefined for a role with no committed default (no own-model resolution)', () => {
+    expect(roleHomeTier('reviewer')).toBeUndefined();
+  });
+});
+
+describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-steering-panel)', () => {
+  it('returns null on the default menu (queen home=standard=sonnet=committed default) — byte-identical to today', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveRoleOwnModelSpec('queen', {})).toBeNull();
+  });
+
+  it('an owner menu override that raises the standard tier MOVES the queen', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const eff = { tiers: [{ name: 'standard', spec: 'opus:xhigh' }] };
+    expect(resolveRoleOwnModelSpec('queen', eff)).toBe('opus:xhigh');
+  });
+
+  it('a queen CEILING is her TARGET (a decider has no self-picker) — ceiling=max → opus:xhigh', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'max' } })).toBe('opus:xhigh');
+  });
+
+  it('a too-low ceiling NEVER downgrades the queen below her floor (EI-7/EI-286) → null (stays default)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // queen floor = standard (sonnet); ceiling 'quick' (haiku) clamps UP to standard → equals committed default → null.
+    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'quick' } })).toBeNull();
+  });
+
+  it('null for a role with no home tier (no committed default)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveRoleOwnModelSpec('reviewer', { tiers: [{ name: 'standard', spec: 'opus:xhigh' }] })).toBeNull();
   });
 });

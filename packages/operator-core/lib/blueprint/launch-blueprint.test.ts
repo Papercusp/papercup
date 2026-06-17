@@ -25,12 +25,32 @@ vi.mock('../hive/queen-brief-launch', () => ({
     computeQueenWakeBrief(...(a as [string, string, { wokeBy?: string }?])),
 }));
 
+// queen-steering-panel GAP-2: stub the owner-steering + agent-config reads the
+// queen own-model resolution does, so the launch path is deterministic (no PG /
+// config file) and the resolved spawnModel is assertable. fleet/model-tiers stays
+// REAL (the resolution logic is unit-tested in model-tiers.test.ts).
+const getOwnerSteering = vi.fn(async (_ws?: string, _slug?: string) => ({
+  directive: null,
+  eligiblePlans: [] as string[],
+  eligibleHives: [] as string[],
+  pauseNewWork: false,
+  pausedUntil: null as number | null,
+  modelTiers: null as unknown,
+  tierCeilings: null as unknown,
+}));
+vi.mock('../owner-steering', () => ({ getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...(a as [string, string])) }));
+const readAgentConfig = vi.fn(async () => ({ models: {}, tiers: [] as unknown[], tierCeilings: {} as Record<string, string> }));
+vi.mock('../agent-config', () => ({ readAgentConfig: (...a: unknown[]) => readAgentConfig(...a) }));
+
 afterEach(() => {
   setLaunchBlueprintFire(null);
   setLaunchBlueprintResolver(null);
   resetLaunchBlueprintTriggerMap();
   computeQueenWakeBrief.mockClear();
   computeQueenWakeBrief.mockResolvedValue('QUEEN-BRIEF::floor+carrynote');
+  getOwnerSteering.mockClear();
+  readAgentConfig.mockClear();
+  vi.unstubAllEnvs();
 });
 
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
@@ -123,6 +143,44 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect(fired).toHaveLength(1);
     expect(fired[0]).toMatchObject({ blueprintId: 'deploy', role: 'release-manager', kickoff: 'go' });
     expect(fired[0]!.url).toContain('role=release-manager');
+  });
+
+  it('GAP-2: an owner tier override raises the QUEEN\'s OWN model (bodyExtra.spawnModel) at launch', async () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // Owner set the menu (standard tier) to opus:xhigh in the 👑-tab → session override.
+    getOwnerSteering.mockResolvedValueOnce({
+      directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null,
+      modelTiers: [{ name: 'standard', spec: 'opus:xhigh' }], tierCeilings: null,
+    });
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    const target = await fireLaunchBlueprint('hive', { ...opts, kickoff: 'go' });
+    expect(target.role).toBe('queen');
+    expect(fired).toHaveLength(1);
+    // Her OWN model is now tier-driven — resolved from the owner's menu, not her sonnet default.
+    expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:xhigh');
+  });
+
+  it('GAP-2: an un-steered Hive leaves the queen on her committed default (no spawnModel pin) — byte-identical to today', async () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // default getOwnerSteering mock = un-steered; readAgentConfig = empty menu.
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('hive', { ...opts, kickoff: 'go' });
+    expect(fired).toHaveLength(1);
+    expect((fired[0]!.bodyExtra as { spawnModel?: string } | undefined)?.spawnModel).toBeUndefined();
+  });
+
+  it('GAP-2: a caller-set spawnModel (e.g. the bench pin) WINS over the tier resolution', async () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    getOwnerSteering.mockResolvedValueOnce({
+      directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null,
+      modelTiers: [{ name: 'standard', spec: 'opus:xhigh' }], tierCeilings: null,
+    });
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('hive', { ...opts, kickoff: 'go', bodyExtra: { spawnModel: 'opus:max' } });
+    expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:max'); // not overridden
   });
 
   it('fireLaunchBlueprintForEvent fires the launch blueprint that declares the event key', async () => {

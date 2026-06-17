@@ -37,6 +37,7 @@ import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
+import { Checkbox } from '@/app/harness/Checkbox';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
 import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 import ScheduledRoutinesPane from '../adv/ScheduledRoutinesPane';
@@ -178,6 +179,10 @@ export function pauseStateLabel(row: HiveSteeringRow, nowMs: number): { active: 
   return { active: false, label: 'New work flowing' };
 }
 
+function countLabel(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
 export default function QueenTab({ active }: { active: boolean }) {
   const steeringQ = useSyncQuery<HiveSteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000 });
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
@@ -236,6 +241,11 @@ export default function QueenTab({ active }: { active: boolean }) {
   const planRestricted = view.eligiblePlans.length > 0;
   const hiveRestricted = view.eligibleHives.length > 0;
   const pause = pauseStateLabel(view, Date.now());
+  const scopeLabel = hiveRestricted || planRestricted
+    ? `${hiveRestricted ? countLabel(view.eligibleHives.length, 'hive') : 'any hive'} · ${planRestricted ? countLabel(view.eligiblePlans.length, 'plan') : 'any plan'}`
+    : 'Any hive · any plan';
+  const directiveLabel = view.directive?.trim() ? 'Directive set' : 'No directive';
+  const tierLabel = view.modelTiers?.length ? `${countLabel(view.modelTiers.length, 'tier')} override` : 'Workspace tiers';
 
   // ── Nested hive→plan picker (steering-nested-hive-plan-tree-2026-06-17, P-002) ──
   const steeringTreeOn = useFlag(FLAGS.STEERING_HIVE_TREE);
@@ -372,16 +382,38 @@ export default function QueenTab({ active }: { active: boolean }) {
     <div className="pc-queen">
       <header className="pc-queen__bar">
         <Crown size={14} aria-hidden />
-        <span className="pc-queen__title">Steering</span>
+        <span className="pc-queen__identity">
+          <span className="pc-queen__title">Queen</span>
+          <span className="pc-queen__subtitle">Steering controls</span>
+        </span>
         {home && <span className="pc-queen__hive" title="The home Queen this steers">{home}</span>}
         <span className="pc-queen__spacer" />
-        <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={saving} title="Clear ALL steering back to default">
+        <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={saving} aria-label="Clear all steering back to default">
           <RotateCcw size={11} aria-hidden /> reset
         </button>
       </header>
 
       {/* Queen heartbeat — is she alive? (owner-priority, queen-heartbeat-2026-06-16) */}
       <QueenHeartbeat homeSlug={home} />
+
+      <div className="pc-queen__summary" aria-label="Queen steering summary">
+        <div className={`pc-queen__summary-item${pause.active ? ' pc-queen__summary-item--warn' : ' pc-queen__summary-item--good'}`}>
+          <span className="pc-queen__summary-label">Work</span>
+          <span className="pc-queen__summary-value">{pause.active ? pause.label : 'Flowing'}</span>
+        </div>
+        <div className={`pc-queen__summary-item${hiveRestricted || planRestricted ? ' pc-queen__summary-item--warn' : ''}`}>
+          <span className="pc-queen__summary-label">Scope</span>
+          <span className="pc-queen__summary-value">{scopeLabel}</span>
+        </div>
+        <div className="pc-queen__summary-item">
+          <span className="pc-queen__summary-label">Brief</span>
+          <span className="pc-queen__summary-value">{directiveLabel}</span>
+        </div>
+        <div className="pc-queen__summary-item">
+          <span className="pc-queen__summary-label">Models</span>
+          <span className="pc-queen__summary-value">{tierLabel}</span>
+        </div>
+      </div>
 
       {err && (
         <div className="pc-queen__err" role="alert">
@@ -390,7 +422,7 @@ export default function QueenTab({ active }: { active: boolean }) {
       )}
 
       {/* 1 — Pause new work (TOPMOST, owner-review round 2) */}
-      <section className="pc-queen__section">
+      <section className="pc-queen__section pc-queen__section--pause">
         <div className="pc-queen__section-head">
           <span className="pc-queen__section-title">Pause new work</span>
           <span className={`pc-queen__pausebadge${pause.active ? ' pc-queen__pausebadge--on' : ''}`}>{pause.label}</span>
@@ -405,9 +437,11 @@ export default function QueenTab({ active }: { active: boolean }) {
           {view.pauseNewWork ? 'Resume new work' : 'Pause indefinitely'}
         </button>
         <div className="pc-queen__pausefor">
-          <span className="pc-queen__presetlabel">pause for</span>
-          <input type="number" min={1} className="pc-queen__mins" value={pauseMins} onChange={(e) => setPauseMins(e.target.value)} aria-label="Pause duration in minutes" />
-          <span className="pc-queen__presetlabel">min</span>
+          <label className="pc-queen__duration">
+            <span className="pc-queen__presetlabel">for</span>
+            <input type="number" min={1} className="pc-queen__mins" value={pauseMins} onChange={(e) => setPauseMins(e.target.value)} aria-label="Pause duration in minutes" />
+            <span className="pc-queen__presetlabel">min</span>
+          </label>
           <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={saving}>apply</button>
           {view.pausedUntil != null && (
             <button type="button" className="pc-queen__chip" onClick={clearPause} disabled={saving}>clear</button>
@@ -450,8 +484,8 @@ export default function QueenTab({ active }: { active: boolean }) {
               <span className="pc-queen__section-title">Eligible hives</span>
               <span className="pc-queen__count">{hiveRestricted ? `${view.eligibleHives.length} selected` : 'no restriction'}</span>
               <span className="pc-queen__spacer" />
-              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={saving || hiveOptions.length === 0} title="Select every hive">all</button>
-              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={saving || !hiveRestricted} title="Clear the hive scope">none</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={saving || hiveOptions.length === 0} aria-label="Select every hive">all</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={saving || !hiveRestricted} aria-label="Clear the hive scope">none</button>
             </div>
             <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
               {hiveRestricted
@@ -466,10 +500,10 @@ export default function QueenTab({ active }: { active: boolean }) {
                   const on = view.eligibleHives.includes(h.value);
                   return (
                     <li key={h.value} className={`pc-queen__plan${on ? ' pc-queen__plan--on' : ''}`}>
-                      <label className="pc-queen__planlabel">
-                        <input type="checkbox" className="pc-queen__check" checked={on} onChange={() => toggleHive(h.value)} />
+                      <div className="pc-queen__planlabel">
+                        <Checkbox className="pc-queen__check" checked={on} onChange={() => toggleHive(h.value)} ariaLabel={h.label} />
                         <span className="pc-queen__planslug" title={h.value}>{h.label}</span>
-                      </label>
+                      </div>
                     </li>
                   );
                 })}
@@ -484,8 +518,8 @@ export default function QueenTab({ active }: { active: boolean }) {
               <span className="pc-queen__section-title">Eligible plans</span>
               <span className="pc-queen__count">{planRestricted ? `${view.eligiblePlans.length} selected` : 'no restriction'}</span>
               <span className="pc-queen__spacer" />
-              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(true)} disabled={saving || planRows.length === 0} title="Select every plan shown">all</button>
-              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(false)} disabled={saving || !planRestricted} title="Clear the plan restriction">none</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(true)} disabled={saving || planRows.length === 0} aria-label="Select every plan shown">all</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(false)} disabled={saving || !planRestricted} aria-label="Clear the plan restriction">none</button>
             </div>
             <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
               {planRestricted
@@ -500,10 +534,10 @@ export default function QueenTab({ active }: { active: boolean }) {
               <ul className="pc-queen__plans">
                 {planRows.map((p) => (
                   <li key={p.slug} className={`pc-queen__plan${p.eligible ? ' pc-queen__plan--on' : ''}`}>
-                    <label className="pc-queen__planlabel">
-                      <input type="checkbox" className="pc-queen__check" checked={p.eligible} onChange={() => togglePlan(p.slug)} />
+                    <div className="pc-queen__planlabel">
+                      <Checkbox className="pc-queen__check" checked={p.eligible} onChange={() => togglePlan(p.slug)} ariaLabel={p.title} />
                       <span className="pc-queen__planslug" title={p.slug}>{p.title}</span>
-                    </label>
+                    </div>
                     <span className="pc-queen__planstatus" data-status={p.inActive ? (p.startStatus === 'started' ? 'started' : p.status ?? '') : 'stale'}>
                       {p.inActive ? (p.startStatus === 'started' ? 'live' : p.status ?? '') : 'not active'}
                     </span>
