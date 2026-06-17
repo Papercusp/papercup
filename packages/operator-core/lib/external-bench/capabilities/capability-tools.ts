@@ -53,38 +53,92 @@ export interface OpenRunSandboxDeps {
 /* -------------------------------------------------------------------------- */
 
 /**
- * The LIVE {@link RunTool} — POSTs `{ name, args }` to the operator's loopback
- * `run-tool` route and unwraps the tool payload, EXACTLY mirroring
- * `su-independent-backlog.ts`'s `placeFifoBatch` request shape + result parsing:
- *   - route via `operatorApiBase()` (PAPERCUSP_OPERATOR_BASE → :3170 staging where the
- *     bench code lives; else PAPERCUSP_HONO_PORT);
- *   - `loopbackFetch` (bounded retry over a restart) POST with the JSON body;
- *   - the route wraps the MCP return as `{ ok, result: { content: [{ text: "<json>" }] } }`
- *     (or a flat `result`) — unwrap to the tool payload.
+ * The LIVE {@link RunTool} — calls the operator's MCP endpoint (`/api/mcp?superuser=1`)
+ * via a JSON-RPC `tools/call`, then unwraps the tool payload from `result.content[0].text`.
  *
- * Lazy dynamic imports keep the module import-light so the fake-driven test never loads
- * the loopback fetch. The injected `runTool` is what tests pass instead.
+ * WHY the MCP endpoint and NOT `/api/agent-mcp/run-tool` (the original wiring): the run-tool
+ * route is the PALETTE runner and rejects arg-taking tools with `not_palette_eligible`
+ * ("requires arguments") — `memory:*` / `work_items:*` / `coord:*` all take args, so they 403
+ * there (plan D-013, confirmed by an auth-probe). The full MCP endpoint accepts `tools/call`
+ * with arguments; it only needs a per-call `workspace` (the tool wrappers pass
+ * `sandbox.workspaceId`) + the superuser bearer:
+ *   - route via `operatorApiBase()` (PAPERCUSP_OPERATOR_BASE → :3170 staging; else PAPERCUSP_HONO_PORT);
+ *   - bearer from `~/.papercusp/superuser-token` (the `superuser=1` gate);
+ *   - the response is SSE (`text/event-stream`) — parse the `data:` line's JSON-RPC envelope;
+ *   - the MCP result is `{ content: [{ text: "<json>" }], isError? }` — unwrap to the tool payload.
+ *
+ * The injected `runTool` ({@link OpenRunSandboxDeps.runTool}) is what tests pass instead, so the
+ * fake-driven unit tests make no real call. A live smoke (real `memory:remember`) covers THIS
+ * path — the D-013 lesson: stubbed-only tests hid the wrong endpoint.
  */
 export function liveRunTool(): RunTool {
   return async (name, args) => {
-    const { loopbackFetch, readJsonBody } = await import('../../loopback-fetch');
     const { operatorApiBase } = await import('../../operator-api-base');
-    const toolUrl = `${operatorApiBase()}/api/agent-mcp/run-tool`;
-
-    const res = await loopbackFetch(toolUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, args }),
-    });
+    const fs = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    let token = '';
+    try {
+      token = (await fs.readFile(path.join(os.homedir(), '.papercusp', 'superuser-token'), 'utf8')).trim();
+    } catch {
+      /* a trusted-localhost loopback operator may not require it */
+    }
+    const url = `${operatorApiBase()}/api/mcp?superuser=1`;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+    } catch (e) {
+      return { ok: false, payload: {}, error: `fetch failed: ${(e as Error).message}` };
+    }
     if (!res.ok) {
       return { ok: false, payload: {}, error: `HTTP ${res.status} ${await res.text().catch(() => '')}` };
     }
-    const envelope = await readJsonBody<{ ok: boolean; result?: unknown; error?: string }>(res, toolUrl);
-    if (!envelope.ok) {
-      return { ok: false, payload: {}, error: envelope.error ?? 'run-tool returned ok:false' };
+    const env = parseMcpSseResult(await res.text());
+    if (!env) return { ok: false, payload: {}, error: 'unparseable MCP response' };
+    if (env.error) return { ok: false, payload: {}, error: `MCP error: ${JSON.stringify(env.error).slice(0, 300)}` };
+    const result = env.result as { content?: Array<{ text?: string }>; isError?: boolean } | undefined;
+    const payload = unwrapRunToolPayload(result);
+    if (result?.isError) {
+      const txt = result.content?.[0]?.text ?? '';
+      return { ok: false, payload, error: `tool error: ${txt.slice(0, 300)}` };
     }
-    return { ok: true, payload: unwrapRunToolPayload(envelope.result) };
+    return { ok: true, payload };
   };
+}
+
+/**
+ * Parse an MCP streamable-HTTP response: the body is SSE (`event: message` / `data: {json}`),
+ * possibly preceded by a `:stream-open` comment. Returns the JSON-RPC envelope ({result}|{error})
+ * from the last `data:` line that carries one. Tolerates a plain-JSON body too.
+ */
+export function parseMcpSseResult(body: string): { result?: unknown; error?: unknown } | null {
+  const dataLines = body
+    .split('\n')
+    .filter((l) => l.startsWith('data:'))
+    .map((l) => l.slice('data:'.length).trim());
+  for (let i = dataLines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(dataLines[i]) as { result?: unknown; error?: unknown };
+      if (obj && typeof obj === 'object' && ('result' in obj || 'error' in obj)) return obj;
+    } catch {
+      /* skip non-JSON data lines */
+    }
+  }
+  try {
+    const obj = JSON.parse(body) as { result?: unknown; error?: unknown };
+    if (obj && typeof obj === 'object') return obj;
+  } catch {
+    /* not plain JSON */
+  }
+  return null;
 }
 
 /**
