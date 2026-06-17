@@ -34,6 +34,18 @@ export interface CreateHiveOpts {
   workspaceId: string;
   /** Parent dir for the home-harness folder. Default ~/.papercusp/hives. */
   parentDir?: string;
+  /**
+   * LINK an EXISTING local repo in place as the hive home, instead of
+   * provisioning a fresh dir under `parentDir/slug` ("every created Pot is a
+   * hive" — the standalone/plain-harness path is being retired). When set, the
+   * resolved path is used AS-IS: the fresh-dir creation and the dest_exists
+   * guard are skipped (the path must already exist → `path_not_found` if not),
+   * and the dir-removal undo is a NO-OP — a rollback must NEVER delete the
+   * user's existing repo. Steps 2-6 (register harness_kind:'hive', mint
+   * identity, scaffold schema, write <path>/.papercusp/blueprint.yaml, arm
+   * wakes) proceed unchanged with this path. `parentDir` is ignored when set.
+   */
+  existingPath?: string;
   deployment?: DeploymentConfig;
   /** Wake the Queen `wakeInSeconds` from now (0 = immediately). Omit ⇒ create
    *  idle (no wake declared; wake later via hive:wake / hive:declare-wake). */
@@ -132,9 +144,20 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
   }
   const requiresRepo = validation.blueprint.knobs.requiresRepo !== false;
 
+  // LINK-EXISTING mode: when `existingPath` is set, use it as the hive home AS-IS
+  // — skip the fresh-dir provision below AND the dest_exists guard; instead the
+  // path must already exist (path_not_found if not). Otherwise (fresh mode) the
+  // home is a new dir at parentDir/slug and dest_exists guards against a clash.
+  const linkExisting = typeof opts.existingPath === 'string' && opts.existingPath.trim() !== '';
   const parentDir = opts.parentDir ?? join(homedir(), '.papercusp', 'hives');
-  const dest = resolvePath(join(parentDir, opts.slug));
-  if (existsSync(dest)) {
+  const dest = linkExisting
+    ? resolvePath(opts.existingPath!.trim())
+    : resolvePath(join(parentDir, opts.slug));
+  if (linkExisting) {
+    if (!existsSync(dest)) {
+      return { ok: false, error: 'path_not_found', message: `Path to link does not exist: ${dest}` };
+    }
+  } else if (existsSync(dest)) {
     return { ok: false, error: 'dest_exists', message: `Destination already exists: ${dest}` };
   }
 
@@ -152,22 +175,33 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
 
   try {
     // 1. Provision the dir (hive is normally repo-less; honor the blueprint knob).
+    //    LINK-EXISTING: the dir already exists (verified above) — use it AS-IS,
+    //    do NOT create a fresh one, and the removal undo is a NO-OP so a rollback
+    //    never deletes the user's existing repo (only the registry/identity/schema
+    //    undos apply in link mode).
     let path: string;
-    if (requiresRepo) {
-      const { initLocalHarnessDir } = await import('../../harness/init-local-dir');
-      const init = await initLocalHarnessDir({ parentDir, folderName: opts.slug });
-      path = init.path;
-    } else {
-      mkdirSync(dest, { recursive: true });
+    if (linkExisting) {
       path = dest;
-    }
-    undo.push(() => {
-      try {
-        rmSync(path, { recursive: true, force: true });
-      } catch {
-        /* ignore */
+      undo.push(() => {
+        /* link mode: NEVER delete the user's existing repo on rollback */
+      });
+    } else {
+      if (requiresRepo) {
+        const { initLocalHarnessDir } = await import('../../harness/init-local-dir');
+        const init = await initLocalHarnessDir({ parentDir, folderName: opts.slug });
+        path = init.path;
+      } else {
+        mkdirSync(dest, { recursive: true });
+        path = dest;
       }
-    });
+      undo.push(() => {
+        try {
+          rmSync(path, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      });
+    }
 
     // 2. Register with harness_kind:'hive' (the marker resolveHive filters on —
     //    harness:create does NOT set this, so the hive path must).

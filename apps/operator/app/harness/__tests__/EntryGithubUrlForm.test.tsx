@@ -41,7 +41,7 @@ function renderForm(props?: {
   onBack?: () => void;
   onCreated?: (slug: string, opts?: { hive?: string }) => void;
   hiveScope?: string | null;
-  initialMode?: 'new-hive' | 'into-hive' | 'standalone';
+  initialMode?: 'new-hive' | 'into-hive';
   /** Repo privacy threaded from the search pick; undefined = unknown (pasted URL). */
   initialPrivate?: boolean;
 }) {
@@ -595,7 +595,24 @@ describe('join offer (existing hive)', () => {
   });
 });
 
-// ── into-hive + standalone modes ────────────────────────────────────────────
+// ── into-hive mode + retired standalone mode ────────────────────────────────
+
+describe('standalone (plain-harness) mode is RETIRED', () => {
+  it('renders NO "Standalone" mode button — every created Pot is a hive', () => {
+    renderForm();
+    expect(screen.queryByRole('button', { name: 'Standalone' })).toBeNull();
+    // The only create labels are the hive / member ones.
+    expect(screen.queryByRole('button', { name: 'Clone & register' })).toBeNull();
+    screen.getByRole('button', { name: 'Create hive' });
+  });
+
+  it('with a hive scope, the only modes are New hive + Add to <hive> (no Standalone)', () => {
+    renderForm({ hiveScope: 'acme' });
+    screen.getByRole('button', { name: 'New hive' });
+    screen.getByRole('button', { name: 'Add to acme' });
+    expect(screen.queryByRole('button', { name: 'Standalone' })).toBeNull();
+  });
+});
 
 describe('into-hive mode', () => {
   it('sends intoHive (no visibility) and reports the membership to onCreated', async () => {
@@ -622,45 +639,5 @@ describe('into-hive mode', () => {
 
     await user.click(screen.getByRole('button', { name: 'Done' }));
     expect(onCreated).toHaveBeenCalledWith('web', { hive: 'acme' });
-  });
-});
-
-describe('standalone mode (D-007)', () => {
-  it('uses the projects route with the derived slug and no hive', async () => {
-    const user = userEvent.setup();
-    respondByUrl({
-      '/api/harness/projects': {
-        status: 200,
-        body: { ok: true, project: { slug: 'web', path: '/clones/web' }, blueprint: { generated: true } },
-      },
-    });
-    const { onCreated } = renderForm();
-    await user.click(screen.getByRole('button', { name: 'Standalone' }));
-    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
-    await user.click(screen.getByRole('button', { name: 'Clone & register' }));
-
-    await waitFor(() => screen.getByRole('heading', { name: /Harness created/ }));
-    expect(postedBodies('/api/harness/projects')[0]).toMatchObject({ slug: 'web', githubUrl: VALID_URL });
-    expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(0);
-
-    await user.click(screen.getByRole('button', { name: 'Done' }));
-    expect(onCreated).toHaveBeenCalledWith('web');
-  });
-
-  it('maps the projects route’s bare clone codes (dest_exists)', async () => {
-    const user = userEvent.setup();
-    respondByUrl({
-      '/api/harness/projects': {
-        status: 409,
-        body: { error: 'destination exists', code: 'dest_exists' },
-      },
-    });
-    renderForm();
-    await user.click(screen.getByRole('button', { name: 'Standalone' }));
-    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
-    await user.click(screen.getByRole('button', { name: 'Clone & register' }));
-
-    const alert = await waitFor(() => screen.getByRole('alert'));
-    expect(alert.textContent).toContain('already exists on disk');
   });
 });

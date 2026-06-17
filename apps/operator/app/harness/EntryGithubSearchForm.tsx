@@ -5,8 +5,9 @@
  * (comb-hive-native-sharing-2026-06-11 P-009). A search-as-you-type panel over
  * the P-008 loopback proxy `GET /api/github/search-repos`, feeding the existing
  * create-from-repo flow. Pick a result OR paste a repo URL → that repo prefills
- * {@link EntryGithubUrlForm} (the 3-mode fork preserved: new-hive / into-hive /
- * standalone; runTests opt-in per hardening D-001). The create form's own
+ * {@link EntryGithubUrlForm} (the 2-mode fork: new-hive / into-hive — every
+ * created Pot is a hive, so the plain-harness standalone mode is retired;
+ * runTests opt-in per hardening D-001). The create form's own
  * paste-time lookup still offers "join the existing hive" when one exists — so
  * the search → create → join path works without the P-010/P-011 result badges.
  *

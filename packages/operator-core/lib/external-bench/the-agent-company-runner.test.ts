@@ -8,7 +8,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   runOneTacTask,
-  runTheAgentCompanyBacklog,
   TAC_BLUEPRINT_ID,
   type TacRunnerOps,
   type TacTaskEnv,
@@ -134,37 +133,6 @@ describe('runOneTacTask', () => {
   });
 });
 
-describe('runTheAgentCompanyBacklog', () => {
-  it('drains the whole backlog within the fleet cap, never throwing', async () => {
-    const record: string[] = [];
-    const { ops, maxLive } = fakeOps(record, { cap: 2 });
-    const res = await runTheAgentCompanyBacklog(ops, {
-      backlog: [task(0), task(1), task(2), task(3), task(4)],
-      arm: 'papercusp',
-      budget: { maxUsd: 15 },
-      seed: 'seed-0',
-      workspaceId: 'ws',
-    });
-    expect(res).toHaveLength(5);
-    expect(res.every((r) => r.submission !== null)).toBe(true);
-    expect(maxLive()).toBeLessThanOrEqual(2);
-    expect(maxLive()).toBeGreaterThanOrEqual(2); // saturates the cap
-  });
-
-  it('one task failing does NOT abort the pool (partials)', async () => {
-    const record: string[] = [];
-    const { ops } = fakeOps(record, { cap: 2, throwOnDrive: new Set(['sde-task-1']) });
-    const res = await runTheAgentCompanyBacklog(ops, {
-      backlog: [task(0), task(1), task(2)],
-      arm: 'papercusp',
-      budget: { maxUsd: 15 },
-      seed: 'seed-0',
-      workspaceId: 'ws',
-    });
-    expect(res).toHaveLength(3);
-    const failed = res.find((r) => r.attempt.instanceId === 'sde-task-1')!;
-    expect(failed.attempt.stopReason).toBe('infra-failed');
-    expect(failed.submission).toBeNull();
-    expect(res.filter((r) => r.submission !== null)).toHaveLength(2); // the other two still produced submissions
-  });
-});
+// The backlog/pool orchestration moved to `./tac-backlog-driver.ts` (built on the shared
+// `makePoolBacklogDriver`); its pool-drain + never-throw + cap coverage lives in
+// `./tac-backlog-driver.test.ts`. This file now covers only the per-task unit (`runOneTacTask`).

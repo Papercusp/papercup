@@ -343,13 +343,33 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => vo
 }
 
 // ── Entry 3 form — existing local repo ────────────────────────────────────
-
-function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string }) {
+//
+// An existing local repo IS a hive: when NOT adding into an existing hive the
+// form LINKS the repo in place AND stands up a kind:'hive' home (the Queen
+// blueprint) via /api/harness/hives with a non-empty `path` (the contract:
+// `path` set ⇒ link-in-place as a new hive). When a `hive` scope IS passed
+// (into-hive member) it posts a plain member harness to /api/harness/projects,
+// stamping the membership edge. The repo never moves in either branch.
+function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string; hiveLabel: string }) {
   const t = useLexicon();
+  const hiveLower = hiveLabel.toLowerCase();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // learning-packs P-006: pack selection — default = the Papercusp pack (D-004).
+  // Only used on the new-hive branch (`!hive`).
+  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
   const slugRef = useRef<HTMLInputElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
+
+  const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
+    queryName: 'learningPacks.list',
+    args: {},
+    staleTime: 60_000,
+  });
+  const availablePacks =
+    packRows && packRows.length > 0
+      ? packRows
+      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -362,20 +382,40 @@ function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; on
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch('/api/harness/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // `hive` (P-011): stamps the membership edge to the selected hive scope.
-        body: JSON.stringify({ slug, path, ...(hive ? { hive } : {}) }),
-      });
+      // `hive` SET → a member harness linked in place inside the selected hive
+      // (P-011 stamps the membership edge). `hive` UNDEFINED → LINK the existing
+      // repo in place as a NEW top-level hive home (the contract: a non-empty
+      // `path` links a dir as a hive), seeded from the chosen learning pack.
+      const res = hive
+        ? await fetch('/api/harness/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slug, path, hive }),
+          })
+        : await fetch('/api/harness/hives', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slug, path, learningPack: learningPack === 'none' ? null : learningPack }),
+          });
       if (!res.ok) {
         const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         setError(friendlyError(body.code, body.error));
         setBusy(false);
         return;
       }
-      const data: CreateResult = await res.json();
-      toast.success(`${t('pot')} '${data.project.slug}' linked in place — ${data.project.path} (folder not moved)`);
+      const data = (await res.json()) as CreateResult & {
+        seededLearnings?: { packId: string; packVersion?: string; count?: number; error?: string };
+      };
+      if (hive) {
+        toast.success(`${t('pot')} '${data.project.slug}' linked in place — ${data.project.path} (folder not moved)`);
+      } else {
+        toast.success(`${hiveLabel} '${data.project.slug}' created — linked in place, the Queen is provisioning its fleet.`, {
+          description:
+            data.seededLearnings && !data.seededLearnings.error && (data.seededLearnings.count ?? 0) > 0
+              ? `Started with ${data.seededLearnings.count} default learnings (${data.seededLearnings.packId}) — review & edit them in the Learning tab.`
+              : undefined,
+        });
+      }
       onSuccess(data.project.slug);
     } catch (err: unknown) {
       setError((err as Error).message ?? 'Network error');
@@ -386,25 +426,48 @@ function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; on
   return (
     <form onSubmit={(e) => void handleSubmit(e)}>
       <BackBtn onBack={onBack} />
-      <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>Existing local repo</h2>
+      <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>
+        {hive ? 'Existing local repo' : `Existing repo as a new ${hiveLower}`}
+      </h2>
       {error && <ErrorBanner message={error} />}
-      <div
-        style={{
-          background: 'var(--bg-2)',
-          border: '1px solid var(--border)',
-          borderRadius: 8,
-          padding: '10px 12px',
-          marginBottom: 16,
-          fontSize: 12.5,
-          lineHeight: 1.5,
-          color: 'var(--fg-dim)',
-        }}
-      >
-        <span style={{ marginRight: 6 }}>🔗</span>
-        <strong style={{ color: 'var(--fg)' }}>Links the folder in place</strong> — your repo stays exactly
-        where it is; nothing is moved or copied. The workspace just records a pointer to this path. The same
-        folder can be linked into more than one workspace (e.g. to try different prompts on it).
-      </div>
+      {hive ? (
+        <div
+          style={{
+            background: 'var(--bg-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: '10px 12px',
+            marginBottom: 16,
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: 'var(--fg-dim)',
+          }}
+        >
+          <span style={{ marginRight: 6 }}>🔗</span>
+          <strong style={{ color: 'var(--fg)' }}>Links the folder in place</strong> as a member of{' '}
+          <code>{hive}</code> — your repo stays exactly where it is; nothing is moved or copied. The same
+          folder can be linked into more than one workspace (e.g. to try different prompts on it).
+        </div>
+      ) : (
+        <div
+          style={{
+            background: 'var(--bg-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: '10px 12px',
+            marginBottom: 16,
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: 'var(--fg-dim)',
+          }}
+        >
+          <span style={{ marginRight: 6 }}>👑</span>
+          <strong style={{ color: 'var(--fg)' }}>Links the folder in place</strong> as a new {hiveLower} home
+          running the <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a Queen that
+          surveys the work frontier and places it onto a fleet of bees. Your repo stays where it is; nothing
+          is moved or copied. You can add members into it afterward.
+        </div>
+      )}
       <Label>
         <FieldLabel>{t('pot')} slug</FieldLabel>
         <input ref={slugRef} type="text" placeholder="my-project" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
@@ -415,7 +478,35 @@ function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; on
         <input ref={pathRef} type="text" placeholder="/home/user/projects/my-project" style={inputStyle} />
         <HintText>Absolute path to an existing git repository or project directory. Stays where it is — linked, not moved.</HintText>
       </Label>
-      <SubmitRow busy={busy} label={`Add ${t('pot')}`} onBack={onBack} />
+      {/* learning-packs P-006: the pack picker — a new hive starts with a
+          default set of learnings; selectable away, editable afterward. Only
+          shown for the new-hive branch (`!hive`); members inherit the hive's. */}
+      {!hive && (
+        <Label>
+          <FieldLabel>Learning pack</FieldLabel>
+          <select
+            data-testid="learning-pack-picker"
+            value={learningPack}
+            onChange={(e) => setLearningPack(e.target.value)}
+            style={inputStyle}
+          >
+            {availablePacks.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.title}
+                {p.itemCount ? ` — ${p.itemCount} learnings` : ''}
+                {p.id === 'papercusp-default' ? ' (default)' : ''}
+              </option>
+            ))}
+            <option value="none">None — start with an empty memory</option>
+          </select>
+          <HintText>
+            New {hiveLower}s start with a default set of learnings — working wisdom seeded
+            into the {hiveLower}&rsquo;s shared memory. Review, edit, or remove them anytime
+            from the Learning tab.
+          </HintText>
+        </Label>
+      )}
+      <SubmitRow busy={busy} label={hive ? `Add ${t('pot')}` : `Create ${t('pot')}`} onBack={onBack} />
     </form>
   );
 }
@@ -956,7 +1047,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
           <PickerStep onSelect={setStep} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} combLabel={combLabel} githubUrlEnabled={githubUrlEnabled} />
         )}
         {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} hiveLabel={hiveLabel} />}
-        {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
+        {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} hiveLabel={hiveLabel} />}
         {step === 'github-url' && !githubUrlEnabled && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
         {step === 'github-url' && githubUrlEnabled && (
           <EntryGithubSearchForm

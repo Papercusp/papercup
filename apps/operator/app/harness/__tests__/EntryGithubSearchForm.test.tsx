@@ -79,7 +79,7 @@ function mockSearchAndBindings(items: unknown[], bindings: unknown[]) {
   });
 }
 
-function renderSearch(props?: { hiveScope?: string | null; initialMode?: 'new-hive' | 'into-hive' | 'standalone' }) {
+function renderSearch(props?: { hiveScope?: string | null; initialMode?: 'new-hive' | 'into-hive' }) {
   const onBack = vi.fn();
   const onCreated = vi.fn();
   render(

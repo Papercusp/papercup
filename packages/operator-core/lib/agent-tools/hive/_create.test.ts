@@ -8,7 +8,7 @@
  * dir).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -213,5 +213,91 @@ describe('createHiveHarness', () => {
     expect(res.message).toMatch(/generic-hive/); // surfaces the available hive templates
     expect(existsSync(join(tmpParent, 'wrong-kind'))).toBe(false); // no side effect
     expect(ensureCalls).toEqual([]); // rejected before identity mint
+  });
+
+  // ── LINK-EXISTING mode ("every created Pot is a hive") ──────────────────────
+  describe('existingPath: link an existing repo in place', () => {
+    it('registers harness_kind:hive at the EXACT existing path; no sibling dir; blueprint into <existingPath>/.papercusp', async () => {
+      // An existing repo dir to link in place (NOT under tmpParent, so we can also
+      // assert no sibling dir is created at parentDir/slug).
+      const existing = mkdtempSync(join(tmpdir(), 'hive-link-existing-'));
+      try {
+        const { createHiveHarness } = await import('./_create');
+        const res = await createHiveHarness({
+          slug: 'linked-hive',
+          workspaceId: 'default',
+          parentDir: tmpParent,
+          existingPath: existing,
+        });
+        expect(res.ok).toBe(true);
+        // The hive home is the existing path exactly (resolved) — not a fresh dir.
+        expect(res.path).toBe(existing);
+        const entry = registry.projects.find((p) => p.slug === 'linked-hive');
+        expect(entry).toBeTruthy();
+        expect(entry?.harness_kind).toBe('hive');
+        expect(entry?.path).toBe(existing);
+        // No sibling dir minted under parentDir.
+        expect(existsSync(join(tmpParent, 'linked-hive'))).toBe(false);
+        // Blueprint written INTO the existing dir.
+        expect(existsSync(join(existing, '.papercusp', 'blueprint.yaml'))).toBe(true);
+        // Identity minted, loop provisioned — the rest of create is unchanged.
+        expect(ensureCalls).toEqual([['default', 'linked-hive']]);
+        expect(provisionCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'linked-hive' }]);
+      } finally {
+        rmSync(existing, { recursive: true, force: true });
+      }
+    });
+
+    it('a forced rollback NEVER deletes the existing dir (link-mode dir undo is a no-op)', async () => {
+      // Force a later step (schema scaffold) to throw → rollback runs.
+      scaffoldImpl = async () => {
+        throw new Error('schema boom');
+      };
+      const existing = mkdtempSync(join(tmpdir(), 'hive-link-rollback-'));
+      try {
+        const { createHiveHarness } = await import('./_create');
+        const res = await createHiveHarness({
+          slug: 'rollback-link-hive',
+          workspaceId: 'default',
+          parentDir: tmpParent,
+          existingPath: existing,
+        });
+        expect(res.ok).toBe(false);
+        expect(res.error).toBe('create_failed');
+        // The user's existing dir MUST still be there after rollback.
+        expect(existsSync(existing)).toBe(true);
+        // Registry undo ran — no orphan entry.
+        expect(registry.projects.find((p) => p.slug === 'rollback-link-hive')).toBeUndefined();
+        // Identity undo ran (deleteHive) — same as the fresh-dir rollback.
+        expect(deleteHiveCalls).toEqual([['default', 'rollback-link-hive']]);
+      } finally {
+        rmSync(existing, { recursive: true, force: true });
+      }
+    });
+
+    it('existingPath that does not exist → path_not_found, before any side effect', async () => {
+      const missing = join(tmpdir(), 'hive-link-does-not-exist-xyz', 'nope');
+      expect(existsSync(missing)).toBe(false);
+      const { createHiveHarness } = await import('./_create');
+      const res = await createHiveHarness({
+        slug: 'missing-path-hive',
+        workspaceId: 'default',
+        existingPath: missing,
+      });
+      expect(res.ok).toBe(false);
+      expect(res.error).toBe('path_not_found');
+      expect(registry.projects.find((p) => p.slug === 'missing-path-hive')).toBeUndefined();
+      expect(ensureCalls).toEqual([]); // rejected before identity mint
+    });
+
+    it('the fresh-dir path (no existingPath) is unchanged', async () => {
+      const { createHiveHarness } = await import('./_create');
+      const res = await createHiveHarness({ slug: 'fresh-hive', workspaceId: 'default', parentDir: tmpParent });
+      expect(res.ok).toBe(true);
+      // A fresh dir was created under parentDir/slug.
+      expect(res.path).toBe(join(tmpParent, 'fresh-hive'));
+      expect(readdirSync(tmpParent)).toContain('fresh-hive');
+      expect(existsSync(join(res.path!, '.papercusp', 'blueprint.yaml'))).toBe(true);
+    });
   });
 });

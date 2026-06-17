@@ -196,7 +196,8 @@ describe('Entry 3 — existing local repo navigation', () => {
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('Existing local repo'));
-    screen.getByRole('heading', { name: 'Existing local repo' });
+    // No hive scope ⇒ an existing repo IS a new hive (linked in place, Queen blueprint).
+    screen.getByRole('heading', { name: /Existing repo as a new hive/i });
     screen.getByPlaceholderText('/home/user/projects/my-project');
   });
 });
@@ -239,22 +240,24 @@ describe('P-012b — new-local happy path', () => {
 // ── P-012c — Entry 3 happy path ───────────────────────────────────────────
 
 describe('P-012c — existing-local happy path', () => {
-  it('adds harness and calls onCreated on success', async () => {
+  it('with no scope, LINKS the existing repo in place as a NEW hive (POST /api/harness/hives with {path})', async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
-    mockFetch.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ ok: true, project: { slug: 'existing', path: '/repos/existing' } }),
-        { status: 200 },
-      ),
-    );
+    mockCreateOk({ slug: 'existing', path: '/repos/existing' });
     renderPicker({ onCreated });
     await user.click(screen.getByText('Existing local repo'));
     await user.type(screen.getByPlaceholderText('my-project'), 'existing');
     await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/repos/existing');
-    await user.click(screen.getByRole('button', { name: 'Add Hive' }));
+    // No scope ⇒ an existing repo IS a new hive (the Queen blueprint), linked in
+    // place via the `path` arg — the create button reads "Create Hive".
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('existing'));
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/hives', expect.objectContaining({ method: 'POST' }));
+    // A non-empty `path` links the existing dir in place as a hive (the contract);
+    // no membership edge (no hive scope).
+    expect(lastCreateBody()).toMatchObject({ slug: 'existing', path: '/repos/existing' });
+    expect(lastCreateBody().hive).toBeUndefined();
   });
 });
 
@@ -291,7 +294,8 @@ describe('P-012d — error messages', () => {
     await user.click(screen.getByText('Existing local repo'));
     await user.type(screen.getByPlaceholderText('my-project'), 'foo');
     await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/bad/../path');
-    await user.click(screen.getByRole('button', { name: 'Add Hive' }));
+    // No scope ⇒ the existing-repo form creates a new hive ("Create Hive").
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     const alert = await waitFor(() => screen.getByRole('alert'));
     expect(alert.textContent).toContain('That path is invalid');
@@ -451,7 +455,7 @@ describe('P-010 — creation fork toggle', () => {
 });
 
 describe('P-011 — add into hive stamps the membership', () => {
-  it('into-hive mode sends `hive` in the create body + reports the membership to onCreated', async () => {
+  it('a scoped existing-repo submit posts a MEMBER to /api/harness/projects with the hive + reports the membership', async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
     mockCreateOk({ slug: 'web', path: '/tmp/web' }, { membership: { hive: 'acme', edge: 'hive_slug' } });
@@ -460,9 +464,11 @@ describe('P-011 — add into hive stamps the membership', () => {
     await user.click(screen.getByText('Existing local repo'));
     await user.type(screen.getByPlaceholderText('my-project'), 'web');
     await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/tmp/web');
+    // Scoped ⇒ "Add to <hive>" path: a MEMBER linked in place, not a new hive.
     await user.click(screen.getByRole('button', { name: 'Add Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web', { hive: 'acme' }));
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/projects', expect.objectContaining({ method: 'POST' }));
     expect(lastCreateBody()).toMatchObject({ slug: 'web', path: '/tmp/web', hive: 'acme' });
   });
 

@@ -184,4 +184,31 @@ describe('POST /api/harness/hives — createHive error→status map (Gap 8)', ()
     expect(status).toBe(200);
     expect(body).toMatchObject({ ok: true, hive: true, project: { slug: 'good-slug', path: '/p' } });
   });
+
+  // LINK-EXISTING ("every created Pot is a hive"): a `path` body field links an
+  // existing local repo in place (existingPath); `parentDir` provisions a fresh dir.
+  it('passes existingPath when the body carries a path (link-in-place)', async () => {
+    createHiveHarness.mockResolvedValue({ ok: true, slug: 'good-slug', path: '/repo', waked: false });
+    await post(createHiveRoute, { slug: 'good-slug', path: '  /home/me/repo  ' });
+    expect(createHiveHarness).toHaveBeenCalledTimes(1);
+    const arg = createHiveHarness.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg).toMatchObject({ slug: 'good-slug', existingPath: '/home/me/repo' }); // trimmed
+    expect(arg).not.toHaveProperty('parentDir'); // link mode does not also pass parentDir
+  });
+
+  it('passes parentDir (no existingPath) when the body carries parentDir but no path (fresh dir)', async () => {
+    createHiveHarness.mockResolvedValue({ ok: true, slug: 'good-slug', path: '/p', waked: false });
+    await post(createHiveRoute, { slug: 'good-slug', parentDir: '/home/me/hives' });
+    expect(createHiveHarness).toHaveBeenCalledTimes(1);
+    const arg = createHiveHarness.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg).toMatchObject({ slug: 'good-slug', parentDir: '/home/me/hives' });
+    expect(arg).not.toHaveProperty('existingPath');
+  });
+
+  it('maps path_not_found → 400 (link target missing)', async () => {
+    createHiveHarness.mockResolvedValue({ ok: false, error: 'path_not_found', message: 'm:path_not_found' });
+    const { status, body } = await post(createHiveRoute, { slug: 'good-slug', path: '/no/such/dir' });
+    expect(status).toBe(400);
+    expect(body).toMatchObject({ code: 'path_not_found' });
+  });
 });

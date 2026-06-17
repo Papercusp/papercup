@@ -425,7 +425,7 @@ const createHive = defineTool({
   path: '/harness/hives',
   auth: 'loopback',
   async handler(req) {
-    let body: { slug?: string; parentDir?: string; wakeInSeconds?: number; learningPack?: string | null } = {};
+    let body: { slug?: string; path?: string; parentDir?: string; wakeInSeconds?: number; learningPack?: string | null } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
     const slug = String(body.slug ?? '').trim();
     if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
@@ -433,10 +433,17 @@ const createHive = defineTool({
     }
     const { createHiveHarness } = await import('../../../agent-tools/hive/_create');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
+    // LINK-EXISTING ("every created Pot is a hive"): a `path` body field links an
+    // existing local repo in place as the hive home (existingPath → use AS-IS, no
+    // fresh dir, no delete-on-rollback). Otherwise fall through to the fresh-dir
+    // path under `parentDir/slug`.
+    const linkPath = typeof body.path === 'string' && body.path.trim() ? body.path.trim() : '';
     const res = await createHiveHarness({
       slug,
       workspaceId: activeWorkspaceId(),
-      parentDir: typeof body.parentDir === 'string' && body.parentDir.trim() ? body.parentDir.trim() : undefined,
+      ...(linkPath
+        ? { existingPath: linkPath }
+        : { parentDir: typeof body.parentDir === 'string' && body.parentDir.trim() ? body.parentDir.trim() : undefined }),
       wakeInSeconds: typeof body.wakeInSeconds === 'number' ? body.wakeInSeconds : undefined,
       // learning-packs P-005/P-006: '' and null ⇒ seed nothing; absent ⇒ default pack.
       ...(body.learningPack === null || typeof body.learningPack === 'string'

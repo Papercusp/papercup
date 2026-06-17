@@ -176,31 +176,8 @@ export async function runOneTacTask(
   }
 }
 
-/**
- * Run a backlog of TheAgentCompany tasks through a bounded concurrency POOL (size = the fleet cap), never
- * throwing — each task yields a {@link TacRunResult} (an error attempt on failure). Mirrors the
- * su-independent pool: `cap` worker loops pull the next task until the backlog drains. Returns results in
- * completion order; the caller hands the non-null submissions to {@link makeTheAgentCompanyGrader}.
- */
-export async function runTheAgentCompanyBacklog(
-  ops: TacRunnerOps,
-  input: { backlog: BenchTask[]; arm: string; budget: GenerationBudget; seed: string; workspaceId: string },
-): Promise<TacRunResult[]> {
-  const { backlog, arm, budget, seed, workspaceId } = input;
-  const cap = Math.max(1, Math.floor(await ops.concurrencyCap()) || 1);
-  const results: TacRunResult[] = [];
-  let next = 0;
-
-  const worker = async (): Promise<void> => {
-    for (;;) {
-      const i = next;
-      if (i >= backlog.length) return;
-      next += 1;
-      results.push(await runOneTacTask(ops, { task: backlog[i], arm, budget, seed, workspaceId }));
-    }
-  };
-
-  const poolSize = Math.max(1, Math.min(cap, backlog.length || 1));
-  await Promise.all(Array.from({ length: poolSize }, () => worker()));
-  return results;
-}
+// NB: the backlog/pool orchestration for TheAgentCompany now lives in `./tac-backlog-driver.ts`
+// (`theAgentCompanyBacklogDriver` / `runTheAgentCompanySuiteViaFleet`), built on the SHARED
+// `makePoolBacklogDriver` shell so the suite emits the canonical `HiveBacklogResult` and runs on BOTH the
+// su-independent and hive arms — superseding the bespoke pool loop that used to live here. This file keeps
+// only the per-task unit (`runOneTacTask`), which that driver's `perTask` calls.

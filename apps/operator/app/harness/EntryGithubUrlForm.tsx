@@ -6,14 +6,13 @@
  * dogfood-design-memo-create-harness-picker-ux-2026-05-24 (focused form, inline
  * progress strip, errorCodeToCopy mapping) re-targeted at hives.
  *
- * Three modes (the P-012 creation fork):
+ * Two modes (the P-012 creation fork — every created Pot is a hive, so the
+ * plain-harness "standalone" path is RETIRED):
  *   new-hive   (the headline, default) → POST /api/harness/hives/from-repo:
  *              clone → blueprint detect → hive home + member → visibility-gated
  *              auto-publish (D-002/D-003).
  *   into-hive  same route with `intoHive` — adds the repo as a member of the
  *              selected hive (no new home/identity).
- *   standalone (D-007) → POST /api/harness/projects githubUrl path: clone +
- *              register + blueprint; no hive, no publish.
  *
  * A paste-time lookup hit returns `existing` — a JOIN OFFER with zero side
  * effects. The form swaps to a confirm card whose Join drives the EXISTING
@@ -68,8 +67,8 @@ export function deriveSlugFromRepo(repo: string): string {
 }
 
 // ── Error-code → copy map (memo design: centralized errorCodeToCopy) ───────
-// Covers BOTH routes' codes: hives/from-repo (clone_-prefixed + hive codes)
-// and the standalone projects route (bare clone codes).
+// Covers the hives/from-repo route's codes (clone_-prefixed + hive codes).
+// The bare (un-prefixed) clone codes are kept too — they're harmless aliases.
 
 export function errorCodeToCopy(code: string | undefined, raw: string, hiveLower = 'hive'): string {
   switch (code) {
@@ -155,11 +154,9 @@ function statusMap(entries: [StripStepId, StripStatus][]): Partial<Record<StripS
 function stepsForMode(mode: FormMode): StripStepId[] {
   // Only a NEW hive seeds learnings (learning-packs P-006) — into-hive adds a
   // member to an existing home (install packs there from the Learning tab).
-  return mode === 'standalone'
-    ? ['resolve', 'clone', 'detect', 'create']
-    : mode === 'into-hive'
-      ? ['resolve', 'lookup', 'clone', 'detect', 'create', 'publish']
-      : ['resolve', 'lookup', 'clone', 'detect', 'create', 'seed', 'publish'];
+  return mode === 'into-hive'
+    ? ['resolve', 'lookup', 'clone', 'detect', 'create', 'publish']
+    : ['resolve', 'lookup', 'clone', 'detect', 'create', 'seed', 'publish'];
 }
 
 /** Rough per-step holds for the optimistic spinner (clone is the long pole). */
@@ -255,18 +252,9 @@ interface FromRepoResponse {
   code?: string;
 }
 
-interface StandaloneResponse {
-  ok?: boolean;
-  project?: { slug: string; path: string };
-  blueprint?: { generated?: boolean };
-  clone?: { url: string; owner: string; repo: string; defaultBranch?: string };
-  error?: string;
-  code?: string;
-}
-
 // ── Component ───────────────────────────────────────────────────────────────
 
-export type FormMode = 'new-hive' | 'into-hive' | 'standalone';
+export type FormMode = 'new-hive' | 'into-hive';
 type Phase = 'form' | 'running' | 'error' | 'offer' | 'joining' | 'joined' | 'created';
 
 export interface EntryGithubUrlFormProps {
@@ -356,7 +344,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   const [stepStatuses, setStepStatuses] = useState<Partial<Record<StripStepId, StripStatus>>>({});
   const [offer, setOffer] = useState<ExistingOffer | null>(null);
   const [offerUnverified, setOfferUnverified] = useState(false);
-  const [created, setCreated] = useState<{ kind: 'hive'; result: CreatedResult; publish?: PublishOutcome; bindingUnverified: boolean } | { kind: 'standalone'; slug: string; path: string; blueprintGenerated?: boolean } | null>(null);
+  const [created, setCreated] = useState<{ kind: 'hive'; result: CreatedResult; publish?: PublishOutcome; bindingUnverified: boolean } | null>(null);
   const [joinSummary, setJoinSummary] = useState<{ ok: number; total: number; firstSlug?: string } | null>(null);
   // P-006: "Copied ✓" feedback on the invite-artifact copy button — transient UI.
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -424,7 +412,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   const { data: progressRows } = useSyncQuery<{ step: StripStepId; status: StripStatus }>({
     queryName: 'hiveFromRepo.progress',
     args: { progressId },
-    enabled: phase === 'running' && mode !== 'standalone' && progressId.length > 0,
+    enabled: phase === 'running' && progressId.length > 0,
   });
   useEffect(() => {
     if (phase !== 'running' || !progressRows || progressRows.length === 0) return;
@@ -493,31 +481,6 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     startOptimistic(steps);
 
     try {
-      if (mode === 'standalone') {
-        // D-007: the projects-route githubUrl path — clone + register + blueprint.
-        const res = await fetch('/api/harness/projects', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-          slug: effectiveSlug,
-          githubUrl: trimmed,
-          ...(verifyTests ? { runTests: true } : {}),
-        }),
-        });
-        const body: StandaloneResponse = await res.json().catch(() => ({}));
-        if (!res.ok || !body.ok || !body.project) {
-          settleError(steps, body.code);
-          setError(errorCodeToCopy(body.code, body.error ?? `HTTP ${res.status}`, hiveLower));
-          setPhase('error');
-          return;
-        }
-        clearTimer();
-        setStepStatuses(statusMap(steps.map((s) => [s, s === 'detect' && body.blueprint?.generated === false ? 'skipped' : 'done'])));
-        setCreated({ kind: 'standalone', slug: body.project.slug, path: body.project.path, blueprintGenerated: body.blueprint?.generated });
-        setPhase('created');
-        return;
-      }
-
       const res = await fetch('/api/harness/hives/from-repo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -651,7 +614,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     return (
       <div>
         <h2 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 600 }}>
-          {phase === 'running' ? (mode === 'standalone' ? 'Cloning repository…' : `Creating ${hiveLower} from repository…`) : 'Create failed'}
+          {phase === 'running' ? `Creating ${hiveLower} from repository…` : 'Create failed'}
         </h2>
         {parsed && (
           <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--fg-dim)' }}>
@@ -759,22 +722,6 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
 
   // Created — the success summary.
   if (phase === 'created' && created) {
-    if (created.kind === 'standalone') {
-      return (
-        <div>
-          <h2 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>✓ Harness created</h2>
-          <InfoCard>
-            <code>{created.slug}</code> registered at <code>{created.path}</code>.{' '}
-            {created.blueprintGenerated
-              ? 'A blueprint was detected and written — it’s ready to run.'
-              : 'No blueprint was generated — configure one from the harness settings.'}
-          </InfoCard>
-          <div style={{ textAlign: 'right' }}>
-            <button type="button" onClick={() => onCreated(created.slug)} style={primaryBtn}>Done</button>
-          </div>
-        </div>
-      );
-    }
     const { result, publish, bindingUnverified } = created;
     const intoExisting = mode === 'into-hive';
     // P-006 (D-006): the full invite-link artifact is the headline; the bare
@@ -909,7 +856,9 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         you&rsquo;ll be offered to join it instead.
       </p>
 
-      {/* The 3-mode fork (P-012): new-hive is the entry's default. */}
+      {/* The creation fork (P-012): new-hive is the entry's default; "Add to
+          <hive>" only appears with a selected scope. Every created Pot is a
+          hive, so the plain-harness "Standalone" mode is RETIRED. */}
       <div role="group" aria-label="Creation mode" style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
         <button type="button" aria-pressed={mode === 'new-hive'} onClick={() => setMode('new-hive')} style={modeBtn(mode === 'new-hive')} title={`Create a new ${hiveLower} from this repository`}>
           New {hiveLower}
@@ -919,9 +868,6 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             Add to {hiveScope}
           </button>
         )}
-        <button type="button" aria-pressed={mode === 'standalone'} onClick={() => setMode('standalone')} style={modeBtn(mode === 'standalone')} title={`A standalone harness — no ${hiveLower}, no publish`}>
-          Standalone
-        </button>
       </div>
 
       <label style={{ display: 'block', marginBottom: 14 }}>
@@ -1076,7 +1022,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
         <button type="button" onClick={onBack} style={secondaryBtn}>Cancel</button>
         <button type="submit" disabled={!url.trim()} style={{ ...primaryBtn, opacity: url.trim() ? 1 : 0.5, cursor: url.trim() ? 'pointer' : 'not-allowed' }}>
-          {mode === 'standalone' ? 'Clone & register' : mode === 'into-hive' ? 'Add repository' : `Create ${hiveLower}`}
+          {mode === 'into-hive' ? 'Add repository' : `Create ${hiveLower}`}
         </button>
       </div>
     </form>
