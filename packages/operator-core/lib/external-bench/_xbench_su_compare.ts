@@ -67,6 +67,12 @@ const MAX_USD_PER_TASK = Number(process.env.XBENCH_MAX_USD ?? 10);
 const MAX_TOKENS_PER_TASK = Number(process.env.XBENCH_MAX_TOKENS ?? 4_000_000);
 const MAX_TASKS = process.env.XBENCH_MAX_TASKS ? Number(process.env.XBENCH_MAX_TASKS) : undefined;
 const ONLY_IID = process.env.XBENCH_ONLY_IID || undefined; // run EXACTLY one instance_id (cheap probe).
+// XBENCH_ONLY_IIDS: comma-separated instance_ids — run EXACTLY this set (the targeted RESUME of
+// infra-interrupted tasks). Merges into the existing snapshot by instanceId (like ONLY_IID), so a
+// partial run can be completed in waves without clobbering already-done siblings (benchmark-robustness).
+const ONLY_IIDS = process.env.XBENCH_ONLY_IIDS
+  ? process.env.XBENCH_ONLY_IIDS.split(',').map((s) => s.trim()).filter(Boolean)
+  : undefined;
 const CAP = Number(process.env.XBENCH_CAP ?? 5); // contention cap (in-process pool size).
 
 // The D-004-B su-arm loopback-fetches the operator host for fleet:place_batch (su-independent-backlog.ts
@@ -173,6 +179,14 @@ function loadTasks(): BenchTask[] {
       throw new Error(`XBENCH_ONLY_IID=${ONLY_IID} not found in ${SAMPLE} (${tasks.length} tasks loaded)`);
     }
     tasks = [one];
+  } else if (ONLY_IIDS) {
+    const want = new Set(ONLY_IIDS);
+    const found = tasks.filter((t) => want.has(t.instanceId));
+    const missing = ONLY_IIDS.filter((id) => !tasks.some((t) => t.instanceId === id));
+    if (missing.length) {
+      throw new Error(`XBENCH_ONLY_IIDS: ${missing.length} not in ${SAMPLE} (${tasks.length} loaded): ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? '…' : ''}`);
+    }
+    tasks = found;
   } else if (MAX_TASKS != null) {
     tasks = tasks.slice(0, MAX_TASKS);
   }
@@ -214,6 +228,12 @@ async function main() {
   mkd(`${OUT_DIR}/diffs-${ARM}`, { recursive: true });
   const manifestPath = `${OUT_DIR}/${ARM}.manifest.jsonl`;
   wf(manifestPath, '', 'utf8'); // truncate any stale manifest for this arm
+  // ROBUSTNESS (benchmark-resumability): append each task's STRUCTURED result here the moment it is collected.
+  // The full ${ARM}.json snapshot is only written at finalize() — a mid-run kill (e.g. a peer restarting :3170)
+  // otherwise loses every stopReason/cost not yet in the snapshot. With this incremental log the missing set is
+  // recomputable + re-runnable in waves (XBENCH_ONLY_IIDS) and the snapshot rebuildable, WITHOUT re-running
+  // already-done tasks. NOT truncated: it accumulates across resume waves (deduped by instanceId downstream).
+  const resultsPath = `${OUT_DIR}/${ARM}.results.jsonl`;
 
   bindSuIndependentBacklogDriver({
     workspaceId: WORKSPACE_ID,
@@ -233,8 +253,10 @@ async function main() {
     onTaskCollected: (tr) => {
       const a = tr.attempt;
       const diff = a.diff ?? '';
+      const diffBytes = Buffer.byteLength(diff, 'utf8');
       wf(`${OUT_DIR}/diffs-${ARM}/${a.instanceId}.diff`, diff, 'utf8');
-      console.log(`[su-independent] collected ${a.instanceId}: diffBytes=${Buffer.byteLength(diff, 'utf8')} cost=$${(a.costUsd || 0).toFixed(2)} stop=${a.stopReason}`);
+      af(resultsPath, JSON.stringify({ instanceId: a.instanceId, stopReason: a.stopReason, diffBytes, costUsd: a.costUsd ?? 0, ts: Date.now() }) + '\n', 'utf8');
+      console.log(`[su-independent] collected ${a.instanceId}: diffBytes=${diffBytes} cost=$${(a.costUsd || 0).toFixed(2)} stop=${a.stopReason}`);
     },
   });
 
