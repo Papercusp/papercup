@@ -147,6 +147,7 @@ export async function getItemRedundancy(workItemId: string, opts: { harness?: st
   const rows = await sql<{ redundancy: number | null }[]>`
     SELECT redundancy FROM harness_shared.harness_features_consolidated
      WHERE feature_id = ${workItemId}
+       AND workspace_id = ${activeWorkspaceId()}
        AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`TRUE`}
      ORDER BY updated_ts DESC NULLS LAST
      LIMIT 1`;

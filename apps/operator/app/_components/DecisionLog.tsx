@@ -71,6 +71,10 @@ export interface DecisionLogProps {
    *  here (null on deselect) and the inline expand is suppressed. Omit (the
    *  settings page) to keep the self-contained inline accordion. */
   onSelectRow?: (row: DecisionRow | null) => void;
+  /** queue 3-pane: the detail is rendered EXTERNALLY from `?decision=` by the
+   *  parent (PlansClient reads the same ledger), so suppress the inline accordion.
+   *  The row click still sets `?decision=`; the parent renders the right pane. */
+  externalDetail?: boolean;
 }
 
 /** POST the revert to the dedicated loopback route (mirrors GraduationPrompts'
@@ -215,6 +219,7 @@ export default function DecisionLog({
   className,
   style,
   onSelectRow,
+  externalDetail,
 }: DecisionLogProps) {
   const args = useMemo(
     () => ({
@@ -388,7 +393,7 @@ export default function DecisionLog({
               </button>
             ) : null}
           </div>
-          {isOpen && !onSelectRow ? <DecisionDetail row={row} /> : null}
+          {isOpen && !onSelectRow && !externalDetail ? <DecisionDetail row={row} /> : null}
           </div>
         );
       })}

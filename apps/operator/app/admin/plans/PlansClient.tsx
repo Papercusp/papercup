@@ -20,7 +20,8 @@
  * `leaveGuard()` first.
  */
 
-import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -209,9 +210,22 @@ export default function PlansClient() {
     'qlLayer',
     parseAsStringEnum<'disposition' | 'action'>(['disposition', 'action']).withDefault('disposition'),
   );
-  // queue-pending-accuracy P-004: the Queen's-log selected row is rendered in the
-  // shared right pane (3-pane consistency), not an inline accordion in the list.
-  const [selectedDecision, setSelectedDecision] = useState<DecisionRow | null>(null);
+  // Queen's-log selection is URL-driven (?decision=), looked up from the SAME
+  // decision.ledger the log renders — the robust 3-pane path the Pending lists use
+  // (?item= / ?other=), NOT a child→parent useState mirror (which didn't reliably
+  // update the right pane). Deep-linkable + survives the ledger's refresh.
+  const [queueDecisionSel] = useQueryState('decision', parseAsInteger);
+  const queenLogRows = useSyncQuery<DecisionRow>({
+    queryName: 'decision.ledger',
+    args: { layer: qlLayer, limit: 50 },
+  });
+  const selectedDecision = useMemo(
+    () =>
+      queueDecisionSel != null
+        ? (queenLogRows.data ?? []).find((r) => r.id === queueDecisionSel) ?? null
+        : null,
+    [queueDecisionSel, queenLogRows.data],
+  );
   // Inbox tier filter (D-006) — Decisions ▸ Handled ▸ Alerts ▸ Activity (or all).
   // Only the Decisions tier demands the user; this lets them focus on it.
   // The local is queueTier, but the URL key stays 'inboxTier' — it's a cross-app
@@ -899,7 +913,7 @@ export default function PlansClient() {
                               : 'Every governed action that ran, auto or gated — the full audit trail. Newest first.'
                           }
                           emptyText="No decisions logged yet. As the Queen considers items, they appear here."
-                          onSelectRow={setSelectedDecision}
+                          externalDetail
                         />
                       </section>
                     ) : (

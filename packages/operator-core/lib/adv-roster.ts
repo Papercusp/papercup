@@ -274,7 +274,12 @@ export function mergeRosterEntries(
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
-    const pane = classifyAgentPane({ role: adv?.role ?? null, ownerId: p.ownerId });
+    // The autonomous Queen + Overwatch are invoke-route launches with NO
+    // adv_sessions row (adv?.role would be null) — but their presence row
+    // carries agentRole (deriveAgentRole, stamped on each heartbeat). Fall back
+    // to it so they classify as queen/overwatch and surface in the dock
+    // --queen/--overwatch panes instead of dropping to the generic bee arm.
+    const pane = classifyAgentPane({ role: adv?.role ?? p.agentRole ?? null, ownerId: p.ownerId });
     const claims = claimsByOwner.get(p.ownerId) ?? [];
     const currentPlanSlug = p.currentPlanSlug ?? adv?.planSlug ?? null;
     // EI-348 (P-013): for a spawned bee, the RUNNING nursery row is a first-
@@ -317,7 +322,7 @@ export function mergeRosterEntries(
       hasLaunchRecord: adv != null,
       advSessionId: adv?.id ?? null,
       currentPlanSlug,
-      role: adv?.role ?? null,
+      role: adv?.role ?? p.agentRole ?? null,
       feature: adv?.feature ?? null,
       agent: adv?.agent ?? null,
       mode: adv?.mode ?? null,

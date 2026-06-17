@@ -477,6 +477,35 @@ export async function fireLaunchBlueprint(
     fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnModel: benchModel } };
   }
 
+  // queen-steering-panel-2026-06-15 GAP-2 (P-006): resolve the QUEEN's OWN model
+  // from the owner's tier config so raising the 👑-tab menu/ceiling actually moves
+  // the autonomous queen — not just the tier she picks for bees (her launch passed
+  // NO tier, so resolveTierSpec never ran for her: roleModelDefault('queen')=sonnet
+  // was her ceiling). She runs at her ceiling-or-home tier resolved against the
+  // EFFECTIVE menu (owner-steering session override > workspace agent-config), via
+  // the SAME bodyExtra.spawnModel → PAPERCUSP_SPAWN_MODEL channel as the bench pin
+  // above — so a caller pin / bench pin (checked `== null`) still wins. Returns the
+  // spec ONLY when it differs from her committed default, so an un-steered Hive is
+  // byte-identical to today. Fail-soft: a config-read failure leaves her default.
+  if (target.role === 'queen' && fireInput.bodyExtra?.spawnModel == null) {
+    try {
+      const [{ readAgentConfig }, { getOwnerSteering }, { effectiveTierConfig, resolveRoleOwnModelSpec }] =
+        await Promise.all([
+          import('../agent-config'),
+          import('../owner-steering'),
+          import('../fleet/model-tiers'),
+        ]);
+      const [cfg, steering] = await Promise.all([
+        readAgentConfig().catch(() => null),
+        getOwnerSteering(input.workspaceId, input.installSlug).catch(() => null),
+      ]);
+      const spec = resolveRoleOwnModelSpec('queen', effectiveTierConfig(cfg, steering));
+      if (spec) fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnModel: spec } };
+    } catch {
+      /* fail-soft: leave the queen on her committed default if tier config is unreadable */
+    }
+  }
+
   const fire = _fire ?? defaultFire;
   const fired = (await fire({ ...fireInput, ...target })) as LaunchSpawnInfo | undefined;
   return { ...target, spawn: fired ?? null };

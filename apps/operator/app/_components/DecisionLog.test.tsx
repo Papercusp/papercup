@@ -139,4 +139,21 @@ describe('DecisionLog (queue-authorization-redesign P-003/P-006)', () => {
     expect(screen.queryByText('Reversibility')).toBeNull();
     vi.unstubAllGlobals();
   });
+
+  /* ── externalDetail (queue 3-pane): parent renders detail from ?decision= ── */
+
+  it('externalDetail suppresses the inline detail on click (parent owns the right pane)', () => {
+    syncResult = { data: [decision({ id: 5 })], loading: false, error: null };
+    renderLog(<DecisionLog title="Queen's log" externalDetail />);
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    // The click selects the row (?decision=) but the inline accordion stays
+    // closed — the detail is rendered externally from the URL by the parent.
+    expect(screen.queryByText('Reversibility')).toBeNull();
+  });
+
+  it('externalDetail suppresses the inline detail on a ?decision= deep-link', () => {
+    syncResult = { data: [decision({ id: 9 })], loading: false, error: null };
+    renderLog(<DecisionLog title="Queen's log" externalDetail />, '?decision=9');
+    expect(screen.queryByText('Reversibility')).toBeNull();
+  });
 });

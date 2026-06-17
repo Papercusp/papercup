@@ -159,6 +159,47 @@ export function effectiveTierConfig(
 }
 
 /**
+ * The tier NAME a role runs at by DEFAULT — the `DEFAULT_MODEL_TIERS` entry whose
+ * spec model-id matches the role's committed default (`roleModelDefault`). E.g.
+ * queen's default `sonnet` ⇒ the `standard` tier. `undefined` when the role has no
+ * committed default or it isn't in the default menu (→ no own-model resolution).
+ * Mapped via the DEFAULT menu (names↔committed-specs are stable) so it still
+ * resolves after the owner overrides the menu SPECS. Pure.
+ */
+export function roleHomeTier(role: string): string | undefined {
+  const def = roleModelDefault(role);
+  if (!def) return undefined;
+  const id = specModelId(def);
+  return DEFAULT_MODEL_TIERS.find((t) => specModelId(t.spec) === id)?.name;
+}
+
+/**
+ * Resolve a role's OWN model spec from the effective tier menu — the
+ * queen-steering-panel GAP-2 lever: a decider role (queen/operator) does NOT pick
+ * its own tier, so the menu only ever governed the tier it picks for OTHERS. This
+ * resolves the role's own model so an owner who raises the 👑-tab menu/ceiling
+ * actually moves the autonomous role's model.
+ *
+ * The role runs at its CEILING tier when one is set (a decider has no self-picker,
+ * so its ceiling IS its target — run as strong as the owner allows), else its HOME
+ * tier — resolved against the EFFECTIVE (session-override > workspace-default) menu
+ * and clamped by `resolveTierSpec` (a too-low ceiling never downgrades below the
+ * role floor, EI-7/EI-286). Returns the spec ONLY when it DIFFERS from the role's
+ * committed default, so an un-configured / default menu yields `null` = no override
+ * = today's behaviour exactly. Pure; caller supplies `effectiveTierConfig`'s output.
+ */
+export function resolveRoleOwnModelSpec(
+  role: string,
+  eff: { tiers?: readonly ModelTier[]; tierCeilings?: Record<string, string> },
+): string | null {
+  const tier = eff.tierCeilings?.[role]?.trim() || roleHomeTier(role);
+  if (!tier) return null;
+  const r = resolveTierSpec({ tier, role, tiers: eff.tiers, tierCeilings: eff.tierCeilings });
+  if (!r.ok) return null;
+  return r.spec && r.spec !== roleModelDefault(role) ? r.spec : null;
+}
+
+/**
  * Render the LIVE tier menu as runtime-context lines for a placement
  * decider's launch prompt (queen/operator) — the channel that keeps her
  * rubric in sync with the user's ACTUAL menu (names, specs, and the

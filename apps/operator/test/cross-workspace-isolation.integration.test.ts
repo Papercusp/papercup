@@ -48,6 +48,15 @@ beforeAll(async () => {
     VALUES ('aud-a', 0, 'system:test', 'noop', 'proj-a', '{}'::jsonb, ${WS_A}),
            ('aud-b', 0, 'system:test', 'noop', 'proj-b', '{}'::jsonb, ${WS_B})
     ON CONFLICT (id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id`;
+  // harness_plans is the table behind the owner-reported leak (workspace-data-
+  // isolation-leaks-2026-06-17 F-A1): the "all plans" view used to resolve to a
+  // hardcoded workspace. The F-A1 fix lists by workspace_id under withWorkspace,
+  // so it relies on exactly the RLS isolation asserted below.
+  await db.adminSql`
+    INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
+    VALUES (${WS_A}, 'h-a', 'plan-a'),
+           (${WS_B}, 'h-b', 'plan-b')
+    ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING`;
 }, 90_000);
 
 afterAll(async () => {
@@ -75,6 +84,16 @@ describe('cross-workspace RLS isolation (P-005)', () => {
     const cross = await inWorkspace(WS_B, (tx) => tx`SELECT id FROM harness_shared.audit_log WHERE id = 'aud-a'`);
     expect(cross).toHaveLength(0);
     const own = await inWorkspace(WS_B, (tx) => tx`SELECT id FROM harness_shared.audit_log WHERE id = 'aud-b'`);
+    expect(own).toHaveLength(1);
+  });
+
+  it('harness_plans is workspace-isolated — the reported-bug table (F-A1)', async () => {
+    // The F-A1 "all plans" workspace-wide listing reads harness_plans under
+    // withWorkspace(activeWorkspace); under WS_B it must see ONLY WS_B's plans,
+    // never another workspace's (the exact leak the owner reported).
+    const cross = await inWorkspace(WS_B, (tx) => tx`SELECT plan_slug FROM harness_shared.harness_plans WHERE plan_slug = 'plan-a'`);
+    expect(cross).toHaveLength(0);
+    const own = await inWorkspace(WS_B, (tx) => tx`SELECT plan_slug FROM harness_shared.harness_plans WHERE plan_slug = 'plan-b'`);
     expect(own).toHaveLength(1);
   });
 

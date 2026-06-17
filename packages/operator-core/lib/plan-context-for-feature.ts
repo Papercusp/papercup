@@ -11,6 +11,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from './workspace-registry';
 import { readPlanBySlug } from './agent-tools/plans/source';
 
 const PLAN_CONTEXT_CHAR_BUDGET = 6_000;
@@ -38,7 +39,8 @@ async function queryProvenance(
     const rows = await sql<FeatureProvenanceRow[]>`
       SELECT source_plan_slug, source_plan_item_ids, title
         FROM harness_shared.harness_features_consolidated
-       WHERE harness_slug = ${harnessSlug}
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = ${harnessSlug}
          AND feature_id   = ${featureId}
        LIMIT 1
     `;
@@ -138,7 +140,8 @@ export async function getPlanContextsForFeatures(
     const rows = await sql<Array<{ source_plan_slug: string }>>`
       SELECT DISTINCT source_plan_slug
         FROM harness_shared.harness_features_consolidated
-       WHERE harness_slug = ${harnessSlug}
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = ${harnessSlug}
          AND feature_id   = ANY(${featureIds})
          AND source_plan_slug IS NOT NULL
        LIMIT 2

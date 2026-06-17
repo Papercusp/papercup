@@ -279,6 +279,27 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     expect(bare.agentPaneKind).toBe('bee');
   });
 
+  it('classifies invoke-launched queen/overwatch from presence agentRole when there is no adv row (dock panes)', () => {
+    // The autonomous Queen + Overwatch fire via the invoke route — NO adv_sessions
+    // row (adv.role null) — but their presence row carries agentRole. Without the
+    // fallback they dropped to the bee arm and vanished from the dock --queen /
+    // --overwatch panes.
+    const [queen] = mergeRosterEntries([presence({ ownerId: 'q', agentRole: 'queen' })], new Map(), NOW);
+    expect(queen.agentPaneKind).toBe('queen');
+    expect(queen.role).toBe('queen');
+
+    const [ow] = mergeRosterEntries([presence({ ownerId: 'ow', agentRole: 'overwatch' })], new Map(), NOW);
+    expect(ow.agentPaneKind).toBe('overwatch');
+
+    // An explicit adv-record role still wins over the presence agentRole.
+    const [adved] = mergeRosterEntries(
+      [presence({ ownerId: 'a', agentRole: 'queen' })],
+      new Map([['a', adv({ role: 'worker' })]]),
+      NOW,
+    );
+    expect(adved.agentPaneKind).toBe('bee');
+  });
+
   it('surfaces the bee session_id from the spawned-agents map → claude --resume handle (P-004)', () => {
     const [e] = mergeRosterEntries(
       [presence({ ownerId: 's-bee-1' })],
