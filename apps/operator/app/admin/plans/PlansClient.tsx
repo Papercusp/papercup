@@ -866,7 +866,7 @@ export default function PlansClient() {
                   />
                 ) : view === 'queue' ? (
                   <div className="pc-queue__list">
-                    {/* B1 (P-006): the two-halves summary + the Pending|Queen's-log
+                    {/* B1 (P-006): the two-halves summary + the Needs Decision|Queen's-log
                         segmented control — only in the redesigned Queue (flag-gated). */}
                     {queueAuthzView ? (
                       <>
@@ -945,7 +945,7 @@ export default function PlansClient() {
                         loading={attention.loading}
                         error={attention.error}
                         refresh={attention.refresh}
-                        title="Pending"
+                        title="Needs Decision"
                         kinds={queueKinds}
                         planFilters={itemPlans}
                         tierFilter={queueTier}

@@ -667,7 +667,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
                 tasks: [featureId],
                 harness: memberSlug,
                 brief,
-                tier: 'max', // opus:xhigh — strict per D-004 fairness
+                tier: process.env.XBENCH_TIER || 'max', // default 'max' (opus:xhigh); XBENCH_TIER pins a specific model tier (e.g. 'opus46' for a fair same-model comparison)
                 min_inject_affinity: 100, // never warm-inject — the independent arm needs a FRESH isolated spawn
                 workspace: ws,
                 dry_run: false,

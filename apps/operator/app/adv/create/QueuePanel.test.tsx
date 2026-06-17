@@ -7,7 +7,7 @@
  * Create-tab Queue (this panel) silently rendered the legacy grouping. These
  * tests lock in that the panel:
  *   - passes `groupByAuthorizer` to PlanOtherList tracking the flag (A1);
- *   - renders the QueueSummary + Pending|Queen's-log tabs when the flag is on (B1);
+ *   - renders the QueueSummary + Needs Decision|Queen's-log tabs when the flag is on (B1);
  *   - mounts the shared <DecisionLog/> on the Queen's-log tab.
  *
  * The data hooks, flag hook and heavy list children are mocked; nuqs runs under
@@ -109,13 +109,13 @@ afterEach(() => {
 });
 
 describe('QueuePanel', () => {
-  it('flag ON: passes groupByAuthorizer + renders the summary and Pending/Queen-log tabs', () => {
+  it('flag ON: passes groupByAuthorizer + renders the summary and Needs Decision/Queen-log tabs', () => {
     renderAt('');
     expect(screen.getByTestId('other-list').getAttribute('data-authz')).toBe('true');
     expect(otherListProps.at(-1)?.groupByAuthorizer).toBe(true);
     // B1: summary (waiting-on-you = tierCounts.decision) + the two tabs.
     expect(screen.getByTestId('queue-summary').textContent).toContain('3');
-    expect(screen.getByRole('button', { name: 'Pending' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Needs Decision' })).toBeTruthy();
     expect(screen.getByRole('button', { name: "Queen's log" })).toBeTruthy();
   });
 

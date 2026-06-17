@@ -29,6 +29,8 @@ import { describe, it, expect } from 'vitest';
 import {
   composeFeatureKey,
   composeIssueKey,
+  composePlanKey,
+  CDC_CAPTURED_TABLES,
   outboxRowToLocalWriteOp,
   UnknownOutboxTableError,
   type OutboxRow,
@@ -53,6 +55,36 @@ describe('composeFeatureKey / composeIssueKey', () => {
   it('is deterministic — same id → same key', () => {
     expect(composeFeatureKey('F-001')).toBe(composeFeatureKey('F-001'));
     expect(composeIssueKey('I-001')).toBe(composeIssueKey('I-001'));
+  });
+
+  it('composePlanKey is the plan_slug itself (matches projection composeKey)', () => {
+    expect(composePlanKey('my-plan-2026-06-04')).toBe('my-plan-2026-06-04');
+    expect(composePlanKey('x')).toBe(composePlanKey('x')); // deterministic
+  });
+});
+
+describe('CDC_CAPTURED_TABLES — federation completeness guard', () => {
+  it('includes the known federated tables (dropping one silently breaks that table\'s federation)', () => {
+    // These are the tables whose local writes MUST ride the peer-log. A regression
+    // that removes one from TABLE_NAME_TO_TABLE_TAG would silently un-federate it.
+    for (const t of [
+      'contributor_usage_events',
+      'harness_plans',
+      'harness_plan_parts',
+      'engineer_issues',
+      'hive_members',
+      'hive_settings',
+      'plan_item_assignments',
+      'coord_event_log',
+    ]) {
+      expect(CDC_CAPTURED_TABLES).toContain(t);
+    }
+  });
+
+  it('is a non-empty set of non-empty table names', () => {
+    expect(CDC_CAPTURED_TABLES.length).toBeGreaterThan(0);
+    expect(CDC_CAPTURED_TABLES.every((t) => typeof t === 'string' && t.length > 0)).toBe(true);
+    expect(new Set(CDC_CAPTURED_TABLES).size).toBe(CDC_CAPTURED_TABLES.length); // no dupes
   });
 });
 

@@ -15,8 +15,10 @@
 //! `psu --brain`) is a separate action (TODO: bind a key on the dock).
 
 use crate::client::OperatorClient;
+use crate::models::RosterEntry;
 use crate::transcript::{locate_session_transcript, tail_transcript};
 use std::io::Write;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Which autonomous agent this pane follows.
@@ -53,20 +55,54 @@ impl Scope {
     }
 }
 
-/// Resolve the autonomous session's native uuid from the live roster — the SAME
-/// backend data every instance reads — or None when it isn't up yet.
-async fn resolve_uuid(client: &OperatorClient, scope: &Scope) -> Option<String> {
-    let (active, _ended) = client.roster_typed().await.ok()?;
-    active
+/// Resolve the autonomous session this pane follows: the NEWEST session for
+/// this scope (across the live + ended roster tiers) whose transcript file
+/// actually exists on disk. Returns its native uuid + transcript path together
+/// (we locate once), or None when no such session is up yet. The roster is the
+/// SAME backend data every desktop instance reads, so all instances resolve the
+/// same session.
+///
+/// The Queen runs as a SERIES of short "wake" sessions, each a fresh uuid; the
+/// roster accumulates dozens of past wakes (45 active + 24 ended is normal). We
+/// sort by `adv_session_id` — a serial PK, so a higher id launched later — and
+/// take the most recent wake that has turns on disk. This makes the pane show
+/// her latest activity and roll forward to each new wake automatically, and it
+/// never blanks between wakes (it keeps showing the last wake's transcript,
+/// which persists on disk after the process exits). Taking the FIRST match
+/// instead pinned the pane to the OLDEST stale wake — the wrong-session symptom.
+async fn resolve_session(client: &OperatorClient, scope: &Scope) -> Option<(String, PathBuf)> {
+    let (active, ended) = client.roster_typed().await.ok()?;
+    let entries: Vec<RosterEntry> = active.into_iter().chain(ended).collect();
+    select_newest_with_transcript(entries, scope, locate_session_transcript)
+}
+
+/// Pure core of [`resolve_session`] (network + fs injected): among `entries`,
+/// the NEWEST (by `adv_session_id`) entry whose role matches `scope`, has a
+/// non-empty session id, AND whose uuid `locate`s to a real transcript file.
+/// Returns the uuid + its path, or None. Separated out so the "newest wake with
+/// turns, not the first stale match" selection is unit-testable.
+fn select_newest_with_transcript(
+    entries: Vec<RosterEntry>,
+    scope: &Scope,
+    locate: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<(String, PathBuf)> {
+    let mut matches: Vec<RosterEntry> = entries
         .into_iter()
-        .find(|e| {
-            e.role
-                .as_deref()
-                .map(|r| scope.matches_role(r))
-                .unwrap_or(false)
-                && e.session_id.is_some()
+        .filter(|e| {
+            e.role.as_deref().map(|r| scope.matches_role(r)).unwrap_or(false)
+                && e.session_id.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false)
         })
-        .and_then(|e| e.session_id)
+        .collect();
+    // Newest launch first (adv_session_id is a serial PK; higher = launched later).
+    matches.sort_by(|a, b| b.adv_session_id.unwrap_or(0).cmp(&a.adv_session_id.unwrap_or(0)));
+    for e in matches {
+        if let Some(uuid) = e.session_id {
+            if let Some(path) = locate(&uuid) {
+                return Some((uuid, path));
+            }
+        }
+    }
+    None
 }
 
 /// Run the read-only transcript pane: connect, resolve the autonomous session
@@ -97,28 +133,22 @@ pub async fn run(scope: Scope) -> anyhow::Result<()> {
     // `None != None` = false, skipping the status print and leaving a blank pane.)
     let mut current_uuid: Option<String> = Some(String::new());
     let mut offset: u64 = 0;
-    let mut path: Option<std::path::PathBuf> = None;
+    let mut path: Option<PathBuf> = None;
 
     loop {
-        // (Re)resolve the session + its transcript path; a recycled brain → new uuid.
-        let uuid = resolve_uuid(&client, &scope).await;
+        // (Re)resolve the newest session + its transcript path; a new wake → new uuid.
+        let resolved = resolve_session(&client, &scope).await;
+        let uuid = resolved.as_ref().map(|(u, _)| u.clone());
         if uuid != current_uuid {
             current_uuid = uuid;
             offset = 0;
-            path = current_uuid.as_deref().and_then(locate_session_transcript);
-            match (&current_uuid, &path) {
-                (Some(u), Some(_)) => {
+            path = resolved.map(|(_, p)| p);
+            match &current_uuid {
+                Some(u) if !u.is_empty() => {
                     let short = &u[..u.len().min(8)];
                     let _ = writeln!(out, "\n── attached: {} {} ──", scope.label(), short);
                 }
-                (Some(_), None) => {
-                    let _ = writeln!(
-                        out,
-                        "\n  {} is up, but its transcript isn't on this host yet…",
-                        scope.label()
-                    );
-                }
-                (None, _) => {
+                _ => {
                     let _ = writeln!(out, "\n  {} not running right now — waiting…", scope.label());
                 }
             }
@@ -140,5 +170,61 @@ pub async fn run(scope: Scope) -> anyhow::Result<()> {
         }
 
         tokio::time::sleep(Duration::from_millis(1500)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(role: &str, adv: i64, sid: Option<&str>) -> RosterEntry {
+        RosterEntry {
+            role: Some(role.into()),
+            adv_session_id: Some(adv),
+            session_id: sid.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn scope_matches_role_aliases() {
+        assert!(Scope::Queen.matches_role("queen"));
+        assert!(Scope::Queen.matches_role("brain"));
+        assert!(Scope::Queen.matches_role("QUEEN"));
+        assert!(!Scope::Queen.matches_role("overwatch"));
+        assert!(Scope::Overwatch.matches_role("overwatch"));
+        assert!(!Scope::Overwatch.matches_role("queen"));
+    }
+
+    #[test]
+    fn picks_newest_wake_with_a_transcript_not_the_first_stale_one() {
+        // Three queen wakes; only the two newest have a transcript on disk.
+        let entries = vec![
+            entry("queen", 2915, Some("old-stale")),     // oldest — would win a `.find()`
+            entry("overwatch", 3019, Some("ow")),        // wrong scope
+            entry("queen", 3329, Some("newest")),        // newest, but no file yet
+            entry("queen", 3328, Some("live")),          // 2nd-newest, HAS a file
+        ];
+        // `newest` (3329) has no transcript; `live` (3328) and `old-stale` do.
+        let locate = |uuid: &str| -> Option<PathBuf> {
+            match uuid {
+                "live" | "old-stale" => Some(PathBuf::from(format!("/t/{uuid}.jsonl"))),
+                _ => None,
+            }
+        };
+        let got = select_newest_with_transcript(entries, &Scope::Queen, locate);
+        // Rolls back from 3329 (no file) to 3328 (`live`) — NOT the oldest 2915.
+        assert_eq!(got, Some(("live".into(), PathBuf::from("/t/live.jsonl"))));
+    }
+
+    #[test]
+    fn returns_none_when_no_matching_session_has_a_transcript() {
+        let entries = vec![
+            entry("queen", 3329, Some("a")),
+            entry("queen", 3328, Some("")), // empty sid ignored
+            entry("bee", 9000, Some("b")),  // wrong scope
+        ];
+        let got = select_newest_with_transcript(entries, &Scope::Queen, |_| None);
+        assert_eq!(got, None);
     }
 }

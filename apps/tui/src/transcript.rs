@@ -27,15 +27,47 @@ use crate::models::ChatMessage;
 /// existing transcript (a long brain session's jsonl can be tens of MB).
 const BACKFILL_BYTES: u64 = 400 * 1024;
 
-/// Find `<uuid>.jsonl` under `~/.claude/projects/*/` — the session transcript.
-/// The project-dir name is the munged cwd of the session, which we can't
-/// reconstruct reliably, so we scan the one directory level instead.
+/// Find `<uuid>.jsonl` for a session transcript. The project-dir name is the
+/// munged cwd of the session, which we can't reconstruct reliably, so we scan
+/// the directory level(s) instead. We search BOTH transcript roots:
+///
+///   1. `~/.claude/projects/<munged-cwd>/<uuid>.jsonl` — a plain interactive
+///      Claude Code session (the owner's own shells).
+///   2. `~/.papercusp/session-claude/<session>/projects/<munged-cwd>/<uuid>.jsonl`
+///      — a psu-launched agent (queen / overwatch / bee). The psu launcher
+///      redirects Claude's config dir per session, so the autonomous Queen's
+///      turns land HERE, never under `~/.claude/projects`. Missing this root is
+///      exactly why the dock's read-only pane showed "waiting…" while the live
+///      Queen was actively writing 450KB of turns to a session-claude file.
 pub fn locate_session_transcript(uuid: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    let projects = home.join(".claude").join("projects");
     let want = format!("{uuid}.jsonl");
+
+    // Root 1: ~/.claude/projects/<munged>/<uuid>.jsonl
+    if let Some(p) = find_in_projects_dir(&home.join(".claude").join("projects"), &want) {
+        return Some(p);
+    }
+
+    // Root 2: ~/.papercusp/session-claude/<session>/projects/<munged>/<uuid>.jsonl
+    // (one extra <session> level — each psu agent gets its own config dir).
+    let session_claude = home.join(".papercusp").join("session-claude");
+    if let Ok(sessions) = fs::read_dir(&session_claude) {
+        for session in sessions.flatten() {
+            let projects = session.path().join("projects");
+            if let Some(p) = find_in_projects_dir(&projects, &want) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Scan the immediate `<munged-cwd>` subdirs of one `projects/` dir for
+/// `<want>` (`<uuid>.jsonl`). Returns the first match, or None if the dir is
+/// absent / holds no match.
+fn find_in_projects_dir(projects: &Path, want: &str) -> Option<PathBuf> {
     for entry in fs::read_dir(projects).ok()?.flatten() {
-        let candidate = entry.path().join(&want);
+        let candidate = entry.path().join(want);
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -129,6 +161,23 @@ pub fn parse_transcript_line(line: &str) -> Option<ChatMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_in_projects_dir_locates_uuid_under_a_munged_cwd_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let projects = tmp.path().join("projects");
+        let munged = projects.join("-home-marsh-office--papercusp-hives-papercup-hive");
+        std::fs::create_dir_all(&munged).unwrap();
+        let uuid = "ca5b976a-1e92-4b70-aa3e-1ce74e93e944";
+        let target = munged.join(format!("{uuid}.jsonl"));
+        std::fs::write(&target, b"{}\n").unwrap();
+
+        // Found one level down (the <munged-cwd> dir), like the real layout.
+        assert_eq!(find_in_projects_dir(&projects, &format!("{uuid}.jsonl")), Some(target));
+        // Absent uuid / absent dir → None, never a panic.
+        assert_eq!(find_in_projects_dir(&projects, "missing.jsonl"), None);
+        assert_eq!(find_in_projects_dir(&projects.join("nope"), "x.jsonl"), None);
+    }
 
     #[test]
     fn parses_user_and_assistant_text_and_skips_everything_else() {

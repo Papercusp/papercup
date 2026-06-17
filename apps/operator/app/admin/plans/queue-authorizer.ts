@@ -82,14 +82,14 @@ export function planSections(groups: AttentionGroup[]): DisplaySection[] {
   return groups.map((g) => ({ key: g.key, title: g.title, harnessSlug: g.harnessSlug, items: g.items }));
 }
 
-/** B1 (P-006): the Queue's Pending|Queen's-log segmented tabs + the Queen-log
+/** B1 (P-006): the Queue's Needs Decision|Queen's-log segmented tabs + the Queen-log
  *  layer toggle. Shared so the /admin/plans Queue (PlansClient) AND the Create
  *  dock's Queue (QueuePanel) render the same control — the original redesign
  *  wired these into PlansClient only, so the Create-tab Queue silently never got
  *  the B1 tabs (and A1 grouping). Keep them here so the two surfaces can't
  *  diverge again. */
 export const QUEUE_TABS: { id: 'pending' | 'queen-log'; label: string; hint: string }[] = [
-  { id: 'pending', label: 'Pending', hint: 'Items an agent escalated for your sign-off.' },
+  { id: 'pending', label: 'Needs Decision', hint: 'Items an agent escalated for your sign-off.' },
   { id: 'queen-log', label: "Queen's log", hint: 'What the Queen has decided on her own.' },
 ];
 export const QUEEN_LOG_LAYERS: { id: 'disposition' | 'action'; label: string; hint: string }[] = [

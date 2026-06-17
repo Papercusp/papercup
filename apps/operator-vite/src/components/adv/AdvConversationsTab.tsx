@@ -46,6 +46,7 @@ import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import ChatPanel from '@/app/harness/ChatPanel';
+import { hiveHomeLabel } from '@/lib/hive-label';
 import '@/app/admin/coordination/coordination.css';
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
@@ -994,7 +995,7 @@ function ThreadsView() {
             </span>
             <span className="pc-coord__row-title">{c.title ?? c.id}</span>
             <span className="pc-coord__row-meta">
-              {c.harness_slug ? c.harness_slug : 'workspace'}
+              {c.harness_slug ? hiveHomeLabel(c.harness_slug) : 'workspace'}
               {c.promoted_issue_id ? ` · → ${c.promoted_issue_id}` : ''}
             </span>
             {(c.topics ?? []).length > 0 && (
@@ -1101,7 +1102,7 @@ function ThreadsView() {
               </div>
               <div className="pc-advconv__detailstats" aria-label="Conversation metadata">
                 <span><strong>{detail.subscriber_count}</strong> follower{detail.subscriber_count === 1 ? '' : 's'}</span>
-                <span>{detail.scope === 'harness' && detail.harness_slug ? detail.harness_slug : 'workspace'}</span>
+                <span>{detail.scope === 'harness' && detail.harness_slug ? hiveHomeLabel(detail.harness_slug) : 'workspace'}</span>
                 {detail.asker_id && <span>asked by {detail.asker_id}</span>}
               </div>
             </header>
@@ -1281,7 +1282,7 @@ function DeliberationsView() {
             </span>
             <span className="pc-coord__row-title">{t.title ?? t.thread_id}</span>
             <span className="pc-coord__row-meta">
-              {t.harness_slug ?? 'workspace'} · {t.post_count} post{t.post_count === 1 ? '' : 's'}
+              {t.harness_slug ? hiveHomeLabel(t.harness_slug) : 'workspace'} · {t.post_count} post{t.post_count === 1 ? '' : 's'}
               {t.created_by ? ` · ${t.created_by}` : ''}
             </span>
           </div>
@@ -1348,7 +1349,7 @@ function DeliberationsView() {
                 <h2>{head.title ?? head.thread_id}</h2>
               </div>
               <div className="pc-advconv__detailstats" aria-label="Thread metadata">
-                <span>{head.harness_slug ?? 'workspace'}</span>
+                <span>{head.harness_slug ? hiveHomeLabel(head.harness_slug) : 'workspace'}</span>
                 <span><strong>{posts.length}</strong> posts</span>
               </div>
             </header>
@@ -1499,7 +1500,7 @@ function AgentChatsView() {
             </span>
             <span className="pc-coord__row-title">{c.title ?? c.id}</span>
             <span className="pc-coord__row-meta">
-              {c.harness_slug ?? 'workspace'}{c.feature_id ? ` · ${c.feature_id}` : ''} · {c.turns} turn{c.turns === 1 ? '' : 's'}
+              {c.harness_slug ? hiveHomeLabel(c.harness_slug) : 'workspace'}{c.feature_id ? ` · ${c.feature_id}` : ''} · {c.turns} turn{c.turns === 1 ? '' : 's'}
             </span>
           </div>
         ),
@@ -1591,7 +1592,7 @@ function AgentChatsView() {
                 <h2>{detail.title ?? detail.id}</h2>
               </div>
               <div className="pc-advconv__detailstats" aria-label="Chat metadata">
-                <span>{detail.harness_slug ?? 'workspace'}</span>
+                <span>{detail.harness_slug ? hiveHomeLabel(detail.harness_slug) : 'workspace'}</span>
                 <span><strong>{(detail.transcript ?? []).length}</strong> turns</span>
                 <span>${((detail.total_cost_usd_cents ?? 0) / 100).toFixed(2)} · {(detail.total_input_tokens ?? 0) + (detail.total_output_tokens ?? 0)} tok</span>
               </div>
@@ -1741,7 +1742,7 @@ function MessagesView() {
                   {m.harness_slug && (
                     <div className="pc-advfeed__kv">
                       <strong>harness</strong>
-                      <span>{m.harness_slug}</span>
+                      <span>{hiveHomeLabel(m.harness_slug)}</span>
                     </div>
                   )}
                 </div>

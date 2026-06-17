@@ -310,4 +310,22 @@ describe('reconcileDoneStatus (validator omitted the validating→passed write)'
       expect(dbc.state.updates).toBe(0);
     }
   });
+
+  test('handles both validating and in_progress states on DONE (orchestrator-finalize.ts reconcileDoneStatus)', async () => {
+    const { reconcileDoneStatus } = await import('./orchestrator-finalize');
+    // The feature pipeline reaches DONE when the director declares it,
+    // which happens AFTER the bee/worker finishes. The realFinalizer calls
+    // reconcileDoneStatus to ensure the feature status is flipped to passed
+    // even if the validator step was skipped.
+    const testCases = [
+      { initial: 'validating', shouldFlip: true, desc: 'validator omitted PG write' },
+      { initial: 'in_progress', shouldFlip: true, desc: 'bee finished before validator (hiveloop)' },
+    ];
+    for (const { initial, shouldFlip, desc } of testCases) {
+      const dbc = fakeDbc(initial);
+      const flipped = await reconcileDoneStatus('hiveloop', 'F-greeting', dbc);
+      expect(flipped).toBe(shouldFlip);
+      expect(dbc.state.status).toBe('passed');
+    }
+  });
 });

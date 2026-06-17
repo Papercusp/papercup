@@ -337,7 +337,14 @@ export function mergeRosterEntries(
       launchArgv: [],
       agentPaneKind: pane.kind,
       driveMode: pane.driveMode,
-      sessionId: sessionsByOwner.get(p.ownerId) ?? null,
+      // The agent's native claude session uuid (the `claude --resume <id>` /
+      // transcript-file handle). A spawned bee records it in spawned_agents
+      // (sessionsByOwner); a psu-launched agent (queen / overwatch / brain) has
+      // no spawned_agents row but DOES stamp it on its adv_sessions row
+      // (mig 115). Both are the same native uuid — fall back to the adv row so
+      // the autonomous Queen/Overwatch carry a resolvable session id (the dock's
+      // read-only `pui brain-view` pane locates the transcript by this uuid).
+      sessionId: sessionsByOwner.get(p.ownerId) ?? adv?.sessionId ?? null,
       wakeMode: resolveWakeModeFrom(wakeModesByOwner.get(p.ownerId) ?? null, defaultWakeMode),
       pendingWakes: pendingWakesByOwner.get(p.ownerId) ?? 0,
     };

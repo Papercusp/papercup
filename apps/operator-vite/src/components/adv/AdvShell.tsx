@@ -26,6 +26,7 @@ import {
 import { Select, type SelectEntry, type SelectOption } from '@/app/harness/Select';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
 import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
+import { hiveHomeLabel } from '@/lib/hive-label';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
@@ -1045,13 +1046,17 @@ export function buildHarnessSelectOptions(
     // slug. Label it by the stripped hive name; `value` stays the home slug so
     // `?slug=` still scopes to the hive (backend unchanged). A legacy/standalone
     // root (a real harness that is its own hive) keeps its slug.
-    const rootLabel = root.harness_kind === 'hive' ? root.slug.replace(/-hive$/, '') : root.slug;
+    // Detect a hive home by kind OR the `-hive` slug suffix — projects-lite
+    // doesn't always carry harness_kind, and members never end in `-hive`, so
+    // the suffix is a safe robust fallback.
+    const isHiveHome = root.harness_kind === 'hive' || root.slug.endsWith('-hive');
+    const rootLabel = isHiveHome ? hiveHomeLabel(root.slug) : root.slug;
     tree.push({ value: root.slug, label: rootLabel });
     for (const member of members) {
       // Single-repo collapse: a `<x>-hive` home whose one member is the repo `<x>`
       // — the hive IS that repo, so drop the redundant `↳ <x>` row (the `<x>`
       // header already stands for it; selecting it scopes to the hive).
-      if (root.harness_kind === 'hive' && member.slug === rootLabel) continue;
+      if (isHiveHome && member.slug === rootLabel) continue;
       tree.push({ value: member.slug, label: `  ↳ ${member.slug}` });
     }
   }

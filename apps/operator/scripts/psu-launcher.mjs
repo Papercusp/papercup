@@ -1047,7 +1047,7 @@ function fmtAge(iso) {
  *  session as the pinned brain (Queen) — an AGENT, so it re-applies the
  *  native-scheduler lockout the human resume path deliberately skips
  *  (flags don't persist into resumes; every brain dock-open re-arms it). */
-function launchResume(session, { brain = false, fork = false, passthrough = [] } = {}) {
+function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [] } = {}) {
   // --fork is claude-only — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
@@ -1055,11 +1055,14 @@ function launchResume(session, { brain = false, fork = false, passthrough = [] }
     console.error(`psu: --fork is only supported for claude sessions — ${session.agent} has no fork-session. Re-run without --fork to resume in place.`);
     process.exit(2);
   }
+  if (addDir.length && session.agent === 'omp') {
+    console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');
+  }
   // omp re-loads the coordination extension per invocation; claude/codex don't
   // use -e. Stable path, only added when actually installed.
   const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
-  const { bin, args } = resumeArgsFor(session, { coordExtPath, fork });
+  const { bin, args } = resumeArgsFor(session, { coordExtPath, fork, addDir });
   if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
   // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
   if (passthrough.length) args.push(...passthrough);
@@ -1096,6 +1099,105 @@ function launchResume(session, { brain = false, fork = false, passthrough = [] }
 
   console.error(`psu: ${fork ? 'forking' : 'resuming'} ${session.agent} in ${session.cwd}  (${bin} ${args.join(' ')})`);
   runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
+}
+
+/**
+ * The bootstrap-su POST body that mints the NEW tracked row + native id for a
+ * fork. Pure — exported for tests. A fork carries over the original's workspace +
+ * plan and lands in the ORIGINAL's cwd (harness_slug:null so the server doesn't
+ * relocate cwd — the seeded transcript is keyed by the original's cwd, and claude
+ * resolves --resume by CLAUDE_CONFIG_DIR + the encoded cwd it runs in, so the fork
+ * MUST run in that same cwd). agent is always claude (the only fork-session backend).
+ */
+export function forkBootstrapBody(session) {
+  return {
+    agent: 'claude',
+    workspace: session.workspaceId || null,
+    harness_slug: null,
+    plan_slug: session.planSlug || null,
+    cwd: session.cwd,
+  };
+}
+
+/**
+ * src/dst for seeding a fork's fresh isolated config dir with the original's
+ * transcripts. Pure — exported for tests. We copy the whole `projects/` subtree
+ * (the original's per-session dir holds essentially just <origId>.jsonl) so that
+ * whichever encoded-cwd dir claude looks under, the original transcript is present
+ * to --resume from.
+ */
+export function forkSeedPaths(origConfigDir, forkConfigDir) {
+  return { src: join(origConfigDir, 'projects'), dst: join(forkConfigDir, 'projects') };
+}
+
+/**
+ * `psu --resume <tracked-claude> --fork` → a NEW *tracked* session. Unlike the
+ * plain (untracked) fork (launchResume + fork, which lets claude mint a random id
+ * with no adv row), this:
+ *   1. mints a fresh adv_sessions row + native id via bootstrap-su (same envelope
+ *      a fresh psu session gets: per-session CLAUDE_CONFIG_DIR, coord owner id, MCP),
+ *   2. SEEDS that fresh config dir with the original's transcript (forkSeedPaths),
+ *   3. launches `claude --resume <origId> --fork-session --session-id <forkId>` so
+ *      claude forks the history into the psu-known id (verified: the trio is valid).
+ * The fork therefore shows up in `psu --resume`'s picker like any other psu session.
+ * Its coord identity (PAPERCUSP_SID) is fresh (a NEW row), so it runs concurrently
+ * with the still-live original without colliding on locks/presence/inbox-wake.
+ *
+ * No engineer-playbook re-injection (unlike launchFreshSu): the forked history
+ * already carries the original's system prompt — appending it again would double it.
+ *
+ * Falls back to the plain untracked fork (launchResume) when the session isn't a
+ * forkable tracked claude session, or when bootstrap-su is unreachable/incomplete —
+ * so `--fork` never hard-fails on the tracked path.
+ */
+async function launchTrackedFork(session, args = {}) {
+  const forkOpts = { fork: true, passthrough: args.passthrough, addDir: args.addDir };
+  const forkable = session.agent === 'claude' && session.sessionId && session.coordOwnerId && session.id != null;
+  if (!forkable) {
+    // Untracked claude (no adv row) → the plain untracked fork; non-claude →
+    // launchResume refuses with a clear message. Either way defer to launchResume.
+    launchResume(session, forkOpts);
+    return;
+  }
+  let res;
+  try {
+    res = await api('/api/agent-mcp/console/bootstrap-su', {
+      method: 'POST',
+      body: JSON.stringify(forkBootstrapBody(session)),
+    });
+  } catch (e) {
+    console.error(`psu: fork bootstrap failed (${e?.message ?? e}) — falling back to an UNTRACKED fork (resumable only by uuid).`);
+    launchResume(session, forkOpts);
+    return;
+  }
+  const forkId = res?.nativeSessionId || null;
+  const forkConfigDir = res?.envelopeEnv?.CLAUDE_CONFIG_DIR || null;
+  if (!forkId || !forkConfigDir) {
+    console.error('psu: fork bootstrap returned no native id / config dir — falling back to an UNTRACKED fork (resumable only by uuid).');
+    launchResume(session, forkOpts);
+    return;
+  }
+  // Seed the fork's empty per-session config dir with the original's transcript so
+  // `claude --resume <origId>` resolves there; the forked turns then write
+  // <forkId>.jsonl in the fork's OWN dir (keyed by its fresh coord owner id).
+  const origConfigDir = session.configDir || sessionClaudeConfigDir(session.coordOwnerId);
+  const { src, dst } = forkSeedPaths(origConfigDir, forkConfigDir);
+  try {
+    if (existsSync(src)) { mkdirSync(dst, { recursive: true }); cpSync(src, dst, { recursive: true }); }
+    else console.error(`psu: original transcript dir not found (${src}) — claude --resume may fail to find it.`);
+  } catch (e) {
+    console.error(`psu: could not seed the fork transcript (${e?.message ?? e}) — continuing; claude --resume may not find the original.`);
+  }
+  // Resume the ORIGINAL's id, fork into the FORCED fork id. No playbook re-inject.
+  const { bin, args: forkArgs } = resumeArgsFor(session, { fork: true, forkSessionId: forkId, addDir: args.addDir });
+  if (args.passthrough?.length) forkArgs.push(...args.passthrough);
+  console.error(
+    `psu: forking claude ${session.sessionId} → tracked session #${res.sessionId ?? '?'} (${forkId}) in ${session.cwd}  (${bin} ${forkArgs.join(' ')})`,
+  );
+  console.error('psu: the fork is a NEW tracked session — it appears in `psu --resume`; the original is untouched.');
+  // Run in the ORIGINAL's cwd (the seeded transcript is keyed by it); the fresh
+  // bootstrap envelope (config dir / coord id / MCP) makes it a proper SU session.
+  runWrapper({ wrapperBin: bin, args: forkArgs, cwd: session.cwd, envelopeEnv: { ...res.envelopeEnv } });
 }
 
 /** A session that couldn't be matched to a tracked adv_sessions row — either a
@@ -1156,7 +1258,8 @@ async function resumeFlow(args = {}) {
         );
         process.exit(1);
       }
-      launchResume(tracked, { fork: args.fork, passthrough: args.passthrough });
+      if (args.fork) { await launchTrackedFork(tracked, args); return; }
+      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir });
       return;
     }
 
@@ -1175,7 +1278,9 @@ async function resumeFlow(args = {}) {
     // 3. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
     //    the papercusp-su tools) are NOT loaded. Require an explicit confirm.
     await confirmUntrackedResume(untracked, args);
-    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough });
+    // An untracked session has no adv row to seed a tracked fork from — fork it in
+    // place (claude mints a random id; resumable only by uuid). launchResume handles it.
+    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir });
     return;
   }
 
@@ -1205,7 +1310,8 @@ async function resumeFlow(args = {}) {
     message: 'Resume which session?',
     source: async (term) => filterRows(rows, term),
   });
-  launchResume(picked, { fork: args.fork, passthrough: args.passthrough });
+  if (args.fork) { await launchTrackedFork(picked, args); return; }
+  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir });
 }
 
 // `psu --brain` (native-terminal-desktop D-013): the desktop chat dock's
@@ -1440,13 +1546,19 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     promptFile: res.promptFile,
     coordExtPath: res.coordExtPath,
     // Force the recorded native session id on a FRESH launch — but not when
-    // this invocation is itself resuming one (--session-id + --resume conflict).
+    // this invocation is itself resuming one: claude rejects --session-id with
+    // --resume/--continue *unless* --fork-session is also present (that exception
+    // is what launchTrackedFork relies on; see resumeArgsFor).
     nativeSessionId: args.resumeSession ? null : res.nativeSessionId,
   });
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
   const extra = suWrapperExtraArgs(res.agent, { model: args.model, resumeSession: args.resumeSession });
-  // Generic `--` passthrough, forwarded verbatim to the backend CLI after psu's flags.
-  const launchArgs = [...baseArgs, ...extra, ...(args.passthrough || [])];
+  if (args.addDir?.length && res.agent === 'omp') {
+    console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');
+  }
+  // First-class --add-dir (claude/codex) then the generic `--` passthrough — both
+  // forwarded verbatim to the backend CLI after psu's own flags.
+  const launchArgs = [...baseArgs, ...extra, ...addDirArgs(res.agent, args.addDir || []), ...(args.passthrough || [])];
   // The brain (Queen) is an AGENT riding the su launch machinery — it gets the
   // native-scheduler lockout the human su session deliberately keeps (D-003).
   if (brain && res.agent === 'claude') launchArgs.push(NATIVE_SCHEDULER_DENY_FLAG);

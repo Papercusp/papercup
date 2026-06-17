@@ -107,6 +107,15 @@ export async function storeMcpResult(args: {
   // jsonb bound as text::jsonb — the operator's postgres-js client throws
   // on bare-object jsonb params (agent-insights/postgres-js-jsonb-binding).
   const resultJson = JSON.stringify(args.result);
+  // Size gate: skip storing pathologically large results (operator-scalability P1-2
+  // / app-wide-load-traps F-A1). The store is synchronous on the event loop; large
+  // results block long enough to drop MCP/SSE connections. Skipping the row forgoes
+  // replay for that ONE huge result while the write itself still committed — best-
+  // effort by contract, safe.
+  if (resultJson.length > REPLAY_STORE_MAX_BYTES) {
+    maybeSweep();
+    return;
+  }
   // First write wins: if a concurrent same-key call already stored, keep
   // the original (both executed in that pathological case; the FIRST
   // stored result is the one every later replay sees — stable).

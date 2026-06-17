@@ -33,6 +33,8 @@ import { checkFireGate, recordFire } from '../autoloop';
 import { getSystemAction, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
+// Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
+import '../harness/routines/configure-per-workspace';
 import { operatorApiBase } from '../operator-api-base';
 
 // 6-field crontab (seconds). Default: every 30s, matching the legacy ticker.

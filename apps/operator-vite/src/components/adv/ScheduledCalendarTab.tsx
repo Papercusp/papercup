@@ -16,8 +16,12 @@ import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import type { DatesSetArg, EventClickArg, EventDropArg, EventInput } from '@fullcalendar/core';
 import type { DateClickArg } from '@fullcalendar/interaction';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+import { CalendarPlus, ExternalLink, Pencil, X } from 'lucide-react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import { Modal } from '@/app/harness/Modal';
+import { Tooltip } from '@/app/harness/Tooltip';
 import ScheduledRoutinesPane from './ScheduledRoutinesPane';
 import ScheduleEditor, { runScheduleTool, type ScheduleMode } from './ScheduleEditor';
 import './scheduled-calendar.css';
@@ -153,6 +157,21 @@ export default function ScheduledCalendarTab() {
       })),
     [occurrences],
   );
+  const stats = useMemo(() => {
+    let armed = 0;
+    let paused = 0;
+    let oneShot = 0;
+    let failed = 0;
+    let partial = 0;
+    for (const o of occurrences) {
+      if (o.scheduleActive) armed += 1;
+      else paused += 1;
+      if (o.kind === 'one-shot') oneShot += 1;
+      if (o.lastOutcome === 'failed') failed += 1;
+      if (o.lastOutcome === 'partial' || o.lastOutcome === 'timed-out') partial += 1;
+    }
+    return { total: occurrences.length, armed, paused, oneShot, failed, partial };
+  }, [occurrences]);
 
   const onDatesSet = useCallback(
     (arg: DatesSetArg) => {
@@ -262,122 +281,144 @@ export default function ScheduledCalendarTab() {
   }, [selected, occurrences]);
 
   return (
-    <div className="pc-sched-cal">
-      <div className="pc-sched-cal__legend" aria-hidden>
-        <span><i className="pc-sched-cal__swatch" style={{ background: 'var(--good, #34d399)' }} /> last run ok</span>
-        <span><i className="pc-sched-cal__swatch" style={{ background: 'var(--bad, #fb7185)' }} /> last run failed</span>
-        <span><i className="pc-sched-cal__swatch" style={{ background: 'var(--warn, #fbbf24)' }} /> partial</span>
-        <span><i className="pc-sched-cal__swatch" style={{ background: 'var(--fg-mute, #7f9bb4)', opacity: 0.55 }} /> paused (disarmed)</span>
-        <span style={{ fontStyle: 'italic' }}>italic = one-shot</span>
-        {loading && <span>· loading…</span>}
-        <button
-          type="button"
-          className="pc-sched-cal__add"
-          onClick={() => setPickerOpen(true)}
-          aria-hidden={false}
-          title="Author a schedule for a plan"
-        >
-          ＋ Schedule a plan
-        </button>
-      </div>
-      <div className="pc-sched-cal__body">
-        <aside className="pc-sched-cal__routines">
-          <ScheduledRoutinesPane onSelect={(slug) => void setSelected(slug)} />
-        </aside>
-        <div className="pc-sched-cal__main">
-          <FullCalendar
-            ref={calRef}
-            plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-            initialView={view}
-            headerToolbar={{ left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,timeGridDay' }}
-            events={events}
-            datesSet={onDatesSet}
-            eventClick={onEventClick}
-            dateClick={onDateClick}
-            eventDrop={onEventDrop}
-            editable
-            eventStartEditable
-            eventDurationEditable={false}
-            height="100%"
-            nowIndicator
-            dayMaxEvents={4}
-            firstDay={1}
-          />
+    <TooltipPrimitive.Provider delayDuration={250}>
+      <div className="pc-sched-cal">
+        <header className="pc-sched-cal__masthead">
+          <div className="pc-sched-cal__titleblock">
+            <p className="pc-sched-cal__eyebrow">Scheduled plans</p>
+            <h2>Calendar</h2>
+          </div>
+          <div className="pc-sched-cal__stats" aria-label="Calendar occurrence summary">
+            <span><strong>{stats.total}</strong> in view</span>
+            <span><strong>{stats.armed}</strong> armed</span>
+            {stats.failed > 0 ? <span className="is-danger"><strong>{stats.failed}</strong> failed</span> : null}
+            {stats.partial > 0 ? <span className="is-warn"><strong>{stats.partial}</strong> partial</span> : null}
+            {stats.paused > 0 ? <span><strong>{stats.paused}</strong> paused</span> : null}
+            {stats.oneShot > 0 ? <span><strong>{stats.oneShot}</strong> one-shot</span> : null}
+            {loading ? <span>Loading</span> : null}
+          </div>
+          <Tooltip label="Author a schedule for a plan" side="bottom" align="end">
+            <button type="button" className="pc-sched-cal__add" onClick={() => setPickerOpen(true)}>
+              <CalendarPlus size={14} aria-hidden />
+              <span>Schedule</span>
+            </button>
+          </Tooltip>
+        </header>
+        <div className="pc-sched-cal__legend" aria-label="Calendar status legend">
+          <span><i className="pc-sched-cal__swatch pc-sched-cal__swatch--success" /> last run ok</span>
+          <span><i className="pc-sched-cal__swatch pc-sched-cal__swatch--failed" /> last run failed</span>
+          <span><i className="pc-sched-cal__swatch pc-sched-cal__swatch--partial" /> partial</span>
+          <span><i className="pc-sched-cal__swatch pc-sched-cal__swatch--paused" /> paused</span>
+          <span className="pc-sched-cal__oneshot">italic = one-shot</span>
         </div>
-        {selectedPlan && (
-          <aside className="pc-sched-cal__aside">
-            <h3>{selectedPlan.row.title ?? selectedPlan.row.templateSlug}</h3>
-            <dl>
-              <dt>Plan</dt>
-              <dd>{selectedPlan.row.templateSlug}</dd>
-              <dt>Pot</dt>
-              <dd>{selectedPlan.row.harnessSlug}</dd>
-              <dt>State</dt>
-              <dd>{selectedPlan.row.scheduleActive ? 'Armed (firing)' : 'Paused (disarmed)'}</dd>
-              <dt>Kind</dt>
-              <dd>{selectedPlan.row.kind === 'one-shot' ? 'One-shot' : 'Recurring'}</dd>
-              <dt>Last run</dt>
-              <dd>{selectedPlan.row.lastOutcome ?? '—'}</dd>
-            </dl>
-            <h3>Next fires</h3>
-            {selectedPlan.upcoming.length === 0 ? (
-              <p className="pc-sched-cal__empty" style={{ padding: 8 }}>No upcoming occurrences in view.</p>
-            ) : (
-              <ul style={{ listStyle: 'none', margin: 0, padding: 0, fontSize: 11 }}>
-                {selectedPlan.upcoming.map((o) => (
-                  <li key={o.occurrenceMs} style={{ padding: '2px 0', color: 'var(--fg-dim, #b9d4e8)' }}>
-                    {new Date(o.occurrenceMs).toLocaleString()}
-                  </li>
-                ))}
-              </ul>
-            )}
-            <p style={{ marginTop: 12 }}>
-              <a href={`/adv?tab=plans&plan=${encodeURIComponent(selectedPlan.row.templateSlug)}`} style={{ color: 'var(--accent, #38bdf8)', fontSize: 11 }}>
-                Open plan → runs &amp; schedule
-              </a>
-            </p>
-            <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="pc-sched-cal__edit"
-                onClick={() =>
-                  setEditor({
-                    slug: selectedPlan.row.templateSlug,
-                    title: selectedPlan.row.title,
-                    harness: selectedPlan.row.harnessSlug,
-                    isArmed: selectedPlan.row.scheduleActive,
-                  })
-                }
-                style={{ fontSize: 11 }}
-              >
-                Edit schedule
-              </button>
-              <button
-                type="button"
-                onClick={() => void setSelected(null)}
-                style={{ fontSize: 11 }}
-              >
-                Close
-              </button>
-            </div>
+        <div className="pc-sched-cal__body">
+          <aside className="pc-sched-cal__routines">
+            <ScheduledRoutinesPane onSelect={(slug) => void setSelected(slug)} />
           </aside>
+          <div className="pc-sched-cal__main">
+            <FullCalendar
+              ref={calRef}
+              plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+              initialView={view}
+              headerToolbar={{ left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,timeGridDay' }}
+              events={events}
+              datesSet={onDatesSet}
+              eventClick={onEventClick}
+              dateClick={onDateClick}
+              eventDrop={onEventDrop}
+              editable
+              eventStartEditable
+              eventDurationEditable={false}
+              height="100%"
+              nowIndicator
+              dayMaxEvents={4}
+              firstDay={1}
+            />
+          </div>
+          {selectedPlan && (
+            <aside className="pc-sched-cal__aside">
+              <div className="pc-sched-cal__aside-head">
+                <h3>{selectedPlan.row.title ?? selectedPlan.row.templateSlug}</h3>
+                <button
+                  type="button"
+                  className="pc-sched-cal__iconbtn"
+                  onClick={() => void setSelected(null)}
+                  aria-label="Close selected plan"
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              </div>
+              <dl>
+                <dt>Plan</dt>
+                <dd>{selectedPlan.row.templateSlug}</dd>
+                <dt>Pot</dt>
+                <dd>{selectedPlan.row.harnessSlug}</dd>
+                <dt>State</dt>
+                <dd>{selectedPlan.row.scheduleActive ? 'Armed (firing)' : 'Paused (disarmed)'}</dd>
+                <dt>Kind</dt>
+                <dd>{selectedPlan.row.kind === 'one-shot' ? 'One-shot' : 'Recurring'}</dd>
+                <dt>Last run</dt>
+                <dd>{selectedPlan.row.lastOutcome ?? '—'}</dd>
+              </dl>
+              <h3>Next fires</h3>
+              {selectedPlan.upcoming.length === 0 ? (
+                <p className="pc-sched-cal__empty pc-sched-cal__empty--compact">No upcoming occurrences in view.</p>
+              ) : (
+                <ul className="pc-sched-cal__next-list">
+                  {selectedPlan.upcoming.map((o) => (
+                    <li key={o.occurrenceMs}>
+                      {new Date(o.occurrenceMs).toLocaleString()}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="pc-sched-cal__planlink">
+                <a href={`/adv?tab=plans&plan=${encodeURIComponent(selectedPlan.row.templateSlug)}`}>
+                  <ExternalLink size={12} aria-hidden />
+                  <span>Open plan</span>
+                </a>
+              </p>
+              <div className="pc-sched-cal__actions">
+                <button
+                  type="button"
+                  className="pc-sched-cal__edit"
+                  onClick={() =>
+                    setEditor({
+                      slug: selectedPlan.row.templateSlug,
+                      title: selectedPlan.row.title,
+                      harness: selectedPlan.row.harnessSlug,
+                      isArmed: selectedPlan.row.scheduleActive,
+                    })
+                  }
+                >
+                  <Pencil size={12} aria-hidden />
+                  Edit schedule
+                </button>
+              </div>
+            </aside>
+          )}
+        </div>
+
+        {pickerOpen && (
+          <SchedulePicker
+            plans={planList}
+            onPick={(p) => {
+              setPickerOpen(false);
+              setEditor({ slug: p.slug, title: p.title, harness: p.harness, isArmed: p.scheduleActive ?? false });
+            }}
+            onClose={() => setPickerOpen(false)}
+          />
         )}
-      </div>
 
-      {pickerOpen && (
-        <SchedulePicker
-          plans={planList}
-          onPick={(p) => {
-            setPickerOpen(false);
-            setEditor({ slug: p.slug, title: p.title, harness: p.harness, isArmed: p.scheduleActive ?? false });
-          }}
-          onClose={() => setPickerOpen(false)}
-        />
-      )}
-
-      {editor && (
-        <div className="pc-sched-cal__editor-overlay" role="presentation" onClick={() => setEditor(null)}>
-          <div className="pc-sched-cal__editor-card" role="presentation" onClick={(e) => e.stopPropagation()}>
+        {editor && (
+          <Modal
+            open
+            onOpenChange={(open: boolean) => {
+              if (!open) setEditor(null);
+            }}
+            title={`Edit schedule for ${editor.title ?? editor.slug}`}
+            contentClassName="pc-sched-cal__modal-card"
+          >
             <ScheduleEditor
               planSlug={editor.slug}
               planTitle={editor.title}
@@ -389,13 +430,12 @@ export default function ScheduledCalendarTab() {
               onClose={() => setEditor(null)}
               onSaved={afterWrite}
             />
-          </div>
-        </div>
-      )}
-    </div>
+          </Modal>
+        )}
+      </div>
+    </TooltipPrimitive.Provider>
   );
 }
-
 /** Plan picker for "Schedule a plan" — choose any plan to (re)author its schedule.
  *  Unscheduled plans float to the top (the common case); already-scheduled ones
  *  remain pickable to edit. Reuses the P-021 `scheduled` glance off plans.list. */
@@ -426,44 +466,46 @@ function SchedulePicker({
   }, [plans, q]);
 
   return (
-    <div className="pc-sched-cal__editor-overlay" role="presentation" onClick={onClose}>
-      <div className="pc-sched-cal__editor-card" role="dialog" aria-label="Schedule a plan" onClick={(e) => e.stopPropagation()}>
-        <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <strong style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Schedule a plan</strong>
-            <span style={{ flex: 1 }} />
-            <button type="button" onClick={onClose} aria-label="Close picker" style={{ background: 'none', border: 'none', color: 'var(--fg-mute, #7f9bb4)', fontSize: 16, cursor: 'pointer' }}>×</button>
-          </div>
-          <input
-            type="search"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Filter plans…"
-            aria-label="Filter plans"
-            style={{ font: 'inherit', fontSize: 12, padding: '6px 8px', borderRadius: 6, color: 'var(--fg, #e7f7ff)', background: 'var(--bg, #07101d)', border: '1px solid var(--border-strong, rgba(125,211,252,0.3))' }}
-          />
-          {filtered.length === 0 ? (
-            <p style={{ fontSize: 11, color: 'var(--fg-mute, #7f9bb4)', padding: 8 }}>No plans match.</p>
-          ) : (
-            <ul style={{ listStyle: 'none', margin: 0, padding: 0, maxHeight: 340, overflowY: 'auto' }}>
-              {filtered.map((p) => (
-                <li key={`${p.harness}:${p.slug}`}>
-                  <button
-                    type="button"
-                    onClick={() => onPick(p)}
-                    style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '6px 8px', background: 'none', border: 'none', borderBottom: '1px solid var(--border-muted, rgba(125,211,252,0.08))', cursor: 'pointer', color: 'var(--fg, #e7f7ff)' }}
-                  >
-                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>{p.title ?? p.slug}</span>
-                    {p.scheduled && (
-                      <span style={{ fontSize: 9, color: 'var(--fg-mute, #7f9bb4)', flexShrink: 0 }}>{p.scheduleActive ? 'armed' : 'scheduled'}</span>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+    <Modal
+      open
+      onOpenChange={(open: boolean) => {
+        if (!open) onClose();
+      }}
+      title="Schedule a plan"
+      contentClassName="pc-sched-cal__modal-card pc-sched-cal__picker-card"
+    >
+      <div className="pc-sched-cal__picker">
+        <div className="pc-sched-cal__picker-head">
+          <strong>Schedule a plan</strong>
+          <button type="button" onClick={onClose} aria-label="Close picker" className="pc-sched-cal__iconbtn">
+            <X size={14} aria-hidden />
+          </button>
         </div>
+        <input
+          type="search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Filter plans..."
+          aria-label="Filter plans"
+          className="pc-sched-cal__picker-search"
+        />
+        {filtered.length === 0 ? (
+          <p className="pc-sched-cal__empty pc-sched-cal__empty--compact">No plans match.</p>
+        ) : (
+          <ul className="pc-sched-cal__picker-list">
+            {filtered.map((p) => (
+              <li key={`${p.harness}:${p.slug}`}>
+                <button type="button" onClick={() => onPick(p)} className="pc-sched-cal__picker-row">
+                  <span>{p.title ?? p.slug}</span>
+                  {p.scheduled ? (
+                    <em className={p.scheduleActive ? 'is-armed' : ''}>{p.scheduleActive ? 'armed' : 'scheduled'}</em>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }

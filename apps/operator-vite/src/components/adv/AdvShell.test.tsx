@@ -477,4 +477,15 @@ describe('buildHarnessSelectOptions — hive-home folding (the repo-less `-hive`
     const tree = treeOf(buildHarnessSelectOptions([lite('solo', { is_shared: true })], null, 'Hives', 'WS'));
     expect(tree).toEqual([{ value: 'solo', label: 'solo' }]);
   });
+
+  it('folds a `-hive` home by SUFFIX even when harness_kind is absent (projects-lite robustness)', () => {
+    // projects-lite doesn't always carry harness_kind; the `-hive` suffix alone
+    // must still fold the home (members never end in -hive). Guards the case
+    // where the kind-only gate would leave a raw `<x>-hive` row in the picker.
+    const tree = treeOf(
+      buildHarnessSelectOptions([lite('shop-hive'), lite('shop', { hive_slug: 'shop-hive' })], null, 'Hives', 'WS'),
+    );
+    expect(tree).toEqual([{ value: 'shop-hive', label: 'shop' }]);
+    expect(tree.some((o) => o.label.includes('-hive'))).toBe(false);
+  });
 });

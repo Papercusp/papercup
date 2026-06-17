@@ -9,6 +9,9 @@ import {
   presetsFromArgs,
   resumeArgsFor,
   resumeEnvFor,
+  addDirArgs,
+  forkBootstrapBody,
+  forkSeedPaths,
   findUntrackedSession,
   claudeStoreHasSession,
   sessionHasTranscript,
@@ -119,6 +122,29 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs(['--resume=x']).yes).toBe(false);
   });
 
+  it('parses --add-dir (space + = forms, repeatable); defaults to []', () => {
+    expect(parseArgs([]).addDir).toEqual([]);
+    expect(parseArgs(['--add-dir', '/tmp/a']).addDir).toEqual(['/tmp/a']);
+    expect(parseArgs(['--add-dir=/tmp/b']).addDir).toEqual(['/tmp/b']);
+    // Repeatable, both forms intermixed.
+    expect(parseArgs(['--add-dir', '/x', '--add-dir=/y', '--add-dir', '/z']).addDir).toEqual(['/x', '/y', '/z']);
+    // An empty `--add-dir=` contributes nothing.
+    expect(parseArgs(['--add-dir=']).addDir).toEqual([]);
+  });
+
+  it('a value after --add-dir is taken verbatim, not parsed as a psu flag', () => {
+    // The space-form value is consumed as the dir even if it looks flag-ish.
+    const a = parseArgs(['--add-dir', '--no-plan']);
+    expect(a.addDir).toEqual(['--no-plan']);
+    expect(a.noPlan).toBe(false);
+  });
+
+  it('--add-dir before `--` is psu-parsed; after `--` it is verbatim passthrough', () => {
+    const a = parseArgs(['--add-dir', '/early', '--', '--add-dir', '/late']);
+    expect(a.addDir).toEqual(['/early']);
+    expect(a.passthrough).toEqual(['--add-dir', '/late']);
+  });
+
   it('parses --fork / --fork-session (resume-time branch); defaults false', () => {
     expect(parseArgs(['--resume=42', '--fork']).fork).toBe(true);
     expect(parseArgs(['--resume=42', '--fork-session']).fork).toBe(true);
@@ -183,6 +209,58 @@ describe('psu-launcher arg parsing', () => {
   it('resumeArgsFor refuses --fork for non-claude agents (omp/codex have no fork-session)', () => {
     expect(() => resumeArgsFor({ agent: 'omp', ompThreadId: 't' }, { fork: true })).toThrow(/fork/i);
     expect(() => resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { fork: true })).toThrow(/fork/i);
+  });
+
+  it('resumeArgsFor forces the fork id via --session-id ONLY alongside --fork-session (tracked fork)', () => {
+    // The plain --session-id/--resume conflict is lifted by --fork-session, so the
+    // trio is valid — this is how launchTrackedFork pins the fork to a psu-minted id.
+    expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { fork: true, forkSessionId: 'forked' }).args).toEqual([
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--fork-session', '--session-id', 'forked',
+    ]);
+    // forkSessionId WITHOUT fork is ignored (no --fork-session ⇒ --session-id would conflict with --resume).
+    expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { forkSessionId: 'forked' }).args).toEqual([
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
+    ]);
+  });
+
+  it('addDirArgs maps to each backend native flag (claude/codex), [] for omp; uses the greed-safe = form', () => {
+    expect(addDirArgs('claude', ['/a', '/b'])).toEqual(['--add-dir=/a', '--add-dir=/b']);
+    expect(addDirArgs('codex', ['/a'])).toEqual(['--add-dir=/a']);
+    expect(addDirArgs('omp', ['/a'])).toEqual([]); // omp has no --add-dir
+    expect(addDirArgs('claude', [])).toEqual([]);
+    expect(addDirArgs('gemini', ['/a'])).toEqual([]); // unknown backend
+  });
+
+  it('resumeArgsFor threads --add-dir into each backend at the right position', () => {
+    // claude: appended after the resume/permission flags.
+    expect(resumeArgsFor({ agent: 'claude', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([
+      '--resume', 'u', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--add-dir=/d',
+    ]);
+    // claude fork: --add-dir comes after the fork flags.
+    expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { fork: true, forkSessionId: 'f', addDir: ['/d'] }).args).toEqual([
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--fork-session', '--session-id', 'f', '--add-dir=/d',
+    ]);
+    // codex: --add-dir is a TOP-LEVEL option, so it must precede the `resume` subcommand.
+    expect(resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '--add-dir=/d', 'resume', 'u',
+    ]);
+  });
+
+  it('forkBootstrapBody carries the original workspace/plan + cwd, harness null, agent claude', () => {
+    expect(
+      forkBootstrapBody({ agent: 'claude', sessionId: 'orig', coordOwnerId: 'su-1', id: 7, workspaceId: 'ws9', planSlug: 'my-plan', cwd: '/repo' }),
+    ).toEqual({ agent: 'claude', workspace: 'ws9', harness_slug: null, plan_slug: 'my-plan', cwd: '/repo' });
+    // Missing optional fields collapse to null.
+    expect(forkBootstrapBody({ agent: 'claude', cwd: '/repo' })).toEqual({
+      agent: 'claude', workspace: null, harness_slug: null, plan_slug: null, cwd: '/repo',
+    });
+  });
+
+  it('forkSeedPaths points at the projects/ subtree of each config dir', () => {
+    expect(forkSeedPaths('/orig/cfg', '/fork/cfg')).toEqual({
+      src: '/orig/cfg/projects',
+      dst: '/fork/cfg/projects',
+    });
   });
 
   it('resumeEnvFor: identity + workspace scope SURVIVE a tracked resume (psu-workspace-scoping fix)', () => {

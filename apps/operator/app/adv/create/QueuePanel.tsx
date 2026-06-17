@@ -9,7 +9,7 @@
  *     why-line + category badge, behind the QUEUE_AUTHORIZATION_VIEW flag
  *     (PlanOtherList renders all of this when `groupByAuthorizer` is set; the
  *     `?qcat` category facet lives inside it too).
- *   - B1 (P-006): a Pending | Queen's-log segmented control + the two-halves
+ *   - B1 (P-006): a Needs Decision | Queen's-log segmented control + the two-halves
  *     QueueSummary strip, reusing the shared <DecisionLog/> for the log.
  *
  * The redesign originally landed in PlansClient only; this panel is the surface
@@ -118,7 +118,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
 
   return (
     <div className="pc-queue__list" style={{ height: '100%', overflow: 'auto' }}>
-      {/* B1 (P-006): two-halves summary + Pending|Queen's-log tabs (flag-gated). */}
+      {/* B1 (P-006): two-halves summary + Needs Decision|Queen's-log tabs (flag-gated). */}
       {queueAuthzView ? (
         <div className="pc-queue__masthead">
           <QueueSummary waitingOnYou={queue.tierCounts.decision} />
@@ -213,7 +213,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
                 loading={queue.attentionRaw.loading}
                 error={queue.attentionRaw.error}
                 refresh={queue.attentionRaw.refresh}
-                title={queueAuthzView ? 'Pending' : 'Other'}
+                title={queueAuthzView ? 'Needs Decision' : 'Other'}
                 kinds={queueAuthzView ? queueKinds : queue.otherFacets}
                 planFilters={itemPlans}
                 groupByAuthorizer={queueAuthzView}

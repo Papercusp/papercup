@@ -861,8 +861,8 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
   // curator/documenter finalization steps.
   if (outcome === 'done') {
     try {
-      const { getLegacyClient } = await import('@papercusp/db-org');
-      const flipped = await reconcileDoneStatus(harnessSlug, featureId, getLegacyClient(harnessSlug), (m) =>
+      const pg = adminClientForHarness(harnessSlug);
+      const flipped = await reconcileDoneStatus(harnessSlug, featureId, pg, (m) =>
         console.log(m),
       );
       if (flipped) {

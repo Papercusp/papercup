@@ -661,6 +661,14 @@ export const FLAGS = {
   // reversible kill-switch the owner flips ON (OFF = today's `default`-pinned behavior,
   // byte-identical; old `default` issues preserved). Listed in KNOWN_DARK_FLAGS.
   ISSUES_PER_WORKSPACE: "papercusp-issues-per-workspace",
+  // workspace-data-isolation-leaks-2026-06-17 F-E1 (PHASE 1): scope the routines
+  // upsert's ON CONFLICT to (workspace_id, install_slug, name) so a hive in workspace
+  // B can no longer CLOBBER a same-named routine in workspace A (the latent leak — 0
+  // collisions live today). DEFAULT OFF — reversible kill-switch; OFF = today's
+  // ON CONFLICT (install_slug, name), byte-identical. Phase 2 (drop the old unique +
+  // fold workspace_id into the routine id, to let same-slug routines fully COEXIST
+  // across workspaces) is a separate staged migration. Listed in KNOWN_DARK_FLAGS.
+  ROUTINES_PER_WORKSPACE: "papercusp-routines-per-workspace",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -703,6 +711,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (deliberate) — per-workspace engineer-issues cutover, reversible
   // kill-switch; OFF = today's `default`-pinned issue bus, byte-identical. Listed in KNOWN_DARK_FLAGS.
   [FLAGS.ISSUES_PER_WORKSPACE]: false,
+  // DEFAULT OFF (deliberate) — routines per-workspace ON CONFLICT (phase 1), reversible
+  // kill-switch; OFF = today's ON CONFLICT (install_slug,name), byte-identical. KNOWN_DARK_FLAGS.
+  [FLAGS.ROUTINES_PER_WORKSPACE]: false,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,

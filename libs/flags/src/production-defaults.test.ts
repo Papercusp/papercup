@@ -242,6 +242,9 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // cutover of the shared `default` issue bus. DELIBERATE dark ship — reversible kill-switch
   // the owner flips ON (OFF = today's behavior, byte-identical; old `default` issues preserved).
   FLAGS.ISSUES_PER_WORKSPACE,
+  // workspace-data-isolation-leaks-2026-06-17 F-E1 (phase 1): routines per-workspace ON CONFLICT.
+  // DELIBERATE dark ship — reversible; OFF = today's ON CONFLICT (install_slug,name), byte-identical.
+  FLAGS.ROUTINES_PER_WORKSPACE,
 ]);
 
 /**

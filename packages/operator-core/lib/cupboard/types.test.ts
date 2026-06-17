@@ -19,9 +19,12 @@ import {
   isHarnessListing,
   isHiveBlueprintListing,
   isHivePubkeyRef,
+  isListingKind,
   isPubliclyVisible,
+  listingActionFor,
   listingHiveKey,
   listingHiveRef,
+  listingKindOf,
   ok,
   type CupboardError,
   type HarnessListing,
@@ -429,5 +432,43 @@ describe('groupHarnessRowsByHive (hive-first browse, comb-hive-native-sharing P-
       makeListing({ id: 2, hive_pubkey: HIVE_A, hive_title: 'Late title' }),
     ];
     expect(groupHarnessRowsByHive(rows).hives[0].hiveTitle).toBe('Late title');
+  });
+});
+
+describe('isListingKind / listingKindOf — kind resolution', () => {
+  it('isListingKind accepts the 5 canonical kinds, rejects everything else', () => {
+    for (const k of ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack']) {
+      expect(isListingKind(k)).toBe(true);
+    }
+    expect(isListingKind('pack')).toBe(false); // legacy alias is NOT a canonical kind
+    expect(isListingKind('bogus')).toBe(false);
+    expect(isListingKind(undefined)).toBe(false);
+    expect(isListingKind(123)).toBe(false);
+  });
+
+  it('listingKindOf maps the legacy "pack" alias to tool-pack', () => {
+    expect(listingKindOf(makeListing({ listing_kind: 'pack' as never }))).toBe('tool-pack');
+  });
+
+  it('listingKindOf passes a canonical kind through, and defaults absent/invalid to harness', () => {
+    expect(listingKindOf(makeListing({ listing_kind: 'plugin' }))).toBe('plugin');
+    expect(listingKindOf(makeListing({}))).toBe('harness'); // absent → harness (pre-004 rows)
+    expect(listingKindOf(makeListing({ listing_kind: 'bogus' as never }))).toBe('harness');
+  });
+});
+
+describe('listingActionFor — the consumer action per listing kind (per-harness sharing retired)', () => {
+  it('a harness row points at its Hive ONLY when hive-bound (else no action)', () => {
+    expect(listingActionFor(makeListing({ listing_kind: 'harness', hive_pubkey: 'X'.repeat(43) + '=' }))).toBe('view-hive');
+    expect(listingActionFor(makeListing({ listing_kind: 'harness' }))).toBeNull(); // legacy, no hive_pubkey
+    expect(listingActionFor(makeListing({}))).toBeNull(); // absent kind → harness, no pubkey
+  });
+
+  it('blueprint / plugin / tool-pack / learning-pack all → install', () => {
+    for (const k of ['blueprint', 'plugin', 'tool-pack', 'learning-pack'] as const) {
+      expect(listingActionFor(makeListing({ listing_kind: k }))).toBe('install');
+    }
+    // the legacy "pack" alias resolves to tool-pack → install
+    expect(listingActionFor(makeListing({ listing_kind: 'pack' as never }))).toBe('install');
   });
 });

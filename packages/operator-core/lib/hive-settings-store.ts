@@ -144,3 +144,63 @@ export async function deleteHiveSetting(
   )) as unknown as Array<{ setting_key: string }>;
   return rows.length > 0;
 }
+
+// ── Hive-INSTANCE agent-prompt overrides ──────────────────────────────────────
+// domain-generic-agent-personas-2026-06-17 P-003 / D-003. A Hive INSTANCE (e.g. the
+// Papercusp hive) carries its own per-role prompt specialization here — stored as a
+// `hive_settings` value under key `promptOverride.<role>`, so it federates over the
+// Hive's peer-log like any other setting. This is the INSTANCE layer that sits ON TOP
+// of the blueprint -> ancestors -> base FILE chain (prompt-resolve): the reusable
+// blueprint persona stays a file + generic; only instance-specifics live here. The
+// override SPECIALIZES (is appended after the resolved persona) — it does not replace
+// the role; the caller (the prompt assembler) owns that composition.
+
+export const PROMPT_OVERRIDE_SETTING_PREFIX = 'promptOverride.';
+
+/** The `hive_settings` key a role's instance prompt override is stored under. */
+export function promptOverrideSettingKey(role: string): string {
+  return `${PROMPT_OVERRIDE_SETTING_PREFIX}${role}`;
+}
+
+/** Get a Hive instance's prompt override for a role (null when unset). */
+export async function getHiveInstancePromptOverride(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  role: string,
+  sql?: Sql,
+): Promise<string | null> {
+  const rec = await getHiveSetting(workspaceId, hiveHomeSlug, promptOverrideSettingKey(role), sql);
+  if (!rec || rec.value == null) return null;
+  return typeof rec.value === 'string' ? rec.value : String(rec.value);
+}
+
+/** Set (upsert) a Hive instance's prompt override for a role (markdown). Federates. */
+export async function setHiveInstancePromptOverride(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  role: string,
+  promptMd: string,
+  sql?: Sql,
+): Promise<void> {
+  await setHiveSetting(
+    { workspaceId, hiveHomeSlug, settingKey: promptOverrideSettingKey(role), value: promptMd },
+    sql,
+  );
+}
+
+/** All per-role prompt overrides set on a Hive instance (role -> markdown). */
+export async function listHiveInstancePromptOverrides(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  sql?: Sql,
+): Promise<Record<string, string>> {
+  const all = await listHiveSettings(workspaceId, hiveHomeSlug, sql);
+  const out: Record<string, string> = {};
+  for (const rec of all) {
+    if (rec.settingKey.startsWith(PROMPT_OVERRIDE_SETTING_PREFIX) && rec.value != null) {
+      const role = rec.settingKey.slice(PROMPT_OVERRIDE_SETTING_PREFIX.length);
+      out[role] = typeof rec.value === 'string' ? rec.value : String(rec.value);
+    }
+  }
+  return out;
+}

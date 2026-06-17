@@ -57,6 +57,7 @@ import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';
 import { DemandPanel } from './DemandPanel';
 import { ExperimentsPanel } from './ExperimentsPanel';
 import { Select } from '@/app/harness/Select';
+import { hiveHomeLabel } from '@/lib/hive-label';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
 import HumanQueueDrain from './HumanQueueDrain';
@@ -307,7 +308,7 @@ export default function LearningTab() {
                 triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
                 options={hives.map((h) => ({
                   value: h.slug,
-                  label: `${h.slug}${h.remote ? ' (joined)' : ''}`,
+                  label: `${hiveHomeLabel(h.slug)}${h.remote ? ' (joined)' : ''}`,
                 }))}
               />
             </label>
