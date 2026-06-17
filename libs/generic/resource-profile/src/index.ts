@@ -109,6 +109,11 @@ export type ResourceProfileConfig = Partial<ResourceSignals>;
 const GIB = 1024 * 1024 * 1024;
 
 function clamp(n: number, lo: number, hi: number): number {
+  // A non-finite input (NaN/±Infinity) must never escape as a cap — NaN passes
+  // straight through Math.min/Math.max and would poison every derived number
+  // (and the host class) for the memoized process lifetime. Fall back to the
+  // floor, the safe small-host default.
+  if (!Number.isFinite(n)) return lo;
   return Math.max(lo, Math.min(hi, n));
 }
 

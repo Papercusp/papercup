@@ -64,4 +64,27 @@ describe('computeDelta', () => {
   it('same entryId under two different keys is NOT a duplicate', () => {
     expect(() => computeDelta('s1', [], next(['topicA', 'd1'], ['topicB', 'd1']))).not.toThrow();
   });
+
+  // PI1 (PINNED — non-bug): the separator is the NUL control char, not a space, so
+  // a space-boundary ambiguity does NOT exist. `('topic a','d1')` and
+  // `('topic','a d1')` are DISTINCT contributions and must both survive as puts —
+  // NOT collapse into a false "duplicate contribution" throw. (An earlier analysis
+  // mistook the non-printing NUL for a space; this pins the real behaviour.)
+  it('space-containing keys do NOT collide on the separator (distinct refs)', () => {
+    expect(refOf('s', 'topic a', 'd1')).not.toBe(refOf('s', 'topic', 'a d1'));
+    const d = computeDelta('s1', [], next(['topic a', 'd1'], ['topic', 'a d1']));
+    expect(d.delete).toEqual([]);
+    expect(d.put).toHaveLength(2);
+    expect(d.put.map((x) => [x.key, x.entryId])).toEqual([
+      ['topic a', 'd1'],
+      ['topic', 'a d1'],
+    ]);
+  });
+
+  it('a free-text topic key with internal spaces round-trips as one bucket', () => {
+    // realistic input: a non-slug topic tag like 'data sync'
+    const d = computeDelta('s1', [], next(['data sync', 'D-1'], ['data', 'sync D-1']));
+    expect(d.put).toHaveLength(2);
+    expect(refOf('s1', 'data sync', 'D-1')).not.toBe(refOf('s1', 'data', 'sync D-1'));
+  });
 });

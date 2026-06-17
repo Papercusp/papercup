@@ -90,8 +90,17 @@ export interface EvictionDecision {
  * Combine φ-accrual with SWIM: a peer is only evicted when BOTH the direct signal
  * is highly suspicious (φ ≥ threshold) AND the indirect probe fails to find it
  * alive. A low φ keeps it; a relay ack keeps it; only an across-the-board silence
- * evicts. When there are no relays to ask, a high φ alone decides (degrades to the
+ * evicts. When no relay reached a verdict, a high φ alone decides (degrades to the
  * bare detector) — flagged via the `no-relays-high-phi` reason.
+ *
+ * "No relay reached a verdict" means: a literal `null` indirect (the caller never
+ * probed), OR a result where nobody confirmed alive AND nobody reported dead —
+ * i.e. an empty relay set, `k ≤ 0`, or every relay itself unreachable. All of
+ * these are observationally "we asked no one / got no signal", so they share the
+ * `no-relays-high-phi` reason. `confirmed-dead` is reserved for the case a
+ * REACHABLE relay actually reported the target dead — without this, an empty /
+ * all-unreachable result was mis-attributed as `confirmed-dead`, falsely claiming
+ * a witness agreed (the composition the two pure fns are meant to support).
  */
 export function decideEviction(
   phi: number,
@@ -101,5 +110,10 @@ export function decideEviction(
   if (phi < threshold) return { evict: false, reason: 'alive-direct' };
   if (indirect == null) return { evict: true, reason: 'no-relays-high-phi' };
   if (indirect.alive) return { evict: false, reason: 'alive-indirect' };
+  // No relay reached a verdict (empty / k≤0 / all unreachable) → no witness, same
+  // as having no relays at all. Don't claim a relay confirmed it dead.
+  if (indirect.confirmedBy.length === 0 && indirect.deadBy.length === 0) {
+    return { evict: true, reason: 'no-relays-high-phi' };
+  }
   return { evict: true, reason: 'confirmed-dead' };
 }

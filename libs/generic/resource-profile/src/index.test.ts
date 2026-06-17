@@ -172,6 +172,90 @@ describe('hostRole shrinks the queue on non-draining hosts', () => {
   });
 });
 
+describe('non-finite cores never poison the profile (RP1 — was a real defect)', () => {
+  // Before the fix: Math.floor(NaN)=NaN flowed straight through Math.max and the
+  // un-guarded clamp(), so every cap came back NaN; NaN<=4 and NaN<=16 are both
+  // false so the host misclassed as 'server' — and the WHOLE bogus profile got
+  // memoized for the process lifetime. A NaN profile is never intended. Reverting
+  // either guard (the cores fallback or the clamp Number.isFinite check) makes NaN
+  // reappear and these assertions fail.
+  it('cores:NaN falls back to a single-core laptop with finite caps', () => {
+    const p = deriveResourceProfile(signals({ cores: NaN }));
+    // host class is sane, not the bogus 'server' the NaN comparisons produced.
+    expect(p.hostClass).toBe('laptop');
+    // every cap is a finite number (the defect made all of these NaN).
+    for (const cap of [
+      p.maxSimultaneousAgents,
+      p.dbosQueueConcurrency,
+      p.pgPoolMax,
+      p.serializationWorkers,
+      p.embedBatchSize,
+    ]) {
+      expect(Number.isFinite(cap)).toBe(true);
+    }
+    // and each lands on its small-host floor / value.
+    expect(p.maxSimultaneousAgents).toBe(1);
+    expect(p.dbosQueueConcurrency).toBe(1);
+    expect(p.pgPoolMax).toBe(6); // 1 + 1 + 4
+    expect(p.serializationWorkers).toBe(0);
+    expect(p.embedBatchSize).toBe(32);
+    // the persisted signal is a finite core count, not NaN.
+    expect(Number.isFinite(p.signals.cores)).toBe(true);
+    expect(p.signals.cores).toBe(1);
+  });
+
+  it('cores:Infinity also falls back to a single-core laptop (not an oversized server)', () => {
+    const p = deriveResourceProfile(signals({ cores: Infinity }));
+    expect(p.hostClass).toBe('laptop');
+    expect(Number.isFinite(p.signals.cores)).toBe(true);
+    expect(p.signals.cores).toBe(1);
+    expect(p.maxSimultaneousAgents).toBe(1);
+    expect(p.dbosQueueConcurrency).toBe(1);
+    for (const cap of [p.pgPoolMax, p.serializationWorkers, p.embedBatchSize]) {
+      expect(Number.isFinite(cap)).toBe(true);
+    }
+  });
+});
+
+describe('cores + freeMem normalization (RP2)', () => {
+  it('floors fractional cores down and lifts non-positive cores to 1', () => {
+    // Math.max(1, Math.floor(cores))
+    expect(deriveResourceProfile(signals({ cores: 0 })).signals.cores).toBe(1);
+    expect(deriveResourceProfile(signals({ cores: -5 })).signals.cores).toBe(1);
+    expect(deriveResourceProfile(signals({ cores: 2.7 })).signals.cores).toBe(2);
+  });
+
+  it('overwrites the frozen signals.cores with the normalized value, not the raw input', () => {
+    // signals: Object.freeze({ ...signals, cores }) — the derived (floored) value wins.
+    const p = deriveResourceProfile(signals({ cores: 2.7 }));
+    expect(p.signals.cores).toBe(2);
+    // and the frozen object can't be mutated back.
+    expect(() => {
+      (p.signals as { cores: number }).cores = 99;
+    }).toThrow();
+  });
+
+  it('a negative freeMemBytes is floored to 0, clamping agents to the floor of 1', () => {
+    // Math.max(0, freeMemBytes)/GIB -> 0 free GiB -> floor(0/0.5)=0 agents-by-ram,
+    // clamped up to the floor of 1.
+    const p = deriveResourceProfile(
+      signals({ cores: 128, embeddedPg: false, totalMemBytes: 512 * GIB, freeMemBytes: -1 * GIB }),
+    );
+    expect(p.maxSimultaneousAgents).toBe(1);
+  });
+});
+
+describe('utility hostRole halves the DBOS queue like request-only (RP3)', () => {
+  it('a 16-core utility host gets half the full-host queue depth', () => {
+    // queueRoleFactor = hostRole === 'full' ? 1 : 0.5 — 'utility' is in the else.
+    // round(16 * 1) = 16 base; * 0.5 = 8.
+    const p = deriveResourceProfile(signals({ cores: 16, hostRole: 'utility' }));
+    expect(p.dbosQueueConcurrency).toBe(8);
+    const full = deriveResourceProfile(signals({ cores: 16, hostRole: 'full' }));
+    expect(p.dbosQueueConcurrency).toBeLessThan(full.dbosQueueConcurrency);
+  });
+});
+
 describe('configure + memoized singleton', () => {
   it('injects signals and memoizes the derived profile', () => {
     configureResourceProfile({ cores: 4, embeddedPg: true, freeMemBytes: 8 * GIB });
