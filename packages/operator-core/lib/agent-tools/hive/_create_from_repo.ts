@@ -534,23 +534,25 @@ export async function createHiveFromRepo(
     message: e instanceof Error ? e.message : String(e),
   }));
 
-  // 7.5 — record the owner's beacon-publish consent (B-07 / C-2). NEW published
-  //       Hives only: a private hive never publishes (no beacon), and into-hive
-  //       re-adds must not clobber the existing home's standing consent. Absent =
-  //       OFF (D-002), so we only write when the publish-flow carried a choice.
-  //       Best-effort — like the publish step, never fails the create.
-  if (!intoHive && visibility !== 'private' && opts.beaconConsent !== undefined) {
+  // 7.5 — record the owner's beacon-publish consent (B-07 / C-2). PUBLIC-only:
+  //       the activity beacon is a public-directory signal, so an invite (hidden,
+  //       secret-gated) hive must not broadcast it; into-hive re-adds must not
+  //       clobber the existing home's standing consent. Absent = OFF (D-002), so
+  //       we only write when the publish-flow carried a choice. Best-effort —
+  //       like the publish step, never fails the create.
+  if (!intoHive && visibility === 'public' && opts.beaconConsent !== undefined) {
     await setBeaconConsent(opts.workspaceId, hiveSlug, opts.beaconConsent === true).catch(() => {});
   }
 
-  // 8 — publish per visibility (P-007). Best-effort: NEVER fails the create.
-  //     into-hive mode (P-009) re-publishes the EXISTING listing instead — new
-  //     member rows only; an unpublished/private hive stays untouched.
+  // 8 — publish per derived visibility (P-007). Best-effort: NEVER fails the
+  //     create. visibility ∈ {public, invite} — both publish a listing (public =
+  //     discoverable directory; invite = hidden, secret-gated). into-hive mode
+  //     (P-009) re-publishes the EXISTING listing instead — new member rows only;
+  //     an unpublished hive stays untouched.
   let publishOutcome:
     | PublishCreatedHiveOutcome
-    | { skipped: 'private' }
     | { skipped: 'unpublished_hive' };
-  mark('publish', visibility === 'private' && !intoHive ? 'skipped' : 'running');
+  mark('publish', 'running');
   if (intoHive) {
     const republish = deps.republish ?? republishHiveAfterMemberAdd;
     publishOutcome = await republish({
@@ -563,8 +565,6 @@ export async function createHiveFromRepo(
       cupboard: { attempted: false as const },
       error: e instanceof Error ? e.message : String(e),
     }));
-  } else if (visibility === 'private') {
-    publishOutcome = { skipped: 'private' }; // D-003: zero external writes
   } else {
     publishOutcome = await publish({
       workspaceId: opts.workspaceId,
@@ -580,14 +580,12 @@ export async function createHiveFromRepo(
     }));
   }
 
-  if (!(visibility === 'private' && !intoHive)) {
-    mark(
-      'publish',
-      'skipped' in publishOutcome || ('announced' in publishOutcome && !publishOutcome.announced && publishOutcome.error)
-        ? 'skipped'
-        : 'done',
-    );
-  }
+  mark(
+    'publish',
+    'skipped' in publishOutcome || ('announced' in publishOutcome && !publishOutcome.announced && publishOutcome.error)
+      ? 'skipped'
+      : 'done',
+  );
 
   return {
     ok: true,

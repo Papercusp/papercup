@@ -2,8 +2,9 @@
  * hive:create_from_repo — create a Hive FROM a GitHub URL
  * (hive-from-github-url-2026-06-11 P-006; the headline Entry-2-at-Hive-level
  * flow). Paste a URL → repo→Hive lookup (join offer when one exists) → clone →
- * test-verified blueprint detection → Hive home + member harness → visibility-
- * gated auto-publish (D-002; private = zero external writes, D-003).
+ * test-verified blueprint detection → Hive home + member harness → auto-publish.
+ * Visibility is DERIVED from the repo: public repo → discoverable directory
+ * listing; private repo → 'invite' (hidden, secret-gated), surfaced as "Private".
  *
  * ROOT-ONLY like hive:create — hives are peers, never nested.
  * The composition lives in `_create_from_repo.ts` (seam-injected, unit-tested);
@@ -25,7 +26,7 @@ export default defineTool({
   name: 'hive:create_from_repo',
   profile: 'engineer',
   description:
-    'Create a Hive FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, Hive home + first member harness, upstream coords stamped, auto-publish per visibility (public = P2P directory + Cupboard; invite = secret topic only; private = zero external writes). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
+    'Create a Hive FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, Hive home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
   guidance: {
     when: 'Onboarding a GitHub repository as a NEW Hive in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.',
     notWhen:
@@ -45,10 +46,6 @@ export default defineTool({
       .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase alphanumeric + dashes')
       .optional()
       .describe('Base slug (default: repo name). Member = <base>, Hive home = <base>-hive; auto-suffixed on collision.'),
-    visibility: z
-      .enum(['public', 'invite', 'private'])
-      .default('public')
-      .describe('D-002 auto-publish: public (default) = directory + Cupboard; invite = secret-topic announce only; private = zero external writes (publish later via discovery:set_hive).'),
     shallow: z.boolean().optional().describe('Shallow clone (--depth 1) for large repos.'),
     runTests: z.boolean().default(false).describe('OPT-IN: run the detected test command once to verify it — this EXECUTES CODE from the pasted repo (hardening D-001). Default false; verify after create via harness:generate-from-repo on the clone if preferred.'),
     testTimeoutMs: z.number().int().positive().optional().describe('Budget for the test-verify run (default 120s).'),
@@ -87,7 +84,6 @@ export default defineTool({
     const res = await createHiveFromRepo({
       githubUrl: args.githubUrl,
       ...(args.slug ? { slug: args.slug } : {}),
-      visibility: args.visibility,
       ...(args.shallow !== undefined ? { shallow: args.shallow } : {}),
       runTests: args.runTests,
       ...(args.testTimeoutMs ? { testTimeoutMs: args.testTimeoutMs } : {}),

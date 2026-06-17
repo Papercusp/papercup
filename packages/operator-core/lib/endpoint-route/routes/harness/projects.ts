@@ -465,7 +465,8 @@ const createHive = defineTool({
  * the HTTP face the CreateHarnessPicker's GitHub-URL entry drives. Thin over
  * the canonical `createHiveFromRepo` composition (hive:create_from_repo) —
  * lookup (join offer) → clone → blueprint detection → home + member →
- * visibility-gated auto-publish. Long timeout: clone + the test-verify run.
+ * auto-publish (visibility derived from repo privacy, never sent by the client).
+ * Long timeout: clone + the test-verify run.
  */
 const createHiveFromRepoRoute = defineTool({
   method: 'POST',
@@ -478,7 +479,6 @@ const createHiveFromRepoRoute = defineTool({
     let body: {
       githubUrl?: string;
       slug?: string;
-      visibility?: string;
       shallow?: boolean;
       runTests?: boolean;
       force?: boolean;
@@ -492,16 +492,11 @@ const createHiveFromRepoRoute = defineTool({
     if (!githubUrl) {
       return Response.json({ error: 'githubUrl required', code: 'invalid_url' }, { status: 400 });
     }
-    const visibility =
-      body.visibility === 'private' || body.visibility === 'invite' || body.visibility === 'public'
-        ? body.visibility
-        : 'public';
     const { createHiveFromRepo } = await import('../../../agent-tools/hive/_create_from_repo');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     const res = await createHiveFromRepo({
       githubUrl,
       ...(typeof body.slug === 'string' && body.slug.trim() ? { slug: body.slug.trim() } : {}),
-      visibility,
       ...(body.shallow !== undefined ? { shallow: body.shallow === true } : {}),
       // D-001 (hardening): test-verify EXECUTES repo code — explicit true only.
       ...(body.runTests === true ? { runTests: true } : {}),

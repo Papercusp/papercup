@@ -171,12 +171,26 @@ describe('createHiveFromRepo (P-006)', () => {
     expect(seen).toEqual([false, true]);
   });
 
-  it('private visibility skips publish entirely (D-003 zero external writes)', async () => {
+  it('public repo (coords.private=false) → publishes with visibility:public (discoverable listing)', async () => {
     const { deps, calls } = fakes();
-    const r = await createHiveFromRepo({ githubUrl: URL, visibility: 'private', workspaceId: 'ws' }, deps);
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
     if (!r.ok || !('created' in r)) throw new Error('expected created');
-    expect(r.publish).toEqual({ skipped: 'private' });
-    expect(calls.publishes).toEqual([]);
+    expect(calls.publishes[0]).toMatchObject({ hiveSlug: 'shop-hive', visibility: 'public' });
+    expect(r.publish).toMatchObject({ announced: true });
+  });
+
+  it('private repo (coords.private=true) → publishes with visibility:invite (hidden listing, NOT skipped)', async () => {
+    const { deps, calls } = fakes({
+      lookup: async () => ({
+        ...NONE_LOOKUP,
+        coords: { ...NONE_LOOKUP.coords, private: true },
+      }),
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    // a private repo still publishes — as a hidden, secret-gated invite listing
+    expect(calls.publishes[0]).toMatchObject({ hiveSlug: 'shop-hive', visibility: 'invite', repoIsPrivate: true });
+    expect(r.publish).toMatchObject({ announced: true });
   });
 
   it('blueprint failure removes the clone and reports', async () => {
@@ -337,12 +351,16 @@ describe('createHiveFromRepo (P-006)', () => {
     expect(calls.beaconWrites).toEqual([]);
   });
 
-  it('private visibility records NO beacon consent (a private hive never publishes)', async () => {
-    const { deps, calls } = fakes();
-    await createHiveFromRepo(
-      { githubUrl: URL, visibility: 'private', beaconConsent: true, workspaceId: 'ws' },
-      deps,
-    );
+  it('private repo (invite visibility) records NO beacon consent (the beacon is PUBLIC-only)', async () => {
+    const { deps, calls } = fakes({
+      lookup: async () => ({
+        ...NONE_LOOKUP,
+        coords: { ...NONE_LOOKUP.coords, private: true },
+      }),
+    });
+    await createHiveFromRepo({ githubUrl: URL, beaconConsent: true, workspaceId: 'ws' }, deps);
+    // the hive publishes (as a hidden invite listing) but never broadcasts a beacon
+    expect(calls.publishes[0]).toMatchObject({ visibility: 'invite' });
     expect(calls.beaconWrites).toEqual([]);
   });
 

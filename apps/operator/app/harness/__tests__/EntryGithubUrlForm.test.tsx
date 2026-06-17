@@ -42,6 +42,8 @@ function renderForm(props?: {
   onCreated?: (slug: string, opts?: { hive?: string }) => void;
   hiveScope?: string | null;
   initialMode?: 'new-hive' | 'into-hive' | 'standalone';
+  /** Repo privacy threaded from the search pick; undefined = unknown (pasted URL). */
+  initialPrivate?: boolean;
 }) {
   const onBack = props?.onBack ?? vi.fn();
   const onCreated = props?.onCreated ?? vi.fn();
@@ -51,6 +53,7 @@ function renderForm(props?: {
       onCreated={onCreated}
       hiveScope={props?.hiveScope ?? null}
       initialMode={props?.initialMode ?? 'new-hive'}
+      initialPrivate={props?.initialPrivate}
     />,
   );
   return { ...result, onBack, onCreated };
@@ -140,13 +143,31 @@ describe('form validation', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('shows the public privacy explainer with Public selected by default', () => {
-    renderForm();
-    const publicRadio = screen.getByRole('radio', { name: /Public/ }) as HTMLInputElement;
-    expect(publicRadio.checked).toBe(true);
+  it('derives + displays Public visibility for a known-public repo (no radios)', () => {
+    renderForm({ initialPrivate: false });
+    screen.getByText('Public');
     screen.getByText(
-      "Anyone on the network can discover this hive; contributors' GitHub identities, including your own, are visible.",
+      /This repo is public — your hive is discoverable on the network; contributors’ GitHub identities, including your own, are visible\./,
     );
+    // The 3-way radio is RETIRED — visibility is derived, never chosen.
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  });
+
+  it('derives + displays Private (invite-only) visibility for a known-private repo (no radios)', () => {
+    renderForm({ initialPrivate: true });
+    screen.getByText('Private');
+    screen.getByText(
+      /This is a private repo — your hive will be Private: hidden from the directory and joinable only with the invite secret generated at publish\./,
+    );
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  });
+
+  it('shows the neutral "set automatically" hint when repo privacy is unknown (pasted URL)', () => {
+    renderForm({ initialPrivate: undefined });
+    screen.getByText(
+      /Visibility is set automatically from the repository — public repos become Public; private repos become Private \(invite-only\)\./,
+    );
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
   });
 
   it('auto-derives the slug under the Advanced expander', async () => {
@@ -180,10 +201,10 @@ describe('new-hive mode', () => {
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
 
     await waitFor(() => screen.getByRole('heading', { name: /Hive created/ }));
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({
-      githubUrl: VALID_URL,
-      visibility: 'public',
-    });
+    // Visibility is derived server-side — the frontend no longer sends it.
+    const createdBody = postedBodies('/api/harness/hives/from-repo')[0];
+    expect(createdBody).toMatchObject({ githubUrl: VALID_URL });
+    expect(createdBody).not.toHaveProperty('visibility');
     screen.getByText('web-hive');
     screen.getByText('web');
     screen.getByText(/Announced to the hive directory/);
@@ -272,7 +293,7 @@ describe('new-hive mode', () => {
     expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ learningPack: null });
   });
 
-  it('beacon consent (B-07 / C-2): shown for public, default OFF, unchecked sends beaconConsent:false', async () => {
+  it('beacon consent (B-07 / C-2): shown for a KNOWN-PUBLIC repo, default OFF, unchecked sends beaconConsent:false', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': {
@@ -280,17 +301,19 @@ describe('new-hive mode', () => {
         body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
       },
     });
-    renderForm();
+    renderForm({ initialPrivate: false });
     const beacon = screen.getByTestId('beacon-consent-optin').querySelector('input')!;
     expect(beacon.checked).toBe(false); // default OFF — publishing a beacon is opt-in (D-002)
     screen.getByText(/Also publish a live status beacon\?/);
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ visibility: 'public', beaconConsent: false });
+    const body = postedBodies('/api/harness/hives/from-repo')[0];
+    expect(body).toMatchObject({ beaconConsent: false });
+    expect(body).not.toHaveProperty('visibility'); // derived server-side, never sent
   });
 
-  it('beacon consent: checking the box sends beaconConsent:true', async () => {
+  it('beacon consent: checking the box sends beaconConsent:true (known-public)', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': {
@@ -298,7 +321,7 @@ describe('new-hive mode', () => {
         body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
       },
     });
-    renderForm();
+    renderForm({ initialPrivate: false });
     await user.click(screen.getByTestId('beacon-consent-optin'));
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
@@ -306,25 +329,41 @@ describe('new-hive mode', () => {
     expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ beaconConsent: true });
   });
 
-  it('beacon consent: a PRIVATE hive hides the question and sends no beaconConsent (no publish ⇒ no beacon)', async () => {
+  it('beacon consent: a KNOWN-PRIVATE repo hides the question and sends no beaconConsent (Private ⇒ no broadcast)', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': {
         status: 200,
-        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, inviteSecret: 's3cret', cupboard: { attempted: false, skipped: 'invite' } } },
       },
     });
-    renderForm();
-    await user.click(screen.getByRole('radio', { name: /Private/ }));
+    renderForm({ initialPrivate: true });
+    expect(screen.queryByTestId('beacon-consent-optin')).toBeNull();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
+    const body = postedBodies('/api/harness/hives/from-repo')[0];
+    expect(body).not.toHaveProperty('beaconConsent');
+    expect(body).not.toHaveProperty('visibility');
+  });
+
+  it('beacon consent: an UNKNOWN-privacy repo (pasted URL) hides the question and sends no beaconConsent', async () => {
+    const user = userEvent.setup();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
+      },
+    });
+    renderForm({ initialPrivate: undefined });
     expect(screen.queryByTestId('beacon-consent-optin')).toBeNull();
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
     expect(postedBodies('/api/harness/hives/from-repo')[0]).not.toHaveProperty('beaconConsent');
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ visibility: 'private' });
   });
 
-  it('shows the invite secret for an invite hive', async () => {
+  it('shows the invite secret for a Private (invite) hive — derived from a private repo', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': {
@@ -337,14 +376,14 @@ describe('new-hive mode', () => {
         },
       },
     });
-    renderForm();
+    renderForm({ initialPrivate: true });
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
-    await user.click(screen.getByRole('radio', { name: /Invite/ }));
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
 
     await waitFor(() => screen.getByTestId('invite-secret'));
     expect(screen.getByTestId('invite-secret').textContent).toBe('s3cret-topic');
-    expect(postedBodies('/api/harness/hives/from-repo')[0].visibility).toBe('invite');
+    // The frontend sends no visibility — the backend derives invite from repo privacy.
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).not.toHaveProperty('visibility');
   });
 
   it('shows + copies the FULL invite link when present, instead of the bare secret (hardening P-006)', async () => {
@@ -366,9 +405,8 @@ describe('new-hive mode', () => {
         },
       },
     });
-    renderForm();
+    renderForm({ initialPrivate: true });
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
-    await user.click(screen.getByRole('radio', { name: /Invite/ }));
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
 
     await waitFor(() => screen.getByTestId('invite-link'));

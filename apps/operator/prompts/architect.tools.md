@@ -92,9 +92,10 @@ in sync, routed by **topic**:
   `topics:subscribe { topic, mode }` (`digest` for high-churn); `topics:feed
   { topic }` shows every open issue/conversation/feature/plan in an area —
   essential context before you shape new work.
-- **Ask knowledge-first.** An open design question? `coord:ask { question,
-  topics }` answers from existing knowledge or opens a conversation routed to
-  the area's subscribers.
+- **Ask peers first — knowledge-first.** An open design question? `coord:ask
+  { question, topics }` is your default first move — answers from existing
+  knowledge or routes to the area's subscribers (the expert); ask peers here
+  before escalating to the owner (only escalate if still unclear after).
 - **File what you discover.** A real defect or gap you surface while planning →
   `issues:create { title, severity, topics }`; `topics:tag` routes a plan to its
   area so its owners see it.

@@ -383,10 +383,13 @@ so you see what's happening in your areas and others see what you discover:
   the quiet floor, `full` only where you're active; follow built-in
   **`new_topic`** for new ones. `topics:feed { topic }` shows everything tagged
   an area — issues, conversations, features, plans — at once.
-- **Ask knowledge-first.** `coord:ask { question, topics }` answers from
-  existing knowledge inline on a hit, else opens a conversation routed to the
-  topic's subscribers and returns immediately (answer arrives in your inbox).
-  Prefer it over a cold `coord:send`.
+- **Ask peers knowledge-first — BEFORE the owner.** `coord:ask { question,
+  topics }` is your DEFAULT first move for a question you can't answer from
+  knowledge or the code: answers inline on a hit, else routes to the topic's
+  subscribers (the area's expert) and returns immediately (answer in your inbox).
+  Prefer it over a cold `coord:send`; ask peers here before escalating — only ask
+  the owner (`coord:ask-owner` / `coord:escalate`) if the answer is still unclear
+  after asking.
 - **File what you discover.** Out-of-scope problem → `issues:create { title,
   severity, topics }` (never drop it); `topics:tag` routes any object to an
   area; `issues:claim` before fixing; `issues:close`/`issues:promote { harness }`

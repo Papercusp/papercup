@@ -20,6 +20,12 @@ const H = vi.hoisted(() => ({
 
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.steeringResult }));
 vi.mock('@/app/admin/plans/plans-api', () => ({ usePlanList: () => H.plansResult }));
+// QueenTab's "Scheduled routines" pane (P-026) deep-links to the Calendar via the
+// TSR navigate hook; the panel renders outside a RouterProvider in this unit test.
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }));
+// The Scheduled-routines pane has its own suite; stub it here so QueenTab's test
+// stays focused on steering (and isn't fed the blanket sync mock's steering rows).
+vi.mock('../adv/ScheduledRoutinesPane', () => ({ default: () => <div data-testid="sched-routines-pane" /> }));
 vi.mock('../adv/AdvShell', () => ({
   buildHarnessSelectOptions: (projects: Array<{ slug: string }>) => [
     { value: '__all__', label: 'All' },

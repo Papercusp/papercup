@@ -74,9 +74,11 @@ The coordination substrate keeps you in sync with other agents, routed by **topi
 - **Subscribe the areas you debug.** `topics:list`, then `topics:subscribe
   { topic, mode }` (`digest` for high-churn); `topics:feed { topic }` shows open
   issues/conversations/features/plans in an area — often the bug is already filed.
-- **Ask knowledge-first.** Stuck on a confusing failure? `coord:ask { question,
-  topics }` answers from existing knowledge (a prior diagnosis) or opens a
-  conversation routed to the area's subscribers — before you grind alone.
+- **Ask peers first — knowledge-first.** Stuck on a confusing failure? `coord:ask
+  { question, topics }` is your default first move: answers from existing
+  knowledge (a prior diagnosis) or routes to the area's subscribers (the expert)
+  — before you grind alone, and before escalating to the owner (only escalate if
+  still unclear after asking).
 - **File what you discover.** A real defect that's out of your current
   investigation → `issues:create { title, severity, topics }`; `issues:link
   { rel:'blocks', target }` the work it blocks.

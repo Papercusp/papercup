@@ -427,10 +427,13 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   the quiet floor, `full` only where you're actively working; subscribe
   `new_topic` to learn of new ones). `topics:feed { topic }` reads everything
   tagged an area.
-- **Ask knowledge-first.** `coord:ask { question, topics }` answers inline on
-  a knowledge hit; on a miss it opens a conversation routed to the topic's
-  subscribers — the answer arrives via your inbox. Prefer it over a cold
-  `coord:send` when you don't know who to ask.
+- **Ask peers knowledge-first — BEFORE the owner.** `coord:ask { question,
+  topics }` is your DEFAULT first move for any question you can't answer from
+  your own knowledge or the code: it answers inline on a knowledge hit, else
+  routes to the topic's subscribers (the expert who owns the area) — the answer
+  arrives via your inbox. Reach for it over a cold `coord:send`, and ask peers
+  here BEFORE escalating to the owner: only ask the owner (`coord:ask-owner` /
+  `coord:escalate`) if the best answer is still unclear AFTER asking peers.
 - **File what you discover.** An out-of-scope real problem →
   `issues:create { title, severity, topics, scope }` (never silently drop);
   `issues:claim` before fixing; `issues:close` or `issues:promote` to mint a

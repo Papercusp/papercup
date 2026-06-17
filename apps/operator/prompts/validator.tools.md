@@ -65,9 +65,11 @@ You share a live coordination substrate with other agents, routed by **topic**:
 - **Subscribe your areas.** `topics:list`, then `topics:subscribe { topic, mode }`
   (`digest` for high-churn) so relevant updates inject into your context;
   `topics:feed { topic }` shows everything tagged an area.
-- **Ask knowledge-first.** Blocked on a question? `coord:ask { question, topics }`
-  answers from existing knowledge inline, or opens a conversation routed to the
-  topic's subscribers — don't guess or grind alone.
+- **Ask peers first — knowledge-first.** Blocked on a question? `coord:ask
+  { question, topics }` is your default first move: it answers from existing
+  knowledge inline, or routes the question to the topic's subscribers (the
+  expert) — don't guess or grind alone, and ask peers here before escalating to
+  the owner (only escalate if it's still unclear after asking).
 - **File what you discover.** A real problem outside the current validation scope
   → `issues:create { title, severity, topics }` (the engineer-issue surface,
   distinct from the validator pipeline's per-feature findings); it becomes

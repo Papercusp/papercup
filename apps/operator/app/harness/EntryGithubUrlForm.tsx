@@ -229,7 +229,9 @@ interface PublishOutcome {
   /** Hardening P-006 (D-006): the full shareable `papercusp://hive?...` artifact. */
   inviteLink?: string;
   cupboard?: { attempted?: boolean; rowsCreated?: number; rowsFailed?: number; errors?: string[]; skipped?: string };
-  skipped?: 'private' | 'unpublished_hive';
+  // True-private is RETIRED — a private repo now publishes a hidden invite
+  // listing. The only remaining publish-skip is an unpublished into-hive home.
+  skipped?: 'unpublished_hive';
 }
 
 interface CreatedResult {
@@ -822,7 +824,6 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             </div>
           )}
           <div style={{ marginTop: 6 }}>
-            {publish?.skipped === 'private' && <>Not published — private {hiveLower}s make zero external writes. Publish later from the {hiveLower} header.</>}
             {publish?.skipped === 'unpublished_hive' && <>The {hiveLower} isn&rsquo;t published, so the new member stays unlisted until it is.</>}
             {publish && !publish.skipped && (
               <>
@@ -945,44 +946,39 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         )}
       </label>
 
+      {/* Visibility is DERIVED from the repo's privacy, not chosen (the 3-way
+          radio is RETIRED). Public repo → Public hive (discoverable); private
+          repo → Private hive (hidden, invite-only). When the privacy is unknown
+          (a directly-pasted URL) the backend still derives it on clone — we show
+          a neutral "set automatically" hint. Read-only display. */}
       {mode === 'new-hive' && (
-        <fieldset style={{ border: 'none', padding: 0, margin: '0 0 14px' }}>
-          <legend style={{ fontSize: 12, color: 'var(--fg-dim)', fontWeight: 500, padding: 0, marginBottom: 6 }}>Visibility</legend>
-          {(
-            [
-              {
-                v: 'public' as const,
-                label: 'Public',
-                hint: `Anyone on the network can discover this ${hiveLower}; contributors' GitHub identities, including your own, are visible.`,
-              },
-              {
-                v: 'invite' as const,
-                label: 'Invite',
-                hint: `Hidden from the public directory — joinable only with the invite secret generated at publish.`,
-              },
-              {
-                v: 'private' as const,
-                label: 'Private',
-                hint: `Nothing leaves this machine — no announce, no central listing. Publish later anytime.`,
-              },
-            ]
-          ).map(({ v, label, hint }) => (
-            <label key={v} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', borderRadius: 6, cursor: 'pointer', background: visibility === v ? 'var(--bg-2)' : 'transparent' }}>
-              <input
-                type="radio"
-                name="hive-visibility"
-                value={v}
-                checked={visibility === v}
-                onChange={() => setVisibility(v)}
-                style={{ marginTop: 2 }}
-              />
-              <span>
-                <span style={{ display: 'block', fontSize: 13, fontWeight: visibility === v ? 600 : 500 }}>{label}{v === 'public' ? ' (default)' : ''}</span>
-                <span style={{ display: 'block', fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.45 }}>{hint}</span>
+        <div data-testid="derived-visibility" style={{ border: '1px solid var(--border)', background: 'var(--bg-2)', borderRadius: 8, padding: '10px 12px', margin: '0 0 14px' }}>
+          <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-dim)', fontWeight: 500, marginBottom: 4 }}>Visibility</span>
+          {initialPrivate === true && (
+            <>
+              <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>Private</span>
+              <span style={{ display: 'block', fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.45 }}>
+                This is a private repo — your {hiveLower} will be Private: hidden from the directory and
+                joinable only with the invite secret generated at publish.
               </span>
-            </label>
-          ))}
-        </fieldset>
+            </>
+          )}
+          {initialPrivate === false && (
+            <>
+              <span style={{ display: 'block', fontSize: 13, fontWeight: 600 }}>Public</span>
+              <span style={{ display: 'block', fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.45 }}>
+                This repo is public — your {hiveLower} is discoverable on the network; contributors&rsquo;
+                GitHub identities, including your own, are visible.
+              </span>
+            </>
+          )}
+          {initialPrivate === undefined && (
+            <span style={{ display: 'block', fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.45 }}>
+              Visibility is set automatically from the repository — public repos become Public; private
+              repos become Private (invite-only).
+            </span>
+          )}
+        </div>
       )}
 
       {/* learning-packs P-006: the pack picker — a new hive starts with a
@@ -1011,10 +1007,10 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         </label>
       )}
 
-      {/* B-07 / C-2: the beacon-publish consent question — asked at the natural
-          moment, INSIDE the publish flow (D-002 amendment), for a hive that will
-          actually publish (public/invite). Default OFF; "(recommended)" nudges. */}
-      {mode === 'new-hive' && visibility !== 'private' && (
+      {/* B-07 / C-2: the beacon-publish consent question — shown ONLY for a
+          KNOWN-PUBLIC hive (a Private or unknown-privacy hive must not broadcast
+          a live activity beacon). Default OFF; "(recommended)" nudges. */}
+      {mode === 'new-hive' && initialPrivate === false && (
         <label
           style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', marginBottom: 14, borderRadius: 6, cursor: 'pointer' }}
           data-testid="beacon-consent-optin"

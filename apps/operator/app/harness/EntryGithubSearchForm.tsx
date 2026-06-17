@@ -142,6 +142,11 @@ export function EntryGithubSearchForm({
   // The repo URL to create from — set by picking a result or short-circuiting a
   // pasted URL. While set, the create form (EntryGithubUrlForm) takes over.
   const [picked, setPicked] = useState<string | null>(null);
+  // The PICKED repo's privacy — threaded to the create form so it can DERIVE +
+  // display the hive's visibility (public repo → Public, private → Private).
+  // A pasted URL has no known privacy → undefined (the backend derives it on
+  // clone; the create form shows the neutral "set automatically" hint).
+  const [pickedPrivate, setPickedPrivate] = useState<boolean | undefined>(undefined);
   const [phase, setPhase] = useState<SearchPhase>('idle');
   const [results, setResults] = useState<RepoResult[]>([]);
   const [activeIdx, setActiveIdx] = useState(-1);
@@ -266,6 +271,7 @@ export function EntryGithubSearchForm({
     return (
       <EntryGithubUrlForm
         initialUrl={picked}
+        initialPrivate={pickedPrivate}
         onBack={() => setPicked(null)}
         onCreated={onCreated}
         hiveScope={hiveScope}
@@ -274,9 +280,16 @@ export function EntryGithubSearchForm({
     );
   }
 
-  const pickResult = (r: RepoResult) => setPicked(r.htmlUrl);
+  const pickResult = (r: RepoResult) => {
+    setPickedPrivate(r.private);
+    setPicked(r.htmlUrl);
+  };
   const continueWithUrl = () => {
-    if (urlMatch) setPicked(query.trim());
+    if (urlMatch) {
+      // A pasted URL carries no known privacy — the backend derives it on clone.
+      setPickedPrivate(undefined);
+      setPicked(query.trim());
+    }
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {

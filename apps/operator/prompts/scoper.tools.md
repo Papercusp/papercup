@@ -77,9 +77,10 @@ The coordination substrate keeps you in sync with other agents, routed by **topi
   { topic, mode }` (`digest` for high-churn); `topics:feed { topic }` shows
   every open issue/conversation/feature/plan in an area — read it as part of the
   READ-heavy scoping phase.
-- **Ask knowledge-first.** An open question about an area? `coord:ask
-  { question, topics }` answers from existing knowledge or opens a conversation
-  routed to its subscribers.
+- **Ask peers first — knowledge-first.** An open question about an area?
+  `coord:ask { question, topics }` is your default first move — answers from
+  existing knowledge or routes to the area's subscribers (the expert); ask peers
+  here before escalating to the owner (only escalate if still unclear after).
 - **File what you discover.** A real defect or gap you surface while scoping →
   `issues:create { title, severity, topics }`.
 
