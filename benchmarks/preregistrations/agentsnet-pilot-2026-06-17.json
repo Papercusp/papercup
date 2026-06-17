@@ -1,0 +1,17 @@
+{
+  "runId": "agentsnet-pilot-2026-06-17",
+  "preregHash": "ef026d2fc228e9b8c76d0076dbccd9df05de0ede54ee2037ca357f76f47888ea",
+  "label": "AgentsNet (opus-as-nodes, route A)",
+  "suites": [
+    "agentsnet"
+  ],
+  "createdAt": "2026-06-17T06:53:03.180Z",
+  "config": {
+    "suite": "agentsnet",
+    "arm": "baseline-b-native",
+    "modelId": "claude-opus-4-8",
+    "harnessVersion": "agentsnet@vendored-2026-06-17",
+    "graderVersion": "agentsnet@arxiv-2507.08616",
+    "label": "AgentsNet (opus-as-nodes, route A)"
+  }
+}

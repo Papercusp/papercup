@@ -175,4 +175,45 @@ describe('blueprint:catalog — installed tier (temp PAPERCUSP_HOME)', () => {
     expect(partial.error).toBeUndefined();
     expect(partial.description).toBe('extend me');
   });
+
+  // ─── G4: an installed blueprint whose `extends` names a NONEXISTENT parent
+  // makes resolveExtends THROW (`cannot resolve extended blueprint`). The catalog
+  // must keep it as an `{ id, tier, error }` entry — an unresolvable blueprint
+  // must not crash the catalog or hide every other (working) blueprint.
+  it('keeps a blueprint whose extends points at a nonexistent parent as an error entry, without hiding the rest', async () => {
+    await writeInstalled('orphan-extender', ['id: orphan-extender', 'extends: no-such-parent-xyz']);
+
+    const r = await run();
+    expect(r.ok).toBe(true);
+    const orphan = byId(r, 'orphan-extender')!;
+    expect(orphan.error).toBeTruthy();
+    expect(orphan.error).toContain('no-such-parent-xyz');
+    // Not mistaken for a deliberately-partial (abstract) parent — it is broken.
+    expect(orphan.abstract).toBeUndefined();
+    // The rest of the catalog survives — coding (a built-in) is still listed.
+    expect(byId(r, 'coding')).toBeTruthy();
+    expect(byId(r, 'coding')!.error).toBeUndefined();
+  });
+
+  // ─── G5: catalog.ts reads `args.tier ?? 'all'`, so a raw-handler caller that
+  // OMITS tier entirely (bypassing zod's `.default('all')`, exactly as this
+  // harness's `run()` does — args go straight to the handler) still lists every
+  // tier. With an installed blueprint present, BOTH tiers must appear.
+  it("a raw-handler call with tier absent lists ALL tiers (the `?? 'all'` fallback)", async () => {
+    await writeInstalled('installed-x', [
+      'id: installed-x',
+      'workItem: { kind: feature }',
+      'spine: { edges: { DONE: { to: done } } }',
+    ]);
+
+    const r = await run({}); // no `tier` key — zod's default never runs at the raw handler
+    expect(r.ok).toBe(true);
+    const tiers = new Set(r.blueprints.map((b: Entry) => b.tier));
+    // Fault-injection guard: NON-VACUOUS only because both tiers are present —
+    // if the fallback resolved to 'installed' or 'builtin' one would be missing.
+    expect(tiers.has('installed')).toBe(true);
+    expect(tiers.has('builtin')).toBe(true);
+    expect(byId(r, 'installed-x')!.tier).toBe('installed');
+    expect(byId(r, 'coding')!.tier).toBe('builtin');
+  });
 });

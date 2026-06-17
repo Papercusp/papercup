@@ -10,6 +10,8 @@ import {
   dockerTaskStandardOps,
   gatewayModelCall,
   hiveDriveArm,
+  isTransientGatewayError,
+  parseRetryAfterMs,
   parseTaskhelperResult,
   singleOpusDriveArm,
   type ExecFn,
@@ -164,7 +166,50 @@ describe('singleOpusDriveArm', () => {
   });
 });
 
+describe('isTransientGatewayError / parseRetryAfterMs', () => {
+  it('classifies gateway pacing, overload, and hangs as transient', () => {
+    expect(isTransientGatewayError({ status: 429 })).toBe(true);
+    expect(isTransientGatewayError(new Error("account 'x' paced/paused; retry after 117s"))).toBe(true);
+    expect(isTransientGatewayError(new Error('overloaded_error'))).toBe(true);
+    expect(isTransientGatewayError(new Error('socket hang up'))).toBe(true);
+    expect(isTransientGatewayError(new Error('Request timed out'))).toBe(true);
+    expect(isTransientGatewayError(new Error('fetch failed'))).toBe(true);
+    expect(isTransientGatewayError({ status: 400 })).toBe(false);
+    expect(isTransientGatewayError(new Error('invalid_request'))).toBe(false);
+  });
+
+  it('parses the gateway retry-after hint (ms), capped, from the error body', () => {
+    expect(parseRetryAfterMs({ error: { message: "account 'definitelyahuman' paced/paused; retry after 117s" } })).toBe(117_000);
+    expect(parseRetryAfterMs(new Error('retry after 5s'))).toBe(5_000);
+    expect(parseRetryAfterMs(new Error('retry after 9999s'))).toBe(200_000); // capped
+    expect(parseRetryAfterMs(new Error('no hint here'))).toBeNull();
+  });
+});
+
 describe('gatewayModelCall — transient-retry', () => {
+  it('waits the gateway-hinted retry-after, then succeeds', async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const ctor = class {
+      messages = {
+        create: vi.fn(async () => {
+          calls += 1;
+          if (calls < 2) {
+            const e = new Error("account 'definitelyahuman' paced/paused; retry after 30s") as Error & { status: number };
+            e.status = 429;
+            throw e;
+          }
+          return { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } };
+        }),
+      };
+    };
+    const mc = gatewayModelCall({ anthropicCtor: ctor as never, sleep: async (ms) => { waits.push(ms); }, maxRetries: 4 });
+    const r = await mc({ system: 's', messages: [], tools: [], maxTokens: 8 });
+    expect(r.text).toBe('ok');
+    expect(waits[0]).toBe(30_000); // honored the hint, not the 3s base backoff
+  });
+
+
   const okResp = { content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn', usage: { input_tokens: 5, output_tokens: 2 } };
 
   it('retries a 429 then succeeds (rides out concurrent-bench gateway contention)', async () => {

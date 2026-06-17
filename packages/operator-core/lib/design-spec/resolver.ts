@@ -75,7 +75,7 @@ function parseFrontmatter(body: string): { fm: DesignSpecFrontmatter; rest: stri
   let currentKey: string | null = null;
   let currentObj: Record<string, unknown> | null = null;
   for (const rawLine of head.split(/\r?\n/)) {
-    const line = rawLine.replace(/#.*$/, '').replace(/\s+$/, '');
+    const line = stripComment(rawLine).replace(/\s+$/, '');
     if (!line.trim()) continue;
     const indented = /^\s+/.test(rawLine);
     if (!indented) {
@@ -100,6 +100,28 @@ function parseFrontmatter(body: string): { fm: DesignSpecFrontmatter; rest: stri
     }
   }
   return { fm: fm as DesignSpecFrontmatter, rest };
+}
+
+/**
+ * Strip a trailing `#` comment, quote-aware. A `#` only begins a comment when it
+ * is at the start of the line OR preceded by whitespace AND is not inside a single-
+ * or double-quoted string. So `brand: "#ff0066"` (hex) and `url: "x#frag"` keep
+ * their `#`, while `key: value # note` still drops the comment. (Matches YAML's
+ * rule that `#` mid-token — e.g. inside a quoted scalar — is a literal.)
+ */
+function stripComment(line: string): string {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === '#' && !inSingle && !inDouble) {
+      // Only a real comment when at line-start or preceded by whitespace.
+      if (i === 0 || /\s/.test(line[i - 1]!)) return line.slice(0, i);
+    }
+  }
+  return line;
 }
 
 function stripQuotes(s: string): string {

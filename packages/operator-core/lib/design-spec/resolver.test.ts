@@ -116,6 +116,114 @@ describe('resolveDesignSpec', () => {
     expect(r.body.includes('---')).toBe(false);
     expect(r.body.startsWith('# Real header')).toBe(true);
   });
+
+  // --- G12: a `#` inside a quoted value must NOT be stripped as a comment.
+  //     Pre-fix this truncated `"#ff0066"` → `""` (silent data loss). ------------
+  it('keeps a `#` inside a double-quoted value (hex color) — no comment-strip', async () => {
+    const r = await resolveDesignSpec({
+      harnessRoot: HARNESS,
+      workspaceRoot: WORKSPACE,
+      appDefaultPath: APP_DEFAULT,
+      readFile: fakeReader({ '/h/DESIGN_SPEC.md': '---\nbrand: "#ff0066"\n---\nbody' }),
+    });
+    expect(r.frontmatter['brand']).toBe('#ff0066');
+  });
+
+  it('keeps a `#` inside a single-quoted value', async () => {
+    const r = await resolveDesignSpec({
+      harnessRoot: HARNESS,
+      workspaceRoot: WORKSPACE,
+      appDefaultPath: APP_DEFAULT,
+      readFile: fakeReader({ '/h/DESIGN_SPEC.md': "---\naccent: '#00ddff'\n---\nbody" }),
+    });
+    expect(r.frontmatter['accent']).toBe('#00ddff');
+  });
+
+  it('keeps a URL fragment `#frag` inside a quoted value', async () => {
+    const r = await resolveDesignSpec({
+      harnessRoot: HARNESS,
+      workspaceRoot: WORKSPACE,
+      appDefaultPath: APP_DEFAULT,
+      readFile: fakeReader({
+        '/h/DESIGN_SPEC.md': '---\ndocs: "https://x.example/p#section-2"\n---\nbody',
+      }),
+    });
+    expect(r.frontmatter['docs']).toBe('https://x.example/p#section-2');
+  });
+
+  it('still strips a genuine trailing `# comment` after a value', async () => {
+    const r = await resolveDesignSpec({
+      harnessRoot: HARNESS,
+      workspaceRoot: WORKSPACE,
+      appDefaultPath: APP_DEFAULT,
+      readFile: fakeReader({
+        '/h/DESIGN_SPEC.md': '---\nname: operator # the trailing comment\n---\nbody',
+      }),
+    });
+    expect(r.frontmatter['name']).toBe('operator');
+  });
+
+  it('still strips a trailing comment AFTER a quoted value (closing quote, then #)', async () => {
+    const r = await resolveDesignSpec({
+      harnessRoot: HARNESS,
+      workspaceRoot: WORKSPACE,
+      appDefaultPath: APP_DEFAULT,
+      readFile: fakeReader({
+        '/h/DESIGN_SPEC.md': '---\nbrand: "#ff0066" # primary brand\n---\nbody',
+      }),
+    });
+    expect(r.frontmatter['brand']).toBe('#ff0066');
+  });
+
+  it('drops a whole-line comment in frontmatter', async () => {
+    const r = await resolveDesignSpec({
+      harnessRoot: HARNESS,
+      workspaceRoot: WORKSPACE,
+      appDefaultPath: APP_DEFAULT,
+      readFile: fakeReader({
+        '/h/DESIGN_SPEC.md': '---\n# a leading note\nname: operator\n---\nbody',
+      }),
+    });
+    expect(r.frontmatter['name']).toBe('operator');
+    // The comment-only line produced no key.
+    expect(Object.keys(r.frontmatter)).toEqual(['name']);
+  });
+
+  // --- G13: nesting / state-reset across the frontmatter line walk. -------------
+  it('resets nested-object state when a scalar key follows a nested block', async () => {
+    const r = await resolveDesignSpec({
+      harnessRoot: HARNESS,
+      workspaceRoot: WORKSPACE,
+      appDefaultPath: APP_DEFAULT,
+      readFile: fakeReader({
+        '/h/DESIGN_SPEC.md': '---\nmodels:\n  designer: opus\nname: top\nother:\n  k: v\n---\nb',
+      }),
+    });
+    // nested block parsed
+    expect(r.frontmatter.models?.designer).toBe('opus');
+    // scalar after a nested block resets state → lands at top level, not under models
+    expect(r.frontmatter['name']).toBe('top');
+    expect((r.frontmatter.models as Record<string, unknown>)['name']).toBeUndefined();
+    // a second nested block after a scalar reopens cleanly
+    expect((r.frontmatter['other'] as Record<string, unknown>)?.['k']).toBe('v');
+  });
+
+  it('documents 2-deep nesting behavior: only the first level is captured (deeper indent ignored)', async () => {
+    const r = await resolveDesignSpec({
+      harnessRoot: HARNESS,
+      workspaceRoot: WORKSPACE,
+      appDefaultPath: APP_DEFAULT,
+      readFile: fakeReader({
+        '/h/DESIGN_SPEC.md': '---\nmodels:\n  designer: opus\n    nested: deep\nname: top\n---\nb',
+      }),
+    });
+    // The parser is single-level by design (doc comment): the 2-deep line is read as
+    // another key under `models` (the regex tolerates leading whitespace), NOT a true
+    // tree. Pin the documented graceful behavior — it does not throw or corrupt siblings.
+    expect(r.frontmatter.models?.designer).toBe('opus');
+    expect((r.frontmatter.models as Record<string, unknown>)['nested']).toBe('deep');
+    expect(r.frontmatter['name']).toBe('top');
+  });
 });
 
 describe('renderResolvedSpec', () => {

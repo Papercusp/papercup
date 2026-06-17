@@ -452,10 +452,12 @@ export interface GatewayModelCfg {
   /** Pin this arm's calls to a specific pool account (cache-affinity + contention isolation from concurrent
    *  benches). Sent as the `x-papercusp-account` header the gateway routes on. Env override: PAPERCUSP_METR_ACCOUNT. */
   accountId?: string;
-  /** Retries on a transient 429/529/overloaded from the gateway (shared with concurrent benches). Default 4. */
+  /** Retries on a transient 429/529/overload/pace/hang from the shared gateway. Default 8 (rides out pace cycles). */
   maxRetries?: number;
-  /** Base backoff (ms) for transient retries (exponential: base·2^attempt). Default 2000. */
+  /** Base backoff (ms) for transient retries when no `retry after` hint is present (exponential, capped). Default 3000. */
   retryBaseMs?: number;
+  /** Per-request timeout (ms) — the shared gateway hangs under load, so fail fast + retry rather than block. Default 90000. */
+  requestTimeoutMs?: number;
   /** Sleep seam (injected in tests so retries don't actually wait). */
   sleep?: (ms: number) => Promise<void>;
   /** Anthropic SDK import (injected for tests; defaults to a lazy dynamic import of @anthropic-ai/sdk). */
@@ -464,12 +466,43 @@ export interface GatewayModelCfg {
   };
 }
 
-/** A transient gateway error (429 rate-limit / 529 overloaded) worth retrying — distinct from a real failure. */
-function isTransientGatewayError(e: unknown): boolean {
+/**
+ * A transient error worth retrying — the SHARED inference gateway pacing (429 `paced/paused; retry after Ns`),
+ * Anthropic overload (529), OR a gateway hang / network blip (timeout, ECONNRESET, socket hang up, http 000).
+ * Under concurrent benches the gateway both paces accounts AND hangs, so both are transient, not real failures.
+ */
+export function isTransientGatewayError(e: unknown): boolean {
   const status = (e as { status?: number })?.status;
-  if (status === 429 || status === 529 || status === 503) return true;
+  if (status === 429 || status === 529 || status === 503 || status === 502 || status === 504) return true;
   const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
-  return msg.includes('rate_limit') || msg.includes('overloaded') || msg.includes('429') || msg.includes('529');
+  return (
+    msg.includes('rate_limit') ||
+    msg.includes('overloaded') ||
+    msg.includes('paced') ||
+    msg.includes('paused') ||
+    msg.includes('429') ||
+    msg.includes('529') ||
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('econnreset') ||
+    msg.includes('econnrefused') ||
+    msg.includes('socket hang up') ||
+    msg.includes('aborted') ||
+    msg.includes('fetch failed') ||
+    msg.includes('terminated')
+  );
+}
+
+/** Parse the gateway's `retry after Ns` hint (ms), if present — so we wait out the pace window, not just a few s. */
+export function parseRetryAfterMs(e: unknown): number | null {
+  const body = (e as { error?: { message?: string }; message?: string }) ?? {};
+  const text = `${body?.error?.message ?? ''} ${e instanceof Error ? e.message : String(e)}`;
+  const m = text.match(/retry[ -]?after[: ]+(\d+)\s*s/i) ?? text.match(/(\d+)\s*s(?:econds)?\b/i);
+  if (m) {
+    const sec = Number(m[1]);
+    if (Number.isFinite(sec) && sec > 0) return Math.min(sec * 1000, 200_000); // cap at 200s
+  }
+  return null;
 }
 
 /** The minimal slice of the Anthropic Messages response we read. */
@@ -490,20 +523,22 @@ export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
   const apiKey = cfg.apiKey ?? process.env.ANTHROPIC_API_KEY ?? 'sk-papercusp-gateway';
   const accountId = cfg.accountId ?? process.env.PAPERCUSP_METR_ACCOUNT;
   const defaultHeaders = accountId ? { [GATEWAY_ACCOUNT_HEADER]: accountId } : undefined;
+  const timeout = cfg.requestTimeoutMs ?? 90_000;
   let clientP: Promise<{ messages: { create(body: Record<string, unknown>): Promise<AnthropicMessageResponse> } }> | null = null;
   const client = async () => {
     if (!clientP) {
       clientP = (async () => {
-        if (cfg.anthropicCtor) return new cfg.anthropicCtor({ apiKey, baseURL, ...(defaultHeaders ? { defaultHeaders } : {}) });
-        const mod = (await import('@anthropic-ai/sdk')) as unknown as { default: new (o: { apiKey: string; baseURL: string; defaultHeaders?: Record<string, string> }) => { messages: { create(b: Record<string, unknown>): Promise<AnthropicMessageResponse> } } };
-        return new mod.default({ apiKey, baseURL, ...(defaultHeaders ? { defaultHeaders } : {}) });
+        const opts = { apiKey, baseURL, timeout, maxRetries: 0, ...(defaultHeaders ? { defaultHeaders } : {}) };
+        if (cfg.anthropicCtor) return new cfg.anthropicCtor(opts);
+        const mod = (await import('@anthropic-ai/sdk')) as unknown as { default: new (o: Record<string, unknown>) => { messages: { create(b: Record<string, unknown>): Promise<AnthropicMessageResponse> } } };
+        return new mod.default(opts);
       })();
     }
     return clientP;
   };
 
-  const maxRetries = cfg.maxRetries ?? 4;
-  const retryBaseMs = cfg.retryBaseMs ?? 2000;
+  const maxRetries = cfg.maxRetries ?? 8;
+  const retryBaseMs = cfg.retryBaseMs ?? 3000;
   const sleep = cfg.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   return async ({ system, messages, tools, maxTokens }) => {
@@ -516,9 +551,11 @@ export function gatewayModelCall(cfg: GatewayModelCfg = {}): ModelCall {
         break;
       } catch (e) {
         lastErr = e;
-        // Retry only transient gateway contention (429/529/overloaded — the shared bench gateway is busy).
+        // Retry transient gateway pacing/overload/hang. Honor the gateway's `retry after Ns` hint when present
+        // (the pace window is ~2 min — a few-second backoff is too short); else exponential backoff (capped 60s).
         if (attempt < maxRetries && isTransientGatewayError(e)) {
-          await sleep(retryBaseMs * 2 ** attempt);
+          const hinted = parseRetryAfterMs(e);
+          await sleep(hinted ?? Math.min(retryBaseMs * 2 ** attempt, 60_000));
           continue;
         }
         throw e;

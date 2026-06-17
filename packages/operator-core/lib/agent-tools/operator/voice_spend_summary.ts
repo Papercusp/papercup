@@ -26,12 +26,31 @@ function currentYm(): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-interface ElSpend {
+export interface ElSpend {
   minutesUsed: number;
   minutesCap: number | null;
   ym: string;
   overCap: boolean;
   pctUsed: number | null;
+}
+
+/**
+ * Pure spend math for the EL (Conv AI) scope — the only testable seam in
+ * readElSpend, which is otherwise welded to PG + prefs. `cap` is the raw
+ * monthly minute cap from voice prefs; a non-positive/non-number cap means
+ * "uncapped" → minutesCap/pctUsed null, overCap false. pctUsed is clamped to
+ * [0,1] so an over-cap month still reports 1.0 not >1.
+ */
+export function computeElSpend(secsUsed: number, cap: unknown, ym: string): ElSpend {
+  const minutesUsed = secsUsed / 60;
+  const minutesCap = typeof cap === 'number' && cap > 0 ? cap : null;
+  return {
+    minutesUsed,
+    minutesCap,
+    ym,
+    overCap: minutesCap !== null && minutesUsed >= minutesCap,
+    pctUsed: minutesCap !== null ? Math.min(1, minutesUsed / minutesCap) : null,
+  };
 }
 
 async function readElSpend(): Promise<ElSpend> {
@@ -52,17 +71,8 @@ async function readElSpend(): Promise<ElSpend> {
     // Table missing or PG unreachable → degraded zeros
     secsUsed = 0;
   }
-  const minutesUsed = secsUsed / 60;
   const prefs = await loadVoicePrefs().catch(() => null);
-  const cap = prefs?.fullAgentMonthlyMinuteCap;
-  const minutesCap = typeof cap === 'number' && cap > 0 ? cap : null;
-  return {
-    minutesUsed,
-    minutesCap,
-    ym,
-    overCap: minutesCap !== null && minutesUsed >= minutesCap,
-    pctUsed: minutesCap !== null ? Math.min(1, minutesUsed / minutesCap) : null,
-  };
+  return computeElSpend(secsUsed, prefs?.fullAgentMonthlyMinuteCap, ym);
 }
 
 export default defineTool({

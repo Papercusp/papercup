@@ -133,3 +133,145 @@ describe('installed (non-built-in) parents', () => {
     expect(r.summary.id).toBe('coding');
   });
 });
+
+// ─── G1: extend.ts merge semantics — the engine deep-merges OBJECTS but REPLACES
+// arrays/scalars. extend.ts spreads overrides at the child's TOP level and lets
+// resolveExtends do the DEEP merge during resolution, so both shapes resolve
+// correctly. These pin that contract: an array override REPLACES the parent's
+// array; an object override (spine.edges) DEEP-MERGES with it. Re-validating the
+// returned YAML via {source} resolves it through the real engine.
+describe('blueprint:extend — merge semantics (deep-merge objects, replace arrays)', () => {
+  it('an array override (roles) REPLACES the parent array — resolved has ONLY the override', async () => {
+    const r = await run(extendTool, { id: 'c', parent: 'coding', overrides: { roles: [{ id: 'solo' }] } });
+    expect(r.ok).toBe(true);
+    // The returned child YAML carries the override verbatim (one role) …
+    const child = parseYaml(r.yaml);
+    expect(child.roles).toEqual([{ id: 'solo' }]);
+    // … and re-resolving it through the engine confirms the parent's many roles
+    // were REPLACED, not appended: exactly the one override role survives.
+    const resolved = await run(validateTool, { source: r.yaml });
+    expect(resolved.summary.roles).toEqual(['solo']);
+    // Fault-injection guard: this assertion is NON-VACUOUS only because the array
+    // was replaced. coding declares >1 role; if extend.ts had deep-merged the
+    // array (concat) the resolved set would contain the parent roles too.
+    expect(resolved.summary.roles).not.toContain('worker');
+    expect(resolved.summary.roles.length).toBe(1);
+  });
+
+  it('an object override (spine.edges) DEEP-MERGES — resolved retains parent edges AND adds the new one', async () => {
+    const r = await run(extendTool, {
+      id: 'c2',
+      parent: 'coding',
+      overrides: { spine: { edges: { CUSTOM: { to: 'role', role: 'worker' } } } },
+    });
+    expect(r.ok).toBe(true);
+    const child = parseYaml(r.yaml);
+    // The child override only mentions CUSTOM …
+    expect(Object.keys(child.spine.edges)).toEqual(['CUSTOM']);
+    // … but the resolved spine RETAINS the parent's edges (DONE, NEXT_WORKER) AND
+    // gains CUSTOM — the object deep-merge, not an array/scalar replace.
+    const resolved = await run(validateTool, { source: r.yaml });
+    expect(resolved.summary.spineVerbs).toContain('DONE');
+    expect(resolved.summary.spineVerbs).toContain('NEXT_WORKER');
+    expect(resolved.summary.spineVerbs).toContain('CUSTOM');
+  });
+});
+
+// ─── G2: validate.ts returns issues instead of throwing on a semantically-broken
+// (but schema-valid) blueprint. An unreachable/non-terminating spine is a hard
+// ERROR; an undeclared dispatch target is a non-blocking WARNING. Both paths must
+// return cleanly (no thrown exception, no parseError).
+describe('blueprint:validate — semantic errors are returned, not thrown', () => {
+  it('a non-terminating spine (no terminal edge, non-terminal default) → ok:false with errors, no throw', async () => {
+    const src = [
+      'id: g2',
+      'workItem: { kind: feature }',
+      'roles: [{ id: director }, { id: worker }]',
+      'spine:',
+      '  decider: director',
+      '  edges: { NEXT_WORKER: { to: role, role: worker } }',
+      '  default: { to: role, role: worker }',
+    ].join('\n');
+    const r = await run(validateTool, { source: src });
+    expect(r.ok).toBe(false);
+    expect(r.errors.length).toBeGreaterThan(0);
+    expect(r.errors.map((e: { code: string }) => e.code)).toContain('no-terminal');
+    // Returned, not thrown: no parseError, and a summary is still produced.
+    expect(r.parseError).toBeUndefined();
+    expect(r.summary.id).toBe('g2');
+  });
+
+  it('an unreachable (declared-but-unused) role → ok:true with an unused-role WARNING', async () => {
+    const src = [
+      'id: g2b',
+      'workItem: { kind: feature }',
+      'roles: [{ id: director }, { id: worker }, { id: orphan }]',
+      'spine:',
+      '  decider: director',
+      '  edges: { DONE: { to: done }, NEXT_WORKER: { to: role, role: worker } }',
+    ].join('\n');
+    const r = await run(validateTool, { source: src });
+    // Reachability is a warning, not a hard error — the blueprint still runs.
+    expect(r.ok).toBe(true);
+    expect(r.parseError).toBeUndefined();
+    expect(r.warnings.map((w: { code: string }) => w.code)).toContain('unused-role');
+    expect(r.warnings.some((w: { message: string }) => w.message.includes('orphan'))).toBe(true);
+  });
+
+  it('a dispatch target with no matching role (ghost) → ok:true, a dispatch-undeclared-role WARNING (not thrown)', async () => {
+    const src = [
+      'id: g2c',
+      'workItem: { kind: feature }',
+      'roles: [{ id: director }, { id: worker }]',
+      'spine:',
+      '  decider: director',
+      '  edges: { DONE: { to: done }, NEXT_WORKER: { to: role, role: ghost } }',
+    ].join('\n');
+    const r = await run(validateTool, { source: src });
+    expect(r.ok).toBe(true);
+    expect(r.parseError).toBeUndefined();
+    expect(r.warnings.map((w: { code: string }) => w.code)).toContain('dispatch-undeclared-role');
+  });
+});
+
+// ─── G3: program-mode spine — the summary surfaces spineSteps (and leaves
+// spineVerbs empty), the mirror of the decider/edges path. One valid program,
+// one with a gate branch that can never resolve (no fallback → a hard error).
+describe('blueprint:validate — program-mode spine summary', () => {
+  it('a valid steps+gate program → summary.spineSteps populated, summary.spineVerbs empty', async () => {
+    const src = [
+      'id: g3',
+      'workItem: { kind: decision }',
+      'roles: [{ id: voter }]',
+      'spine:',
+      '  decider: voter',
+      '  steps:',
+      '    - { id: s1, op: spawn-roles }',
+      '    - { id: s2, op: collect-votes }',
+      '  gate:',
+      '    - { op: resolve, else: true }',
+    ].join('\n');
+    const r = await run(validateTool, { source: src });
+    expect(r.ok).toBe(true);
+    expect(r.summary.spineSteps).toEqual(['s1', 's2']);
+    expect(r.summary.spineVerbs).toEqual([]);
+  });
+
+  it('a gate with no fallback branch → ok:false (gate-no-fallback error), no throw', async () => {
+    const src = [
+      'id: g3b',
+      'workItem: { kind: decision }',
+      'roles: [{ id: voter }]',
+      'spine:',
+      '  decider: voter',
+      '  steps:',
+      '    - { id: s1, op: spawn-roles }',
+      '  gate:',
+      "    - { op: resolve, when: { '==': [{ var: tally.winner }, yes] } }",
+    ].join('\n');
+    const r = await run(validateTool, { source: src });
+    expect(r.ok).toBe(false);
+    expect(r.parseError).toBeUndefined();
+    expect(r.errors.map((e: { code: string }) => e.code)).toContain('gate-no-fallback');
+  });
+});
