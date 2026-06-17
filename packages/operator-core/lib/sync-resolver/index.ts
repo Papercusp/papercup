@@ -2788,6 +2788,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return state ? [state] : [];
     },
   },
+  'evals.benchEstimate': {
+    argsSchema: z.object({ taskSetId: z.string().optional(), cap: z.number().optional() }),
+    resolve: async (args) => {
+      const { taskSetId, cap } = args as { taskSetId?: string; cap?: number };
+      const { estimateBenchLaunch } = await import('../external-bench/estimate');
+      return [estimateBenchLaunch({ taskSetId, cap })];
+    },
+  },
   // accounts.pool — the Queen's Claude Max account pool as a live read-model for
   // the Accounts tab (accounts-pool-tab-2026-06-15 P-001). One row per pool
   // account: the union of accounts:list + accounts:status (id/label/credentialRef/

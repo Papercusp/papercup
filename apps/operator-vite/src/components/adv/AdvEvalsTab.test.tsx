@@ -273,15 +273,12 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
 });
 
 // The Launch subtab (P-006) posts to the managed engine launcher; it reads the
-// active-run guard from evals.benchRuns + fetches a cost estimate.
+// active-run guard from evals.benchRuns + evals.benchEstimate.
 describe('<AdvEvalsTab> launch subtab (P-006)', () => {
   beforeEach(() => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: RequestInit) => {
-        if (String(url).includes('/estimate')) {
-          return { ok: true, json: async () => ({ taskCount: 11, estCostUsd: 38.5, estWallMin: 36, perTaskUsd: 3.5, basis: 'm3' }) } as Response;
-        }
         if (String(url).includes('/runs/launch')) {
           expect(init?.method).toBe('POST');
           return { ok: true, json: async () => ({ ok: true, runId: 'ui-hive-realqueen-123' }) } as Response;
@@ -294,6 +291,7 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
 
   it('renders the arm picker + a launch button when no run is in flight', async () => {
     nuqsState.evalView = 'launch';
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ taskCount: 11, estCostUsd: 38.5, estWallMin: 36, perTaskUsd: 3.5, basis: 'm3' }] };
     render(<AdvEvalsTab />);
     expect(screen.getByLabelText('Benchmark arm')).toBeTruthy();
     expect(screen.getByLabelText('Launch benchmark run')).toBeTruthy();

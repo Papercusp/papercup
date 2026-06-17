@@ -29,6 +29,12 @@ async function route(method: string, path: string): Promise<Route> {
   if (!r) throw new Error(`route ${method} ${path} not registered`);
   return r;
 }
+async function launchRoute(method: string, path: string): Promise<Route> {
+  const mod = await import('../routes/external-bench/launch');
+  const r = (mod.default as Route[]).find((x) => x.method === method && x.path === path);
+  if (!r) throw new Error(`launch route ${method} ${path} not registered`);
+  return r;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -77,5 +83,18 @@ describe('GET /external-bench/runs/:id', () => {
     const res = await r.handler(req('/runs/nope'), ctx({ id: 'nope' }));
     expect(res.status).toBe(404);
     expect((await res.json()).error).toBe('run_not_found');
+  });
+});
+
+describe('GET /external-bench/estimate', () => {
+  it('returns the shared launch estimate envelope', async () => {
+    const r = await launchRoute('GET', '/external-bench/estimate');
+    const res = await r.handler(req('/estimate?taskSetId=11-task-pilot&cap=6'), ctx());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.taskSetId).toBe('11-task-pilot');
+    expect(body.taskCount).toBe(11);
+    expect(body.cap).toBe(6);
+    expect(body.estCostUsd).toBe(38.5);
   });
 });

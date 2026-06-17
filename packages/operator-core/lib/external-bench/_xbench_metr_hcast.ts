@@ -17,6 +17,8 @@ import type { BenchTask } from './types';
 import { loadBenchTaskSet } from './task-sets';
 import { makeMetrHcastLiveOps, gatewayModelCall, metrGatewayBaseUrl } from './metr-hcast-live';
 import { runMetrHcastSuite } from './metr-hcast-driver';
+import { runMetrHcastSuiteViaFleet, METR_HCAST_SU_INDEPENDENT_ARM, METR_HCAST_HIVE_ARM } from './metr-hcast-backlog';
+import type { FleetArmId } from '@papercusp/bench-metrics';
 import { buildMetrHcastReport, formatMetrHcastReport } from './metr-hcast-report';
 import { appendAccumResult, loadAccumulatedResults, accumCoverage } from './metr-hcast-accum';
 import { dirname as pathDirname } from 'node:path';
@@ -45,6 +47,9 @@ async function main(): Promise<void> {
   const thinkingBudget = effort === 'xhigh' ? Number(arg('thinking-budget', '16000')) : 0;
   const dryRun = hasFlag('dry-run');
   const accumulate = hasFlag('accumulate');
+  // --via-fleet: run each arm through the SHARED canonical HiveBacklogDriver contract (metrHcastBacklogDriver)
+  // → emit BOTH the standard fleet summary AND the horizon report from one run (the dual-arm unification).
+  const viaFleet = hasFlag('via-fleet');
   // Accumulation dir = alongside --out (default the metr-hcast results dir).
   const accumBase = out ? pathDirname(out) : `${process.env.HOME}/.papercusp/bench-results/metr-hcast`;
   const customIds = arg('task-ids')?.split(',').map((s) => s.trim()).filter(Boolean);
@@ -62,6 +67,34 @@ async function main(): Promise<void> {
   }
 
   const modelCall = gatewayModelCall({ model, ...(account ? { accountId: account } : {}), ...(thinkingBudget > 0 ? { thinkingBudget } : {}) });
+
+  // ── --via-fleet: the shared-contract path (metr-hcast through the SAME HiveBacklogDriver as SWE-bench) ──
+  if (viaFleet) {
+    const fleetArms: FleetArmId[] = arms.map((a) => (a === 'papercusp' ? METR_HCAST_HIVE_ARM : METR_HCAST_SU_INDEPENDENT_ARM));
+    console.log(`[via-fleet] running through the canonical HiveBacklogDriver contract — fleet arms: ${fleetArms.join(', ')}`);
+    const fleetRun = await runMetrHcastSuiteViaFleet({
+      tasks,
+      arms: fleetArms,
+      opsFor: (arm) =>
+        makeMetrHcastLiveOps(arm === METR_HCAST_HIVE_ARM ? 'papercusp' : 'baseline-a-ablation', { modelCall, model, concurrencyCap: () => concurrency }),
+      budget: budgetTokens ? { maxTokens: budgetTokens } : {},
+      report: { weighting, bootstrap, runId: `metr-hcast-${taskSet}-fleet` },
+      ...(accumulate ? { onTaskCollected: (arm, r) => appendAccumResult(accumBase, arm === METR_HCAST_HIVE_ARM ? 'papercusp' : 'baseline-a-ablation', r) } : {}),
+      onArmDone: (a) => console.log(`  …${a.fleetArm}: ${a.summary.tasks} tasks, ${a.summary.resolved} resolved, peakConcurrency ${a.summary.peakConcurrency}, $${a.summary.costUsd.toFixed(3)}`),
+    });
+    console.log('\n=== FLEET SUMMARIES (the canonical cross-suite output) ===');
+    for (const f of fleetRun.fleet) {
+      console.log(`  ${f.fleetArm}: tasks=${f.summary.tasks} resolved=${f.summary.resolved} zeroHumanGate=${f.summary.tasksZeroHumanGate} tokens=${f.summary.tokensTotal} wallClock=${(f.summary.wallClockMs / 1000).toFixed(0)}s peakConc=${f.summary.peakConcurrency}`);
+    }
+    console.log('\n' + formatMetrHcastReport(fleetRun.report));
+    if (out) {
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(out, JSON.stringify({ report: fleetRun.report, fleet: fleetRun.fleet, resultsByArm: fleetRun.resultsByArm }, null, 2), 'utf8');
+      console.log(`\nWrote fleet run artifact → ${out}`);
+    }
+    return;
+  }
+
   // In accumulate mode: fold in rows banked by earlier partial runs, and append each new row as it settles.
   const prior = accumulate ? loadAccumulatedResults(accumBase) : {};
   if (accumulate) {

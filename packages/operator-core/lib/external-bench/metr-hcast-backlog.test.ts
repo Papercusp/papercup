@@ -10,6 +10,7 @@ import {
   metrHcastArmIdForFleetArm,
   metrHcastBacklogDriver,
   metrHcastTaskResultsFromFleet,
+  runMetrHcastSuiteViaFleet,
 } from './metr-hcast-backlog';
 import type { MetrHcastRunnerOps } from './metr-hcast-runner';
 import type { BenchTask } from './types';
@@ -102,6 +103,36 @@ describe('metrHcastBacklogDriver', () => {
     expect(hive.points.find((p) => p.quantile === 0.5)!.horizonMinutes).toBeGreaterThan(
       solo.points.find((p) => p.quantile === 0.5)!.horizonMinutes,
     );
+  });
+
+  it('runMetrHcastSuiteViaFleet runs BOTH arms through the fleet contract → fleet summaries + horizon report', async () => {
+    const big = [2, 4, 8, 16, 32, 64, 128].map((m) => task(`fam${m}__t${m}`, m));
+    const banked: string[] = [];
+    const out = await runMetrHcastSuiteViaFleet({
+      tasks: big,
+      opsFor: (arm) => competenceOps(arm === 'hive-realqueen' ? 64 : 16),
+      sampleIntervalMs: 1,
+      report: { bootstrap: 50, seed: 1, weighting: 'equal' },
+      onTaskCollected: (arm) => { banked.push(arm); },
+    });
+    // Two fleet arms, each with a canonical HiveBacklogResult + a FleetRunSummary.
+    expect(out.fleet.map((f) => f.fleetArm).sort()).toEqual(['hive-realqueen', 'su-independent']);
+    for (const f of out.fleet) {
+      expect(f.result.suite).toBe('metr-hcast');
+      expect(f.summary.tasks).toBe(7);
+      expect(f.summary.peakConcurrency).toBeGreaterThanOrEqual(1);
+    }
+    // The hive arm (competence 64) resolves MORE tasks than solo (16) — the fleet summary reflects it.
+    const hiveSummary = out.fleet.find((f) => f.fleetArm === 'hive-realqueen')!.summary;
+    const soloSummary = out.fleet.find((f) => f.fleetArm === 'su-independent')!.summary;
+    expect(hiveSummary.resolved).toBeGreaterThan(soloSummary.resolved);
+    // And the horizon report (from the SAME fleet output) shows the hive's longer horizon.
+    const hive = out.report.arms.find((a) => a.arm === 'papercusp')!;
+    const solo = out.report.arms.find((a) => a.arm === 'baseline-a-ablation')!;
+    expect(hive.points.find((p) => p.quantile === 0.5)!.horizonMinutes).toBeGreaterThan(
+      solo.points.find((p) => p.quantile === 0.5)!.horizonMinutes,
+    );
+    expect(banked.length).toBe(14); // 7 tasks × 2 arms
   });
 
   it('respects the concurrency cap from ops', async () => {

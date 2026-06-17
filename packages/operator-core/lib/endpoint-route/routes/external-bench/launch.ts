@@ -21,14 +21,7 @@ import { launchBenchRun, cancelBenchRun } from '../../../external-bench/run-laun
 import { gradeBenchRun } from '../../../external-bench/grade-runner';
 import { deleteBenchRun } from '../../../external-bench/run-store';
 import { buildExportBundle } from '../../../external-bench/export-bundle';
-import { knownTaskSets } from '../../../external-bench/task-sets';
-
-// Per-task opus cost basis: the m3 real-Queen pass cost $33.98 over 11 tasks
-// (~$3.09/task). Round up for a conservative pre-launch estimate.
-const PER_TASK_USD = 3.5;
-// Rough per-task wall minutes (a SWE-bench Pro task on the hive); time is the
-// looser estimate — labelled rough in the UI.
-const PER_TASK_WALL_MIN = 18;
+import { estimateBenchLaunch } from '../../../external-bench/estimate';
 
 const launch = defineTool({
   method: 'POST',
@@ -103,22 +96,8 @@ const estimate = defineTool({
   async handler(req) {
     const params = new URL(req.url).searchParams;
     const taskSetId = params.get('taskSetId') || '11-task-pilot';
-    const cap = Math.max(1, Number(params.get('cap') ?? 5) || 5);
-    const set = knownTaskSets().find((s) => s.id === taskSetId);
-    const taskCount = set?.count ?? (taskSetId === 'swe-bench-pro-full' ? 731 : 11);
-    const estCostUsd = Math.round(taskCount * PER_TASK_USD * 100) / 100;
-    // Parallel wall ≈ ceil(N/cap) waves × per-task wall (rough).
-    const waves = Math.ceil(taskCount / cap);
-    const estWallMin = waves * PER_TASK_WALL_MIN;
-    return Response.json({
-      taskSetId,
-      taskCount,
-      cap,
-      perTaskUsd: PER_TASK_USD,
-      estCostUsd,
-      estWallMin,
-      basis: 'per-task cost from the m3 real-Queen pass ($33.98 / 11 ≈ $3.09/task, opus); time is rough.',
-    });
+    const cap = Number(params.get('cap') ?? 5) || 5;
+    return Response.json(estimateBenchLaunch({ taskSetId, cap }));
   },
 });
 

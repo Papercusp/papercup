@@ -27,8 +27,12 @@
  */
 import type { FleetArmId } from '@papercusp/bench-metrics';
 import type { HiveBacklogDriver, HiveBacklogResult, FleetTaskResult } from './hive-backlog';
+import { toFleetRunSummary } from './hive-backlog';
 import { runOneMetrHcastTask, type MetrHcastRunnerOps, type MetrHcastTaskResult } from './metr-hcast-runner';
 import { makePoolBacklogDriver } from './hive-backlog-utilities';
+import { buildMetrHcastReport, type MetrHcastReport, type MetrHcastReportOpts } from './metr-hcast-report';
+import type { BenchTask, GenerationBudget } from './types';
+import type { FleetRunSummary } from '@papercusp/bench-metrics';
 
 /** The two METR HCAST fleet-arm versions (reuse the SWE-bench vocab so cross-suite comparison is apples-to-apples). */
 export const METR_HCAST_SU_INDEPENDENT_ARM: FleetArmId = 'su-independent';
@@ -95,6 +99,72 @@ export function metrHcastBacklogDriver(ops: MetrHcastRunnerOps, opts: MetrHcastB
       return toFleetTaskResult(r, placedAtMs, startedAt, finishedAt);
     },
   });
+}
+
+/** One arm's outcome from {@link runMetrHcastSuiteViaFleet}: the canonical fleet record + its fleet summary. */
+export interface MetrHcastFleetArmResult {
+  fleetArm: FleetArmId;
+  result: HiveBacklogResult;
+  /** The standard fleet rollup (tasks / resolved / cost / tokens / wall-clock / peak concurrency). */
+  summary: FleetRunSummary;
+}
+
+/** The full two-arm METR HCAST run THROUGH the shared fleet contract — both metric families from one run. */
+export interface MetrHcastFleetRunResult {
+  /** Per fleet-arm: the canonical HiveBacklogResult + fleet summary (the unified output every suite emits). */
+  fleet: MetrHcastFleetArmResult[];
+  /** Per-arm MetrHcastTaskResult[] reconstructed from the fleet output (for the horizon fit). */
+  resultsByArm: Record<string, MetrHcastTaskResult[]>;
+  /** The METR-specific horizon report (per-arm horizon + the hive-vs-single-opus lift + caveats). */
+  report: MetrHcastReport;
+}
+
+/**
+ * Run the two-arm METR HCAST suite THROUGH the canonical {@link HiveBacklogDriver} fleet contract (the shared
+ * code), so ONE run yields BOTH the standard fleet metrics ({@link toFleetRunSummary}) AND the METR horizon
+ * report. Each fleet arm ('su-independent' / 'hive-realqueen') runs its own {@link metrHcastBacklogDriver}
+ * over the same backlog; `opsFor(arm)` binds the arm's in-container agent loop. This is the live unification:
+ * metr-hcast now flows through the identical orchestration the SWE-bench arms use.
+ */
+export async function runMetrHcastSuiteViaFleet(input: {
+  tasks: BenchTask[];
+  /** Fleet arms to run (default both: su-independent + hive-realqueen). */
+  arms?: FleetArmId[];
+  /** Build the runner ops for one fleet arm (binds its in-container agent loop). */
+  opsFor: (arm: FleetArmId) => MetrHcastRunnerOps;
+  runId?: string;
+  seed?: number;
+  budget?: GenerationBudget;
+  report?: MetrHcastReportOpts;
+  fleetTimeoutMs?: number;
+  sampleIntervalMs?: number;
+  onTaskCollected?: (fleetArm: FleetArmId, r: MetrHcastTaskResult) => void | Promise<void>;
+  onArmDone?: (arm: MetrHcastFleetArmResult) => void | Promise<void>;
+}): Promise<MetrHcastFleetRunResult> {
+  const arms = input.arms ?? [METR_HCAST_SU_INDEPENDENT_ARM, METR_HCAST_HIVE_ARM];
+  const runId = input.runId ?? 'metr-hcast-fleet';
+  const seed = input.seed ?? 0;
+  const budget = input.budget ?? {};
+
+  const fleet: MetrHcastFleetArmResult[] = [];
+  const resultsByArm: Record<string, MetrHcastTaskResult[]> = {};
+  for (const arm of arms) {
+    const driver = metrHcastBacklogDriver(input.opsFor(arm), {
+      fleetTimeoutMs: input.fleetTimeoutMs,
+      sampleIntervalMs: input.sampleIntervalMs,
+      onTaskCollected: (r) => input.onTaskCollected?.(arm, r),
+    });
+    const result = await driver.run({ arm, suite: 'metr-hcast', runId, seed, backlog: input.tasks, budget });
+    const taskResults = metrHcastTaskResultsFromFleet(result);
+    resultsByArm[metrHcastArmIdForFleetArm(arm)] = taskResults;
+    const resolvedCount = taskResults.filter((t) => t.grade.resolved === true).length;
+    const armResult: MetrHcastFleetArmResult = { fleetArm: arm, result, summary: toFleetRunSummary(result, resolvedCount) };
+    fleet.push(armResult);
+    await Promise.resolve(input.onArmDone?.(armResult)).catch(() => {});
+  }
+
+  const report = buildMetrHcastReport(resultsByArm, input.report);
+  return { fleet, resultsByArm, report };
 }
 
 /**

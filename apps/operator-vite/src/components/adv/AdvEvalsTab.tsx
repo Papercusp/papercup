@@ -983,7 +983,6 @@ function LaunchRunView() {
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [estimate, setEstimate] = useState<LaunchEstimate | null>(null);
 
   const [, setEvalView] = useQueryState('evalView', parseAsString);
   const [, setEvalRun] = useQueryState('evalRun', parseAsString);
@@ -996,15 +995,12 @@ function LaunchRunView() {
     [runsSync.data],
   );
 
-  // Cost+time estimate (D-004) — refetched as the task set / cap change.
-  useEffect(() => {
-    let live = true;
-    fetch(`/api/external-bench/estimate?taskSetId=${encodeURIComponent(taskSet)}&cap=${capNum}`)
-      .then((r) => r.json())
-      .then((e: LaunchEstimate) => { if (live) setEstimate(e); })
-      .catch(() => { if (live) setEstimate(null); });
-    return () => { live = false; };
-  }, [taskSet, capNum]);
+  // Cost+time estimate (D-004) — shared sync read so the launch form stays on the audited data path.
+  const estimateSync = useSyncQuery<LaunchEstimate>({
+    queryName: 'evals.benchEstimate',
+    args: { taskSetId: taskSet, cap: capNum },
+  });
+  const estimate = estimateSync.data?.[0] ?? null;
 
   const needsConfirm = (estimate?.estCostUsd ?? 0) >= OWNER_CONFIRM_USD;
   const customMissing = taskSet === 'custom' && customIds.trim().length === 0;
