@@ -154,6 +154,24 @@ test('backpressure — an upstream unified-429 pauses the governor; the next req
   assert.ok(Number(second.headers.get('retry-after')) > 0);
 });
 
+test('a BARE upstream 429 (no rate-limit headers) fails over to the next account — the stuck-loop fix', async () => {
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B')]);
+  await boot(
+    (_req, res) => {
+      // Anthropic's header-less rate_limit_error: NO anthropic-ratelimit-* / retry-after headers.
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+    },
+    { pool },
+  );
+  assert.equal(pool.active().accountId, 'A', 'starts active on A');
+  const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 429, 'the bare 429 still propagates to the caller');
+  // The fix: a bare 429 must ROTATE active off A (not 429-loop it) so the next request tries B.
+  assert.equal(pool.active().accountId, 'B', 'bare 429 failed over A→B (no stuck-loop on the limited account)');
+});
+
 test('401 from upstream invalidates the cached token', async () => {
   await boot((_req, res) => {
     res.writeHead(401, { 'content-type': 'application/json' });

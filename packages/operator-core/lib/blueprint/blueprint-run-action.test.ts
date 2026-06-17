@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
-import { getSystemAction, listSystemActions, type SystemActionCtx } from '../harness/routines/system-actions';
+import { getSystemAction, listSystemActions, type SystemActionCtx, type SystemActionResult } from '../harness/routines/system-actions';
 
 // P-009: the decider fire consults the autoloop fire gate + records outcomes.
 // Mock the gate controllably (default: allow) so unit tests never touch PG.
@@ -87,23 +87,26 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     warn.mockRestore();
   });
 
-  it("payload.blueprintId fires that STANDALONE launch blueprint's role (unify-launches D-002)", async () => {
-    // The `scan` cadence routine seeds `{ blueprintId: 'scan' }`; the handler must
-    // fire the NAMED launch blueprint via the launch-blueprint primitive (role
-    // resolves from the blueprint), NOT the harness's effective blueprint.
-    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
-    setLaunchBlueprintFire((input) => {
-      fired.push(input);
-    });
-    // The harness-effective resolver must NOT be consulted on the blueprintId path.
+  it("payload.blueprintId QUEUES a durable launch of that STANDALONE blueprint's role (unify-launches D-002, EI-995)", async () => {
+    // The `scan` cadence routine seeds `{ blueprintId: 'scan' }`. The handler runs
+    // INSIDE a DBOS step, so it must NOT fire inline (startWorkflow-from-step is
+    // rejected → the EI-995 Queen/Overwatch no-op). It RETURNS the launch as a
+    // durableSpawn for the routine workflow to start AFTER the step. Role resolves
+    // from the NAMED launch blueprint, NOT the harness's effective blueprint.
     setBlueprintResolver(async () => {
       throw new Error('harness-effective resolver should not run for a named launch blueprint');
     });
 
-    await handleBlueprintRun(ctx({ payloadTemplate: { blueprintId: 'scan', kickoff: 'sweep now' } }));
+    const result = (await handleBlueprintRun(
+      ctx({ payloadTemplate: { blueprintId: 'scan', kickoff: 'sweep now' } }),
+    )) as SystemActionResult | undefined;
 
-    expect(fired).toHaveLength(1);
-    expect(fired[0]).toMatchObject({ blueprintId: 'scan', role: 'scanner', kickoff: 'sweep now' });
+    expect(result?.durableSpawns).toHaveLength(1);
+    const spawn = result!.durableSpawns![0];
+    expect(spawn.spawnRecord?.childRole).toBe('scanner'); // role resolved from the 'scan' blueprint
+    expect(spawn.label).toBe('demo/scanner');
+    expect(spawn.body.kickoff).toBe('sweep now');
+    expect(spawn.body.extra).toContain('BLUEPRINT_ID=scan');
   });
 
   it('payload.timeoutMs threads through to the launch fire (a scan needs >> the 90s route default)', async () => {

@@ -98,7 +98,31 @@ export default function ScheduledCalendarTab() {
   const [pickerOpen, setPickerOpen] = useState(false);
   // The plan list (incl. P-021 schedule fields) powers the "Schedule a plan"
   // picker — pick an unscheduled plan to give it a first schedule.
-  const { data: planListData } = useSyncQuery<PlanListLite>({ queryName: 'plans.list', args: {} });
+  // Workspace-wide plan picker (D-020 item 3): fan plans.list across every harness
+  // so an unscheduled plan in a NON-primary pot is schedulable too (the same
+  // projects/lite source QueenTab uses). Fetched + queried lazily — only once the
+  // picker is opened — since the cross-harness fan-out is heavier than the default.
+  const [harnessSlugs, setHarnessSlugs] = useState<string[]>([]);
+  useEffect(() => {
+    if (!pickerOpen || harnessSlugs.length > 0) return;
+    let cancel = false;
+    fetch('/api/harness/projects/lite', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d: { projects?: Array<{ slug?: string }> }) => {
+        if (cancel) return;
+        const slugs = Array.isArray(d?.projects) ? d.projects.map((p) => p.slug).filter((s): s is string => !!s) : [];
+        setHarnessSlugs(slugs);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, [pickerOpen, harnessSlugs.length]);
+  const { data: planListData } = useSyncQuery<PlanListLite>({
+    queryName: 'plans.list',
+    args: harnessSlugs.length > 0 ? { harness_slugs: harnessSlugs } : {},
+    enabled: pickerOpen,
+  });
   const planList = useMemo(() => (Array.isArray(planListData) ? planListData : []), [planListData]);
   // Each scheduled plan's RAW schedule (rrule/scheduledAt/exdate/rdate) — editor
   // pre-fill + the per-occurrence EXDATE/RDATE drag read this (D-020).
@@ -320,6 +344,7 @@ export default function ScheduledCalendarTab() {
                   setEditor({
                     slug: selectedPlan.row.templateSlug,
                     title: selectedPlan.row.title,
+                    harness: selectedPlan.row.harnessSlug,
                     isArmed: selectedPlan.row.scheduleActive,
                   })
                 }
@@ -344,7 +369,7 @@ export default function ScheduledCalendarTab() {
           plans={planList}
           onPick={(p) => {
             setPickerOpen(false);
-            setEditor({ slug: p.slug, title: p.title, isArmed: p.scheduleActive ?? false });
+            setEditor({ slug: p.slug, title: p.title, harness: p.harness, isArmed: p.scheduleActive ?? false });
           }}
           onClose={() => setPickerOpen(false)}
         />

@@ -33,6 +33,10 @@ vi.mock('../adv/AdvShell', () => ({
   ],
 }));
 vi.mock('../adv/adv-harness-selection', () => ({ ALL_HARNESSES_OPTION: '__all__' }));
+// This suite pins the LEGACY FLAT fallback (the STEERING_HIVE_TREE flag-OFF path).
+// The nested hive→plan picker (flag ON, the default) has its own suite,
+// QueenTab.tree.test.tsx.
+vi.mock('@papercusp/flags/client', () => ({ useFlag: () => false }));
 
 import QueenTab from './QueenTab';
 

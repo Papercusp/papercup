@@ -65,12 +65,12 @@ import type { FleetArmId } from '@papercusp/bench-metrics';
 import type { ArmAttempt, BenchTask, GenerationBudget, GenerationTelemetry, TaskCheckout } from './types';
 import {
   setHiveBacklogDriver,
-  type ConcurrencyTimeline,
   type FleetTaskResult,
   type HiveBacklogDriver,
   type HiveBacklogResult,
   type HiveBacklogRunRequest,
 } from './hive-backlog';
+import { makeConcurrencySampler } from './hive-backlog-utilities';
 
 /** The arm this driver serves (open `FleetArmId` union — slots in with no type change). */
 export const SU_INDEPENDENT_ARM: FleetArmId = 'su-independent';
@@ -200,47 +200,28 @@ export function suIndependentBacklogDriver(
     async run(req: HiveBacklogRunRequest): Promise<HiveBacklogResult> {
       const startedAtMs = ops.now();
 
-      // ── live-concurrency accounting ──────────────────────────────────────────────────────────────
-      // `live` is the ground-truth pool occupancy (++ at a task's first FIFO spawn, -- at its finish).
-      // The sampler reads it on a fixed cadence into `samples`; peak is tracked inline so the scalar
-      // `peakConcurrentBees` stays populated even when the run is shorter than one sample interval.
-      let live = 0;
-      let peak = 0;
-      const samples: { tMs: number; live: number }[] = [];
-      const sample = (): void => {
-        samples.push({ tMs: ops.now() - startedAtMs, live });
-        if (live > peak) peak = live;
-      };
-      const enter = (): void => {
-        live += 1;
-        if (live > peak) peak = live;
-      };
-      const exit = (): void => {
-        live = Math.max(0, live - 1);
-      };
+      // ── live-concurrency accounting (the SHARED sampler — hive-backlog-utilities) ──────────────────
+      // `occupancy` is the ground-truth pool occupancy (enter() at a task's first FIFO spawn, exit() at its
+      // finish); it reads on a fixed cadence into the ConcurrencyTimeline, peak tracked inline. Extracted to
+      // hive-backlog-utilities so the su-independent pool + the METR HCAST in-container pool share ONE impl.
+      const occupancy = makeConcurrencySampler(startedAtMs, ops.now);
+      const enter = (): void => occupancy.enter();
+      const exit = (): void => occupancy.exit();
 
       const taskResults: FleetTaskResult[] = [];
       const enrolledAll: SuIndependentEnrolled[] = [];
       const memberSlugs: string[] = [];
 
       // The concurrency sampler runs on a real timer (unref'd so it never keeps the process alive). The
-      // injected `ops.now()` lets the unit test drive logical time; the timer cadence is wall-clock, so a
-      // fake-driven test that wants samples calls `sample()` indirectly through a 0ms-interval pump or
-      // asserts on the inline peak. We always take an initial + final sample so the timeline is non-empty.
-      sample();
-      const sampler = setInterval(() => sample(), Math.max(1, sampleIntervalMs));
-      if (typeof sampler.unref === 'function') sampler.unref();
+      // injected `ops.now()` lets the unit test drive logical time. We always take an initial + final sample
+      // so the timeline is non-empty.
+      occupancy.sample();
+      const samplerTimer = setInterval(() => occupancy.sample(), Math.max(1, sampleIntervalMs));
+      if (typeof samplerTimer.unref === 'function') samplerTimer.unref();
 
       const finalize = (runError?: string): HiveBacklogResult => {
-        clearInterval(sampler);
-        sample(); // final occupancy snapshot
-        const avgConcurrent = samples.length > 0 ? samples.reduce((s, x) => s + x.live, 0) / samples.length : 0;
-        const sampledPeak = samples.reduce((m, x) => Math.max(m, x.live), 0);
-        const concurrencyTimeline: ConcurrencyTimeline = {
-          samples,
-          avgConcurrent,
-          peakConcurrent: Math.max(sampledPeak, peak),
-        };
+        clearInterval(samplerTimer);
+        occupancy.sample(); // final occupancy snapshot
         return {
           arm: req.arm,
           suite: req.suite,
@@ -248,10 +229,10 @@ export function suIndependentBacklogDriver(
           seed: req.seed,
           startedAtMs,
           finishedAtMs: ops.now(),
-          peakConcurrentBees: peak,
+          peakConcurrentBees: occupancy.peak(),
           taskResults,
           coordEvents: [], // an independent-agent arm has NO Queen coordination trace — by design.
-          concurrencyTimeline,
+          concurrencyTimeline: occupancy.finalize(),
           ...(runError ? { runError } : {}),
         };
       };

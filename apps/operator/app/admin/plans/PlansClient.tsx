@@ -35,7 +35,7 @@ import { useLexicon } from '@/lib/useLexicon';
 import DecisionLog, { DecisionDetail, type DecisionRow } from '@/app/_components/DecisionLog';
 import QueueSummary from './QueueSummary';
 import { QUEUE_TABS, QUEEN_LOG_LAYERS } from './queue-authorizer';
-import { Plus, ClipboardList, Inbox, Terminal } from 'lucide-react';
+import { ClipboardList, Inbox, Terminal } from 'lucide-react';
 import {
   SessionsRosterList,
   SessionsRosterDetail,
@@ -614,14 +614,17 @@ export default function PlansClient() {
   const resolvedHarnessSlug = activeHarnessSlug ?? fallbackHarnessSlug;
 
   const [launchingNewPlan, setLaunchingNewPlan] = useState(false);
-  const onNewPlan = useCallback(async () => {
+  // ownerSlug is the EXPLICIT owning hive (steering-nested-hive-plan-tree P-005) —
+  // the active scope when concrete, else the owner's menu choice (null = explicit
+  // workspace-level). NewPlanButton makes the choice instead of silently defaulting.
+  const onNewPlan = useCallback(async (ownerSlug: string | null) => {
     if (launchingNewPlan) return;
     setLaunchingNewPlan(true);
     try {
       const result = await launchAgent({
-        slug: resolvedHarnessSlug ?? null,
+        slug: ownerSlug ?? null,
         planSlug: null,
-        label: resolvedHarnessSlug ? `new-plan · ${resolvedHarnessSlug}` : 'new-plan',
+        label: ownerSlug ? `new-plan · ${ownerSlug}` : 'new-plan',
         kickoff: { kind: 'new-plan' },
         // Open as a pane in the zellij dock (owner ask, pui-dock-agent-stack):
         // record a pending workbench launch; the dock's pui dock-driver panes it
@@ -638,7 +641,7 @@ export default function PlansClient() {
     } finally {
       setLaunchingNewPlan(false);
     }
-  }, [launchingNewPlan, resolvedHarnessSlug]);
+  }, [launchingNewPlan]);
 
   // The inbox's single shared sticky preview — renders the selected plan-item
   // (`?item=`) or Other attention item (`?other=`), or an empty prompt. Both
@@ -696,20 +699,13 @@ export default function PlansClient() {
     <div className="pc-plans">
       <aside className="pc-plans__rail">
         <div className="pc-plans__rail-actions">
-          <button
-            type="button"
-            className="pc-plans__new-plan"
-            onClick={onNewPlan}
-            disabled={launchingNewPlan}
-            title={
-              resolvedHarnessSlug
-                ? `Launch an agent session to draft a new plan in ${resolvedHarnessSlug}`
-                : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`
-            }
-          >
-            <Plus size={14} aria-hidden />
-            {launchingNewPlan ? 'Launching…' : 'New plan'}
-          </button>
+          <NewPlanButton
+            resolvedHarnessSlug={resolvedHarnessSlug}
+            projects={registryProjects}
+            launching={launchingNewPlan}
+            potLabel={t('pot', { lower: true })}
+            onLaunch={onNewPlan}
+          />
           <button
             type="button"
             className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}

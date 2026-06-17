@@ -37,6 +37,11 @@ type FetchInit = RequestInit & { dispatcher?: UndiciDispatcher };
 
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-retry-after
+/** A header-less ("bare") upstream 429 carries no window/retry signal. The account IS rate-limited
+ *  right now, so pace it for this SHORT bounded backoff AND fail over — rotating off a momentarily-
+ *  limited account instead of 429-looping it (the aviynw10 stuck-loop, 2026-06-17). Short so the
+ *  account rejoins quickly; long enough to give other accounts the turn. */
+const BARE_429_FAILOVER_BACKOFF_MS = 60 * 1000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
@@ -402,20 +407,31 @@ export function createInferenceGateway(deps: GatewayDeps) {
         upstream429++;
         const reset = parseRateReset(hobj);
         const unifiedRejected = gov.snapshot().unified?.rejected === true;
+        // A BARE 429: rate_limit_error with NO window headers (no unified util, no retry-after/reset).
+        // Anthropic returns these for some caps. The old code treated it as a no-op — which left the
+        // gateway 429-LOOPING the same momentarily-limited account forever (the aviynw10 stuck-loop,
+        // 2026-06-17: every bee's claude-code then retry-looped into a $0 hang while other accounts sat
+        // idle). Treat it as a SHORT bounded account limit: pace briefly + fail over (below).
+        const bare429 =
+          up.status === 429 && !unifiedRejected && reset.retryAfterMs === undefined && reset.resetAt === undefined;
         // Penalize ONLY a classic 429 carrying its own retry-after/reset. Skip it for:
         //  • a 529 — transient SERVER overload, not rate-limit budget; it must NOT pause the account;
         //  • a unified (rolling-window) rejection — recordResponse already set the BOUNDED re-probe
         //    pause, and penalizing to the full multi-hour unified reset is exactly the stale-pause /
         //    false-exhaustion bug (the rolling 5h window recovers continuously).
-        //  • a bare framing-429 (no rate headers) — reset is empty, so this is a no-op anyway.
+        // A bare 429 gets a SHORT bounded penalty (NOT the multi-hour reset → safe from stale-pause).
         if (up.status === 429 && !unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
           gov.penalize(reset);
+        } else if (bare429) {
+          gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
         }
-        // 5h-budget exhaustion (the unified window rejected) → fail over to another account that still
-        // has budget so the fleet doesn't stall; the exhausted account rejoins the rotation at its
-        // REAL reset (a rolling window the failover pool tracks separately from the bucket pause).
-        if (unifiedRejected) {
-          const next = pool.onExhausted(active.accountId, reset.resetAt ?? Date.now() + 5 * 60 * 60 * 1000);
+        // Fail over to another account that still has budget so the fleet doesn't stall — on a unified
+        // 5h exhaustion OR a bare 429. The exhausted account rejoins the rotation at its reset (the
+        // unified rolling window) / the short backoff (bare). Without the bare-429 case the gateway
+        // stalls on a stuck account and 429-loops every caller.
+        if (unifiedRejected || bare429) {
+          const resetAt = reset.resetAt ?? Date.now() + (bare429 ? BARE_429_FAILOVER_BACKOFF_MS : 5 * 60 * 60 * 1000);
+          const next = pool.onExhausted(active.accountId, resetAt);
           if (next && next.accountId !== active.accountId) failovers++;
         }
       } else if (up.status === 401) {
