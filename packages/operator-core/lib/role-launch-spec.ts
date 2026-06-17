@@ -506,12 +506,53 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
       }
     }
   }
+  // domain-generic-agent-personas-2026-06-17 P-006 (SU_BLUEPRINT_PERSONA, default-off):
+  // resolve the su persona via the blueprint prompt-resolve chain (blueprints/base/prompts/
+  // su.md) instead of the hardcoded papercusp-su playbook; the per-agent overlay + generated
+  // sections still splice (overlayDir = the operator prompts dir where papercusp-su.<agent>.md
+  // lives). Flag OFF ⇒ renderSuPlaybook resolves the playbook as today (byte-identical).
+  let suBaseSource: string | undefined;
+  let suOverlayDir: string | undefined;
+  try {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    if (await getFlag(FLAGS.SU_BLUEPRINT_PERSONA, input.workspaceId)) {
+      const files = resolvePromptFiles({ harnessDir: harnessRoot(), phase: '', dept: '' }, 'su');
+      if (files.length > 0) {
+        suBaseSource = files[files.length - 1];
+        suOverlayDir = promptsDir();
+      }
+    }
+  } catch {
+    /* flag/resolve miss → fall through to today's playbook (byte-identical) */
+  }
   const rendered = await renderSuPlaybook({
     agent: input.agent,
     profile: input.profile,
     operatorAppRoot: input.operatorAppRoot,
     projectGuideSource,
+    baseSource: suBaseSource,
+    overlayDir: suOverlayDir,
   });
+  // domain-generic-agent-personas-2026-06-17 P-008 (su-path hive-instance override): when the
+  // su persona came from the blueprint (flag-on), append the launch hive's INSTANCE override for
+  // su — its project-specifics (e.g. the Papercusp hive's Tauri/:3070/endpoint-system content),
+  // stored in the federated hive_settings layer (same as the harness-role path, P-003).
+  // Best-effort; flag-off (suBaseSource undefined) or no hive ⇒ skipped (byte-identical).
+  let suPersonaText = rendered.text;
+  if (suBaseSource && harnessSlug) {
+    try {
+      const { hiveHomeSlugForHarness } = await import('./hive-federation');
+      const { getHiveInstancePromptOverride } = await import('./hive-settings-store');
+      const hiveSlug = await hiveHomeSlugForHarness(input.workspaceId, harnessSlug);
+      if (hiveSlug) {
+        const inst = await getHiveInstancePromptOverride(input.workspaceId, hiveSlug, 'su');
+        if (inst) suPersonaText = `${suPersonaText.replace(/\n+$/, '')}\n\n${inst}`;
+      }
+    } catch {
+      /* best-effort hive-instance su override */
+    }
+  }
   const launchCtx = composeLaunchContext({
     harnessSlug,
     planSlug: input.planSlug ?? null,
@@ -519,8 +560,8 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     planNow: input.planNow ?? null,
   });
   const promptText = launchCtx
-    ? rendered.text.replace(/\n+$/, '') + '\n\n' + launchCtx
-    : rendered.text;
+    ? suPersonaText.replace(/\n+$/, '') + '\n\n' + launchCtx
+    : suPersonaText;
 
   // 3. Superuser MCP — the existing loopback door (NOT a signed,
   //    role-scoped URL): `?superuser=1&workspace=<ws>` + the bearer from

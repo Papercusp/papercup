@@ -24,8 +24,8 @@ function fakeGit(opts: {
     }
     if (args[0] === 'status') return opts.dirty ? 'M somefile' : '';
     if (args[0] === 'rev-parse') return args[args.length - 1].replace('^{commit}', '');
-    if (args[0] === 'log' && args.includes('%H')) return opts.pathCommit ?? null;
-    if (args[0] === 'log' && args.includes('%s')) return opts.subject ?? 'subj';
+    if (args[0] === 'log' && args.includes('--pretty=%H')) return opts.pathCommit ?? null;
+    if (args[0] === 'log' && args.includes('--pretty=%s')) return opts.subject ?? 'subj';
     if (args[0] === 'rev-list' && args[1] === '--count') {
       const [ref, sha] = args[2].split('..');
       const set = new Set(opts.contains?.[ref] ?? []);

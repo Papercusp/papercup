@@ -129,8 +129,8 @@ async function copyIfExists(src: string, dst: string): Promise<boolean> {
  *  the base playbook; missing → '' (the marker is still removed, never
  *  shipped literally). One reader for every client (omp/claude/codex) so
  *  the install path and `buildLaunchSpec`'s `su` branch can't drift. */
-async function readAgentOverlay(baseSrc: string, agent: string): Promise<string> {
-  const overlayPath = path.join(path.dirname(baseSrc), `papercusp-su.${agent}.md`);
+async function readAgentOverlay(baseSrc: string, agent: string, overlayDir?: string): Promise<string> {
+  const overlayPath = path.join(overlayDir ?? path.dirname(baseSrc), `papercusp-su.${agent}.md`);
   try {
     return (await fs.readFile(overlayPath, 'utf8')).replace(/\n+$/, '');
   } catch (e) {
@@ -346,6 +346,11 @@ export interface RenderSuPlaybookInput {
   operatorAppRoot?: string;
   /** Override the resolved base path directly (tests / explicit callers). */
   baseSource?: string;
+  /** Dir to resolve the per-agent overlay (`papercusp-su.<agent>.md`) from. Defaults to
+   *  dirname(baseSource). Set when baseSource is a blueprint persona whose dir has no
+   *  client overlays (domain-generic-agent-personas P-006) — point it at the operator
+   *  prompts dir so the client tooling overlay still splices. */
+  overlayDir?: string;
   /**
    * Project-guide source to splice at PROJECT_GUIDE_MARKER (P-001 / D-002).
    * - `undefined` (default) → auto-resolve the ENGINEER candidates: the repo's
@@ -395,9 +400,9 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
     );
   }
   const base = await fs.readFile(baseSource, 'utf8');
-  const overlay = await readAgentOverlay(baseSource, input.agent);
+  const overlay = await readAgentOverlay(baseSource, input.agent, input.overlayDir);
   const overlaySource = overlay
-    ? path.join(path.dirname(baseSource), `papercusp-su.${input.agent}.md`)
+    ? path.join(input.overlayDir ?? path.dirname(baseSource), `papercusp-su.${input.agent}.md`)
     : '';
   const withWire = spliceGeneratedSection(
     spliceToolingOverlay(base, overlay),
