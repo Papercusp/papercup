@@ -235,6 +235,9 @@ export interface TeardownHiveLearningLoopResult {
   scoutRoutine: boolean;
   /** The `gym:<hive>` / `scout:<hive>` learning-governor registrants were removed (or absent). */
   governorRegistrants: boolean;
+  /** The git-sync pipeline routines (system:git-sync/green-checkpoint/release-trigger) for
+   *  this install were removed (or were already absent) — git-sync-dx-hardening P-007. */
+  gitSyncRoutines: boolean;
 }
 
 /**
@@ -244,6 +247,9 @@ export interface TeardownHiveLearningLoopResult {
  *   (a) the dark gym_autoloop_config row keyed (workspace_id, harness_slug=hiveSlug),
  *   (b) the inactive scout routine (install_slug=hiveSlug, name='scout-cycle'),
  *   (c) the learning-governor registrants `gym:<hive>` + `scout:<hive>`.
+ *   (d) the git-sync pipeline routines (system:git-sync/green-checkpoint/release-trigger)
+ *       seeded for this install — git-sync-dx-hardening P-007 (they leaked per benchmark
+ *       run; both dissolve paths — hive:dissolve + dissolveBenchHive — flow through here).
  *
  * Mirrors the provision's `undo` (which removes a+b), extended with the governor
  * registrants the provision NEVER writes (the gym/scout tick mirrors write those
@@ -260,6 +266,7 @@ export async function teardownHiveLearningLoop(
     gymAutoloop: false,
     scoutRoutine: false,
     governorRegistrants: false,
+    gitSyncRoutines: false,
   };
 
   // (a) dark gym autoloop row.
@@ -287,6 +294,21 @@ export async function teardownHiveLearningLoop(
     await deleteLearningLoop(sql, { workspaceId, loopId: gymLoopId(hiveSlug) });
     await deleteLearningLoop(sql, { workspaceId, loopId: scoutLoopId(hiveSlug) });
     result.governorRegistrants = true;
+  } catch {
+    /* best-effort */
+  }
+
+  // (d) git-sync pipeline routines (git-sync-dx-hardening-2026-06-17 P-007 / F6): the
+  //     system:git-sync (+ green-checkpoint / release-trigger) routines seeded per install
+  //     were NEVER reaped on dissolve, so every benchmark/hive run leaked rows (135+
+  //     accumulated). Scoped tightly to THIS hive's install_slug + the git-sync trio, so a
+  //     live install's sync is never touched. Best-effort, like the rest.
+  try {
+    await sql`
+      DELETE FROM harness_shared.routines
+       WHERE workspace_id = ${workspaceId} AND install_slug = ${hiveSlug}
+         AND target_role IN ('system:git-sync', 'system:green-checkpoint', 'system:release-trigger')`;
+    result.gitSyncRoutines = true;
   } catch {
     /* best-effort */
   }

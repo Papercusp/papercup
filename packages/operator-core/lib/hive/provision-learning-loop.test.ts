@@ -187,6 +187,7 @@ describe('teardownHiveLearningLoop (P-021 — the hive:dissolve inverse)', () =>
       gymAutoloop: true,
       scoutRoutine: true,
       governorRegistrants: true,
+      gitSyncRoutines: true,
     });
 
     const gymDelete = calls.find((c) => c.text.includes('DELETE FROM harness_shared.gym_autoloop_config'));
@@ -194,10 +195,21 @@ describe('teardownHiveLearningLoop (P-021 — the hive:dissolve inverse)', () =>
     expect(gymDelete!.values).toContain('alpha');
     expect(gymDelete!.values).toContain('w1');
 
-    const routineDelete = calls.find((c) => c.text.includes('DELETE FROM harness_shared.routines'));
-    expect(routineDelete).toBeTruthy();
-    expect(routineDelete!.values).toContain('alpha');
-    expect(routineDelete!.values).toContain(HIVE_SCOUT_ROUTINE_NAME);
+    const scoutDelete = calls.find(
+      (c) => c.text.includes('DELETE FROM harness_shared.routines') && c.values.includes(HIVE_SCOUT_ROUTINE_NAME),
+    );
+    expect(scoutDelete).toBeTruthy();
+    expect(scoutDelete!.values).toContain('alpha');
+
+    // P-007 (git-sync-dx-hardening): the git-sync pipeline routines for this install are
+    // ALSO reaped on dissolve (by target_role), scoped to this hive's install_slug.
+    const gitSyncDelete = calls.find(
+      (c) => c.text.includes('DELETE FROM harness_shared.routines') && c.text.includes('target_role'),
+    );
+    expect(gitSyncDelete).toBeTruthy();
+    expect(gitSyncDelete!.text).toContain('system:git-sync');
+    expect(gitSyncDelete!.values).toContain('alpha');
+    expect(gitSyncDelete!.values).toContain('w1');
 
     // The two governor registrant deletes — keyed gym:<hive> and scout:<hive>.
     const govDeletes = calls.filter((c) =>

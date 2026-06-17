@@ -142,6 +142,17 @@ vi.mock('../../agent-tools/plans/source', () => ({
     archived: false,
   })),
 }));
+// psu-account-chooser P-002: resolveAccountPin reads the pool + the session-override,
+// but ONLY when the gateway flag is on. Mock both so the gateway-ON branches are
+// DB-free + deterministic (the gateway-OFF + no-account branches return before them).
+const loadAccountPoolMock = vi.fn(async (_ws?: string) => ({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] }));
+vi.mock('../../deployment/account-pool-store', () => ({
+  loadAccountPool: (...a: unknown[]) => loadAccountPoolMock(...(a as [string])),
+}));
+const getAccountOverrideMock = vi.fn(async (_ws: string) => ({ forcedAccounts: [] as string[], excludeAccounts: [] as string[] }));
+vi.mock('../../deployment/account-session-override', () => ({
+  getAccountOverride: (...a: unknown[]) => getAccountOverrideMock(...(a as [string])),
+}));
 
 const CTX: RouteContext = {
   principal: null,
@@ -522,5 +533,82 @@ describe('bootstrap-su', () => {
     expect(json.cwd).not.toBe(homedir());
     expect(json.cwd).toBe('/workspace');
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/workspace' }));
+  });
+});
+
+describe('resolveAccountPin (psu-account-chooser P-002)', () => {
+  beforeEach(() => {
+    getFlagMock.mockResolvedValue(false);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] });
+    getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
+  });
+  const pin = async (requested: string | null) =>
+    (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountPin('default', requested);
+
+  it('no account → no env patch, no notice', async () => {
+    expect(await pin(null)).toEqual({ env: {}, notice: null });
+    expect(await pin('   ')).toEqual({ env: {}, notice: null });
+  });
+
+  it('gateway off → fail-soft notice, no env patch (the current live default)', async () => {
+    getFlagMock.mockResolvedValue(false);
+    const r = await pin('aviynw6');
+    expect(r.env).toEqual({});
+    expect(r.notice).toMatch(/gateway is off/i);
+  });
+
+  it('unknown account (not in pool) → fail-soft notice', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('not-a-real-acct');
+    expect(r.env).toEqual({});
+    expect(r.notice).toMatch(/not in the account pool/i);
+  });
+
+  it('account excluded by session-override → fail-soft notice', async () => {
+    getFlagMock.mockResolvedValue(true);
+    getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: ['aviynw6'] });
+    const r = await pin('aviynw6');
+    expect(r.env).toEqual({});
+    expect(r.notice).toMatch(/exclude list/i);
+  });
+
+  it('account outside forcedAccounts allow-list → fail-soft notice', async () => {
+    getFlagMock.mockResolvedValue(true);
+    getAccountOverrideMock.mockResolvedValue({ forcedAccounts: ['aviynw2'], excludeAccounts: [] });
+    const r = await pin('aviynw6');
+    expect(r.env).toEqual({});
+    expect(r.notice).toMatch(/allow-list/i);
+  });
+
+  it('valid + allowed + gateway on → gateway env pin + PAPERCUSP_ACCOUNT_ID + confirm notice', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('aviynw6');
+    expect(r.env.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
+    expect(r.env.ANTHROPIC_CUSTOM_HEADERS).toContain('aviynw6');
+    expect(r.env.PAPERCUSP_ACCOUNT_ID).toBe('aviynw6');
+    expect(r.notice).toMatch(/pinned to account aviynw6/i);
+  });
+
+  // P-006 (end-to-end through the POST handler): the launcher's `account` body field
+  // flows → resolveAccountPin → the response's envelopeEnv + accountNotice.
+  it('POST { account } → response carries the fail-soft notice when the gateway is off', async () => {
+    getFlagMock.mockResolvedValue(false);
+    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup', account: 'aviynw6' })).json();
+    expect(json.accountNotice).toMatch(/gateway is off/i);
+    expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
+  });
+
+  it('POST { account } → response pins the account + sets the gateway env when on + valid', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup', account: 'aviynw6' })).json();
+    expect(json.accountNotice).toMatch(/pinned to account aviynw6/i);
+    expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('aviynw6');
+  });
+
+  it('POST without account → no accountNotice, no gateway env (unchanged default)', async () => {
+    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
+    expect(json.accountNotice).toBeNull();
+    expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 });

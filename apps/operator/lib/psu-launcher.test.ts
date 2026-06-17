@@ -49,6 +49,7 @@ describe('psu-launcher arg parsing', () => {
       profile: null,
       yes: false,
       brain: false,
+      account: null,
       addDir: [],
       passthrough: [],
     });
@@ -84,6 +85,7 @@ describe('psu-launcher arg parsing', () => {
       profile: null,
       yes: false,
       brain: false,
+      account: null,
       addDir: [],
       passthrough: [],
     });
@@ -109,6 +111,17 @@ describe('psu-launcher arg parsing', () => {
 
   it('parses --no-plan', () => {
     expect(parseArgs(['--no-picker', '--agent=omp', '--harness=x', '--no-plan']).noPlan).toBe(true);
+  });
+
+  it('parses --account (psu-account-chooser; both = and space forms; default null)', () => {
+    expect(parseArgs([]).account).toBeNull();
+    expect(parseArgs(['--account=aviynw6']).account).toBe('aviynw6');
+    expect(parseArgs(['--account', 'aviynw6']).account).toBe('aviynw6');
+    // Composable with the other launch flags + the `--` passthrough is untouched.
+    const a = parseArgs(['--no-picker', '--agent=claude', '--account', 'avi-storewolf', '--', '--verbose']);
+    expect(a.account).toBe('avi-storewolf');
+    expect(a.agent).toBe('claude');
+    expect(a.passthrough).toEqual(['--verbose']);
   });
 
   it('parses --profile (P-023); defaults to null', () => {

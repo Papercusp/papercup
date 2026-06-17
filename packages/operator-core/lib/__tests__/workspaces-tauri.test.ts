@@ -43,14 +43,15 @@ describe('workspaces-tauri', () => {
     expect(resolveWorkspaceSwitchTarget('alpha beta/γ')).toBe('/harness?ws=alpha%20beta%2F%CE%B3');
   });
 
-  it('soft-navigates on the web/static path after a successful workspace switch', async () => {
+  it('hard-navigates (full reload) on the web/static path after a successful workspace switch', async () => {
     vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }));
     const { switchWorkspace } = await import('../workspaces-tauri');
 
     await switchWorkspace('beta', { resetTo: '/harness?ws=beta&panel=overview' });
 
     expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/switch', expect.objectContaining({ method: 'POST' }));
-    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=beta&panel=overview');
+    // hard:true forces a document reload so host-spa re-injects __PAPERCUSP_WS__.
+    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=beta&panel=overview', { hard: true });
   });
 
   it('uses the default reset target on the web/static path when resetTo is omitted', async () => {
@@ -60,7 +61,7 @@ describe('workspaces-tauri', () => {
     await switchWorkspace('delta');
 
     expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/switch', expect.objectContaining({ method: 'POST' }));
-    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=delta');
+    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=delta', { hard: true });
   });
   it('does not soft-navigate when the web/static workspace switch request fails', async () => {
     vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: false, status: 500, json: () => Promise.resolve({ error: 'switch-fail' }) }));
@@ -69,7 +70,7 @@ describe('workspaces-tauri', () => {
     await expect(switchWorkspace('delta')).rejects.toThrow('switch-fail');
     expect(navigateClient).not.toHaveBeenCalled();
   });
-  it('persists registry.current then soft-navigates on the desktop path (Phase E P-050 — no restart)', async () => {
+  it('persists registry.current then hard-navigates on the desktop path (Phase E P-050 — no restart)', async () => {
     vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
     commands.workspacesSwitch.mockResolvedValue({ status: 'ok' });
     const { switchWorkspace } = await import('../workspaces-tauri');
@@ -80,7 +81,7 @@ describe('workspaces-tauri', () => {
     // app.restart() anymore) and then re-scopes THIS window by navigating.
     expect(commands.workspacesSwitch).toHaveBeenCalledWith('gamma');
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=gamma');
+    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=gamma', { hard: true });
   });
 
   it('surfaces desktop command errors and does not navigate', async () => {
