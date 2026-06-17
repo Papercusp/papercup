@@ -36,7 +36,7 @@ function parseSeed(): { categories: string[]; ceilings: Set<string>; locked: Set
 }
 
 describe('migration 259 autonomy_policy seed', () => {
-  it('seeds exactly the 13 canonical category ids (no drift from categories.ts)', () => {
+  it('seeds exactly the canonical category ids (no drift from categories.ts)', () => {
     const { categories } = parseSeed();
     expect(categories).toHaveLength(AUTONOMY_CATEGORY_IDS.length);
     expect(new Set(categories)).toEqual(new Set(AUTONOMY_CATEGORY_IDS));

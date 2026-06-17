@@ -15,7 +15,7 @@ import {
 } from './categories';
 
 describe('autonomy categories (D-009 taxonomy)', () => {
-  it('is exactly the 13-category partition, in table order', () => {
+  it('is exactly the 14-category partition, in table order', () => {
     expect(AUTONOMY_CATEGORY_IDS).toEqual([
       'inbox-triage',
       'escalations',
@@ -29,9 +29,10 @@ describe('autonomy categories (D-009 taxonomy)', () => {
       'agent-lifecycle',
       'credentials-auth',
       'knowledge-curation',
+      'schedule-arm',
       'system-control',
     ]);
-    expect(CATEGORIES).toHaveLength(13);
+    expect(CATEGORIES).toHaveLength(14);
   });
 
   it('has no duplicate ids', () => {

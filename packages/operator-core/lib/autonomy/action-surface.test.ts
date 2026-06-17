@@ -41,7 +41,7 @@ describe('action surface — completeness (D-010)', () => {
     }
   });
 
-  it('is a TOTAL partition — every one of the 13 categories is exercised', () => {
+  it('is a TOTAL partition — every one of the canonical categories is exercised', () => {
     const seen = new Set(categoriesInAudit());
     for (const id of AUTONOMY_CATEGORY_IDS) {
       expect(seen.has(id), `category "${id}" has no audited action`).toBe(true);

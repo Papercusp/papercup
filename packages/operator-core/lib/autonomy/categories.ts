@@ -42,7 +42,8 @@ export type SuggestedPosture =
   | 'protected';
 
 /**
- * The 13-category partition of the human-driving action surface (D-009). Every
+ * The 14-category partition of the human-driving action surface (D-009; +schedule-arm,
+ * scheduled-recurring-plans-2026-06-16 D-017). Every
  * action a human takes to drive the system maps to exactly one of these via the
  * tool/verb it uses ({@link ../autonomy/capability-category-map}).
  */
@@ -59,6 +60,7 @@ export type AutonomyCategory =
   | 'agent-lifecycle'
   | 'credentials-auth'
   | 'knowledge-curation'
+  | 'schedule-arm'
   | 'system-control';
 
 export interface CategoryDef {
@@ -173,6 +175,14 @@ export const CATEGORIES: readonly CategoryDef[] = [
       'memory approve / forget; docs & insights publish; learning-pack / blueprint publish',
   },
   {
+    id: 'schedule-arm',
+    label: 'Schedule arming',
+    protected: false,
+    suggestedPosture: 'risk-graded',
+    covers:
+      "arm / disarm a scheduled plan's recurrence (start/stop it firing runs) — distinct from system-control's SYSTEM loops; non-protected so it can graduate per plan risk (scheduled-recurring-plans-2026-06-16 D-017)",
+  },
+  {
     id: 'system-control',
     label: 'System control',
     protected: true,
@@ -181,7 +191,7 @@ export const CATEGORIES: readonly CategoryDef[] = [
   },
 ];
 
-/** The 13 category ids, in table order. The contract B-03's store seeds on. */
+/** The 14 category ids, in table order. The contract B-03's store seeds on. */
 export const AUTONOMY_CATEGORY_IDS: readonly AutonomyCategory[] = CATEGORIES.map((c) => c.id);
 
 /**

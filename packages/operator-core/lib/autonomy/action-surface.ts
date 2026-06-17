@@ -537,6 +537,20 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     coverage: 'covered',
   },
 
+  // ── schedule-arm ──────────────────────────────────────────────────────────────
+  {
+    id: 'schedule.arm-plan-schedule',
+    label: 'Arm / disarm a scheduled plan',
+    category: 'schedule-arm',
+    reversibility: 'reversible',
+    authority: 'system',
+    queenVerbs: ['plans:arm-schedule', 'plans:disarm-schedule'],
+    humanSurface: 'Calendar / plan schedule controls',
+    coverage: 'covered',
+    notes:
+      'Arming makes a scheduled plan start firing runs; reversible (disarm). NON-protected so it can graduate per plan risk (scheduled-recurring-plans-2026-06-16 D-017) — seeded never-auto, distinct from system-control’s permanently-protected SYSTEM loops.',
+  },
+
   // ── system-control (PROTECTED) ──────────────────────────────────────────────────────
   {
     id: 'system.arm-loop',

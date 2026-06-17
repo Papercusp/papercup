@@ -109,6 +109,9 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
 
   // ── plan-governance ──
   { id: 'cat:plan-reviews', on: TRIGGER, when: { action: { matches: '^harness:(plan_reviews|pending_reviews)' } }, fire: 'plan-governance', meta: { reason: 'plan-review queue' } },
+  // schedule-arm: arming a scheduled plan is its OWN (graduatable) category — MUST precede the
+  // generic plans: rule so plans:arm-schedule doesn't fall through to plan-governance (D-017).
+  { id: 'cat:schedule-arm', on: TRIGGER, when: { action: { matches: '^plans:(arm|disarm)-schedule' } }, fire: 'schedule-arm', meta: { reason: 'arms / disarms a scheduled plan’s recurrence (start/stop autonomous runs)' } },
   { id: 'cat:plans', on: TRIGGER, when: { action: { matches: '^plans:' } }, fire: 'plan-governance', meta: { reason: 'ratify / promote / set plan state' } },
   { id: 'cat:plan-items', on: TRIGGER, when: { action: { matches: '^plan_items:' } }, fire: 'plan-governance', meta: { reason: 'plan-item governance (claim / convert / status)' } },
   { id: 'cat:goals', on: TRIGGER, when: { action: { matches: '^goals:' } }, fire: 'plan-governance', meta: { reason: 'plan-level objectives' } },
