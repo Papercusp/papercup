@@ -15,8 +15,10 @@
  * stays live (a heartbeat polls its own status — the legitimate UI-timer case).
  */
 import { useEffect, useRef, useState } from 'react';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useSyncQuery } from '@papercusp/sync';
 import { Crown } from 'lucide-react';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 interface PlacementSummary {
   recovering: number;
@@ -108,33 +110,41 @@ export default function QueenHeartbeat({ homeSlug }: { homeSlug?: string }) {
   const recovering = (pl?.items ?? []).filter((i) => i.status === 'recovering').slice(0, 3);
 
   return (
-    <section className={`pc-qh pc-qh--${tone}`} aria-label="Queen status">
-      <div className="pc-qh__top">
-        <span className={`pc-qh__dot pc-qh__dot--${tone}${state === 'running' || state === 'parked' ? ' pc-qh__dot--pulse' : ''}`} aria-hidden />
-        <Crown size={13} aria-hidden />
-        <span className="pc-qh__state">{label}</span>
-        {row?.slug && <span className="pc-qh__slug" title="The home Queen">{row.slug}</span>}
-      </div>
-      <div className="pc-qh__wakes">
-        <span className="pc-qh__woke">woke {relPast(row?.lastWakeAt ?? null, now)}</span>
-        {row?.started && <span className="pc-qh__next">next {countdown(row?.nextFireAt ?? null, now)}</span>}
-      </div>
-      {pl && (pl.workingTracked > 0 || pl.recovering > 0 || pl.cursed > 0) ? (
-        <div className="pc-qh__placements">
-          <span className="pc-qh__pchip" title="placements she is driving to terminal">driving {pl.workingTracked}</span>
-          {pl.recovering > 0 && <span className="pc-qh__pchip pc-qh__pchip--warn">{pl.recovering} recovering</span>}
-          {pl.cursed > 0 && <span className="pc-qh__pchip pc-qh__pchip--bad">{pl.cursed} cursed</span>}
-          {recovering.map((i) => (
-            <span key={i.workItemId} className="pc-qh__wi" title={`recovering ${i.workItemId}`}>{i.workItemId}</span>
-          ))}
+    <TooltipPrimitive.Provider delayDuration={250}>
+      <section className={`pc-qh pc-qh--${tone}`} aria-label="Queen status">
+        <div className="pc-qh__top">
+          <span className={`pc-qh__dot pc-qh__dot--${tone}${state === 'running' || state === 'parked' ? ' pc-qh__dot--pulse' : ''}`} aria-hidden />
+          <Crown size={13} aria-hidden />
+          <span className="pc-qh__state">{label}</span>
+          {row?.slug && (
+            <Tooltip label="The home Queen">
+              <span className="pc-qh__slug">{row.slug}</span>
+            </Tooltip>
+          )}
         </div>
-      ) : row?.started ? (
-        <div className="pc-qh__placements">
-          <span className="pc-qh__pchip pc-qh__pchip--idle">no open placements</span>
+        <div className="pc-qh__wakes">
+          <span className="pc-qh__woke">woke {relPast(row?.lastWakeAt ?? null, now)}</span>
+          {row?.started && <span className="pc-qh__next">next {countdown(row?.nextFireAt ?? null, now)}</span>}
         </div>
-      ) : null}
-      <HeartbeatStyles />
-    </section>
+        {pl && (pl.workingTracked > 0 || pl.recovering > 0 || pl.cursed > 0) ? (
+          <div className="pc-qh__placements">
+            <Tooltip label="Placements she is driving to terminal">
+              <span className="pc-qh__pchip">driving {pl.workingTracked}</span>
+            </Tooltip>
+            {pl.recovering > 0 && <span className="pc-qh__pchip pc-qh__pchip--warn">{pl.recovering} recovering</span>}
+            {pl.cursed > 0 && <span className="pc-qh__pchip pc-qh__pchip--bad">{pl.cursed} cursed</span>}
+            {recovering.map((i) => (
+              <span key={i.workItemId} className="pc-qh__wi" title={`recovering ${i.workItemId}`}>{i.workItemId}</span>
+            ))}
+          </div>
+        ) : row?.started ? (
+          <div className="pc-qh__placements">
+            <span className="pc-qh__pchip pc-qh__pchip--idle">no open placements</span>
+          </div>
+        ) : null}
+        <HeartbeatStyles />
+      </section>
+    </TooltipPrimitive.Provider>
   );
 }
 

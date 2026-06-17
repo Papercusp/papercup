@@ -4,6 +4,7 @@ import {
   projectReadColumns,
   projectWriteColumns,
   encodePositionalRows,
+  positionalRowSchema,
   reconstructArgs,
   type ColumnSpec,
 } from './index';
@@ -183,5 +184,85 @@ describe('reconstructArgs — positional row → typed args + misalignment guard
       // the null-rule coerces an empty cell to '' rather than rejecting.
       expect(reconstructArgs('', cols)).toEqual({ ok: true, args: { body: '' } });
     });
+  });
+});
+
+// ── positionalRowSchema — the advertised single `row` arg ────────────────────
+
+describe('positionalRowSchema', () => {
+  it('advertises a single required `row` string and names the column order', () => {
+    const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), n: z.number() })))!;
+    const schema = positionalRowSchema(cols);
+    expect(schema).toMatchObject({ type: 'object', additionalProperties: false, required: ['row'] });
+    const row = (schema.properties as { row: { type: string; description: string } }).row;
+    expect(row.type).toBe('string');
+    expect(row.description).toContain('id');
+    expect(row.description).toContain('column order');
+  });
+
+  it('marks an optional column with a trailing ? in the order legend', () => {
+    const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), n: z.number(), note: z.string().optional() })))!;
+    const desc = (positionalRowSchema(cols).properties as { row: { description: string } }).row.description;
+    expect(desc).toMatch(/note\?/);
+  });
+
+  it('adds the free-text hint when the last column is text, omits it otherwise', () => {
+    const textCols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), body: z.string() })))!;
+    expect((positionalRowSchema(textCols).properties as { row: { description: string } }).row.description).toMatch(/free-text/);
+    const scalarCols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), n: z.number() })))!;
+    expect((positionalRowSchema(scalarCols).properties as { row: { description: string } }).row.description).not.toMatch(/free-text/);
+  });
+});
+
+// ── reconstructArgs — coercion guards (shifted/garbage row rejected, D-007) ───
+
+describe('reconstructArgs — type coercion guards', () => {
+  it('rejects a non-numeric value in a number column (not silently coerced to NaN)', () => {
+    const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), n: z.number() })))!;
+    const r = reconstructArgs('x,not-a-number', cols);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/expected number/);
+  });
+
+  it('rejects a non-integer value in an integer column', () => {
+    const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), n: z.number().int() })))!;
+    const r = reconstructArgs('x,1.5', cols);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/expected integer/);
+  });
+
+  it('rejects an unrecognized boolean token', () => {
+    const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), ok: z.boolean() })))!;
+    expect(reconstructArgs('x,maybe', cols).ok).toBe(false);
+  });
+
+  it('accepts 1/0 (not only true/false) as boolean', () => {
+    const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), ok: z.boolean() })))!;
+    expect(reconstructArgs('x,1', cols)).toEqual({ ok: true, args: { id: 'x', ok: true } });
+    expect(reconstructArgs('y,0', cols)).toEqual({ ok: true, args: { id: 'y', ok: false } });
+  });
+
+  it('rejects a required-but-empty NON-string column (a missing number is not "")', () => {
+    const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), n: z.number() })))!;
+    const r = reconstructArgs('x,', cols);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/required but empty/);
+  });
+
+  it('rejects when no columns are declared', () => {
+    expect(reconstructArgs('anything', [])).toEqual({ ok: false, reason: 'no columns declared' });
+  });
+});
+
+// ── reconstructArgs — RFC-4180 quoted scalar carries the delimiter ────────────
+
+describe('reconstructArgs — quoted scalar with an embedded comma (no trailing free-text)', () => {
+  it('un-quotes a scalar cell that carries a comma when the last column is NOT free-text', () => {
+    // Last column is a number → no free-text mode → the row is RFC-4180 parsed, so a
+    // quoted middle cell can carry the delimiter. This is the decode side of
+    // encodePositionalRows's quoting (round-trip integrity for comma-bearing scalars).
+    const cols = projectWriteColumns(jsonSchema(z.object({ id: z.string(), label: z.string(), n: z.number() })))!;
+    const r = reconstructArgs('WI-1,"x, y",42', cols);
+    expect(r).toEqual({ ok: true, args: { id: 'WI-1', label: 'x, y', n: 42 } });
   });
 });

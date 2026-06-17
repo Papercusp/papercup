@@ -21,9 +21,11 @@
  * dark/empty state defensively.
  */
 import { useState } from 'react';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { AlertTriangle, Eye, Pause, Play } from 'lucide-react';
+import { Tooltip } from '@/app/harness/Tooltip';
 import type {
   Anomaly,
   AnomalyActionType,
@@ -132,42 +134,48 @@ export default function OverwatchTab({ active }: { active: boolean }) {
   };
 
   return (
-    <div className="pc-owsb">
+    <TooltipPrimitive.Provider delayDuration={250}>
+      <div className="pc-owsb">
       {/* Control / status header — status + START/PAUSE toggle (mirrors QueenTab) */}
       <header className="pc-owsb__bar" data-tone={tone}>
         <span className={`pc-owsb__dot pc-owsb__dot--${tone}`} aria-hidden />
         <Eye size={14} aria-hidden />
         <span className="pc-owsb__title">{stateLabel}</span>
         {slug && (
-          <span className="pc-owsb__hive" title="Supervised hive">{slug}</span>
+          <Tooltip label="Supervised hive">
+            <span className="pc-owsb__hive">{slug}</span>
+          </Tooltip>
         )}
-        <button
-          type="button"
-          className="pc-owsb__toggle"
-          data-on={isStarted}
-          disabled={busy}
-          onClick={() => void toggle()}
-          style={slug ? undefined : { marginLeft: 'auto' }}
-          title={isStarted ? 'Pause the overwatch supervisor (overwatch:pause)' : 'Start the overwatch supervisor (overwatch:start)'}
-          aria-label={isStarted ? 'Pause overwatch' : 'Start overwatch'}
-        >
-          {busy ? (
-            '…'
-          ) : isStarted ? (
-            <>
-              <Pause size={11} aria-hidden /> Pause
-            </>
-          ) : (
-            <>
-              <Play size={11} aria-hidden /> Start
-            </>
-          )}
-        </button>
+        <Tooltip label={isStarted ? 'Pause the overwatch supervisor (overwatch:pause)' : 'Start the overwatch supervisor (overwatch:start)'}>
+          <button
+            type="button"
+            className="pc-owsb__toggle"
+            data-on={isStarted}
+            disabled={busy}
+            onClick={() => void toggle()}
+            style={slug ? undefined : { marginLeft: 'auto' }}
+            aria-label={isStarted ? 'Pause overwatch' : 'Start overwatch'}
+          >
+            {busy ? (
+              '…'
+            ) : isStarted ? (
+              <>
+                <Pause size={11} aria-hidden /> Pause
+              </>
+            ) : (
+              <>
+                <Play size={11} aria-hidden /> Start
+              </>
+            )}
+          </button>
+        </Tooltip>
       </header>
       <div className="pc-owsb__meta">
         {cadenceMin != null && <span>cadence {cadenceMin}m</span>}
         <span>{control?.armed ? `next ${whenLabel(control.nextWakeAt)}` : 'no wake armed'}</span>
-        <span title="Last overwatch wake">woke {ageLabel(control?.staleForMs ?? null)}</span>
+        <Tooltip label="Last overwatch wake">
+          <span>woke {ageLabel(control?.staleForMs ?? null)}</span>
+        </Tooltip>
       </div>
 
       {ctrlErr && <div className="pc-owsb__err">Control failed — {ctrlErr}</div>}
@@ -191,7 +199,8 @@ export default function OverwatchTab({ active }: { active: boolean }) {
       </div>
 
       <OverwatchStyles />
-    </div>
+      </div>
+    </TooltipPrimitive.Provider>
   );
 }
 

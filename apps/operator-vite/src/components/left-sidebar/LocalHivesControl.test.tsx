@@ -4,13 +4,25 @@
 // central local-hive start/stop list against a mocked hive.controlState query +
 // a stubbed run-tool dispatch (the pinned AdvNowRunning sibling pattern). Asserts:
 // a row per hive with state shown via the Start/Stop toggle label, the running
-// tally, Start → hive:start (no drain), Stop → confirm → hive:pause{drainBees},
-// and a declined confirm aborts.
+// tally, Start → hive:start (no drain), Stop → shared confirm dialog →
+// hive:pause{drainBees}, and a declined confirm aborts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+const H = vi.hoisted(() => ({
+  confirmResult: true,
+  confirm: vi.fn(),
+}));
+
+vi.mock('@/app/harness/useConfirmDialog', () => ({
+  useConfirmDialog: () => ({
+    confirm: H.confirm,
+    element: <div data-testid="confirm-dialog" />,
+  }),
+}));
 
 let hiveResult: Record<string, unknown> = {
   data: [
@@ -44,6 +56,8 @@ beforeEach(() => {
   };
   runToolCalls = [];
   runToolResponse = { ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } };
+  H.confirmResult = true;
+  H.confirm = vi.fn(async () => H.confirmResult);
   toastMock.success.mockReset();
   toastMock.error.mockReset();
   vi.stubGlobal(
@@ -67,6 +81,7 @@ afterEach(() => {
 describe('LocalHivesControl', () => {
   it('renders a row per hive with its state + the running tally', () => {
     render(<LocalHivesControl />);
+    expect(screen.getByTestId('confirm-dialog')).toBeTruthy();
     expect(screen.getByText('local hives · 1/2 running')).toBeTruthy();
     expect(screen.getByTestId('local-hive-papercup-hive')).toBeTruthy();
     // State is conveyed by the Start/Stop toggle label (no separate STARTED/
@@ -94,10 +109,16 @@ describe('LocalHivesControl', () => {
     );
   });
 
-  it('Stop on a started hive confirms, then fires hive:pause{drainBees}', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('Stop on a started hive confirms with the shared dialog, then fires hive:pause{drainBees}', async () => {
     render(<LocalHivesControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-papercup-hive'));
+    await waitFor(() =>
+      expect(H.confirm).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Pause papercup-hive?',
+        confirmLabel: 'Pause hive',
+        destructive: true,
+      })),
+    );
     await waitFor(() =>
       expect(runToolCalls).toEqual([
         { name: 'hive:pause', args: { harness: 'papercup-hive', drainBees: true }, confirmed: true },
@@ -109,9 +130,10 @@ describe('LocalHivesControl', () => {
   });
 
   it('a declined confirm aborts the pause', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    H.confirmResult = false;
     render(<LocalHivesControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-papercup-hive'));
+    expect(H.confirm).toHaveBeenCalled();
     expect(runToolCalls).toEqual([]);
     expect(toastMock.success).not.toHaveBeenCalled();
   });

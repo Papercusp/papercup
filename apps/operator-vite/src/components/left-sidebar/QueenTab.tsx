@@ -30,6 +30,7 @@
  *    `hive.steering` + wakes the Queen).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useNavigate } from '@tanstack/react-router';
 import { useSyncQuery } from '@papercusp/sync';
 import { AlertTriangle, CalendarClock, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
@@ -38,6 +39,7 @@ import { FLAGS } from '@papercusp/flags';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
 import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 import ScheduledRoutinesPane from '../adv/ScheduledRoutinesPane';
@@ -369,14 +371,19 @@ export default function QueenTab({ active }: { active: boolean }) {
     applySteering(treeSetAllHivesFn(liveSelection(), on, hiveOptions, planIndex.planToHive));
 
   return (
-    <div className="pc-queen">
+    <TooltipPrimitive.Provider delayDuration={250}>
+      <div className="pc-queen">
       <header className="pc-queen__bar">
         <Crown size={14} aria-hidden />
         <span className="pc-queen__identity">
           <span className="pc-queen__title">Queen</span>
           <span className="pc-queen__subtitle">Steering controls</span>
         </span>
-        {home && <span className="pc-queen__hive" title="The home Queen this steers">{home}</span>}
+        {home && (
+          <Tooltip label="The home Queen this steers">
+            <span className="pc-queen__hive">{home}</span>
+          </Tooltip>
+        )}
         <span className="pc-queen__spacer" />
         <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={saving} aria-label="Clear all steering back to default">
           <RotateCcw size={11} aria-hidden /> reset
@@ -560,7 +567,8 @@ export default function QueenTab({ active }: { active: boolean }) {
       </section>
 
       <QueenStyles />
-    </div>
+      </div>
+    </TooltipPrimitive.Provider>
   );
 }
 

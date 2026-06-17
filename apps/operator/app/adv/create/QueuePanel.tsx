@@ -123,6 +123,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
                 : 'Every governed action that ran, auto or gated — the full audit trail. Newest first.'
             }
             emptyText="No decisions logged yet. As the Queen considers items, they appear here."
+            externalDetail
           />
         </section>
       ) : (

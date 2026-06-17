@@ -17,6 +17,7 @@
  * applied OPTIMISTICALLY in useAccountOverride so the levers flip instantly.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { parseAsString, useQueryState } from 'nuqs';
 import { Link } from '@tanstack/react-router';
 import { toast } from 'sonner';
@@ -255,74 +256,71 @@ export default function AccountsTab({ active }: { active: boolean }) {
               a.rate.windowResetAt7d && a.rate.windowResetAt7d > now ? ` · resets ${fmtCountdown(a.rate.windowResetAt7d - now)}` : '';
             return (
               <li key={a.id} className={`pclsb-acct__row pclsb-acct__row--${statusKind}${isForced ? ' is-forced' : ''}${isExcluded ? ' is-excluded' : ''}`}>
-                <div className="pclsb-acct__top">
-                  <button
-                    type="button"
-                    className="pclsb-acct__name"
-                    aria-expanded={isOpen}
-                    onClick={() => void setExpanded(isOpen ? null : a.id)}
-                  >
-                    <span className="pclsb-acct__labelrow">
-                      <span className={`pclsb-acct__dot pclsb-acct__dot--${statusKind}`} aria-hidden />
-                      <span className="pclsb-acct__label">{a.label || a.id}</span>
-                    </span>
-                    <span className="pclsb-acct__id">{a.id}</span>
-                  </button>
-                  <span className={`pclsb-acct__statuspill pclsb-acct__statuspill--${statusKind}`} aria-label={statusLabel}>{statusShort}</span>
-                  <div className="pclsb-acct__btns">
-                    <button
-                      type="button"
-                      className={`pclsb-acct__b${isForced ? ' is-force' : ''}`}
-                      disabled={overrideBusy}
-                      aria-pressed={isForced}
-                      aria-label={isForced ? `Stop forcing ${a.id}` : `Force only ${a.id}`}
-                      onClick={() => toggleForce(a.id)}
-                    >
-                      {isForced ? '✓ Force' : 'Force'}
-                    </button>
-                    <button
-                      type="button"
-                      className={`pclsb-acct__b${isExcluded ? ' is-excl' : ''}`}
-                      disabled={overrideBusy}
-                      aria-pressed={isExcluded}
-                      aria-label={isExcluded ? `Stop excluding ${a.id}` : `Exclude ${a.id}`}
-                      onClick={() => toggleExclude(a.id)}
-                    >
-                      {isExcluded ? '✓ Excl' : 'Excl'}
-                    </button>
-                    <button
-                      type="button"
-                      className="pclsb-acct__expand"
-                      aria-label={isOpen ? 'Collapse' : 'Expand'}
-                      aria-expanded={isOpen}
-                      onClick={() => void setExpanded(isOpen ? null : a.id)}
-                    >
-                      {isOpen ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
-                    </button>
+                <Collapsible.Root open={isOpen} onOpenChange={(open) => void setExpanded(open ? a.id : null)}>
+                  <div className="pclsb-acct__top">
+                    <Collapsible.Trigger asChild>
+                      <button type="button" className="pclsb-acct__name">
+                        <span className="pclsb-acct__labelrow">
+                          <span className={`pclsb-acct__dot pclsb-acct__dot--${statusKind}`} aria-hidden />
+                          <span className="pclsb-acct__label">{a.label || a.id}</span>
+                        </span>
+                        <span className="pclsb-acct__id">{a.id}</span>
+                      </button>
+                    </Collapsible.Trigger>
+                    <span className={`pclsb-acct__statuspill pclsb-acct__statuspill--${statusKind}`} aria-label={statusLabel}>{statusShort}</span>
+                    <div className="pclsb-acct__btns">
+                      <button
+                        type="button"
+                        className={`pclsb-acct__b${isForced ? ' is-force' : ''}`}
+                        disabled={overrideBusy}
+                        aria-pressed={isForced}
+                        aria-label={isForced ? `Stop forcing ${a.id}` : `Force only ${a.id}`}
+                        onClick={() => toggleForce(a.id)}
+                      >
+                        {isForced ? '✓ Force' : 'Force'}
+                      </button>
+                      <button
+                        type="button"
+                        className={`pclsb-acct__b${isExcluded ? ' is-excl' : ''}`}
+                        disabled={overrideBusy}
+                        aria-pressed={isExcluded}
+                        aria-label={isExcluded ? `Stop excluding ${a.id}` : `Exclude ${a.id}`}
+                        onClick={() => toggleExclude(a.id)}
+                      >
+                        {isExcluded ? '✓ Excl' : 'Excl'}
+                      </button>
+                      <Collapsible.Trigger asChild>
+                        <button
+                          type="button"
+                          className="pclsb-acct__expand"
+                          aria-label={isOpen ? 'Collapse' : 'Expand'}
+                        >
+                          {isOpen ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+                        </button>
+                      </Collapsible.Trigger>
+                    </div>
                   </div>
-                </div>
 
-                <div className="pclsb-acct__usage">
-                  <UsageMeter label="5h" value={a.rate.utilization} reset={reset5h} />
-                  <UsageMeter label="7d" value={a.rate.utilization7d} reset={reset7d} />
-                </div>
+                  <div className="pclsb-acct__usage">
+                    <UsageMeter label="5h" value={a.rate.utilization} reset={reset5h} />
+                    <UsageMeter label="7d" value={a.rate.utilization7d} reset={reset7d} />
+                  </div>
 
-                <div className="pclsb-acct__facts">
-                  <span>{maskRef(a.credentialRef)}</span>
-                  <span>{a.boundTo.length ? `${a.boundTo.length} bound` : 'unbound'}</span>
-                  <span>{a.liveBuckets.length ? `${a.liveBuckets.length} bucket${a.liveBuckets.length === 1 ? '' : 's'}` : 'no buckets'}</span>
-                  {a.egress && (a.egress.proxyUrl || a.egress.localAddress) ? <span>egress</span> : null}
-                  {paused && <span className="pclsb-acct__chip is-excl">paused</span>}
-                  {isForced && <span className="pclsb-acct__chip is-force">forced</span>}
-                  {isExcluded && <span className="pclsb-acct__chip is-excl">excluded</span>}
-                  {a.sustainedlyLimited && <span className="pclsb-acct__chip is-excl">limited</span>}
-                  {a.rate.penaltyCount > 0 && (
-                    <span className="pclsb-acct__chip">{a.rate.penaltyCount} penalt{a.rate.penaltyCount === 1 ? 'y' : 'ies'}</span>
-                  )}
-                </div>
+                  <div className="pclsb-acct__facts">
+                    <span>{maskRef(a.credentialRef)}</span>
+                    <span>{a.boundTo.length ? `${a.boundTo.length} bound` : 'unbound'}</span>
+                    <span>{a.liveBuckets.length ? `${a.liveBuckets.length} bucket${a.liveBuckets.length === 1 ? '' : 's'}` : 'no buckets'}</span>
+                    {a.egress && (a.egress.proxyUrl || a.egress.localAddress) ? <span>egress</span> : null}
+                    {paused && <span className="pclsb-acct__chip is-excl">paused</span>}
+                    {isForced && <span className="pclsb-acct__chip is-force">forced</span>}
+                    {isExcluded && <span className="pclsb-acct__chip is-excl">excluded</span>}
+                    {a.sustainedlyLimited && <span className="pclsb-acct__chip is-excl">limited</span>}
+                    {a.rate.penaltyCount > 0 && (
+                      <span className="pclsb-acct__chip">{a.rate.penaltyCount} penalt{a.rate.penaltyCount === 1 ? 'y' : 'ies'}</span>
+                    )}
+                  </div>
 
-                {isOpen && (
-                  <div className="pclsb-acct__detail">
+                  <Collapsible.Content className="pclsb-acct__detail">
                     <div className={`pclsb-acct__status pclsb-acct__status--${statusKind}`}>
                       <StatusIcon size={12} aria-hidden />
                       <span>{statusLabel}</span>
@@ -389,8 +387,8 @@ export default function AccountsTab({ active }: { active: boolean }) {
                     >
                       <RotateCcw size={11} aria-hidden /> {resetBusyId === a.id ? 'Resetting…' : 'Reset rate state'}
                     </button>
-                  </div>
-                )}
+                  </Collapsible.Content>
+                </Collapsible.Root>
               </li>
             );
           })}

@@ -19,6 +19,7 @@
  * Unlike DevAdminRail this is NOT dev-gated — it's a first-class app surface.
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
@@ -196,14 +197,15 @@ export default function LeftSidebar() {
   return (
     <>
       <style>{LEFT_SIDEBAR_CSS}</style>
-      <aside
-        className="pclsb"
-        data-testid="left-sidebar"
-        data-collapsed={open ? 'false' : 'true'}
-        data-tab={active.id}
-        style={{ width: renderedWidth }}
-        aria-label="Swarm sidebar"
-      >
+      <TooltipPrimitive.Provider delayDuration={250}>
+        <aside
+          className="pclsb"
+          data-testid="left-sidebar"
+          data-collapsed={open ? 'false' : 'true'}
+          data-tab={active.id}
+          style={{ width: renderedWidth }}
+          aria-label="Swarm sidebar"
+        >
         {/* Collapsed: the three tab icons — click one to expand into it. */}
         <div className="pclsb__expand-rail" aria-hidden={open}>
           {visibleTabs.map((x) => {
@@ -282,17 +284,18 @@ export default function LeftSidebar() {
           )}
         </div>
 
-        <div
-          className="pclsb__resize-handle"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-          onPointerDown={onHandleDown}
-          onPointerMove={onHandleMove}
-          onPointerUp={onHandleUp}
-          onPointerCancel={onHandleUp}
-        />
-      </aside>
+          <div
+            className="pclsb__resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            onPointerDown={onHandleDown}
+            onPointerMove={onHandleMove}
+            onPointerUp={onHandleUp}
+            onPointerCancel={onHandleUp}
+          />
+        </aside>
+      </TooltipPrimitive.Provider>
     </>
   );
 }

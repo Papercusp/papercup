@@ -10,10 +10,14 @@
  */
 
 import { useMemo } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
+import { useSyncQuery } from '@papercusp/sync';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanItemPreview from '@/app/admin/plans/PlanItemPreview';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
+import { DecisionDetail, type DecisionRow } from '@/app/_components/DecisionLog';
 import { usePlanAttention } from '@/app/admin/plans/plans-api';
 import { useCreateScope, usePlanListMaps } from './use-create-data';
 
@@ -37,6 +41,31 @@ export default function PreviewPanel(_props?: Partial<PanelComponentProps>) {
   const maps = usePlanListMaps(scope);
   const [queueItemSel] = useQueryState('item', parseAsString);
   const [queueOtherSel, setQueueOtherSel] = useQueryState('other', parseAsString);
+
+  // Queen's-log selection (?decision=) → the decision's full detail, looked up
+  // from the SAME decision.ledger the log renders. 3-pane parity with ?item/?other;
+  // gated like QueuePanel so a lingering ?item/?other can't shadow it on the log tab.
+  const queueAuthzView = useFlag(FLAGS.QUEUE_AUTHORIZATION_VIEW);
+  const [queueTab] = useQueryState(
+    'queueTab',
+    parseAsStringEnum<'pending' | 'queen-log'>(['pending', 'queen-log']).withDefault('pending'),
+  );
+  const [qlLayer] = useQueryState(
+    'qlLayer',
+    parseAsStringEnum<'disposition' | 'action'>(['disposition', 'action']).withDefault('disposition'),
+  );
+  const [decisionSel] = useQueryState('decision', parseAsInteger);
+  const decisionRows = useSyncQuery<DecisionRow>({
+    queryName: 'decision.ledger',
+    args: { layer: qlLayer, limit: 50 },
+  });
+  const selectedDecision = useMemo(
+    () =>
+      decisionSel != null
+        ? (decisionRows.data ?? []).find((r) => r.id === decisionSel) ?? null
+        : null,
+    [decisionSel, decisionRows.data],
+  );
 
   const attention = usePlanAttention(
     scope.scopeMode === 'all'

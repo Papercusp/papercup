@@ -107,3 +107,44 @@ test('safety: no host access / function calls', () => {
   assert.throws(() => parseExpr('process.exit(1)'));
   assert.throws(() => parseExpr('a = 1'));
 });
+
+test('readPath is null-safe — a missing/null/primitive intermediate yields undefined (never throws)', () => {
+  assert.equal(readPath({ a: null }, ['a', 'b']), undefined); // through null
+  assert.equal(readPath({}, ['x', 'y']), undefined); // missing
+  assert.equal(readPath({ a: 5 }, ['a', 'b']), undefined); // through a non-object
+  assert.equal(readPath('str', ['length']), undefined); // primitives never leak props (safety)
+  assert.equal(readPath(null, ['a']), undefined);
+});
+
+test('== distinguishes a NULL value from a MISSING path (not loose JS ==)', () => {
+  assert.equal(evalExpr('x == null', { x: null }), true);
+  assert.equal(evalExpr('x == null', {}), false); // missing → undefined, and undefined !== null
+  assert.equal(evalExpr('x != null', {}), true);
+});
+
+test('ordering falls back to string-lexical when operands are not both numeric', () => {
+  assert.equal(evalExpr('a < b', { a: 'apple', b: 'banana' }), true);
+  assert.equal(evalExpr('a > b', { a: 'banana', b: 'apple' }), true);
+  assert.equal(evalExpr('a <= b', { a: 'x', b: 'x' }), true); // equal strings
+});
+
+test('tokenizer rejects an unterminated string literal', () => {
+  assert.throws(() => parseExpr("'abc"));
+  assert.equal(isValidExpr("'abc"), false);
+  assert.equal(isValidExpr("'abc'"), true);
+});
+
+test('tokenizer rejects an unexpected character', () => {
+  assert.throws(() => parseExpr('a @ b'));
+});
+
+test('truthy: undefined and NaN are falsy; a negative number is truthy', () => {
+  assert.equal(truthy(undefined), false);
+  assert.equal(truthy(Number.NaN), false);
+  assert.equal(truthy(-1), true);
+});
+
+test('NOT / ! chains nest', () => {
+  assert.equal(evalExpr('NOT NOT true', {}), true);
+  assert.equal(evalExpr('!!false', {}), false);
+});

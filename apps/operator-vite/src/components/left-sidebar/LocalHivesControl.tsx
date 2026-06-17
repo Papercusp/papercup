@@ -13,6 +13,7 @@ import { useCallback, useState } from 'react';
 import { Play, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { runHiveControl, countStarted, type HiveControlRow } from '../adv/hive-control';
 
 export default function LocalHivesControl() {
@@ -22,14 +23,18 @@ export default function LocalHivesControl() {
   });
   const hives = (data as HiveControlRow[] | undefined) ?? [];
   const [busy, setBusy] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const toggle = useCallback(async (hive: HiveControlRow) => {
     const tool = hive.started ? 'hive:pause' : 'hive:start';
     if (
       hive.started &&
-      !window.confirm(
-        `Pause hive "${hive.slug}"? Live bees are asked to wrap up; no new wakes fire until Start.`,
-      )
+      !await askConfirm({
+        title: `Pause ${hive.slug}?`,
+        body: 'Live bees are asked to wrap up; no new wakes fire until Start.',
+        confirmLabel: 'Pause hive',
+        destructive: true,
+      })
     ) {
       return;
     }
@@ -43,10 +48,11 @@ export default function LocalHivesControl() {
     }
     // The hive.controlState invalidation fired by hive:start/pause refreshes the row.
     setBusy(null);
-  }, []);
+  }, [askConfirm]);
 
   return (
     <div className="pclsb-panel" data-testid="local-hives-control">
+      {confirmEl}
       <div className="pclsb-panel__bar">
         <span className="pclsb-panel__bar-label">
           local hives · {countStarted(hives)}/{hives.length} running
