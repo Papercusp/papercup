@@ -35,10 +35,10 @@ import { getOrgPg } from '@papercusp/db-org';
 import { loadBuiltinBlueprint, isProgramSpine, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { resolveProjectDir } from '../spawn-config';
 import { loopbackFetch } from '../loopback-fetch';
-import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
+import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from '../harness/routines/system-actions';
 import { checkFireGate, recordFire } from '../autoloop';
 import { getEffectiveBlueprint } from './project-to-pg';
-import { fireLaunchBlueprint, resolveLaunchBlueprint } from './launch-blueprint';
+import { resolveLaunchBlueprint, buildLaunchSpawnRequest } from './launch-blueprint';
 import { operatorApiBase } from '../operator-api-base';
 import '../coord-ops/index'; // register coord ops (program-mode spine steps)
 import '../blueprint-steps/index'; // register deterministic step-ops (P-010)
@@ -248,7 +248,7 @@ async function runScheduledProgram(
 }
 
 /** The registered `system:blueprint-run` handler. */
-export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void> {
+export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | SystemActionResult> {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
 
   // unify-agent-launches-as-blueprints D-002: a routine may name a STANDALONE
@@ -285,17 +285,32 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void> {
         : `Scheduled launch of blueprint '${launchId}' for '${installSlug}'.`;
     // A scheduled launch may need far more than the invoke route's 90s default —
     // a workspace `scan` runs many turns (P-009 smoke: 300s SIGTERMed a real scan
-    // with zero output). The routine's payload_template carries the budget;
-    // fireLaunchBlueprint forwards it as the route's `timeoutMs`.
+    // with zero output). The routine's payload_template carries the budget,
+    // forwarded as the route's `timeoutMs`.
     const timeoutMs = Number(payloadTemplate?.timeoutMs);
-    const target = await fireLaunchBlueprint(launchId, {
-      installSlug,
-      workspaceId,
-      kickoff,
-      ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
-    });
-    console.log(`[blueprint-run] ${installSlug}: fired launch blueprint '${launchId}' (role ${target.role})`);
-    return;
+    // EI-995: fire via the EI-403-A durableSpawns SEAM, NOT `fireLaunchBlueprint`
+    // inline. This handler runs as ONE DBOS step; firing inline → durableSpawnFire
+    // hits "startWorkflow from within a step" → falls back to a fire-and-forget that
+    // AWAITS the worker run, which the step does NOT keep alive → the autonomous Queen
+    // (and Overwatch) returned in ~80ms, orphaned, placing nothing (the live :3070
+    // no-op). Returning the request lets the routine workflow start it DURABLY after
+    // the step, where startWorkflow is legal (system-actions.ts → startDurableSpawns).
+    // The handler is a checkpointed step, so this per-fire key is stable on replay.
+    const idempotencyKey = `blueprint-run:${installSlug}:${launchId}:${Date.now()}`;
+    const durableSpawn = await buildLaunchSpawnRequest(
+      launchId,
+      {
+        installSlug,
+        workspaceId,
+        kickoff,
+        ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
+      },
+      idempotencyKey,
+    );
+    console.log(
+      `[blueprint-run] ${installSlug}: queued durable launch '${launchId}' (role ${durableSpawn.spawnRecord?.childRole ?? '?'})`,
+    );
+    return { durableSpawns: [durableSpawn] };
   }
 
   const resolve = _resolver ?? resolveBlueprint;

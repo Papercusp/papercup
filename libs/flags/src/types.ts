@@ -634,6 +634,15 @@ export const FLAGS = {
   // emits child work_items from an expand-here node (bee proposes, Queen disposes) — the
   // record starts shallow and self-elaborates at the point of best context.
   DEFERRED_EXPANSION: "papercusp-deferred-expansion",
+  // steering-nested-hive-plan-tree-2026-06-17 (P-003): the 👑 Queen steering panel's
+  // NESTED hive→plan picker — hives at top, their plans nested beneath, a plan
+  // selectable only under a checked hive. Replaces the two FLAT lists (Eligible
+  // hives + Eligible plans) that let you express a contradiction (an eligible plan
+  // under an excluded hive — a dead no-op the survey silently drops). DEFAULT ON
+  // (alpha flags-default-on): a complete presentation switch over the unchanged
+  // persisted (eligibleHives, eligiblePlans) shape (D-001); OFF renders the legacy
+  // two flat sections as the fallback.
+  STEERING_HIVE_TREE: "papercusp-steering-hive-tree",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -666,6 +675,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.SYSTEM_HEALTH_TAB]: true,
   // DEFAULT ON — fresh-context interactive brain (reversible to D-013).
   [FLAGS.QUEEN_BRAIN_FRESH]: true,
+  // DEFAULT ON (alpha flags-default-on) — a complete presentation switch: the nested
+  // hive→plan steering picker over the unchanged persisted shape. OFF = legacy flat lists.
+  [FLAGS.STEERING_HIVE_TREE]: true,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,

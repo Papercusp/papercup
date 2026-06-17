@@ -33,6 +33,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useSyncQuery } from '@papercusp/sync';
 import { AlertTriangle, CalendarClock, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
+import { useFlag } from '@papercusp/flags/client';
+import { FLAGS } from '@papercusp/flags';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
@@ -40,6 +42,18 @@ import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 import ScheduledRoutinesPane from '../adv/ScheduledRoutinesPane';
 import QueenHeartbeat from './QueenHeartbeat';
 import ModelTiersOverride from './ModelTiersOverride';
+import HiveSteeringTree from './HiveSteeringTree';
+import {
+  buildSteeringTree,
+  detectIllegalEligiblePlans,
+  indexPlansByHive,
+  setAllHives as treeSetAllHivesFn,
+  setHivePlans as treeSetHivePlansFn,
+  toggleHive as treeToggleHiveFn,
+  togglePlan as treeTogglePlanFn,
+  type SteeringSelection,
+  type TreePlanInput,
+} from './hive-steering-tree';
 
 /** One row of the `hive.steering` sync query (C-1, B-01 + round-2 eligibleHives). */
 export interface HiveSteeringRow {
@@ -223,6 +237,35 @@ export default function QueenTab({ active }: { active: boolean }) {
   const hiveRestricted = view.eligibleHives.length > 0;
   const pause = pauseStateLabel(view, Date.now());
 
+  // ── Nested hive→plan picker (steering-nested-hive-plan-tree-2026-06-17, P-002) ──
+  const steeringTreeOn = useFlag(FLAGS.STEERING_HIVE_TREE);
+  // Candidates carry `.harness`; eligible slugs NOT in the candidate list are
+  // stale → synthetic unassigned rows (harness '') so they stay visible.
+  const treePlans: TreePlanInput[] = useMemo(() => {
+    const fromCandidates: TreePlanInput[] = candidates.map((p) => ({
+      slug: p.slug,
+      title: p.title ?? p.slug,
+      status: p.status ?? null,
+      startStatus: p.startStatus ?? null,
+      harness: p.harness,
+      inActive: true,
+    }));
+    const seen = new Set(candidates.map((c) => c.slug));
+    const stale: TreePlanInput[] = view.eligiblePlans
+      .filter((s) => !seen.has(s))
+      .map((slug) => ({ slug, title: slug, status: null, startStatus: null, harness: '', inActive: false }));
+    return [...fromCandidates, ...stale];
+  }, [candidates, view.eligiblePlans]);
+  // hivePlans / planToHive depend only on candidate harnesses (stale eligibles are
+  // always unassigned), so the toggle structural map is stable.
+  const planIndex = useMemo(() => indexPlansByHive(hiveOptions, treePlans), [hiveOptions, treePlans]);
+  const steeringSelection: SteeringSelection = { eligibleHives: view.eligibleHives, eligiblePlans: view.eligiblePlans };
+  const steeringTree = useMemo(
+    () => buildSteeringTree(hiveOptions, treePlans, { eligibleHives: view.eligibleHives, eligiblePlans: view.eligiblePlans }),
+    [hiveOptions, treePlans, view.eligibleHives, view.eligiblePlans],
+  );
+  const illegalCount = detectIllegalEligiblePlans(steeringSelection, planIndex.planToHive).length;
+
   /** Serialized, fail-soft write (the optimistic fields are already in `view`). */
   const enqueue = (patch: Record<string, unknown>) => {
     if (!home) {
@@ -305,6 +348,26 @@ export default function QueenTab({ active }: { active: boolean }) {
     enqueue({ clear: true });
   };
 
+  // Nested-picker handlers (P-002): compute the next (eligibleHives, eligiblePlans)
+  // via the pure toggles from the LIVE selection (the overlay ref, so back-to-back
+  // clicks accumulate), then optimistic-write BOTH lists in click order.
+  const liveSelection = (): SteeringSelection => {
+    const l = live();
+    return { eligibleHives: l.eligibleHives, eligiblePlans: l.eligiblePlans };
+  };
+  const applySteering = (next: SteeringSelection) => {
+    overlay({ eligibleHives: next.eligibleHives, eligiblePlans: next.eligiblePlans });
+    enqueue({ eligibleHives: next.eligibleHives, eligiblePlans: next.eligiblePlans });
+  };
+  const treeToggleHive = (slug: string) =>
+    applySteering(treeToggleHiveFn(liveSelection(), slug, planIndex.hivePlans, planIndex.planToHive));
+  const treeTogglePlan = (hiveSlug: string, planSlug: string) =>
+    applySteering(treeTogglePlanFn(liveSelection(), hiveSlug, planSlug, planIndex.hivePlans, planIndex.planToHive));
+  const treeSetHivePlans = (hiveSlug: string, on: boolean) =>
+    applySteering(treeSetHivePlansFn(liveSelection(), hiveSlug, on, planIndex.hivePlans, planIndex.planToHive));
+  const treeSetAllHives = (on: boolean) =>
+    applySteering(treeSetAllHivesFn(liveSelection(), on, hiveOptions, planIndex.planToHive));
+
   return (
     <div className="pc-queen">
       <header className="pc-queen__bar">
@@ -364,75 +427,93 @@ export default function QueenTab({ active }: { active: boolean }) {
       {/* 3 — Model tiers (session override, D-006 / #4) */}
       <ModelTiersOverride override={view.modelTiers ?? null} onWrite={setModelTiers} busy={saving} />
 
-      {/* 4 — Eligible Hives (placement scope, owner-review round 2) */}
-      <section className="pc-queen__section">
-        <div className="pc-queen__section-head">
-          <Network size={12} aria-hidden />
-          <span className="pc-queen__section-title">Eligible hives</span>
-          <span className="pc-queen__count">{hiveRestricted ? `${view.eligibleHives.length} selected` : 'no restriction'}</span>
-          <span className="pc-queen__spacer" />
-          <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={saving || hiveOptions.length === 0} title="Select every hive">all</button>
-          <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={saving || !hiveRestricted} title="Clear the hive scope">none</button>
-        </div>
-        <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
-          {hiveRestricted
-            ? 'Queen may place ONLY into the checked hives. Uncheck all to remove the scope.'
-            : 'Nothing checked → Queen may place into ANY hive. Check hives to scope where she places work.'}
-        </div>
-        {hiveOptions.length === 0 ? (
-          <div className="pc-queen__placeholder">Loading hives…</div>
-        ) : (
-          <ul className="pc-queen__plans">
-            {hiveOptions.map((h) => {
-              const on = view.eligibleHives.includes(h.value);
-              return (
-                <li key={h.value} className={`pc-queen__plan${on ? ' pc-queen__plan--on' : ''}`}>
-                  <label className="pc-queen__planlabel">
-                    <input type="checkbox" className="pc-queen__check" checked={on} onChange={() => toggleHive(h.value)} />
-                    <span className="pc-queen__planslug" title={h.value}>{h.label}</span>
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
+      {/* 4+5 — Steering scope. The nested hive→plan picker (P-002) makes the
+          illegal "eligible plan under an excluded hive" state unrepresentable;
+          the flag-OFF fallback is the legacy two flat lists. */}
+      {steeringTreeOn ? (
+        <HiveSteeringTree
+          tree={steeringTree}
+          illegalCount={illegalCount}
+          busy={saving}
+          loading={hiveOptions.length === 0 || (plansQ.loading && !plansQ.data)}
+          onToggleHive={treeToggleHive}
+          onTogglePlan={treeTogglePlan}
+          onSetHivePlans={treeSetHivePlans}
+          onSetAllHives={treeSetAllHives}
+        />
+      ) : (
+        <>
+          {/* 4 — Eligible Hives (placement scope, owner-review round 2) */}
+          <section className="pc-queen__section">
+            <div className="pc-queen__section-head">
+              <Network size={12} aria-hidden />
+              <span className="pc-queen__section-title">Eligible hives</span>
+              <span className="pc-queen__count">{hiveRestricted ? `${view.eligibleHives.length} selected` : 'no restriction'}</span>
+              <span className="pc-queen__spacer" />
+              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={saving || hiveOptions.length === 0} title="Select every hive">all</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={saving || !hiveRestricted} title="Clear the hive scope">none</button>
+            </div>
+            <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
+              {hiveRestricted
+                ? 'Queen may place ONLY into the checked hives. Uncheck all to remove the scope.'
+                : 'Nothing checked → Queen may place into ANY hive. Check hives to scope where she places work.'}
+            </div>
+            {hiveOptions.length === 0 ? (
+              <div className="pc-queen__placeholder">Loading hives…</div>
+            ) : (
+              <ul className="pc-queen__plans">
+                {hiveOptions.map((h) => {
+                  const on = view.eligibleHives.includes(h.value);
+                  return (
+                    <li key={h.value} className={`pc-queen__plan${on ? ' pc-queen__plan--on' : ''}`}>
+                      <label className="pc-queen__planlabel">
+                        <input type="checkbox" className="pc-queen__check" checked={on} onChange={() => toggleHive(h.value)} />
+                        <span className="pc-queen__planslug" title={h.value}>{h.label}</span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
 
-      {/* 5 — Eligible Plans */}
-      <section className="pc-queen__section">
-        <div className="pc-queen__section-head">
-          <ListChecks size={12} aria-hidden />
-          <span className="pc-queen__section-title">Eligible plans</span>
-          <span className="pc-queen__count">{planRestricted ? `${view.eligiblePlans.length} selected` : 'no restriction'}</span>
-          <span className="pc-queen__spacer" />
-          <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(true)} disabled={saving || planRows.length === 0} title="Select every plan shown">all</button>
-          <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(false)} disabled={saving || !planRestricted} title="Clear the plan restriction">none</button>
-        </div>
-        <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
-          {planRestricted
-            ? 'Queen works ONLY the checked plans. Uncheck all to remove the restriction.'
-            : 'Nothing selected → Queen may work ANY plan. Check plans to focus her (eligibility ≠ lifecycle status).'}
-        </div>
-        {plansQ.loading && !plansQ.data ? (
-          <div className="pc-queen__placeholder">Loading plans…</div>
-        ) : planRows.length === 0 ? (
-          <div className="pc-queen__placeholder">No steerable plans.</div>
-        ) : (
-          <ul className="pc-queen__plans">
-            {planRows.map((p) => (
-              <li key={p.slug} className={`pc-queen__plan${p.eligible ? ' pc-queen__plan--on' : ''}`}>
-                <label className="pc-queen__planlabel">
-                  <input type="checkbox" className="pc-queen__check" checked={p.eligible} onChange={() => togglePlan(p.slug)} />
-                  <span className="pc-queen__planslug" title={p.slug}>{p.title}</span>
-                </label>
-                <span className="pc-queen__planstatus" data-status={p.inActive ? (p.startStatus === 'started' ? 'started' : p.status ?? '') : 'stale'}>
-                  {p.inActive ? (p.startStatus === 'started' ? 'live' : p.status ?? '') : 'not active'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+          {/* 5 — Eligible Plans */}
+          <section className="pc-queen__section">
+            <div className="pc-queen__section-head">
+              <ListChecks size={12} aria-hidden />
+              <span className="pc-queen__section-title">Eligible plans</span>
+              <span className="pc-queen__count">{planRestricted ? `${view.eligiblePlans.length} selected` : 'no restriction'}</span>
+              <span className="pc-queen__spacer" />
+              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(true)} disabled={saving || planRows.length === 0} title="Select every plan shown">all</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(false)} disabled={saving || !planRestricted} title="Clear the plan restriction">none</button>
+            </div>
+            <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
+              {planRestricted
+                ? 'Queen works ONLY the checked plans. Uncheck all to remove the restriction.'
+                : 'Nothing selected → Queen may work ANY plan. Check plans to focus her (eligibility ≠ lifecycle status).'}
+            </div>
+            {plansQ.loading && !plansQ.data ? (
+              <div className="pc-queen__placeholder">Loading plans…</div>
+            ) : planRows.length === 0 ? (
+              <div className="pc-queen__placeholder">No steerable plans.</div>
+            ) : (
+              <ul className="pc-queen__plans">
+                {planRows.map((p) => (
+                  <li key={p.slug} className={`pc-queen__plan${p.eligible ? ' pc-queen__plan--on' : ''}`}>
+                    <label className="pc-queen__planlabel">
+                      <input type="checkbox" className="pc-queen__check" checked={p.eligible} onChange={() => togglePlan(p.slug)} />
+                      <span className="pc-queen__planslug" title={p.slug}>{p.title}</span>
+                    </label>
+                    <span className="pc-queen__planstatus" data-status={p.inActive ? (p.startStatus === 'started' ? 'started' : p.status ?? '') : 'stale'}>
+                      {p.inActive ? (p.startStatus === 'started' ? 'live' : p.status ?? '') : 'not active'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </>
+      )}
 
       {/* 6 — Scheduled routines (the ops glance, scheduled-recurring-plans P-026).
           Reads the same plans.scheduledOccurrences ledger the Calendar does; a row
