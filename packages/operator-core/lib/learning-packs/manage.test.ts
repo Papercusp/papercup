@@ -102,6 +102,93 @@ describe('classifyPackInstall', () => {
     const review = await classifyPackInstall({ hiveSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
     expect(review.clean).toBe(3);
   });
+
+  it('LP-2: a pack_item_id already present is `present` (skip) even when search scores it BELOW dupThreshold', async () => {
+    // The double-install hazard: the 3 rows ARE present (provenance), but the
+    // embedding search returns each at 0.7 (< 0.9 dupThreshold). Without the
+    // provenance guard, all 3 classify as 'clean' → 'install' → duplicate
+    // pack_item_id rows. The guard reads them as 'present' (no embedding lookup).
+    const present: Entry[] = pack.items.map((it) => ({
+      id: `existing-${it.id}`,
+      text: `${it.title} — ${it.text}`,
+      scope: 'hive:h',
+      metadata: { source: 'pack', pack_id: 'rails-pack', pack_item_id: it.id },
+    }));
+    const { backend } = fakeBackend({
+      pool: present,
+      // search returns the matching row, but only at 0.7 (below threshold).
+      neighborsFor: {
+        'always do a': [{ ...present[0], score: 0.7 }],
+        'always do b': [{ ...present[1], score: 0.7 }],
+        'always do c': [{ ...present[2], score: 0.7 }],
+      },
+    });
+    const review = await classifyPackInstall(
+      { hiveSlug: 'h', pack },
+      { backend: backend as never, judge: noConflictJudge },
+    );
+    expect(review).toMatchObject({ present: 3, clean: 0, duplicates: 0, conflicts: 0 });
+    for (const c of review.items) expect(c.status).toBe('present');
+    // The provenance guard short-circuits BEFORE the embedding search.
+    expect(backend.search).not.toHaveBeenCalled();
+  });
+
+  it('LP-2: applyPackInstall never re-writes a `present` item, even if a resolution says install', async () => {
+    const present: Entry[] = pack.items.map((it) => ({
+      id: `existing-${it.id}`,
+      text: `${it.title} — ${it.text}`,
+      scope: 'hive:h',
+      metadata: { source: 'pack', pack_id: 'rails-pack', pack_item_id: it.id },
+    }));
+    const { backend, remembered } = fakeBackend({ pool: present });
+    const review = await classifyPackInstall(
+      { hiveSlug: 'h', pack },
+      { backend: backend as never, judge: noConflictJudge },
+    );
+    const res = await applyPackInstall(
+      {
+        workspaceId: 'ws',
+        hiveSlug: 'h',
+        pack,
+        review,
+        // Adversarial: force-install every present item.
+        resolutions: pack.items.map((it) => ({ itemId: it.id, action: 'install' as const })),
+      },
+      { backend: backend as never },
+    );
+    expect(res).toMatchObject({ installed: 0, skipped: 3 });
+    expect(remembered).toEqual([]); // no duplicate pack_item_id rows written
+  });
+
+  it('LP-2: a NEW pack item still installs while present siblings skip (guard is per-item)', async () => {
+    // Only items a,b are present; c is genuinely new and clean.
+    const present: Entry[] = [
+      {
+        id: 'existing-a',
+        text: 'A — always do a',
+        scope: 'hive:h',
+        metadata: { source: 'pack', pack_id: 'rails-pack', pack_item_id: 'a' },
+      },
+      {
+        id: 'existing-b',
+        text: 'B — always do b',
+        scope: 'hive:h',
+        metadata: { source: 'pack', pack_id: 'rails-pack', pack_item_id: 'b' },
+      },
+    ];
+    const { backend, remembered } = fakeBackend({ pool: present });
+    const review = await classifyPackInstall(
+      { hiveSlug: 'h', pack },
+      { backend: backend as never, judge: noConflictJudge },
+    );
+    expect(review).toMatchObject({ present: 2, clean: 1 });
+    const res = await applyPackInstall(
+      { workspaceId: 'ws', hiveSlug: 'h', pack, review },
+      { backend: backend as never },
+    );
+    expect(res).toMatchObject({ installed: 1, skipped: 2 });
+    expect(remembered.map((r) => r.text)).toEqual(['C — always do c']);
+  });
 });
 
 describe('applyPackInstall', () => {

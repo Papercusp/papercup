@@ -2153,9 +2153,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // Decorate the rollups with enabled state (P-009) + adoptable-version
       // info (P-013) — best-effort; the bare snapshot still renders.
       try {
-        const [{ disabledPacksFor }, { activeWorkspaceId }, catalog] = await Promise.all([
+        const [{ disabledPacksFor }, { activeWorkspaceId }, { semverGt }, catalog] = await Promise.all([
           import('../learning-packs/manage'),
           import('../workspace-registry'),
+          import('../learning-packs/pack-format'),
           listLearningPacks(),
         ]);
         const disabled = new Set(await disabledPacksFor(activeWorkspaceId(), hive));
@@ -2164,7 +2165,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           const avail = catalog.find((c) => c.id === p.packId);
           if (avail) {
             p.availableVersion = avail.version;
-            p.updateAvailable = !!p.packVersion && avail.version !== p.packVersion;
+            p.updateAvailable = semverGt(avail.version, p.packVersion);
           }
         }
       } catch {

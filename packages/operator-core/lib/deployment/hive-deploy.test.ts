@@ -97,6 +97,36 @@ describe('teardownHive / pauseHive / scaleHive', () => {
     expect(r.destroyed).toContain('queen:h1');
   });
 
+  // DEP-1: a member teardown that throws is captured in `failed`, the loop keeps
+  // going, AND the dedicated control frame is STILL torn down afterward — a member
+  // failure must not strand the Queen frame as a billing leak.
+  it('teardownHive: a member throw → failed, but other member + control frame still destroyed (no Queen billing leak)', async () => {
+    const deps = memDeps({
+      async teardownHarness(slug) {
+        if (slug === 'a') throw new Error('destroy failed');
+        return { destroyed: true };
+      },
+    });
+    const r = await teardownHive(spec({ queen: { placement: 'dedicated' } }), 'ws', deps);
+    expect(r.failed).toContain('a');
+    expect(r.destroyed).toContain('b');
+    expect(r.destroyed).toContain('queen:h1'); // control frame torn down despite the member throw
+    expect(r.destroyed).not.toContain('a');
+  });
+
+  // DEP-1: the control-frame teardown itself throwing is captured in `failed`
+  // (under its own try/catch) — members already destroyed are unaffected.
+  it('teardownHive: control-frame teardown throwing → queen recorded in failed, members still destroyed', async () => {
+    const deps = memDeps({
+      async teardownControlFrame() {
+        throw new Error('queen destroy failed');
+      },
+    });
+    const r = await teardownHive(spec({ queen: { placement: 'dedicated' } }), 'ws', deps);
+    expect(r.failed).toEqual(['queen:h1']);
+    expect(r.destroyed).toEqual(['a', 'b']);
+  });
+
   it('pauseHive destroys execution frames (destroy-to-stop), keeps the Queen by default', async () => {
     const deps = memDeps();
     const r = await pauseHive(spec({ queen: { placement: 'dedicated' } }), 'ws', deps);
@@ -110,6 +140,33 @@ describe('teardownHive / pauseHive / scaleHive', () => {
     expect(r.added.map((m) => m.slug)).toEqual(['c']);
     expect(r.removed).toEqual(['a']);
     expect(deps.deployments.get('c')).toEqual(swarm);
+  });
+
+  // DEP-3: pauseHive swallows a per-member teardown throw (.catch → destroyed:false)
+  // so one stuck frame doesn't abort the pause — only the successfully-destroyed
+  // frame appears in `paused`, and no error escapes.
+  it('pauseHive: a member teardown throwing is swallowed → only the survivor is paused, no throw', async () => {
+    const deps = memDeps({
+      async teardownHarness(slug) {
+        if (slug === 'a') throw new Error('stuck');
+        return { destroyed: true };
+      },
+    });
+    const r = await pauseHive(spec(), 'ws', deps);
+    expect(r.paused).toEqual(['b']);
+  });
+
+  // DEP-3: scaleHive's remove leg likewise swallows a throwing teardown — the
+  // removed list reflects only what was actually destroyed.
+  it('scaleHive: a throwing removal is swallowed → only the destroyed member is in removed', async () => {
+    const deps = memDeps({
+      async teardownHarness(slug) {
+        if (slug === 'a') throw new Error('stuck');
+        return { destroyed: true };
+      },
+    });
+    const r = await scaleHive(spec(), 'ws', { remove: ['a', 'b'] }, deps);
+    expect(r.removed).toEqual(['b']);
   });
 });
 
@@ -129,6 +186,25 @@ describe('cost controls (computeFramesToReap / reapHiveFrames)', () => {
 
   it('no budget config → nothing reaped', () => {
     expect(computeFramesToReap(spec(), [{ slug: 'a', costUsd: 999, lastActivityMs: 0 }], now)).toEqual([]);
+  });
+
+  // DEP-2: budget-vs-idle precedence — the `else if` means an over-budget AND idle
+  // frame reports ONLY `budget` (each frame yields at most one entry; budget wins).
+  it('over-budget AND idle reports ONLY budget (else-if precedence, one entry per frame)', () => {
+    const reap = computeFramesToReap(s, [{ slug: 'a', costUsd: 12, lastActivityMs: now - 31 * 60_000 }], now);
+    expect(reap).toEqual([{ slug: 'a', reason: 'budget' }]);
+  });
+
+  // DEP-2: budget cap is inclusive (>=) — costUsd at the cap is reaped, just under is not.
+  it('budget cap boundary is inclusive: costUsd===cap reaped, cap-0.01 not', () => {
+    expect(computeFramesToReap(s, [{ slug: 'a', costUsd: 10 }], now)).toEqual([{ slug: 'a', reason: 'budget' }]);
+    expect(computeFramesToReap(s, [{ slug: 'a', costUsd: 9.99 }], now)).toEqual([]);
+  });
+
+  // DEP-2: idle window is inclusive (>=) — idle exactly the window length is reaped.
+  it('idle window boundary is inclusive: idle exactly idleReaperMinutes is reaped', () => {
+    expect(computeFramesToReap(s, [{ slug: 'a', lastActivityMs: now - 30 * 60_000 }], now)).toEqual([{ slug: 'a', reason: 'idle' }]);
+    expect(computeFramesToReap(s, [{ slug: 'a', lastActivityMs: now - (30 * 60_000 - 1) }], now)).toEqual([]);
   });
 
   it('reapHiveFrames tears down the selected frames', async () => {

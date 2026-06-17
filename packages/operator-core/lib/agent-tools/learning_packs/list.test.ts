@@ -68,4 +68,44 @@ describe('learning_packs:list tool', () => {
       availableVersion: '2.0.0',
     });
   });
+
+  it('LP-1: a catalog version OLDER than installed is NOT an update (semver, not string !==)', async () => {
+    // Catalog ships 1.0.0; the hive already carries 2.0.0. The old string
+    // inequality (`avail.version !== p.packVersion`) flagged this downgrade as
+    // updateAvailable:true. semverGt(1.0.0, 2.0.0) === false fixes it.
+    mockListPacks.mockResolvedValue([{ id: 'papercusp-default', version: '1.0.0' }] as never);
+    mockReadHive.mockResolvedValue({
+      packs: [{ packId: 'papercusp-default', packVersion: '2.0.0' }],
+      organicCount: 0,
+    } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
+    mockDisabled.mockResolvedValue([]);
+    const res = body(await callTool({ hive: 'my-hive' }));
+    expect(res.installed[0]).toMatchObject({
+      packId: 'papercusp-default',
+      updateAvailable: false, // 1.0.0 is NOT newer than installed 2.0.0
+      availableVersion: '1.0.0',
+    });
+  });
+
+  it('LP-1: 1.10.0 IS recognized as newer than installed 1.9.0', async () => {
+    mockListPacks.mockResolvedValue([{ id: 'papercusp-default', version: '1.10.0' }] as never);
+    mockReadHive.mockResolvedValue({
+      packs: [{ packId: 'papercusp-default', packVersion: '1.9.0' }],
+      organicCount: 0,
+    } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
+    mockDisabled.mockResolvedValue([]);
+    const res = body(await callTool({ hive: 'my-hive' }));
+    expect(res.installed[0].updateAvailable).toBe(true);
+  });
+
+  it('LP-1: equal versions are NOT an update', async () => {
+    mockListPacks.mockResolvedValue([{ id: 'papercusp-default', version: '2.0.0' }] as never);
+    mockReadHive.mockResolvedValue({
+      packs: [{ packId: 'papercusp-default', packVersion: '2.0.0' }],
+      organicCount: 0,
+    } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
+    mockDisabled.mockResolvedValue([]);
+    const res = body(await callTool({ hive: 'my-hive' }));
+    expect(res.installed[0].updateAvailable).toBe(false);
+  });
 });

@@ -91,6 +91,29 @@ describe('Change Feed', () => {
       expect(result[result.length - 1].ts).toBe('2026-06-06T07:00:00Z');
     });
 
+    // CUR-2 PIN: dedup runs over [...wis, ...gyms, ...plans] BEFORE the sort, so
+    // it is first-wins by SOURCE ORDER (work-items, then gyms, then plans) — NOT
+    // by recency. A work-item shadows a same-id plan even when the plan's ts is
+    // newer. Intentional but undocumented; pin so a "sort then dedup" refactor
+    // can't silently flip which record survives.
+    it('dedups across sources first-wins by source order, not recency (CUR-2)', async () => {
+      const collidingReaders: ChangeFeedReaders = {
+        async workItemCompletions() {
+          return [{ id: 'x', kind: 'completion', title: 'from work-item', ref: 'wi:x', ts: '2026-06-08T00:00:00Z' }];
+        },
+        async gymProposals() {
+          return [];
+        },
+        async planRuns() {
+          return [{ id: 'x', kind: 'plan-run', title: 'from plan (newer)', ref: 'plan:x', ts: '2026-06-09T00:00:00Z' }];
+        },
+      };
+      const result = await gatherCompletions(collidingReaders);
+      expect(result).toHaveLength(1);
+      expect(result[0].title).toBe('from work-item');
+      expect(result[0].kind).toBe('completion');
+    });
+
     it('handles reader errors gracefully', async () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
       const errorReaders: ChangeFeedReaders = {
@@ -134,6 +157,28 @@ describe('Change Feed', () => {
     it('returns empty when no entries match filters', () => {
       const result = rankChangeFeed([], { limit: 10 });
       expect(result).toHaveLength(0);
+    });
+
+    // CUR-1: the fn claims "newest first (recency)" as its OWN contract, so it
+    // must sort by ts even when handed entries in NON-recency order (not only
+    // when the caller pre-sorts). Same tier (both fleet-internal completions),
+    // input order oldest→newest → output newest-first.
+    it('sorts same-tier entries newest-first regardless of input order (CUR-1)', () => {
+      const out = rankChangeFeed([
+        { id: 'a', kind: 'completion', title: 'a', ref: 'a', ts: '2026-06-01T00:00:00Z' },
+        { id: 'b', kind: 'completion', title: 'b', ref: 'b', ts: '2026-06-09T00:00:00Z' },
+      ]);
+      expect(out.map((e) => e.id)).toEqual(['b', 'a']);
+    });
+
+    // CUR-1 (cont.): the recency tie-break is applied WITHIN the userRequested
+    // tier, not across it — a newer fleet-internal item never jumps a user item.
+    it('keeps userRequested ahead of a newer fleet-internal entry (CUR-1)', () => {
+      const out = rankChangeFeed([
+        { id: 'fresh', kind: 'completion', title: 'fresh internal', ref: 'fresh', ts: '2026-06-09T00:00:00Z', userRequested: false },
+        { id: 'user', kind: 'completion', title: 'older user', ref: 'user', ts: '2026-06-01T00:00:00Z', userRequested: true },
+      ]);
+      expect(out.map((e) => e.id)).toEqual(['user', 'fresh']);
     });
   });
 

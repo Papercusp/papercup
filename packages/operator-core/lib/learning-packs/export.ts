@@ -109,17 +109,24 @@ export async function exportHiveLearningsToPack(input: ExportPackInput): Promise
     'utf8',
   );
 
+  // Derive ids up front (sequentially — the dedupe set isn't concurrency-safe),
+  // then write the files. Each file carries an explicit `id:` frontmatter so a
+  // re-imported pack keeps the SAME pack_item_id even if the file is later
+  // renamed — provenance/upgrade-diff stability (P-013) can't rely on the
+  // filename stem alone. learning-packs-2026-06-11 P-016.
   const taken = new Set<string>();
+  const planned = exportable.map((e) => {
+    const { title, body } = titleAndBody(e.text);
+    return { id: itemIdFrom(title, taken), title, body, kind: rowKind(e) };
+  });
   await Promise.all(
-    exportable.map(async (e) => {
-      const { title, body } = titleAndBody(e.text);
-      const id = itemIdFrom(title, taken);
-      await writeFile(
+    planned.map(({ id, title, body, kind }) =>
+      writeFile(
         join(packDir, `${id}.md`),
-        `---\ntitle: ${esc(title)}\nkind: ${rowKind(e)}\n---\n\n${body}\n`,
+        `---\nid: ${id}\ntitle: ${esc(title)}\nkind: ${kind}\n---\n\n${body}\n`,
         'utf8',
-      );
-    }),
+      ),
+    ),
   );
 
   return { ok: true, packDir, exported: exportable.length, skippedPackRows };

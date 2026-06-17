@@ -49,15 +49,17 @@ export default defineTool({
       },
       loadPack: (id) => loadLearningPack(id),
     });
+    const { semverGt } = await import('../../learning-packs/pack-format');
     const disabled = await disabledPacksFor(workspaceId, args.hive);
-    const installed = snap.packs.map((p) => ({
-      ...p,
-      enabled: !disabled.includes(p.packId),
-      updateAvailable:
-        !!p.packVersion &&
-        !!packs.find((a) => a.id === p.packId && a.version !== p.packVersion),
-      availableVersion: packs.find((a) => a.id === p.packId)?.version,
-    }));
+    const installed = snap.packs.map((p) => {
+      const availableVersion = packs.find((a) => a.id === p.packId)?.version;
+      return {
+        ...p,
+        enabled: !disabled.includes(p.packId),
+        updateAvailable: semverGt(availableVersion, p.packVersion),
+        availableVersion,
+      };
+    });
     return text({
       ok: true,
       packs,

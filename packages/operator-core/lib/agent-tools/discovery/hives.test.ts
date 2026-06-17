@@ -92,4 +92,24 @@ describe('discovery:hives endpoint (P-005)', () => {
     const out = await call({ limit: 1 });
     expect(out.count).toBe(1);
   });
+
+  // DISC-3: the private filter runs BEFORE the limit slice. With the private
+  // hive sorted FIRST (newest announce) and limit:1, the surviving row is the
+  // PUBLIC one — if the slice ran before the filter, the newest-private row
+  // would consume the single slot and the result would be empty.
+  it('filters private hives BEFORE slicing to the limit (DISC-3)', async () => {
+    const dir = configureHiveDirectoryForTest(fakeDeps());
+    await dir.ingestAnnounce(
+      await announce({ hive_id: 'pub', visibility: 'public', ts: NOW }),
+    );
+    await dir.ingestAnnounce(
+      // Newest announce → sorts first; the private filter must still drop it.
+      await announce({ hive_id: 'priv', visibility: 'private', ts: NOW + 1 }),
+    );
+    const out = await call({ limit: 1 });
+    expect(out.count).toBe(1);
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0].hiveId).toBe('pub');
+    expect(out.rows[0].visibility).toBe('public');
+  });
 });

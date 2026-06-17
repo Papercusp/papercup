@@ -21,7 +21,6 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { Link } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import {
-  KeyRound,
   RotateCcw,
   ChevronDown,
   ChevronRight,

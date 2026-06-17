@@ -44,6 +44,8 @@ export interface GaiaRunTotals {
   wallClockMs: number;
   /** Tasks excluded from accuracy because the agent hit an infra error (stopReason==='error'). */
   infraErrors: number;
+  /** Tasks whose prior prediction was reused (RESUME) rather than re-run. */
+  reused: number;
 }
 
 export interface GaiaRunResult {
@@ -68,6 +70,13 @@ export interface GaiaRunConfig {
   excludeInfraErrors?: boolean;
   /** Max chars of trajectory packed into `reasoning_trace` (default 4000). */
   maxTraceChars?: number;
+  /**
+   * RESUME: prior predictions (e.g. from a crashed run's predictions.jsonl). A task with a prior record that
+   * already produced a real answer (stopReason ≠ 'error' AND model_answer ≠ '') is NOT re-run — its prediction
+   * is reused (saving the Opus spend) and re-graded against the gold. Formatting-failure / infra-error tasks
+   * ARE re-run (a retry might do better). This makes a long 165-task run crash-resumable.
+   */
+  priorPredictions?: GaiaPredictionRecord[];
 }
 
 /** Bounded-concurrency map preserving input order. */
@@ -111,17 +120,33 @@ export async function runGaiaSuite(
   const now = deps.now ?? Date.now;
   const startedAt = now();
 
-  const results = await mapLimit(tasks, concurrency, (task) => deps.runAgent(task));
+  // RESUME: a prior record with a real answer (non-error, non-empty) is reused, not re-run.
+  const prior = new Map<string, GaiaPredictionRecord>();
+  for (const p of config.priorPredictions ?? []) {
+    if (p.stopReason !== 'error' && p.model_answer !== '') prior.set(p.task_id, p);
+  }
+  const toRun = tasks.filter((t) => !prior.has(t.taskId));
+  const ran = await mapLimit(toRun, concurrency, (task) => deps.runAgent(task));
+  const ranById = new Map<string, GaiaAgentResult>(toRun.map((t, i) => [t.taskId, ran[i]]));
 
   const predictions: GaiaPredictionRecord[] = [];
   const gradeInputs: GaiaPrediction[] = [];
   let tokensIn = 0;
   let tokensOut = 0;
   let infraErrors = 0;
+  let reused = 0;
 
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks[i];
-    const r = results[i];
+  for (const task of tasks) {
+    const priorRec = prior.get(task.taskId);
+    if (priorRec) {
+      reused++;
+      tokensIn += priorRec.tokensIn;
+      tokensOut += priorRec.tokensOut;
+      predictions.push(priorRec);
+      gradeInputs.push({ taskId: task.taskId, modelAnswer: priorRec.model_answer, gold: task.finalAnswer, level: task.level });
+      continue;
+    }
+    const r = ranById.get(task.taskId)!;
     tokensIn += r.tokensIn;
     tokensOut += r.tokensOut;
     const isInfra = r.stopReason === 'error';
@@ -157,8 +182,24 @@ export async function runGaiaSuite(
     estCostUsd: tokensIn * OPUS_PRICE.inPerTok + tokensOut * OPUS_PRICE.outPerTok,
     wallClockMs: now() - startedAt,
     infraErrors,
+    reused,
   };
   return { predictions, report, totals };
+}
+
+/** Parse a predictions.jsonl body → records (for RESUME). Tolerant of blank lines + malformed rows. */
+export function parsePredictionsJsonl(body: string): GaiaPredictionRecord[] {
+  const out: GaiaPredictionRecord[] = [];
+  for (const line of body.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      out.push(JSON.parse(t) as GaiaPredictionRecord);
+    } catch {
+      /* skip malformed */
+    }
+  }
+  return out;
 }
 
 /** Serialize predictions → a JSONL string (one record per line). */

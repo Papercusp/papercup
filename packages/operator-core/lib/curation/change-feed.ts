@@ -117,7 +117,11 @@ export function rankChangeFeed(
       if ((a.r.userRequested ?? false) !== (b.r.userRequested ?? false)) {
         return a.r.userRequested ? -1 : 1;
       }
-      // Newest first (stable sort by index preserves relative order).
+      // Newest first (recency) — compare ts directly so the fn honors its
+      // "newest first" contract on ANY input order, not only a caller that
+      // pre-sorts (CUR-1). The input index is the final tie-break, keeping the
+      // sort stable for entries that share a ts.
+      if (a.r.ts !== b.r.ts) return a.r.ts < b.r.ts ? 1 : -1;
       return a.i - b.i;
     })
     .map(({ r }) => r)

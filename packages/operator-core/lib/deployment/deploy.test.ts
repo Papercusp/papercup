@@ -82,6 +82,41 @@ describe('deployHarness', () => {
     expect(calls).toEqual(['provision', 'persist', 'install', 'join']);
   });
 
+  // DEP-4 (P-020): when selectAccount returns an account-augmented config, the
+  // DOWNSTREAM steps (resolveDriver + buildBootstrap) must receive the AUGMENTED
+  // config — not the original config0 — so the frame is provisioned + bootstrapped
+  // against the bound account's credentials/accountId.
+  it('selectAccount: resolveDriver + buildBootstrap receive the account-augmented config, not config0', async () => {
+    const config0: DeploymentConfig = { ...cloud, accountId: 'acct-1', credentialRef: 'cred-1' };
+    const augmented: DeploymentConfig = { ...config0, accountId: 'acct-2', credentialRef: 'cred-2' };
+    const calls: string[] = [];
+    const base = memDeps(config0, calls);
+    let resolveDriverConfig: DeploymentConfig | undefined;
+    let bootstrapConfig: DeploymentConfig | undefined;
+    let selectAccountInput: DeploymentConfig | undefined;
+    const deps: DeployDeps = {
+      ...base,
+      resolveDriver(config) {
+        resolveDriverConfig = config;
+        return base.resolveDriver(config);
+      },
+      async buildBootstrap(slug, ws, config) {
+        bootstrapConfig = config;
+        return { repoUrl: 'g', install: ['npm ci'] };
+      },
+      async selectAccount(config) {
+        selectAccountInput = config;
+        return augmented;
+      },
+    };
+    await deployHarness('papercup', 'ws', deps);
+    expect(selectAccountInput).toEqual(config0); // selectAccount got the original
+    expect(resolveDriverConfig).toEqual(augmented); // ...but driver + bootstrap got the augmented one
+    expect(resolveDriverConfig?.credentialRef).toBe('cred-2');
+    expect(bootstrapConfig).toEqual(augmented);
+    expect(bootstrapConfig?.accountId).toBe('acct-2');
+  });
+
   it('persists the frame BEFORE install, so a failed install leaves a destroyable frame', async () => {
     const calls: string[] = [];
     const failingDriver: DeploymentDriver = {

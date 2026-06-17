@@ -54,7 +54,13 @@ export interface InstallClassification {
   title: string;
   /** The canonical text that would be written. */
   incoming: string;
-  status: 'clean' | 'duplicate' | 'conflict';
+  /**
+   * `present` = a row with this `{pack_id, pack_item_id}` already exists
+   * (provenance match, embedding-score-independent) — re-install is a no-op,
+   * never a duplicate write. clean/duplicate/conflict are the same-pool
+   * semantic outcomes for items with no provenance row yet.
+   */
+  status: 'present' | 'clean' | 'duplicate' | 'conflict';
   /** The clashing existing row (duplicate/conflict only). */
   existing?: { id: string; text: string; organic: boolean; packId?: string; score?: number };
   /** One-line judge summary (conflict only). */
@@ -70,6 +76,8 @@ export interface InstallReview {
   clean: number;
   duplicates: number;
   conflicts: number;
+  /** Items already present by provenance (skipped — no embedding lookup). */
+  present: number;
 }
 
 export interface ManageDeps {
@@ -108,6 +116,25 @@ export async function classifyPackInstall(
   const scope = hiveScopeKey(opts.hiveSlug);
   const items = opts.shapes === undefined ? [...opts.pack.items] : filterByShapes(opts.pack.items, opts.shapes);
 
+  // Provenance guard (mirrors planPackUpgrade): an item whose
+  // {pack_id, pack_item_id} already has a row is ALREADY PRESENT, regardless
+  // of what the embedding search returns. Without this, a re-install where the
+  // top neighbor's score dips below dupThreshold would re-classify as 'clean'
+  // → 'install' and write a SECOND row with the same pack_item_id (D-003: a
+  // pack row is never double-written). The list is read once, not per item.
+  let presentItemIds = new Set<string>();
+  try {
+    const pool = await backend.list({ scope });
+    presentItemIds = new Set(
+      pool
+        .filter((e) => packIdOf(e) === opts.pack.manifest.id)
+        .map((e) => (typeof e.metadata?.pack_item_id === 'string' ? e.metadata.pack_item_id : ''))
+        .filter(Boolean),
+    );
+  } catch {
+    /* pool unreadable — fall back to search-only classification (no guard) */
+  }
+
   const out: InstallClassification[] = [];
   for (let i = 0; i < items.length; i += CLASSIFY_CONCURRENCY) {
     const batch = items.slice(i, i + CLASSIFY_CONCURRENCY);
@@ -115,6 +142,9 @@ export async function classifyPackInstall(
       batch.map(async (item): Promise<InstallClassification> => {
         const incoming = memoryTextOf(item);
         const base = { itemId: item.id, title: item.title, incoming };
+        if (presentItemIds.has(item.id)) {
+          return { ...base, status: 'present', defaultAction: 'skip' };
+        }
         try {
           const neighbors = await backend.search(incoming, { scope, limit: CLASSIFY_TOP_K });
           const top = neighbors[0];
@@ -177,6 +207,7 @@ export async function classifyPackInstall(
     clean: out.filter((c) => c.status === 'clean').length,
     duplicates: out.filter((c) => c.status === 'duplicate').length,
     conflicts: out.filter((c) => c.status === 'conflict').length,
+    present: out.filter((c) => c.status === 'present').length,
   };
 }
 
@@ -215,6 +246,12 @@ export async function applyPackInstall(
   let failed = 0;
 
   for (const c of opts.review.items) {
+    // A provenance-present item is NEVER re-written, even if a resolution asks
+    // to install — the row already exists with this pack_item_id (no dupes).
+    if (c.status === 'present') {
+      skipped += 1;
+      continue;
+    }
     const action = byId.get(c.itemId) ?? c.defaultAction;
     if (action === 'skip') {
       skipped += 1;

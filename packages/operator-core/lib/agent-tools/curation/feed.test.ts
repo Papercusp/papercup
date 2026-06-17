@@ -60,4 +60,31 @@ describe('rankFleetFeed', () => {
   it('empty in → empty out', () => {
     expect(rankFleetFeed([])).toEqual([]);
   });
+
+  // CUR-3 (a): harness + surfaceOnly compose (AND) — only rows matching BOTH
+  // the harness scope and the surface disposition survive.
+  it('applies harness + surfaceOnly together (CUR-3)', () => {
+    const mixed: FleetSignal[] = [
+      sig({ id: 'd-pc', kind: 'decision', title: 'decision pc', ts: '2026-06-04T05:00:00Z', harness: 'papercup' }),
+      sig({ id: 'p-pc', kind: 'progress', title: 'progress pc', ts: '2026-06-04T04:00:00Z', harness: 'papercup' }), // batch → dropped by surfaceOnly
+      sig({ id: 'd-other', kind: 'decision', title: 'decision other', ts: '2026-06-04T03:00:00Z', harness: 'restart' }), // dropped by harness
+    ];
+    const rows = rankFleetFeed(mixed, { harness: 'papercup', surfaceOnly: true });
+    expect(rows.map((r) => r.id)).toEqual(['d-pc']);
+    expect(rows.every((r) => r.harness === 'papercup' && r.disposition === 'surface')).toBe(true);
+  });
+
+  // CUR-3 (b): the disposition tie-break (surface-before-batch) BEATS recency —
+  // a non-urgent surface `decision` that is OLDER still ranks ahead of a newer
+  // non-urgent batch `completion`. (Neither is urgent, so the urgent tier is a
+  // no-op and the dispRank decides.)
+  it('ranks surface-before-batch ahead of recency for the same urgency tier (CUR-3)', () => {
+    const rows = rankFleetFeed([
+      sig({ id: 'newer-batch', kind: 'completion', title: 'fleet-internal done', ts: '2026-06-09T00:00:00Z' }), // batch, newer
+      sig({ id: 'older-surface', kind: 'decision', title: 'decision owed', ts: '2026-06-01T00:00:00Z' }), // surface, older
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(['older-surface', 'newer-batch']);
+    expect(rows[0].disposition).toBe('surface');
+    expect(rows[1].disposition).toBe('batch');
+  });
 });

@@ -93,6 +93,33 @@ function isKebab(s: unknown): s is string {
   return typeof s === 'string' && KEBAB_RE.test(s);
 }
 
+/**
+ * Numeric three-part-semver comparison: −1 / 0 / 1 for a<b / a==b / a>b.
+ * Non-semver inputs sort BEFORE any valid version (so a malformed catalog
+ * version never spuriously reads as "newer"). The one place version ordering
+ * is decided — `updateAvailable` is `semverGt(catalog, installed)`, never a
+ * raw string `!==` (which mis-reads 1.10.0 < 1.9.0 and flags downgrades as
+ * upgrades). learning-packs-2026-06-11 P-013.
+ */
+export function compareSemver(a: string, b: string): -1 | 0 | 1 {
+  const av = SEMVER_RE.test(a);
+  const bv = SEMVER_RE.test(b);
+  if (!av || !bv) return av === bv ? 0 : av ? 1 : -1;
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1;
+    if (pa[i] < pb[i]) return -1;
+  }
+  return 0;
+}
+
+/** True iff `a` is a strictly newer three-part semver than `b`. */
+export function semverGt(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  return compareSemver(a, b) === 1;
+}
+
 /* ────────────────────────────────────────────────────────────────────────
  * Manifest
  * ──────────────────────────────────────────────────────────────────────── */

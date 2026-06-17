@@ -283,9 +283,18 @@ export async function runOneMetrHcastTask(
  */
 export async function runMetrHcastBacklog(
   ops: MetrHcastRunnerOps,
-  input: { backlog: BenchTask[]; arm: string; budget: GenerationBudget; seed: string; workspaceId: string },
+  input: {
+    backlog: BenchTask[];
+    arm: string;
+    budget: GenerationBudget;
+    seed: string;
+    workspaceId: string;
+    /** Fired the instant each task settles — so a partial/killed run still BANKS its completed rows (P-005:
+     *  opus only opens in brief windows; incremental persistence lets every window accumulate toward the fit). */
+    onResult?: (r: MetrHcastTaskResult) => void | Promise<void>;
+  },
 ): Promise<MetrHcastTaskResult[]> {
-  const { backlog, arm, budget, seed, workspaceId } = input;
+  const { backlog, arm, budget, seed, workspaceId, onResult } = input;
   const cap = Math.max(1, Math.floor(await ops.concurrencyCap()) || 1);
   const results: MetrHcastTaskResult[] = [];
   let next = 0;
@@ -295,7 +304,9 @@ export async function runMetrHcastBacklog(
       const i = next;
       if (i >= backlog.length) return;
       next += 1;
-      results.push(await runOneMetrHcastTask(ops, { task: backlog[i], arm, budget, seed, workspaceId }));
+      const r = await runOneMetrHcastTask(ops, { task: backlog[i], arm, budget, seed, workspaceId });
+      results.push(r);
+      if (onResult) await onResult(r);
     }
   };
 

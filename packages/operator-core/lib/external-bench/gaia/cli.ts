@@ -17,11 +17,10 @@
  * The pilot/run verbs spend Opus (owner-gated: gateway capacity + $). They write predictions JSONL + a
  * report under ~/.papercusp/bench-results/gaia/runs/<ts>/.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { gatewayBaseUrl } from '../competitor-live';
-import { existsSync } from 'node:fs';
 import {
   buildGaiaDownloadCommand,
   gaiaHfTokenFile,
@@ -37,6 +36,7 @@ import { makeLiveGaiaToolset } from './tools-live';
 import {
   formatGaiaReportLine,
   makeLiveRunAgent,
+  parsePredictionsJsonl,
   predictionsToJsonl,
   runGaiaSuite,
   type GaiaRunResult,
@@ -56,35 +56,55 @@ function log(...a: unknown[]): void {
 
 const DEFAULT_VENV_PYTHON = join(homedir(), '.papercusp', 'competitors', 'venv', 'bin', 'python');
 
+/** True iff the validation corpus is already on disk. */
+function corpusPresent(): boolean {
+  return existsSync(join(gaiaValidationDir(), 'metadata.jsonl'));
+}
+
+/** Run the gated download for a split with a resolved token. Returns true on success. */
+async function runDownload(token: string, split: 'validation' | 'test'): Promise<boolean> {
+  const destRoot = arg('--dest', join(homedir(), '.papercusp', 'bench-results', 'gaia')) as string;
+  const pythonBin = arg('--python', DEFAULT_VENV_PYTHON) as string;
+  const { cmd, args } = buildGaiaDownloadCommand({ pythonBin, destRoot, split });
+  const { spawn } = await import('node:child_process');
+  return new Promise<boolean>((resolve) => {
+    const child = spawn(cmd, args, { stdio: 'inherit', env: { ...process.env, HF_TOKEN: token } });
+    child.on('close', (code) => resolve(code === 0));
+  });
+}
+
 async function provision(): Promise<void> {
   const split = (arg('--split', 'validation') as 'validation' | 'test') ?? 'validation';
   const destRoot = arg('--dest', join(homedir(), '.papercusp', 'bench-results', 'gaia')) as string;
   const pythonBin = arg('--python', DEFAULT_VENV_PYTHON) as string;
-  const { cmd, args } = buildGaiaDownloadCommand({ pythonBin, destRoot, split });
-  log(`GAIA is a GATED dataset. Ensure HF_TOKEN is set to a token whose account accepted the terms at`);
-  log(`  https://huggingface.co/datasets/gaia-benchmark/GAIA`);
-  log(`Then set PAPERCUSP_GAIA_${split.toUpperCase()}_DIR=${destRoot}/2023/${split}`);
+  const { cmd } = buildGaiaDownloadCommand({ pythonBin, destRoot, split });
+  log('GAIA is a GATED dataset. Unblock with EITHER:');
+  log('  • export HF_TOKEN=<token>   (account must have accepted the terms at');
+  log('    https://huggingface.co/datasets/gaia-benchmark/GAIA )');
+  log(`  • or drop the token into ${gaiaHfTokenFile()}`);
   log('');
-  log('Download command:');
-  log(`  ${cmd} -c '<python snapshot_download…>'`);
   if (!has('--run')) {
-    log('\n(Dry run — pass --run to execute. Requires HF_TOKEN in env + huggingface_hub installed.)');
+    log(`(Dry run — pass --run to execute. Interpreter: ${cmd}.)`);
     return;
   }
-  if (!process.env.HF_TOKEN && !process.env.HUGGING_FACE_HUB_TOKEN) {
-    log('\nERROR: --run given but HF_TOKEN is not set. GAIA is gated; aborting.');
+  const token = resolveHfToken();
+  if (!token) {
+    log(`\nERROR: --run given but no HF token found (env HF_TOKEN or ${gaiaHfTokenFile()}). GAIA is gated; aborting.`);
     process.exitCode = 2;
     return;
   }
-  const { spawn } = await import('node:child_process');
-  await new Promise<void>((resolve) => {
-    const child = spawn(cmd, args, { stdio: 'inherit', env: process.env });
-    child.on('close', (code) => {
-      log(code === 0 ? `\nProvisioned. Set PAPERCUSP_GAIA_${split.toUpperCase()}_DIR=${destRoot}/2023/${split}` : `\nDownload failed (exit ${code}).`);
-      if (code !== 0) process.exitCode = 2;
-      resolve();
-    });
-  });
+  const ok = await runDownload(token, split);
+  log(ok ? `\nProvisioned → ${destRoot}/2023/${split}` : `\nDownload failed.`);
+  if (!ok) process.exitCode = 2;
+}
+
+/** Ensure the validation corpus is on disk: present → true; absent but a token is available → auto-provision. */
+async function ensureProvisioned(): Promise<boolean> {
+  if (corpusPresent()) return true;
+  const token = resolveHfToken();
+  if (!token) return false;
+  log('Corpus absent; a token is available — auto-provisioning the validation split…');
+  return runDownload(token, 'validation');
 }
 
 async function selfcheck(): Promise<void> {
@@ -140,28 +160,67 @@ function writeRun(result: GaiaRunResult, label: string): string {
   return dir;
 }
 
-async function runTasks(tasks: GaiaTask[], label: string): Promise<void> {
+async function runTasks(tasks: GaiaTask[], label: string): Promise<GaiaRunResult> {
   const concurrency = Number(arg('--concurrency', '4'));
+  const accountId = arg('--account');
+  // RESUME: reuse prior predictions from a --resume <dir> (skips already-answered tasks → no re-spend).
+  const resumeDir = arg('--resume');
+  let priorPredictions: GaiaRunResult['predictions'] | undefined;
+  if (resumeDir && existsSync(join(resumeDir, 'predictions.jsonl'))) {
+    priorPredictions = parsePredictionsJsonl(readFileSync(join(resumeDir, 'predictions.jsonl'), 'utf8'));
+    log(`Resuming: ${priorPredictions.length} prior predictions from ${resumeDir}`);
+  }
   log(`Running ${tasks.length} GAIA tasks (${JSON.stringify(gaiaLevelCounts(tasks))}) @ concurrency ${concurrency}…`);
-  const llm = makeLiveGaiaLlm({});
+  const llm = makeLiveGaiaLlm({ accountId });
   const runAgent = makeLiveRunAgent({ llm });
-  const result = await runGaiaSuite(tasks, { runAgent }, { concurrency });
+  const result = await runGaiaSuite(tasks, { runAgent }, { concurrency, priorPredictions });
   const dir = writeRun(result, label);
   log('\n' + formatGaiaReportLine(result));
-  log(`\nWrote predictions + report to ${dir}`);
+  log(`reused ${result.totals.reused} prior · wrote predictions + report to ${dir}`);
+  return result;
 }
 
 async function pilot(): Promise<void> {
+  if (!(await ensureProvisioned())) {
+    log(`Cannot pilot — GAIA corpus not provisioned and no HF token. See \`provision\`.`);
+    process.exitCode = 3;
+    return;
+  }
   const perLevel = Number(arg('--per-level', '10'));
   const tasks = stratifiedGaiaSubset(loadGaiaValidation(), perLevel);
   await runTasks(tasks, `pilot-${perLevel}`);
 }
 
 async function run(): Promise<void> {
+  if (!(await ensureProvisioned())) {
+    log(`Cannot run — GAIA corpus not provisioned and no HF token. See \`provision\`.`);
+    process.exitCode = 3;
+    return;
+  }
   let tasks = loadGaiaValidation();
   const limit = arg('--limit');
   if (limit) tasks = tasks.slice(0, Number(limit));
   await runTasks(tasks, 'validation');
+}
+
+/**
+ * AUTORUN — the loop workhorse. If the corpus is reachable (or a token lets us provision it), run the pilot
+ * then the full validation and exit 0 (DONE). If no token/corpus yet, exit 7 (NOT-YET) so a driving loop knows
+ * to wait and retry. Idempotent: pass `--resume <dir>` to continue a partial run.
+ */
+async function autorun(): Promise<void> {
+  if (!(await ensureProvisioned())) {
+    log(`GAIA: still blocked — no corpus + no HF token (env HF_TOKEN or ${gaiaHfTokenFile()}). Nothing to run yet.`);
+    process.exitCode = 7; // NOT-YET sentinel for the driving loop
+    return;
+  }
+  log('GAIA corpus available — running pilot then full validation.');
+  if (!has('--skip-pilot')) {
+    const perLevel = Number(arg('--per-level', '10'));
+    await runTasks(stratifiedGaiaSubset(loadGaiaValidation(), perLevel), `pilot-${perLevel}`);
+  }
+  await runTasks(loadGaiaValidation(), 'validation');
+  log('\nGAIA autorun DONE (pilot + full validation complete).');
 }
 
 async function main(): Promise<void> {
@@ -171,16 +230,20 @@ async function main(): Promise<void> {
       return provision();
     case 'selfcheck':
       return selfcheck();
+    case 'autorun':
+      return autorun();
     case 'pilot':
       return pilot();
     case 'run':
       return run();
     default:
-      log('Usage: tsx gaia/cli.ts <provision|selfcheck|pilot|run> [flags]');
+      log('Usage: tsx gaia/cli.ts <provision|selfcheck|autorun|pilot|run> [flags]');
       log('  provision [--split validation|test] [--dest <root>] [--python <bin>] [--run]');
       log('  selfcheck');
-      log('  pilot [--per-level N] [--concurrency N]');
-      log('  run   [--limit N] [--concurrency N]');
+      log('  autorun   [--per-level N] [--skip-pilot] [--concurrency N] [--account <id>] [--resume <dir>]');
+      log('              exit 0 = done · exit 7 = NOT-YET (no token/corpus, loop should wait + retry)');
+      log('  pilot [--per-level N] [--concurrency N] [--account <id>] [--resume <dir>]');
+      log('  run   [--limit N] [--concurrency N] [--account <id>] [--resume <dir>]');
       process.exitCode = verb ? 2 : 0;
   }
 }

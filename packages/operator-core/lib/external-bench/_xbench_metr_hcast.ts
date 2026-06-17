@@ -17,7 +17,9 @@ import type { BenchTask } from './types';
 import { loadBenchTaskSet } from './task-sets';
 import { makeMetrHcastLiveOps, gatewayModelCall, metrGatewayBaseUrl } from './metr-hcast-live';
 import { runMetrHcastSuite } from './metr-hcast-driver';
-import { formatMetrHcastReport } from './metr-hcast-report';
+import { buildMetrHcastReport, formatMetrHcastReport } from './metr-hcast-report';
+import { appendAccumResult, loadAccumulatedResults, accumCoverage } from './metr-hcast-accum';
+import { dirname as pathDirname } from 'node:path';
 import type { HorizonWeighting } from '@papercusp/bench-metrics';
 
 function arg(name: string, def?: string): string | undefined {
@@ -40,6 +42,9 @@ async function main(): Promise<void> {
   const out = arg('out');
   const account = arg('account');
   const dryRun = hasFlag('dry-run');
+  const accumulate = hasFlag('accumulate');
+  // Accumulation dir = alongside --out (default the metr-hcast results dir).
+  const accumBase = out ? pathDirname(out) : `${process.env.HOME}/.papercusp/bench-results/metr-hcast`;
   const customIds = arg('task-ids')?.split(',').map((s) => s.trim()).filter(Boolean);
 
   let tasks: BenchTask[] = await loadBenchTaskSet(taskSet, customIds);
@@ -55,6 +60,12 @@ async function main(): Promise<void> {
   }
 
   const modelCall = gatewayModelCall({ model, ...(account ? { accountId: account } : {}) });
+  // In accumulate mode: fold in rows banked by earlier partial runs, and append each new row as it settles.
+  const prior = accumulate ? loadAccumulatedResults(accumBase) : {};
+  if (accumulate) {
+    const cov = accumCoverage(prior);
+    console.log(`[accumulate] prior banked rows: ${Object.entries(cov).map(([a, c]) => `${a}=${c.scoredTasks}/${c.baselinedTasks} scored`).join('  ') || '(none)'}`);
+  }
   const { resultsByArm, report } = await runMetrHcastSuite({
     tasks,
     arms,
@@ -67,14 +78,21 @@ async function main(): Promise<void> {
         concurrencyCap: () => concurrency,
       }),
     report: { weighting, bootstrap, runId: `metr-hcast-${taskSet}-${samples}s` },
+    ...(accumulate ? { priorResultsByArm: prior, onResult: (arm, r) => appendAccumResult(accumBase, arm, r) } : {}),
     onProgress: ({ arm, sample, done, total }) => console.log(`  …${arm} sample ${sample + 1}: ${done}/${total} rows`),
   });
 
-  console.log('\n' + formatMetrHcastReport(report));
+  // The report from the driver already folds prior accum (priorResultsByArm); rebuild explicitly for clarity.
+  const finalReport = accumulate ? buildMetrHcastReport(resultsByArm, { weighting, bootstrap, runId: `metr-hcast-${taskSet}-accum` }) : report;
+  console.log('\n' + formatMetrHcastReport(finalReport));
+  if (accumulate) {
+    const cov = accumCoverage(resultsByArm);
+    console.log(`[accumulate] cumulative scored coverage: ${Object.entries(cov).map(([a, c]) => `${a}=${c.scoredTasks}/${c.baselinedTasks}`).join('  ')}`);
+  }
 
   if (out) {
     mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, JSON.stringify({ report, resultsByArm }, null, 2), 'utf8');
+    writeFileSync(out, JSON.stringify({ report: finalReport, resultsByArm }, null, 2), 'utf8');
     console.log(`\nWrote run artifact → ${out}`);
   }
 }

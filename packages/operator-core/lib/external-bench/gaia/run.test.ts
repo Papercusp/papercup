@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatGaiaReportLine,
+  parsePredictionsJsonl,
   predictionsToJsonl,
   renderTrace,
   runGaiaSuite,
@@ -115,5 +116,38 @@ describe('gaia run — helpers', () => {
     const line = formatGaiaReportLine(out);
     expect(line).toContain('overall 100.0%');
     expect(line).toContain('L1 100.0%');
+  });
+});
+
+describe('gaia run — resume (priorPredictions)', () => {
+  it('reuses a prior real answer (does NOT re-run the agent) and re-runs error/empty tasks', async () => {
+    const tasks = [task('a', 1, 'Paris'), task('b', 2, '42'), task('c', 3, 'x')];
+    const calls: string[] = [];
+    const deps: GaiaRunDeps = {
+      runAgent: async (t) => {
+        calls.push(t.taskId);
+        return result(t.taskId, { answer: t.taskId === 'b' ? '42' : t.taskId === 'c' ? 'x' : 'WRONG' });
+      },
+    };
+    const prior = [
+      { task_id: 'a', model_answer: 'Paris', reasoning_trace: '', level: 1 as const, stopReason: 'done' as const, turns: 1, toolCalls: 0, tokensIn: 50, tokensOut: 5 }, // reuse (real answer)
+      { task_id: 'b', model_answer: '', reasoning_trace: '', level: 2 as const, stopReason: 'done' as const, turns: 1, toolCalls: 0, tokensIn: 1, tokensOut: 1 }, // empty → re-run
+      { task_id: 'c', model_answer: 'x', reasoning_trace: '', level: 3 as const, stopReason: 'error' as const, turns: 0, toolCalls: 0, tokensIn: 0, tokensOut: 0 }, // error → re-run
+    ];
+    const out = await runGaiaSuite(tasks, deps, { priorPredictions: prior });
+    // Only b and c re-ran; a was reused.
+    expect(calls.sort()).toEqual(['b', 'c']);
+    expect(out.totals.reused).toBe(1);
+    // a reused (Paris, correct), b re-ran (42, correct), c re-ran (x, correct) → 3/3.
+    expect(out.report.resolved).toBe(3);
+    // The reused prediction's tokens are counted.
+    expect(out.predictions.find((p) => p.task_id === 'a')?.tokensIn).toBe(50);
+  });
+
+  it('parsePredictionsJsonl round-trips predictionsToJsonl and tolerates junk', () => {
+    const recs = [{ task_id: 'a', model_answer: 'x', reasoning_trace: '', level: 1 as const, stopReason: 'done' as const, turns: 1, toolCalls: 0, tokensIn: 1, tokensOut: 1 }];
+    const parsed = parsePredictionsJsonl(predictionsToJsonl(recs) + '\n{bad json}\n');
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].task_id).toBe('a');
   });
 });

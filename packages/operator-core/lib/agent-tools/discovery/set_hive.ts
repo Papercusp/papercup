@@ -28,20 +28,30 @@ export default defineTool({
       'To deploy a hive’s execution frames use deploy:hive. To browse OTHERS’ hives use discovery:hives. Setting visibility:private withdraws a hive from the directory (it stops being re-announced; peers age it out via TTL).',
   },
   requirePrincipal: false,
-  args: z.object({
-    hiveId: z.string().min(1).max(120),
-    title: z.string().min(1).max(200),
-    description: z.string().max(2000).default(''),
-    visibility: z.enum(HIVE_VISIBILITIES as unknown as [string, ...string[]]).default('public'),
-    /** Member harness swarm-topics (hex) — the display signal (how many harnesses). */
-    memberTopics: z.array(z.string().min(1)).max(64).optional(),
-    /** Full papercusp://harness?... join links per member harness (one-click join). */
-    memberLinks: z.array(z.string().min(1)).max(64).optional(),
-    /** Required for visibility:invite — the secret whose topic invitees join. */
-    inviteSecret: z.string().min(1).optional(),
-    /** Epoch-ms created stamp (defaults to now on first create). */
-    createdAt: z.number().int().positive().optional(),
-  }),
+  args: z
+    .object({
+      hiveId: z.string().min(1).max(120),
+      title: z.string().min(1).max(200),
+      description: z.string().max(2000).default(''),
+      visibility: z.enum(HIVE_VISIBILITIES as unknown as [string, ...string[]]).default('public'),
+      /** Member harness swarm-topics (hex) — the display signal (how many harnesses). */
+      memberTopics: z.array(z.string().min(1)).max(64).optional(),
+      /** Full papercusp://harness?... join links per member harness (one-click join). */
+      memberLinks: z.array(z.string().min(1)).max(64).optional(),
+      /** Required for visibility:invite — the secret whose topic invitees join. */
+      inviteSecret: z.string().min(1).optional(),
+      /** Epoch-ms created stamp (defaults to now on first create). */
+      createdAt: z.number().int().positive().optional(),
+    })
+    // invite genuinely REQUIRES the secret — `publishHiveToDirectory` throws
+    // without it (hive-publish.ts) and the sibling HTTP route 400s up front
+    // (set-hive.ts). Reject here too so the MCP face fails cleanly BEFORE the
+    // meta is saved, instead of half-saving then surfacing a generic
+    // announceError (the "one flip surface" P-015 stays consistent).
+    .refine((a) => a.visibility !== 'invite' || !!a.inviteSecret, {
+      message: 'invite visibility requires inviteSecret',
+      path: ['inviteSecret'],
+    }),
   async handler(args) {
     // The composition (save → withdraw|publish) is shared with the HTTP face
     // (POST /api/discovery/set-hive) — one flip surface (P-015).

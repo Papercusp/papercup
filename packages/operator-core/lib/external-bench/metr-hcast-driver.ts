@@ -30,6 +30,11 @@ export interface MetrHcastDriverOpts {
   report?: MetrHcastReportOpts;
   /** Per-arm per-sample progress callback (for the CLI's live log). */
   onProgress?: (e: { arm: string; sample: number; done: number; total: number }) => void;
+  /** Fired the instant each task settles (per arm) — the CLI appends it to a per-arm accumulation JSONL so a
+   *  partial/killed run banks its completed rows (P-005 under intermittent opus). */
+  onResult?: (arm: string, r: MetrHcastTaskResult) => void | Promise<void>;
+  /** Prior accumulated results to FOLD INTO the report (rows banked by earlier partial runs). */
+  priorResultsByArm?: Record<string, MetrHcastTaskResult[]>;
 }
 
 export interface MetrHcastDriverResult {
@@ -51,9 +56,12 @@ export async function runMetrHcastSuite(opts: MetrHcastDriverOpts): Promise<Metr
   const workspaceId = opts.workspaceId ?? 'metr-hcast';
 
   const resultsByArm: Record<string, MetrHcastTaskResult[]> = {};
+  // Seed with any prior accumulated rows so the report reflects cumulative progress across partial runs.
+  for (const [arm, rows] of Object.entries(opts.priorResultsByArm ?? {})) resultsByArm[arm] = [...rows];
+
   for (const arm of arms) {
     const ops = opts.opsFor(arm);
-    const acc: MetrHcastTaskResult[] = [];
+    const acc: MetrHcastTaskResult[] = resultsByArm[arm] ?? [];
     for (let sample = 0; sample < samples; sample++) {
       const seedResults = await runMetrHcastBacklog(ops, {
         backlog: opts.tasks,
@@ -61,8 +69,8 @@ export async function runMetrHcastSuite(opts: MetrHcastDriverOpts): Promise<Metr
         budget,
         seed: String(sample),
         workspaceId,
+        onResult: opts.onResult ? (r) => opts.onResult!(arm, r) : undefined,
       });
-      // Stamp the seed onto the attempt so multi-sample rows are distinct (the runner uses the seed we pass).
       acc.push(...seedResults);
       opts.onProgress?.({ arm, sample, done: acc.length, total: opts.tasks.length * samples });
     }

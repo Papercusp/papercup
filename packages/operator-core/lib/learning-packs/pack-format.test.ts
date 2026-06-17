@@ -7,11 +7,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
+  compareSemver,
   filterByShapes,
   memoryTextOf,
   parseLearningFile,
   parseManifest,
   provenanceOf,
+  semverGt,
   validatePack,
   type LearningPack,
 } from './pack-format';
@@ -167,5 +169,35 @@ describe('load-packs (tmp fixture roots)', () => {
     expect(
       await listLearningPacks({ roots: [{ dir: join(root, 'missing'), source: 'builtin' }] }),
     ).toEqual([]);
+  });
+});
+
+describe('compareSemver / semverGt (LP-1: numeric, not string)', () => {
+  it('orders by numeric component, not lexical string', () => {
+    // The string-inequality bug: '1.10.0' !== '1.9.0' is true either way, but
+    // '1.10.0' < '1.9.0' lexically — only numeric compare reads 1.10 > 1.9.
+    expect(compareSemver('1.10.0', '1.9.0')).toBe(1);
+    expect(compareSemver('1.9.0', '1.10.0')).toBe(-1);
+    expect(compareSemver('2.0.0', '1.0.0')).toBe(1);
+    expect(compareSemver('0.0.10', '0.0.9')).toBe(1);
+    expect(compareSemver('1.2.3', '1.2.3')).toBe(0);
+  });
+
+  it('semverGt: catalog newer than installed → true; older/equal → false', () => {
+    // installed 1.0.0, catalog 2.0.0 ⇒ update available.
+    expect(semverGt('2.0.0', '1.0.0')).toBe(true);
+    // installed 1.9.0, catalog 1.10.0 ⇒ update available (the string bug).
+    expect(semverGt('1.10.0', '1.9.0')).toBe(true);
+    // installed 2.0.0, catalog 1.0.0 ⇒ DOWNGRADE, NOT an update (string !== bug).
+    expect(semverGt('1.0.0', '2.0.0')).toBe(false);
+    // equal ⇒ not an update (string !== would also be false here — the safe case).
+    expect(semverGt('1.0.0', '1.0.0')).toBe(false);
+  });
+
+  it('semverGt tolerates undefined / malformed versions (never spuriously true)', () => {
+    expect(semverGt(undefined, '1.0.0')).toBe(false);
+    expect(semverGt('1.0.0', undefined)).toBe(false);
+    expect(semverGt('not-a-version', '1.0.0')).toBe(false);
+    expect(semverGt('1.0.0', 'not-a-version')).toBe(true); // valid beats malformed
   });
 });

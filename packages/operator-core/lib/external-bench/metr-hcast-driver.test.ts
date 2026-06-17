@@ -69,6 +69,32 @@ describe('runMetrHcastSuite', () => {
     expect(report.arms).toHaveLength(1);
   });
 
+  it('fires onResult per settled task and folds priorResultsByArm into the report', async () => {
+    const banked: Array<{ arm: string; id: string }> = [];
+    const prior = {
+      papercusp: [
+        {
+          attempt: { arm: 'papercusp', blueprintId: 'metr-hcast', instanceId: 'fam99__t99', seed: '0', diff: '', tokensIn: 1, tokensOut: 1, costUsd: 0, turns: 1, wallClockMs: 1, trajectoryRef: '', stopReason: 'done' as const, armMeta: { family: 'fam99' } },
+          grade: { instanceId: 'fam99__t99', prefix: '0', resolved: true, score: 1, graderFamily: 'metr-hcast', graderVersion: '1', rawGraderOutput: {} },
+          humanMinutes: 99,
+        },
+      ],
+    };
+    const { resultsByArm } = await runMetrHcastSuite({
+      tasks: TASKS,
+      arms: ['papercusp'],
+      opsFor: () => competenceOps(64),
+      report: { bootstrap: 0 },
+      priorResultsByArm: prior,
+      onResult: (arm, r) => { banked.push({ arm, id: r.attempt.instanceId }); },
+    });
+    // onResult fired once per task (7 tasks × 1 sample).
+    expect(banked).toHaveLength(7);
+    // The prior banked row is folded in → resultsByArm has prior(1) + new(7) = 8.
+    expect(resultsByArm['papercusp']).toHaveLength(8);
+    expect(resultsByArm['papercusp'].some((r) => r.attempt.instanceId === 'fam99__t99')).toBe(true);
+  });
+
   it('never throws when an arm op fails for a task', async () => {
     const flaky: MetrHcastRunnerOps = {
       ...competenceOps(32),
