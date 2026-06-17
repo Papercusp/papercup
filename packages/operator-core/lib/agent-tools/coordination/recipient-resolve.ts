@@ -76,3 +76,41 @@ export async function resolveRecipients(
     presence.map((p) => p.ownerId),
   );
 }
+
+/** PURE best-effort core: rewrite each entry to its FULL ownerId when a unique
+ *  prefix matches, otherwise leave it UNCHANGED (the silent twin of
+ *  resolveRecipientsAgainst — for the shared message/wake layers where a hard
+ *  fail would break federation + broadcasts). selector/wildcard, exact match,
+ *  ambiguous, and unknown all pass through untouched; only a unique prefix is
+ *  rewritten. */
+export function resolveBestEffort(
+  to: readonly string[],
+  knownOwnerIds: readonly string[],
+): string[] {
+  const known = new Set(knownOwnerIds);
+  return to.map((id) => {
+    if (isSelectorOrWildcard(id) || known.has(id)) return id;
+    const matches = knownOwnerIds.filter((k) => k.startsWith(id));
+    return matches.length === 1 ? matches[0] : id;
+  });
+}
+
+/** Host wrapper: resolve `to` best-effort against the live roster. SKIPS the
+ *  roster read entirely when every entry is a selector/wildcard (broadcasts pay
+ *  nothing), and FAILS SOFT (returns `to` unchanged) if the roster read errors —
+ *  resolution must never break a send/wake. */
+export async function resolveBestEffortAgainstRoster(
+  to: readonly string[],
+  workspaceId?: string | null,
+): Promise<string[]> {
+  if (!to.some((id) => !isSelectorOrWildcard(id))) return [...to];
+  try {
+    const presence = await listPresence({ workspaceId });
+    return resolveBestEffort(
+      to,
+      presence.map((p) => p.ownerId),
+    );
+  } catch {
+    return [...to];
+  }
+}

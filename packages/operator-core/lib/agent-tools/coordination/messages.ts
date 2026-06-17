@@ -24,6 +24,7 @@ import { hostAudienceResolvers, audienceMode } from './audience-host';
 import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
 import { parkSlotMessage, drainUserMailbox } from './slot-parked-store';
 import type { AgentIdentity } from './identity';
+import { resolveBestEffortAgainstRoster } from './recipient-resolve';
 
 export type { InboxOptions };
 
@@ -73,9 +74,13 @@ export async function sendMessage(
   const liveAddrs = slots.length
     ? opts.to.filter((t) => parseSlotSelector(t) === null)
     : opts.to;
-  const to = hasAudienceSelector(liveAddrs)
+  const toExpanded = hasAudienceSelector(liveAddrs)
     ? await expandAudience(liveAddrs, hostAudienceResolvers, audienceMode())
     : liveAddrs;
+  // owner-2026-06-17: resolve short ownerId PREFIXES to full ids so inbox delivery
+  // + any inbox-wake hit the right recipient. Best-effort + fail-soft; an
+  // all-selector/broadcast `to` skips the roster read entirely.
+  const to = await resolveBestEffortAgainstRoster(toExpanded, identity.workspaceId);
   const env: CoordEnvelope = {
     ts: new Date().toISOString(),
     msg_id: newMsgId(),

@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { openHandoff, acceptHandoff } from '../handoffs';
+import { resolveBestEffortAgainstRoster } from '../recipient-resolve';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -90,8 +91,11 @@ export default defineTool({
         isError: true,
       };
     }
+    // owner-2026-06-17: resolve short ownerId prefixes to full ids so the handoff
+    // records + reaches the right agent. Best-effort + fail-soft.
+    const handoffTo = await resolveBestEffortAgainstRoster(args.to, identity.workspaceId);
     const rec = await openHandoff(identity, {
-      to: args.to,
+      to: handoffTo,
       plan_slug: args.plan_slug,
       summary: args.summary,
       body: args.body,

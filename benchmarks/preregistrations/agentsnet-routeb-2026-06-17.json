@@ -1,0 +1,17 @@
+{
+  "runId": "agentsnet-routeb-2026-06-17",
+  "preregHash": "83f3005f702fa5213da02da781dd583d1f41fb5068eba5b665c643fe52d14dc7",
+  "label": "AgentsNet (opus-as-nodes, route A)",
+  "suites": [
+    "agentsnet"
+  ],
+  "createdAt": "2026-06-17T09:05:44.084Z",
+  "config": {
+    "suite": "agentsnet",
+    "arm": "papercusp",
+    "modelId": "claude-opus-4-8",
+    "harnessVersion": "agentsnet@vendored-2026-06-17",
+    "graderVersion": "agentsnet@arxiv-2507.08616",
+    "label": "AgentsNet (opus-as-nodes, route A)"
+  }
+}

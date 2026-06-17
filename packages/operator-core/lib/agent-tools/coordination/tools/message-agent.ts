@@ -32,6 +32,7 @@ import { COORD_ROLES } from '../roles';
 import { openConversation } from '../conversations';
 import { sendMessage } from '../messages';
 import { wakeRecipients } from '../inbox-wake';
+import { resolveBestEffortAgainstRoster } from '../recipient-resolve';
 
 function truncate(s: string, n = 100): string {
   const t = s.trim().replace(/\s+/g, ' ');
@@ -74,6 +75,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // owner-2026-06-17: resolve a short ownerId prefix to the full id so the
+    // subscribe (+ ping + wake) target the right agent. Best-effort + fail-soft.
+    const toOwner = args.to
+      ? (await resolveBestEffortAgainstRoster([args.to], identity.workspaceId))[0]
+      : undefined;
     const workItemLabel =
       args.item_ref && args.plan_slug
         ? `${args.plan_slug} ${args.item_ref}`
@@ -92,14 +98,14 @@ export default defineTool({
 
     // 2. Subscribe the owning agent so every later thread reply reaches them.
     let subscribedOwner = false;
-    if (args.to && args.to !== identity.ownerId) {
+    if (toOwner && toOwner !== identity.ownerId) {
       try {
         const subs = new PgEntitySubscriptionStore({
           getSql: () => getOrgPg().sql,
           ensureSchema: async () => {},
         });
         await subs.subscribe({
-          subscriber_id: args.to,
+          subscriber_id: toOwner,
           target_kind: 'object',
           target_ref: objectToTargetRef({ kind: 'conversation', ref: conversationId }),
           delivery_mode: 'full',

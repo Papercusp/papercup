@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isSelectorOrWildcard, resolveRecipientsAgainst } from './recipient-resolve';
+import {
+  isSelectorOrWildcard,
+  resolveBestEffort,
+  resolveRecipientsAgainst,
+} from './recipient-resolve';
 
 // Two `su-` agents (distinct uuids) + a `pus-` agent — the prefix `su-df00939e`
 // uniquely picks the first; the prefix `su-` is ambiguous across both.
@@ -61,5 +65,23 @@ describe('isSelectorOrWildcard', () => {
   it('treats a concrete ownerId as not-a-selector', () => {
     expect(isSelectorOrWildcard('su-df00939e')).toBe(false);
     expect(isSelectorOrWildcard('pus-abcdef01-2345')).toBe(false);
+  });
+});
+
+describe('resolveBestEffort (the silent shared-layer twin)', () => {
+  it('rewrites a unique prefix to the full ownerId', () => {
+    expect(resolveBestEffort(['su-df00939e'], KNOWN)).toEqual([
+      'su-df00939e-1f16-410d-ac0d-ef1aebd41d96',
+    ]);
+  });
+  it('leaves an UNKNOWN id unchanged (best-effort never rejects)', () => {
+    expect(resolveBestEffort(['su-zzz99999'], KNOWN)).toEqual(['su-zzz99999']);
+  });
+  it('leaves an AMBIGUOUS prefix unchanged', () => {
+    expect(resolveBestEffort(['su-'], KNOWN)).toEqual(['su-']);
+  });
+  it('passes selectors/wildcards + exact ids through untouched', () => {
+    const to = ['*', 'human', '@plan:x', 'su-fc2fd592-e760-42bd-8057-beb4d06eef52'];
+    expect(resolveBestEffort(to, KNOWN)).toEqual(to);
   });
 });

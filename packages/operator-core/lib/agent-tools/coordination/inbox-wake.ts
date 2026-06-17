@@ -27,6 +27,7 @@ import { emitAwaitedEvent } from '../../events/await/engine';
 // hive-agent-tabs P-007/D-005: the per-agent wake-mode gate (consumed below).
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
+import { resolveBestEffortAgainstRoster } from './recipient-resolve';
 
 /** Prefix for the per-agent inbox-wake key. A bee watches `inboxWakeKey(self)`;
  *  a `{wake:true}` send to that bee fires exactly this key. */
@@ -75,7 +76,11 @@ export async function wakeRecipients(
   recipients: readonly string[],
   opts: { summary?: string; payload?: unknown; source?: string; workspaceId?: string } = {},
 ): Promise<WakeRecipientsResult> {
-  const targets = [...new Set(recipients)].filter((r) => !NON_WAKEABLE.has(r));
+  // owner-2026-06-17: resolve a short ownerId PREFIX to the full id before firing
+  // the wake key — the key is exact (`coord:inbox-wake:<full-ownerId>`), so a short
+  // prefix would fire a key nobody watches (woken:0). Best-effort + fail-soft.
+  const resolved = await resolveBestEffortAgainstRoster(recipients, opts.workspaceId);
+  const targets = [...new Set(resolved)].filter((r) => !NON_WAKEABLE.has(r));
   // The per-agent wake-MODE gate (hive-agent-tabs P-007/D-005), GRADUATED off
   // the HIVE_AGENT_TABS flag (start-hive-wake P-007 / OQ-2): the gate is the
   // hive's PAUSE primitive (hive:pause sets the global default to `manual`), so
