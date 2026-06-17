@@ -14,10 +14,12 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   listPlanIndexRows,
+  listPlanIndexRowsForWorkspace,
   getPlanContentsBySlugs,
   resolveHarnessPlansDir,
   type PlanIndexRow,
 } from './source';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatusForItems } from './effective-status';
@@ -73,6 +75,10 @@ const argsSchema = z.object({
     .pipe(z.array(z.string().min(1)).max(HARNESS_SLUGS_MAX, { message: `harness_slugs capped at ${HARNESS_SLUGS_MAX}` }))
     .optional()
     .describe('Optional explicit fan-out across multiple harnesses (overrides ctx harness).'),
+  workspaceWide: z
+    .boolean()
+    .optional()
+    .describe('List EVERY plan in the active workspace, regardless of harness (workspace-data-isolation-leaks F-A1). The UI "all plans" view uses this instead of the harness:"all" wildcard (which is the SU shortcut for Papercusp\'s own plans). Overrides harness / harness_slugs.'),
   harness: harnessArg,
 });
 
@@ -158,24 +164,54 @@ export default defineTool({
     // resolveHarnessPlansDir); otherwise fall through to the ctx-resolver's
     // single harness. Unknown slugs produce a warning entry instead of
     // throwing — caller may pass a stale registry snapshot from the client.
+    // F-A1: the workspace-wide path lists every plan in the active workspace by
+    // workspace_id (RLS-scoped), regardless of harness — the UI "all plans" view.
+    // Otherwise resolve the harness set as before (explicit fan-out, or the ctx
+    // harness / the SU 'all' wildcard → papercup).
     const perHarness: string[] = [];
     const unknownHarnesses: string[] = [];
-    if (args.harness_slugs && args.harness_slugs.length > 0) {
-      const seen = new Set<string>();
-      for (const slug of args.harness_slugs) {
-        const trimmed = slug.trim();
-        if (!trimmed || seen.has(trimmed)) continue;
-        seen.add(trimmed);
-        try {
-          const r = await resolveHarnessPlansDir(trimmed);
-          if (!perHarness.includes(r.harnessSlug)) perHarness.push(r.harnessSlug);
-        } catch {
-          unknownHarnesses.push(trimmed);
+    if (!args.workspaceWide) {
+      if (args.harness_slugs && args.harness_slugs.length > 0) {
+        const seen = new Set<string>();
+        for (const slug of args.harness_slugs) {
+          const trimmed = slug.trim();
+          if (!trimmed || seen.has(trimmed)) continue;
+          seen.add(trimmed);
+          try {
+            const r = await resolveHarnessPlansDir(trimmed);
+            if (!perHarness.includes(r.harnessSlug)) perHarness.push(r.harnessSlug);
+          } catch {
+            unknownHarnesses.push(trimmed);
+          }
         }
+      } else {
+        const one = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
+        perHarness.push(one.harnessSlug);
       }
+    }
+
+    // Fetch the index rows as per-harness batches. Workspace-wide reads them all
+    // at once (one query by workspace_id) and groups by harness so the per-harness
+    // gap-fill + row processing below is unchanged.
+    const batches: Array<{ harnessSlug: string; rows: PlanIndexRow[] }> = [];
+    if (args.workspaceWide) {
+      const allRows = await listPlanIndexRowsForWorkspace({
+        workspaceId: activeWorkspaceId(),
+        includeArchived,
+        includeInstances,
+      });
+      const byHarness = new Map<string, PlanIndexRow[]>();
+      for (const r of allRows) {
+        const arr = byHarness.get(r.harnessSlug) ?? [];
+        arr.push(r);
+        byHarness.set(r.harnessSlug, arr);
+      }
+      for (const [harnessSlug, rows] of byHarness) batches.push({ harnessSlug, rows });
     } else {
-      const one = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
-      perHarness.push(one.harnessSlug);
+      for (const harnessSlug of perHarness) {
+        const rows = await listPlanIndexRows({ harnessSlug, includeArchived, includeInstances });
+        batches.push({ harnessSlug, rows });
+      }
     }
 
     type AugmentedRow = ListRow & {
@@ -214,12 +250,11 @@ export default defineTool({
       console.warn('[plans:list] scout-provenance read failed — origin omitted:', err instanceof Error ? err.message : err);
     }
 
-    for (const harnessSlug of perHarness) {
-      // Index-only read (audit P-042 — EI-98/EI-174/EI-175): every field this
+    for (const { harnessSlug, rows } of batches) {
+      // Index-only rows (audit P-042 — EI-98/EI-174/EI-175): every field this
       // row needs lives in the harness_plans projection columns, so the
       // content blobs never leave PG and nothing is parsed per request. The
-      // archived filter runs in SQL.
-      const rows = await listPlanIndexRows({ harnessSlug, includeArchived, includeInstances });
+      // archived filter ran in SQL during the fetch above.
 
       // Targeted fallback for projection-gap rows (non-legacy with an empty
       // Stage-3 items index — e.g. a federated remote row whose projection
@@ -322,7 +357,7 @@ export default defineTool({
       count: augmentedRows.length,
       includeArchived,
       includeLegacy,
-      harnessCount: perHarness.length,
+      harnessCount: batches.length,
       ...(unknownHarnesses.length > 0 && { unknownHarnesses }),
     });
 

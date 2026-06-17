@@ -120,6 +120,13 @@ export const REPORT_ON_SUITES: readonly BenchSet[] = Object.freeze([
     rationale:
       'The DIRECT coordination dimension: one opus agent per graph node, local-neighbor-only message passing, five distributed-computing tasks (coloring/consensus/leader-election/matching/vertex-cover) with deterministic get_score(). Reported on as a model-coordination number (optionally carried over our substrate, route B); NEVER a gym tuning target — D-002: it is decentralized/local-only, so our global-view queen would cheat it (plan benchmark-suite-agentsnet-2026-06-17).',
   },
+  {
+    id: 'swarmbench',
+    usage: 'report-on',
+    title: 'SwarmBench (decentralized swarm coordination; arXiv:2505.04364)',
+    rationale:
+      'Coordination-NATIVE 2D-grid swarm sim (Pursuit/Synchronization/Foraging/Flocking/Transport): N agents under local k×k view + local messaging, deterministic per-task sim score. The headline is the decentralized-peers-vs-centralized-coordinator topology delta — a coordination result no diff-batch suite can express. NEVER a gym tuning target — D-005; and per D-001 a global-view queen would violate the local-only premise (plan benchmark-suite-swarmbench-2026-06-17).',
+  },
 ]);
 
 /**

@@ -73,6 +73,7 @@ describe('gym↔report-set firewall — set-level disjointness (P-012)', () => {
         'swe-bench-live',
         'swe-bench-pro',
         'swe-evo',
+        'swarmbench',
         'swe-lancer',
         'swe-rebench',
         'terminal-bench',

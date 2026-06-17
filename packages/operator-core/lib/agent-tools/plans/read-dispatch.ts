@@ -46,9 +46,16 @@ export async function callPlansReadRaw(
   sp.set('superuser', '1');
   sp.set('client', ADMIN_UI_CLIENT_ID);
   const b: Record<string, unknown> = { ...body };
-  // /adv works at operator scope on Papercusp's own plans; default the
-  // harness gate to 'all' (→ papercup) unless the caller passed one.
-  if (b.harness == null) b.harness = 'all';
+  // /adv shows the ACTIVE workspace's plans. The cross-plan `list` verb defaults
+  // to the workspace-wide listing (workspace-data-isolation-leaks F-A1) instead
+  // of the harness:'all' wildcard (→ papercup/papercusp-workspace), which leaked
+  // papercup's plans into every other workspace. Other verbs target a specific
+  // plan (the UI passes its harness), so they keep the 'all' → papercup default.
+  if (verb === 'list' && b.harness == null && b.harness_slugs == null && b.workspaceWide == null) {
+    b.workspaceWide = true;
+  } else if (b.harness == null) {
+    b.harness = 'all';
+  }
   const result = await handleHttpToolRequest(
     {
       method: 'POST',

@@ -51,10 +51,8 @@ import { bindSuIndependentBacklogDriver, SU_INDEPENDENT_ARM } from './su-indepen
 import { bindRealQueenBacklogDriver, dissolveBenchHive, HIVE_REALQUEEN_ARM } from './hive-backlog-realqueen';
 import { runHiveBacklog } from './hive-backlog';
 import { loadBenchTaskSet } from './task-sets';
-import { gradeGaia, type GaiaPrediction } from './grader/gaia';
-import { coerceLevel } from './grader/gaia';
+import { gradeGaia, coerceLevel, type GaiaPrediction, type GaiaLevel } from './grader/gaia';
 import type { BenchTask } from './types';
-import type { GaiaLevel } from './gaia/dataset';
 
 type GaiaArm = typeof SU_INDEPENDENT_ARM | typeof HIVE_REALQUEEN_ARM;
 

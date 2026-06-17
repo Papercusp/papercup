@@ -55,6 +55,11 @@ export type BenchmarkFamily =
   // mutated container), so it self-grades through the standalone gaia/ pipeline (grader/gaia.ts + gaia/run.ts),
   // not the diff/in-container OfficialGrader registry.
   | 'gaia'
+  // SwarmBench (plan benchmark-suite-swarmbench-2026-06-17). Coordination-NATIVE 2D-grid sim: N agents,
+  // local k×k view + local messaging, deterministic per-task sim score. The arm = swarm-control TOPOLOGY
+  // (decentralized peers vs aggregated-local coordinator); rides makePoolBacklogDriver (one scenario = one
+  // perTask), the sim score on attempt.armMeta. D-001: a global-view queen would violate the local-only premise.
+  | 'swarmbench'
   | (string & {});
 
 /**

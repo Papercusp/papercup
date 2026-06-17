@@ -589,6 +589,55 @@ export async function listPlanIndexRows(
 }
 
 /**
+ * Index-only listing across the WHOLE active workspace — every plan in
+ * `workspaceId` regardless of harness (workspace-data-isolation-leaks F-A1).
+ *
+ * The UI "all plans" view must show the ACTIVE workspace's plans, not a single
+ * hardcoded harness. The legacy `harness:'all'` sentinel resolves to
+ * papercup/PAPERCUSP_WORKSPACE_ID (the SU wildcard for Papercusp's own plans) —
+ * correct for the dogfood, but a cross-workspace LEAK for any other workspace.
+ * This lists by `workspace_id` only (RLS + the explicit filter both scope it),
+ * so each workspace sees exactly its own plans. Output rows carry their own
+ * `harnessSlug`. (In papercup's own workspace every plan is under the papercup
+ * harness, so this returns the same set the old `harness:'all'` path did.)
+ */
+export async function listPlanIndexRowsForWorkspace(
+  opts: {
+    workspaceId: string;
+    includeArchived?: boolean;
+    status?: string;
+    limit?: number;
+    includeInstances?: boolean;
+  },
+): Promise<PlanIndexRow[]> {
+  const { workspaceId } = opts;
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+    const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
+    const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
+    const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+    return tx<Array<Omit<PlanDbRow, 'content'>>>`
+      SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
+             title, status, created, updated, owner, initiative, supersedes, superseded_by,
+             op_status, op_started_at, op_updated_at, current_wave, op_priority,
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId}
+       ${archivedFilter}
+       ${statusFilter}
+       ${instanceFilter}
+       ORDER BY harness_slug ASC, plan_slug ASC
+       ${limitClause}
+    `;
+  });
+  return rows.map((r) => {
+    const { content: _content, ...rest } = rowFromDb({ ...r, content: '' } as PlanDbRow);
+    return rest;
+  });
+}
+
+/**
  * Author a plan's SCHEDULE — the operational schedule columns (scheduled-recurring-plans
  * D-004/D-016, P-014), distinct from the markdown blob (like the op_* columns). Writes
  * `schedule` (jsonb), `scheduled_at`, `expires_at`, `tzid`. Does NOT arm the schedule

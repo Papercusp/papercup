@@ -130,10 +130,27 @@ export interface GaiaExtractDeps {
  */
 export async function extractGaiaAnswer(checkout: TaskCheckout, deps: GaiaExtractDeps = {}): Promise<string> {
   const readFile = deps.readFile ?? ((p: string) => readFileP(p, 'utf8'));
+  const answerPath = join(checkout.dir, GAIA_ANSWER_FILE);
   try {
-    const body = await readFile(join(checkout.dir, GAIA_ANSWER_FILE));
-    return body.trim();
-  } catch {
+    const body = await readFile(answerPath);
+    const trimmed = body.trim();
+    if (process.env.PAPERCUSP_GAIA_DEBUG) {
+      console.log(`[gaia-extract] OK ${answerPath} len=${trimmed.length} → ${JSON.stringify(trimmed.slice(0, 80))}`);
+    }
+    return trimmed;
+  } catch (err) {
+    // Diagnostic (DEBUG-gated): a miss here is the common "answer.txt not where we looked" failure — log the
+    // path we tried + a listing of the checkout dir + any sibling answer.txt under it, so a re-probe pinpoints
+    // a cwd/path mismatch (the bee wrote answer.txt to a different dir than checkout.dir) vs a genuine no-answer.
+    if (process.env.PAPERCUSP_GAIA_DEBUG && !deps.readFile) {
+      try {
+        const { readdirSync, existsSync } = await import('node:fs');
+        const listing = existsSync(checkout.dir) ? readdirSync(checkout.dir).join(', ') : '(dir gone)';
+        console.log(`[gaia-extract] MISS ${answerPath} (${err instanceof Error ? err.message : String(err)}); dir contents: [${listing}]`);
+      } catch {
+        /* diagnostic only */
+      }
+    }
     return '';
   }
 }

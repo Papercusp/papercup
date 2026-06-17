@@ -77,6 +77,10 @@ export type BenchSuite =
   // opus, neighbor-only message passing, deterministic get_score() → continuous [0,1]
   // coordination score on TaskRunResult.score; official BINARY headline = (score === 1).
   | 'agentsnet'
+  // SwarmBench (plan benchmark-suite-swarmbench-2026-06-17). Coordination-native decentralized 2D-grid
+  // swarm sim; deterministic per-task sim score on TaskRunResult.score. Headline = the decentralized-vs-
+  // centralized topology delta (D-001: the fair queen sees aggregated-local views only, not the global grid).
+  | 'swarmbench'
   | (string & {});
 
 /** Grader modality (P-001 §1): offline diff-batch · online in-container · qa (a single FINAL ANSWER string,

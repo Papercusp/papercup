@@ -8,6 +8,7 @@
  * Table: harness_shared.pending_wakes (migration 204).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 /**
  * Push the hive-scoped wake board (`network.hive.wakes`, hive-network-surface
@@ -134,9 +135,13 @@ export async function listPendingWakes(ownerId: string): Promise<PendingWake[]> 
  */
 export async function listAllPendingWakes(): Promise<PendingWake[]> {
   const { sql } = getOrgPg();
+  // F-C3 (workspace-data-isolation-leaks): pending_wakes has workspace_id but no
+  // RLS + getOrgPg() bypasses it, so scope the fleet-wide wake board to the active
+  // workspace (else every workspace's staged wakes appear in one board).
   const rows = await sql`
     SELECT id, owner_id, summary, payload, source, workspace_id, created_at, count, last_seen_at
     FROM harness_shared.pending_wakes
+    WHERE workspace_id = ${activeWorkspaceId()}
     ORDER BY owner_id ASC, id ASC
     LIMIT ${BOARD_READ_LIMIT}
   `;
@@ -168,9 +173,11 @@ export async function countPendingWakes(ownerId: string): Promise<number> {
  */
 export async function countAllPendingWakes(): Promise<Map<string, number>> {
   const { sql } = getOrgPg();
+  // F-C3: scope the per-agent badge counts to the active workspace (see listAllPendingWakes).
   const rows = await sql`
     SELECT owner_id, count(*)::int AS n
     FROM harness_shared.pending_wakes
+    WHERE workspace_id = ${activeWorkspaceId()}
     GROUP BY owner_id
   `;
   const out = new Map<string, number>();

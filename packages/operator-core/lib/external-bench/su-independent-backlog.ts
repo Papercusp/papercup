@@ -702,6 +702,30 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       const { extractDiff } = await import('./clone');
       const { readMemberUsage, readMemberBeeSpawns, stopReasonForFeatureStatus } = await import('./hive-backlog-live');
       const sql = await sqlClient();
+      const member = memberSlugForTask(hivePrefix, task.instanceId);
+      const featureId = memberSlugToFeatureId.get(member) ?? featureIdForTask(task.instanceId);
+
+      // WAIT for the bee to finish before reading its work product. The bench bee runs ASYNC after
+      // placeFifoBatch; UNLIKE the real-Queen arm (whose DRIVER polls until drained before collecting),
+      // this arm calls collectTask straight after placement — so collect MUST poll the spawn to a terminal
+      // state itself. Without it, collect read an in-progress task → empty diff + $0 + 'infra-failed' while
+      // the bee was still working, orphaning a live opus bee (observed 2026-06-17, the verification-probe
+      // $0 fails). Bounded by a per-task ceiling; the bee's own INVOKE_TIMEOUT terminates the spawn first.
+      {
+        const deadline = Date.now() + 45 * 60 * 1000;
+        for (;;) {
+          const rows = await sql<{ status: string }[]>`
+            SELECT status FROM harness_shared.spawned_agents
+             WHERE workspace_id = ${ws} AND spawn_id = ${spawnId} LIMIT 1`.catch(() => [] as { status: string }[]);
+          const st = rows[0]?.status ?? null;
+          if (st === 'done' || st === 'failed' || st === 'cancelled') break;
+          if (Date.now() >= deadline) break;
+          await new Promise<void>((r) => {
+            const t = setTimeout(r, 5000);
+            t.unref?.();
+          });
+        }
+      }
 
       // Extract the work product. GAIA SWAP 3: read `answer.txt` (the qa answer) instead of the git diff.
       let diff = '';
@@ -719,8 +743,6 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       }
 
       // Read cost + bee spawn info from the member harness.
-      const member = memberSlugForTask(hivePrefix, task.instanceId);
-      const featureId = memberSlugToFeatureId.get(member) ?? featureIdForTask(task.instanceId);
       const cost = await readMemberUsage(sql, member, ws).catch(() => ({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 }));
       const spawnRows = await readMemberBeeSpawns(sql, member, ws).catch(() => []);
 

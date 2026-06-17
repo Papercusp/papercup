@@ -164,11 +164,17 @@ async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> 
   }
   const url = new URL(req.url);
   const body = bodyFromSearchParams(url.searchParams) as Record<string, unknown>;
-  // /adv is the operator's own plan UI, working at operator scope on Papercusp's
-  // plans. The plans:* tools now require an explicit harness (the all-sentinel
-  // gate); default it to 'all' (→ papercup) so /adv keeps its pre-gate behavior,
-  // unless the caller passed one (?harness=…).
-  if (body.harness == null) body.harness = 'all';
+  // /adv shows the ACTIVE workspace's plans. For the cross-plan `list` verb,
+  // default to the workspace-wide listing (every plan in the active workspace,
+  // any harness) instead of the harness:'all' wildcard — that wildcard resolves
+  // to papercup/papercusp-workspace and LEAKED its plans into every other
+  // workspace (workspace-data-isolation-leaks F-A1). Other verbs keep the 'all'
+  // → papercup default (they target a specific plan whose harness the UI passes).
+  if (verb === 'list' && body.harness == null && body.harness_slugs == null && body.workspaceWide == null) {
+    body.workspaceWide = true;
+  } else if (body.harness == null) {
+    body.harness = 'all';
+  }
   const result = await handleHttpToolRequest(
     {
       method: 'POST',
