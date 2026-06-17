@@ -93,15 +93,20 @@ There are **two** governor singletons in **two** processes, and they are not the
   `maxSimultaneousAgents` cap → the **AIMD adaptive concurrency** (rate-limit-layer-v2 D-005:
   multiplicative-decrease on `penalize`, additive-increase after clean streaks) IS active here.
 - **Gateway** (`:8788`, `bin.ts → startGatewayService`): **never** calls `initRateLimitConfig` /
-  `setGlobalConcurrencyCap`, so its global gate has no finite cap → **AIMD is DORMANT in the
-  gateway.** Only the *static* per-account governor runs there (`maxConcurrent: 3`, `rpm: 45`,
-  `recordResponse` util-pacing, `penalize` pause, + the fault-#3 bare-429 failover). So under
-  sustained transient throttles the gateway pauses-then-resumes at the SAME static rate rather than
-  adaptively settling — predictive per-account pacing is *designed* but only *partly* wired on the
-  egress path. ⚠ You can't just install the operator's cap into the gateway: the operator cap is
-  **agent-concurrency**; the gateway gate is **per-request concurrency** — copying `cap=1` would
-  throttle the gateway to one in-flight HTTP request. A true gateway fix is per-account AIMD on the
-  gateway's own buckets.
+  `setGlobalConcurrencyCap`, so its global gate has no finite cap → fleet-wide **AIMD is DORMANT in
+  the gateway**; only the *static* per-account governor runs there (`maxConcurrent: 3`, `rpm: 45`,
+  `recordResponse` util-pacing, `penalize` pause). ⚠ You can't just install the operator's cap into
+  the gateway: the operator cap is **agent-concurrency**; the gateway gate is **per-request
+  concurrency** — copying `cap=1` would throttle the gateway to one in-flight HTTP request.
+  Instead (2026-06-17) the gateway became a **resilient retrying proxy** — the practical fix that
+  matters more than AIMD: on a throttle it doesn't just forward the error (bees have a tiny CLI retry
+  budget that exhausts → `$0` fail), it **internally retries across the pool before responding**
+  (`INTERNAL_RETRY_MAX_ATTEMPTS`): a transient/bare 429 → pace + rotate + short backoff; a **529** →
+  short backoff; a **usage/session CAP** → `peekBody` the non-200 body (`classifyHttpError` → its meter
+  is invisible in headers, util can read 0 on a capped account) → pause-to-reset + rotate to a healthy
+  account (the bee classifies `usage_limit` as a no-retry wall, so the gateway MUST route around it
+  itself). Net: a bee egresses opus through heavy 429 churn (seen: 497 upstream-429 / 409 failovers on
+  one run) and still completes.
 
 ## The fix levers
 
@@ -109,6 +114,21 @@ There are **two** governor singletons in **two** processes, and they are not the
   must both be enabled for per-account routing + per-account governor keying (fixes #1).
 - **Pool all accounts in the gateway** (not just 1–2) so the `x-papercusp-account` header can
   route to any of them and it never falls back to one exhausted account (fixes #2).
+- **Gateway resilient retry** (2026-06-17, `gateway.ts`) — internally retries/rotates across the pool
+  on every throttle shape (bare-429, transient-429, 529, usage/session cap via `peekBody`) so a bee
+  never sees a wall it won't retry (fixes #3 + the session-cap case).
+- **SPAWN-side governor must not veto what the gateway can serve** (`dbos/orchestrator-runner.ts`,
+  2026-06-17). A SECOND governor gates spawn ADMISSION (per-account bucket, `PAPERCUSP_AGENT_GOVERNOR=1`):
+  when that bucket was paused past `maxWait` it failed the spawn `$0` with **"agent governor: rate-limit
+  pause exceeded max wait"** — even with five idle accounts. Fix: when gateway egress is configured
+  (`extraEnv.ANTHROPIC_BASE_URL` set), **proceed** and let the gateway's failover route to a healthy
+  account instead of hard-failing. Tell: a bee dies in under 1s, `$0`, that exact `error_message`.
+- **Not every bench `$0` is rate-limit** — the su-independent driver's `collectTask`
+  (`external-bench/su-independent-backlog.ts`) used to read the diff/cost IMMEDIATELY after
+  `placeFifoBatch` with no wait → empty diff + `$0` + `infra-failed` while the bee was STILL running
+  (orphaning a live opus bee). Fix: poll `spawned_agents.status` to terminal before extracting (the
+  real-Queen arm's DRIVER polls-until-drained; this arm didn't). Tell: bee `status=running` with a
+  fresh heartbeat + climbing gateway requests, yet the launcher already recorded `infra-failed`.
 
 ## If you BUILD on the LLM
 

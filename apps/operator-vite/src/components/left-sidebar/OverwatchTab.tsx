@@ -398,6 +398,7 @@ function OverwatchStyles() {
         display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 10px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); background: var(--bg-2, rgba(255, 255, 255, 0.03));
       }
+      .pc-owsb__section--empty { gap: 2px; }
       .pc-owsb__section-head { display: flex; align-items: center; gap: 6px; }
       .pc-owsb__section-head svg { color: var(--fg-mute, #7f9bb4); }
       .pc-owsb__section-title { font-size: 10.5px; font-weight: 760; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg, #e7f7ff); }
@@ -410,25 +411,27 @@ function OverwatchStyles() {
       .pc-owsb__filters { display: flex; gap: 4px; flex-wrap: wrap; }
       .pc-owsb__chip {
         font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer;
-        padding: 2px 8px; border-radius: 999px; color: var(--fg-mute, #7f9bb4);
+        padding: 3px 8px; border-radius: 999px; color: var(--fg-mute, #7f9bb4);
         background: var(--bg-3, rgba(255, 255, 255, 0.04)); border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
       }
+      .pc-owsb__chip:hover { color: var(--fg, #e7f7ff); border-color: rgba(125, 211, 252, 0.34); }
       .pc-owsb__chip--on { color: var(--fg, #e7f7ff); border-color: rgba(99, 102, 241, 0.6); background: rgba(99, 102, 241, 0.16); }
       .pc-owsb__healthy {
-        font-size: 11px; color: #6ee7b7; padding: 8px 10px; border-radius: 8px;
+        font-size: 11px; color: #6ee7b7; padding: 9px 10px; border-radius: 8px;
         border: 1px solid rgba(52, 211, 153, 0.3); background: rgba(52, 211, 153, 0.07);
       }
 
       .pc-owsb__anoms { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
       .pc-owsb__anom {
-        display: flex; flex-direction: column; gap: 3px; padding: 7px 9px; border-radius: 8px;
+        display: flex; flex-direction: column; gap: 5px; padding: 8px 9px; border-radius: 8px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); border-left: 3px solid var(--accent, #475569);
         background: rgba(255, 255, 255, 0.02);
       }
       .pc-owsb__anom--bad { --accent: #f43f5e; background: rgba(244, 63, 94, 0.06); }
       .pc-owsb__anom--warn { --accent: #fbbf24; background: rgba(251, 191, 36, 0.05); }
       .pc-owsb__anom--mute { --accent: #38bdf8; }
-      .pc-owsb__anom-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .pc-owsb__anom-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .pc-owsb__anom-main { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
       .pc-owsb__sev { font-size: 8.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 6px; border-radius: 999px; }
       .pc-owsb__sev--bad { color: #fca5a5; background: rgba(244, 63, 94, 0.16); }
       .pc-owsb__sev--warn { color: #fcd34d; background: rgba(251, 191, 36, 0.16); }
@@ -438,15 +441,26 @@ function OverwatchStyles() {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
       }
+      .pc-owsb__subject {
+        flex-shrink: 0; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-size: 9px; color: var(--fg-mute, #7f9bb4); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .pc-owsb__action {
+        display: flex; align-items: center; gap: 7px; min-width: 0; padding-top: 2px;
+        border-top: 1px solid rgba(125, 211, 252, 0.1);
+      }
       .pc-owsb__verb {
-        margin-left: auto; font-size: 8.5px; font-weight: 800; letter-spacing: 0.05em; padding: 1px 7px; border-radius: 999px;
+        flex-shrink: 0; font-size: 8.5px; font-weight: 800; letter-spacing: 0.05em; padding: 1px 7px; border-radius: 999px;
         border: 1px solid currentColor; white-space: nowrap;
       }
       .pc-owsb__verb--nudge { color: #818cf8; }
       .pc-owsb__verb--observe { color: #38bdf8; }
       .pc-owsb__verb--escalate { color: #fb7185; }
       .pc-owsb__anom-detail { font-size: 11px; line-height: 1.35; color: var(--fg-dim, #b9d4e8); }
-      .pc-owsb__anom-msg { font-size: 10.5px; line-height: 1.35; color: var(--fg-mute, #7f9bb4); font-style: italic; }
+      .pc-owsb__anom-msg {
+        min-width: 0; font-size: 10.5px; line-height: 1.35; color: var(--fg-mute, #7f9bb4);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
 
       .pc-owsb__footnote { font-size: 10px; line-height: 1.4; color: var(--fg-mute, #7f9bb4); padding: 0 2px; }
       .pc-owsb__footnote strong { color: var(--fg-dim, #b9d4e8); font-weight: 700; }
