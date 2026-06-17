@@ -197,37 +197,37 @@ describe('isAvailable / isSustainedlyLimited', () => {
 describe('selectAccountForSpawn (P-005 cache-affinity)', () => {
   it('sticks to the prior account when it is still available (overrides headroom)', () => {
     const p = poolOf('a', 'b', 'c'); // headroom would pick 'a'
-    expect(selectAccountForSpawn(p, T0, { priorAccountId: 'c' })).toBe('c');
+    expect(selectAccountForSpawn(p, T0, { priorAccountId: 'c' }).accountId).toBe('c');
   });
 
   it('falls through a paused prior account to the next rule', () => {
     let p = poolOf('a', 'b');
     p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 10 * MIN });
-    expect(selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'b' })).toBe('a');
+    expect(selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'b' }).accountId).toBe('a');
   });
 
   it('pins a harness to the account it is bound to (cache co-location)', () => {
     let p = poolOf('a', 'b', 'c');
     p = bindAccount(p, 'b', 'harness-x');
-    expect(selectAccountForSpawn(p, T0, { harness: 'harness-x' })).toBe('b');
+    expect(selectAccountForSpawn(p, T0, { harness: 'harness-x' }).accountId).toBe('b');
   });
 
   it('skips a paused harness-pinned account and falls back to headroom', () => {
     let p = poolOf('a', 'b');
     p = bindAccount(p, 'b', 'harness-x');
     p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 10 * MIN });
-    expect(selectAccountForSpawn(p, T0 + MIN, { harness: 'harness-x' })).toBe('a');
+    expect(selectAccountForSpawn(p, T0 + MIN, { harness: 'harness-x' }).accountId).toBe('a');
   });
 
   it('falls back to the least-loaded available account with no prior/harness', () => {
-    expect(selectAccountForSpawn(poolOf('a', 'b'), T0)).toBe('a');
+    expect(selectAccountForSpawn(poolOf('a', 'b'), T0).accountId).toBe('a');
   });
 
   it('returns undefined when every account is paused', () => {
     let p = poolOf('a', 'b');
     p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 10 * MIN });
     p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 10 * MIN });
-    expect(selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'a', harness: 'h' })).toBeUndefined();
+    expect(selectAccountForSpawn(p, T0 + MIN, { priorAccountId: 'a', harness: 'h' }).accountId).toBeUndefined();
   });
 });
 

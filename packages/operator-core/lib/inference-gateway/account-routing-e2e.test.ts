@@ -99,7 +99,7 @@ describe('multi-account routing — end-to-end (selection → spawn header → g
     const pool = selectionPool();
 
     // 1. SELECTION (Queen-independent): harness-x is bound to acctB.
-    const accountId = selectAccountForSpawn(pool, T0, { harness: 'harness-x' });
+    const accountId = selectAccountForSpawn(pool, T0, { harness: 'harness-x' }).accountId;
     expect(accountId).toBe('acctB');
 
     // 2. SPAWN ENV emits the x-papercusp-account routing header.
@@ -115,8 +115,8 @@ describe('multi-account routing — end-to-end (selection → spawn header → g
 
   it('a second same-harness bee shares the SAME account (cache-affinity) → same credential', async () => {
     const pool = selectionPool();
-    const a1 = selectAccountForSpawn(pool, T0, { harness: 'harness-x' });
-    const a2 = selectAccountForSpawn(pool, T0 + 5_000, { harness: 'harness-x' });
+    const a1 = selectAccountForSpawn(pool, T0, { harness: 'harness-x' }).accountId;
+    const a2 = selectAccountForSpawn(pool, T0 + 5_000, { harness: 'harness-x' }).accountId;
     expect(a2).toBe(a1); // deterministic harness co-location
     const port = await bootGateway();
     await fireBee(port, gatewaySpawnEnv(true, { accountId: a2 }));
@@ -125,7 +125,7 @@ describe('multi-account routing — end-to-end (selection → spawn header → g
 
   it('a bee in an UNBOUND harness egresses through the budget-drain pick (acctA)', async () => {
     const pool = selectionPool();
-    const accountId = selectAccountForSpawn(pool, T0, { harness: 'other-harness' });
+    const accountId = selectAccountForSpawn(pool, T0, { harness: 'other-harness' }).accountId;
     expect(accountId).toBe('acctA'); // no binding → oldest-added / budget-drain order
     const port = await bootGateway();
     await fireBee(port, gatewaySpawnEnv(true, { accountId }));

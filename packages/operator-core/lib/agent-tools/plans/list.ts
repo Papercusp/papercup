@@ -49,6 +49,10 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe('Include plans without valid frontmatter. Default true.'),
+  includeInstances: z
+    .boolean()
+    .optional()
+    .describe('Include per-run instance plans of scheduled templates (Option C). Hidden by default — they are reached via the template Runs history, not the main directory.'),
   /**
    * P-029: explicit multi-harness fan-out. When set, ignore the ctx
    * harness and walk each named harness's `docs/plans/` dir, returning
@@ -136,6 +140,7 @@ export default defineTool({
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
+    const includeInstances = args.includeInstances === true;
 
     // P-029: build the list of harness slugs to read.
     // When `harness_slugs` is supplied, fan out across each (validated via
@@ -203,7 +208,7 @@ export default defineTool({
       // row needs lives in the harness_plans projection columns, so the
       // content blobs never leave PG and nothing is parsed per request. The
       // archived filter runs in SQL.
-      const rows = await listPlanIndexRows({ harnessSlug, includeArchived });
+      const rows = await listPlanIndexRows({ harnessSlug, includeArchived, includeInstances });
 
       // Targeted fallback for projection-gap rows (non-legacy with an empty
       // Stage-3 items index — e.g. a federated remote row whose projection

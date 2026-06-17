@@ -64,6 +64,27 @@ export interface PlanSourceOpts {
 }
 
 /** A raw harness_plans row (camelCased), for callers needing version / op_* state. */
+/**
+ * The authored schedule of a scheduled/recurring plan (scheduled-recurring-plans-2026-06-16
+ * D-004). Stored in the `schedule` jsonb column; NULL ⇒ the plan is not scheduled. The
+ * recurrence SET is RRULE-native (rrule + rdate + exdate, anchored on dtstart/tzid); `cron`
+ * is an alternate input dialect. The engine computes next_fire_at directly from this — it is
+ * never converted to cron.
+ */
+export interface PlanSchedule {
+  kind: 'rrule' | 'cron';
+  rrule?: string;
+  dtstart?: string;
+  tzid?: string;
+  rdate?: string[];
+  exdate?: string[];
+  cron?: string;
+  concurrency?: 'queue' | 'skip' | 'cancel-prev';
+  catchup?: 'skip-old' | 'run-all-backlog';
+  carryState?: boolean;
+  costCapCents?: number;
+}
+
 export interface PlanRow {
   workspaceId: string;
   harnessSlug: string;
@@ -93,6 +114,21 @@ export interface PlanRow {
   decisions: PlanIndexDecision[];
   nowState: string | null;
   nowNext: string | null;
+  // Scheduled/recurring plans (scheduled-recurring-plans-2026-06-16, mig 299).
+  /** Authored recurrence set + policy; NULL ⇒ not scheduled (D-004). */
+  schedule: PlanSchedule | null;
+  /** Armed/active — false until armed via the autonomy-governed flow (D-010). */
+  scheduleActive: boolean;
+  /** One-shot fire time (drag-onto-a-day); NULL for pure recurrence/unscheduled (D-004). */
+  scheduledAt: string | null;
+  /** Recurrence end / deadline; on expiry the schedule deactivates (D-004). */
+  expiresAt: string | null;
+  /** Per-plan timezone for calendar-time recurrence; NULL ⇒ workspace/user default (D-013). */
+  tzid: string | null;
+  /** Instance→template back-pointer (Option C, D-003); NULL for templates + ordinary plans. */
+  templateSlug: string | null;
+  /** Run ordinal for an instance plan (D-003). */
+  runSeq: number | null;
 }
 
 interface PlanDbRow {
@@ -122,6 +158,13 @@ interface PlanDbRow {
   decisions: unknown;
   now_state: string | null;
   now_next: string | null;
+  schedule: unknown;
+  schedule_active: boolean;
+  scheduled_at: string | null;
+  expires_at: string | null;
+  tzid: string | null;
+  template_slug: string | null;
+  run_seq: number | null;
 }
 
 function rowFromDb(r: PlanDbRow): PlanRow {
@@ -152,6 +195,13 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     decisions: Array.isArray(r.decisions) ? (r.decisions as PlanIndexDecision[]) : [],
     nowState: r.now_state,
     nowNext: r.now_next,
+    schedule: (r.schedule as PlanSchedule | null) ?? null,
+    scheduleActive: r.schedule_active ?? false,
+    scheduledAt: r.scheduled_at,
+    expiresAt: r.expires_at,
+    tzid: r.tzid,
+    templateSlug: r.template_slug,
+    runSeq: r.run_seq,
   };
 }
 
@@ -449,7 +499,8 @@ export async function getPlanRow(
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, initiative, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
@@ -470,7 +521,8 @@ export async function listPlanRows(
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, initiative, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
        ${archivedFilter}
@@ -492,22 +544,33 @@ export type PlanIndexRow = Omit<PlanRow, 'content'>;
  * statuses reads the Stage-3 `items` jsonb already on the row.
  */
 export async function listPlanIndexRows(
-  opts: PlanSourceOpts & { includeArchived?: boolean; status?: string; limit?: number } = {},
+  opts: PlanSourceOpts & {
+    includeArchived?: boolean;
+    status?: string;
+    limit?: number;
+    /** Include per-run instance plans (template_slug IS NOT NULL). Default false (D-003). */
+    includeInstances?: boolean;
+  } = {},
 ): Promise<PlanIndexRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const rows = await withWorkspace(workspaceId, async (tx) => {
     const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
     const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
+    // Hide per-run instance plans (Option C, D-003) by default — they are reached
+    // via the template's Runs history, not the main plan directory.
+    const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
     const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
     return tx<Array<Omit<PlanDbRow, 'content'>>>`
       SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
              title, status, created, updated, owner, initiative, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
        ${archivedFilter}
        ${statusFilter}
+       ${instanceFilter}
        ORDER BY plan_slug ASC
        ${limitClause}
     `;
@@ -572,7 +635,8 @@ export async function listPlanRowsMatchingAnyToken(
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, initiative, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at, items, decisions, now_state, now_next
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next,
+             schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
        ${archivedFilter}
