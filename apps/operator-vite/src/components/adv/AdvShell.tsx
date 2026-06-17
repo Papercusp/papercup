@@ -1025,11 +1025,33 @@ export function buildHarnessSelectOptions(
 
   // Authoritative Hive grouping (hive_slug → home, parent_slug fallback; a
   // kind:'hive' home is its own root). groupByHive sorts roots + members.
+  //
+  // A `kind:'hive'` home is repo-LESS plumbing (it owns the Queen + federation
+  // identity, never code) — so we never surface it as a node by its raw
+  // `<name>-hive` slug. The hive is presented by a friendly name; `value` stays
+  // the home slug so `?slug=` still scopes to the hive (backend unchanged):
+  //   • single-member hive (the common create-from-repo case) — the hive IS that
+  //     one repo, so it collapses to ONE row labeled by the repo (no `-hive`, no
+  //     redundant member row).
+  //   • multi-member hive — a friendly hive header (`-hive` suffix stripped) +
+  //     the member repos beneath it.
+  //   • a legacy/standalone root (a real harness that is its own hive) is shown
+  //     as-is — it carries its own content, so it stays a real node.
   const tree: SelectOption[] = [];
   for (const group of groupByHive(projects)) {
-    tree.push({ value: group.root.slug, label: group.root.slug });
-    for (const member of group.members) {
-      if (member.slug === group.root.slug) continue;
+    const root = group.root;
+    const members = group.members.filter((m) => m.slug !== root.slug);
+    // A kind:'hive' home is repo-LESS plumbing — never show its raw `<x>-hive`
+    // slug. Label it by the stripped hive name; `value` stays the home slug so
+    // `?slug=` still scopes to the hive (backend unchanged). A legacy/standalone
+    // root (a real harness that is its own hive) keeps its slug.
+    const rootLabel = root.harness_kind === 'hive' ? root.slug.replace(/-hive$/, '') : root.slug;
+    tree.push({ value: root.slug, label: rootLabel });
+    for (const member of members) {
+      // Single-repo collapse: a `<x>-hive` home whose one member is the repo `<x>`
+      // — the hive IS that repo, so drop the redundant `↳ <x>` row (the `<x>`
+      // header already stands for it; selecting it scopes to the hive).
+      if (root.harness_kind === 'hive' && member.slug === rootLabel) continue;
       tree.push({ value: member.slug, label: `  ↳ ${member.slug}` });
     }
   }

@@ -1,8 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { z } from 'zod';
 
+// Real MemoryUnavailableError so `err instanceof MemoryUnavailableError` in the
+// handler's runtime-failure catch matches what the test throws (the handler
+// imports the class from this same module shim). Exported under the real name
+// from the mock; the test imports it as MemoryUnavailableError below.
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
+  MemoryUnavailableError: class MemoryUnavailableError extends Error {
+    constructor(public readonly reason: string) {
+      super(`memory backend unavailable: ${reason}`);
+      this.name = 'MemoryUnavailableError';
+    }
+  },
 }));
 vi.mock('../../auth', () => ({
   getSessionUserOrDefault: vi.fn(),
@@ -15,7 +25,7 @@ vi.mock('@papercusp/db-org', () => ({
 }));
 
 import remember from './remember';
-import { getMemoryBackend } from '../../memory/backend';
+import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
 
@@ -367,5 +377,164 @@ describe('memory:remember — psu reachability (crossWorkspace + workspace arg)'
     const withWs = schema.safeParse({ content: 'x', kind: 'feedback', workspace: 'ws-a' });
     expect(withWs.success).toBe(true);
     if (withWs.success) expect((withWs.data as { workspace?: string }).workspace).toBe('ws-a');
+  });
+});
+
+// Helper: unwrap the JSON envelope a handler result carries.
+const envelope = (res: unknown): { ok: boolean; reason?: string; [k: string]: unknown } =>
+  JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+// GAP 1: `available()` is only a connectivity probe (false green) — a RUNTIME
+// embedder/store failure trips inside `backend.remember`, which THROWS
+// MemoryUnavailableError per the backend contract. The handler catches that and
+// returns the SAME clean `{ ok:false, reason }` shape the upfront-unavailable
+// branch returns, instead of letting the throw escape to the MCP framework's
+// opaque `handler_error` (isError) envelope. A non-MemoryUnavailableError throw
+// is a real bug and MUST propagate.
+describe('memory:remember — runtime store failure (GAP 1: available() false-green)', () => {
+  it('maps a MemoryUnavailableError throw from backend.remember to a clean { ok:false, reason }', async () => {
+    const b = fakeBackend();
+    // available() is GREEN (connectivity probe), but the actual write throws —
+    // the exact false-green the embedder-down case produces.
+    b.available.mockResolvedValue({ ok: true });
+    b.remember.mockRejectedValue(new MemoryUnavailableError('mem0_unavailable'));
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'a fact the embedder cannot embed', kind: 'feedback' },
+      fakeCtx,
+    );
+    const parsed = envelope(res);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe('mem0_unavailable');
+    // The structured `reason` is surfaced (not buried in a handler_error prefix),
+    // and crucially the handler returns a normal envelope — it does NOT throw.
+    expect(b.remember).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a NON-MemoryUnavailableError throw propagate (pins current crash behavior — a real bug surfaces, not a fake {ok:false})', async () => {
+    const b = fakeBackend();
+    b.available.mockResolvedValue({ ok: true });
+    b.remember.mockRejectedValue(new Error('unexpected PG constraint violation'));
+    useBackend(b);
+
+    await expect(
+      remember.handler({ content: 'x', kind: 'feedback' }, fakeCtx),
+    ).rejects.toThrow('unexpected PG constraint violation');
+  });
+});
+
+// GAP 7: the explicit-write path is the EI-178 guard — it MUST always pass
+// verbatim:true so mem0 skips the unbounded LLM condense step. And a
+// dedup/conflict-check failure must FALL THROUGH to the write (the defensive
+// catch), never block a legitimate remember.
+describe('memory:remember — verbatim guard + dedup fall-through (GAP 7)', () => {
+  const origEnv = process.env.PAPERCUSP_MEMORY_DEDUP;
+  afterAll(() => {
+    if (origEnv === undefined) delete process.env.PAPERCUSP_MEMORY_DEDUP;
+    else process.env.PAPERCUSP_MEMORY_DEDUP = origEnv;
+  });
+
+  it('always passes verbatim:true — dedup OFF path', async () => {
+    delete process.env.PAPERCUSP_MEMORY_DEDUP;
+    const b = fakeBackend();
+    useBackend(b);
+    await remember.handler({ content: 'fact', kind: 'feedback' }, fakeCtx);
+    const [, opts] = b.remember.mock.calls[0];
+    expect((opts as { verbatim?: boolean }).verbatim).toBe(true);
+  });
+
+  it('always passes verbatim:true — dedup ON, force:true bypass path', async () => {
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+    const b = fakeBackend([{ id: 'm', text: 'fact', score: 0.99 }]);
+    useBackend(b);
+    await remember.handler({ content: 'fact', kind: 'feedback', force: true }, fakeCtx);
+    const [, opts] = b.remember.mock.calls[0];
+    expect((opts as { verbatim?: boolean }).verbatim).toBe(true);
+  });
+
+  it('always passes verbatim:true — dedup ON, neighbors below threshold (write path runs after the check)', async () => {
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+    const b = fakeBackend([{ id: 'm', text: 'unrelated', score: 0.2 }]);
+    useBackend(b);
+    await remember.handler({ content: 'a new fact', kind: 'feedback' }, fakeCtx);
+    expect(b.search).toHaveBeenCalled(); // dedup check ran
+    const [, opts] = b.remember.mock.calls[0];
+    expect((opts as { verbatim?: boolean }).verbatim).toBe(true);
+  });
+
+  it('a dedup/conflict-check failure (search throws) falls through to the write — write still carries verbatim:true', async () => {
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+    const b = fakeBackend();
+    b.search.mockRejectedValue(new Error('dedup/conflict path exploded'));
+    useBackend(b);
+
+    const res = await remember.handler({ content: 'fact', kind: 'project' }, fakeCtx);
+    expect(envelope(res).ok).toBe(true);
+    expect(b.remember).toHaveBeenCalledTimes(1);
+    const [, opts] = b.remember.mock.calls[0];
+    // The catch{} at the dedup site must not strip the verbatim guard on the
+    // fall-through write.
+    expect((opts as { verbatim?: boolean }).verbatim).toBe(true);
+  });
+});
+
+// GAP 8: scope isolation. harness_slug + hive_slug together is rejected
+// (mutually exclusive); hive_slug alone routes to scope 'hive:<slug>' and a
+// user-scoped search NEVER sees the hive scope key (no cross-pool leak).
+describe('memory:remember — scope isolation (GAP 8)', () => {
+  it('rejects { harness_slug, hive_slug } both set as mutually exclusive — backend never called', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'fact', kind: 'project', harness_slug: 'sheets', hive_slug: 'team-hive' },
+      fakeCtx,
+    );
+    const parsed = envelope(res);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toMatch(/mutually exclusive/i);
+    expect(b.remember).not.toHaveBeenCalled();
+    expect(b.search).not.toHaveBeenCalled();
+  });
+
+  it('hive_slug only → backend.remember called with scope "hive:<slug>" and metadata.scope "hive"', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+
+    await remember.handler(
+      { content: 'whole-hive convention: build via `npm run build`', kind: 'project', hive_slug: 'team-hive' },
+      fakeCtx,
+    );
+    expect(b.remember).toHaveBeenLastCalledWith(
+      'whole-hive convention: build via `npm run build`',
+      expect.objectContaining({ scope: 'hive:team-hive' }),
+    );
+    const [, opts] = b.remember.mock.calls[0];
+    const meta = (opts as { metadata: Record<string, unknown> }).metadata;
+    expect(meta.scope).toBe('hive');
+    expect(meta.hive_slug).toBe('team-hive');
+    expect(meta.harness_slug).toBeUndefined();
+  });
+
+  it('a user-scoped write (no slug) never tags the hive scope key — no cross-pool leak between hive and user pools', async () => {
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on'; // force the dedup search to run so we can inspect its scope arg
+    const b = fakeBackend([{ id: 'm', text: 'noise', score: 0.1 }]);
+    useBackend(b);
+
+    await remember.handler({ content: 'personal preference', kind: 'feedback' }, fakeCtx);
+
+    // The dedup search must race ONLY the user pool — never a hive:* scope.
+    for (const call of b.search.mock.calls) {
+      const opts = call[1] as { scope: string };
+      expect(opts.scope).toBe('user-1');
+      expect(opts.scope).not.toMatch(/^hive:/);
+    }
+    // And the write lands in the user pool, not a hive pool.
+    expect(b.remember).toHaveBeenLastCalledWith(
+      'personal preference',
+      expect.objectContaining({ scope: 'user-1' }),
+    );
+    delete process.env.PAPERCUSP_MEMORY_DEDUP;
   });
 });

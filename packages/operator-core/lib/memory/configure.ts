@@ -163,35 +163,66 @@ async function buildEmbedderForMode(mode: 'openai' | 'local'): Promise<EmbedFn> 
 }
 
 /**
- * Resolve the embedder for the current user preference. 'disabled' is a
- * hard stop; 'auto' cascades openai → local → disabled.
+ * Injectable seams for the embedder cascade — the pure core
+ * (`resolveEmbedderWith`) takes these so the four-way cascade can be
+ * table-tested without real network/credential/package I/O (GAP 4). The
+ * production `resolveEmbedder` wires the real implementations.
  */
-async function resolveEmbedder(): Promise<ResolvedEmbedder> {
-  const preference = await readEmbedderPreference();
+export interface ResolveEmbedderDeps {
+  readPreference: () => Promise<'auto' | 'openai' | 'local' | 'disabled'>;
+  resolveKey: () => Promise<string>;
+  localInstalled: () => Promise<boolean>;
+  buildOpenAi: (key: string) => EmbedFn;
+  buildLocal: () => Promise<EmbedFn>;
+}
+
+/**
+ * Pure cascade core. 'disabled' is a hard stop; 'openai'/'local' are forced
+ * (fall to disabled with a specific reason if their dependency is missing);
+ * 'auto' cascades openai → local → disabled. No runtime behavior differs from
+ * the previous inline form — the seams are just injected.
+ */
+export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<ResolvedEmbedder> {
+  const preference = await deps.readPreference();
   if (preference === 'disabled') {
     return { mode: 'disabled', reason: 'user_disabled' };
   }
 
-  const key = await resolveOpenAiKey();
+  const key = await deps.resolveKey();
 
   if (preference === 'openai') {
-    if (key) return { mode: 'openai', dims: EMBEDDER_DIM, embed: buildOpenAiEmbedder(key) };
+    if (key) return { mode: 'openai', dims: EMBEDDER_DIM, embed: deps.buildOpenAi(key) };
     return { mode: 'disabled', reason: 'openai_forced_but_no_key' };
   }
 
   if (preference === 'local') {
-    if (await localAvailable()) {
-      return { mode: 'local', dims: EMBEDDER_DIM, embed: await buildLocalEmbedder() };
+    if (await deps.localInstalled()) {
+      return { mode: 'local', dims: EMBEDDER_DIM, embed: await deps.buildLocal() };
     }
     return { mode: 'disabled', reason: 'local_forced_but_not_installed' };
   }
 
   // 'auto' — openai first, then local, then disabled.
-  if (key) return { mode: 'openai', dims: EMBEDDER_DIM, embed: buildOpenAiEmbedder(key) };
-  if (await localAvailable()) {
-    return { mode: 'local', dims: EMBEDDER_DIM, embed: await buildLocalEmbedder() };
+  if (key) return { mode: 'openai', dims: EMBEDDER_DIM, embed: deps.buildOpenAi(key) };
+  if (await deps.localInstalled()) {
+    return { mode: 'local', dims: EMBEDDER_DIM, embed: await deps.buildLocal() };
   }
   return { mode: 'disabled', reason: 'no_openai_key_and_local_not_installed' };
+}
+
+/**
+ * Resolve the embedder for the current user preference. 'disabled' is a
+ * hard stop; 'auto' cascades openai → local → disabled. Thin production
+ * wrapper over `resolveEmbedderWith` with the real seams.
+ */
+async function resolveEmbedder(): Promise<ResolvedEmbedder> {
+  return resolveEmbedderWith({
+    readPreference: readEmbedderPreference,
+    resolveKey: resolveOpenAiKey,
+    localInstalled: localAvailable,
+    buildOpenAi: buildOpenAiEmbedder,
+    buildLocal: buildLocalEmbedder,
+  });
 }
 
 // The Claude Code topic-file bridge (generalize-memory-backend-swappable

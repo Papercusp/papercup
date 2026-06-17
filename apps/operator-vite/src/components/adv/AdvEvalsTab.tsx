@@ -51,9 +51,11 @@
  */
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
-import { useSyncQuery } from '@papercusp/sync';
+import { useSyncMutate, useSyncQuery } from '@papercusp/sync';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive, Play } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
+import { Checkbox } from '@/app/harness/Checkbox';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
 // the @papercusp/sync read and feeds these props; the components read no data.
 import {
@@ -249,6 +251,51 @@ interface BenchRunLive {
   spendUsd: number | null;
   wallSec: number | null;
   taskProgress: { todo: number; in_progress: number; collected: number; graded: number; error: number; total: number };
+}
+
+interface LaunchRunArgs {
+  arm: string;
+  taskSetId: string;
+  taskIds?: string[];
+  model?: string;
+  cap?: number;
+  maxUsdPerTask?: number;
+  maxTokensPerTask?: number;
+  maxUsdPerRun?: number;
+}
+interface LaunchRunResult {
+  ok: boolean;
+  runId?: string;
+  error?: string;
+}
+async function readJsonResponse<T extends { ok?: boolean; error?: string }>(res: Response, fallback: string): Promise<T> {
+  const text = await res.text();
+  let data: T = {} as T;
+  try {
+    data = JSON.parse(text) as T;
+  } catch {
+    // Some error paths return an empty/non-JSON body; surface the HTTP status.
+  }
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `${fallback} (${res.status})`);
+  }
+  return data;
+}
+async function launchRunRest(args: LaunchRunArgs): Promise<LaunchRunResult> {
+  const res = await fetch('/api/external-bench/runs/launch', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(args),
+  });
+  return readJsonResponse<LaunchRunResult>(res, 'launch failed');
+}
+async function gradeRunRest(args: { runId: string }): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(args.runId)}/grade`, { method: 'POST' });
+  return readJsonResponse<{ ok: boolean; error?: string }>(res, 'grade failed');
+}
+async function deleteRunRest(args: { runId: string }): Promise<{ ok: boolean; deleted?: boolean; error?: string }> {
+  const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(args.runId)}`, { method: 'DELETE' });
+  return readJsonResponse<{ ok: boolean; deleted?: boolean; error?: string }>(res, 'delete failed');
 }
 
 const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : `${Math.round(v * 100)}%`);
@@ -940,6 +987,7 @@ function LaunchRunView() {
 
   const [, setEvalView] = useQueryState('evalView', parseAsString);
   const [, setEvalRun] = useQueryState('evalRun', parseAsString);
+  const launchRun = useSyncMutate<LaunchRunArgs, LaunchRunResult>('externalBench.launchRun', launchRunRest);
 
   // A run already in flight blocks a new launch (single-active-run, spend-safety).
   const runsSync = useSyncQuery<{ id: string; status: string }>({ queryName: 'evals.benchRuns', args: {} });
@@ -966,7 +1014,7 @@ function LaunchRunView() {
     setSubmitting(true);
     setError(null);
     try {
-      const body: Record<string, unknown> = {
+      const body: LaunchRunArgs = {
         arm,
         taskSetId: taskSet,
         cap: capNum,
@@ -974,14 +1022,9 @@ function LaunchRunView() {
         maxUsdPerTask: Number(maxUsd) || undefined,
       };
       if (taskSet === 'custom') body.taskIds = customIds.split(',').map((s) => s.trim()).filter(Boolean);
-      const res = await fetch('/api/external-bench/runs/launch', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const json = (await res.json()) as { ok?: boolean; runId?: string; error?: string };
-      if (!res.ok || !json.ok || !json.runId) {
-        setError(json.error || `launch failed (${res.status})`);
+      const json = await launchRun(body);
+      if (!json.ok || !json.runId) {
+        setError(json.error || 'launch failed');
         return;
       }
       await setEvalRun(json.runId);
@@ -1095,7 +1138,7 @@ function LaunchRunView() {
 
       {needsConfirm ? (
         <label className="pc-evals__confirm" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 14 }}>
-          <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} aria-label="Approve this spend" />
+          <Checkbox checked={confirmed} onChange={setConfirmed} ariaLabel="Approve this spend" />
           <span>
             This run is estimated at <strong>≈ ${estimate?.estCostUsd.toFixed(2)}</strong> of opus — confirm you approve the spend.
           </span>
@@ -1141,6 +1184,64 @@ const ACTION_BTN: CSSProperties = {
   background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg-dim)',
   borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer',
 };
+
+const PRESERVED_TASK_COLUMNS: ColumnDef<PreservedResolvedTask>[] = [
+  {
+    key: 'task',
+    header: 'task',
+    width: 'minmax(190px, 2fr)',
+    toCopyText: (row) => row.instanceId,
+    render: ({ row }) => (
+      <span className="pc-preserved__task" title={row.instanceId}>
+        {shortInstance(row.instanceId)}
+      </span>
+    ),
+  },
+  {
+    key: 'resolved',
+    header: 'resolved',
+    width: 0.8,
+    align: 'right',
+    toCopyText: (row) => (row.resolved == null ? '' : row.resolved ? 'resolved' : 'unresolved'),
+    render: ({ row }) => (
+      <span className={`pc-preserved__num ${row.resolved ? 'pc-preserved__ok' : row.resolved === false ? 'pc-preserved__bad' : ''}`}>
+        {row.resolved == null ? '—' : row.resolved ? '✓' : '✗'}
+      </span>
+    ),
+  },
+  {
+    key: 'cost',
+    header: 'cost',
+    width: 0.75,
+    align: 'right',
+    toCopyText: (row) => fmtUsd(row.costUsd ?? 0),
+    render: ({ row }) => <span className="pc-preserved__num">{fmtUsd(row.costUsd ?? 0)}</span>,
+  },
+  {
+    key: 'turns',
+    header: 'turns',
+    width: 0.6,
+    align: 'right',
+    toCopyText: (row) => String(row.turns ?? ''),
+    render: ({ row }) => <span className="pc-preserved__num">{row.turns ?? '—'}</span>,
+  },
+  {
+    key: 'diffBytes',
+    header: 'diff bytes',
+    width: 0.8,
+    align: 'right',
+    toCopyText: (row) => String(row.diffBytes ?? 0),
+    render: ({ row }) => <span className="pc-preserved__num">{row.diffBytes ?? 0}</span>,
+  },
+  {
+    key: 'stop',
+    header: 'stop',
+    width: 'minmax(150px, 1.2fr)',
+    toCopyText: (row) => row.stopReason ?? '',
+    render: ({ row }) => <span className="pc-preserved__stop">{row.stopReason ?? '—'}</span>,
+  },
+];
+
 function downloadFile(name: string, content: string, mime: string): void {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -1437,6 +1538,8 @@ function PreservedRunsView() {
   const [, setLaunchArm] = useQueryState('launchArm', parseAsString);
   const [, setLaunchTaskSet] = useQueryState('launchTaskSet', parseAsString);
   const [, setLaunchCap] = useQueryState('launchCap', parseAsString);
+  const gradeRunMutate = useSyncMutate<{ runId: string }, { ok: boolean; error?: string }>('externalBench.gradeRun', gradeRunRest);
+  const deleteRunMutate = useSyncMutate<{ runId: string }, { ok: boolean; deleted?: boolean; error?: string }>('externalBench.deleteRun', deleteRunRest);
   // Filter the run list by arm (P-014 browse/filter).
   const [armFilter, setArmFilter] = useQueryState('runArmFilter', parseAsString);
   const armOptions = useMemo(() => [...new Set(runs.map((r) => r.arm))].sort(), [runs]);
@@ -1447,9 +1550,7 @@ function PreservedRunsView() {
     setGrading(true);
     setActionErr(null);
     try {
-      const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(selId)}/grade`, { method: 'POST' });
-      const json = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !json.ok) setActionErr(json.error || `grade failed (${res.status})`);
+      await gradeRunMutate({ runId: selId });
     } catch (e) {
       setActionErr(String(e));
     } finally {
@@ -1480,12 +1581,7 @@ function PreservedRunsView() {
     if (!selId) return;
     setActionErr(null);
     try {
-      const res = await fetch(`/api/external-bench/runs/${encodeURIComponent(selId)}`, { method: 'DELETE' });
-      const json = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !json.ok) {
-        setActionErr(json.error || `delete failed (${res.status})`);
-        return;
-      }
+      await deleteRunMutate({ runId: selId });
       await setSelId(null);
     } catch (e) {
       setActionErr(String(e));
@@ -1663,29 +1759,16 @@ function PreservedRunsView() {
           {/* Per-task resolved + cost/turns/diff table (the Compare viz; single
               arm so the baseline column is empty — see the caveat note). */}
           <div className="pc-evals__sectionhead"><h2>Per-task results</h2></div>
-          <table className="pc-preserved__table">
-            <thead>
-              <tr>
-                <th>task</th><th className="pc-preserved__num">resolved</th>
-                <th className="pc-preserved__num">cost</th><th className="pc-preserved__num">turns</th>
-                <th className="pc-preserved__num">diff bytes</th><th>stop</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail!.perTask.map((t) => (
-                <tr key={t.instanceId}>
-                  <td className="pc-preserved__task" title={t.instanceId}>{shortInstance(t.instanceId)}</td>
-                  <td className={`pc-preserved__num ${t.resolved ? 'pc-preserved__ok' : t.resolved === false ? 'pc-preserved__bad' : ''}`}>
-                    {t.resolved == null ? '—' : t.resolved ? '✓' : '✗'}
-                  </td>
-                  <td className="pc-preserved__num">{fmtUsd(t.costUsd ?? 0)}</td>
-                  <td className="pc-preserved__num">{t.turns ?? '—'}</td>
-                  <td className="pc-preserved__num">{t.diffBytes ?? 0}</td>
-                  <td className="pc-preserved__stop">{t.stopReason ?? '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="pc-preserved__grid" data-testid="preserved-task-grid">
+            <RichGrid<PreservedResolvedTask>
+              columns={PRESERVED_TASK_COLUMNS}
+              rows={detail!.perTask}
+              getRowId={(row) => row.instanceId}
+              rowMinHeight={32}
+              inline
+              empty={<span className="pc-evals__empty">No per-task rows.</span>}
+            />
+          </div>
 
           {/* Resolved-as-score per-task bars (Compare) — keeps the shared viz in
               the loop; treatment = resolved (1/0), no baseline arm. */}
@@ -1820,12 +1903,10 @@ function EvalsStyles() {
       .pc-evals__note { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in oklab, #eab308, transparent 60%); background: color-mix(in oklab, #eab308, transparent 90%); font-size: 12px; line-height: 1.5; color: var(--fg-dim, #b9d4e8); }
       .pc-evals__note strong { color: var(--fg, #e7f7ff); font-size: 12.5px; }
 
-      .pc-preserved__table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--fg-dim, #b9d4e8); }
-      .pc-preserved__table th { text-align: left; padding: 4px 8px; font-size: 10.5px; font-weight: 600; color: var(--fg-mute, #7f9bb4); border-bottom: 1px solid var(--border, rgba(125,211,252,0.18)); }
-      .pc-preserved__table tbody tr { border-top: 1px solid var(--border, rgba(125,211,252,0.1)); }
-      .pc-preserved__num { text-align: right; padding: 4px 8px; white-space: nowrap; }
-      .pc-preserved__task { padding: 4px 8px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .pc-preserved__stop { padding: 4px 8px; color: var(--fg-mute, #7f9bb4); }
+      .pc-preserved__grid { min-width: 0; overflow-x: auto; border: 1px solid var(--border, rgba(125,211,252,0.18)); border-radius: 8px; background: var(--bg-2, rgba(255,255,255,0.04)); }
+      .pc-preserved__num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .pc-preserved__task { display: block; min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-preserved__stop { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute, #7f9bb4); }
       .pc-preserved__ok { color: var(--good, #34d399); font-weight: 700; }
       .pc-preserved__bad { color: var(--bad, #fb7185); font-weight: 700; }
 

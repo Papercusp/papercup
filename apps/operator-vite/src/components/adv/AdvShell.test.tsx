@@ -158,7 +158,7 @@ vi.mock('@/lib/hotkeys', () => ({
   },
 }));
 
-import AdvShell, { ADV_TABS } from './AdvShell';
+import AdvShell, { ADV_TABS, buildHarnessSelectOptions } from './AdvShell';
 
 const LS_KEY = () => wsLocalKey('harness.activeProject');
 
@@ -442,5 +442,39 @@ describe('AdvShell — CreateHarnessPicker into-hive scope gating', () => {
     // Gated to '' (null) — the picker defaults to new-hive, so submitting cannot
     // post intoHive=pot-b and trip the backend hive_not_found.
     expect(screen.getByTestId('create-picker').getAttribute('data-hive-scope')).toBe('');
+  });
+});
+
+describe('buildHarnessSelectOptions — hive-home folding (the repo-less `-hive` plumbing is never shown)', () => {
+  const lite = (slug: string, extra: Record<string, unknown> = {}) =>
+    ({ slug, path: '/p', hasState: false, hasSpec: false, ...extra }) as never;
+  // Pull the member tree out of the workspace group entry.
+  const treeOf = (entries: ReturnType<typeof buildHarnessSelectOptions>) =>
+    (entries.find((e) => 'kind' in e && e.kind === 'group') as { options: { value: string; label: string }[] } | undefined)
+      ?.options ?? [];
+
+  it('collapses a single-repo hive: `<x>-hive` home + member `<x>` → ONE "x" row (no -hive, no redundant member)', () => {
+    const tree = treeOf(
+      buildHarnessSelectOptions([lite('shop-hive', { harness_kind: 'hive' }), lite('shop', { hive_slug: 'shop-hive' })], null, 'Hives', 'WS'),
+    );
+    // label = the stripped hive name; value = the home slug so ?slug= scopes to the hive.
+    expect(tree).toEqual([{ value: 'shop-hive', label: 'shop' }]);
+  });
+
+  it('multi-repo hive: friendly header (`-hive` stripped) + member rows; the raw `-hive` slug never appears', () => {
+    const tree = treeOf(
+      buildHarnessSelectOptions(
+        [lite('team-hive', { harness_kind: 'hive' }), lite('backend', { hive_slug: 'team-hive' }), lite('frontend', { hive_slug: 'team-hive' })],
+        null, 'Hives', 'WS',
+      ),
+    );
+    expect(tree[0]).toEqual({ value: 'team-hive', label: 'team' });
+    expect(tree.map((o) => o.label)).toEqual(expect.arrayContaining(['  ↳ backend', '  ↳ frontend']));
+    expect(tree.some((o) => o.label === 'team-hive')).toBe(false);
+  });
+
+  it('a legacy/standalone non-hive root keeps its slug as-is', () => {
+    const tree = treeOf(buildHarnessSelectOptions([lite('solo', { is_shared: true })], null, 'Hives', 'WS'));
+    expect(tree).toEqual([{ value: 'solo', label: 'solo' }]);
   });
 });

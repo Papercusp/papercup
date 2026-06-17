@@ -19,7 +19,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { getMemoryBackend } from '../../memory/backend';
+import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { anchorMetadata } from '../../memory/anchors';
 import { checkConflicts } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
@@ -210,23 +210,52 @@ export default defineTool({
       }
     }
 
-    const { ids } = await backend.remember(args.content, {
-      scope: scopeKey,
-      kind: args.kind,
-      metadata,
-      // Store the agent's text VERBATIM (infer:false) — do NOT run mem0's
-      // LLM fact-extraction/condense step on the explicit single-fact write
-      // path. That step is an unbounded Anthropic (Haiku) call with no
-      // timeout; under the busy-fleet 429 backoff it routinely outlived the
-      // MCP client's request timeout (~60s) and dropped the transport
-      // mid-call — the PG insert committed, but the caller saw "transport
-      // dropped; response lost" and blind-retried into near-duplicates
-      // (EI-178). An explicit remember is already a clean one-line fact the
-      // agent wrote deliberately, so condensation adds little here; the
-      // conversation-extraction path (backend.rememberConversation) keeps the
-      // LLM extraction, where pulling facts out of a chat window earns it.
-      verbatim: true,
-    });
+    // `available()` is only a CONNECTIVITY probe (the cosine leg's
+    // reachability) — a RUNTIME embedder failure surfaces here, where
+    // `backend.remember` THROWS `MemoryUnavailableError` per the backend
+    // contract (backend.ts: "available() is the non-throwing probe; every
+    // other method throws when the store is unreachable"). Without this
+    // catch the throw escapes to the MCP dispatch wrapper, which renders it
+    // as `{ isError: true, content: 'handler_error: memory backend
+    // unavailable: <reason>' }` — an opaque, crash-shaped result that hides
+    // the structured `reason` the agent can act on. Map it back to the SAME
+    // clean `{ ok: false, reason }` envelope the upfront-unavailable branch
+    // returns, so a down embedder reads identically whether it trips at
+    // probe time or call time. A NON-MemoryUnavailableError throw is a real
+    // bug — let it propagate to the framework's handler_error envelope.
+    //
+    // NOTE: this only makes the FAILURE legible — the write is still LOST on
+    // an embedder outage (no degrade-to-lexical / vector-deferral here). The
+    // deeper fix lives in the BACKEND and is an owner design decision (see
+    // the GAP-1 FLAG in the agent report); this handler catch does not
+    // attempt it.
+    let ids: string[];
+    try {
+      ({ ids } = await backend.remember(args.content, {
+        scope: scopeKey,
+        kind: args.kind,
+        metadata,
+        // Store the agent's text VERBATIM (infer:false) — do NOT run mem0's
+        // LLM fact-extraction/condense step on the explicit single-fact write
+        // path. That step is an unbounded Anthropic (Haiku) call with no
+        // timeout; under the busy-fleet 429 backoff it routinely outlived the
+        // MCP client's request timeout (~60s) and dropped the transport
+        // mid-call — the PG insert committed, but the caller saw "transport
+        // dropped; response lost" and blind-retried into near-duplicates
+        // (EI-178). An explicit remember is already a clean one-line fact the
+        // agent wrote deliberately, so condensation adds little here; the
+        // conversation-extraction path (backend.rememberConversation) keeps the
+        // LLM extraction, where pulling facts out of a chat window earns it.
+        verbatim: true,
+      }));
+    } catch (err) {
+      if (err instanceof MemoryUnavailableError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: err.reason }) }],
+        };
+      }
+      throw err;
+    }
 
     // Live-refresh the settings memory page (userMemory.list sync query) —
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).

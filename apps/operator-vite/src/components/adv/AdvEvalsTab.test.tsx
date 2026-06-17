@@ -16,6 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import type { ReactNode } from 'react';
 
 // ── nuqs: per-key store with spy setters captured per render. ──
 const nuqsState: Record<string, unknown> = { evalView: 'external', evalSuite: null, evalRun: null };
@@ -35,10 +36,30 @@ vi.mock('nuqs', () => ({
 // ── @papercusp/sync: dispatch by queryName from a hoisted store. ──
 const H = vi.hoisted(() => ({
   results: {} as Record<string, { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }>,
+  mutatePaths: [] as string[],
 }));
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
+  useSyncMutate: (path: string, restFallback: (args: unknown) => Promise<unknown>) => {
+    H.mutatePaths.push(path);
+    return restFallback;
+  },
+}));
+
+// RichGrid is layout-heavy; the tab only owns columns/rows wiring here.
+vi.mock('@papercusp/grid-core', () => ({
+  RichGrid: ({ rows, columns }: { rows: Record<string, unknown>[]; columns: Array<{ key: string; render?: (ctx: { row: Record<string, unknown>; rowIndex: number; rowBg: string; isSelected: boolean }) => ReactNode }> }) => (
+    <div data-testid="rich-grid" data-rows={rows.length}>
+      {rows.map((row, rowIndex) => (
+        <div key={String(row.instanceId ?? row.id ?? rowIndex)}>
+          {columns.map((col) => (
+            <span key={col.key}>{col.render ? col.render({ row, rowIndex, rowBg: '', isSelected: false }) : String(row[col.key] ?? '')}</span>
+          ))}
+        </div>
+      ))}
+    </div>
+  ),
 }));
 
 // ── eval-viz charts → markers that echo their key props. ──
@@ -86,6 +107,7 @@ beforeEach(() => {
   nuqsState.compareA = null;
   nuqsState.compareB = null;
   H.results = {};
+  H.mutatePaths = [];
 });
 afterEach(() => cleanup());
 
@@ -242,6 +264,8 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     expect(screen.getByLabelText('Preserved run')).toBeTruthy();
     // The selected run's summary scoreboard renders from evals.benchRun.
     expect(screen.getByLabelText(/hive-realqueen — preserved run summary/)).toBeTruthy();
+    expect(screen.getByTestId('preserved-task-grid')).toBeTruthy();
+    expect(screen.getByTestId('rich-grid').getAttribute('data-rows')).toBe('2');
     // The per-task Compare + the single-arm throughput/MAST viz are fed from the detail.
     expect(screen.getByTestId('viz-throughput')).toBeTruthy();
     expect(screen.getByTestId('viz-mast')).toBeTruthy();
@@ -273,6 +297,7 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
     render(<AdvEvalsTab />);
     expect(screen.getByLabelText('Benchmark arm')).toBeTruthy();
     expect(screen.getByLabelText('Launch benchmark run')).toBeTruthy();
+    expect(H.mutatePaths).toContain('externalBench.launchRun');
     // The cost estimate (≥$20) requires an owner-confirm before launch is enabled.
     await screen.findByLabelText('Approve this spend');
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);

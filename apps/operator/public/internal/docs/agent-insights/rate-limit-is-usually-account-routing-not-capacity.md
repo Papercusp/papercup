@@ -24,7 +24,7 @@ so a genuine quota wall is rare. A spawned bee is supposed to be pinned to an av
 account (`selectSpawnAccount` → `PAPERCUSP_ACCOUNT_ID` → `x-papercusp-account` header) and
 the governor keys that account's bucket.
 
-## The two faults that masquerade as a limit
+## The faults that masquerade as a limit
 
 **1. Account-blind governor (the routing is flag-gated OFF).** In `operator-spawn.ts`,
 `selectSpawnAccount` only runs when **both** `FLAGS.INFERENCE_GATEWAY` **and**
@@ -46,6 +46,23 @@ then **hangs at $0** (alive, `status=running`, no model call) instead of failing
 the bee is alive but has **zero** `agent_usage_samples`, and the gateway `/healthz`
 `accountId` ≠ the bee's pinned `PAPERCUSP_ACCOUNT_ID`.
 
+**3. The bare/header-less 429 stuck-loop (a TRANSIENT throttle read as exhaustion).** Anthropic
+returns two shapes of `429`, and they mean opposite things — read the headers, not just the
+status. A **quota** wall carries `anthropic-ratelimit-*` (unified util/reset) and/or `retry-after`
+**and `x-should-retry: false`**: you really are out, wait/route elsewhere. A **bare** 429 —
+`{"type":"rate_limit_error","message":"Error"}` with **NO `anthropic-ratelimit-*`, NO
+`retry-after`, and `x-should-retry: true`** — is a **short transient BURST throttle**: capacity
+exists, Anthropic is literally telling you to retry in a moment. The gateway's 429 handler used to
+treat the bare form as a **no-op** (no `penalize`, no failover), so the gateway **stayed on the
+momentarily-throttled account and 429-looped every caller** — each bee's `claude` CLI then
+retry-looped into a **$0 hang** (alive, no model call) while the six other accounts sat idle (the
+"aviynw10 stuck-loop", 2026-06-17). Fixed in `gateway.ts`: a bare 429 now gets a SHORT bounded
+penalty (`BARE_429_FAILOVER_BACKOFF_MS`, \~15 s — tuned to the transient duration, NOT the multi-hour
+unified reset) **and fails over** (`pool.onExhausted`), so the next request rotates to a fresh
+account. Tell: `/healthz` `upstream429` climbs while `failovers` stays flat, the active `accountId`
+never changes, and the 429 body is the bare `message:"Error"` form. **`x-should-retry: true` ⇒ this
+is not a wall — retry / fail over, don't conclude exhaustion.**
+
 ## The diagnostic recipe (do this BEFORE concluding a limit)
 
 * **`dev:rate_governor_status`** — is the paused bucket the **global** `anthropic:opus`
@@ -58,7 +75,31 @@ the bee is alive but has **zero** `agent_usage_samples`, and the gateway `/healt
   `ANTHROPIC_CUSTOM_HEADERS: x-papercusp-account` — which account/gateway did it **actually**
   use?
 * **The gateway `/healthz`** (`:8788`) — its `accountId` + `unified.rejected`: is it stuck
-  serving one exhausted account?
+  serving one exhausted account? Watch `upstream429` vs `failovers` (fault #3: 429s climb,
+  failovers flat).
+* **`operator_rate_limit_config` (get)** — the fleet-wide `maxSimultaneousAgents` cap. If it's
+  pinned LOW (e.g. **1**, the floor), the operator serializes governed spawns one-at-a-time —
+  throughput looks "rate-limited" but it's a **config throttle**, not a quota wall, and with
+  `cap == concurrencyFloor` the operator's own AIMD has no room to adapt. Often a leftover from an
+  earlier firefight.
+
+## The two governor processes — pace lives in BOTH, AIMD only in one
+
+There are **two** governor singletons in **two** processes, and they are not the same:
+
+* **Operator** (`:3070`/`:3170`): `initRateLimitConfig()` installs the finite
+  `maxSimultaneousAgents` cap → the **AIMD adaptive concurrency** (rate-limit-layer-v2 D-005:
+  multiplicative-decrease on `penalize`, additive-increase after clean streaks) IS active here.
+* **Gateway** (`:8788`, `bin.ts → startGatewayService`): **never** calls `initRateLimitConfig` /
+  `setGlobalConcurrencyCap`, so its global gate has no finite cap → **AIMD is DORMANT in the
+  gateway.** Only the *static* per-account governor runs there (`maxConcurrent: 3`, `rpm: 45`,
+  `recordResponse` util-pacing, `penalize` pause, + the fault-#3 bare-429 failover). So under
+  sustained transient throttles the gateway pauses-then-resumes at the SAME static rate rather than
+  adaptively settling — predictive per-account pacing is *designed* but only *partly* wired on the
+  egress path. ⚠ You can't just install the operator's cap into the gateway: the operator cap is
+  **agent-concurrency**; the gateway gate is **per-request concurrency** — copying `cap=1` would
+  throttle the gateway to one in-flight HTTP request. A true gateway fix is per-account AIMD on the
+  gateway's own buckets.
 
 ## The fix levers
 
