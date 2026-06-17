@@ -22,6 +22,7 @@
  */
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { isCliEntry } from '../util/cli-entry';
 
 /** The paper context the harness drops in the sandbox (mirrors `PAPER_TEXT_FILES` in hive_solver.py). */
 export interface PaperContext {
@@ -235,6 +236,6 @@ async function main(): Promise<void> {
 }
 
 // Run as a CLI only when invoked directly (so the test can import the pure functions).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   await main();
 }

@@ -39,7 +39,6 @@ import type {
   SeedGitSyncRoutineOpts,
   SeedGitSyncRoutineOutcome,
 } from '../../harness/git-sync/git-sync-routine';
-import type { HiveVisibility } from '../../sync/hyperbee/hive-announce';
 import { createHiveHarness, type CreateHiveResult, type SeededLearningsSummary } from './_create';
 import { shapesFromDetection } from '../../learning-packs/seed';
 import {
@@ -55,8 +54,6 @@ export interface CreateHiveFromRepoOpts {
   /** Base slug — default: the repo name (lowercased). Member = `<base>`, Hive home = `<base>-hive`.
    *  On collision the base auto-suffixes `-2`..`-9` (plan OQ-1: tools never stall on a prompt). */
   slug?: string;
-  /** D-002: default 'public' (auto-publish). 'private' = zero external writes (D-003). */
-  visibility?: HiveVisibility;
   shallow?: boolean;
   /**
    * Run the detected test command once to verify it. Default FALSE on this
@@ -133,7 +130,6 @@ export type CreateHiveFromRepoResult =
       bindingUnverified: boolean;
       publish:
         | PublishCreatedHiveOutcome
-        | { skipped: 'private' }
         | { skipped: 'unpublished_hive' };
       /** git-sync-any-hive B-01: outcome of seeding the member's `system:git-sync`
        *  routine. Best-effort — a failed/ineligible seed never fails the create. */
@@ -314,7 +310,6 @@ export async function createHiveFromRepo(
   const removeHiveHome = deps.removeHiveHome ?? defaultRemoveHiveHome;
   const rmDir = deps.rmDir ?? (async (p: string) => rm(p, { recursive: true, force: true }));
 
-  const visibility: HiveVisibility = opts.visibility ?? 'public';
   // D-001 (hardening): verify-by-running is OPT-IN for pasted URLs.
   const runTests = opts.runTests === true;
 
@@ -368,6 +363,11 @@ export async function createHiveFromRepo(
   const bindingUnverified = found.kind === 'none' ? found.bindingUnverified : false;
   const repoId = found.coords.githubRepositoryId;
   const repoIsPrivate = found.coords.private;
+  // Visibility is derived from the repo's privacy, never chosen (hive-visibility-from-repo-privacy):
+  //   public repo  → 'public' (discoverable directory listing)
+  //   private repo → 'invite' (hidden, secret-gated) — surfaced to users as "Private"
+  // The true local-only 'private' visibility is retired.
+  const visibility: 'public' | 'invite' = repoIsPrivate ? 'invite' : 'public';
 
   // 2 — slugs (collision-resilient, OQ-1) + into-hive validation (fail-fast,
   //     before any clone side effect).

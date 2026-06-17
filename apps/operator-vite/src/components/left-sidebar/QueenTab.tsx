@@ -30,12 +30,14 @@
  *    `hive.steering` + wakes the Queen).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from '@tanstack/react-router';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
 import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
+import ScheduledRoutinesPane from '../adv/ScheduledRoutinesPane';
 import QueenHeartbeat from './QueenHeartbeat';
 import ModelTiersOverride from './ModelTiersOverride';
 
@@ -165,6 +167,7 @@ export function pauseStateLabel(row: HiveSteeringRow, nowMs: number): { active: 
 export default function QueenTab({ active }: { active: boolean }) {
   const steeringQ = useSyncQuery<HiveSteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000 });
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
+  const navigate = useNavigate();
 
   const [projects, setProjects] = useState<LiteProject[]>([]);
   const [saving, setSaving] = useState(false);
@@ -429,6 +432,26 @@ export default function QueenTab({ active }: { active: boolean }) {
             ))}
           </ul>
         )}
+      </section>
+
+      {/* 6 — Scheduled routines (the ops glance, scheduled-recurring-plans P-026).
+          Reads the same plans.scheduledOccurrences ledger the Calendar does; a row
+          per scheduled plan with next-fire + armed/paused + last-run outcome. Click
+          jumps to the Calendar focused on that plan. */}
+      <section className="pc-queen__section">
+        <div className="pc-queen__section-head">
+          <CalendarClock size={12} aria-hidden />
+          <span className="pc-queen__section-title">Scheduled routines</span>
+          <span className="pc-queen__count">next 30 days</span>
+        </div>
+        <ScheduledRoutinesPane
+          onSelect={(slug) =>
+            void navigate({
+              to: '/adv',
+              search: (prev) => ({ ...(prev as Record<string, unknown>), tab: 'calendar', calPlan: slug }),
+            })
+          }
+        />
       </section>
 
       <QueenStyles />

@@ -265,7 +265,6 @@ interface StandaloneResponse {
 // ── Component ───────────────────────────────────────────────────────────────
 
 export type FormMode = 'new-hive' | 'into-hive' | 'standalone';
-type Visibility = 'public' | 'invite' | 'private';
 type Phase = 'form' | 'running' | 'error' | 'offer' | 'joining' | 'joined' | 'created';
 
 export interface EntryGithubUrlFormProps {
@@ -283,6 +282,14 @@ export interface EntryGithubUrlFormProps {
    * blank one. The user can still edit it. Absent ⇒ the blank-URL entry.
    */
   initialUrl?: string;
+  /**
+   * Repo privacy when known (threaded from the search pick). The hive's
+   * visibility is DERIVED from this — public repo → Public hive (discoverable),
+   * private repo → Private hive (invite-only, secret-gated). `undefined` =
+   * unknown (a directly-pasted URL): the backend still derives it from the
+   * cloned repo's privacy; the form shows a neutral "set automatically" hint.
+   */
+  initialPrivate?: boolean;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -318,7 +325,7 @@ function InfoCard({ children }: { children: ReactNode }) {
   );
 }
 
-export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initialMode = 'new-hive', initialUrl = '' }: EntryGithubUrlFormProps) {
+export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initialMode = 'new-hive', initialUrl = '', initialPrivate }: EntryGithubUrlFormProps) {
   const t = useLexicon();
   const hiveLabel = t('pot'); // "Hive" | "Pot"
   const hiveLower = t('pot', { lower: true });
@@ -330,7 +337,6 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   // this form (the search panel keys on the picked url), so no sync effect.
   const [url, setUrl] = useState(initialUrl);
   const [urlError, setUrlError] = useState('');
-  const [visibility, setVisibility] = useState<Visibility>('public');
   // D-001 (hive-from-repo-hardening): verifying the detected test command RUNS
   // CODE from the pasted repo — explicit opt-in, default off. Transient draft →
   // useState (nuqs exception).
@@ -520,10 +526,12 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         body: JSON.stringify({
           githubUrl: trimmed,
           ...(slugTouched && customSlug.trim() ? { slug: customSlug.trim() } : {}),
-          ...(mode === 'new-hive' ? { visibility } : {}),
-          // B-07 / C-2: carry the beacon consent only when this hive will publish
-          // (public/invite). A private hive never announces, so it has no beacon.
-          ...(mode === 'new-hive' && visibility !== 'private' ? { beaconConsent } : {}),
+          // Visibility is DERIVED server-side from the repo's privacy (public
+          // repo → Public hive; private repo → Private/invite hive) — the
+          // frontend no longer sends a chosen `visibility`.
+          // B-07 / C-2: carry the beacon consent ONLY for a KNOWN-PUBLIC hive.
+          // A Private (or unknown-privacy) hive must not broadcast a beacon.
+          ...(mode === 'new-hive' && initialPrivate === false ? { beaconConsent } : {}),
           // learning-packs P-006: the picker selection ('none' ⇒ null = seed nothing).
           ...(mode === 'new-hive' ? { learningPack: learningPack === 'none' ? null : learningPack } : {}),
           ...(mode === 'into-hive' && hiveScope ? { intoHive: hiveScope } : {}),

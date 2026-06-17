@@ -24,11 +24,11 @@ export default defineTool({
     'Ask a question knowledge-FIRST. Runs search:semantic + mem0 before interrupting anyone: a hit returns answer candidates inline (with sources); a miss opens a `question` conversation routed to topic subscribers and returns immediately (answers arrive in your inbox — never blocks). Pass topics to route a miss; force_open:true to ask peers even when knowledge had candidates.',
   guidance: {
     when:
-      'You have a question and want the fastest correct answer without needlessly interrupting a peer. Always include topics so a miss reaches the right people. For a harness-specific question pass harness.',
+      'DEFAULT FIRST MOVE for any question you cannot answer from your own knowledge or the code — it routes to the peer/expert who owns the area (knowledge-first, non-blocking). Reach for this BEFORE escalating to the owner/human: ask peers here first; only ask the owner (coord:ask-owner / coord:escalate) if the best answer is still unclear after asking. Always include topics so a miss reaches the right people; pass harness for a harness-specific question.',
     notWhen:
-      'For an open-ended discussion (no single answer), use conversations:post. To turn-block on a peer/human, use coord:escalate / coord:handoff instead — coord:ask is deliberately non-blocking.',
+      'For an open-ended discussion (no single answer), use conversations:post. Do NOT jump to coord:ask-owner / coord:escalate (interrupting the owner) before trying coord:ask — escalate to the owner only when peers + knowledge leave the answer unclear. coord:ask is deliberately non-blocking; to turn-block on a peer/handoff use coord:escalate / coord:handoff.',
     chaining:
-      'topics:list → coord:ask (with topics). On a miss you get a conversation_id; conversations:get to read replies, conversations:resolve when answered.',
+      'topics:list → coord:ask (with topics). On a miss you get a conversation_id; conversations:get to read replies, conversations:resolve when answered. Still unclear after peers replied? THEN coord:ask-owner / coord:escalate.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
