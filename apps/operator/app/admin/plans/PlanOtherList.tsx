@@ -72,26 +72,35 @@ interface Props {
   /** A1 (P-004): group by authorizer + show why-line/category badge. Flag-gated;
    *  when false the prior plan/harness grouping renders unchanged. */
   groupByAuthorizer?: boolean;
+  /** Queue unification: include needs-human plan-items in the buckets (they
+   *  carry authorizer='you' → "Needs you"). A plan-item row routes its click to
+   *  the shared ?item= preview (the Vditor plan preview), not the ?other= card. */
+  includePlanItems?: boolean;
 }
 
-/** Keep only the non-plan-item kinds (optionally narrowed to `allow`), and —
- *  when a plan filter is active — only items belonging to those plans; when a
- *  tier filter is active — only that tier; drop groups left empty. */
+/** Keep the attention items to show: by default the non-plan-item kinds
+ *  (optionally narrowed to `allow`); with `includePlanItems` the needs-human
+ *  plan-items (authorizer='you') are kept too, so the unified Queue shows them
+ *  in the "Needs you" bucket alongside escalations. Plan-items bypass the
+ *  per-kind `allow` facet (it narrows the Other kinds, not the decisions). Also
+ *  narrows by plan filter + tier; drops groups left empty. */
 function otherOnly(
   groups: AttentionGroup[],
   allowKinds: AttentionKind[],
   allowPlans: string[],
   tier: AttentionTier | 'all',
+  includePlanItems: boolean,
 ): AttentionGroup[] {
   const allow = allowKinds.length ? new Set(allowKinds) : null;
   const plans = allowPlans.length ? new Set(allowPlans) : null;
+  const passesKind = (kind: AttentionKind) =>
+    kind === 'plan-item' ? includePlanItems : !allow || allow.has(kind);
   return groups
     .map((g) => ({
       ...g,
       items: g.items.filter(
         (i) =>
-          i.kind !== 'plan-item' &&
-          (!allow || allow.has(i.kind)) &&
+          passesKind(i.kind) &&
           (!plans || (i.planSlug != null && plans.has(i.planSlug))) &&
           (tier === 'all' || i.tier === tier),
       ),
@@ -109,15 +118,26 @@ export default function PlanOtherList({
   planFilters,
   tierFilter,
   groupByAuthorizer,
+  includePlanItems,
 }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
   // Inbox shares one preview pane across the Other + item lists; selecting an
-  // Other item clears any plan-item selection so the shared pane shows it.
-  const [, setItemSel] = useQueryState('item', parseAsString);
+  // Other item clears any plan-item selection (and vice-versa) so the shared
+  // pane shows exactly one.
+  const [selectedItem, setItemSel] = useQueryState('item', parseAsString);
   const selectOther = (id: string) => {
     void setSelected(id);
     void setItemSel(null);
   };
+  // A plan-item row feeds the SAME ?item= preview the Plans/Queue item lists use
+  // (the Vditor plan preview scrolled to the item), so a needs-human decision in
+  // the "Needs you" bucket opens its full plan preview, not the generic card.
+  const selectPlanItem = (planSlug: string, itemRef: string) => {
+    void setItemSel(`${planSlug}::${itemRef}`);
+    void setSelected(null);
+  };
+  const planItemSelKey = (it: AttentionItem): string | null =>
+    it.kind === 'plan-item' && it.planSlug && it.itemRef ? `${it.planSlug}::${it.itemRef}` : null;
   // Collapsible groups — same `?expand=` model as the Plans tab's PlanItemsList.
   const [expandedGroups, setExpandedGroups] = useQueryState(
     'expand',
@@ -127,7 +147,7 @@ export default function PlanOtherList({
   const [catFilter, setCatFilter] = useQueryState('qcat', parseAsArrayOf(parseAsString).withDefault([]));
 
   const planList = planFilters ?? [];
-  const otherGroups = otherOnly(groups, kinds ?? [], planList, tierFilter ?? 'all');
+  const otherGroups = otherOnly(groups, kinds ?? [], planList, tierFilter ?? 'all', includePlanItems ?? false);
   const allItems = otherGroups.flatMap((g) => g.items);
   // P-007: the autonomy categories present in the current items + the active filter
   // (new Queue view only; other-items only — plan-items are uniformly plan-governance).
@@ -142,9 +162,16 @@ export default function PlanOtherList({
   // Auto-expand the selected item's section (mirrors the Plans tab). The ref
   // token stops us reopening a section the user just collapsed while the
   // selection stays put.
-  const selectedGroupKey = selected
-    ? sections.find((s) => s.items.some((i) => i.id === selected))?.key ?? null
-    : null;
+  const selectedGroupKey =
+    selected || selectedItem
+      ? sections.find((s) =>
+          s.items.some(
+            (i) =>
+              (selected != null && i.id === selected) ||
+              (selectedItem != null && planItemSelKey(i) === selectedItem),
+          ),
+        )?.key ?? null
+      : null;
   const autoExpandRef = useRef<string | null>(null);
   useEffect(() => {
     if (!selectedGroupKey) {
@@ -251,7 +278,8 @@ export default function PlanOtherList({
               <Collapsible.Content className="pc-items__group-content">
                 <ul className="pc-items__rows" role="list">
                   {s.items.map((it) => {
-                    const isSel = selected === it.id;
+                    const itemKey = planItemSelKey(it);
+                    const isSel = itemKey ? selectedItem === itemKey : selected === it.id;
                     const why = groupByAuthorizer ? whyLine(it) : null;
                     return (
                       <li key={it.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
@@ -260,7 +288,9 @@ export default function PlanOtherList({
                           className="pc-items__row"
                           aria-current={isSel ? 'true' : undefined}
                           title={it.title}
-                          onClick={() => selectOther(it.id)}
+                          onClick={() =>
+                            itemKey ? selectPlanItem(it.planSlug!, it.itemRef!) : selectOther(it.id)
+                          }
                         >
                           {/* Free-form text first (leftmost); the why-line stacks
                               under it in the authorizer view. */}
@@ -274,7 +304,12 @@ export default function PlanOtherList({
                                 {it.tier === 'handled' ? '✓ handled' : it.tier}
                               </span>
                             ) : null}
-                            {groupByAuthorizer && it.category ? (
+                            {/* A plan-item shows its P-NNN (a decision on a known plan);
+                                other kinds show their autonomy-category (authorizer view)
+                                or kind badge. */}
+                            {it.kind === 'plan-item' ? (
+                              it.itemRef ? <span className="pc-items__id">{it.itemRef}</span> : null
+                            ) : groupByAuthorizer && it.category ? (
                               <span
                                 className={`pc-category${it.whyGated === 'protected' ? ' pc-category--protected' : ''}`}
                                 title={`autonomy category: ${it.category}`}

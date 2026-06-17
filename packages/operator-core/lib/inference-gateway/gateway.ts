@@ -24,6 +24,8 @@ import {
   governorForBackend,
   PriorityAdmissionQueue,
   priorityFromLabel,
+  classifyHttpError,
+  parseUsageResetMs,
   type RateLimitGovernor,
   type AdmissionSnapshot,
 } from '@papercusp/papercup-shared/agent';
@@ -45,6 +47,17 @@ const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-
  *  transient-throttle duration: long enough to let it clear, short enough not to over-bench an
  *  account that's already recovered (which would thin the pool under broad concurrent contention). */
 const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
+/** Inspect a NON-200 upstream body up to this many bytes for a usage/session-limit signature (the
+ *  Claude-Code subscription cap — "You've hit your session limit · resets 10:50am" — a WALL the bee
+ *  classifies as usage_limit + WON'T retry). Such error bodies are tiny; this just bounds the read.
+ *  Successful 200 streams are NEVER peeked, so the hot path keeps zero added latency. */
+const USAGE_LIMIT_PEEK_BYTES = 64 * 1024;
+/** When a usage/session-limit message carries no parseable reset, pause the capped account this long. */
+const USAGE_LIMIT_DEFAULT_PAUSE_MS = 60 * 60 * 1000;
+/** Bounded INTERNAL failover: how many accounts the gateway walks past usage-limited ones on a SINGLE
+ *  request before giving up. The bee treats a usage_limit as a no-retry wall, so the gateway must route
+ *  around a session-capped account itself and return a GOOD response — not forward the limit. */
+const USAGE_LIMIT_MAX_FAILOVER_ATTEMPTS = 5;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
@@ -223,6 +236,49 @@ async function readBody(req: http.IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+/**
+ * Read up to `capBytes` of a web ReadableStream into a `head` Buffer. If the stream ENDS within the cap
+ * (the usual case for tiny error/limit bodies), `rest` is null and `head` is the whole body. If the cap
+ * is hit first (a large streamed response), `rest` is a Node Readable yielding the REMAINING bytes (the
+ * head is returned separately so the caller writes it first). Lets the gateway peek a NON-200 upstream
+ * body for a usage/session-limit signature without buffering successful 200 streams. The generator's
+ * finally cancels the reader on natural end OR an early destroy(), so a discarded body never leaks the
+ * upstream connection.
+ */
+async function peekBody(
+  webStream: ReadableStream<Uint8Array>,
+  capBytes: number,
+): Promise<{ head: Buffer; rest: Readable | null }> {
+  const reader = webStream.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      reader.releaseLock?.();
+      return { head: Buffer.concat(chunks), rest: null };
+    }
+    chunks.push(Buffer.from(value));
+    total += value.byteLength;
+    if (total >= capBytes) break;
+  }
+  const head = Buffer.concat(chunks);
+  const rest = Readable.from(
+    (async function* () {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          yield Buffer.from(value);
+        }
+      } finally {
+        reader.cancel?.().catch(() => {});
+      }
+    })(),
+  );
+  return { head, rest };
+}
+
 export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamBase = (deps.upstreamBase ?? DEFAULT_UPSTREAM).replace(/\/$/, '');
   const doFetch = deps.fetchImpl ?? fetch;
@@ -370,95 +426,155 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
 
     try {
-      const token = await active.token();
-      const headers: Record<string, string> = {};
-      for (const [k, v] of Object.entries(req.headers)) {
-        if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
-        headers[k] = Array.isArray(v) ? v.join(', ') : v;
-      }
+      // Constant request headers (everything but the per-account Authorization/dispatcher, set per attempt).
       // Every account is a Claude Max subscription OAuth credential → `Authorization: Bearer` + the
       // required `oauth-2025-04-20` beta. There is NO x-api-key path: this deployment has no billed
       // API key, and a raw key would 400 against the subscription-only beta (any x-api-key a bee
       // sends is stripped above by STRIP_REQUEST). NOTE for raw-SDK callers routed through here on a
       // Max token: the FIRST `system` block must be the Claude Code identifier or the request is
       // shunted to a far stricter bucket and 429s — the `claude` CLI bees already frame themselves.
-      headers['authorization'] = `Bearer ${token}`;
-      headers['anthropic-beta'] = withOAuthBeta(headers['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined));
-      if (!headers['anthropic-version']) headers['anthropic-version'] = ANTHROPIC_VERSION;
-      headers['accept-encoding'] = 'identity';
-
-      let up: Response;
-      try {
-        const init: FetchInit = { method: req.method ?? 'POST', headers };
-        if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
-        // Per-account IP routing: forward this account's request through its dedicated egress
-        // dispatcher (proxy / bound source IP) when configured; absent ⇒ default (shared) egress.
-        const dispatcher = await dispatcherFor(active);
-        if (dispatcher) init.dispatcher = dispatcher;
-        up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
-      } catch (e) {
-        upstreamErrors++;
-        log('error', `upstream fetch failed: ${(e as Error).message}`);
-        sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway upstream error: ${(e as Error).message}` }, gateway: true });
-        return;
+      const baseHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
+        baseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
       }
+      baseHeaders['anthropic-beta'] = withOAuthBeta(baseHeaders['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined));
+      if (!baseHeaders['anthropic-version']) baseHeaders['anthropic-version'] = ANTHROPIC_VERSION;
+      baseHeaders['accept-encoding'] = 'identity';
 
-      const hobj = headersToObject(up.headers);
-      gov.recordResponse(hobj);
-      deps.onResponse?.(hobj, up.status, model, active.accountId);
-      if (up.status === 429 || up.status === 529) {
-        upstream429++;
-        const reset = parseRateReset(hobj);
-        const unifiedRejected = gov.snapshot().unified?.rejected === true;
-        // A BARE 429: rate_limit_error with NO window headers (no unified util, no retry-after/reset).
-        // Anthropic returns these for some caps. The old code treated it as a no-op — which left the
-        // gateway 429-LOOPING the same momentarily-limited account forever (the aviynw10 stuck-loop,
-        // 2026-06-17: every bee's claude-code then retry-looped into a $0 hang while other accounts sat
-        // idle). Treat it as a SHORT bounded account limit: pace briefly + fail over (below).
-        const bare429 =
-          up.status === 429 && !unifiedRejected && reset.retryAfterMs === undefined && reset.resetAt === undefined;
-        // Penalize ONLY a classic 429 carrying its own retry-after/reset. Skip it for:
-        //  • a 529 — transient SERVER overload, not rate-limit budget; it must NOT pause the account;
-        //  • a unified (rolling-window) rejection — recordResponse already set the BOUNDED re-probe
-        //    pause, and penalizing to the full multi-hour unified reset is exactly the stale-pause /
-        //    false-exhaustion bug (the rolling 5h window recovers continuously).
-        // A bare 429 gets a SHORT bounded penalty (NOT the multi-hour reset → safe from stale-pause).
-        if (up.status === 429 && !unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
-          gov.penalize(reset);
-        } else if (bare429) {
-          gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
-        }
-        // Fail over to another account that still has budget so the fleet doesn't stall — on a unified
-        // 5h exhaustion OR a bare 429. The exhausted account rejoins the rotation at its reset (the
-        // unified rolling window) / the short backoff (bare). Without the bare-429 case the gateway
-        // stalls on a stuck account and 429-loops every caller.
-        if (unifiedRejected || bare429) {
-          const resetAt = reset.resetAt ?? Date.now() + (bare429 ? BARE_429_FAILOVER_BACKOFF_MS : 5 * 60 * 60 * 1000);
-          const next = pool.onExhausted(active.accountId, resetAt);
-          if (next && next.accountId !== active.accountId) failovers++;
-        }
-      } else if (up.status === 401) {
-        active.invalidateToken?.();
-      }
+      // INTERNAL FAILOVER LOOP. On most responses this runs ONCE. It re-runs only to route past a
+      // usage/session CAP ("You've hit your session limit · resets 10:50am") — a hard wall the bee
+      // classifies as `usage_limit` and will NOT retry, so the gateway must rotate to a healthy account
+      // and return a GOOD response itself rather than forwarding the wall (the account-routing-fault the
+      // owner flags: a $0 bee while idle accounts sit unused). A transient/bare 429 is NOT looped here —
+      // the bee's CLI retries those, and the next request lands on the failover-rotated active().
+      let attempt = 0;
+      for (;;) {
+        const token = await active.token();
+        const headers: Record<string, string> = { ...baseHeaders, authorization: `Bearer ${token}` };
 
-      const outHeaders: Record<string, string> = {};
-      up.headers.forEach((v, k) => {
-        if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
-      });
-      res.writeHead(up.status, outHeaders);
-      if (up.body) {
-        const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
-        nodeStream.pipe(res);
-        await new Promise<void>((resolve) => {
-          res.on('finish', () => resolve());
-          res.on('close', () => resolve());
-          nodeStream.on('error', () => {
-            res.destroy();
-            resolve();
-          });
+        let up: Response;
+        try {
+          const init: FetchInit = { method: req.method ?? 'POST', headers };
+          if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
+          // Per-account IP routing: forward this account's request through its dedicated egress
+          // dispatcher (proxy / bound source IP) when configured; absent ⇒ default (shared) egress.
+          const dispatcher = await dispatcherFor(active);
+          if (dispatcher) init.dispatcher = dispatcher;
+          up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
+        } catch (e) {
+          upstreamErrors++;
+          log('error', `upstream fetch failed: ${(e as Error).message}`);
+          sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway upstream error: ${(e as Error).message}` }, gateway: true });
+          return;
+        }
+
+        const hobj = headersToObject(up.headers);
+        gov.recordResponse(hobj);
+        deps.onResponse?.(hobj, up.status, model, active.accountId);
+
+        // When the active account is usage/session-capped, this is set to its reset → pause + rotate.
+        let usageCapResetAt: number | undefined;
+        // A peeked NON-200 body (so it can be FORWARDED if we end up not failing over). Successful 200
+        // streams are NEVER peeked — the hot path keeps zero added latency + no false-positive risk.
+        let peekedHead: Buffer | null = null;
+        let peekedRest: Readable | null = null;
+
+        if (up.status === 429 || up.status === 529) {
+          upstream429++;
+          const reset = parseRateReset(hobj);
+          const unifiedRejected = gov.snapshot().unified?.rejected === true;
+          // A BARE 429: rate_limit_error with NO window headers (no unified util, no retry-after/reset).
+          // Without handling, the gateway 429-LOOPED the same momentarily-limited account (the aviynw10
+          // stuck-loop, 2026-06-17). Treat it as a SHORT bounded account limit: pace briefly + fail over.
+          const bare429 =
+            up.status === 429 && !unifiedRejected && reset.retryAfterMs === undefined && reset.resetAt === undefined;
+          // A 429 may ALSO be a hard usage/session CAP — the BODY names it ("hit your session limit").
+          // Peek the tiny error body to tell a transient throttle (retry) from a cap (long pause +
+          // INTERNAL failover, since the bee won't retry a usage_limit). util can be 0 on a capped
+          // account (the cap is a DIFFERENT meter than the rolling window), so headers don't reveal it.
+          let usageResetAt: number | undefined;
+          if (up.body) {
+            const peek = await peekBody(up.body, USAGE_LIMIT_PEEK_BYTES);
+            peekedHead = peek.head;
+            peekedRest = peek.rest;
+            const text = peek.head.toString('utf8');
+            if (classifyHttpError({ status: undefined, message: text }, 'anthropic').class === 'usage_limit') {
+              usageResetAt = parseUsageResetMs(text) ?? undefined;
+              usageCapResetAt = usageResetAt ?? Date.now() + USAGE_LIMIT_DEFAULT_PAUSE_MS;
+            }
+          }
+          if (usageCapResetAt !== undefined) {
+            // Hard cap on THIS account → pause it to its reset (so the pin yields to liveness + the
+            // selector skips it) before the internal failover below routes the request elsewhere.
+            gov.penalize({ resetAt: usageCapResetAt });
+          } else if (up.status === 429 && !unifiedRejected && (reset.retryAfterMs !== undefined || reset.resetAt !== undefined)) {
+            gov.penalize(reset);
+          } else if (bare429) {
+            gov.penalize({ retryAfterMs: BARE_429_FAILOVER_BACKOFF_MS, resetAt: Date.now() + BARE_429_FAILOVER_BACKOFF_MS });
+          }
+          // Rotate the pool's active() off an exhausted/throttled account so the NEXT request (the bee's
+          // own retry for a transient 429) lands on a healthy one. Skipped for a usage cap — that gets
+          // the INTERNAL retry below (the bee won't retry it itself).
+          if (usageCapResetAt === undefined && (unifiedRejected || bare429)) {
+            const resetAt = reset.resetAt ?? Date.now() + (bare429 ? BARE_429_FAILOVER_BACKOFF_MS : 5 * 60 * 60 * 1000);
+            const next = pool.onExhausted(active.accountId, resetAt);
+            if (next && next.accountId !== active.accountId) failovers++;
+          }
+        } else if (up.status === 401) {
+          active.invalidateToken?.();
+        }
+
+        // INTERNAL failover for a usage/session cap: rotate to a healthy account + re-fetch so the bee
+        // gets a GOOD response (it treats a usage_limit as a no-retry wall). Bounded; if no healthy
+        // account remains we fall through and forward the cap (genuinely out of capacity).
+        if (usageCapResetAt !== undefined && attempt < USAGE_LIMIT_MAX_FAILOVER_ATTEMPTS - 1) {
+          const next = pool.onExhausted(active.accountId, usageCapResetAt);
+          if (next && next.accountId !== active.accountId) {
+            failovers++;
+            peekedRest?.destroy(); // discard the capped account's body
+            active = next;
+            gov = governorForAccount(model, active.accountId);
+            attempt++;
+            log('warn', `inference-gateway: usage/session cap on account → failover to '${active.accountId}' (attempt ${attempt})`);
+            continue;
+          }
+          // no failover target — forward the cap response below.
+        }
+
+        const outHeaders: Record<string, string> = {};
+        up.headers.forEach((v, k) => {
+          if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
         });
-      } else {
-        res.end();
+        res.writeHead(up.status, outHeaders);
+        if (peekedHead !== null) {
+          // We already consumed this body via peekBody — write the peeked head, then stream any remainder.
+          if (peekedHead.length) res.write(peekedHead);
+          if (peekedRest) {
+            peekedRest.pipe(res);
+            await new Promise<void>((resolve) => {
+              res.on('finish', () => resolve());
+              res.on('close', () => resolve());
+              peekedRest!.on('error', () => { res.destroy(); resolve(); });
+            });
+          } else {
+            res.end();
+          }
+        } else if (up.body) {
+          const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
+          nodeStream.pipe(res);
+          await new Promise<void>((resolve) => {
+            res.on('finish', () => resolve());
+            res.on('close', () => resolve());
+            nodeStream.on('error', () => {
+              res.destroy();
+              resolve();
+            });
+          });
+        } else {
+          res.end();
+        }
+        return;
       }
     } finally {
       release();

@@ -106,6 +106,12 @@ export interface SuIndependentEnrolled {
 export interface SuTaskOutcome {
   /** The unified diff base..HEAD (grader test-files excluded); "" when the agent produced no change. */
   diff: string;
+  /**
+   * The qa-modality FINAL ANSWER the agent wrote (GAIA: `answer.txt`). Set ONLY by the GAIA seam
+   * ({@link SuIndependentBacklogOpts.gaia}); absent/'' for the default diff path. Carried onto
+   * {@link ArmAttempt.answer} so the same FleetTaskResult serves both the diff arms and the GAIA arm.
+   */
+  answer?: string;
   telemetry: GenerationTelemetry;
   /** The agent/spawn id that served it (diagnostics + the FleetTaskResult.beeId field). */
   agentId: string;
@@ -179,6 +185,21 @@ export interface SuIndependentBacklogOpts {
    */
   onEnrolled?: (enrolled: SuIndependentEnrolled) => void | Promise<void>;
   onTaskCollected?: (result: FleetTaskResult) => void | Promise<void>;
+  /**
+   * GAIA arm seam (plan benchmark-suite-gaia-2026-06-17). When present, the REAL ops binding
+   * ({@link suIndependentBacklogOps}) runs the GAIA general-assistant path instead of the SWE-bench coding
+   * path — the THREE SWAPS: GAIA scratch-dir clone (no repo), member blueprint `gaia-agent` + the
+   * question/answer.txt brief, and `answer.txt` extraction into {@link ArmAttempt.answer} (diff:''). ADDITIVE:
+   * absent → today's unchanged SWE-bench behavior. The driver itself is GAIA-agnostic (the swap is entirely
+   * inside the injected ops); it only flows the extra `answer` field through.
+   */
+  gaia?: GaiaArmSeamConfig;
+}
+
+/** GAIA arm config — a presence flag is enough today; reserved for future per-arm GAIA tuning. */
+export interface GaiaArmSeamConfig {
+  /** Must be true to engage the GAIA path. */
+  enabled: true;
 }
 
 /**
@@ -372,6 +393,7 @@ function taskResultFromOutcome(
     instanceId: enrolled.task.instanceId,
     seed,
     diff: outcome.diff,
+    ...(outcome.answer != null ? { answer: outcome.answer } : {}),
     tokensIn: t.tokensIn,
     tokensOut: t.tokensOut,
     costUsd: t.costUsd,
@@ -468,6 +490,12 @@ export function bindSuIndependentBacklogDriver(
  */
 export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndependentBacklogOps {
   const ws = opts.workspaceId;
+  // GAIA seam (plan benchmark-suite-gaia-2026-06-17): when engaged, swap clone → GAIA scratch dir, member
+  // blueprint → `gaia-agent`, the brief → the question + answer.txt instruction, and extract → `answer.txt`
+  // (the THREE SWAPS). Everything else (FIFO routing, cost-read, never-throw) is unchanged. Per-task briefs
+  // are stored by instanceId so the FIFO place gets the right one.
+  const gaiaMode = opts.gaia?.enabled === true;
+  const gaiaBriefByInstance = new Map<string, string>();
 
   // Ensure the environment variables are set for the directive + model pinning (D-020 fix).
   const BENCH_BEE_DIRECTIVE = [
@@ -524,8 +552,15 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
     },
 
     async prepareTask({ task }) {
-      const { cloneTaskRepo } = await import('./clone');
-      const checkout = await cloneTaskRepo(task);
+      let checkout;
+      if (gaiaMode) {
+        // GAIA SWAP 1: no repo to clone — a scratch git dir with the optional attachment staged in.
+        const { gaiaCloneTask } = await import('./gaia-backlog-support');
+        checkout = await gaiaCloneTask(task);
+      } else {
+        const { cloneTaskRepo } = await import('./clone');
+        checkout = await cloneTaskRepo(task);
+      }
       const enrolled: SuIndependentEnrolled = {
         task,
         clonePath: checkout.dir,
@@ -545,12 +580,21 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       const { join } = await import('node:path');
       const { stringify: stringifyYaml } = await import('yaml');
 
-      // Write the member's .papercusp/blueprint.yaml (extends external-bench).
+      // GAIA SWAP 2 (blueprint): the member runs the general-assistant `gaia-agent` blueprint, NOT the
+      // coding spine `external-bench`. Write the member's .papercusp/blueprint.yaml accordingly.
+      let memberBlueprint = 'external-bench';
+      let featureSpec = task.problemStatement;
+      if (gaiaMode) {
+        const { GAIA_MEMBER_BLUEPRINT, gaiaBrief } = await import('./gaia-backlog-support');
+        memberBlueprint = GAIA_MEMBER_BLUEPRINT;
+        featureSpec = gaiaBrief(task); // the question + the answer.txt instruction (the work-item brief)
+        gaiaBriefByInstance.set(task.instanceId, featureSpec);
+      }
       const bpDir = join(enrolled.checkout.dir, '.papercusp');
       await mkdir(bpDir, { recursive: true });
       await writeFile(
         join(bpDir, 'blueprint.yaml'),
-        stringifyYaml({ id: member, extends: 'external-bench' }, { lineWidth: 100 }),
+        stringifyYaml({ id: member, extends: memberBlueprint }, { lineWidth: 100 }),
         'utf8',
       );
 
@@ -558,13 +602,13 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       const ops = await liveOps();
       await ops.registerMember({ member, clonePath: enrolled.checkout.dir, hiveHome: hiveSlug, workspaceId });
 
-      // Seed the single feature (the problem statement).
+      // Seed the single feature (the problem statement, or the GAIA question+answer.txt brief).
       const featureId = featureIdForTask(task.instanceId);
       await ops.seedFeature({
         member,
         featureId,
         title: task.problemStatement.slice(0, 200),
-        spec: task.problemStatement,
+        spec: featureSpec,
         workspaceId: ws,
       });
 
@@ -597,6 +641,13 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       const featureId = memberSlugToFeatureId.get(memberSlug);
       if (!featureId) throw new Error(`Cannot find feature id for member ${memberSlug}`);
 
+      // GAIA SWAP 2 (brief): the placed bee gets the GAIA question + answer.txt instruction, NOT the coding
+      // directive. The per-task brief was stored at enroll time keyed by instanceId.
+      const instanceId = instanceByFeatureId.get(featureId);
+      const brief = gaiaMode
+        ? (instanceId ? gaiaBriefByInstance.get(instanceId) : undefined) ?? ''
+        : process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '';
+
       const toolUrl = `${operatorApiBase()}/api/agent-mcp/run-tool`;
       const res = await loopbackFetch(toolUrl, {
         method: 'POST',
@@ -606,7 +657,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
           args: {
             tasks: [featureId],
             harness: memberSlug,
-            brief: process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '',
+            brief,
             tier: 'max', // opus:xhigh — strict per D-004 fairness
             min_inject_affinity: 100, // never warm-inject — the independent arm needs a FRESH isolated spawn
             workspace: ws,
@@ -652,13 +703,19 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
       const { readMemberUsage, readMemberBeeSpawns, stopReasonForFeatureStatus } = await import('./hive-backlog-live');
       const sql = await sqlClient();
 
-      // Extract the diff from the worktree.
+      // Extract the work product. GAIA SWAP 3: read `answer.txt` (the qa answer) instead of the git diff.
       let diff = '';
+      let answer: string | undefined;
       let generationError: string | undefined;
-      try {
-        diff = await extractDiff(enrolled.checkout, task);
-      } catch (e) {
-        generationError = `extractDiff failed: ${e instanceof Error ? e.message : String(e)}`;
+      if (gaiaMode) {
+        const { extractGaiaAnswer } = await import('./gaia-backlog-support');
+        answer = await extractGaiaAnswer(enrolled.checkout); // never throws; '' when no answer.txt
+      } else {
+        try {
+          diff = await extractDiff(enrolled.checkout, task);
+        } catch (e) {
+          generationError = `extractDiff failed: ${e instanceof Error ? e.message : String(e)}`;
+        }
       }
 
       // Read cost + bee spawn info from the member harness.

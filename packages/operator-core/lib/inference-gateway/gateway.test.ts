@@ -172,6 +172,35 @@ test('a BARE upstream 429 (no rate-limit headers) fails over to the next account
   assert.equal(pool.active().accountId, 'B', 'bare 429 failed over A→B (no stuck-loop on the limited account)');
 });
 
+test('a usage/session CAP (429 body names the limit) is INTERNALLY failed over — bee gets B\'s success, not A\'s wall', async () => {
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B')]);
+  let calls = 0;
+  await boot(
+    (_req, res) => {
+      calls += 1;
+      if (calls === 1) {
+        // Account A is session-capped: a 429 whose BODY names the cap. No rate-limit headers (util can be
+        // 0 on a capped account — the cap is a DIFFERENT meter than the rolling window), so only the body
+        // reveals it. The bee treats usage_limit as a no-retry WALL, so the gateway must route past it.
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: "You've hit your session limit · resets 10:50am" } }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, content: 'hi from B' }));
+      }
+    },
+    { pool },
+  );
+  assert.equal(pool.active().accountId, 'A', 'starts active on A');
+  const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(res.status, 200, 'gateway internally failed over the cap → returns B\'s success, not A\'s 429 wall');
+  const body = JSON.parse(await res.text());
+  assert.equal(body.ok, true, "the forwarded body is B's success, not the session-limit error");
+  assert.equal(pool.active().accountId, 'B', 'rotated off the session-capped account A');
+  assert.equal(calls, 2, 'one capped attempt on A + one internal-failover success on B');
+});
+
 test('401 from upstream invalidates the cached token', async () => {
   await boot((_req, res) => {
     res.writeHead(401, { 'content-type': 'application/json' });

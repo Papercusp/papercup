@@ -36,7 +36,8 @@ import { useLexicon } from '@/lib/useLexicon';
 import DecisionLog, { DecisionDetail, type DecisionRow } from '@/app/_components/DecisionLog';
 import QueueSummary from './QueueSummary';
 import { QUEUE_TABS, QUEEN_LOG_LAYERS } from './queue-authorizer';
-import { ClipboardList, Inbox, Terminal } from 'lucide-react';
+import { ClipboardList, Inbox, Terminal, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import {
   SessionsRosterList,
   SessionsRosterDetail,
@@ -61,6 +62,7 @@ import {
   type PlanBucket,
   type PlanItemRow,
   type AttentionTier,
+  type AttentionKind,
 } from './plans-api';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { resolveHarnessScope, type HarnessNodeForScope, HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
@@ -110,7 +112,6 @@ const OTHER_KIND_IDS = [
   'conversation',
   'scout-grade',
 ] as const;
-type OtherKind = (typeof OTHER_KIND_IDS)[number];
 
 /** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
 type QueueTierFilter = AttentionTier | 'all';
@@ -124,21 +125,6 @@ const QUEUE_TIER_FILTERS = ['all', ...ATTENTION_TIERS] as const;
 function tierOfPlanCategory(c: 'needs-human' | 'todo' | 'blocked'): AttentionTier {
   return c === 'needs-human' ? 'decision' : c === 'blocked' ? 'alert' : 'activity';
 }
-
-/** Item-status filter toggles — the "Items" group. */
-const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }> = [
-  { id: 'needs-human', label: 'Needs Human', hint: 'Items waiting on a human decision.' },
-  { id: 'todo', label: 'ToDos', hint: 'Agent-actionable work — effective todo, all blockers cleared. Sorted by importance.' },
-  { id: 'blocked', label: 'Blocked', hint: 'Items stuck on unresolved blockers or external waits.' },
-  { id: 'coord-escalation', label: 'Escalations', hint: 'Agent escalations from the coord log — a decision is blocking progress.' },
-  { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
-  { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the {pot} app is broken.' },
-  { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the queue (chat stays conversation only).' },
-  { id: 'improvement', label: 'Improvements', hint: 'Self-improvements the auto-implement loop routed to you for triage.' },
-  { id: 'standing-approval', label: 'Approvals', hint: 'Standing-approval candidates — grant the operator auto-dispatch, or dismiss.' },
-  { id: 'conversation', label: 'Questions', hint: 'Open agent questions / coord:ask conversations awaiting an answer.' },
-  { id: 'scout-grade', label: 'Scout', hint: 'Routed Scout ideas awaiting your optional grade.' },
-];
 
 const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'needs-human': 'Needs Human',
@@ -241,6 +227,24 @@ export default function PlansClient() {
   // preview pane (right column) renders whichever it is.
   const [queueItemSel] = useQueryState('item', parseAsString);
   const [queueOtherSel, setQueueOtherSel] = useQueryState('other', parseAsString);
+
+  // Queue Filter (redesign): the kind facet (qKinds — narrows the Other kinds in
+  // the authorizer buckets; plan-items always show), the opt-in backlog toggles
+  // (qTodos/qBlocked — append the pickable/blocked plan-item backlog as its own
+  // section; default OFF so the Queue defaults to "what needs attention", not the
+  // whole work backlog), and the Filter panel's open state (a panel-open flag → nuqs).
+  const [queueKinds, setQueueKinds] = useQueryState(
+    'qKinds',
+    parseAsArrayOf(parseAsStringEnum<AttentionKind>([...OTHER_KIND_IDS])).withDefault([]),
+  );
+  const toggleQueueKind = useCallback(
+    (k: AttentionKind) =>
+      void setQueueKinds(queueKinds.includes(k) ? queueKinds.filter((x) => x !== k) : [...queueKinds, k]),
+    [queueKinds, setQueueKinds],
+  );
+  const [qTodos, setQTodos] = useQueryState('qTodos', parseAsBoolean.withDefault(false));
+  const [qBlocked, setQBlocked] = useQueryState('qBlocked', parseAsBoolean.withDefault(false));
+  const [qFilterOpen, setQFilterOpen] = useQueryState('qFilter', parseAsBoolean.withDefault(false));
 
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -382,18 +386,22 @@ export default function PlansClient() {
     [attention.data],
   );
 
-  // Split the active item-status facet into plan-item categories and the
-  // non-plan-item ("Other") kinds. Empty selection = show everything.
-  const otherFacets = useMemo(
-    () => istatus.filter((s): s is OtherKind => (OTHER_KIND_IDS as readonly string[]).includes(s)),
-    [istatus],
-  );
-  const planItemFacetCount = istatus.length - otherFacets.length;
-  // Show the Other section when no facet is selected, or an Other-kind facet
-  // is. Show the plan-item list when no facet is selected, or a plan-item
-  // facet is. (So a bare "Escalations" selection shows only Other items.)
-  const showOther = istatus.length === 0 || otherFacets.length > 0;
-  const showPlanItems = istatus.length === 0 || planItemFacetCount > 0;
+  // The opt-in pickable-work backlog: actionable todos (qTodos) + blocked items
+  // (qBlocked), deduped. Rendered as its own "Backlog" section under the
+  // authorizer buckets only when a Filter toggle is on (default off);
+  // PlanItemsList applies the per-plan filter internally.
+  const backlogItems = useMemo(() => {
+    const out: PlanItemRow[] = [];
+    if (qTodos) out.push(...(itemsActionable.data?.items ?? []));
+    if (qBlocked) out.push(...(itemsBlocked.data?.items ?? []));
+    const seen = new Set<string>();
+    return out.filter((r) => {
+      const k = `${r.plan}::${r.item.id}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }, [qTodos, qBlocked, itemsActionable.data, itemsBlocked.data]);
 
   const istatusKey = istatus.join('|');
   const pBucketsKey = pBuckets.join('|');
@@ -908,83 +916,50 @@ export default function PlansClient() {
                       </section>
                     ) : (
                     <>
-                    {/* Tier bar (D-006): Decisions ▸ Handled ▸ Alerts ▸ Activity.
-                        Only Decisions demands the user; the rest declutter into
-                        their own tiers. */}
-                    <nav className="pc-queue__tiers" aria-label="Queue tiers">
-                      {QUEUE_TIER_FILTERS.map((t) => {
-                        const active = queueTier === t;
-                        const label = t === 'all' ? 'All' : TIER_LABEL[t];
-                        const count =
-                          t === 'all'
-                            ? Object.values(tierCounts).reduce((a, b) => a + b, 0)
-                            : tierCounts[t];
-                        return (
-                          <button
-                            key={t}
-                            type="button"
-                            className={`pc-queue__tier pc-queue__tier--${t}${active ? ' is-active' : ''}`}
-                            aria-pressed={active}
-                            onClick={() => void setQueueTier(active && t !== 'all' ? 'all' : t)}
-                            title={
-                              t === 'decision'
-                                ? 'Decisions — the only tier that demands you'
-                                : t === 'handled'
-                                  ? 'Handled by the operator (audit: what + why)'
-                                  : label
-                            }
-                          >
-                            <span className="pc-queue__tier-label">{label}</span>
-                            <span className="pc-queue__tier-count">{itemsLoading ? '…' : count}</span>
-                          </button>
-                        );
-                      })}
-                    </nav>
-                    {/* Item filters, sticky atop the inbox list column. */}
-                    <nav className="pc-queue__filters" aria-label="Queue item filters">
-                      {ITEM_FILTERS.map((f) => {
-                        const active = istatus.includes(f.id);
-                        return (
-                          <button
-                            key={f.id}
-                            type="button"
-                            className={`pc-queue__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
-                            aria-pressed={active}
-                            onClick={() => toggleItemStatus(f.id)}
-                            title={f.hint.replace('{pot}', t('pot'))}
-                          >
-                            <span className="pc-queue__filter-label">{f.label}</span>
-                            <span className="pc-queue__filter-count">
-                              {itemsLoading ? '…' : itemStatusCounts[f.id]}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </nav>
+                    {/* ONE slicing model: the authorizer buckets (Needs you /
+                        Automatable / Alerts) over ALL attention items — needs-human
+                        plan-items AND coord/smoke/etc. The old tier bar + 11-chip row
+                        collapse into one Filter; the pickable-todo / blocked backlog
+                        is opt-in (default off) as its own section so the default view
+                        stays "what needs attention", not the whole work backlog. */}
+                    <QueueFilterBar
+                      kinds={queueKinds}
+                      onToggleKind={toggleQueueKind}
+                      counts={itemStatusCounts}
+                      showTodos={qTodos}
+                      showBlocked={qBlocked}
+                      onToggleTodos={() => void setQTodos(!qTodos)}
+                      onToggleBlocked={() => void setQBlocked(!qBlocked)}
+                      todoCount={itemsActionable.data?.items.length ?? 0}
+                      blockedCount={itemsBlocked.data?.items.length ?? 0}
+                      tierFilter={queueTier}
+                      onClearTier={() => void setQueueTier('all')}
+                      open={qFilterOpen}
+                      onOpenChange={(o) => void setQFilterOpen(o)}
+                    />
                     <div className="pc-items__listpane">
-                      {showOther ? (
-                        <PlanOtherList
-                          groups={attention.data?.groups ?? []}
-                          loading={attention.loading}
-                          error={attention.error}
-                          refresh={attention.refresh}
-                          title="Other"
-                          kinds={otherFacets}
-                          planFilters={itemPlans}
-                          tierFilter={queueTier}
-                          groupByAuthorizer={queueAuthzView}
-                        />
-                      ) : null}
-                      {showPlanItems ? (
+                      <PlanOtherList
+                        groups={attention.data?.groups ?? []}
+                        loading={attention.loading}
+                        error={attention.error}
+                        refresh={attention.refresh}
+                        title="Pending"
+                        kinds={queueKinds}
+                        planFilters={itemPlans}
+                        tierFilter={queueTier}
+                        groupByAuthorizer
+                        includePlanItems
+                      />
+                      {qTodos || qBlocked ? (
                         <PlanItemsList
-                          items={filteredItems}
+                          items={backlogItems}
                           loading={itemsLoading}
                           error={itemsError}
                           refresh={refreshItems}
                           harnessByPlan={harnessByPlan}
                           planMeta={planMetaBySlug}
                           planFilters={itemPlans}
-                          title={itemTitle}
+                          title="Backlog — pickable work"
                         />
                       ) : null}
                     </div>
