@@ -139,7 +139,9 @@ export function makeLiveGaiaLlm(cfg: LiveGaiaLlmConfig = {}): LlmFn {
     new Anthropic({
       apiKey,
       ...(baseURL ? { baseURL } : {}),
-      maxRetries: cfg.maxRetries ?? 8,
+      // High default: ride out gateway/account 429 bursts under fleet contention (honors Retry-After) so a
+      // long unattended run grinds through capacity windows instead of failing tasks. Tune via cfg.maxRetries.
+      maxRetries: cfg.maxRetries ?? 12,
       ...(cfg.accountId ? { defaultHeaders: { [ACCOUNT_HEADER]: cfg.accountId } } : {}),
     });
 

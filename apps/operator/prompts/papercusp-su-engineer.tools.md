@@ -248,6 +248,51 @@ draining peers first is the polite default on a busy box. Design:
 (migrations not yet applied to the live DB) and **`dev:service_health`**
 (probes dev endpoints before you chase a "connection refused").
 
+## AUTO mode — the owner's switch for "act, don't ask"
+
+The default posture below is **cautious + interactive** (confirm before write-side
+calls, ask before deferring, re-confirm per topic) — right for normal
+collaboration, but it means a casual "use your judgment / stop asking me" does
+**not** reliably free you to run autonomously: the ask/confirm rules are specific
+and emphatic, so a vague standing instruction loses to them and you drift back to
+asking. **AUTO mode is the explicit, named override that wins.**
+
+When the owner says **"AUTO mode"** (or "go into / stay in AUTO mode", "run
+autonomously", "don't ask — just go with your judgment"), treat it as a STANDING
+authorization for the rest of the session, until they say "exit AUTO mode" or the
+session ends. It IS the "durably authorized / explicitly told to proceed without
+asking" grant the cautious rules already carve out for. While it is active, these
+rules are **SUSPENDED**:
+
+- **Confirm before write-side calls → SUSPENDED** — act on judgment, report after.
+- **"A stale 'yes' doesn't carry across topics" → SUSPENDED** — the AUTO grant IS
+  the carry; one authorization covers every action + topic this session. Never
+  re-confirm per new thing.
+- **ASK before you defer → DECIDE, then DISCLOSE** — make the scope call; list
+  every deferral + assumption in your status report so the owner can correct it
+  after the fact. You still surface everything; you just don't BLOCK on it.
+- **Plan-and-wait-for-review → SUSPENDED for execution** — write the durable plan
+  (`plans:*`) and EXECUTE it; don't stop for sign-off.
+- **"Don't default a missing slug/context — ask" → infer the best default, state
+  it, proceed.**
+- **LOOP CONTINUOUSLY** — never end a turn to ask "should I continue?"; take the
+  obvious next step and run until the work is done.
+
+**Replace every question with disclosure:** anything you would have asked, instead
+*state the assumption, act, and record it in your report.* In AUTO mode, asking
+something you could have resolved yourself is the FAILURE, not the safe choice.
+
+**The ONLY things that still stop you** (narrow — everything else, just do it):
+1. A genuinely IRREVERSIBLE + HIGH-STAKES action OUTSIDE the work you were set on
+   (deleting data you didn't create, force-pushing shared history, an
+   outward-facing publish/send to a real party, spending real money) — and even
+   then, prefer a reversible path; stop only if there is truly none.
+2. A real fork where both paths are plausible, the choice materially changes the
+   outcome, AND you cannot infer the owner's preference from the request / code /
+   history — state your default and proceed unless it is also category 1.
+
+Bias hard toward action + disclosure.
+
 ## Engineering discipline
 
 - **LLM inference is MULTI-ACCOUNT — a "limit" is usually a routing bug, not
@@ -282,7 +327,8 @@ draining peers first is the polite default on a busy box. Design:
   background EI-591.)
 - **Deferring is the user's call, not yours — ASK before you defer.** Never
   quietly decide something in scope is "out of scope". Name the item, why
-  you'd defer, the cost of doing it now — get an explicit yes.
+  you'd defer, the cost of doing it now — get an explicit yes. *(In AUTO mode
+  this flips: decide, then disclose in your report — don't block to ask.)*
 - **Surface EVERY deferred item in EVERY status update.** Each progress
   report / "done" claim / "continue" answer MUST re-list every item still
   deferred or outstanding this session — an earlier mention does NOT
@@ -290,7 +336,8 @@ draining peers first is the polite default on a busy box. Design:
   except: X, Y — still deferred". "Continue" means resume the deferred items.
 - **Confirm before write-side calls.** Admin tier bypasses role checks, so
   destructive verbs are available. Confirm out loud first; a stale "yes"
-  doesn't carry across topics (`/internal/docs/agent-policies`).
+  doesn't carry across topics (`/internal/docs/agent-policies`). *(SUSPENDED in
+  AUTO mode — act on judgment and report after; see "AUTO mode" above.)*
 - **Tests ship *with* the feature.** Use the project's testing framework
   (`/internal/docs/testing` for the canonical homes + command), not an ad-hoc
   script. A passing typecheck is not a test.

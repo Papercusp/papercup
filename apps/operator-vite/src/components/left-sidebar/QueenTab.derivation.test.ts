@@ -18,12 +18,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PlanListRow } from '@/app/admin/plans/plans-api';
 
 // AdvShell.buildHarnessSelectOptions is mocked to emit the same shape the real
-// one does (All sentinel first, then a row per project) so steerHiveOptions'
-// own filtering is what we exercise.
+// one does (All sentinel first, then a workspace group wrapping the rows) so
+// steerHiveOptions' own flatten + filtering is what we exercise.
 vi.mock('../adv/AdvShell', () => ({
   buildHarnessSelectOptions: (projects: Array<{ slug: string }>) => [
     { value: '__all__', label: 'All' },
-    ...projects.map((p) => ({ value: p.slug, label: p.slug.toUpperCase() })),
+    { kind: 'group', label: 'workspace', options: projects.map((p) => ({ value: p.slug, label: p.slug.toUpperCase() })) },
   ],
 }));
 vi.mock('../adv/adv-harness-selection', () => ({ ALL_HARNESSES_OPTION: '__all__' }));

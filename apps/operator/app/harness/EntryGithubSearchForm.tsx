@@ -313,7 +313,7 @@ export function EntryGithubSearchForm({
       <button type="button" onClick={onBack} style={backBtnStyle}>
         ← Back
       </button>
-      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Search GitHub</h2>
+      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Search GitHub or enter URL</h2>
       <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
         Find any repository on GitHub and create or join a {hiveLower} from it. Paste a repo URL to skip
         straight to create.

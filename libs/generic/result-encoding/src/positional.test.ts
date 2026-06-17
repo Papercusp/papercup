@@ -155,4 +155,33 @@ describe('reconstructArgs — positional row → typed args + misalignment guard
     const r = reconstructArgs('x,,', cols);
     expect(r).toEqual({ ok: true, args: { id: 'x', maybe: null } });
   });
+
+  // Gap-17: a SINGLE-column free-text tool (scalarCount = columns.length - 1 = 0).
+  // With no scalar columns to peel off, splitRow performs NO comma splitting —
+  // the entire row is the free-text remainder, so embedded commas/newlines are
+  // taken verbatim. This is the degenerate base case of the trailing-free-text
+  // rule and must not corrupt a prose body that happens to contain commas.
+  describe('single-column free-text tool (Gap-17)', () => {
+    const cols = projectWriteColumns(jsonSchema(z.object({ body: z.string() })))!;
+
+    it('projects to one trailing text column with scalarCount 0', () => {
+      expect(cols).toHaveLength(1);
+      expect(cols[0]).toMatchObject({ name: 'body', type: 'text', optional: false, nullable: false });
+    });
+
+    it('keeps the whole row verbatim — no comma splitting', () => {
+      const r = reconstructArgs('hello, world\nmore', cols);
+      expect(r).toEqual({ ok: true, args: { body: 'hello, world\nmore' } });
+    });
+
+    it('a row that is just a comma stays a comma (not split into fields)', () => {
+      expect(reconstructArgs(',', cols)).toEqual({ ok: true, args: { body: ',' } });
+    });
+
+    it('empty row → required-but-empty handling: explicit empty string (pinned)', () => {
+      // `body` is required (not optional, not nullable) and string-ish `text`, so
+      // the null-rule coerces an empty cell to '' rather than rejecting.
+      expect(reconstructArgs('', cols)).toEqual({ ok: true, args: { body: '' } });
+    });
+  });
 });

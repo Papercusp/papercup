@@ -399,7 +399,7 @@ function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onS
         }}
       >
         <span style={{ marginRight: 6 }}>👑</span>
-        Stands up a new {hiveLabel.toLowerCase()} home running the <strong style={{ color: 'var(--fg)' }}>pot</strong> blueprint —
+        Stands up a new {hiveLabel.toLowerCase()} home running the <strong style={{ color: 'var(--fg)' }}>{hiveLabel.toLowerCase()}</strong> blueprint —
         a Queen that surveys the work frontier and places it onto a fleet of bees. You can add members into it afterward.
       </div>
       <Label>
@@ -671,7 +671,7 @@ function buildSections(opts: {
         {
           key: 'github-url',
           step: 'github-url',
-          label: 'Search GitHub',
+          label: 'Search GitHub or enter URL',
           description: `Find any repo on GitHub and create or join a ${hiveLower} from it.`,
           icon: '🔎',
         },

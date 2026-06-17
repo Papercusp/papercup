@@ -97,7 +97,7 @@ describe('P-006/P-007 — hive-native picker layout (flag on)', () => {
     // Create group — getByText throws if not found (presence assert, no jest-dom).
     screen.getByText('New local directory');
     screen.getByText('Existing local repo');
-    screen.getByText('Search GitHub');
+    screen.getByText('Search GitHub or enter URL');
     // Join group — the demoted underline affordances are gone; these are cards now.
     screen.getByText('Browse the Comb');
     screen.getByText('Hive invite');
@@ -304,10 +304,10 @@ describe('P-009 — Search GitHub entry', () => {
   it('flag on (default): the card opens the search panel (not the create form yet)', async () => {
     const user = userEvent.setup();
     renderPicker();
-    await user.click(screen.getByText('Search GitHub'));
+    await user.click(screen.getByText('Search GitHub or enter URL'));
     // The search panel — its own heading + searchbox; the create-form heading
     // ('GitHub URL') only appears after a result/URL is picked.
-    screen.getByRole('heading', { name: 'Search GitHub' });
+    screen.getByRole('heading', { name: 'Search GitHub or enter URL' });
     screen.getByRole('searchbox');
     expect(screen.queryByRole('heading', { name: 'GitHub URL' })).toBeNull();
     // The selected entry rides the nuqs `?picker=github-url` axis (unchanged id).
@@ -333,7 +333,7 @@ describe('P-009 — Search GitHub entry', () => {
   it('pasting a URL in search short-circuits to the create form, prefilled', async () => {
     const user = userEvent.setup();
     renderPicker();
-    await user.click(screen.getByText('Search GitHub'));
+    await user.click(screen.getByText('Search GitHub or enter URL'));
     await user.type(screen.getByRole('searchbox'), 'https://github.com/octocat/hello-world');
     // The URL short-circuit affordance — Continue → the create flow.
     await user.click(await screen.findByTestId('gh-search-url-continue'));
@@ -346,7 +346,7 @@ describe('P-009 — Search GitHub entry', () => {
   it('into-hive picker mode threads into-hive into the create form opened from search', async () => {
     const user = userEvent.setup();
     renderPicker({ hiveScope: 'acme' });
-    await user.click(screen.getByText('Search GitHub'));
+    await user.click(screen.getByText('Search GitHub or enter URL'));
     await user.type(screen.getByRole('searchbox'), 'https://github.com/octocat/hello-world');
     await user.click(await screen.findByTestId('gh-search-url-continue'));
     // The create form inherits the picker fork (into-hive when a scope is set).

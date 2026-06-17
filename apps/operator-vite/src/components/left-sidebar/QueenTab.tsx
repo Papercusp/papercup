@@ -113,9 +113,18 @@ export function toggleEligible(current: readonly string[], slug: string): string
 /** The steerable hive set as checkbox options — the SAME set the main AdvShell
  *  selector shows, minus the non-steering "All" + loading rows. Pure. */
 export function steerHiveOptions(projects: LiteProject[]): Array<{ value: string; label: string }> {
-  return buildHarnessSelectOptions(projects, null)
-    .filter((o) => o.value !== ALL_HARNESSES_OPTION && o.value !== '__loading')
-    .map((o) => ({ value: o.value, label: o.label }));
+  // buildHarnessSelectOptions returns SelectEntry[]: the "All" row plus a
+  // workspace group wrapping the Hive → member tree. Flatten it to the steerable
+  // rows (drop the non-steering "All" + loading rows; keep the member indent).
+  const flat: Array<{ value: string; label: string }> = [];
+  for (const entry of buildHarnessSelectOptions(projects, null)) {
+    const opts = 'kind' in entry && entry.kind === 'group' ? entry.options : [entry];
+    for (const o of opts) {
+      if (o.value === ALL_HARNESSES_OPTION || o.value === '__loading') continue;
+      flat.push({ value: o.value, label: typeof o.label === 'string' ? o.label : String(o.label) });
+    }
+  }
+  return flat;
 }
 
 /** The HOME Queen's hive: the first formal hive (kind:'hive'), else the first

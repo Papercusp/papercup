@@ -23,7 +23,7 @@ vi.mock('@/app/admin/plans/plans-api', () => ({ usePlanList: () => H.plansResult
 vi.mock('../adv/AdvShell', () => ({
   buildHarnessSelectOptions: (projects: Array<{ slug: string }>) => [
     { value: '__all__', label: 'All' },
-    ...projects.map((p) => ({ value: p.slug, label: p.slug })),
+    { kind: 'group', label: 'workspace', options: projects.map((p) => ({ value: p.slug, label: p.slug })) },
   ],
 }));
 vi.mock('../adv/adv-harness-selection', () => ({ ALL_HARNESSES_OPTION: '__all__' }));
