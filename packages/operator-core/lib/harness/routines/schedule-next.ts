@@ -11,8 +11,17 @@
  * plus the dispatcher over a routine's `trigger_config` / a plan's `schedule`
  * shape.
  */
-import { RRule, RRuleSet } from 'rrule';
+import { createRequire } from 'node:module';
 import { computeNextFireAt } from './cron';
+
+// `rrule` is a CommonJS package: under the ESM/tsx host its classes are exposed on the
+// DEFAULT export, NOT as statically-detectable named exports, so `import { RRule } from
+// 'rrule'` throws `The requested module 'rrule' does not provide an export named 'RRule'`
+// at module load. That took down EVERY consumer of this routine's transitive import graph
+// — notably `fleet:place_batch` on the staging operator (:3170), which 500'd on every
+// placement. Load it via createRequire (the repo's ESM-safe CJS pattern; cf.
+// libs/generic/resource-profile) so the named classes resolve at runtime.
+const { RRule, RRuleSet } = createRequire(import.meta.url)('rrule') as typeof import('rrule');
 
 /**
  * The recurrence config stored on a routine's `trigger_config` (and authored on
@@ -81,6 +90,58 @@ export function computeNextFire(cfg: ScheduleTrigger | null | undefined, from: D
   if (cfg.kind === 'rrule' || cfg.rrule) return computeNextFireFromRrule(cfg, from);
   if (cfg.cron) return computeNextFireAt(cfg.cron, from);
   return null;
+}
+
+/**
+ * All occurrences of a recurrence within [rangeStart, rangeEnd] (inclusive) — the
+ * calendar window expansion (P-018). The calendar is driven from these
+ * backend-computed occurrences (one source of truth; the calendar lib stays
+ * swappable). RRULE uses RRuleSet.between so RDATE additions + EXDATE exclusions
+ * are honored; cron is stepped (no native range expansion). A bare `scheduled_at`
+ * one-shot carries no rrule/cron and is added by the caller. `limit` bounds a
+ * pathological sub-minute cadence over a wide window.
+ */
+export function expandOccurrences(
+  cfg: ScheduleTrigger | null | undefined,
+  rangeStart: Date,
+  rangeEnd: Date,
+  limit = 500,
+): Date[] {
+  if (!cfg || rangeEnd.getTime() < rangeStart.getTime()) return [];
+  if (cfg.rrule) {
+    try {
+      const opts = RRule.parseString(cfg.rrule);
+      const dt = cfg.dtstart ? new Date(cfg.dtstart) : undefined;
+      if (dt && Number.isFinite(dt.getTime())) opts.dtstart = dt;
+      if (cfg.tzid) opts.tzid = cfg.tzid;
+      const set = new RRuleSet();
+      set.rrule(new RRule(opts));
+      for (const iso of cfg.rdate ?? []) {
+        const d = new Date(iso);
+        if (Number.isFinite(d.getTime())) set.rdate(d);
+      }
+      for (const iso of cfg.exdate ?? []) {
+        const d = new Date(iso);
+        if (Number.isFinite(d.getTime())) set.exdate(d);
+      }
+      return set.between(rangeStart, rangeEnd, true).slice(0, limit); // inclusive bounds
+    } catch {
+      return [];
+    }
+  }
+  if (cfg.cron) {
+    const out: Date[] = [];
+    // step from just before rangeStart so an occurrence exactly at the bound is included
+    let cursor = new Date(rangeStart.getTime() - 1);
+    for (let i = 0; i < limit; i++) {
+      const next = computeNextFireAt(cfg.cron, cursor);
+      if (!next || next.getTime() > rangeEnd.getTime()) break;
+      out.push(next);
+      cursor = next;
+    }
+    return out;
+  }
+  return [];
 }
 
 /**
