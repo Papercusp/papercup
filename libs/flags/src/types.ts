@@ -675,6 +675,16 @@ export const FLAGS = {
   // carries workspace_id). These tools are SU-only, so this is a guard rail (low exploitability).
   // DEFAULT OFF — reversible; OFF = today's behavior (no check), byte-identical. KNOWN_DARK_FLAGS.
   UI_WORKSPACE_GUARD: "papercusp-ui-workspace-guard",
+  // domain-generic-agent-personas-2026-06-17 P-006: resolve the `su` role's persona via the
+  // blueprint prompt-resolve chain (blueprints/base/prompts/su.md) instead of the hardcoded
+  // papercusp-su playbook. DEFAULT OFF (unverified spawn-path change) — OFF = today's
+  // renderSuPlaybook, byte-identical. Owner flips after a live su-launch smoke. KNOWN_DARK_FLAGS.
+  SU_BLUEPRINT_PERSONA: "papercusp-su-blueprint-persona",
+  // domain-generic-agent-personas-2026-06-17 P-013/P-014: deliver the agent prompt by REPLACING
+  // the Claude Code base (--system-prompt-file / --system-prompt) instead of append/stdin, so OUR
+  // persona is the whole system prompt. DEFAULT OFF (unverified fleet-wide hot-path) — OFF =
+  // today's stdin/append, byte-identical. Owner flips after a per-role×backend live smoke. KNOWN_DARK_FLAGS.
+  REPLACE_CLAUDE_BASE: "papercusp-replace-claude-base",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -684,6 +694,12 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // to live bee re-invocation (fresh session vs `--resume`). Flip ON after P-006
   // live verification. OFF ⇒ legacy `--resume`, behavior-neutral.
   [FLAGS.BEE_FRESH_CONTEXT_WARM_INJECT]: false,
+  // DEFAULT OFF (domain-generic-agent-personas P-006): su persona via the blueprint prompt-resolve
+  // chain. OFF ⇒ today's renderSuPlaybook (byte-identical). Flip after a live su-launch smoke.
+  [FLAGS.SU_BLUEPRINT_PERSONA]: false,
+  // DEFAULT OFF (domain-generic-agent-personas P-013/P-014): replace the Claude base prompt
+  // (--system-prompt-file). OFF ⇒ today's stdin/append (byte-identical). Flip after a per-role×backend smoke.
+  [FLAGS.REPLACE_CLAUDE_BASE]: false,
   // DEFAULT ON — activated 2026-06-15 (owner authorization, plan-implementation-framework P-010).
   // The convert-at-pickup compiled-brief path (P-003). The framework bake-off runs concurrently to
   // validate it; a 'regressed' verdict auto-reverts it off (autoRevertOnRegression / P-015).

@@ -30,6 +30,12 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   FLAGS.TESTING, // cut for V1
 
   // ── Genuinely incomplete/unsafe work (per the FLAG_DEFAULTS comments) ──
+  // domain-generic-agent-personas-2026-06-17 P-006: su-as-blueprint-role persona path —
+  // unverified spawn-path change; OFF = today's renderSuPlaybook. Owner flips post live smoke.
+  FLAGS.SU_BLUEPRINT_PERSONA,
+  // domain-generic-agent-personas-2026-06-17 P-013/P-014: replace-the-Claude-base prompt
+  // delivery — unverified fleet-wide hot-path; OFF = today's stdin/append. Owner flips post smoke.
+  FLAGS.REPLACE_CLAUDE_BASE,
   // inbox-cards-unification Phase D (P-031): durable-escalation mirror of
   // chat decision cards is still building; the live ctx.askUser path is
   // unchanged with this off.

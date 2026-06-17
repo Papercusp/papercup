@@ -224,8 +224,15 @@ the whole shared tree and pushes to origin on a schedule (superproject + every
 submodule). **No `git add` / `commit` / `push`, ever** — just leave your work
 in the tree; it lands on origin within minutes. Don't stash, branch, or scope
 pathspecs to isolate "your" diff. Merge conflicts go to a `merge-resolver`
-agent, not you. Pause only via `UPDATE harness_shared.routines SET active=false
-WHERE name='git-sync'`.
+agent, not you. **Need to pause git-sync for a tree** (e.g. a deliberate
+multi-step change)? Take its SCOPED resource lock — `locks:acquire_resource {
+resource: 'git-sync:<slug>', mode: 'exclusive', ttl_sec: 1200 }` — which holds
+ONLY that one tree's sync (the tick skips while a peer holds it), auto-resumes on
+TTL expiry, is audited, and is visible via `locks:list`; release with
+`locks:release_resource`. **NEVER `UPDATE harness_shared.routines SET active=false
+WHERE name='git-sync'`** — the routine name is identical across every install, so
+that one statement freezes the WHOLE fleet's sync (no TTL, no auto-resume, no
+audit, no broadcast). See plan `git-sync-dx-hardening-2026-06-17` (F3).
 
 **Stay on `staging`; never `git worktree` or branch-switch. `main` is
 automation-only** — it only fast-forwards to green-checkpoint-passed staging
