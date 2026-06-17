@@ -343,10 +343,6 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   // CODE from the pasted repo — explicit opt-in, default off. Transient draft →
   // useState (nuqs exception).
   const [verifyTests, setVerifyTests] = useState(false);
-  // B-07 / C-2: opt-in to publish a live status beacon for a NEW published hive.
-  // Default OFF (D-002 — publishing an activity summary is an outward-facing act
-  // the owner must actively consent to); the "(recommended)" framing nudges yes.
-  const [beaconConsent, setBeaconConsent] = useState(false);
   // learning-packs P-006: which pack seeds the new hive's shared memory.
   // Default = the Papercusp pack (D-004); 'none' starts empty. Transient
   // form draft → useState (nuqs exception).
@@ -531,9 +527,8 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           // Visibility is DERIVED server-side from the repo's privacy (public
           // repo → Public hive; private repo → Private/invite hive) — the
           // frontend no longer sends a chosen `visibility`.
-          // B-07 / C-2: carry the beacon consent ONLY for a KNOWN-PUBLIC hive.
-          // A Private (or unknown-privacy) hive must not broadcast a beacon.
-          ...(mode === 'new-hive' && initialPrivate === false ? { beaconConsent } : {}),
+          // B-07 / C-2: the beacon is auto-derived server-side from the repo's
+          // privacy (public → on, private → off) — the frontend sends nothing.
           // learning-packs P-006: the picker selection ('none' ⇒ null = seed nothing).
           ...(mode === 'new-hive' ? { learningPack: learningPack === 'none' ? null : learningPack } : {}),
           ...(mode === 'into-hive' && hiveScope ? { intoHive: hiveScope } : {}),
@@ -1007,34 +1002,22 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         </label>
       )}
 
-      {/* B-07 / C-2: the beacon-publish consent question — shown ONLY for a
-          KNOWN-PUBLIC hive (a Private or unknown-privacy hive must not broadcast
-          a live activity beacon). Default OFF; "(recommended)" nudges. */}
+      {/* B-07 / C-2: the live status beacon is no longer an opt-in — it's auto-ON
+          for a public hive (part of being publicly discoverable) and auto-OFF for
+          a Private (invite) hive (a hidden hive never broadcasts). For a known-
+          public hive we surface an informational note; no checkbox. */}
       {mode === 'new-hive' && initialPrivate === false && (
-        <label
-          style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', marginBottom: 14, borderRadius: 6, cursor: 'pointer' }}
-          data-testid="beacon-consent-optin"
+        <div
+          data-testid="beacon-auto-note"
+          style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', marginBottom: 14, fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.45 }}
         >
-          <input
-            type="checkbox"
-            checked={beaconConsent}
-            onChange={(e) => setBeaconConsent(e.target.checked)}
-            style={{ marginTop: 2 }}
-          />
+          <span style={{ marginTop: 1 }}>📡</span>
           <span>
-            <span style={{ display: 'block', fontSize: 13, fontWeight: beaconConsent ? 600 : 500 }}>
-              Also publish a live status beacon?{' '}
-              <span style={{ fontWeight: 500, color: 'var(--fg-mute)' }}>
-                (recommended for {hiveLower}s you want collaborators to find)
-              </span>
-            </span>
-            <span style={{ display: 'block', fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.45 }}>
-              Shares a compact, live activity summary (active agents, queue depth, current
-              focus) on the {hiveLower} directory so collaborators can see this {hiveLower} is
-              alive. You can change this anytime from the {hiveLower} header.
-            </span>
+            A live status beacon (active agents, queue depth, current focus) is published on the{' '}
+            {hiveLower} directory so collaborators can see this {hiveLower} is alive — automatic for
+            public {hiveLower}s. You can turn it off anytime from the {hiveLower} header.
           </span>
-        </label>
+        </div>
       )}
 
       {/* D-001 (hardening): test-verify is opt-in — it EXECUTES code from the

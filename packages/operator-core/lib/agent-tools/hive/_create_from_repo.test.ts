@@ -335,45 +335,33 @@ describe('createHiveFromRepo (P-006)', () => {
 
   // ── B-07 / C-2: beacon-publish consent recorded in the publish flow ──────────
 
-  it('records beacon consent for a NEW published hive (true and false round-trip)', async () => {
+  it('auto-ENABLES the beacon for a NEW PUBLIC hive (no opt-in — derived from visibility)', async () => {
     const { deps, calls } = fakes();
-    await createHiveFromRepo({ githubUrl: URL, beaconConsent: true, workspaceId: 'ws' }, deps);
-    await createHiveFromRepo({ githubUrl: URL, slug: 'shop-x', beaconConsent: false, workspaceId: 'ws' }, deps);
-    expect(calls.beaconWrites).toEqual([
-      { hive: 'shop-hive', consent: true },
-      { hive: 'shop-x-hive', consent: false },
-    ]);
-  });
-
-  it('omitting beaconConsent writes nothing (absent = OFF, default-deny D-002)', async () => {
-    const { deps, calls } = fakes();
+    // Default repo is public → visibility 'public' → beacon auto-ON, no client input.
     await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
-    expect(calls.beaconWrites).toEqual([]);
+    expect(calls.beaconWrites).toEqual([{ hive: 'shop-hive', consent: true }]);
   });
 
-  it('private repo (invite visibility) records NO beacon consent (the beacon is PUBLIC-only)', async () => {
+  it('auto-DISABLES the beacon for a NEW PRIVATE (invite) hive (a hidden hive never broadcasts)', async () => {
     const { deps, calls } = fakes({
       lookup: async () => ({
         ...NONE_LOOKUP,
         coords: { ...NONE_LOOKUP.coords, private: true },
       }),
     });
-    await createHiveFromRepo({ githubUrl: URL, beaconConsent: true, workspaceId: 'ws' }, deps);
-    // the hive publishes (as a hidden invite listing) but never broadcasts a beacon
+    await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    // The hive publishes (as a hidden invite listing) but the beacon is written OFF.
     expect(calls.publishes[0]).toMatchObject({ visibility: 'invite' });
-    expect(calls.beaconWrites).toEqual([]);
+    expect(calls.beaconWrites).toEqual([{ hive: 'shop-hive', consent: false }]);
   });
 
-  it('into-hive mode records NO beacon consent (the existing home keeps its standing consent)', async () => {
+  it('into-hive mode records NO beacon write (the existing home keeps its standing setting)', async () => {
     const { deps, calls } = fakes({
       loadRegistry: async () =>
         ({ projects: [{ slug: 'myhive', path: '/h', harness_kind: 'hive' }] }) as never,
       republish: (async () => ({ announced: true, cupboard: { attempted: false } })) as never,
     });
-    await createHiveFromRepo(
-      { githubUrl: URL, intoHive: 'myhive', beaconConsent: true, workspaceId: 'ws' },
-      deps,
-    );
+    await createHiveFromRepo({ githubUrl: URL, intoHive: 'myhive', workspaceId: 'ws' }, deps);
     expect(calls.beaconWrites).toEqual([]);
   });
 
@@ -383,7 +371,8 @@ describe('createHiveFromRepo (P-006)', () => {
         throw new Error('settings store down');
       },
     });
-    const r = await createHiveFromRepo({ githubUrl: URL, beaconConsent: true, workspaceId: 'ws' }, deps);
+    // Public repo → the auto-beacon write fires (and throws) — the create still succeeds.
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
     expect(r.ok).toBe(true);
   });
 

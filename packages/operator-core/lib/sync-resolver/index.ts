@@ -1646,6 +1646,33 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── plans.schedule — one row per scheduled plan's RAW authored schedule (P-020 / D-020) ──
+  //
+  // The calendar's schedule editor pre-fills from this, and the per-occurrence
+  // EXDATE/RDATE drag reads the source RRULE here. Window-independent (unlike
+  // scheduledOccurrences) so a plan whose next fire is outside the calendar view
+  // — or opened from the "Schedule a plan" picker — is still editable. Best-effort:
+  // a read error degrades to [] so the editor opens fresh (replace-mode).
+  'plans.schedule': {
+    argsSchema: z.object({ harnessSlug: z.string().max(200).optional() }),
+    resolve: async (args) => {
+      const a = args as { harnessSlug?: string };
+      try {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { listPlanSchedules } = await import('../harness/routines/scheduled-occurrences');
+        const { sql } = getOrgPg();
+        return await listPlanSchedules(sql, {
+          workspaceId: activeWorkspaceId(),
+          ...(a.harnessSlug ? { harnessSlug: a.harnessSlug } : {}),
+        });
+      } catch (err) {
+        console.warn('[plans.schedule] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
   // ── plans.runHistory — the Runs tab's per-template run history + rollup (scheduled-recurring-plans P-022/P-024) ──
   //
   // Distinct from `plans.runs` (the Agents-tab flat PlanRun[] keyed on { slug }):

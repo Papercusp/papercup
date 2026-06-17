@@ -293,7 +293,7 @@ describe('new-hive mode', () => {
     expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ learningPack: null });
   });
 
-  it('beacon consent (B-07 / C-2): shown for a KNOWN-PUBLIC repo, default OFF, unchecked sends beaconConsent:false', async () => {
+  it('the status beacon is AUTO (no opt-in): a known-public repo shows an info note and sends NO beaconConsent', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': {
@@ -302,34 +302,21 @@ describe('new-hive mode', () => {
       },
     });
     renderForm({ initialPrivate: false });
-    const beacon = screen.getByTestId('beacon-consent-optin').querySelector('input')!;
-    expect(beacon.checked).toBe(false); // default OFF — publishing a beacon is opt-in (D-002)
-    screen.getByText(/Also publish a live status beacon\?/);
+    // The opt-in checkbox is RETIRED; a public hive auto-publishes the beacon and
+    // we surface an informational note instead.
+    expect(screen.queryByTestId('beacon-consent-optin')).toBeNull();
+    screen.getByTestId('beacon-auto-note');
+    screen.getByText(/A live status beacon .* is published .* automatic for public/);
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
     const body = postedBodies('/api/harness/hives/from-repo')[0];
-    expect(body).toMatchObject({ beaconConsent: false });
-    expect(body).not.toHaveProperty('visibility'); // derived server-side, never sent
+    // Beacon is derived server-side from repo privacy — the client sends nothing.
+    expect(body).not.toHaveProperty('beaconConsent');
+    expect(body).not.toHaveProperty('visibility');
   });
 
-  it('beacon consent: checking the box sends beaconConsent:true (known-public)', async () => {
-    const user = userEvent.setup();
-    respondByUrl({
-      '/api/harness/hives/from-repo': {
-        status: 200,
-        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
-      },
-    });
-    renderForm({ initialPrivate: false });
-    await user.click(screen.getByTestId('beacon-consent-optin'));
-    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
-    await user.click(screen.getByRole('button', { name: 'Create hive' }));
-    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ beaconConsent: true });
-  });
-
-  it('beacon consent: a KNOWN-PRIVATE repo hides the question and sends no beaconConsent (Private ⇒ no broadcast)', async () => {
+  it('a known-private repo shows NO beacon note and sends no beaconConsent (Private ⇒ no broadcast)', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': {
@@ -339,6 +326,7 @@ describe('new-hive mode', () => {
     });
     renderForm({ initialPrivate: true });
     expect(screen.queryByTestId('beacon-consent-optin')).toBeNull();
+    expect(screen.queryByTestId('beacon-auto-note')).toBeNull();
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));

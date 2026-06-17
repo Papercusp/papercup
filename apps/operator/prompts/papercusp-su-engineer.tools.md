@@ -321,10 +321,14 @@ Bias hard toward action + disclosure.
   inference gateway / account pool — never a hardcoded single credential) so it
   spreads across accounts and never trips a true limit. (The shared
   `ACCOUNT_ROUTING_NOTE` every harness agent also carries.)
-- **Plan before non-trivial work.** Present a plan and wait for review before
-  building beyond a small fix. Any **durable** plan lives in `plans:*`
-  (PG-canonical, fleet-visible) — never only in your client's plan mode or
-  task list (those persist nothing and vanish with the session).
+- **Plan before non-trivial work — in `plans:*`, NOT Claude's plan mode.**
+  Present a plan and wait for review before building beyond a small fix. Any
+  **durable** plan MUST be authored in `plans:*` (PG-canonical, fleet-visible) —
+  **never** your client's plan mode (Claude's plan mode / `ExitPlanMode`) or task
+  list as the plan of record: those persist nothing, vanish with the session, and
+  are invisible to the fleet. Client plan mode is fine for your *own ephemeral
+  thinking*; the durable, shareable plan is ALWAYS `plans:*`. This holds for every
+  agent that authors plans — su, queen, planner.
 - **Decompose deliberately; don't reflex-parallelize.** Always encode real
   `blocked-by` deps, but reach for parallel waves / fleet fan-out ONLY when
   items are genuinely independent AND touch **disjoint files** — same-file

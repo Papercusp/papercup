@@ -69,23 +69,54 @@ async function resolveOpenAiKey(): Promise<string> {
   return key;
 }
 
-/** OpenAI text-embedding-3-small, truncated to 384 dims via the API. */
-function buildOpenAiEmbedder(apiKey: string): EmbedFn {
+/** OpenAI text-embedding-3-small, truncated to 384 dims via the API.
+ *
+ * Resilient: a TRANSIENT failure (429 rate-limit, 5xx, network/fetch error) is
+ * retried with exponential backoff before giving up — a burst of writes (e.g.
+ * learning-pack seeding fires items in concurrent batches) used to fail wholesale
+ * the moment OpenAI rate-limited or hiccupped, surfacing as "N write(s) failed".
+ * A NON-retryable client error (401 bad/expired key, 400, 403) fails fast with a
+ * clear message — retrying won't help, and the caller should fix the key. */
+export function buildOpenAiEmbedder(apiKey: string): EmbedFn {
+  const MAX_ATTEMPTS = 4; // 1 try + 3 retries
   return async (text: string): Promise<number[]> => {
-    const r = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: OPENAI_EMBEDDER_MODEL,
-        input: text,
-        dimensions: EMBEDDER_DIM,
-      }),
-    });
-    if (!r.ok) {
-      throw new Error(`openai_embed_failed_${r.status}: ${await r.text().catch(() => '')}`);
+    let lastErr: Error | null = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        // 300ms, 600ms, 1200ms backoff — rides out a transient rate-limit/blip.
+        await new Promise((res) => setTimeout(res, 300 * 2 ** (attempt - 1)));
+      }
+      try {
+        const r = await fetch('https://api.openai.com/v1/embeddings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: OPENAI_EMBEDDER_MODEL,
+            input: text,
+            dimensions: EMBEDDER_DIM,
+          }),
+        });
+        if (r.ok) {
+          const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
+          return j.data[0].embedding;
+        }
+        const body = await r.text().catch(() => '');
+        const err = new Error(`openai_embed_failed_${r.status}: ${body}`);
+        // 429 (rate limit) + 5xx are transient → retry; other 4xx (401/400/403)
+        // are a config/auth problem → fail fast (no point retrying a bad key).
+        if (r.status === 429 || r.status >= 500) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      } catch (e) {
+        // A non-retryable openai_embed_failed_4xx (thrown above) propagates; a
+        // network/fetch error is transient → retry until attempts are exhausted.
+        if (e instanceof Error && /^openai_embed_failed_4(?!29)/.test(e.message)) throw e;
+        lastErr = e instanceof Error ? e : new Error(String(e));
+      }
     }
-    const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
-    return j.data[0].embedding;
+    throw lastErr ?? new Error('openai_embed_failed: retries exhausted');
   };
 }
 

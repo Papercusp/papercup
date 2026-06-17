@@ -254,15 +254,130 @@ export default function ScheduledCalendarTab() {
                 Open plan → runs &amp; schedule
               </a>
             </p>
-            <button
-              type="button"
-              onClick={() => void setSelected(null)}
-              style={{ marginTop: 8, fontSize: 11 }}
-            >
-              Close
-            </button>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="pc-sched-cal__edit"
+                onClick={() =>
+                  setEditor({
+                    slug: selectedPlan.row.templateSlug,
+                    title: selectedPlan.row.title,
+                    isArmed: selectedPlan.row.scheduleActive,
+                  })
+                }
+                style={{ fontSize: 11 }}
+              >
+                Edit schedule
+              </button>
+              <button
+                type="button"
+                onClick={() => void setSelected(null)}
+                style={{ fontSize: 11 }}
+              >
+                Close
+              </button>
+            </div>
           </aside>
         )}
+      </div>
+
+      {pickerOpen && (
+        <SchedulePicker
+          plans={planList}
+          onPick={(p) => {
+            setPickerOpen(false);
+            setEditor({ slug: p.slug, title: p.title, isArmed: p.scheduleActive ?? false });
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+
+      {editor && (
+        <div className="pc-sched-cal__editor-overlay" role="presentation" onClick={() => setEditor(null)}>
+          <div className="pc-sched-cal__editor-card" role="presentation" onClick={(e) => e.stopPropagation()}>
+            <ScheduleEditor
+              planSlug={editor.slug}
+              planTitle={editor.title}
+              seedDate={editor.seedDate}
+              seedMode={editor.seedMode}
+              isArmed={editor.isArmed}
+              onClose={() => setEditor(null)}
+              onSaved={afterWrite}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Plan picker for "Schedule a plan" — choose any plan to (re)author its schedule.
+ *  Unscheduled plans float to the top (the common case); already-scheduled ones
+ *  remain pickable to edit. Reuses the P-021 `scheduled` glance off plans.list. */
+function SchedulePicker({
+  plans,
+  onPick,
+  onClose,
+}: {
+  plans: PlanListLite[];
+  onPick: (p: PlanListLite) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState('');
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const rows = needle
+      ? plans.filter((p) => p.slug.toLowerCase().includes(needle) || (p.title ?? '').toLowerCase().includes(needle))
+      : plans;
+    // Unscheduled first, then by title/slug.
+    return [...rows]
+      .sort((a, b) => {
+        const sa = a.scheduled ? 1 : 0;
+        const sb = b.scheduled ? 1 : 0;
+        if (sa !== sb) return sa - sb;
+        return (a.title ?? a.slug).localeCompare(b.title ?? b.slug);
+      })
+      .slice(0, 60);
+  }, [plans, q]);
+
+  return (
+    <div className="pc-sched-cal__editor-overlay" role="presentation" onClick={onClose}>
+      <div className="pc-sched-cal__editor-card" role="dialog" aria-label="Schedule a plan" onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <strong style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Schedule a plan</strong>
+            <span style={{ flex: 1 }} />
+            <button type="button" onClick={onClose} aria-label="Close picker" style={{ background: 'none', border: 'none', color: 'var(--fg-mute, #7f9bb4)', fontSize: 16, cursor: 'pointer' }}>×</button>
+          </div>
+          <input
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Filter plans…"
+            aria-label="Filter plans"
+            style={{ font: 'inherit', fontSize: 12, padding: '6px 8px', borderRadius: 6, color: 'var(--fg, #e7f7ff)', background: 'var(--bg, #07101d)', border: '1px solid var(--border-strong, rgba(125,211,252,0.3))' }}
+          />
+          {filtered.length === 0 ? (
+            <p style={{ fontSize: 11, color: 'var(--fg-mute, #7f9bb4)', padding: 8 }}>No plans match.</p>
+          ) : (
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0, maxHeight: 340, overflowY: 'auto' }}>
+              {filtered.map((p) => (
+                <li key={`${p.harness}:${p.slug}`}>
+                  <button
+                    type="button"
+                    onClick={() => onPick(p)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '6px 8px', background: 'none', border: 'none', borderBottom: '1px solid var(--border-muted, rgba(125,211,252,0.08))', cursor: 'pointer', color: 'var(--fg, #e7f7ff)' }}
+                  >
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>{p.title ?? p.slug}</span>
+                    {p.scheduled && (
+                      <span style={{ fontSize: 9, color: 'var(--fg-mute, #7f9bb4)', flexShrink: 0 }}>{p.scheduleActive ? 'armed' : 'scheduled'}</span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   );

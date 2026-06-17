@@ -61,10 +61,6 @@ export default defineTool({
       .regex(/^[a-z0-9][a-z0-9-]*$/)
       .optional()
       .describe("P-009 into-hive mode: add the repo as a member of this EXISTING kind:'hive' home instead of standing up a new hive (no new identity/listing; the existing listing re-publishes with the new member)."),
-    beaconConsent: z
-      .boolean()
-      .optional()
-      .describe('B-07 / C-2: consent to publish a live status beacon for this NEW Hive (recorded as the beacon-publish-consent setting). Ignored for private hives + into-hive. Absent = OFF (default-deny, D-002).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
@@ -90,7 +86,6 @@ export default defineTool({
       ...(args.parentDir ? { parentDir: args.parentDir } : {}),
       ...(args.force !== undefined ? { force: args.force } : {}),
       ...(args.intoHive ? { intoHive: args.intoHive } : {}),
-      ...(args.beaconConsent !== undefined ? { beaconConsent: args.beaconConsent } : {}),
       workspaceId,
     });
     return text(res as unknown as Record<string, unknown>);

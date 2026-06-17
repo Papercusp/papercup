@@ -483,7 +483,6 @@ const createHiveFromRepoRoute = defineTool({
       runTests?: boolean;
       force?: boolean;
       intoHive?: string;
-      beaconConsent?: boolean;
       progressId?: string;
       learningPack?: string | null;
     } = {};
@@ -504,8 +503,6 @@ const createHiveFromRepoRoute = defineTool({
       ...(typeof body.intoHive === 'string' && body.intoHive.trim()
         ? { intoHive: body.intoHive.trim() }
         : {}),
-      // B-07 / C-2: the publish-flow beacon-publish consent (new public/invite hives).
-      ...(typeof body.beaconConsent === 'boolean' ? { beaconConsent: body.beaconConsent } : {}),
       // learning-packs P-005/P-006: pack picker selection — string pack id,
       // null = seed nothing, absent = default pack.
       ...(body.learningPack === null || typeof body.learningPack === 'string'

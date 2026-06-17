@@ -89,14 +89,6 @@ export interface CreateHiveFromRepoOpts {
    */
   progressId?: string;
   /**
-   * B-07 / C-2: the owner's consent to publish a live status beacon for this
-   * new Hive, captured by the publish-flow consent question. Recorded as the
-   * `beacon-publish-consent` hive setting for a NEW published (public/invite)
-   * Hive only — into-hive re-adds never re-ask, and a private hive never
-   * publishes. Absent = OFF (default-deny, D-002).
-   */
-  beaconConsent?: boolean;
-  /**
    * Learning pack seeded into the new hive home (learning-packs P-005).
    * Omit ⇒ default pack; null ⇒ none. Ignored in into-hive mode (the home
    * already exists — install packs there via learning_packs:install).
@@ -534,14 +526,14 @@ export async function createHiveFromRepo(
     message: e instanceof Error ? e.message : String(e),
   }));
 
-  // 7.5 — record the owner's beacon-publish consent (B-07 / C-2). PUBLIC-only:
-  //       the activity beacon is a public-directory signal, so an invite (hidden,
-  //       secret-gated) hive must not broadcast it; into-hive re-adds must not
-  //       clobber the existing home's standing consent. Absent = OFF (D-002), so
-  //       we only write when the publish-flow carried a choice. Best-effort —
+  // 7.5 — auto-set the beacon-publish consent from the derived visibility (B-07 /
+  //       C-2). No user opt-in: a PUBLIC hive auto-enables the live status beacon
+  //       (it's a public-directory discoverability signal); an INVITE (hidden,
+  //       secret-gated) hive auto-disables it (a hidden hive must never broadcast).
+  //       into-hive re-adds don't touch the existing home's setting. Best-effort —
   //       like the publish step, never fails the create.
-  if (!intoHive && visibility === 'public' && opts.beaconConsent !== undefined) {
-    await setBeaconConsent(opts.workspaceId, hiveSlug, opts.beaconConsent === true).catch(() => {});
+  if (!intoHive) {
+    await setBeaconConsent(opts.workspaceId, hiveSlug, visibility === 'public').catch(() => {});
   }
 
   // 8 — publish per derived visibility (P-007). Best-effort: NEVER fails the
