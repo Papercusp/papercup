@@ -286,4 +286,15 @@ describe('defaultVerifierScore', () => {
     const best = defaultVerifierScore({ applied: true, reproPassed: true, regressionsPassed: true, visiblePassed: 2, visibleTotal: 2 });
     expect(best).toBeCloseTo(1, 5);
   });
+
+  it('guards visibleTotal=0 against NaN (a candidate with no visible tests must still score, not poison the max-select)', () => {
+    const score = defaultVerifierScore({ applied: true, reproPassed: true, regressionsPassed: true, visiblePassed: 0, visibleTotal: 0 });
+    expect(Number.isNaN(score)).toBe(false);
+    expect(score).toBeCloseTo(0.85, 5); // 0.6 repro + 0.25 no-regressions + 0.15·0 visible
+  });
+
+  it('weights compose exactly (repro + no-regressions + half the visible fraction)', () => {
+    const s = defaultVerifierScore({ applied: true, reproPassed: true, regressionsPassed: true, visiblePassed: 2, visibleTotal: 4 });
+    expect(s).toBeCloseTo(0.6 + 0.25 + 0.15 * 0.5, 5); // 0.925
+  });
 });

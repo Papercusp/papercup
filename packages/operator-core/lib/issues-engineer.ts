@@ -29,6 +29,10 @@ import {
   type ThreadPostRow,
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { activeWorkspaceId } from './workspace-registry';
+import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { resolveProject } from './harness-core';
@@ -98,7 +102,33 @@ export interface EngineerIssueDetail extends EngineerIssue {
 //    DEFAULT_COORD_WORKSPACE; SU broadcasts via '*' there). engineer_issues' own
 //    workspace_id is a domain column; issue ids are global so the ObjectRef is
 //    unambiguous across domain workspaces. ──────────────────────────────────────
-const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, workspaceId: DEFAULT_COORD_WORKSPACE };
+// workspace-data-isolation-leaks-2026-06-17 F (owner D-001): scope the engineer-issues
+// store (rows + their tags/threads/links/subscriptions) to the ACTIVE workspace when
+// papercusp-issues-per-workspace is ON, else the legacy shared `default` coord workspace.
+// Both the capability stores (via coordOpts.getWorkspaceId) and the engineer_issues row
+// queries below resolve through THIS, so they flip together. SYNC (cached flag refreshed on
+// an initial read + every flag change — the lexicon/configure.ts pattern). While unloaded it
+// reads false ⇒ 'default' (today's behavior, safe). EI-<n> ids stay GLOBALLY allocated
+// (nextIssueId is unchanged), so the global ObjectRef contract is preserved.
+let issuesPerWorkspaceOn = false;
+async function refreshIssuesPerWorkspace(): Promise<void> {
+  try {
+    issuesPerWorkspaceOn = await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId());
+  } catch {
+    issuesPerWorkspaceOn = false;
+  }
+}
+void refreshIssuesPerWorkspace();
+onFlagChange((key) => {
+  if (key === null || key === FLAGS.ISSUES_PER_WORKSPACE) void refreshIssuesPerWorkspace();
+});
+/** The engineer-issues workspace scope NOW (F): active workspace when the flag is ON,
+ *  else the legacy shared `default` coord workspace. */
+export function issuesScopeWorkspace(): string {
+  return issuesPerWorkspaceOn ? activeWorkspaceId() : DEFAULT_COORD_WORKSPACE;
+}
+
+const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, getWorkspaceId: () => issuesScopeWorkspace() };
 const tags = new PgTaggableStore(coordOpts);
 const threads = new PgThreadStore(coordOpts);
 const subs = new PgEntitySubscriptionStore(coordOpts);
@@ -250,7 +280,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
     INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
        assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at)
-    VALUES (${DEFAULT_COORD_WORKSPACE}, ${id}, ${input.kind ?? 'bug'}, ${input.scope ?? 'operator'}, ${input.title}, ${input.body ?? ''},
+    VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${input.scope ?? 'operator'}, ${input.title}, ${input.body ?? ''},
             ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
             ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
             ${input.payload != null ? JSON.stringify(input.payload) : null}::text::jsonb, ${input.foundDuring ?? null},
@@ -305,7 +335,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)}
       FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
        AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
@@ -323,7 +353,7 @@ export async function getIssue(id: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}`;
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}`;
   return rows[0] ? toIssue(rows[0]) : null;
 }
 
@@ -363,7 +393,7 @@ export async function updateIssue(id: string, patch: UpdateIssuePatch): Promise<
       found_during = ${patch.foundDuring !== undefined ? patch.foundDuring : sql`found_during`},
       linked_feature_id = ${patch.linkedFeatureId !== undefined ? patch.linkedFeatureId : sql`linked_feature_id`},
       origin = 'local'
-    WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
+    WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
@@ -385,7 +415,7 @@ export async function claimIssue(id: string, assignee: string): Promise<Engineer
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local'
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
        AND (assignee IS NULL OR assignee = '' OR assignee = ${assignee})
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
@@ -400,7 +430,7 @@ export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = NULL, assigned_at = NULL, origin = 'local'
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
@@ -413,7 +443,7 @@ export async function setIssueState(id: string, state: IssueState, by?: string):
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local'
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
@@ -450,21 +480,21 @@ export async function deleteIssues(ids: readonly string[]): Promise<number> {
   const threadIds = idList.map((id) => threadId(id));
   await sql`
     DELETE FROM harness_shared.coord_links
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE workspace_id = ${issuesScopeWorkspace()}
        AND ((src_kind = ${ISSUE_KIND} AND src_ref = ANY(${idList}))
          OR (dst_kind = ${ISSUE_KIND} AND dst_ref = ANY(${idList})))`;
   await sql`
     DELETE FROM harness_shared.coord_thread_posts
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND thread_id = ANY(${threadIds})`;
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND thread_id = ANY(${threadIds})`;
   await sql`
     DELETE FROM harness_shared.coord_threads
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND thread_id = ANY(${threadIds})`;
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND thread_id = ANY(${threadIds})`;
   await sql`
     DELETE FROM harness_shared.coord_entity_subscriptions
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND target_kind = 'object' AND target_ref = ANY(${refs})`;
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND target_kind = 'object' AND target_ref = ANY(${refs})`;
   const deleted = await sql`
     DELETE FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ANY(${idList})`;
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ANY(${idList})`;
   return deleted.count ?? 0;
 }
 
@@ -488,13 +518,13 @@ export async function listIssueAgesByTopic(topic: string): Promise<IssueAgeRow[]
     SELECT ei.issue_id, ei.created_at
       FROM harness_shared.engineer_issues ei
       JOIN harness_shared.coord_links cl
-        ON cl.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+        ON cl.workspace_id = ${issuesScopeWorkspace()}
        AND cl.rel = 'tagged'
        AND cl.src_kind = ${ISSUE_KIND}
        AND cl.src_ref = ei.issue_id
        AND cl.dst_kind = 'topic'
        AND cl.dst_ref = ${topic}
-     WHERE ei.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE ei.workspace_id = ${issuesScopeWorkspace()}
      ORDER BY ei.created_at DESC`;
   return rows.map((r) => ({ id: r.issue_id, createdAt: tsIso(r.created_at) }));
 }
@@ -511,7 +541,7 @@ export async function mergeIssuePayload(id: string, patch: Record<string, unknow
     UPDATE harness_shared.engineer_issues
        SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb,
            origin = 'local'
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
+     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   return rows[0] ? toIssue(rows[0]) : null;
 }
@@ -638,7 +668,7 @@ export async function findTaskBySessionId(agentSessionId: string): Promise<Engin
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = 'task' AND state = 'open'
        AND payload ->> 'agentSessionId' = ${agentSessionId}
      ORDER BY created_at DESC
@@ -659,7 +689,7 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE workspace_id = ${issuesScopeWorkspace()}
        AND _search @@ websearch_to_tsquery('english', ${query})
      ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
      LIMIT ${Math.min(limit, 200)}`;
@@ -678,7 +708,7 @@ export async function findIssuesByWatchdogKeys(keys: string[]): Promise<Engineer
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE workspace_id = ${issuesScopeWorkspace()}
        AND payload ? 'watchdogKey'
        AND payload->>'watchdogKey' = ANY(${keys}::text[])
      ORDER BY updated_at DESC`;

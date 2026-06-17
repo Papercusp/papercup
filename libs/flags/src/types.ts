@@ -652,6 +652,15 @@ export const FLAGS = {
   // `default` history is preserved, so flipping OFF fully restores it). Listed in
   // KNOWN_DARK_FLAGS.
   COORD_PER_WORKSPACE: "papercusp-coord-per-workspace",
+  // workspace-data-isolation-leaks-2026-06-17 (owner D-001): scope the engineer-issues
+  // store (engineer_issues rows + their coord tags/threads/links/subscriptions) to the
+  // ACTIVE workspace instead of the single shared `default` coord workspace. EI-<n> ids
+  // stay GLOBALLY allocated (nextIssueId), preserving the ObjectRef contract; only the
+  // ROWS become per-workspace. DEFAULT OFF — DELIBERATE (not alpha default-on): flipping
+  // it cuts the live shared issue bus over to per-workspace partitions, so it ships as a
+  // reversible kill-switch the owner flips ON (OFF = today's `default`-pinned behavior,
+  // byte-identical; old `default` issues preserved). Listed in KNOWN_DARK_FLAGS.
+  ISSUES_PER_WORKSPACE: "papercusp-issues-per-workspace",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -691,6 +700,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // cutover (F-C1) is a reversible kill-switch the owner flips ON; OFF = today's
   // `default`-pinned coord, byte-identical. Listed in KNOWN_DARK_FLAGS.
   [FLAGS.COORD_PER_WORKSPACE]: false,
+  // DEFAULT OFF (deliberate) — per-workspace engineer-issues cutover, reversible
+  // kill-switch; OFF = today's `default`-pinned issue bus, byte-identical. Listed in KNOWN_DARK_FLAGS.
+  [FLAGS.ISSUES_PER_WORKSPACE]: false,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,

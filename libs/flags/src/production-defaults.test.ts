@@ -238,6 +238,10 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // preserved so OFF fully restores it). Verify on :3170 (bees receive inboxes, Queen
   // surveys, escalations route) before promoting.
   FLAGS.COORD_PER_WORKSPACE,
+  // workspace-data-isolation-leaks-2026-06-17 F (owner D-001): per-workspace engineer-issues
+  // cutover of the shared `default` issue bus. DELIBERATE dark ship — reversible kill-switch
+  // the owner flips ON (OFF = today's behavior, byte-identical; old `default` issues preserved).
+  FLAGS.ISSUES_PER_WORKSPACE,
 ]);
 
 /**

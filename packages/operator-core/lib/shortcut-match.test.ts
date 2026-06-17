@@ -138,3 +138,45 @@ describe('isMacPlatform — WebKit navigator.platform freeze regression', () => 
     expect(tryMatch('find.open', combo, ev('f', { metaKey: true }))).toBe(false);
   });
 });
+
+describe('matcher — edge cases (audit)', () => {
+  const step = (raw: string) => parseCombo(raw).alternates[0].steps[0];
+
+  it('a sequence RESETS when the second step arrives after the 1s timeout (no stale completion)', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const combo = parseCombo('g>d');
+      expect(tryMatch('go', combo, ev('g'))).toBe(false); // step 0 armed at t=0
+      vi.setSystemTime(1001); // > SEQUENCE_TIMEOUT_MS (1000)
+      expect(tryMatch('go', combo, ev('d'))).toBe(false); // too late → does NOT complete the sequence
+      // Re-arm cleanly and complete promptly within the window:
+      expect(tryMatch('go', combo, ev('g'))).toBe(false);
+      expect(tryMatch('go', combo, ev('d'))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('requires the alt modifier when bound (alt+k)', () => {
+    expect(stepMatches(step('alt+k'), ev('k', { altKey: true }))).toBe(true);
+    expect(stepMatches(step('alt+k'), ev('k', { altKey: false }))).toBe(false);
+  });
+
+  it('matches a shifted number variant (shift+1 → "!")', () => {
+    expect(stepMatches(step('shift+1'), ev('!', { shiftKey: true }))).toBe(true);
+  });
+
+  it('an empty / blank combo never matches', () => {
+    expect(parseCombo('').alternates).toHaveLength(0);
+    expect(parseCombo('  ').alternates).toHaveLength(0);
+    expect(tryMatch('empty', parseCombo(''), ev('a'))).toBe(false);
+  });
+
+  it('normalizes the remaining special keys (arrows, escape, backspace)', () => {
+    expect(step('up').key).toBe('ArrowUp');
+    expect(step('arrowdown').key).toBe('ArrowDown');
+    expect(step('esc').key).toBe('Escape');
+    expect(step('backspace').key).toBe('Backspace');
+  });
+});

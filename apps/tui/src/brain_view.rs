@@ -91,7 +91,11 @@ pub async fn run(scope: Scope) -> anyhow::Result<()> {
         }
     };
 
-    let mut current_uuid: Option<String> = None;
+    // Sentinel (an impossible empty uuid) so the FIRST resolve — whether it finds
+    // the session or returns None — DIFFERS from this and always renders a status
+    // line. (Plain `None` would make iteration 1's `uuid != current_uuid` be
+    // `None != None` = false, skipping the status print and leaving a blank pane.)
+    let mut current_uuid: Option<String> = Some(String::new());
     let mut offset: u64 = 0;
     let mut path: Option<std::path::PathBuf> = None;
 

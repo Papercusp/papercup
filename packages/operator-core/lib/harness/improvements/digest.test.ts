@@ -5,6 +5,7 @@ import {
   findLikelyDuplicates,
   signatureRecurrence,
   recallAlreadyDecided,
+  titleSimilarity,
 } from './digest';
 import type { ImprovementCandidate } from './policy';
 
@@ -22,6 +23,27 @@ describe('dedupSignature', () => {
   });
   it('ignores punctuation + case', () => {
     expect(dedupSignature('coord:inbox OVERFLOWS!!')).toBe(dedupSignature('coord inbox overflows'));
+  });
+});
+
+describe('titleSimilarity (the Jaccard the 0.8 dedup threshold rides on)', () => {
+  it('is 1.0 for identical signatures (word-order + [kind] invariant)', () => {
+    expect(titleSimilarity('Fix the login bug', 'fix the login bug')).toBe(1);
+    expect(titleSimilarity('login bug fix', 'fix login bug')).toBe(1);
+    expect(titleSimilarity('[bug] login fix', 'login fix')).toBe(1);
+  });
+
+  it('is 0 for fully disjoint signatures', () => {
+    expect(titleSimilarity('alpha beta gamma', 'delta epsilon zeta')).toBe(0);
+  });
+
+  it('is the exact token-set Jaccard for partial overlap', () => {
+    // {apple,banana} ∩ {banana,cherry} = 1 ; ∪ = 3 → 1/3
+    expect(titleSimilarity('apple banana', 'banana cherry')).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('treats two signature-empty titles (all sub-3-char tokens) as identical', () => {
+    expect(titleSimilarity('a b c', 'x y z')).toBe(1);
   });
 });
 
