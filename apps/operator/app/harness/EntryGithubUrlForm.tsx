@@ -517,8 +517,28 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         return;
       }
       if (body.created) {
-        settleCreated(steps, body.publish, body.created.seededLearnings);
-        setCreated({ kind: 'hive', result: body.created, publish: body.publish, bindingUnverified: body.bindingUnverified === true });
+        const result = body.created;
+        const publish = body.publish;
+        const bindingUnverified = body.bindingUnverified === true;
+        // modal-lifecycle-2026-06-17: the create dialog must not linger after a
+        // clean install ("should no longer be visible after the install
+        // completes"). Keep the success view ONLY when the user has to act on
+        // something here: a one-time invite secret/link to copy (it "is not
+        // shown again"), or a warning to read (seeding failed, created as a
+        // duplicate, binding unverified). Otherwise close immediately — the
+        // shell focuses the new hive, so the publish/seeded summary (visible in
+        // the Learning tab + hive header) isn't load-bearing here.
+        const mustStay =
+          !!(publish?.inviteLink || publish?.inviteSecret)
+          || !!(result.seededLearnings?.error || result.duplicateOf || bindingUnverified);
+        if (!mustStay) {
+          clearTimer();
+          if (mode === 'into-hive') onCreated(result.memberSlug, { hive: result.hiveSlug });
+          else onCreated(result.hiveSlug);
+          return;
+        }
+        settleCreated(steps, publish, result.seededLearnings);
+        setCreated({ kind: 'hive', result, publish, bindingUnverified });
         setPhase('created');
         return;
       }

@@ -183,7 +183,7 @@ describe('form validation', () => {
 // ── new-hive submit ─────────────────────────────────────────────────────────
 
 describe('new-hive mode', () => {
-  it('POSTs to /api/harness/hives/from-repo and shows the created summary', async () => {
+  it('auto-closes on a clean create — onCreated fires with no lingering success view (modal-lifecycle-2026-06-17)', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': {
@@ -200,18 +200,17 @@ describe('new-hive mode', () => {
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
 
-    await waitFor(() => screen.getByRole('heading', { name: /Hive created/ }));
+    // A clean install (no invite secret, no warning) must not leave the dialog
+    // parked on a "Hive created" card behind a manual Done — it closes itself,
+    // and the new hive becomes the focused scope (single-arg onCreated).
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web-hive'));
+    expect(screen.queryByRole('heading', { name: /Hive created/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Done' })).toBeNull();
+
     // Visibility is derived server-side — the frontend no longer sends it.
     const createdBody = postedBodies('/api/harness/hives/from-repo')[0];
     expect(createdBody).toMatchObject({ githubUrl: VALID_URL });
     expect(createdBody).not.toHaveProperty('visibility');
-    screen.getByText('web-hive');
-    screen.getByText('web');
-    screen.getByText(/Announced to the hive directory/);
-
-    await user.click(screen.getByRole('button', { name: 'Done' }));
-    // A new hive becomes the focused scope — single-arg onCreated.
-    expect(onCreated).toHaveBeenCalledWith('web-hive');
   });
 
   it('test-verify is opt-in (hardening D-001): unchecked sends no runTests; checked sends true', async () => {
@@ -246,7 +245,7 @@ describe('new-hive mode', () => {
     expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ runTests: true });
   });
 
-  it('learning pack: default selection submits papercusp-default; "none" submits null; success card shows the seeded line (learning-packs P-006)', async () => {
+  it('learning pack: default selection submits papercusp-default; "none" submits null (learning-packs P-006)', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': {
@@ -264,7 +263,7 @@ describe('new-hive mode', () => {
         },
       },
     });
-    renderForm();
+    const { onCreated } = renderForm();
     // The picker defaults to the Papercusp pack and explains the seeding.
     const picker = screen.getByTestId('learning-pack-picker').querySelector('select')!;
     expect(picker.value).toBe('papercusp-default');
@@ -272,10 +271,12 @@ describe('new-hive mode', () => {
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
     expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ learningPack: 'papercusp-default' });
-    // Success summary: the seeded-learnings line + the view & edit link.
-    const line = await screen.findByTestId('seeded-learnings-line');
-    expect(line.textContent).toContain('Started with 28 default learnings');
-    expect(line.querySelector('a')?.getAttribute('href')).toBe('/adv?tab=learning&lview=learnings&lhive=web-hive');
+    // A clean seeded create auto-closes (modal-lifecycle-2026-06-17): the
+    // "started with N learnings" summary lives in the Learning tab now, not a
+    // lingering dialog. (The seeded-line render itself stays covered by the
+    // invite-hive mustStay case below.)
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web-hive'));
+    expect(screen.queryByTestId('seeded-learnings-line')).toBeNull();
 
     cleanup();
     mockFetch.mockClear();
@@ -358,7 +359,12 @@ describe('new-hive mode', () => {
         status: 200,
         body: {
           ok: true,
-          created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' },
+          created: {
+            hiveSlug: 'web-hive',
+            memberSlug: 'web',
+            memberPath: '/tmp/web',
+            seededLearnings: { packId: 'papercusp-default', packVersion: '1.0.0', count: 28 },
+          },
           bindingUnverified: false,
           publish: { announced: true, inviteSecret: 's3cret-topic', cupboard: { attempted: false, skipped: 'invite' } },
         },
@@ -368,8 +374,14 @@ describe('new-hive mode', () => {
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
 
+    // An invite hive is a "mustStay" create — the one-time secret keeps the
+    // success view up (it would be lost on auto-close), and the seeded-learnings
+    // summary renders alongside it.
     await waitFor(() => screen.getByTestId('invite-secret'));
     expect(screen.getByTestId('invite-secret').textContent).toBe('s3cret-topic');
+    const seeded = screen.getByTestId('seeded-learnings-line');
+    expect(seeded.textContent).toContain('Started with 28 default learnings');
+    expect(seeded.querySelector('a')?.getAttribute('href')).toBe('/adv?tab=learning&lview=learnings&lhive=web-hive');
     // The frontend sends no visibility — the backend derives invite from repo privacy.
     expect(postedBodies('/api/harness/hives/from-repo')[0]).not.toHaveProperty('visibility');
   });
@@ -431,6 +443,33 @@ describe('new-hive mode', () => {
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
 
     await waitFor(() => screen.getByText(/Created as a duplicate of an existing hive/));
+  });
+
+  it('keeps the success view (does NOT auto-close) when the binding is unverified — a warning to read (modal-lifecycle-2026-06-17)', async () => {
+    const user = userEvent.setup();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: {
+          ok: true,
+          created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' },
+          // Otherwise a clean create, but the central index couldn't be reached
+          // during lookup — surface the reconcile note rather than closing on it.
+          bindingUnverified: true,
+          publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } },
+        },
+      },
+    });
+    const { onCreated } = renderForm();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+
+    await waitFor(() => screen.getByRole('heading', { name: /Hive created/ }));
+    screen.getByText(/couldn’t be reached during the lookup/);
+    // The dialog waits for the user — onCreated only fires on the explicit Done.
+    expect(onCreated).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onCreated).toHaveBeenCalledWith('web-hive');
   });
 });
 
@@ -632,12 +671,14 @@ describe('into-hive mode', () => {
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Add repository' }));
 
-    await waitFor(() => screen.getByRole('heading', { name: /Added to acme/ }));
+    // A clean into-hive add auto-closes too (modal-lifecycle-2026-06-17): the
+    // membership is reported (memberSlug + the parent hive) and the dialog
+    // closes itself — no "Added to acme" card behind a manual Done.
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web', { hive: 'acme' }));
+    expect(screen.queryByRole('heading', { name: /Added to acme/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Done' })).toBeNull();
     const body = postedBodies('/api/harness/hives/from-repo')[0];
     expect(body).toMatchObject({ githubUrl: VALID_URL, intoHive: 'acme' });
     expect(body.visibility).toBeUndefined();
-
-    await user.click(screen.getByRole('button', { name: 'Done' }));
-    expect(onCreated).toHaveBeenCalledWith('web', { hive: 'acme' });
   });
 });

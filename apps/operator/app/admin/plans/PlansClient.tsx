@@ -541,16 +541,19 @@ export default function PlansClient() {
   );
 
   // Open a plan from the item list / preview (the full PlanDetail), with an
-  // optional P-NNN deep-link.
+  // optional P-NNN deep-link. Opening the full editor is a Plans-view action:
+  // switch the view too, so the full PlanDetail shows (it only renders in the
+  // Plans view now) instead of silently shadowing the Queue/Sessions 3-pane.
   const navPlanTarget = useCallback(
     (next: string, targetId?: string) => {
       if (!leaveGuard()) return;
       setPane('read');
       setTab('editor');
       setJump(targetId ?? null);
+      void setView('plans');
       setSlug(next);
     },
-    [leaveGuard, setJump, setPane, setSlug, setTab],
+    [leaveGuard, setJump, setPane, setSlug, setTab, setView],
   );
 
   // Toggle an item-status filter. Clears the open plan so the (re)filtered
@@ -770,7 +773,13 @@ export default function PlansClient() {
             searchRef={searchRef}
           />
 
-          <PlanBucketTabs plans={visiblePlans} query={q} searchHitSlugs={searchHitSlugs} />
+          {/* Plan-status bucket chips scope the PLANS browser; they're noise in
+              the Queue (which slices by authorizer, not plan lifecycle), so the
+              Queue hides them — the rail there is just harness filter + search +
+              the plan list as a per-plan queue filter. */}
+          {view !== 'queue' ? (
+            <PlanBucketTabs plans={visiblePlans} query={q} searchHitSlugs={searchHitSlugs} />
+          ) : null}
         </div>
 
         <div className="pc-plans__list" aria-label="Plans with matching items">
@@ -787,12 +796,13 @@ export default function PlansClient() {
       </aside>
 
       <main className="pc-plans__main">
-        {/* Plans/Inbox open a full-width plan editor (?plan=) or search (?q=);
-            Sessions ignores those. Otherwise ALL THREE views render through ONE
-            persistent TwoPaneShell so switching view swaps the list/detail
-            content without remounting the 2-pane frame. The roster poll is
-            enabled only on Sessions (the provider stays mounted regardless). */}
-        {view !== 'sessions' && slug ? (
+        {/* Only the PLANS view opens the full-width plan editor (?plan=) or
+            search (?q=); the Queue + Sessions ignore them so a lingering
+            ?plan=/?q= can't shadow their 3-pane (queue nav-tangle fix). All
+            three views otherwise render through ONE persistent TwoPaneShell, so
+            switching view swaps the list/detail content without remounting the
+            2-pane frame. The roster poll is enabled only on Sessions. */}
+        {view === 'plans' && slug ? (
           <PlanDetail
             key={slug}
             slug={slug}
@@ -814,7 +824,7 @@ export default function PlansClient() {
               }
             }}
           />
-        ) : view !== 'sessions' && q.trim() ? (
+        ) : view === 'plans' && q.trim() ? (
           <PlanSearchResults
             query={q}
             onPick={(s) => navSlug(s)}

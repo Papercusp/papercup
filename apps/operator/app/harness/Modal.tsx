@@ -25,6 +25,13 @@ const CONTENT_WRAP_STYLE: CSSProperties = {
 const CONTENT_STYLE: CSSProperties = {
   pointerEvents: 'auto',
   outline: 'none',
+  // The wrap insets the content by 2rem on every side; cap the box to the
+  // remaining viewport and scroll internally so a tall dialog (e.g. a create
+  // success card with an invite secret + warnings) can never overflow past the
+  // backdrop and leave nothing to click-away on. Per-modal contentStyle (spread
+  // after this) can still override.
+  maxHeight: 'calc(100vh - 4rem)',
+  overflowY: 'auto',
 };
 
 const SR_ONLY_STYLE: CSSProperties = {

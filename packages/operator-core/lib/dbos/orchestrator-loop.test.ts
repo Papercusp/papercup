@@ -18,6 +18,7 @@ import {
   orchestratorWorkspaceIds,
   harnessDispatchesLocally,
   isOverdue,
+  getSafetyCeiling,
   type FrontierFeature,
 } from './orchestrator-loop';
 import {
@@ -163,6 +164,9 @@ describe('resolvePerHarnessCap — honor the harness parallelism settings (#1)',
   });
 
   test('…but can never RAISE it past the imperative SAFETY_CEILING (D-007)', () => {
+    // SAFETY_CEILING now scales with resource-profile (F-E2 of app-wide-load-traps),
+    // so we test that the function clamps to whatever getSafetyCeiling() returns.
+    const ceiling = getSafetyCeiling();
     expect(
       resolvePerHarnessCap({
         parallelMax: null,
@@ -170,7 +174,7 @@ describe('resolvePerHarnessCap — honor the harness parallelism settings (#1)',
         blueprintConcurrency: 99,
         blueprintSafetyCeiling: 99,
       }),
-    ).toBe(16);
+    ).toBe(ceiling);
   });
 
   test('the env ceiling (explicit operator override) still clamps a blueprint budget', () => {

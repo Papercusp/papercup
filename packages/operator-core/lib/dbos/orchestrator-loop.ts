@@ -90,6 +90,7 @@ import {
 import { getFeatureBlockers } from './feature-blockers-edges';
 import { selectReady } from './frontier-readiness';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
+import { getResourceProfile } from '../resource-profile';
 
 // ─── G2 Auditor lane injection seam (P-007) ──────────────────────────────────
 //
@@ -135,13 +136,14 @@ export function isOverdue(deadline: string | Date): boolean {
   return deadlineDate < new Date();
 }
 
-/**
- * Hard safety ceiling on per-harness pipeline concurrency when no explicit
- * `PAPERCUSP_DBOS_MAX_PIPELINES` override is set. A misconfigured harness
- * (`parallelWorkers.max: 1000`) must not be able to spawn 1000 pipelines; this
- * caps the blast radius while still honoring any sane per-harness setting.
- */
-const SAFETY_CEILING = 16;
+/** Hard safety ceiling on per-harness pipeline concurrency (F-E2 of app-wide-load-traps).
+    Scales with host resources: derived from maxSimultaneousAgents (the resource-profile's
+    cores-scaled agent budget) with a 2× buffer to allow per-harness flexibility while
+    still preventing runaway dispatch. A misconfigured harness (`parallelWorkers.max: 1000`)
+    must not spawn 1000 pipelines; this caps the blast radius while honoring sane settings. */
+export function getSafetyCeiling(): number {
+  return Math.min(Math.ceil(getResourceProfile().maxSimultaneousAgents * 2), 64);
+}
 
 /**
  * Per-harness pipeline concurrency cap (#1 — concurrency-aware dispatch). DBOS
@@ -191,8 +193,8 @@ export function resolvePerHarnessCap(opts: {
       : budget;
   const declaredCeiling =
     opts.blueprintSafetyCeiling != null && opts.blueprintSafetyCeiling > 0
-      ? Math.min(Math.floor(opts.blueprintSafetyCeiling), SAFETY_CEILING)
-      : SAFETY_CEILING;
+      ? Math.min(Math.floor(opts.blueprintSafetyCeiling), getSafetyCeiling())
+      : getSafetyCeiling();
   const ceiling = opts.envCeiling && opts.envCeiling > 0 ? opts.envCeiling : declaredCeiling;
   // Fleet-wide clamp (D-004): the live maxSimultaneousAgents bounds every harness's cap (the
   // governor's global gate enforces the precise cross-harness total; this keeps the dispatcher

@@ -339,6 +339,16 @@ function tau2DomainForTask(task: BenchTask): string {
   return typeof fromMeta === 'string' && fromMeta.length > 0 ? fromMeta : 'telecom';
 }
 
+/** The specific tau2 task id to address (so distinct backlog tasks run DISTINCT tau2 tasks via `--task-ids`).
+ *  `graderMeta.taskId` is the explicit channel; falls back to `instanceId`. Null ⇒ caller uses `--num-tasks 1`
+ *  (the domain's first task). */
+function tau2TaskIdForTask(task: BenchTask): string | null {
+  const fromMeta = task.graderMeta?.['taskId'] as unknown;
+  if (typeof fromMeta === 'string' && fromMeta.length > 0) return fromMeta;
+  if (typeof task.instanceId === 'string' && task.instanceId.length > 0) return task.instanceId;
+  return null;
+}
+
 /**
  * The REAL conversation seam: shell out to the vendored Python harness for ONE trial of `task` on `arm`'s
  * `--agent`, then read the per-trial reward + cost from `data/simulations/<save-to>/results.json`. Env is the
@@ -351,17 +361,19 @@ function tau2DomainForTask(task: BenchTask): string {
 export const realRunTau2Conversation: RunTau2Conversation = async ({ task, arm }) => {
   const domain = tau2DomainForTask(task);
   const agent = tau2AgentForArm(arm);
+  const taskId = tau2TaskIdForTask(task);
   const saveTo = `tau2-${arm}-${task.instanceId}-${Date.now()}`.replace(/[^A-Za-z0-9._-]/g, '_');
   const resultsPath = join(TAU2_HARNESS_DIR, 'data', 'simulations', saveTo, 'results.json');
 
+  // Drive via pc_run.sh (NOT raw `uv run tau2 run`): pc_run.sh sets --agent-llm/--user-llm + the gateway
+  // api_base (:PC_GW_PORT) in --*-llm-args + TAU2_PAPERCUSP_CC_FRAMING — without it tau2 falls back to its
+  // default OpenAI model and fails. Select the SPECIFIC task via --task-ids when known (so a multi-task
+  // backlog runs distinct tasks), else --num-tasks 1 (the domain's first task). pc_run.sh passes "$@" through.
   const args = [
-    'run',
-    'tau2',
-    'run',
+    'pc_run.sh',
     '--domain',
     domain,
-    '--num-tasks',
-    '1',
+    ...(taskId ? ['--task-ids', taskId] : ['--num-tasks', '1']),
     '--num-trials',
     '1',
     '--agent',
@@ -372,11 +384,12 @@ export const realRunTau2Conversation: RunTau2Conversation = async ({ task, arm }
   const env: Record<string, string> = {
     ...process.env,
     TAU2_PAPERCUSP_CC_FRAMING: '1',
-    PC_REASONING: 'high',
+    PC_REASONING: process.env.PC_REASONING ?? 'high',
+    // PC_GW_PORT flows through from process.env (caller picks the gateway; pc_run.sh defaults to 8799).
   };
 
   const code = await new Promise<number>((resolve) => {
-    const child = spawn('uv', args, { cwd: TAU2_HARNESS_DIR, env });
+    const child = spawn('bash', args, { cwd: TAU2_HARNESS_DIR, env });
     const timer = setTimeout(() => child.kill('SIGKILL'), DEFAULT_TAU2_CONVERSATION_TIMEOUT_MS);
     child.on('close', (c) => {
       clearTimeout(timer);
