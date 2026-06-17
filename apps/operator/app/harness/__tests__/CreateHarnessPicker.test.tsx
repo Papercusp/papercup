@@ -175,7 +175,8 @@ describe('Entry 1 — new local directory navigation', () => {
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('New local directory'));
-    screen.getByRole('heading', { name: 'New local directory' });
+    // No hive scope ⇒ a new local dir IS a new hive (Queen blueprint).
+    screen.getByRole('heading', { name: /New hive from a local directory/i });
     screen.getByPlaceholderText('/home/user/projects');
   });
 
@@ -221,15 +222,15 @@ describe('P-012b — new-local happy path', () => {
     renderPicker({ onCreated });
     await user.click(screen.getByText('New local directory'));
 
-    // slug field — first 'my-project' placeholder on the form
-    await user.type(screen.getAllByPlaceholderText('my-project')[0], 'my-proj');
+    // A new local dir IS a new hive (no scope): slug + parentDir only, posts to
+    // /api/harness/hives (the Queen blueprint), no separate folder-name field.
+    await user.type(screen.getByPlaceholderText('my-project'), 'my-proj');
     await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
-    await user.type(screen.getAllByPlaceholderText('my-project')[1], 'my-proj');
     await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('my-proj'));
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/harness/projects',
+      '/api/harness/hives',
       expect.objectContaining({ method: 'POST' }),
     );
   });
@@ -270,9 +271,8 @@ describe('P-012d — error messages', () => {
     );
     renderPicker();
     await user.click(screen.getByText('New local directory'));
-    await user.type(screen.getAllByPlaceholderText('my-project')[0], 'foo');
+    await user.type(screen.getByPlaceholderText('my-project'), 'foo');
     await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
-    await user.type(screen.getAllByPlaceholderText('my-project')[1], 'foo');
     await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     const alert = await waitFor(() => screen.getByRole('alert'));
@@ -433,21 +433,20 @@ describe('P-006 — Hive invite card', () => {
 // ── P-010/P-011 — the creation fork (D-005) ────────────────────────────────
 
 describe('P-010 — creation fork toggle', () => {
-  it('with a hive scope, offers New-hive + Add-to-<hive> + Standalone and defaults into-hive', () => {
+  it('with a hive scope, offers Add-to-<hive> + New-<hive> and defaults into-hive', () => {
     renderPicker({ hiveScope: 'acme', hiveLabel: 'Hive' });
-    screen.getByRole('tab', { name: /New hive/ });
     const addBtn = screen.getByRole('tab', { name: 'Add to acme' });
-    screen.getByRole('tab', { name: 'Standalone' });
-    // Default into-hive → the "added into <hive>" hint + selected toggle.
+    // The non-into-hive option is "New <hive>" — a new top-level hive. There is
+    // no separate "from blueprint" tab anymore (it folded into New local directory).
+    screen.getByRole('tab', { name: /New hive/i });
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
     expect(addBtn.getAttribute('aria-selected')).toBe('true');
-    screen.getByText('acme');
   });
 
-  it('without a hive scope, there is no Add-to button and standalone is the default', () => {
+  it('without a hive scope, there is no creation-fork toggle at all', () => {
     renderPicker({ hiveScope: null });
-    expect(screen.queryByRole('tab', { name: /^Add to/ })).toBeNull();
-    screen.getByRole('tab', { name: /New hive/ });
-    expect(screen.getByRole('tab', { name: 'Standalone' }).getAttribute('aria-selected')).toBe('true');
+    // No scope ⇒ the fork is hidden entirely; the default is a new top-level hive.
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
   });
 });
 
@@ -467,39 +466,35 @@ describe('P-011 — add into hive stamps the membership', () => {
     expect(lastCreateBody()).toMatchObject({ slug: 'web', path: '/tmp/web', hive: 'acme' });
   });
 
-  it('switching to Standalone drops the membership (no `hive` in the body, single-arg onCreated)', async () => {
+  it('a scoped "New local directory" posts a MEMBER to /api/harness/projects with the hive', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    mockCreateOk({ slug: 'web', path: '/tmp/web' });
+    renderPicker({ onCreated, hiveScope: 'acme' });
+    // Default into-hive: a new local dir here becomes a member of acme, NOT a hive.
+    await user.click(screen.getByText('New local directory'));
+    await user.type(screen.getByPlaceholderText('my-project'), 'web');
+    await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
+    await user.click(screen.getByRole('button', { name: 'Add Hive' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web', { hive: 'acme' }));
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/projects', expect.objectContaining({ method: 'POST' }));
+    expect(lastCreateBody()).toMatchObject({ slug: 'web', hive: 'acme' });
+  });
+
+  it('switching to New-<hive> creates a new top-level hive (single-arg onCreated, posts /api/harness/hives)', async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
     mockCreateOk({ slug: 'solo', path: '/tmp/solo' });
     renderPicker({ onCreated, hiveScope: 'acme' });
-    await user.click(screen.getByRole('tab', { name: 'Standalone' }));
-    await user.click(screen.getByText('Existing local repo'));
+    await user.click(screen.getByRole('tab', { name: /New hive/i }));
+    await user.click(screen.getByText('New local directory'));
     await user.type(screen.getByPlaceholderText('my-project'), 'solo');
-    await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/tmp/solo');
-    await user.click(screen.getByRole('button', { name: 'Add Hive' }));
+    await user.type(screen.getByPlaceholderText('/home/user/projects'), '/tmp');
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('solo'));
+    expect(mockFetch).toHaveBeenCalledWith('/api/harness/hives', expect.objectContaining({ method: 'POST' }));
     expect(lastCreateBody().hive).toBeUndefined();
-  });
-});
-
-describe('P-010 — new hive from blueprint', () => {
-  it('clicking New-hive opens the hive form and posts to /api/harness/hives (no membership)', async () => {
-    const user = userEvent.setup();
-    const onCreated = vi.fn();
-    mockCreateOk({ slug: 'newhive', path: '/tmp/newhive' }, { hive: true });
-    renderPicker({ onCreated, hiveScope: 'acme', hiveLabel: 'Hive' });
-    await user.click(screen.getByRole('tab', { name: /New hive/ }));
-    screen.getByRole('heading', { name: /New hive from blueprint/ });
-    await user.type(screen.getByPlaceholderText('my-hive'), 'newhive');
-    await user.click(screen.getByRole('button', { name: /Create hive/ }));
-
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('newhive'));
-    expect(
-      mockFetch.mock.calls.some((c) => {
-        const url = typeof c[0] === 'string' ? c[0] : (c[0] as URL).toString();
-        return url === '/api/harness/hives';
-      }),
-    ).toBe(true);
   });
 });

@@ -43,6 +43,7 @@ const NO_FILTERS: PlanFilterState = {
   inbox: false,
   actionable: false,
   scout: false,
+  scheduled: false,
 };
 
 describe('bucketOf', () => {
@@ -119,6 +120,26 @@ describe('applyPlanFilters', () => {
     expect(applyPlanFilters(plans, { ...NO_FILTERS, owner: 'a@x.com' }, '').map((p) => p.slug)).toEqual([
       'has-human',
       'empty',
+    ]);
+  });
+
+  it('scheduled filter keeps only plans flagged scheduled (P-021)', () => {
+    const plans = [
+      row({ slug: 'recurring', scheduled: true, scheduleKind: 'recurring', scheduleActive: true }),
+      row({ slug: 'one-shot', scheduled: true, scheduleKind: 'one-shot', scheduleActive: false }),
+      row({ slug: 'plain', scheduled: false }),
+      row({ slug: 'undefined-sched' }),
+    ];
+    expect(applyPlanFilters(plans, { ...NO_FILTERS, scheduled: true }, '').map((p) => p.slug)).toEqual([
+      'recurring',
+      'one-shot',
+    ]);
+    // No filter ⇒ all four pass through.
+    expect(applyPlanFilters(plans, NO_FILTERS, '').map((p) => p.slug)).toEqual([
+      'recurring',
+      'one-shot',
+      'plain',
+      'undefined-sched',
     ]);
   });
 

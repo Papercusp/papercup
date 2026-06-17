@@ -14,10 +14,12 @@ import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
-import type { DatesSetArg, EventClickArg, EventInput } from '@fullcalendar/core';
+import type { DatesSetArg, EventClickArg, EventDropArg, EventInput } from '@fullcalendar/core';
+import type { DateClickArg } from '@fullcalendar/interaction';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import ScheduledRoutinesPane from './ScheduledRoutinesPane';
+import ScheduleEditor, { runScheduleTool, type ScheduleMode } from './ScheduleEditor';
 import './scheduled-calendar.css';
 
 type CalView = 'dayGridMonth' | 'timeGridWeek' | 'timeGridDay';
@@ -32,6 +34,25 @@ interface ScheduledOccurrenceRow {
   lastOutcome: string | null;
 }
 
+/** The open schedule-editor target (P-020). */
+interface EditorState {
+  slug: string;
+  title: string | null;
+  /** ISO date the editor seeds on (from a day-click → one-shot). */
+  seedDate?: string;
+  seedMode?: ScheduleMode;
+  isArmed: boolean;
+}
+
+/** The fields the "Schedule a plan" picker reads off plans.list (P-021 schedule glance). */
+interface PlanListLite {
+  slug: string;
+  title: string | null;
+  scheduled?: boolean;
+  scheduleActive?: boolean;
+  harness: string;
+}
+
 const VIEW_VALUES: CalView[] = ['dayGridMonth', 'timeGridWeek', 'timeGridDay'];
 
 export default function ScheduledCalendarTab() {
@@ -41,12 +62,23 @@ export default function ScheduledCalendarTab() {
   // Visible window — set from FullCalendar's datesSet so the sync query tracks the view.
   const [range, setRange] = useState<{ startMs: number; endMs: number } | null>(null);
 
-  const { data, loading } = useSyncQuery<ScheduledOccurrenceRow>({
+  const { data, loading, invalidate } = useSyncQuery<ScheduledOccurrenceRow>({
     queryName: 'plans.scheduledOccurrences',
     args: { rangeStartMs: range?.startMs ?? 0, rangeEndMs: range?.endMs ?? 0 },
     enabled: !!range,
   });
   const occurrences = useMemo(() => data ?? [], [data]);
+
+  // ── Schedule editor + drag-drop (P-020) ──
+  // The editor authors a plan's schedule (recurring RRULE or one-shot) via
+  // plans:set-schedule and arms it via plans:arm-schedule. `null` = closed.
+  const [editor, setEditor] = useState<EditorState | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // The plan list (incl. P-021 schedule fields) powers the "Schedule a plan"
+  // picker — pick an unscheduled plan to give it a first schedule.
+  const { data: planListData } = useSyncQuery<PlanListLite>({ queryName: 'plans.list', args: {} });
+  const planList = useMemo(() => (Array.isArray(planListData) ? planListData : []), [planListData]);
+  const afterWrite = useCallback(() => void invalidate?.(), [invalidate]);
 
   const events: EventInput[] = useMemo(
     () =>
@@ -90,6 +122,54 @@ export default function ScheduledCalendarTab() {
     [setSelected],
   );
 
+  // Click/drag onto a day = a one-shot for the SELECTED plan (P-020). With no
+  // plan selected there's no target, so open the picker to choose one instead.
+  const onDateClick = useCallback(
+    (arg: DateClickArg) => {
+      if (!selected) {
+        setPickerOpen(true);
+        return;
+      }
+      const row = occurrences.find((o) => o.templateSlug === selected);
+      setEditor({
+        slug: selected,
+        title: row?.title ?? selected,
+        seedDate: arg.date.toISOString(),
+        seedMode: 'one-shot',
+        isArmed: row?.scheduleActive ?? false,
+      });
+    },
+    [selected, occurrences],
+  );
+
+  // Drag an event to a new day. A one-shot just moves (rewrite scheduledAt). A
+  // recurring occurrence can't be moved in isolation without the source RRULE
+  // (the occurrence row doesn't carry it), so revert + open the editor for an
+  // edit-all — per-occurrence EXDATE+RDATE drag is a documented follow-on.
+  const onEventDrop = useCallback(
+    async (arg: EventDropArg) => {
+      const o = arg.event.extendedProps as ScheduledOccurrenceRow;
+      const newStart = arg.event.start;
+      if (!newStart) {
+        arg.revert();
+        return;
+      }
+      if (o.kind === 'one-shot') {
+        const r = await runScheduleTool('plans:set-schedule', {
+          slug: o.templateSlug,
+          schedule: null,
+          scheduledAt: newStart.toISOString(),
+        });
+        if (!r.ok) arg.revert();
+        else afterWrite();
+      } else {
+        arg.revert();
+        setEditor({ slug: o.templateSlug, title: o.title, isArmed: o.scheduleActive });
+      }
+    },
+    [afterWrite],
+  );
+
   const selectedPlan = useMemo(() => {
     if (!selected) return null;
     const rows = occurrences.filter((o) => o.templateSlug === selected);
@@ -108,6 +188,15 @@ export default function ScheduledCalendarTab() {
         <span><i className="pc-sched-cal__swatch" style={{ background: 'var(--fg-mute, #7f9bb4)', opacity: 0.55 }} /> paused (disarmed)</span>
         <span style={{ fontStyle: 'italic' }}>italic = one-shot</span>
         {loading && <span>· loading…</span>}
+        <button
+          type="button"
+          className="pc-sched-cal__add"
+          onClick={() => setPickerOpen(true)}
+          aria-hidden={false}
+          title="Author a schedule for a plan"
+        >
+          ＋ Schedule a plan
+        </button>
       </div>
       <div className="pc-sched-cal__body">
         <aside className="pc-sched-cal__routines">
@@ -122,6 +211,11 @@ export default function ScheduledCalendarTab() {
             events={events}
             datesSet={onDatesSet}
             eventClick={onEventClick}
+            dateClick={onDateClick}
+            eventDrop={onEventDrop}
+            editable
+            eventStartEditable
+            eventDurationEditable={false}
             height="100%"
             nowIndicator
             dayMaxEvents={4}

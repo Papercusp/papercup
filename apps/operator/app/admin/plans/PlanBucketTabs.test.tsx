@@ -80,6 +80,7 @@ const DEFAULT_FILTERS: PlanFilterState = {
   inbox: false,
   actionable: false,
   scout: false,
+  scheduled: false,
 };
 
 /** Ground-truth bucket counts — exactly what the component computes. */

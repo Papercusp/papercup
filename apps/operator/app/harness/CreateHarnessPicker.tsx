@@ -337,7 +337,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => vo
           </HintText>
         </Label>
       )}
-      <SubmitRow busy={busy} label={hive ? `Add ${t('pot')}` : `Create ${hiveLower}`} onBack={onBack} />
+      <SubmitRow busy={busy} label={hive ? `Add ${t('pot')}` : `Create ${t('pot')}`} onBack={onBack} />
     </form>
   );
 }
@@ -915,14 +915,15 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   const memberHive = mode === 'into-hive' && hiveScope ? hiveScope : undefined;
 
   const handleSuccess = (slug: string) => {
-    // A new-hive create is a root, not a member; standalone/into-hive carry the
-    // membership scope so the caller can focus the new member (P-011). Keep the
-    // single-arg call for the standalone path (back-compat with existing callers).
-    const createdInto = step === 'new-hive' ? undefined : memberHive;
+    // A new top-level hive (no membership scope) is a root; an into-hive create
+    // carries the scope so the caller can focus the new member (P-011). Keep the
+    // single-arg call for the root path (back-compat with existing callers).
+    const createdInto = memberHive;
     if (createdInto) onCreated?.(slug, { hive: createdInto });
     else onCreated?.(slug);
     setCreatedSlug(slug);
-    setCreatedHiveSlug(step === 'new-hive' ? slug : (memberHive ?? null));
+    // A root hive publishes itself; a member publishes its parent hive.
+    setCreatedHiveSlug(memberHive ?? slug);
     setStep('share-offer');
   };
 
@@ -954,9 +955,8 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
         {(step === 'picker' || (step === 'share-offer' && createdSlug === null)) && (
           <PickerStep onSelect={setStep} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} combLabel={combLabel} githubUrlEnabled={githubUrlEnabled} />
         )}
-        {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
+        {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} hiveLabel={hiveLabel} />}
         {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
-        {step === 'new-hive' && <NewHiveForm onBack={goBack} onSuccess={handleSuccess} hiveLabel={hiveLabel} />}
         {step === 'github-url' && !githubUrlEnabled && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
         {step === 'github-url' && githubUrlEnabled && (
           <EntryGithubSearchForm
