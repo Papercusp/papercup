@@ -1,86 +1,75 @@
 /**
- * tau2-backlog.ts — the τ²-bench (tau2-bench) fleet-arm backlog driver
- * (plan benchmark-arms-su-vs-queen-expansion-2026-06-16; the dual-arm unification — "run every suite on the
- * SAME generic shared orchestration as every other arm").
+ * tau2-backlog.ts — the τ²-bench (tau2-bench) capability-INJECTION backlog driver
+ * (plan benchmark-capability-injection-redesign-2026-06-17; P-009).
  *
  * τ²-bench is a conversational tool-agent benchmark: one agent ↔ a simulated user, scored by a per-trial
  * REWARD ∈ [0,1] (1 = the task's goal state was reached). Like the METR HCAST / TheAgentCompany / PaperBench
  * drivers, this wraps the SAME generic shell ({@link makePoolBacklogDriver}: bounded concurrency pool +
  * live-occupancy {@link ConcurrencyTimeline} + the never-throw drain) so τ²-bench emits the canonical
  * {@link HiveBacklogResult} and flows through the identical {@link runHiveBacklog} dispatch + downstream fleet
- * metrics (`toFleetRunSummary` → `@papercusp/bench-metrics buildHiveReport`) as every other suite. The ONLY
- * suite-specific bit is the per-task work: run ONE tau2 conversation for the task and carry its reward.
+ * metrics (`toFleetRunSummary` → `@papercusp/bench-metrics buildHiveReport`) as every other suite.
  *
- * WORK-SURFACE DIFFERENCE (vs the SWE-bench M1 diff arms): there is no worktree/diff. Each task is one
- * agent↔user-simulator conversation against a vendored PYTHON harness (`~/.papercusp/bench-harnesses/tau2-bench`,
- * driven via `uv run tau2 run` / `pc_run.sh`). The "submission" is the conversation transcript; the score is
- * the harness's own per-trial `reward_info.reward`. So the per-task work shells out to the harness, then reads
- * `data/simulations/<save-to>/results.json` (`simulations[].reward_info.reward`; cost = `agent_cost`+`user_cost`)
- * and carries reward + cost on `attempt.armMeta` — exactly the METR HCAST armMeta round-trip pattern.
+ * THE ARMS — capability injection, NOT topology (plan D-001). τ²-bench is turn-driven: a "spine of roles"
+ * doesn't map to "produce one turn", so the old fake `papercup_hive` / `su=llm_agent` topology arms were
+ * degenerate by construction and are DELETED. The arms are now:
+ *   - 'vanilla'  → the stock agent with DOMAIN tools only (the bare-model reference).
+ *   - '+memory'  → the SAME agent + a private memory side-channel (memory_search / memory_remember backed by
+ *                  the REAL `memory:*` MCP verbs), scoped to a per-run sandbox hive whose pool ACCUMULATES
+ *                  across all tasks in the run (D-007): learn a policy on task A, recall it on task B. THAT
+ *                  cross-task learning is the lift we measure (it dissolves the single-turn degeneracy).
  *
- * THE THREE ARMS (the {@link Tau2Arm} mapping). τ²-bench scores ONE conversational identity, so the
- * su-vs-hive distinction is partly degenerate here (the user/sim see a single agent regardless of how it
- * decomposes internally) — see {@link TAU2_AGENT_FOR_ARM} for the per-arm `--agent` and the WHY:
- *   - 'baseline-opus' → `llm_agent`   (stock single opus, the reference SUT).
- *   - 'hive'          → `papercup_hive` (the in-process planner→worker route-B agent vendored in the harness).
- *   - 'su'            → `llm_agent`   (degenerate for a single conversational SUT — see the comment).
+ * THE MECHANISM. Both arms run the vendored Python `papercup_mem` agent (src/tau2/agent/papercup_mem_agent.py).
+ * The agent enables memory ONLY when `TAU2_PC_MEMORY_HIVE` is set, so the ARM selects capability purely via
+ * env: '+memory' opens a {@link RunSandbox} (reusing {@link openRunSandbox} from capabilities/ — the per-run
+ * ephemeral hive whose `hiveSlug` is the shared memory namespace) ONCE per (suite-run × arm) and passes
+ * `TAU2_PC_MEMORY_HIVE=<sandbox.hiveSlug>` (+ operator base + superuser token) to every `tau2 run` for that
+ * arm; 'vanilla' passes no hive env, so the SAME agent degrades to a stock LLMAgent. The sandbox is disposed
+ * at arm end (memory wiped — never leaks to production or between arms).
+ *
+ * WORK-SURFACE: there is no worktree/diff. Each task is one agent↔user-simulator conversation against the
+ * vendored PYTHON harness (`~/.papercusp/bench-harnesses/tau2-bench`, driven via `pc_run.sh`). The score is
+ * the harness's own per-trial `reward_info.reward`. The per-task work shells out to the harness, then reads
+ * `data/simulations/<save-to>/results.json` and carries reward + cost on `attempt.armMeta` — the METR HCAST
+ * armMeta round-trip pattern.
  *
  * DEPENDENCY INJECTION: the shell-out + results parsing is one injected seam ({@link Tau2BacklogDeps.runConversation}),
  * defaulting to the real Python invocation ({@link realRunTau2Conversation}) but STUBBABLE in the test so a unit
  * test asserts the pool contract / FleetTaskResult shape / arm switching / round-trip with ZERO subprocess or
- * LLM calls. Never throws (the generation-failure contract — an infra failure lands a non-scored error row).
+ * LLM calls. The sandbox lifecycle is likewise injected ({@link Tau2BacklogDeps.openSandbox}) so tests open no
+ * real hive. Never throws (the generation-failure contract — an infra failure lands a non-scored error row).
  */
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { FleetArmId } from '@papercusp/bench-metrics';
+import { openRunSandbox, liveSandboxHiveOps, liveRunTool } from './capabilities';
+import type { RunSandbox } from './capabilities';
 import type { HiveBacklogDriver, HiveBacklogResult, FleetTaskResult } from './hive-backlog';
 import { makePoolBacklogDriver } from './hive-backlog-utilities';
+import { operatorApiBase } from '../operator-api-base';
 import type { ArmAttempt, BenchTask, GenerationBudget, GenerationStopReason } from './types';
 
 /** The τ²-bench blueprint id stamped on the attempt row (the conversational tool-agent suite). */
 export const TAU2_BLUEPRINT_ID = 'tau2-bench';
 
-/** The three fleet arms this driver runs (the plan's {baseline-opus, hive, su} expansion). */
-export const TAU2_BASELINE_OPUS_ARM: FleetArmId = 'baseline-opus';
-export const TAU2_HIVE_ARM: FleetArmId = 'hive';
-export const TAU2_SU_ARM: FleetArmId = 'su';
+/** The two capability-injection arms this driver runs (plan D-001): bare model vs +memory. */
+export const TAU2_VANILLA_ARM: FleetArmId = 'vanilla';
+export const TAU2_MEMORY_ARM: FleetArmId = '+memory';
 
-/** The tau2 `--agent` registered factory names (src/tau2/registry.py): the single-opus SUT vs the route-B hive. */
-export type Tau2Agent = 'llm_agent' | 'papercup_hive';
+/** The fixed workspace every benchmark memory call lives in (the SU fan-out namespace). */
+const TAU2_WORKSPACE = 'papercusp-workspace';
 
-/**
- * Fleet-arm → tau2 `--agent` factory name. A small, clearly-documented record so a real cross-process arm can
- * be slotted in later (a distinct registered factory) without touching the driver.
- *
- *   - 'baseline-opus' → 'llm_agent'    — stock single opus, the reference system-under-test.
- *   - 'hive'          → 'papercup_hive' — the in-process planner→worker route-B agent vendored in the harness
- *                                         (src/tau2/agent/papercup_hive_agent.py: one conversational identity
- *                                         that decomposes internally).
- *   - 'su'            → 'llm_agent'    — DEGENERATE for a single-agent-interactive suite. τ²-bench scores ONE
- *                                         conversational identity (the user-simulator sees a single agent), so
- *                                         there is no distinct cross-process su-agent to register: the su-vs-hive
- *                                         distinction collapses for a single conversational SUT. P-005's route-B
- *                                         A/B showed no lift over stock opus on this surface, so 'su' maps to the
- *                                         stock `llm_agent` for now. TODO(benchmark-arms-su-vs-queen-expansion):
- *                                         when a genuine cross-process su agent exists, register it as its own
- *                                         tau2 factory and point 'su' at it here — the rest of the driver is
- *                                         arm-agnostic by construction.
- */
-export const TAU2_AGENT_FOR_ARM: Record<string, Tau2Agent> = {
-  'baseline-opus': 'llm_agent',
-  hive: 'papercup_hive',
-  // su is degenerate for a single conversational SUT (see the doc above) → stock opus for now.
-  su: 'llm_agent',
-};
+/** The single vendored tau2 `--agent` (src/tau2/registry.py): a stock LLMAgent + an opt-in memory side-channel
+ *  enabled only when `TAU2_PC_MEMORY_HIVE` is set, so ONE agent serves BOTH arms (the arm = the env it gets). */
+export const TAU2_AGENT = 'papercup_mem';
 
-/** Resolve a fleet-arm id → the tau2 `--agent` factory name (unknown arms default to the stock opus SUT). */
-export function tau2AgentForArm(arm: FleetArmId): Tau2Agent {
-  return TAU2_AGENT_FOR_ARM[String(arm)] ?? 'llm_agent';
+/** True when `arm` is the +memory injection arm (the only arm that opens a sandbox + passes the hive env). */
+export function tau2ArmHasMemory(arm: FleetArmId): boolean {
+  return String(arm) === TAU2_MEMORY_ARM;
 }
 
-/** The settled outcome of ONE tau2 conversation — the only suite-specific seam {@link makeTau2BacklogDriver}
+/** The settled outcome of ONE tau2 conversation — the suite-specific seam {@link makeTau2BacklogDriver}
  *  injects. MUST be never-throw: on any infra/transport failure return `{ stopReason: 'infra-failed', error }`
  *  with reward null, NOT an exception (the never-throw generation contract; downstream excludes it). */
 export interface Tau2ConversationResult {
@@ -98,14 +87,35 @@ export interface Tau2ConversationResult {
   trajectoryRef?: string;
 }
 
+/**
+ * The +memory sandbox context threaded into each conversation: the hive slug (the shared memory namespace)
+ * the `+memory` arm's `papercup_mem` agent scopes its `memory:*` calls to, plus the operator base + bearer the
+ * Python agent's MCP POST uses. `null` for the `vanilla` arm (no memory → the agent degrades to stock).
+ */
+export interface Tau2MemoryContext {
+  /** The ephemeral-hive slug the sandbox opened — TAU2_PC_MEMORY_HIVE for the Python agent. */
+  hiveSlug: string;
+  /** The operator API base the Python MCP POST targets — TAU2_PC_OPERATOR_BASE. */
+  operatorBase: string;
+  /** The superuser bearer — TAU2_PC_OPERATOR_TOKEN (the Python agent also falls back to ~/.papercusp/superuser-token). */
+  token: string;
+}
+
 /** The injected per-conversation work: run ONE tau2 conversation for `task` on `arm`. Defaults to the real
- *  Python invocation ({@link realRunTau2Conversation}); the test injects a fake so no subprocess/LLM runs. */
+ *  Python invocation ({@link realRunTau2Conversation}); the test injects a fake so no subprocess/LLM runs.
+ *  `memory` is the +memory arm's sandbox context (null for vanilla). */
 export type RunTau2Conversation = (input: {
   task: BenchTask;
   arm: FleetArmId;
   seed: string;
   budget: GenerationBudget;
+  memory: Tau2MemoryContext | null;
 }) => Promise<Tau2ConversationResult>;
+
+/** Open the per-(suite-run × arm) {@link RunSandbox} for the +memory arm. Defaults to {@link realOpenSandbox}
+ *  (a real ephemeral hive via {@link openRunSandbox}); the test injects a fake so no hive boots. Returns null
+ *  for an arm that needs no sandbox (vanilla). */
+export type OpenTau2Sandbox = (input: { arm: FleetArmId; runId: string }) => Promise<RunSandbox | null>;
 
 export interface Tau2BacklogDeps {
   now?: () => number;
@@ -113,6 +123,8 @@ export interface Tau2BacklogDeps {
   concurrencyCap: () => number | Promise<number>;
   /** The conversation seam (default {@link realRunTau2Conversation} — the vendored Python harness). */
   runConversation?: RunTau2Conversation;
+  /** The sandbox-open seam (default {@link realOpenSandbox} — a real ephemeral hive for the +memory arm). */
+  openSandbox?: OpenTau2Sandbox;
   fleetTimeoutMs?: number;
   sampleIntervalMs?: number;
   /** Fired the instant each conversation settles → durability (a partial/killed run still banks its rows). */
@@ -152,7 +164,8 @@ function toFleetTaskResult(
     ...(r.error ? { generationError: r.error } : {}),
     armMeta: {
       suite: 'tau2-bench',
-      agent: tau2AgentForArm(arm),
+      agent: TAU2_AGENT,
+      memory: tau2ArmHasMemory(arm), // attribution: which arm had the +memory capability
       reward: r.reward,
       score: r.reward, // for a single trial the reward IS the score
       resolved,
@@ -173,24 +186,31 @@ function toFleetTaskResult(
 /**
  * Build the τ²-bench {@link HiveBacklogDriver} for ONE arm. The generic shell ({@link makePoolBacklogDriver})
  * owns the sampler + pool + canonical-output projection; τ²-bench supplies ONLY its per-task work (run one
- * conversation → reward → FleetTaskResult), and `req.arm` selects the tau2 `--agent` via {@link tau2AgentForArm}.
+ * conversation → reward → FleetTaskResult). For the `+memory` arm the driver opens a {@link RunSandbox} ONCE
+ * for the whole run (the memory pool ACCUMULATES across tasks — D-007) and threads its context into every
+ * conversation; it disposes the sandbox after the backlog drains. `vanilla` opens no sandbox.
+ *
  * Never throws — {@link RunTau2Conversation} is itself never-throw (an infra failure becomes a non-scored
- * result, not an exception); a defensive catch here also degrades to an infra-failed row.
+ * result, not an exception); a defensive catch here also degrades to an infra-failed row. The sandbox open
+ * is best-effort: if it fails, the arm runs WITHOUT memory (degrades to stock) rather than aborting the run.
  */
 export function makeTau2BacklogDriver(deps: Tau2BacklogDeps): HiveBacklogDriver {
   const now = deps.now ?? (() => Date.now());
   const runConversation = deps.runConversation ?? realRunTau2Conversation;
-  return makePoolBacklogDriver({
+  const openSandbox = deps.openSandbox ?? realOpenSandbox;
+
+  const inner = makePoolBacklogDriver({
     now,
     concurrencyCap: () => deps.concurrencyCap(),
     fleetTimeoutMs: deps.fleetTimeoutMs,
     sampleIntervalMs: deps.sampleIntervalMs,
     perTask: async ({ task, arm, seed, budget }): Promise<FleetTaskResult> => {
+      const memory = currentMemoryContext;
       const placedAtMs = now();
       const startedAt = now();
       let r: Tau2ConversationResult;
       try {
-        r = await runConversation({ task, arm, seed, budget });
+        r = await runConversation({ task, arm, seed, budget, memory });
       } catch (e) {
         // Defensive: runConversation is contractually never-throw, but a thrown error still degrades to a
         // non-scored infra row rather than escaping perTask (the never-throw pool contract).
@@ -201,6 +221,41 @@ export function makeTau2BacklogDriver(deps: Tau2BacklogDeps): HiveBacklogDriver 
       return toFleetTaskResult(r, task, arm, seed, placedAtMs, startedAt, finishedAt);
     },
   });
+
+  // The per-run sandbox context, shared by every task in the run via the closure above. Opened once per
+  // run() and torn down after the backlog drains, so the +memory pool accumulates across all tasks (D-007).
+  let currentMemoryContext: Tau2MemoryContext | null = null;
+
+  return {
+    async run(req): Promise<HiveBacklogResult> {
+      let sandbox: RunSandbox | null = null;
+      if (tau2ArmHasMemory(req.arm)) {
+        try {
+          sandbox = await openSandbox({ arm: req.arm, runId: req.runId });
+          if (sandbox) currentMemoryContext = memoryContextFor(sandbox);
+        } catch {
+          // Sandbox boot failed → run the +memory arm WITHOUT memory (degrades to stock) rather than abort.
+          sandbox = null;
+          currentMemoryContext = null;
+        }
+      }
+      try {
+        return await inner.run(req);
+      } finally {
+        currentMemoryContext = null;
+        if (sandbox) await sandbox.dispose().catch(() => {});
+      }
+    },
+  };
+}
+
+/** Build the Python-agent memory context (env values) from an open sandbox. */
+function memoryContextFor(sandbox: RunSandbox): Tau2MemoryContext {
+  return {
+    hiveSlug: sandbox.hiveSlug,
+    operatorBase: operatorApiBase(),
+    token: '', // resolved lazily in realRunTau2Conversation (falls back to ~/.papercusp/superuser-token)
+  };
 }
 
 /** One arm's outcome from {@link runTau2SuiteViaFleet}: the canonical fleet record for that arm. */
@@ -216,19 +271,21 @@ export interface Tau2FleetRunResult {
 
 /**
  * Run the multi-arm τ²-bench suite THROUGH the canonical {@link HiveBacklogDriver} fleet contract — each fleet
- * arm ({baseline-opus, hive, su}) runs its own {@link makeTau2BacklogDriver} over the SAME backlog; an optional
- * `runConversationFor(arm)` binds that arm's conversation seam (default: the shared real Python invocation, which
- * already switches on `arm` internally). Returns the canonical {@link HiveBacklogResult} per arm; the per-task
- * reward/score rides `attempt.armMeta` for {@link tau2TaskResultsFromFleet} + the standard fleet rollup.
+ * arm ({vanilla, +memory}) runs its own {@link makeTau2BacklogDriver} over the SAME backlog; an optional
+ * `runConversationFor(arm)` binds that arm's conversation seam (default: the shared real Python invocation).
+ * Returns the canonical {@link HiveBacklogResult} per arm; the per-task reward/score rides `attempt.armMeta`
+ * for {@link tau2TaskResultsFromFleet} + the standard fleet rollup.
  */
 export async function runTau2SuiteViaFleet(input: {
   tasks: BenchTask[];
-  /** Fleet arms to run (default all three: baseline-opus + hive + su). */
+  /** Fleet arms to run (default both: vanilla + +memory). */
   arms?: FleetArmId[];
   now?: () => number;
   concurrencyCap: () => number | Promise<number>;
   /** Per-arm conversation seam (default {@link realRunTau2Conversation} for every arm). */
   runConversationFor?: (arm: FleetArmId) => RunTau2Conversation;
+  /** Per-arm sandbox-open seam (default {@link realOpenSandbox}). */
+  openSandboxFor?: (arm: FleetArmId) => OpenTau2Sandbox;
   runId?: string;
   seed?: number;
   budget?: GenerationBudget;
@@ -237,7 +294,7 @@ export async function runTau2SuiteViaFleet(input: {
   onTaskCollected?: (fleetArm: FleetArmId, r: Tau2ConversationResult, task: BenchTask) => void | Promise<void>;
   onArmDone?: (arm: Tau2FleetArmResult) => void | Promise<void>;
 }): Promise<Tau2FleetRunResult> {
-  const arms = input.arms ?? [TAU2_BASELINE_OPUS_ARM, TAU2_HIVE_ARM, TAU2_SU_ARM];
+  const arms = input.arms ?? [TAU2_VANILLA_ARM, TAU2_MEMORY_ARM];
   const runId = input.runId ?? 'tau2-fleet';
   const seed = input.seed ?? 0;
   const budget = input.budget ?? {};
@@ -248,6 +305,7 @@ export async function runTau2SuiteViaFleet(input: {
       now: input.now,
       concurrencyCap: input.concurrencyCap,
       runConversation: input.runConversationFor?.(arm),
+      openSandbox: input.openSandboxFor?.(arm),
       fleetTimeoutMs: input.fleetTimeoutMs,
       sampleIntervalMs: input.sampleIntervalMs,
       onTaskCollected: (r, task) => input.onTaskCollected?.(arm, r, task),
@@ -320,10 +378,30 @@ export function tau2TaskResultsFromFleet(result: HiveBacklogResult): Tau2SuiteRe
 }
 
 /* -------------------------------------------------------------------------- */
+/* The real (default) sandbox seam — a per-run ephemeral hive for +memory       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The REAL sandbox-open seam: for the `+memory` arm open a {@link RunSandbox} (a per-run ephemeral hive whose
+ * `hiveSlug` is the shared memory namespace) via {@link openRunSandbox}, reusing the SAME `liveSandboxHiveOps`
+ * + `liveRunTool` the capabilities palette uses. Returns null for any non-memory arm. The driver disposes it
+ * after the backlog drains, so the memory pool ACCUMULATES across all tasks within the run (D-007), then is
+ * wiped (never leaks to production or between arms).
+ */
+export const realOpenSandbox: OpenTau2Sandbox = async ({ arm, runId }) => {
+  if (!tau2ArmHasMemory(arm)) return null;
+  const workspaceId = TAU2_WORKSPACE;
+  return openRunSandbox(
+    { workspaceId, hiveOps: liveSandboxHiveOps(workspaceId), runTool: liveRunTool() },
+    { suite: 'tau2-bench', arm: String(arm), runId },
+  );
+};
+
+/* -------------------------------------------------------------------------- */
 /* The real (default) conversation seam — the vendored Python harness          */
 /* -------------------------------------------------------------------------- */
 
-/** Where the vendored τ²-bench Python harness lives (driven via `uv run tau2 run` / `pc_run.sh`). */
+/** Where the vendored τ²-bench Python harness lives (driven via `pc_run.sh`). */
 const TAU2_HARNESS_DIR = join(homedir(), '.papercusp', 'bench-harnesses', 'tau2-bench');
 /** Default per-conversation wall-clock ceiling before the subprocess is hard-killed (ms). */
 const DEFAULT_TAU2_CONVERSATION_TIMEOUT_MS = 30 * 60_000;
@@ -350,19 +428,20 @@ function tau2TaskIdForTask(task: BenchTask): string | null {
 }
 
 /**
- * The REAL conversation seam: shell out to the vendored Python harness for ONE trial of `task` on `arm`'s
- * `--agent`, then read the per-trial reward + cost from `data/simulations/<save-to>/results.json`. Env is the
- * documented CC-framing + extended-thinking knobs (TAU2_PAPERCUSP_CC_FRAMING=1, PC_REASONING=high). Never throws:
- * a non-zero exit, a missing/garbled results file, or a hard-kill timeout all degrade to a non-scored
- * `{ reward: null, stopReason: 'infra-failed', error }` (downstream `isScoredStopReason` excludes it).
+ * The REAL conversation seam: shell out to the vendored Python harness for ONE trial of `task` on the
+ * `papercup_mem` agent, then read the per-trial reward + cost from `data/simulations/<save-to>/results.json`.
+ * The ARM selects capability via env: the `+memory` arm passes `TAU2_PC_MEMORY_HIVE` (+ operator base + token)
+ * so the Python agent enables its memory side-channel; `vanilla` passes no hive env so the SAME agent degrades
+ * to a stock LLMAgent. Env also carries the documented CC-framing + extended-thinking knobs
+ * (TAU2_PAPERCUSP_CC_FRAMING=1, PC_REASONING=high). Never throws: a non-zero exit, a missing/garbled results
+ * file, or a hard-kill timeout all degrade to a non-scored `{ reward: null, stopReason: 'infra-failed', error }`.
  *
  * NB this is the production path; the unit test injects a fake `runConversation`, so no subprocess/LLM runs there.
  */
-export const realRunTau2Conversation: RunTau2Conversation = async ({ task, arm }) => {
+export const realRunTau2Conversation: RunTau2Conversation = async ({ task, arm, memory }) => {
   const domain = tau2DomainForTask(task);
-  const agent = tau2AgentForArm(arm);
   const taskId = tau2TaskIdForTask(task);
-  const saveTo = `tau2-${arm}-${task.instanceId}-${Date.now()}`.replace(/[^A-Za-z0-9._-]/g, '_');
+  const saveTo = `tau2-${String(arm)}-${task.instanceId}-${Date.now()}`.replace(/[^A-Za-z0-9._-]/g, '_');
   const resultsPath = join(TAU2_HARNESS_DIR, 'data', 'simulations', saveTo, 'results.json');
 
   // Drive via pc_run.sh (NOT raw `uv run tau2 run`): pc_run.sh sets --agent-llm/--user-llm + the gateway
@@ -377,7 +456,7 @@ export const realRunTau2Conversation: RunTau2Conversation = async ({ task, arm }
     '--num-trials',
     '1',
     '--agent',
-    agent,
+    TAU2_AGENT,
     '--save-to',
     saveTo,
   ];
@@ -387,6 +466,14 @@ export const realRunTau2Conversation: RunTau2Conversation = async ({ task, arm }
     PC_REASONING: process.env.PC_REASONING ?? 'high',
     // PC_GW_PORT flows through from process.env (caller picks the gateway; pc_run.sh defaults to 8799).
   };
+  // The +memory arm threads the sandbox hive + operator base + token so the Python agent's memory tools fire
+  // (vanilla passes nothing → the agent's memory_enabled() is false → stock LLMAgent). Token falls back to
+  // ~/.papercusp/superuser-token inside the Python agent when not provided here.
+  if (memory) {
+    env.TAU2_PC_MEMORY_HIVE = memory.hiveSlug;
+    env.TAU2_PC_OPERATOR_BASE = memory.operatorBase;
+    if (memory.token) env.TAU2_PC_OPERATOR_TOKEN = memory.token;
+  }
 
   const code = await new Promise<number>((resolve) => {
     const child = spawn('bash', args, { cwd: TAU2_HARNESS_DIR, env });

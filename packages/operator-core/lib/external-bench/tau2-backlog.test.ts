@@ -1,23 +1,28 @@
 /**
- * τ²-bench (tau2-bench) fleet-arm backlog driver tests
- * (plan benchmark-arms-su-vs-queen-expansion-2026-06-16; the dual-arm unification).
+ * τ²-bench (tau2-bench) capability-INJECTION backlog driver tests
+ * (plan benchmark-capability-injection-redesign-2026-06-17; P-009).
  *
  * Focus: the driver implements the canonical HiveBacklogDriver contract — emits a HiveBacklogResult
  * (FleetTaskResult[] + ConcurrencyTimeline) with reward/score/resolved + per-side cost on armMeta; the
- * arm→tau2 `--agent` mapping (incl. the degenerate 'su' → llm_agent); never-throws on a failing conversation
- * (reward null, excluded); respects the concurrency cap; runs on all three arms via runTau2SuiteViaFleet; and
- * the fleet↔Tau2SuiteResult round-trip (avg_reward + pass^1). FULLY STUBBED runConversation — no Python
- * subprocess, no LLM, no spend.
+ * two capability-injection arms (vanilla vs +memory) — the SAME `papercup_mem` agent, the arm selecting
+ * whether a sandbox (the memory hive) is opened + threaded into each conversation; never-throws on a failing
+ * conversation (reward null, excluded); respects the concurrency cap; runs both arms via runTau2SuiteViaFleet;
+ * and the fleet↔Tau2SuiteResult round-trip (avg_reward + pass^1). FULLY STUBBED runConversation + openSandbox —
+ * no Python subprocess, no LLM, no real hive, no spend.
  */
 import { describe, expect, it } from 'vitest';
 import {
   makeTau2BacklogDriver,
   runTau2SuiteViaFleet,
-  tau2AgentForArm,
+  tau2ArmHasMemory,
   tau2TaskResultsFromFleet,
+  TAU2_AGENT,
+  type OpenTau2Sandbox,
   type RunTau2Conversation,
   type Tau2ConversationResult,
+  type Tau2MemoryContext,
 } from './tau2-backlog';
+import type { RunSandbox } from './capabilities';
 import type { BenchTask } from './types';
 
 const task = (n: number, domain = 'telecom'): BenchTask => ({
@@ -30,7 +35,8 @@ const task = (n: number, domain = 'telecom'): BenchTask => ({
 const BACKLOG = [0, 1, 2, 3].map((n) => task(n));
 
 /** A fake conversation seam keyed by instanceId → reward (1 solved, 0 failed); throws/infra-fails on opt-ins.
- *  Records the arm each task ran under so tests can assert arm switching. ZERO subprocess / LLM. */
+ *  Records the arm each task ran under + the memory context it saw so tests can assert arm/memory threading.
+ *  ZERO subprocess / LLM. */
 function fakeConversation(opts: {
   rewardByTask?: Record<string, number>;
   defaultReward?: number;
@@ -38,11 +44,13 @@ function fakeConversation(opts: {
   throwOn?: Set<string>;
   delayMs?: number;
   onLive?: (live: number) => void;
-} = {}): { run: RunTau2Conversation; sawArm: Map<string, string> } {
+} = {}): { run: RunTau2Conversation; sawArm: Map<string, string>; sawMemory: Map<string, Tau2MemoryContext | null> } {
   const sawArm = new Map<string, string>();
+  const sawMemory = new Map<string, Tau2MemoryContext | null>();
   let live = 0;
-  const run: RunTau2Conversation = async ({ task: t, arm }) => {
+  const run: RunTau2Conversation = async ({ task: t, arm, memory }) => {
     sawArm.set(t.instanceId, String(arm));
+    sawMemory.set(t.instanceId, memory);
     live += 1;
     opts.onLive?.(live);
     try {
@@ -57,26 +65,49 @@ function fakeConversation(opts: {
       live -= 1;
     }
   };
-  return { run, sawArm };
+  return { run, sawArm, sawMemory };
 }
 
-describe('tau2AgentForArm', () => {
-  it('maps baseline-opus → llm_agent, hive → papercup_hive, su → llm_agent (degenerate single-SUT)', () => {
-    expect(tau2AgentForArm('baseline-opus')).toBe('llm_agent');
-    expect(tau2AgentForArm('hive')).toBe('papercup_hive');
-    expect(tau2AgentForArm('su')).toBe('llm_agent');
-    // unknown arm defaults to the stock opus SUT
-    expect(tau2AgentForArm('something-else')).toBe('llm_agent');
+/** A fake sandbox-open seam: for the +memory arm returns a stub RunSandbox (records dispose); null otherwise.
+ *  No real hive boot, no MCP call. */
+function fakeSandbox(): { open: OpenTau2Sandbox; opened: string[]; disposed: string[] } {
+  const opened: string[] = [];
+  const disposed: string[] = [];
+  const open: OpenTau2Sandbox = async ({ arm, runId }) => {
+    if (!tau2ArmHasMemory(arm)) return null;
+    const hiveSlug = `xbench-cap-tau2-mem-${runId}`;
+    opened.push(hiveSlug);
+    const sandbox: RunSandbox = {
+      id: { suite: 'tau2-bench', arm: String(arm), runId },
+      hiveSlug,
+      memberSlug: `${hiveSlug}-m`,
+      workspaceId: 'papercusp-workspace',
+      runTool: async () => ({ ok: true, payload: {} }),
+      dispose: async () => {
+        disposed.push(hiveSlug);
+      },
+    };
+    return sandbox;
+  };
+  return { open, opened, disposed };
+}
+
+describe('tau2ArmHasMemory', () => {
+  it('only the +memory arm has memory; vanilla + unknown arms do not', () => {
+    expect(tau2ArmHasMemory('+memory')).toBe(true);
+    expect(tau2ArmHasMemory('vanilla')).toBe(false);
+    expect(tau2ArmHasMemory('something-else')).toBe(false);
   });
 });
 
 describe('makeTau2BacklogDriver', () => {
-  it('emits the canonical HiveBacklogResult with timeline + reward/score/resolved/cost + agent on armMeta', async () => {
+  it('emits the canonical HiveBacklogResult with timeline + reward/score/resolved/cost + agent/memory on armMeta', async () => {
     const { run } = fakeConversation({ rewardByTask: { 'tau2-task-0': 1, 'tau2-task-3': 0 } });
-    const driver = makeTau2BacklogDriver({ concurrencyCap: () => 3, runConversation: run, sampleIntervalMs: 1 });
-    const res = await driver.run({ arm: 'hive', suite: 'tau2-bench', runId: 'r1', seed: 0, backlog: BACKLOG, budget: {} });
+    const { open } = fakeSandbox();
+    const driver = makeTau2BacklogDriver({ concurrencyCap: () => 3, runConversation: run, openSandbox: open, sampleIntervalMs: 1 });
+    const res = await driver.run({ arm: '+memory', suite: 'tau2-bench', runId: 'r1', seed: 0, backlog: BACKLOG, budget: {} });
 
-    expect(res.arm).toBe('hive');
+    expect(res.arm).toBe('+memory');
     expect(res.suite).toBe('tau2-bench');
     expect(res.runError).toBeUndefined();
     expect(res.taskResults).toHaveLength(4);
@@ -85,7 +116,8 @@ describe('makeTau2BacklogDriver', () => {
 
     const t0 = res.taskResults.find((t) => t.attempt.instanceId === 'tau2-task-0')!;
     expect(t0.attempt.armMeta!.suite).toBe('tau2-bench');
-    expect(t0.attempt.armMeta!.agent).toBe('papercup_hive'); // hive arm → route-B agent
+    expect(t0.attempt.armMeta!.agent).toBe(TAU2_AGENT); // single vendored agent for both arms
+    expect(t0.attempt.armMeta!.memory).toBe(true); // +memory arm → capability attribution
     expect(t0.attempt.armMeta!.reward).toBe(1);
     expect(t0.attempt.armMeta!.score).toBe(1);
     expect(t0.attempt.armMeta!.resolved).toBe(true);
@@ -101,20 +133,56 @@ describe('makeTau2BacklogDriver', () => {
     expect(t3.attempt.armMeta!.resolved).toBe(false);
   });
 
-  it('switches the tau2 --agent on the run arm (baseline-opus → llm_agent)', async () => {
-    const { run, sawArm } = fakeConversation();
-    const res = await makeTau2BacklogDriver({ concurrencyCap: () => 2, runConversation: run, sampleIntervalMs: 1 }).run({
-      arm: 'baseline-opus', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
+  it('the +memory arm opens ONE sandbox for the run, threads its hive into every conversation, and disposes it after', async () => {
+    const { run, sawMemory } = fakeConversation();
+    const { open, opened, disposed } = fakeSandbox();
+    await makeTau2BacklogDriver({ concurrencyCap: () => 2, runConversation: run, openSandbox: open, sampleIntervalMs: 1 }).run({
+      arm: '+memory', suite: 'tau2-bench', runId: 'rm', seed: 0, backlog: BACKLOG, budget: {},
     });
-    // every task saw the run's arm, and the row carries the resolved --agent
-    for (const id of BACKLOG.map((t) => t.instanceId)) expect(sawArm.get(id)).toBe('baseline-opus');
-    expect(res.taskResults.every((t) => t.attempt.armMeta!.agent === 'llm_agent')).toBe(true);
+    // exactly one sandbox opened for the whole run, then disposed (memory accumulates across tasks → wiped at end)
+    expect(opened).toHaveLength(1);
+    expect(disposed).toEqual(opened);
+    // every task saw the SAME hive context (the shared, accumulating namespace)
+    const hives = new Set([...sawMemory.values()].map((m) => m?.hiveSlug));
+    expect(hives.size).toBe(1);
+    expect([...hives][0]).toBe(opened[0]);
+    for (const id of BACKLOG.map((t) => t.instanceId)) {
+      expect(sawMemory.get(id)?.hiveSlug).toBe(opened[0]);
+    }
+  });
+
+  it('the vanilla arm opens NO sandbox and threads null memory into every conversation (degrades to stock)', async () => {
+    const { run, sawArm, sawMemory } = fakeConversation();
+    const { open, opened } = fakeSandbox();
+    const res = await makeTau2BacklogDriver({ concurrencyCap: () => 2, runConversation: run, openSandbox: open, sampleIntervalMs: 1 }).run({
+      arm: 'vanilla', suite: 'tau2-bench', runId: 'rv', seed: 0, backlog: BACKLOG, budget: {},
+    });
+    expect(opened).toHaveLength(0); // vanilla → no sandbox
+    for (const id of BACKLOG.map((t) => t.instanceId)) {
+      expect(sawArm.get(id)).toBe('vanilla');
+      expect(sawMemory.get(id)).toBeNull();
+    }
+    // the row records the single agent + memory=false (attribution)
+    expect(res.taskResults.every((t) => t.attempt.armMeta!.agent === TAU2_AGENT)).toBe(true);
+    expect(res.taskResults.every((t) => t.attempt.armMeta!.memory === false)).toBe(true);
+  });
+
+  it('the +memory arm degrades (no memory) when the sandbox open fails — does NOT abort the run', async () => {
+    const { run, sawMemory } = fakeConversation();
+    const failingOpen: OpenTau2Sandbox = async () => {
+      throw new Error('hive boot boom');
+    };
+    const res = await makeTau2BacklogDriver({ concurrencyCap: () => 3, runConversation: run, openSandbox: failingOpen, sampleIntervalMs: 1 }).run({
+      arm: '+memory', suite: 'tau2-bench', runId: 'rfail', seed: 0, backlog: BACKLOG, budget: {},
+    });
+    expect(res.taskResults).toHaveLength(4); // run still completed
+    for (const id of BACKLOG.map((t) => t.instanceId)) expect(sawMemory.get(id)).toBeNull(); // ran without memory
   });
 
   it('never throws when a conversation throws — lands a non-scored (reward null) infra-failed row', async () => {
     const { run } = fakeConversation({ throwOn: new Set(['tau2-task-1']) });
     const res = await makeTau2BacklogDriver({ concurrencyCap: () => 3, runConversation: run, sampleIntervalMs: 1 }).run({
-      arm: 'su', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
+      arm: 'vanilla', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
     });
     expect(res.taskResults).toHaveLength(4);
     const failed = res.taskResults.find((t) => t.attempt.instanceId === 'tau2-task-1')!;
@@ -128,8 +196,9 @@ describe('makeTau2BacklogDriver', () => {
 
   it('honors an infra-failed conversation result (reward null) as a non-scored row', async () => {
     const { run } = fakeConversation({ infraFail: new Set(['tau2-task-2']) });
-    const res = await makeTau2BacklogDriver({ concurrencyCap: () => 3, runConversation: run, sampleIntervalMs: 1 }).run({
-      arm: 'hive', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
+    const { open } = fakeSandbox();
+    const res = await makeTau2BacklogDriver({ concurrencyCap: () => 3, runConversation: run, openSandbox: open, sampleIntervalMs: 1 }).run({
+      arm: '+memory', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
     });
     const failed = res.taskResults.find((t) => t.attempt.instanceId === 'tau2-task-2')!;
     expect(failed.attempt.stopReason).toBe('infra-failed');
@@ -140,7 +209,7 @@ describe('makeTau2BacklogDriver', () => {
     let maxLive = 0;
     const { run } = fakeConversation({ delayMs: 4, onLive: (l) => { maxLive = Math.max(maxLive, l); } });
     await makeTau2BacklogDriver({ concurrencyCap: () => 2, runConversation: run, sampleIntervalMs: 1 }).run({
-      arm: 'hive', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
+      arm: 'vanilla', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
     });
     expect(maxLive).toBeLessThanOrEqual(2);
     expect(maxLive).toBeGreaterThanOrEqual(2); // saturates the cap
@@ -152,10 +221,10 @@ describe('tau2TaskResultsFromFleet (round-trip)', () => {
     // 0,1 solved (reward 1); 3 unsolved (reward 0); 2 infra-failed (reward null, excluded).
     const { run } = fakeConversation({ rewardByTask: { 'tau2-task-0': 1, 'tau2-task-1': 1, 'tau2-task-3': 0 }, infraFail: new Set(['tau2-task-2']) });
     const res = await makeTau2BacklogDriver({ concurrencyCap: () => 3, runConversation: run, sampleIntervalMs: 1 }).run({
-      arm: 'hive', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
+      arm: 'vanilla', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
     });
     const suite = tau2TaskResultsFromFleet(res);
-    expect(suite.arm).toBe('hive');
+    expect(suite.arm).toBe('vanilla');
     expect(suite.tasks).toHaveLength(4);
     expect(suite.scoredCount).toBe(3); // task-2 (infra) excluded
     expect(suite.avgReward).toBeCloseTo((1 + 1 + 0) / 3); // mean reward over scored rows
@@ -168,7 +237,7 @@ describe('tau2TaskResultsFromFleet (round-trip)', () => {
   it('avg_reward / pass^1 are 0 when no rows scored', async () => {
     const { run } = fakeConversation({ infraFail: new Set(BACKLOG.map((t) => t.instanceId)) });
     const res = await makeTau2BacklogDriver({ concurrencyCap: () => 3, runConversation: run, sampleIntervalMs: 1 }).run({
-      arm: 'su', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
+      arm: 'vanilla', suite: 'tau2-bench', runId: 'r', seed: 0, backlog: BACKLOG, budget: {},
     });
     const suite = tau2TaskResultsFromFleet(res);
     expect(suite.scoredCount).toBe(0);
@@ -178,46 +247,49 @@ describe('tau2TaskResultsFromFleet (round-trip)', () => {
 });
 
 describe('runTau2SuiteViaFleet', () => {
-  it('runs all three arms through the shared fleet contract → one canonical record per arm, with arm-specific agents', async () => {
+  it('runs both arms through the shared fleet contract → one canonical record per arm, +memory lifts over vanilla', async () => {
     const banked: string[] = [];
-    // hive resolves more than baseline/su (which only solve task-0) → asymmetric rewards by arm.
+    // +memory resolves more than vanilla (which only solves task-0) → asymmetric rewards by arm (the lift).
     const out = await runTau2SuiteViaFleet({
       tasks: BACKLOG,
       concurrencyCap: () => 3,
       sampleIntervalMs: 1,
       runConversationFor: (arm) =>
-        fakeConversation(arm === 'hive' ? { defaultReward: 1 } : { rewardByTask: { 'tau2-task-0': 1 }, defaultReward: 0 }).run,
+        fakeConversation(tau2ArmHasMemory(arm) ? { defaultReward: 1 } : { rewardByTask: { 'tau2-task-0': 1 }, defaultReward: 0 }).run,
+      openSandboxFor: () => fakeSandbox().open,
       onTaskCollected: (arm) => { banked.push(arm); },
     });
 
-    expect(out.fleet.map((f) => f.fleetArm).sort()).toEqual(['baseline-opus', 'hive', 'su']);
+    expect(out.fleet.map((f) => f.fleetArm).sort()).toEqual(['+memory', 'vanilla']);
     for (const f of out.fleet) {
       expect(f.result.suite).toBe('tau2-bench');
       expect(f.result.taskResults).toHaveLength(4);
       expect(f.result.peakConcurrentBees).toBeGreaterThanOrEqual(1);
     }
-    expect(banked.length).toBe(12); // 4 tasks × 3 arms
+    expect(banked.length).toBe(8); // 4 tasks × 2 arms
 
-    // The hive arm resolves MORE than baseline/su (the headline read off the same fleet output).
-    const hive = tau2TaskResultsFromFleet(out.fleet.find((f) => f.fleetArm === 'hive')!.result);
-    const baseline = tau2TaskResultsFromFleet(out.fleet.find((f) => f.fleetArm === 'baseline-opus')!.result);
-    expect(hive.passHat1).toBeGreaterThan(baseline.passHat1);
-    // su is the degenerate stock-opus arm → identical agent to baseline-opus.
-    const su = out.fleet.find((f) => f.fleetArm === 'su')!.result;
-    expect(su.taskResults.every((t) => t.attempt.armMeta!.agent === 'llm_agent')).toBe(true);
-    const hiveRes = out.fleet.find((f) => f.fleetArm === 'hive')!.result;
-    expect(hiveRes.taskResults.every((t) => t.attempt.armMeta!.agent === 'papercup_hive')).toBe(true);
+    // The +memory arm resolves MORE than vanilla (the headline read off the same fleet output).
+    const mem = tau2TaskResultsFromFleet(out.fleet.find((f) => f.fleetArm === '+memory')!.result);
+    const vanilla = tau2TaskResultsFromFleet(out.fleet.find((f) => f.fleetArm === 'vanilla')!.result);
+    expect(mem.passHat1).toBeGreaterThan(vanilla.passHat1);
+    // both arms run the SAME single vendored agent; only the memory-attribution flag differs.
+    const memRes = out.fleet.find((f) => f.fleetArm === '+memory')!.result;
+    const vanRes = out.fleet.find((f) => f.fleetArm === 'vanilla')!.result;
+    expect(memRes.taskResults.every((t) => t.attempt.armMeta!.agent === TAU2_AGENT)).toBe(true);
+    expect(vanRes.taskResults.every((t) => t.attempt.armMeta!.agent === TAU2_AGENT)).toBe(true);
+    expect(memRes.taskResults.every((t) => t.attempt.armMeta!.memory === true)).toBe(true);
+    expect(vanRes.taskResults.every((t) => t.attempt.armMeta!.memory === false)).toBe(true);
   });
 
   it('honors an explicit single-arm list', async () => {
     const out = await runTau2SuiteViaFleet({
       tasks: BACKLOG,
-      arms: ['baseline-opus'],
+      arms: ['vanilla'],
       concurrencyCap: () => 2,
       sampleIntervalMs: 1,
       runConversationFor: () => fakeConversation().run,
     });
     expect(out.fleet).toHaveLength(1);
-    expect(out.fleet[0].fleetArm).toBe('baseline-opus');
+    expect(out.fleet[0].fleetArm).toBe('vanilla');
   });
 });
