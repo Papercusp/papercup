@@ -15,7 +15,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { setPlanSchedule } from './source';
-import { validateRrule } from '../../harness/routines/schedule-next';
+import { validateRrule, frequencyWarning } from '../../harness/routines/schedule-next';
 
 const scheduleSchema = z
   .object({
@@ -84,11 +84,17 @@ export default defineTool({
     });
 
     if (!ok) return errorOut('not_found', `plan '${args.slug}' not found`);
+    const warn = sched ? frequencyWarning(sched, new Date()) : null; // P-013: warn-on-frequent
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, slug: args.slug, scheduled: sched != null || args.scheduledAt != null }),
+          text: JSON.stringify({
+            ok: true,
+            slug: args.slug,
+            scheduled: sched != null || args.scheduledAt != null,
+            ...(warn ? { warnings: [warn] } : {}),
+          }),
         },
       ],
     };

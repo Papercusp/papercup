@@ -5,7 +5,7 @@
  * asserting exact wall-clock instants, so they pass regardless of the runner tz.
  */
 import { describe, it, expect } from 'vitest';
-import { computeNextFire, computeNextFireFromRrule, validateRrule, type ScheduleTrigger } from './schedule-next';
+import { computeNextFire, computeNextFireFromRrule, validateRrule, frequencyWarning, type ScheduleTrigger } from './schedule-next';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -116,5 +116,21 @@ describe('validateRrule', () => {
     const r = validateRrule('BYDAY=MO');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/FREQ/);
+  });
+});
+
+describe('frequencyWarning', () => {
+  const from = new Date('2026-06-16T00:00:00.000Z');
+  it('warns on a sub-15-min cadence', () => {
+    const w = frequencyWarning({ kind: 'cron', cron: '*/5 * * * *' }, from);
+    expect(w).toBeTruthy();
+    expect(w).toMatch(/frequently/);
+  });
+  it('does not warn on a daily cadence', () => {
+    expect(frequencyWarning({ kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00Z' }, from)).toBeNull();
+  });
+  it('does not warn for a one-shot / null', () => {
+    expect(frequencyWarning(null, from)).toBeNull();
+    expect(frequencyWarning({ kind: 'rrule', rrule: 'FREQ=DAILY;COUNT=1', dtstart: '2026-01-01T09:00:00Z' }, from)).toBeNull();
   });
 });

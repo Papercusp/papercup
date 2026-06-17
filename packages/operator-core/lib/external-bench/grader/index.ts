@@ -22,6 +22,11 @@ import {
   type SweBenchVerifiedGraderConfig,
   type SweBenchVerifiedGraderDeps,
 } from './swe-bench-verified';
+import {
+  makeTheAgentCompanyGrader,
+  type TheAgentCompanyGraderConfig,
+  type TheAgentCompanyGraderDeps,
+} from './the-agent-company';
 
 export { makeFakeGrader } from './fake';
 export { makeSweBenchProGrader, parseSweBenchProReport } from './swe-bench-pro';
@@ -38,6 +43,19 @@ export type {
   SweBenchVerifiedGraderDeps,
   SweBenchVerifiedReport,
 } from './swe-bench-verified';
+export {
+  makeTheAgentCompanyGrader,
+  parseTheAgentCompanyResult,
+  computeTacScore,
+  extractTacCheckpoints,
+} from './the-agent-company';
+export type {
+  TheAgentCompanyGraderConfig,
+  TheAgentCompanyGraderDeps,
+  TacResult,
+  TacCheckpoint,
+  TacScore,
+} from './the-agent-company';
 
 /** Live subprocess runner — `execFile` (no shell); resolves with streams + exit code, never rejects on exit≠0. */
 export const liveProcExec: ProcExec = (cmd, args, opts) =>
@@ -70,6 +88,7 @@ export interface GraderRegistryConfig {
   sweBenchPro?: SweBenchProGraderConfig;
   sweBenchVerified?: SweBenchVerifiedGraderConfig;
   sweLancer?: SweLancerGraderConfig;
+  theAgentCompany?: TheAgentCompanyGraderConfig;
 }
 
 /**
@@ -103,6 +122,14 @@ export function getOfficialGrader(
         exec: deps?.exec ?? liveProcExec,
         fs: deps?.fs ?? liveGraderFs,
       });
+    }
+    case 'the-agent-company': {
+      if (!cfg.theAgentCompany)
+        throw new Error('getOfficialGrader: the-agent-company requires a TheAgentCompanyGraderConfig');
+      return makeTheAgentCompanyGrader(cfg.theAgentCompany, {
+        exec: deps?.exec ?? liveProcExec,
+        fs: deps?.fs ?? liveGraderFs,
+      } satisfies TheAgentCompanyGraderDeps);
     }
     case 'terminal-bench':
     case 'harness-bench':

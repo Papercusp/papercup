@@ -51,6 +51,11 @@ export type BenchSuite =
   | 'harness-bench'
   | 'swe-evo'
   | 'swe-rebench'
+  // Non-coding / generic-professional + decomposable-deliverable suites that score a
+  // CONTINUOUS partial-credit value (TheAgentCompany checkpoints; PaperBench Replication
+  // Score) rather than a boolean diff pass — see TaskRunResult.score.
+  | 'the-agent-company'
+  | 'paperbench'
   | (string & {});
 
 /** Grader modality (P-001 §1): offline diff-batch vs online in-container. */
@@ -110,6 +115,16 @@ export interface TaskRunResult {
   /** M1 only (null for M2): per-test breakdown. */
   failToPass?: TestOutcome[] | null;
   passToPass?: TestOutcome[] | null;
+  /**
+   * Partial-credit / continuous score in [0,1] for suites that grade a weighted RUBRIC or
+   * CHECKPOINT set rather than a single diff pass — TheAgentCompany checkpoint partial-credit
+   * (S = 0.5·Σresult/Σtotal + 0.5·all-pass) and PaperBench Replication Score. NULL/absent for
+   * boolean-resolved suites (SWE-bench family), where `resolved` IS the score. When present,
+   * `resolved` is the all-or-nothing roll-up (score === 1 / every checkpoint passed); the
+   * meaningful headline for these suites is the MEAN of `score` over scored rows (aggregate.ts
+   * `meanScore`), not pass@1 (which would be the near-zero full-completion rate).
+   */
+  score?: number | null;
 
   // ── generation / cost slice (P-011 — this lib) ────────────────────────────
   /** SUMMED across every agent + turn (coordination overhead counted). */

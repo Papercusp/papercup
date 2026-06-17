@@ -117,6 +117,22 @@ export function verifiedPilotTaskSetPath(): string {
   );
 }
 
+/** The full TheAgentCompany 175-task manifest JSONL (env-overridable). */
+export function theAgentCompanyTaskSetPath(): string {
+  return (
+    process.env.PAPERCUSP_BENCH_TAC_JSONL ??
+    join(homedir(), '.papercusp', 'bench-results', 'the-agent-company', 'tasks.jsonl')
+  );
+}
+
+/** The TheAgentCompany pilot-subset JSONL (10–20 tasks spanning categories), env-overridable. */
+export function theAgentCompanyPilotTaskSetPath(): string {
+  return (
+    process.env.PAPERCUSP_BENCH_TAC_PILOT_JSONL ??
+    join(homedir(), '.papercusp', 'bench-results', 'the-agent-company', 'pilot.jsonl')
+  );
+}
+
 /** Local repo checkout root the engine clones tasks under (env-overridable). */
 function reposRoot(): string {
   return process.env.XBENCH_REPOS_ROOT ?? join(homedir(), '.papercusp', 'bench-repos');
@@ -278,6 +294,87 @@ export function isVerifiedTaskSet(taskSetId: string): boolean {
   return (VERIFIED_TASK_SET_IDS as readonly string[]).includes(taskSetId);
 }
 
+/* ------------------------------- TheAgentCompany ------------------------------- */
+
+/**
+ * One TheAgentCompany task row (plan benchmark-suite-theagentcompany-2026-06-17), as written to
+ * `~/.papercusp/bench-results/the-agent-company/{tasks,pilot}.jsonl` by the provisioning step (Phase 1,
+ * owner-gated). TheAgentCompany is a NON-coding suite: each task is a docker image (the simulated company +
+ * the task's decoupled evaluator); the FULL brief lives inside the container at `/instruction/task.md` (the
+ * arm reads it there), so `problem_statement` here is only a short title/descriptor. There is no git repo /
+ * base commit — the grader runs the in-image `eval.py`; the runner pulls `image`.
+ */
+interface TheAgentCompanyTaskRow {
+  /** Stable task name / id, e.g. 'sde-add-unit-test', 'hr-resume-screening'. */
+  task_name: string;
+  /** Professional category: sde | hr | pm | admin | ds | finance | qa | ml | research | other. */
+  category?: string;
+  /** The task's docker image ref (GHCR), e.g. 'ghcr.io/theagentcompany/<task>-image:1.0.0'. */
+  image?: string;
+  /** Short title/descriptor (the full brief is /instruction/task.md inside the container). */
+  problem_statement?: string;
+  /** Max points = Σtotal across the task's checkpoints, if the manifest records it (informational). */
+  max_points?: number;
+  /** Difficulty tier if the provisioning step computed one. */
+  tier?: 'easy' | 'medium' | 'hard';
+}
+
+/** Map one TheAgentCompany row → a BenchTask. The `in-container` family — no repo/baseCommit; the runner
+ *  pulls `image` + drives the services, the grader runs the in-image evaluator. `category` rides graderMeta
+ *  (and `tier`, when present, both first-class + in graderMeta) for per-category / per-tier reporting. */
+export function theAgentCompanyRowToBenchTask(r: TheAgentCompanyTaskRow): BenchTask {
+  return {
+    benchmark: 'the-agent-company',
+    instanceId: r.task_name,
+    problemStatement: r.problem_statement ?? `TheAgentCompany task ${r.task_name} (brief in /instruction/task.md)`,
+    ...(r.tier ? { tier: r.tier } : {}),
+    graderMeta: {
+      image: r.image ?? '',
+      category: r.category ?? 'other',
+      task_name: r.task_name,
+      ...(typeof r.max_points === 'number' ? { max_points: r.max_points } : {}),
+      ...(r.tier ? { tier: r.tier } : {}),
+    },
+  } satisfies BenchTask;
+}
+
+function readTheAgentCompanyJsonl(path: string): TheAgentCompanyTaskRow[] {
+  if (!existsSync(path)) {
+    throw new Error(
+      `TheAgentCompany task set not found at ${path} — provision the corpus (plan ` +
+        `benchmark-suite-theagentcompany-2026-06-17 Phase 1) before launching it (owner-gated).`,
+    );
+  }
+  return readFileSync(path, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as TheAgentCompanyTaskRow);
+}
+
+/** Load a TheAgentCompany task set → BenchTask[]. `the-agent-company-pilot` reads the pilot subset;
+ *  `the-agent-company` the full 175; `the-agent-company-custom` filters the full set to `taskIds`. */
+export function loadTheAgentCompanyTaskSet(taskSetId: string, taskIds?: string[]): BenchTask[] {
+  const path =
+    taskSetId === 'the-agent-company-pilot' ? theAgentCompanyPilotTaskSetPath() : theAgentCompanyTaskSetPath();
+  let tasks = readTheAgentCompanyJsonl(path).map(theAgentCompanyRowToBenchTask);
+  if (taskSetId === 'the-agent-company-custom') {
+    const want = new Set(taskIds ?? []);
+    if (want.size === 0) throw new Error('task set "the-agent-company-custom" requires a non-empty taskIds list');
+    tasks = tasks.filter((t) => want.has(t.instanceId));
+    if (tasks.length === 0) throw new Error('no tasks in the TheAgentCompany corpus matched the custom taskIds');
+  }
+  return tasks;
+}
+
+/** The TheAgentCompany task-set ids this loader serves. */
+export const TAC_TASK_SET_IDS = ['the-agent-company-pilot', 'the-agent-company', 'the-agent-company-custom'] as const;
+
+/** True iff `taskSetId` is a TheAgentCompany set (routes to {@link loadTheAgentCompanyTaskSet}). */
+export function isTheAgentCompanyTaskSet(taskSetId: string): boolean {
+  return (TAC_TASK_SET_IDS as readonly string[]).includes(taskSetId);
+}
+
 /** The tiers.json shape (instance_id → tier + difficulty diagnostics). */
 type TierEntry = { tier: 'easy' | 'medium' | 'hard'; score?: number };
 
@@ -305,6 +402,13 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
     // Wrap so a synchronous validation throw surfaces as a rejected promise (the Pro branch convention).
     try {
       return Promise.resolve(loadVerifiedTaskSet(taskSetId, taskIds));
+    } catch (e) {
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
+  if (isTheAgentCompanyTaskSet(taskSetId)) {
+    try {
+      return Promise.resolve(loadTheAgentCompanyTaskSet(taskSetId, taskIds));
     } catch (e) {
       return Promise.reject(e instanceof Error ? e : new Error(String(e)));
     }
@@ -374,6 +478,18 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
   } catch {
     verifiedPilotCount = null;
   }
+  let tacCount: number | null = null;
+  try {
+    tacCount = readTheAgentCompanyJsonl(theAgentCompanyTaskSetPath()).length;
+  } catch {
+    tacCount = null;
+  }
+  let tacPilotCount: number | null = null;
+  try {
+    tacPilotCount = readTheAgentCompanyJsonl(theAgentCompanyPilotTaskSetPath()).length;
+  } catch {
+    tacPilotCount = null;
+  }
   return [
     { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)', count: pilotCount },
     {
@@ -384,6 +500,12 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
     { id: 'swe-bench-pro-full', label: 'Full SWE-bench Pro (~731)', count: 731 },
     { id: 'verified-pilot-10', label: 'SWE-bench Verified pilot (10, representative)', count: verifiedPilotCount },
     { id: 'swe-bench-verified', label: 'Full SWE-bench Verified (500)', count: verifiedCount },
+    {
+      id: 'the-agent-company-pilot',
+      label: 'TheAgentCompany pilot (10–20, spans categories)',
+      count: tacPilotCount,
+    },
+    { id: 'the-agent-company', label: 'TheAgentCompany full (175 professional tasks)', count: tacCount },
     { id: 'custom', label: 'Custom instance ids', count: null },
   ];
 }

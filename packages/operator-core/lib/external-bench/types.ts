@@ -34,6 +34,12 @@ export type BenchmarkFamily =
   | 'terminal-bench'
   | 'harness-bench'
   | 'swe-lancer'
+  // Non-coding / generic-professional + decomposable-deliverable suites (plans
+  // benchmark-suite-theagentcompany-2026-06-17 / benchmark-suite-paperbench-2026-06-17).
+  // Both grade a CONTINUOUS partial-credit score, not a single diff pass/fail — see
+  // GradeResult.score + the the-agent-company / paperbench graders.
+  | 'the-agent-company'
+  | 'paperbench'
   | (string & {});
 
 /**
@@ -248,8 +254,17 @@ export interface GradeResult {
   instanceId: string;
   /** Seed/sample this graded — matches {@link ArmSubmission} `prefix` (one grade per (instance, seed)). */
   prefix: string;
-  /** The headline pass/fail. M1: all FAIL_TO_PASS pass AND all PASS_TO_PASS still pass; M2: verifier pass. */
+  /** The headline pass/fail. M1: all FAIL_TO_PASS pass AND all PASS_TO_PASS still pass; M2: verifier pass.
+   *  For partial-credit suites (the-agent-company / paperbench) this is the all-or-nothing roll-up
+   *  (every checkpoint passed / score === 1) — the meaningful headline there is {@link GradeResult.score}. */
   resolved: boolean;
+  /**
+   * Partial-credit / continuous score in [0,1] for rubric/checkpoint suites — TheAgentCompany
+   * (S = 0.5·Σresult/Σtotal + 0.5·all-pass) and PaperBench (Replication Score). Absent/null for the
+   * boolean-resolved SWE-bench family (where `resolved` is the score). Mirrors bench-metrics
+   * `TaskRunResult.score`; the suite headline is the mean of this over scored rows.
+   */
+  score?: number | null;
   /** Per-test (M1 / SWE-bench semantics); undefined for M2 (all-or-nothing). */
   failToPass?: TestOutcome[];
   passToPass?: TestOutcome[];

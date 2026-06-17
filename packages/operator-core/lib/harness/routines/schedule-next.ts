@@ -84,6 +84,28 @@ export function computeNextFire(cfg: ScheduleTrigger | null | undefined, from: D
 }
 
 /**
+ * A warning if a schedule fires very frequently — the doable half of "warn on
+ * expensive × frequent" (P-013 / D-012): frequency is knowable at author time,
+ * expense is not until runs accrue. Returns null for a one-shot / reasonable cadence.
+ * Measures the gap between the next two occurrences from `from`.
+ */
+export function frequencyWarning(
+  cfg: ScheduleTrigger | null | undefined,
+  from: Date,
+  minIntervalMs = 15 * 60_000,
+): string | null {
+  if (!cfg || (!cfg.rrule && !cfg.cron)) return null;
+  const f1 = computeNextFire(cfg, from);
+  if (!f1) return null;
+  const f2 = computeNextFire(cfg, f1);
+  if (!f2) return null; // no second occurrence ⇒ effectively one-shot / exhausted
+  const interval = f2.getTime() - f1.getTime();
+  if (interval >= minIntervalMs) return null;
+  const mins = Math.max(1, Math.round(interval / 60_000));
+  return `This schedule fires very frequently (~every ${mins} min); each fire spawns a run — watch cost (set schedule.costCapCents; global/per-plugin budget caps also apply).`;
+}
+
+/**
  * Validate an authored RRULE string before it's stored (P-014). Checks it parses
  * and carries a FREQ (the one required RRULE part); a parse error or a missing FREQ
  * is rejected with a reason. Does NOT require a future occurrence — an exhausted

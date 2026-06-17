@@ -180,7 +180,10 @@ const conflictedFiles = async (runGit: RunGit, repo: string): Promise<string[]> 
   return r.code === 0 ? r.stdout.trim().split('\n').filter(Boolean) : [];
 };
 
-function rejectedNonFastForward(r: { stdout: string; stderr: string }): boolean {
+// Exported for the non-FF detection table test (test-coverage-gap G21): a git
+// wording change must fail a test, not silently turn retriable rejections into
+// hard escalations.
+export function rejectedNonFastForward(r: { stdout: string; stderr: string }): boolean {
   return /non-fast-forward|\[rejected\]|fetch first|Updates were rejected/i.test(`${r.stdout}\n${r.stderr}`);
 }
 
@@ -227,7 +230,9 @@ type RepoSyncResult = { oversized: OversizedFile[]; contentErrors: ContentOffend
  * push forever (the exact EI-18 incident class). `-uall` lists every untracked file
  * individually so each oversized blob is seen + excluded.
  */
-async function findOversizedDirtyFiles(runGit: RunGit, repoPath: string, maxBytes: number): Promise<OversizedFile[]> {
+// Exported for the exact-boundary table test (test-coverage-gap G22): the size
+// comparison is strict `>` — a file AT maxBytes must be INCLUDED, not excluded.
+export async function findOversizedDirtyFiles(runGit: RunGit, repoPath: string, maxBytes: number): Promise<OversizedFile[]> {
   const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
   if (r.code !== 0) return [];
   const entries = r.stdout.split('\0').filter(Boolean);
