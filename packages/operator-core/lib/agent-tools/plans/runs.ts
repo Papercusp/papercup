@@ -16,7 +16,11 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+// F-A2 (workspace-data-isolation-leaks): plan_runs / plan_run_turns were pinned to
+// DEFAULT_WORKSPACE_ID, so scheduled-plan run history + transcripts were global across
+// workspaces. Stamp + scope to the ACTIVE workspace instead (migration 303 adds the
+// workspace_id column; RLS is a Phase-2 follow-up — see the migration header).
+import { activeWorkspaceId } from '../../workspace-registry';
 
 /**
  * A run's lifecycle status (P-016):
@@ -81,13 +85,13 @@ export interface InsertPlanRunArgs {
 export async function insertPlanRun(args: InsertPlanRunArgs): Promise<number> {
   const now = Date.now();
   const harnessSlug = args.harnessSlug?.trim() || 'papercup';
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<{ id: number }[]>`
       INSERT INTO harness_shared.plan_runs (
-        harness_slug, plan_slug, plan_content_hash, session_id, note,
+        workspace_id, harness_slug, plan_slug, plan_content_hash, session_id, note,
         launched_by, launched_at, status, title, updated_at
       ) VALUES (
-        ${harnessSlug}, ${args.planSlug}, ${args.planContentHash}, ${args.sessionId},
+        ${activeWorkspaceId()}, ${harnessSlug}, ${args.planSlug}, ${args.planContentHash}, ${args.sessionId},
         ${args.note}, ${args.launchedBy}, ${now}, ${args.status},
         ${args.title}, ${now}
       )
@@ -102,7 +106,7 @@ export async function setPlanRunStatus(
   runId: number,
   status: PlanRunStatus,
 ): Promise<void> {
-  await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  await withWorkspace(activeWorkspaceId(), async (tx) => {
     await tx`
       UPDATE harness_shared.plan_runs
       SET status = ${status}, updated_at = ${Date.now()}
@@ -143,7 +147,7 @@ export interface SweepPlanRunsResult {
 export async function sweepPlanRuns(
   now: number = Date.now(),
 ): Promise<SweepPlanRunsResult> {
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(activeWorkspaceId(), async (tx) => {
     const failedRows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_runs
       SET status = 'failed', updated_at = ${now}
@@ -235,7 +239,7 @@ export function mapPlanRunRow(r: RawPlanRunRow): PlanRunRow {
 /** Fetch a single run by id, or `null` when no such run exists. Used
  *  by resume (P-013) to recover a run's `session_id` + `plan_slug`. */
 export async function getPlanRun(runId: number): Promise<PlanRunRow | null> {
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<RawPlanRunRow[]>`
       SELECT id, plan_slug, plan_content_hash, session_id, note,
              launched_by, launched_at, status, title, updated_at,
@@ -269,7 +273,7 @@ export async function markPlanRunResumed(
   runId: number,
   planContentHash: string,
 ): Promise<{ claimed: boolean }> {
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_runs
       SET status = 'running',
@@ -359,7 +363,7 @@ export async function listPlanRuns(
   opts: { harnessSlug?: string } = {},
 ): Promise<PlanRunSummary[]> {
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<
       (RawPlanRunRow & {
         turn_count: number | string;
@@ -385,7 +389,7 @@ export async function listPlanRuns(
                 WHERE w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text
                   AND w.status IN ('failed', 'dropped', 'deprecated')) AS wi_failed
       FROM harness_shared.plan_runs r
-      WHERE r.harness_slug = ${harnessSlug} AND r.plan_slug = ${planSlug}
+      WHERE r.workspace_id = ${activeWorkspaceId()} AND r.harness_slug = ${harnessSlug} AND r.plan_slug = ${planSlug}
       ORDER BY r.launched_at DESC, r.id DESC
     `;
     return rows.map((r) => {
@@ -424,13 +428,14 @@ export async function appendPlanRunTurn(
   args: AppendPlanRunTurnArgs,
 ): Promise<number> {
   const now = Date.now();
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<{ seq: number }[]>`
       INSERT INTO harness_shared.plan_run_turns (
-        plan_run_id, seq, role, content,
+        workspace_id, plan_run_id, seq, role, content,
         tokens_in, tokens_out, cost_usd, created_at
       )
       SELECT
+        ${activeWorkspaceId()},
         ${args.planRunId},
         COALESCE(MAX(seq), 0) + 1,
         ${args.role}, ${args.content},
@@ -516,7 +521,7 @@ export async function readPlanRunTranscript(
       : 0;
   const query = opts.query?.trim() ? opts.query.trim() : null;
 
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(activeWorkspaceId(), async (tx) => {
     const runRows = await tx<{ id: number | string }[]>`
       SELECT id FROM harness_shared.plan_runs
       WHERE session_id = ${sessionId}
