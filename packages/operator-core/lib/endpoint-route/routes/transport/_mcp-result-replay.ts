@@ -96,6 +96,26 @@ export async function lookupStoredMcpResult(
   };
 }
 
+function serializeStoredMcpResult(result: StoredMcpResult): string {
+  const contentParts: string[] = [];
+  if (Array.isArray(result.content)) {
+    for (const item of result.content) {
+      if (item && typeof item === 'object') {
+        const typed = item as Record<string, unknown>;
+        if (typed.type === 'text' && typeof typed.text === 'string') {
+          contentParts.push(`{"type":"text","text":${typed.text}}`);
+        } else {
+          contentParts.push(JSON.stringify(item));
+        }
+      }
+    }
+  }
+  let json = `{"content":[${contentParts.join(',')}]}`;
+  if (result.isError) json += ',"isError":true';
+  if (result._meta) json += `,"_meta":${JSON.stringify(result._meta)}`;
+  return json;
+}
+
 export async function storeMcpResult(args: {
   ownerKey: string;
   idempotencyKey: string;
@@ -130,7 +150,10 @@ export async function storeMcpResult(args: {
   }
   // jsonb bound as text::jsonb — the operator's postgres-js client throws
   // on bare-object jsonb params (agent-insights/postgres-js-jsonb-binding).
-  const resultJson = JSON.stringify(args.result);
+  // Reuse already-serialized text in content items to avoid the 4th stringify
+  // (operator P1-4 / app-wide-load-traps F-A1-part2): build the JSON manually
+  // from components instead of calling JSON.stringify on the whole result.
+  const resultJson = serializeStoredMcpResult(args.result);
   // First write wins: if a concurrent same-key call already stored, keep
   // the original (both executed in that pathological case; the FIRST
   // stored result is the one every later replay sees — stable).
