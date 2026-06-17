@@ -56,6 +56,7 @@ import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive, Play, CheckCircle2, Download, RotateCcw, Trash2 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { StatusPill } from '../ui';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
 // the @papercusp/sync read and feeds these props; the components read no data.
 import {
@@ -1170,10 +1171,10 @@ function LaunchRunView() {
   );
 }
 
-function runStatusTone(status: string | undefined): 'good' | 'warn' | 'bad' | 'info' | 'neutral' {
+function runStatusTone(status: string | undefined): 'good' | 'warn' | 'bad' | 'neutral' {
   const normalized = (status ?? '').toLowerCase();
   if (['done', 'complete', 'completed', 'graded', 'succeeded', 'success'].includes(normalized)) return 'good';
-  if (['pending', 'running', 'grading'].includes(normalized)) return 'info';
+  if (['pending', 'running', 'grading'].includes(normalized)) return 'neutral';
   if (['cancelled', 'canceled', 'failed', 'error', 'errored', 'deleted'].includes(normalized)) return 'bad';
   if (['blocked', 'paused'].includes(normalized)) return 'warn';
   return 'neutral';
@@ -1181,7 +1182,7 @@ function runStatusTone(status: string | undefined): 'good' | 'warn' | 'bad' | 'i
 
 function RunStatusPill({ status }: { status: string | undefined }) {
   const label = status || 'unknown';
-  return <span className={`pc-runstatus pc-runstatus--${runStatusTone(status)}`}>{label}</span>;
+  return <StatusPill tone={runStatusTone(status)} label={label} />;
 }
 
 function fmtShortDate(value: string | undefined): string {

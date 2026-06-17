@@ -422,6 +422,22 @@ body.has-left-sidebar .pc-header {
   background: var(--bg-3, rgba(255, 255, 255, 0.075));
   color: var(--fg-dim, #b9d4e8);
 }
+.pclsb-pill--good {
+  background: color-mix(in oklab, var(--good, #4ade80), transparent 85%);
+  color: var(--good, #4ade80);
+}
+.pclsb-pill--warn {
+  background: color-mix(in oklab, var(--warn, #fbbf24), transparent 85%);
+  color: var(--warn, #fbbf24);
+}
+.pclsb-pill--bad {
+  background: color-mix(in oklab, var(--bad, #f87171), transparent 85%);
+  color: var(--bad, #f87171);
+}
+.pclsb-pill--neutral {
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  color: var(--fg-dim, #b9d4e8);
+}
 
 /* Per-hive start/stop control — mirrors the in-page AdvNowRunning "Start hive"
    / "Stop hive" actions (pc-advshell__action--start/stop): a bordered,
