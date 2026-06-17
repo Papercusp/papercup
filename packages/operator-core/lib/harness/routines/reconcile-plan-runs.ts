@@ -16,6 +16,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { disarmPlanSchedule } from './arm-plan-schedule';
 
 /** Work-item states that count as a finished execution. */
 const TERMINAL = ['passed', 'done', 'resolved', 'closed', 'deprecated', 'dropped', 'failed'];
@@ -70,4 +71,73 @@ export async function reconcileScheduledPlanRuns(
     settled.push({ runId: run.id, harnessSlug: run.harness_slug, planSlug: run.plan_slug, outcome });
   }
   return { reconciled: settled.length, settled };
+}
+
+/** Default consecutive-failure threshold before a schedule auto-pauses (D-011). */
+export const DEFAULT_FAILURE_STREAK = 3;
+
+/**
+ * Failure auto-pause (P-012, D-011): if a template's last `k` SETTLED scheduled runs all
+ * failed, disarm its schedule (stop a broken routine from firing forever). Only acts on a
+ * currently-armed template. The auto-paused state IS the notification — the schedule shows
+ * disarmed + the failed-run streak in the Runs tab / Calendar.
+ */
+export async function autoPauseOnFailureStreak(opts: {
+  sql?: Sql;
+  harnessSlug: string;
+  planSlug: string;
+  k?: number;
+}): Promise<{ paused: boolean; failures: number }> {
+  const db = opts.sql ?? getOrgPg().sql;
+  const k = opts.k ?? DEFAULT_FAILURE_STREAK;
+
+  const tpl = await db<Array<{ workspace_id: string; schedule_active: boolean }>>`
+    SELECT workspace_id, schedule_active FROM harness_shared.harness_plans
+     WHERE harness_slug = ${opts.harnessSlug} AND plan_slug = ${opts.planSlug}`;
+  if (!tpl[0] || !tpl[0].schedule_active) return { paused: false, failures: 0 };
+
+  const recent = await db<Array<{ outcome: string | null }>>`
+    SELECT outcome FROM harness_shared.plan_runs
+     WHERE harness_slug = ${opts.harnessSlug} AND plan_slug = ${opts.planSlug}
+       AND run_type = 'scheduled' AND status IN ('done', 'failed')
+     ORDER BY launched_at DESC
+     LIMIT ${k}`;
+  const failures = recent.filter((r) => r.outcome === 'failed').length;
+
+  if (recent.length >= k && failures === k) {
+    await disarmPlanSchedule({
+      sql: db,
+      workspaceId: tpl[0].workspace_id,
+      harnessSlug: opts.harnessSlug,
+      templateSlug: opts.planSlug,
+    });
+    console.warn(
+      `[plan-run] auto-paused schedule '${opts.planSlug}' (${opts.harnessSlug}) — ${k} consecutive failed runs`,
+    );
+    return { paused: true, failures };
+  }
+  return { paused: false, failures };
+}
+
+/**
+ * One settle+govern pass for the routine tick / plans:runs read: reconcile completions,
+ * then auto-pause any template whose freshly-failed run completes a failure streak (P-012).
+ */
+export async function reconcileAndGovern(
+  opts: { sql?: Sql; harnessSlug?: string; failureStreakK?: number } = {},
+): Promise<{ reconciled: number; paused: string[] }> {
+  const db = opts.sql ?? getOrgPg().sql;
+  const { settled } = await reconcileScheduledPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
+  const paused: string[] = [];
+  for (const s of settled) {
+    if (s.outcome !== 'failed') continue;
+    const r = await autoPauseOnFailureStreak({
+      sql: db,
+      harnessSlug: s.harnessSlug,
+      planSlug: s.planSlug,
+      k: opts.failureStreakK,
+    });
+    if (r.paused) paused.push(s.planSlug);
+  }
+  return { reconciled: settled.length, paused };
 }
