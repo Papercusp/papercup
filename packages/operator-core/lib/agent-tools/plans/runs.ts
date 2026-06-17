@@ -174,6 +174,15 @@ export interface PlanRunRow {
   status: PlanRunStatus;
   title: string | null;
   updatedAt: number;
+  // scheduled-recurring-plans-2026-06-16 (P-022) per-run enrichment.
+  runType: string; // 'interactive' | 'scheduled'
+  trigger: string | null; // 'scheduled' | 'manual' | 'event'
+  outcome: string | null; // success | partial | failed (scheduled runs)
+  finishedAt: number | null;
+  runSeq: number | null;
+  instancePlanSlug: string | null;
+  /** finishedAt − launchedAt (ms); null while running. */
+  durationMs: number | null;
 }
 
 /** Raw `plan_runs` row as PG returns it — snake_case, and `BIGSERIAL`
@@ -189,6 +198,13 @@ export interface RawPlanRunRow {
   status: PlanRunStatus;
   title: string | null;
   updated_at: number | string;
+  // P-022 enrichment (optional: getPlanRun's older callers may not select them).
+  run_type?: string | null;
+  trigger?: string | null;
+  outcome?: string | null;
+  finished_at?: number | string | null;
+  run_seq?: number | string | null;
+  instance_plan_slug?: string | null;
 }
 
 /** Map a raw `plan_runs` row to the camelCased `PlanRunRow`. Pure +
@@ -206,6 +222,13 @@ export function mapPlanRunRow(r: RawPlanRunRow): PlanRunRow {
     status: r.status,
     title: r.title,
     updatedAt: Number(r.updated_at),
+    runType: r.run_type ?? 'interactive',
+    trigger: r.trigger ?? null,
+    outcome: r.outcome ?? null,
+    finishedAt: r.finished_at != null ? Number(r.finished_at) : null,
+    runSeq: r.run_seq != null ? Number(r.run_seq) : null,
+    instancePlanSlug: r.instance_plan_slug ?? null,
+    durationMs: r.finished_at != null ? Number(r.finished_at) - Number(r.launched_at) : null,
   };
 }
 
@@ -215,7 +238,8 @@ export async function getPlanRun(runId: number): Promise<PlanRunRow | null> {
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<RawPlanRunRow[]>`
       SELECT id, plan_slug, plan_content_hash, session_id, note,
-             launched_by, launched_at, status, title, updated_at
+             launched_by, launched_at, status, title, updated_at,
+             run_type, trigger, outcome, finished_at, run_seq, instance_plan_slug
       FROM harness_shared.plan_runs
       WHERE id = ${runId}
     `;
@@ -252,6 +276,61 @@ export async function markPlanRunResumed(
 export interface PlanRunSummary extends PlanRunRow {
   /** Number of `plan_run_turns` rows for this run. */
   turnCount: number;
+  /** Work-item rollup for the run (scheduled runs): counts by bucket. */
+  workItems: { total: number; passed: number; failed: number; open: number };
+  /** Σ plan_run_turns cost (interactive runs). Scheduled-run EXECUTION cost lives in
+   *  the work-items, attributed separately (P-013). */
+  costUsd: number;
+}
+
+/** Aggregate over a template's runs — the Runs-tab summary header (P-023). */
+export interface PlanRunRollup {
+  total: number;
+  success: number;
+  partial: number;
+  failed: number;
+  running: number;
+  /** settled-success / settled-total (0 when nothing settled). */
+  successRate: number;
+  avgDurationMs: number | null;
+  medianDurationMs: number | null;
+  totalCostUsd: number;
+  lastOutcome: string | null;
+  /** Regression flags: a failed latest run, or a run >2× the median duration. */
+  regression: { lastFailed: boolean; slowRunIds: number[] };
+}
+
+/** Pure aggregate over a runs list (PURE — unit-testable, no DB). P-023. */
+export function computePlanRunRollup(runs: readonly PlanRunSummary[]): PlanRunRollup {
+  const success = runs.filter((r) => r.outcome === 'success').length;
+  const partial = runs.filter((r) => r.outcome === 'partial').length;
+  const failed = runs.filter((r) => r.outcome === 'failed').length;
+  const running = runs.filter((r) => r.status === 'running').length;
+  const settled = success + partial + failed;
+  const durations = runs.map((r) => r.durationMs).filter((d): d is number => d != null);
+  const avg = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : null;
+  const sorted = [...durations].sort((a, b) => a - b);
+  const median = sorted.length ? sorted[Math.floor(sorted.length / 2)]! : null;
+  const totalCostUsd = runs.reduce((a, r) => a + (r.costUsd || 0), 0);
+  // newest-first list → runs[0] is latest.
+  const lastOutcome = runs.find((r) => r.outcome != null)?.outcome ?? null;
+  const slowRunIds =
+    median != null
+      ? runs.filter((r) => r.durationMs != null && r.durationMs > 2 * median).map((r) => r.id)
+      : [];
+  return {
+    total: runs.length,
+    success,
+    partial,
+    failed,
+    running,
+    successRate: settled ? success / settled : 0,
+    avgDurationMs: avg,
+    medianDurationMs: median,
+    totalCostUsd,
+    lastOutcome,
+    regression: { lastFailed: runs[0]?.outcome === 'failed', slowRunIds },
+  };
 }
 
 /**
@@ -266,21 +345,43 @@ export async function listPlanRuns(
 ): Promise<PlanRunSummary[]> {
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-    const rows = await tx<(RawPlanRunRow & { turn_count: number | string })[]>`
+    const rows = await tx<
+      (RawPlanRunRow & {
+        turn_count: number | string;
+        cost_usd: number | string;
+        wi_total: number | string;
+        wi_passed: number | string;
+        wi_failed: number | string;
+      })[]
+    >`
       SELECT r.id, r.plan_slug, r.plan_content_hash, r.session_id, r.note,
              r.launched_by, r.launched_at, r.status, r.title, r.updated_at,
-             (
-               SELECT COUNT(*) FROM harness_shared.plan_run_turns t
-               WHERE t.plan_run_id = r.id
-             ) AS turn_count
+             r.run_type, r.trigger, r.outcome, r.finished_at, r.run_seq, r.instance_plan_slug,
+             (SELECT COUNT(*) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id) AS turn_count,
+             (SELECT COALESCE(SUM(t.cost_usd), 0) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id) AS cost_usd,
+             (SELECT COUNT(*) FROM harness_shared.harness_features_consolidated w
+                WHERE w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text) AS wi_total,
+             (SELECT COUNT(*) FROM harness_shared.harness_features_consolidated w
+                WHERE w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text
+                  AND w.status IN ('passed', 'done', 'resolved', 'closed')) AS wi_passed,
+             (SELECT COUNT(*) FROM harness_shared.harness_features_consolidated w
+                WHERE w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text
+                  AND w.status IN ('failed', 'dropped', 'deprecated')) AS wi_failed
       FROM harness_shared.plan_runs r
       WHERE r.harness_slug = ${harnessSlug} AND r.plan_slug = ${planSlug}
       ORDER BY r.launched_at DESC, r.id DESC
     `;
-    return rows.map((r) => ({
-      ...mapPlanRunRow(r),
-      turnCount: Number(r.turn_count),
-    }));
+    return rows.map((r) => {
+      const total = Number(r.wi_total);
+      const passed = Number(r.wi_passed);
+      const failed = Number(r.wi_failed);
+      return {
+        ...mapPlanRunRow(r),
+        turnCount: Number(r.turn_count),
+        costUsd: Number(r.cost_usd),
+        workItems: { total, passed, failed, open: Math.max(0, total - passed - failed) },
+      };
+    });
   });
 }
 
