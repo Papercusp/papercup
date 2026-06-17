@@ -1,9 +1,13 @@
 /**
  * P-001 (benchmark-arms-su-vs-queen-expansion-2026-06-16) — the su-independent backlog driver. The
- * pure, NO-spend slices over INJECTED fake ops: proves boot→spawn→collect→teardown ordering, the
- * concurrency pool respects the fleet cap (≤cap agents live at once), the live-concurrency timeline
- * (peak/avg/samples) is populated, and the never-throw generation-failure contract. NO real git,
- * NO PG, NO LLM, NO live spawns — every side effect is a fake. Mirrors hive-backlog-realqueen.test.ts.
+ * pure, NO-spend slices over INJECTED fake ops: proves the D-004-B lifecycle ordering
+ * (createHive → per task: prepare → enroll → place(FIFO) → collect → teardownMember+teardownTask →
+ * dissolveHive), the concurrency pool respects the fleet cap (≤cap agents live at once), the
+ * live-concurrency timeline (peak/avg/samples) is populated, and the never-throw contract on every
+ * per-task failure path (prepare/enroll/place/collect) + the top-level (concurrencyCap/createHive)
+ * path. NO real git, NO PG, NO LLM, NO live spawns — every side effect is a fake. The arm routes
+ * through a temporary shared hive (members spawn via FIFO through :3170) but emits NO Queen
+ * coordination trace — that independence is the whole point. Mirrors hive-backlog-realqueen.test.ts.
  */
 import { test, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
@@ -50,26 +54,36 @@ function telemetry(over: Partial<GenerationTelemetry> = {}): GenerationTelemetry
 
 interface FakeOpts {
   cap?: number;
-  /** Hook to observe/record live concurrency at each task's run start (for the pool-cap assertion). */
-  onRun?: (peakSeen: number) => void;
-  /** Tasks whose runOneTask should throw (infra failure path). */
-  throwOnRun?: Set<string>;
+  /** Hook to observe/record live concurrency at each task's collect start (for the pool-cap assertion). */
+  onCollect?: (peakSeen: number) => void;
+  /** Tasks whose collectTask should throw (spawn-collection failure path). */
+  throwOnCollect?: Set<string>;
   /** Tasks whose prepareTask should throw (clone failure path). */
   throwOnPrepare?: Set<string>;
+  /** Tasks whose enrollTask should throw (member-enroll failure path). */
+  throwOnEnroll?: Set<string>;
+  /** Tasks whose placeFifoBatch should throw (FIFO-spawn failure path — the real runtime regression). */
+  throwOnPlace?: Set<string>;
 }
 
 /**
- * A fake ops that records the call sequence + tracks live concurrency itself (so the test can assert
- * the pool never exceeds the cap). `runOneTask` resolves on the next microtask so multiple tasks are
- * genuinely in flight concurrently under Promise.all.
+ * A fake ops implementing the full D-004-B {@link SuIndependentBacklogOps} surface. Records the call
+ * sequence + tracks live concurrency itself (so the test can assert the pool never exceeds the cap).
+ * `collectTask` is the in-flight window the driver brackets with enter()/exit(); it resolves on the
+ * next microtask so multiple tasks are genuinely concurrent under Promise.all.
  */
 function fakeOps(record: string[], o: FakeOpts = {}): { ops: SuIndependentBacklogOps; maxLive: () => number } {
   const cap = o.cap ?? 3;
   let live = 0;
   let maxLive = 0;
+  const memberToId = new Map<string, string>(); // memberSlug → instanceId (place/teardownMember get only the slug)
   const ops: SuIndependentBacklogOps = {
     now: () => Date.now(),
     concurrencyCap: () => cap,
+    async createHive({ runId }) {
+      record.push(`createHive:${runId}`);
+      return { hiveSlug: `hive-${runId}` };
+    },
     async prepareTask({ task: t }) {
       record.push(`prepare:${t.instanceId}`);
       if (o.throwOnPrepare?.has(t.instanceId)) throw new Error(`clone boom ${t.instanceId}`);
@@ -83,16 +97,29 @@ function fakeOps(record: string[], o: FakeOpts = {}): { ops: SuIndependentBacklo
       };
       return enrolled;
     },
-    async runOneTask({ enrolled }): Promise<SuTaskOutcome> {
+    async enrollTask({ task: t }) {
+      record.push(`enroll:${t.instanceId}`);
+      if (o.throwOnEnroll?.has(t.instanceId)) throw new Error(`enroll boom ${t.instanceId}`);
+      const memberSlug = `m-${t.instanceId}`;
+      memberToId.set(memberSlug, t.instanceId);
+      return { memberSlug };
+    },
+    async placeFifoBatch({ memberSlug }) {
+      const id = memberToId.get(memberSlug) ?? memberSlug;
+      record.push(`place:${id}`);
+      if (o.throwOnPlace?.has(id)) throw new Error(`place boom ${id}`);
+      return { spawnId: `spawn-${memberSlug}` };
+    },
+    async collectTask({ enrolled }): Promise<SuTaskOutcome> {
       live += 1;
       if (live > maxLive) maxLive = live;
-      o.onRun?.(maxLive);
-      record.push(`run:${enrolled.task.instanceId}`);
+      o.onCollect?.(maxLive);
+      record.push(`collect:${enrolled.task.instanceId}`);
       // Yield so sibling pool workers actually overlap (genuine concurrency under Promise.all).
       await Promise.resolve();
       await Promise.resolve();
       try {
-        if (o.throwOnRun?.has(enrolled.task.instanceId)) throw new Error(`run boom ${enrolled.task.instanceId}`);
+        if (o.throwOnCollect?.has(enrolled.task.instanceId)) throw new Error(`collect boom ${enrolled.task.instanceId}`);
         return {
           diff: `diff --git a/${enrolled.task.instanceId} b`,
           telemetry: telemetry(),
@@ -102,8 +129,14 @@ function fakeOps(record: string[], o: FakeOpts = {}): { ops: SuIndependentBacklo
         live -= 1;
       }
     },
+    async teardownMember({ memberSlug }) {
+      record.push(`teardownMember:${memberToId.get(memberSlug) ?? memberSlug}`);
+    },
     async teardownTask({ enrolled }) {
       record.push(`teardown:${enrolled.task.instanceId}`);
+    },
+    async dissolveHive({ hiveSlug }) {
+      record.push(`dissolveHive:${hiveSlug}`);
     },
   };
   return { ops, maxLive: () => maxLive };
@@ -121,26 +154,30 @@ function req(over: Partial<HiveBacklogRunRequest> = {}): HiveBacklogRunRequest {
   };
 }
 
-// ── boot → spawn → collect → teardown ─────────────────────────────────────────
+// ── createHive → (per task) prepare → enroll → place → collect → teardown → dissolveHive ──────────
 
-test('su-independent: prepares, runs ONE independent agent per task, tears it down, NO coord trace', async () => {
+test('su-independent: prepares, enrolls, spawns + collects ONE independent agent per task, tears it down, NO coord trace', async () => {
   const record: string[] = [];
   const { ops } = fakeOps(record, { cap: 3 });
   const driver = suIndependentBacklogDriver(ops, { workspaceId: 'ws', sampleIntervalMs: 1 });
-  const res = await driver.run(req({ backlog: backlog(2) }));
+  const res = await driver.run(req({ runId: 'r-lifecycle', backlog: backlog(2) }));
 
   assert.equal(res.runError, undefined, 'a clean run carries no runError');
   assert.equal(res.taskResults.length, 2, 'one result per backlog task');
-  // Every task went prepare → run → teardown (ordering per task).
+  // The shared hive is created once up front and dissolved once at the end.
+  assert.ok(record.includes('createHive:r-lifecycle'), 'the temporary shared hive is created once');
+  assert.ok(record.includes('dissolveHive:hive-r-lifecycle'), 'the shared hive is dissolved once at the end');
+  // Every task went prepare → collect → teardown (the bracketed per-task ordering).
   for (const i of [0, 1]) {
     const id = `instance_smoke__task-${i}`;
     const prep = record.indexOf(`prepare:${id}`);
-    const run = record.indexOf(`run:${id}`);
+    const collect = record.indexOf(`collect:${id}`);
     const td = record.indexOf(`teardown:${id}`);
-    assert.ok(prep >= 0 && run > prep && td > run, `prepare→run→teardown ordering for ${id}`);
+    assert.ok(prep >= 0 && collect > prep && td > collect, `prepare→collect→teardown ordering for ${id}`);
+    assert.ok(record.includes(`teardownMember:${id}`), `the member enrollment is torn down for ${id}`);
   }
   // An independent-agent arm produces NO coordination trace — that is the whole point.
-  assert.equal(res.coordEvents.length, 0, 'su-independent emits NO coordEvents (no queen/hive)');
+  assert.equal(res.coordEvents.length, 0, 'su-independent emits NO coordEvents (no queen orchestration)');
   // The per-task result maps the spine-drive outcome through to a FleetTaskResult / ArmAttempt.
   const a = res.taskResults[0].attempt;
   assert.equal(a.arm, SU_INDEPENDENT_ARM);
@@ -200,11 +237,11 @@ test('su-independent: populates the concurrency timeline (samples + avg + peak)'
   assert.equal(tl!.peakConcurrent, res.peakConcurrentBees, 'timeline peak === peakConcurrentBees');
 });
 
-// ── the never-throw contract ───────────────────────────────────────────────────
+// ── the never-throw contract: per-task failure paths ───────────────────────────
 
-test('su-independent: a single task throwing in runOneTask does NOT abort the pool (never-throw, partials)', async () => {
+test('su-independent: a single task throwing in collectTask does NOT abort the pool (never-throw, partials)', async () => {
   const record: string[] = [];
-  const { ops } = fakeOps(record, { cap: 2, throwOnRun: new Set(['instance_smoke__task-1']) });
+  const { ops } = fakeOps(record, { cap: 2, throwOnCollect: new Set(['instance_smoke__task-1']) });
   const driver = suIndependentBacklogDriver(ops, { workspaceId: 'ws', sampleIntervalMs: 1 });
   const res = await driver.run(req({ backlog: backlog(3) }));
 
@@ -212,9 +249,10 @@ test('su-independent: a single task throwing in runOneTask does NOT abort the po
   assert.equal(res.taskResults.length, 3, 'every task still produces a result (the failure → an error row)');
   const failed = res.taskResults.find((r) => r.attempt.instanceId === 'instance_smoke__task-1')!;
   assert.equal(failed.attempt.stopReason, 'error', 'the throwing task → stopReason error');
-  assert.match(failed.attempt.generationError ?? '', /run boom/, 'the infra error is surfaced, not thrown');
+  assert.match(failed.attempt.generationError ?? '', /collect boom/, 'the infra error is surfaced, not thrown');
   assert.equal(failed.attempt.diff, '', 'a failed task carries no diff');
-  // The failed task's checkout is still torn down (the finally path).
+  // The failed task's member + checkout are still torn down (the finally path).
+  assert.ok(record.includes('teardownMember:instance_smoke__task-1'), 'a failed task still tears down its member');
   assert.ok(record.includes('teardown:instance_smoke__task-1'), 'a failed task still tears down its checkout');
   // The other tasks succeeded.
   const ok = res.taskResults.filter((r) => r.attempt.stopReason === 'done');
@@ -232,9 +270,31 @@ test('su-independent: a prepareTask (clone) failure for one task → an error ro
   const failed = res.taskResults.find((r) => r.attempt.instanceId === 'instance_smoke__task-0')!;
   assert.equal(failed.attempt.stopReason, 'error');
   assert.match(failed.attempt.generationError ?? '', /clone boom/);
-  // A prepare failure never ran/tore-down (it never got a checkout).
-  assert.ok(!record.includes('run:instance_smoke__task-0'), 'a clone failure never runs the agent');
+  // A prepare failure never enrolled/collected/tore-down (it never got a checkout or a member).
+  assert.ok(!record.includes('collect:instance_smoke__task-0'), 'a clone failure never collects the agent');
+  assert.ok(!record.includes('enroll:instance_smoke__task-0'), 'a clone failure never enrolls a member');
 });
+
+test('su-independent: a placeFifoBatch (FIFO-spawn) failure → an error row, member + checkout torn down, pool continues', async () => {
+  const record: string[] = [];
+  const { ops } = fakeOps(record, { cap: 2, throwOnPlace: new Set(['instance_smoke__task-0']) });
+  const driver = suIndependentBacklogDriver(ops, { workspaceId: 'ws', sampleIntervalMs: 1 });
+  const res = await driver.run(req({ backlog: backlog(2) }));
+
+  assert.equal(res.runError, undefined, 'a single place failure is NOT a whole-run failure');
+  assert.equal(res.taskResults.length, 2);
+  const failed = res.taskResults.find((r) => r.attempt.instanceId === 'instance_smoke__task-0')!;
+  assert.equal(failed.attempt.stopReason, 'error');
+  assert.match(failed.attempt.generationError ?? '', /place boom/, 'the place failure is surfaced as the generation error');
+  // A place failure never reaches collect, but DOES tear down the enrolled member + checkout.
+  assert.ok(!record.includes('collect:instance_smoke__task-0'), 'a place failure never collects the agent');
+  assert.ok(record.includes('teardownMember:instance_smoke__task-0'), 'a place failure tears down the member');
+  assert.ok(record.includes('teardown:instance_smoke__task-0'), 'a place failure tears down the checkout');
+  // The other task still ran to done.
+  assert.equal(res.taskResults.filter((r) => r.attempt.stopReason === 'done').length, 1);
+});
+
+// ── the never-throw contract: top-level failure path ───────────────────────────
 
 test('su-independent: concurrencyCap throwing → a clean runError result (never throws to the caller)', async () => {
   const record: string[] = [];
@@ -249,6 +309,11 @@ test('su-independent: concurrencyCap throwing → a clean runError result (never
   const res = await driver.run(req({ backlog: backlog(2) }));
   assert.match(res.runError ?? '', /cap read boom/, 'a top-level failure yields runError, not a throw');
   assert.ok(res.concurrencyTimeline, 'the timeline is still attached on the failure path');
+  // Even a top-level failure dissolves the hive it had already created (best-effort cleanup).
+  assert.ok(
+    record.some((r) => r.startsWith('dissolveHive:')),
+    'the shared hive is dissolved even on the top-level failure path',
+  );
 });
 
 // ── wall-clock timeout bounds the run ──────────────────────────────────────────
@@ -274,5 +339,5 @@ test('bindSuIndependentBacklogDriver wires runHiveBacklog (over injected fake op
   const res = await runHiveBacklog(req({ runId: 'r-bound', backlog: backlog(2) }));
   assert.equal(res.arm, SU_INDEPENDENT_ARM);
   assert.equal(res.taskResults.length, 2, 'the bound driver ran via runHiveBacklog');
-  assert.ok(record.some((r) => r.startsWith('run:')), 'the injected fake ops drove the run');
+  assert.ok(record.some((r) => r.startsWith('collect:')), 'the injected fake ops drove the run');
 });

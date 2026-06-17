@@ -51,9 +51,15 @@ export interface ScheduledPlanFireResult {
  */
 export async function runScheduledPlanFire(
   sql: Sql,
-  opts: { installSlug: string; workspaceId: string; templateSlug: string },
+  opts: {
+    installSlug: string;
+    workspaceId: string;
+    templateSlug: string;
+    /** What kind of fire this is (plan_runs.trigger). Default 'scheduled'; run-now passes 'manual'. */
+    trigger?: 'scheduled' | 'manual' | 'event';
+  },
 ): Promise<ScheduledPlanFireResult | null> {
-  const { installSlug, workspaceId, templateSlug } = opts;
+  const { installSlug, workspaceId, templateSlug, trigger = 'scheduled' } = opts;
 
   // 1. The template plan.
   const tpl = await sql<
@@ -115,7 +121,7 @@ export async function runScheduledPlanFire(
        status, title, updated_at, run_type, trigger, instance_plan_slug, run_seq)
     VALUES (${installSlug}, ${templateSlug}, ${template.content_hash}, ${'sched:' + instanceSlug},
             ${PLAN_RUN_LAUNCHER}, ${now}, 'running', ${template.title}, ${now},
-            'scheduled', 'scheduled', ${instanceSlug}, ${runSeq})
+            'scheduled', ${trigger}, ${instanceSlug}, ${runSeq})
     RETURNING id
   `;
   const runId = Number(runRows[0].id);

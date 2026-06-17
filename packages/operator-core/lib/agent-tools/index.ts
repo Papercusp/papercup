@@ -540,6 +540,9 @@ import './plans/transfer-owner';
 import './plans/set-initiative';
 // plan-level lifecycle flip (draft→ready approve / demote / ship / reject).
 import './plans/set-plan-status';
+// scheduled-recurring-plans-2026-06-16 P-014 — author/clear a plan's schedule + manual run-now.
+import './plans/set-schedule';
+import './plans/run-now';
 // Plan history/audit is the PG plan_revisions spine (plans:revisions /
 // plans:revision-diff) — the git-history surface was removed when plans went
 // PG-canonical (plans-pg-canonical-migration-2026-06-03 D-003).
