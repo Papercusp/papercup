@@ -763,6 +763,10 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
 
       return {
         diff,
+        // GAIA SWAP 3: thread the extracted answer.txt body onto the outcome → ArmAttempt.answer (the qa
+        // submission). Without this the extract ran (the answer was read) but was DROPPED here, so the
+        // launcher saw answerLen=0 / 'infra-failed' even on a perfectly-answered task (observed 2026-06-17).
+        ...(answer != null ? { answer } : {}),
         telemetry: {
           tokensIn: cost.tokensIn,
           tokensOut: cost.tokensOut,

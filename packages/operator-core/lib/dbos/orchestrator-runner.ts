@@ -349,7 +349,20 @@ export async function spawnInvokeOnce(
     if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
       const release = await gov.acquire({}, { maxWaitMs: governorMaxWaitMs() });
       if (!release) {
-        return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
+        // The per-account spawn-admission bucket is paused past maxWait. DON'T fail the spawn $0 when the
+        // inference gateway owns egress: it does per-account failover + internal retry, so the bee reaches a
+        // HEALTHY account anyway (the owner's "route around a paused account, don't fail with headroom" — the
+        // spawn-side per-account gate must not veto what the gateway can serve; otherwise a single account's
+        // pause kills spawns with five idle accounts). The gateway's admission queue + pacing still bound
+        // egress. Only with NO gateway egress (no failover safety net) is the hard $0 fail correct.
+        const gatewayEgress = !!(extraEnv.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL);
+        if (!gatewayEgress) {
+          return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
+        }
+        console.warn(`[dbos-invoke] role=${role} spawn-governor bucket paced past maxWait → proceeding via inference-gateway failover`);
+        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);
+        feedGovernor(inner);
+        return inner;
       }
       try {
         const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);

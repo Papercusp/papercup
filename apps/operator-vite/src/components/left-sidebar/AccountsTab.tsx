@@ -132,13 +132,11 @@ function UsageMeter({ label, value, reset }: { label: string; value?: number; re
   const tone = usageTone(value);
   return (
     <div className={`pclsb-acct__meter pclsb-acct__meter--${tone}`} aria-label={`${label} usage ${pct(value)}${reset}`}>
-      <div className="pclsb-acct__meterhead">
-        <span>{label}</span>
-        <strong>{pct(value)}</strong>
-      </div>
+      <span className="pclsb-acct__meterlabel">{label}</span>
       <div className="pclsb-acct__bar" aria-hidden>
         <span style={{ width: `${width}%` }} />
       </div>
+      <strong>{pct(value)}</strong>
       {reset ? <span className="pclsb-acct__meterreset">{reset.replace(/^ · /, '')}</span> : null}
     </div>
   );
@@ -192,36 +190,23 @@ export default function AccountsTab({ active }: { active: boolean }) {
     <div className="pclsb-acct">
       <style>{ACCT_CSS}</style>
       <header className="pclsb-acct__hero">
-        <div>
-          <span className="pclsb-acct__eyebrow">spawn account pool</span>
-          <p>Steer which Max accounts the fleet may use right now.</p>
+        <div className="pclsb-acct__herotitle">
+          <KeyRound size={14} aria-hidden />
+          <div>
+            <span className="pclsb-acct__eyebrow">spawn account pool</span>
+            <p>Session steering for fleet account use.</p>
+          </div>
         </div>
-        <KeyRound size={16} aria-hidden />
+        <div className="pclsb-acct__summary" aria-label="Account pool summary">
+          <span><b>{poolSummary.available}/{poolSummary.total}</b> avail</span>
+          <span><b>{poolSummary.paused}</b> paused</span>
+          <span><b>{poolSummary.limited}</b> limited</span>
+          <span><b>{poolSummary.forced || poolSummary.excluded ? `${poolSummary.forced}/${poolSummary.excluded}` : 'off'}</b> steer</span>
+        </div>
       </header>
 
-      <div className="pclsb-acct__summary" aria-label="Account pool summary">
-        <div>
-          <span>available</span>
-          <strong>{poolSummary.available}/{poolSummary.total}</strong>
-        </div>
-        <div>
-          <span>paused</span>
-          <strong>{poolSummary.paused}</strong>
-        </div>
-        <div>
-          <span>limited</span>
-          <strong>{poolSummary.limited}</strong>
-        </div>
-        <div>
-          <span>steered</span>
-          <strong>{poolSummary.forced || poolSummary.excluded ? `${poolSummary.forced}/${poolSummary.excluded}` : 'off'}</strong>
-        </div>
-      </div>
-
       <div className="pclsb-acct__rule" role="note">
-        <span><strong>Force</strong> allow-lists accounts.</span>
-        <span><strong>Excl</strong> skips accounts.</span>
-        <span>No selection uses the whole pool.</span>
+        <strong>Force</strong> allow-lists · <strong>Excl</strong> skips · none uses the whole pool
       </div>
 
       {overrideActive && (
@@ -263,6 +248,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
               : a.available
                 ? 'Available'
                 : 'Unavailable';
+            const statusShort = paused ? `pause ${fmtCountdown(a.rate.pausedUntil - now)}` : a.available ? 'avail' : 'off';
             const reset5h =
               a.rate.windowResetAt && a.rate.windowResetAt > now ? ` · resets ${fmtCountdown(a.rate.windowResetAt - now)}` : '';
             const reset7d =
@@ -282,7 +268,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
                     </span>
                     <span className="pclsb-acct__id">{a.id}</span>
                   </button>
-                  <span className={`pclsb-acct__statuspill pclsb-acct__statuspill--${statusKind}`}>{statusLabel}</span>
+                  <span className={`pclsb-acct__statuspill pclsb-acct__statuspill--${statusKind}`} aria-label={statusLabel}>{statusShort}</span>
                   <div className="pclsb-acct__btns">
                     <button
                       type="button"
@@ -319,6 +305,13 @@ export default function AccountsTab({ active }: { active: boolean }) {
                 <div className="pclsb-acct__usage">
                   <UsageMeter label="5h" value={a.rate.utilization} reset={reset5h} />
                   <UsageMeter label="7d" value={a.rate.utilization7d} reset={reset7d} />
+                </div>
+
+                <div className="pclsb-acct__facts">
+                  <span>{maskRef(a.credentialRef)}</span>
+                  <span>{a.boundTo.length ? `${a.boundTo.length} bound` : 'unbound'}</span>
+                  <span>{a.liveBuckets.length ? `${a.liveBuckets.length} bucket${a.liveBuckets.length === 1 ? '' : 's'}` : 'no buckets'}</span>
+                  {a.egress && (a.egress.proxyUrl || a.egress.localAddress) ? <span>egress</span> : null}
                   {paused && <span className="pclsb-acct__chip is-excl">paused</span>}
                   {isForced && <span className="pclsb-acct__chip is-force">forced</span>}
                   {isExcluded && <span className="pclsb-acct__chip is-excl">excluded</span>}
