@@ -90,14 +90,18 @@ afterEach(() => {
 });
 
 describe('AccountsTab', () => {
-  it('renders the pool summary, account status, usage meters, and steering actions', () => {
+  it('renders the compact pool summary, row facts, usage meters, and steering actions', () => {
     render(<AccountsTab active />);
 
     expect(screen.getByText('spawn account pool')).toBeTruthy();
-    expect(screen.getByText('available')).toBeTruthy();
+    expect(screen.getAllByText('avail').length).toBeGreaterThan(0);
     expect(screen.getByText('1/1')).toBeTruthy();
     expect(screen.getByText('Opus Primary')).toBeTruthy();
-    expect(screen.getByText('Available')).toBeTruthy();
+    expect(screen.getByLabelText('Available')).toBeTruthy();
+    expect(screen.getByText('file:…/account.json')).toBeTruthy();
+    expect(screen.getByText('1 bound')).toBeTruthy();
+    expect(screen.getByText('1 bucket')).toBeTruthy();
+    expect(screen.getByText('egress')).toBeTruthy();
     expect(screen.getByLabelText(/5h usage ~23%/)).toBeTruthy();
     expect(screen.getByLabelText(/7d usage ~61%/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Force only acct-opus-1' })).toBeTruthy();

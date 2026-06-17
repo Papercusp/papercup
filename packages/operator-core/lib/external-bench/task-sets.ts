@@ -33,6 +33,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { BenchTask } from './types';
 import { gaiaTaskToBenchTask, loadGaiaValidation } from './gaia/dataset';
+import { isSwarmBenchTaskSet, swarmbenchScenarios, swarmScenarioToBenchTask } from './swarmbench-backlog';
 
 /** A SWE-bench Pro task row as persisted in the pilot JSONL. */
 interface TaskRow {
@@ -572,6 +573,17 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
       return Promise.reject(e instanceof Error ? e : new Error(String(e)));
     }
   }
+  if (isSwarmBenchTaskSet(taskSetId)) {
+    try {
+      // Programmatic scenarios (task × grid × agents × seed × view) — not a download. The pilot set is cheap;
+      // the full 'swarmbench' set is the expensive sweep (D-004), gated by its explicit id.
+      let scenarios = swarmbenchScenarios(taskSetId);
+      if (taskIds?.length) scenarios = scenarios.filter((s) => taskIds.includes(swarmScenarioToBenchTask(s).instanceId));
+      return Promise.resolve(scenarios.map(swarmScenarioToBenchTask));
+    } catch (e) {
+      return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
   if (taskSetId === 'swe-bench-pro-full') {
     return Promise.reject(
       new Error(
@@ -691,6 +703,8 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
     { id: 'metr-hcast-pilot', label: 'METR HCAST pilot (cheapest horizon-eligible)', count: metrPilotCount },
     { id: 'metr-hcast-horizon', label: 'METR HCAST horizon set (baseline-carrying)', count: metrHorizonCount },
     { id: 'metr-hcast', label: 'METR HCAST full (~31 open Task-Standard tasks)', count: metrCount },
+    { id: 'swarmbench-pilot', label: 'SwarmBench pilot (Pursuit+Sync, small grid, 3 seeds)', count: swarmbenchScenarios('swarmbench-pilot').length },
+    { id: 'swarmbench', label: 'SwarmBench full (5 tasks × 10 agents × 100 rounds — EXPENSIVE)', count: swarmbenchScenarios('swarmbench').length },
     { id: 'custom', label: 'Custom instance ids', count: null },
   ];
 }

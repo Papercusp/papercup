@@ -46,6 +46,34 @@ export function swarmScenarioToBenchTask(s: SwarmScenario): BenchTask {
   } satisfies BenchTask;
 }
 
+/** The five foundational SwarmBench MAS tasks (deterministic sim scores). */
+export const SWARMBENCH_TASKS = ['Pursuit', 'Synchronization', 'Foraging', 'Flocking', 'Transport'] as const;
+
+/** SwarmBench task-set ids. `swarmbench-pilot` is small/cheap; `swarmbench` is the EXPENSIVE full sweep (D-004). */
+export const SWARMBENCH_TASK_SET_IDS = ['swarmbench-pilot', 'swarmbench', 'swarmbench-custom'] as const;
+
+export function isSwarmBenchTaskSet(taskSetId: string): boolean {
+  return (SWARMBENCH_TASK_SET_IDS as readonly string[]).includes(taskSetId);
+}
+
+/**
+ * Generate the programmatic scenarios for a task-set id (SwarmBench scenarios are NOT downloaded — they are
+ * task × grid × num_agents × seed × view_size tuples). `swarmbench-pilot` = a small/cheap subset for the
+ * topology A/B; `swarmbench` = the full 5-task sweep at the paper's defaults (10 agents × 100 rounds) — the
+ * most expensive suite, gated behind this explicit id (D-004). Override seeds via PAPERCUSP_SWARMBENCH_SEEDS.
+ */
+export function swarmbenchScenarios(taskSetId: string): SwarmScenario[] {
+  const seeds = (process.env.PAPERCUSP_SWARMBENCH_SEEDS ?? '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n));
+  if (taskSetId === 'swarmbench-pilot') {
+    const tasks = ['Pursuit', 'Synchronization'];
+    const useSeeds = seeds.length ? seeds : [42, 7, 123];
+    return tasks.flatMap((task) => useSeeds.map((seed) => ({ task, numAgents: 4, width: 8, height: 8, seed, viewSize: 5, maxRound: 15 })));
+  }
+  // 'swarmbench' (+ 'swarmbench-custom' falls through to full defaults) — EXPENSIVE: 5 tasks × 100 rounds × 10 agents.
+  const useSeeds = seeds.length ? seeds : [27, 42, 123];
+  return SWARMBENCH_TASKS.flatMap((task) => useSeeds.map((seed) => ({ task, numAgents: 10, width: 10, height: 10, seed, viewSize: 5, maxRound: 100 })));
+}
+
 /** Read a SwarmScenario back out of a BenchTask's graderMeta. */
 export function scenarioFromBenchTask(task: BenchTask): SwarmScenario {
   const g = task.graderMeta ?? {};
