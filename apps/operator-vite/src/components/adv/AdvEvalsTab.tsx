@@ -53,7 +53,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { useSyncMutate, useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
-import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive, Play } from 'lucide-react';
+import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive, Play, CheckCircle2, Download, RotateCcw, Trash2 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 import { Checkbox } from '@/app/harness/Checkbox';
 // Shared, purely-presentational benchmark viz (P-021 / BRIEF 10). This tab owns
@@ -473,7 +473,7 @@ export default function AdvEvalsTab() {
         <div className="pc-evals__controlsright">
           {/* Suite picker — shared across views; hidden until suites exist. */}
           {suites.length > 0 ? (
-            <label className="pc-evals__suitepick" title="The benchmark family to view (SWE-bench Pro, Terminal-Bench, …).">
+            <label className="pc-evals__suitepick">
               <Gauge size={12} aria-hidden />
               <span className="pc-evals__suitelabel">suite</span>
               <Select
@@ -541,7 +541,7 @@ function ArmLegend() {
   return (
     <div className="pc-evals__legend" aria-label="Benchmark arms">
       {ARMS.map((arm) => (
-        <span key={arm} className="pc-evals__legenditem" title={ARM_HINT[arm]}>
+        <span key={arm} className="pc-evals__legenditem" aria-label={`${ARM_LABEL[arm]}: ${ARM_HINT[arm]}`}>
           <span className="pc-evals__legenddot" style={{ background: ARM_COLOR[arm] }} aria-hidden />
           {ARM_LABEL[arm]}
         </span>
@@ -645,7 +645,7 @@ interface FleetViewProps {
  *  the shared eval-viz `arms.ts` so the tile matches the chart series. */
 function FleetStat({ arm, value, sub, hint }: { arm: string; value: string; sub?: string; hint?: string }) {
   return (
-    <div className="pc-evals__stat" title={hint} style={{ ['--arm-accent' as string]: armColor(arm) }}>
+    <div className="pc-evals__stat" aria-label={hint} style={{ ['--arm-accent' as string]: armColor(arm) }}>
       <span className="pc-evals__statlabel">
         <span className="pc-evals__statdot" aria-hidden />
         {armLabel(arm)}
@@ -1035,8 +1035,7 @@ function LaunchRunView() {
   return (
     <section className="pc-evals__section">
       <p className="pc-evals__lede">
-        Launch a real SWE-bench Pro run through the managed bench engine. Spend-safe: the run dissolves its
-        hive on completion/cancel, and a crashed host’s run is reaped on restart (no orphan opus re-spin).
+        Launch a managed SWE-bench Pro run with the selected arm, task set, and spend ceiling.
       </p>
 
       {activeRun ? (
@@ -1046,140 +1045,151 @@ function LaunchRunView() {
         </div>
       ) : null}
 
-      <div className="pc-launch__grid" style={{ display: 'grid', gap: 14, maxWidth: 560 }}>
-        <label className="pc-evals__suitepick">
-          <span className="pc-evals__suitelabel">arm</span>
-          <Select
-            ariaLabel="Benchmark arm"
-            value={arm}
-            onChange={(v: string) => void setArm(v as (typeof LAUNCH_ARMS)[number])}
-            options={LAUNCH_ARMS.map((a) => ({ value: a, label: armLabel(a) }))}
-          />
-        </label>
+      <div className="pc-launch__layout">
+        <div className="pc-launch__panel">
+          <div className="pc-evals__sectionhead"><h2>Run setup</h2></div>
+          <div className="pc-launch__fields">
+            <label className="pc-evals__suitepick">
+              <span className="pc-evals__suitelabel">arm</span>
+              <Select
+                ariaLabel="Benchmark arm"
+                value={arm}
+                onChange={(v: string) => void setArm(v as (typeof LAUNCH_ARMS)[number])}
+                options={LAUNCH_ARMS.map((a) => ({ value: a, label: armLabel(a) }))}
+              />
+            </label>
 
-        <label className="pc-evals__suitepick">
-          <span className="pc-evals__suitelabel">task set</span>
-          <Select
-            ariaLabel="Task set"
-            value={taskSet}
-            onChange={(v: string) => void setTaskSet(v as (typeof LAUNCH_TASK_SETS)[number]['id'])}
-            options={LAUNCH_TASK_SETS.map((t) => ({ value: t.id, label: t.label }))}
-          />
-        </label>
+            <label className="pc-evals__suitepick">
+              <span className="pc-evals__suitelabel">task set</span>
+              <Select
+                ariaLabel="Task set"
+                value={taskSet}
+                onChange={(v: string) => void setTaskSet(v as (typeof LAUNCH_TASK_SETS)[number]['id'])}
+                options={LAUNCH_TASK_SETS.map((t) => ({ value: t.id, label: t.label }))}
+              />
+            </label>
 
-        {taskSet === 'custom' ? (
-          <label className="pc-evals__suitepick" style={{ alignItems: 'flex-start' }}>
-            <span className="pc-evals__suitelabel">ids</span>
-            <input
-              aria-label="Custom instance ids (comma-separated)"
-              value={customIds}
-              onChange={(e) => setCustomIds(e.target.value)}
-              placeholder="instance_a, instance_b"
-              style={{ ...fieldStyle, width: 360 }}
-            />
-          </label>
-        ) : null}
+            {taskSet === 'custom' ? (
+              <label className="pc-evals__suitepick pc-launch__wide">
+                <span className="pc-evals__suitelabel">ids</span>
+                <input
+                  aria-label="Custom instance ids (comma-separated)"
+                  value={customIds}
+                  onChange={(e) => setCustomIds(e.target.value)}
+                  placeholder="instance_a, instance_b"
+                  style={{ ...fieldStyle, width: '100%' }}
+                />
+              </label>
+            ) : null}
 
-        <label className="pc-evals__suitepick">
-          <span className="pc-evals__suitelabel">model</span>
-          <span className="pc-evals__suitelabel" style={{ color: 'var(--fg)' }}>
-            opus <em style={{ color: 'var(--fg-dim)' }}>(fail-closed — never downgraded)</em>
-          </span>
-        </label>
+            <div className="pc-launch__model" aria-label="Model policy">
+              <span className="pc-evals__suitelabel">model</span>
+              <strong>opus</strong>
+              <span>fail-closed</span>
+            </div>
 
-        <label className="pc-evals__suitepick">
-          <span className="pc-evals__suitelabel">fleet cap</span>
-          <input
-            aria-label="Fleet concurrency cap"
-            type="number"
-            min={1}
-            value={capRaw ?? '5'}
-            onChange={(e) => void setCap(e.target.value)}
-            style={fieldStyle}
-          />
-        </label>
+            <label className="pc-evals__suitepick">
+              <span className="pc-evals__suitelabel">fleet cap</span>
+              <input
+                aria-label="Fleet concurrency cap"
+                type="number"
+                min={1}
+                value={capRaw ?? '5'}
+                onChange={(e) => void setCap(e.target.value)}
+                style={fieldStyle}
+              />
+            </label>
 
-        <label className="pc-evals__suitepick">
-          <span className="pc-evals__suitelabel">$/task cap</span>
-          <input
-            aria-label="Per-task budget cap (USD)"
-            type="number"
-            min={0}
-            step={0.5}
-            value={maxUsd}
-            onChange={(e) => setMaxUsd(e.target.value)}
-            style={fieldStyle}
-          />
-        </label>
-      </div>
-
-      {estimate ? (
-        <div className="pc-evals__scoreboard" aria-label="Run cost estimate" style={{ marginTop: 16 }}>
-          <div className="pc-evals__stat">
-            <DollarSign size={12} aria-hidden />
-            <span className="pc-evals__statval">≈ ${estimate.estCostUsd.toFixed(2)}</span>
-            <span className="pc-evals__statlabel">est. cost</span>
-          </div>
-          <div className="pc-evals__stat">
-            <Gauge size={12} aria-hidden />
-            <span className="pc-evals__statval">~{estimate.estWallMin} min</span>
-            <span className="pc-evals__statlabel">est. wall (rough)</span>
-          </div>
-          <div className="pc-evals__stat">
-            <span className="pc-evals__statval">{estimate.taskCount}</span>
-            <span className="pc-evals__statlabel">tasks</span>
+            <label className="pc-evals__suitepick">
+              <span className="pc-evals__suitelabel">$/task cap</span>
+              <input
+                aria-label="Per-task budget cap (USD)"
+                type="number"
+                min={0}
+                step={0.5}
+                value={maxUsd}
+                onChange={(e) => setMaxUsd(e.target.value)}
+                style={fieldStyle}
+              />
+            </label>
           </div>
         </div>
-      ) : null}
 
-      {needsConfirm ? (
-        <label className="pc-evals__confirm" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 14 }}>
-          <Checkbox checked={confirmed} onChange={setConfirmed} ariaLabel="Approve this spend" />
-          <span>
-            This run is estimated at <strong>≈ ${estimate?.estCostUsd.toFixed(2)}</strong> of opus — confirm you approve the spend.
-          </span>
-        </label>
-      ) : null}
+        <div className="pc-launch__panel pc-launch__panel--estimate">
+          <div className="pc-evals__sectionhead"><h2>Estimate</h2></div>
+          {estimate ? (
+            <div className="pc-evals__scoreboard pc-launch__estimate" aria-label="Run cost estimate">
+              <div className="pc-evals__stat">
+                <span className="pc-evals__statlabel"><DollarSign size={12} aria-hidden /> est. cost</span>
+                <span className="pc-evals__statvalue">≈ ${estimate.estCostUsd.toFixed(2)}</span>
+                <span className="pc-evals__statsub">{estimate.basis}</span>
+              </div>
+              <div className="pc-evals__stat">
+                <span className="pc-evals__statlabel"><Gauge size={12} aria-hidden /> wall</span>
+                <span className="pc-evals__statvalue">~{estimate.estWallMin} min</span>
+                <span className="pc-evals__statsub">rough projection</span>
+              </div>
+              <div className="pc-evals__stat">
+                <span className="pc-evals__statlabel">tasks</span>
+                <span className="pc-evals__statvalue">{estimate.taskCount}</span>
+                <span className="pc-evals__statsub">{fmtUsd(estimate.perTaskUsd)} / task</span>
+              </div>
+            </div>
+          ) : (
+            <p className="pc-evals__empty">Estimate unavailable.</p>
+          )}
 
-      {error ? (
-        <div className="pc-evals__caveat" role="alert" style={{ marginTop: 14 }}>
-          {error}
+          {needsConfirm ? (
+            <label className="pc-evals__confirm">
+              <Checkbox checked={confirmed} onChange={setConfirmed} ariaLabel="Approve this spend" />
+              <span>
+                Estimated at <strong>≈ ${estimate?.estCostUsd.toFixed(2)}</strong> of opus. Confirm to unlock launch.
+              </span>
+            </label>
+          ) : null}
+
+          {error ? (
+            <div className="pc-evals__caveat" role="alert">
+              {error}
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            className="pc-launch__primary"
+            onClick={() => void launch()}
+            disabled={!canLaunch}
+            aria-label="Launch benchmark run"
+          >
+            <Play size={13} aria-hidden />
+            {submitting ? 'Launching…' : activeRun ? 'Run in flight' : 'Launch run'}
+          </button>
         </div>
-      ) : null}
-
-      <div style={{ marginTop: 16 }}>
-        <button
-          type="button"
-          onClick={() => void launch()}
-          disabled={!canLaunch}
-          aria-label="Launch benchmark run"
-          style={{
-            background: canLaunch ? 'var(--accent, #eab308)' : 'var(--bg-2)',
-            color: canLaunch ? '#1a1a1a' : 'var(--fg-dim)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            padding: '8px 18px',
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: canLaunch ? 'pointer' : 'not-allowed',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-          }}
-        >
-          <Play size={13} aria-hidden />
-          {submitting ? 'Launching…' : 'Launch run'}
-        </button>
       </div>
     </section>
   );
 }
 
-// Shared frost-styled action button + a browser file download (run management).
-const ACTION_BTN: CSSProperties = {
-  background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg-dim)',
-  borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer',
-};
+function runStatusTone(status: string | undefined): 'good' | 'warn' | 'bad' | 'info' | 'neutral' {
+  const normalized = (status ?? '').toLowerCase();
+  if (['done', 'complete', 'completed', 'graded', 'succeeded', 'success'].includes(normalized)) return 'good';
+  if (['pending', 'running', 'grading'].includes(normalized)) return 'info';
+  if (['cancelled', 'canceled', 'failed', 'error', 'errored', 'deleted'].includes(normalized)) return 'bad';
+  if (['blocked', 'paused'].includes(normalized)) return 'warn';
+  return 'neutral';
+}
+
+function RunStatusPill({ status }: { status: string | undefined }) {
+  const label = status || 'unknown';
+  return <span className={`pc-runstatus pc-runstatus--${runStatusTone(status)}`}>{label}</span>;
+}
+
+function fmtShortDate(value: string | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
+}
 
 const PRESERVED_TASK_COLUMNS: ColumnDef<PreservedResolvedTask>[] = [
   {
@@ -1262,7 +1272,7 @@ function ValidityBadges({ signals }: { signals: ValiditySignal[] }) {
           <span
             key={sg.key}
             role="listitem"
-            title={sg.detail}
+            aria-label={`${sg.label}: ${sg.detail}`}
             style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: `1px solid ${c}`, color: c, borderRadius: 999, padding: '2px 10px', fontSize: 12 }}
           >
             <span style={{ width: 7, height: 7, borderRadius: 999, background: c }} aria-hidden />
@@ -1281,7 +1291,7 @@ function LiveFleetPanel({ live }: { live: BenchRunLive }) {
   return (
     <div className="pc-evals__live" aria-label="Live run state" style={{ margin: '8px 0 4px' }}>
       <div className="pc-evals__sectionhead" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ width: 8, height: 8, borderRadius: 999, background: '#34d399', boxShadow: '0 0 6px #34d399' }} aria-hidden />
+        <span style={{ width: 8, height: 8, borderRadius: 999, background: '#34d399' }} aria-hidden />
         <h2>Live · {live.status}</h2>
       </div>
       <div className="pc-evals__scoreboard" aria-label="Live fleet stats">
@@ -1664,9 +1674,9 @@ function PreservedRunsView() {
   const s = detail?.summary;
   return (
     <section className="pc-evals__section">
-      <div className="pc-evals__controlsright">
+      <div className="pc-preserved__toolbar">
         {armOptions.length > 1 ? (
-          <label className="pc-evals__suitepick" title="Filter the run list by arm.">
+          <label className="pc-evals__suitepick">
             <span className="pc-evals__suitelabel">arm</span>
             <Select
               ariaLabel="Filter runs by arm"
@@ -1676,7 +1686,7 @@ function PreservedRunsView() {
             />
           </label>
         ) : null}
-        <label className="pc-evals__suitepick" title="The benchmark run to view (live + preserved).">
+        <label className="pc-evals__suitepick">
           <Archive size={12} aria-hidden />
           <span className="pc-evals__suitelabel">run</span>
           <Select
@@ -1690,22 +1700,6 @@ function PreservedRunsView() {
             }))}
           />
         </label>
-        {selId ? (
-          <>
-            <button type="button" onClick={() => void gradeRun()} disabled={grading || detail?.status === 'grading'} aria-label="Grade this run with the official grader" title="Run the official swe_bench_pro_eval over this run's diffs (re-gradeable)." style={ACTION_BTN}>
-              {detail?.status === 'grading' || grading ? 'Grading…' : 'Grade'}
-            </button>
-            <button type="button" onClick={() => void exportRun()} aria-label="Export this run for 3rd-party reproduction" title="Download predictions.json + a README with the exact public re-grade command." style={ACTION_BTN}>
-              Export
-            </button>
-            <button type="button" onClick={() => void rerunRun()} aria-label="Re-run with the same config" title="Pre-fill the launch form with this run's arm / task set / cap." style={ACTION_BTN}>
-              Re-run
-            </button>
-            <button type="button" onClick={() => void deleteRun()} aria-label="Delete this run" title="Remove the run from the store (the on-disk snapshot is kept, re-importable)." style={{ ...ACTION_BTN, color: '#fb7185', borderColor: '#fb7185' }}>
-              Delete
-            </button>
-          </>
-        ) : null}
       </div>
       {actionErr ? <div className="pc-evals__caveat" role="alert">{actionErr}</div> : null}
 
@@ -1715,6 +1709,40 @@ function PreservedRunsView() {
         <p className="pc-evals__empty">Loading the run…</p>
       ) : (
         <>
+          <div className="pc-preserved__detailhead">
+            <div className="pc-preserved__identity">
+              <span className="pc-evals__suitelabel">selected run</span>
+              <h2>{selId}</h2>
+              <div className="pc-preserved__meta" aria-label="Selected run metadata">
+                <span>{armLabel(s.arm)}</span>
+                <span>{detail.taskSetId || 'task set unknown'}</span>
+                <span>{selRun?.source || detail.source || 'store'}</span>
+                <span>{fmtShortDate(selRun?.createdAt || detail.run.startedAt)}</span>
+              </div>
+            </div>
+            <div className="pc-preserved__detailright">
+              <RunStatusPill status={detail.status || selRun?.status} />
+              <div className="pc-preserved__actions">
+                <button type="button" className="pc-preserved__action" onClick={() => void gradeRun()} disabled={grading || detail?.status === 'grading'} aria-label="Grade this run with the official grader">
+                  <CheckCircle2 size={13} aria-hidden />
+                  {detail?.status === 'grading' || grading ? 'Grading…' : 'Grade'}
+                </button>
+                <button type="button" className="pc-preserved__action" onClick={() => void exportRun()} aria-label="Export this run for third-party reproduction">
+                  <Download size={13} aria-hidden />
+                  Export
+                </button>
+                <button type="button" className="pc-preserved__action" onClick={() => void rerunRun()} aria-label="Re-run with the same config">
+                  <RotateCcw size={13} aria-hidden />
+                  Re-run
+                </button>
+                <button type="button" className="pc-preserved__action pc-preserved__action--danger" onClick={() => void deleteRun()} aria-label="Delete this run">
+                  <Trash2 size={13} aria-hidden />
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* Validity badges (P-009 / D-003) — the integrity guarantee, surfaced. */}
           <ValidityBadges signals={validitySignals} />
           {!runValid ? (
@@ -1830,7 +1858,7 @@ function ArmStat({
   hint?: string;
 }) {
   return (
-    <div className="pc-evals__stat" title={hint} style={{ ['--arm-accent' as string]: ARM_COLOR[arm] }}>
+    <div className="pc-evals__stat" aria-label={hint} style={{ ['--arm-accent' as string]: ARM_COLOR[arm] }}>
       <span className="pc-evals__statlabel">
         <span className="pc-evals__statdot" aria-hidden />
         {ARM_LABEL[arm]}
@@ -1859,7 +1887,7 @@ function EvalsStyles() {
       .pc-evals { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 28px; min-height: 0; }
       .pc-evals__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
       .pc-evals__copy { min-width: 0; max-width: 760px; display: grid; gap: 6px; }
-      .pc-evals__copy h1 { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; letter-spacing: -0.02em; color: var(--fg, #e7f7ff); }
+      .pc-evals__copy h1 { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; letter-spacing: 0; color: var(--fg, #e7f7ff); }
       .pc-evals__copy p { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--fg-dim, #b9d4e8); }
       .pc-evals__copy em { font-style: italic; color: var(--fg, #e7f7ff); }
       .pc-evals__link { color: var(--accent, #38bdf8); text-decoration: none; }
@@ -1875,16 +1903,32 @@ function EvalsStyles() {
       .pc-evals__subtab em { display: block; font-style: normal; font-size: 9.5px; font-weight: 600; opacity: 0.72; margin-top: 1px; }
       .pc-evals__subtab:hover { color: var(--fg, #e7f7ff); }
       .pc-evals__subtab.is-active { color: var(--fg, #e7f7ff); border-color: color-mix(in oklab, #eab308, transparent 30%); background: color-mix(in oklab, #eab308, transparent 86%); }
-      .pc-evals__controlsright { display: inline-flex; align-items: center; gap: 10px; }
+      .pc-evals__controlsright { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
       .pc-evals__suitepick { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-mute, #7f9bb4); }
       .pc-evals__suitelabel { font-size: 10px; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
       .pc-evals__refresh { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 7px; border: 1px solid var(--border, rgba(125,211,252,0.2)); background: var(--bg-2, rgba(255,255,255,0.04)); color: var(--fg-dim, #b9d4e8); cursor: pointer; }
       .pc-evals__refresh:disabled { opacity: 0.5; cursor: default; }
 
       .pc-evals__section { display: flex; flex-direction: column; gap: 14px; }
+      .pc-evals__lede { margin: 0; max-width: 760px; font-size: 12.5px; line-height: 1.55; color: var(--fg-dim, #b9d4e8); }
+      .pc-evals__caveat { padding: 10px 12px; border-radius: 8px; border: 1px solid color-mix(in oklab, #fbbf24, transparent 50%); background: color-mix(in oklab, #fbbf24, transparent 91%); color: var(--fg-dim, #b9d4e8); font-size: 12px; line-height: 1.5; }
+      .pc-evals__caveat code { color: var(--fg, #e7f7ff); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .pc-evals__confirm { display: flex; align-items: flex-start; gap: 8px; color: var(--fg-dim, #b9d4e8); font-size: 12px; line-height: 1.45; }
+      .pc-evals__confirm strong { color: var(--fg, #e7f7ff); }
       .pc-evals__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
       .pc-evals__sectionhead h2 { margin: 0; font-size: 14px; font-weight: 700; color: var(--fg, #e7f7ff); display: inline-flex; align-items: baseline; gap: 8px; }
       .pc-evals__sectionhead em { font-style: italic; font-size: 11px; font-weight: 600; color: var(--fg-mute, #7f9bb4); }
+
+      .pc-launch__layout { display: grid; grid-template-columns: minmax(280px, 1.1fr) minmax(260px, 0.9fr); gap: 12px; align-items: start; }
+      .pc-launch__panel { display: grid; gap: 12px; min-width: 0; padding: 12px; border: 1px solid var(--border, rgba(125,211,252,0.18)); border-radius: 8px; background: var(--bg-2, rgba(255,255,255,0.04)); }
+      .pc-launch__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; align-items: center; }
+      .pc-launch__wide { grid-column: 1 / -1; align-items: flex-start; }
+      .pc-launch__model { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; color: var(--fg-mute, #7f9bb4); }
+      .pc-launch__model strong { color: var(--fg, #e7f7ff); font-size: 13px; }
+      .pc-launch__model span:last-child { font-size: 11px; color: var(--fg-mute, #7f9bb4); }
+      .pc-launch__estimate { grid-template-columns: 1fr; }
+      .pc-launch__primary { justify-self: start; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 8px 18px; border: 1px solid var(--border, rgba(125,211,252,0.2)); border-radius: 7px; background: var(--accent, #eab308); color: #1a1a1a; font-size: 13px; font-weight: 680; cursor: pointer; }
+      .pc-launch__primary:disabled { background: var(--bg-2, rgba(255,255,255,0.04)); color: var(--fg-mute, #7f9bb4); cursor: not-allowed; }
 
       .pc-evals__scoreboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
       .pc-evals__stat { display: grid; gap: 4px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border, rgba(125,211,252,0.18)); background: var(--bg-2, rgba(255,255,255,0.04)); border-left: 3px solid var(--arm-accent, var(--accent, #38bdf8)); }
@@ -1899,6 +1943,23 @@ function EvalsStyles() {
       .pc-evals__note { display: grid; gap: 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in oklab, #eab308, transparent 60%); background: color-mix(in oklab, #eab308, transparent 90%); font-size: 12px; line-height: 1.5; color: var(--fg-dim, #b9d4e8); }
       .pc-evals__note strong { color: var(--fg, #e7f7ff); font-size: 12.5px; }
 
+      .pc-runstatus { display: inline-flex; align-items: center; justify-content: center; min-height: 24px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border, rgba(125,211,252,0.18)); background: var(--bg-2, rgba(255,255,255,0.04)); color: var(--fg-dim, #b9d4e8); font-size: 11px; font-weight: 720; text-transform: capitalize; white-space: nowrap; }
+      .pc-runstatus--good { border-color: color-mix(in oklab, #34d399, transparent 40%); color: #34d399; background: color-mix(in oklab, #34d399, transparent 90%); }
+      .pc-runstatus--info { border-color: color-mix(in oklab, #38bdf8, transparent 40%); color: #7dd3fc; background: color-mix(in oklab, #38bdf8, transparent 90%); }
+      .pc-runstatus--warn { border-color: color-mix(in oklab, #fbbf24, transparent 35%); color: #fbbf24; background: color-mix(in oklab, #fbbf24, transparent 90%); }
+      .pc-runstatus--bad { border-color: color-mix(in oklab, #fb7185, transparent 35%); color: #fb7185; background: color-mix(in oklab, #fb7185, transparent 91%); }
+
+      .pc-preserved__toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+      .pc-preserved__detailhead { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 12px; border: 1px solid var(--border, rgba(125,211,252,0.18)); border-radius: 8px; background: color-mix(in oklab, var(--bg-2, #0f172a), transparent 20%); }
+      .pc-preserved__identity { min-width: 0; display: grid; gap: 5px; }
+      .pc-preserved__identity h2 { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--fg, #e7f7ff); font-size: 16px; font-weight: 760; letter-spacing: 0; }
+      .pc-preserved__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--fg-mute, #7f9bb4); font-size: 11.5px; }
+      .pc-preserved__meta span { display: inline-flex; align-items: center; min-height: 20px; padding: 2px 7px; border-radius: 999px; background: var(--bg-2, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(125,211,252,0.14)); }
+      .pc-preserved__detailright { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+      .pc-preserved__actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+      .pc-preserved__action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 5px 10px; border-radius: 7px; border: 1px solid var(--border, rgba(125,211,252,0.2)); background: var(--bg-2, rgba(255,255,255,0.04)); color: var(--fg-dim, #b9d4e8); font-size: 12px; font-weight: 650; cursor: pointer; }
+      .pc-preserved__action:disabled { opacity: 0.56; cursor: not-allowed; }
+      .pc-preserved__action--danger { border-color: color-mix(in oklab, #fb7185, transparent 35%); color: #fb7185; background: color-mix(in oklab, #fb7185, transparent 94%); }
       .pc-preserved__grid { min-width: 0; overflow-x: auto; border: 1px solid var(--border, rgba(125,211,252,0.18)); border-radius: 8px; background: var(--bg-2, rgba(255,255,255,0.04)); }
       .pc-preserved__num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
       .pc-preserved__task { display: block; min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1910,6 +1971,14 @@ function EvalsStyles() {
       .pc-evals__empty--card { display: grid; justify-items: center; gap: 8px; max-width: 560px; margin: 8px auto; padding: 22px; color: var(--fg-mute, #7f9bb4); }
       .pc-evals__empty--card strong { font-size: 14px; color: var(--fg, #e7f7ff); }
       .pc-evals__empty--card span { font-size: 12px; line-height: 1.55; }
+
+      @media (max-width: 820px) {
+        .pc-launch__layout { grid-template-columns: 1fr; }
+        .pc-launch__fields { grid-template-columns: 1fr; }
+        .pc-preserved__detailhead { grid-template-columns: 1fr; }
+        .pc-preserved__detailright { align-items: flex-start; }
+        .pc-preserved__actions { justify-content: flex-start; }
+      }
     `}</style>
   );
 }

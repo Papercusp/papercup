@@ -60,7 +60,7 @@ import {
   type PresenceRow,
 } from '../../shared-hive-loop/fleet-monitors';
 import { sendMessage, readInbox, appendAck, readAckedMsgIds } from '../../agent-tools/coordination/messages';
-import { listHandoffs } from '../../agent-tools/coordination/handoffs';
+import { listHandoffs, acceptHandoff } from '../../agent-tools/coordination/handoffs';
 import { listEscalations } from '../../agent-tools/coordination/escalations';
 import { sweepDeadOwnerPendingWakes } from '../../agent-tools/coordination/pending-wakes';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
@@ -477,6 +477,38 @@ export function evaluateInvariants(
   return out;
 }
 
+/** Auto-accept handoffs older than the threshold. Called before gatherSnapshot
+ *  to prevent stale handoffs from triggering violations. Best-effort — failures
+ *  never abort. Returns the count of auto-accepted handoffs. */
+async function autoAcceptStaleHandoffs(thresholdHours: number, workspaceId: string): Promise<number> {
+  try {
+    const handoffs = await listHandoffs({ status: 'open' });
+    const now = Date.now();
+    const threshold = thresholdHours * 3_600_000;
+    let count = 0;
+    // Use a synthetic system identity for auto-acceptance.
+    const systemIdentity: AgentIdentity = {
+      ownerId: 'system:coord-invariant-monitor',
+      ownerLabel: 'system',
+      source: 'system-action',
+      workspaceId,
+      userId: null,
+    };
+    for (const h of handoffs) {
+      const age = now - Date.parse(h.record.ts);
+      if (age > threshold) {
+        const accepted = await acceptHandoff(systemIdentity, h.record.msg_id, 
+          `auto-accepted after ${thresholdHours}h pending (system:coord-invariant-monitor)`);
+        if (accepted) count++;
+      }
+    }
+    return count;
+  } catch {
+    // Best-effort — a failure here never aborts the pass.
+    return 0;
+  }
+}
+
 /** Gather the live snapshot. Every leg is isolated — a failing query zeroes
  *  its own check (and notes it), never the fire. */
 async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot> {
@@ -680,6 +712,11 @@ registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => 
   // Sweeping first means the violation only fires for a LIVE agent's genuinely-
   // stuck review queue. Best-effort — a sweep failure never aborts the pass.
   await sweepDeadOwnerPendingWakes().catch(() => 0);
+  // F-FIX-037: Auto-accept handoffs older than the stuck-handoff threshold. This
+  // prevents them from persisting as open violations; handoffs waiting >12h for
+  // acceptance are auto-accepted by the monitor before the invariant check runs.
+  // Best-effort — a failure never aborts the pass.
+  await autoAcceptStaleHandoffs(t.stuckHandoffHours, ctx.workspaceId).catch(() => 0);
   const snap = await gatherSnapshot(t);
   const violations = evaluateInvariants(snap, t, Date.now());
   for (const v of violations) {
