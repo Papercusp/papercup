@@ -64,6 +64,27 @@ describe('runExperiment', () => {
     expect(cfg.cases[0].kind).toBe('synthetic');
   });
 
+  it('does NOT duplicate the baseline variant when the caller already supplies a BASELINE_ID arm (G14)', async () => {
+    const d = deps();
+    const out = await runExperiment(
+      input({
+        arms: [
+          { id: BASELINE_ID, knobs: {} },
+          { id: 'cand', knobs: { 'overlay.systemOverlay': 'Be terse.' } },
+        ],
+      }),
+      { workspaceId: 'ws' },
+      d,
+    );
+    expect(out.ok).toBe(true);
+    const cfg = (d.runGovernedReplay as unknown as { mock: { calls: any[][] } }).mock.calls[0]![0].config;
+    // EXACTLY ONE baseline variant — the explicit baseline arm is the anchor; the
+    // auto-prepend guard (`!variants.some(...)`) must not add a second.
+    const baselineVariants = cfg.variants.filter((v: { variantId: string }) => v.variantId === BASELINE_ID);
+    expect(baselineVariants).toHaveLength(1);
+    expect(cfg.variants.map((v: { variantId: string }) => v.variantId)).toEqual([BASELINE_ID, 'cand']);
+  });
+
   it('surfaces a governed refusal as ok:false refused, never a spend', async () => {
     const out = await runExperiment(
       input(),

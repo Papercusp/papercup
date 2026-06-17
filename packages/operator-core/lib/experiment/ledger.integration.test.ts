@@ -98,6 +98,38 @@ describe('PgExperimentLedger', () => {
     expect(Number(rows[0]!.total_cost_usd)).toBeCloseTo(0.02, 5);
   });
 
+  // G10: the upsert REPLACES the winner in place and advances updated_at past
+  // created_at — a re-run of the same (workspace, battery) overwrites, never appends.
+  it('re-record of (ws,battery) overwrites winner in place and bumps updated_at > created_at (G10)', async () => {
+    const ledger = new PgExperimentLedger(sql);
+    const base = {
+      workspaceId: 'ws',
+      batteryId: 'b1',
+      testId: 'replay',
+      tier: 'offline',
+      arms: [] as never[],
+      baselineId: 'baseline',
+      comparison: null,
+      totalCostUsd: 0,
+      budgetExhausted: false,
+    };
+    await ledger.record({ ...base, winner: 'cand' });
+    // Separate statement → a later now(); a small gap guarantees a strictly-later clock
+    // read so updated_at > created_at is unambiguous (not a same-instant tie).
+    await new Promise((r) => setTimeout(r, 25));
+    await ledger.record({ ...base, winner: 'baseline' });
+
+    const rows = await sql`
+      SELECT winner, created_at, updated_at
+      FROM harness_shared.experiment_runs
+      WHERE workspace_id = 'ws' AND battery_id = 'b1'`;
+    expect(rows).toHaveLength(1); // upsert, not a duplicate
+    expect(rows[0]!.winner).toBe('baseline'); // EXCLUDED winner replaced the old one
+    const createdAt = (rows[0]!.created_at as Date).getTime();
+    const updatedAt = (rows[0]!.updated_at as Date).getTime();
+    expect(updatedAt).toBeGreaterThan(createdAt); // updated_at = now() on conflict
+  });
+
   it('listRecent returns the workspace’s runs, filterable by testId', async () => {
     const ledger = new PgExperimentLedger(sql);
     const base = {

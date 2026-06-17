@@ -31,6 +31,7 @@
     "libs/papercusp/packages/blueprint-distribution",
     "libs/papercusp/packages/locks",
     "libs/papercusp/packages/embedded-postgres-server",
+    "libs/papercusp/plugins/gitnexus-bridge",
     "libs/test-config",
     "libs/generic/papergrid/bloom-grid",
     "libs/generic/rrf",

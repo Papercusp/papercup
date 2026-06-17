@@ -13,7 +13,13 @@ vi.mock('../operator-state-pg', () => ({
   },
 }));
 
-import { ensureVideoChannel, harnessVideoTopicHex, createVoiceChannel } from './registry';
+import {
+  ensureVideoChannel,
+  harnessVideoTopicHex,
+  createVoiceChannel,
+  removeVoiceChannel,
+  resolveVoiceChannel,
+} from './registry';
 
 beforeEach(() => {
   store.value = {};
@@ -60,5 +66,76 @@ describe('ensureVideoChannel', () => {
     expect(named.topicHex).not.toBe(vid.topicHex);
     expect(named.id).toMatch(/^vc-/);
     expect(vid.id).toBe('vid-papercup');
+  });
+});
+
+// Gap-8: the human-named channel CRUD half of the registry.
+describe('createVoiceChannel', () => {
+  it('creates a vc- channel with a random 64-hex topic', async () => {
+    const ch = await createVoiceChannel('standup');
+    expect(ch.id).toMatch(/^vc-/);
+    expect(ch.name).toBe('standup');
+    expect(ch.topicHex).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('is idempotent by name — returns the SAME existing channel, no duplicate', async () => {
+    const ch1 = await createVoiceChannel('standup');
+    const ch2 = await createVoiceChannel('standup');
+    expect(ch2).toEqual(ch1); // same id + same random topic (not re-rolled)
+    const stored = store.value['operator_voice_channels'] as { channels: unknown[] };
+    expect(stored.channels).toHaveLength(1);
+  });
+
+  it('trims the name before the idempotency check', async () => {
+    const ch1 = await createVoiceChannel('standup');
+    const ch2 = await createVoiceChannel('  standup  ');
+    expect(ch2).toEqual(ch1);
+  });
+
+  it('throws on a blank name', async () => {
+    await expect(createVoiceChannel('   ')).rejects.toThrow(/name required/);
+  });
+});
+
+describe('removeVoiceChannel', () => {
+  it('removes a channel by id', async () => {
+    const ch = await createVoiceChannel('standup');
+    expect(await removeVoiceChannel(ch.id)).toBe(true);
+    expect(await resolveVoiceChannel(ch.id)).toBeNull();
+  });
+
+  it('removes a channel by name', async () => {
+    await createVoiceChannel('standup');
+    expect(await removeVoiceChannel('standup')).toBe(true);
+    expect(await resolveVoiceChannel('standup')).toBeNull();
+  });
+
+  it('returns false when nothing matches (no write)', async () => {
+    await createVoiceChannel('standup');
+    expect(await removeVoiceChannel('does-not-exist')).toBe(false);
+    // The surviving channel is untouched.
+    const stored = store.value['operator_voice_channels'] as { channels: unknown[] };
+    expect(stored.channels).toHaveLength(1);
+  });
+
+  it('returns false against an empty registry', async () => {
+    expect(await removeVoiceChannel('anything')).toBe(false);
+  });
+});
+
+describe('resolveVoiceChannel', () => {
+  it('resolves by id', async () => {
+    const ch = await createVoiceChannel('standup');
+    expect(await resolveVoiceChannel(ch.id)).toEqual(ch);
+  });
+
+  it('resolves by name', async () => {
+    const ch = await createVoiceChannel('standup');
+    expect(await resolveVoiceChannel('standup')).toEqual(ch);
+  });
+
+  it('returns null when neither id nor name matches', async () => {
+    await createVoiceChannel('standup');
+    expect(await resolveVoiceChannel('nope')).toBeNull();
   });
 });

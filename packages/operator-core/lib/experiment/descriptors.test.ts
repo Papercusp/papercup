@@ -4,6 +4,7 @@ import type { ReplayBatteryConfig, ReplayBatteryResult } from '../replay/battery
 import type { ReplayCase, ReplayRunner } from '../replay/types';
 import {
   _resetExperimentRegistration,
+  armToReplayVariant,
   gymDescriptor,
   hiveDescriptor,
   instanceDescriptor,
@@ -137,6 +138,58 @@ describe('replay descriptor.run', () => {
       payload: { cases: [historicalCase] },
     };
     await expect(desc.run(request, fakeCtx())).rejects.toThrow(/safety-excluded/);
+  });
+});
+
+describe('armToReplayVariant — arm→ReplayVariant mapping (G6/G15)', () => {
+  // G6a: systemReplace flows to policy.systemReplace (the WHOLE-prompt swap), and is
+  // distinct from systemOverlay (the append) — only systemOverlay was tested before.
+  it('maps overlay.systemReplace to policy.systemReplace (not systemOverlay)', () => {
+    const v = armToReplayVariant({ id: 'replace', knobs: { 'overlay.systemReplace': 'You are X.' } });
+    expect(v.policy.systemReplace).toBe('You are X.');
+    expect(v.policy.systemOverlay).toBeUndefined();
+  });
+
+  it('keeps systemReplace and systemOverlay independent when both are set', () => {
+    const v = armToReplayVariant({
+      id: 'both',
+      knobs: { 'overlay.systemReplace': 'You are X.', 'overlay.systemOverlay': 'Be terse.' },
+    });
+    expect(v.policy.systemReplace).toBe('You are X.');
+    expect(v.policy.systemOverlay).toBe('Be terse.');
+  });
+
+  // G6b: PIN the iteration-order-dependent SILENT pick. Replay has one agent, so the
+  // FIRST model.<role> knob (by Object.values insertion order) becomes the continuation
+  // model — model.b is silently dropped. See report: this is a latent correctness trap.
+  it('PINS the silent first-model pick when an arm gives multiple model.<role> knobs', () => {
+    const v = armToReplayVariant({ id: 'multi', knobs: { 'model.a': 'm1', 'model.b': 'm2' } });
+    // Insertion order → 'm1' wins; 'm2' is silently discarded (no error, no warning).
+    expect(v.policy.model).toBe('m1');
+  });
+
+  // G15: an empty-knobs arm returns REPLAY_BASELINE_VARIANT regardless of its authored
+  // id — the author's id is LOST (replaced by BASELINE_ID). PIN this.
+  it('PINS empty-knobs arm → BASELINE_ID variant, dropping the authored id', () => {
+    const v = armToReplayVariant({ id: 'control', knobs: {} });
+    expect(v.variantId).toBe(BASELINE_ID);
+    expect(v.variantId).not.toBe('control'); // authored id is discarded
+  });
+
+  // G15 follow-on: two distinct empty-knobs arms COLLIDE on the same variantId — both
+  // become BASELINE_ID. FLAG: a battery with two no-op arms would lose one to dedup.
+  it('FLAGS that two empty-knobs arms collide on the same variantId (BASELINE_ID)', () => {
+    const a = armToReplayVariant({ id: 'control-a', knobs: {} });
+    const b = armToReplayVariant({ id: 'control-b', knobs: {} });
+    expect(a.variantId).toBe(BASELINE_ID);
+    expect(b.variantId).toBe(BASELINE_ID);
+    expect(a.variantId).toBe(b.variantId); // collision — distinct authored arms, one id
+  });
+
+  it('preserves the authored id + label for a non-empty arm', () => {
+    const v = armToReplayVariant({ id: 'cand', label: 'terser', knobs: { 'overlay.systemOverlay': 'Be terse.' } });
+    expect(v.variantId).toBe('cand');
+    expect(v.label).toBe('terser');
   });
 });
 

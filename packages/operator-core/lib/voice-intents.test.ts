@@ -43,6 +43,27 @@ describe('parseOperatorIntent', () => {
     });
   });
 
+  // Gap-4: cap spoken as separate words (STT splits "tasks write" not
+  // "tasks-write"). parts[0]=slug, parts.slice(1) hyphen-joined then
+  // colonized = cap. Three rest-tokens → a 2-segment cap.
+  it('parses approve <slug> with cap as space-separated words', () => {
+    expect(parseOperatorIntent('operator approve foo tasks write')).toEqual({
+      kind: 'approve', targetSlug: 'foo', capability: 'tasks:write',
+    });
+  });
+
+  // Gap-4: four rest-tokens collapse to a 3-segment cap (slug + 3 cap
+  // words). 3 segments is voice-INELIGIBLE, so downstream resolveApprove
+  // routes this to refuse-complex-cap (asserted in the resolveApprove
+  // suite); here we just pin the parser's colonized shape.
+  it('joins extra cap words into a 3-segment (complex) cap', () => {
+    expect(parseOperatorIntent('operator approve foo tasks write extra')).toEqual({
+      kind: 'approve', targetSlug: 'foo', capability: 'tasks:write:extra',
+    });
+    // …and the parsed cap is not voice-eligible, so it cannot be voice-approved.
+    expect(isCapVoiceEligible('tasks:write:extra')).toBe(false);
+  });
+
   it('rejects unknown verbs', () => {
     expect(parseOperatorIntent('operator yodel')).toBeNull();
   });
@@ -131,5 +152,47 @@ describe('resolveApprove', () => {
       [c1],
     );
     expect(r.action).toBe('refuse-complex-cap');
+  });
+
+  // ── Gap-5 (P1, authorization gate): the firstShownAt filter must apply
+  // BEFORE the explicit-cap eligibility check. If that order ever flips, an
+  // UNSHOWN or COMPLEX cap could slip through to a voice approve. These two
+  // cases pin the gate from both directions; see the fault-injection note
+  // in voice-intents.ts §resolveApprove.
+
+  // (a) Shown candidate whose cap is complex (3 segments). It survives the
+  //     firstShownAt filter (shown), then the cap-eligibility check rejects
+  //     it → refuse-complex-cap. NEVER approve.
+  it('Gap-5a: explicit complex cap on a SHOWN candidate → refuse-complex-cap (never approve)', () => {
+    const shownComplex: StandingCandidateLike = {
+      capability: 'secrets:read:KEY',
+      targetHarness: 'foo',
+      firstShownAt: '2026-05-02T10:00:00Z',
+    };
+    const r = resolveApprove(
+      { targetSlug: 'foo', capability: 'secrets:read:KEY' },
+      [shownComplex],
+    );
+    expect(r.action).toBe('refuse-complex-cap');
+    expect(r.action).not.toBe('approve');
+    expect(r.capability).toBeUndefined();
+  });
+
+  // (b) Candidate with an otherwise-eligible cap but firstShownAt:null. The
+  //     unshown gate filters it out FIRST, so even an exact explicit cap
+  //     cannot approve it → refuse-no-match. An unshown cap never approves.
+  it('Gap-5b: explicit eligible cap on an UNSHOWN candidate → refuse-no-match (never approve)', () => {
+    const unshownEligible: StandingCandidateLike = {
+      capability: 'tasks:write',
+      targetHarness: 'qux',
+      firstShownAt: null,
+    };
+    const r = resolveApprove(
+      { targetSlug: 'qux', capability: 'tasks:write' },
+      [unshownEligible],
+    );
+    expect(r.action).toBe('refuse-no-match');
+    expect(r.action).not.toBe('approve');
+    expect(r.capability).toBeUndefined();
   });
 });
