@@ -113,8 +113,8 @@ describe('QueenTab nested steering tree', () => {
     render(<QueenTab active={true} />);
     // pot-a is checked → auto-expanded, both plans checked (planMode all).
     const planA = await screen.findByRole('checkbox', { name: 'Plan A' });
-    expect((planA as HTMLInputElement).checked).toBe(true);
-    expect((planA as HTMLInputElement).disabled).toBe(false);
+    expect(planA.getAttribute('aria-checked')).toBe('true');
+    expect((planA as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(planA); // uncheck Plan A → narrow to the rest
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();

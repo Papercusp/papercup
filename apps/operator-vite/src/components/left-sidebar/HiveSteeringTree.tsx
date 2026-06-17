@@ -14,8 +14,9 @@
  * the pure toggle intents. QueenTab owns the (eligibleHives, eligiblePlans) state
  * + the serialized optimistic write. Reuses the parent's `.pc-queen__*` tokens.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertTriangle, ChevronDown, ChevronRight, ListChecks } from 'lucide-react';
+import { Checkbox } from '@/app/harness/Checkbox';
 import type { SteeringTree, TreeHive, TreePlan } from './hive-steering-tree';
 
 export interface HiveSteeringTreeProps {
@@ -44,19 +45,14 @@ function TriCheckbox({
   onChange: () => void;
   ariaLabel: string;
 }) {
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = !!indeterminate && !checked;
-  }, [indeterminate, checked]);
   return (
-    <input
-      ref={ref}
-      type="checkbox"
+    <Checkbox
       className="pc-queen__check"
       checked={checked}
+      indeterminate={indeterminate}
       disabled={disabled}
       onChange={onChange}
-      aria-label={ariaLabel}
+      ariaLabel={ariaLabel}
     />
   );
 }
@@ -64,16 +60,16 @@ function TriCheckbox({
 function PlanRow({ plan, hiveSlug, busy, onTogglePlan }: { plan: TreePlan; hiveSlug: string; busy: boolean; onTogglePlan: HiveSteeringTreeProps['onTogglePlan'] }) {
   return (
     <li className={`pc-queen__plan pc-queen__tree-plan${plan.checked ? ' pc-queen__plan--on' : ''}`}>
-      <label className="pc-queen__planlabel">
-        <input
-          type="checkbox"
+      <div className="pc-queen__planlabel">
+        <Checkbox
           className="pc-queen__check"
           checked={plan.checked}
           disabled={busy}
           onChange={() => onTogglePlan(hiveSlug, plan.slug)}
+          ariaLabel={plan.title}
         />
         <span className="pc-queen__planslug" title={plan.slug}>{plan.title}</span>
-      </label>
+      </div>
       <span
         className="pc-queen__planstatus"
         data-status={plan.inActive ? (plan.startStatus === 'started' ? 'started' : plan.status ?? '') : 'stale'}
@@ -116,7 +112,7 @@ function HiveNode({
         >
           {hasPlans ? (expanded ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />) : <span className="pc-queen__tree-caret-spacer" />}
         </button>
-        <label className="pc-queen__planlabel pc-queen__tree-hivelabel">
+        <div className="pc-queen__planlabel pc-queen__tree-hivelabel">
           <TriCheckbox
             checked={hive.checked}
             indeterminate={hive.planMode === 'some'}
@@ -125,7 +121,7 @@ function HiveNode({
             ariaLabel={`Toggle hive ${hive.slug}`}
           />
           <span className="pc-queen__tree-hivename" title={hive.slug}>{hive.label.trim()}</span>
-        </label>
+        </div>
         <span className="pc-queen__tree-hivemeta">
           {hive.checked
             ? hive.planMode === 'all'
@@ -138,8 +134,8 @@ function HiveNode({
         <>
           {hive.checked && (
             <div className="pc-queen__tree-hiveactions">
-              <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, true)} disabled={busy || hive.planMode === 'all'} title="Make every plan in this hive eligible">all</button>
-              <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, false)} disabled={busy} title="Remove this hive from scope">none</button>
+              <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, true)} disabled={busy || hive.planMode === 'all'} aria-label={`Make every plan in ${hive.slug} eligible`}>all</button>
+              <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, false)} disabled={busy} aria-label={`Remove ${hive.slug} from scope`}>none</button>
             </div>
           )}
           <ul className={`pc-queen__plans pc-queen__tree-plans${hive.checked ? '' : ' pc-queen__tree-plans--off'}`}>
@@ -184,8 +180,8 @@ export default function HiveSteeringTree({
         <span className="pc-queen__section-title">Steering scope</span>
         <span className="pc-queen__count">{restricted ? `${tree.hives.filter((h) => h.checked).length} hive${tree.hives.filter((h) => h.checked).length === 1 ? '' : 's'}` : 'no restriction'}</span>
         <span className="pc-queen__spacer" />
-        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(true)} disabled={busy || tree.hives.length === 0} title="Select every hive">all</button>
-        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(false)} disabled={busy || !restricted} title="Clear the scope">none</button>
+        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(true)} disabled={busy || tree.hives.length === 0} aria-label="Select every hive">all</button>
+        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(false)} disabled={busy || !restricted} aria-label="Clear the scope">none</button>
       </div>
 
       <div className={`pc-queen__scope${restricted ? ' pc-queen__scope--restricted' : ''}`}>
@@ -253,14 +249,19 @@ function TreeStyles() {
       .pc-queen__tree-hive { display: block; padding: 0; border: none; background: none; }
       .pc-queen__tree-hive + .pc-queen__tree-hive { margin-top: 3px; }
       .pc-queen__tree-hiverow {
-        display: flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 7px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); background: rgba(255, 255, 255, 0.025);
+        display: flex; align-items: center; gap: 5px; padding: 5px 7px; border-radius: 7px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); background: var(--bg-2, rgba(255, 255, 255, 0.04));
       }
-      .pc-queen__tree-hive--on > .pc-queen__tree-hiverow { border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.06); }
+      .pc-queen__tree-hive--on > .pc-queen__tree-hiverow {
+        border-color: color-mix(in srgb, var(--queen-accent, var(--warn, #fbbf24)), transparent 56%);
+        background: color-mix(in srgb, var(--queen-accent, var(--warn, #fbbf24)), transparent 92%);
+      }
       .pc-queen__tree-caret {
         display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
         padding: 0; border: none; background: none; cursor: pointer; color: var(--fg-mute, #7f9bb4); flex-shrink: 0;
       }
+      .pc-queen__tree-caret:hover:not(:disabled) { color: var(--fg, #e7f7ff); }
+      .pc-queen__tree-caret:focus-visible { outline: 1px solid var(--queen-accent, var(--warn, #fbbf24)); outline-offset: 1px; border-radius: 4px; }
       .pc-queen__tree-caret:disabled { cursor: default; opacity: 0.4; }
       .pc-queen__tree-caret-spacer { display: inline-block; width: 13px; }
       .pc-queen__tree-hivelabel { flex: 1; min-width: 0; }
@@ -269,21 +270,23 @@ function TreeStyles() {
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
       .pc-queen__tree-hivemeta { flex-shrink: 0; font-size: 9px; color: var(--fg-mute, #7f9bb4); }
-      .pc-queen__tree-hiveactions { display: flex; gap: 5px; padding: 4px 8px 2px 28px; }
-      .pc-queen__tree-plans { margin: 2px 0 2px 0; padding-left: 22px; max-height: none; gap: 3px; }
+      .pc-queen__tree-hiveactions { display: flex; gap: 5px; padding: 4px 7px 2px 28px; }
+      .pc-queen__tree-plans { margin: 2px 0 2px 0; padding-left: 21px; max-height: none; gap: 3px; }
       .pc-queen__tree-plans--off { opacity: 0.55; }
       .pc-queen__tree-plan { padding: 4px 7px; }
       .pc-queen__tree-illegal {
-        display: flex; align-items: center; gap: 6px; font-size: 10px; line-height: 1.3; color: #fcd34d;
-        padding: 5px 8px; border-radius: 7px; border: 1px solid rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.08);
+        display: flex; align-items: center; gap: 6px; font-size: 10px; line-height: 1.3; color: var(--fg, #e7f7ff);
+        padding: 5px 8px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--queen-accent, var(--warn, #fbbf24)), transparent 62%);
+        background: color-mix(in srgb, var(--queen-accent, var(--warn, #fbbf24)), transparent 90%);
       }
       .pc-queen__tree-unassigned {
         display: flex; flex-direction: column; gap: 5px; padding: 7px 8px; border-radius: 8px;
-        border: 1px dashed rgba(244, 63, 94, 0.35); background: rgba(244, 63, 94, 0.05);
+        border: 1px dashed color-mix(in srgb, var(--bad, #f43f5e), transparent 62%);
+        background: color-mix(in srgb, var(--bad, #f43f5e), transparent 94%);
       }
-      .pc-queen__tree-unassigned-head { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: #fca5a5; }
+      .pc-queen__tree-unassigned-head { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0; color: #fca5a5; }
       .pc-queen__tree-unassigned-head svg { color: #fca5a5; }
-      .pc-queen__tree-unassigned .pc-queen__plan { border-color: rgba(244, 63, 94, 0.2); }
+      .pc-queen__tree-unassigned .pc-queen__plan { border-color: color-mix(in srgb, var(--bad, #f43f5e), transparent 78%); }
     `}</style>
   );
 }

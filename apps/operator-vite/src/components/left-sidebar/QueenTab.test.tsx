@@ -91,6 +91,21 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
     expect(screen.queryByLabelText('Select hive to steer')).toBeNull();
   });
 
+  it('summarizes current work flow, scope, directive, and model overrides', () => {
+    H.steeringResult = {
+      data: [steering({ directive: 'Prioritize benchmarks.', eligibleHives: ['pot-a'], eligiblePlans: ['plan-a'], modelTiers: ['opus'] })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<QueenTab active={true} />);
+    expect(screen.getByLabelText('Queen steering summary')).toBeTruthy();
+    expect(screen.getByText('Flowing')).toBeTruthy();
+    expect(screen.getByText('1 hive · 1 plan')).toBeTruthy();
+    expect(screen.getByText('Directive set')).toBeTruthy();
+    expect(screen.getByText('1 tier override')).toBeTruthy();
+  });
+
   it('renders the eligible-hives checkboxes from /api/harness/projects/lite', async () => {
     render(<QueenTab active={true} />);
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'pot-a' })).toBeTruthy());

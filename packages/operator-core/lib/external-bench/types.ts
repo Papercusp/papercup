@@ -60,6 +60,11 @@ export type BenchmarkFamily =
   // (decentralized peers vs aggregated-local coordinator); rides makePoolBacklogDriver (one scenario = one
   // perTask), the sim score on attempt.armMeta. D-001: a global-view queen would violate the local-only premise.
   | 'swarmbench'
+  // GDPval (OpenAI, arXiv:2510.04374; plan benchmark-suite-gdpval-2026-06-17). Real-world professional
+  // DELIVERABLES (docs/slides/spreadsheets/…) across 44 occupations × 9 GDP sectors. Graded by a BLINDED
+  // PAIRWISE comparison vs an expert reference deliverable → win/tie/loss → win-or-tie rate (NOT a diff/exact
+  // match). The new `deliverable-bundle` modality; the pairwise autograder is grader/gdpval.ts.
+  | 'gdpval'
   | (string & {});
 
 /**
@@ -261,6 +266,14 @@ export type ArmSubmission =
       /** The agent's final answer text the grader scores against the gold answer. */
       answer: string;
       prefix: string;
+    }
+  | {
+      modality: 'deliverable-bundle'; // M4 (GDPval) — a professional deliverable bundle reduced to text,
+      // graded by a BLINDED PAIRWISE comparison vs the expert reference deliverable (win/tie/loss).
+      instanceId: string;
+      /** The arm's deliverable, reduced to text/markdown for the pairwise judge. */
+      deliverable: string;
+      prefix: string;
     };
 
 /** Build the M1 predictions record for an attempt (the shape `swe_bench_pro_eval.py` ingests). */
@@ -271,6 +284,11 @@ export function diffSubmission(attempt: ArmAttempt): ArmSubmission {
 /** Build the M3 (qa) submission for an attempt — the GAIA arm hands its FINAL ANSWER string to the grader. */
 export function qaSubmission(attempt: ArmAttempt): ArmSubmission {
   return { modality: 'qa', instanceId: attempt.instanceId, answer: attempt.answer ?? '', prefix: attempt.seed };
+}
+
+/** Build the M4 (deliverable-bundle) submission — the GDPval arm hands its deliverable text to the pairwise judge. */
+export function deliverableSubmission(attempt: ArmAttempt): ArmSubmission {
+  return { modality: 'deliverable-bundle', instanceId: attempt.instanceId, deliverable: attempt.answer ?? '', prefix: attempt.seed };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -322,7 +340,7 @@ export interface GradeResult {
  */
 export interface OfficialGrader {
   family: BenchmarkFamily;
-  modality: 'diff' | 'in-container' | 'qa';
+  modality: 'diff' | 'in-container' | 'qa' | 'deliverable-bundle';
   /** Grade a batch. `tasks` carries each instance's {@link BenchTask.graderMeta}; matched by instanceId. */
   grade(submissions: ArmSubmission[], tasks: BenchTask[]): Promise<GradeResult[]>;
 }

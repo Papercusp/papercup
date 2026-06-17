@@ -81,13 +81,18 @@ export type BenchSuite =
   // swarm sim; deterministic per-task sim score on TaskRunResult.score. Headline = the decentralized-vs-
   // centralized topology delta (D-001: the fair queen sees aggregated-local views only, not the global grid).
   | 'swarmbench'
+  // GDPval (OpenAI, plan benchmark-suite-gdpval-2026-06-17). Real-world professional DELIVERABLES graded by a
+  // blinded PAIRWISE comparison vs an expert reference → win/tie/loss → win-or-tie rate. resolved = win-or-tie;
+  // `score` carries the win=1/tie=.5/loss=0 value (the suite headline is the mean = the win-rate).
+  | 'gdpval'
   | (string & {});
 
 /** Grader modality (P-001 §1): offline diff-batch · online in-container · qa (a single FINAL ANSWER string,
  *  quasi-exact-match graded — GAIA; plan benchmark-suite-gaia-2026-06-17) · interactive (a synchronous
  *  per-turn agent↔simulator loop graded by a reward-model — tau2-bench / the-agent-company; the agent↔sim
- *  DRIVE lives in the runner layer (external-bench), this lib only scores the result). */
-export type GraderModality = 'diff' | 'in-container' | 'qa' | 'interactive';
+ *  DRIVE lives in the runner layer (external-bench), this lib only scores the result) · deliverable-bundle (a
+ *  professional deliverable graded by a blinded pairwise judge vs an expert reference — GDPval). */
+export type GraderModality = 'diff' | 'in-container' | 'qa' | 'interactive' | 'deliverable-bundle';
 
 /**
  * Normalized grader outcome. `error`/`timeout` are INFRA failures, distinct
