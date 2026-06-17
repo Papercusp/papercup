@@ -13,8 +13,11 @@
  * The defineTool call-log (replay-grade audit) is NOT sourced here — it rides
  * [[route-everything-through-definetool-2026-06-17]]; pass it via `extraCallLog` when available.
  */
+import { mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { BenchReportBundle, BenchReportCall, BenchReportCoordEvent, BenchReportSpawnNode } from './report-schema';
-import { bundleFromRollouts } from './report-builder';
+import { bundleFromRollouts, writeReportHtml } from './report-builder';
 
 /** Structural shapes of the store reads we consume (kept loose so real types satisfy them). */
 interface TaskRunResultRow {
@@ -167,4 +170,20 @@ export async function buildBundleFromPg(
     spawnTree: toSpawnTree(detail),
     callLog: opts.extraCallLog,
   });
+}
+
+/**
+ * Build + write a portable `report-<runId>.html` for a completed run. Best-effort emit primitive:
+ * returns the path written, or null if the run has no result rows (nothing to report — e.g. an id that
+ * isn't a run_result.run_id). Default out dir: ~/.papercusp/bench-results/reports/.
+ */
+export async function emitReport(
+  runId: string,
+  opts: { workspace?: string; outDir?: string; readers?: PgReportReaders; extraCallLog?: BenchReportCall[] } = {},
+): Promise<string | null> {
+  const bundle = await buildBundleFromPg(runId, opts);
+  if (!bundle) return null;
+  const dir = opts.outDir ?? join(homedir(), '.papercusp', 'bench-results', 'reports');
+  mkdirSync(dir, { recursive: true });
+  return writeReportHtml(bundle, join(dir, `report-${runId}.html`));
 }

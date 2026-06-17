@@ -381,6 +381,15 @@ export async function recordRunCompletion(
      WHERE id = ${runId} AND workspace_id = ${ws}
   `;
   await rollupBenchRunMetrics(runId, opts);
+  // Best-effort: emit a portable report-<runId>.html alongside the run (plan
+  // benchmark-report-portable-trace-2026-06-17, P-001). Dynamic-imported + try/caught so it NEVER
+  // blocks or fails run completion; a runId with no run_result rows just no-ops (returns null).
+  try {
+    const { emitReport } = await import('./report/report-builder-pg');
+    await emitReport(runId, { workspace: opts.workspace });
+  } catch {
+    /* report emit is best-effort — a missing report never breaks a completed run */
+  }
 }
 
 // ───────────────────────── reads ──────────────────────────
