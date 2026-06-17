@@ -145,7 +145,7 @@ describe('form validation', () => {
     const publicRadio = screen.getByRole('radio', { name: /Public/ }) as HTMLInputElement;
     expect(publicRadio.checked).toBe(true);
     screen.getByText(
-      "Anyone on the network can discover this hive; contributors' GitHub identities are visible.",
+      "Anyone on the network can discover this hive; contributors' GitHub identities, including your own, are visible.",
     );
   });
 

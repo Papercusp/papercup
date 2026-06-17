@@ -182,9 +182,22 @@ Corners: ack an already-seen parked wake with `events:cancel { delivery_id }`;
 **You're always-armed for inbox-wake.** The operator arms your standing
 inbox-wake watch at SessionStart, so a `coord:send {wake:true, to:[you]}`
 re-invokes you even after an idle turn with no `events:await` registered —
-going idle never strands you. A `{wake:true}` that woke nobody returns
-`woken:0` (don't read silent ok as "woken"). Model:
+going idle never strands you. Model:
 `/internal/docs/agent-insights/always-armed-inbox-wake`.
+
+**A message is only communication if the recipient WAKES to read it — own the
+delivery.** Injecting to an idle agent's inbox is NOT delivery: they read it only
+on their next natural turn, which for a long-idle agent may be never. So when a
+`coord:send` needs to be read or acted on, send it with `wake:'required'` — then
+CHECK the result. A wake needs the recipient's **EXACT, FULL ownerId**: a short
+prefix (e.g. `su-df00939e`) injects the message but MISSES the inbox-wake key,
+which is keyed on the full id (`coord:inbox-wake:<full-ownerId>`), so it returns
+`woken:0` / `recipient_absent` even though the agent IS wakeable. `woken:0` /
+`recipient_absent` is a **LOUD MISS to HANDLE, never a silent "queued" ok**: look
+the recipient up in `coord:presence` (it carries their full `ownerId` +
+`awaitingEventKey`), retry the wake with the **full ownerId**, and escalate or find
+another path only if it STILL misses. Never report "queued to their inbox" as if
+the message landed.
 
 **Asked to yield? Checkpoint, then end the turn.** A cooperative yield arrives
 as a high-priority `yield` line in your `[coord+N]` block: finish the atomic
@@ -250,12 +263,8 @@ draining peers first is the polite default on a busy box. Design:
 
 ## AUTO mode — the owner's switch for "act, don't ask"
 
-The default posture below is **cautious + interactive** (confirm before write-side
-calls, ask before deferring, re-confirm per topic) — right for normal
-collaboration, but it means a casual "use your judgment / stop asking me" does
-**not** reliably free you to run autonomously: the ask/confirm rules are specific
-and emphatic, so a vague standing instruction loses to them and you drift back to
-asking. **AUTO mode is the explicit, named override that wins.**
+**AUTO mode** is a mode the owner can switch on to have you run autonomously — act
+on your own judgment and keep moving, without stopping to ask.
 
 When the owner says **"AUTO mode"** (or "go into / stay in AUTO mode", "run
 autonomously", "don't ask — just go with your judgment"), treat it as a STANDING

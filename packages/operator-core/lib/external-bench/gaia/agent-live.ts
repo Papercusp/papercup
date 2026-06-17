@@ -12,7 +12,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { gatewayBaseUrl } from '../competitor-live';
-import { ACCOUNT_HEADER } from '../../inference-gateway/gateway';
+import { ACCOUNT_HEADER, PRIORITY_HEADER } from '../../inference-gateway/gateway';
 import type { AssistantBlock, GaiaToolSpec, LlmFn, LlmMessage, LlmTurnRequest, LlmTurnResponse } from './agent';
 
 /** Fairness default: every arm runs claude-opus-4-8 via the gateway (matches DEFAULT_COMPETITOR_MODEL). */
@@ -114,8 +114,15 @@ export interface LiveGaiaLlmConfig {
   /**
    * Pin this run to a specific gateway pool account (the `x-papercusp-account` header) to dodge a
    * fleet-exhausted active account. Pick a low-utilization id from `accounts:status`. Gateway-only.
+   * NOTE: the gateway uses ONE active() account at a time + failover-on-429 (no load-balancing), so under
+   * fleet contention a healthy pinned account is far more reliable than the shared active() one.
    */
   accountId?: string;
+  /**
+   * Gateway request priority (`x-papercusp-priority`): 'interactive' (this user-requested run) jumps ahead
+   * of the fleet's 'batch' work in the gateway's priority queue, so it isn't starved under contention.
+   */
+  priority?: string;
   /** Inject a client (tests). Needs a `messages.stream(params).finalMessage()` (the SDK requires streaming for
    *  long requests — non-streaming create() is rejected once max_tokens could exceed the 10-min cap). */
   client?: { messages: { stream: (params: Anthropic.MessageCreateParamsStreaming) => { finalMessage: () => Promise<Anthropic.Message> } } };
@@ -142,7 +149,14 @@ export function makeLiveGaiaLlm(cfg: LiveGaiaLlmConfig = {}): LlmFn {
       // High default: ride out gateway/account 429 bursts under fleet contention (honors Retry-After) so a
       // long unattended run grinds through capacity windows instead of failing tasks. Tune via cfg.maxRetries.
       maxRetries: cfg.maxRetries ?? 12,
-      ...(cfg.accountId ? { defaultHeaders: { [ACCOUNT_HEADER]: cfg.accountId } } : {}),
+      ...(cfg.accountId || cfg.priority
+        ? {
+            defaultHeaders: {
+              ...(cfg.accountId ? { [ACCOUNT_HEADER]: cfg.accountId } : {}),
+              ...(cfg.priority ? { [PRIORITY_HEADER]: cfg.priority } : {}),
+            },
+          }
+        : {}),
     });
 
   return async (req: LlmTurnRequest): Promise<LlmTurnResponse> => {

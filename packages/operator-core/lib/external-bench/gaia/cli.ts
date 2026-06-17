@@ -154,6 +154,10 @@ async function selfcheck(): Promise<void> {
 async function runTasks(tasks: GaiaTask[], label: string): Promise<GaiaRunResult> {
   const concurrency = Number(arg('--concurrency', '4'));
   const accountId = arg('--account');
+  // The gateway funnels through one active() account + failover-on-429 (no load-balancing), so under fleet
+  // contention pin a healthy account (--account) and request interactive priority (default) to avoid being
+  // starved behind the fleet's batch work.
+  const priority = arg('--priority', 'interactive');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = join(homedir(), '.papercusp', 'bench-results', 'gaia', 'runs', `${label}-${stamp}`);
   mkdirSync(dir, { recursive: true });
@@ -173,7 +177,7 @@ async function runTasks(tasks: GaiaTask[], label: string): Promise<GaiaRunResult
     }
   }
   log(`Running ${tasks.length} GAIA tasks (${JSON.stringify(gaiaLevelCounts(tasks))}) @ concurrency ${concurrency} → ${dir}`);
-  const llm = makeLiveGaiaLlm({ accountId });
+  const llm = makeLiveGaiaLlm({ accountId, priority });
   const runAgent = makeLiveRunAgent({ llm });
   // CHECKPOINT: append each freshly-completed record so a crash mid-run loses at most the in-flight tasks.
   let done = 0;

@@ -1,8 +1,8 @@
 /**
  * statusline-fleet.test.ts — the fleet statusline's render logic, driven
  * through the script's PAPERCUSP_STATUSLINE_FIXTURE sync mode (no operator, no
- * token). Asserts the two-line glance render (wake glyph / staged ✉ / 🐝 /
- * governor ⏳ / peers / 💡 tip) and the quiet-state single line.
+ * token). Asserts the glance render (wake glyph / staged ✉ / 🐝 / governor ⏳ /
+ * peers / 💡 tip / ⋯ detail-affordance row) and the quiet-state single line.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -53,7 +53,7 @@ describe('statusline-fleet render (fixture mode)', () => {
       ],
     });
     const lines = out.split('\n');
-    expect(lines).toHaveLength(2);
+    expect(lines).toHaveLength(3);
     expect(lines[0]).toContain('papercusp');
     expect(lines[0]).toContain('⏸ manual ✉2');
     expect(lines[0]).toContain('🐝1');
@@ -62,6 +62,8 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(lines[1]).toBe(
       "💡 Wake mode is manual — 2 staged wakes waiting; the queen won't self-drive. Back to auto: /mcp__papercusp-su__tool:coord:wake-mode mode=auto",
     );
+    // When a tip row is shown, a final ⋯ row points at the full glance dump.
+    expect(lines[2]).toBe('⋯ run /mcp__papercusp-su__tool:coord:glance for detail');
   });
 
   it('quiet auto fleet → one line, ▶ auto, no tip row', () => {
@@ -95,6 +97,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     const lines = out.split('\n');
     expect(lines[0]).toContain('⏳ anthropic:opus');
     expect(lines[1]).toContain('💡 Rate governor paused');
+    expect(lines[2]).toBe('⋯ run /mcp__papercusp-su__tool:coord:glance for detail');
   });
 
   it('rows fit COLUMNS; a pathological tip wraps but is capped at 4 rows', () => {
@@ -113,7 +116,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     // Code points, not UTF-16 units — python truncates/wraps per code point,
     // and 💡/🐝 are 2 UTF-16 units each.
     for (const line of lines) expect([...line].length).toBeLessThanOrEqual(50);
-    expect(lines.length).toBeLessThanOrEqual(5); // fleet row + ≤4 tip rows
+    expect(lines.length).toBeLessThanOrEqual(6); // fleet row + ≤4 tip rows + ⋯ detail row
   });
 
   it('a narrow pane wraps the tip across rows — full text AND command survive', () => {

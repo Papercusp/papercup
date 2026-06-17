@@ -300,6 +300,58 @@ test('per-request x-papercusp-account header routes to the named pool account (P
   assert.equal(upstream.last.headers['x-papercusp-account'], undefined);
 });
 
+test('Fault #3 — a header-pinned request whose account is paced fails over to active() (no $0 hang)', async () => {
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const paced: ActiveAccount = { accountId: 'paced-acct', token: async () => 'paced-tok' };
+  const healthy: ActiveAccount = { accountId: 'healthy-acct', token: async () => 'healthy-tok' };
+  const pool: AccountPool = {
+    active: () => healthy, // failover-walked to a healthy account
+    onExhausted: () => null,
+    select: (id) => (id === 'paced-acct' ? paced : id === 'healthy-acct' ? healthy : null),
+  };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 50 });
+  port = await gw.listen(0);
+  // The pinned account is being LIVE-paced (a long governor pause the cross-process drain projection
+  // can't see) — the gateway must not strict-honor the pin into a hang.
+  getGovernor('anthropic', 'opus', undefined, 'paced-acct').penalize({ retryAfterMs: 60 * 60_000 });
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'paced-acct' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer healthy-tok', 'paced pin → served via active()');
+  resetGovernorRegistry();
+});
+
+test('a header-pinned request whose account is HEALTHY is still strict-honored (cache affinity preserved)', async () => {
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const pinnedAcct: ActiveAccount = { accountId: 'pin-acct', token: async () => 'pin-tok' };
+  const activeAcct: ActiveAccount = { accountId: 'active-acct', token: async () => 'active-tok' };
+  const pool: AccountPool = {
+    active: () => activeAcct,
+    onExhausted: () => null,
+    select: (id) => (id === 'pin-acct' ? pinnedAcct : id === 'active-acct' ? activeAcct : null),
+  };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 50 });
+  port = await gw.listen(0);
+  // pin-acct is NOT paced → the pin holds (no failover), preserving its per-credential cache.
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'pin-acct' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer pin-tok', 'healthy pin is honored, not failed over');
+  resetGovernorRegistry();
+});
+
 test('every account is Claude Max OAuth — a bee-sent x-api-key is stripped + replaced with Bearer (D-003)', async () => {
   await boot((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });

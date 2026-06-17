@@ -4,12 +4,16 @@
 # coord-glance combined read, 2026-06-12). Two lines:
 #
 #   papercusp · ⏸ manual ✉2 · 🐝1 · 5 peers · ◆ su-074be ✎ catalog.ts
-#   💡 Wake mode is manual — 2 staged wakes waiting; … /papercusp:tool:coord:wake-mode mode=auto
+#   💡 Wake mode is manual — 2 staged wakes waiting; … /mcp__papercusp-su__tool:coord:wake-mode mode=auto
+#   ⋯ run /mcp__papercusp-su__tool:coord:glance for detail
 #
 # Line 1: wake-gate state (▶ auto / ⏸ manual, ✉ staged wakes), bees in flight,
 # governor pauses, peer count + most-recent peer action. Line 2 (only when the
 # server has a tip for this state): the top contextual tip from the glance tips
-# engine, usually with the slash command that resolves it.
+# engine, usually with the slash command that resolves it. Line 3 (only when a
+# tip is shown): a ⋯ affordance pointing at the full `coord:glance` dump — the
+# statusline itself has no expand affordance and clips line 1 to fit, so this is
+# how a human reaches the unabridged state.
 #
 # Claude invokes a statusline command frequently, so this is CHEAP + FAIL-OPEN:
 # ONE `coord:glance` call with a short timeout; if the operator predates the
@@ -189,5 +193,9 @@ if tips:
         # pathological tip can't swallow the pane.
         full = ('💡 ' + text + (f' {cmd}' if cmd else '')).rstrip()
         lines.extend(textwrap.wrap(full, width=cols, subsequent_indent='  ')[:4])
+        # A statusline can't expand, and line 1 clips the governor list + peer
+        # summary to fit — so whenever there's a tip worth surfacing, point at
+        # the full structured glance the human can run for the unabridged state.
+        lines.append('⋯ run /mcp__papercusp-su__tool:coord:glance for detail')
 emit(lines, cols)
 PYEOF

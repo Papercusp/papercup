@@ -38,6 +38,11 @@ type FetchInit = RequestInit & { dispatcher?: UndiciDispatcher };
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-retry-after
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
+/** A header-PINNED request waits at most this long on its pinned account before failing over to the
+ *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
+ *  projection, which can't see the gateway's live pacing, so a pinned account may be actively paced —
+ *  we must NOT 429-loop the bee into a $0 hang. Short, so failover is quick; cache-affinity yields. */
+const PINNED_FAILOVER_WAIT_MS = 10_000;
 /** Header a bee/spawn sets to prioritise its requests (interactive/queen > batch). */
 export const PRIORITY_HEADER = 'x-papercusp-priority';
 /** Header a spawn sets to pin its requests to one pool account for cache affinity
@@ -313,11 +318,36 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // x-papercusp-account header so its per-credential conversation cache survives; an unknown id
     // (or no header / a single-account pool) falls back to the active account — today's behavior.
     const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
-    const active = (wantAccount && pool.select?.(wantAccount)) || pool.active();
-    const gov = governorForAccount(model, active.accountId);
+    const pinned = (wantAccount && pool.select?.(wantAccount)) || null;
+    const poolActive = pool.active();
+    // Fault #3 — pinned-but-paced failover. The spawn-side drain selector pins a bee to an account by
+    // its cross-process BUDGET projection, which can't see the gateway's LIVE pacing — so it can pin a
+    // bee to an account that's currently paced/exhausted by recent 429s. Strict-honoring the header
+    // would 429-loop that bee into an indefinite $0 hang (alive, no model calls). So cache-affinity
+    // YIELDS TO LIVENESS: if the pinned account's live governor is paused (or can't admit within a
+    // short window), serve this request through the pool's active() (failover-walked to a healthy
+    // account). The pin still holds for the bee's later requests — each re-checks, so it returns to
+    // its per-credential cache once the account recovers.
+    const canFailover = pinned !== null && poolActive.accountId !== pinned.accountId;
+    let active = pinned ?? poolActive;
+    let gov = governorForAccount(model, active.accountId);
+    if (canFailover && active.accountId === pinned!.accountId && gov.state.pausedUntil > Date.now()) {
+      log('warn', `inference-gateway: pinned '${pinned!.accountId}' paused → routing via active '${poolActive.accountId}' (cache-affinity yields to liveness)`);
+      active = poolActive;
+      gov = governorForAccount(model, active.accountId);
+    }
 
     totalRequests++;
-    const release = await gov.acquire(est, { maxWaitMs: maxQueueWaitMs });
+    // A still-pinned request gets only a SHORT admission wait, then fails over to active() rather than
+    // waiting the full maxQueueWaitMs and 429-looping the bee.
+    const stillPinned = canFailover && active.accountId === pinned!.accountId;
+    let release = await gov.acquire(est, { maxWaitMs: stillPinned ? PINNED_FAILOVER_WAIT_MS : maxQueueWaitMs });
+    if (!release && stillPinned) {
+      log('warn', `inference-gateway: pinned '${pinned!.accountId}' admission-timeout → failover to active '${poolActive.accountId}'`);
+      active = poolActive;
+      gov = governorForAccount(model, active.accountId);
+      release = await gov.acquire(est, { maxWaitMs: maxQueueWaitMs });
+    }
     if (!release) {
       queued429++;
       const retryAfterSec = Math.max(1, Math.ceil((gov.state.pausedUntil - Date.now()) / 1000));
