@@ -51,10 +51,34 @@ re-probes — the next response's utilization is the truth.**
   `longPauseMs` is deleted. The utilization is the cross-process projection the gateway feeds via
   `recordAccountWindow` (the same projection the drain selector routes by).
 
+## Related fault — a header-PINNED bee hangs at $0 on a paced account (D-005)
+
+Sibling failure, same projection-vs-live-truth gap. The spawn chokepoint pins a bee to an account
+(`x-papercusp-account`) chosen by `selectAccountByDrain`, which reads the cross-process BUDGET
+projection. That projection **can't see the gateway's live pacing** — its penalty/pause data can lag
+hours. So the selector cheerfully pins a bee to a low-utilization account that the gateway is
+*currently* pacing/exhausting (observed: aviynw4 projection util 0.15 / penalties 2h stale, while the
+gateway live-paced it). The gateway strict-honored the pin → no failover → the bee 429-loops into an
+indefinite **$0 hang** (alive, zero model calls), while other accounts sit usable.
+
+Fix (gateway.ts proxy, `PINNED_FAILOVER_WAIT_MS`): a pinned request whose account's **live** governor
+is paused (pre-check) or can't admit within \~10s **fails over to `pool.active()`** (the failover-walked
+healthy account). The pin still holds for the bee's later requests (re-checked each time → it returns
+to its per-credential cache once the account recovers). **Cache-affinity yields to liveness.** The fix
+is gateway-side ON PURPOSE: only the gateway has the live-pacing truth; a selection-side guard can't
+see it. Edge: a bare framing-429 doesn't pause the governor, so the pre-check won't trip — CLI bees
+frame themselves (real 429s → covered); a raw-SDK pinned caller could still loop.
+
 ## How to diagnose next time
 
 If a subscription bucket is paused with no live pressure, or an account reads exhausted off
 `penaltyCount:1`: it's a rolling-window over-pause, not a real cap. Check gateway `/healthz`
 `unified.rejected`/`utilization` for the **active** account — if `rejected:false` and util \< 1, the
-pause is stale. (Distinct from the framing-429 storm, where a raw `/v1/messages` on a Max OAuth token
+pause is stale. If instead a *specific* bee hangs at $0 while the fleet is fine, read its
+`x-papercusp-account` header + that account's live gateway governor — that's the D-005 pinned-paced
+fault. (Both are distinct from the framing-429 storm, where a raw `/v1/messages` on a Max OAuth token
 429s unless the first system block is the Claude Code identifier — see that insight.)
+
+Also operational: the gateway loads its account pool **only at boot** (no hot-reload) — after
+registering/removing accounts you must restart `papercup-inference-gateway.service` to re-pool, else
+it dead-ends on a stale subset. A standing durable improvement would be to hot-reload the pool.

@@ -12,6 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { sendMessage } from '../messages';
 import { wakeRecipients } from '../inbox-wake';
+import { resolveRecipients, isSelectorOrWildcard } from '../recipient-resolve';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -53,8 +54,43 @@ export default defineTool({
     const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const harnessSlug =
       typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+    // owner-2026-06-17: validate + resolve recipients against the live roster
+    // BEFORE sending. A short ownerId PREFIX resolves to the full id (so the exact
+    // `coord:inbox-wake:<ownerId>` wake key matches and the wake lands); a concrete
+    // recipient that matches NO known agent is a LOUD error — the send does NOT
+    // happen — instead of the old silent ok:true. Fail-soft: a roster-read hiccup
+    // degrades to the raw ids (never blocks coord). Local-roster scoped.
+    let toSend = args.to;
+    if (args.to.some((id) => !isSelectorOrWildcard(id))) {
+      try {
+        const r = await resolveRecipients(args.to, identity.workspaceId);
+        if (r.unknown.length || r.ambiguous.length) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: 'unknown_recipient',
+                  message:
+                    'coord:send addressed agent(s) not in the roster — nothing was sent. ' +
+                    'Look up the full ownerId with coord:presence and retry.',
+                  ...(r.unknown.length ? { unknown_recipients: r.unknown } : {}),
+                  ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
+                }),
+              },
+            ],
+          };
+        }
+        toSend = r.resolved;
+      } catch (e) {
+        console.warn(
+          `[coord:send] recipient resolve failed, sending unresolved: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
     const env = await sendMessage(identity, {
-      to: args.to,
+      to: toSend,
       summary: args.summary,
       body: args.body,
       files: args.files,
