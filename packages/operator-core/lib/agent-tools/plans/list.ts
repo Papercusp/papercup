@@ -103,6 +103,17 @@ type ListRow = {
   /** Importance of the hottest OPEN item (done/dropped excluded), null
    *  when nothing is open. Missing `importance:` keyword = 'normal'. */
   maxImportance: Importance | null;
+  /**
+   * Schedule glance (scheduled-recurring-plans-2026-06-16 P-021). Derived from
+   * the already-fetched harness_plans schedule columns (zero extra cost — the
+   * index read already selects them). `scheduled` is the authoritative
+   * "is this plan scheduled at all" signal; `scheduleActive` = armed/firing
+   * (false = paused/disarmed); `scheduleKind` distinguishes a recurrence set
+   * (`recurring`) from a one-shot `scheduled_at` (`one-shot`).
+   */
+  scheduled: boolean;
+  scheduleActive: boolean;
+  scheduleKind: 'recurring' | 'one-shot' | null;
 };
 
 /** Most → least urgent rank, per IMPORTANCE_LEVELS order. */
@@ -298,6 +309,11 @@ export default defineTool({
           priority: row.opPriority,
           maxImportance,
           origin: scoutPlanRefs.has(`plan:${slug}`) ? ('scout' as const) : null,
+          // P-021 schedule glance — already-loaded columns, no extra read.
+          // A recurrence set ⇒ recurring; else a bare one-shot fire time ⇒ one-shot.
+          scheduled: row.schedule != null || row.scheduledAt != null,
+          scheduleActive: row.scheduleActive === true,
+          scheduleKind: row.schedule != null ? 'recurring' : row.scheduledAt != null ? 'one-shot' : null,
         });
       }
     }

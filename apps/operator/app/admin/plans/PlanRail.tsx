@@ -16,7 +16,7 @@
 
 import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { forwardRef, useImperativeHandle, useMemo, useCallback, useState, useRef } from 'react';
-import { Play, Pause, Clock } from 'lucide-react';
+import { Play, Pause, Clock, Repeat, CalendarClock } from 'lucide-react';
 import { AuthorBadge } from '../../_components/AuthorBadge';
 import {
   bucketOf,
@@ -115,6 +115,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const [fInbox] = useQueryState('pInbox', parseAsBoolean.withDefault(false));
   const [fActionable] = useQueryState('pActionable', parseAsBoolean.withDefault(false));
   const [fScout] = useQueryState('pScout', parseAsBoolean.withDefault(false));
+  const [fScheduled] = useQueryState('pScheduled', parseAsBoolean.withDefault(false));
   const [fSort] = useQueryState(
     'pSort',
     parseAsStringEnum<PlanSort>(PLAN_SORT_IDS).withDefault('default'),
@@ -127,7 +128,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const sorted = useMemo<PlanListRow[]>(() => {
     const filtered = applyPlanFilters(
       plans,
-      { date: fDate, owner: fOwner, initiative: fInitiative, view: fView, viewerEmail: fViewerEmail, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable, scout: fScout },
+      { date: fDate, owner: fOwner, initiative: fInitiative, view: fView, viewerEmail: fViewerEmail, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable, scout: fScout, scheduled: fScheduled },
       query,
       searchHitSlugs,
     );
@@ -156,7 +157,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       return 0;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plans, fBucketsKey, fOwner, fInitiative, fView, fViewerEmail, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fSort, query, searchHitSlugs, selectedKey, runningOrder]);
+  }, [plans, fBucketsKey, fOwner, fInitiative, fView, fViewerEmail, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fScheduled, fSort, query, searchHitSlugs, selectedKey, runningOrder]);
 
   useImperativeHandle(
     ref,
@@ -460,6 +461,7 @@ function PlanRow({
           {source ? <SourcePill source={source} /> : null}
           {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
           <StatusPill status={plan.status} />
+          {plan.scheduled ? <SchedulePill kind={plan.scheduleKind ?? null} active={plan.scheduleActive ?? false} /> : null}
           {plan.updated ? (
             <span
               className="pc-plan-row__updated"
@@ -493,6 +495,35 @@ function PlanRow({
 
 function StatusPill({ status }: { status: PlanStatus }) {
   return <span className={`pc-pill pc-pill--${status}`}>{status}</span>;
+}
+
+/**
+ * Schedule pill (scheduled-recurring-plans-2026-06-16 P-021) — the per-row glance
+ * for a scheduled/recurring plan. Icon distinguishes a recurrence set (Repeat)
+ * from a one-shot fire time (CalendarClock); the trailing dot + dimming shows
+ * armed (firing) vs paused (saved-but-disarmed). Full schedule + next-fires +
+ * run history live on the plan's Calendar/Runs surfaces — this is just the glance.
+ */
+function SchedulePill({ kind, active }: { kind: 'recurring' | 'one-shot' | null; active: boolean }) {
+  const Icon = kind === 'one-shot' ? CalendarClock : Repeat;
+  const label = kind === 'one-shot' ? 'one-shot' : 'recurring';
+  const stateLabel = active ? 'armed — firing on schedule' : 'paused — saved but not armed';
+  return (
+    <Tooltip label={`Scheduled (${label}) · ${stateLabel}`}>
+      <span
+        className="pc-pill pc-pill--schedule"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, opacity: active ? 1 : 0.6 }}
+        data-schedule-active={active ? 'true' : 'false'}
+      >
+        <Icon size={11} aria-hidden />
+        {label}
+        <span
+          aria-hidden
+          style={{ width: 6, height: 6, borderRadius: '50%', background: active ? 'var(--good, #34d399)' : 'var(--fg-mute, #7f9bb4)' }}
+        />
+      </span>
+    </Tooltip>
+  );
 }
 
 /**

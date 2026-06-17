@@ -94,6 +94,10 @@ export default function PlanFilters({
     'pScout',
     parseAsBoolean.withDefault(false),
   );
+  const [scheduled, setScheduled] = useQueryState(
+    'pScheduled',
+    parseAsBoolean.withDefault(false),
+  );
   const [sort, setSort] = useQueryState(
     'pSort',
     parseAsStringEnum<PlanSort>(PLAN_SORT_IDS).withDefault('default'),
@@ -127,6 +131,7 @@ export default function PlanFilters({
     (inbox ? 1 : 0) +
     (actionable ? 1 : 0) +
     (scout ? 1 : 0) +
+    (scheduled ? 1 : 0) +
     (sort !== 'default' ? 1 : 0);
 
   const activeTokens = [
@@ -138,6 +143,7 @@ export default function PlanFilters({
     inbox ? { key: 'needs-human', label: 'has needs-human', clear: () => setInbox(false) } : null,
     actionable ? { key: 'actionable', label: 'has actionable', clear: () => setActionable(false) } : null,
     scout ? { key: 'scout', label: 'scout-created', clear: () => setScout(false) } : null,
+    scheduled ? { key: 'scheduled', label: 'scheduled', clear: () => setScheduled(false) } : null,
     archivedOnly ? { key: 'archived', label: 'archived', clear: () => setArchivedOnly(false) } : null,
     legacyOnly ? { key: 'legacy', label: 'legacy', clear: () => setLegacyOnly(false) } : null,
   ].flatMap((token) => (token ? [token] : []));
@@ -152,6 +158,7 @@ export default function PlanFilters({
     setInbox(false);
     setActionable(false);
     setScout(false);
+    setScheduled(false);
     setSort(null);
   };
 
@@ -252,6 +259,7 @@ export default function PlanFilters({
         <Toggle on={inbox} onChange={setInbox} label="needs human" />
         <Toggle on={actionable} onChange={setActionable} label="actionable" />
         <Toggle on={scout} onChange={setScout} label="scout" />
+        <Toggle on={scheduled} onChange={setScheduled} label="scheduled" />
         <Toggle on={legacyOnly} onChange={setLegacyOnly} label="legacy" />
         <Toggle on={archivedOnly} onChange={setArchivedOnly} label="archived" />
       </div>

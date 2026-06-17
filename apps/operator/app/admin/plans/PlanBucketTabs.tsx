@@ -57,11 +57,12 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
   const [inbox] = useQueryState('pInbox', parseAsBoolean.withDefault(false));
   const [actionable] = useQueryState('pActionable', parseAsBoolean.withDefault(false));
   const [scout] = useQueryState('pScout', parseAsBoolean.withDefault(false));
+  const [scheduled] = useQueryState('pScheduled', parseAsBoolean.withDefault(false));
 
   const counts = useMemo<Record<PlanBucket, number>>(() => {
     const filtered = applyPlanFilters(
       plans,
-      { date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout },
+      { date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, scheduled },
       query,
       searchHitSlugs,
     );
@@ -74,7 +75,7 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
     };
     for (const p of filtered) acc[bucketOf(p)] += 1;
     return acc;
-  }, [plans, date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, query, searchHitSlugs]);
+  }, [plans, date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, scheduled, query, searchHitSlugs]);
 
   const toggle = (id: PlanBucket) => {
     const has = buckets.includes(id);

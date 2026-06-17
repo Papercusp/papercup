@@ -35,6 +35,8 @@ export interface PlanFilterState {
   actionable: boolean;
   /** Only plans the Scout loop routed (origin 'scout', ledger-derived server-side). */
   scout: boolean;
+  /** Only scheduled/recurring plans (P-021 — a recurrence set or a one-shot fire time). */
+  scheduled: boolean;
 }
 
 /**
@@ -73,6 +75,9 @@ export function applyPlanFilters(
   }
   if (f.scout) {
     working = working.filter((p) => p.origin === 'scout');
+  }
+  if (f.scheduled) {
+    working = working.filter((p) => p.scheduled === true);
   }
   const needle = query.trim().toLowerCase();
   if (!needle) return working;

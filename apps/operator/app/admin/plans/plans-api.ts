@@ -114,6 +114,14 @@ export interface PlanListRow {
   /** 'scout' when the Scout loop routed this plan (ledger-derived server-side).
    *  (May arrive undefined from a server predating the field.) */
   origin?: 'scout' | null;
+  /** P-021 schedule glance — true when the plan has a recurrence set OR a one-shot
+   *  fire time (scheduled-recurring-plans-2026-06-16). Undefined from a server
+   *  predating the field. */
+  scheduled?: boolean;
+  /** Armed/firing (true) vs saved-but-paused/disarmed (false). */
+  scheduleActive?: boolean;
+  /** A recurrence set (`recurring`) vs a one-shot `scheduled_at` (`one-shot`); null/undefined ⇒ unscheduled. */
+  scheduleKind?: 'recurring' | 'one-shot' | null;
 }
 
 export interface PlanItem {

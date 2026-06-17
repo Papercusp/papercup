@@ -47,7 +47,6 @@ import { HowSharingWorks } from '../_components/HowSharingWorks';
 const ENTRY_STEPS = [
   'new-local',
   'existing-local',
-  'new-hive',
   'github-url',
   'hive-invite',
   'share-offer',
@@ -57,11 +56,11 @@ type EntryStep = (typeof ENTRY_STEPS)[number];
 type Step = 'picker' | EntryStep;
 
 /**
- * The creation fork (harnesses-tab-hive-model D-005 / P-010). `standalone` and
- * `into-hive` share the same "how to add" entry cards — the only difference is
- * whether the create stamps a membership edge to the selected hive (P-011).
- * `new-hive` is its own form (stand up a kind:'hive' home). The toggle only
- * offers `into-hive` when a hive scope is actually selected.
+ * The creation fork (harnesses-tab-hive-model D-005 / P-010). A `standalone`
+ * "New local directory" now stands up a NEW hive (a fresh local dir IS a hive);
+ * `into-hive` adds the new dir as a member of the selected hive scope, stamping
+ * a membership edge (P-011). The "Add to <hive>" toggle only appears — and the
+ * only difference between the modes only exists — when a hive scope is selected.
  */
 type CreateMode = 'standalone' | 'into-hive';
 
@@ -175,42 +174,81 @@ function ErrorBanner({ message }: { message: string }) {
 }
 
 // ── Entry 1 form — new local directory ────────────────────────────────────
-
-function NewLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string }) {
+//
+// A new local directory IS a hive: when NOT adding into an existing hive the
+// form stands up a kind:'hive' home (the Queen blueprint) via /api/harness/hives.
+// When a `hive` scope IS passed (into-hive member) it posts a plain member
+// harness to /api/harness/projects, reusing the slug as the folder name. The
+// folder is the slug in both branches — there is no separate folder-name field.
+function NewLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string; hiveLabel: string }) {
   const t = useLexicon();
+  const hiveLower = hiveLabel.toLowerCase();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // learning-packs P-006: pack selection — default = the Papercusp pack (D-004).
+  // Only used on the new-hive branch (`!hive`).
+  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
   const slugRef = useRef<HTMLInputElement>(null);
   const parentDirRef = useRef<HTMLInputElement>(null);
-  const folderNameRef = useRef<HTMLInputElement>(null);
+
+  const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
+    queryName: 'learningPacks.list',
+    args: {},
+    staleTime: 60_000,
+  });
+  const availablePacks =
+    packRows && packRows.length > 0
+      ? packRows
+      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const slug = slugRef.current?.value.trim() ?? '';
     const parentDir = parentDirRef.current?.value.trim() ?? '';
-    const folderName = folderNameRef.current?.value.trim() ?? '';
-    if (!slug || !parentDir || !folderName) {
+    if (!slug || !parentDir) {
       setError('All fields are required.');
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch('/api/harness/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // `hive` (P-011): when adding into the selected hive, the route stamps
-        // the membership edge to that scope (formal hive_slug / legacy parent_slug).
-        body: JSON.stringify({ slug, parentDir, folderName, ...(hive ? { hive } : {}) }),
-      });
+      // `hive` SET → a member harness inside the selected hive (the folder is
+      // the slug). `hive` UNDEFINED → a new top-level hive home at
+      // <parentDir>/<slug>, seeded from the chosen learning pack.
+      const res = hive
+        ? await fetch('/api/harness/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // `hive` (P-011): the route stamps the membership edge to that scope
+            // (formal hive_slug / legacy parent_slug). The folder is the slug.
+            body: JSON.stringify({ slug, parentDir, folderName: slug, hive }),
+          })
+        : await fetch('/api/harness/hives', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slug, parentDir, learningPack: learningPack === 'none' ? null : learningPack }),
+          });
       if (!res.ok) {
         const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         setError(friendlyError(body.code, body.error));
         setBusy(false);
         return;
       }
-      const data: CreateResult = await res.json();
-      toast.success(`${t('pot')} '${data.project.slug}' created at ${data.project.path}`);
+      const data = (await res.json()) as CreateResult & {
+        seededLearnings?: { packId: string; packVersion?: string; count?: number; error?: string };
+      };
+      if (hive) {
+        toast.success(`${t('pot')} '${data.project.slug}' added to ${hive} at ${data.project.path}`);
+      } else {
+        toast.success(`${hiveLabel} '${data.project.slug}' created — the Queen is provisioning its fleet.`, {
+          // learning-packs P-006: tell the user the hive starts with default
+          // learnings + where to edit them (the Learning tab's Learnings view).
+          description:
+            data.seededLearnings && !data.seededLearnings.error && (data.seededLearnings.count ?? 0) > 0
+              ? `Started with ${data.seededLearnings.count} default learnings (${data.seededLearnings.packId}) — review & edit them in the Learning tab.`
+              : undefined,
+        });
+      }
       onSuccess(data.project.slug);
     } catch (err: unknown) {
       setError((err as Error).message ?? 'Network error');
@@ -221,24 +259,85 @@ function NewLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSucce
   return (
     <form onSubmit={(e) => void handleSubmit(e)}>
       <BackBtn onBack={onBack} />
-      <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>New local directory</h2>
+      <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>
+        {hive ? 'New local directory' : `New ${hiveLower} from a local directory`}
+      </h2>
       {error && <ErrorBanner message={error} />}
+      {hive ? (
+        <div
+          style={{
+            background: 'var(--bg-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: '10px 12px',
+            marginBottom: 16,
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: 'var(--fg-dim)',
+          }}
+        >
+          <span style={{ marginRight: 6 }}>📁</span>
+          Creates a fresh folder, runs <strong style={{ color: 'var(--fg)' }}>git init</strong>, and adds it as a
+          member of <code>{hive}</code>.
+        </div>
+      ) : (
+        <div
+          style={{
+            background: 'var(--bg-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            padding: '10px 12px',
+            marginBottom: 16,
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: 'var(--fg-dim)',
+          }}
+        >
+          <span style={{ marginRight: 6 }}>👑</span>
+          Stands up a fresh folder as a new {hiveLower} home running the{' '}
+          <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a Queen that surveys the work
+          frontier and places it onto a fleet of bees. You can add members into it afterward.
+        </div>
+      )}
       <Label>
         <FieldLabel>{t('pot')} slug</FieldLabel>
         <input ref={slugRef} type="text" placeholder="my-project" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
-        <HintText>Lowercase, hyphens OK. Used as the folder name inside the state dir.</HintText>
+        <HintText>Lowercase, hyphens OK. Used as the folder name created inside the parent directory.</HintText>
       </Label>
       <Label>
         <FieldLabel>Parent directory</FieldLabel>
         <input ref={parentDirRef} type="text" placeholder="/home/user/projects" style={inputStyle} />
         <HintText>Absolute path to the directory that will contain the new folder.</HintText>
       </Label>
-      <Label>
-        <FieldLabel>Folder name</FieldLabel>
-        <input ref={folderNameRef} type="text" placeholder="my-project" style={inputStyle} />
-        <HintText>The new directory to create inside the parent. Must not already exist.</HintText>
-      </Label>
-      <SubmitRow busy={busy} label={`Create ${t('pot')}`} onBack={onBack} />
+      {/* learning-packs P-006: the pack picker — a new hive starts with a
+          default set of learnings; selectable away, editable afterward. Only
+          shown for the new-hive branch (`!hive`); members inherit the hive's. */}
+      {!hive && (
+        <Label>
+          <FieldLabel>Learning pack</FieldLabel>
+          <select
+            data-testid="learning-pack-picker"
+            value={learningPack}
+            onChange={(e) => setLearningPack(e.target.value)}
+            style={inputStyle}
+          >
+            {availablePacks.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.title}
+                {p.itemCount ? ` — ${p.itemCount} learnings` : ''}
+                {p.id === 'papercusp-default' ? ' (default)' : ''}
+              </option>
+            ))}
+            <option value="none">None — start with an empty memory</option>
+          </select>
+          <HintText>
+            New {hiveLower}s start with a default set of learnings — working wisdom seeded
+            into the {hiveLower}&rsquo;s shared memory. Review, edit, or remove them anytime
+            from the Learning tab.
+          </HintText>
+        </Label>
+      )}
+      <SubmitRow busy={busy} label={hive ? `Add ${t('pot')}` : `Create ${hiveLower}`} onBack={onBack} />
     </form>
   );
 }
@@ -317,122 +416,6 @@ function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; on
         <HintText>Absolute path to an existing git repository or project directory. Stays where it is — linked, not moved.</HintText>
       </Label>
       <SubmitRow busy={busy} label={`Add ${t('pot')}`} onBack={onBack} />
-    </form>
-  );
-}
-
-// ── New-hive form — stand up a kind:'hive' home (the Queen/pot blueprint) ──
-
-function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onSuccess: (slug: string) => void; hiveLabel: string }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // learning-packs P-006: pack selection — default = the Papercusp pack (D-004).
-  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
-  const slugRef = useRef<HTMLInputElement>(null);
-
-  const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
-    queryName: 'learningPacks.list',
-    args: {},
-    staleTime: 60_000,
-  });
-  const availablePacks =
-    packRows && packRows.length > 0
-      ? packRows
-      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    const slug = slugRef.current?.value.trim() ?? '';
-    if (!slug) {
-      setError('A slug is required.');
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/harness/hives', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, learningPack: learningPack === 'none' ? null : learningPack }),
-      });
-      if (!res.ok) {
-        const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        setError(body.error || `Could not create ${hiveLabel.toLowerCase()}.`);
-        setBusy(false);
-        return;
-      }
-      const data = (await res.json()) as {
-        ok: boolean;
-        project: { slug: string };
-        seededLearnings?: { packId: string; packVersion?: string; count?: number; error?: string };
-      };
-      toast.success(`${hiveLabel} '${data.project.slug}' created — the Queen is provisioning its fleet.`, {
-        // learning-packs P-006: tell the user the hive starts with default
-        // learnings + where to edit them (the Learning tab's Learnings view).
-        description:
-          data.seededLearnings && !data.seededLearnings.error && (data.seededLearnings.count ?? 0) > 0
-            ? `Started with ${data.seededLearnings.count} default learnings (${data.seededLearnings.packId}) — review & edit them in the Learning tab.`
-            : undefined,
-      });
-      onSuccess(data.project.slug);
-    } catch (err: unknown) {
-      setError((err as Error).message ?? 'Network error');
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form onSubmit={(e) => void handleSubmit(e)}>
-      <BackBtn onBack={onBack} />
-      <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>New {hiveLabel.toLowerCase()} from blueprint</h2>
-      {error && <ErrorBanner message={error} />}
-      <div
-        style={{
-          background: 'var(--bg-2)',
-          border: '1px solid var(--border)',
-          borderRadius: 8,
-          padding: '10px 12px',
-          marginBottom: 16,
-          fontSize: 12.5,
-          lineHeight: 1.5,
-          color: 'var(--fg-dim)',
-        }}
-      >
-        <span style={{ marginRight: 6 }}>👑</span>
-        Stands up a new {hiveLabel.toLowerCase()} home running the <strong style={{ color: 'var(--fg)' }}>{hiveLabel.toLowerCase()}</strong> blueprint —
-        a Queen that surveys the work frontier and places it onto a fleet of bees. You can add members into it afterward.
-      </div>
-      <Label>
-        <FieldLabel>{hiveLabel} slug</FieldLabel>
-        <input ref={slugRef} type="text" placeholder="my-hive" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
-        <HintText>Lowercase, hyphens OK. The slug for the new {hiveLabel.toLowerCase()}.</HintText>
-      </Label>
-      {/* learning-packs P-006: the pack picker — the new hive starts with a
-          default set of learnings; selectable away, editable afterward. */}
-      <Label>
-        <FieldLabel>Learning pack</FieldLabel>
-        <select
-          data-testid="learning-pack-picker"
-          value={learningPack}
-          onChange={(e) => setLearningPack(e.target.value)}
-          style={inputStyle}
-        >
-          {availablePacks.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.title}
-              {p.itemCount ? ` — ${p.itemCount} learnings` : ''}
-              {p.id === 'papercusp-default' ? ' (default)' : ''}
-            </option>
-          ))}
-          <option value="none">None — start with an empty memory</option>
-        </select>
-        <HintText>
-          New {hiveLabel.toLowerCase()}s start with a default set of learnings — working wisdom seeded
-          into the {hiveLabel.toLowerCase()}&rsquo;s shared memory. Review, edit, or remove them anytime
-          from the Learning tab.
-        </HintText>
-      </Label>
-      <SubmitRow busy={busy} label={`Create ${hiveLabel.toLowerCase()}`} onBack={onBack} />
     </form>
   );
 }
@@ -705,23 +688,25 @@ function capitalize(s: string): string {
 }
 
 /**
- * The creation fork toggle (D-005 / P-010): New hive · Add to <hive> · Standalone.
- * "Add to <hive>" only appears when a hive scope is selected.
+ * The creation fork toggle (D-005 / P-010), now a 2-option scope toggle that
+ * only appears WHEN a hive scope is selected: [Add to <hive>] (into-hive) |
+ * [New <hive>] (standalone — a fresh local dir is its own new hive). With no
+ * scope there is no fork at all (mode stays `standalone` = a new hive), so this
+ * renders nothing.
  */
 function ForkToggle({
   mode,
   onMode,
-  onNewHive,
   hiveScope,
   hiveLabel,
 }: {
   mode: CreateMode;
   onMode: (m: CreateMode) => void;
-  onNewHive: () => void;
   hiveScope: string | null;
   hiveLabel: string;
 }) {
   const lower = hiveLabel.toLowerCase();
+  if (!hiveScope) return null;
   const btn = (active: boolean): React.CSSProperties => ({
     flex: 1,
     padding: '7px 10px',
@@ -738,16 +723,11 @@ function ForkToggle({
   });
   return (
     <div role="tablist" aria-label="Creation mode" style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
-      <button type="button" role="tab" onClick={onNewHive} style={btn(false)} title={`Stand up a new ${lower} home running the Queen blueprint`}>
-        👑 New {lower}
+      <button type="button" role="tab" aria-selected={mode === 'into-hive'} onClick={() => onMode('into-hive')} style={btn(mode === 'into-hive')} title={`Add the new ${lower} into ${hiveScope}`}>
+        Add to {hiveScope}
       </button>
-      {hiveScope && (
-        <button type="button" role="tab" aria-selected={mode === 'into-hive'} onClick={() => onMode('into-hive')} style={btn(mode === 'into-hive')} title={`Add the new ${lower} into ${hiveScope}`}>
-          Add to {hiveScope}
-        </button>
-      )}
-      <button type="button" role="tab" aria-selected={mode === 'standalone'} onClick={() => onMode('standalone')} style={btn(mode === 'standalone')} title={`A standalone ${lower}, not nested under another hive`}>
-        Standalone
+      <button type="button" role="tab" aria-selected={mode === 'standalone'} onClick={() => onMode('standalone')} style={btn(mode === 'standalone')} title={`Stand up a new ${lower} home running the Queen blueprint`}>
+        New {lower}
       </button>
     </div>
   );
@@ -779,7 +759,7 @@ function PickerStep({
     githubUrlEnabled,
   });
   const fork = (
-    <ForkToggle mode={mode} onMode={onMode} onNewHive={() => onSelect('new-hive')} hiveScope={hiveScope} hiveLabel={hiveLabel} />
+    <ForkToggle mode={mode} onMode={onMode} hiveScope={hiveScope} hiveLabel={hiveLabel} />
   );
   return (
     <div>
