@@ -584,12 +584,11 @@ export const FLAGS = {
   // observes-not-ideas, no thrash, cross-monitors the Queen). The owner flips it ON
   // after that proof — surfaced loudly in the plan's ## Now + every lane report.
   OVERWATCH: "papercusp-overwatch",
-  // scheduled-recurring-plans-2026-06-16 (P-028): the global master switch for the
-  // scheduled-plan EXECUTION path — the system:plan-run action + arming. DEFAULT OFF
-  // (DELIBERATE, NOT the alpha default-on policy): autonomous recurring spend + action
-  // on a cadence, not yet live-proven; ships dark until the owner flips it. Per-plan
-  // arming is separately autonomy-gated (the schedule-arm category). Pending flip
-  // surfaced in the plan's ## Now + every lane report.
+  // scheduled-recurring-plans-2026-06-16 (P-028 → D-019): the global master switch for
+  // the scheduled-plan EXECUTION path — the system:plan-run action + arming. DEFAULT ON
+  // (owner-directed at ship, D-019). Safe despite being an autonomous executor: the real
+  // control is per-plan ARMING (autonomy-gated, schedule-arm never-auto, owner-only);
+  // an un-armed feature fires nothing. Flip OFF via /admin/features for dark.
   SCHEDULED_PLANS: "papercusp-scheduled-plans",
   // impartial-benchmark-suite-2026-06-15 (P-005/BRIEF 3): gates the EXTERNAL-BENCH
   // grader adapter + the `external-bench:run` op — the runner that clones a public
@@ -975,10 +974,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the role registration (B-01), the wake-loop/routine (B-04), and the UI pane
   // (B-08). Pending flip surfaced in the plan's ## Now + every lane report.
   [FLAGS.OVERWATCH]: false,
-  // DEFAULT OFF — DELIBERATE (scheduled-recurring-plans-2026-06-16 P-028): the
-  // scheduled-plan execution path (system:plan-run + arming) ships dark — autonomous
-  // recurring spend/action until the owner flips it. Per-plan arming is autonomy-gated.
-  [FLAGS.SCHEDULED_PLANS]: false,
+  // DEFAULT ON (scheduled-recurring-plans-2026-06-16 D-019, owner-directed at ship): the
+  // scheduled-plan execution path is enabled in prod. Safe despite being an autonomous
+  // executor — the real control is per-plan ARMING (autonomy-gated, schedule-arm
+  // never-auto, owner-only); an un-armed feature fires nothing. (Supersedes P-028's dark default.)
+  [FLAGS.SCHEDULED_PLANS]: true,
   // DEFAULT OFF — DELIBERATE (see the flag note): the external-bench grader adapter
   // is incomplete (M2 unbuilt) + infra-heavy (Docker/GB image pulls); ships dark
   // until the P-009 pilot proves it. Owner flips ON after — pending flip surfaced.

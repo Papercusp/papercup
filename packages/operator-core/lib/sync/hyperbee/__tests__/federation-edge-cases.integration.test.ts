@@ -248,7 +248,15 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
     VALUES ('p-fed', 'Fed', 'active', ${HARNESS_SLUG}, ${WORKSPACE_ID}, 0, 0)
   `;
 
-  for (const file of ['archive/102-substrate-outbox.sql', 'archive/103-issues-workspace-id-fill-trigger.sql']) {
+  for (const file of [
+    'archive/102-substrate-outbox.sql',
+    'archive/103-issues-workspace-id-fill-trigger.sql',
+    // WI-192: the usage-events workspace_id column + BEFORE-INSERT fill trigger
+    // (resolves workspace_id from harness_shared.projects by slug). Without it,
+    // usage outbox rows are stamped workspace_id='' and the real-workspace drain
+    // drops them → usage events never federate. This migration is the fix.
+    '301-usage-events-workspace-id-fill-trigger.sql',
+  ]) {
     const sqlText = readFileSync(join(SQL_DIR, file), 'utf8');
     await sql.unsafe(sqlText);
   }
@@ -614,9 +622,13 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
   // ── G2 [P2]: contributor_usage_events (the 5th federated table) federates ──
   // The table is declared sync:'peer-log' (harness-state/table-registry.ts) with a
   // capture trigger (mig 108) + projection (projections/usage.ts) + op-mapper
-  // (feature-issue-op-keys.toUsageValue). This test proves the full
-  // capture→drain→swarm→projection→PG path AND surfaces the workspace_id='' drain
-  // gap (documented as a sub-assertion + in the report).
+  // (feature-issue-op-keys.toUsageValue). WI-192 added migration 301 (workspace_id
+  // column + BEFORE-INSERT fill trigger from harness_shared.projects), so usage
+  // events now carry a REAL workspace_id → the standard real-workspace drain
+  // matches them and they federate END-TO-END (the prior gap: the outbox row was
+  // stamped workspace_id='' and the drain dropped it). This test proves the full
+  // capture→drain→swarm→projection→PG path through the STANDARD drain — no manual
+  // workspace_id patching.
   it(
     'G2: a usage event on A federates to B with origin=remote and a byte-equal payload',
     async () => {
@@ -625,7 +637,8 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
       const eventId = 'U-fed-1';
       const payload = { feature_id: 'F-x', cost_cents: 1234, nested: { a: [1, 2, 3], b: 'str' } };
       // Mirrors emitUsageEvent (harness/usage-events.ts) byte-for-byte: it does
-      // NOT set workspace_id (the table has no such column).
+      // NOT set workspace_id. WI-192's BEFORE-INSERT fill trigger (mig 301)
+      // resolves it from harness_shared.projects by slug before the row is stored.
       await peerA.pg`
         INSERT INTO harness_shared.contributor_usage_events
           (harness_slug, event_id, github_user_id, device_pubkey, kind, ref_id, payload, ts, schema_version, origin)
@@ -638,44 +651,32 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
       // The capture trigger (mig 108) enqueued exactly one row (send side works).
       expect(await countOutbox(peerA.pg, 'contributor_usage_events', eventId)).toBe(1);
 
-      // ── G2 FINDING (REAL, P2): the outbox row gets workspace_id='' ──
-      // The capture function does `COALESCE(row->>'workspace_id', '')`; usage has
-      // no workspace_id column → ''. The drain filters on the booted handle's REAL
-      // workspaceId, so a real-workspace drain MISSES these rows — usage events do
-      // NOT federate through the standard drain. This is the exact class migration
-      // 103 fixed for issues (a BEFORE-INSERT fill trigger from projects), never
-      // applied to usage. Pin the current (buggy) state so a future fix flips it.
+      // ── WI-192 FIX (was the G2 FINDING gap): the outbox row now carries the REAL
+      // workspace_id ──
+      // The BEFORE-INSERT fill trigger (mig 301) resolved the row's workspace_id
+      // from harness_shared.projects (slug 'sheets' → WORKSPACE_ID) before the
+      // AFTER-INSERT capture trigger ran, so the outbox row is stamped with the
+      // real workspace_id — NOT '' — and the real-workspace drain matches it.
       const [obox] = await peerA.pg<Array<{ workspace_id: string }>>`
         SELECT workspace_id FROM harness_shared.substrate_outbox
          WHERE table_name = 'contributor_usage_events' AND key = ${eventId}
       `;
       expect(
         obox.workspace_id,
-        'G2 FINDING TRACKER: usage-events outbox rows currently get workspace_id="". ' +
-          'If this assertion fails because the value is now the real workspace_id, the fill gap was ' +
-          'FIXED — update this test to assert the standard drain federates usage end-to-end.',
-      ).toBe('');
+        'WI-192: usage-events outbox rows must now carry the REAL workspace_id ' +
+          '(the mig-301 fill trigger), not "". If this is "", the fill trigger did not fire — ' +
+          'the federation fix regressed.',
+      ).toBe(WORKSPACE_ID);
 
-      // A standard drain (real workspace filter) drains NOTHING for usage — the
-      // gap, demonstrated. (Other tables in this peer have no pending rows here.)
-      const drainedStd = await drainOutboxOnce(peerA.handle, peerA.pg);
-      expect(
-        drainedStd,
-        'G2 FINDING: the standard real-workspace drain unexpectedly picked up the usage row — ' +
-          'the workspace_id fill gap may be fixed; revisit this test.',
-      ).toBe(0);
-
-      // ── Prove the REST of the path is correct (projection + op-mapper + wire +
-      // echo-guard) by fixing the outbox row's workspace_id to the handle's, then
-      // draining — i.e. simulating the one missing piece (the fill). This is what
-      // a workspace_id fill (mig-103-for-usage) would produce. ──
-      await peerA.pg`
-        UPDATE harness_shared.substrate_outbox
-           SET workspace_id = ${WORKSPACE_ID}
-         WHERE table_name = 'contributor_usage_events' AND key = ${eventId} AND drained_at IS NULL
-      `;
+      // THE WI-192 ACCEPTANCE: the STANDARD drain (real-workspace filter, NO manual
+      // workspace_id patching) now picks up the usage row → usage events federate
+      // through the same path as features/issues.
       const drained = await drainOutboxOnce(peerA.handle, peerA.pg);
-      expect(drained, 'usage event was not drained to A’s log even after fixing workspace_id').toBeGreaterThanOrEqual(1);
+      expect(
+        drained,
+        'WI-192: the standard real-workspace drain did NOT pick up the usage row — ' +
+          'usage events still do not federate (the mig-301 fill gap is not fixed).',
+      ).toBeGreaterThanOrEqual(1);
 
       const onB = await pollUntil(
         async () => {
