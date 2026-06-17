@@ -582,9 +582,14 @@ describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     render(<LearningTab />); // default view = improvements (hive-aware)
     const picker = screen.getByLabelText('Hive lens') as HTMLSelectElement;
     expect(picker).toBeTruthy();
-    expect(within(picker).getByRole('option', { name: 'alpha-hive' })).toBeTruthy();
+    // Labels are the friendly hive name — hiveHomeLabel strips the `-hive` home
+    // suffix for display (workspace-hive-ui-2026-06-17) — while the option VALUE
+    // stays the raw slug for backend calls.
+    const alpha = within(picker).getByRole('option', { name: 'alpha' }) as HTMLOptionElement;
+    expect(alpha.value).toBe('alpha-hive');
     // remote hives are badged "(joined)".
-    expect(within(picker).getByRole('option', { name: 'beta-hive (joined)' })).toBeTruthy();
+    const beta = within(picker).getByRole('option', { name: 'beta (joined)' }) as HTMLOptionElement;
+    expect(beta.value).toBe('beta-hive');
   });
 
   it('shows the picker on the Gym and Learnings views too', () => {

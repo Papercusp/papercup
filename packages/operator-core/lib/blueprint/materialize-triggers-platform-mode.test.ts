@@ -143,7 +143,12 @@ describe('materializeBlueprintTriggers — platform-mode gate (P-070)', () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0].singleton).toBe(false);
-    expect(getCalls()).toBe(1); // per-install upsert ran
+    // The per-install upsert ran (NOT gated). NB: upsertRoutine builds its
+    // flag-gated `ON CONFLICT` target as a nested `sql` fragment (F-E1), so a
+    // single per-install upsert invokes the `sql` template more than once —
+    // assert it RAN (a non-zero count proves the branch wasn't the gated skip),
+    // not a brittle exact invocation count of upsertRoutine's internals.
+    expect(getCalls()).toBeGreaterThanOrEqual(1); // per-install upsert ran
     expect(flagRead).toBe(false); // no gateable singleton ⇒ flag never consulted
   });
 });
