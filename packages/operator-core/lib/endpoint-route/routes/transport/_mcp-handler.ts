@@ -902,16 +902,35 @@ const handler = createMcpHandler(
               }],
             };
           }
-          // Power-user workspace clamp (defense in depth). The ctx's
-          // workspaceId is already token-clamped, so any tool reading
-          // ctx.workspaceId is safe. But a handful of tools accept an
-          // explicit `workspace` ARG used as a filter (audit 2026-05-20:
-          // ui:list_clients is the only current one). For the
-          // power-user tier we overwrite that arg with the clamped
-          // workspace before the tool sees it — this defends every
-          // tool, present and future, without a per-tool audit.
+          // scoped-superuser-workspace-clamp (P-006/P-007), flag-gated. A SCOPED
+          // superuser session (concrete workspaceId, not '*') is confined to its
+          // workspace: (a) a crossWorkspace tool — which bypasses the workspace tx
+          // (getOrgPg) and spans workspaces by design (see the P-062 admin-ctx
+          // branch below) — is DENIED; (b) its per-call `workspace` arg is
+          // overwritten with the clamped workspace (mirrors the power-user clamp).
+          // Only an UNSCOPED ('*') superuser may span. Flag OFF → no-op.
+          const scopedSuperuserClamp =
+            spawnRes.ctx.isSuperuser === true &&
+            spawnRes.ctx.workspaceId !== '*' &&
+            (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
+          if (scopedSuperuserClamp && projected.crossWorkspace === true) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text' as const,
+                text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
+              }],
+            };
+          }
+          // Power-user / scoped-superuser workspace clamp (defense in depth). The
+          // ctx's workspaceId is already clamped, so any tool reading
+          // ctx.workspaceId is safe. But a handful of tools accept an explicit
+          // `workspace` ARG used as a filter (audit 2026-05-20: ui:list_clients is
+          // the only current one). We overwrite that arg with the clamped
+          // workspace before the tool sees it — this defends every tool, present
+          // and future, without a per-tool audit.
           const dispatchArgs =
-            spawnRes.ctx.isPowerUser && args && typeof args === 'object' && 'workspace' in args
+            (spawnRes.ctx.isPowerUser || scopedSuperuserClamp) && args && typeof args === 'object' && 'workspace' in args
               ? { ...args, workspace: spawnRes.ctx.workspaceId }
               : args;
           // Replay lookup (P-046 / EI-68) — placed after the profile gate so a

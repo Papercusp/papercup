@@ -4,55 +4,68 @@ import type { ActiveAccount } from './gateway';
 
 const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
 
-describe('createFailoverPool (EI-535)', () => {
+describe('createFailoverPool (EI-535) — load distribution', () => {
   it('throws with an empty account list', () => {
     expect(() => createFailoverPool([])).toThrow(/at least one account/);
   });
 
-  it('starts on the first (primary) account', () => {
-    const p = createFailoverPool([acct('a'), acct('b')]);
+  it('round-robins active() across the whole pool so unpinned egress spreads (2026-06-18 concentration bug)', () => {
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')]);
+    // Successive unpinned requests cycle through every account instead of pinning to one.
+    expect(p.active().accountId).toBe('a');
+    expect(p.active().accountId).toBe('b');
+    expect(p.active().accountId).toBe('c');
     expect(p.active().accountId).toBe('a');
   });
 
-  it('fails over to the next available account on exhaustion + makes it active', () => {
+  it('a single-account pool always returns that account', () => {
+    const p = createFailoverPool([acct('solo')]);
+    expect(p.active().accountId).toBe('solo');
+    expect(p.active().accountId).toBe('solo');
+  });
+
+  it('active() SKIPS an exhausted account so load only spreads across accounts with budget', () => {
+    const t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')], { now: () => t });
+    p.onExhausted('b', t + 3_600_000); // b out of rotation
+    const seen = new Set([p.active().accountId, p.active().accountId, p.active().accountId, p.active().accountId]);
+    expect(seen.has('b')).toBe(false);
+    expect(seen.has('a')).toBe(true);
+    expect(seen.has('c')).toBe(true);
+  });
+});
+
+describe('createFailoverPool — onExhausted failover', () => {
+  it('returns the next DIFFERENT account that still has budget', () => {
     const t = 1000;
     const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
     const next = p.onExhausted('a', t + 3_600_000);
     expect(next?.accountId).toBe('b');
-    expect(p.active().accountId).toBe('b');
   });
 
-  it('is idempotent under concurrent 429s — exhausting an already-rotated-away id is a no-op', () => {
-    const t = 1000;
-    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
-    p.onExhausted('a', t + 3_600_000); // now on b
-    expect(p.onExhausted('a', t + 3_600_000)?.accountId).toBe('b'); // straggler for 'a' → stays on b
-    expect(p.active().accountId).toBe('b');
-  });
-
-  it('returns null + stays put when ALL accounts are exhausted', () => {
-    const t = 1000;
-    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
-    p.onExhausted('a', t + 3_600_000); // → b
-    expect(p.onExhausted('b', t + 3_600_000)).toBeNull(); // a still exhausted → none available
-    expect(p.active().accountId).toBe('b'); // stays on the (now-exhausted) last active
-  });
-
-  it('an exhausted account rejoins the rotation once its reset passes', () => {
-    let t = 1000;
-    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
-    p.onExhausted('a', t + 1000); // a exhausted until t+1000 → on b
-    expect(p.onExhausted('b', t + 3_600_000)).toBeNull(); // a not yet recovered
-    t += 2000; // advance past a's reset
-    expect(p.onExhausted('b', t + 3_600_000)?.accountId).toBe('a'); // recovered a is picked
-  });
-
-  it('round-robins across 3 accounts', () => {
+  it('never returns the exhausted account itself', () => {
     const t = 1000;
     const p = createFailoverPool([acct('a'), acct('b'), acct('c')], { now: () => t });
-    expect(p.onExhausted('a', t + 9_000_000)?.accountId).toBe('b');
-    expect(p.onExhausted('b', t + 9_000_000)?.accountId).toBe('c');
-    expect(p.onExhausted('c', t + 9_000_000)).toBeNull(); // all exhausted
+    for (let i = 0; i < 6; i++) {
+      const next = p.onExhausted('a', t + 3_600_000);
+      expect(next?.accountId).not.toBe('a');
+    }
+  });
+
+  it('returns null when ALL OTHER accounts are exhausted', () => {
+    const t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 3_600_000);
+    expect(p.onExhausted('b', t + 3_600_000)).toBeNull(); // a still exhausted → none other available
+  });
+
+  it('an exhausted account rejoins rotation once its reset passes', () => {
+    let t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
+    p.onExhausted('a', t + 1000); // a exhausted until t+1000
+    expect(p.onExhausted('b', t + 3_600_000)).toBeNull(); // a not yet recovered, b just exhausted
+    t += 2000; // advance past a's reset
+    expect(p.onExhausted('b', t + 3_600_000)?.accountId).toBe('a'); // recovered a is picked
   });
 
   it('defaults to a 5h window when the reset is missing / already past', () => {
@@ -60,17 +73,17 @@ describe('createFailoverPool (EI-535)', () => {
     const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
     p.onExhausted('a', 0); // past reset → 5h default
     t += 60_000; // a minute later, a is still inside its 5h window
-    p.onExhausted('b', t + 100); // b exhausted, a not recovered → null
-    expect(p.active().accountId).toBe('b');
+    expect(p.onExhausted('b', t + 100)).toBeNull(); // b exhausted, a not recovered → none available
   });
 });
 
 describe('createFailoverPool — select() header-pinned routing (x-papercusp-account)', () => {
-  it('returns the named pool entry and does NOT move the active account', () => {
+  it('returns the named pool entry without disturbing the round-robin cursor', () => {
     const p = createFailoverPool([acct('a'), acct('b'), acct('c')]);
     expect(p.select!('b')?.accountId).toBe('b');
     expect(p.select!('c')?.accountId).toBe('c');
-    expect(p.active().accountId).toBe('a'); // select is a pure lookup — active is unchanged
+    // select is a pure lookup — it does not advance the round-robin cursor.
+    expect(p.active().accountId).toBe('a');
   });
 
   it('returns null for an unknown account id (the gateway then falls back to active())', () => {
@@ -78,13 +91,12 @@ describe('createFailoverPool — select() header-pinned routing (x-papercusp-acc
     expect(p.select!('ghost')).toBeNull();
   });
 
-  it('keeps a header-pinned request on its OWN credential even after a failover moved active', () => {
+  it('keeps a header-pinned request on its OWN credential regardless of rotation/exhaustion', () => {
     const t = 1_000_000;
     const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
-    p.onExhausted('a', t + 3_600_000); // 5h-exhaust 'a' → active rotates to 'b'
-    expect(p.active().accountId).toBe('b');
+    p.onExhausted('a', t + 3_600_000); // 5h-exhaust 'a'
     // A request still header-pinned to 'a' routes to a's credential (cache affinity is per-credential),
-    // independent of which account is currently active — that is the whole point of select().
+    // independent of rotation/exhaustion — that is the whole point of select().
     expect(p.select!('a')?.accountId).toBe('a');
     expect(p.select!('b')?.accountId).toBe('b');
   });

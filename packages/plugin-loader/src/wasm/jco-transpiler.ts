@@ -45,7 +45,7 @@ export const realJcoTranspiler: Transpiler = async (wasmBytes, outputDir) => {
   // installed (happens in JS-only-plugin deployments).
   let jco: typeof import('@bytecodealliance/jco');
   try {
-    jco = await import(/* turbopackIgnore: true */ /* webpackIgnore: true */ '@bytecodealliance/jco');
+    jco = await import(/* @vite-ignore */ /* turbopackIgnore: true */ /* webpackIgnore: true */ '@bytecodealliance/jco');
   } catch (e) {
     throw new Error(
       `@bytecodealliance/jco is not installed. WASM plugin support requires it; install via \`pnpm add @bytecodealliance/jco\`. Underlying: ${(e as Error).message}`,

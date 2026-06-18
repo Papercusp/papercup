@@ -1,16 +1,23 @@
 /**
- * Account failover pool for the inference gateway (EI-535).
+ * Account failover + load-distribution pool for the inference gateway (EI-535).
  *
- * The gateway egresses the whole fleet through ONE active account. A Max subscription has a 5h
- * unified budget; when it's exhausted the gateway would otherwise pause ALL egress until the 5h
- * reset — even while another registered account still has budget (the firefight on 2026-06-14:
- * `definitelyahuman` 100%-exhausted while `aviynw10` sat idle with budget). This pool makes the
- * gateway FAIL OVER: on a 5h exhaustion (`onExhausted`, fired from an upstream 429 with the unified
- * window rejected) it rotates to the next account that isn't itself exhausted; an exhausted account
- * rejoins the rotation once its reset time passes. With N accounts the fleet's effective budget is
- * ~N×; only when ALL are exhausted does egress pause (degrading to the pre-failover behavior).
+ * Two jobs:
+ *   1. DISTRIBUTE the fleet's UNPINNED egress ACROSS the whole pool. `active()` round-robins over
+ *      the accounts that still have budget, so concurrent load spreads evenly instead of piling onto
+ *      one account. (Before 2026-06-18 the pool egressed the whole fleet through ONE fixed `active`
+ *      account; under the fleet's concurrent opus load that single account short-term-429'd
+ *      continuously while the other 6 accounts sat IDLE — the owner-reported "accounts unused / it's
+ *      not a real rate limit, the router is broken" bug. The 5h-exhaustion failover below never fired
+ *      for short-term/per-minute throttles, so nothing ever spread the load.)
+ *   2. FAIL OVER off an account that's out of budget. `onExhausted` marks an account out of rotation
+ *      until its reset (a 5h unified-budget exhaustion, a hard usage cap, or a short bare-429 pace),
+ *      and hands the retry loop the next account that still has budget. An exhausted account rejoins
+ *      the rotation once its reset passes. Only when ALL accounts are exhausted does egress pause.
  *
- * Pure + synchronous (a small Map + an index); the credential refresh + token getters live in the
+ * Header-pinned requests (`select`, x-papercusp-account) bypass round-robin and stay on their own
+ * credential for cache-affinity — a bee keeps its warm per-credential cache regardless of rotation.
+ *
+ * Pure + synchronous (a small Map + a cursor); the credential refresh + token getters live in the
  * resolvers the entries wrap (launch.ts). `now()` is injectable for tests.
  */
 import type { ActiveAccount, AccountPool } from './gateway';
@@ -26,34 +33,48 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
   if (entries.length === 0) throw new Error('createFailoverPool: at least one account is required');
   const now = opts.now ?? (() => Date.now());
   const log = opts.log ?? (() => {});
-  /** accountId → epoch ms its 5h budget resets; an entry with a still-future value is skipped. */
+  /** accountId → epoch ms its budget resets; an entry with a still-future value is skipped. */
   const exhaustedUntil = new Map<string, number>();
-  let activeIdx = 0;
+  /** Round-robin cursor — the NEXT index to consider, advanced on every `active()` so unpinned
+   *  egress spreads across the whole pool instead of concentrating on one account. */
+  let rrIdx = 0;
 
   const available = (e: ActiveAccount): boolean => {
     const until = exhaustedUntil.get(e.accountId);
     return until === undefined || until <= now();
   };
 
+  /** The account to egress the next UNPINNED request through — round-robin across the accounts that
+   *  still have budget, so the fleet's load distributes evenly. Falls back to plain round-robin
+   *  (including paused accounts) only when EVERY account is currently exhausted, so the gateway still
+   *  picks SOMETHING (the retry loop / governor then paces it) rather than starving. */
   function active(): ActiveAccount {
-    return entries[activeIdx];
-  }
-
-  function onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null {
-    // Idempotent under concurrent 429s: only the request whose account is still active rotates;
-    // a straggler 429 for an already-rotated-away account is a no-op.
-    if (entries[activeIdx].accountId !== exhaustedId) return entries[activeIdx];
-    exhaustedUntil.set(exhaustedId, resetAt > now() ? resetAt : now() + FIVE_HOURS_MS);
-    // Round-robin from the next index to the first account that still has budget.
-    for (let step = 1; step <= entries.length; step++) {
-      const idx = (activeIdx + step) % entries.length;
+    for (let step = 0; step < entries.length; step++) {
+      const idx = (rrIdx + step) % entries.length;
       if (available(entries[idx])) {
-        activeIdx = idx;
-        log('warn', `inference-gateway: '${exhaustedId}' 5h-exhausted → failover to '${entries[idx].accountId}'`);
+        rrIdx = (idx + 1) % entries.length;
         return entries[idx];
       }
     }
-    log('error', `inference-gateway: '${exhaustedId}' exhausted and no failover account has budget — egress pauses until reset`);
+    const idx = rrIdx % entries.length;
+    rrIdx = (idx + 1) % entries.length;
+    return entries[idx];
+  }
+
+  /** Mark `exhaustedId` out of rotation until `resetAt`, and return the next DIFFERENT account that
+   *  still has budget for the retry loop to rotate onto (null when none remain → egress pauses until
+   *  a reset). Idempotent: re-exhausting an already-paused account just refreshes its reset. */
+  function onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null {
+    exhaustedUntil.set(exhaustedId, resetAt > now() ? resetAt : now() + FIVE_HOURS_MS);
+    for (let step = 0; step < entries.length; step++) {
+      const idx = (rrIdx + step) % entries.length;
+      if (entries[idx].accountId !== exhaustedId && available(entries[idx])) {
+        rrIdx = (idx + 1) % entries.length;
+        log('warn', `inference-gateway: '${exhaustedId}' out of rotation → '${entries[idx].accountId}'`);
+        return entries[idx];
+      }
+    }
+    log('error', `inference-gateway: '${exhaustedId}' exhausted and no other account has budget — egress pauses until reset`);
     return null;
   }
 
