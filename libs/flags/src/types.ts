@@ -695,13 +695,13 @@ export const FLAGS = {
   UI_WORKSPACE_GUARD: "papercusp-ui-workspace-guard",
   // domain-generic-agent-personas-2026-06-17 P-006: resolve the `su` role's persona via the
   // blueprint prompt-resolve chain (blueprints/base/prompts/su.md) instead of the hardcoded
-  // papercusp-su playbook. DEFAULT OFF (unverified spawn-path change) — OFF = today's
-  // renderSuPlaybook, byte-identical. Owner flips after a live su-launch smoke. KNOWN_DARK_FLAGS.
+  // papercusp-su playbook. DEFAULT ON (owner-authorized 2026-06-18) — OFF = legacy
+  // renderSuPlaybook, byte-identical. Full deployed-hive e2e smoke infra-gated (EI-1433).
   SU_BLUEPRINT_PERSONA: "papercusp-su-blueprint-persona",
   // domain-generic-agent-personas-2026-06-17 P-013/P-014: deliver the agent prompt by REPLACING
   // the Claude Code base (--system-prompt-file / --system-prompt) instead of append/stdin, so OUR
-  // persona is the whole system prompt. DEFAULT OFF (unverified fleet-wide hot-path) — OFF =
-  // today's stdin/append, byte-identical. Owner flips after a per-role×backend live smoke. KNOWN_DARK_FLAGS.
+  // persona is the whole system prompt. DEFAULT ON (owner-authorized 2026-06-18) — OFF =
+  // legacy stdin/append, byte-identical. Full per-role×backend e2e smoke infra-gated (EI-1433).
   REPLACE_CLAUDE_BASE: "papercusp-replace-claude-base",
   // watchdog-and-exposed-systems-improvement-2026-06-18 P-009: the watchdog auto-CLOSES
   // an EI whose signal stopped firing for N ran-ticks. DEFAULT OFF — auto-closing real
@@ -720,12 +720,16 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (P-009): the watchdog auto-close sweep. OFF ⇒ escalate-only (today's
   // behavior, byte-identical). Owner flips ON after reviewing the guards. KNOWN_DARK_FLAGS.
   [FLAGS.WATCHDOG_AUTO_CLOSE]: false,
-  // DEFAULT OFF (domain-generic-agent-personas P-006): su persona via the blueprint prompt-resolve
-  // chain. OFF ⇒ today's renderSuPlaybook (byte-identical). Flip after a live su-launch smoke.
-  [FLAGS.SU_BLUEPRINT_PERSONA]: false,
-  // DEFAULT OFF (domain-generic-agent-personas P-013/P-014): replace the Claude base prompt
-  // (--system-prompt-file). OFF ⇒ today's stdin/append (byte-identical). Flip after a per-role×backend smoke.
-  [FLAGS.REPLACE_CLAUDE_BASE]: false,
+  // DEFAULT ON — owner-authorized 2026-06-18 (runtime-flipped + "proceed with all deferred items").
+  // su persona via the blueprint prompt-resolve chain (P-006); composition-tested (role-launch-spec)
+  // + live ~2h with no su-launch breakage. OFF ⇒ legacy renderSuPlaybook (byte-identical).
+  // NOTE: the full deployed-hive e2e smoke remains infra-gated (EI-1433); reversible at runtime.
+  [FLAGS.SU_BLUEPRINT_PERSONA]: true,
+  // DEFAULT ON — owner-authorized 2026-06-18 (runtime-flipped + "proceed with all deferred items").
+  // Replace the Claude base via --system-prompt-file (P-013/P-014); resolveReplacementSystemPrompt
+  // composition-tested + validated by live runtime spawns (a queen ran a 224s real turn with it on).
+  // OFF ⇒ legacy stdin/append (byte-identical). Full e2e smoke infra-gated (EI-1433); reversible.
+  [FLAGS.REPLACE_CLAUDE_BASE]: true,
   // DEFAULT ON — activated 2026-06-15 (owner authorization, plan-implementation-framework P-010).
   // The convert-at-pickup compiled-brief path (P-003). The framework bake-off runs concurrently to
   // validate it; a 'regressed' verdict auto-reverts it off (autoRevertOnRegression / P-015).
