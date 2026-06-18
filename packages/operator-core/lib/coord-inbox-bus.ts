@@ -28,12 +28,12 @@
  * 1 connection on the embedded-PG admin URL). Host-only — opens a long-lived PG
  * connection, so only the Hono host imports it (never a browser/Vite chunk).
  */
-import postgres from 'postgres';
-import { getOrgPg } from '@papercusp/db-org';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
-import { hubListen, listenHubEnabled } from './pg-listen-hub';
+import postgres from "postgres";
+import { getOrgPg } from "@papercusp/db-org";
+import { DEFAULT_COORD_WORKSPACE } from "@papercusp/coordination/event-log";
+import { evaluateDataCondition, type DataCondition } from "@papercusp/rules";
+import { getHarnessAdminUrl } from "./embedded-pg-discovery";
+import { hubListen, listenHubEnabled } from "./pg-listen-hub";
 
 /** A wake handler — invoked once when a human-relevant coord row lands. */
 type Handler = () => void;
@@ -72,11 +72,11 @@ let startPromise: Promise<void> | null = null;
  */
 const HUMAN_RELEVANT_ROW: DataCondition = {
   any: [
-    { surface: { equals: 'escalations' } },
+    { surface: { equals: "escalations" } },
     {
       all: [
-        { surface: { in: ['messages', 'handoffs'] } },
-        { to: { contains: 'human' } },
+        { surface: { in: ["messages", "handoffs"] } },
+        { to: { contains: "human" } },
       ],
     },
   ],
@@ -89,7 +89,7 @@ export function isHumanRelevantRow(surface: string, to: unknown): boolean {
 
 /** Normalize a jsonb `to` value (postgres-js may hand back a string or array). */
 function parseToArray(v: unknown): unknown {
-  if (typeof v === 'string') {
+  if (typeof v === "string") {
     try {
       return JSON.parse(v);
     } catch {
@@ -143,7 +143,7 @@ async function initCursor(): Promise<void> {
     `;
     cursor = Number(rows[0]?.max_id ?? 0) || 0;
   } catch (err) {
-    console.error('[coord-inbox-bus] cursor init failed:', err);
+    console.error("[coord-inbox-bus] cursor init failed:", err);
     cursor = 0;
   }
 }
@@ -151,7 +151,9 @@ async function initCursor(): Promise<void> {
 /** Read rows newer than the cursor, advance it, and report whether any of them
  *  is human-relevant. Indexed `id > cursor` scan — usually one row per NOTIFY. */
 async function peekHumanRelevant(): Promise<boolean> {
-  const rows = await getOrgPg().sql<{ id: string; surface: string; to_json: unknown }[]>`
+  const rows = await getOrgPg().sql<
+    { id: string; surface: string; to_json: unknown }[]
+  >`
     SELECT id::text AS id, surface, body->'to' AS to_json
       FROM harness_shared.coord_event_log
      WHERE workspace_id = ${WS} AND id > ${cursor}
@@ -181,14 +183,14 @@ async function onNotify(): Promise<void> {
       try {
         human = await (peekOverride ?? peekHumanRelevant)();
       } catch (err) {
-        console.error('[coord-inbox-bus] peek failed:', err);
+        console.error("[coord-inbox-bus] peek failed:", err);
       }
       if (human) {
         for (const h of handlers) {
           try {
             h();
           } catch (err) {
-            console.error('[coord-inbox-bus] handler threw:', err);
+            console.error("[coord-inbox-bus] handler threw:", err);
           }
         }
       }
@@ -209,18 +211,21 @@ async function ensureStarted(): Promise<void> {
       // never on this connection — so when the hub is on, the hub connection is
       // LISTEN-only, exactly as the hub requires.
       if (listenHubEnabled()) {
-        hubUnsub = await hubListen('coord_inbox', () => {
+        hubUnsub = await hubListen("coord_inbox", () => {
           void onNotify();
         });
       } else {
-        listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
-        await listenerSql.listen('coord_inbox', () => {
+        listenerSql = postgres(getHarnessAdminUrl(), {
+          onnotice: () => {},
+          max: 1,
+        });
+        await listenerSql.listen("coord_inbox", () => {
           void onNotify();
         });
       }
       started = true;
     })().catch((err) => {
-      console.error('[coord-inbox-bus] failed to start:', err);
+      console.error("[coord-inbox-bus] failed to start:", err);
       started = false;
       listenerSql = null;
       hubUnsub = null;
@@ -274,7 +279,13 @@ export const _coordInboxTestSeam = {
     cursor = v;
   },
   /** Snapshot of the observer state machine. */
-  state: (): { cursor: number; draining: boolean; dirty: boolean; handlerCount: number; started: boolean } => ({
+  state: (): {
+    cursor: number;
+    draining: boolean;
+    dirty: boolean;
+    handlerCount: number;
+    started: boolean;
+  } => ({
     cursor,
     draining,
     dirty,

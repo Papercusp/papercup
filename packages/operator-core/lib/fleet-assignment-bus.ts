@@ -19,9 +19,9 @@
  * Host-only — opens a long-lived PG connection, so only the Hono host imports
  * it (never a browser/Vite chunk).
  */
-import postgres from 'postgres';
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
-import { hubListen, listenHubEnabled } from './pg-listen-hub';
+import postgres from "postgres";
+import { getHarnessAdminUrl } from "./embedded-pg-discovery";
+import { hubListen, listenHubEnabled } from "./pg-listen-hub";
 
 export interface FleetAssignmentChange {
   workspaceId: string;
@@ -73,9 +73,11 @@ async function maybeCloseListener(): Promise<void> {
 }
 
 /** Parse the NOTIFY payload "<workspace_id>::<source>::<agent_id>" (best-effort). */
-export function parseFleetAssignmentPayload(payload: string | undefined): FleetAssignmentChange {
-  const [workspaceId = '', source = '', ...rest] = (payload ?? '').split('::');
-  return { workspaceId, source, agentId: rest.join('::') };
+export function parseFleetAssignmentPayload(
+  payload: string | undefined,
+): FleetAssignmentChange {
+  const [workspaceId = "", source = "", ...rest] = (payload ?? "").split("::");
+  return { workspaceId, source, agentId: rest.join("::") };
 }
 
 function fanout(change: FleetAssignmentChange): void {
@@ -83,7 +85,7 @@ function fanout(change: FleetAssignmentChange): void {
     try {
       h(change);
     } catch (err) {
-      console.error('[fleet-assignment-bus] handler threw:', err);
+      console.error("[fleet-assignment-bus] handler threw:", err);
     }
   }
 }
@@ -97,13 +99,16 @@ async function ensureStarted(): Promise<void> {
       fanout(parseFleetAssignmentPayload(payload));
     };
     if (listenHubEnabled()) {
-      hubUnsub = await hubListen('fleet_assignment', onNotify);
+      hubUnsub = await hubListen("fleet_assignment", onNotify);
     } else {
-      listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
-      await listenerSql.listen('fleet_assignment', onNotify);
+      listenerSql = postgres(getHarnessAdminUrl(), {
+        onnotice: () => {},
+        max: 1,
+      });
+      await listenerSql.listen("fleet_assignment", onNotify);
     }
   } catch (err) {
-    console.error('[fleet-assignment-bus] failed to start:', err);
+    console.error("[fleet-assignment-bus] failed to start:", err);
     started = false;
     listenerSql = null;
     hubUnsub = null;

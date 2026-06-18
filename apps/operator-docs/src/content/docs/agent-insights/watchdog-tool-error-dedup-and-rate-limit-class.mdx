@@ -1,6 +1,13 @@
 ---
 title: 'Watchdog can SEE a tool failing yet file nothing — dedup masking + the rate-limit class'
-description: When a tool (e.g. memory:search) is failing for a NEW reason but the watchdog files no improvement, the cause is usually dedup masking — the repeated-tool-error key is `<tool>:<class>`, so a NEW failure mode collapses onto an already-OPEN EI about a DIFFERENT bug. Also: external provider rate-limits (OpenAI embed 429 / TPM) used to misclassify as `structural` code bugs. Diagnose via watchdog_ticks.known_open_keys + the EI's real "Sample error:" body, not the key alone.
+description: >-
+  When a tool (e.g. memory:search) is failing for a NEW reason but the watchdog
+  files no improvement, the cause is usually dedup masking — the
+  repeated-tool-error key is `<tool>:<class>`, so a NEW failure mode collapses
+  onto an already-OPEN EI about a DIFFERENT bug. Also: external provider
+  rate-limits (OpenAI embed 429 / TPM) used to misclassify as `structural` code
+  bugs. Diagnose via watchdog_ticks.known_open_keys + the EI's real "Sample
+  error:" body, not the key alone.
 discovered: 2026-06-17
 tags: [watchdog, improvements, dedup, rate-limit, embeddings, memory, openai, diagnostics]
 status: active

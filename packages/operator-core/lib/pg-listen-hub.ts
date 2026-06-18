@@ -20,12 +20,12 @@
  * that also runs a query (coord-inbox's peek) routes that query through its own
  * client (getOrgPg().sql), not the hub connection.
  */
-import postgres from 'postgres';
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import postgres from "postgres";
+import { getHarnessAdminUrl } from "./embedded-pg-discovery";
 
 /** Whether the shared listen hub is enabled (default OFF). */
 export function listenHubEnabled(): boolean {
-  return process.env.PAPERCUSP_LISTEN_HUB === '1';
+  return process.env.PAPERCUSP_LISTEN_HUB === "1";
 }
 
 /** The single shared LISTEN connection (lazily created, nulled on last unsub). */

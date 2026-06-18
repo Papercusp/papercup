@@ -13,11 +13,19 @@
  * Run: cd packages/operator-core && \
  *   npx vitest run --config vitest.integration.config.ts lib/pg-listen-hub.integration.test.ts
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import postgres, { type Sql } from 'postgres';
-import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
-import { hubListen, listenHubEnabled, _stopHubForTests } from './pg-listen-hub';
-import { _resetHarnessAdminUrlCacheForTests } from './embedded-pg-discovery';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
+import postgres, { type Sql } from "postgres";
+import { createFreshTestDb, type MigratedTestDb } from "@papercusp/test-config";
+import { hubListen, listenHubEnabled, _stopHubForTests } from "./pg-listen-hub";
+import { _resetHarnessAdminUrlCacheForTests } from "./embedded-pg-discovery";
 
 let db: MigratedTestDb;
 /** A separate client we use to issue the NOTIFYs and inspect pg_stat_activity. */
@@ -27,7 +35,7 @@ const SAVED_ADMIN_URL = process.env.HARNESS_ADMIN_DATABASE_URL;
 const SAVED_FLAG = process.env.PAPERCUSP_LISTEN_HUB;
 
 beforeAll(async () => {
-  db = await createFreshTestDb({ prefix: 'listenhub' });
+  db = await createFreshTestDb({ prefix: "listenhub" });
   probe = postgres(db.url, { max: 2, onnotice: () => {} });
 });
 
@@ -40,23 +48,30 @@ beforeEach(() => {
   // Point the hub at the fresh DB and arm the flag, then drop the cached URL so
   // the next getHarnessAdminUrl() re-resolves to it.
   process.env.HARNESS_ADMIN_DATABASE_URL = db.url;
-  process.env.PAPERCUSP_LISTEN_HUB = '1';
+  process.env.PAPERCUSP_LISTEN_HUB = "1";
   _resetHarnessAdminUrlCacheForTests();
 });
 
 afterEach(async () => {
   await _stopHubForTests();
   _resetHarnessAdminUrlCacheForTests();
-  if (SAVED_ADMIN_URL === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+  if (SAVED_ADMIN_URL === undefined)
+    delete process.env.HARNESS_ADMIN_DATABASE_URL;
   else process.env.HARNESS_ADMIN_DATABASE_URL = SAVED_ADMIN_URL;
   if (SAVED_FLAG === undefined) delete process.env.PAPERCUSP_LISTEN_HUB;
   else process.env.PAPERCUSP_LISTEN_HUB = SAVED_FLAG;
 });
 
 /** Resolve when `value` is received, or reject after `ms`. */
-function awaitNotify(register: (resolve: (v: string) => void) => void, ms = 5000): Promise<string> {
+function awaitNotify(
+  register: (resolve: (v: string) => void) => void,
+  ms = 5000,
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timed out waiting for NOTIFY')), ms);
+    const timer = setTimeout(
+      () => reject(new Error("timed out waiting for NOTIFY")),
+      ms,
+    );
     register((v) => {
       clearTimeout(timer);
       resolve(v);
@@ -72,8 +87,8 @@ function countHubBackends(): Promise<number> {
   `.then((rows) => (rows[0] as { n: number }).n);
 }
 
-describe('pg-listen-hub (PAPERCUSP_LISTEN_HUB=1)', () => {
-  it('multiplexes two channels onto ONE backend and fires both callbacks', async () => {
+describe("pg-listen-hub (PAPERCUSP_LISTEN_HUB=1)", () => {
+  it("multiplexes two channels onto ONE backend and fires both callbacks", async () => {
     expect(listenHubEnabled()).toBe(true);
 
     let resolveA!: (v: string) => void;
@@ -85,20 +100,24 @@ describe('pg-listen-hub (PAPERCUSP_LISTEN_HUB=1)', () => {
       resolveB = r;
     });
 
-    const unsubA = await hubListen('hub_chan_a', (payload) => resolveA(payload));
-    const unsubB = await hubListen('hub_chan_b', (payload) => resolveB(payload));
+    const unsubA = await hubListen("hub_chan_a", (payload) =>
+      resolveA(payload),
+    );
+    const unsubB = await hubListen("hub_chan_b", (payload) =>
+      resolveB(payload),
+    );
 
     // EXACTLY ONE backend serves both subscriptions (the collapse 4→1 proof).
     const backendsWhileListening = await countHubBackends();
     expect(backendsWhileListening).toBe(1);
 
     // Fire both channels from the separate probe client.
-    await probe.notify('hub_chan_a', 'payload-A');
-    await probe.notify('hub_chan_b', 'payload-B');
+    await probe.notify("hub_chan_a", "payload-A");
+    await probe.notify("hub_chan_b", "payload-B");
 
     const [a, b] = await Promise.all([gotA, gotB]);
-    expect(a).toBe('payload-A');
-    expect(b).toBe('payload-B');
+    expect(a).toBe("payload-A");
+    expect(b).toBe("payload-B");
 
     // First unsub keeps the (still-referenced) connection alive…
     unsubA();

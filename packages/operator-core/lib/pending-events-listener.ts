@@ -13,9 +13,9 @@
  * The trigger that fires NOTIFY lives in libs/db/sql/009-workspace-scoping.sql.
  */
 
-import postgres from 'postgres';
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
-import { hubListen, listenHubEnabled } from './pg-listen-hub';
+import postgres from "postgres";
+import { getHarnessAdminUrl } from "./embedded-pg-discovery";
+import { hubListen, listenHubEnabled } from "./pg-listen-hub";
 
 export interface PendingEventNotification {
   id: string;
@@ -76,12 +76,12 @@ function onNotify(payload: string): void {
         h(evt);
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.error('[pending_events_listener] handler threw:', err);
+        console.error("[pending_events_listener] handler threw:", err);
       }
     }
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error('[pending_events_listener] bad payload:', err);
+    console.error("[pending_events_listener] bad payload:", err);
   }
 }
 
@@ -90,17 +90,17 @@ async function ensureStarted(): Promise<void> {
   started = true;
   try {
     if (listenHubEnabled()) {
-      hubUnsub = await hubListen('pending_events_inserted', onNotify);
+      hubUnsub = await hubListen("pending_events_inserted", onNotify);
     } else {
       listenerSql = postgres(adminUrl(), {
         onnotice: () => {},
         max: 1,
       });
-      await listenerSql.listen('pending_events_inserted', onNotify);
+      await listenerSql.listen("pending_events_inserted", onNotify);
     }
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error('[pending_events_listener] failed to start:', err);
+    console.error("[pending_events_listener] failed to start:", err);
     started = false;
     listenerSql = null;
     hubUnsub = null;

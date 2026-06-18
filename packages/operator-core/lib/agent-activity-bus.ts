@@ -16,9 +16,9 @@
  * opens a long-lived PG connection, so only the Hono host imports it (never a
  * browser/Vite chunk).
  */
-import postgres from 'postgres';
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
-import { hubListen, listenHubEnabled } from './pg-listen-hub';
+import postgres from "postgres";
+import { getHarnessAdminUrl } from "./embedded-pg-discovery";
+import { hubListen, listenHubEnabled } from "./pg-listen-hub";
 
 /** A wake handler — invoked once per notification with the notified owner_id (may be
  *  empty). The handler queries new rows itself (by its own cursor + filter). */
@@ -63,9 +63,9 @@ async function maybeCloseListener(): Promise<void> {
 
 /** Parse the NOTIFY payload "<workspace_id>::<owner_id>" → owner_id (best-effort). */
 export function ownerFromPayload(payload: string | undefined): string {
-  if (!payload) return '';
-  const idx = payload.indexOf('::');
-  return idx >= 0 ? payload.slice(idx + 2) : '';
+  if (!payload) return "";
+  const idx = payload.indexOf("::");
+  return idx >= 0 ? payload.slice(idx + 2) : "";
 }
 
 function fanout(ownerId: string): void {
@@ -73,7 +73,7 @@ function fanout(ownerId: string): void {
     try {
       h(ownerId);
     } catch (err) {
-      console.error('[agent-activity-bus] handler threw:', err);
+      console.error("[agent-activity-bus] handler threw:", err);
     }
   }
 }
@@ -87,13 +87,16 @@ async function ensureStarted(): Promise<void> {
       fanout(ownerFromPayload(payload));
     };
     if (listenHubEnabled()) {
-      hubUnsub = await hubListen('agent_activity', onNotify);
+      hubUnsub = await hubListen("agent_activity", onNotify);
     } else {
-      listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
-      await listenerSql.listen('agent_activity', onNotify);
+      listenerSql = postgres(getHarnessAdminUrl(), {
+        onnotice: () => {},
+        max: 1,
+      });
+      await listenerSql.listen("agent_activity", onNotify);
     }
   } catch (err) {
-    console.error('[agent-activity-bus] failed to start:', err);
+    console.error("[agent-activity-bus] failed to start:", err);
     started = false;
     listenerSql = null;
     hubUnsub = null;

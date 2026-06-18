@@ -1,0 +1,101 @@
+/**
+ * swe-pro-seam.ts — the SWE-bench-Pro {@link CloneGradeSeam} (plan benchmark-capability-injection-redesign
+ * P-003), wired against the steward's locked coordination-topology contract (coordination-topology.ts,
+ * 2026-06-18). The topology RUNTIME (CoordinationStrategy impl + the shared pool driver) is the steward's;
+ * this is the per-BENCHMARK seam SWE-Pro supplies so every topology arm (su-independent / dist-* / hive)
+ * clones + grades SWE-Pro identically (fairness C5).
+ *
+ * modality `diff`: clone the task repo @ base commit → a scratch worktree (the agent edits it) → `extractDiff`
+ * (base→worktree git-diff, minus the grader's own test files) → the official SWE-bench-Pro grader
+ * (`swe_bench_pro_eval` via _xbench_grade.py + local docker) → resolved. Composes the EXISTING, tested
+ * `makeCloneTaskRepo` + `makeExtractDiff` (clone.ts) — no re-roll. The real grader is docker-gated, so it is
+ * dependency-INJECTED (`gradeDiff`): the unit test injects a fake (no docker/git), the run wiring injects the
+ * real Pro grader.
+ *
+ * ROW CONTRACT (steward-confirmed 2026-06-18, matches buildCapabilityAttribution's C1 same-denominator):
+ *   - clone/extract/grade INFRA crash → `{ resolved: null, graderStatus: 'error' }` (an infra non-completion;
+ *     bench-metrics reconciles null→false in the C1 headline, never silently dropped).
+ *   - EMPTY diff (the agent produced nothing) → `{ resolved: false, graderStatus: 'empty-diff' }` (a genuine
+ *     capability-fail — an empty diff cannot pass; no wasted grader run).
+ *   - graded → `{ resolved, graderStatus: resolved ? 'passed' : 'failed' }`.
+ * `teardown` is NEVER-THROW + ALWAYS run (success / capability-fail / infra) so a run never leaks worktrees.
+ */
+import type { CloneGradeSeam } from './coordination-topology';
+import { makeCloneTaskRepo, makeExtractDiff } from './clone';
+import type { BenchTask, CloneTaskRepo, ExtractDiff, TaskCheckout } from './types';
+
+/** The real per-instance Pro grade: given a task + its diff, run the official grader → resolved. Docker-gated
+ *  (swe_bench_pro_eval + local docker images), so it is injected; the production run wiring binds it. */
+export type SweProGradeDiff = (task: BenchTask, diff: string) => Promise<boolean>;
+
+export interface SweProSeamDeps {
+  /** Clone seam (default the real {@link makeCloneTaskRepo}). */
+  cloneTaskRepo?: CloneTaskRepo;
+  /** Diff-extraction seam (default the real {@link makeExtractDiff}). */
+  extractDiff?: ExtractDiff;
+  /** The official Pro grader (REQUIRED — docker-gated; the test injects a fake, the run injects the real one). */
+  gradeDiff: SweProGradeDiff;
+  /** Scratch root the worktrees clone under. */
+  workRoot?: string;
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Build the SWE-bench-Pro {@link CloneGradeSeam} (handle = {@link TaskCheckout}). Every topology arm the
+ * steward's runtime drives uses this ONE seam, so clone + grade are identical across arms (C5).
+ */
+export function makeSweProCloneGradeSeam(deps: SweProSeamDeps): CloneGradeSeam<TaskCheckout> {
+  const clone = deps.cloneTaskRepo ?? makeCloneTaskRepo();
+  const extract = deps.extractDiff ?? makeExtractDiff();
+  const gradeDiff = deps.gradeDiff;
+
+  return {
+    modality: 'diff',
+
+    clone: (task: BenchTask): Promise<TaskCheckout> => clone(task, deps.workRoot ? { workRoot: deps.workRoot } : undefined),
+
+    async grade(task: BenchTask, handle: TaskCheckout) {
+      let diff: string;
+      try {
+        diff = await extract(handle, task);
+      } catch (e) {
+        // extracting the submission failed = infra (the agent's work couldn't be read) → null (reconciled false).
+        return { resolved: null, graderStatus: 'error', detail: { stage: 'extract', error: errMsg(e) } };
+      }
+      if (!diff.trim()) {
+        // The agent produced no diff → a genuine capability-fail (an empty diff cannot pass); skip the grader.
+        return { resolved: false, graderStatus: 'empty-diff' };
+      }
+      try {
+        const resolved = await gradeDiff(task, diff);
+        return { resolved, graderStatus: resolved ? 'passed' : 'failed' };
+      } catch (e) {
+        // The official grader crashed (docker/harness infra) → null, not a false (never penalize the arm).
+        return { resolved: null, graderStatus: 'error', detail: { stage: 'grade', error: errMsg(e) } };
+      }
+    },
+
+    async teardown(handle: TaskCheckout): Promise<void> {
+      // Never-throw, always-run: a run must not leak worktrees on ANY path.
+      await handle.cleanup().catch(() => {});
+    },
+  };
+}
+
+/**
+ * The plan's framework arms → the steward's topology BLUEPRINT ids (resolved via `resolveCoordinationSpec`).
+ * Per the steward's directive (2026-06-18): vanilla = the no-coordination pole; `su` = a flat-distributed
+ * self-claim topology; `hive` = the central Queen. The exact `su` distributed variant is a study knob
+ * (dist-broadcast / dist-peer-review / dist-blackboard / dist-repo-huddle) — `dist-broadcast` is the default
+ * single-capability coord arm; confirm the variant with the steward when the runtime pilot runs.
+ */
+export const SWE_PRO_TOPOLOGY_ARMS = {
+  vanilla: 'su-independent',
+  su: 'dist-broadcast',
+  hive: 'hive',
+} as const;
+
+export type SweProFrameworkArm = keyof typeof SWE_PRO_TOPOLOGY_ARMS;
