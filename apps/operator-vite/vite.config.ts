@@ -98,6 +98,18 @@ export default defineConfig({
       // winston-transport at module scope, which only resolves by accident on
       // hosts with a stray $HOME/node_modules (broke the macOS build VM).
       { find: /^@dbos-inc\/dbos-sdk(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/dbos-browser.ts') },
+      // Server-only P2P substrate networking (corestore/hyperswarm/hyperdht/
+      // hyperbee/hypercore/udx-native → sodium-universal → the native
+      // sodium-native addon). Reachable through the route-tree import graph via
+      // operator-core backend modules (work-items, issues-engineer,
+      // orchestrator/*, hive-*, sync/hyperbee/*) but tree-shaken out of the
+      // browser bundle; Rolldown still hard-fails resolving the native deps
+      // during its scan. Shim them out — the SPA never runs substrate code.
+      // (compact-encoding/protomux/b4a are pure-JS browser-safe — NOT shimmed.)
+      {
+        find: /^(corestore|hyperswarm|hyperdht|hyperbee|hypercore|hypercore-crypto|sodium-universal|sodium-native|sodium-secretstream|udx-native|dht-rpc|blind-relay)(?:\/.*)?$/,
+        replacement: resolve(import.meta.dirname, 'src/shims/substrate-browser.ts'),
+      },
       { find: '@', replacement: operatorRoot },
     ],
     // Operator components and the Vite shell must share ONE React

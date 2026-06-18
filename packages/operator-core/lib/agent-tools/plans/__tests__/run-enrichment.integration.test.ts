@@ -18,6 +18,16 @@ vi.mock('@papercusp/db-org', () => ({
   withWorkspace: (_ws: string, cb: (tx: unknown) => unknown) => cb(org.adminSql),
 }));
 
+// listPlanRuns filters `WHERE r.workspace_id = activeWorkspaceId()` (F-B3
+// workspace-data-isolation). activeWorkspaceId() is process-GLOBAL (request-ALS →
+// PAPERCUSP_WORKSPACE_ID → registry default), uncontrolled here — and the seeded
+// plan_runs.workspace_id (set to WS below) must equal it or the read returns []
+// intermittently. Pin the active workspace to the seed workspace.
+vi.mock('../../../workspace-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../workspace-registry')>();
+  return { ...actual, activeWorkspaceId: () => 'ws-x' };
+});
+
 // Import AFTER the mock is declared (vi.mock is hoisted).
 const { listPlanRuns, computePlanRunRollup } = await import('../runs');
 type PlanRunSummary = Awaited<ReturnType<typeof listPlanRuns>>[number];
@@ -40,9 +50,9 @@ async function seedRun(opts: { outcome: 'success' | 'partial' | 'failed'; launch
   const sql = org.adminSql;
   const rows = await sql<{ id: number }[]>`
     INSERT INTO harness_shared.plan_runs
-      (harness_slug, plan_slug, plan_content_hash, session_id, launched_by, launched_at,
+      (workspace_id, harness_slug, plan_slug, plan_content_hash, session_id, launched_by, launched_at,
        status, title, updated_at, run_type, trigger, run_seq, outcome, finished_at, instance_plan_slug)
-    VALUES (${HARNESS}, ${TEMPLATE}, 'h', ${'s' + opts.launchedAt}, 'system:plan-run', ${opts.launchedAt},
+    VALUES ('ws-x', ${HARNESS}, ${TEMPLATE}, 'h', ${'s' + opts.launchedAt}, 'system:plan-run', ${opts.launchedAt},
             ${opts.outcome === 'failed' ? 'failed' : 'done'}, 'r', ${opts.launchedAt}, 'scheduled', 'scheduled', 0,
             ${opts.outcome}, ${opts.launchedAt + opts.durationMs}, ${TEMPLATE + '@run-' + opts.launchedAt})
     RETURNING id`;

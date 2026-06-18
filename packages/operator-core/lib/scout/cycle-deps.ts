@@ -28,7 +28,7 @@ import { buildStateOfHiveReaders } from './corpus-digest-deps';
 import { runIdeators } from './ideators';
 import { critiqueIdeas } from './critics';
 import { recombineProposals } from './recombine';
-import { routeProposals, wholeSystemInstanceOverride, type CapturePort, type RouterPorts } from './router';
+import { routeProposals, makeWholeSystemInstanceOverride, type CapturePort, type RouterPorts } from './router';
 import {
   buildCapturePort,
   buildGymDispatchPort,
