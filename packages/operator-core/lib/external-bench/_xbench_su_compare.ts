@@ -57,9 +57,10 @@ import { readFileSync } from 'node:fs';
 import { bindSuIndependentBacklogDriver, SU_INDEPENDENT_ARM } from './su-independent-backlog';
 import { runHiveBacklog } from './hive-backlog';
 import { retireBenchDebris, type DebrisSql } from './bench-teardown';
+import { resolveBenchWorkspace } from './bench-workspace';
 import type { BenchTask } from './types';
 
-const WORKSPACE_ID = process.env.XBENCH_WORKSPACE_ID ?? 'papercusp-workspace';
+const WORKSPACE_ID = resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID); // dedicated benchmark workspace, never production (plan benchmark-workspace-isolation)
 const ARM = SU_INDEPENDENT_ARM; // 'su-independent' — this launcher serves exactly one arm.
 const SAMPLE = process.env.XBENCH_SAMPLE ?? '/tmp/xbench-sample.jsonl';
 const REPOS_ROOT = process.env.XBENCH_REPOS_ROOT ?? '/tmp/xbench-repos';
