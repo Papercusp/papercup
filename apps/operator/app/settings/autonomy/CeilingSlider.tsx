@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import type { CSSProperties } from 'react';
 
 /**
@@ -140,8 +142,8 @@ export function CeilingSlider({
         const active = i === idx;
         const filled = i <= idx;
         return (
-          <button
-            key={lvl}
+          <Tooltip key={lvl} label={compact ? CEILING_SHORT_LABEL[lvl] : undefined}><button
+
             type="button"
             role="radio"
             aria-checked={active}
@@ -149,7 +151,7 @@ export function CeilingSlider({
             disabled={disabled}
             tabIndex={active ? 0 : -1}
             data-level={lvl}
-            title={compact ? CEILING_SHORT_LABEL[lvl] : undefined}
+
             style={compact ? compactStopStyle(disabled) : stopStyle(disabled)}
             onClick={() => {
               if (!disabled && lvl !== value) onChange(lvl);
@@ -157,7 +159,7 @@ export function CeilingSlider({
           >
             <span aria-hidden="true" style={dotStyle(filled, active)} />
             {!compact && <span style={labelStyle(active)}>{CEILING_SHORT_LABEL[lvl]}</span>}
-          </button>
+          </button></Tooltip>
         );
       })}
     </div>
