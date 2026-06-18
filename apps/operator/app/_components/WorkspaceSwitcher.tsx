@@ -80,12 +80,27 @@ export default function WorkspaceSwitcher() {
       validate: (v) => v.length > 64 ? 'Max 64 characters' : null,
     });
     if (!name) return;
+    let created: Workspace;
     try {
-      await createWorkspace(name);
-      await refresh();
-      toast.success(`workspace "${name}" created`);
+      created = await createWorkspace(name);
     } catch (e: any) {
       toast.error(`create failed: ${e?.message ?? e}`);
+      return;
+    }
+    // Auto-switch this window straight into the freshly created workspace —
+    // creating it IS the intent to use it, so (unlike onSwitch) there's no
+    // confirm dialog. switchWorkspace persists the registry default then
+    // hard-navigates to ?ws=<id>, reloading the view under us; the reload
+    // makes refresh() moot. Only if the switch itself fails do we fall back
+    // to refreshing the list so the new workspace is at least pickable.
+    setOpen(false);
+    progress.start(0.08, 0, true);
+    try {
+      await switchWorkspace(created.id, { resetTo: `/harness?ws=${encodeURIComponent(created.id)}` });
+    } catch (e: any) {
+      toast.error(`workspace "${name}" created, but switch failed: ${e?.message ?? e}`);
+      progress.stop(120);
+      await refresh();
     }
   };
 

@@ -27,6 +27,8 @@ function policy(ceiling: AutonomyCategoryPolicy['ceiling']): (c: string) => Prom
 }
 /** ARMED + permissive: the gate rules `auto` for any non-protected mapped action. */
 const armedAuto: DeciderDeps = { isArmed: async () => true, isFullAutonomy: async () => false, getPolicy: policy('critical') };
+/** ARMED with a `low` ceiling — matches the live `work-prioritization` config (EI-570 regression). */
+const armedLow: DeciderDeps = { isArmed: async () => true, isFullAutonomy: async () => false, getPolicy: policy('low') };
 /** The shipped default — disarmed; the gate gates EVERYTHING. */
 const disarmed: DeciderDeps = { isArmed: async () => false, isFullAutonomy: async () => false, getPolicy: policy('never-auto') };
 
@@ -53,6 +55,21 @@ describe('arm-reversible-action — P-114 two-phase seam', () => {
       expect(r).not.toBeNull();
       expect(r!.posture).toBe('auto');
       expect(r!.category).toBe('work-prioritization');
+    });
+
+    it('arms at the category ceiling when riskTier is absent (EI-570 regression: bees never pass riskTier, must not fail-safe to critical)', async () => {
+      // work_items:set_state → work-prioritization, ceiling=low; absent riskTier must
+      // derive 'low' from the ceiling → low ≤ low → auto → armed (not null).
+      const r = await planReversibleArm(SQL, WS, { action: 'work_items:set_state' }, makeDeps(armedLow));
+      expect(r).not.toBeNull();
+      expect(r!.posture).toBe('auto');
+      expect(r!.riskTier).toBe('low');
+    });
+
+    it('returns null for an unmapped action even when armed (category=null → no ceiling proxy → critical fail-safe)', async () => {
+      // An action not in the category map → categoryForAction returns null → no ceiling proxy
+      // → riskTier stays undefined → decideAutonomy defaults to critical → gated.
+      expect(await planReversibleArm(SQL, WS, { action: 'unknown:verb' }, makeDeps(armedAuto))).toBeNull();
     });
 
     it('returns null for an empty workspace', async () => {

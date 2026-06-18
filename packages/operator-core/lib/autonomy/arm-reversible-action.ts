@@ -47,6 +47,8 @@ import {
   type DeciderDeps,
   type AutonomyDecision,
 } from './decider';
+import { categoryForAction } from './capability-category-map';
+import { effectiveCeiling as computeEffectiveCeiling } from './policy';
 import { armTripwireForDecision } from './tripwire/scan';
 import type { RevertHandle } from './tripwire/core';
 import { recordDecisionDisposition } from '../decision-ledger/disposition';
@@ -64,9 +66,10 @@ export interface PlanReversibleArmInput {
   action: string;
   /**
    * The acting agent's declared per-ITEM risk (the gate's risk half is per-item, not
-   * per-verb — emit.ts keeps action risk NULL by design). Absent ⇒ the decider
-   * fail-safes to `critical`, so an undeclared action arms only at a maximally-open
-   * ceiling (conservative — never over-arms).
+   * per-verb — emit.ts keeps action risk NULL by design). Absent ⇒ `planReversibleArm`
+   * derives the risk from the category's effective ceiling (so the arm gate agrees with
+   * the chokepoint); falls through to `critical` only when the category is unmapped or
+   * its ceiling is `never-auto` (in which case the gate still correctly returns null).
    */
   riskTier?: RiskTier | null;
   /** Declared authority (`owner` always gates). Default `system`. */
@@ -121,11 +124,33 @@ export async function planReversibleArm(
 ): Promise<AutonomyDecision | null> {
   if (!workspaceId) return null;
   const d = deps ?? defaultArmReversibleDeps(sql, workspaceId);
+
+  // When the caller omits riskTier (the common arm-call-site path — bees never
+  // pass decision.riskTier), derive a proxy from the category's effective ceiling
+  // so the arm gate agrees with the chokepoint (EI-570). The chokepoint already
+  // ruled `auto` at or below the ceiling; defaulting to `critical` instead makes
+  // the arm gate always disagree → 0 tripwires ever arm. Using the ceiling as the
+  // risk means: if the policy would auto-decide this action the arm fires too.
+  // Safe: AutonomyCeiling \ {'never-auto'} ⊆ RiskTier; the `never-auto` check
+  // keeps the ceiling-gated categories untouched (falls through to the `critical`
+  // default in decideAutonomy, which still gates correctly for unmapped actions).
+  let riskTier = input.riskTier;
+  if (riskTier == null) {
+    const category = categoryForAction(input.action ?? '');
+    if (category != null) {
+      const policy = await d.decider.getPolicy(category);
+      const ceiling = computeEffectiveCeiling(policy);
+      if (ceiling !== 'never-auto') {
+        riskTier = ceiling; // narrowed: Exclude<AutonomyCeiling, 'never-auto'> = RiskTier
+      }
+    }
+  }
+
   const decision = await resolveAutonomyDecision(
     {
       action: input.action,
       reversibility: 'reversible',
-      ...(input.riskTier != null ? { riskTier: input.riskTier } : {}),
+      ...(riskTier != null ? { riskTier } : {}),
       ...(input.authority != null ? { authority: input.authority } : {}),
     },
     d.decider,

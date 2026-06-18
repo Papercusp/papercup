@@ -23,7 +23,8 @@ const { reg, wsApi, dialogs, toastSpies } = vi.hoisted(() => ({
     } as { current: string; workspaces: { id: string; name: string }[] } | null,
   },
   wsApi: {
-    create: vi.fn(async () => {}),
+    // create resolves to the new Workspace (id used to auto-switch into it).
+    create: vi.fn(async (name: string) => ({ id: name.toLowerCase(), name })),
     del: vi.fn(async () => {}),
     openWindow: vi.fn(async () => {}),
     rename: vi.fn(async () => {}),
@@ -203,13 +204,27 @@ describe('<WorkspaceSwitcher />', () => {
     await waitFor(() => expect(toastSpies.success).toHaveBeenCalledWith('deleted "Bravo"'));
   });
 
-  it('creating a workspace (prompt returns a name) calls createWorkspace and toasts success', async () => {
+  it('creating a workspace auto-switches this window into the new workspace', async () => {
     dialogs.promptAnswer = 'Gamma';
     await renderAndOpen();
     const menu = await screen.findByRole('menu');
     fireEvent.click(within(menu).getByText(/new workspace/i));
     await waitFor(() => expect(wsApi.create).toHaveBeenCalledWith('Gamma'));
-    await waitFor(() => expect(toastSpies.success).toHaveBeenCalledWith('workspace "Gamma" created'));
+    // After create succeeds the component switches into it (no confirm) — a hard
+    // nav to ?ws=<new id> — rather than leaving the user on the old workspace.
+    await waitFor(() =>
+      expect(wsApi.switch).toHaveBeenCalledWith('gamma', { resetTo: '/harness?ws=gamma' }),
+    );
+  });
+
+  it('a failed create does not switch and surfaces the error', async () => {
+    dialogs.promptAnswer = 'Gamma';
+    wsApi.create.mockRejectedValueOnce(new Error('boom'));
+    await renderAndOpen();
+    const menu = await screen.findByRole('menu');
+    fireEvent.click(within(menu).getByText(/new workspace/i));
+    await waitFor(() => expect(toastSpies.error).toHaveBeenCalledWith('create failed: boom'));
+    expect(wsApi.switch).not.toHaveBeenCalled();
   });
 
   it('a cancelled create prompt (null) does not call createWorkspace', async () => {
