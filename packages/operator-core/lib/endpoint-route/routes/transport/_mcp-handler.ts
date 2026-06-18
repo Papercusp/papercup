@@ -1191,11 +1191,30 @@ const handler = createMcpHandler(
  */
 const SSE_PRIME = new TextEncoder().encode(':stream-open\n\n');
 
-export function primeSseResponse(res: Response): Response {
+// P2-2 (operator-scalability-event-loop-2026-06-16): a spec-legal SSE comment used as
+// an application-level keepalive. While a blocking / long tools/call holds the
+// streamable-HTTP event-stream OPEN but silent, the cloudflared tunnel + the client's
+// ~60s idle timers fire and drop the connection mid-call (the MCP-tooling drops seen
+// under load). Emitting this comment on a cadence well under 60s resets both timers.
+// Like SSE_PRIME it rides the PER-REQUEST stream (NOT the Redis-backed SSE transport,
+// which stays disabled) and is ignored by the MCP client's SSE parser (`:`-prefixed =
+// comment). Tunable/disable-able via PAPERCUSP_MCP_KEEPALIVE_MS (0 = off).
+const SSE_KEEPALIVE = new TextEncoder().encode(': keepalive\n\n');
+const DEFAULT_KEEPALIVE_MS = Number(process.env.PAPERCUSP_MCP_KEEPALIVE_MS) || 20_000;
+
+export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KEEPALIVE_MS): Response {
   const ctype = res.headers.get('content-type') ?? '';
   if (!res.body || !ctype.includes('text/event-stream')) return res;
   const reader = res.body.getReader();
   let cancelled = false;
+  let closed = false;
+  let keepalive: ReturnType<typeof setInterval> | undefined;
+  const stopKeepalive = (): void => {
+    if (keepalive) {
+      clearInterval(keepalive);
+      keepalive = undefined;
+    }
+  };
   // Tracks the latest in-flight inner read so the disconnect-drain (cancel)
   // never issues a `reader.read()` concurrent with a pending pull read — that
   // throws "read while another read is in progress".
@@ -1203,11 +1222,28 @@ export function primeSseResponse(res: Response): Response {
   const primed = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(SSE_PRIME);
+      // P2-2: keep the open-but-idle stream alive past the 60s tunnel/client timers.
+      // Fires independently of pull() (which blocks on the inner read while the tool
+      // runs), so a pending consumer read is satisfied by the comment — resetting the
+      // idle timers — without waiting on the tool to produce.
+      if (keepaliveMs > 0) {
+        keepalive = setInterval(() => {
+          if (cancelled || closed) return;
+          try {
+            controller.enqueue(SSE_KEEPALIVE);
+          } catch {
+            stopKeepalive(); // controller closed/errored between checks — stop pinging
+          }
+        }, keepaliveMs);
+        (keepalive as { unref?: () => void }).unref?.();
+      }
     },
     pull(controller) {
       const p = (async () => {
         const { done, value } = await reader.read();
         if (done) {
+          closed = true;
+          stopKeepalive();
           controller.close();
           return;
         }
@@ -1238,6 +1274,8 @@ export function primeSseResponse(res: Response): Response {
     // transport.onclose), which is what makes the inner stream end.
     cancel() {
       cancelled = true;
+      closed = true;
+      stopKeepalive();
       void (async () => {
         try {
           await lastRead; // let any in-flight pull read settle first

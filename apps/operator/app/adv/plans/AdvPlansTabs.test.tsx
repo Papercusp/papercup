@@ -113,7 +113,7 @@ describe('<AdvPlansTabs /> strip', () => {
     // titled tab uses its title; the untitled one strips no date (no suffix) → slug
     expect(screen.getByText('Alpha Plan')).toBeTruthy();
     expect(screen.getByText('beta-plan')).toBeTruthy();
-    const open = screen.getAllByRole('tab').find((t) => t.getAttribute('title') === 'beta-plan')!;
+    const open = screen.getAllByRole('tab').find((t) => t.getAttribute('aria-label') === 'beta-plan')!;
     expect(open.getAttribute('aria-selected')).toBe('true');
     // both plan tabs are closeable
     expect(screen.getAllByRole('button', { name: /close/i })).toHaveLength(2);

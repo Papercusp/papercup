@@ -130,4 +130,46 @@ describe('primeSseResponse', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(pulls).toBeGreaterThan(0); // the drain actually consumed the stream
   });
+
+  // P2-2 (operator-scalability-event-loop-2026-06-16): an application keepalive so a
+  // blocking/long tools/call doesn't trip the cloudflared tunnel + client ~60s idle
+  // timers while the event-stream is open but silent.
+  it('P2-2: injects a periodic keepalive comment while the stream is open but idle', async () => {
+    // Inner stream stays open + silent — the blocking-tool shape.
+    const inner = new ReadableStream<Uint8Array>({ start() {/* never enqueues */} });
+    const primed = primeSseResponse(sseResponse(inner), 10); // 10ms keepalive cadence
+    const reader = primed.body!.getReader();
+    const dec = new TextDecoder();
+
+    const first = await reader.read();
+    expect(dec.decode(first.value!)).toBe(':stream-open\n\n'); // prime first
+
+    // The NEXT chunk must be a keepalive comment (arrives ~10ms later), not a hang.
+    const second = await Promise.race([
+      reader.read(),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('no keepalive within 1s')), 1000)),
+    ]);
+    expect(dec.decode((second as ReadableStreamReadResult<Uint8Array>).value!)).toBe(': keepalive\n\n');
+    await reader.cancel();
+  });
+
+  it('P2-2: keepaliveMs=0 disables the keepalive (prime + data only)', async () => {
+    const enc = new TextEncoder();
+    const inner = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode('data: {"ok":true}\n\n'));
+        c.close();
+      },
+    });
+    const primed = primeSseResponse(sseResponse(inner), 0); // keepalive off
+    const chunks: string[] = [];
+    const reader = primed.body!.getReader();
+    const dec = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(dec.decode(value));
+    }
+    expect(chunks).toEqual([':stream-open\n\n', 'data: {"ok":true}\n\n']);
+  });
 });
