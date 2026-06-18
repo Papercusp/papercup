@@ -32,10 +32,10 @@ const argsSchema = z.object({
   status: z.enum([...ITEM_STATUSES] as [string, ...string[]]),
   note: z
     .string()
-    .max(1000)
+    .max(4000)
     .optional()
     .describe(
-      'Optional SHORT comment appended inline to the item line (<=1000 chars). For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
+      'Optional SHORT comment appended inline to the item line. Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), not rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
     ),
   rationale: z
     .string()
@@ -84,6 +84,20 @@ export function shouldPushNeedsHuman(
     oldStatus !== 'needs-human' &&
     (importance === 'urgent' || importance === 'high')
   );
+}
+
+/** Caller-DX (watchdog P-006): the inline note is spliced into a single plan
+ *  item line, so an over-long note bloats the file. Truncate-with-marker
+ *  instead of rejecting — the agent never bounces; the long form belongs in
+ *  `rationale` (stored on the plan revision). */
+const NOTE_INLINE_MAX = 1000;
+export function truncateInlineNote(note: string | undefined): {
+  note: string | undefined;
+  truncated: boolean;
+} {
+  if (note === undefined) return { note: undefined, truncated: false };
+  if (note.length <= NOTE_INLINE_MAX) return { note, truncated: false };
+  return { note: note.slice(0, NOTE_INLINE_MAX - 1) + '…', truncated: true };
 }
 
 export function flipStatusInBody(
@@ -140,6 +154,9 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
+
+    // Caller-DX (P-006): truncate an over-long inline note instead of rejecting.
+    const { note: inlineNote, truncated: noteTruncated } = truncateInlineNote(args.note);
 
     // Claim discipline (claim-discipline-enforcement-2026-06-10): the flip IS
     // the claim. An agent flipping an item to `wip` auto-claims it here, and a
@@ -214,7 +231,7 @@ export default defineTool({
           current,
           args.itemId,
           args.status,
-          args.note,
+          inlineNote,
         );
         if (!found) {
           return { newBody: null, value: { ok: false, code: 'item_not_found' } };
@@ -340,6 +357,13 @@ export default defineTool({
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             ...(claim ? { claim } : {}),
             ...(claimReleased ? { claimReleased } : {}),
+            ...(noteTruncated
+              ? {
+                  noteTruncated: true,
+                  noteHint:
+                    'inline note truncated to 1000 chars — put the long form in `rationale` (stored on the plan revision, not the item line).',
+                }
+              : {}),
           }),
         },
       ],

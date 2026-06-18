@@ -102,7 +102,13 @@ export default defineTool({
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
     wait: z
       .object({
-        max_sec: z.number().int().nonnegative().max(MAX_WAIT_SEC),
+        max_sec: z
+          .number()
+          .int()
+          .nonnegative()
+          .describe(
+            `Blocking same-turn wait in seconds. A value above ${MAX_WAIT_SEC} is CLAMPED to ${MAX_WAIT_SEC} (not rejected) — the turn cannot block longer than the tool's own timeout. For a longer wait, end your turn with wake_on_grant:true instead.`,
+          ),
       })
       .optional(),
     wake_on_grant: z
@@ -128,7 +134,13 @@ export default defineTool({
     }
 
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
-    const maxWaitSec = args.wait?.max_sec ?? 0;
+    // Caller-DX (watchdog P-006): an over-cap wait is CLAMPED to MAX_WAIT_SEC,
+    // not zod-rejected. The 300s ceiling is a hard constraint (the tool is
+    // killed at MAX_WAIT_SEC+30); a longer wait belongs to wake_on_grant. Agents
+    // repeatedly bounced off the old `.max(300)` rejection — clamp + advise.
+    const requestedWaitSec = args.wait?.max_sec ?? 0;
+    const waitClamped = requestedWaitSec > MAX_WAIT_SEC;
+    const maxWaitSec = waitClamped ? MAX_WAIT_SEC : requestedWaitSec;
     const startedAt = Date.now();
 
     // ── Fast path: try once, no wait ─────────────────────────────────
@@ -499,6 +511,16 @@ export default defineTool({
               ok: false,
               busy: await enrichBusy(finalBusy.busy),
               ticket_id: ticketId,
+              ...(waitClamped
+                ? {
+                    wait_clamped: {
+                      requested_sec: requestedWaitSec,
+                      capped_sec: MAX_WAIT_SEC,
+                      advice:
+                        'wait was capped at 300s (the blocking ceiling). For a longer wait, retry with wake_on_grant:true and END YOUR TURN — you are re-invoked when the grant cascade reaches your ticket.',
+                    },
+                  }
+                : {}),
             }),
           },
         ],

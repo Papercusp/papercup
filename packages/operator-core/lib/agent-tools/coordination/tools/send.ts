@@ -27,8 +27,26 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    to: z.array(z.string().min(1)).min(1),
-    summary: z.string().min(1),
+    // Caller-DX (watchdog P-006): actionable validation messages — agents
+    // repeatedly bounced off the bare "Required" / "Array must contain at least
+    // 1 element(s)" zod default on these two required fields.
+    to: z
+      .array(z.string().min(1), {
+        required_error:
+          'coord:send needs `to`: an array of recipient ownerIds — ["*"] broadcasts, ["human"] surfaces to the user. Look up a full ownerId via coord:presence.',
+        invalid_type_error:
+          '`to` must be an array of recipient ownerId strings (e.g. ["su-1234…"], or ["*"] to broadcast).',
+      })
+      .min(
+        1,
+        'coord:send needs at least one recipient in `to` — ["*"] broadcasts, ["human"] surfaces to the user.',
+      ),
+    summary: z
+      .string({
+        required_error:
+          'coord:send needs `summary`: a one-line headline of the message (what the recipient sees in their inbox).',
+      })
+      .min(1, '`summary` must be a non-empty one-line headline.'),
     body: z.string().optional(),
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),

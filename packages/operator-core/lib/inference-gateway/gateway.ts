@@ -521,12 +521,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
           upstream429++;
           const reset = parseRateReset(hobj);
           const unifiedRejected = gov.snapshot().unified?.rejected === true;
+          // Anthropic's AUTHORITATIVE per-request signal: `x-should-retry: true` on a 429 means a SHORT
+          // TRANSIENT burst-throttle (capacity exists, retry), NOT quota/5h exhaustion (which sets
+          // x-should-retry:false + window/retry-after headers). This OVERRIDES a stale governor
+          // `unified.rejected` latch: a single past 5h-window rejection used to mis-mark every later
+          // transient opus 429 as "5h-exhausted", so the gateway rotated through ALL accounts treating
+          // each as dead and forwarded the retryable 429 (the owner-reported "accounts aren't saturated
+          // but the gateway 429s" bug, 2026-06-18). Trust x-should-retry over the latched flag.
+          const shouldRetry = String((hobj['x-should-retry'] ?? '')).toLowerCase() === 'true';
           // A BARE 429: rate_limit_error with NO window headers — a transient burst throttle (the
           // aviynw10 stuck-loop, 2026-06-17). A 429 may ALSO be a hard usage/session CAP — the BODY names
           // it ("hit your session limit"); util can be 0 on a capped account (a DIFFERENT meter than the
           // rolling window), so only the body reveals it. Peek the tiny error body to tell them apart.
           const bare429 =
-            up.status === 429 && !unifiedRejected && reset.retryAfterMs === undefined && reset.resetAt === undefined;
+            up.status === 429 &&
+            reset.retryAfterMs === undefined &&
+            reset.resetAt === undefined &&
+            (!unifiedRejected || shouldRetry);
           let usageCapResetAt: number | undefined;
           if (up.body) {
             const peek = await peekBody(up.body, USAGE_LIMIT_PEEK_BYTES);

@@ -57,6 +57,25 @@ export interface RunBehavior {
   /** Wakes that REPORTED a turn count (the avg-turns denominator). The subprocess wake path captures
    *  claude `num_turns`; an in-process stateless call reports none — so this can be < queenWakes. */
   queenWakesWithTurns: number;
+  // ── Per-bee warm-inject carry efficiency (bee-context-efficiency P-015 / D-006) ──
+  // The bee analog of the Queen per-wake metrics. A long-lived bee processes MANY warm-injected
+  // tasks on ONE resumed claude session (`claude --resume`), re-reading its grown transcript every
+  // turn — so cache_read on a non-first wake ≈ the dead prior-task context carried into this task.
+  // Raw token totals across the run's bee wakes, from beeWakeEfficiency() (hive/bee-wake-efficiency.ts)
+  // over agent_usage_samples role='bee', grouped by session_id (migration 279).
+  /** Σ cache_read on the NON-FIRST wakes of each bee session — the resumed-transcript carry (the
+   *  waste the fresh-context warm-inject fork drops; D-011 measured ~97% of a long bee's prompt). */
+  beeCarriedReadTokens: number;
+  /** Σ cache_read across all bee wakes (part of the carry-share denominator). */
+  beeCacheReadTokens: number;
+  /** Σ cache_creation across all bee wakes. */
+  beeCacheCreationTokens: number;
+  /** Σ uncached input across all bee wakes. */
+  beeInputTokens: number;
+  /** Warm-injects = non-first bee wakes (totalWakes − sessions). 0 ⇒ no bee ever warm-injected, so
+   *  the carry sub-score is SKIPPED (the queenWakes>0 gate analog — a run with no warm-inject carry
+   *  is not scored on a 0 it never earned). */
+  beeWarmInjects: number;
 }
 
 /** One D-003 pairing: an efficiency metric and the failure-mode that must stay low to credit it. */
@@ -98,6 +117,19 @@ export interface EfficiencyMetrics {
   /** Queen wakes observed in the window. 0 ⇒ no queen-efficiency data, so the queen sub-scores are
    *  SKIPPED (a run with no Queen samples is not penalized for a 0 cache ratio it never earned). */
   queenWakes: number;
+  /** Share of bee PROMPT tokens that are resumed-transcript carry — the bee analog of the Queen
+   *  cache metric, but INVERTED: beeCarriedRead ÷ (beeCacheRead + beeCacheCreation + beeInput).
+   *  LOWER is better — the carry is dead prior-task transcript re-read every turn (D-011); the
+   *  Phase-1 fresh-context warm-inject fork drops it, so the before/after win is VISIBLE here rather
+   *  than asserted (D-006). 0 when no bee prompt tokens were seen. ONLY good if reworkRate stays low
+   *  (a low carry bought by dropping LIVE working state mid-task surfaces as rework/redo, D-003). */
+  beeCarryShare: number;
+  /** Mean carried-read tokens per warm-inject — observability (the bee analog of tokensPerWake).
+   *  null when no warm-inject occurred. */
+  beeAvgCarriedPerWarmInject: number | null;
+  /** Bee warm-injects observed (non-first wakes). 0 ⇒ the bee carry sub-score is SKIPPED (the
+   *  queenWakes gate analog — a run with no warm-inject carry is not penalized for a 0 it never earned). */
+  beeWarmInjects: number;
   /** The D-003 couplings made explicit — HE-06 credits each win only if its pair stays low. */
   pairings: {
     lowCommunication: MetricPairing;
@@ -106,6 +138,10 @@ export interface EfficiencyMetrics {
     /** Win-2 round-trips: low turns/wake is only credited if rework stays low (same staleness
      *  failure mode as cacheEfficiency). `metric` is 0 when no wake reported a turn count. */
     roundTrip: MetricPairing;
+    /** Bee warm-inject carry: a low carry share is only credited if rework stays low — a carry drop
+     *  bought by dropping live working state mid-task surfaces as redo/bounces (same staleness
+     *  failure mode as the queen wins). `metric` is the carry share. */
+    beeCarry: MetricPairing;
   };
 }
 
@@ -129,6 +165,11 @@ export function computeEfficiencyMetrics(b: RunBehavior): EfficiencyMetrics {
   // Queen round-trip efficiency (P-010 Win-2). Mean turns over wakes that REPORTED a turn count;
   // null (not 0) when none did, so a window with no turn data is scored as "no signal", not "ideal".
   const avgQueenTurns = b.queenWakesWithTurns > 0 ? b.queenTurns / b.queenWakesWithTurns : null;
+  // Bee warm-inject carry efficiency (P-015). Share of bee prompt tokens that are resumed-transcript
+  // carry (LOWER = fresher). Reproduces beeWakeEfficiency.carryShareOfPrompt over the run's bee wakes.
+  const beePromptTokens = b.beeCacheReadTokens + b.beeCacheCreationTokens + b.beeInputTokens;
+  const beeCarryShare = beePromptTokens > 0 ? b.beeCarriedReadTokens / beePromptTokens : 0;
+  const beeAvgCarriedPerWarmInject = b.beeWarmInjects > 0 ? b.beeCarriedReadTokens / b.beeWarmInjects : null;
   return {
     parallelismUtilization,
     idleWhileReadyMs: b.idleWhileReadyMs,
