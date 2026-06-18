@@ -57,9 +57,13 @@ describe('resolveBoundAccount', () => {
     expect((await resolveBoundAccount('ws')).source).toBe('local-fallback');
   });
 
-  it('treats a pool-load failure as an empty pool (→ local fallback)', async () => {
+  it('FAILS CLOSED on a pool-load error — throws rather than silently using the local credential', async () => {
+    // Regression (silent-local-fallback fault): a swallowed read error used to collapse the
+    // lifetime-cached pool to `local`, silently ignoring every account pin for hours. A load
+    // FAILURE must fail closed (the supervised gateway exits → systemd restarts → retries); only a
+    // genuinely EMPTY pool resolves to local.
     mockedLoad.mockRejectedValue(new Error('pg down'));
-    expect((await resolveBoundAccount('ws')).source).toBe('local-fallback');
+    await expect(resolveBoundAccount('ws')).rejects.toThrow(/account-pool load failed/);
   });
 });
 
@@ -100,11 +104,16 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     expect(pool[0].source).toBe('local-fallback');
   });
 
-  it('treats a pool-load failure as empty (→ single local account)', async () => {
+  it('FAILS CLOSED on a pool-load error — throws rather than degrading to the local credential', async () => {
     mockedLoad.mockRejectedValue(new Error('pg down'));
-    const pool = await resolveAccountPool('ws');
-    expect(pool).toHaveLength(1);
-    expect(pool[0].accountId).toBe('local');
+    await expect(resolveAccountPool('ws')).rejects.toThrow(/account-pool load failed/);
+  });
+
+  it('retries a TRANSIENT load error then succeeds (a PG blip must not collapse the pool)', async () => {
+    mockedLoad
+      .mockRejectedValueOnce(new Error('blip'))
+      .mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['a', 'b']);
   });
 });
 

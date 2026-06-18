@@ -8,6 +8,8 @@ import {
   classifyToolError,
   isEphemeralBenchmarkHarnessSlug,
   isEphemeralBenchmarkSignal,
+  ephemeralSignalSlug,
+  isEphemeralSignal,
   collectMigrationDriftSignals,
   routineFailureSignalsFromRows,
   stuckPlanSignalsFromRows,
@@ -321,6 +323,21 @@ describe('ephemeral-benchmark signal filter (P-006)', () => {
     expect(isEphemeralBenchmarkSignal(govStarve)).toBe(true);
     expect(isEphemeralBenchmarkSignal(real)).toBe(false);
     expect(isEphemeralBenchmarkSignal(globalToolErr)).toBe(false); // global source — never filtered
+  });
+
+  it('P-008: the projects.ephemeral flag drops a flagged-slug signal even when the regex would NOT', () => {
+    const flagged = new Set(['some-real-looking-slug']);
+    const flaggedSig = { source: 'stalled-feature' as const, key: 'k', title: 'features stalled', body: '', severity: 'major' as const, scope: 'harness:some-real-looking-slug' };
+    expect(isEphemeralBenchmarkSignal(flaggedSig)).toBe(false); // regex alone would NOT catch it
+    expect(isEphemeralSignal(flaggedSig, flagged)).toBe(true); // ...but the first-class flag does
+    // An un-flagged real harness signal is kept; the regex still catches benchmark slugs (fallback).
+    const realSig = { source: 'stalled-feature' as const, key: 'k', title: 'features in papercup', body: '', severity: 'major' as const, scope: 'harness:papercup' };
+    expect(isEphemeralSignal(realSig, new Set())).toBe(false);
+    const benchSig = { source: 'stalled-feature' as const, key: 'k', title: 't', body: '', severity: 'major' as const, scope: 'harness:xbench-su-x-instance_foo' };
+    expect(isEphemeralSignal(benchSig, new Set())).toBe(true);
+    // ephemeralSignalSlug extracts the harness slug; null for a global (non-per-harness) source.
+    expect(ephemeralSignalSlug(flaggedSig)).toBe('some-real-looking-slug');
+    expect(ephemeralSignalSlug({ source: 'repeated-tool-error' as const, key: 'memory:search:rate-limit', title: 't', body: '', severity: 'minor' as const })).toBeNull();
   });
 });
 

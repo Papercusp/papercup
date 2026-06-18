@@ -14,7 +14,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
-import { createInferenceGateway, ACCOUNT_HEADER, type ActiveAccount } from './gateway';
+import { createInferenceGateway, ACCOUNT_HEADER, ROUTED_ACCOUNT_HEADER, type ActiveAccount } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { gatewaySpawnEnv } from './spawn-env';
 import { bindAccount, emptyPool, registerAccount, selectAccountForSpawn, type AccountPool } from '../deployment/account-pool';
@@ -131,5 +131,18 @@ describe('multi-account routing — end-to-end (selection → spawn header → g
     await fireBee(port, gatewaySpawnEnv(true, { accountId }));
     expect(upstream!.last.headers['authorization']).toBe('Bearer tokA');
     expect(upstream!.last.headers[ACCOUNT_HEADER]).toBeUndefined();
+  });
+
+  it('reports the ACTUALLY-routed account on the response (x-papercusp-routed-account) for detectability', async () => {
+    const port = await bootGateway();
+    const callPinned = (accountId: string) =>
+      fetch(`http://127.0.0.1:${port}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: accountId },
+        body: JSON.stringify({ model: 'claude-opus-4-99', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] }),
+      });
+    // The header names where the request truly egressed — so a silent fallback off a pin is visible.
+    expect((await callPinned('acctB')).headers.get(ROUTED_ACCOUNT_HEADER)).toBe('acctB');
+    expect((await callPinned('acctA')).headers.get(ROUTED_ACCOUNT_HEADER)).toBe('acctA');
   });
 });

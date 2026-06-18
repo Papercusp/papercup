@@ -153,6 +153,23 @@ re-block the 01:15 checkpoint. **Action:** did NOT manually deploy (pipeline is 
 deploy at 1am unsupervised is riskier than waiting ~8min). Watching the 01:15 outcome; will investigate
 only if it ALSO fails to advance.
 
+### CORRECTION (2026-06-18 ~01:55) — the gate runs `test:affected`, NOT `lint:tsc`; EI-1341 is a RED HERRING
+The 01:15 checkpoint did NOT advance (main 38 behind, 5h-old tip — 4 consecutive reds). I initially read
+an escalation body claiming the block was **EI-1341** (operator-core lint:tsc +92 over baseline) — that
+escalation was itself a MIS-DIAGNOSIS. Peers corrected it (su-146bf7a7, the EI-1341 owner, + a git-sync
+agent): **the green-checkpoint deploy gate runs `npm run test:affected`, not `lint:tsc`** (release-config.ts
+:79). EI-1341 is a tsc code-health RATCHET that does NOT gate deploys — `test:affected` is green on its own.
+So chasing the +92 tsc errors would be effort at the wrong target; I dropped it. The REAL stall is a failing
+`test:affected` (a peer's in-flight edit broke an affected test — shared-fate stall — or the inference-gateway
+:8788 flap that su-224c6080 is mid-fixing flaking gateway-dependent tests). A peer is identifying the exact
+red. **My scout fixes (CI-1/2/3) + the :3070 crash-fix are safe on staging and auto-ship the instant the
+gate clears — no manual submit needed.** Lesson: trust `dev:pipeline_position` / release-config over a
+human-written escalation body's claim about WHICH check is red. Also flagged by the peer: no release-fixer in
+the active roster despite 4 reds — the self-healing may not be firing (their plan item, not mine).
+The :3070 green-operator crash-loop (oversized 399-conn PG pool, `backend-connection-scaling` regression) is
+real + its fix is also stranded on staging behind the same gate — emergency lever is `PAPERCUSP_DB_POOL_MAX`
+(20-30) on the :3070 drop-in, but that's the connection-scaling owner's call, not mine.
+
 ## FINDINGS / BASELINE (no action needed)
 
 - **Queen** — performing as designed: places aggressively (4-7 `place_batch` + 4-5 `fleet_spawn`
