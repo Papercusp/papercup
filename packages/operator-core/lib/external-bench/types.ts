@@ -65,6 +65,13 @@ export type BenchmarkFamily =
   // PAIRWISE comparison vs an expert reference deliverable → win/tie/loss → win-or-tie rate (NOT a diff/exact
   // match). The new `deliverable-bundle` modality; the pairwise autograder is grader/gdpval.ts.
   | 'gdpval'
+  // FrontierSWE (Proximal Labs; plan benchmark-suite-frontier-swe-2026-06-18). Ultra-long-horizon
+  // implementation / perf-eng / ML-research — 17 tasks, 5 trials/task, CONTINUOUS [0,1] score (no model
+  // fully solves the implementation tasks). M2 in-container + own-scorer (each task ships its own scorer:
+  // a Rust benchmark-runner + *.expected fixtures), driven via Harbor. The headline is mean@5/best@5 +
+  // AVG-RANK/dominance across a coordination-topology arm pool (D-002), never a single resolved%;
+  // GradeResult.score carries the [0,1] value and resolved = (score === 1) is the degenerate binary.
+  | 'frontier-swe'
   | (string & {});
 
 /**

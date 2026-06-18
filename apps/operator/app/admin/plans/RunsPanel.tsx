@@ -12,6 +12,7 @@
 import { useMemo } from 'react';
 import { parseAsInteger, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import RunDetailPanel from './RunDetailPanel';
 
 interface RunRow {
@@ -67,6 +68,63 @@ function fmtDuration(ms: number | null): string {
 function fmtWhen(ms: number): string {
   return new Date(ms).toLocaleString();
 }
+
+const runColumns: ColumnDef<RunRow>[] = [
+  {
+    key: 'seq',
+    header: '#',
+    width: 0.55,
+    toCopyText: (r) => String(r.runSeq ?? r.id),
+    render: ({ row }) => <span style={{ color: 'var(--fg-dim, #b9d4e8)' }}>{row.runSeq ?? row.id}</span>,
+  },
+  {
+    key: 'outcome',
+    header: 'Outcome',
+    width: 1.1,
+    toCopyText: (r) => r.status === 'running' ? 'running' : r.outcome ?? '—',
+    render: ({ row }) => (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+        <span style={{ width: 8, height: 8, borderRadius: 2, background: outcomeColor(row.outcome, row.status), display: 'inline-block' }} />
+        {row.status === 'running' ? 'running' : row.outcome ?? '—'}
+      </span>
+    ),
+  },
+  {
+    key: 'trigger',
+    header: 'Trigger',
+    width: 1.1,
+    toCopyText: (r) => r.trigger ?? r.runType,
+    render: ({ row }) => <span style={{ color: 'var(--fg-dim, #b9d4e8)' }}>{row.trigger ?? row.runType}</span>,
+  },
+  {
+    key: 'duration',
+    header: 'Duration',
+    width: 0.9,
+    toCopyText: (r) => fmtDuration(r.durationMs),
+    render: ({ row }) => <span style={{ color: 'var(--fg-dim, #b9d4e8)' }}>{fmtDuration(row.durationMs)}</span>,
+  },
+  {
+    key: 'workItems',
+    header: 'Work items',
+    width: 0.9,
+    toCopyText: (r) => r.workItems.total > 0 ? `${r.workItems.passed}/${r.workItems.total}` : '—',
+    render: ({ row }) => <span style={{ color: 'var(--fg-dim, #b9d4e8)' }}>{row.workItems.total > 0 ? `${row.workItems.passed}/${row.workItems.total}` : '—'}</span>,
+  },
+  {
+    key: 'cost',
+    header: 'Cost',
+    width: 0.75,
+    toCopyText: (r) => r.costUsd > 0 ? `$${r.costUsd.toFixed(2)}` : '—',
+    render: ({ row }) => <span style={{ color: 'var(--fg-dim, #b9d4e8)' }}>{row.costUsd > 0 ? `$${row.costUsd.toFixed(2)}` : '—'}</span>,
+  },
+  {
+    key: 'when',
+    header: 'When',
+    width: 1.7,
+    toCopyText: (r) => fmtWhen(r.launchedAt),
+    render: ({ row }) => <span style={{ color: 'var(--fg-mute, #7f9bb4)' }}>{fmtWhen(row.launchedAt)}</span>,
+  },
+];
 
 /** Dependency-free inline sparkline over a numeric series (P-025). Themed to tokens. */
 function Sparkline({ values, color, width = 160, height = 28 }: { values: number[]; color: string; width?: number; height?: number }) {
@@ -195,43 +253,16 @@ export default function RunsPanel({ slug, planTitle, currentContentHash }: Props
       )}
 
       {/* Drill-down — run table */}
-      <table className="pc-runs-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-        <thead>
-          <tr style={{ textAlign: 'left', color: 'var(--fg-mute, #7f9bb4)', borderBottom: '1px solid var(--border, rgba(125,211,252,0.15))' }}>
-            <th style={{ padding: '4px 6px' }}>#</th>
-            <th style={{ padding: '4px 6px' }}>Outcome</th>
-            <th style={{ padding: '4px 6px' }}>Trigger</th>
-            <th style={{ padding: '4px 6px' }}>Duration</th>
-            <th style={{ padding: '4px 6px' }}>Work items</th>
-            <th style={{ padding: '4px 6px' }}>Cost</th>
-            <th style={{ padding: '4px 6px' }}>When</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((r) => (
-            <tr
-              key={r.id}
-              onClick={() => void setRun(r.id)}
-              style={{ cursor: 'pointer', borderBottom: '1px solid var(--border-muted, rgba(125,211,252,0.08))' }}
-            >
-              <td style={{ padding: '4px 6px', color: 'var(--fg-dim, #b9d4e8)' }}>{r.runSeq ?? r.id}</td>
-              <td style={{ padding: '4px 6px' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: outcomeColor(r.outcome, r.status), display: 'inline-block' }} />
-                  {r.status === 'running' ? 'running' : r.outcome ?? '—'}
-                </span>
-              </td>
-              <td style={{ padding: '4px 6px', color: 'var(--fg-dim, #b9d4e8)' }}>{r.trigger ?? r.runType}</td>
-              <td style={{ padding: '4px 6px', color: 'var(--fg-dim, #b9d4e8)' }}>{fmtDuration(r.durationMs)}</td>
-              <td style={{ padding: '4px 6px', color: 'var(--fg-dim, #b9d4e8)' }}>
-                {r.workItems.total > 0 ? `${r.workItems.passed}/${r.workItems.total}` : '—'}
-              </td>
-              <td style={{ padding: '4px 6px', color: 'var(--fg-dim, #b9d4e8)' }}>{r.costUsd > 0 ? `$${r.costUsd.toFixed(2)}` : '—'}</td>
-              <td style={{ padding: '4px 6px', color: 'var(--fg-mute, #7f9bb4)' }}>{fmtWhen(r.launchedAt)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div style={{ height: Math.min(620, 32 + runs.length * 28 + 4) }}>
+        <RichGrid<RunRow>
+          columns={runColumns}
+          rows={runs}
+          getRowId={(r) => String(r.id)}
+          rowMinHeight={28}
+          headerHeight={32}
+          onRowClick={(r) => void setRun(r.id)}
+        />
+      </div>
 
       {/* Drill-down panel — self-gates on ?run= */}
       <RunDetailPanel planSlug={slug} planTitle={planTitle ?? null} currentContentHash={currentContentHash} />

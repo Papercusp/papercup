@@ -14,6 +14,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 // Keep in sync with the canonical union in
 // `lib/sync/hyperbee/boot-history.ts`. The KIND_COLOR / KIND_MARK maps below
@@ -85,34 +86,6 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   merge_error: '✗',
 };
 
-const TABLE: CSSProperties = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  fontSize: 12,
-};
-
-const TH: CSSProperties = {
-  textAlign: 'left',
-  borderBottom: '1px solid var(--border, #2a2a2a)',
-  padding: '6px 10px',
-  fontWeight: 600,
-  color: 'var(--fg-dim, #888)',
-  fontSize: 10,
-  textTransform: 'uppercase',
-  letterSpacing: 0.4,
-};
-
-const TD: CSSProperties = {
-  padding: '6px 10px',
-  borderBottom: '1px solid var(--border-subtle, #222)',
-  verticalAlign: 'top',
-};
-
-const KIND_CELL: CSSProperties = {
-  ...TD,
-  whiteSpace: 'nowrap',
-};
-
 const EMPTY: CSSProperties = {
   fontSize: 12,
   color: 'var(--fg-dim, #888)',
@@ -132,6 +105,46 @@ function relTime(ts: number, now: number): string {
   return `${d}d`;
 }
 
+function columns(now: number): ColumnDef<BootHistoryEntry>[] {
+  return [
+    {
+      key: 'when',
+      header: 'When',
+      width: 0.85,
+      toCopyText: (e) => `${relTime(e.ts, now)} ago`,
+      render: ({ row }) => `${relTime(row.ts, now)} ago`,
+    },
+    {
+      key: 'workspace',
+      header: 'Workspace',
+      width: 1.4,
+      toCopyText: (e) => e.workspaceId,
+      render: ({ row }) => <code>{row.workspaceId}</code>,
+    },
+    {
+      key: 'harness',
+      header: 'Harness',
+      width: 1.4,
+      toCopyText: (e) => e.harnessSlug,
+      render: ({ row }) => <code>{row.harnessSlug}</code>,
+    },
+    {
+      key: 'kind',
+      header: 'Kind',
+      width: 1.4,
+      toCopyText: (e) => e.kind,
+      render: ({ row }) => <span style={{ color: KIND_COLOR[row.kind], whiteSpace: 'nowrap' }}>{KIND_MARK[row.kind]} {row.kind}</span>,
+    },
+    {
+      key: 'message',
+      header: 'Message',
+      width: 2.4,
+      toCopyText: (e) => e.message ?? '',
+      render: ({ row }) => <span style={{ color: 'var(--fg-dim, #aaa)' }}>{row.message ?? ''}</span>,
+    },
+  ];
+}
+
 export function BootHistoryTable(props: BootHistoryTableProps): ReactNode {
   const { entries } = props;
   const now = props.nowMs ?? Date.now();
@@ -143,38 +156,15 @@ export function BootHistoryTable(props: BootHistoryTableProps): ReactNode {
     );
   }
   return (
-    <table style={TABLE} data-testid="boot-history-table">
-      <thead>
-        <tr>
-          <th style={TH}>When</th>
-          <th style={TH}>Workspace</th>
-          <th style={TH}>Harness</th>
-          <th style={TH}>Kind</th>
-          <th style={TH}>Message</th>
-        </tr>
-      </thead>
-      <tbody>
-        {entries.map((e, i) => (
-          <tr
-            key={`${e.ts}-${e.workspaceId}-${e.harnessSlug}-${e.kind}-${i}`}
-            data-testid={`boot-history-row-${e.kind}`}
-          >
-            <td style={TD}>{relTime(e.ts, now)} ago</td>
-            <td style={TD}>
-              <code>{e.workspaceId}</code>
-            </td>
-            <td style={TD}>
-              <code>{e.harnessSlug}</code>
-            </td>
-            <td style={{ ...KIND_CELL, color: KIND_COLOR[e.kind] }}>
-              {KIND_MARK[e.kind]} {e.kind}
-            </td>
-            <td style={{ ...TD, color: 'var(--fg-dim, #aaa)' }}>
-              {e.message ?? ''}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div style={{ height: Math.min(520, 32 + entries.length * 30 + 4) }} data-testid="boot-history-table">
+      <RichGrid<BootHistoryEntry>
+        columns={columns(now)}
+        rows={[...entries]}
+        getRowId={(e, i) => `${e.ts}-${e.workspaceId}-${e.harnessSlug}-${e.kind}-${i}`}
+        rowMinHeight={30}
+        headerHeight={32}
+        rowProps={({ row }) => ({ 'data-testid': `boot-history-row-${row.kind}` })}
+      />
+    </div>
   );
 }

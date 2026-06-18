@@ -219,6 +219,22 @@ describe('classifyToolError — by error_code, with a legacy error_message fallb
     expect(classifyToolError(null, 'error', 'invalid_args: slug expected string')).toBe('caller');
     expect(classifyToolError(null, 'error', 'something unrecognized')).toBe('structural');
   });
+
+  it('classifies PG/infra connection-exhaustion as TRANSIENT, not structural — even with a handler_error code (PG-wedge collateral guard)', () => {
+    // The 2026-06-17 wedge surfaced these across every PG-backed tool as handler_error /
+    // status=error; the low-bar structural signal mis-filed each tool as broken (EI-1331…1344).
+    for (const code of ['handler_error', null]) {
+      expect(classifyToolError(code, 'error', 'sorry, too many clients already')).toBe('transient');
+      expect(
+        classifyToolError(code, 'error', 'remaining connection slots are reserved for roles with the SUPERUSER attribute'),
+      ).toBe('transient');
+      expect(classifyToolError(code, 'error', 'could not connect to server: Connection refused')).toBe('transient');
+      expect(classifyToolError(code, 'error', 'the database system is starting up')).toBe('transient');
+    }
+    // A genuine tool bug (no infra signature) STILL classifies structural — no false negatives.
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+    expect(classifyToolError(null, 'error', 'no such column: foo')).toBe('structural');
+  });
 });
 
 describe('P-010 blind-source collectors (watchdog-robustness)', () => {

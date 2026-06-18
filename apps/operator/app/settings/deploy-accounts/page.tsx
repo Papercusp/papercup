@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 import { toast } from 'sonner';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import {
   formatResetIn,
   isActiveAccount,
@@ -40,6 +42,7 @@ interface AccountRow {
 }
 
 export default function DeployAccountsPage() {
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [headroom, setHeadroom] = useState<PoolHeadroom | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -195,7 +198,13 @@ export default function DeployAccountsPage() {
 
   const remove = useCallback(
     async (id: string) => {
-      if (!confirm(`Remove account "${id}" from the pool? (the credential file is left in place)`)) return;
+      const ok = await askConfirm({
+        title: 'Remove Max account',
+        body: `Remove account "${id}" from the pool? The credential file is left in place.`,
+        confirmLabel: 'Remove',
+        destructive: true,
+      });
+      if (!ok) return;
       await fetch('/api/admin/deploy-accounts/remove', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -203,7 +212,7 @@ export default function DeployAccountsPage() {
       });
       await refresh();
     },
-    [refresh],
+    [askConfirm, refresh],
   );
 
   const command = setupTokenCommand(accountId);
@@ -219,6 +228,7 @@ export default function DeployAccountsPage() {
 
   return (
     <div className="pc-da">
+      {confirmEl}
       <div className="pc-da__bar">
         <p className="pc-da__lede">
           The pool of Claude <strong>Max accounts</strong> the fleet runs on — each subscription's own 5h/7d
@@ -354,66 +364,15 @@ export default function DeployAccountsPage() {
           <p className="pc-da__muted">No accounts in the pool yet. Link one to grow the fleet's aggregate capacity.</p>
         )}
         {accounts.length > 0 && (
-          <table className="pc-da__table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Label</th>
-                <th>Status</th>
-                <th>5h budget</th>
-                <th>Bound to</th>
-                <th>Credential</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map((a) => {
-                const active = isActiveAccount(headroom, a.id);
-                const pct = active ? headroom?.utilizationPct : undefined;
-                return (
-                  <tr key={a.id}>
-                    <td className="pc-da__mono">
-                      {a.id}
-                      {active && <span className="pc-da__pill pc-da__pill--active" title="The gateway is routing egress through this account now">active</span>}
-                    </td>
-                    <td>{a.label || '—'}</td>
-                    <td>
-                      {a.sustainedlyLimited ? (
-                        <span className="pc-da__pill pc-da__pill--bad">limited</span>
-                      ) : a.rate.pausedUntil > Date.now() ? (
-                        <span className="pc-da__pill pc-da__pill--warn">
-                          paused → {new Date(a.rate.pausedUntil).toLocaleTimeString()}
-                        </span>
-                      ) : (
-                        <span className="pc-da__pill pc-da__pill--ok">available</span>
-                      )}
-                    </td>
-                    <td>
-                      {pct !== undefined ? (
-                        <div className="pc-da__util" title={`${headroom?.window ?? '5h'} window${headroom?.rejected ? ' — over budget' : ''}`}>
-                          <div className={`pc-da__util-bar pc-da__util-bar--${utilizationTone(pct)}`}>
-                            <span style={{ width: `${Math.min(100, pct)}%` }} />
-                          </div>
-                          <span className="pc-da__util-pct">
-                            {pct}% · resets {formatResetIn(headroom?.resetInSec)}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="pc-da__muted">—</span>
-                      )}
-                    </td>
-                    <td className="pc-da__mono">{a.boundTo.length ? a.boundTo.join(', ') : '—'}</td>
-                    <td className="pc-da__mono pc-da__cred">{a.credentialRef}</td>
-                    <td>
-                      <button className="pc-da__btn pc-da__btn--ghost" onClick={() => void remove(a.id)}>
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(620, 34 + accounts.length * 42 + 4) }}>
+            <RichGrid<AccountRow>
+              columns={accountColumns(headroom, remove)}
+              rows={accounts}
+              getRowId={(a) => a.id}
+              rowMinHeight={42}
+              headerHeight={34}
+            />
+          </div>
         )}
       </div>
 
@@ -444,9 +403,6 @@ export default function DeployAccountsPage() {
         .pc-da__field input, .pc-da__field textarea { background: color-mix(in srgb, var(--bg-deeper), transparent 20%); border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%); border-radius: 8px; color: var(--fg); padding: 8px 10px; font-size: 13px; font-family: ui-monospace, Menlo, monospace; }
         .pc-da__error { color: var(--bad); font-size: 12.5px; margin: 6px 0 0; }
         .pc-da__muted { color: color-mix(in srgb, var(--accent-soft), transparent 45%); font-size: 13px; }
-        .pc-da__table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-        .pc-da__table th { text-align: left; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%); color: color-mix(in srgb, var(--accent-soft), transparent 40%); font-weight: 650; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
-        .pc-da__table td { padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 93%); vertical-align: middle; }
         .pc-da__mono { font-family: ui-monospace, Menlo, monospace; }
         .pc-da__cred { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--accent-soft), transparent 38%); }
         .pc-da__pill { display: inline-flex; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 650; }
@@ -464,4 +420,96 @@ export default function DeployAccountsPage() {
       `}</style>
     </div>
   );
+}
+
+function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => void): ColumnDef<AccountRow>[] {
+  return [
+    {
+      key: 'id',
+      header: 'ID',
+      width: 1.2,
+      toCopyText: (a) => a.id,
+      render: ({ row }) => {
+        const active = isActiveAccount(headroom, row.id);
+        return (
+          <span className="pc-da__mono">
+            {row.id}
+            {active && <span className="pc-da__pill pc-da__pill--active" title="The gateway is routing egress through this account now">active</span>}
+          </span>
+        );
+      },
+    },
+    { key: 'label', header: 'Label', width: 1, toCopyText: (a) => a.label || '—', render: ({ row }) => row.label || '—' },
+    {
+      key: 'status',
+      header: 'Status',
+      width: 1.1,
+      toCopyText: (a) => accountStatusText(a),
+      render: ({ row }) => accountStatus(row),
+    },
+    {
+      key: 'budget',
+      header: '5h budget',
+      width: 1.5,
+      toCopyText: (a) => isActiveAccount(headroom, a.id) && headroom?.utilizationPct !== undefined ? `${headroom.utilizationPct}%` : '—',
+      render: ({ row }) => {
+        const active = isActiveAccount(headroom, row.id);
+        const pct = active ? headroom?.utilizationPct : undefined;
+        return pct !== undefined ? (
+          <div className="pc-da__util" title={`${headroom?.window ?? '5h'} window${headroom?.rejected ? ' — over budget' : ''}`}>
+            <div className={`pc-da__util-bar pc-da__util-bar--${utilizationTone(pct)}`}>
+              <span style={{ width: `${Math.min(100, pct)}%` }} />
+            </div>
+            <span className="pc-da__util-pct">
+              {pct}% · resets {formatResetIn(headroom?.resetInSec)}
+            </span>
+          </div>
+        ) : (
+          <span className="pc-da__muted">—</span>
+        );
+      },
+    },
+    {
+      key: 'bound',
+      header: 'Bound to',
+      width: 1.4,
+      toCopyText: (a) => a.boundTo.length ? a.boundTo.join(', ') : '—',
+      render: ({ row }) => <span className="pc-da__mono">{row.boundTo.length ? row.boundTo.join(', ') : '—'}</span>,
+    },
+    {
+      key: 'credential',
+      header: 'Credential',
+      width: 1.5,
+      toCopyText: (a) => a.credentialRef,
+      render: ({ row }) => <span className="pc-da__mono pc-da__cred">{row.credentialRef}</span>,
+    },
+    {
+      key: 'actions',
+      header: '',
+      width: '88px',
+      render: ({ row }) => (
+        <button className="pc-da__btn pc-da__btn--ghost" onClick={() => void remove(row.id)}>
+          Remove
+        </button>
+      ),
+    },
+  ];
+}
+
+function accountStatusText(account: AccountRow): string {
+  if (account.sustainedlyLimited) return 'limited';
+  if (account.rate.pausedUntil > Date.now()) return `paused ${new Date(account.rate.pausedUntil).toLocaleTimeString()}`;
+  return 'available';
+}
+
+function accountStatus(account: AccountRow) {
+  if (account.sustainedlyLimited) return <span className="pc-da__pill pc-da__pill--bad">limited</span>;
+  if (account.rate.pausedUntil > Date.now()) {
+    return (
+      <span className="pc-da__pill pc-da__pill--warn">
+        paused → {new Date(account.rate.pausedUntil).toLocaleTimeString()}
+      </span>
+    );
+  }
+  return <span className="pc-da__pill pc-da__pill--ok">available</span>;
 }

@@ -1,0 +1,9 @@
+{
+  "actor": "s-1781747304082-8d079aca",
+  "feature_id": "F-FIX-038",
+  "field": "__created",
+  "id": 952,
+  "new_value": "{\"id\":\"F-FIX-038\",\"title\":\"Placement watchdog over-curses slow-but-ALIVE bees: raise spawn heartbeat-stale threshold + relax curse threshold\",\"sourceIssueId\":\"WI-233\"}",
+  "old_value": "null",
+  "ts": 1781747582570
+}

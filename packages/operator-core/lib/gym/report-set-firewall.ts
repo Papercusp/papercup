@@ -127,6 +127,13 @@ export const REPORT_ON_SUITES: readonly BenchSet[] = Object.freeze([
     rationale:
       'Coordination-NATIVE 2D-grid swarm sim (Pursuit/Synchronization/Foraging/Flocking/Transport): N agents under local k×k view + local messaging, deterministic per-task sim score. The headline is the decentralized-peers-vs-centralized-coordinator topology delta — a coordination result no diff-batch suite can express. NEVER a gym tuning target — D-005; and per D-001 a global-view queen would violate the local-only premise (plan benchmark-suite-swarmbench-2026-06-17).',
   },
+  {
+    id: 'frontier-swe',
+    usage: 'report-on',
+    title: 'FrontierSWE (Proximal Labs; ultra-long-horizon implementation / perf-eng / ML-research)',
+    rationale:
+      '17 ultra-long-horizon tasks (5 implementation / 9 performance / 3 ML-research), hours→tens-of-hours, 5 trials/task, CONTINUOUS [0,1] score (no model fully solves the implementation tasks). M2 in-container + own-scorer (each task ships its own scorer: a Rust benchmark-runner + *.expected fixtures); headline = mean@5/best@5 + AVG-RANK/dominance across a coordination-topology arm pool. Third-party-authored + self-grading → NEVER a gym tuning target (D-005) (plan benchmark-suite-frontier-swe-2026-06-18).',
+  },
 ]);
 
 /**

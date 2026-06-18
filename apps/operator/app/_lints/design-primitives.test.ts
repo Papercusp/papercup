@@ -30,18 +30,13 @@ const LEGACY_NATIVE_SELECT_FILES = new Set([
 
 const LEGACY_NATIVE_TABLE_FILES = new Set([
   // P-004 baseline: migrate these to RichGrid/grid-core or a local grid wrapper.
-  'app/admin/dbos/DbosClient.tsx',
   'app/admin/dogfood-substrate/page.tsx',
-  'app/admin/plans/RunsPanel.tsx',
   'app/admin/testing/_components/LiveMetricsTab.tsx',
   'app/admin/testing/_components/RoutesTab.tsx',
   'app/adv/harnesses/AcceptancePanel.tsx',
   'app/dev/_components/IpcTab.tsx',
   'app/eval-viz/Compare.tsx',
-  'app/gym/GymDashboard.tsx',
-  'app/harness/insights/BootHistoryTable.tsx',
   'app/harness/insights/ClaimAttemptTimeline.tsx',
-  'app/settings/deploy-accounts/page.tsx',
 ]);
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
@@ -139,6 +134,20 @@ function unexpectedFiles(pattern: RegExp, allowed: ReadonlySet<string>): string[
   return offenders;
 }
 
+function unexpectedNativeConfirmFiles(): string[] {
+  const offenders: string[] = [];
+  for (const file of collectFiles()) {
+    const content = readFileSync(file, 'utf-8');
+    const hasNativeConfirm =
+      /window\.confirm\s*\(/.test(content) ||
+      (/\bconfirm\s*\(/.test(content) && !/useConfirmDialog/.test(content));
+    if (!hasNativeConfirm) continue;
+    const path = rel(file);
+    if (!SHARED_CONFIRM_IMPLEMENTATION_FILES.has(path)) offenders.push(path);
+  }
+  return offenders;
+}
+
 function expectNoUnexpected(label: string, offenders: string[]): void {
   if (offenders.length > 0) {
     throw new Error(
@@ -158,11 +167,8 @@ describe('design primitive lint', () => {
     expectNoUnexpected('Native <table>', unexpectedFiles(/<table\b/g, LEGACY_NATIVE_TABLE_FILES));
   });
 
-  it('blocks direct window.confirm usage outside the shared confirm primitive and legacy baseline', () => {
-    expectNoUnexpected(
-      'Direct window.confirm',
-      unexpectedFiles(/window\.confirm\s*\(/g, SHARED_CONFIRM_IMPLEMENTATION_FILES),
-    );
+  it('blocks direct confirm usage outside the shared confirm primitive and legacy baseline', () => {
+    expectNoUnexpected('Direct confirm', unexpectedNativeConfirmFiles());
   });
 
   it('blocks native radio inputs in app UI', () => {

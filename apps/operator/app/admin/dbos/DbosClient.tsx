@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 type Workflow = {
   workflow_uuid: string;
@@ -31,6 +32,53 @@ export const statusColor = (s: string): string =>
     : s === 'ERROR' || s.includes('MAX_RECOVERY') ? '#fca5a5'
       : s === 'PENDING' || s === 'ENQUEUED' ? '#fde68a'
         : '#dbeafe';
+
+const workflowColumns: ColumnDef<Workflow>[] = [
+  {
+    key: 'workflow',
+    header: 'Workflow',
+    width: 1.1,
+    toCopyText: (w) => w.workflow_uuid,
+    render: ({ row }) => <span title={row.workflow_uuid} style={monoCell}>{row.workflow_uuid.slice(0, 8)}</span>,
+  },
+  { key: 'name', header: 'Name', width: 1.4, toCopyText: (w) => w.name, render: ({ row }) => row.name },
+  {
+    key: 'status',
+    header: 'Status',
+    width: 2,
+    toCopyText: (w) => `${w.status}${w.error ? ` — ${w.error}` : ''}`,
+    render: ({ row }) => <span style={{ color: statusColor(row.status) }}>{row.status}{row.error ? ` — ${row.error}` : ''}</span>,
+  },
+  { key: 'queue', header: 'Queue', width: 1, toCopyText: (w) => w.queue_name ?? '—', render: ({ row }) => row.queue_name ?? '—' },
+  {
+    key: 'version',
+    header: 'Ver',
+    width: 1,
+    toCopyText: (w) => w.application_version ?? '—',
+    render: ({ row }) => <span title={row.application_version ?? ''} style={monoCell}>{row.application_version?.slice(0, 10) ?? '—'}</span>,
+  },
+  {
+    key: 'recovery',
+    header: 'Recov',
+    width: 0.7,
+    toCopyText: (w) => String(w.recovery_attempts),
+    render: ({ row }) => String(row.recovery_attempts),
+  },
+  {
+    key: 'dedup',
+    header: 'Dedup',
+    width: 0.7,
+    toCopyText: (w) => w.deduplication_id ?? '—',
+    render: ({ row }) => <span title={row.deduplication_id ?? ''} style={monoCell}>{row.deduplication_id ? '✓' : '—'}</span>,
+  },
+  { key: 'created', header: 'Created', width: 1.4, toCopyText: (w) => fmt(w.created_at), render: ({ row }) => fmt(row.created_at) },
+];
+
+const queueColumns: ColumnDef<QueueRow>[] = [
+  { key: 'queue', header: 'Queue', width: 2, toCopyText: (q) => q.queue_name, render: ({ row }) => <span style={monoCell}>{row.queue_name}</span> },
+  { key: 'depth', header: 'Depth', width: 1, toCopyText: (q) => String(q.depth), render: ({ row }) => row.depth },
+  { key: 'active', header: 'Active', width: 1, toCopyText: (q) => String(q.active), render: ({ row }) => row.active },
+];
 
 export default function DbosClient() {
   // URL-backed state per repo convention (nuqs), so agents + deep links work.
@@ -90,36 +138,33 @@ export default function DbosClient() {
           </div>
 
           {view === 'workflows' ? (
-            <table style={tbl}>
-              <thead>
-                <tr>{['workflow', 'name', 'status', 'queue', 'ver', 'recov', 'dedup', 'created'].map((h) => <th key={h} style={th}>{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {data.workflows.map((w) => (
-                  <tr key={w.workflow_uuid}>
-                    <td style={tdMono} title={w.workflow_uuid}>{w.workflow_uuid.slice(0, 8)}</td>
-                    <td style={td}>{w.name}</td>
-                    <td style={{ ...td, color: statusColor(w.status) }}>{w.status}{w.error ? ` — ${w.error}` : ''}</td>
-                    <td style={td}>{w.queue_name ?? '—'}</td>
-                    <td style={tdMono} title={w.application_version ?? ''}>{w.application_version?.slice(0, 10) ?? '—'}</td>
-                    <td style={td}>{String(w.recovery_attempts)}</td>
-                    <td style={tdMono} title={w.deduplication_id ?? ''}>{w.deduplication_id ? '✓' : '—'}</td>
-                    <td style={td}>{fmt(w.created_at)}</td>
-                  </tr>
-                ))}
-                {data.workflows.length === 0 && <tr><td style={td} colSpan={8}>no workflows for this filter</td></tr>}
-              </tbody>
-            </table>
+            data.workflows.length === 0 ? (
+              <div style={emptyGrid}>no workflows for this filter</div>
+            ) : (
+              <div style={{ height: Math.min(640, 32 + data.workflows.length * 28 + 4) }}>
+                <RichGrid<Workflow>
+                  columns={workflowColumns}
+                  rows={data.workflows}
+                  getRowId={(w) => w.workflow_uuid}
+                  rowMinHeight={28}
+                  headerHeight={32}
+                />
+              </div>
+            )
           ) : (
-            <table style={tbl}>
-              <thead><tr>{['queue', 'depth', 'active'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
-              <tbody>
-                {data.queues.map((q) => (
-                  <tr key={q.queue_name}><td style={tdMono}>{q.queue_name}</td><td style={td}>{q.depth}</td><td style={td}>{q.active}</td></tr>
-                ))}
-                {data.queues.length === 0 && <tr><td style={td} colSpan={3}>no queued work</td></tr>}
-              </tbody>
-            </table>
+            data.queues.length === 0 ? (
+              <div style={emptyGrid}>no queued work</div>
+            ) : (
+              <div style={{ height: Math.min(420, 32 + data.queues.length * 28 + 4) }}>
+                <RichGrid<QueueRow>
+                  columns={queueColumns}
+                  rows={data.queues}
+                  getRowId={(q) => q.queue_name}
+                  rowMinHeight={28}
+                  headerHeight={32}
+                />
+              </div>
+            )
           )}
         </>
       )}
@@ -137,10 +182,11 @@ const pill = (on: boolean): CSSProperties => ({
   border: `1px solid ${on ? 'rgba(103,232,249,0.5)' : 'rgba(103,232,249,0.18)'}`,
   background: on ? 'color-mix(in srgb, var(--bg-raised), transparent 2%)' : 'transparent', color: '#dbeafe', cursor: 'pointer', fontSize: 12,
 });
-const tbl: CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 12 };
-const th: CSSProperties = {
-  textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid rgba(103,232,249,0.18)',
-  color: 'color-mix(in srgb, var(--accent-soft), transparent 30%)', fontWeight: 650, textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.06em',
+const monoCell: CSSProperties = { fontFamily: 'ui-monospace, Menlo, monospace' };
+const emptyGrid: CSSProperties = {
+  padding: '10px 12px',
+  border: '1px solid rgba(103,232,249,0.12)',
+  borderRadius: 6,
+  color: 'rgba(214,236,248,0.62)',
+  fontSize: 12,
 };
-const td: CSSProperties = { padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)', verticalAlign: 'top' };
-const tdMono: CSSProperties = { ...td, fontFamily: 'ui-monospace, Menlo, monospace' };

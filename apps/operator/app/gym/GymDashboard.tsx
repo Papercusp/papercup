@@ -19,6 +19,7 @@ import {
   useQueryState,
 } from 'nuqs';
 import { diffLines } from 'diff';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
 // The compare table is lifted to a shared eval-viz component (P-021 / BRIEF 10),
 // reused on the Evaluation surface; the gym renders the same one here.
@@ -43,6 +44,7 @@ interface PromptsResp { judgeRubric: string | null; roles: Record<string, string
 interface AutoloopResp { autoloop: { enabled: boolean; status: string; budgetUsd: number | null; spentUsd: number; lastCycle: number | null } | null; configured: boolean }
 interface CycleRow { cycle: number; parentId: string | null; candidateId: string | null; decision: string | null }
 interface CompareRow { taskId: string; aComposite: number | null; bComposite: number | null; delta: number | null }
+interface VariantRow { variantId: string; label?: string; parentId?: string | null; onFrontier?: boolean }
 
 const TABS = ['proposals', 'prompts', 'autoloop', 'cycles', 'variants', 'compare', 'frontier'] as const;
 type Tab = (typeof TABS)[number];
@@ -55,6 +57,25 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 const card: React.CSSProperties = { border: '1px solid var(--border, #2a2a33)', borderRadius: 8, padding: 12, background: 'var(--bg-2, #16161c)' };
 const mono: React.CSSProperties = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 };
+
+const cycleColumns: ColumnDef<CycleRow>[] = [
+  { key: 'cycle', header: '#', width: 0.6, toCopyText: (c) => String(c.cycle), render: ({ row }) => row.cycle },
+  { key: 'parent', header: 'Parent', width: 1.5, toCopyText: (c) => c.parentId ?? '—', render: ({ row }) => row.parentId ?? '—' },
+  { key: 'candidate', header: 'Candidate', width: 1.5, toCopyText: (c) => c.candidateId ?? '—', render: ({ row }) => row.candidateId ?? '—' },
+  {
+    key: 'decision',
+    header: 'Decision',
+    width: 1,
+    toCopyText: (c) => c.decision ?? '—',
+    render: ({ row }) => <span style={{ color: row.decision === 'accept' ? '#9ae6a4' : '#ff9a8a' }}>{row.decision ?? '—'}</span>,
+  },
+];
+
+const variantColumns: ColumnDef<VariantRow>[] = [
+  { key: 'variant', header: 'Variant', width: 1.6, toCopyText: (v) => v.variantId, render: ({ row }) => row.variantId },
+  { key: 'parent', header: 'Parent', width: 1.4, toCopyText: (v) => v.parentId ?? '—', render: ({ row }) => row.parentId ?? '—' },
+  { key: 'frontier', header: 'Frontier', width: 0.8, toCopyText: (v) => v.onFrontier ? 'yes' : '', render: ({ row }) => row.onFrontier ? '✓' : '' },
+];
 
 export default function GymDashboard() {
   const t = useLexicon();
@@ -365,39 +386,42 @@ function CyclesTab({ slug }: { slug: string }) {
   return (
     <div style={card} data-testid="gym-cycles">
       {err && <div style={{ color: '#ff6b6b', ...mono }}>{err}</div>}
-      <table style={{ ...mono, width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr style={{ textAlign: 'left', opacity: 0.7 }}><th>#</th><th>parent</th><th>candidate</th><th>decision</th></tr></thead>
-        <tbody>
-          {rows.map((c, i) => (
-            <tr key={i} style={{ borderTop: '1px solid #2a2a33' }}>
-              <td>{c.cycle}</td><td>{c.parentId ?? '—'}</td><td>{c.candidateId ?? '—'}</td>
-              <td style={{ color: c.decision === 'accept' ? '#9ae6a4' : '#ff9a8a' }}>{c.decision ?? '—'}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && <tr><td colSpan={4} style={{ opacity: 0.6, paddingTop: 8 }}>No cycles yet.</td></tr>}
-        </tbody>
-      </table>
+      {rows.length === 0 ? (
+        <div style={{ ...mono, opacity: 0.6, paddingTop: 8 }}>No cycles yet.</div>
+      ) : (
+        <div style={{ height: Math.min(420, 32 + rows.length * 28 + 4), fontFamily: mono.fontFamily }}>
+          <RichGrid<CycleRow>
+            columns={cycleColumns}
+            rows={rows}
+            getRowId={(c) => `${c.cycle}:${c.candidateId ?? 'none'}`}
+            rowMinHeight={28}
+            headerHeight={32}
+          />
+        </div>
+      )}
     </div>
   );
 }
 
 function VariantsTab({ slug }: { slug: string }) {
-  const { rows, err, unavailable } = useGymList<{ variantId: string; label?: string; parentId?: string | null; onFrontier?: boolean }>(slug, '/variants', (j) => ((j as { variants?: never[] }).variants ?? []));
+  const { rows, err, unavailable } = useGymList<VariantRow>(slug, '/variants', (j) => ((j as { variants?: VariantRow[] }).variants ?? []));
   if (unavailable) return <Unavailable />;
   return (
     <div style={card} data-testid="gym-variants">
       {err && <div style={{ color: '#ff6b6b', ...mono }}>{err}</div>}
-      <table style={{ ...mono, width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr style={{ textAlign: 'left', opacity: 0.7 }}><th>variant</th><th>parent</th><th>frontier</th></tr></thead>
-        <tbody>
-          {rows.map((v, i) => (
-            <tr key={i} style={{ borderTop: '1px solid #2a2a33' }}>
-              <td>{v.variantId}</td><td>{v.parentId ?? '—'}</td><td>{v.onFrontier ? '✓' : ''}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && <tr><td colSpan={3} style={{ opacity: 0.6, paddingTop: 8 }}>No variants yet.</td></tr>}
-        </tbody>
-      </table>
+      {rows.length === 0 ? (
+        <div style={{ ...mono, opacity: 0.6, paddingTop: 8 }}>No variants yet.</div>
+      ) : (
+        <div style={{ height: Math.min(420, 32 + rows.length * 28 + 4), fontFamily: mono.fontFamily }}>
+          <RichGrid<VariantRow>
+            columns={variantColumns}
+            rows={rows}
+            getRowId={(v) => v.variantId}
+            rowMinHeight={28}
+            headerHeight={32}
+          />
+        </div>
+      )}
     </div>
   );
 }

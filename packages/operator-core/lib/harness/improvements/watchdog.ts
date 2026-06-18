@@ -586,11 +586,26 @@ export type ToolErrorClass = 'structural' | 'transient' | 'caller';
  * back to status + an error_message pattern. Keep in sync with the SQL CASE in
  * `collectToolErrorSignals` — this fn is the documented source of truth.
  */
+/**
+ * Shared-infra failures that recur identically in SHAPE but are transient LOAD, not a tool
+ * bug — chiefly PG connection-exhaustion (max_connections hit / superuser-reserved slots) and
+ * brief DB unavailability. These surface (often as `handler_error`) across EVERY PG-backed
+ * tool at once during a wedge, so the low-bar structural signal mis-files each tool as broken
+ * (the 2026-06-17 PG-wedge collateral: EI-1331/1332/1323/1337/1342/1344/1333). Treating them as
+ * `transient` defers to the volume-gated bar (n≥15), so a brief wedge is ignored while a
+ * SUSTAINED infra problem still fires. Pattern-only (no false-positive risk on real tool bugs:
+ * a tool bug doesn't say "too many clients"). MIRROR of the SQL `~*` clause in
+ * `collectToolErrorSignals`. Runbook: agent-insights/pg-connection-exhaustion-fleet-wedge.
+ */
+export const INFRA_TRANSIENT_ERROR_RE =
+  /too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|terminating connection due to|ECONNREFUSED|ECONNRESET|connection terminated|could not connect to server/i;
+
 export function classifyToolError(
   errorCode: string | null | undefined,
   status: string,
   errorMessage: string | null | undefined,
 ): ToolErrorClass {
+  const m = errorMessage ?? '';
   if (errorCode) {
     if (errorCode === 'timeout') return 'transient';
     if (
@@ -598,11 +613,14 @@ export function classifyToolError(
       errorCode === 'role_not_allowed' || errorCode === 'missing_capability' ||
       errorCode === 'quota_exceeded'
     ) return 'caller';
+    // INFRA-transient takes precedence over the structural fallback: a PG max_connections /
+    // DB-unavailable failure is shared-infra load, not this tool's bug (mirrors SQL).
+    if (INFRA_TRANSIENT_ERROR_RE.test(m)) return 'transient';
     return 'structural'; // unauthorized / handler_error / harness_required / any other deterministic code
   }
-  const m = errorMessage ?? '';
   if (status === 'timeout' || /exceeded timeout|timed?\s*out/i.test(m)) return 'transient';
   if (status === 'role-not-allowed' || /^invalid_args:/i.test(m)) return 'caller';
+  if (INFRA_TRANSIENT_ERROR_RE.test(m)) return 'transient'; // shared-infra exhaustion, not a tool bug
   return 'structural'; // unclassified error → structural; the per-class FIRE bar gates noise
 }
 
@@ -723,6 +741,11 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
           WHEN error_code = 'timeout' OR status = 'timeout' THEN 'transient'
           WHEN error_code IN ('invalid_args','invalid_input','role_not_allowed','missing_capability','quota_exceeded')
                OR status = 'role-not-allowed' OR error_message LIKE 'invalid_args:%' THEN 'caller'
+          -- INFRA-transient (mirrors classifyToolError / INFRA_TRANSIENT_ERROR_RE): PG
+          -- connection-exhaustion + DB-unavailability recur identically in SHAPE across every
+          -- tool during a wedge, but are shared-infra LOAD, not a per-tool bug. Defer to the
+          -- volume bar so a brief wedge stops mis-filing structural tool-bug EIs.
+          WHEN error_message ~* 'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|terminating connection due to|ECONNREFUSED|ECONNRESET|connection terminated|could not connect to server' THEN 'transient'
           ELSE 'structural'
         END AS class,
         error_message,
