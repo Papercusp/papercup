@@ -439,6 +439,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
 
+    // Opt-in per-request routing trace (PAPERCUSP_GATEWAY_ROUTE_LOG=1): logs the pinned account
+    // requested via the x-papercusp-account header vs the account this request ACTUALLY egressed on
+    // — the ground-truth diagnostic for "is my pin landing / failing over". Off by default (noisy).
+    if (process.env.PAPERCUSP_GATEWAY_ROUTE_LOG === '1') {
+      log('info', `gw-route: want=${wantAccount ?? '-'} routed=${active.accountId} model=${model}`);
+    }
+
     try {
       // Constant request headers (everything but the per-account Authorization/dispatcher, set per attempt).
       // Every account is a Claude Max subscription OAuth credential → `Authorization: Bearer` + the
