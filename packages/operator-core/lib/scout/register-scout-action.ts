@@ -76,6 +76,26 @@ async function resolveArchive(scope: { workspaceId: string; harnessSlug: string 
  * buffered scout seeds to the archive (P-012).
  */
 export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId }) => {
+  // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
+  // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and
+  // never pass the spawn chokepoint that patches `ANTHROPIC_BASE_URL` onto bee subprocesses —
+  // so (unlike bees) they egress STRAIGHT to api.anthropic.com on a SINGLE account. Under the
+  // busy fleet that account is perpetually at its Anthropic limit → every ideator 429s → the
+  // cycle returns `no-ideas` with $0 spent. That is why the @singleton Scout produced 0 ideas
+  // across 49/49 ticks since the 2026-06-14 re-scope (root-caused 2026-06-18). When the
+  // INFERENCE_GATEWAY flag is on, point the in-process SDK (PAPERCUSP_ANTHROPIC_URL) AND any
+  // claude-CLI subprocess (ANTHROPIC_BASE_URL) at the localhost pacing gateway so Scout
+  // load-balances across the bound pool accounts exactly like the gym (autoloop-cycle.ts) and
+  // the fleet. Flag-OFF → unchanged direct egress; a pre-set override is respected.
+  const { FLAGS } = await import('@papercusp/flags');
+  const { getFlag } = await import('@papercusp/flags/server');
+  if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
+    const { gatewayLlmEnv } = await import('../inference-gateway/spawn-env');
+    for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {
+      if (!process.env[k]) process.env[k] = v;
+    }
+  }
+
   const { llmCall } = await import('../llm-testing/llm-client');
   const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
   const archive = await resolveArchive({ workspaceId, harnessSlug });

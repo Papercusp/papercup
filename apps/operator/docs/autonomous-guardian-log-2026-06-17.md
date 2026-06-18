@@ -34,7 +34,26 @@ default). Stale pre-06-14 pending ideas simply keep it from early-firing — the
 **Tests:** 7 new focused tests in `cadence.test.ts` (drained fires / pending blocks / never-routed
 no-op / disabled-when-omitted / respects floor / outranks idle / friction still wins). Suite green.
 
-**Deploy status:** both land on the live @singleton scout via the staging→green pipeline (server-side,
+### CI-3 · Scout was DEAD — in-process ideators bypass the inference gateway (the REAL root cause) — SHIPPED to tree
+**The big one (owner-asked live test 2026-06-18).** The cadence fix (CI-1/CI-2) makes scout FIRE more,
+but the decisive finding: the @singleton scout already fired 49 times and produced **0 ideas every single
+time, $0 spent** — dead since the 06-14 re-scope. Root cause: scout's in-process ideator/critic llmCalls
+are `anthropic-direct` and never pass the spawn chokepoint that routes bees through the inference gateway,
+so they hit `api.anthropic.com` DIRECTLY on a single account → that account is perpetually rate-limited by
+the busy fleet → every ideator `429`s → `no-ideas`/$0. The corpus is RICH (digest: 20 friction / 20 spend
+sinks $68k / 20 deferrals / 20 capability gaps / 18 reverts over 499 completions) — so this was purely the
+LLM egress, not missing observations. **Same bug class as the gym's FB-16** (`gym-cycle-inprocess-llm-
+bypasses-gateway`) — scout just never got the fix. **Fix:** `register-scout-action.ts` `productionScoutRunner`
+now applies `gatewayLlmEnv()` (flag-gated on INFERENCE_GATEWAY, which is ON) so scout's in-process SDK
+routes through the localhost gateway's pooled+paced multi-account egress, exactly like the gym + the fleet.
+Verified `chat-stream.ts resolveAnthropicBaseUrl()` reads `PAPERCUSP_ANTHROPIC_URL` (what the fix sets), so
+it routes. Tests: register-scout-action 3/3 + full scout suite 495 green; typecheck clean. Wrote insight
+`scout-cycle-inprocess-llm-bypasses-gateway`. **Empirical-proof caveat:** even gateway-routed, a manual run
+still 429s RIGHT NOW because the whole account pool is at its weekly limit pre-7am — the fix's payoff (pool
++ pacing instead of one un-paced account) lands once accounts have headroom (7am reset). If scout stays
+starved post-reset, next lever = a less-contended ideator model or a reserved account for scout.
+
+**Deploy status:** all three (CI-1/CI-2/CI-3) land on the live @singleton scout via the staging→green pipeline (server-side,
 no hot-reload; the scout runs in the :3070 green operator). NOT manually deployed — letting the pipeline
 carry it. Owner #3 (dedup): YES confirmed — scout's critics read a novelty corpus (`readNoveltyCorpus`,
 cycle.ts:96 — prior plans/decisions/ideas/dropped-improvements) and a novelty critic drops near-dups, so

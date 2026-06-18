@@ -16,7 +16,7 @@
 
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { getOrgPg } from '../../org-pg';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   listIssues,
   setIssueState,
@@ -190,29 +190,29 @@ export async function processAutoClose(
 
   const { seenKeys, ranTickCount } = await d.recentRanTickKeys(minTicks);
   if (ranTickCount < minTicks) return []; // not enough history — never close on a fresh watchdog
-  const inFlight = await d.inFlightDispatchIds(keyed.map((i) => i.issueId));
+  const inFlight = await d.inFlightDispatchIds(keyed.map((i) => i.id));
   const nowMs = d.nowMs();
 
   const out: AutoCloseOutcome[] = [];
   for (const i of keyed) {
     const watchdogKey = watchdogKeyOfIssue(i);
     const candidate: AutoCloseCandidate = {
-      issueId: i.issueId,
+      issueId: i.id,
       watchdogKey,
       state: i.state,
       assignee: i.assignee,
       createdAtMs: i.createdAt ? Date.parse(i.createdAt) : NaN,
       signalOrigin: i.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN,
-      inFlightDispatch: inFlight.has(i.issueId),
+      inFlightDispatch: inFlight.has(i.id),
     };
     const decision = decideAutoClose(candidate, { seenKeys, ranTickCount, nowMs }, opts);
     if (!decision.close) continue;
     try {
-      await d.close(i.issueId, watchdogKey, decision.reason);
-      out.push({ issueId: i.issueId, watchdogKey, reason: decision.reason });
+      await d.close(i.id, watchdogKey, decision.reason);
+      out.push({ issueId: i.id, watchdogKey, reason: decision.reason });
     } catch (e) {
       // Best-effort: one close failing must not abort the sweep.
-      console.warn(`[watchdog-auto-close] close failed for ${i.issueId}:`, e instanceof Error ? e.message : e);
+      console.warn(`[watchdog-auto-close] close failed for ${i.id}:`, e instanceof Error ? e.message : e);
     }
   }
   if (out.length > 0) {
