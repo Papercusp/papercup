@@ -163,6 +163,20 @@ export interface WorkItemsHealth {
   blocked: number;
   needsHuman: number;
   done: number;
+  // Stuck-items recovery health (work-queue-stuck-item-recovery P-008 / P-009).
+  // OPTIONAL — absent when the work-queue-health read failed this tick (the panel
+  // still renders its base counts, fail-soft).
+  /** Freed-but-non-dispatchable feature rows (should be ~0; any >0 is a real anomaly). */
+  stuckFeatures?: number;
+  /** Feature claims past grace still held by a dead holder (reaper backlog). */
+  deadHeldClaims?: number;
+  /** Open bug/change issues past grace still assigned to a dead holder. */
+  deadAssignedIssues?: number;
+  /** Age of the stale-claim reaper's last recorded run, in seconds; null if never
+   *  recorded (fresh boot / unknown). */
+  reaperAgeSec?: number | null;
+  /** The reaper hasn't run within its staleness window (likely wedged) — P-009. */
+  reaperStale?: boolean;
 }
 
 /** Work-feed flow. */

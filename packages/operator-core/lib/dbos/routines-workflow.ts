@@ -249,6 +249,33 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'hive-placement-watchdog-sweep' },
   );
 
+  // scheduled-recurring-plans-2026-06-16 (Phase 5) — the scheduled-plan RUN completion +
+  // governance sweep. A `system:plan-run` fire mints a plan_runs row at status='running' +
+  // work_items; nothing settled the run when those finished, and the cost-cap / failure-streak
+  // auto-pause only act on a SETTLED run. reconcile-plan-runs.ts was implemented + tested but
+  // never wired (EI: its doc claimed "called before the plans:runs read + by the tick" — it
+  // wasn't), so scheduled runs stayed `running` forever and the governance never fired. Ride the
+  // 30s tick like the watchdog sweeps above: settle every running scheduled run whose work_items
+  // are terminal, then auto-pause a template that breached its costCapCents or failure streak.
+  // Best-effort (a sweep failure must never fail the loop it watches) + one durable step.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { reconcileAndGovern } = await import('../harness/routines/reconcile-plan-runs');
+        const { reconciled, paused } = await reconcileAndGovern();
+        if (reconciled > 0 || paused.length > 0) {
+          console.warn(
+            `[plan-run-reconcile] tick settled ${reconciled} scheduled run(s)` +
+              (paused.length ? `, auto-paused ${paused.length} schedule(s): ${paused.join(', ')}` : ''),
+          );
+        }
+      } catch (e) {
+        console.warn(`[plan-run-reconcile] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'plan-run-reconcile-sweep' },
+  );
+
   // queen-autonomous-execution B-11 / P-050: hive THROUGHPUT instrumentation —
   // one snapshot tick per started hive, riding the same 30s sweep. Records the
   // six metrics (frontier depth, placements/wake, busy-vs-cap, stuck, MTTC,

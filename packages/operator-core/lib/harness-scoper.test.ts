@@ -17,8 +17,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // vi.mock factories are hoisted above module-top consts, so the spies must be
 // declared via vi.hoisted to be initialized when the factories run.
 const { spawnInvokeOnceMock, appendFileSyncMock } = vi.hoisted(() => ({
-  spawnInvokeOnceMock: vi.fn(async () => ({ output: '', exitCode: 0, stderr: '' })),
-  appendFileSyncMock: vi.fn(),
+  // `...args` so the `.mock.calls[0]` destructures below (5- and 2-element) type-check.
+  spawnInvokeOnceMock: vi.fn(async (..._a: unknown[]) => ({ output: '', exitCode: 0, stderr: '' })),
+  appendFileSyncMock: vi.fn<(...a: unknown[]) => void>(),
 }));
 
 vi.mock('./dbos/orchestrator-runner', () => ({ spawnInvokeOnce: spawnInvokeOnceMock }));

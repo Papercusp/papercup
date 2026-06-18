@@ -26,7 +26,9 @@ export const BENCH_NONTERMINAL_STATUSES = [
  * in {@link retireBenchDebris} so the scope is unit-testable without PG.
  */
 export function isStaleBenchDebris(harnessSlug: string, status: string): boolean {
-  const isBench = /^xbench/.test(harnessSlug) || harnessSlug.includes('instance_');
+  // Benchmark harness naming across drivers: `xbench*` (su/queen), `xbq*` (hive-member slugs),
+  // `extbench*` (external-bench scratch), or anything carrying `instance` (the SWE-bench instance id).
+  const isBench = /^(xbench|xbq|extbench)/.test(harnessSlug) || harnessSlug.includes('instance');
   const isProtected = harnessSlug.startsWith('papercup');
   return isBench && !isProtected && (BENCH_NONTERMINAL_STATUSES as readonly string[]).includes(status);
 }

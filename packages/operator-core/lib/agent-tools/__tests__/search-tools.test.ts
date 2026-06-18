@@ -42,11 +42,22 @@ afterEach(() => {
 
 // ─── search:fulltext ──────────────────────────────────────────────────────────
 
+// The search runners are mocked; type them to their (sources, opts) call shape so the
+// `.mock.calls[0]` destructures below (`[sources]` / `[, opts]`) are typed, not 0-arg empty tuples.
+type FullTextMock = (
+  sources: Array<{ name: string }>,
+  opts: Record<string, unknown>,
+) => Promise<{ results: unknown[]; totalHits: number }>;
+type HybridMock = (
+  sources: Array<{ name: string }>,
+  opts: Record<string, unknown>,
+) => Promise<{ results: unknown[]; totalHits: number; embedderAvailable?: boolean }>;
+
 describe('search:fulltext', () => {
   it('calls runFullTextSearch with query + workspaceId + limit', async () => {
-    const runFullTextSearch = vi.fn(async () => ({ results: [MOCK_HIT], totalHits: 1 }));
+    const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [MOCK_HIT], totalHits: 1 }));
     vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
-    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_, r: unknown[]) => r }));
+    vi.doMock('../search/rerank', () => ({ rerankProseHits: async (_: unknown, r: unknown[]) => r }));
 
     const { default: tool } = await import('../search/fulltext');
     await tool.handler({ query: 'authentication', limit: 3 }, MAKE_CTX());
@@ -74,7 +85,7 @@ describe('search:fulltext', () => {
   });
 
   it('expands scope=all to all four named scopes', async () => {
-    const runFullTextSearch = vi.fn(async () => ({ results: [], totalHits: 0 }));
+    const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
     vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
     vi.doMock('../search/rerank', () => ({
       rerankProseHits: async (_: unknown, r: unknown[]) => r,
@@ -90,7 +101,7 @@ describe('search:fulltext', () => {
   });
 
   it('filters to only the requested scope', async () => {
-    const runFullTextSearch = vi.fn(async () => ({ results: [], totalHits: 0 }));
+    const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
     vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
     vi.doMock('../search/rerank', () => ({
       rerankProseHits: async (_: unknown, r: unknown[]) => r,
@@ -104,7 +115,7 @@ describe('search:fulltext', () => {
   });
 
   it('passes harness_slug as scopeFilter', async () => {
-    const runFullTextSearch = vi.fn(async () => ({ results: [], totalHits: 0 }));
+    const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
     vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
     vi.doMock('../search/rerank', () => ({
       rerankProseHits: async (_: unknown, r: unknown[]) => r,
@@ -122,7 +133,7 @@ describe('search:fulltext', () => {
 
 describe('search:semantic', () => {
   it('calls runHybridSearch with query + mode + workspaceId', async () => {
-    const runHybridSearch = vi.fn(async () => ({ results: [], totalHits: 0, embedderAvailable: true }));
+    const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: true }));
     vi.doMock('@papercusp/search', () => ({ runHybridSearch }));
     vi.doMock('../search/embedder', () => ({
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
@@ -143,7 +154,7 @@ describe('search:semantic', () => {
   });
 
   it('defaults to hybrid mode', async () => {
-    const runHybridSearch = vi.fn(async () => ({ results: [], totalHits: 0, embedderAvailable: false }));
+    const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: false }));
     vi.doMock('@papercusp/search', () => ({ runHybridSearch }));
     vi.doMock('../search/embedder', () => ({
       buildQueryEmbedder: vi.fn(async () => vi.fn()),

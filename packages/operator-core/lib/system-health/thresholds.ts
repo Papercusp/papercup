@@ -86,6 +86,14 @@ export function beesStatus(d: BeesHealth): PanelStatus {
 /** Work items. warn = a needs-human queue exists. (Backlog depth is not a health
  *  failure on its own — that's the work-feed / plans story.) */
 export function workItemsStatus(d: WorkItemsHealth): PanelStatus {
+  // P-009: a recorded-but-aged-out reaper is WEDGED — the most severe work-queue
+  // failure (stuck items accumulate silently). A null age = never recorded (fresh
+  // boot / unknown) → warn, not crit, to avoid alarming on the ~1 boot interval
+  // before the first sweep stamps its heartbeat.
+  if (d.reaperStale && d.reaperAgeSec != null) return 'crit';
+  // P-008: any genuinely stuck row, a dead-held claim backlog, or a dead-assigned issue.
+  if ((d.stuckFeatures ?? 0) > 0 || (d.deadHeldClaims ?? 0) > 0 || (d.deadAssignedIssues ?? 0) > 0) return 'warn';
+  if (d.reaperStale) return 'warn';
   if (d.needsHuman > 0) return 'warn';
   return 'ok';
 }

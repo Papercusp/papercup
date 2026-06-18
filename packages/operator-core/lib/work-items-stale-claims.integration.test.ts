@@ -8,7 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
-import { reclaimStaleWorkItemClaims } from './work-items-stale-claims';
+import { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims } from './work-items-stale-claims';
 
 const PRESENCE_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
@@ -23,6 +23,15 @@ const SPAWNED_DDL = `
     status text NOT NULL,
     heartbeat_at timestamptz
   )`;
+const ENGINEER_ISSUES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (
+    workspace_id text NOT NULL DEFAULT 'default',
+    issue_id text NOT NULL,
+    kind text, scope text, title text, body text, severity text, source text, state text,
+    assignee text, assigned_by text, assigned_at timestamptz, payload jsonb,
+    found_during text, linked_feature_id text, created_by text, signal_origin text,
+    created_at timestamptz, updated_at timestamptz, origin text DEFAULT 'local',
+    PRIMARY KEY (workspace_id, issue_id))`;
 
 let db: FreshPgDb;
 let sql: postgres.Sql;
@@ -36,6 +45,7 @@ beforeAll(async () => {
   await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
+  await sql.unsafe(ENGINEER_ISSUES_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -43,8 +53,30 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.coord_presence, harness_shared.spawned_agents`;
+  await sql`TRUNCATE harness_shared.harness_features_consolidated, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.engineer_issues`;
 });
+
+async function seedIssue(
+  issueId: string,
+  kind: string,
+  assignee: string | null,
+  assignedAgoMin: number,
+  state = 'open',
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.engineer_issues
+      (workspace_id, issue_id, kind, scope, title, state, assignee, assigned_by, assigned_at, created_at, updated_at)
+    VALUES
+      (${WS}, ${issueId}, ${kind}, 'operator', ${issueId}, ${state}, ${assignee},
+       ${kind === 'task' ? 'operator' : null},
+       ${assignee ? sql`now() - make_interval(mins => ${assignedAgoMin})` : null}, now(), now())`;
+}
+
+async function assigneeOf(issueId: string): Promise<string | null> {
+  const [row] = await sql<{ assignee: string | null }[]>`
+    SELECT assignee FROM harness_shared.engineer_issues WHERE issue_id = ${issueId}`;
+  return row?.assignee ?? null;
+}
 
 async function seedItem(
   featureId: string,
@@ -202,5 +234,61 @@ describe('reclaimStaleWorkItemClaims', () => {
        WHERE feature_id = 'F-009' AND (taken_by IS NULL OR taken_by = '')
        RETURNING feature_id`;
     expect(updated).toHaveLength(1);
+  });
+});
+
+describe('reclaimStaleIssueClaims (issue-family reaper, GAP 2 / P-005 / D-009)', () => {
+  it('a dead-holder OPEN bug → assignee cleared, returned to the open pool', async () => {
+    await seedIssue('EI-1', 'bug', 'opspawn-dead-bug', 30);
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(1);
+    expect(r.released[0]).toMatchObject({ issue_id: 'EI-1', kind: 'bug', former_assignee: 'opspawn-dead-bug' });
+    expect(await assigneeOf('EI-1')).toBeNull();
+  });
+
+  it('a dead-holder OPEN change → assignee cleared', async () => {
+    await seedIssue('EI-2', 'change', 'opspawn-dead-chg', 30);
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released.map((c) => c.issue_id)).toEqual(['EI-2']);
+    expect(await assigneeOf('EI-2')).toBeNull();
+  });
+
+  it('a `task` (delegate) issue is NEVER reaped — a durable conversational binding (D-009)', async () => {
+    // Stale assigned_at + a dead holder: a bug here WOULD be reaped, but a task must NOT be.
+    await seedIssue('EI-3', 'task', 'delegate:sess-abc', 999);
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect(await assigneeOf('EI-3')).toBe('delegate:sess-abc');
+  });
+
+  it('resolved / closed issues are untouched even with a dead holder', async () => {
+    await seedIssue('EI-4', 'bug', 'opspawn-dead-resolved', 30, 'resolved');
+    await seedIssue('EI-5', 'bug', 'opspawn-dead-closed', 30, 'closed');
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect(await assigneeOf('EI-4')).toBe('opspawn-dead-resolved');
+    expect(await assigneeOf('EI-5')).toBe('opspawn-dead-closed');
+  });
+
+  it('alias-aware liveness parity with the feature path: a RUNNING nursery alias keeps the claim', async () => {
+    await seedIssue('EI-6', 'bug', 'opspawn-1900-xyz', 30);
+    await sql`INSERT INTO harness_shared.spawned_agents VALUES ('s-bee', 's-bee', 'opspawn-1900-xyz', 'running', now())`;
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect(await assigneeOf('EI-6')).toBe('opspawn-1900-xyz');
+  });
+
+  it('a fresh coord_presence heartbeat keeps the claim; claims inside grace are untouched', async () => {
+    await seedIssue('EI-7', 'bug', 'su-alive-issue', 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-alive-issue', now())`;
+    await seedIssue('EI-8', 'bug', 'opspawn-justclaimed', 2); // inside 10-min grace
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(0);
+  });
+
+  it('unassigned open issues are ignored', async () => {
+    await seedIssue('EI-9', 'bug', null, 0);
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(0);
   });
 });

@@ -337,6 +337,14 @@ async function staleClaimSweepTick(): Promise<void> {
           ir.released.map((c) => `${c.issue_id}[${c.kind}]<-${c.former_assignee}`).join(', '),
       );
     }
+
+    // P-009: heartbeat — record this run (always, even when nothing was freed) so the
+    // system-health reader can detect a WEDGED scheduler (last-run aged out). The
+    // detection must be external to this (possibly wedged) sweep; this just stamps it.
+    try {
+      const { recordSweepRun, STALE_CLAIM_SWEEP_NAME } = await import('../work-queue-health');
+      await recordSweepRun(getOrgPg().sql, STALE_CLAIM_SWEEP_NAME, r.released.length + ir.released.length);
+    } catch { /* best-effort heartbeat */ }
   }, { name: 'stale-claim-sweep' });
 
   // …and the PLAN-ITEM analog (EI-179): plan_item_claims lapse lazily — a dead

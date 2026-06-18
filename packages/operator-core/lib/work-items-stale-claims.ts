@@ -126,7 +126,7 @@ function classify(row: ReleasedRow, cap: number): StaleClaimAction {
  * heartbeat. Shared by BOTH the feature reaper and the issue reaper (P-005) so
  * their liveness rule can NEVER diverge — embed it in a `WITH live_holder AS (…)`.
  */
-function liveHolderFragment(sql: Db, graceSec: number) {
+export function liveHolderFragment(sql: Db, graceSec: number) {
   return sql`
       -- Mig-225 alias-aware liveness: presence rows…
       SELECT owner_id AS alias

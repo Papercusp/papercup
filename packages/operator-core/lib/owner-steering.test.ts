@@ -6,9 +6,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const listHiveSettings = vi.fn();
-const setHiveSetting = vi.fn(async () => ({}));
-const deleteHiveSetting = vi.fn(async () => {});
+// `...args` so the mock factory's `(...a) => fn(...a)` spreads type-check + `.mock.calls` index.
+const listHiveSettings = vi.fn<(...a: unknown[]) => unknown>();
+const setHiveSetting = vi.fn(async (..._a: unknown[]) => ({}));
+const deleteHiveSetting = vi.fn(async (..._a: unknown[]) => {});
 
 vi.mock('./hive-settings-store', () => ({
   listHiveSettings: (...a: unknown[]) => listHiveSettings(...a),

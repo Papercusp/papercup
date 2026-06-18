@@ -263,15 +263,31 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
     for (const it of items) byState[it.state] = (byState[it.state] ?? 0) + 1;
     const n = (s: string) => byState[s] ?? 0;
     const inProgress = n('wip') + n('in-progress') + n('validating') + n('reviewing');
+    // P-008 / P-009: stuck-items metric + reaper liveness (best-effort — a read
+    // failure leaves the recovery fields undefined so the panel still renders).
+    let recovery: Awaited<ReturnType<typeof import('../work-queue-health').readWorkQueueHealth>> | null = null;
+    try {
+      const { readWorkQueueHealth } = await import('../work-queue-health');
+      recovery = await readWorkQueueHealth(getOrgPg().sql, { workspaceId: ctx.ws });
+    } catch { /* leave recovery fields undefined — fail-soft */ }
     const data: WorkItemsHealth = {
       total: items.length, byState,
       todo: n('todo'), inProgress, blocked: n('blocked'),
       needsHuman: n('needs-human') + n('needs_human'), done: n('done') + n('passed') + n('resolved'),
+      ...(recovery ? {
+        stuckFeatures: recovery.stuckFeatures,
+        deadHeldClaims: recovery.deadHeldFeatures,
+        deadAssignedIssues: recovery.deadAssignedIssues,
+        reaperAgeSec: recovery.reaperAgeMs == null ? null : Math.round(recovery.reaperAgeMs / 1000),
+        reaperStale: recovery.reaperStale,
+      } : {}),
     };
     const status = workItemsStatus(data);
+    const stuckTotal = (data.stuckFeatures ?? 0) + (data.deadHeldClaims ?? 0) + (data.deadAssignedIssues ?? 0);
+    const reaperWedged = data.reaperStale === true && data.reaperAgeSec != null;
     return {
       status,
-      summary: `${data.total} items — ${data.todo} todo, ${inProgress} in-flight, ${data.blocked} blocked${data.needsHuman > 0 ? `, ${data.needsHuman} need human` : ''}`,
+      summary: `${data.total} items — ${data.todo} todo, ${inProgress} in-flight, ${data.blocked} blocked${data.needsHuman > 0 ? `, ${data.needsHuman} need human` : ''}${stuckTotal > 0 ? `, ${stuckTotal} stuck` : ''}${reaperWedged ? ' — REAPER WEDGED' : ''}`,
       data,
       link: { label: 'Working', href: '/adv?tab=harnesses' },
       metrics: [
@@ -280,6 +296,10 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
         m('blocked', data.blocked, data.blocked > 0 ? 'warn' : undefined),
         m('needs-human', data.needsHuman, data.needsHuman > 0 ? 'warn' : undefined),
         m('done', data.done),
+        ...(recovery ? [
+          m('stuck', stuckTotal, stuckTotal > 0 ? 'warn' : undefined),
+          m('reaper age', data.reaperAgeSec == null ? '—' : `${data.reaperAgeSec}s`, reaperWedged ? 'crit' : data.reaperStale ? 'warn' : undefined),
+        ] : []),
       ],
     };
   });
