@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * PlanItemPreview — the detail pane for the cross-plan item views. Renders
  * the SELECTED item as the shared chat card (its actions) above a read-only
@@ -159,14 +161,14 @@ export default function PlanItemPreview({
           busy={busy}
           onResponse={(r) => void onCardResponse(r)}
         />
-        <button
+        <Tooltip label="Open the full plan, jumped to this item"><button
           type="button"
           className="pc-items__view-full"
           onClick={() => onViewFullPlan(planSlug, itemId)}
-          title="Open the full plan, jumped to this item"
+
         >
           View full plan ↗
-        </button>
+        </button></Tooltip>
       </div>
       <div className="pc-items__detail-body" ref={scopeRef}>
         <AskChoiceCard
