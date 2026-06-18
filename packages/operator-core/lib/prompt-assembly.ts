@@ -50,6 +50,7 @@ import { renderFrictionTripwire } from './harness/improvements/friction-markers'
 import { renderYieldPolicy } from './turn-yield-policy';
 import { renderTestingStandard } from './testing-standard-policy';
 import { renderAccountRoutingNote } from './account-routing-policy';
+import { renderDeployPipelineNote } from './deploy-pipeline-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -434,6 +435,16 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (testingStandard) {
     parts.push(testingStandard);
     sections.push({ name: 'testing-standard', chars: testingStandard.length });
+  }
+
+  // Deploy-pipeline note (the "your change ships via an async, self-healing pipeline; don't
+  // babysit it or self-diagnose a stall" clause) — the SHARED base every operator-launched role
+  // inherits, mirroring the spawned-bee base (buildPromptParts). Sourced from the one
+  // DEPLOY_PIPELINE_NOTE constant (orchestrator) so this base + the spawned-bee base can't desync.
+  const deployNote = renderDeployPipelineNote();
+  if (deployNote) {
+    parts.push(deployNote);
+    sections.push({ name: 'deploy-pipeline-note', chars: deployNote.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

@@ -296,6 +296,18 @@ describe('assembleRolePrompt — coord-injection legend (token-efficient-coord-i
   });
 });
 
+describe('assembleRolePrompt — deploy-pipeline note (deploy-pipeline-legibility-2026-06-18 P-003)', () => {
+  it('injects the async + self-healing deploy-pipeline note into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## The deploy pipeline is ASYNC + SELF-HEALING');
+    expect(out.text).toContain('dev:pipeline_position');
+    expect(out.text).toContain(':3070 serves GREEN `main`');
+    expect(out.sections.some((s) => s.name === 'deploy-pipeline-note')).toBe(true);
+  });
+});
+
 describe('assembleRolePrompt — friction trip-wire (self-learning-central P-001/A, D-006)', () => {
   it('injects the near-zero friction trip-wire into the SHARED base every role inherits', async () => {
     mockTools.length = 0;

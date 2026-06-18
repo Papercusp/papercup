@@ -24,7 +24,14 @@ export default defineTool({
     chaining: 'Edit a file → (git-sync commits within minutes) → dev:pipeline_position{path} to confirm it reached staging/main/:3070.',
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  // Read-only (intel:read) "where is my change + is the gate stalled" probe. Available to
+  // EVERY execution/judgment role — the shared DEPLOY_PIPELINE_NOTE tells all of them to reach
+  // for it instead of polling :3070, so the allowlist must cover them all (deploy-pipeline-legibility-2026-06-18 P-005).
+  agentRoles: [
+    'operator', 'queen', 'architect', 'worker', 'scoper', 'validator', 'reviewer',
+    'debugger', 'documenter', 'curator', 'bee', 'sentinel', 'overwatch',
+    'release-fixer', 'merge-resolver', 'content-fixer', 'release-manager',
+  ],
   args: z.object({
     path: z.string().min(1).max(400).optional(),
     sha: z.string().min(4).max(64).optional(),
