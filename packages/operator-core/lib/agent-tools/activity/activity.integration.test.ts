@@ -20,6 +20,19 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
+// activity:report WRITES workspace_id from ctx.principal.workspaceId ('ws-test' below),
+// but activity:recent READS scoped by activeWorkspaceId() — the process-GLOBAL active
+// workspace (request-ALS → PAPERCUSP_WORKSPACE_ID → registry default 'default'). In
+// production these align (a request's workspace IS the principal's); in this isolated
+// test nothing sets the global, so the read filtered workspace_id='default' (or whatever
+// a sibling test leaked into the worker) and returned 0 rows — an INTERMITTENT failure
+// keyed on uncontrolled process-global state, not the read logic under test. Pin the
+// active workspace to the same id WORKER_CTX writes under so the read sees its own rows.
+vi.mock('../../workspace-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../workspace-registry')>();
+  return { ...actual, activeWorkspaceId: () => 'ws-test' };
+});
+
 const { default: reportTool } = await import('./report');
 const { default: recentTool } = await import('./recent');
 

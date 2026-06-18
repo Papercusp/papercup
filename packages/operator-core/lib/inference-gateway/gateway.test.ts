@@ -357,20 +357,28 @@ test('fails over to a second account when the active one hits its 5h budget (EI-
   gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
   port = await gw.listen(0);
 
-  // First request → account A's real 5h-rejected 429 → the gateway INTERNALLY fails over to B and
-  // returns B's 200, so the caller never sees the 429 (the resilient internal-retry behavior).
-  const first = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(first.status, 200, "internal failover A→B → B's 200, not A's 429");
-  assert.equal(pool.active().accountId, 'B', 'gateway failed over to B');
-
-  // Next request → account B (fresh bucket) → 200, egressing on B's token.
-  const second = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(second.status, 200, 'B has budget → 200');
-  assert.equal(upstream.last.headers['authorization'], 'Bearer B-tok', 'now egressing on B');
-
+  // Under round-robin active(), the gateway egresses each unpinned request through the next account in
+  // the pool — so within a single pass it WILL route a request onto A, which returns the real
+  // 5h-rejected 429. The resilient behavior under test: whenever a request lands on the 5h-exhausted
+  // account, the gateway INTERNALLY fails over to B and returns B's 200 — the caller NEVER sees A's 429.
+  // Send a full pass + 1 so A is certainly exercised, and assert the invariants that hold regardless of
+  // which account each round-robin hop picked.
+  for (let i = 0; i < 3; i++) {
+    const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(r.status, 200, "every request → 200 (A's 5h-rejected 429 is internally failed over to B, never surfaced)");
+    assert.equal(r.headers.get('x-papercusp-routed-account'), 'B', 'every served request egressed on the healthy account B');
+    assert.equal(JSON.parse(await r.text()).ok, true);
+  }
+  // The 5h-rejected account A is now OUT of rotation (onExhausted marked it until its reset), so active()
+  // only ever yields B — A no longer takes a round-robin slot. The /stats headline account is therefore B
+  // and at least one internal failover (A→B) was recorded.
+  assert.equal(upstream.last.headers['authorization'], 'Bearer B-tok', 'egress settled on B');
+  const seen = new Set([pool.active().accountId, pool.active().accountId, pool.active().accountId, pool.active().accountId]);
+  assert.ok(!seen.has('A'), 'A is out of rotation after its 5h rejection');
+  assert.deepEqual([...seen], ['B'], 'only B serves rotation now');
   const s = (await (await ask('/stats')).json()) as { accountId: string; failovers: number };
-  assert.equal(s.accountId, 'B', '/stats reflects the new active account');
-  assert.equal(s.failovers, 1);
+  assert.equal(s.accountId, 'B', '/stats reflects the surviving active account');
+  assert.ok(s.failovers >= 1, 'at least one A→B internal failover was recorded');
   resetGovernorRegistry();
 });
 
@@ -394,11 +402,19 @@ test('a 403 org/subscription-disallowed account pauses + fails over to a healthy
   port = await gw.listen(0);
 
   // A's 403 is an org-level disqualification → pause A out of rotation + fail over to B, returning B's
-  // 200 (NOT forwarding the 403, which would hard-fail the bee / 403-block the fleet when A is active()).
-  const first = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(first.status, 200, "403 org-disallowed → internal failover A→B → B's 200");
+  // 200 (NOT forwarding the 403, which would hard-fail the bee / 403-block the fleet). Under round-robin
+  // active(), a request lands on A within one pass; whenever it does, the gateway must internally fail
+  // over to B and return 200 — never surface A's 403. Drive a full pass + 1 so A is certainly exercised.
+  for (let i = 0; i < 3; i++) {
+    const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(r.status, 200, "403 org-disallowed → internal failover to B → 200, A's 403 never surfaced");
+    assert.equal(r.headers.get('x-papercusp-routed-account'), 'B', 'served on the healthy account B');
+  }
   assert.equal(upstream.last.headers['authorization'], 'Bearer B-tok', 'egressed on B');
-  assert.equal(pool.active().accountId, 'B', 'A paused out of rotation, B is active');
+  // A is paused OUT of rotation (penalize + onExhausted on the org-disallow), so active() only yields B.
+  const seen = new Set([pool.active().accountId, pool.active().accountId, pool.active().accountId, pool.active().accountId]);
+  assert.ok(!seen.has('A'), 'A paused out of rotation on the org-disallow 403');
+  assert.deepEqual([...seen], ['B'], 'B is the only account serving rotation');
   resetGovernorRegistry();
 });
 
