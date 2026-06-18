@@ -90,6 +90,7 @@ export {
 export {
   buildFairnessAudit,
   formatFairnessAuditMarkdown,
+  formatPerInstanceMatrix,
   type FairnessStatus,
   type FairnessCriterion,
   type ArmFairnessSummary,

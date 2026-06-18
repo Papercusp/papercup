@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * PendingCardsBar — renders cards from the state-channel SSE stream.
  *
@@ -207,16 +209,16 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
             {remaining} more {remaining === 1 ? 'card' : 'cards'} after this
           </p>
         )}
-        <button
+        <Tooltip label="Cancel — abort all pending prompts under this run"><button
           type="button"
           className="pending-cards-bar-cancel-run"
           onClick={() => void onCancelRun()}
           disabled={busy}
           aria-label="Cancel this run"
-          title="Cancel — abort all pending prompts under this run"
+
         >
           Cancel
-        </button>
+        </button></Tooltip>
       </div>
       {!connected && (
         <p className="pending-cards-bar-disconnected" role="status">

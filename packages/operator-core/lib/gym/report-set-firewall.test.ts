@@ -67,6 +67,7 @@ describe('gym↔report-set firewall — set-level disjointness (P-012)', () => {
     expect([...reportOnSetIds()].sort()).toEqual(
       [
         'agentsnet',
+        'frontier-swe',
         'harness-bench',
         'metr-hcast',
         'roadmapbench',

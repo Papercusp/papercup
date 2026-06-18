@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
@@ -64,15 +66,15 @@ export default function RuntimeView({ status: initial }: { status: RuntimeStatus
         <Stat label="Loaded" value={status.loaded} />
         <Stat label="Load errors" value={status.errors} bad={status.errors > 0} />
         <Stat label="Initialized pairs" value={status.initializedPairs.length} />
-        <button
+        <Tooltip label="Drop the cache; the next request rediscovers."><button
           className="pc-button"
           onClick={reset}
           disabled={resetting}
           style={{ marginLeft: 'auto' }}
-          title="Drop the cache; the next request rediscovers."
+
         >
           {resetting ? 'Resetting…' : 'Reset cache'}
-        </button>
+        </button></Tooltip>
       </div>
 
       <Card title={`Loaded plugins (${status.plugins.length})`}>

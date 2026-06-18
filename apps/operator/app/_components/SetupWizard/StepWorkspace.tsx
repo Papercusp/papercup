@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from './tauri-detect';
@@ -152,15 +154,15 @@ export function StepWorkspace() {
         )}
       </label>
       <div className="pc-step__actions">
-        <button
+        <Tooltip label={validation && !validation.ok ? validation.reason : undefined}><button
           type="button"
           className="pc-btn pc-btn--primary"
           onClick={() => void onSave()}
           disabled={!canSave}
-          title={validation && !validation.ok ? validation.reason : undefined}
+
         >
           {saving ? 'Saving…' : 'Save'}
-        </button>
+        </button></Tooltip>
         {savedAt && <span className="pc-step__saved">Saved.</span>}
       </div>
       {!tauri && (

@@ -10,6 +10,7 @@
 
 'use client';
 
+import { Tooltip } from '@/app/harness/Tooltip';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTabVisitHistory } from './useTabVisitHistory';
 
@@ -31,26 +32,26 @@ export function DockNavChevrons({ className }: DockNavChevronsProps) {
       role="group"
       aria-label="Tab history"
     >
-      <button
+      <Tooltip label="Back (Cmd+[)"><button
         type="button"
         onClick={nav.back}
         disabled={!nav.canBack}
         aria-label="Back to previous tab"
-        title="Back (Cmd+[)"
+
         style={btnStyle(nav.canBack)}
       >
         <ChevronLeft size={14} aria-hidden />
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label="Forward (Cmd+])"><button
         type="button"
         onClick={nav.forward}
         disabled={!nav.canForward}
         aria-label="Forward to next tab"
-        title="Forward (Cmd+])"
+
         style={btnStyle(nav.canForward)}
       >
         <ChevronRight size={14} aria-hidden />
-      </button>
+      </button></Tooltip>
     </div>
   );
 }

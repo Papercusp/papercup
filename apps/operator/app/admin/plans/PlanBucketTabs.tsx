@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * PlanBucketTabs — plan lifecycle filter chips (Draft / Ready / Running /
  * Shipped / Superseded).
@@ -87,17 +89,17 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
       {PLAN_BUCKETS.map(({ id, label }) => {
         const active = buckets.includes(id);
         return (
-          <button
-            key={id}
+          <Tooltip key={id} label={active ? `${label}: on — click to remove from the filter` : `Add ${label} plans to the filter`}><button
+
             type="button"
             className={`pc-plans__view pc-plan-bucket pc-plan-bucket--${id} ${active ? 'is-active' : ''}`}
             aria-pressed={active}
             onClick={() => toggle(id)}
-            title={active ? `${label}: on — click to remove from the filter` : `Add ${label} plans to the filter`}
+
           >
             <span className="pc-plans__view-label">{label}</span>
             <span className="pc-plans__view-count">{counts[id]}</span>
-          </button>
+          </button></Tooltip>
         );
       })}
     </div>

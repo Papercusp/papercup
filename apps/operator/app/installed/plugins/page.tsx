@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useState } from 'react';
 import * as Lucide from 'lucide-react';
 import { toast } from 'sonner';
@@ -259,15 +261,15 @@ export default function InstalledPluginsPage() {
                 )}
                 <div className="pc-marketplace-card-actions pc-installed-plugin-actions">
                   {updates[p.name] && (
-                    <button
+                    <Tooltip label={`Update v${updates[p.name].installed} → v${updates[p.name].available}${updates[p.name].capChange.added.length ? ` (new caps: ${updates[p.name].capChange.added.join(', ')})` : ''}`}><button
                       className="pc-button"
                       style={{ background: 'var(--accent, #22d3ee)', color: '#000' }}
                       onClick={() => update(p.name)}
                       disabled={busy === p.name}
-                      title={`Update v${updates[p.name].installed} → v${updates[p.name].available}${updates[p.name].capChange.added.length ? ` (new caps: ${updates[p.name].capChange.added.join(', ')})` : ''}`}
+
                     >
                       {busy === p.name ? 'updating…' : `Update → v${updates[p.name].available}`}
-                    </button>
+                    </button></Tooltip>
                   )}
                   <RouteLink
                     href={`/installed/plugins/${encodeURIComponent(p.name)}/permissions`}

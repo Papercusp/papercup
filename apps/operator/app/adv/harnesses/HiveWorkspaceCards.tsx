@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * HiveWorkspaceCards — the all-mode (`?scope=all`) workspace view for the
  * Harnesses tab (harnesses-tab-hive-model-2026-06-07 P-003 / D-003).
@@ -77,10 +79,10 @@ export default function HiveWorkspaceCards({ groups, workspaceLabel, onDrill, on
               className="pc-hive-cards__card"
               data-testid={`hive-card-${g.root.slug}`}
             >
-              <button
+              <Tooltip label={`Open ${g.root.slug}`}><button
                 type="button"
                 className="pc-hive-cards__card-head"
-                title={`Open ${g.root.slug}`}
+
                 onClick={() => onDrill(g.root.slug, g.root.slug)}
               >
                 <Boxes size={15} className="pc-hive-cards__card-icon" aria-hidden />
@@ -91,18 +93,18 @@ export default function HiveWorkspaceCards({ groups, workspaceLabel, onDrill, on
                 <span className="pc-hive-cards__card-count" title={`${memberCount} ${membersLabel.toLowerCase()}`}>
                   {memberCount}
                 </span>
-              </button>
+              </button></Tooltip>
               <ul className="pc-hive-cards__members" role="list">
                 {memberRows.map((m) => {
                   const isRoot = m.slug === g.root.slug;
                   const live = !!m.hasState;
                   return (
                     <li key={m.slug}>
-                      <button
+                      <Tooltip label={m.slug}><button
                         type="button"
                         data-testid={`hive-member-${m.slug}`}
                         className="pc-hive-cards__member"
-                        title={m.slug}
+
                         onClick={() => onDrill(g.root.slug, m.slug)}
                       >
                         <span
@@ -117,7 +119,7 @@ export default function HiveWorkspaceCards({ groups, workspaceLabel, onDrill, on
                         {m.harness_kind && m.harness_kind !== 'harness' && (
                           <span className="pc-hive-cards__kind">{m.harness_kind}</span>
                         )}
-                      </button>
+                      </button></Tooltip>
                     </li>
                   );
                 })}

@@ -12,6 +12,7 @@
 
 'use client';
 
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { HarnessDock } from '../dock/HarnessDock';
@@ -105,14 +106,14 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
         <DockNavChevrons />
         <AddPanelCatalog defaultSlug={slug} />
         <LayoutsMenu currentLayoutName={`dashboard:${slug}`} />
-        <button
+        <Tooltip label="Exit dock view, go back to classic dashboard"><button
           type="button"
           onClick={() => router.push(`/harness/${slug}`)}
           style={{ ...btn, color: 'var(--bad)' }}
-          title="Exit dock view, go back to classic dashboard"
+
         >
           ← Classic
-        </button>
+        </button></Tooltip>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <HarnessDock layoutName={`dashboard:${slug}`} slug={slug} />

@@ -16,6 +16,7 @@
 
 'use client';
 
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Bot,
@@ -256,12 +257,12 @@ export function AddPanelCatalog({
               const Icon = iconFor(t);
               const isOpen = openByType.has(t);
               return (
-                <button
-                  key={t}
+                <Tooltip key={t} label={isOpen ? 'Already open — focus it' : `Open ${labelFor(t)}`}><button
+
                   type="button"
                   className="pc-add-panel__item"
                   onClick={() => handleAdd(t)}
-                  title={isOpen ? 'Already open — focus it' : `Open ${labelFor(t)}`}
+
                 >
                   <span className="pc-add-panel__icon">
                     <Icon size={15} aria-hidden strokeWidth={1.75} />
@@ -277,7 +278,7 @@ export function AddPanelCatalog({
                   ) : (
                     <Plus className="pc-add-panel__plus" size={13} aria-hidden />
                   )}
-                </button>
+                </button></Tooltip>
               );
             })
           )}

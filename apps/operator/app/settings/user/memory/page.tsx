@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useState, useCallback, useMemo, type ReactElement } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
@@ -618,10 +620,10 @@ export default function MemoryPage() {
             color: 'var(--fg)', fontSize: 13, flex: 1,
           }}
         />
-        <button
+        <Tooltip label="Rank by semantic relevance (the same hybrid search agents use) instead of substring match."><button
           type="button"
           onClick={() => void setSemantic(!semantic)}
-          title="Rank by semantic relevance (the same hybrid search agents use) instead of substring match."
+
           style={{
             padding: '8px 12px', borderRadius: 6,
             border: semantic ? '2px solid var(--fg)' : '1px solid var(--border)',
@@ -631,7 +633,7 @@ export default function MemoryPage() {
           }}
         >
           ✨ semantic
-        </button>
+        </button></Tooltip>
         <button
           type="button"
           onClick={() => void setAddOpen(!addOpen)}
@@ -715,10 +717,10 @@ export default function MemoryPage() {
               {f} {f !== 'all' && `(${kindCounts.get(f) ?? 0})`}
             </button>
           ))}
-          <button
+          <Tooltip label="Show only memories with broken anchors / contradictions / etc."><button
             type="button"
             onClick={() => void setFlaggedOnly(!flaggedOnly)}
-            title="Show only memories with broken anchors / contradictions / etc."
+
             style={{
               padding: '4px 10px', borderRadius: 6,
               border: flaggedOnly ? '2px solid var(--warn)' : '1px solid var(--border)',
@@ -729,14 +731,14 @@ export default function MemoryPage() {
             }}
           >
             ⚠ flagged only ({flaggedCount})
-          </button>
+          </button></Tooltip>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button
+          <Tooltip label="Run the Layer 1 structural anchor audit — checks that every file / plan / migration referenced by a memory still exists. Free and fast."><button
             type="button"
             onClick={onAuditAll}
             disabled={auditBusy || rows.length === 0}
-            title="Run the Layer 1 structural anchor audit — checks that every file / plan / migration referenced by a memory still exists. Free and fast."
+
             style={{
               padding: '4px 10px', borderRadius: 6,
               border: '1px solid var(--border)',
@@ -747,25 +749,25 @@ export default function MemoryPage() {
             }}
           >
             {auditBusy ? 'Auditing…' : 'Audit all'}
-          </button>
-          <button
+          </button></Tooltip>
+          <Tooltip label="Re-embed openai-collection memories into the local-collection so they're visible after switching memoryEmbedderMode to local."><button
             type="button"
             onClick={() => onReembed('openai', 'local')}
             disabled={reembedBusy !== null}
-            title="Re-embed openai-collection memories into the local-collection so they're visible after switching memoryEmbedderMode to local."
+
             style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
           >
             {reembedBusy === 'openai-to-local' ? 'Re-embedding…' : 'openai → local'}
-          </button>
-          <button
+          </button></Tooltip>
+          <Tooltip label="Re-embed local-collection memories into the openai-collection so they're visible after switching memoryEmbedderMode to openai."><button
             type="button"
             onClick={() => onReembed('local', 'openai')}
             disabled={reembedBusy !== null}
-            title="Re-embed local-collection memories into the openai-collection so they're visible after switching memoryEmbedderMode to openai."
+
             style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
           >
             {reembedBusy === 'local-to-openai' ? 'Re-embedding…' : 'local → openai'}
-          </button>
+          </button></Tooltip>
           <button
             type="button"
             onClick={onForgetAll}

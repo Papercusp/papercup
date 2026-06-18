@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * Run-detail panel — plan-agent-launch P-023.
  *
@@ -204,15 +206,15 @@ export default function RunDetailPanel({ planSlug, planTitle, currentContentHash
             ⚠ stale
           </span>
         ) : null}
-        <button
+        <Tooltip label="Resume the run in a real terminal — the live agent surface."><button
           type="button"
           className="pc-run-detail__console"
           onClick={onOpenConsole}
           disabled={!meta || consoleBusy}
-          title="Resume the run in a real terminal — the live agent surface."
+
         >
           {consoleBusy ? 'Opening…' : 'Open agent console'}
-        </button>
+        </button></Tooltip>
       </header>
       {consoleError ? (
         <div className="pc-run-detail__error">{consoleError}</div>

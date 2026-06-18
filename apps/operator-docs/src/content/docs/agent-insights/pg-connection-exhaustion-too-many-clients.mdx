@@ -97,10 +97,21 @@ The server knobs are derived from detected cores/RAM in one place —
   the postmaster `-c` flags — autoadjusts at boot, no config.
 
 Raising the ceiling is the immediate relief and is *correct for the hardware* —
-not a band-aid. The structural follow-ups (unify per-harness pools onto one
-shared pool, collapse the 5 LISTEN connections into one, front PG with a
-transaction-mode pooler for true thousands-of-agents multiplexing) live in plan
-`backend-connection-scaling-2026-06-17`.
+not a band-aid. The structural hardening shipped in plan
+`backend-connection-scaling-2026-06-17`:
+
+- **`boundedOrgPoolMax`** (resource-profile) caps the org pools so `(2 pools × N
+  operator processes) + overhead` can't exceed the ceiling — the guard the
+  regression lacked; CI-asserted across 126 host shapes.
+- **PgBouncer** transaction-pooling for true thousands-of-agents multiplexing,
+  gated `PAPERCUSP_PGBOUNCER` (LISTEN connections bypass — session-bound).
+- **Per-transaction `search_path`** via `withWorkspace` + `withHarnessSchema` /
+  `harnessQuery`, so pooling never resolves the wrong schema.
+- **Connection-pressure watch** (periodic-workflows) warns past 85% saturation
+  with the top `application_name` holders — the early signal this outage lacked.
+
+Validated end-to-end: **300 concurrent callers → 5 backends, 0 rejected** (the
+bounded pool queues the excess instead of exhausting PG).
 
 ## Gotcha — don't write a plan as a raw file during the outage
 

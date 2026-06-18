@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 // Footer chip showing the desktop app version + an inline "Update" button
 // when a new release is available. Renders null in web mode.
 //
@@ -114,11 +116,11 @@ export default function UpdateChip() {
     return (
       <>
       {confirmEl}
-      <button
+      <Tooltip label={info?.notes ?? `New version v${info!.new_version} available`}><button
         type="button"
         onClick={onInstall}
         disabled={installing}
-        title={info?.notes ?? `New version v${info!.new_version} available`}
+
         style={{
           background: 'var(--accent)',
           border: '1px solid var(--accent, #2d7a40)',
@@ -135,17 +137,17 @@ export default function UpdateChip() {
       >
         <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
         {installing ? 'Installing…' : `Update to v${info!.new_version}`}
-      </button>
+      </button></Tooltip>
       </>
     );
   }
 
   return (
-    <button
+    <Tooltip label={checking ? 'Checking for updates…' : 'Click to check for updates'}><button
       type="button"
       onClick={() => poll(false)}
       disabled={checking}
-      title={checking ? 'Checking for updates…' : 'Click to check for updates'}
+
       style={{
         background: 'transparent',
         border: '1px solid var(--border, #2a2a2a)',
@@ -159,6 +161,6 @@ export default function UpdateChip() {
     >
       v{version}
       {checking && <span style={{ marginLeft: 6, opacity: 0.6 }}>…</span>}
-    </button>
+    </button></Tooltip>
   );
 }

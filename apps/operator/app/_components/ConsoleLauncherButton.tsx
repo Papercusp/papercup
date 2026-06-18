@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * ConsoleLauncherButton — the "+" button in the global chrome that
  * opens an OS-native terminal in the active harness's directory with
@@ -51,11 +53,11 @@ export function ConsoleLauncherButton() {
     : 'Launch terminal in workspace root';
 
   return (
-    <button
+    <Tooltip label={tooltip}><button
       type="button"
       className={`pc-console-btn${busy ? ' is-busy' : ''}`}
       aria-label="Launch terminal"
-      title={tooltip}
+
       disabled={busy}
       onMouseDown={() => console.info('[console-launcher] mousedown')}
       onClick={async () => {
@@ -98,7 +100,7 @@ export function ConsoleLauncherButton() {
           {clickCount}
         </span>
       )}
-    </button>
+    </button></Tooltip>
   );
 }
 

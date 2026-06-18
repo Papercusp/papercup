@@ -199,6 +199,40 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     expect(signals[0].kind).toBe('change');
     expect(signals[0].severity).toBe('minor');
   });
+
+  it('RATE-LIMIT (external provider 429 / TPM) is volume-gated, kind=change, NOT a code bug (P-002)', () => {
+    const signals = toolErrorSignalsFromRows([
+      // The 2026-06-17 embed-429: memory:search saturated ~32/78 calls — its OWN key,
+      // distinct from the scoping :structural EI it used to be masked under.
+      { tool_name: 'memory:search', class: 'rate-limit' as const, n: 32, total: 78, sample: 'openai_embed_failed_429: Rate limit reached … tokens per min (TPM)' },
+      { tool_name: 'memory:remember', class: 'rate-limit' as const, n: 6, total: 40, sample: 'openai_embed_failed_429' }, // <8 → gated out
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['memory:search:rate-limit']);
+    expect(signals[0].kind).toBe('change'); // external capacity, not the auto-implement lane
+    expect(signals[0].severity).toBe('major'); // ≥30 → major
+    expect(signals[0].findingClass).toBe('external-rate-limit:memory:search');
+    expect(signals[0].body).toMatch(/EXTERNAL CAPACITY/);
+  });
+
+  it('STRUCTURAL key is sharpened by the SQL fingerprint so two DIFFERENT modes under one tool do not mask each other (P-003)', () => {
+    const signals = toolErrorSignalsFromRows([
+      { tool_name: 'memory:search', class: 'structural' as const, fingerprint: 'built-in-tool-memory-search-requires', n: 4, total: 50, sample: 'requires a workspace-scoped call' },
+      { tool_name: 'memory:search', class: 'structural' as const, fingerprint: 'cannot-read-properties-of-undefined', n: 3, total: 50, sample: 'Cannot read properties of undefined' },
+    ]);
+    expect(signals.map((s) => s.key).sort()).toEqual([
+      'memory:search:structural:built-in-tool-memory-search-requires',
+      'memory:search:structural:cannot-read-properties-of-undefined',
+    ]);
+    // Titles diverge per mode too, so the capture-core search-first dedup can't re-collapse them.
+    expect(new Set(signals.map((s) => s.title)).size).toBe(2);
+  });
+
+  it('STRUCTURAL without a fingerprint keeps the legacy bare key (back-compat: pre-fingerprint ticks)', () => {
+    const signals = toolErrorSignalsFromRows([
+      { tool_name: 'docs:get', class: 'structural' as const, n: 7, total: 7, sample: 'boom' },
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['docs:get:structural']);
+  });
 });
 
 describe('classifyToolError — by error_code, with a legacy error_message fallback (P-008 / D-009)', () => {
@@ -234,6 +268,23 @@ describe('classifyToolError — by error_code, with a legacy error_message fallb
     // A genuine tool bug (no infra signature) STILL classifies structural — no false negatives.
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
     expect(classifyToolError(null, 'error', 'no such column: foo')).toBe('structural');
+  });
+
+  it('classifies an EXTERNAL provider rate-limit (OpenAI embed TPM 429) as rate-limit, not structural (P-002)', () => {
+    // handler_error is the dispatcher code for an embed failure; the MESSAGE carries the signal.
+    expect(
+      classifyToolError('handler_error', 'error', 'openai_embed_failed_429: Rate limit reached for text-embedding-3-small … on tokens per min (TPM)'),
+    ).toBe('rate-limit');
+    // The misleading "Request too large … Requested 6" variant is the SAME TPM saturation.
+    expect(
+      classifyToolError('handler_error', 'error', 'openai_embed_failed_429: Request too large … on tokens per min (TPM): Limit 1000000, Requested 6'),
+    ).toBe('rate-limit');
+    expect(classifyToolError(null, 'error', '429 Too Many Requests')).toBe('rate-limit');
+    expect(classifyToolError(null, 'error', 'rate limit exceeded')).toBe('rate-limit');
+    // No rate-limit signature → STILL structural (no false positive).
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+    // An INTERNAL caller quota_exceeded code stays CALLER (not an external provider limit).
+    expect(classifyToolError('quota_exceeded', 'error', 'monthly budget exhausted')).toBe('caller');
   });
 });
 

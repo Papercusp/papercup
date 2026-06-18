@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * create:filter — the left FILTER sidebar of the Create dock, always visible.
  * Top: New plan + the Plans/Inbox/Sessions view buttons (set ?view, which
@@ -104,56 +106,54 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
     <div className="pc-plans__rail" style={{ height: '100%', overflow: 'auto' }}>
       {/* New plan + the 3 view buttons — above the plan list, exactly as before. */}
       <div className="pc-plans__rail-actions">
-        <button
+        <Tooltip label={resolvedSlug
+              ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
+              : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`}><button
           type="button"
           className="pc-plans__new-plan"
           onClick={onNewPlan}
           disabled={launching}
-          title={
-            resolvedSlug
-              ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
-              : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`
-          }
+
         >
           <Plus size={14} aria-hidden />
           {launching ? 'Launching…' : 'New plan'}
-        </button>
-        <button
+        </button></Tooltip>
+        <Tooltip label="Plans — open a plan from the list to view/edit it full-width."><button
           type="button"
           className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}
           onClick={() => void setView('plans')}
-          title="Plans — open a plan from the list to view/edit it full-width."
+
         >
           <ClipboardList size={14} aria-hidden />
           Plans
-        </button>
-        <button
+        </button></Tooltip>
+        <Tooltip label="Queue — every decision & action surface across plans the Queen did not auto-handle (list + detail)."><button
           type="button"
           className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
           onClick={() => void setView('queue')}
-          title="Queue — every decision & action surface across plans the Queen did not auto-handle (list + detail)."
+
         >
           <Inbox size={14} aria-hidden />
           <span className="pc-plans__queue-btn-label">Queue</span>
-        </button>
-        <button
+        </button></Tooltip>
+        <Tooltip label="Sessions — live agent roster (list + detail)."><button
           type="button"
           className={`pc-plans__sessions-btn${view === 'sessions' ? ' is-active' : ''}`}
           onClick={() => void setView('sessions')}
-          title="Sessions — live agent roster (list + detail)."
+
         >
           <Terminal size={14} aria-hidden />
           <span className="pc-plans__queue-btn-label">Sessions</span>
-        </button>
-        <button
+        </button></Tooltip>
+        <Tooltip label="Observations — pre-idea sensor readings agents record at end of turn (browse only; never enters the work queue)."><button
           type="button"
           className={`pc-plans__sessions-btn${view === 'observations' ? ' is-active' : ''}`}
           onClick={() => void setView('observations')}
-          title="Observations — pre-idea sensor readings agents record at end of turn (browse only; never enters the work queue)."
+
         >
           <Eye size={14} aria-hidden />
           <span className="pc-plans__queue-btn-label">Observations</span>
-        </button>
+        </button></Tooltip>
       </div>
 
       <div className="pc-plans__group">

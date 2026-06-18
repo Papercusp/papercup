@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * Plans admin tab — nuqs-driven shell, additive-filter model (D-007).
  *
@@ -729,34 +731,34 @@ export default function PlansClient() {
             potLabel={t('pot', { lower: true })}
             onLaunch={onNewPlan}
           />
-          <button
+          <Tooltip label={`Browse plans — open one to view/edit it. (Plan-status & ${t('pot', { lower: true })} filters stay applied.)`}><button
             type="button"
             className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}
             onClick={() => void goPlans()}
-            title={`Browse plans — open one to view/edit it. (Plan-status & ${t('pot', { lower: true })} filters stay applied.)`}
+
           >
             <ClipboardList size={14} aria-hidden />
             Plans
-          </button>
-          <button
+          </button></Tooltip>
+          <Tooltip label="Open the Queue — every decision & action surface across plans the Queen did not auto-handle, with item filters cleared (plan filters stay)."><button
             type="button"
             className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
             onClick={() => void goQueue()}
-            title="Open the Queue — every decision & action surface across plans the Queen did not auto-handle, with item filters cleared (plan filters stay)."
+
           >
             <Inbox size={14} aria-hidden />
             <span className="pc-plans__queue-btn-label">Queue</span>
             {queueTotal > 0 ? <span className="pc-plans__queue-btn-count">{queueTotal}</span> : null}
-          </button>
-          <button
+          </button></Tooltip>
+          <Tooltip label="Live agent roster — who's active across plans, what they're doing, which files. The plan selection filters the plan-grouped section."><button
             type="button"
             className={`pc-plans__sessions-btn${view === 'sessions' ? ' is-active' : ''}`}
             onClick={() => void goSessions()}
-            title="Live agent roster — who's active across plans, what they're doing, which files. The plan selection filters the plan-grouped section."
+
           >
             <Terminal size={14} aria-hidden />
             <span className="pc-plans__queue-btn-label">Sessions</span>
-          </button>
+          </button></Tooltip>
         </div>
 
         {/* ── PLANS group — search + plan-status filters (scope which plans' items show). ── */}
@@ -880,16 +882,16 @@ export default function PlansClient() {
                         <QueueSummary waitingOnYou={tierCounts.decision} />
                         <nav className="pc-queue__tabs" aria-label="Queue tab">
                           {QUEUE_TABS.map((tb) => (
-                            <button
-                              key={tb.id}
+                            <Tooltip key={tb.id} label={tb.hint}><button
+
                               type="button"
                               className={`pc-queue__tab${queueTab === tb.id ? ' is-active' : ''}`}
                               aria-pressed={queueTab === tb.id}
                               onClick={() => void setQueueTab(tb.id)}
-                              title={tb.hint}
+
                             >
                               {tb.label}
-                            </button>
+                            </button></Tooltip>
                           ))}
                         </nav>
                       </>
@@ -898,16 +900,16 @@ export default function PlansClient() {
                       <section className="pc-queue__queenlog" aria-label="Queen's decision log">
                         <nav className="pc-queue__tabs pc-queue__layer-toggle" aria-label="Decision log layer">
                           {QUEEN_LOG_LAYERS.map((l) => (
-                            <button
-                              key={l.id}
+                            <Tooltip key={l.id} label={l.hint}><button
+
                               type="button"
                               className={`pc-queue__tab${qlLayer === l.id ? ' is-active' : ''}`}
                               aria-pressed={qlLayer === l.id}
                               onClick={() => void setQlLayer(l.id)}
-                              title={l.hint}
+
                             >
                               {l.label}
-                            </button>
+                            </button></Tooltip>
                           ))}
                         </nav>
                         <DecisionLog
@@ -1068,14 +1070,14 @@ function QueueFilterBar({
           </button>
         </Collapsible.Trigger>
         {tierFilter !== 'all' ? (
-          <button
+          <Tooltip label="A linked-in view filtered the Queue to this tier — click to clear."><button
             type="button"
             className="pc-queue__tierchip"
             onClick={onClearTier}
-            title="A linked-in view filtered the Queue to this tier — click to clear."
+
           >
             {TIER_LABEL[tierFilter]} ✕
-          </button>
+          </button></Tooltip>
         ) : null}
       </div>
       <Collapsible.Content className="pc-queue__filterpanel">
@@ -1099,26 +1101,26 @@ function QueueFilterBar({
         </div>
         <div className="pc-queue__filtergroup">
           <span className="pc-queue__filterlabel">Backlog</span>
-          <button
+          <Tooltip label="Show the agent-pickable todo backlog (off by default — the Queue defaults to what needs attention)."><button
             type="button"
             className={`pc-queue__filter${showTodos ? ' is-active' : ''}`}
             aria-pressed={showTodos}
             onClick={onToggleTodos}
-            title="Show the agent-pickable todo backlog (off by default — the Queue defaults to what needs attention)."
+
           >
             <span className="pc-queue__filter-label">Pickable todos</span>
             <span className="pc-queue__filter-count">{todoCount}</span>
-          </button>
-          <button
+          </button></Tooltip>
+          <Tooltip label="Show blocked plan items."><button
             type="button"
             className={`pc-queue__filter${showBlocked ? ' is-active' : ''}`}
             aria-pressed={showBlocked}
             onClick={onToggleBlocked}
-            title="Show blocked plan items."
+
           >
             <span className="pc-queue__filter-label">Blocked</span>
             <span className="pc-queue__filter-count">{blockedCount}</span>
-          </button>
+          </button></Tooltip>
         </div>
       </Collapsible.Content>
     </Collapsible.Root>

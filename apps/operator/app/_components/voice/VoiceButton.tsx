@@ -1,5 +1,6 @@
 'use client';
 
+
 /**
  * Voice mode toggle button. Lives in the Operator chat sidebar header.
  *
@@ -349,10 +350,10 @@ export function VoiceButton(): ReactElement {
 
   return (
     <div className={`pc-voice-control${showWakeHint || showPttHint ? ' has-wake-hint' : ''}${isConnecting ? ' is-connecting' : ''}`}>
-      <button
+      <Tooltip label={title}><button
         type="button"
         aria-label="Voice mode"
-        title={title}
+
         onClick={onClick}
         onMouseDown={onPttDown}
         onMouseUp={onPttUp}
@@ -367,7 +368,7 @@ export function VoiceButton(): ReactElement {
           <span className="pc-voice-btn-icon">{ICON[vs.status]}</span>
         </span>
         {content}
-      </button>
+      </button></Tooltip>
       <Tooltip label="Open microphone settings">
         <a
           href="/settings/voice"

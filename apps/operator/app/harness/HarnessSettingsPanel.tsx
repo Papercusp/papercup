@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
@@ -904,15 +906,15 @@ export default function HarnessSettingsPanel({
                   maxLength={32}
                   style={{ width: 140, fontSize: 13, padding: '3px 6px' }}
                 />
-                <button
+                <Tooltip label={parallel.adaptive.tiers.length <= 2 ? 'Need at least 2 tiers' : 'Remove row'}><button
                   type="button"
                   onClick={() => removeTierRow(idx)}
                   disabled={parallel.adaptive.tiers.length <= 2}
-                  title={parallel.adaptive.tiers.length <= 2 ? 'Need at least 2 tiers' : 'Remove row'}
+
                   style={{ fontSize: 11, padding: '2px 8px' }}
                 >
                   ✕
-                </button>
+                </button></Tooltip>
               </div>
             ))}
             <button
@@ -1023,14 +1025,14 @@ export default function HarnessSettingsPanel({
                 {isDefault ? (
                   <span />
                 ) : (
-                  <button
+                  <Tooltip label="Remove role override"><button
                     type="button"
                     onClick={() => setAiBackend((rows) => rows.filter((_, i) => i !== idx))}
-                    title="Remove role override"
+
                     style={{ fontSize: 11, padding: '2px 6px' }}
                   >
                     ✕
-                  </button>
+                  </button></Tooltip>
                 )}
                 {!isDefault && (
                   <datalist id={`ai-roles-${idx}`}>

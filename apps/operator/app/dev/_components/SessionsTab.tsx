@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useState, useCallback } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
@@ -379,10 +381,10 @@ function DetailPanel({
                 {
                   key: 'open', header: '', width: 0.5, align: 'center',
                   render: ({ row }) => (
-                    <button
+                    <Tooltip label="Open in API tab with this tool + spawn context"><button
                       type="button"
                       className="pc-dev-btn-mini"
-                      title="Open in API tab with this tool + spawn context"
+
                       onClick={() =>
                         onRerun({
                           toolName: row.tool_name,
@@ -397,7 +399,7 @@ function DetailPanel({
                               : undefined,
                         })
                       }
-                    >↗</button>
+                    >↗</button></Tooltip>
                   ),
                 },
               ]}

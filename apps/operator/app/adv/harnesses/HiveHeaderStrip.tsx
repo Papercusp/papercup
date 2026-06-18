@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * HiveHeaderStrip — the selected hive's "face" inside the Harnesses tab
  * (harnesses-tab-hive-model-2026-06-07 P-022).
@@ -257,15 +259,15 @@ export default function HiveHeaderStrip({
             one Share affordance, the explicit choice lives in the dialog. */}
         {isHiveHome && (
           <>
-            <button
+            <Tooltip label={`Share this ${hiveLabel.toLowerCase()} — choose who can find and join it`}><button
               type="button"
               className="pc-hive-header__viz-btn pc-hive-header__share-btn"
               data-testid="hive-share-button"
-              title={`Share this ${hiveLabel.toLowerCase()} — choose who can find and join it`}
+
               onClick={() => void setShareOpen(true)}
             >
               <Share2 size={11} aria-hidden /> Share…
-            </button>
+            </button></Tooltip>
             <ShareHiveDialog
               hiveSlug={hiveSlug}
               hiveLabel={hiveLabel.toLowerCase()}

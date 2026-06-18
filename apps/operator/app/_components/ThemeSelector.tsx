@@ -1,5 +1,6 @@
 'use client';
 
+
 /**
  * Navbar theme selector — a compact dropdown (mirrors WorkspaceSwitcher's
  * hand-rolled, portaled menu) that switches the active color theme instantly
@@ -173,8 +174,8 @@ export default function ThemeSelector() {
           {themes.map((t) => {
             const isCurrent = t.id === activeTheme;
             return (
-              <button
-                key={t.id}
+              <Tooltip key={t.id} label={isCurrent ? 'current theme' : `switch to ${t.label}`}><button
+
                 type="button"
                 role="menuitemradio"
                 aria-checked={isCurrent}
@@ -194,14 +195,14 @@ export default function ThemeSelector() {
                   padding: '5px 8px',
                   borderRadius: 3,
                 }}
-                title={isCurrent ? 'current theme' : `switch to ${t.label}`}
+
               >
                 <ThemeSwatch themeId={t.id} />
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {t.label}
                 </span>
                 {isCurrent && <span aria-hidden style={{ fontSize: 11, lineHeight: 1 }}>●</span>}
-              </button>
+              </button></Tooltip>
             );
           })}
           <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '4px 0' }} />

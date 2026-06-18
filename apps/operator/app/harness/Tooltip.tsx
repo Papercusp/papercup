@@ -24,14 +24,16 @@ export function Tooltip({ label, children, side = 'top', align = 'center' }: {
 }) {
   if (!label) return <>{children}</>;
   return (
-    <RT.Root>
-      <RT.Trigger asChild>{children}</RT.Trigger>
-      <RT.Portal>
-        <RT.Content data-anim="fade" sideOffset={6} side={side} align={align} style={CONTENT_STYLE}>
-          {label}
-          <RT.Arrow style={{ fill: 'color-mix(in srgb, var(--bg-1), transparent 4%)' }} width={10} height={5} />
-        </RT.Content>
-      </RT.Portal>
-    </RT.Root>
+    <RT.Provider delayDuration={250} skipDelayDuration={150}>
+      <RT.Root>
+        <RT.Trigger asChild>{children}</RT.Trigger>
+        <RT.Portal>
+          <RT.Content data-anim="fade" sideOffset={6} side={side} align={align} style={CONTENT_STYLE}>
+            {label}
+            <RT.Arrow style={{ fill: 'color-mix(in srgb, var(--bg-1), transparent 4%)' }} width={10} height={5} />
+          </RT.Content>
+        </RT.Portal>
+      </RT.Root>
+    </RT.Provider>
   );
 }

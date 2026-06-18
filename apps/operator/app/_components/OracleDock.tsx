@@ -1,5 +1,6 @@
 'use client';
 
+
 /**
  * Always-mounted Oracle assistant dock.
  *
@@ -1281,24 +1282,24 @@ export function OracleDock() {
                   </span>
                   {tabBusy && <span className="oracle-tab-dot oracle-tab-dot-busy" aria-label="thinking" />}
                   {!tabBusy && unread && <span className="oracle-tab-dot oracle-tab-dot-unread" aria-label="unread" />}
-                  <button
+                  <Tooltip label="Close"><button
                     type="button"
                     className="oracle-tab-close"
                     aria-label={`Close ${targetLabel(t.target)}`}
-                    title="Close"
+
                     onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}
-                  ><X aria-hidden="true" className="oracle-tab-close-icon" /></button>
+                  ><X aria-hidden="true" className="oracle-tab-close-icon" /></button></Tooltip>
                 </div>
               );
             })}
             <div style={{ position: 'relative', flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
-              <button
+              <Tooltip label="New chat"><button
                 type="button"
                 className={`oracle-tab-add${pickerOpen ? ' is-open' : ''}` }
                 aria-label="New chat"
-                title="New chat"
+
                 onClick={() => setPickerOpen((v) => !v)}
-              ><Plus aria-hidden="true" className="oracle-tab-add-icon" /></button>
+              ><Plus aria-hidden="true" className="oracle-tab-add-icon" /></button></Tooltip>
             </div>
           </div>
 

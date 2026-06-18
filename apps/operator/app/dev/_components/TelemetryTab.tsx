@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
@@ -163,12 +165,12 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
               {
                 key: 'open', header: '', width: 0.5, align: 'center',
                 render: ({ row }) => (
-                  <button
+                  <Tooltip label="Open in API tab with this tool selected"><button
                     type="button"
                     className="pc-dev-btn-mini"
-                    title="Open in API tab with this tool selected"
+
                     onClick={() => onRerun({ toolName: row.tool_name, workspace: row.workspaces[0] })}
-                  >↗</button>
+                  >↗</button></Tooltip>
                 ),
               },
             ]}

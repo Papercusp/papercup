@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * PuiLauncherButton — the "PUI" CTA next to OPS in the global header. Opens
  * the `pui` ratatui workbench (apps/tui) in an OS-native terminal via a
@@ -23,12 +25,12 @@ export function PuiLauncherButton() {
   const [busy, setBusy] = useState(false);
 
   return (
-    <button
+    <Tooltip label="Open the pui workbench in a terminal"><button
       type="button"
       className="pc-header-cta pc-header-cta--mission"
       aria-label="Open the pui workbench in a terminal"
       aria-busy={busy}
-      title="Open the pui workbench in a terminal"
+
       disabled={busy}
       style={busy ? { opacity: 0.6, pointerEvents: 'none' } : undefined}
       onClick={async () => {
@@ -49,6 +51,6 @@ export function PuiLauncherButton() {
         <TerminalMark className="pc-header-cta-logo pc-header-cta-logo--pui" />
       </span>
       <span className="pc-header-cta-label">PUI</span>
-    </button>
+    </button></Tooltip>
   );
 }

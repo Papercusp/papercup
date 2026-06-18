@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * API tab — auto-generated from /api/plugins/tools. Every tool the
  * runtime registry knows about shows up here. Click a tool → form built
@@ -241,12 +243,12 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
                 <span className="pc-dev-api-group-count">{list.length}</span>
               </div>
               {list.map((t) => (
-                <button
-                  key={`${t.pluginName}::${t.name}`}
+                <Tooltip key={`${t.pluginName}::${t.name}`} label={t.description}><button
+
                   type="button"
                   className={`pc-dev-api-tool ${selected?.name === t.name ? 'is-active' : ''} ${requiredArgCount(t) > 0 ? 'has-required' : ''}`}
                   onClick={() => setSelectedName(t.name)}
-                  title={t.description}
+
                 >
                   <span className="pc-dev-api-tool-name">{t.name}</span>
                   <span className="pc-dev-api-tool-badges">
@@ -262,7 +264,7 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
                       </span>
                     )}
                   </span>
-                </button>
+                </button></Tooltip>
               ))}
             </div>
           ))}

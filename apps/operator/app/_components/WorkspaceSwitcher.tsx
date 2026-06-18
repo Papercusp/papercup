@@ -1,5 +1,6 @@
 'use client';
 
+
 // Workspace switcher dropdown. Renders in both desktop and webapp modes:
 // the underlying wrapper falls back to /api/workspaces HTTP endpoints
 // when there's no Tauri runtime. Lists workspaces, lets the user pick
@@ -295,7 +296,7 @@ export default function WorkspaceSwitcher() {
                     style={{ flex: 1, font: 'inherit', background: 'var(--bg, #111)', border: '1px solid var(--border, #2a2a2a)', color: 'inherit', padding: '2px 6px', borderRadius: 3 }}
                   />
                 ) : (
-                  <button
+                  <Tooltip label={isCurrent ? 'current workspace' : `switch to ${ws.name}`}><button
                     type="button"
                     onClick={() => onSwitch(ws.id)}
                     className="pc-workspace-menu-target"
@@ -309,7 +310,7 @@ export default function WorkspaceSwitcher() {
                       font: 'inherit',
                       padding: 0,
                     }}
-                    title={isCurrent ? 'current workspace' : `switch to ${ws.name}`}
+
                   >
                     {ws.name}
                     {isCurrent && (
@@ -317,39 +318,39 @@ export default function WorkspaceSwitcher() {
                         active
                       </span>
                     )}
-                  </button>
+                  </button></Tooltip>
                 )}
                 {!isRenaming && (
                   <>
-                    <button
+                    <Tooltip label={`Open "${ws.name}" in a new window`}><button
                       type="button"
                       onClick={() => onOpenWindow(ws.id)}
-                      title={`Open "${ws.name}" in a new window`}
+
                       aria-label={`Open ${ws.name} in a new window`}
                       className="pc-workspace-menu-action"
                       style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: 'pointer', padding: '0 4px' }}
                     >
                       ⧉
-                    </button>
-                    <button
+                    </button></Tooltip>
+                    <Tooltip label="Rename"><button
                       type="button"
                       onClick={() => startRename(ws)}
-                      title="Rename"
+
                       className="pc-workspace-menu-action"
                       style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: 'pointer', padding: '0 4px' }}
                     >
                       ✎
-                    </button>
-                    <button
+                    </button></Tooltip>
+                    <Tooltip label="Delete"><button
                       type="button"
                       onClick={() => onDelete(ws)}
-                      title="Delete"
+
                       disabled={undeletable(ws.id) || reg.workspaces.length <= 1}
                       className="pc-workspace-menu-action"
                       style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: undeletable(ws.id) || reg.workspaces.length <= 1 ? 'not-allowed' : 'pointer', padding: '0 4px', opacity: undeletable(ws.id) || reg.workspaces.length <= 1 ? 0.3 : 1 }}
                     >
                       ✕
-                    </button>
+                    </button></Tooltip>
                   </>
                 )}
               </div>

@@ -19,6 +19,7 @@ import {
   buildFairnessAudit,
   formatAttributionLines,
   formatFairnessAuditMarkdown,
+  formatPerInstanceMatrix,
 } from '@papercusp/bench-metrics';
 
 /** The slice of a tau2 simulation we read (other keys ignored). */
@@ -164,6 +165,9 @@ export function reportTau2Comparison(input: {
   for (const l of formatAttributionLines(attributionMeanScore)) md.push(`- ${l}`);
   md.push('');
   md.push(formatFairnessAuditMarkdown(audit));
+  md.push('');
+  md.push(formatPerInstanceMatrix(rows, { metric: 'meanScore' }));
+  md.push('');
   md.push('## Caveats');
   for (const c of attributionMeanScore.caveats) md.push(`- ${c}`);
 

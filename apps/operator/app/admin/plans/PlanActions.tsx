@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * PlanActions — read-mode chrome strip for the structured-write verbs
  * (P-204, D-004 reconciled).
@@ -226,110 +228,102 @@ export default function PlanActions({
   return (
     <div className="pc-plan-actions">
       {bucket === 'draft' ? (
-        <button
+        <Tooltip label="Approve this draft — unlocks the Start button. Does not start the plan."><button
           type="button"
           className="pc-plan-actions__btn pc-plan-actions__btn--approve"
           onClick={handleApprove}
           disabled={approvePending}
-          title="Approve this draft — unlocks the Start button. Does not start the plan."
+
         >
           {approvePending ? 'Approving…' : '✓ Approve Plan'}
-        </button>
+        </button></Tooltip>
       ) : null}
       {bucket === 'ready' || bucket === 'running' ? (
-        <button
+        <Tooltip label={isStarted ? 'Pause plan — orchestrator stops picking new features' : 'Start plan — orchestrator picks features from this plan'}><button
           type="button"
           className={`pc-plan-actions__btn pc-plan-actions__btn--start${isStarted ? ' pc-plan-actions__btn--started' : ''}`}
           onClick={handleStartPause}
           disabled={startPending}
-          title={isStarted ? 'Pause plan — orchestrator stops picking new features' : 'Start plan — orchestrator picks features from this plan'}
+
         >
           {startPending ? (isStarted ? 'Pausing…' : 'Starting…') : isStarted ? '⏸ Pause Plan' : '▶ Start Plan'}
-        </button>
+        </button></Tooltip>
       ) : null}
       {bucket !== 'shipped' && bucket !== 'rejected' ? (
-        <button
+        <Tooltip label={disabled
+              ? disabledReason
+              : 'Reject this plan — flips its status to superseded (kept, not deleted) and stops the orchestrator picking it up.'}><button
           type="button"
           className="pc-plan-actions__btn pc-plan-actions__btn--reject"
           onClick={() => setOpen('reject')}
           disabled={disabled}
-          title={
-            disabled
-              ? disabledReason
-              : 'Reject this plan — flips its status to superseded (kept, not deleted) and stops the orchestrator picking it up.'
-          }
+
         >
           Reject Plan
-        </button>
+        </button></Tooltip>
       ) : null}
       {bucket === 'ready' ? (
-        <button
+        <Tooltip label="Demote back to draft — reverses approval; the orchestrator won't pick this up."><button
           type="button"
           className="pc-plan-actions__btn pc-plan-actions__btn--demote"
           onClick={handleDemote}
           disabled={demotePending}
-          title="Demote back to draft — reverses approval; the orchestrator won't pick this up."
+
         >
           {demotePending ? 'Demoting…' : '↩ Demote to Draft'}
-        </button>
+        </button></Tooltip>
       ) : null}
-      <button
+      <Tooltip label={disabled ? disabledReason : 'Replace the ## Now block'}><button
         type="button"
         className="pc-plan-actions__btn"
         onClick={() => setOpen('set-now')}
         disabled={disabled}
-        title={disabled ? disabledReason : 'Replace the ## Now block'}
+
       >
         Set Now
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label={disabled
+            ? disabledReason
+            : 'Log a decision — the rationale behind a choice (rejected alternative, constraint, argument that settled it). Gets a permanent D-NNN id.'}><button
         type="button"
         className="pc-plan-actions__btn"
         onClick={() => setOpen('add-decision')}
         disabled={disabled}
-        title={
-          disabled
-            ? disabledReason
-            : 'Log a decision — the rationale behind a choice (rejected alternative, constraint, argument that settled it). Gets a permanent D-NNN id.'
-        }
+
       >
         + Decision
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label={disabled
+            ? disabledReason
+            : 'Add an item — one concrete work unit under a phase. Tracked by status (todo / wip / done / …). Gets a permanent P-NNN id.'}><button
         type="button"
         className="pc-plan-actions__btn"
         onClick={() => setOpen('add-item')}
         disabled={disabled}
-        title={
-          disabled
-            ? disabledReason
-            : 'Add an item — one concrete work unit under a phase. Tracked by status (todo / wip / done / …). Gets a permanent P-NNN id.'
-        }
+
       >
         + Item
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label={disabled
+            ? disabledReason
+            : `Promote todo/wip plan items to ${t('pot', { lower: true })} features via plans:promote`}><button
         type="button"
         className="pc-plan-actions__btn pc-plan-actions__btn--promote"
         onClick={() => setOpen('promote')}
         disabled={disabled || (items ?? []).filter((i) => i.effectiveStatus === 'todo' || i.effectiveStatus === 'wip').length === 0}
-        title={
-          disabled
-            ? disabledReason
-            : `Promote todo/wip plan items to ${t('pot', { lower: true })} features via plans:promote`
-        }
+
       >
         → {t('pot')}
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label={`Launch an agent session for ${slug} as a pane in the pui workbench`}><button
         type="button"
         className="pc-plan-actions__btn pc-plan-actions__btn--launch"
         onClick={onLaunchWorkbench}
         disabled={launchingWorkbench}
-        title={`Launch an agent session for ${slug} as a pane in the pui workbench`}
+
       >
         {launchingWorkbench ? 'Launching…' : 'Launch agent'}
-      </button>
+      </button></Tooltip>
 
       <SetNowDialog
         open={open === 'set-now'}

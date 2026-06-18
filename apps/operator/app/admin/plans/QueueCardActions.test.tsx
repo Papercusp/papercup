@@ -84,7 +84,7 @@ describe('QueueCardActions', () => {
     }
   });
 
-  it('applies the option style class and uses hint as the title', () => {
+  it('applies the option style class without leaking the hint as a native title', () => {
     render(
       <QueueCardActions
         options={[opt({ id: 'a', label: 'Delete', style: 'danger', hint: 'Permanently remove' })]}
@@ -93,11 +93,11 @@ describe('QueueCardActions', () => {
     );
     const btn = screen.getByRole('button', { name: 'Delete' });
     expect(btn.className).toContain('pc-items__action--danger');
-    expect(btn.getAttribute('title')).toBe('Permanently remove');
+    expect(btn.getAttribute('title')).toBeNull();
   });
 
-  it('falls back to label for the title when no hint', () => {
+  it('does not add native title text when no hint is provided', () => {
     render(<QueueCardActions options={[opt({ id: 'a', label: 'Resolve' })]} onResponse={() => {}} />);
-    expect(screen.getByRole('button', { name: 'Resolve' }).getAttribute('title')).toBe('Resolve');
+    expect(screen.getByRole('button', { name: 'Resolve' }).getAttribute('title')).toBeNull();
   });
 });

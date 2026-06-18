@@ -242,6 +242,42 @@ export function formatFairnessAuditMarkdown(audit: FairnessAudit): string {
   return out.join('\n');
 }
 
+/**
+ * The full per-instance result matrix (instance_id × arm × value) the standard requires for an auditable
+ * denominator (C1/C10): "Report the full per-instance result matrix so the denominator is auditable." Each
+ * cell is the arm's per-task value over its seeds — pass@1 (resolved-rate) or meanScore — with `i:N` marking
+ * infra seeds counted false and `–` an absent task (the C1/C6 fairness markers, visible per cell).
+ */
+export function formatPerInstanceMatrix(rows: readonly TaskRunResult[], opts: { metric?: 'passAt1' | 'meanScore' } = {}): string {
+  const metric = opts.metric ?? 'passAt1';
+  const arms = [...new Set(rows.map((r) => r.arm))];
+  const tasks = [...new Set(rows.map((r) => r.taskId))].sort();
+  // per (task, arm): scored/resolved/scoreSum/infra over seeds.
+  const cell = new Map<string, { scored: number; resolved: number; scoreSum: number; infra: number }>();
+  const key = (t: string, a: string) => `${t} ${a}`;
+  for (const r of rows) {
+    const c = cell.get(key(r.taskId, r.arm)) ?? { scored: 0, resolved: 0, scoreSum: 0, infra: 0 };
+    if (isScored(r)) {
+      c.scored += 1;
+      if (r.resolved === true) c.resolved += 1;
+      if (typeof r.score === 'number') c.scoreSum += r.score;
+    } else c.infra += 1;
+    cell.set(key(r.taskId, r.arm), c);
+  }
+  const fmt = (t: string, a: string): string => {
+    const c = cell.get(key(t, a));
+    if (!c || c.scored + c.infra === 0) return '–'; // absent task (false under same-denominator)
+    const val = metric === 'meanScore' ? c.scoreSum / Math.max(1, c.scored) : c.scored === 0 ? 0 : c.resolved / c.scored;
+    return `${val.toFixed(2)}${c.infra > 0 ? ` i:${c.infra}` : ''}`;
+  };
+  const out: string[] = [];
+  out.push(`### Per-instance matrix (${metric}; \`i:N\`=infra seeds counted false, \`–\`=absent)`);
+  out.push(`| task | ${arms.map((a) => `\`${a}\``).join(' | ')} |`);
+  out.push(`|---|${arms.map(() => '---').join('|')}|`);
+  for (const t of tasks) out.push(`| ${t} | ${arms.map((a) => fmt(t, a)).join(' | ')} |`);
+  return out.join('\n');
+}
+
 function statusMark(s: FairnessStatus): string {
   switch (s) {
     case 'PASS':

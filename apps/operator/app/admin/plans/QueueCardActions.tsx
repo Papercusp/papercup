@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * QueueCardActions — the Queue detail-pane action buttons, rendered in the
  * toolbar (next to "View full plan") instead of inside the AskChoiceCard (#4).
@@ -41,12 +43,12 @@ export function QueueCardActions({
       {options.map((opt) => {
         const isNav = opt.terminal === false;
         return (
-          <button
-            key={opt.id}
+          <Tooltip key={opt.id} label={opt.hint ?? opt.label}><button
+
             type="button"
             disabled={busy}
             className={`pc-items__action pc-items__action--${opt.style ?? 'default'}${isNav ? ' pc-items__action--nav' : ''}`}
-            title={opt.hint ?? opt.label}
+
             onClick={() =>
               onResponse(
                 isNav
@@ -56,7 +58,7 @@ export function QueueCardActions({
             }
           >
             {opt.label}
-          </button>
+          </button></Tooltip>
         );
       })}
     </div>

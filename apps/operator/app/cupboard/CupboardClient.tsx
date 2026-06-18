@@ -1,5 +1,6 @@
 'use client';
 
+
 /**
  * CupboardClient — the storefront for the Cupboard registry.
  *
@@ -494,14 +495,14 @@ export default function CupboardClient() {
           ))}
         </div>}
 
-        {!toolsView && <button
+        {!toolsView && <Tooltip label="Refresh"><button
           onClick={fetchListings}
           disabled={loading}
           style={ghostButtonStyle}
-          title="Refresh"
+
         >
           <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
-        </button>}
+        </button></Tooltip>}
       </div>
 
       {/* Tools discovery view (?kind=tools) — tool-level discovery with its own
@@ -772,11 +773,11 @@ export function ListingCard({
       {/* Hive chip — enters the per-Hive rollup (D-005). Hidden when ungroupable
           (no project identity) or in rollup mode (no onHive passed). */}
       {hiveRef && onHive && (
-        <button
+        <Tooltip label={`View all of ${hiveRef}'s listings`}><button
           onClick={onHive}
           data-testid="cupboard-hive-chip"
           data-hive={hiveRef}
-          title={`View all of ${hiveRef}'s listings`}
+
           style={{
             alignSelf: 'flex-start',
             display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -791,7 +792,7 @@ export function ListingCard({
           }}
         >
           <Package size={10} /> {hiveRef}
-        </button>
+        </button></Tooltip>
       )}
 
       {/* Footer — per-listing action. Legacy harness rows (no owning Hive)

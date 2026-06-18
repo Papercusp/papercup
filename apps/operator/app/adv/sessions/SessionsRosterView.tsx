@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * SessionsRosterView — the live "who's active, on what" roster (plan
  * adv-sessions-live-roster-2026-06-02, P-006). Rendered as the 3rd ?view= in
@@ -388,14 +390,14 @@ function FilterBar({
         onChange={(e) => onChange({ ...filters, file: e.target.value })}
       />
       {active ? (
-        <button
+        <Tooltip label="Clear all filters"><button
           type="button"
           className="pc-roster__filter-clear"
           onClick={() => onChange(EMPTY_FILTERS)}
-          title="Clear all filters"
+
         >
           clear
-        </button>
+        </button></Tooltip>
       ) : null}
     </div>
   );
@@ -437,19 +439,19 @@ function FilesInPlaySection({
               {f.agents.map((a) => {
                 const client = a.agent ?? shortSource(a.source);
                 return (
-                  <button
-                    key={a.ownerId}
+                  <Tooltip key={a.ownerId} label={`${client} · ${a.label || a.ownerId}${isZombie(a) ? ' · zombie' : ''}`}><button
+
                     type="button"
                     className="pc-files__agent"
                     data-selected={a.ownerId === selectedAgent || undefined}
                     data-liveness={a.liveness}
-                    title={`${client} · ${a.label || a.ownerId}${isZombie(a) ? ' · zombie' : ''}`}
+
                     onClick={() => onSelect(a.ownerId)}
                   >
                     <LivenessDot liveness={a.liveness} size={6} />
                     {client}
                     {isZombie(a) ? <span className="pc-files__zombie">!</span> : null}
-                  </button>
+                  </button></Tooltip>
                 );
               })}
             </span>
@@ -553,19 +555,17 @@ export function SessionsRosterList({
               <span className="pc-roster__count pc-roster__count--idle">{idle} idle</span>
             </span>
             {staleCount > 0 && filters.liveness !== 'stale' ? (
-              <button
+              <Tooltip label={showStale
+                    ? 'Hide stale (>10m idle) sessions'
+                    : 'Show stale (>10m idle) sessions — hidden by default to keep the roster fast'}><button
                 type="button"
                 className="pc-roster__stale-toggle"
                 aria-pressed={showStale}
                 onClick={() => onToggleStale?.()}
-                title={
-                  showStale
-                    ? 'Hide stale (>10m idle) sessions'
-                    : 'Show stale (>10m idle) sessions — hidden by default to keep the roster fast'
-                }
+
               >
                 {showStale ? 'hide' : 'show'} {staleCount} stale
-              </button>
+              </button></Tooltip>
             ) : null}
           </header>
 

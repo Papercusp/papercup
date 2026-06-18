@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * ToolsSection — the Cupboard's tool-level discovery view
  * (tool-distribution-granularity-2026-06-05 P-006 / D-002 / D-005 +
@@ -187,14 +189,14 @@ export function ToolsSection({
               <AlertTriangle size={12} /> Cupboard unreachable — showing local tools only
             </span>
           )}
-          <button
+          <Tooltip label="Refresh tools"><button
             onClick={fetchTools}
             disabled={loading}
-            title="Refresh tools"
+
             style={{ ...toolRefreshStyle, marginLeft: 'auto' }}
           >
             <RefreshCw size={12} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
-          </button>
+          </button></Tooltip>
         </div>
       )}
 

@@ -10,6 +10,7 @@
 
 'use client';
 
+import { Tooltip } from '@/app/harness/Tooltip';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { NavHistory } from './useNavHistory';
 
@@ -31,26 +32,26 @@ export function NavChevrons<T>({ nav, className }: NavChevronsProps<T>) {
         alignItems: 'center',
       }}
     >
-      <button
+      <Tooltip label="Back (Cmd+[)"><button
         type="button"
         onClick={nav.back}
         disabled={!nav.canBack}
         aria-label="Back"
-        title="Back (Cmd+[)"
+
         style={chevronButtonStyle(nav.canBack)}
       >
         <ChevronLeft size={14} aria-hidden />
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label="Forward (Cmd+])"><button
         type="button"
         onClick={nav.forward}
         disabled={!nav.canForward}
         aria-label="Forward"
-        title="Forward (Cmd+])"
+
         style={chevronButtonStyle(nav.canForward)}
       >
         <ChevronRight size={14} aria-hidden />
-      </button>
+      </button></Tooltip>
     </div>
   );
 }

@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * ColumnFilterBar — the visual surface for the generic column-filter system
  * (generic-column-filters-2026-06-14 Phase 2). Driven entirely by the
@@ -304,13 +306,13 @@ export function ColumnFilterBar<TRow>({
       <ListFilter size={13} aria-hidden style={{ color: 'var(--fg-mute, #7f9bb4)', flexShrink: 0 }} />
 
       {activeChips.map((chip) => (
-        <button
-          key={chip.colKey}
+        <Tooltip key={chip.colKey} label="Edit filter"><button
+
           type="button"
           className="pc-advpanel__chip"
           aria-pressed
           onClick={() => openEditor(chip.colKey)}
-          title="Edit filter"
+
         >
           {chip.label}
           <X
@@ -322,7 +324,7 @@ export function ColumnFilterBar<TRow>({
               chip.clear();
             }}
           />
-        </button>
+        </button></Tooltip>
       ))}
 
       {addable.length > 0 ? (

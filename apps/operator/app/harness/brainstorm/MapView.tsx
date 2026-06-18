@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
@@ -314,14 +316,14 @@ function MapInner({ slug }: Props) {
       <div className="h-brainstorm-map-hint" aria-hidden="true">
         click <kbd>＋</kbd> to add child · drag to reposition · double-click to rename · <kbd>Del</kbd> to remove
       </div>
-      <button
+      <Tooltip label="Auto-arrange all nodes"><button
         type="button"
         className="h-brainstorm-map-arrange"
         onClick={autoArrange}
-        title="Auto-arrange all nodes"
+
       >
         <Wand2 size={11} /> tidy
-      </button>
+      </button></Tooltip>
       {nodes.length === 0 && (
         <div className="h-brainstorm-map-empty">
           <button type="button" className="h-brainstorm-map-empty-add" onClick={addFirstNode}>
@@ -501,31 +503,31 @@ function MapNodeBody(props: MapNodeBodyProps) {
           ))}
         </div>
       )}
-      <button
+      <Tooltip label="Change type"><button
         type="button"
         className="rf-mind-kind-btn nodrag nopan"
-        title="Change type"
+
         onClick={(e) => { e.stopPropagation(); setShowKindMenu((s) => !s); }}
       >
         type
-      </button>
+      </button></Tooltip>
 
-      <button
+      <Tooltip label="Add child node"><button
         type="button"
         className="rf-mind-add nodrag nopan"
-        title="Add child node"
+
         onClick={(e) => { e.stopPropagation(); onAddChild(); }}
       >
         <Plus size={12} strokeWidth={2.5} />
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label="Delete node"><button
         type="button"
         className="rf-mind-del nodrag nopan"
-        title="Delete node"
+
         onClick={(e) => { e.stopPropagation(); onDelete(); }}
       >
         <X size={11} strokeWidth={2.5} />
-      </button>
+      </button></Tooltip>
     </div>
   );
 }

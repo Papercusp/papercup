@@ -16,6 +16,7 @@
  * latter (so the tab + profile agree) is a flagged follow-up; this panel
  * applies the P-048d zeroing client-side regardless.
  */
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { parseAsInteger, parseAsStringEnum, useQueryState } from 'nuqs';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
@@ -230,17 +231,17 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
               <span className="pc-adv-contributors__tiers" aria-label="activity by trust tier">
                 <span title="Tier-A merged PRs">✓{c.prs_merged} PR</span>
                 <span title="Tier-B features shipped">✓{c.features_shipped} shipped</span>
-                <button
+                <Tooltip label="Tier-C activity events — click for the per-kind breakdown"><button
                   type="button"
                   className="pc-adv-contributors__activity"
-                  title="Tier-C activity events — click for the per-kind breakdown"
+
                   aria-expanded={expandedId === c.github_user_id}
                   onClick={() =>
                     void setExpandedId(expandedId === c.github_user_id ? null : c.github_user_id)
                   }
                 >
                   {c.activity_events} act
-                </button>
+                </button></Tooltip>
               </span>
               <span className="pc-adv-contributors__joined" title="Joined">{fmtJoined(c.joined_at)}</span>
               {c.device_count > 0 && (

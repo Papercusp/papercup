@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useState } from 'react';
 import dynamic from '@/lib/router-compat/dynamic';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
@@ -76,15 +78,15 @@ export default function SqlTab() {
           <strong>SQL</strong>
           <span>read-only · rollback transaction</span>
         </div>
-        <button
+        <Tooltip label="Cmd/Ctrl+Enter"><button
           type="button"
           className="pc-sql-run pc-dev-btn-primary"
           onClick={run}
           disabled={busy}
-          title="Cmd/Ctrl+Enter"
+
         >
           {busy ? 'Running…' : '▶ Run'}
-        </button>
+        </button></Tooltip>
         <label className="pc-sql-role">
           Role:
           <Select

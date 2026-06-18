@@ -1,5 +1,6 @@
 'use client';
 
+
 /**
  * HiveMemberRail — the in-tab member selector for the Harnesses tab
  * (harnesses-tab-hive-model-2026-06-07 P-002).
@@ -112,12 +113,12 @@ export default function HiveMemberRail({
           const live = livenessBySlug?.[m.slug] ?? false;
           return (
             <li key={m.slug}>
-              <button
+              <Tooltip label={m.slug}><button
                 type="button"
                 data-testid={`hive-member-${m.slug}`}
                 className={`pc-hive-rail__item${active ? ' is-active' : ''}`}
                 aria-current={active ? 'true' : undefined}
-                title={m.slug}
+
                 onClick={() => onSelect(m.slug)}
               >
                 <span
@@ -143,7 +144,7 @@ export default function HiveMemberRail({
                     aria-label="Shared"
                   />
                 )}
-              </button>
+              </button></Tooltip>
             </li>
           );
         })}

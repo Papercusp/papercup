@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * NewPlanButton — the "New plan" launcher with an EXPLICIT owning-hive choice
  * (steering-nested-hive-plan-tree-2026-06-17, P-005).
@@ -79,20 +81,18 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
   const concrete = !!resolvedHarnessSlug || hiveOptions.length === 0;
   if (concrete) {
     return (
-      <button
+      <Tooltip label={resolvedHarnessSlug
+            ? `Launch an agent session to draft a new plan in ${resolvedHarnessSlug}`
+            : `Launch an agent session to draft a new plan (no active ${potLabel} — agent will ask)`}><button
         type="button"
         className="pc-plans__new-plan"
         onClick={() => onLaunch(resolvedHarnessSlug ?? null)}
         disabled={launching}
-        title={
-          resolvedHarnessSlug
-            ? `Launch an agent session to draft a new plan in ${resolvedHarnessSlug}`
-            : `Launch an agent session to draft a new plan (no active ${potLabel} — agent will ask)`
-        }
+
       >
         <Plus size={14} aria-hidden />
         {launching ? 'Launching…' : 'New plan'}
-      </button>
+      </button></Tooltip>
     );
   }
 
@@ -103,19 +103,19 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
   };
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
-      <button
+      <Tooltip label="Choose the owning hive for the new plan"><button
         type="button"
         className="pc-plans__new-plan"
         onClick={() => setMenuOpen((o) => !o)}
         disabled={launching}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
-        title="Choose the owning hive for the new plan"
+
       >
         <Plus size={14} aria-hidden />
         {launching ? 'Launching…' : 'New plan'}
         <ChevronDown size={12} aria-hidden style={{ marginLeft: 'auto' }} />
-      </button>
+      </button></Tooltip>
       {menuOpen && (
         <div
           role="menu"
@@ -163,7 +163,7 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
               {h.member ? `↳ ${h.label}` : h.label}
             </button>
           ))}
-          <button
+          <Tooltip label="Draft at the workspace level (no owning hive) — explicit, not the silent default"><button
             type="button"
             role="menuitem"
             className="pc-plans__newplan-item"
@@ -182,10 +182,10 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
               borderRadius: 0,
               cursor: 'pointer',
             }}
-            title="Draft at the workspace level (no owning hive) — explicit, not the silent default"
+
           >
             Workspace-level (no hive)
-          </button>
+          </button></Tooltip>
         </div>
       )}
     </div>

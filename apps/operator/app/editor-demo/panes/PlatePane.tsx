@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { Plate, PlateContent, PlateElement, PlateLeaf, useEditorRef, usePlateEditor } from '@udecode/plate/react';
 import { BasicElementsPlugin } from '@udecode/plate-basic-elements/react';
 import { BasicMarksPlugin } from '@udecode/plate-basic-marks/react';
@@ -33,9 +35,9 @@ function PlateToolbar() {
   const editor = useEditorRef();
 
   const btn = (label: string, onClick: () => void, title?: string) => (
-    <button
+    <Tooltip label={title ?? label}><button
       type="button"
-      title={title ?? label}
+
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => { editor.tf.focus(); onClick(); }}
       style={{
@@ -44,7 +46,7 @@ function PlateToolbar() {
         color: '#ddd', padding: '4px 8px', borderRadius: 3, cursor: 'pointer',
         fontSize: 12, fontFamily: 'inherit', minWidth: 28,
       }}
-    >{label}</button>
+    >{label}</button></Tooltip>
   );
 
   return (

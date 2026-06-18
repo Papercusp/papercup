@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import dynamic from '@/lib/router-compat/dynamic';
@@ -57,18 +59,18 @@ export function BrainstormFull({ slug }: { slug: string }) {
         </div>
         <div className="h-bsfull-subtabs" role="tablist" aria-label="Active layer">
           {LAYERS.map((l) => (
-            <button
-              key={l.id}
+            <Tooltip key={l.id} label={l.caption}><button
+
               type="button"
               role="tab"
               aria-selected={active === l.id}
               className={`h-bsfull-sub${active === l.id ? ' on' : ''}`}
               onClick={() => void setActive(l.id)}
-              title={l.caption}
+
             >
               <l.icon size={12} />
               <span>{l.label}</span>
-            </button>
+            </button></Tooltip>
           ))}
         </div>
       </div>

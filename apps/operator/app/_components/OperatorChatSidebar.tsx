@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * OperatorChatSidebar — fixed left, full-height, and collapsible.
  *
@@ -199,12 +201,12 @@ export function OperatorChatSidebar() {
       data-collapsed={chatOpen ? 'false' : 'true'}
     >
       <style>{OP_CHAT_SIDEBAR_CSS}</style>
-      <button
+      <Tooltip label="Expand Papercup chat"><button
         type="button"
         className="op-chat-expand-rail"
         onClick={expandChat}
         aria-label="Expand Papercup chat"
-        title="Expand Papercup chat"
+
         aria-hidden={chatOpen}
       >
         <span className="op-chat-expand-orb" aria-hidden="true">
@@ -212,7 +214,7 @@ export function OperatorChatSidebar() {
         </span>
         <span className="op-chat-expand-label">Chat</span>
         <ChevronRight className="op-chat-expand-chevron" strokeWidth={1.9} aria-hidden="true" />
-      </button>
+      </button></Tooltip>
       <div className="op-chat-expanded-shell" aria-hidden={!chatOpen}>
         <div className="op-chat-header">
           <div className="op-chat-header-main">
@@ -227,15 +229,15 @@ export function OperatorChatSidebar() {
                   subtitleClassName="op-chat-wordmark-subtitle"
                   subtitle=""
                 />
-                <button
+                <Tooltip label="Collapse Papercup chat"><button
                   type="button"
                   className="op-chat-toggle"
                   onClick={collapseChat}
                   aria-label="Collapse Papercup chat"
-                  title="Collapse Papercup chat"
+
                 >
                   <ChevronLeft strokeWidth={1.9} aria-hidden="true" />
-                </button>
+                </button></Tooltip>
               </div>
               <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
                 <AudienceModeSelector />

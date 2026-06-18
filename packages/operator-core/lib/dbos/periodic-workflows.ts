@@ -191,6 +191,44 @@ const systemHealthWorkflow = DBOS.registerWorkflow(systemHealthTick, {
 });
 DBOS.registerScheduled(systemHealthWorkflow, { name: 'systemHealth', crontab: '10,40 * * * * *' });
 
+// Every 30s (at :15/:45): connection-pressure watch — C5-1 of
+// backend-connection-scaling-2026-06-17. pgHealth() reports server-wide
+// saturation (numbackends/max_connections across ALL databases, incl. su-lock);
+// warn LOUDLY past 85% with the top connection holders, so a creeping leak or a
+// pool-sizing regression is visible BEFORE it becomes a "too many clients" outage
+// (the 2026-06-17 incident had no such signal). Log-only liveness signal — a
+// future admission governor (parent plan P5) reads the same numbers to shed load.
+async function connectionPressureTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      const { pgHealth } = await import('../dev-data');
+      const h = await pgHealth().catch(() => null);
+      if (!h || h.maxConnections <= 0) return;
+      if (h.saturationPct >= 85) {
+        const top = h.byApplication
+          .slice(0, 6)
+          .map((a) => `${a.name}=${a.count}`)
+          .join(' ');
+        console.warn(
+          `[pg-pressure] DANGER ${h.serverWideConnections}/${h.maxConnections} conns ` +
+            `(${h.saturationPct}%). Top holders: ${top}. ` +
+            `Remedy: raise the ceiling (npx tsx scripts/pg-autotune.ts --apply), lower ` +
+            `PAPERCUSP_DB_POOL_MAX, or enable PgBouncer (PAPERCUSP_PGBOUNCER=1).`,
+        );
+      }
+    },
+    { name: 'connection-pressure' },
+  );
+}
+const connectionPressureWorkflow = DBOS.registerWorkflow(connectionPressureTick, {
+  name: 'connectionPressure',
+  maxRecoveryAttempts: 3,
+});
+DBOS.registerScheduled(connectionPressureWorkflow, {
+  name: 'connectionPressure',
+  crontab: '15,45 * * * * *',
+});
+
 // Every 30s: harness_status / harness_lanes PID-liveness sweep (consolidation
 // P-001). Replaces the legacy setInterval in harness-status-sweep.ts (which
 // stands down on dbosTimersActive).

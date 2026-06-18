@@ -1,5 +1,6 @@
 'use client';
 
+
 import { CSSProperties, ReactNode } from 'react';
 import {
   AlertOctagon,
@@ -263,13 +264,13 @@ export function AgentKindPill({
 /** Short monospace ID pill — copyable. */
 export function IdPill({ id, onClick }: { id: string; onClick?: () => void }) {
   return (
-    <button
+    <Tooltip label={`${id} — click to copy`}><button
       onClick={(e) => {
         e.stopPropagation();
         navigator.clipboard?.writeText(id).catch(() => {});
         onClick?.();
       }}
-      title={`${id} — click to copy`}
+
       style={{
         fontFamily: FONTS.mono,
         fontSize: SIZES.xs,
@@ -283,7 +284,7 @@ export function IdPill({ id, onClick }: { id: string; onClick?: () => void }) {
       }}
     >
       {id}
-    </button>
+    </button></Tooltip>
   );
 }
 

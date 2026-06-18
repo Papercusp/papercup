@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Select } from '@/app/harness/Select';
@@ -312,19 +314,19 @@ export default function TablesTab() {
                 {schema} <span>({ts.length})</span>
               </div>
               {ts.map((t) => (
-                <button
-                  key={t.exportName}
+                <Tooltip key={t.exportName} label={t.exportName}><button
+
                   type="button"
                   className={`pc-tables-row ${selected === t.exportName ? 'is-active' : ''}`}
                   onClick={() => {
                     if (selected !== t.exportName) setFilters([]);
                     setSelected(t.exportName);
                   }}
-                  title={t.exportName}
+
                 >
                   <span className="pc-tables-row-name">{t.name}</span>
                   <span className="pc-tables-row-count">{t.columnCount}c</span>
-                </button>
+                </button></Tooltip>
               ))}
             </div>
           ))}
@@ -386,14 +388,14 @@ export default function TablesTab() {
                 {filterChips.map((chip) => (
                   <span key={chip.key} className="pc-tables-filter-chip">
                     <code>{chip.label}</code>
-                    <button
+                    <Tooltip label={`Remove ${chip.col} ${chip.op} filter`}><button
                       type="button"
                       className="pc-tables-filter-chip-x"
                       onClick={() => removeFilter(chip.key)}
-                      title={`Remove ${chip.col} ${chip.op} filter`}
+
                     >
                       ×
-                    </button>
+                    </button></Tooltip>
                   </span>
                 ))}
                 <button className="pc-tables-filter-clear" onClick={clearAllFilters}>
@@ -551,14 +553,14 @@ export default function TablesTab() {
                         }
                         if (fk && value !== null && value !== undefined) {
                           return (
-                            <button
+                            <Tooltip label={`Open ${fk.foreignTable} where ${fk.foreignColumn} = ${valueToLabel(value)}`}><button
                               type="button"
                               className="pc-tables-fklink"
                               onClick={() => navigateFK(fk.foreignTable, fk.foreignColumn, value)}
-                              title={`Open ${fk.foreignTable} where ${fk.foreignColumn} = ${valueToLabel(value)}`}
+
                             >
                               {renderCell(value)}
-                            </button>
+                            </button></Tooltip>
                           );
                         }
                         return <>{renderCell(value)}</>;

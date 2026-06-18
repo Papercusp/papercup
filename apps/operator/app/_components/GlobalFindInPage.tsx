@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * App-wide find-in-page (Ctrl/⌘+F) — a browser-style find bar.
  *
@@ -232,35 +234,35 @@ export default function GlobalFindInPage() {
         <span className="pc-find__note">Find isn’t supported in this webview</span>
       )}
       <span className="pc-find__sep" aria-hidden="true" />
-      <button
+      <Tooltip label="Previous match (Shift+Enter)"><button
         type="button"
         className="pc-find__btn"
         onClick={goPrev}
         disabled={matchCount === 0}
         aria-label="Previous match (Shift+Enter)"
-        title="Previous match (Shift+Enter)"
+
       >
         ↑
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label="Next match (Enter)"><button
         type="button"
         className="pc-find__btn"
         onClick={goNext}
         disabled={matchCount === 0}
         aria-label="Next match (Enter)"
-        title="Next match (Enter)"
+
       >
         ↓
-      </button>
-      <button
+      </button></Tooltip>
+      <Tooltip label="Close find (Esc)"><button
         type="button"
         className="pc-find__btn"
         onClick={close}
         aria-label="Close find (Esc)"
-        title="Close find (Esc)"
+
       >
         ×
-      </button>
+      </button></Tooltip>
     </div>
   );
 }

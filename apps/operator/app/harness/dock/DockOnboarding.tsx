@@ -14,6 +14,7 @@
 
 'use client';
 
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { X, MousePointer2 } from 'lucide-react';
@@ -91,11 +92,11 @@ export function DockOnboarding() {
         </kbd>{' '}
         for back/forward.
       </span>
-      <button
+      <Tooltip label="Got it"><button
         type="button"
         onClick={dismiss}
         aria-label="Dismiss onboarding"
-        title="Got it"
+
         style={{
           display: 'inline-flex',
           padding: 2,
@@ -107,7 +108,7 @@ export function DockOnboarding() {
         }}
       >
         <X size={12} aria-hidden />
-      </button>
+      </button></Tooltip>
     </div>
   );
 }

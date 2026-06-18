@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
@@ -59,9 +61,9 @@ function ToolbarPlugin() {
   };
 
   const btn = (label: string, onClick: () => void, isActive = false, title?: string) => (
-    <button
+    <Tooltip label={title ?? label}><button
       type="button"
-      title={title ?? label}
+
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       style={{
@@ -70,7 +72,7 @@ function ToolbarPlugin() {
         color: '#ddd', padding: '4px 8px', borderRadius: 3, cursor: 'pointer',
         fontSize: 12, fontFamily: 'inherit', minWidth: 28,
       }}
-    >{label}</button>
+    >{label}</button></Tooltip>
   );
 
   return (

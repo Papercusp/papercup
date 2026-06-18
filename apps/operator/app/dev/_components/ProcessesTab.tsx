@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
@@ -194,15 +196,15 @@ export default function ProcessesTab() {
               const protectedReason = protectedReasonFor(row.kind);
               const killable = protectedReason === null;
               return (
-                <button
+                <Tooltip label={killable ? `Send SIGTERM to pid ${row.pid}` : `Protected: ${protectedReason}`}><button
                   type="button"
                   className="pc-dev-btn-mini pc-dev-btn-danger"
                   disabled={!killable}
-                  title={killable ? `Send SIGTERM to pid ${row.pid}` : `Protected: ${protectedReason}`}
+
                   onClick={() =>
                     setKillModal({ process: row, confirmText: '', signal: 'SIGTERM', busy: false, result: null })
                   }
-                >kill</button>
+                >kill</button></Tooltip>
               );
             },
           },

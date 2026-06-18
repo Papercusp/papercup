@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * OperatorActiveToggle — sidebar button that flips operator interaction
  * mode between active and passive.
@@ -190,16 +192,16 @@ export function OperatorActiveToggle() {
   return (
     <>
       <style>{TOGGLE_CSS}</style>
-      <button
+      <Tooltip label={title}><button
         type="button"
         onClick={onClick}
         className={`op-active-toggle op-active-toggle--${stateClass}`}
         aria-label={aria}
-        title={title}
+
       >
         <span className={`op-active-toggle-dot op-active-toggle-dot--${dotKind}`} aria-hidden="true" />
         <span className="op-active-toggle-label">{label}</span>
-      </button>
+      </button></Tooltip>
     </>
   );
 }

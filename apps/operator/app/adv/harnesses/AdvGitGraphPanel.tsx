@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * AdvGitGraphPanel — the /adv Git dock's commit-graph panel.
  *
@@ -392,15 +394,15 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
       {uniqueRefs.length > 0 ? (
         <div className="pc-adv-gitgrid__refrail" aria-label="Refs">
           {uniqueRefs.slice(0, 8).map((ref) => (
-            <button
-              key={ref}
+            <Tooltip key={ref} label={`Filter by ${ref}`}><button
+
               type="button"
               className={`pc-adv-gitgrid__ref is-${refClass(ref)}`}
               onClick={() => applyQuery(ref)}
-              title={`Filter by ${ref}`}
+
             >
               {refLabel(ref)}
-            </button>
+            </button></Tooltip>
           ))}
         </div>
       ) : null}
@@ -408,15 +410,15 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
       {topAuthors.length > 1 ? (
         <div className="pc-adv-gitgrid__authors" aria-label="Top authors">
           {topAuthors.map(([author, count]) => (
-            <button
-              key={author}
+            <Tooltip key={author} label={`Filter by ${author}`}><button
+
               type="button"
               className="pc-adv-gitgrid__author-chip"
               onClick={() => applyQuery(author)}
-              title={`Filter by ${author}`}
+
             >
               <span>{author}</span><b>{count}</b>
-            </button>
+            </button></Tooltip>
           ))}
         </div>
       ) : null}

@@ -16,6 +16,7 @@
 
 'use client';
 
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useState } from 'react';
 import { Layers, X } from 'lucide-react';
 import { usePromptDialog } from '../usePromptDialog';
@@ -119,13 +120,13 @@ export function LayoutsMenu({
   return (
     <div style={{ position: 'relative', display: 'inline-block' }} className={className}>
       {promptEl}
-      <button
+      <Tooltip label="Save, switch, or reset named layouts"><button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-label="Layouts menu"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Save, switch, or reset named layouts"
+
         style={{
           display: 'inline-flex',
           alignItems: 'center',
@@ -141,7 +142,7 @@ export function LayoutsMenu({
       >
         <Layers size={12} aria-hidden />
         Layouts
-      </button>
+      </button></Tooltip>
       {open && (
         <>
           <div

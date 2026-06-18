@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildFairnessAudit, formatFairnessAuditMarkdown } from './fairness-audit';
+import { buildFairnessAudit, formatFairnessAuditMarkdown, formatPerInstanceMatrix } from './fairness-audit';
 import type { TaskRunResult, ArmId, BenchSuite, GraderStatus } from './schema';
 
 let seq = 0;
@@ -121,6 +121,24 @@ describe('buildFairnessAudit', () => {
 
   it('throws on empty rows', () => {
     expect(() => buildFairnessAudit([])).toThrow(/no rows/);
+  });
+});
+
+describe('formatPerInstanceMatrix', () => {
+  it('renders instance × arm cells with infra (i:N) + absent (–) markers', () => {
+    const rows = [
+      task('t1', 'vanilla', true, 0),
+      task('t1', 'hive', true, 0),
+      task('t2', 'vanilla', false, 0),
+      // hive infra-fails t2 → i:1 marker; t3 absent for vanilla → –
+      mk({ taskId: 't2', arm: 'hive', generationStatus: 'error', resolved: null }),
+      task('t3', 'hive', true, 0),
+    ];
+    const md = formatPerInstanceMatrix(rows, { metric: 'passAt1' });
+    expect(md).toContain('| task | `vanilla` | `hive` |');
+    expect(md).toContain('| t1 | 1.00 | 1.00 |');
+    expect(md).toContain('| t2 | 0.00 | 0.00 i:1 |'); // hive t2 all-infra
+    expect(md).toContain('| t3 | – | 1.00 |'); // vanilla absent on t3
   });
 });
 

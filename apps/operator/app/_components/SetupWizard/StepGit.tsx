@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useState } from 'react';
 import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
 import { InlinePtyTerminal } from './InlinePtyTerminal';
@@ -221,25 +223,23 @@ export function StepGit() {
         <code>git</code> picks up automatically.
       </p>
       <div className="pc-step__actions">
-        <button
+        <Tooltip label={GITHUB_AUTH_ALPHA_DISABLED
+              ? 'GitHub sign-in is disabled during the alpha'
+              : ghInstalled === false
+                ? 'Install the GitHub CLI first (see hint below)'
+                : undefined}><button
           type="button"
           className="pc-btn pc-btn--primary"
           onClick={startGithubLogin}
           disabled={GITHUB_AUTH_ALPHA_DISABLED || active || !tauri || !spec || ghInstalled === false}
-          title={
-            GITHUB_AUTH_ALPHA_DISABLED
-              ? 'GitHub sign-in is disabled during the alpha'
-              : ghInstalled === false
-                ? 'Install the GitHub CLI first (see hint below)'
-                : undefined
-          }
+
         >
           {active
             ? 'Running…'
             : ghSignedIn
               ? 'Re-sign in to GitHub'
               : 'Sign in to GitHub'}
-        </button>
+        </button></Tooltip>
         {GITHUB_AUTH_ALPHA_DISABLED ? (
           <span className="pc-field__hint" style={{ marginLeft: 8 }}>
             GitHub sign-in is disabled while Papercusp is in alpha — it'll light up in a later release.

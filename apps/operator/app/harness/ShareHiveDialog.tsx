@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * ShareHiveDialog / ShareHiveForm — the real share surface for a hive
  * (comb-hive-native-sharing-2026-06-11 P-004). Replaces the retired
@@ -324,11 +326,11 @@ export function ShareHiveForm({
             <code className="pc-share-hive__invite-code" data-testid="share-hive-invite-link" title={inviteLink}>
               {inviteLink}
             </code>
-            <button
+            <Tooltip label="Copy the invite link"><button
               type="button"
               className="pc-share-hive__copy"
               data-testid="share-hive-invite-copy"
-              title="Copy the invite link"
+
               onClick={() => {
                 void navigator.clipboard
                   .writeText(inviteLink)
@@ -345,7 +347,7 @@ export function ShareHiveForm({
                   <Copy size={12} aria-hidden /> copy
                 </>
               )}
-            </button>
+            </button></Tooltip>
           </span>
         </div>
       )}

@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * AssignDialog — cross-user handoff / @-mention assign UI
  * (shared-hive-collaboration-2026-06-14 P-008 + P-016).
@@ -114,15 +116,15 @@ export default function AssignDialog({ planSlug, itemRef, compact = false }: Ass
       open={open}
       onOpenChange={(o) => (o ? void setAssign(myKey) : close())}
       trigger={
-        <button
+        <Tooltip label={`Assign ${targetLabel} to @user`}><button
           type="button"
           className={`pc-assign__trigger${compact ? ' is-compact' : ''}`}
           aria-label={`Assign ${targetLabel} to a user`}
-          title={`Assign ${targetLabel} to @user`}
+
         >
           <AtSign size={compact ? 13 : 14} aria-hidden="true" />
           {compact ? null : <span>Assign</span>}
-        </button>
+        </button></Tooltip>
       }
       contentClassName="pc-assign__panel"
       ariaLabel={`Assign ${targetLabel} to a user`}

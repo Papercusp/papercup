@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * /settings/omp — full configuration surface for the omp (oh-my-pi)
  * agent backend. Mirrors `omp config list` / `omp config set`.
@@ -247,14 +249,14 @@ function SettingRow({
       </div>
       <div style={S.rowMeta}>
         {!setting.isUnset && (
-          <button
+          <Tooltip label="Reset to default (unset)"><button
             type="button"
             style={S.btnGhost}
             onClick={onUnset}
-            title="Reset to default (unset)"
+
           >
             ↻ default
-          </button>
+          </button></Tooltip>
         )}
       </div>
     </div>

@@ -13,6 +13,7 @@
  */
 'use client';
 
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useForm } from 'react-hook-form';
@@ -222,7 +223,7 @@ export default function PluginSettingsPage() {
                 );
                 return (
                   <li key={p.name}>
-                    <button
+                    <Tooltip label={enabled ? '' : `Not enabled in this ${t('pot', { lower: true })}`}><button
                       type="button"
                       onClick={() => setActivePlugin(p.name)}
                       style={{
@@ -230,11 +231,11 @@ export default function PluginSettingsPage() {
                         background: isActive ? 'var(--bg-1, #1e1e1e)' : 'transparent',
                         opacity: enabled ? 1 : 0.55,
                       }}
-                      title={enabled ? '' : `Not enabled in this ${t('pot', { lower: true })}`}
+
                     >
                       {p.name.split('/').pop()}
                       {!enabled && <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--fg-mute, #888)' }}>off</span>}
-                    </button>
+                    </button></Tooltip>
                   </li>
                 );
               })}

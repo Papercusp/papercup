@@ -444,17 +444,17 @@ function PlanRow({
         <div className="pc-plan-row__head">
           <span className="pc-plan-row__title">{title}</span>
           {showStartToggle ? (
-            <button
+            <Tooltip label={isStarted ? 'Pause plan (orchestrator stops picking features)' : 'Start plan (orchestrator picks features from this plan)'}><button
               type="button"
               className={`pc-plan-row__start-btn${isStarted ? ' is-started' : ''}`}
               disabled={busy}
               onClick={handleStartToggle}
-              title={isStarted ? 'Pause plan (orchestrator stops picking features)' : 'Start plan (orchestrator picks features from this plan)'}
+
               aria-label={isStarted ? `Pause plan ${plan.slug}` : `Start plan ${plan.slug}`}
             >
               {isStarted ? <Pause size={11} /> : <Play size={11} />}
               {isStarted ? 'Pause' : 'Start'}
-            </button>
+            </button></Tooltip>
           ) : null}
         </div>
         <div className="pc-plan-row__meta-line">

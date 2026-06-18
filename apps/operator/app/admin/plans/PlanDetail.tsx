@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * Plan detail view — the two-pane shell's main pane.
  *
@@ -422,15 +424,15 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
           >
             {itemView === 'kanban' ? '☰ List' : '⊞ Kanban'}
           </button>
-          <button
+          <Tooltip label="Show the plan's revision activity feed"><button
             type="button"
             className="pc-plan-editor-tools__btn"
             onClick={() => setActivityOpen(activityOpen === 'open' ? 'closed' : 'open')}
             aria-pressed={activityOpen === 'open'}
-            title="Show the plan's revision activity feed"
+
           >
             ⟲ Activity
-          </button>
+          </button></Tooltip>
         </div>
       ) : null}
       {!editing && itemView === 'kanban' ? (
@@ -768,17 +770,17 @@ function TabButton({
 }) {
   const isActive = tab === active;
   return (
-    <button
+    <Tooltip label={hint}><button
       type="button"
       role="tab"
       aria-selected={isActive}
       className={`pc-plans__tab${isActive ? ' is-active' : ''}`}
       onClick={() => onTab(tab)}
-      title={hint}
+
     >
       {label}
       {hint ? <span className="pc-plans__tab-hint"> · {hint}</span> : null}
-    </button>
+    </button></Tooltip>
   );
 }
 
@@ -913,15 +915,15 @@ function PlanActivityFeed({
     >
       <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h4 style={{ margin: 0, fontSize: '0.8em', fontWeight: 600 }}>Activity</h4>
-        <button
+        <Tooltip label="Close"><button
           type="button"
           onClick={onClose}
           aria-label="Close activity feed"
-          title="Close"
+
           style={{ padding: '2px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--fg-mute)', fontSize: '0.9em', lineHeight: 1 }}
         >
           ✕
-        </button>
+        </button></Tooltip>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: '10px 14px' }}>
         {loading ? <p style={{ color: 'var(--fg-mute)', fontSize: '0.8em' }}>Loading…</p> : null}

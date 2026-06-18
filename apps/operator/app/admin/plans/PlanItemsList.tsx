@@ -158,11 +158,11 @@ export default function PlanItemsList({
         const isSel = selectedItem === itemKey(planSlug, r.item.id);
         return (
           <li key={r.item.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
-            <button
+            <Tooltip label={r.item.text}><button
               type="button"
               className="pc-items__row"
               aria-current={isSel ? 'true' : undefined}
-              title={r.item.text}
+
               onClick={() => selectItem(itemKey(planSlug, r.item.id))}
             >
               {/* Free-form text first (leftmost); id + status + importance
@@ -187,7 +187,7 @@ export default function PlanItemsList({
                   <AuthorBadge identity={r.item.lastEditedBy} variant="compact" prefix="by" />
                 ) : null}
               </span>
-            </button>
+            </button></Tooltip>
             {/* P-008: per-item cross-user assign — sibling of the row button
                 (can't nest a button). Compact, hover-revealed via CSS. */}
             <span className="pc-items__row-actions">

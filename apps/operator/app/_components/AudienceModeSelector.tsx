@@ -1,5 +1,7 @@
 'use client';
 
+
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useCallback, useEffect, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import {
@@ -58,24 +60,24 @@ export function AudienceModeSelector() {
     <>
       <style>{CSS}</style>
       <div className="audience-mode-selector" role="group" aria-label="Audience mode">
-        <button
+        <Tooltip label="Engineer mode — peer-level, terse, full technical vocabulary"><button
           type="button"
           className={`audience-mode-btn${mode === 'engineer' ? ' audience-mode-btn--active' : ''}`}
           onClick={() => select('engineer')}
           aria-pressed={mode === 'engineer'}
-          title="Engineer mode — peer-level, terse, full technical vocabulary"
+
         >
           Engineer
-        </button>
-        <button
+        </button></Tooltip>
+        <Tooltip label="Novice mode — plain language, outcome-first, no implementation questions"><button
           type="button"
           className={`audience-mode-btn${mode === 'novice' ? ' audience-mode-btn--active' : ''}`}
           onClick={() => select('novice')}
           aria-pressed={mode === 'novice'}
-          title="Novice mode — plain language, outcome-first, no implementation questions"
+
         >
           Novice
-        </button>
+        </button></Tooltip>
       </div>
     </>
   );
