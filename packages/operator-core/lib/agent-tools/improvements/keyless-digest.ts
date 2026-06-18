@@ -26,7 +26,7 @@ export default defineTool({
   name: 'improvements:keyless-digest',
   profile: 'engineer',
   description:
-    'Triage surface for KEYLESS improvement items (no payload.watchdogKey — manual / non-watchdog EIs) — the un-managed backlog that never dedups, ages, or auto-closes. Returns the keyed-vs-keyless headline split, age-band rollup (fresh < 7d · aging 7–30d · stale ≥ 30d), and the stale-review queue (oldest-first) with a per-item disposition (claim-or-close / follow-up-owner). Read-only — closes nothing; surfaces the pile so a human/Queen can drain it (P-014).',
+    'Triage surface for KEYLESS improvement items (no payload.watchdogKey — manual / non-watchdog EIs) — the un-managed backlog that never dedups, ages, or auto-closes. Returns the keyed-vs-keyless headline split, age-band rollup (fresh < 7d · aging 7–30d · stale ≥ 30d), and the review queue (keyless EIs ≥ 7d, oldest-first) with a per-item disposition (claim-or-close / follow-up-owner). Read-only — closes nothing; surfaces the pile so a human/Queen can drain it (P-014).',
   guidance: {
     when: 'To see and triage the un-managed backlog — the keyless EIs that the watchdog lifecycle (dedup/aging/auto-close) cannot touch because they carry no watchdogKey. Use it as the periodic keyless human-review digest: drain the stale-review queue (claim, close if obsolete, or convert a recurring one to a keyed form).',
     notWhen: 'You want watchdog/auto-implement health — improvements:watchdog-status. You want the full captured (keyed) backlog triage — improvements:digest. You want one item — issues:get.',

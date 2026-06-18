@@ -123,8 +123,8 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
       for (let k = 0; k < s.n; k++) {
         await sql`
           INSERT INTO harness_shared.tool_invocations
-            (workspace_id, tool_name, status, error_code, error_message, invoked_at)
-          VALUES ('*', ${s.tool}, ${s.status}, ${s.code}, ${s.msg}, now())`;
+            (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status, error_code, error_message, invoked_at)
+          VALUES ('*', '', '', ${s.tool}, 'su', '', '', ${s.status}, ${s.code}, ${s.msg}, now())`;
       }
     }
 

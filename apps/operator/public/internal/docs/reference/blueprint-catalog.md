@@ -11,7 +11,7 @@ The built-in harness blueprints — each a declarative harness shape (work-item 
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (32 concrete + 4 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (42 concrete + 4 abstract).
 
 ## Built-in blueprints
 
@@ -27,17 +27,26 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (32 con
 | `deferral-interest` | base | mining-run (`DIR`) | — | inherited | 0 | Deterministic learning loop: backfill realized deferral costs from history and re-fit the learned deferral-pricing model the queue ranker reads (the deferral-interest refit) on a cadence. Pure SQL + math, no agent. |
 | `deliberate` | base | decision (`DLIB`) | — | inherited | 0 | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split. |
 | `deploy` | single-agent | deploy-run (`DEP`) | release-manager | inherited | 1 | The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet. |
+| `dist-blackboard` | base | feature (`W`) | — | concurrency 4 | 1 | Stigmergic distributed coordination: N peer workers self-claim from a shared queue (no Queen) and coordinate ONLY via a shared blackboard (work-item/scratchpad state) — no direct messaging. |
+| `dist-broadcast` | base | feature (`W`) | — | concurrency 4 | 1 | Flat-distributed coordination: N peer workers self-claim from a shared queue (no Queen) and broadcast findings to peers. The fully-distributed pole of the central-vs-distributed study. |
+| `dist-peer-review` | base | feature (`W`) | — | concurrency 4 | 2 | Flat-distributed coordination with a peer-review gate: N peer workers self-claim from a shared queue (no Queen); each result is reviewed by a nominated peer before submit. |
+| `dist-repo-huddle` | base | feature (`W`) | — | concurrency 4 | 1 | Distributed per-repo huddle: N peer workers self-claim (no Queen); same-repo agents form a group that shares repo-understanding + peer-reviews within the repo — coordination scoped to overlap. |
+| `ensemble-solve` | base | feature (`W`) | — | concurrency 4 | 2 | Ensemble: N agents solve the same task independently (no coordination during), then a judge picks the best solution. The aggregation-after control arm for the coordination-topology study. |
 | `fleet-ekg` | base | scan-run (`EKG`) | — | inherited | 0 | Deterministic learning loop: embed recent agent sessions into behavioral vectors, detect fleet-wide distribution shifts vs the trailing baseline, attribute against the behavior-change ledger, and alarm unattributable MAJOR shifts (the Fleet EKG) on a cadence. Pure SQL, no agent. |
+| `gaia-agent` | single-agent | feature (`F`) | gaia-worker | inherited | 1 | General-assistant GAIA solver: one agent researches a question with native web_search/fetch/bash/file tools and writes its FINAL ANSWER to answer.txt. The non-coding single-agent bench unit placed by the su-independent pool or the real Queen. |
 | `graduation` | base | mining-run (`GRD`) | — | inherited | 0 | Deterministic learning loop: count per-class clean auto-passes over the outcome rails and file an owner ratification report for any class that crosses the graduation threshold (the graduation tracker) on a cadence. Pure SQL, no agent; files an owner report — never auto-widens autoKinds. |
 | `gym` | base | gym-task (`G`) | gym-director | inherited | 6 | A meta-harness that optimizes another harness's blueprint: a gym-director drives generate-tasks → run-target-variant (sub-harness) → judge → propose → A/B-gate → accept (commit the target blueprint). The target declares its own gym rubric. |
+| `hier-lead-worker` | base | feature (`W`) | — | concurrency 4 | 2 | Hierarchical elected-lead team: one lead runs a coordination pass (plan/assign/strategize) over the team backlog, then workers execute under it. The in-team-coordinator pole between flat-distributed and the Queen. |
 | `hive` | base | hive-wake (`POT`) | queen | inherited | 2 | The Hive/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Queen role (two-plane coordination, steer-don't-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `queen` (the same role with the dial turned toward placement automation). |
 | `hive-eval` | base | hive-eval-run (`HEV`) | — | inherited | 0 | Monthly Hive-run evaluation: when the code SHA changed, run one owner-budget-capped SCORED generation of the seeded scenario corpus (whole-Hive runs graded on outcome quality / efficiency / speed by the un-gameable gate) — the acceptance yardstick for whether queen-execution / wave-dispatch / autonomy made the Hive better. |
 | `implement` | single-agent | improvement (`IMP`) | worker | inherited | 1 | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive. |
 | `iq-battery` | base | benchmark-run (`IQB`) | — | inherited | 0 | Monthly IQ-battery benchmark: when the code SHA changed, run one owner-budget-capped generation (solver/judge bees through the governed chokepoint) beside gen-0 in the beekeeper trend — the "is the system improving" yardstick. |
+| `memory-precision` | base | benchmark-run (`MPB`) | — | inherited | 0 | Weekly memory-precision monitoring: replay the frozen gold set against the production hybrid backend at the push floor and record FP@5 / R@10 / precision — so the injection floor (solved) is monitored, not benchmarked-once. |
 | `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver | inherited | 1 | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push. |
 | `migration` | base | migration-task (`M`) | migration-director | concurrency 4 | 4 | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change. |
 | `negative-space` | base | mining-run (`NSM`) | — | inherited | 0 | Deterministic learning loop: recompute the zero-hit-search demand map and file the capped missing-knowledge candidates (the negative-space miner) on a cadence. Pure-SQL, no agent — the simplest deterministic blueprint. |
 | `neologism` | base | mining-run (`NEO`) | — | inherited | 0 | Deterministic learning loop: mine coord traffic + the insights corpus for emergent recurring vocabulary with no corresponding primitive and file the capped abstraction-proposal candidates (the neologism miner) on a cadence. Pure SQL/fs, no agent. |
+| `pair` | base | feature (`W`) | — | concurrency 4 | 2 | Driver/navigator pair: two agents on one task — a driver writes, a navigator continuously reviews + corrects. The tightest real-time peer-correction loop in the topology study. |
 | `prompt-ablation` | base | ablation-run (`ABL`) | — | inherited | 0 | Prompt sedimentology: shadow-ablate ONE SU-playbook governance rule and replay the llm-testing `su` suite baseline-vs-ablated, recording the behavioral-delta evidence — on a weekly cadence. Never mutates a live prompt. |
 | `red-queen` | base | drill-run (`RQ`) | — | inherited | 0 | Red-queen vaccination: plant a known synthetic friction in the SANDBOX, detect + heal it with a real watchdog, and record MTTSH + the zero-leak assertion — one drill cycle per cadence tick. |
 | `regret` | base | mining-run (`RGT`) | — | inherited | 0 | Regret miner: select bad historical sessions, price candidate rule changes via a governed counterfactual replay, and file scored what-would-have-helped reports. |
@@ -49,6 +58,7 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (32 con
 | `sentinel` | single-agent | task (`SENTINEL`) | sentinel | inherited | 1 | Launch one fleet WATCHER (the `sentinel` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Queen steers, the sentinel watches. |
 | `transfer` | base | distillation-run (`TRF`) | — | inherited | 0 | Transfer harness: distill transferable lessons from the day's transcripts (admitted probationary), then student-transfer-test them via a governed replay battery to promote/demote/retire — on a nightly cadence. |
 | `vote` | base | decision (`VOTE`) | — | inherited | 2 | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human. |
+| `worker` | base | feature (`F`) | — | inherited | 0 | Operator-hosted coding worker: run one feature's chunk loop (plan → per-chunk acquire/implement/typecheck-gate → commit / replan / escalate) as a deterministic program step. The durable-program port of the subprocess chunk-loop worker. |
 
 ### Abstract (not directly runnable)
 
@@ -163,6 +173,56 @@ The release-gate deploy launch: the release-manager agent reviews the gathered d
 - **Spine decider:** `release-manager` (maxTurns 20)
 - **Roles (1):** `release-manager`
 
+### `dist-blackboard`
+
+Stigmergic distributed coordination: N peer workers self-claim from a shared queue (no Queen) and coordinate ONLY via a shared blackboard (work-item/scratchpad state) — no direct messaging.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `W`)
+- **Dispatch:** concurrency 4
+- **Roles (1):** `worker`
+
+### `dist-broadcast`
+
+Flat-distributed coordination: N peer workers self-claim from a shared queue (no Queen) and broadcast findings to peers. The fully-distributed pole of the central-vs-distributed study.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `W`)
+- **Dispatch:** concurrency 4
+- **Roles (1):** `worker`
+
+### `dist-peer-review`
+
+Flat-distributed coordination with a peer-review gate: N peer workers self-claim from a shared queue (no Queen); each result is reviewed by a nominated peer before submit.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `W`)
+- **Dispatch:** concurrency 4
+- **Roles (2):** `worker`, `reviewer`
+
+### `dist-repo-huddle`
+
+Distributed per-repo huddle: N peer workers self-claim (no Queen); same-repo agents form a group that shares repo-understanding + peer-reviews within the repo — coordination scoped to overlap.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `W`)
+- **Dispatch:** concurrency 4
+- **Roles (1):** `worker`
+
+### `ensemble-solve`
+
+Ensemble: N agents solve the same task independently (no coordination during), then a judge picks the best solution. The aggregation-after control arm for the coordination-topology study.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `W`)
+- **Dispatch:** concurrency 4
+- **Roles (2):** `solver`, `judge`
+
 ### `external-bench`
 
 The full Papercusp arm of the impartial benchmark suite: the complete coding spine + coordination substrate run autonomously to DONE over one cloned public benchmark task, under an iso-budget cap, graded by the benchmark's OWN external harness. The spine-ON pole of the `coding-solo` causal-isolation pairing (arm 'papercusp'); we neither author nor grade. Spun by the `instantiateBenchHarness` port (./run-loop.ts).
@@ -177,6 +237,16 @@ Deterministic learning loop: embed recent agent sessions into behavioral vectors
 - **Extends:** `base`
 - **Version:** 0.1.0
 - **Work item:** `scan-run` (id prefix `EKG`)
+
+### `gaia-agent`
+
+General-assistant GAIA solver: one agent researches a question with native web_search/fetch/bash/file tools and writes its FINAL ANSWER to answer.txt. The non-coding single-agent bench unit placed by the su-independent pool or the real Queen.
+
+- **Extends:** `single-agent`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `F`)
+- **Spine decider:** `gaia-worker` (maxTurns 60)
+- **Roles (1):** `gaia-worker`
 
 ### `generic-hive`
 
@@ -204,6 +274,16 @@ A meta-harness that optimizes another harness's blueprint: a gym-director drives
 - **Planner:** inline
 - **Finalize gates:** done: committer
 - **Roles (6):** `gym-director`, `task-generator`, `variant-runner`, `judge`, `proposer`, `committer`
+
+### `hier-lead-worker`
+
+Hierarchical elected-lead team: one lead runs a coordination pass (plan/assign/strategize) over the team backlog, then workers execute under it. The in-team-coordinator pole between flat-distributed and the Queen.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `W`)
+- **Dispatch:** concurrency 4
+- **Roles (2):** `lead`, `worker`
 
 ### `hive`
 
@@ -242,6 +322,14 @@ Monthly IQ-battery benchmark: when the code SHA changed, run one owner-budget-ca
 - **Version:** 0.1.0
 - **Work item:** `benchmark-run` (id prefix `IQB`)
 
+### `memory-precision`
+
+Weekly memory-precision monitoring: replay the frozen gold set against the production hybrid backend at the push floor and record FP@5 / R@10 / precision — so the injection floor (solved) is monitored, not benchmarked-once.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `benchmark-run` (id prefix `MPB`)
+
 ### `merge-resolution`
 
 Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push.
@@ -279,6 +367,16 @@ Deterministic learning loop: mine coord traffic + the insights corpus for emerge
 - **Extends:** `base`
 - **Version:** 0.1.0
 - **Work item:** `mining-run` (id prefix `NEO`)
+
+### `pair`
+
+Driver/navigator pair: two agents on one task — a driver writes, a navigator continuously reviews + corrects. The tightest real-time peer-correction loop in the topology study.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `W`)
+- **Dispatch:** concurrency 4
+- **Roles (2):** `driver`, `navigator`
 
 ### `prompt-ablation`
 
@@ -389,3 +487,11 @@ Decide between options via a diverse-lens, confidence-weighted vote: one voter p
 - **Version:** 0.1.0
 - **Work item:** `decision` (id prefix `VOTE`)
 - **Roles (2):** `voter`, `advocate`
+
+### `worker`
+
+Operator-hosted coding worker: run one feature's chunk loop (plan → per-chunk acquire/implement/typecheck-gate → commit / replan / escalate) as a deterministic program step. The durable-program port of the subprocess chunk-loop worker.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `feature` (id prefix `F`)

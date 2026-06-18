@@ -1047,7 +1047,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
     <>
       <Modal
         open={open}
-        onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(true); }}
+        onOpenChange={(v) => { if (!v) void handleClose(); else void onOpenChange(true); }}
         title={step === 'share-offer' && createdSlug ? `${t('pot')} created` : `Add a ${t('pot')}`}
         contentStyle={{
           width: 'min(520px, 96vw)',
@@ -1074,12 +1074,15 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
             // selection carries over; otherwise the headline new-hive default.
             // The search panel threads this into the create form it opens (P-009).
             initialMode={mode === 'into-hive' && hiveScope ? 'into-hive' : 'new-hive'}
-            onCreated={(slug, opts) => {
+            onCreated={async (slug, opts) => {
               // The create form already showed its own success/publish summary
               // (and a hive auto-publishes per visibility) — skip the share offer.
-              if (opts?.hive) onCreated?.(slug, { hive: opts.hive });
-              else onCreated?.(slug);
-              handleClose();
+              // AWAIT the parent focus-write, THEN close: serialized so the
+              // ?slug focus-write and the ?create=false close-write don't race
+              // (custom-adapter same-tick clobber → stuck-open modal).
+              if (opts?.hive) await onCreated?.(slug, { hive: opts.hive });
+              else await onCreated?.(slug);
+              await handleClose();
             }}
           />
         )}

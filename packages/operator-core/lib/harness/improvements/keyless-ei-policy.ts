@@ -80,8 +80,11 @@ export interface KeylessBacklogSummary {
   fresh: number;
   aging: number;
   stale: number;
-  /** Stale AND unassigned — the genuinely-accreting, no-owner pile. */
+  /** Stale (≥30d) AND unassigned — the genuinely-accreting, no-owner pile. */
   staleUnassigned: number;
+  /** Aging-or-older (≥7d) AND unassigned — the un-owned pile the review digest
+   *  surfaces NOW (staleUnassigned is 0 while the corpus is young). */
+  agingUnassigned: number;
   /** Age of the oldest sampled keyless EI, in days (0 when none). */
   oldestDays: number;
   /** Counts by severity + source, so a noise concentration is visible. */
@@ -105,6 +108,7 @@ export function summarizeKeylessBacklog(
   let aging = 0;
   let stale = 0;
   let staleUnassigned = 0;
+  let agingUnassigned = 0;
   let oldestMs = nowMs;
   for (const r of rows) {
     const band = keylessAgeBandOf(nowMs - r.createdAtMs, opts);
@@ -114,6 +118,7 @@ export function summarizeKeylessBacklog(
       stale++;
       if (!r.assignee) staleUnassigned++;
     }
+    if (band !== 'fresh' && !r.assignee) agingUnassigned++;
     bySeverity[r.severity] = (bySeverity[r.severity] ?? 0) + 1;
     bySource[r.source] = (bySource[r.source] ?? 0) + 1;
     if (r.createdAtMs < oldestMs) oldestMs = r.createdAtMs;
@@ -125,6 +130,7 @@ export function summarizeKeylessBacklog(
     aging,
     stale,
     staleUnassigned,
+    agingUnassigned,
     oldestDays: rows.length === 0 ? 0 : Math.floor((nowMs - oldestMs) / 86_400_000),
     bySeverity,
     bySource,
@@ -147,24 +153,29 @@ export interface KeylessReviewItem {
 }
 
 /**
- * Pure: the human-review queue — STALE keyless EIs (the un-managed accretion),
- * oldest-first, capped. Each carries a disposition hint:
- *   - unassigned stale  → 'claim-or-close'   (no owner; a human should claim or close it)
- *   - assigned stale     → 'follow-up-owner'  (stale despite an owner — nudge or reassign)
- * A repeating-signal item (source suggests recurrence) is flagged 'convert-to-keyed'
- * so it can re-enter the dedup/aging/auto-close machinery.
+ * Pure: the human-review queue — keyless EIs at or past the review FLOOR (the
+ * un-managed accretion worth triaging), oldest-first, capped. Each carries a
+ * disposition hint:
+ *   - unassigned → 'claim-or-close'  (no owner; a human should claim or close it)
+ *   - assigned    → 'follow-up-owner' (stale despite an owner — nudge or reassign)
+ *
+ * The floor DEFAULTS to the AGING threshold (7d), NOT stale (30d): validated against
+ * live data the keyless corpus is young (weeks old) — a 30d floor leaves the queue
+ * EMPTY while ~95 un-owned aging items accrete. Skipping only genuinely-fresh (<7d)
+ * items surfaces the real pile now; truly-stale items rise to the top as they age
+ * (the queue is oldest-first). Override `reviewFloorMs` to tune.
  */
 export function planKeylessReview(
   rows: readonly KeylessIssueRow[],
   nowMs: number,
-  opts: { agingMs?: number; staleMs?: number; limit?: number } = {},
+  opts: { agingMs?: number; staleMs?: number; limit?: number; reviewFloorMs?: number } = {},
 ): KeylessReviewItem[] {
-  const staleMs = opts.staleMs ?? KEYLESS_STALE_MS;
+  const reviewFloorMs = opts.reviewFloorMs ?? opts.agingMs ?? KEYLESS_AGING_MS;
   const limit = opts.limit ?? DEFAULT_KEYLESS_REVIEW_LIMIT;
   const out: KeylessReviewItem[] = [];
   for (const r of rows) {
     const ageMs = nowMs - r.createdAtMs;
-    if (ageMs < staleMs) continue;
+    if (ageMs < reviewFloorMs) continue;
     const band = keylessAgeBandOf(ageMs, opts);
     const disposition: KeylessDisposition = r.assignee ? 'follow-up-owner' : 'claim-or-close';
     out.push({
@@ -253,6 +264,7 @@ export async function readOpenKeylessIssues(limit = 500): Promise<OpenKeylessIss
 /** One-line policy statement, surfaced by the digest tool + the watchdog-status headline. */
 export const KEYLESS_EI_POLICY =
   'Keyless EIs (no payload.watchdogKey — manual/non-watchdog) are AGE-BANDED and surfaced ' +
-  'for HUMAN REVIEW, never auto-closed (no windowed evidence to clear). Stale + unassigned ' +
-  'ones are the un-managed accretion: claim them, close them if obsolete, or convert a ' +
-  'recurring one to a keyed form so it re-enters dedup/aging/auto-close.';
+  'for HUMAN REVIEW, never auto-closed (no windowed evidence to clear). The review queue is ' +
+  'aging-or-older (≥7d, default) + unassigned — the un-managed accretion: claim them, close ' +
+  'them if obsolete, or convert a recurring one to a keyed form so it re-enters ' +
+  'dedup/aging/auto-close.';

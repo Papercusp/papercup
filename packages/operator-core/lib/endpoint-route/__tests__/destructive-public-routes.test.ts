@@ -48,6 +48,9 @@ const setFlagOverride = vi.fn(async (): Promise<{ ok: boolean; reason?: string }
 vi.mock('@papercusp/flags/server', () => ({
   setFlag: (...a: unknown[]) => setFlag(...(a as [])),
   setFlagOverride: (...a: unknown[]) => setFlagOverride(...(a as [])),
+  // The 'production' preset clears runtime overrides (preset.ts, 2026-06-18). The
+  // handler awaits it; the mock must provide it or the production case 500s.
+  clearAllFlagOverrides: () => Promise.resolve([]),
 }));
 const publishFlagChange = vi.fn();
 const reinitFlagBackend = vi.fn();

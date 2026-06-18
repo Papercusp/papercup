@@ -56,6 +56,7 @@ describe('summarizeKeylessBacklog (P-014)', () => {
     expect(s.aging).toBe(1);
     expect(s.stale).toBe(2);
     expect(s.staleUnassigned).toBe(1); // EI-3 only — EI-4 has an owner
+    expect(s.agingUnassigned).toBe(2); // EI-2 (aging) + EI-3 (stale), both unassigned; EI-4 owned
     expect(s.oldestDays).toBe(50);
     expect(s.bySeverity).toEqual({ minor: 3, major: 1 });
     expect(s.bySource).toEqual({ manual: 3, capture: 1 });
@@ -68,7 +69,7 @@ describe('summarizeKeylessBacklog (P-014)', () => {
 });
 
 describe('planKeylessReview (P-014)', () => {
-  it('returns only STALE items, oldest-first, with a disposition per ownership', () => {
+  it('surfaces items at/after the aging floor (skips fresh), oldest-first, disposition per ownership', () => {
     const rows = [
       row({ id: 'EI-fresh', ageDays: 2 }),
       row({ id: 'EI-aging', ageDays: 14 }),
@@ -76,10 +77,18 @@ describe('planKeylessReview (P-014)', () => {
       row({ id: 'EI-stale-owned', ageDays: 60, assignee: 's-bob' }),
     ];
     const review = planKeylessReview(rows, NOW);
-    expect(review.map((r) => r.id)).toEqual(['EI-stale-owned', 'EI-stale-unowned']); // oldest-first, stale only
+    // Floor defaults to aging (7d): fresh excluded, aging + stale included, oldest-first.
+    expect(review.map((r) => r.id)).toEqual(['EI-stale-owned', 'EI-stale-unowned', 'EI-aging']);
     expect(review.find((r) => r.id === 'EI-stale-unowned')!.disposition).toBe('claim-or-close');
     expect(review.find((r) => r.id === 'EI-stale-owned')!.disposition).toBe('follow-up-owner');
-    expect(review.every((r) => r.band === 'stale')).toBe(true);
+    expect(review.find((r) => r.id === 'EI-aging')!.band).toBe('aging');
+    expect(review.find((r) => r.id === 'EI-stale-unowned')!.band).toBe('stale');
+  });
+
+  it('honors a custom reviewFloorMs (stale-only)', () => {
+    const rows = [row({ id: 'EI-aging', ageDays: 14 }), row({ id: 'EI-stale', ageDays: 40 })];
+    const review = planKeylessReview(rows, NOW, { reviewFloorMs: KEYLESS_STALE_MS });
+    expect(review.map((r) => r.id)).toEqual(['EI-stale']); // the aging item is below the stale floor
   });
 
   it('caps the queue', () => {
@@ -87,7 +96,7 @@ describe('planKeylessReview (P-014)', () => {
     expect(planKeylessReview(rows, NOW, { limit: 10 })).toHaveLength(10);
   });
 
-  it('returns nothing when no item is stale', () => {
-    expect(planKeylessReview([row({ id: 'EI-1', ageDays: 5 }), row({ id: 'EI-2', ageDays: 20 })], NOW)).toEqual([]);
+  it('returns nothing when every item is fresh (below the aging floor)', () => {
+    expect(planKeylessReview([row({ id: 'EI-1', ageDays: 2 }), row({ id: 'EI-2', ageDays: 5 })], NOW)).toEqual([]);
   });
 });
