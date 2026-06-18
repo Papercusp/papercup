@@ -238,6 +238,22 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     if (!workspaceId && sidForLookup) {
       workspaceId = (await workspaceForCoordOwner(sidForLookup)) ?? '';
     }
+    // scoped-superuser-workspace-clamp-2026-06-18 (P-006 / D-004), flag-gated:
+    // safe-by-default. When the clamp flag is ON, a superuser session must resolve
+    // to a CONCRETE workspace (which the existing effectiveDispatchWorkspace then
+    // confines — a concrete workspaceId ignores any per-call `workspace` arg) OR
+    // explicitly opt into unscoped god-mode. An UNRESOLVED workspace no longer
+    // SILENTLY becomes '*' (the root of the demonstrated cross-workspace reach) —
+    // it is rejected, so psu passes a workspace, or opts in via ?workspace=* /
+    // ?all_workspaces=1 for deliberate cross-workspace admin. Flag OFF → unchanged
+    // (the `workspaceId || '*'` fallback below), byte-identical.
+    if (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system')) {
+      const optedUnscoped =
+        workspaceId === '*' || url.searchParams.get('all_workspaces') === '1';
+      if (!workspaceId && !optedUnscoped) {
+        return { kind: 'failed', reason: 'scoped_superuser_workspace_unresolved' };
+      }
+    }
     // Profile: header (OMP) > URL param (claude env-expanded / install-baked).
     const headerProfile = (headers.get('x-papercusp-profile') ?? '').trim();
     const profileParam = headerProfile || url.searchParams.get('profile');
