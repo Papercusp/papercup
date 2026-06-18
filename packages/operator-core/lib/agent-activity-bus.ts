@@ -18,6 +18,7 @@
  */
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { hubListen, listenHubEnabled } from './pg-listen-hub';
 
 /** A wake handler — invoked once per notification with the notified owner_id (may be
  *  empty). The handler queries new rows itself (by its own cursor + filter). */
@@ -26,6 +27,8 @@ type Handler = (ownerId: string) => void;
 const handlers = new Set<Handler>();
 let started = false;
 let listenerSql: postgres.Sql | null = null;
+/** Hub unsubscribe (set only when PAPERCUSP_LISTEN_HUB=1 routes us onto the shared connection). */
+let hubUnsub: (() => void) | null = null;
 
 /** Register a wake handler; lazily starts the single LISTEN. Returns unsubscribe. */
 export function onAgentActivity(handler: Handler): () => void {
@@ -39,14 +42,22 @@ export function onAgentActivity(handler: Handler): () => void {
 
 /** Close the listener if there are no handlers left (cleanup to avoid listener leak). */
 async function maybeCloseListener(): Promise<void> {
-  if (handlers.size === 0 && listenerSql && started) {
-    try {
-      await listenerSql.end({ timeout: 5 }).catch(() => {});
-    } catch {
-      // Ignore errors during close
+  if (handlers.size === 0 && started) {
+    if (hubUnsub) {
+      hubUnsub();
+      hubUnsub = null;
+      started = false;
+      return;
     }
-    listenerSql = null;
-    started = false;
+    if (listenerSql) {
+      try {
+        await listenerSql.end({ timeout: 5 }).catch(() => {});
+      } catch {
+        // Ignore errors during close
+      }
+      listenerSql = null;
+      started = false;
+    }
   }
 }
 
@@ -71,19 +82,29 @@ async function ensureStarted(): Promise<void> {
   if (started) return;
   started = true;
   try {
-    listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
-    await listenerSql.listen('agent_activity', (payload) => {
+    const onNotify = (payload: string) => {
       if (handlers.size === 0) return;
       fanout(ownerFromPayload(payload));
-    });
+    };
+    if (listenHubEnabled()) {
+      hubUnsub = await hubListen('agent_activity', onNotify);
+    } else {
+      listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
+      await listenerSql.listen('agent_activity', onNotify);
+    }
   } catch (err) {
     console.error('[agent-activity-bus] failed to start:', err);
     started = false;
     listenerSql = null;
+    hubUnsub = null;
   }
 }
 
 export async function _stopForTests(): Promise<void> {
+  if (hubUnsub) {
+    hubUnsub();
+    hubUnsub = null;
+  }
   if (listenerSql) {
     await listenerSql.end({ timeout: 5 }).catch(() => {});
   }

@@ -15,6 +15,7 @@
 
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { hubListen, listenHubEnabled } from './pg-listen-hub';
 
 export interface PendingEventNotification {
   id: string;
@@ -30,6 +31,8 @@ type Handler = (event: PendingEventNotification) => void;
 const handlers = new Set<Handler>();
 let started = false;
 let listenerSql: postgres.Sql | null = null;
+/** Hub unsubscribe (set only when PAPERCUSP_LISTEN_HUB=1 routes us onto the shared connection). */
+let hubUnsub: (() => void) | null = null;
 
 function adminUrl(): string {
   return getHarnessAdminUrl();
@@ -46,14 +49,39 @@ export function onPendingEventInserted(handler: Handler): () => void {
 
 /** Close the listener if there are no handlers left (cleanup to avoid listener leak). */
 async function maybeCloseListener(): Promise<void> {
-  if (handlers.size === 0 && listenerSql && started) {
-    try {
-      await listenerSql.end({ timeout: 5 }).catch(() => {});
-    } catch {
-      // Ignore errors during close
+  if (handlers.size === 0 && started) {
+    if (hubUnsub) {
+      hubUnsub();
+      hubUnsub = null;
+      started = false;
+      return;
     }
-    listenerSql = null;
-    started = false;
+    if (listenerSql) {
+      try {
+        await listenerSql.end({ timeout: 5 }).catch(() => {});
+      } catch {
+        // Ignore errors during close
+      }
+      listenerSql = null;
+      started = false;
+    }
+  }
+}
+
+function onNotify(payload: string): void {
+  try {
+    const evt = JSON.parse(payload) as PendingEventNotification;
+    for (const h of handlers) {
+      try {
+        h(evt);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[pending_events_listener] handler threw:', err);
+      }
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[pending_events_listener] bad payload:', err);
   }
 }
 
@@ -61,35 +89,29 @@ async function ensureStarted(): Promise<void> {
   if (started) return;
   started = true;
   try {
-    listenerSql = postgres(adminUrl(), {
-      onnotice: () => {},
-      max: 1,
-    });
-    await listenerSql.listen('pending_events_inserted', (payload) => {
-      try {
-        const evt = JSON.parse(payload) as PendingEventNotification;
-        for (const h of handlers) {
-          try {
-            h(evt);
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.error('[pending_events_listener] handler threw:', err);
-          }
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('[pending_events_listener] bad payload:', err);
-      }
-    });
+    if (listenHubEnabled()) {
+      hubUnsub = await hubListen('pending_events_inserted', onNotify);
+    } else {
+      listenerSql = postgres(adminUrl(), {
+        onnotice: () => {},
+        max: 1,
+      });
+      await listenerSql.listen('pending_events_inserted', onNotify);
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[pending_events_listener] failed to start:', err);
     started = false;
     listenerSql = null;
+    hubUnsub = null;
   }
 }
 
 export async function _stopForTests(): Promise<void> {
+  if (hubUnsub) {
+    hubUnsub();
+    hubUnsub = null;
+  }
   if (listenerSql) {
     await listenerSql.end({ timeout: 5 }).catch(() => {});
   }

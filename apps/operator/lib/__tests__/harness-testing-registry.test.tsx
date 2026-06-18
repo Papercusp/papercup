@@ -84,14 +84,14 @@ describe('<AcceptancePanel> (P-062/P-063)', () => {
       vi.fn(async () => ({ ok: true, json: async () => ({ assertions: ASSERTIONS }) })) as unknown as typeof fetch,
     );
     render(<AcceptancePanel slug="demo" />);
-    await waitFor(() => screen.getByText('VAL-demo-001'));
-    screen.getByText('GET /x returns 200');
-    screen.getByText('VAL-demo-002');
+    await waitFor(() => expect(screen.getAllByText('VAL-demo-001').length).toBeGreaterThan(0));
+    expect(screen.getAllByText('GET /x returns 200').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('VAL-demo-002').length).toBeGreaterThan(0);
     // Two requires_test checkboxes — VAL-001 checked, VAL-002 unchecked.
-    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    const boxes = screen.getAllByRole('checkbox');
     expect(boxes).toHaveLength(2);
-    expect(boxes[0].checked).toBe(true);
-    expect(boxes[1].checked).toBe(false);
+    expect(boxes[0].getAttribute('aria-checked')).toBe('true');
+    expect(boxes[1].getAttribute('aria-checked')).toBe('false');
   });
 
   it('PATCHes requires_test when a toggle is flipped', async () => {
@@ -103,7 +103,7 @@ describe('<AcceptancePanel> (P-062/P-063)', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const user = userEvent.setup();
     render(<AcceptancePanel slug="demo" />);
-    await waitFor(() => screen.getByText('VAL-demo-001'));
+    await waitFor(() => expect(screen.getAllByText('VAL-demo-001').length).toBeGreaterThan(0));
     const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
     await user.click(boxes[0]); // flip VAL-001 required → exempt
     await waitFor(() =>

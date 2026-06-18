@@ -33,6 +33,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { hubListen, listenHubEnabled } from './pg-listen-hub';
 
 /** A wake handler — invoked once when a human-relevant coord row lands. */
 type Handler = () => void;
@@ -42,6 +43,8 @@ const WS = DEFAULT_COORD_WORKSPACE;
 const handlers = new Set<Handler>();
 let started = false;
 let listenerSql: postgres.Sql | null = null;
+/** Hub unsubscribe (set only when PAPERCUSP_LISTEN_HUB=1 routes us onto the shared connection). */
+let hubUnsub: (() => void) | null = null;
 /** Highest `coord_event_log.id` already considered (peek watermark). */
 let cursor = 0;
 /** Re-entrancy guard so overlapping NOTIFYs collapse into one peek pass. */
@@ -108,15 +111,24 @@ export function onCoordInbox(handler: Handler): () => void {
 
 /** Close the listener if there are no handlers left (cleanup to avoid listener leak). */
 async function maybeCloseListener(): Promise<void> {
-  if (handlers.size === 0 && listenerSql && started) {
-    try {
-      await listenerSql.end({ timeout: 5 }).catch(() => {});
-    } catch {
-      // Ignore errors during close
+  if (handlers.size === 0 && started) {
+    if (hubUnsub) {
+      hubUnsub();
+      hubUnsub = null;
+      started = false;
+      startPromise = null;
+      return;
     }
-    listenerSql = null;
-    started = false;
-    startPromise = null;
+    if (listenerSql) {
+      try {
+        await listenerSql.end({ timeout: 5 }).catch(() => {});
+      } catch {
+        // Ignore errors during close
+      }
+      listenerSql = null;
+      started = false;
+      startPromise = null;
+    }
   }
 }
 
@@ -193,15 +205,25 @@ async function ensureStarted(): Promise<void> {
     // opening a second LISTEN. `started` flips true only once the LISTEN is live.
     startPromise = (async () => {
       await initCursor();
-      listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
-      await listenerSql.listen('coord_inbox', () => {
-        void onNotify();
-      });
+      // The peek QUERY runs on getOrgPg().sql (see initCursor/peekHumanRelevant),
+      // never on this connection — so when the hub is on, the hub connection is
+      // LISTEN-only, exactly as the hub requires.
+      if (listenHubEnabled()) {
+        hubUnsub = await hubListen('coord_inbox', () => {
+          void onNotify();
+        });
+      } else {
+        listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
+        await listenerSql.listen('coord_inbox', () => {
+          void onNotify();
+        });
+      }
       started = true;
     })().catch((err) => {
       console.error('[coord-inbox-bus] failed to start:', err);
       started = false;
       listenerSql = null;
+      hubUnsub = null;
       startPromise = null; // allow a later retry
     });
   }
@@ -209,6 +231,10 @@ async function ensureStarted(): Promise<void> {
 }
 
 export async function _stopForTests(): Promise<void> {
+  if (hubUnsub) {
+    hubUnsub();
+    hubUnsub = null;
+  }
   if (listenerSql) {
     await listenerSql.end({ timeout: 5 }).catch(() => {});
   }

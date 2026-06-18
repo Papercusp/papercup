@@ -93,7 +93,8 @@ export function ProvisionalOwnerExplainer(props: ProvisionalOwnerExplainerProps)
         <p>
           Because you're the first contributor, you're the harness's{' '}
           <strong>provisional owner</strong>. Your device's pubkey is
-          recorded against <code>@{ownerLogin}</code> immediately.
+          recorded against <code>@{ownerLogin}</code> for <code>{harnessSlug}</code>{' '}
+          immediately.
         </p>
         <p style={{ marginTop: 8 }}>
           When you publish to Cupboard, this provisional ownership becomes

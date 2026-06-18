@@ -1,0 +1,103 @@
+/**
+ * pg-listen-hub — ONE shared LISTEN connection for the homogeneous wake buses.
+ *
+ * C1-3 of backend-connection-scaling-2026-06-17. Today each of the four
+ * `postgres().listen()` buses (agent-activity, fleet-assignment, pending-events,
+ * coord-inbox) opens its OWN dedicated `postgres(getHarnessAdminUrl(), {max:1})`
+ * connection — four long-lived PG backends that never close. postgres-js
+ * multiplexes MULTIPLE `.listen(channel, cb)` calls on ONE `sql` instance onto a
+ * single backend (verified), so routing them all through one shared instance
+ * collapses 4 backends → 1.
+ *
+ * GATED behind `PAPERCUSP_LISTEN_HUB=1` (default OFF). Wake delivery is
+ * fleet-critical, so the default keeps every bus on its own connection
+ * (byte-identical to the historical behavior, zero risk); the flag lets the
+ * shared hub be reviewed and enabled deliberately. See D-002 @
+ * backend-connection-scaling-2026-06-17.
+ *
+ * Host-only — opens a long-lived PG connection, so only the Hono host imports
+ * the buses that import this (never a browser/Vite chunk). LISTEN ONLY: a bus
+ * that also runs a query (coord-inbox's peek) routes that query through its own
+ * client (getOrgPg().sql), not the hub connection.
+ */
+import postgres from 'postgres';
+import { getHarnessAdminUrl } from './embedded-pg-discovery';
+
+/** Whether the shared listen hub is enabled (default OFF). */
+export function listenHubEnabled(): boolean {
+  return process.env.PAPERCUSP_LISTEN_HUB === '1';
+}
+
+/** The single shared LISTEN connection (lazily created, nulled on last unsub). */
+let sql: postgres.Sql | null = null;
+/** Live subscription count — `.end()`s + nulls `sql` when it returns to zero. */
+let subCount = 0;
+
+function ensureSql(): postgres.Sql {
+  if (!sql) {
+    sql = postgres(getHarnessAdminUrl(), {
+      onnotice: () => {},
+      max: 1,
+      idle_timeout: 0,
+      connection: {
+        application_name: `pcusp:listen-hub:p${process.pid}`.slice(0, 63),
+      },
+    });
+  }
+  return sql;
+}
+
+/**
+ * Subscribe a callback to `channel` on the SHARED hub connection. Ref-counts
+ * subscriptions; the FIRST subscription lazily opens the connection and the LAST
+ * unsubscribe `.end()`s + nulls it. Returns an unsubscribe fn (idempotent).
+ *
+ * Multiple `hubListen` calls — to the same or different channels — ride the one
+ * backend (postgres-js multiplexes `.listen()` over a single connection).
+ */
+export async function hubListen(
+  channel: string,
+  cb: (payload: string) => void,
+): Promise<() => void> {
+  const instance = ensureSql();
+  subCount++;
+  let unlisten: (() => Promise<void>) | null = null;
+  try {
+    // postgres-js .listen() resolves with a meta object carrying .unlisten().
+    const handle = await instance.listen(channel, cb);
+    unlisten = handle.unlisten;
+  } catch (err) {
+    // Failed to establish this subscription — undo the ref-count bump and, if we
+    // were the only would-be subscriber, tear the just-opened connection down.
+    subCount--;
+    if (subCount === 0 && sql) {
+      const dead = sql;
+      sql = null;
+      await dead.end({ timeout: 5 }).catch(() => {});
+    }
+    throw err;
+  }
+
+  let unsubscribed = false;
+  return () => {
+    if (unsubscribed) return;
+    unsubscribed = true;
+    // Best-effort UNLISTEN for this channel (don't block the caller on it).
+    if (unlisten) void unlisten().catch(() => {});
+    subCount--;
+    if (subCount === 0 && sql) {
+      const dead = sql;
+      sql = null;
+      void dead.end({ timeout: 5 }).catch(() => {});
+    }
+  };
+}
+
+/** Test-only — force-close the shared connection and reset the ref-count. */
+export async function _stopHubForTests(): Promise<void> {
+  if (sql) {
+    await sql.end({ timeout: 5 }).catch(() => {});
+  }
+  sql = null;
+  subCount = 0;
+}

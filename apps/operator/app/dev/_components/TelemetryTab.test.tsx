@@ -160,7 +160,7 @@ describe('<TelemetryTab /> render states + transport filter', () => {
     ));
     render(<TelemetryTab workspaceIds={null} onRerun={onRerun} />);
     await screen.findByTestId('grid');
-    fireEvent.click(screen.getByTitle('Open in API tab with this tool selected'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open in API tab with this tool selected' }));
     expect(onRerun).toHaveBeenCalledWith({ toolName: 'tool-x', workspace: 'ws-1' });
   });
 });

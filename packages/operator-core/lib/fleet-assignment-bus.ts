@@ -21,6 +21,7 @@
  */
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { hubListen, listenHubEnabled } from './pg-listen-hub';
 
 export interface FleetAssignmentChange {
   workspaceId: string;
@@ -37,6 +38,8 @@ type Handler = (change: FleetAssignmentChange) => void;
 const handlers = new Set<Handler>();
 let started = false;
 let listenerSql: postgres.Sql | null = null;
+/** Hub unsubscribe (set only when PAPERCUSP_LISTEN_HUB=1 routes us onto the shared connection). */
+let hubUnsub: (() => void) | null = null;
 
 /** Register a wake handler; lazily starts the single LISTEN. Returns unsubscribe. */
 export function onFleetAssignmentChange(handler: Handler): () => void {
@@ -50,14 +53,22 @@ export function onFleetAssignmentChange(handler: Handler): () => void {
 
 /** Close the listener if there are no handlers left (cleanup to avoid listener leak). */
 async function maybeCloseListener(): Promise<void> {
-  if (handlers.size === 0 && listenerSql && started) {
-    try {
-      await listenerSql.end({ timeout: 5 }).catch(() => {});
-    } catch {
-      // Ignore errors during close
+  if (handlers.size === 0 && started) {
+    if (hubUnsub) {
+      hubUnsub();
+      hubUnsub = null;
+      started = false;
+      return;
     }
-    listenerSql = null;
-    started = false;
+    if (listenerSql) {
+      try {
+        await listenerSql.end({ timeout: 5 }).catch(() => {});
+      } catch {
+        // Ignore errors during close
+      }
+      listenerSql = null;
+      started = false;
+    }
   }
 }
 
@@ -81,19 +92,29 @@ async function ensureStarted(): Promise<void> {
   if (started) return;
   started = true;
   try {
-    listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
-    await listenerSql.listen('fleet_assignment', (payload) => {
+    const onNotify = (payload: string) => {
       if (handlers.size === 0) return;
       fanout(parseFleetAssignmentPayload(payload));
-    });
+    };
+    if (listenHubEnabled()) {
+      hubUnsub = await hubListen('fleet_assignment', onNotify);
+    } else {
+      listenerSql = postgres(getHarnessAdminUrl(), { onnotice: () => {}, max: 1 });
+      await listenerSql.listen('fleet_assignment', onNotify);
+    }
   } catch (err) {
     console.error('[fleet-assignment-bus] failed to start:', err);
     started = false;
     listenerSql = null;
+    hubUnsub = null;
   }
 }
 
 export async function _stopForTests(): Promise<void> {
+  if (hubUnsub) {
+    hubUnsub();
+    hubUnsub = null;
+  }
   if (listenerSql) {
     await listenerSql.end({ timeout: 5 }).catch(() => {});
   }

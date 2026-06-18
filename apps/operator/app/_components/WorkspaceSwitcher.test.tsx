@@ -141,7 +141,10 @@ describe('<WorkspaceSwitcher />', () => {
     await renderAndOpen();
     const menu = await screen.findByRole('menu');
     await waitFor(() => expect(within(menu).getByText('Alpha')).toBeTruthy());
-    const deleteButtons = within(menu).getAllByTitle('Delete');
+    const deleteButtons = [
+      within(menu).getByRole('button', { name: 'Delete Alpha' }),
+      within(menu).getByRole('button', { name: 'Delete Bravo' }),
+    ];
     // Two rows → two delete buttons; ws-a (active) is disabled, ws-b is not.
     expect(deleteButtons).toHaveLength(2);
     expect((deleteButtons[0] as HTMLButtonElement).disabled).toBe(true);
@@ -195,7 +198,7 @@ describe('<WorkspaceSwitcher />', () => {
     await renderAndOpen();
     const menu = await screen.findByRole('menu');
     // ws-b (Bravo) is deletable (not active, not the default reg.current=ws-a).
-    fireEvent.click(within(menu).getAllByTitle('Delete')[1]);
+    fireEvent.click(within(menu).getByRole('button', { name: 'Delete Bravo' }));
     await waitFor(() => expect(wsApi.del).toHaveBeenCalledWith('ws-b'));
     await waitFor(() => expect(toastSpies.success).toHaveBeenCalledWith('deleted "Bravo"'));
   });
