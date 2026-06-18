@@ -3,12 +3,14 @@
  * (decentralized-dispatch-scaling-2026-06-08 P-004 / D-002, on D-007's recommended
  * HYBRID — authority-arbitrated exactly-once, fail-open to reconcile).
  *
- * DEFAULT OFF. `PAPERCUSP_WORKITEM_CLAIM_LEASE=1` is the OWNER'S RATIFICATION SWITCH:
- * until D-007 (P-001) is settled, this stays off and `work_items:claim_next` / `:claim`
- * behave EXACTLY as before (a local `SELECT … FOR UPDATE SKIP LOCKED` on one PG). The
- * owner flips it on to activate the cross-Swarm Hive-authority arbitration. (Env-gated
- * rather than a PostHog flag because it is a synchronous server-side dispatch decision
- * read deep in the claim path; promote to a PostHog flag if a UI toggle is wanted.)
+ * DEFAULT OFF. The `WORKITEM_CLAIM_LEASE` FLAG is the OWNER'S RATIFICATION SWITCH:
+ * until the recovery layer is exercised this stays off and `work_items:claim_next` / `:claim`
+ * behave EXACTLY as before (a local `SELECT … FOR UPDATE SKIP LOCKED` on one PG). The owner
+ * flips it on (runtime, via /admin/features) to activate the cross-Swarm Hive-authority
+ * arbitration. Migrated off the ad-hoc `PAPERCUSP_WORKITEM_CLAIM_LEASE` env gate to a FLAG
+ * (work-queue-stuck-item-recovery P-012 / D-008); because the decision is read SYNC deep in
+ * the claim path, the flag is held in a SYNC-cached boolean refreshed on boot + every flag
+ * change (the lexicon/issues-engineer pattern). Listed in KNOWN_DARK_FLAGS.
  *
  * When ON: after the local claim sets `taken_by`, the claim tool acquires the Hive lease
  * through the per-Hive authority (the swarm router installed at boot — see
@@ -19,15 +21,35 @@
  * partitioned the acquire fails OPEN to a local advisory lease and
  * `work-item-claim-reconcile.ts` (P-005) resolves any double-claim on reconvergence.
  */
+import { FLAGS } from '@papercusp/flags';
+import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
+import { systemDistinctId } from './flag-distinct-id';
 import { hiveHomeSlugForHarness } from './hive-federation';
 import { acquireClaim } from './work-item-claims';
 import { getBootedHarness } from './sync/hyperbee/boot-all';
 import { resolveMyPubkey } from './orchestrator/distributed-claim';
 
-/** The owner's ratification switch (D-007 / P-001). Default OFF. */
+// P-012 / D-008: the WORKITEM_CLAIM_LEASE flag, SYNC-cached because the claim-path read
+// must be synchronous. Refreshed on an initial read + every flag change (the
+// issues-engineer/lexicon pattern). Unloaded → false (DEFAULT OFF, the safe behavior).
+let claimLeaseOn = false;
+async function refreshClaimLease(): Promise<void> {
+  try {
+    claimLeaseOn = await getFlag(FLAGS.WORKITEM_CLAIM_LEASE, systemDistinctId());
+  } catch {
+    claimLeaseOn = false;
+  }
+}
+void refreshClaimLease();
+onFlagChange((key) => {
+  if (key === null || key === FLAGS.WORKITEM_CLAIM_LEASE) void refreshClaimLease();
+});
+
+/** The owner's ratification switch (D-008). Default OFF. Read from the SYNC-cached
+ *  WORKITEM_CLAIM_LEASE flag (migrated off the PAPERCUSP_WORKITEM_CLAIM_LEASE env gate). */
 export function workItemClaimLeaseEnabled(): boolean {
-  return process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE === '1';
+  return claimLeaseOn;
 }
 
 /**

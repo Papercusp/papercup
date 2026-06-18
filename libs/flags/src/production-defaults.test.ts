@@ -258,6 +258,14 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // workspace-data-isolation-leaks-2026-06-17 F-M7: ui:dispatch/get_state cross-workspace guard
   // (SU-only surface). DELIBERATE dark ship — reversible; OFF = today's behavior, byte-identical.
   FLAGS.UI_WORKSPACE_GUARD,
+  // work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008: the per-Hive authority claim LEASE,
+  // migrated off the PAPERCUSP_WORKITEM_CLAIM_LEASE env gate. DEFAULT OFF — once the stale-claim
+  // reaper requeues mid-flight items (GAP 1) + covers the issue family (GAP 2), the stuck-item
+  // risk is closed regardless of the lease, and the lease's heartbeat is wired only into the DBOS
+  // orchestrator (not the general claim tools), so flipping it ON now would add a TTL with no
+  // heartbeat on the self-selection path. Owner flips ON after the recovery layer is exercised;
+  // OFF = today's local SELECT … FOR UPDATE SKIP LOCKED, byte-identical.
+  FLAGS.WORKITEM_CLAIM_LEASE,
 ]);
 
 /**

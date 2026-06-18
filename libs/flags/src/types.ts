@@ -668,6 +668,17 @@ export const FLAGS = {
   // reversible kill-switch the owner flips ON (OFF = today's `default`-pinned behavior,
   // byte-identical; old `default` issues preserved). Listed in KNOWN_DARK_FLAGS.
   ISSUES_PER_WORKSPACE: "papercusp-issues-per-workspace",
+  // work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008: the per-Hive authority claim
+  // LEASE (decentralized-dispatch-scaling P-004) — migrated off the ad-hoc
+  // PAPERCUSP_WORKITEM_CLAIM_LEASE env gate to a runtime-flippable FLAG. DEFAULT OFF
+  // (D-008): once the stale-claim reaper requeues mid-flight items (GAP 1) and covers the
+  // issue family (GAP 2), the stuck-item risk is closed regardless of the lease, so the
+  // lease's TTL+heartbeat is defense-in-depth, not the fix — and its heartbeat is wired
+  // only into the DBOS orchestrator, not the general claim tools, so flipping it ON now
+  // would add a TTL with no heartbeat on the self-selection path. Owner flips ON after the
+  // recovery layer is exercised. Listed in KNOWN_DARK_FLAGS. Read SYNC-cached (deep in the
+  // claim path) via work-item-claim-lease-wiring.ts.
+  WORKITEM_CLAIM_LEASE: "papercusp-workitem-claim-lease",
   // workspace-data-isolation-leaks-2026-06-17 F-E1 (PHASE 1): scope the routines
   // upsert's ON CONFLICT to (workspace_id, install_slug, name) so a hive in workspace
   // B can no longer CLOBBER a same-named routine in workspace A (the latent leak — 0
@@ -740,6 +751,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // DEFAULT OFF (deliberate) — per-workspace engineer-issues cutover, reversible
   // kill-switch; OFF = today's `default`-pinned issue bus, byte-identical. Listed in KNOWN_DARK_FLAGS.
   [FLAGS.ISSUES_PER_WORKSPACE]: false,
+  [FLAGS.WORKITEM_CLAIM_LEASE]: false,
   // DEFAULT OFF (deliberate) — routines per-workspace ON CONFLICT (phase 1), reversible
   // kill-switch; OFF = today's ON CONFLICT (install_slug,name), byte-identical. KNOWN_DARK_FLAGS.
   [FLAGS.ROUTINES_PER_WORKSPACE]: false,

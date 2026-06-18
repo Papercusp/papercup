@@ -49,7 +49,12 @@ const ALLOW = new Set([
   // ── dev-box ergonomics / operator infra ──
   'PAPERCUSP_RELOAD_PROMPTS', 'PAPERCUSP_ALLOW_DEV_RESTART', 'PAPERCUSP_ALLOW_REMOTE_ADMIN',
   'PAPERCUSP_REQUIRE_SPAWN_SIG', 'PAPERCUSP_MEM0_SESSION_EXTRACTION', 'PAPERCUSP_PERSIST_CHUNKS',
-  'PAPERCUSP_WORKITEM_REDUNDANCY', 'PAPERCUSP_WORKITEM_CLAIM_LEASE',
+  'PAPERCUSP_WORKITEM_REDUNDANCY',
+  // PAPERCUSP_WORKITEM_CLAIM_LEASE removed — migrated to the WORKITEM_CLAIM_LEASE FLAG
+  // (work-queue-stuck-item-recovery-2026-06-17 P-012 / D-008).
+  // PAPERCUSP_LISTEN_HUB: shared PG LISTEN/NOTIFY connection-pool infra toggle
+  // (pg-listen-hub.ts) — runtime/infra config, not a user-facing feature.
+  'PAPERCUSP_LISTEN_HUB',
   // ── baseline (existing infra/dev/safety gates, classified as config 2026-06-16) ──
   // All set by a launcher/CI/safety path, not user-facing features — env is correct.
   'PAPERCUSP_AGENT_SESSION', 'PAPERCUSP_ALLOW_DB_MIGRATE', 'PAPERCUSP_ALLOW_NO_SANDBOX',
