@@ -59,6 +59,11 @@ export interface CoordinationSpec {
   sharedState: 'messages' | 'blackboard' | 'both';
   /** Coordination grouping granularity (huddle / pair / ensemble). */
   team: 'per-backlog' | 'per-repo' | 'per-task';
+  /** Post-hoc aggregation across a per-task team's INDEPENDENT attempts. 'judge-best' = ensemble
+   *  (N agents solve a task with no coordination during → a judge role picks/merges the best). Only
+   *  meaningful with team:'per-task'; 'none' = no after-the-fact aggregation (pair, all distributed
+   *  arms). The runtime fans N solvers + runs the judge when this is 'judge-best'. */
+  aggregate: 'none' | 'judge-best';
   /** coord/* tools an agent in this topology may NOT use (e.g. ['coord:send'] enforces blackboard-only). */
   disciplineForbid: string[];
   /** Central orchestrator present (a `kind:'hive'` Queen blueprint) vs distributed/none. */
@@ -76,6 +81,7 @@ export interface TopologyBlueprintView {
     review?: 'none' | 'peer';
     sharedState?: 'messages' | 'blackboard' | 'both';
     team?: 'per-backlog' | 'per-repo' | 'per-task';
+    aggregate?: 'none' | 'judge-best';
     discipline?: { allow?: string[]; forbid?: string[] };
   };
 }
@@ -91,6 +97,7 @@ export function resolveCoordinationSpec(bp: TopologyBlueprintView): Coordination
     review: c?.review ?? 'none',
     sharedState: c?.sharedState ?? 'both',
     team: c?.team ?? 'per-backlog',
+    aggregate: c?.aggregate ?? 'none',
     disciplineForbid: c?.discipline?.forbid ?? [],
     central: bp.kind === 'hive',
   };

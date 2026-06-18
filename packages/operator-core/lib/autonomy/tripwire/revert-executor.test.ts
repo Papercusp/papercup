@@ -55,7 +55,7 @@ describe('built-in reverters', () => {
       helpers,
     );
     expect(out.reverted).toBe(true);
-    expect(calls.state).toEqual([{ id: 'WI-9', state: 'todo', opts: { harness: 'h1', by: 'autonomy-revert' } }]);
+    expect(calls.state).toEqual([{ id: 'WI-9', state: 'todo', opts: { harness: 'h1', by: 'autonomy-revert', allowNonCanonical: true } }]);
   });
 
   it('work-item-priority restores the prior priority (null allowed)', async () => {

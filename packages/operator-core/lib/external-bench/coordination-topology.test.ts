@@ -29,6 +29,17 @@ test('resolveCoordinationSpec — distributed blueprints map to the right topolo
   assert.equal(hud.review, 'peer');
 });
 
+test('resolveCoordinationSpec — per-task arms carry the aggregate field (ensemble vs pair)', () => {
+  const ens = resolveCoordinationSpec(loadBuiltinBlueprint('ensemble-solve').blueprint);
+  assert.equal(ens.team, 'per-task');
+  assert.equal(ens.aggregate, 'judge-best', 'ensemble = N independent solvers → judge picks best');
+
+  const pair = resolveCoordinationSpec(loadBuiltinBlueprint('pair').blueprint);
+  assert.equal(pair.team, 'per-task');
+  assert.equal(pair.aggregate, 'none', 'pair coordinates DURING, no after-the-fact aggregation');
+  assert.equal(pair.review, 'peer');
+});
+
 test('resolveCoordinationSpec — the hive blueprint is the CENTRAL pole', () => {
   const hive = resolveCoordinationSpec(loadBuiltinBlueprint('hive').blueprint);
   assert.equal(hive.central, true, 'kind:hive ⇒ central Queen');
@@ -42,6 +53,7 @@ test('resolveCoordinationSpec — defaults (no coordination section) = central-p
   assert.equal(spec.review, 'none');
   assert.equal(spec.sharedState, 'both');
   assert.equal(spec.team, 'per-backlog');
+  assert.equal(spec.aggregate, 'none');
   assert.deepEqual(spec.disciplineForbid, []);
   assert.equal(spec.central, false);
 });
