@@ -167,6 +167,12 @@ await runFrontierSweResilient({
 Run ≥2 arms (e.g. `su-independent` vs `hive`) over the same tasks + same iso-budget for the topology lift (D-002).
 Interrupted? Re-run the same call — only missing trials re-execute.
 
+**Workspace isolation (mandatory — plan benchmark-workspace-isolation-2026-06-18):** the launcher MUST resolve any
+run/telemetry workspace via `resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID)` (`bench-workspace.ts`) —
+default `'benchmarks'`, NEVER the production `'papercusp-workspace'` (the guard throws on prod). FrontierSWE's
+in-container agents are sandboxed (bash+submit only) so they don't reach host memory/coord/work-items, but the
+launcher must still isolate the run-store/telemetry workspace as defense-in-depth.
+
 ## Discipline
 
 - **Two-port model** — the bench routes `PAPERCUSP_OPERATOR_BASE=:3170` (staging) + the

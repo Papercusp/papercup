@@ -16,6 +16,7 @@ import type { HiveBacklogDriver, FleetTaskResult } from './hive-backlog';
 import { makePoolBacklogDriver } from './hive-backlog-utilities';
 import type { BenchTask, GenerationStopReason } from './types';
 import { scenarioId, type RunSwarmSim, type SwarmMode, type SwarmScenario } from './swarmbench-live';
+import { resolveBenchWorkspace } from './bench-workspace';
 
 /** The two SwarmBench fleet-arm versions (reuse the cross-suite vocab for apples-to-apples comparison). */
 export const SWARMBENCH_SU_INDEPENDENT_ARM: FleetArmId = 'su-independent';
@@ -101,7 +102,9 @@ export interface SwarmbenchBacklogOpts {
  * (a sim/infra failure → stopReason 'infra-failed', score null, excluded — the generation-failure contract).
  */
 export function swarmbenchBacklogDriver(runSim: RunSwarmSim, opts: SwarmbenchBacklogOpts = {}): HiveBacklogDriver {
-  const ws = opts.workspaceId ?? 'swarmbench';
+  // Isolated benchmark workspace — never production (guarded; the owner-flagged pollution fix,
+  // plan benchmark-workspace-isolation-2026-06-18). 'swarmbench' is a per-suite sub-workspace.
+  const ws = resolveBenchWorkspace(opts.workspaceId ?? 'swarmbench');
   return makePoolBacklogDriver({
     now: () => Date.now(),
     // SwarmBench scenarios are heavy (N agents × rounds); run a small pool. Override via opts if needed.

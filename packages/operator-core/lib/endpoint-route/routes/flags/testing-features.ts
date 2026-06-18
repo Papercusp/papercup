@@ -14,6 +14,7 @@ import {
   getPosthogConfigWithSource,
   resetPosthogConfigForTest,
 } from '../../../posthog-config';
+import { clearAllFlagOverrides } from '@papercusp/flags/server';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const CONFIG_PATH = path.join(os.homedir(), '.papercusp', 'posthog.json');
@@ -49,9 +50,19 @@ const post = defineTool({
       { mode: 0o600 },
     );
     resetPosthogConfigForTest();
+    // Leaving testing mode → clear the stored runtime overrides so flags return
+    // to bundled defaults — the "all flags off" state this toggle's own UI
+    // promises. Otherwise an override set while testing was on (e.g.
+    // papercusp-testing, pinned via the per-flag toggle or "Full testing")
+    // keeps shadowing the default after testingFeatures is off, so the gated
+    // surfaces never disappear without a manual per-flag clear. (2026-06-18)
+    let clearedOverrides: string[] = [];
+    if (!ctx.input.enabled) {
+      clearedOverrides = await clearAllFlagOverrides();
+    }
     const { reinitFlagBackend } = await import('../../../flag-bus');
     reinitFlagBackend();
-    return Response.json({ ok: true, testingFeatures: ctx.input.enabled });
+    return Response.json({ ok: true, testingFeatures: ctx.input.enabled, clearedOverrides });
   },
 });
 

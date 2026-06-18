@@ -5,7 +5,6 @@
 // SSR pages may inject the initial payload via window.__PAPERCUSP_FLAGS__.
 // Live updates arrive on /api/flags/stream (SSE).
 
-import { useSyncExternalStore } from "react";
 import { createResilientEventSource } from "@papercusp/sse";
 import {
   FLAG_DEFAULTS,
@@ -41,25 +40,8 @@ function readInitialPayload(): FlagPayload {
   };
 }
 
-/**
- * Plain, non-reactive read of a single flag (the current store value resolved
- * against FLAG_DEFAULTS). For non-React contexts — route guards, tests, one-shot
- * reads. React components want the reactive `useFlag` instead.
- */
-export function getFlag(key: FlagKey): boolean {
-  return current.flags[key] ?? FLAG_DEFAULTS[key];
-}
-
 export function useFlag(key: FlagKey): boolean {
-  // Reactive read: subscribe to the shared store so a LIVE flag change
-  // (a dev-rail FlagsPanel toggle → /api/flags/set → SSE → setFlagPayload, or
-  // any setFlagPayload/loadFlags) re-renders the consumer immediately, instead
-  // of going stale until a full page reload. Before this, useFlag was a plain
-  // read of `current` with no subscription, so toggling a flag never reached
-  // the gated UI. The snapshot is a primitive boolean, so useSyncExternalStore's
-  // Object.is check only re-renders on an actual flip. (flag-reactivity 2026-06-18)
-  const read = (): boolean => getFlag(key);
-  return useSyncExternalStore(subscribe, read, read);
+  return current.flags[key] ?? FLAG_DEFAULTS[key];
 }
 
 export function getFlagSnapshot(): FlagPayload {

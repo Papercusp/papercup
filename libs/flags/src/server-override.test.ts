@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  clearAllFlagOverrides,
   getAllFlags,
   getFlag,
   initFlagBackend,

@@ -34,7 +34,6 @@
   },
   "peerDependencies": {
     "@papercusp/sse": "*",
-    "posthog-node": ">=4 <6",
-    "react": ">=18"
+    "posthog-node": ">=4 <6"
   }
 }

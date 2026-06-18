@@ -45,6 +45,7 @@ import { join } from 'node:path';
 import type { FleetArmId } from '@papercusp/bench-metrics';
 import { openRunSandbox, liveSandboxHiveOps, liveRunTool } from './capabilities';
 import type { RunSandbox } from './capabilities';
+import { resolveBenchWorkspace } from './bench-workspace';
 import type { HiveBacklogDriver, HiveBacklogResult, FleetTaskResult } from './hive-backlog';
 import { makePoolBacklogDriver } from './hive-backlog-utilities';
 import { operatorApiBase } from '../operator-api-base';
@@ -57,8 +58,11 @@ export const TAU2_BLUEPRINT_ID = 'tau2-bench';
 export const TAU2_VANILLA_ARM: FleetArmId = 'vanilla';
 export const TAU2_MEMORY_ARM: FleetArmId = '+memory';
 
-/** The fixed workspace every benchmark memory call lives in (the SU fan-out namespace). */
-const TAU2_WORKSPACE = 'papercusp-workspace';
+/** The ISOLATED workspace every tau2 benchmark memory call lives in — the dedicated `benchmarks` workspace
+ *  (or an XBENCH_WORKSPACE_ID override), NEVER production (resolveBenchWorkspace REFUSES the prod workspace).
+ *  The old prod default polluted real `papercup` recall with the +memory arm's per-run memories (the owner-
+ *  flagged 287-memory leak; plan benchmark-workspace-isolation-2026-06-18). */
+const TAU2_WORKSPACE = resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID);
 
 /** The single vendored tau2 `--agent` (src/tau2/registry.py): a stock LLMAgent + an opt-in memory side-channel
  *  enabled only when `TAU2_PC_MEMORY_HIVE` is set, so ONE agent serves BOTH arms (the arm = the env it gets). */
@@ -473,6 +477,9 @@ export const realRunTau2Conversation: RunTau2Conversation = async ({ task, arm, 
     env.TAU2_PC_MEMORY_HIVE = memory.hiveSlug;
     env.TAU2_PC_OPERATOR_BASE = memory.operatorBase;
     if (memory.token) env.TAU2_PC_OPERATOR_TOKEN = memory.token;
+    // The ISOLATED benchmark workspace the Python agent writes its memories to — must MATCH the sandbox
+    // hive's workspace (never production; the owner-flagged 287-memory leak, benchmark-workspace-isolation).
+    env.TAU2_PC_WORKSPACE = TAU2_WORKSPACE;
   }
 
   const code = await new Promise<number>((resolve) => {

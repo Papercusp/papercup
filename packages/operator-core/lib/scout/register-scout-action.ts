@@ -96,7 +96,31 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     }
   }
 
-  const { llmCall } = await import('../llm-testing/llm-client');
+  const { llmCall: rawLlmCall } = await import('../llm-testing/llm-client');
+  // MODEL-FALLBACK ON RATE-LIMIT (2026-06-18): opus is the best ideator model, but the Max-
+  // subscription account pool is frequently opus/sonnet-EXHAUSTED (Anthropic 429 on EVERY pooled
+  // account — measured: opus+sonnet 429 while haiku 200) even though the gateway fails over
+  // correctly — it can't conjure capacity that doesn't exist. Rather than let the whole cycle
+  // return `no-ideas`, fall an ideator/critic/recombine call back to the next tier on a rate-limit
+  // so Scout ALWAYS produces: opus when it has headroom (quality), degrading to sonnet→haiku only
+  // under saturation. A non-rate error is NOT masked (re-thrown). This is the resilience that makes
+  // the observation→scout→ideas→queen flow survive a busy fleet.
+  const SCOUT_MODEL_FALLBACKS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'];
+  const isRateLimited = (e: unknown): boolean => /\b429\b|rate[_-]?limit/i.test(e instanceof Error ? e.message : String(e));
+  const llmCall = (async (args: Parameters<typeof rawLlmCall>[0]) => {
+    const requested = (args as { model?: string }).model ?? SCOUT_MODEL_FALLBACKS[0];
+    const chain = [requested, ...SCOUT_MODEL_FALLBACKS.filter((m) => m !== requested)];
+    let lastErr: unknown;
+    for (const model of chain) {
+      try {
+        return await rawLlmCall({ ...args, model });
+      } catch (e) {
+        if (isRateLimited(e)) { lastErr = e; continue; } // tier saturated → try the next
+        throw e; // a real (non-rate) error must not be masked by a fallback
+      }
+    }
+    throw lastErr;
+  }) as typeof rawLlmCall;
   const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
   const archive = await resolveArchive({ workspaceId, harnessSlug });
   const deps = buildScoutCycleDeps({

@@ -139,7 +139,7 @@ export function pythonRunSwarmSim(deps: SwarmLiveDeps = {}): RunSwarmSim {
   const apiKey = deps.apiKey ?? process.env.SWARMBENCH_API_KEY ?? 'sk-papercusp-gateway';
   const timeoutMs = deps.timeoutMs ?? 1_800_000;
 
-  return async ({ scenario, mode }): Promise<SwarmSimResult> => {
+  return async ({ scenario, mode, workspaceId }): Promise<SwarmSimResult> => {
     const s = scenario;
     const args = [
       join(repoDir, 'swarmbench_run.py'),
@@ -157,7 +157,9 @@ export function pythonRunSwarmSim(deps: SwarmLiveDeps = {}): RunSwarmSim {
       '--api-key', apiKey,
     ];
     try {
-      const r = await exec(python, args, { timeoutMs });
+      // Pass the ISOLATED benchmark workspace to the python's memory writes (never production — the
+      // owner-flagged pollution; plan benchmark-workspace-isolation-2026-06-18).
+      const r = await exec(python, args, { timeoutMs, env: { SWARMBENCH_WORKSPACE: workspaceId } });
       const parsed = parseSwarmSimResult(r.stdout);
       if (parsed.error === undefined && parsed.score === null && r.code !== 0) {
         return { ...parsed, error: `swarmbench_run exited ${r.code}: ${(r.stderr || r.stdout).slice(-300)}` };

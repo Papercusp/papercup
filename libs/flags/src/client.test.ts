@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@papercusp/sse', () => ({ createResilientEventSource: vi.fn() }));
 
 import {
-  getFlag,
+  useFlag,
   getFlagSnapshot,
   setFlagPayload,
   subscribe,
@@ -37,24 +37,24 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('getFlag — defaulting', () => {
+describe('useFlag — defaulting', () => {
   it('returns the FLAG_DEFAULTS value for the initial state', () => {
     for (const k of ALL_FLAG_KEYS) {
-      expect(getFlag(k)).toBe(FLAG_DEFAULTS[k]);
+      expect(useFlag(k)).toBe(FLAG_DEFAULTS[k]);
     }
   });
 
   it('reflects a value set via setFlagPayload', () => {
     setFlagPayload({ flags: { [KEY]: true } as FlagValues, evaluatedAt: 1, source: 'posthog' });
-    expect(getFlag(KEY)).toBe(true);
+    expect(useFlag(KEY)).toBe(true);
   });
 
   it('a partial payload still defaults every unset flag (resolveWithDefaults)', () => {
     setFlagPayload({ flags: { [KEY]: true } as FlagValues, evaluatedAt: 1, source: 'posthog' });
-    expect(getFlag(KEY)).toBe(true);
-    expect(getFlag(OTHER)).toBe(false); // unset → default
+    expect(useFlag(KEY)).toBe(true);
+    expect(useFlag(OTHER)).toBe(false); // unset → default
     // every key resolves to a boolean
-    for (const k of ALL_FLAG_KEYS) expect(typeof getFlag(k)).toBe('boolean');
+    for (const k of ALL_FLAG_KEYS) expect(typeof useFlag(k)).toBe('boolean');
   });
 });
 
@@ -103,7 +103,7 @@ describe('loadFlags', () => {
     const result = await loadFlags('/api/flags/bootstrap');
     expect(fetchMock).toHaveBeenCalledWith('/api/flags/bootstrap', { credentials: 'same-origin' });
     expect(result.flags[KEY]).toBe(true);
-    expect(getFlag(KEY)).toBe(true); // store updated
+    expect(useFlag(KEY)).toBe(true); // store updated
   });
 
   it('throws on a non-2xx response', async () => {

@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { z } from 'zod';
 
 import { ALL_FLAG_KEYS } from '@papercusp/flags';
-import { setFlag } from '@papercusp/flags/server';
+import { setFlag, clearAllFlagOverrides } from '@papercusp/flags/server';
 import { publishFlagChange, reinitFlagBackend } from '../../../flag-bus';
 import { resetPosthogConfigForTest } from '../../../posthog-config';
 import '../../../flag-bus';
@@ -46,9 +46,13 @@ export default defineTool({
       cfg.testingFeatures = false;
       writeConfig(cfg);
       resetPosthogConfigForTest();
+      // Symmetric inverse of the 'testing' preset (which turns flags on): clear
+      // the stored runtime overrides so production truly returns to bundled
+      // defaults instead of leaving flags pinned on. (2026-06-18)
+      const clearedOverrides = await clearAllFlagOverrides();
       reinitFlagBackend();
       publishFlagChange(null);
-      return Response.json({ ok: true, preset: 'production', testingFeatures: false });
+      return Response.json({ ok: true, preset: 'production', testingFeatures: false, clearedOverrides });
     }
     const cfg = readConfig();
     cfg.testingFeatures = true;

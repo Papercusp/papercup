@@ -27,9 +27,10 @@ import { readFileSync } from 'node:fs';
 import { bindRealQueenBacklogDriver, dissolveBenchHive, HIVE_REALQUEEN_ARM, FIFO_NOQUEEN_ARM } from './hive-backlog-realqueen';
 import { runHiveBacklog, registerFleetPlanner } from './hive-backlog';
 import { planFifoPlacement } from './queen-ablation';
+import { resolveBenchWorkspace } from './bench-workspace';
 import type { BenchTask } from './types';
 
-const WORKSPACE_ID = process.env.XBENCH_WORKSPACE_ID ?? 'papercusp-workspace';
+const WORKSPACE_ID = resolveBenchWorkspace(process.env.XBENCH_WORKSPACE_ID); // dedicated benchmark workspace, never production (plan benchmark-workspace-isolation)
 const ARM = (process.env.XBENCH_ARM ?? HIVE_REALQUEEN_ARM) === FIFO_NOQUEEN_ARM ? FIFO_NOQUEEN_ARM : HIVE_REALQUEEN_ARM;
 const SAMPLE = process.env.XBENCH_SAMPLE ?? '/tmp/xbench-sample.jsonl';
 const REPOS_ROOT = process.env.XBENCH_REPOS_ROOT ?? '/tmp/xbench-repos';

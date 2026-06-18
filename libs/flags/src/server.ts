@@ -91,6 +91,33 @@ export async function setFlagOverride(
   }
 }
 
+/**
+ * Clear EVERY stored runtime override (the PG-backed layer). Called when a
+ * deployment LEAVES testing mode — the `testingFeatures` master-switch turning
+ * OFF and the "V1 Production" preset — so flags return to their bundled
+ * defaults, the "all flags off" state that surface's UI promises.
+ *
+ * Without this, an override set while testing was on (e.g. papercusp-testing)
+ * keeps shadowing the defaults after testing is turned off, so the gated
+ * surfaces never disappear. Best-effort + idempotent; returns the cleared keys.
+ */
+export async function clearAllFlagOverrides(): Promise<FlagKey[]> {
+  if (!overrideStore) return [];
+  try {
+    const current = await overrideStore.load();
+    const keys = Object.keys(current) as FlagKey[];
+    for (const key of keys) {
+      await overrideStore.set(key, null);
+    }
+    overrideCache = null;
+    return keys;
+  } catch {
+    // Never block the leave-testing path on the override layer.
+    overrideCache = null;
+    return [];
+  }
+}
+
 export function initFlagBackend(cfg: PostHogConfig | null): void {
   if (client) {
     void client.shutdown();
