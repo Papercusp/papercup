@@ -520,7 +520,7 @@ export function frontierSweTaskSetPath(): string {
  * horizon, then runs `verifierCmd` and reads the reward. Everything the grader/runner needs rides graderMeta; the
  * ARM only ever sees `problemStatement` (the instruction.md brief) → generation stays grader-agnostic/un-gameable.
  */
-interface FrontierSweTaskRow {
+export interface FrontierSweTaskRow {
   /** Stable instance id = the task dir name, e.g. 'cranelift-codegen-opt'. */
   instanceId: string;
   /** FrontierSWE's canonical fine-grained category (task.toml [metadata].category), e.g. 'ml-systems-optimization'. */

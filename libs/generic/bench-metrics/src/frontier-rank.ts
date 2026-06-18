@@ -164,7 +164,7 @@ export interface FrontierArmSummary {
   bestAtK: number;
   /** Mean leaderboard position across tasks (lower = better), ranked on per-task best@k. */
   avgRank: number;
-  /** Win rate vs a random opponent on a task, in [0,1]. */
+  /** Win rate vs a random opponent on a task, in [0,1]; NaN when the arm had no opponents on any task. */
   dominance: number;
   /** Tasks with ≥ k trials for this arm. */
   tasksUsed: number;
@@ -215,10 +215,12 @@ export function frontierRankReport(
 
   const arms: FrontierArmSummary[] = Object.keys(bestAcc).map((arm) => ({
     arm,
-    meanAtK: meanAcc[arm] ? meanAcc[arm].sum / meanAcc[arm].n : 0,
+    meanAtK: meanAcc[arm] ? meanAcc[arm].sum / meanAcc[arm].n : Number.NaN,
     bestAtK: bestAcc[arm].sum / bestAcc[arm].n,
     avgRank: ranks[arm] ?? Number.NaN,
-    dominance: dom[arm] ?? 0,
+    // NaN (not 0) when the arm had no opponent on any task — "no comparison possible", not "lost everything"
+    // (e.g. a per-bucket filter leaving one arm). 0 would falsely rank it below a 50-50 arm.
+    dominance: dom[arm] ?? Number.NaN,
     tasksUsed: bestAcc[arm].n,
   }));
   // Sort by AVG RANK ascending (the leaderboard order).

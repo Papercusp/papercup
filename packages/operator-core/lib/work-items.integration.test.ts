@@ -257,6 +257,33 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
     expect(await wi.observeWorkItem('WI-404')).toBeNull();
   });
 
+  // P-003 / D-002: a VOLUNTARY release of a feature mid-flight resets its status →
+  // todo so it returns to the claimable pool (symmetry with the reaper). Terminal /
+  // blocked rows keep their status.
+  it('releasing a mid-flight (in_progress) feature resets status → todo (P-003)', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'mid-flight', harness: 'papercup', createdBy: 'agA' });
+    expect((await wi.claimWorkItem(feat.id, 'agA'))?.assignee).toBe('agA');
+    await wi.setWorkItemState(feat.id, 'in_progress');
+    const before = (await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
+    expect(before.status).toBe('in_progress');
+
+    await wi.releaseWorkItem(feat.id);
+    const after = (await db.sql`SELECT status, taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
+    expect(after.status).toBe('todo');
+    expect(after.taken_by).toBeNull();
+    // …and it's observable as available again.
+    expect(await wi.observeWorkItem(feat.id)).toMatchObject({ available: true, claimedBy: null });
+  });
+
+  it('releasing a TERMINAL (passed) feature keeps it terminal — not resurrected to todo (P-003)', async () => {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'done-feat', harness: 'papercup', createdBy: 'agA' });
+    await wi.claimWorkItem(feat.id, 'agA');
+    await wi.setWorkItemState(feat.id, 'passed');
+    await wi.releaseWorkItem(feat.id);
+    const after = (await db.sql`SELECT status FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0];
+    expect(after.status).toBe('passed');
+  });
+
   // Bug fix (issues-engineer.claimIssue): the unified claim is atomic compare-and-claim for the
   // ISSUE family too — previously claimIssue did an unconditional `SET assignee` (last-write-wins),
   // so a second claimer silently STOLE a live grip, breaking the claimWorkItem contract ("exactly

@@ -6,6 +6,8 @@ import {
   isImprovementLoopTool,
   toolErrorSignalsFromRows,
   classifyToolError,
+  isEphemeralBenchmarkHarnessSlug,
+  isEphemeralBenchmarkSignal,
   collectMigrationDriftSignals,
   routineFailureSignalsFromRows,
   stuckPlanSignalsFromRows,
@@ -239,14 +241,14 @@ describe('classifyToolError — by error_code, with a legacy error_message fallb
   it('classifies by the first-class error_code when present (the P-007 path)', () => {
     expect(classifyToolError('unauthorized', 'error', 'x')).toBe('structural');
     expect(classifyToolError('handler_error', 'error', 'x')).toBe('structural');
-    expect(classifyToolError('harness_required', 'error', 'x')).toBe('structural');
+    expect(classifyToolError('harness_required', 'error', 'x')).toBe('caller'); // P-007: harness arg is the caller's job
     expect(classifyToolError('timeout', 'timeout', 'x')).toBe('transient');
     expect(classifyToolError('invalid_args', 'error', 'x')).toBe('caller');
     expect(classifyToolError('role_not_allowed', 'role-not-allowed', 'x')).toBe('caller');
   });
 
   it('falls back to status + message for legacy rows (error_code NULL, pre-P-007 deploy)', () => {
-    expect(classifyToolError(null, 'error', 'built-in tool requires a workspace-scoped call')).toBe('structural');
+    expect(classifyToolError(null, 'error', 'built-in tool requires a workspace-scoped call')).toBe('caller'); // P-007: caller scope, not a tool bug
     expect(classifyToolError(null, 'timeout', 'exceeded timeout of 60s')).toBe('transient');
     expect(classifyToolError(null, 'error', 'exceeded timeout of 60s')).toBe('transient');
     expect(classifyToolError(null, 'role-not-allowed', '')).toBe('caller');
@@ -285,6 +287,39 @@ describe('classifyToolError — by error_code, with a legacy error_message fallb
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
     // An INTERNAL caller quota_exceeded code stays CALLER (not an external provider limit).
     expect(classifyToolError('quota_exceeded', 'error', 'monthly budget exhausted')).toBe('caller');
+  });
+
+  it('classifies harness/scope caller errors as caller, not structural (P-007)', () => {
+    expect(classifyToolError('handler_error', 'error', 'No harness specified. `harness` is a per-call arg')).toBe('caller');
+    expect(classifyToolError('harness_required', 'error', 'x')).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', "resolvePlanScope: harness 'papercup-hive' is not registered in harness_shared.projects in any workspace")).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', 'built-in tool "memory:search" requires a workspace-scoped call')).toBe('caller');
+    expect(classifyToolError(null, 'error', 'No harness specified')).toBe('caller');
+  });
+
+  it('classifies a timeout that surfaced as handler_error as transient, not structural (P-009)', () => {
+    expect(classifyToolError('handler_error', 'error', 'tool "chat:ask_choice" exceeded timeout of 60s (handler returned but signal had aborted)')).toBe('transient');
+    expect(classifyToolError('handler_error', 'error', 'plans:attention timed out')).toBe('transient');
+  });
+});
+
+describe('ephemeral-benchmark signal filter (P-006)', () => {
+  it('matches benchmark/throwaway slugs but never real harness slugs', () => {
+    for (const s of ['xbench-su-CpaQzU-instance_flipt-io__f', 'xbqbhtpys6a', 'bench-memcap-probe-DELETEME', 'hiveloop-hive', 'sb-gym', 'e2e-imp-j1', 'xbench-smoke-p009-mem'])
+      expect(isEphemeralBenchmarkHarnessSlug(s)).toBe(true);
+    for (const s of ['papercup', 'papercup-org', 'papercup-org-business', 'papercup-hive', 'sheets', 'sheets-from-template-e2e', 'dbosroll', 'restart'])
+      expect(isEphemeralBenchmarkHarnessSlug(s)).toBe(false);
+  });
+
+  it('drops per-harness signals for benchmark instances; keeps global + real-harness signals', () => {
+    const bench = { source: 'stalled-feature' as const, key: 'xbench-su-CpaQzU', title: 'features in xbench-su-CpaQzU stalled', body: '', severity: 'major' as const, scope: 'harness:xbench-su-CpaQzU-instance_flipt' };
+    const govStarve = { source: 'governor-starvation' as const, key: 'gov:xbqbhtpys6a', title: 'Hive xbqbhtpys6a: fleet saturated', body: '', severity: 'minor' as const };
+    const real = { source: 'stalled-feature' as const, key: 'papercup', title: 'features in papercup stalled', body: '', severity: 'major' as const, scope: 'harness:papercup' };
+    const globalToolErr = { source: 'repeated-tool-error' as const, key: 'memory:search:rate-limit', title: 'rate-limit', body: '', severity: 'minor' as const };
+    expect(isEphemeralBenchmarkSignal(bench)).toBe(true);
+    expect(isEphemeralBenchmarkSignal(govStarve)).toBe(true);
+    expect(isEphemeralBenchmarkSignal(real)).toBe(false);
+    expect(isEphemeralBenchmarkSignal(globalToolErr)).toBe(false); // global source — never filtered
   });
 });
 

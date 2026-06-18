@@ -286,19 +286,23 @@ async function staleClaimSweepTick(): Promise<void> {
     const { reclaimStaleWorkItemClaims } = await import('../work-items-stale-claims');
     const r = await reclaimStaleWorkItemClaims(getOrgPg().sql);
     if (r.released.length > 0) {
-      const byStatus = r.released.reduce<Record<string, number>>((acc, c) => {
-        acc[c.status] = (acc[c.status] ?? 0) + 1;
+      const byAction = r.released.reduce<Record<string, number>>((acc, c) => {
+        acc[c.action] = (acc[c.action] ?? 0) + 1;
         return acc;
       }, {});
       console.warn(
         `[stale-claims] released ${r.released.length} work-item claim(s) from dead holders ` +
-          `(${Object.entries(byStatus).map(([s, n]) => `${s}:${n}`).join(', ')}): ` +
-          r.released.map((c) => `${c.harness_slug}/${c.feature_id}<-${c.former_taken_by}`).join(', '),
+          `(${Object.entries(byAction).map(([a, n]) => `${a}:${n}`).join(', ')}): ` +
+          r.released.map((c) => `${c.harness_slug}/${c.feature_id}<-${c.former_taken_by} [${c.former_status}->${c.new_status}]`).join(', '),
       );
-      // Non-'todo' rows died mid-flight — surface them for deliberate
-      // re-placement instead of silently returning them to the backlog.
-      const midFlight = r.released.filter((c) => c.status !== 'todo');
-      if (midFlight.length > 0) {
+      // GAP 1 fix (D-006): requeued mid-flight rows auto-return to `todo` — no
+      // broadcast needed (the old "needs re-placement" broadcast existed BECAUSE
+      // nothing re-placed them). We now broadcast ONLY dead-letters: poison items
+      // that exhausted the requeue cap and parked in `blocked`, which DO need
+      // human/Queen attention. Terminal/`blocked`/`todo` freed rows are no longer
+      // mislabeled as "needs re-placement" (the F-FIX-038 [passed] wart).
+      const deadLettered = r.released.filter((c) => c.action === 'dead-lettered');
+      if (deadLettered.length > 0) {
         try {
           const { sendMessage } = await import('../agent-tools/coordination/messages');
           await sendMessage(
@@ -312,9 +316,9 @@ async function staleClaimSweepTick(): Promise<void> {
             {
               to: ['*'],
               summary:
-                `stale-claim sweep: ${midFlight.length} work item(s) freed from DEAD holders mid-flight ` +
-                `(non-todo status — needs re-placement): ` +
-                midFlight.map((c) => `${c.harness_slug}/${c.feature_id} [${c.status}]`).join(', '),
+                `stale-claim sweep: ${deadLettered.length} work item(s) dead-lettered to [blocked] ` +
+                `(stale-reclaim-exhausted — requeued past the cap by repeatedly-dying holders, needs attention): ` +
+                deadLettered.map((c) => `${c.harness_slug}/${c.feature_id} (requeued ${c.requeue_count}x)`).join(', '),
             },
           );
         } catch { /* best-effort — the console.warn above is the floor */ }

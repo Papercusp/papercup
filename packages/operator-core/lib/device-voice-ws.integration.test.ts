@@ -18,9 +18,12 @@ import net from 'node:net';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
-const dispatchTranscript = vi.fn(async () => {});
+// Typed to dispatchTranscript's real 4-arg signature so `.mock.calls` is the proper tuple and a
+// 4-arg mockImplementation type-checks (loose param types — vi.mock hoists above the imports).
+type DispatchArgs = [claims: unknown, text: string, wake: string, send: (f: Record<string, unknown>) => void];
+const dispatchTranscript = vi.fn<(...a: DispatchArgs) => Promise<void>>(async () => {});
 vi.mock('./device-voice-dispatch', () => ({
-  dispatchTranscript: (...args: unknown[]) => dispatchTranscript(...args),
+  dispatchTranscript: (...args: unknown[]) => dispatchTranscript(...(args as DispatchArgs)),
 }));
 
 const TEST_BASE = 39187; // an unusual high port unlikely to collide on a dev/CI box
@@ -69,7 +72,7 @@ function token(sub = 'device-1') {
 describe('device voice WS — real server', () => {
   it('listens on the base port, authenticates a client, and round-trips a dispatcher frame', async () => {
     dispatchTranscript.mockImplementation(
-      async (_c: unknown, _t: unknown, _w: unknown, send: (f: unknown) => void) => {
+      async (_c: unknown, _t: unknown, _w: unknown, send: (f: Record<string, unknown>) => void) => {
         send({ kind: 'speak', text: 'pong', source: 'operator' });
       },
     );

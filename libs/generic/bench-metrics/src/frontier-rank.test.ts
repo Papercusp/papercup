@@ -113,5 +113,14 @@ describe('frontierRankReport — the suite rollup', () => {
     approx(opus.dominance, 1);
   });
 
+  it('a solo arm (no opponents on any task) gets dominance NaN, not 0 (review Bug 1)', () => {
+    const solo: ArmTaskTrials[] = [{ taskId: 't', tier: 'implementation', trials: { hive: [0.5, 0.5] } }];
+    const r = frontierRankReport(solo, 2);
+    const hive = r.arms.find((a) => a.arm === 'hive')!;
+    expect(Number.isNaN(hive.dominance)).toBe(true);
+    expect(hive.avgRank).toBeCloseTo(1); // the sole arm ranks 1
+    expect(hive.meanAtK).toBeCloseTo(0.5);
+  });
+
   it('rejects k < 1', () => expect(() => frontierRankReport(tasks, 0)).toThrow());
 });

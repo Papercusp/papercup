@@ -95,6 +95,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     swarm_affinity text,
     fed_ts bigint,
     redundancy integer,
+    requeue_count integer NOT NULL DEFAULT 0,
     _search tsvector GENERATED ALWAYS AS (
       setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
       setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||

@@ -22,9 +22,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // first sign/verify is sufficient; top-level keeps it unambiguous.
 process.env.MOBILE_JWT_SECRET = 'unit-test-mobile-secret-0123456789abcd';
 
-const dispatchTranscript = vi.fn(async () => {});
+// Mock typed to dispatchTranscript's real 4-arg signature (claims, text, wakeWord, send), so
+// `.mock.calls[N]` is the proper tuple and a 4-arg mockImplementation type-checks. (Defined with
+// loose param types to avoid depending on imports declared below — vi.mock hoists above them.)
+type DispatchArgs = [claims: unknown, text: string, wake: string, send: (f: Record<string, unknown>) => void];
+const dispatchTranscript = vi.fn<(...a: DispatchArgs) => Promise<void>>(async () => {});
 vi.mock('./device-voice-dispatch', () => ({
-  dispatchTranscript: (...args: unknown[]) => dispatchTranscript(...args),
+  dispatchTranscript: (...args: unknown[]) => dispatchTranscript(...(args as DispatchArgs)),
 }));
 
 import { signDeviceToken, type DeviceClaims } from './device-jwt';

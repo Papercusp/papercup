@@ -12,6 +12,8 @@ import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { armPlanSchedule, disarmPlanSchedule } from './arm-plan-schedule';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
+import { claimDueRoutine } from './claim';
+import { listDueCronRoutines } from '@papercusp/db-org';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -74,5 +76,26 @@ describe('armPlanSchedule / disarmPlanSchedule', () => {
     const res = await armPlanSchedule({ sql, workspaceId: WS, harnessSlug: HARNESS, templateSlug: SLUG });
     expect(res).toEqual({ ok: false, reason: 'not_scheduled' });
     expect(await planActive()).toBe(false); // unchanged
+  });
+
+  it('a fired one-shot un-arms its owning plan (EI-1371): claim deactivates the routine AND the plan', async () => {
+    // Make the fixture a one-shot: drop the recurrence, set a DUE scheduled_at.
+    const fireAt = new Date(Date.now() - 1000);
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET schedule = NULL, scheduled_at = ${fireAt.toISOString()}::timestamptz
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+    const res = await armPlanSchedule({ sql, workspaceId: WS, harnessSlug: HARNESS, templateSlug: SLUG, scheduledAt: fireAt });
+    expect(res.ok).toBe(true);
+    expect(await planActive()).toBe(true);
+    expect((await routineActive()).active).toBe(true);
+
+    // The tick claims the due one-shot → deactivates the routine AND un-arms the plan (mirror disarm).
+    const mine = (await listDueCronRoutines(sql)).find((r) => r.name === planScheduleRoutineName(SLUG));
+    expect(mine).toBeTruthy();
+    expect(await claimDueRoutine(sql, mine!)).toBe(true);
+
+    expect((await routineActive()).active).toBe(false); // one-shot deactivated (pre-existing behavior)
+    expect(await planActive()).toBe(false); // EI-1371: previously stayed true → UI showed "armed"
   });
 });

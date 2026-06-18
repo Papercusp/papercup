@@ -8,10 +8,11 @@ import {
   frontierSwePilotSubset,
   isFrontierSweTaskSet,
   FRONTIER_SWE_TASK_SET_IDS,
+  type FrontierSweTaskRow,
 } from './task-sets';
 import { loadBenchTaskSet } from './task-sets';
 
-const ROWS = [
+const ROWS: FrontierSweTaskRow[] = [
   {
     instanceId: 'cranelift-codegen-opt',
     category: 'programming',

@@ -45,6 +45,7 @@ import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { autoPickableWhereSql } from './work-items-admission';
+import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES } from './work-item-dispatch-states';
 import {
   ISSUE_KIND,
   type IssueKind,
@@ -698,9 +699,14 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
     result = updated ? issueToWorkItem(updated) : null;
   } else {
     const { sql } = getOrgPg();
+    // D-007: a genuine terminal success/drop resets the stale-reclaim requeue
+    // counter, so a later legitimate re-open starts fresh with the full cap.
+    const resetRequeue = FEATURE_TERMINAL_STATES.includes(state);
     const rows = await sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
-         SET status = ${state}, updated_ts = ${Date.now()}
+         SET status = ${state},
+             requeue_count = CASE WHEN ${resetRequeue} THEN 0 ELSE requeue_count END,
+             updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
@@ -879,9 +885,19 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
     return updated ? issueToWorkItem(updated) : null;
   }
   const { sql } = getOrgPg();
+  // P-003 / D-002: a VOLUNTARY release mirrors the reaper — a freed mid-flight
+  // (requeueable) row resets → `todo` so it returns to the claimable pool, since
+  // an agent releasing in-flight work wants it picked up again, not stranded in a
+  // non-dispatchable status. No requeue_count bump (voluntary release is not a
+  // failure / poison-loop). Terminal (`passed`/`deprecated`), `blocked`, and
+  // already-`todo` rows keep their status. Done in SQL off the live column so it
+  // never depends on the JS-side state mapping.
+  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
   const rows = await sql<FeatureRowDb[]>`
     UPDATE harness_shared.harness_features_consolidated
-       SET taken_by = NULL, taken_at = NULL, updated_ts = ${Date.now()}
+       SET taken_by = NULL, taken_at = NULL,
+           status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
+           updated_ts = ${Date.now()}
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
   return rows[0] ? featureRowToWorkItem(rows[0]) : null;

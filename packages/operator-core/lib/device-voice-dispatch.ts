@@ -127,7 +127,9 @@ export async function runStandingApprove(
       send({ kind: 'speak', text: 'That capability has a complex name; please approve in settings.', source: 'operator' });
       return;
     case 'refuse-ambiguous':
-      send({ kind: 'speak', text: `Multiple matches for ${resolution.targetSlug}: ${resolution.options.join(', ')}. Specify one.`, source: 'operator' });
+      // `options` is `?:` on VoiceIntentResolution (voice-intents.ts) — the resolver always sets
+      // it for this action, but the single-interface type can't prove that; default to [] safely.
+      send({ kind: 'speak', text: `Multiple matches for ${resolution.targetSlug}: ${(resolution.options ?? []).join(', ')}. Specify one.`, source: 'operator' });
       return;
     case 'approve': {
       const today = new Date().toISOString().slice(0, 10);

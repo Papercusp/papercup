@@ -22,9 +22,11 @@ vi.mock('../../elevenlabs-webhook-auth', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
 const get = vi.fn();
-const runCommand = vi.fn(async () => ({ ok: true, ran: 'command' }));
-const runQuery = vi.fn(async () => ({ ok: true, ran: 'query' }));
-const deliver = vi.fn(async () => ({ ok: true, ran: 'tab' }));
+// `...args` makes each mock's `.mock.calls[N]` a variadic tuple, so the assertions below that
+// index `calls[0][0..2]` type-check (the bare `() =>` form inferred a 0-arg empty-tuple call).
+const runCommand = vi.fn(async (..._args: unknown[]) => ({ ok: true, ran: 'command' }));
+const runQuery = vi.fn(async (..._args: unknown[]) => ({ ok: true, ran: 'query' }));
+const deliver = vi.fn(async (..._args: unknown[]) => ({ ok: true, ran: 'tab' }));
 vi.mock('../../commands/registry', () => ({
   get: (...a: unknown[]) => get(...(a as [])),
   runCommand: (...a: unknown[]) => runCommand(...(a as [])),

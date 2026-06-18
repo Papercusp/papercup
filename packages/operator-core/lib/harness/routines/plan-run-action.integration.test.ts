@@ -86,14 +86,19 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(inst[0].content).toContain('Monitor X');
 
     // plan_runs ledger row, keyed on the TEMPLATE slug.
-    const run = await sql<Array<{ run_type: string; trigger: string; instance_plan_slug: string; status: string }>>`
-      SELECT run_type, trigger, instance_plan_slug, status FROM harness_shared.plan_runs
+    const run = await sql<
+      Array<{ run_type: string; trigger: string; instance_plan_slug: string; status: string; workspace_id: string }>
+    >`
+      SELECT run_type, trigger, instance_plan_slug, status, workspace_id FROM harness_shared.plan_runs
        WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
     expect(run).toHaveLength(1);
     expect(run[0].run_type).toBe('scheduled');
     expect(run[0].trigger).toBe('scheduled');
     expect(run[0].instance_plan_slug).toBe(res!.instanceSlug);
     expect(run[0].status).toBe('running');
+    // EI-1368: the fire MUST stamp workspace_id (was '' before), else the run is invisible to
+    // the workspace-scoped listPlanRuns/getPlanRun reads (Runs/Agents tab + plans:runs/run-transcript).
+    expect(run[0].workspace_id).toBe(WS);
 
     // Run-scoped frontier work_items: source_plan_slug = TEMPLATE, payload.plan_run = the run.
     const wis = await sql<Array<{ feature_id: string; source_plan_slug: string; status: string; payload: Record<string, unknown> }>>`
@@ -117,6 +122,37 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     const runCount = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
     expect(runCount[0].n).toBe(1);
+  });
+
+  it('run-now (manual) mints a fresh run after a scheduled fire — never replay-no-ops (EI-1369)', async () => {
+    // A scheduled fire stamps last_fired_at (the replay-stable token for the cadence path).
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const sched = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(sched!.replayed).toBe(false);
+    expect(sched!.runSeq).toBe(0);
+
+    // A MANUAL run-now must NOT reuse last_fired_at's token (that would recompute sched's slug and
+    // replay-no-op). It mints a fresh run instead — even though last_fired_at is still set.
+    const m1 = await runScheduledPlanFire(sql, {
+      installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE, trigger: 'manual',
+    });
+    expect(m1!.replayed).toBe(false);
+    expect(m1!.instanceSlug).not.toBe(sched!.instanceSlug);
+    expect(m1!.runSeq).toBe(1);
+
+    // A SECOND manual run-now (potentially the same millisecond) still mints a distinct run —
+    // the module-monotonic manual token guarantees uniqueness.
+    const m2 = await runScheduledPlanFire(sql, {
+      installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE, trigger: 'manual',
+    });
+    expect(m2!.replayed).toBe(false);
+    expect(m2!.instanceSlug).not.toBe(m1!.instanceSlug);
+    expect(m2!.runSeq).toBe(2);
+
+    const runs = await sql<{ trigger: string }[]>`
+      SELECT trigger FROM harness_shared.plan_runs
+       WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE} ORDER BY id`;
+    expect(runs.map((r) => r.trigger)).toEqual(['scheduled', 'manual', 'manual']);
   });
 
   it('mints DISTINCT runs across fires (run_seq increments, fresh work_items)', async () => {
