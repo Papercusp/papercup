@@ -453,7 +453,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // requested via the x-papercusp-account header vs the account this request ACTUALLY egressed on
     // — the ground-truth diagnostic for "is my pin landing / failing over". Off by default (noisy).
     if (process.env.PAPERCUSP_GATEWAY_ROUTE_LOG === '1') {
-      log('info', `gw-route: want=${wantAccount ?? '-'} routed=${active.accountId} model=${model}`);
+      log('info', `gw-route: client=${req.socket?.remotePort ?? '?'} want=${wantAccount ?? '-'} routed=${active.accountId} model=${model}`);
     }
 
     try {
