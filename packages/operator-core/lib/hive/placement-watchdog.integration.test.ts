@@ -301,8 +301,12 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
          status, fail_count, escalation_msg_id, placed_at, last_seen_at, updated_at)
       VALUES (${WS}, ${HIVE}, 'F-CURED-2', ${HIVE}, ${QUEEN},
               'cursed', 3, 'esc-cursed', now(), now(), now())`;
-    // The unit is already in a terminal state (passed)
-    await seedUnit({ id: 'F-CURED-2', status: 'passed' });
+    // A bee completed it independently (the scenario): seed the `done` bee so the unit
+    // is discovered as a placement candidate, then the cursed escalation is suppressed.
+    // (Pre-existing test gap, unrelated to WI-233: the unit reached terminal but no bee
+    // was seeded, so candidate discovery never picked it up and it stayed cursed.)
+    await seedBee({ owner: 'bee-e', featureId: 'F-CURED-2', status: 'done' });
+    await seedUnit({ id: 'F-CURED-2', status: 'passed', takenBy: 'bee-e' });
 
     const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
 

@@ -226,6 +226,42 @@ export default function DeployAccountsPage() {
     }
   }, [command]);
 
+  const primaryAction =
+    linkMode === 'oauth'
+      ? authorizeUrl
+        ? completeOAuth
+        : startOAuth
+      : register;
+  const primaryLabel =
+    linkMode === 'oauth'
+      ? authorizeUrl
+        ? busy ? 'Linking...' : 'Complete link'
+        : busy ? 'Generating...' : 'Get authorize link'
+      : busy ? 'Linking...' : 'Link account';
+  const primaryDisabled =
+    busy ||
+    !accountId ||
+    (linkMode === 'oauth'
+      ? authorizeUrl
+        ? !code.trim()
+        : false
+      : !value.trim());
+  const formStatus = addError
+    ? 'Resolve the error before continuing.'
+    : busy
+      ? 'Saving changes...'
+      : linkMode === 'oauth'
+        ? authorizeUrl
+          ? code.trim()
+            ? 'Ready to complete the link.'
+            : 'Paste the approval code to continue.'
+          : accountId
+            ? 'Ready to generate the authorize link.'
+            : 'Enter an account ID to continue.'
+        : value.trim()
+          ? 'Ready to link this account.'
+          : 'Paste a setup-token or credentials bundle to continue.';
+
   return (
     <div className="pc-da">
       {confirmEl}
@@ -296,9 +332,6 @@ export default function DeployAccountsPage() {
                   as the <strong>TARGET Max account</strong>, approve, then paste the code claude shows you. The token is
                   written server-side and never returned to the browser.
                 </p>
-                <button className="pc-da__btn pc-da__btn--primary" disabled={busy || !accountId} onClick={() => void startOAuth()}>
-                  {busy ? 'Generating…' : 'Get authorize link'}
-                </button>
               </div>
             ) : (
               <>
@@ -321,9 +354,6 @@ export default function DeployAccountsPage() {
                   <span>3 · Paste the code claude.ai shows you</span>
                   <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="code#state" />
                 </label>
-                <button className="pc-da__btn pc-da__btn--primary" disabled={busy || !code.trim()} onClick={() => void completeOAuth()}>
-                  {busy ? 'Linking…' : 'Complete link'}
-                </button>
               </>
             )
           ) : (
@@ -348,12 +378,20 @@ export default function DeployAccountsPage() {
                 <span>3 · Paste the token (or a .credentials.json bundle)</span>
                 <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={3} placeholder="sk-ant-oat01-…   or   {&quot;claudeAiOauth&quot;:{…}}" />
               </label>
-              <button className="pc-da__btn pc-da__btn--primary" disabled={busy || !accountId || !value.trim()} onClick={register}>
-                {busy ? 'Linking…' : 'Link account'}
-              </button>
             </>
           )}
           {addError && <p className="pc-da__error">⚠ {addError}</p>}
+          <div className="pc-da__save-row">
+            <span className="pc-da__save-status" aria-live="polite">{formStatus}</span>
+            <div className="pc-da__save-actions">
+              <button type="button" className="pc-da__btn pc-da__btn--ghost" onClick={resetForm}>
+                Cancel
+              </button>
+              <button className="pc-da__btn pc-da__btn--primary" disabled={primaryDisabled} onClick={() => void primaryAction()}>
+                {primaryLabel}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -403,6 +441,9 @@ export default function DeployAccountsPage() {
         .pc-da__field input, .pc-da__field textarea { background: color-mix(in srgb, var(--bg-deeper), transparent 20%); border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%); border-radius: 8px; color: var(--fg); padding: 8px 10px; font-size: 13px; font-family: ui-monospace, Menlo, monospace; }
         .pc-da__error { color: var(--bad); font-size: 12.5px; margin: 6px 0 0; }
         .pc-da__muted { color: color-mix(in srgb, var(--accent-soft), transparent 45%); font-size: 13px; }
+        .pc-da__save-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+        .pc-da__save-status { color: var(--fg-mute); font-size: 12.5px; }
+        .pc-da__save-actions { display: inline-flex; align-items: center; gap: 8px; }
         .pc-da__mono { font-family: ui-monospace, Menlo, monospace; }
         .pc-da__cred { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--accent-soft), transparent 38%); }
         .pc-da__pill { display: inline-flex; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 650; }

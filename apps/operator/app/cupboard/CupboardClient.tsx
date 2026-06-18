@@ -303,11 +303,7 @@ export default function CupboardClient() {
       style={{
         minHeight: '100%',
         padding: 24,
-        background: `
-          radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent), transparent 82%), transparent 32%),
-          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--accent-deep), transparent 88%), transparent 28%),
-          linear-gradient(180deg, var(--bg) 0%, var(--bg-1) 46%, var(--bg) 100%)
-        `,
+        background: 'var(--bg)',
       }}
     >
       <div style={{ maxWidth: 1180, margin: '0 auto' }}>
@@ -320,8 +316,8 @@ export default function CupboardClient() {
           borderRadius: 18,
           padding: 24,
           marginBottom: 16,
-          background: 'linear-gradient(135deg, var(--bg-popover), color-mix(in srgb, var(--bg-1), transparent 16%))',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.34)',
+          background: 'var(--bg-2)',
+          boxShadow: 'none',
         }}
       >
         <div
@@ -329,7 +325,7 @@ export default function CupboardClient() {
           style={{
             position: 'absolute',
             inset: 0,
-            background: 'linear-gradient(120deg, transparent 0%, rgba(255,255,255,0.045) 42%, transparent 68%)',
+            display: 'none',
             pointerEvents: 'none',
           }}
         />
@@ -703,7 +699,7 @@ export function ListingCard({
           position: 'absolute',
           inset: '0 0 auto',
           height: 3,
-          background: `linear-gradient(90deg, ${tone.fg}, transparent)`,
+          background: tone.fg,
           opacity: 0.86,
         }}
       />
@@ -1013,7 +1009,7 @@ export function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOp
           position: 'absolute',
           inset: '0 0 auto',
           height: 3,
-          background: 'linear-gradient(90deg, var(--accent-soft), transparent)',
+          background: 'var(--accent-soft)',
           opacity: 0.86,
         }}
       />

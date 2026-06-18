@@ -18,7 +18,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import {
   getLegacyClient,
-  getHarnessPg,
+  harnessQuery,
   slugToSchemaName,
   getFeatureLineage,
   formatLineageForPrompt,
@@ -42,8 +42,9 @@ const getLineage = defineTool({
     const format = new URL(req.url).searchParams.get('format') ?? 'md';
     const schemaName = slugToSchemaName(project.slug);
     try {
-      const { sql } = getHarnessPg(project.slug);
-      const rows = await getFeatureLineage(sql, schemaName, project.slug, id);
+      const rows = await harnessQuery(project.slug, (q) =>
+        getFeatureLineage(q, schemaName, project.slug, id),
+      );
       if (rows.length === 0) {
         return Response.json({ error: 'feature not found or no lineage' }, { status: 404 });
       }

@@ -22961,21 +22961,12 @@ body:has(.operator-panel) {
 .operator-panel__action-strip {
   position: relative;
   isolation: isolate;
-  gap: 10px !important;
+  gap: 8px !important;
 }
 
 .operator-panel__action-strip::before {
-  content: "";
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  top: 50%;
-  height: 1px;
-  transform: translateY(-50%);
-  pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgb(from var(--accent-strong) r g b / 0.22), rgba(45, 212, 191, 0.18), transparent);
-  opacity: 0.72;
-  z-index: -1;
+  content: none;
+  display: none;
 }
 
 .operator-panel__action-strip .operator-btn,
@@ -22990,35 +22981,33 @@ body:has(.operator-panel) {
   --operator-action-ring: rgb(from var(--accent-strong) r g b / 0.26);
   position: relative;
   min-width: 82px;
-  background:
-    radial-gradient(circle at 18% 18%, rgba(255,255,255,0.18), transparent 30%),
-    linear-gradient(180deg, color-mix(in oklab, var(--operator-action-tone), transparent 78%), color-mix(in srgb, var(--bg-deep), transparent 18%)) !important;
-  box-shadow:
-    0 10px 20px rgba(0,0,0,0.20),
-    0 0 0 1px color-mix(in oklab, var(--operator-action-tone), transparent 78%),
-    inset 0 1px 0 rgba(255,255,255,0.075) !important;
+  background: var(--bg-2) !important;
+  box-shadow: none !important;
 }
 
 .operator-panel__action-strip .operator-btn--primary {
-  --operator-action-ring: rgba(45, 212, 191, 0.34);
+  --operator-action-ring: color-mix(in srgb, var(--accent), transparent 66%);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 55%) !important;
+  background: color-mix(in srgb, var(--accent), transparent 84%) !important;
+  color: var(--accent-soft) !important;
 }
 
 .operator-panel__action-strip .operator-btn:not(.operator-btn--primary):not(.operator-btn--ghost) {
-  --operator-action-ring: rgb(from var(--gold-400) r g b / 0.30);
+  --operator-action-ring: color-mix(in srgb, var(--warn), transparent 70%);
+  border-color: color-mix(in srgb, var(--warn), transparent 58%) !important;
+  background: color-mix(in srgb, var(--warn), transparent 86%) !important;
+  color: var(--warn) !important;
 }
 
 .operator-panel__action-strip .operator-btn--ghost {
   --operator-action-ring: color-mix(in srgb, var(--accent-soft), transparent 76%);
+  background: transparent !important;
 }
 
 .operator-panel__action-strip .operator-btn:hover,
 .operator-panel__action-strip .operator-btn:focus-visible {
-  transform: translateY(-1px);
-  box-shadow:
-    0 12px 24px rgba(0,0,0,0.24),
-    0 0 0 2px var(--operator-action-ring),
-    0 0 22px color-mix(in oklab, var(--operator-action-tone), transparent 82%),
-    inset 0 1px 0 rgba(255,255,255,0.11) !important;
+  transform: none;
+  box-shadow: 0 0 0 2px var(--operator-action-ring) !important;
 }
 
 .operator-feed-tabs {

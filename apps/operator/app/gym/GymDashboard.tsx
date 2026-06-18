@@ -55,9 +55,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-const card: React.CSSProperties = { border: '1px solid var(--border, #2a2a33)', borderRadius: 8, padding: 12, background: 'var(--bg-2, #16161c)' };
+const card: React.CSSProperties = { border: '1px solid var(--border)', borderRadius: 8, padding: 12, background: 'var(--bg-2)' };
 const mono: React.CSSProperties = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 };
-const subtleInput: React.CSSProperties = { background: 'var(--bg-deeper)', color: 'inherit', border: '1px solid var(--border)', borderRadius: 6 };
+const inputStyle: React.CSSProperties = { ...mono, background: 'var(--bg-deeper)', color: 'inherit', border: '1px solid var(--border)', borderRadius: 6 };
 const dangerText = 'var(--bad)';
 const goodText = 'var(--good)';
 
@@ -98,7 +98,7 @@ export default function GymDashboard() {
   }, []);
 
   return (
-    <div style={{ padding: 16, color: 'var(--fg, #e6e6ea)', maxWidth: 1100, margin: '0 auto' }}>
+    <div style={{ padding: 16, color: 'var(--fg)', maxWidth: 1100, margin: '0 auto' }}>
       <header style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>Harness Gym</h1>
         <label style={{ ...mono, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -242,7 +242,7 @@ function DiffView({ original, proposed }: { original: string; proposed: string }
 function ProposalDiff({ original, proposed }: { original: string; proposed: string }) {
   const fallback = <DiffView original={original} proposed={proposed} />;
   return (
-    <div data-testid="gym-diff-wrap" style={{ height: 320, border: '1px solid #2a2a33', borderRadius: 6, overflow: 'hidden' }}>
+    <div data-testid="gym-diff-wrap" style={{ height: 320, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
       <LoadBoundary fallback={fallback}>
         <Suspense fallback={fallback}>
           <MonacoDiffEditor
@@ -292,22 +292,22 @@ function PromptsTab({ slug }: { slug: string }) {
         {keys.map((k) => (
           <button key={k} onClick={() => void setRole(k)} data-testid={`gym-role-${k}`}
             style={{ ...mono, display: 'block', width: '100%', textAlign: 'left', padding: '5px 8px', marginBottom: 3, borderRadius: 6, cursor: 'pointer',
-              border: '1px solid ' + (role === k ? 'var(--accent,#5b8cff)' : '#2a2a33'), background: role === k ? '#1d2433' : 'transparent', color: 'inherit' }}>
+              border: '1px solid ' + (role === k ? 'var(--accent-strong)' : 'var(--border)'), background: role === k ? 'color-mix(in srgb, var(--accent), transparent 88%)' : 'transparent', color: 'inherit' }}>
             {k === 'judge' ? 'judge (rubric)' : k}
           </button>
         ))}
       </div>
       <div style={card}>
-        {err && <div style={{ color: '#ff6b6b', ...mono, marginBottom: 8 }} data-testid="gym-prompt-error">{err}</div>}
+        {err && <div style={{ color: dangerText, ...mono, marginBottom: 8 }} data-testid="gym-prompt-error">{err}</div>}
         <textarea value={draft} onChange={(e) => { setDraft(e.target.value); setSaved(false); }} data-testid="gym-prompt-editor"
           spellCheck={false}
-          style={{ ...mono, width: '100%', minHeight: 320, background: '#0b0b0f', color: 'inherit', border: '1px solid #2a2a33', borderRadius: 6, padding: 10, resize: 'vertical' }} />
+          style={{ ...inputStyle, width: '100%', minHeight: 320, padding: 10, resize: 'vertical' }} />
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
           <button disabled={busy || draft === current} onClick={save} data-testid="gym-prompt-save"
-            style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--accent,#5b8cff)', color: '#0b0b0f' }}>
+            style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 55%)', background: 'color-mix(in srgb, var(--accent), transparent 84%)', color: 'var(--accent-soft)' }}>
             Save {role === 'judge' ? 'rubric' : role}
           </button>
-          {saved && <span style={{ ...mono, color: '#9ae6a4' }} data-testid="gym-prompt-saved">saved ✓</span>}
+          {saved && <span style={{ ...mono, color: goodText }} data-testid="gym-prompt-saved">saved ✓</span>}
         </div>
       </div>
     </div>
@@ -335,23 +335,23 @@ function AutoloopTab({ slug }: { slug: string }) {
   const a = cfg?.autoloop;
   return (
     <div style={{ ...card, maxWidth: 480 }}>
-      {err && <div style={{ color: '#ff6b6b', ...mono, marginBottom: 8 }} data-testid="gym-autoloop-error">{err}</div>}
+      {err && <div style={{ color: dangerText, ...mono, marginBottom: 8 }} data-testid="gym-autoloop-error">{err}</div>}
       <div style={{ ...mono, marginBottom: 10 }} data-testid="gym-autoloop-status">
         status: <b>{a?.status ?? 'idle'}</b> · enabled: <b>{a?.enabled ? 'yes' : 'no'}</b><br />
         budget: {a?.budgetUsd != null ? `$${a.budgetUsd}` : '∞'} · spent: ${Number(a?.spentUsd ?? 0).toFixed(2)} · last cycle: {a?.lastCycle ?? '—'}
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <button disabled={busy} onClick={() => post({ enabled: !a?.enabled })} data-testid="gym-autoloop-toggle"
-          style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: 'none', background: a?.enabled ? '#b3402f' : '#2e7d32', color: '#fff' }}>
+          style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: `1px solid color-mix(in srgb, ${a?.enabled ? 'var(--bad)' : 'var(--good)'}, transparent 55%)`, background: `color-mix(in srgb, ${a?.enabled ? 'var(--bad)' : 'var(--good)'}, transparent 84%)`, color: a?.enabled ? dangerText : goodText }}>
           {a?.enabled ? 'Disable' : 'Enable'} autoloop
         </button>
         <label style={{ ...mono, display: 'flex', alignItems: 'center', gap: 4 }}>
           budget $
           <input value={budget} onChange={(e) => setBudget(e.target.value)} data-testid="gym-autoloop-budget" inputMode="decimal"
-            style={{ ...mono, width: 80, background: '#0b0b0f', color: 'inherit', border: '1px solid #2a2a33', borderRadius: 6, padding: '3px 6px' }} />
+            style={{ ...inputStyle, width: 80, padding: '3px 6px' }} />
         </label>
         <button disabled={busy} onClick={() => post({ budgetUsd: budget.trim() === '' ? null : Number(budget) })} data-testid="gym-autoloop-save-budget"
-          style={{ ...mono, cursor: 'pointer', padding: '6px 12px', borderRadius: 6, border: '1px solid #2a2a33', background: 'transparent', color: 'inherit' }}>
+          style={{ ...mono, cursor: 'pointer', padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'inherit' }}>
           Set budget
         </button>
       </div>
@@ -388,7 +388,7 @@ function CyclesTab({ slug }: { slug: string }) {
   if (unavailable) return <Unavailable />;
   return (
     <div style={card} data-testid="gym-cycles">
-      {err && <div style={{ color: '#ff6b6b', ...mono }}>{err}</div>}
+      {err && <div style={{ color: dangerText, ...mono }}>{err}</div>}
       {rows.length === 0 ? (
         <div style={{ ...mono, opacity: 0.6, paddingTop: 8 }}>No cycles yet.</div>
       ) : (
@@ -411,7 +411,7 @@ function VariantsTab({ slug }: { slug: string }) {
   if (unavailable) return <Unavailable />;
   return (
     <div style={card} data-testid="gym-variants">
-      {err && <div style={{ color: '#ff6b6b', ...mono }}>{err}</div>}
+      {err && <div style={{ color: dangerText, ...mono }}>{err}</div>}
       {rows.length === 0 ? (
         <div style={{ ...mono, opacity: 0.6, paddingTop: 8 }}>No variants yet.</div>
       ) : (
@@ -450,10 +450,10 @@ function CompareTab({ slug }: { slug: string }) {
   return (
     <div style={card} data-testid="gym-compare">
       <div style={{ ...mono, display: 'flex', gap: 8, marginBottom: 8 }}>
-        <input placeholder="variant A" value={a} onChange={(e) => void setA(e.target.value)} data-testid="gym-compare-a" style={{ ...mono, background: '#0b0b0f', color: 'inherit', border: '1px solid #2a2a33', borderRadius: 6, padding: '3px 6px' }} />
-        <input placeholder="variant B" value={b} onChange={(e) => void setB(e.target.value)} data-testid="gym-compare-b" style={{ ...mono, background: '#0b0b0f', color: 'inherit', border: '1px solid #2a2a33', borderRadius: 6, padding: '3px 6px' }} />
+        <input placeholder="variant A" value={a} onChange={(e) => void setA(e.target.value)} data-testid="gym-compare-a" style={{ ...inputStyle, padding: '3px 6px' }} />
+        <input placeholder="variant B" value={b} onChange={(e) => void setB(e.target.value)} data-testid="gym-compare-b" style={{ ...inputStyle, padding: '3px 6px' }} />
       </div>
-      {err && <div style={{ color: '#ff6b6b', ...mono }}>{err}</div>}
+      {err && <div style={{ color: dangerText, ...mono }}>{err}</div>}
       <Compare
         baseline={a || 'A'}
         treatment={b || 'B'}
@@ -470,7 +470,7 @@ function FrontierTab({ slug }: { slug: string }) {
   if (unavailable) return <Unavailable />;
   return (
     <div style={card} data-testid="gym-frontier">
-      {err && <div style={{ color: '#ff6b6b', ...mono }}>{err}</div>}
+      {err && <div style={{ color: dangerText, ...mono }}>{err}</div>}
       <div style={{ ...mono, opacity: 0.7, marginBottom: 6 }}>Pareto-optimal variants (train vectors):</div>
       {rows.length === 0 ? <div style={{ ...mono, opacity: 0.6 }}>No frontier yet.</div> : (
         <ul style={{ ...mono, margin: 0, paddingLeft: 18 }}>{rows.map((v) => <li key={v}>{v}</li>)}</ul>

@@ -29,6 +29,7 @@ import {
 } from './the-agent-company';
 import { makeGaiaGrader, type GaiaGraderConfig } from './gaia-official';
 import { makeGdpvalGrader, type GdpvalGraderConfig } from './gdpval-official';
+import { makeFrontierSweGrader, type FrontierSweGraderConfig, type FrontierSweGraderDeps } from './frontier-swe';
 
 export { makeFakeGrader } from './fake';
 export { makeSweBenchProGrader, parseSweBenchProReport } from './swe-bench-pro';
@@ -53,6 +54,14 @@ export {
 } from './the-agent-company';
 export { makeGaiaGrader, type GaiaGraderConfig } from './gaia-official';
 export { makeGdpvalGrader, type GdpvalGraderConfig } from './gdpval-official';
+export {
+  makeFrontierSweGrader,
+  parseFrontierSweReward,
+  rewardFromJson,
+  type FrontierSweGraderConfig,
+  type FrontierSweGraderDeps,
+  type FrontierSweRawReward,
+} from './frontier-swe';
 export type {
   TheAgentCompanyGraderConfig,
   TheAgentCompanyGraderDeps,
@@ -95,6 +104,7 @@ export interface GraderRegistryConfig {
   theAgentCompany?: TheAgentCompanyGraderConfig;
   gaia?: GaiaGraderConfig;
   gdpval?: GdpvalGraderConfig;
+  frontierSwe?: FrontierSweGraderConfig;
 }
 
 /**
@@ -144,6 +154,13 @@ export function getOfficialGrader(
     case 'gdpval': {
       if (!cfg.gdpval) throw new Error('getOfficialGrader: gdpval requires a GdpvalGraderConfig (incl. a judge)');
       return makeGdpvalGrader(cfg.gdpval);
+    }
+    case 'frontier-swe': {
+      if (!cfg.frontierSwe) throw new Error('getOfficialGrader: frontier-swe requires a FrontierSweGraderConfig');
+      return makeFrontierSweGrader(cfg.frontierSwe, {
+        exec: deps?.exec ?? liveProcExec,
+        fs: deps?.fs ?? liveGraderFs,
+      } satisfies FrontierSweGraderDeps);
     }
     case 'terminal-bench':
     case 'harness-bench':

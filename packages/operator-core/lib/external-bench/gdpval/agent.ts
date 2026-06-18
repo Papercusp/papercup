@@ -63,6 +63,9 @@ export interface GdpvalGenerationDeps {
   /** Office/pdf → text extractor (the resolver's; reuse makeLiveResolverDeps().officeExtract). */
   officeExtract: ResolverDeps['officeExtract'];
   agentConfig?: GaiaAgentConfig;
+  /** Retry ONCE with a forceful "write the file now" brief if the first run yields an empty deliverable
+   *  (the agent narrated a plan without calling run_python, or wrote only unreadable/empty files). Default true. */
+  retryOnEmpty?: boolean;
 }
 
 export interface GdpvalGenerationResult {

@@ -18,7 +18,9 @@
  * (migration 130) and silently drop a row.
  */
 import { join } from 'node:path';
-import { getHarnessPg } from '@papercusp/db-org';
+// harnessQuery: PgBouncer-safe per-harness reads (C1-2). getHarnessPg retained for
+// the saveIssues multi-statement write — see the plan's C1-2 follow-up note.
+import { getHarnessPg, harnessQuery } from '@papercusp/db-org';
 import { safeRead, harnessDir } from './harness-core';
 import type { Issue, IssueSeverity, IssueStatus } from './harness/issue-types';
 import type { ProjectEntry } from './harness-registry';
@@ -85,15 +87,14 @@ function parseNotes(v: unknown): Issue['notes'] {
 
 /** Load the curated issue set for a harness from PG (the store-of-record). */
 export async function loadIssuesFromPg(project: ProjectEntry): Promise<Issue[]> {
-  const { sql } = getHarnessPg(project.slug);
-  const rows = (await sql`
+  const rows = (await harnessQuery(project.slug, (q) => q`
     SELECT issue_id, title, severity, source, status, found_at, found_during, repro,
            evidence, suggested_fix, code_pointer, linked_feature_id, attempts, notes,
            created_ts
       FROM harness_issues
      WHERE harness_slug = ${project.slug}
      ORDER BY created_ts DESC, issue_id DESC
-  `) as Array<{
+  `)) as Array<{
     issue_id: string; title: string; severity: string; source: string; status: string;
     found_at: string | Date; found_during: string | null; repro: string | null;
     evidence: string | null; suggested_fix: string | null; code_pointer: string | null;
