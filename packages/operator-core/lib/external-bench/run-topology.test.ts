@@ -73,6 +73,7 @@ function fakeAgent(overrides: Partial<AgentRunOutput> = {}) {
       tokensOut: 50,
       costUsd: 0.01,
       turns: 3,
+      coordCalls: 2, // C4 evidence: each agent made 2 coordination tool calls (the topology WAS exercised)
     };
     if (input.role === 'judge') return { ...base, pickIndex: 1, ...overrides };
     return { ...base, ...overrides };
@@ -109,6 +110,7 @@ test('distributed arm (dist-broadcast) — one worker per task, rows carry seam 
     assert.equal(r.modelId, 'claude-opus-4-8[1m]');
     assert.ok(r.wallClockMs > 0);
     assert.equal(typeof r.createdAt, 'string');
+    assert.equal(r.armMeta?.coordCalls, 2, 'C4 evidence: the worker actually coordinated');
   }
   // the worker directive (self-claim + broadcast to topic) was injected.
   assert.match(calls[0].directive, /DISTRIBUTED team/);
@@ -162,7 +164,8 @@ test('ensemble (ensemble-solve) — N solvers + judge; judge pick is the graded 
   assert.equal(graded[0].cid, 1, 'graded the judge-picked solver environment');
   const row = res.rows[0];
   assert.equal(row.resolved, true);
-  assert.deepEqual(row.armMeta, { ensembleSize: 3, solvers: 3, candidates: 3, pickIndex: 1 });
+  // coordCalls summed across 3 solvers + 1 judge (4 agents × 2 = 8) — C4 evidence the ensemble ran.
+  assert.deepEqual(row.armMeta, { ensembleSize: 3, solvers: 3, candidates: 3, pickIndex: 1, coordCalls: 8 });
 });
 
 test('pair (pair) — driver + navigator on one clone, usage summed, one graded attempt', async () => {
@@ -184,7 +187,7 @@ test('pair (pair) — driver + navigator on one clone, usage summed, one graded 
   assert.deepEqual(calls.map((c) => c.role), ['driver', 'navigator']);
   assert.equal(res.modelCallsSpent, 2, 'driver + navigator');
   assert.equal(res.rows[0].tokensTotal, 300, 'usage summed across both agents');
-  assert.deepEqual(res.rows[0].armMeta, { pair: true });
+  assert.deepEqual(res.rows[0].armMeta, { pair: true, coordCalls: 4 });
   // the navigator was handed the driver's submission to review.
   assert.deepEqual(calls[1].candidates, [{ index: 0, submission: 'driver:instance_p__p-1' }]);
 });
@@ -208,6 +211,22 @@ test('clone failure → an infra-error row (resolved null, generationStatus erro
   const ok = res.rows.find((r) => r.taskId === 'instance_ok__ok-1')!;
   assert.equal(ok.resolved, true);
   assert.equal(tornDown.length, 1, 'only the successful clone is torn down (the failed one has no handle)');
+});
+
+test('C4 evidence — a coordination arm whose agents never coordinated reports coordCalls:0 (audit can flag)', async () => {
+  // The trap: a "dist-broadcast" delta is meaningless if the agents never actually broadcast. The driver
+  // surfaces armMeta.coordCalls so buildFairnessAudit can mark such an arm C4 NEEDS-EVIDENCE.
+  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint);
+  const { seam } = fakeSeam();
+  const { run } = fakeAgent({ coordCalls: 0 }); // agents ran but made ZERO coordination calls
+  const backlog = [task('instance_z__z-1'), task('instance_z__z-2')];
+
+  const res = await runTopology<FakeHandle>({
+    spec, backlog, seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
+    runId: 'r7', seed: 1, now: fakeClock(), runAgent: run, cap: 2,
+  });
+
+  assert.ok(res.rows.every((r) => r.armMeta?.coordCalls === 0), 'a non-coordinating run is visible as coordCalls:0');
 });
 
 test('central pole (hive) resolves to plain workers with an empty coordination directive', async () => {

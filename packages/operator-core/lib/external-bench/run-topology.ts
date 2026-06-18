@@ -80,6 +80,15 @@ export interface AgentRunOutput extends AgentRunUsage {
   capped?: boolean;
   /** Judge only: which candidate index it picked (the winning solver). */
   pickIndex?: number;
+  /**
+   * C4 EVIDENCE — the count of COORDINATION tool calls this agent actually made (coord:send / topic
+   * broadcast / peer-review ask / work_items:claim_next / blackboard write — whatever the topology uses).
+   * The runAgent reports it from telemetry. The driver sums it per task onto `armMeta.coordCalls` so the
+   * fairness audit can FLAG a coordination arm whose agents never coordinated (`coordCalls ≈ 0`) — then the
+   * topology was NOT exercised and any "delta" is variance, not capability (the C4 trap that sank a peer's
+   * tau2 +memory "lift": a discretionary capability the agent simply never invoked). A `worker` in a
+   * central/no-coord arm legitimately reports 0. */
+  coordCalls?: number;
   error?: string | null;
 }
 
@@ -241,7 +250,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       });
       addUsage(out);
       const grade = out.status === 'completed' ? await seam.grade(task, handle) : infraGrade;
-      return buildRow({ task, usage: out, grade, status: out.status, capped: !!out.capped, generationError: out.error, wallClockMs: now() - unitStart });
+      return buildRow({ task, usage: out, grade, status: out.status, capped: !!out.capped, generationError: out.error, wallClockMs: now() - unitStart, armMeta: { coordCalls: out.coordCalls ?? 0 } });
     } finally {
       await safeTeardown(handle);
     }
@@ -252,6 +261,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     const handles: H[] = [];
     const candidates: Array<{ index: number; submission: unknown }> = [];
     let usage = ZERO;
+    let coordCalls = 0;
     try {
       for (let i = 0; i < ensembleSize; i++) {
         if (i > 0 && exhausted()) break; // always run at least one solver; stop spending past the cap
@@ -267,12 +277,12 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
           attemptBudget: remaining(),
         });
-        addUsage(out); usage = sumUsage(usage, out);
+        addUsage(out); usage = sumUsage(usage, out); coordCalls += out.coordCalls ?? 0;
         if (out.status === 'completed') candidates.push({ index: handles.length - 1, submission: out.submission });
       }
 
       if (candidates.length === 0) {
-        return buildRow({ task, usage, grade: infraGrade, status: 'error', capped: false, generationError: 'ensemble: no solver produced a submission', wallClockMs: now() - unitStart, armMeta: { ensembleSize, solvers: handles.length } });
+        return buildRow({ task, usage, grade: infraGrade, status: 'error', capped: false, generationError: 'ensemble: no solver produced a submission', wallClockMs: now() - unitStart, armMeta: { ensembleSize, solvers: handles.length, coordCalls } });
       }
 
       let pickIndex = candidates[0].index;
@@ -282,11 +292,11 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
           attemptBudget: remaining(), candidates,
         });
-        addUsage(judge); usage = sumUsage(usage, judge);
+        addUsage(judge); usage = sumUsage(usage, judge); coordCalls += judge.coordCalls ?? 0;
         if (judge.pickIndex != null && handles[judge.pickIndex] != null) pickIndex = judge.pickIndex;
       }
       const grade = await seam.grade(task, handles[pickIndex]);
-      return buildRow({ task, usage, grade, status: 'completed', capped: exhausted(), wallClockMs: now() - unitStart, armMeta: { ensembleSize, solvers: handles.length, candidates: candidates.length, pickIndex } });
+      return buildRow({ task, usage, grade, status: 'completed', capped: exhausted(), wallClockMs: now() - unitStart, armMeta: { ensembleSize, solvers: handles.length, candidates: candidates.length, pickIndex, coordCalls } });
     } finally {
       for (const h of handles) await safeTeardown(h);
     }
@@ -308,16 +318,17 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       });
       addUsage(drv);
       let usage = drv as AgentRunUsage;
+      let coordCalls = drv.coordCalls ?? 0;
       if (drv.status === 'completed' && !exhausted()) {
         const nav = await deps.runAgent({
           task, handle, role: 'navigator', arm: spec.arm, teamKey: plan.teamKey,
           topic: teamTopic(spec, plan.teamKey), directive: plan.directive, forbidTools: plan.forbidTools,
           attemptBudget: remaining(), candidates: [{ index: 0, submission: drv.submission }],
         });
-        addUsage(nav); usage = sumUsage(usage, nav);
+        addUsage(nav); usage = sumUsage(usage, nav); coordCalls += nav.coordCalls ?? 0;
       }
       const grade = drv.status === 'completed' ? await seam.grade(task, handle) : infraGrade;
-      return buildRow({ task, usage, grade, status: drv.status, capped: !!drv.capped || exhausted(), generationError: drv.error, wallClockMs: now() - unitStart, armMeta: { pair: true } });
+      return buildRow({ task, usage, grade, status: drv.status, capped: !!drv.capped || exhausted(), generationError: drv.error, wallClockMs: now() - unitStart, armMeta: { pair: true, coordCalls } });
     } finally {
       await safeTeardown(handle);
     }

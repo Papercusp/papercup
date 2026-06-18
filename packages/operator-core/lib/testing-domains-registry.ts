@@ -436,6 +436,27 @@ defineTestDomain({
         'packages/operator-core/lib/agent-tools/plans/__tests__/e2e.test.ts',
       ],
     },
+    {
+      id: 'scheduling',
+      label: 'Scheduling (routines)',
+      // The scheduled-plans feature: a plan's RRULE/cron schedule is armed into
+      // a routine that fires plan_runs. Its runtime lives in the routines engine
+      // (packages/.../harness/routines/), so these globs overlap the Harness ›
+      // Lib catch-all — deliberately, to surface the feature as one group here.
+      // (Other routines actions — hive-canary, wake-brain, release, improvement,
+      // coord-invariant — are NOT scheduled-plans and stay out of this section.)
+      globs: [
+        'packages/operator-core/lib/harness/routines/schedule-next.test.ts',
+        'packages/operator-core/lib/harness/routines/scheduled-occurrences.integration.test.ts',
+        'packages/operator-core/lib/harness/routines/materialize-plan-schedule.integration.test.ts',
+        'packages/operator-core/lib/harness/routines/arm-plan-schedule.integration.test.ts',
+        'packages/operator-core/lib/harness/routines/plan-run-action.integration.test.ts',
+        'packages/operator-core/lib/harness/routines/plan-run-cost.integration.test.ts',
+        'packages/operator-core/lib/harness/routines/reconcile-plan-runs.integration.test.ts',
+        'packages/operator-core/lib/harness/routines/gc-plan-runs.integration.test.ts',
+        'packages/operator-core/lib/agent-tools/plans/__tests__/set-plan-schedule.integration.test.ts',
+      ],
+    },
     // Catch-the-rest for the plans tool __tests__ dir + the plans admin UI.
     { id: 'tools', label: 'Tools', globs: ['packages/operator-core/lib/agent-tools/plans/__tests__/**/*.test.ts'] },
     { id: 'app', label: 'App UI', globs: ['apps/operator/app/admin/plans/**/*.test.*'] },
@@ -520,6 +541,10 @@ defineTestDomain({
     { id: 'wit', label: 'WIT', globs: ['packages/plugin-wit/**/*.test.ts'] },
     { id: 'grants', label: 'Grants', globs: ['packages/operator-core/lib/plugin-grants*.test.ts'] },
     { id: 'lifecycle', label: 'Lifecycle', globs: ['packages/operator-core/lib/plugin-*.test.ts'] },
+    // Vitest unit tests that ship beside a built-in plugin (libs/papercusp/plugins/**).
+    // e.g. gitnexus-bridge's rolesFor/quotaFor/path helpers. Distinct from the
+    // builtin-smoke runner below (which drives a full in-process publish flow).
+    { id: 'builtin', label: 'Built-in plugin units', globs: ['libs/papercusp/plugins/**/*.test.ts'] },
     // Built-in plugin smokes (libs/papercusp/plugins/**). In-process — the
     // cloudflare-pages smoke runs the full Direct-Upload flow against a mock
     // of api.cloudflare.com (no real CF account/token). Surfaced as a runner

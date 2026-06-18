@@ -118,3 +118,39 @@ export function coordinationSpawnPlans(spec: CoordinationSpec, backlog: readonly
     return { teamKey, tasks, directive: coordinationDirective(spec, teamKey), forbidTools };
   });
 }
+
+// ── C4 measurement: which tool calls count as ACTIVE COORDINATION ──────────────────────────────────
+// The C4 fairness check ("was the topology actually exercised?") needs every arm to count coordination
+// the SAME way — otherwise the measurement itself is a fairness bug. A consumer's runAgent populates
+// AgentRunOutput.coordCalls = countCoordinationCalls(<the agent's tool-call names>) using this ONE
+// predicate, so a `dist-broadcast` arm and an `ensemble` arm are judged on an identical definition.
+
+/**
+ * The tool-name matchers that count as INTER-AGENT COORDINATION (not work-acquisition). Rationale: the C4
+ * question is "did the agents coordinate vs work in isolation" — so we count direct peer messaging
+ * (`coord:*`), broadcast (`topics:*`), durable hand-off (`messages:send`), and shared-state / blackboard
+ * reads+writes (`work_items:comment|amend|observe`). We deliberately EXCLUDE `work_items:claim_next` /
+ * `fleet:assignments` — self-claim is present even in the no-coordination arm, so it does not evidence
+ * coordination. Peer-review rides `coord:ask`/`coord:send`, already covered by the `coord:` prefix.
+ */
+export const COORDINATION_TOOL_MATCHERS: readonly (string | RegExp)[] = [
+  /^coord:/,
+  /^topics:/,
+  'messages:send',
+  'work_items:comment',
+  'work_items:amend',
+  'work_items:observe',
+];
+
+/** PURE: is this tool-call name an active-coordination call (per {@link COORDINATION_TOOL_MATCHERS})? */
+export function isCoordinationToolCall(toolName: string): boolean {
+  return COORDINATION_TOOL_MATCHERS.some((m) => (typeof m === 'string' ? m === toolName : m.test(toolName)));
+}
+
+/** PURE: count active-coordination calls in a sequence of tool-call names — the standard C4 `coordCalls`
+ *  computation every consumer's runAgent should use, so the measurement is identical across arms. */
+export function countCoordinationCalls(toolNames: Iterable<string>): number {
+  let n = 0;
+  for (const name of toolNames) if (isCoordinationToolCall(name)) n += 1;
+  return n;
+}

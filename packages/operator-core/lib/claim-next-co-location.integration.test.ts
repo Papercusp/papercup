@@ -14,13 +14,16 @@
  * Two layers are exercised:
  *   1. claimNextWorkItem({swarmId}) — the SELECT-side affinity filter (each Swarm sees
  *      only its own + unaffined work), against a shared PG.
- *   2. the work_items:claim_next HANDLER — that, under PAPERCUSP_WORKITEM_CLAIM_LEASE,
+ *   2. the work_items:claim_next HANDLER — that, under the WORKITEM_CLAIM_LEASE flag,
  *      it derives THIS Swarm's id from localSwarmId and threads it in (so affinity
  *      engages in the real tool path), and is affinity-blind when the flag is off.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { emitFlagChange } from '@papercusp/flags/server';
 
 const H = 'h1';
 const SWARM_A = 'pubkey-aaaa';
@@ -54,7 +57,7 @@ vi.mock('./fleet/swarm-identity', () => ({
 }));
 // Isolate the affinity behavior from the authority RPC: the lease GRANTS locally (the
 // authority-serialization path is proven by work-item-claims-two-instance). We toggle
-// the flag itself via the env in each test.
+// the WORKITEM_CLAIM_LEASE flag itself in each test (P-012 migrated it off the env var).
 vi.mock('./work-item-claim-lease-wiring', async () => {
   const actual = await vi.importActual<typeof import('./work-item-claim-lease-wiring')>('./work-item-claim-lease-wiring');
   return { ...actual, leaseClaimedWorkItem: async () => true };
@@ -67,6 +70,17 @@ vi.mock('./agent-tools/coordination/identity', async () => {
 const wi = await import('./work-items');
 const claimNextTool = (await import('./agent-tools/work_items/claim_next')).default;
 let db: FreshPgDb;
+
+/**
+ * Drive the WORKITEM_CLAIM_LEASE FLAG (P-012/D-008 migrated the gate off the
+ * PAPERCUSP_WORKITEM_CLAIM_LEASE env var). The claim-lease wiring caches the flag in a
+ * SYNC boolean refreshed on flag change — force the override, fire the change, await the tick.
+ */
+async function setLeaseFlag(on: boolean): Promise<void> {
+  setFlagOverridesForTest({ [FLAGS.WORKITEM_CLAIM_LEASE]: on });
+  emitFlagChange(FLAGS.WORKITEM_CLAIM_LEASE);
+  await new Promise((r) => setTimeout(r, 0));
+}
 
 async function seed(id: string, opts: { affinity?: string | null; createdTs?: number } = {}) {
   await db.sql`
@@ -98,7 +112,8 @@ beforeAll(async () => {
 });
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => { await db.sql`DELETE FROM harness_shared.harness_features_consolidated`; });
-afterEach(() => { delete process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE; whoami.swarm = 'local'; });
+afterEach(async () => { await setLeaseFlag(false); whoami.swarm = 'local'; });
+afterAll(() => setFlagOverridesForTest(null));
 
 describe('two Swarms partition one backlog by co-location affinity (claimNextWorkItem)', () => {
   it('each Swarm drains its OWN affined work + shared unaffined, never the other Swarm\'s', async () => {
@@ -141,7 +156,7 @@ describe('two Swarms partition one backlog by co-location affinity (claimNextWor
 
 describe('work_items:claim_next handler — flag gates the co-location affinity', () => {
   it('with the lease ON, the handler threads localSwarmId so affinity engages', async () => {
-    process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE = '1';
+    await setLeaseFlag(true);
     await seed('F-B1', { affinity: SWARM_B, createdTs: 10 }); // older, but B's
     await seed('F-A1', { affinity: SWARM_A, createdTs: 20 }); // newer, A's
     // Swarm A's handler must skip the older B-affined item and take its own.

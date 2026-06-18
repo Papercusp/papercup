@@ -223,3 +223,52 @@ describe('frequencyWarning', () => {
     expect(frequencyWarning({ kind: 'rrule', rrule: 'FREQ=DAILY;COUNT=1', dtstart: '2026-01-01T09:00:00Z' }, from)).toBeNull();
   });
 });
+
+// RDATE = the additive half of the "edit this occurrence" model (D-004): a one-off
+// instant grafted onto the recurrence set, independent of the RRULE pattern. The
+// source honors it (RRuleSet.rdate) but it was previously only covered for EXDATE.
+describe('computeNextFireFromRrule — RDATE additions', () => {
+  it('returns an RDATE one-off that falls before the next rrule occurrence', () => {
+    const cfg: ScheduleTrigger = {
+      rrule: 'FREQ=DAILY', // 09:00 every day
+      dtstart: '2026-06-01T09:00:00.000Z',
+      rdate: ['2026-06-10T18:00:00.000Z'], // an extra fire on the 10th, that evening
+    };
+    // `from` is just after the 10th's 09:00 daily fire; the next *pattern* fire is
+    // the 11th 09:00, but the RDATE on the 10th 18:00 is sooner and must win.
+    const next = computeNextFireFromRrule(cfg, new Date('2026-06-10T10:00:00.000Z'));
+    expect(next).not.toBeNull();
+    expect(next!.toISOString()).toBe('2026-06-10T18:00:00.000Z');
+  });
+
+  it('an EXDATE at the same instant cancels an RDATE one-off (union semantics)', () => {
+    const cfg: ScheduleTrigger = {
+      rrule: 'FREQ=DAILY',
+      dtstart: '2026-06-01T09:00:00.000Z',
+      rdate: ['2026-06-10T18:00:00.000Z'],
+      exdate: ['2026-06-10T18:00:00.000Z'], // exclude the very occurrence we added
+    };
+    // With the RDATE cancelled, the next fire reverts to the pattern: the 11th 09:00.
+    const next = computeNextFireFromRrule(cfg, new Date('2026-06-10T10:00:00.000Z'));
+    expect(next).not.toBeNull();
+    expect(next!.toISOString()).toBe('2026-06-11T09:00:00.000Z');
+  });
+});
+
+describe('expandOccurrences — RDATE additions', () => {
+  it('includes an RDATE one-off within the window alongside the pattern fires', () => {
+    const cfg: ScheduleTrigger = {
+      rrule: 'FREQ=DAILY', // 09:00 daily
+      dtstart: '2026-06-01T09:00:00.000Z',
+      rdate: ['2026-06-11T18:00:00.000Z'], // an extra evening fire mid-window
+    };
+    const start = new Date('2026-06-10T00:00:00.000Z');
+    const end = new Date('2026-06-12T23:59:59.000Z');
+    const isos = expandOccurrences(cfg, start, end).map((d) => d.toISOString());
+    // 3 daily pattern fires (10th–12th 09:00) + the 1 RDATE = 4, ascending.
+    expect(isos).toContain('2026-06-11T18:00:00.000Z');
+    expect(isos).toHaveLength(4);
+    const times = isos.map((s) => new Date(s).getTime());
+    for (let i = 1; i < times.length; i++) expect(times[i]).toBeGreaterThan(times[i - 1]);
+  });
+});

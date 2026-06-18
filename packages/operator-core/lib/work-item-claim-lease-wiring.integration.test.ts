@@ -11,6 +11,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { emitFlagChange } from '@papercusp/flags/server';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -30,6 +33,17 @@ const { workItemClaimLeaseEnabled, leaseClaimedWorkItem } = await import('./work
 const { getClaim } = await import('./work-item-claims');
 const { resetWorkItemClaimAuthority } = await import('./work-item-claim-authority');
 
+/**
+ * Drive the WORKITEM_CLAIM_LEASE FLAG (P-012/D-008 migrated the gate off the
+ * PAPERCUSP_WORKITEM_CLAIM_LEASE env var). The wiring caches the flag in a SYNC boolean
+ * refreshed on flag change, so force the override, fire the change, then await the tick.
+ */
+async function setLeaseFlag(on: boolean): Promise<void> {
+  setFlagOverridesForTest({ [FLAGS.WORKITEM_CLAIM_LEASE]: on });
+  emitFlagChange(FLAGS.WORKITEM_CLAIM_LEASE);
+  await new Promise((r) => setTimeout(r, 0));
+}
+
 const WORK_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_claims (
     workspace_id text NOT NULL, harness_slug text NOT NULL, work_item_id text NOT NULL,
@@ -48,23 +62,23 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
 });
-afterAll(async () => { await db?.cleanup(); });
+afterAll(async () => { setFlagOverridesForTest(null); await db?.cleanup(); });
 beforeEach(async () => {
   resetWorkItemClaimAuthority();
   await db.sql`DELETE FROM harness_shared.work_item_claims`;
-  delete process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE;
+  await setLeaseFlag(false);
 });
-afterEach(() => { delete process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE; });
+afterEach(async () => { await setLeaseFlag(false); });
 
-describe('workItemClaimLeaseEnabled (owner ratification switch)', () => {
-  it('defaults OFF; ON only for exactly "1"', () => {
-    expect(workItemClaimLeaseEnabled()).toBe(false);
-    process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE = '0';
-    expect(workItemClaimLeaseEnabled()).toBe(false);
-    process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE = 'true';
-    expect(workItemClaimLeaseEnabled()).toBe(false);
-    process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE = '1';
-    expect(workItemClaimLeaseEnabled()).toBe(true);
+describe('workItemClaimLeaseEnabled (owner ratification switch — the WORKITEM_CLAIM_LEASE FLAG)', () => {
+  it('defaults OFF; flips with the flag (sync cache refreshed on flag change)', async () => {
+    // P-012/D-008: the gate migrated off the PAPERCUSP_WORKITEM_CLAIM_LEASE env var to the
+    // runtime-flippable WORKITEM_CLAIM_LEASE flag, read from a SYNC-cached boolean.
+    expect(workItemClaimLeaseEnabled()).toBe(false); // default OFF (KNOWN_DARK_FLAGS)
+    await setLeaseFlag(true);
+    expect(workItemClaimLeaseEnabled()).toBe(true); // flag ON → cached true
+    await setLeaseFlag(false);
+    expect(workItemClaimLeaseEnabled()).toBe(false); // flag OFF → cached false again
   });
 });
 

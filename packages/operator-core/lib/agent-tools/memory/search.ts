@@ -71,6 +71,8 @@ export default defineTool({
     limit: z.number().int().min(1).max(20).optional(),
     harness_slug: z.string().optional()
       .describe('Scope the search to a single harness in addition to user memory. Omit to fan out across every harness in the workspace.'),
+    harnessOnly: z.boolean().optional()
+      .describe('Scope to ONLY the named harness pool — EXCLUDE the user/personal pool. For ISOLATED per-run pools (e.g. a benchmark capability-injection arm) where the user\'s personal memories would be noise. Requires harness_slug; ignored without it.'),
     workspace: z.string().optional()
       .describe('Superuser-only: from an UNSCOPED session, resolve harness fan-out within THIS workspace (the resolved workspace scopes the fan-out). Scoped/power-user sessions ignore it. Omit for personal (user-scoped) recall.'),
   }),
@@ -101,12 +103,15 @@ export default defineTool({
       }
     }
 
+    // Scope: user-pool + harness-pool(s) normally. With harnessOnly (+ a harness_slug), scope to ONLY the
+    // harness pool — drop the user pool — so an ISOLATED per-run pool (a benchmark capability-injection arm)
+    // recalls just its own facts, not the user's personal memories (which would be noise / confound the
+    // measurement). harnessOnly without harness_slug is meaningless (no pool to isolate to) → ignored.
+    const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
+    const scope = args.harnessOnly && args.harness_slug ? harnessScopes : [user.id, ...harnessScopes];
     // The backend fans out per scope (limit applies per pool), merges,
     // de-dupes by id and sorts by score; we apply the global cap here.
-    let hits = await backend.search(args.query, {
-      scope: [user.id, ...harnessSlugs.map((slug) => `harness:${slug}`)],
-      limit,
-    });
+    let hits = await backend.search(args.query, { scope, limit });
 
     // memory_feedback consumer (EI-366 / consume-edges P-031): drop hits the
     // user deleted (tombstones — the lexical projection has no per-delete

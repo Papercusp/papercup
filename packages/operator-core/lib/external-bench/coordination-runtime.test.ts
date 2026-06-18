@@ -9,6 +9,8 @@ import {
   groupTeams,
   coordinationDirective,
   coordinationSpawnPlans,
+  isCoordinationToolCall,
+  countCoordinationCalls,
 } from './coordination-runtime';
 import type { CoordinationSpec } from './coordination-topology';
 import type { BenchTask } from './types';
@@ -83,4 +85,19 @@ test('coordinationSpawnPlans — per-repo yields one plan per repo with tasks + 
   assert.ok(plans.every((p) => p.tasks.length >= 1 && p.directive.length > 0));
   assert.ok(plans.every((p) => p.forbidTools.length === 1 && p.forbidTools[0] === 'coord:send'));
   assert.deepEqual(plans.map((p) => p.teamKey).sort(), ['ansible__ansible', 'flipt-io__flipt']);
+});
+
+test('C4 coordination-call measurement — counts inter-agent comms, NOT work-acquisition', () => {
+  // counts: direct messaging (coord:*), broadcast (topics:*), hand-off, blackboard reads/writes
+  for (const t of ['coord:send', 'coord:ask', 'coord:emit', 'topics:feed', 'topics:subscribe', 'messages:send', 'work_items:comment', 'work_items:amend', 'work_items:observe']) {
+    assert.equal(isCoordinationToolCall(t), true, `${t} is coordination`);
+  }
+  // does NOT count: self-claim / work acquisition (present even in the no-coordination arm) + plain work
+  for (const t of ['work_items:claim_next', 'fleet:assignments', 'work_items:get', 'work_items:complete', 'capability:edit', 'bash', 'Read']) {
+    assert.equal(isCoordinationToolCall(t), false, `${t} is NOT coordination`);
+  }
+  // the standard coordCalls computation: 4 coordination calls in a mixed trace.
+  const trace = ['Read', 'coord:send', 'capability:edit', 'work_items:claim_next', 'topics:feed', 'work_items:comment', 'messages:send', 'bash'];
+  assert.equal(countCoordinationCalls(trace), 4);
+  assert.equal(countCoordinationCalls([]), 0, 'a non-coordinating agent → 0 (the C4 red flag)');
 });

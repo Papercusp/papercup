@@ -58,7 +58,7 @@ export default defineTool({
       excludeRedundant,
     });
     // P-004 / D-002 (D-007 hybrid), flag-gated default-OFF: once the owner ratifies
-    // (PAPERCUSP_WORKITEM_CLAIM_LEASE=1), the local SKIP-LOCKED claim is arbitrated by
+    // (the WORKITEM_CLAIM_LEASE flag), the local SKIP-LOCKED claim is arbitrated by
     // the per-Hive authority lease. On a single box this is a no-op (authority = self);
     // cross-Swarm, only one Swarm wins the Hive lease — the loser releases its local
     // claim so the item returns to the backlog (work-stealing across machines).

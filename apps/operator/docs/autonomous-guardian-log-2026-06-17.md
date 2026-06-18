@@ -117,6 +117,23 @@ singleton, and (2) OK to raise fleet-wide scout firing (cost). Then the fix is ~
 Meanwhile: watching for scout's next natural fire under the healthy LLM (would confirm it
 produces); Queen/Overwatch healthy.
 
+## DEPLOY PIPELINE (guardian cycle 2026-06-18 ~01:07) — was STUCK 4h, now self-healing
+Green `main` was **33 commits behind staging**, pinned to a ~4h-old commit — i.e. NOTHING on staging
+(scout fix, recent F-FIX-038 follow-ups, persona work) had deployed to :3070 in 4h. Root cause: the
+last green-checkpoint result was `{advanced:false, green:false, reason:"not-green"}` with **28 failing
+test files + 3 packages** (highlighted: `plans/runs.test.ts` mapPlanRunRow gained 7 fields w/ a stale
+expected-shape; a big `endpoint-route/*` + `tool-*` cluster = a tool/route change w/o snapshot update).
+**Verified those failures are NOW FIXED on staging** — re-ran 10 of the 28 (runs, tool-auth-gating,
+auth-posture, mcp-handler-gating-matrix, route-stack, openapi, schedule-next, voice-node,
+tool-harness-scope, tool-input-schema-rejection): all green. So the checkpoint was blocked by a
+since-resolved red surface. The checkpoint cron is `0 15 * * * *` (hourly at HH:15) → the **01:15 run
+should find green and FF main forward**, deploying the 33 commits incl. the scout fix.
+**Risk to watch:** `registry-residuals.test.ts` (EI-1402) failed under load in my ship-gate run (11s,
+timeout-ish) but passed at the checkpoint's run — looks **flaky under load**, so it could intermittently
+re-block the 01:15 checkpoint. **Action:** did NOT manually deploy (pipeline is self-healing + a manual
+deploy at 1am unsupervised is riskier than waiting ~8min). Watching the 01:15 outcome; will investigate
+only if it ALSO fails to advance.
+
 ## FINDINGS / BASELINE (no action needed)
 
 - **Queen** — performing as designed: places aggressively (4-7 `place_batch` + 4-5 `fleet_spawn`

@@ -11,7 +11,7 @@
  *   - read      { workItem }                    — report the current affinity, no write.
  *
  * The affinity is INERT until the per-Hive claim lease is active
- * (`PAPERCUSP_WORKITEM_CLAIM_LEASE=1`); on a single Swarm everything is co-located
+ * (the `WORKITEM_CLAIM_LEASE` flag); on a single Swarm everything is co-located
  * locally, so the lever reports `local` and changes nothing.
  */
 import { z } from 'zod';

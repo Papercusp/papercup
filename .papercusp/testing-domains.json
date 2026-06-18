@@ -375,6 +375,7 @@
             "packages/operator-core/lib/agent-tools/docs/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/flags/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/harness/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/harness_docs/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/hooks/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/memory/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/messages/**/*.test.ts",
@@ -458,6 +459,21 @@
           "globs": [
             "packages/operator-core/lib/agent-tools/plans/__tests__/concurrency*.test.ts",
             "packages/operator-core/lib/agent-tools/plans/__tests__/e2e.test.ts"
+          ]
+        },
+        {
+          "id": "scheduling",
+          "label": "Scheduling (routines)",
+          "globs": [
+            "packages/operator-core/lib/harness/routines/schedule-next.test.ts",
+            "packages/operator-core/lib/harness/routines/scheduled-occurrences.integration.test.ts",
+            "packages/operator-core/lib/harness/routines/materialize-plan-schedule.integration.test.ts",
+            "packages/operator-core/lib/harness/routines/arm-plan-schedule.integration.test.ts",
+            "packages/operator-core/lib/harness/routines/plan-run-action.integration.test.ts",
+            "packages/operator-core/lib/harness/routines/plan-run-cost.integration.test.ts",
+            "packages/operator-core/lib/harness/routines/reconcile-plan-runs.integration.test.ts",
+            "packages/operator-core/lib/harness/routines/gc-plan-runs.integration.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/set-plan-schedule.integration.test.ts"
           ]
         },
         {
@@ -660,6 +676,13 @@
           "label": "Lifecycle",
           "globs": [
             "packages/operator-core/lib/plugin-*.test.ts"
+          ]
+        },
+        {
+          "id": "builtin",
+          "label": "Built-in plugin units",
+          "globs": [
+            "libs/papercusp/plugins/**/*.test.ts"
           ]
         },
         {

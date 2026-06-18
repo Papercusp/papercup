@@ -792,7 +792,7 @@ export interface ClaimNextFilter {
    * the claim HONORS each item's `swarm_affinity`: work affined to a DIFFERENT Swarm is
    * skipped, and work affined to THIS Swarm is preferred over unaffined work. The caller
    * passes this ONLY when the per-Hive claim lease is active
-   * (`PAPERCUSP_WORKITEM_CLAIM_LEASE=1`); omitted (the single-instance default) the claim
+   * (the `WORKITEM_CLAIM_LEASE` flag); omitted (the single-instance default) the claim
    * is byte-identical to before — oldest-first, affinity ignored.
    */
   swarmId?: string;

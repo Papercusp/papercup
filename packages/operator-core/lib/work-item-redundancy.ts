@@ -80,9 +80,9 @@ export async function resolveReplicaHiveSlug(workspaceId: string, harnessSlug: s
   }
 }
 
-/** The owner's master switch for BOINC redundancy (P-014). Default OFF — mirrors
- *  `PAPERCUSP_WORKITEM_CLAIM_LEASE`. Env-gated (a synchronous server-side dispatch
- *  decision deep in the claim path); promote to a PostHog flag if a UI toggle is wanted. */
+/** The owner's master switch for BOINC redundancy (P-014). Default OFF. Env-gated via
+ *  `PAPERCUSP_WORKITEM_REDUNDANCY` (a synchronous server-side dispatch decision deep in the
+ *  claim path); promote to a FLAG (as WORKITEM_CLAIM_LEASE did, P-012) if a UI toggle is wanted. */
 export function workItemRedundancyEnabled(): boolean {
   return process.env.PAPERCUSP_WORKITEM_REDUNDANCY === '1';
 }

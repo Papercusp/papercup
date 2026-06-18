@@ -113,6 +113,18 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     expect(out.results[0]).toEqual({ id: 'm0', memory: 't0', score: 0.9 });
   });
 
+  it('memory:search harnessOnly scopes to ONLY the harness pool — excludes the user pool (isolated benchmark recall)', async () => {
+    const b = fakeBackend([]);
+    useBackend(b);
+    // harnessOnly + harness_slug → scope is the harness pool alone, no user-1.
+    await search.handler({ query: 'q', harness_slug: 'bench-run-1', harnessOnly: true }, ctx);
+    expect(b.search).toHaveBeenCalledWith('q', { scope: ['harness:bench-run-1'], limit: 8 });
+    // harnessOnly WITHOUT harness_slug is ignored (nothing to isolate to) → still fans user + workspace.
+    b.search.mockClear();
+    await search.handler({ query: 'q', harnessOnly: true }, ctx);
+    expect(b.search).toHaveBeenCalledWith('q', { scope: ['user-1', 'harness:papercup'], limit: 8 });
+  });
+
   it('PULL path applies NO relevance floor — surfaces weak scored candidates for the LLM to judge (P-021 / D-003)', async () => {
     // The read-gate split: the push/auto-inject path floors with injectMinScore()
     // (no LLM in the loop, so a bad inject already harmed the turn); the on-demand

@@ -57,6 +57,24 @@ paths — so for a *non-papercup* harness the Built-in tier is mostly empty;
 that's expected, not a bug. Default the nav to the first non-`universal`
 (content-bearing) tab.
 
+<Aside type="caution" title="The contract DOES drift on the dev box — regenerate it by hand">
+"Generated from `adminRegistry` so there's no hand-maintained drift" is the
+*intent*, not the dev-box reality. The only guards that catch a stale
+`.papercusp/testing-domains.json` (or a test file that matches no domain glob →
+invisible in the tab) are `gen:contract:check` and `lint:tests` — and those run
+**only in GitHub Actions CI** (`.github/workflows/test.yml`). git-sync commits
+the shared tree with `[skip ci]`, and the local green-checkpoint gate runs only
+`npm run test:affected` (the registry self-tests check structure, not
+contract↔registry freshness). So on the dev box a stale contract sails straight
+to `main`/`:3070` and the Tests tab silently shows old domains. Found 2026-06-18:
+the committed contract was stale and a real test (`gitnexus-bridge/index.test.ts`)
+was an uncaught orphan. **After ANY edit to `testing-domains-registry.ts`, run
+`npx tsx scripts/gen-testing-domains-contract.ts` + `npm --prefix apps/operator
+run lint:tests`** yourself — do not trust the tab to reflect a registry change,
+and do not trust CI to have caught a stale contract. (Systemic fix tracked
+separately — wire both gates into green-checkpoint.)
+</Aside>
+
 ## Harness endpoints resolve against `reg.current` — your curl can hit the wrong workspace
 
 `resolvePhasedProject(slug, phase)` resolves the harness from the registry

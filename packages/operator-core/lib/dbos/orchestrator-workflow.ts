@@ -61,7 +61,7 @@ export interface PipelineInput {
   spine?: BlueprintSpine;
   /**
    * D-007 (shared-hive-loop-e2e-testing): the per-Hive work-item lease this pipeline runs
-   * under, captured when the executor claimed one (`PAPERCUSP_WORKITEM_CLAIM_LEASE` ON).
+   * under, captured when the executor claimed one (the `WORKITEM_CLAIM_LEASE` flag ON).
    * Threaded so the pipeline can RENEW the lease and, before each side-effecting step,
    * SELF-ABORT if it was stolen/lapsed (heartbeat → `renewed:false`, rule 5). Absent when
    * the lease flag is off / the claim couldn't be taken (fail-open) → the heartbeat seam
