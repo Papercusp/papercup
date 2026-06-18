@@ -922,6 +922,52 @@ const handler = createMcpHandler(
               }],
             };
           }
+          // Hive tier (P-014a; owner-ratified 2026-06-18 — AUTO-CONFINE on harness).
+          // When a scoped-superuser session's concrete harness belongs to a hive,
+          // it is confined to THAT hive's subtree: (a) cross_harness:* tools (which
+          // read OTHER harnesses) are denied; (b) a per-call `harness` arg that
+          // escapes the hive — harness:'all'/'*', or a harness in a different hive —
+          // is rejected. Subtree membership = hiveHomeSlugForHarness(harness) ===
+          // scopeHive (the hive home AND each member resolve to the home; D-006).
+          // The harder half — confining the workspace-global coord/fleet/search/
+          // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
+          if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*') {
+            const { hiveHomeSlugForHarness } = await import('../../../hive-federation');
+            const scopeHive = await hiveHomeSlugForHarness(
+              spawnRes.ctx.workspaceId,
+              spawnRes.ctx.harnessSlug,
+            );
+            if (scopeHive) {
+              if (toolName.startsWith('cross_harness:')) {
+                return {
+                  isError: true,
+                  content: [{
+                    type: 'text' as const,
+                    text: `harness_forbidden: "${toolName}" reads other harnesses, but this session is confined to hive "${scopeHive}".`,
+                  }],
+                };
+              }
+              const argHarness =
+                args && typeof args === 'object' && typeof (args as Record<string, unknown>).harness === 'string'
+                  ? ((args as Record<string, unknown>).harness as string).trim()
+                  : '';
+              if (argHarness) {
+                const escapes =
+                  argHarness === 'all' ||
+                  argHarness === '*' ||
+                  (await hiveHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive;
+                if (escapes) {
+                  return {
+                    isError: true,
+                    content: [{
+                      type: 'text' as const,
+                      text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".`,
+                    }],
+                  };
+                }
+              }
+            }
+          }
           // Power-user / scoped-superuser workspace clamp (defense in depth). The
           // ctx's workspaceId is already clamped, so any tool reading
           // ctx.workspaceId is safe. But a handful of tools accept an explicit

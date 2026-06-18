@@ -42,6 +42,15 @@ const h = vi.hoisted(() => {
     fakeSql,
     /** scoped-superuser-workspace-clamp: dispatch tests toggle the flag via this. */
     scopedClampFlag: { value: false },
+    /** Hive-tier resolver seam: maps a harness → its hive home slug (null = no hive). */
+    hiveHomeSlugForHarness: vi.fn(
+      async (_ws: string, harness: string): Promise<string | null> =>
+        harness === 'hiveA-home' || harness === 'hiveA-member'
+          ? 'hiveA-home'
+          : harness === 'hiveB-home'
+            ? 'hiveB-home'
+            : null,
+    ),
     /** Every workspace id the (mocked) withWorkspace opened a tx for. */
     withWorkspaceCalls: [] as string[],
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
@@ -141,6 +150,10 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => {
         ? h.scopedClampFlag.value
         : (actual.getFlag as (k: string, s?: string) => Promise<boolean>)(key, scope),
   };
+});
+vi.mock('../../hive-federation', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, hiveHomeSlugForHarness: h.hiveHomeSlugForHarness };
 });
 
 // _mcp-handler's transport setup calls a bare `require(...)` for the MCP SDK
