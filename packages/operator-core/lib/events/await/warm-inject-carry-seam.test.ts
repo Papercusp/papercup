@@ -189,3 +189,76 @@ describe('Phase 1 gate — the fork is not yet live, so the carry above IS produ
     // wake-executor.ts:407) — the regression that proves Phase 1 edited this seam.
   });
 });
+
+// ─────────────────────── Phase 1 (P-005): the fork, flag ON ───────────────────────
+// The marker payload (freshContextWorkItem/Harness/Brief) is stamped on the wake by
+// place_batch ONLY when the flag is on. With it present + the fork enabled, an exited
+// bee's NEW-task warm-inject re-routes to a FRESH spawn — NO `--resume`, no carry.
+// `deps.freshContext` is injected so no real spawn / flag-store / DB fires.
+const MARKER = { freshContextWorkItem: 'WI-999', freshContextHarness: 'acme', freshContextBrief: 'do the thing' };
+
+describe('Phase 1 fork (flag ON) — drained bee + NEW task → fresh spawn, the carry inverts', () => {
+  it('re-routes to a fresh bee spawn (channel fresh-context-warm-inject) and NEVER --resumes', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const spawnFreshBee = vi.fn(async () => ({ ok: true, spawnId: 's-fresh-1' }));
+    const releaseClaim = vi.fn(async () => {});
+    const out = await executeWake(
+      warmInjectDelivery({ payload: MARKER }),
+      deps({ spawnDetached, freshContext: { enabled: async () => true, spawnFreshBee, releaseClaim } }),
+    );
+
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'fresh-context-warm-inject' });
+    // The fork fired with the marker's target, the bee's stable identity as lineage,
+    // and its workspace — NOT the wake-executor's --resume path.
+    expect(spawnFreshBee).toHaveBeenCalledWith({
+      workspaceId: 'papercusp-workspace',
+      harness: 'acme',
+      workItemId: 'WI-999',
+      brief: 'do the thing',
+      parentSpawnId: BEE_OWNER,
+    });
+    // The exited bee's stale claim is freed so the fresh bee self-claims the item.
+    expect(releaseClaim).toHaveBeenCalledWith('WI-999', 'acme');
+    // THE INVARIANT INVERSION: no --resume carry — spawnDetached (the legacy resume) never ran.
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the legacy --resume when the fresh spawn is not admitted (fail-soft)', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const spawnFreshBee = vi.fn(async () => ({ ok: false, spawnId: null })); // e.g. over fleet cap
+    const releaseClaim = vi.fn(async () => {});
+    const out = await executeWake(
+      warmInjectDelivery({ payload: MARKER }),
+      deps({ spawnDetached, freshContext: { enabled: async () => true, spawnFreshBee, releaseClaim } }),
+    );
+
+    // The wake is never stranded: it drops through to the legacy resume seam.
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+    const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[], unknown];
+    expect(args).toContain('--resume');
+    // A failed spawn must NOT release the claim (the bee resumes, claim intact).
+    expect(releaseClaim).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fork an ordinary warm-inject (no marker payload) even with the fork enabled', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const spawnFreshBee = vi.fn(async () => ({ ok: true, spawnId: 's-x' }));
+    const out = await executeWake(
+      warmInjectDelivery(), // payload: null — no marker
+      deps({ spawnDetached, freshContext: { enabled: async () => true, spawnFreshBee, releaseClaim: async () => {} } }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+    expect(spawnFreshBee).not.toHaveBeenCalled();
+  });
+
+  it('defence-in-depth: a marker present but the fork disabled still --resumes (no fork)', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const spawnFreshBee = vi.fn(async () => ({ ok: true, spawnId: 's-x' }));
+    const out = await executeWake(
+      warmInjectDelivery({ payload: MARKER }),
+      deps({ spawnDetached, freshContext: { enabled: async () => false, spawnFreshBee, releaseClaim: async () => {} } }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+    expect(spawnFreshBee).not.toHaveBeenCalled();
+  });
+});

@@ -64,6 +64,7 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
         role text,
         harness_slug text,
         run_id text,
+        session_id text, -- migration 279: groups a warm-inject bee's wakes (readBeeEkg, P-015)
         input_tokens bigint,
         output_tokens bigint,
         cache_read_tokens bigint,

@@ -12,8 +12,10 @@
  *   - a legacy illegal state surfaces the warning chip (P-004)
  *   - an unassigned (no-hive) plan is surfaced, non-checkable
  */
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 const H = vi.hoisted(() => ({
   steeringResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
@@ -44,6 +46,10 @@ vi.mock('../adv/adv-harness-selection', () => ({ ALL_HARNESSES_OPTION: '__all__'
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => true }));
 
 import QueenTab from './QueenTab';
+
+// QueenTab's new Throttle + Autonomy sections use nuqs (collapse state); the
+// adapter supplies the URL-state context the hooks need under test.
+const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
 
 const PROJECTS = [
   { slug: 'papercup-hive', harness_kind: 'hive' },
@@ -85,7 +91,7 @@ afterEach(() => {
 
 describe('QueenTab nested steering tree', () => {
   it('renders the Steering scope tree with hive nodes (no flat Eligible-hives/plans sections)', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     expect(screen.getByText('Steering scope')).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' })).toBeTruthy());
     expect(screen.getByRole('checkbox', { name: 'Toggle hive papercup-hive' })).toBeTruthy();
@@ -97,7 +103,7 @@ describe('QueenTab nested steering tree', () => {
   });
 
   it('select-all scopes only hives that currently have plans', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' })).toBeTruthy());
 
     fireEvent.click(screen.getByRole('button', { name: 'Select every hive' }));
@@ -110,7 +116,7 @@ describe('QueenTab nested steering tree', () => {
   });
 
   it('toggling a hive writes eligibleHives + targets the home hive', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' })).toBeTruthy());
     fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
@@ -122,7 +128,7 @@ describe('QueenTab nested steering tree', () => {
   });
 
   it('a plan under an UNCHECKED hive is disabled — the contradiction is unrepresentable', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     // pot-a is unchecked; expand it to reveal its plans.
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand hive' }).length).toBeGreaterThan(0));
     const carets = screen.getAllByRole('button', { name: 'Expand hive' });
@@ -133,7 +139,7 @@ describe('QueenTab nested steering tree', () => {
   });
 
   it('keeps a manually expanded hive open across parent rerenders', async () => {
-    const { rerender } = render(<QueenTab active={true} />);
+    const { rerender } = render(<QueenTab active={true} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand hive' }).length).toBeGreaterThan(0));
     fireEvent.click(screen.getAllByRole('button', { name: 'Expand hive' })[1]);
     expect(await screen.findByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
@@ -145,7 +151,7 @@ describe('QueenTab nested steering tree', () => {
   });
 
   it('keeps an expanded hive open when its scope checkbox is toggled', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand hive' }).length).toBeGreaterThan(0));
     fireEvent.click(screen.getAllByRole('button', { name: 'Expand hive' })[1]);
     expect(await screen.findByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
@@ -159,7 +165,7 @@ describe('QueenTab nested steering tree', () => {
 
   it('narrowing a plan under a checked hive writes the explicit eligiblePlans', async () => {
     H.steeringResult = { data: [steering({ eligibleHives: ['pot-a'], eligiblePlans: [] })], loading: false, error: null, invalidate: vi.fn() };
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     // pot-a is checked → auto-expanded, both plans checked (planMode all).
     const planA = await screen.findByRole('checkbox', { name: 'Plan A' });
     expect(planA.getAttribute('aria-checked')).toBe('true');
@@ -174,12 +180,12 @@ describe('QueenTab nested steering tree', () => {
   it('surfaces a legacy illegal state (eligible plan under an excluded hive)', async () => {
     // pot-a checked, but plan-b (papercup-hive, excluded) is eligible → dead.
     H.steeringResult = { data: [steering({ eligibleHives: ['pot-a'], eligiblePlans: ['plan-a', 'plan-b'] })], loading: false, error: null, invalidate: vi.fn() };
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     expect(await screen.findByText(/eligible plan.*excluded hive/i)).toBeTruthy();
   });
 
   it('surfaces an unassigned (no-hive) plan, non-checkable', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     expect(await screen.findByText('No hive — not steerable')).toBeTruthy();
     const unassigned = screen.getByText('No hive — not steerable').closest('.pc-queen__tree-unassigned') as HTMLElement;
     expect(within(unassigned).getByText('Orphan')).toBeTruthy();

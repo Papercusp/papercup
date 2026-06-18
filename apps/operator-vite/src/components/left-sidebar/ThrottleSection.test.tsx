@@ -72,11 +72,14 @@ describe('ThrottleSection pure helpers', () => {
     expect(idleEnabled({ gym: false }, 'gym')).toBe(false);
     expect(idleEnabled({ gym: false }, 'scout')).toBe(true);
   });
-  it('throttleActiveCount counts knobs away from default', () => {
+  it('throttleActiveCount counts knobs away from default (each idle suppression counts)', () => {
     expect(throttleActiveCount({ cadenceFloorSec: null, maxBees: null, beeTier: null, idleActivities: null, autoScaleOut: null })).toBe(0);
+    // cadence + max + tier + autoScaleOut(false) + 2 suppressed idle = 6
     expect(
       throttleActiveCount({ cadenceFloorSec: 120, maxBees: 4, beeTier: 'std', idleActivities: { gym: false, scout: false }, autoScaleOut: false }),
-    ).toBe(5); // cadence + max + tier + autoScaleOut + 2 idle, capped logic → 1+1+1+1+2 = 6? see below
+    ).toBe(6);
+    // autoScaleOut === true (explicit-on, not the disable) does NOT count
+    expect(throttleActiveCount({ cadenceFloorSec: null, maxBees: null, beeTier: null, idleActivities: { gym: true }, autoScaleOut: true })).toBe(0);
   });
 });
 

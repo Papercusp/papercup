@@ -119,7 +119,7 @@ export default function AutonomySurfacing({
               {policyQ.loading && rows.length === 0 ? (
                 'Loading autonomy policy…'
               ) : !armed ? (
-                <>Autonomy <strong>not armed</strong> — nothing auto-runs; every decision routes to you regardless of the ceilings below.</>
+                <>Autonomy is <strong>disarmed</strong> — nothing auto-runs; every decision routes to you regardless of the ceilings below.</>
               ) : active > 0 ? (
                 <><strong>{active}</strong> of {total} categories can auto-run · {locked} locked. She may auto-decide at each category&rsquo;s effective ceiling (reversible, not owner-only).</>
               ) : (

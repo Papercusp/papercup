@@ -642,6 +642,13 @@ export const FLAGS = {
   // DEFAULT ON (alpha flags-default-on) — additive, bounded, fail-soft; OFF ⇒ no dossier
   // (the agent falls back to its read tools), behavior otherwise unchanged.
   BEE_WAKE_DOSSIER: "papercusp-bee-wake-dossier",
+  // bee-context-efficiency Phase 4 (P-013, D-007): the transcript-cap BACKSTOP. A
+  // cadence sweep recycles a bee whose session has carried too many tasks / too large a
+  // token-span (force a fresh spawn after a threshold; the work-item checkpoint carries
+  // continuity). Only ever recycles an IDLE/drained bee (D-005 — never mid-task). DEFAULT
+  // OFF + the routine is seeded INACTIVE (double-gated, like idle-session-reaper): an
+  // unverified bee-lifecycle change; bring up dry-run first, then flip.
+  BEE_TRANSCRIPT_CAP: "papercusp-bee-transcript-cap",
   // plan-implementation-framework P-003 (compiled-briefs): when on, plan_items:convert
   // COMPILES the work-item brief from the plan item + plan focus (## Now) + the decisions
   // bearing on the item, instead of leaving payload.brief to a hand-authored overlay.
@@ -739,6 +746,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // spawn/wake-hydration volatile tail (P-008/P-009). Bounded + fail-soft; OFF ⇒ no
   // dossier section (the agent uses its read tools), otherwise behavior-neutral.
   [FLAGS.BEE_WAKE_DOSSIER]: true,
+  // DEFAULT OFF (P-013): the bee transcript-cap recycle sweep — an unverified bee-lifecycle
+  // change, double-gated (this flag OFF + the routine seeded INACTIVE). OFF ⇒ a no-op
+  // (the sweep logs the over-cap cohort but recycles nothing). KNOWN_DARK_FLAGS.
+  [FLAGS.BEE_TRANSCRIPT_CAP]: false,
   // DEFAULT OFF (P-009): the watchdog auto-close sweep. OFF ⇒ escalate-only (today's
   // behavior, byte-identical). Owner flips ON after reviewing the guards. KNOWN_DARK_FLAGS.
   [FLAGS.WATCHDOG_AUTO_CLOSE]: false,

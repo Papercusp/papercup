@@ -9,8 +9,10 @@
  * write `hive:set-steering` through /api/agent-mcp/run-tool, targeting the home
  * hive, with the right field.
  */
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 const H = vi.hoisted(() => ({
   steeringResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
@@ -47,6 +49,10 @@ vi.mock('../adv/adv-harness-selection', () => ({ ALL_HARNESSES_OPTION: '__all__'
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => false }));
 
 import QueenTab from './QueenTab';
+
+// QueenTab's new Throttle + Autonomy sections use nuqs (collapse state); the
+// adapter supplies the URL-state context the hooks need under test.
+const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
 
 const PROJECTS = [
   { slug: 'papercup-hive', harness_kind: 'hive' },
@@ -88,7 +94,7 @@ afterEach(() => {
 
 describe('QueenTab (Colony sidebar, round 2)', () => {
   it('renders Pause (topmost), directive, eligible hives + plans, and the minutes input — no hive dropdown', () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     expect(screen.getByText('Pause new work')).toBeTruthy();
     expect(screen.getByText('Focus directive')).toBeTruthy();
     expect(screen.getByText('Eligible hives')).toBeTruthy();
@@ -107,7 +113,7 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
       error: null,
       invalidate: vi.fn(),
     };
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     expect(screen.getByLabelText('Queen steering summary')).toBeTruthy();
     expect(screen.getByText('Flowing')).toBeTruthy();
     expect(screen.getByText('1 hive · 1 plan')).toBeTruthy();
@@ -116,7 +122,7 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
   });
 
   it('renders the eligible-hives checkboxes from harnessProjects.lite sync data', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'pot-a' })).toBeTruthy());
     expect(screen.getByRole('checkbox', { name: 'papercup-hive' })).toBeTruthy();
     expect(screen.getByRole('checkbox', { name: 'pot-b' })).toBeTruthy();
@@ -124,7 +130,7 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
   });
 
   it('toggling a hive writes eligibleHives + the home hive', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'pot-a' })).toBeTruthy());
     fireEvent.click(screen.getByRole('checkbox', { name: 'pot-a' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
@@ -135,7 +141,7 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
   });
 
   it('toggling a plan writes eligiblePlans + the home hive', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Plan A' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();
@@ -144,14 +150,14 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
   });
 
   it('writes pauseNewWork:true on Pause indefinitely', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     fireEvent.click(screen.getByRole('button', { name: /Pause indefinitely/i }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(setSteeringBody().args.pauseNewWork).toBe(true);
   });
 
   it('accumulates fast back-to-back checkbox clicks without clobbering (owner bug 2026-06-16)', async () => {
-    render(<QueenTab active={true} />);
+    render(<QueenTab active={true} />, { wrapper: Wrap });
     // two clicks before any server refetch — the old read-modify-write on the
     // stale server array dropped the first selection; optimistic state accumulates.
     fireEvent.click(screen.getByRole('checkbox', { name: 'Plan A' }));
