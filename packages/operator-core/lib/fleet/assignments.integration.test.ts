@@ -23,6 +23,17 @@ import {
   type FleetAssignmentChange,
 } from '../fleet-assignment-bus';
 
+// getWorkItem (used by reorderWorkItem) scopes its feature lookup by activeWorkspaceId()
+// (F-B3 workspace-data-isolation-leaks). Every row here is seeded under WS='default', but
+// nothing in this isolated test sets the process-global active workspace — so the lookup
+// filtered the wrong workspace and an existing-but-unassigned row read as 'not found'
+// (intermittently, on whatever global state a sibling test leaked into the worker). Pin
+// the active workspace to the seed workspace so the lookup sees the seeded rows.
+vi.mock('../workspace-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../workspace-registry')>();
+  return { ...actual, activeWorkspaceId: () => 'default' };
+});
+
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
 
