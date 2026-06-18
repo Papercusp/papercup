@@ -1,5 +1,32 @@
 # Worker log — EI-570 (implement / self-improvement auto-fix)
 
+## Dispatch attempt 2 (run 1781782617-worker, 2026-06-18)
+
+**Status: VERIFIED FIXED — improvements:resolve blocked (EI-570 not found in system)**
+
+The prior worker (attempt 1) applied the fix correctly:
+- `planReversibleArm` in `arm-reversible-action.ts` now derives `riskTier` from the
+  category's effective ceiling when absent (lines 137–147), ending the 0-tripwires bug.
+- Regression tests in `arm-reversible-action.test.ts` and `arm-reversible-work-item.test.ts`
+  pin the fix. 17/17 tests pass (verified this run).
+- Agent insights MDX written at `arm-call-site-risk-tier-proxy.mdx`.
+
+**Why improvements:resolve couldn't close the loop:**
+`improvements:resolve { id: 'EI-570' }` returns `{ ok: false, error: "issue EI-570 not found" }`.
+`work_items:get EI-570` and `issues:get EI-570` both return not-found.
+The improvements digest (77 total, 67 resolved) shows IDs only in the 1000+ range — EI-570 predates
+the current active range. The first worker likely applied the fix without successfully resolving the ID,
+and the ID has since been purged/expired from the system.
+
+**What a human should verify:**
+- The fix IS in place and tests are green. No re-work needed.
+- The cadence will keep re-dispatching EI-570 unless the dispatch queue is manually purged for this ID.
+  Consider: (a) checking whether the improvements dispatcher holds a stale queue entry for EI-570,
+  and (b) confirming the dispatch routing can handle "not found" IDs gracefully (STOP condition: touches
+  the self-improvement loop's own code — EI-815 context).
+
+
+
 ## EI-570: Tripwire arm-call-site never fires
 
 **Bug**: `planReversibleArm` called `resolveAutonomyDecision` without `riskTier` when bees

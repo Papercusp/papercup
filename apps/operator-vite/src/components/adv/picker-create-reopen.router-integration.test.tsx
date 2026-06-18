@@ -73,13 +73,17 @@ function AdvLike({ writeSlugOnCreate }: { writeSlugOnCreate: boolean }) {
 }
 
 describe('picker create-completion close × AdvShell [activeSlug] effect', () => {
-  it('REPRODUCES: writing ?slug on close lets the effect reopen the modal', async () => {
+  it('writing ?slug on close does NOT let the effect reopen the modal (adapter no longer clobbers)', async () => {
     mountAt('/?create=true&picker=github-url', <AdvLike writeSlugOnCreate />);
     await waitFor(() => expect(window.location.search).toContain('create=true'));
     fireEvent.click(screen.getByTestId('create'));
     await new Promise((r) => setTimeout(r, 80)); // let the effect's setScope land
-    // BUG: ?create comes back (the effect's setScope clobbered the close).
-    expect(window.location.search).toContain('create=true');
+    // FIXED: the close clears ?create, and the effect's SECOND write (setScope)
+    // no longer re-derives ?create from a stale snapshot — so the modal stays
+    // closed. The legitimate writes still land (the new slug + all-scope).
+    expect(window.location.search).not.toContain('create=true');
+    expect(window.location.search).toContain('slug=new-hive');
+    expect(window.location.search).toContain('scope=all');
   });
 
   it('FIX: NOT writing ?slug on close keeps the modal closed (no effect trigger)', async () => {
