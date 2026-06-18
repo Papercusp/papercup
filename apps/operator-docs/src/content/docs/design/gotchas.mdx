@@ -69,6 +69,8 @@ Approved content-disclosure `<details>` sites:
 - `app/dev/_components/SessionsTab.tsx` — transcript JSON dump
 - `app/dev/_components/TablesTab.tsx` — table-row JSON dumps
 - `app/_components/SetupWizard/StepAutoUpdate.tsx` — release-notes prose
+- `app/cupboard/[id]/page.tsx` — learning-pack content preview
+- `app/harness/dock/sample-panels.tsx` — sample/debug panel parameters
 
 A tell that `<details>` is correct: the content is prose (or auto-generated text), the user doesn't tab/select inside it, and rendering it costs real work (Monaco, MarkdownPreview, a long log dump). Interactive disclosures — collapsible form sections, per-row expanders inside lists where you want shared animation and focus management — still use `<Collapsible>`.
 
