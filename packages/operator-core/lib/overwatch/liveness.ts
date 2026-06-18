@@ -30,7 +30,7 @@
  */
 import type { Sql } from 'postgres';
 import { clampToFloor } from '@papercusp/debounce-coalesce';
-import { upsertRoutine, setRoutineActive } from '@papercusp/db-org';
+import { upsertRoutine, setRoutineActive, deleteRoutine } from '@papercusp/db-org';
 import { computeNextFireAt } from '../harness/routines/cron';
 
 /** The overwatch role id (C-2, B-01). */
@@ -123,9 +123,11 @@ export async function declareOverwatchTimeWake(
   return { at, clamped };
 }
 
-/** Clear overwatch's time wake (deactivate the one-shot routine). */
+/** Clear overwatch's time wake (deactivate the one-shot routine).
+ *  EI-1477: DELETE the row (not just deactivate) to avoid duplicate-key conflicts
+ *  under concurrency when a stale/orphaned row would collide with a new UPSERT. */
 export async function clearOverwatchTimeWake(sql: Sql, installSlug: string): Promise<void> {
-  await setRoutineActive(sql, installSlug, OVERWATCH_WAKE_ROUTINE_NAME, false);
+  await deleteRoutine(sql, installSlug, OVERWATCH_WAKE_ROUTINE_NAME);
 }
 
 /** timestamptz arrives as Date or ISO string depending on the pool's type
