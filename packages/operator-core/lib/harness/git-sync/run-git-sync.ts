@@ -26,7 +26,12 @@ import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
-import { groupFilesForAttribution, type FileAttribution } from './git-sync-attribution';
+import {
+  groupFilesForAttribution,
+  attributionMapForRepo,
+  type FileAttribution,
+  type AttributionRosterEntry,
+} from './git-sync-attribution';
 
 export type RunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
 
@@ -139,6 +144,11 @@ export interface RunGitSyncOpts {
    *  Defaults to fs read; null on any error. */
   readText?: (repoPath: string, relPath: string) => Promise<string | null>;
   log?: (m: string) => void;
+  /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): the caller supplies the live roster of active
+   *  agents + their declared files (built flag-gated from coord presence). When present, git-sync
+   *  derives a per-repo attribution map and peels per-agent commits; when absent (flag OFF / no
+   *  caller) commits are unchanged (today's single whole-tree commit). DERIVED, never authored. */
+  loadRoster?: () => Promise<AttributionRosterEntry[]>;
 }
 
 /** Default content-guard file reader — the working-tree bytes that `add -A` would
@@ -517,6 +527,11 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     return { status: 'error', errors: [{ scope: 'superproject', message: `no repo path registered for harness '${slug}'` }], pushed: [], merged: [], oversized: [], contentErrors: [] };
   }
 
+  // P-004: the live roster (active agents + their declared files) for THIS tick, supplied by
+  // the caller flag-gated. Empty when the flag is OFF (or no caller) → no attribution, today's
+  // single-commit behavior. Read ONCE; per-repo maps are derived below (super + each submodule).
+  const roster = opts.loadRoster ? await opts.loadRoster() : [];
+
   const conflicts: RepoConflict[] = [];
   const errors: RepoError[] = [];
   const pushed: string[] = [];
@@ -562,7 +577,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   for (const sub of subPaths) {
     // P-004: a submodule's last-resort default is its own 'main' (resolved via
     // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
-    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { ...repoO, defaultBranch: 'main' }));
+    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { ...repoO, defaultBranch: 'main', attribution: attributionMapForRepo(roster, sub) }));
   }
 
   // Superproject last — ONLY when every submodule reconciled (else its bumped pointers
@@ -571,7 +586,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // file — IS on its origin, so the parent gitlink resolves fine.)
   const blocked = conflicts.length > 0 || errors.length > 0;
   if (!blocked) {
-    absorb('superproject', await syncOneRepo(runGit, repo, { ...repoO, defaultBranch: branch }));
+    absorb('superproject', await syncOneRepo(runGit, repo, { ...repoO, defaultBranch: branch, attribution: attributionMapForRepo(roster, '') }));
   } else {
     log(`[git-sync] ${conflicts.length} conflict(s) + ${errors.length} error(s) in submodules — deferring superproject push (${slug})`);
   }

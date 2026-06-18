@@ -28,6 +28,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
+import { listPresence } from '../../agent-tools/coordination/presence';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
@@ -741,11 +742,36 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   // fixer) — the instant off-switch on the shared commit path, no deploy needed. A
   // flag-infra error falls back to the default (ON), keeping the safety on.
   const contentGuardOn = await getFlag(FLAGS.GIT_SYNC_CONTENT_GUARD, slug);
+  // P-004 (git-sync-dx-hardening): derived commit attribution (default OFF). When ON, supply the
+  // LIVE roster of active agents + their declared files (coord presence current_files) so runGitSync
+  // peels per-agent commits. DERIVED, never authored — agents stay git-free. Flag-gated read; a
+  // presence-read failure degrades to no attribution (today's single commit).
+  const attributionOn = await getFlag(FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, slug);
 
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
   try {
-    outcome = await runGitSync(slug, { config: cfg, contentDetectors: contentGuardOn ? undefined : [] });
+    outcome = await runGitSync(slug, {
+      config: cfg,
+      contentDetectors: contentGuardOn ? undefined : [],
+      loadRoster: attributionOn
+        ? async () => {
+            try {
+              const recs = await listPresence({ workspaceId });
+              return recs
+                .map((r) => ({
+                  agent: r.ownerId,
+                  agentLabel: r.ownerLabel ?? undefined,
+                  intent: r.intent ?? undefined,
+                  files: Array.isArray(r.currentFiles) ? r.currentFiles : [],
+                }))
+                .filter((e) => e.files.length > 0);
+            } catch {
+              return [];
+            }
+          }
+        : undefined,
+    });
   } finally {
     if (lock.state === 'acquired') await releaseAll(cd, acquired);
   }

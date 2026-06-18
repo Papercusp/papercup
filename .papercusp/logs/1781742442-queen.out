@@ -1,0 +1,32 @@
+## BLOCKED — Queen verb surface is unavailable this wake
+
+**Woke by:** `coord:escalate` event (re-tier a new need-human before the owner sees it).
+
+**Blockage:** None of the papercusp Queen MCP verbs are callable in this session, and there is no `ToolSearch` tool present to load deferred ones. I retried multiple name variants before concluding:
+
+| Attempt | Result |
+|---|---|
+| `hive_status` | No such tool available |
+| `mcp__papercusp__hive_status` | No such tool available |
+| `mcp__papercusp__coord_inbox` | No such tool available |
+| `ListMcpResourcesTool` (papercusp / all) | server connected, **nothing callable exposed** |
+
+The errors are `"No such tool available"` (definitive), not `"still connecting"` (transient) — so this is a real tool-path breakage, not something a retry fixes. The entire steering surface is down: I **cannot** `inbox:triage`, `coord:resolve`, `hive:survey`, `fleet:*`, `work_items:*`, or even `hive:declare-wake`.
+
+**What I deliberately did NOT do** (integrity mandate): no curling `:3070`/operator REST to fake these verbs (forbidden for `group:verb`, and green runs stale code per my carry-note), no hand-writing fleet state, no OS-level scheduler for the wake (forbidden — zombie schedules). A truthful BLOCKED beats a fabricated DONE. (I also tried to log this to `.papercusp/memory/raw.md`, but file writes are permission-gated here too.)
+
+**Consequently un-handled this wake** (all need the owner/su now):
+- **Fresh escalations that likely woke me** — `mqiq6eh2` (advisory) + `mqip2w7e` (blocker): green-checkpoint looping on FROZEN candidate `02adbc35`; per the advisory text the fix already landed in staging — needs a re-run on latest tip + close release-not-green. *(Consistent with the two newest `release-fixer` memory lines: `02adbc35` was a shared-PG load flake whose hermetic fix is already pinned in current staging — the next checkpoint on latest tip is likely already green.)*
+- **Routed question `mqinx379`** — "F-FIX-032/033 cursed, clear the breaker?" Left unanswered.
+- **Cursed-placement advisories** (WI-214/217/231/232, F-FIX-032). Un-triaged.
+
+**Context the next functional wake / su must carry forward (from my verified carry-note, so it isn't lost):**
+1. The papercup frontier is **FALSE-cursed** — governor false-pause is fixed; real cause is slow bees (`capability:bash` tight loops 10–50×) → heartbeat stalls → reaper reclaims a still-alive bee → watchdog latches cursed. **Do not mass-re-place** (won't hold while bees are slow); **do not chase a rate-limit** (routing, not real); **do not clear the breaker** on the cursed items yet.
+2. Root fix in flight: **WI-231** (bee `principal`, alive, load 1) — `capability:bash` perf. **WI-233** filed (raise heartbeat-stale + relax curse threshold); ownership question pending with su-37e53.
+3. The ~50 `xbench-*`/`extbench` frontier items are **not mine** (owner `su-26811096`, taskless-bee bug) — never place on them.
+
+**The ask:** restore the Queen MCP tool loadout / ToolSearch deferral wiring for this session type. Until then no Queen wake can triage, place, or reschedule itself.
+
+**Wake declaration:** I cannot call `hive:declare-wake` (it's part of the missing surface) and will not schedule by any other means. The liveness backstop will have to re-wake me — but that wake will be equally inert until the tool surface is fixed.
+
+ESCALATE Queen verb surface unavailable — no papercusp MCP tools registered and no ToolSearch to load them; cannot triage/place/resolve/declare-wake. Fix the wake's tool loadout, then re-wake.

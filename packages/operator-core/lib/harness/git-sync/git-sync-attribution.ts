@@ -108,8 +108,18 @@ export function groupFilesForAttribution(
  * agents claim the same path (rare — file locks serialize edits), first-declared wins
  * (stable by the input order the caller passes).
  */
+/** One active agent's declared work, as the caller resolves it from presence/declare-intent. */
+export interface AttributionRosterEntry {
+  agent: string;
+  agentLabel?: string;
+  intent?: string;
+  email?: string;
+  /** Workspace-root-relative paths the agent is working on (coord:declare-intent current_files). */
+  files: string[];
+}
+
 export function attributionMapForRepo(
-  roster: Array<{ agent: string; agentLabel?: string; intent?: string; email?: string; files: string[] }>,
+  roster: AttributionRosterEntry[],
   repoRelPrefix: string,
 ): Map<string, FileAttribution> {
   const prefix = repoRelPrefix ? repoRelPrefix.replace(/\/?$/, '/') : '';
