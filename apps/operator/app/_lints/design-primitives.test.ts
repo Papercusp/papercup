@@ -49,6 +49,48 @@ const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
   'app/harness/useConfirmDialog.tsx',
 ]);
 
+const LEGACY_BUTTON_TITLE_FILES = new Set([
+  // P-003 baseline: migrate remaining action tooltips to Tooltip.
+  'app/_components/ConsoleLauncherButton.tsx',
+  'app/_components/GlobalFindInPage.tsx',
+  'app/_components/OperatorActiveToggle.tsx',
+  'app/_components/OperatorChatSidebar.tsx',
+  'app/_components/OracleDock.tsx',
+  'app/_components/PuiLauncherButton.tsx',
+  'app/_components/SetupWizard/StepGit.tsx',
+  'app/_components/UpdateChip.tsx',
+  'app/_components/voice/VoiceButton.tsx',
+  'app/admin/plans/AssignDialog.tsx',
+  'app/admin/plans/PlanActions.tsx',
+  'app/admin/plans/PlanDetail.tsx',
+  'app/admin/plans/PlanItemsList.tsx',
+  'app/admin/plans/PlanOtherList.tsx',
+  'app/admin/plans/PlanRail.tsx',
+  'app/admin/plans/PlansClient.tsx',
+  'app/admin/plans/RunDetailPanel.tsx',
+  'app/adv/create/PlansListPanel.tsx',
+  'app/adv/harnesses/AdvContributorsPanel.tsx',
+  'app/adv/harnesses/HiveHeaderStrip.tsx',
+  'app/adv/harnesses/HiveWorkspaceCards.tsx',
+  'app/adv/sessions/SessionsRosterView.tsx',
+  'app/cupboard/CupboardClient.tsx',
+  'app/cupboard/ToolsSection.tsx',
+  'app/dev/_components/ProcessesTab.tsx',
+  'app/dev/_components/SessionsTab.tsx',
+  'app/dev/_components/TelemetryTab.tsx',
+  'app/editor-demo/panes/LexicalPane.tsx',
+  'app/editor-demo/panes/PlatePane.tsx',
+  'app/harness/ShareHiveDialog.tsx',
+  'app/harness/brainstorm/MapView.tsx',
+  'app/harness/dock/DockNavChevrons.tsx',
+  'app/harness/dock/DockOnboarding.tsx',
+  'app/harness/dock/NavChevrons.tsx',
+  'app/settings/autonomy/CeilingSlider.tsx',
+  'app/settings/omp/page.tsx',
+  'app/settings/plugin-runtime/RuntimeView.tsx',
+  'app/settings/user/memory/page.tsx',
+]);
+
 function walk(dir: string, out: string[]): void {
   let entries: string[];
   try {
@@ -125,5 +167,9 @@ describe('design primitive lint', () => {
 
   it('blocks native radio inputs in app UI', () => {
     expectNoUnexpected('Native radio input', unexpectedFiles(/<input\b[^>]*\btype=["']radio["']/g, new Set()));
+  });
+
+  it('blocks title-only tooltips on buttons', () => {
+    expectNoUnexpected('Button title tooltip', unexpectedFiles(/<button\b[^>]*\btitle=/g, LEGACY_BUTTON_TITLE_FILES));
   });
 });

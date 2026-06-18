@@ -319,7 +319,9 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
     return (
       <div className="chat-panel chat-panel--error">
         <AlertTriangle size={14} /> Failed to load chat: {loadError}
-        <button className="chat-panel__retry" onClick={() => void loadChat()} title="Retry loading the chat transcript">retry</button>
+        <Tooltip label="Retry loading the chat transcript">
+          <button className="chat-panel__retry" onClick={() => void loadChat()}>retry</button>
+        </Tooltip>
       </div>
     );
   }

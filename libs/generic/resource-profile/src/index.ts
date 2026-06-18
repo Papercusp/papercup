@@ -228,6 +228,47 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
 }
 
 /**
+ * The bounded size for EACH org pool (admin + app), so that all org pools across
+ * all operator processes + per-process fixed overhead + other-DB pools (su-lock)
+ * stay under the DB's `max_connections`. C1-1 / C5-2 of
+ * backend-connection-scaling-2026-06-17 — the guard the P4-3 regression lacked
+ * (it sized each pool to `pgPoolMax` with no awareness of the 2-pool × N-process
+ * multiplication or the ceiling, so two server-profile operators could open ~208
+ * connections against a 100-slot DB).
+ *
+ * Behind a transaction pooler the app pool maps to local pooler *client* slots,
+ * not PG backends, so it is NOT bounded by the backend ceiling — returns
+ * `desired`. By construction (when not pooled):
+ *   bounded·2·procs + fixedOverhead·procs + otherDbs + superuserReserved ≤ maxConnections.
+ */
+export function boundedOrgPoolMax(opts: {
+  /** The unbounded desired size (e.g. resource-profile pgPoolMax or an env override). */
+  desired: number;
+  /** The DB's max_connections ceiling (host-tuned). */
+  maxConnections: number;
+  /** superuser_reserved_connections (kept free for superusers). */
+  superuserReserved: number;
+  /** How many operator processes share this DB (dev box: :3070 + :3170 = 2). */
+  expectedProcesses: number;
+  /** Behind a transaction pooler → app pool ≠ PG backends; skip the bound. */
+  behindPooler?: boolean;
+  /** Non-org connections each process holds: admin-cache(8) + 5 LISTEN buses. */
+  fixedOverheadPerProcess?: number;
+  /** Connections from OTHER databases on the same instance (su-lock in papercusp_su). */
+  reservedForOtherDbs?: number;
+}): number {
+  const desired = Math.max(1, Math.floor(Number.isFinite(opts.desired) ? opts.desired : 1));
+  if (opts.behindPooler) return desired;
+  const procs = Math.max(1, Math.floor(opts.expectedProcesses));
+  const fixedPerProc = opts.fixedOverheadPerProcess ?? 13;
+  const otherDbs = opts.reservedForOtherDbs ?? 32;
+  const reserved = Math.max(0, opts.superuserReserved) + otherDbs + fixedPerProc * procs;
+  const budgetForOrgPools = Math.max(2, opts.maxConnections - reserved);
+  const perPoolCap = Math.floor(budgetForOrgPools / (procs * 2));
+  return Math.max(1, Math.min(desired, perPoolCap));
+}
+
+/**
  * Render a {@link DatabaseTuning} into a map of Postgres GUC name → value string
  * (with MB units where the knob is a size). Feed to a `conf.d` file
  * (`${k} = ${v}`) or to embedded-postgres `-c` flags

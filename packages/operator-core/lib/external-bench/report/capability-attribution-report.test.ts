@@ -58,6 +58,10 @@ describe('buildRunCapabilityAttribution', () => {
     expect(res!.perSuite.map((s) => s.suite)).toEqual(['tau2-bench', 'swarmbench']);
     expect(res!.skippedSuites).toEqual([]);
 
+    // a fairness audit per suite (binding pre-claim table)
+    expect(res!.audits.map((a) => a.suite)).toEqual(['tau2-bench', 'swarmbench']);
+    expect(res!.audits[0].criteria.find((c) => c.id === 'C1')).toBeDefined();
+
     // cross-suite roll-up has one cell per (suite, capability)
     expect(res!.crossSuite.cells).toHaveLength(2);
     const mem = res!.crossSuite.rollup.find((r) => r.capability === '+memory')!;
@@ -121,6 +125,7 @@ describe('formatRunAttributionMarkdown', () => {
     expect(md).toContain('| `+memory` |'); // rollup row
     expect(md).toContain('### tau2-bench (passAt1)');
     expect(md).toContain('+memory vs vanilla on tau2-bench'); // per-suite line
+    expect(md).toContain('## Fairness audits (pre-claim — binding)');
     expect(md).toContain('## Skipped suites');
     expect(md).toContain('`swe-bench-pro`:'); // skipped reason listed
     expect(md).toContain('## Caveats');

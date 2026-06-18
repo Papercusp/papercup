@@ -22,6 +22,7 @@ import { ChevronRight } from 'lucide-react';
 import { type PlanItemRow, type PlanBucket } from './plans-api';
 import { AuthorBadge } from '../../_components/AuthorBadge';
 import AssignDialog from './AssignDialog';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 interface Props {
   items: PlanItemRow[];
@@ -229,10 +230,12 @@ export default function PlanItemsList({
                     }
                   >
                     <Collapsible.Trigger asChild>
-                      <button type="button" className="pc-items__plan-head" title={planSlug}>
+                      <button type="button" className="pc-items__plan-head">
                         <ChevronRight className="pc-items__group-chevron" size={13} aria-hidden />
                         <span className="pc-items__plan-copy">
-                          <span className="pc-items__plan-name">{planTitle}</span>
+                          <Tooltip label={planSlug}>
+                            <span className="pc-items__plan-name">{planTitle}</span>
+                          </Tooltip>
                           {bucket || harnessSlug ? (
                             <span className="pc-items__plan-meta">
                               {bucket ? (

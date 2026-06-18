@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  boundedOrgPoolMax,
   configureResourceProfile,
   databaseTuningToSettings,
   deriveDatabaseTuning,
@@ -365,6 +366,76 @@ describe('resource profile exposes the database tuning', () => {
     expect(p.database.maxConnections).toBe(512);
     expect(p.database.sharedBuffersMb).toBe(65536);
   });
+});
+
+describe('boundedOrgPoolMax — keep org pools under the DB ceiling (C1-1)', () => {
+  it('does not reduce when the budget is ample (this box: 52 vs 512)', () => {
+    expect(
+      boundedOrgPoolMax({ desired: 52, maxConnections: 512, superuserReserved: 10, expectedProcesses: 2 }),
+    ).toBe(52);
+  });
+
+  it('caps when desired × 2 pools × procs would blow the ceiling (the regression case)', () => {
+    // The pre-fix scenario: desired 52, but a 100-slot DB. 2 pools × 2 procs × 52
+    // = 208 >> 100. Must come down hard.
+    const bounded = boundedOrgPoolMax({
+      desired: 52,
+      maxConnections: 100,
+      superuserReserved: 3,
+      expectedProcesses: 2,
+    });
+    expect(bounded).toBeLessThan(52);
+    // invariant holds: 2 pools × 2 procs × bounded + overhead ≤ 100
+    expect(bounded * 2 * 2 + 13 * 2 + 32 + 3).toBeLessThanOrEqual(100);
+  });
+
+  it('behind a pooler, returns the full desired size (app pool ≠ PG backends)', () => {
+    expect(
+      boundedOrgPoolMax({
+        desired: 52,
+        maxConnections: 100,
+        superuserReserved: 3,
+        expectedProcesses: 2,
+        behindPooler: true,
+      }),
+    ).toBe(52);
+  });
+
+  it('never returns below 1', () => {
+    expect(
+      boundedOrgPoolMax({ desired: 1, maxConnections: 10, superuserReserved: 3, expectedProcesses: 8 }),
+    ).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('CI guard (C5-2) — derived pool sizing never exceeds the host-tuned ceiling', () => {
+  // The 2026-06-17 outage was pool sizing that ignored the DB ceiling. This is the
+  // permanent tripwire: for every host shape, the bounded org pools + per-process
+  // fixed overhead + other-DB pools + reserved must fit under max_connections.
+  const FIXED_PER_PROC = 13; // admin-cache(8) + 5 LISTEN buses
+  const OTHER_DBS = 32; // su-lock in papercusp_su
+  const PROCS = 2; // dev box runs :3070 + :3170
+  for (const cores of [2, 4, 8, 16, 24, 32, 64, 128, 256]) {
+    for (const ramGib of [2, 4, 8, 16, 64, 256, 512]) {
+      for (const embeddedPg of [false, true]) {
+        it(`fits: ${cores} cores / ${ramGib} GiB / embedded=${embeddedPg}`, () => {
+          const p = deriveResourceProfile(
+            signals({ cores, embeddedPg, totalMemBytes: ramGib * GIB, freeMemBytes: ramGib * GIB }),
+          );
+          const db = p.database;
+          const bounded = boundedOrgPoolMax({
+            desired: p.pgPoolMax,
+            maxConnections: db.maxConnections,
+            superuserReserved: db.superuserReservedConnections,
+            expectedProcesses: PROCS,
+          });
+          const total =
+            bounded * 2 * PROCS + FIXED_PER_PROC * PROCS + OTHER_DBS + db.superuserReservedConnections;
+          expect(total).toBeLessThanOrEqual(db.maxConnections);
+        });
+      }
+    }
+  }
 });
 
 describe('configure + memoized singleton', () => {

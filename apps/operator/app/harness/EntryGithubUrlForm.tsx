@@ -38,6 +38,7 @@ import { parseHarnessLink } from '@papercusp/operator-core/lib/harness/harness-l
 import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
 import { Select } from './Select';
+import { Tooltip } from './Tooltip';
 
 // ── Client-side GitHub URL validation ──────────────────────────────────────
 // Mirrors clone-github.ts parseGithubUrl (the server-side source of truth).
@@ -881,13 +882,17 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           <hive>" only appears with a selected scope. Every created Pot is a
           hive, so the plain-harness "Standalone" mode is RETIRED. */}
       <div role="group" aria-label="Creation mode" style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-        <button type="button" aria-pressed={mode === 'new-hive'} onClick={() => setMode('new-hive')} style={modeBtn(mode === 'new-hive')} title={`Create a new ${hiveLower} from this repository`}>
-          New {hiveLower}
-        </button>
-        {hiveScope && (
-          <button type="button" aria-pressed={mode === 'into-hive'} onClick={() => setMode('into-hive')} style={modeBtn(mode === 'into-hive')} title={`Add the repo as a member of ${hiveScope}`}>
-            Add to {hiveScope}
+        <Tooltip label={`Create a new ${hiveLower} from this repository`}>
+          <button type="button" aria-pressed={mode === 'new-hive'} onClick={() => setMode('new-hive')} style={modeBtn(mode === 'new-hive')}>
+            New {hiveLower}
           </button>
+        </Tooltip>
+        {hiveScope && (
+          <Tooltip label={`Add the repo as a member of ${hiveScope}`}>
+            <button type="button" aria-pressed={mode === 'into-hive'} onClick={() => setMode('into-hive')} style={modeBtn(mode === 'into-hive')}>
+              Add to {hiveScope}
+            </button>
+          </Tooltip>
         )}
       </div>
 

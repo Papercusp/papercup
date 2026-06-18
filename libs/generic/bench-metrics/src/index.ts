@@ -71,6 +71,17 @@ export {
   type CapabilityRollup,
 } from './capability-attribution';
 
+// Mandatory C1–C10 pre-claim fairness-audit table (capability-injection redesign / P-011 / C10).
+export {
+  buildFairnessAudit,
+  formatFairnessAuditMarkdown,
+  type FairnessStatus,
+  type FairnessCriterion,
+  type ArmFairnessSummary,
+  type FairnessAudit,
+  type FairnessAuditOpts,
+} from './fairness-audit';
+
 // ── Hive layer (Phase 5 / D-010) — fleet-over-backlog metrics ──────────────
 // L2 throughput + L3 value-capture + the report builder for the UI's
 // Throughput / Value subtabs (P-030).

@@ -20,12 +20,15 @@ import type {
   CapabilityAttributionOpts,
   CapabilityAttributionReport,
   CrossSuiteAttribution,
+  FairnessAudit,
   TaskRunResult,
 } from '@papercusp/bench-metrics';
 import {
   buildCapabilityAttribution,
   buildCrossSuiteAttribution,
+  buildFairnessAudit,
   formatAttributionLines,
+  formatFairnessAuditMarkdown,
   DEFAULT_CONTROL_ARM,
 } from '@papercusp/bench-metrics';
 
@@ -46,6 +49,8 @@ export interface RunCapabilityAttribution {
   perSuite: CapabilityAttributionReport[];
   /** The headline matrix + per-capability roll-up across the attributed suites. */
   crossSuite: CrossSuiteAttribution;
+  /** The mandatory C1–C10 fairness audit, one per suite (cross-arm; gates the claim — binding standard). */
+  audits: FairnessAudit[];
   /** Suites present in the run but not attributed (with the reason). */
   skippedSuites: SkippedSuite[];
 }
@@ -93,8 +98,16 @@ export async function buildRunCapabilityAttribution(
   }
 
   const perSuite: CapabilityAttributionReport[] = [];
+  const audits: FairnessAudit[] = [];
   const skippedSuites: SkippedSuite[] = [];
   for (const [suite, suiteRows] of bySuite) {
+    // The fairness audit gates EVERY suite's claim (binding standard) — compute it even for suites we cannot
+    // attribute (no control arm): the C1–C10 table still applies cross-arm.
+    try {
+      audits.push(buildFairnessAudit(suiteRows));
+    } catch {
+      /* empty suite — unreachable (bySuite groups only non-empty) */
+    }
     try {
       perSuite.push(buildCapabilityAttribution(suiteRows, opts.attribution));
     } catch (e) {
@@ -107,6 +120,7 @@ export async function buildRunCapabilityAttribution(
     control,
     perSuite,
     crossSuite: buildCrossSuiteAttribution(perSuite),
+    audits,
     skippedSuites,
   };
 }
@@ -159,6 +173,15 @@ export function formatRunAttributionMarkdown(run: RunCapabilityAttribution): str
     if (lines.length === 0) out.push('_no capability arms_');
     else for (const l of lines) out.push(`- ${l}`);
     out.push('');
+  }
+
+  // Fairness audits (the mandatory C1–C10 pre-claim table per suite — binding standard).
+  if (run.audits.length) {
+    out.push('## Fairness audits (pre-claim — binding)');
+    out.push('');
+    for (const audit of run.audits) {
+      out.push(formatFairnessAuditMarkdown(audit));
+    }
   }
 
   // Skipped suites (honest about what wasn't attributed).

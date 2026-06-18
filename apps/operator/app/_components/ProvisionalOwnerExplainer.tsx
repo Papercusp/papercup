@@ -17,8 +17,9 @@
  * modal — the consumer controls open/close. Pure UI.
  */
 
-import { useEffect, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { Modal } from '@/app/harness/Modal';
 
 const FLAG_KEY = 'papercusp.provisionalOwner.shown.v1';
 
@@ -37,51 +38,6 @@ function markSeenLocally(): void {
     // ignore — explainer just re-shows on next share, low harm
   }
 }
-
-const OVERLAY: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(0, 0, 0, 0.4)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 100,
-};
-
-const DIALOG: CSSProperties = {
-  background: 'var(--surface, #fff)',
-  borderRadius: 8,
-  padding: 24,
-  maxWidth: 480,
-  width: '90%',
-  boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
-  fontSize: 14,
-  lineHeight: 1.5,
-};
-
-const TITLE: CSSProperties = {
-  fontSize: 18,
-  fontWeight: 600,
-  marginBottom: 12,
-};
-
-const BUTTON_ROW: CSSProperties = {
-  display: 'flex',
-  gap: 8,
-  justifyContent: 'flex-end',
-  marginTop: 16,
-};
-
-const PRIMARY_BUTTON: CSSProperties = {
-  background: 'var(--accent, #4CAF50)',
-  color: '#fff',
-  border: 'none',
-  borderRadius: 6,
-  padding: '8px 16px',
-  fontSize: 14,
-  fontWeight: 500,
-  cursor: 'pointer',
-};
 
 export interface ProvisionalOwnerExplainerProps {
   open: boolean;
@@ -116,18 +72,24 @@ export function ProvisionalOwnerExplainer(props: ProvisionalOwnerExplainerProps)
   if (!open) return null;
 
   return (
-    <div
-      style={OVERLAY}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="provisional-owner-title"
-      data-testid="provisional-owner-explainer"
-      onClick={onClose}
+    <Modal
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={`You're the provisional owner of ${harnessSlug}`}
+      contentStyle={{
+        background: 'var(--bg)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: 24,
+        maxWidth: 480,
+        width: '90%',
+        fontSize: 14,
+        lineHeight: 1.5,
+      }}
     >
-      <div style={DIALOG} onClick={(e) => e.stopPropagation()}>
-        <div id="provisional-owner-title" style={TITLE}>
-          You're the provisional owner of <code>{harnessSlug}</code>
-        </div>
+      <div
+      data-testid="provisional-owner-explainer"
+      >
         <p>
           Because you're the first contributor, you're the harness's{' '}
           <strong>provisional owner</strong>. Your device's pubkey is
@@ -142,17 +104,17 @@ export function ProvisionalOwnerExplainer(props: ProvisionalOwnerExplainerProps)
         <p style={{ marginTop: 8, color: 'var(--fg-dim)' }}>
           We won't show this again on this machine.
         </p>
-        <div style={BUTTON_ROW}>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
           <button
             type="button"
             onClick={onClose}
-            style={PRIMARY_BUTTON}
+            className="pc-button-primary"
             data-testid="provisional-owner-explainer-dismiss"
           >
             Got it
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

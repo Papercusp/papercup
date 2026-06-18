@@ -1510,6 +1510,12 @@ async function roleFlow(args, role, rolesMeta) {
     // it via envelopeEnv (same env the fleet + su paths read). Off/absent ⇒ --append (today).
     replaceClaudeBase: res.envelopeEnv?.PAPERCUSP_REPLACE_CLAUDE_BASE === '1',
   });
+  if (args.addDir?.length && res.agent === 'omp') {
+    console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');
+  }
+  // First-class --add-dir (claude/codex) + generic `--` passthrough, forwarded to the
+  // backend CLI after psu's role flags — parity with the su (launchFreshSu) + resume paths.
+  const roleArgs = [...launchArgs, ...addDirArgs(res.agent, args.addDir || []), ...(args.passthrough || [])];
   console.error(
     `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : (res.planSlug ? `plan ${res.planSlug}` : 'no feature')}` +
       `  ·  ${res.harnessSlug ? `harness ${res.harnessSlug}` : 'workspace-level (no harness)'}  ·  session ${res.sessionId ?? '?'}`,
@@ -1520,7 +1526,7 @@ async function roleFlow(args, role, rolesMeta) {
   // (native-scheduler-lockout P-010).
   runWrapper({
     wrapperBin: bin,
-    args: launchArgs,
+    args: roleArgs,
     cwd: res.cwd,
     envelopeEnv: { ...res.envelopeEnv, PAPERCUSP_AGENT_SESSION: '1' },
   });

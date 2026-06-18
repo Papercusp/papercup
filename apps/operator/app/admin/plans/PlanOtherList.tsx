@@ -37,6 +37,7 @@ import { QueueCardActions } from './QueueCardActions';
 import { attentionItemToCardSpec, resolveAttentionAction, answerAttentionItem } from './attention-card';
 import { TIER_LABEL, type AttentionGroup, type AttentionItem, type AttentionKind, type AttentionTier } from './plans-api';
 import { byAuthorizer, planSections, whyLine } from './queue-authorizer';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 const KIND_LABEL: Record<AttentionKind, string> = {
   'plan-item': 'item',
@@ -232,10 +233,12 @@ export default function PlanOtherList({
       {sections.map((s) => {
         const isExpanded = expandedGroups.includes(s.key);
         const head = (
-          <button type="button" className="pc-items__plan-head" title={s.title}>
+          <button type="button" className="pc-items__plan-head">
             <ChevronRight className="pc-items__group-chevron" size={13} aria-hidden />
             <span className="pc-items__plan-copy">
-              <span className="pc-items__plan-name">{s.title}</span>
+              <Tooltip label={s.title}>
+                <span className="pc-items__plan-name">{s.title}</span>
+              </Tooltip>
               {s.hint ? (
                 <span className="pc-items__plan-meta">
                   <span className="pc-queue__section-hint">{s.hint}</span>

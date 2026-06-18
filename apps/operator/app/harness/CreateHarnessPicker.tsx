@@ -31,6 +31,7 @@ import { useState, useRef, type FormEvent, type ReactNode } from 'react';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { Modal } from './Modal';
 import { Select } from './Select';
+import { Tooltip } from './Tooltip';
 import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
 // Pure parser leaf — SPA-bundle-safe (the harness-link-types rule).
@@ -813,12 +814,16 @@ function ForkToggle({
   });
   return (
     <div role="tablist" aria-label="Creation mode" style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
-      <button type="button" role="tab" aria-selected={mode === 'into-hive'} onClick={() => onMode('into-hive')} style={btn(mode === 'into-hive')} title={`Add the new ${lower} into ${hiveScope}`}>
-        Add to {hiveScope}
-      </button>
-      <button type="button" role="tab" aria-selected={mode === 'standalone'} onClick={() => onMode('standalone')} style={btn(mode === 'standalone')} title={`Stand up a new ${lower} home running the Queen blueprint`}>
-        New {lower}
-      </button>
+      <Tooltip label={`Add the new ${lower} into ${hiveScope}`}>
+        <button type="button" role="tab" aria-selected={mode === 'into-hive'} onClick={() => onMode('into-hive')} style={btn(mode === 'into-hive')}>
+          Add to {hiveScope}
+        </button>
+      </Tooltip>
+      <Tooltip label={`Stand up a new ${lower} home running the Queen blueprint`}>
+        <button type="button" role="tab" aria-selected={mode === 'standalone'} onClick={() => onMode('standalone')} style={btn(mode === 'standalone')}>
+          New {lower}
+        </button>
+      </Tooltip>
     </div>
   );
 }

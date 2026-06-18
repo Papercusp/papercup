@@ -151,7 +151,7 @@ describe('buildCapabilityAttribution (pass@1)', () => {
     expect(ratio.costRatio).toBeCloseTo(0.5, 6);
   });
 
-  it('classifies per-task unlocked / regressed / neutral over commonly-scored tasks', () => {
+  it('classifies per-task unlocked / regressed / neutral; same-denominator counts an absent control task as false (C1)', () => {
     const rows = [
       attempt('t1', 'vanilla', true, 1_000_000),
       attempt('t2', 'vanilla', false, 1_000_000),
@@ -159,24 +159,20 @@ describe('buildCapabilityAttribution (pass@1)', () => {
       attempt('t1', '+coord', false, 1_000_000), // regressed
       attempt('t2', '+coord', true, 1_000_000), // unlocked
       attempt('t3', '+coord', true, 1_000_000), // neutral
-      attempt('t4', '+coord', true, 1_000_000), // no control row → ignored
+      attempt('t4', '+coord', true, 1_000_000), // no control row → control scores false (absent), so unlocked
     ];
+    // DEFAULT = same-denominator (C1): t4 is in the union, control absent → false → +coord unlocked it.
     const c = buildCapabilityAttribution(rows).capabilities[0];
-    expect(c.unlockedTasks).toEqual(['t2']);
+    expect(c.sameDenominator).toBe(true);
+    expect(c.unlockedTasks).toEqual(['t2', 't4']);
     expect(c.regressedTasks).toEqual(['t1']);
     expect(c.neutralTasks).toEqual(['t3']);
-    expect(c.tasksCompared).toBe(3);
-  });
+    expect(c.tasksCompared).toBe(4);
 
-  it('excludes infra-error rows from the per-task rate and the headline', () => {
-    const rows = [
-      attempt('t1', 'vanilla', false, 1_000_000),
-      attempt('t1', '+memory', true, 1_000_000),
-      mk({ taskId: 't2', arm: '+memory', generationStatus: 'error', resolved: null, tokensIn: 1_000_000, tokensTotal: 1_000_000 }),
-    ];
-    const c = buildCapabilityAttribution(rows).capabilities[0];
-    expect(c.tasksCompared).toBe(1);
-    expect(c.unlockedTasks).toEqual(['t1']);
+    // SECONDARY exclude-infra view: t4 (no control scored row) is dropped — flatters coverage, labelled.
+    const ex = buildCapabilityAttribution(rows, { sameDenominator: false }).capabilities[0];
+    expect(ex.unlockedTasks).toEqual(['t2']);
+    expect(ex.tasksCompared).toBe(3);
   });
 
   it('respects an explicit capabilityArms allow-list and default control', () => {
@@ -209,6 +205,49 @@ describe('buildCapabilityAttribution (pass@1)', () => {
     const rows = [attempt('t1', 'vanilla', false, 1_000_000), attempt('t1', '+memory', true, 1_000_000)];
     expect(buildCapabilityAttribution(rows).caveats).toEqual(ATTRIBUTION_CAVEATS);
     expect(ATTRIBUTION_CAVEATS.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('buildCapabilityAttribution — fairness same-denominator (C1/C6)', () => {
+  it('counts an arm infra-failure as false in the shared denominator (C1) and tracks coverage (C6)', () => {
+    const rows = [
+      // both arms attempt t1,t2,t3. control resolves all 3. +memory resolves t1,t2 but INFRA-FAILS t3.
+      attempt('t1', 'vanilla', true, 1_000_000),
+      attempt('t2', 'vanilla', true, 1_000_000),
+      attempt('t3', 'vanilla', true, 1_000_000),
+      attempt('t1', '+memory', true, 1_000_000),
+      attempt('t2', '+memory', true, 1_000_000),
+      mk({ taskId: 't3', arm: '+memory', generationStatus: 'error', resolved: null, tokensIn: 1_000_000, tokensTotal: 1_000_000 }),
+    ];
+    // SAME-DENOMINATOR (default): t3 counts as false for +memory → +memory 2/3 vs control 3/3 → regressed on t3.
+    const fair = buildCapabilityAttribution(rows).capabilities[0];
+    expect(fair.controlValue).toBeCloseTo(1, 6);
+    expect(fair.capabilityValue).toBeCloseTo(2 / 3, 6);
+    expect(fair.valueDelta).toBeCloseTo(-1 / 3, 6);
+    expect(fair.regressedTasks).toEqual(['t3']);
+    expect(fair.capabilityCoverage.produced).toBe(2);
+    expect(fair.capabilityCoverage.infraOnly).toBe(1); // t3 all-infra → counted false, disclosed
+    expect(fair.capabilityCoverage.absent).toBe(0);
+    expect(fair.controlCoverage.produced).toBe(3);
+
+    // EXCLUDE-INFRA (secondary): t3 is DROPPED for +memory → it looks tied 2/2 vs 2/2 (flattered).
+    const ex = buildCapabilityAttribution(rows, { sameDenominator: false }).capabilities[0];
+    expect(ex.capabilityValue).toBeCloseTo(1, 6); // 2/2 on its scored set — the C1 trap the standard warns of
+    expect(ex.tasksCompared).toBe(2); // t3 dropped
+    expect(ex.regressedTasks).toEqual([]);
+  });
+
+  it('counts an absent task (one arm never ran it) as false under same-denominator', () => {
+    const rows = [
+      attempt('t1', 'vanilla', true, 1_000_000),
+      attempt('t2', 'vanilla', true, 1_000_000),
+      attempt('t1', '+memory', true, 1_000_000),
+      // +memory never ran t2 (absent) → false under same-denominator
+    ];
+    const c = buildCapabilityAttribution(rows).capabilities[0];
+    expect(c.capabilityValue).toBeCloseTo(0.5, 6); // t1=1, t2=absent=0
+    expect(c.capabilityCoverage.absent).toBe(1);
+    expect(c.regressedTasks).toEqual(['t2']); // control 1 > capability 0
   });
 });
 
