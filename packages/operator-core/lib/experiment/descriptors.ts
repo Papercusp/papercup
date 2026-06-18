@@ -21,6 +21,8 @@ import {
 import type { ReplayCase, ReplayVariant } from '../replay/types';
 import { partitionArm, validateArm, type KnobArm } from './knob-space';
 import type { GymExperimentPayload } from './gym-run-core';
+import type { InstanceExperimentPayload } from './instance-run-core';
+import type { HiveExperimentPayload } from './hive-run-core';
 import type { ExperimentRequest, ExperimentRunCtx, ExperimentRunResult } from './types';
 
 /** Injectable seam — the runners the descriptors delegate to (real by default; a
@@ -132,44 +134,33 @@ export function replayDescriptor(deps: ExperimentDescriptorDeps = defaultDeps): 
 // --------------------------------------------------------------------------
 
 /**
- * The whole-instance / whole-Hive tiers (the gated cost-exception, D-002). Their live
- * runners (the iq-battery boot / hive-eval ports) are heavy infra `experiment:run`
- * cannot provision, and their OWN loops (apiary / hive-eval) already drive them — so
- * binding a live runner-config here would be speculative, unverifiable, and redundant
- * (D-017). They are therefore BOUND TO THE CONTRACT but STAGED: the run validates the
- * arm against the test's `['genome','model']` slice + the safety set (P-021) and
- * PARTITIONS it — threading the `genome.*` delta + the `model.<role>` axis exactly like
- * the reachable replay/gym tiers — then refuses with NO spend, pointing at the ctx dep
- * slot that un-stages it (the gym worked example, P-066/P-068). Wiring the live
- * runner-config + the spawn-time model override is purely additive when that infra is
- * supplied. (P-063 end-state: "discoverable-but-staged — run() refuses".)
+ * The whole-instance / whole-Hive tiers (the gated cost-exception, D-002) — now BOUND to
+ * their live runners (P-063/D-023, the owner-requested un-staging of the D-022 deferral),
+ * mirroring the gym binding. The run validates each arm against the test's
+ * `['genome','model']` slice + the safety set (P-021), then DELEGATES to the tier's
+ * run-core (`instance-run-core` / `hive-run-core`), which maps each arm onto a
+ * config-varied instance (a `genome.*` delta + the `model.<role>` spawn override) and runs
+ * it via the injected live deps. Those live deps (iq-battery `BeekeeperDeps` / hive-eval
+ * `HiveRunPorts`) are heavy infra experiment:run does not provision and the apiary/hive-eval
+ * loops already drive — so absent the injected deps the run-core refuses with NO spend
+ * (still "discoverable-but-staged" until the owner arms it). These tiers stay the gated
+ * cost-exception reached only via the escalation discipline (P-041), never the default.
  */
-function stagedGenomeModelDescriptor(
+function liveGenomeModelDescriptor(
   meta: Omit<ExperimentDescriptor, 'run'> & { fidelityTier: 'live' },
-  ctxSlot: 'instance' | 'hive',
-  liveDepHint: string,
+  delegate: (request: ExperimentRequest, ctx: ExperimentRunCtx) => Promise<ExperimentRunResult>,
 ): ExperimentDescriptor {
   return {
     ...meta,
     async run(request, ctx) {
-      // Validate + partition every arm — proves the genome/model slice gate + that the
-      // genome delta and model.<role> overrides fold cleanly, even while staged.
       for (const arm of request.arms) {
         const v = validateArm(arm, meta.knobSlice);
         if (!v.ok) {
           const bad = [...v.outOfSlice, ...v.excluded.map((e) => `${e} (safety-excluded)`)].join(', ');
           throw new Error(`${meta.id} arm "${arm.id}" has knobs outside its slice: ${bad}`);
         }
-        partitionArm(arm); // throws on a malformed genome/model knob (defense in depth)
       }
-      const bound = ctxSlot === 'instance' ? ctx.instance?.deps : ctx.hive?.ports;
-      throw new Error(
-        `the "${meta.id}" test (${meta.kind}, ${meta.fidelityTier} tier) is the gated cost-exception (D-002) and stays STAGED — ` +
-          (bound
-            ? `its live runner-config + spawn-time model.<role> binding is deferred to the ${liveDepHint} that owns it (D-017).`
-            : `it requires ctx.${ctxSlot}.${ctxSlot === 'instance' ? 'deps' : 'ports'} (the ${liveDepHint}), which experiment:run does not provision — its own loop drives it (D-017). `) +
-          `Screen the knob change on the offline replay tier instead (P-040/D-004).`,
-      );
+      return delegate(request, ctx);
     },
   };
 }
@@ -209,36 +200,64 @@ export function gymDescriptor(): ExperimentDescriptor {
 }
 
 export function instanceDescriptor(): ExperimentDescriptor {
-  return stagedGenomeModelDescriptor(
+  return liveGenomeModelDescriptor(
     {
       id: 'instance',
       summary:
-        'Whole-instance eval — boot a config-varied instance from a genome delta (the iq-battery InstanceSubject) and score it. The gated cost-exception, used when a component eval cannot isolate the variable (D-002).',
+        'Whole-instance eval — boot a config-varied instance from a genome delta + model.<role> spawn override (the iq-battery InstanceSubject) and score it. The gated cost-exception, used when a component eval cannot isolate the variable (D-002); live when ctx.instance.deps are armed.',
       kind: 'whole-instance',
       fidelityTier: 'live',
       costClass: 'high',
       knobSlice: ['genome', 'model'],
       metrics: { signals: ['status', 'tokens', 'escalation'], rubricDimensions: ['composite'] },
     },
-    'instance',
-    'iq-battery boot (the apiary loop)',
+    async (request, ctx) => {
+      const { instanceRunCore } = await import('./instance-run-core');
+      return instanceRunCore(
+        {
+          batteryId: request.batteryId,
+          arms: request.arms,
+          payload: request.payload as InstanceExperimentPayload,
+          repeats: request.repeats,
+          ...(request.maxDistillChars !== undefined ? { maxDistillChars: request.maxDistillChars } : {}),
+        },
+        { workspaceId: ctx.workspaceId, ...(ctx.instance?.deps ? { deps: ctx.instance.deps } : {}) },
+      );
+    },
   );
 }
 
 export function hiveDescriptor(): ExperimentDescriptor {
-  return stagedGenomeModelDescriptor(
+  return liveGenomeModelDescriptor(
     {
       id: 'hive',
       summary:
-        'Whole-hive eval — run a seeded Hive scenario end-to-end (the hive-eval Subject) and score outcome × efficiency × speed. Live agent spend.',
+        'Whole-hive eval — run a seeded Hive scenario end-to-end under a genome + model.<role> varied instance (the hive-eval Subject) and score outcome × efficiency × speed. Live agent spend; live when ctx.hive.ports are armed.',
       kind: 'whole-hive',
       fidelityTier: 'live',
       costClass: 'high',
       knobSlice: ['genome', 'model'],
       metrics: { signals: ['outcome', 'efficiency', 'speed'], rubricDimensions: ['outcome', 'efficiency', 'speed'] },
     },
-    'hive',
-    'hive-eval ports (the hive-eval loop)',
+    async (request, ctx) => {
+      const { hiveRunCore } = await import('./hive-run-core');
+      return hiveRunCore(
+        {
+          batteryId: request.batteryId,
+          arms: request.arms,
+          payload: request.payload as HiveExperimentPayload,
+          repeats: request.repeats,
+          ...(request.maxDistillChars !== undefined ? { maxDistillChars: request.maxDistillChars } : {}),
+        },
+        {
+          workspaceId: ctx.workspaceId,
+          now: ctx.now,
+          llmCall: ctx.llmCall,
+          ...(ctx.hive?.ports ? { ports: ctx.hive.ports } : {}),
+          ...(ctx.sleep ? { sleep: ctx.sleep } : {}),
+        },
+      );
+    },
   );
 }
 
