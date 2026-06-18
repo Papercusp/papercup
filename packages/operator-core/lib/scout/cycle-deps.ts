@@ -41,6 +41,7 @@ import { gatherSteppingStones, type ArchivePort } from './gym-bridge';
 import { gatherGraderFeedbackPriming, type GradedIdeaView } from './ideator-feedback-priming';
 import { getScoutLensWeights } from './routed-ledger';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
+import { DEFAULT_SCOUT_CONFIG, type ScoutConfig } from './config';
 import type { CorpusEntry } from './critique-core';
 import type { ScoutCycleDeps, ScoutCycleLimits } from './cycle';
 import type { ExperimentDispatchPort } from './experiment-rail';
@@ -80,6 +81,13 @@ export interface BuildScoutCycleDepsOptions {
   /** Override the dark experiment-rail dispatch port (tests). Default: the dry-run-only
    *  buildExperimentDispatchPort. Only consulted when SCOUT_EXPERIMENT_RAIL is ON. */
   experimentDispatch?: ExperimentDispatchPort;
+  /**
+   * Per-blueprint Scout tuning (P-009 scout-config seam): the ideator lens roster, the
+   * search-first novelty knobs, the verdict-bucket thresholds, and the routing default +
+   * whole-system marker vocabulary. Defaults to {@link DEFAULT_SCOUT_CONFIG} (byte-identical
+   * to the previous hardcoded constants); the runner resolves it from the blueprint `scout` block.
+   */
+  scoutConfig?: ScoutConfig;
 }
 
 /**
@@ -87,9 +95,18 @@ export interface BuildScoutCycleDepsOptions {
  * count runs only the first N lenses (one ideator each); at/above it, the default
  * one-per-lens roster runs. Never silences below one lens (D-004 floor).
  */
-export function rosterForBudget(maxIdeators?: number): { lenses?: readonly CreativeLens[] } {
-  if (maxIdeators == null || maxIdeators >= CREATIVE_LENSES.length) return {};
-  return { lenses: CREATIVE_LENSES.slice(0, Math.max(1, Math.floor(maxIdeators))) };
+export function rosterForBudget(
+  maxIdeators?: number,
+  lenses: readonly CreativeLens[] = CREATIVE_LENSES,
+): { lenses?: readonly CreativeLens[] } {
+  if (maxIdeators == null || maxIdeators >= lenses.length) {
+    // Full roster. Return {} ONLY for the engine-default lenses, so the default path keeps
+    // deferring to the ideators' default roster + the meta-learned lens weighting
+    // (behavior-neutral). A custom blueprint roster is passed explicitly (the weighting is
+    // keyed to the default lenses, so it does not apply to a custom roster). (P-009)
+    return lenses === CREATIVE_LENSES ? {} : { lenses: [...lenses] };
+  }
+  return { lenses: lenses.slice(0, Math.max(1, Math.floor(maxIdeators))) };
 }
 
 /**
@@ -156,6 +173,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
 
   const readers = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();
   const noveltyCorpus = opts.noveltyCorpus ?? readNoveltyCorpus;
+  const scoutConfig = opts.scoutConfig ?? DEFAULT_SCOUT_CONFIG;
 
   return {
     llmCall: opts.llmCall,
@@ -171,7 +189,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     // the roster (D-010), the cap wins — skip the meta-learned extras so the cycle
     // never over-spends (extraIdeatorBudget would otherwise add ideators past the cap).
     ideate: async (digest, ctx) => {
-      const roster = rosterForBudget(ctx.maxIdeators);
+      const roster = rosterForBudget(ctx.maxIdeators, scoutConfig.lenses);
       const weighting = roster.lenses ? {} : await getScoutLensWeights({ harnessSlug: opts.harnessSlug });
       // P-012 archive→Scout FEED: prime the ideators with the gym QD archive's diverse
       // elites (stepping-stones), so Scout builds on / leaps away from what the gym has
@@ -195,14 +213,22 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       ).ideas;
     },
     critique: async (ideas, ctx) =>
-      (await critiqueIdeas(ideas, ctx.corpus, { llmCall: ctx.llmCall })).critiques,
+      (
+        await critiqueIdeas(ideas, ctx.corpus, { llmCall: ctx.llmCall }, {
+          novelty: scoutConfig.novelty,
+          bucket: scoutConfig.buckets,
+        })
+      ).critiques,
     recombine: async (scored, ctx) =>
       (await recombineProposals(scored, { llmCall: ctx.llmCall })).proposals,
     // The whole-system override realizes the P-005 split: a testable WHOLE-SYSTEM proposal
     // (genome's interacting wholes) routes to the InstanceSubject; a component idea stays on
     // the gym (HarnessSubject). plan/improvement/unhinted ideas are untouched.
     route: async (proposals) => {
-      const result = await routeProposals(proposals, routerPorts, { override: wholeSystemInstanceOverride });
+      const result = await routeProposals(proposals, routerPorts, {
+        override: makeWholeSystemInstanceOverride(scoutConfig.routing.wholeSystemMarkers),
+        defaultRail: scoutConfig.routing.defaultRail,
+      });
       // Dark Scout→experiment rail (SCOUT_EXPERIMENT_RAIL, default OFF — #2 "close the
       // loop"): ADDITIVELY express each testable (gym-rail) proposal as a DRY-RUN
       // experiment spec — proves the Scout→experiment:run loop with NO spend + NO change

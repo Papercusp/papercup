@@ -75,7 +75,7 @@ async function resolveArchive(scope: { workspaceId: string; harnessSlug: string 
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig }) => {
   // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
   // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and
   // never pass the spawn chokepoint that patches `ANTHROPIC_BASE_URL` onto bee subprocesses —
@@ -113,6 +113,9 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     archive,
     limits: { maxCostUsd: budget.maxCostUsd, maxIdeators: budget.maxIdeators },
     cycleId,
+    // P-009: per-blueprint Scout tuning (lenses/novelty/buckets/routing). Undefined ⇒
+    // buildScoutCycleDeps falls back to DEFAULT_SCOUT_CONFIG (behavior-neutral).
+    ...(scoutConfig ? { scoutConfig } : {}),
   });
   try {
     return await runScoutCycle(deps);
